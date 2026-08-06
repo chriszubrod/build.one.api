@@ -143,26 +143,24 @@ class ReviewService:
                 cl_service = ContractLaborService()
                 cl = cl_service.repo.read_by_id(contract_labor_id)
                 if cl is not None:
-                    ContractLaborReviewNotificationService().enqueue_drafts(
-                        contract_labor=cl,
-                    )
-                    # Advance CL.Status from pending_review → submitted
-                    # on the initial Submit transition so the row moves
-                    # out of the author's Pending queue and into the
-                    # Submitted queue. Failure-isolated (log, don't roll
-                    # back the Review row). Idempotent: only flips when
-                    # the current status is 'pending_review'; any other
-                    # value (submitted/ready/billed) is left alone so
-                    # reruns or race conditions are safe.
-                    # NOTE: this is the interim shim; full vocab rename
-                    # (pending_review → draft; ready → approved;
-                    # billed → completed) will land in a follow-up.
+                    # Advance CL.Status pending_review → submitted FIRST,
+                    # BEFORE enqueue, so the per-date gate inside
+                    # enqueue_drafts sees THIS record as already
+                    # submitted. The consolidated crew draft only releases
+                    # once NO ContractLabor for the WorkDate remains
+                    # pending_review — if we enqueued before flipping,
+                    # this very row would still count as pending and hold
+                    # its own date indefinitely. Failure-isolated (log,
+                    # don't roll back the Review row). Idempotent: only
+                    # flips from 'pending_review'; any later value
+                    # (submitted/ready/billed) is left alone.
+                    # NOTE: interim shim; full vocab rename (pending_review
+                    # → draft; ready → approved; billed → completed) lands
+                    # in a follow-up.
                     if cl.status == "pending_review":
                         try:
-                            existing = cl_service.repo.read_by_id(contract_labor_id)
-                            if existing is not None and existing.status == "pending_review":
-                                existing.status = "submitted"
-                                cl_service.repo.update_by_id(existing)
+                            cl.status = "submitted"
+                            cl_service.repo.update_by_id(cl)
                         except Exception:
                             logger.exception(
                                 "Failed to advance CL.status pending_review → submitted "
@@ -170,6 +168,16 @@ class ReviewService:
                                 contract_labor_id,
                                 review.id,
                             )
+
+                    # Enqueue the consolidated per-(project, date) crew
+                    # drafts. enqueue_drafts internally gates (releases
+                    # only when no ContractLabor for this WorkDate is
+                    # still pending_review) and claims each (project, date)
+                    # exactly once, so re-firing on each crew member's
+                    # submit is safe.
+                    ContractLaborReviewNotificationService().enqueue_drafts(
+                        contract_labor=cl,
+                    )
             except Exception:
                 logger.exception(
                     "Failed to enqueue ContractLabor review-submit drafts "

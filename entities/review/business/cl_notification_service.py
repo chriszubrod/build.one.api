@@ -1,16 +1,28 @@
 """
-Per-project draft email for ContractLabor review submissions.
+Consolidated per-(project, date) crew draft email for ContractLabor reviews.
 
-When a ContractLabor enters review (first Submit transition), enqueue ONE
-MS Graph `create_draft` per distinct project on the labor's line items.
-Each draft is addressed to that project's PM(s) and asks for the
-SubCostCode(s) for the lines on that project. Drafts are never auto-sent
-— they land in the shared mailbox's Drafts folder and the user manually
-addresses + sends them after reviewing.
+CONSOLIDATION (U-XXX, 2026-08-05): the review-notification is now ONE
+draft per (project, work_date) that COMBINES every laborer on that
+project+date — not one draft per (worker, project). It also gates on the
+whole date: a draft only releases once EVERY ContractLabor for the
+work_date has left 'pending_review' (all "Submit for Review"). While any
+record for the date is still pending, the enqueue holds; the trigger
+re-fires on each subsequent submit and the last one clears the gate.
+
+Each draft is addressed to that project's PM(s) (TO) + Owner(s) (CC), BCCs
+the office archive, and asks for the SubCostCode for the crew's labor on
+that project+date. A PM reply applies that SCC to the whole crew (see
+ContractLaborService.apply_reviewer_decision). Drafts are never auto-sent
+— they land in the shared mailbox's Drafts folder for manual send.
+
+Dedup + straggler handling: a (project, date) draft is claimed exactly
+once via an atomic conditional insert into ContractLaborNotification.
+A laborer added AFTER the date already released does NOT re-send the crew
+email (the claim already exists) — it's a manual follow-up per Chris' call.
 
 Empty TO is allowed: projects with no `UserProject(Role='Project Manager')`
 get a draft with empty TO so the user has a placeholder in Drafts to
-manually address. Per Chris' product call.
+manually address.
 
 Failure isolation: never raises. Enqueue failures log and continue; the
 Review row is never rolled back.
@@ -44,71 +56,101 @@ class ContractLaborReviewNotificationService:
             )
 
     def _do_enqueue(self, *, contract_labor):
-        from entities.contract_labor.persistence.line_item_repo import (
-            ContractLaborLineItemRepository,
+        cl_public_id = getattr(contract_labor, "public_id", None)
+        work_date = getattr(contract_labor, "work_date", None)
+        if work_date is None:
+            logger.info(
+                "cl_review_notification.skip_no_work_date cl_public_id=%s",
+                cl_public_id,
+            )
+            return
+        work_date_str = (
+            work_date.isoformat() if hasattr(work_date, "isoformat") else str(work_date)
         )
 
-        cl_id = contract_labor.id
-        cl_public_id = contract_labor.public_id
-        worker_name = contract_labor.employee_name or "Worker"
-        work_date = contract_labor.work_date or "—"
+        # ── DATE GATE ────────────────────────────────────────────────
+        # Release the consolidated crew drafts ONLY when every
+        # ContractLabor for this WorkDate has left 'pending_review' (all
+        # "Submit for Review"). While any record for the date is still
+        # pending, hold — the trigger re-fires on each subsequent submit
+        # and the last one clears the gate.
+        pending = self._count_pending_for_date(work_date)
+        if pending is None:
+            return  # gate lookup failed; error already logged — don't half-send
+        if pending > 0:
+            logger.info(
+                "cl_review_notification.held work_date=%s pending=%d "
+                "(trigger cl_public_id=%s)",
+                work_date_str, pending, cl_public_id,
+            )
+            return
 
-        line_items = ContractLaborLineItemRepository().read_by_contract_labor_id(
-            contract_labor_id=cl_id,
-        )
+        # ── GATHER: all submitted crew lines for the date, by project ─
+        line_rows = self._read_submitted_lines_for_date(work_date)
+        if not line_rows:
+            logger.info(
+                "cl_review_notification.nothing_submitted work_date=%s", work_date_str,
+            )
+            return
+
         lines_by_project: dict[int, list] = {}
-        for li in line_items:
-            if li.project_id is None:
-                continue  # overhead lines have no project anchor
-            lines_by_project.setdefault(li.project_id, []).append(li)
-
-        recipients_by_project = self._fetch_recipients(cl_id)
-
-        # Union of project ids from BOTH sources — recipients sproc
-        # surfaces every distinct project even when no PM exists, AND
-        # we ALWAYS create a draft per project that has at least one
-        # line item (even if no PM is configured for that project).
-        project_ids = set(lines_by_project.keys()) | set(recipients_by_project.keys())
+        project_meta: dict[int, dict] = {}
+        for r in line_rows:
+            pid = r.ProjectId
+            lines_by_project.setdefault(pid, []).append(r)
+            if pid not in project_meta:
+                project_meta[pid] = {
+                    "name": getattr(r, "ProjectName", None) or "",
+                    "abbreviation": getattr(r, "ProjectAbbreviation", None) or "",
+                    # ANY crew CL with a line on this project resolves the
+                    # per-project PM/Owner recipients + satisfies the FK.
+                    "representative_cl_id": r.ContractLaborId,
+                }
 
         # BCC the office archive (matches Bill's review-notification
-        # envelope). Lazy import — Settings can fail to load in some
-        # CLI contexts; never let it break the enqueue path.
+        # envelope). Lazy import — Settings can fail to load in some CLI
+        # contexts; never let it break the enqueue path.
         bcc_addresses = self._build_bcc_addresses()
 
         outbox = MsOutboxService()
         enqueued = 0
-        empty_bucket = {"name": "", "abbreviation": "", "pms": [], "owners": []}
-        for project_id in sorted(project_ids):
-            lines = lines_by_project.get(project_id, [])
-            if not lines:
-                # Project surfaced by sproc but no current line items —
-                # nothing to ask about. Skip.
+        for project_id in sorted(lines_by_project.keys()):
+            lines = lines_by_project[project_id]
+            meta = project_meta[project_id]
+            representative_cl_id = meta["representative_cl_id"]
+            project_label = self._format_project_label(meta, project_id)
+            subject = f"Contract Labor - {project_label} - {work_date_str}"
+
+            # ── CLAIM (dedup + straggler-manual + race guard) ────────
+            # Atomically insert the (project, date) token; only the
+            # inserter enqueues the draft. If the token already exists
+            # (this project+date released in a prior cycle), skip — a
+            # late-added laborer is a manual follow-up, never re-sends
+            # the whole crew. The Subject stored here is the deterministic
+            # reply-binding key (FindContractLaborForReviewerReply).
+            claimed = self._claim_notification(
+                contract_labor_id=representative_cl_id,
+                project_id=project_id,
+                work_date=work_date,
+                outbound_subject=subject,
+            )
+            if not claimed:
+                logger.info(
+                    "cl_review_notification.already_sent project_id=%s work_date=%s",
+                    project_id, work_date_str,
+                )
                 continue
-            bucket = recipients_by_project.get(project_id, empty_bucket)
+
+            recipients_by_project = self._fetch_recipients(representative_cl_id)
+            bucket = recipients_by_project.get(project_id, {"pms": [], "owners": []})
             pms = bucket.get("pms", [])
             owners = bucket.get("owners", [])
-            project_label = self._format_project_label(bucket, project_id)
 
             to_addresses = self._build_recipient_addresses(pms)
             cc_addresses = self._build_recipient_addresses(owners)
-            subject = f"Contract Labor - {worker_name} - {project_label} - {work_date}"
-
-            # Persist the (CL, Project, Subject) triple so the reviewer-reply
-            # lookup (FindContractLaborForReviewerReply) can bind an inbound
-            # reply back to its (CL, Project) pair via JOIN — no subject
-            # parsing at lookup time. The Subject acts as the dedup key
-            # between this row and the BCC inbox copy that arrives after
-            # the MS outbox drains. See entities/contract_labor/sql/
-            # ContractLaborNotification.sql for the table.
-            self._register_notification(
-                contract_labor_id=cl_id,
-                project_id=project_id,
-                outbound_subject=subject,
-            )
             body = self._build_body(
-                worker_name=worker_name,
-                work_date=str(work_date),
                 project_label=project_label,
+                work_date=work_date_str,
                 lines=lines,
                 pms=pms,
             )
@@ -116,7 +158,7 @@ class ContractLaborReviewNotificationService:
             try:
                 outbox.enqueue_send_mail(
                     entity_type="ContractLabor",
-                    entity_public_id=cl_public_id,
+                    entity_public_id=str(cl_public_id or ""),
                     to_addresses=to_addresses,
                     cc_addresses=cc_addresses,
                     bcc_addresses=bcc_addresses,
@@ -129,45 +171,94 @@ class ContractLaborReviewNotificationService:
             except Exception as error:
                 logger.exception(
                     "cl_review_notification.enqueue_project_failed "
-                    "cl_public_id=%s project_id=%s: %s",
-                    cl_public_id,
-                    project_id,
-                    error,
+                    "project_id=%s work_date=%s: %s",
+                    project_id, work_date_str, error,
                 )
 
         logger.info(
-            "cl_review_notification.enqueued cl_public_id=%s projects=%d drafts=%d",
-            cl_public_id,
-            len(project_ids),
-            enqueued,
+            "cl_review_notification.enqueued work_date=%s projects=%d drafts=%d",
+            work_date_str, len(lines_by_project), enqueued,
         )
 
-    def _register_notification(
-        self, *, contract_labor_id: int, project_id: int, outbound_subject: str,
-    ) -> None:
-        """Insert one ContractLaborNotification row per outbound draft.
+    # =========================================================================
+    # DB reads for the gate + consolidation
+    # =========================================================================
 
-        Failure-isolated: a write failure here is logged but does not
-        propagate (the outbox row is already enqueued and we don't want
-        to block the notification flow). The cost of a missing join row
-        is that the reviewer-reply lookup falls through to fuzzy hints
-        for that conversation — degraded, not broken.
+    def _count_pending_for_date(self, work_date) -> Optional[int]:
+        """Count ContractLabor still in 'pending_review' for the date.
+        Returns None on lookup failure so the caller aborts rather than
+        releasing a half-gated set."""
+        try:
+            with get_connection() as conn:
+                cur = conn.cursor()
+                call_procedure(
+                    cursor=cur,
+                    name="CountPendingContractLaborByWorkDate",
+                    params={"WorkDate": work_date},
+                )
+                row = cur.fetchone()
+                return int(row.PendingCount) if row is not None else 0
+        except Exception as error:
+            logger.exception(
+                "cl_review_notification.gate_count_failed work_date=%s: %s",
+                work_date, error,
+            )
+            return None
+
+    def _read_submitted_lines_for_date(self, work_date) -> list:
+        """All project-anchored line items across contractors whose
+        ContractLabor for the date is 'submitted' (awaiting PM coding)."""
+        try:
+            with get_connection() as conn:
+                cur = conn.cursor()
+                call_procedure(
+                    cursor=cur,
+                    name="ReadSubmittedContractLaborLinesByWorkDate",
+                    params={"WorkDate": work_date},
+                )
+                return cur.fetchall()
+        except Exception as error:
+            logger.exception(
+                "cl_review_notification.read_lines_failed work_date=%s: %s",
+                work_date, error,
+            )
+            return []
+
+    def _claim_notification(
+        self, *, contract_labor_id: int, project_id: int, work_date, outbound_subject: str,
+    ) -> bool:
+        """Atomically claim the (project, date) notification token.
+
+        Returns True iff THIS call inserted the row — the caller then
+        enqueues the draft. Returns False when the token already existed
+        (already sent → skip) OR the write failed (logged; safer to skip
+        than double-send). The conditional insert under (UPDLOCK,
+        HOLDLOCK) is both the dedup guard and the concurrency guard: two
+        near-simultaneous "last submit" releases can't both insert.
         """
         try:
             with get_connection() as conn:
                 cur = conn.cursor()
                 cur.execute(
                     """INSERT INTO dbo.[ContractLaborNotification]
-                           ([ContractLaborId], [ProjectId], [OutboundSubject])
-                       VALUES (?, ?, ?)""",
-                    (contract_labor_id, project_id, outbound_subject),
+                           ([ContractLaborId], [ProjectId], [WorkDate], [OutboundSubject])
+                       SELECT ?, ?, ?, ?
+                       WHERE NOT EXISTS (
+                           SELECT 1 FROM dbo.[ContractLaborNotification] WITH (UPDLOCK, HOLDLOCK)
+                           WHERE [ProjectId] = ? AND [WorkDate] = ?
+                       )""",
+                    (contract_labor_id, project_id, work_date, outbound_subject,
+                     project_id, work_date),
                 )
+                inserted = cur.rowcount
                 conn.commit()
+                return inserted == 1
         except Exception as error:
             logger.warning(
-                "cl_review_notification.register_failed cl_id=%s project_id=%s: %s",
-                contract_labor_id, project_id, error,
+                "cl_review_notification.claim_failed project_id=%s work_date=%s: %s",
+                project_id, work_date, error,
             )
+            return False
 
     # =========================================================================
     # Internals
@@ -287,32 +378,34 @@ class ContractLaborReviewNotificationService:
     def _build_body(
         self,
         *,
-        worker_name: str,
-        work_date: str,
         project_label: str,
+        work_date: str,
         lines: list,
         pms: list[dict],
     ) -> str:
-        """HTML body matching Chris' template (2026-06-03):
+        """Consolidated crew HTML body for one (project, date):
 
             {name(s)},
 
-            The following Contract Labor record has been submitted for
-            review. When you have a moment, please review and reply with
-            an approval with sub cost code and description or not
-            approved.
+            The following Contract Labor for {project} on {date} has been
+            submitted for review. When you have a moment, please review
+            and reply with an approval with sub cost code and description
+            or not approved. The sub cost code you provide will be applied
+            to the full crew listed below.
 
-            Date: {date}
-            Project: {project}
+            {Worker A}
             Hours: {hours}
             Is Billable: {billable}
             Is Overhead: {overhead}
             Description: {description}
 
-        When the project has multiple line items, repeat the
-        Date/Project/Hours/Billable/Overhead/Description block per line
-        separated by a blank line. When no PM is resolved, the salutation
-        falls back to 'Hi,'."""
+            {Worker B}
+            ...
+
+        Rows arrive project-then-worker-then-line ordered (the sproc's
+        ORDER BY), so grouping preserves a stable render. A worker with
+        multiple lines on the project gets each line under one bold name.
+        When no PM is resolved, the salutation is omitted."""
         # Greeting only rendered when PMs resolve. No PMs → start straight
         # at the body, no salutation. (Owners and BCC still receive the
         # email; they just don't get a personalized greeting since they're
@@ -321,39 +414,49 @@ class ContractLaborReviewNotificationService:
         greeting = f"<p>{html.escape(names)},</p>" if names else ""
 
         ask = (
-            "<p>The following Contract Labor record has been submitted "
-            "for review. When you have a moment, please review and reply "
-            "with an approval with sub cost code and description or not "
-            "approved.</p>"
+            f"<p>The following Contract Labor for {html.escape(project_label)} "
+            f"on {html.escape(work_date)} has been submitted for review. When "
+            "you have a moment, please review and reply with an approval with "
+            "sub cost code and description or not approved. The sub cost code "
+            "you provide will be applied to the full crew listed below.</p>"
         )
+
+        # Group the flat line rows by worker (ContractLaborId), preserving
+        # first-seen order so the render matches the sproc's ORDER BY.
+        by_worker: dict = {}
+        worker_order: list = []
+        for r in lines:
+            cl_id = r.ContractLaborId
+            if cl_id not in by_worker:
+                by_worker[cl_id] = {
+                    "name": getattr(r, "EmployeeName", None) or "Worker",
+                    "lines": [],
+                }
+                worker_order.append(cl_id)
+            by_worker[cl_id]["lines"].append(r)
 
         parts: list[str] = [greeting, ask]
-        for li in lines:
-            parts.append(self._format_line_block(
-                work_date=work_date,
-                project_label=project_label,
-                line=li,
-            ))
+        for cl_id in worker_order:
+            parts.append(self._format_worker_block(by_worker[cl_id]))
         return "".join(parts)
 
-    def _format_line_block(self, *, work_date: str, project_label: str, line) -> str:
-        hours = self._fmt_hours(line.hours)
-        billable = self._fmt_yes_no(line.is_billable, default_true=True)
-        overhead = self._fmt_yes_no(line.is_overhead, default_true=False)
-        desc = (line.description or "").strip() or "(no description)"
-        # Use <br> within a <p> so the block renders as one paragraph
-        # with line breaks — matches the plain-text feel of the template
-        # while staying HTML-valid.
-        return (
-            "<p>"
-            f"Date: {html.escape(work_date)}<br>"
-            f"Project: {html.escape(project_label)}<br>"
-            f"Hours: {html.escape(hours)}<br>"
-            f"Is Billable: {html.escape(billable)}<br>"
-            f"Is Overhead: {html.escape(overhead)}<br>"
-            f"Description: {html.escape(desc)}"
-            "</p>"
-        )
+    def _format_worker_block(self, worker: dict) -> str:
+        """One <p> per worker: bold name, then Hours/Billable/Overhead/
+        Description for each of their lines on this project."""
+        line_blocks: list[str] = []
+        for r in worker["lines"]:
+            hours = self._fmt_hours(getattr(r, "Hours", None))
+            billable = self._fmt_yes_no(getattr(r, "IsBillable", None), default_true=True)
+            overhead = self._fmt_yes_no(getattr(r, "IsOverhead", None), default_true=False)
+            desc = (getattr(r, "Description", None) or "").strip() or "(no description)"
+            line_blocks.append(
+                f"Hours: {html.escape(hours)}<br>"
+                f"Is Billable: {html.escape(billable)}<br>"
+                f"Is Overhead: {html.escape(overhead)}<br>"
+                f"Description: {html.escape(desc)}"
+            )
+        inner = "<br><br>".join(line_blocks)
+        return f"<p><b>{html.escape(worker['name'])}</b><br>{inner}</p>"
 
     @staticmethod
     def _fmt_hours(value) -> str:

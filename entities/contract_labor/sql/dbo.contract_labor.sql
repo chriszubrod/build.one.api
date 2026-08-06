@@ -1553,13 +1553,23 @@ GO
 
 
 -- ─────────────────────────────────────────────────────────────────────
--- ContractLaborNotification — join table populated by
--- cl_notification_service at outbound-enqueue time. One row per
--- (CL, Project) draft, carrying the exact OutboundSubject as the
--- deterministic JOIN key against the BCC-arrived EmailMessage.
+-- ContractLaborNotification — dedup + reply-binding token populated by
+-- cl_notification_service at outbound-enqueue time.
 --
--- Migration counterpart: scripts/migrations/2026_05_27_find_contract_labor_for_reviewer_reply.sql
--- (keep in sync — re-running canonical must match the migration body).
+-- U-XXX (2026-08-05) CONSOLIDATION: notifications are now ONE row per
+-- (Project, WorkDate) — the consolidated crew draft — not one per
+-- (CL, Project). [WorkDate] is the new binding key; [ContractLaborId]
+-- is retained (NOT NULL, FK-valid) but now holds a REPRESENTATIVE crew
+-- member's id (any CL with a line on that project+date), not "the" CL.
+-- [OutboundSubject] stays the deterministic JOIN key against the
+-- BCC-arrived EmailMessage for reviewer-reply matching. The
+-- (ProjectId, WorkDate) index also serves as the app-level dedup lookup
+-- (cl_notification_service inserts conditionally on NOT EXISTS).
+--
+-- Prod-apply: this base file is the single source and is idempotent
+-- (fresh CREATE guarded by OBJECT_ID IS NULL + additive ALTER/backfill
+-- guarded by sys.columns/sys.indexes). Apply the whole file to prod via
+-- `python scripts/run_sql.py entities/contract_labor/sql/dbo.contract_labor.sql`.
 -- ─────────────────────────────────────────────────────────────────────
 
 IF OBJECT_ID('dbo.ContractLaborNotification', 'U') IS NULL
@@ -1571,6 +1581,7 @@ BEGIN
         [CreatedDatetime]  DATETIME2(3) NOT NULL DEFAULT SYSUTCDATETIME(),
         [ContractLaborId]  BIGINT NOT NULL,
         [ProjectId]        BIGINT NOT NULL,
+        [WorkDate]         DATE NULL,
         [OutboundSubject]  NVARCHAR(500) NOT NULL,
 
         CONSTRAINT [FK_CLN_ContractLabor] FOREIGN KEY ([ContractLaborId])
@@ -1583,18 +1594,65 @@ BEGIN
         ON [dbo].[ContractLaborNotification] ([OutboundSubject]);
     CREATE INDEX [IX_CLN_ContractLaborId]
         ON [dbo].[ContractLaborNotification] ([ContractLaborId]);
+    CREATE INDEX [IX_CLN_ProjectWorkDate]
+        ON [dbo].[ContractLaborNotification] ([ProjectId], [WorkDate]);
+END;
+GO
+
+-- Idempotent migration for existing databases: add [WorkDate] + the
+-- (ProjectId, WorkDate) dedup index, backfilling WorkDate for historical
+-- rows from the linked ContractLabor. Safe to re-run (guards on presence).
+IF OBJECT_ID('dbo.ContractLaborNotification', 'U') IS NOT NULL
+   AND NOT EXISTS (SELECT 1 FROM sys.columns
+                   WHERE object_id = OBJECT_ID('dbo.ContractLaborNotification')
+                     AND name = 'WorkDate')
+BEGIN
+    ALTER TABLE [dbo].[ContractLaborNotification] ADD [WorkDate] DATE NULL;
+END;
+GO
+
+-- Backfill any NULL WorkDate from the representative CL (separate batch so
+-- the freshly-added column is visible to the UPDATE).
+IF OBJECT_ID('dbo.ContractLaborNotification', 'U') IS NOT NULL
+   AND EXISTS (SELECT 1 FROM sys.columns
+               WHERE object_id = OBJECT_ID('dbo.ContractLaborNotification')
+                 AND name = 'WorkDate')
+BEGIN
+    UPDATE cln
+       SET cln.[WorkDate] = cl.[WorkDate]
+      FROM dbo.[ContractLaborNotification] cln
+      INNER JOIN dbo.[ContractLabor] cl ON cl.[Id] = cln.[ContractLaborId]
+     WHERE cln.[WorkDate] IS NULL;
+END;
+GO
+
+IF OBJECT_ID('dbo.ContractLaborNotification', 'U') IS NOT NULL
+   AND NOT EXISTS (SELECT 1 FROM sys.indexes
+                   WHERE name = 'IX_CLN_ProjectWorkDate'
+                     AND object_id = OBJECT_ID('dbo.ContractLaborNotification'))
+BEGIN
+    CREATE INDEX [IX_CLN_ProjectWorkDate]
+        ON [dbo].[ContractLaborNotification] ([ProjectId], [WorkDate]);
 END;
 GO
 
 
 -- ─────────────────────────────────────────────────────────────────────
 -- FindContractLaborForReviewerReply — bind a PM/Owner reply email back
--- to the (ContractLabor, Project) pair via the ContractLaborNotification
--- join table. PRIMARY path is a 2-step JOIN through EmailMessage; FUZZY
--- fallback handles non-Outlook clients that lose ConversationId.
+-- to the (Project, WorkDate) the consolidated crew draft was about, via
+-- the ContractLaborNotification token. PRIMARY path is a 2-step JOIN
+-- through EmailMessage; FUZZY fallback handles non-Outlook clients that
+-- lose ConversationId.
 --
--- NO Status filter (mirrors BillRepo.find_for_reviewer_reply). Unit 3's
--- apply path enforces with a specific error.
+-- U-XXX (2026-08-05) CONSOLIDATION: notifications are per-(Project,
+-- WorkDate) now, so the reply resolves to that pair — NOT a single CL.
+-- apply_reviewer_decision re-derives the full reviewable crew from these
+-- two keys. Worker hint is retained in the signature for caller
+-- compatibility but no longer participates (the crew draft has no worker
+-- in its subject).
+--
+-- NO Status filter (mirrors BillRepo.find_for_reviewer_reply). The apply
+-- path enforces reviewable-status with a specific error.
 -- ─────────────────────────────────────────────────────────────────────
 
 CREATE OR ALTER PROCEDURE FindContractLaborForReviewerReply
@@ -1609,19 +1667,19 @@ BEGIN
     SET NOCOUNT ON;
 
     DECLARE @MatchKind NVARCHAR(20) = NULL;
-    DECLARE @CLId BIGINT = NULL;
     DECLARE @ProjectId BIGINT = NULL;
+    DECLARE @MatchedWorkDate DATE = NULL;
 
     -- ── PRIMARY: JOIN outbound EmailMessage → ContractLaborNotification ─
     -- Single-result-or-null: COUNT(*)=1 gate via a table variable, same
     -- shape as BillRepository's mirror at entities/bill/sql/dbo.
     -- bill_create_source_email.sql (FindBillForReviewerReply).
-    DECLARE @PrimaryHits TABLE (CLId BIGINT, ProjectId BIGINT);
+    DECLARE @PrimaryHits TABLE (ProjectId BIGINT, WorkDate DATE);
 
-    INSERT INTO @PrimaryHits (CLId, ProjectId)
+    INSERT INTO @PrimaryHits (ProjectId, WorkDate)
     SELECT DISTINCT TOP 2
-        cln.[ContractLaborId],
-        cln.[ProjectId]
+        cln.[ProjectId],
+        cln.[WorkDate]
     FROM dbo.[EmailMessage] em
     INNER JOIN dbo.[ContractLaborNotification] cln
         ON cln.[OutboundSubject] = em.[Subject]
@@ -1632,40 +1690,38 @@ BEGIN
     IF (SELECT COUNT(*) FROM @PrimaryHits) = 1
     BEGIN
         SELECT TOP 1
-            @CLId      = CLId,
-            @ProjectId = ProjectId
+            @ProjectId       = ProjectId,
+            @MatchedWorkDate = WorkDate
         FROM @PrimaryHits;
         SET @MatchKind = 'conversation';
     END
 
     -- ── FUZZY: caller-supplied hints (non-Outlook conv-id loss) ────
-    -- Triggered only when PRIMARY missed. Requires all three hints.
-    -- Same JOIN-through-line-items shape as the Bill fuzzy fallback.
+    -- Triggered only when PRIMARY missed. Requires (project, work_date);
+    -- the crew draft is worker-agnostic so @WorkerHint is ignored.
     -- TRY_CAST guards @WorkDateHint regardless of session DATEFORMAT.
     IF @MatchKind IS NULL
-       AND @WorkerHint IS NOT NULL
        AND @ProjectHint IS NOT NULL
        AND @WorkDateHint IS NOT NULL
     BEGIN
         DECLARE @WorkDate DATE = TRY_CAST(@WorkDateHint AS DATE);
         IF @WorkDate IS NOT NULL
         BEGIN
-            DECLARE @FuzzyHits TABLE (CLId BIGINT, ProjectId BIGINT);
+            DECLARE @FuzzyHits TABLE (ProjectId BIGINT, WorkDate DATE);
 
-            INSERT INTO @FuzzyHits (CLId, ProjectId)
-            SELECT DISTINCT TOP 2 cl.[Id], p.[Id]
-            FROM dbo.[ContractLabor] cl
-            INNER JOIN dbo.[ContractLaborLineItem] cli ON cli.[ContractLaborId] = cl.[Id]
-            INNER JOIN dbo.[Project] p ON p.[Id] = cli.[ProjectId]
-            WHERE cl.[EmployeeName] = @WorkerHint
-              AND cl.[WorkDate]     = @WorkDate
-              AND p.[Abbreviation]  = @ProjectHint;
+            INSERT INTO @FuzzyHits (ProjectId, WorkDate)
+            SELECT DISTINCT TOP 2 p.[Id], @WorkDate
+            FROM dbo.[Project] p
+            INNER JOIN dbo.[ContractLaborLineItem] cli ON cli.[ProjectId] = p.[Id]
+            INNER JOIN dbo.[ContractLabor] cl ON cl.[Id] = cli.[ContractLaborId]
+            WHERE p.[Abbreviation] = @ProjectHint
+              AND cl.[WorkDate]    = @WorkDate;
 
             IF (SELECT COUNT(*) FROM @FuzzyHits) = 1
             BEGIN
                 SELECT TOP 1
-                    @CLId      = CLId,
-                    @ProjectId = ProjectId
+                    @ProjectId       = ProjectId,
+                    @MatchedWorkDate = WorkDate
                 FROM @FuzzyHits;
                 SET @MatchKind = 'fuzzy';
             END
@@ -1673,22 +1729,107 @@ BEGIN
     END
 
     -- ── Hydrate + return ──────────────────────────────────────────
-    -- Single SELECT joining CL + Project for the final shape. NO Status
-    -- filter (Unit 3's apply path enforces).
+    -- The (Project, WorkDate) pair the reply is about. apply_reviewer_
+    -- decision re-derives the crew from these keys. NO Status filter.
     SELECT
-        cl.[Id]                                         AS ContractLaborId,
-        CAST(cl.[PublicId] AS NVARCHAR(36))             AS ContractLaborPublicId,
         p.[Id]                                          AS ProjectId,
         CAST(p.[PublicId] AS NVARCHAR(36))              AS ProjectPublicId,
         p.[Abbreviation]                                AS ProjectAbbreviation,
         p.[Name]                                        AS ProjectName,
-        cl.[EmployeeName]                               AS ParsedWorker,
-        CONVERT(VARCHAR(10), cl.[WorkDate], 120)        AS ParsedWorkDate,
-        cl.[Status]                                     AS ContractLaborStatus,
+        CONVERT(VARCHAR(10), @MatchedWorkDate, 120)     AS WorkDate,
         @MatchKind                                      AS MatchKind
+    FROM dbo.[Project] p
+    WHERE p.[Id] = @ProjectId AND @ProjectId IS NOT NULL;
+END;
+GO
+
+
+-- ─────────────────────────────────────────────────────────────────────
+-- U-XXX (2026-08-05) CONSOLIDATION — three reads supporting the
+-- per-(Project, WorkDate) crew review-notification flow:
+--   1. CountPendingContractLaborByWorkDate  — the date gate (hold until
+--      no ContractLabor for the date is still 'pending_review').
+--   2. ReadSubmittedContractLaborLinesByWorkDate — the consolidated draft
+--      body: every submitted line for the date, joined to Project, so the
+--      notification service can group by project and list each laborer.
+--   3. ReadReviewableContractLaborByProjectAndDate — the reply crew: the
+--      distinct ContractLabor rows a PM's (project, date) reply codes.
+-- ─────────────────────────────────────────────────────────────────────
+
+CREATE OR ALTER PROCEDURE CountPendingContractLaborByWorkDate
+(
+    @WorkDate DATE
+)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    SELECT COUNT(*) AS PendingCount
+    FROM dbo.[ContractLabor]
+    WHERE [WorkDate] = @WorkDate
+      AND [Status] = 'pending_review';
+END;
+GO
+
+
+CREATE OR ALTER PROCEDURE ReadSubmittedContractLaborLinesByWorkDate
+(
+    @WorkDate DATE
+)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    -- One row per project-anchored line item across ALL contractors whose
+    -- ContractLabor for @WorkDate is 'submitted' (awaiting PM coding).
+    -- Overhead lines (ProjectId NULL) are excluded — the PM reviews a
+    -- specific project, not the worker's overhead allocation. Ordered so
+    -- the draft body renders deterministically (project, worker, line).
+    SELECT
+        cl.[Id]                 AS ContractLaborId,
+        cl.[EmployeeName]       AS EmployeeName,
+        p.[Id]                  AS ProjectId,
+        p.[Name]                AS ProjectName,
+        p.[Abbreviation]        AS ProjectAbbreviation,
+        cli.[Id]                AS LineItemId,
+        cli.[Hours]             AS Hours,
+        cli.[IsBillable]        AS IsBillable,
+        cli.[IsOverhead]        AS IsOverhead,
+        cli.[Description]       AS Description
     FROM dbo.[ContractLabor] cl
-    INNER JOIN dbo.[Project] p ON p.[Id] = @ProjectId
-    WHERE cl.[Id] = @CLId AND @CLId IS NOT NULL;
+    INNER JOIN dbo.[ContractLaborLineItem] cli ON cli.[ContractLaborId] = cl.[Id]
+    INNER JOIN dbo.[Project] p ON p.[Id] = cli.[ProjectId]
+    WHERE cl.[WorkDate] = @WorkDate
+      AND cl.[Status] = 'submitted'
+      AND cli.[ProjectId] IS NOT NULL
+    ORDER BY p.[Id], cl.[EmployeeName], cli.[Id];
+END;
+GO
+
+
+CREATE OR ALTER PROCEDURE ReadReviewableContractLaborByProjectAndDate
+(
+    @ProjectId BIGINT,
+    @WorkDate DATE
+)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    -- Distinct reviewable ContractLabor rows a PM's (project, date) reply
+    -- applies to: those with at least one line item on @ProjectId at
+    -- @WorkDate, still open to reviewer edits ('pending_review' or
+    -- 'submitted'). apply_reviewer_decision loops these, coding each.
+    SELECT DISTINCT
+        cl.[Id]                             AS ContractLaborId,
+        CAST(cl.[PublicId] AS NVARCHAR(36)) AS ContractLaborPublicId,
+        cl.[EmployeeName]                   AS EmployeeName,
+        cl.[Status]                         AS Status
+    FROM dbo.[ContractLabor] cl
+    INNER JOIN dbo.[ContractLaborLineItem] cli ON cli.[ContractLaborId] = cl.[Id]
+    WHERE cli.[ProjectId] = @ProjectId
+      AND cl.[WorkDate] = @WorkDate
+      AND cl.[Status] IN ('pending_review', 'submitted');
 END;
 GO
 

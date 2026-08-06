@@ -481,24 +481,27 @@ class ContractLaborRepository:
         project_hint: Optional[str] = None,
         work_date_hint: Optional[str] = None,
     ) -> Optional[dict]:
-        """Find the (ContractLabor, Project) pair a PM/Owner reply is
-        reviewing.
+        """Find the (Project, WorkDate) a PM/Owner reply is reviewing.
+
+        CONSOLIDATION (U-XXX): notifications are per-(project, date) crew
+        drafts, so a reply resolves to that pair — NOT a single CL.
+        apply_reviewer_decision re-derives the full reviewable crew from
+        these keys via read_reviewable_crew_by_project_and_date.
 
         Strategy:
-          1. Strict ConversationId match — look up the outbound CL
+          1. Strict ConversationId match — look up the outbound crew
              notification (`cl_notification_service`-enqueued) by
-             `EmailMessage.ConversationId`, parse its subject for
-             worker + project_abbr + work_date, bind to the CL +
-             line-item-Project the notification was about.
-          2. Fuzzy fallback when (1) misses or the subject parse fails
-             — caller supplies all three hints (worker / project_abbr /
-             work_date) parsed from the REPLY's own subject. Same bind
-             with single-result-or-null requirement.
+             `EmailMessage.ConversationId` JOINed to its stored subject,
+             returning the (project, work_date) it was about.
+          2. Fuzzy fallback when (1) misses — caller supplies
+             (project_abbr, work_date) parsed from the REPLY's own
+             subject (worker is no longer in the subject). Same
+             single-result-or-null requirement.
 
-        Returns a slim dict (not a ContractLabor model) carrying the
-        fields apply_reviewer_decision needs + `match_kind` for
-        telemetry (`'conversation'` | `'fuzzy'`). Returns None on 0 or
-        2+ candidates — ambiguous cases flow through `flagged_needs_review`
+        Returns a slim dict (not a ContractLabor model) carrying
+        project + work_date + `match_kind` for telemetry
+        (`'conversation'` | `'fuzzy'`). Returns None on 0 or 2+
+        candidates — ambiguous cases flow through `flagged_needs_review`
         at the agent layer.
 
         Mirrors `BillRepository.find_for_reviewer_reply` (Wave 3 Phase 1).
@@ -520,19 +523,50 @@ class ContractLaborRepository:
                 if not row:
                     return None
                 return {
-                    "contract_labor_id": row.ContractLaborId,
-                    "contract_labor_public_id": str(row.ContractLaborPublicId) if row.ContractLaborPublicId else None,
                     "project_id": row.ProjectId,
                     "project_public_id": str(row.ProjectPublicId) if row.ProjectPublicId else None,
                     "project_abbreviation": row.ProjectAbbreviation,
                     "project_name": row.ProjectName,
-                    "parsed_worker": row.ParsedWorker,
-                    "parsed_work_date": row.ParsedWorkDate,
-                    "contract_labor_status": row.ContractLaborStatus,
+                    "work_date": row.WorkDate,
                     "match_kind": row.MatchKind,
                 }
         except Exception as error:
             logger.error(f"Error in find_for_reviewer_reply (ContractLabor): {error}")
+            raise map_database_error(error)
+
+    def read_reviewable_crew_by_project_and_date(
+        self, *, project_id: int, work_date: str,
+    ) -> list[dict]:
+        """Return the distinct reviewable ContractLabor rows a PM's
+        (project, date) reply codes: those with a line item on the
+        project at the date, still in 'pending_review' or 'submitted'.
+
+        Each dict: {contract_labor_id, contract_labor_public_id,
+        employee_name, status}. Empty list when none match.
+        """
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(
+                    cursor=cursor,
+                    name="ReadReviewableContractLaborByProjectAndDate",
+                    params={"ProjectId": project_id, "WorkDate": work_date},
+                )
+                rows = cursor.fetchall()
+                return [
+                    {
+                        "contract_labor_id": r.ContractLaborId,
+                        "contract_labor_public_id": str(r.ContractLaborPublicId) if r.ContractLaborPublicId else None,
+                        "employee_name": getattr(r, "EmployeeName", None),
+                        "status": getattr(r, "Status", None),
+                    }
+                    for r in rows
+                ]
+        except Exception as error:
+            logger.error(
+                f"Error in read_reviewable_crew_by_project_and_date "
+                f"(project_id={project_id}, work_date={work_date}): {error}"
+            )
             raise map_database_error(error)
 
     def delete_by_id(self, id: int) -> Optional[ContractLabor]:

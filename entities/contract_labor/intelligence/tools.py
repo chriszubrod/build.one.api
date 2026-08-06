@@ -165,35 +165,33 @@ class _FindByConversationIdArgs(BaseModel):
     conversation_id: str = Field(
         description=(
             "MS Graph ConversationId from the inbound reply email. The "
-            "tool finds the outbound `Contract Labor - {Worker} - "
-            "{ProjectAbbr} - {YYYY-MM-DD}` notification on the same "
-            "conversation and binds the reply back to its (CL, Project) "
-            "pair."
+            "tool finds the outbound consolidated crew notification "
+            "`Contract Labor - {ProjectAbbr} - {YYYY-MM-DD}` on the same "
+            "conversation and binds the reply back to its (Project, "
+            "WorkDate) pair — the apply step re-derives the full crew."
         ),
     )
     worker_hint: Optional[str] = Field(
         default=None,
         description=(
-            "Optional worker name parsed from the REPLY's own subject "
-            "(`Re: Contract Labor - {Worker} - ...`). Enables the fuzzy "
-            "fallback when conversation_id misses (rare). Required "
-            "alongside project_hint + work_date_hint for the fallback "
-            "to fire."
+            "Legacy/optional. The consolidated crew subject no longer "
+            "carries a worker, so this is ignored server-side; pass it or "
+            "not. The fuzzy fallback fires on (project_hint, "
+            "work_date_hint) alone."
         ),
     )
     project_hint: Optional[str] = Field(
         default=None,
         description=(
             "Optional project abbreviation parsed from the REPLY subject "
-            "(e.g. `TB3`, `HA`, `WVA`). Part of the fuzzy fallback "
-            "triple."
+            "(e.g. `TB3`, `HA`, `WVA`). Half of the fuzzy fallback pair."
         ),
     )
     work_date_hint: Optional[str] = Field(
         default=None,
         description=(
             "Optional work_date parsed from the REPLY subject in "
-            "`YYYY-MM-DD` form. Part of the fuzzy fallback triple."
+            "`YYYY-MM-DD` form. Half of the fuzzy fallback pair."
         ),
     )
 
@@ -215,25 +213,30 @@ async def _find_contract_labor_by_conversation_id(args: dict, ctx: ToolContext) 
 find_contract_labor_by_conversation_id = Tool(
     name="find_contract_labor_by_conversation_id",
     description=(
-        "Bind a PM/Owner reply email back to the (ContractLabor, "
-        "Project) pair it's reviewing. Use this as the first step of "
-        "the reviewer-reply branch when the inbound email looks like a "
-        "reply on a tracked CL notification thread (`Re: Contract "
-        "Labor - {Worker} - {ProjectAbbr} - {YYYY-MM-DD}`).\n\n"
-        "Returns a slim payload (`contract_labor_public_id`, "
-        "`project_public_id`, `project_abbreviation`, `parsed_worker`, "
-        "`parsed_work_date`, `contract_labor_status`, `match_kind`) "
-        "when a single CL row resolves on that conversation, OR null "
-        "when no match / ambiguous.\n\n"
+        "Bind a PM/Owner reply email back to the (Project, WorkDate) it's "
+        "reviewing. Use this as the first step of the reviewer-reply "
+        "branch when the inbound email looks like a reply on a tracked CL "
+        "notification thread (`Re: Contract Labor - {ProjectAbbr} - "
+        "{YYYY-MM-DD}`).\n\n"
+        "CONSOLIDATION (U-XXX): the outbound notification is now ONE "
+        "consolidated crew draft per (project, date) — no worker in the "
+        "subject — so this resolves to a (Project, WorkDate) pair and the "
+        "apply step codes the entire crew.\n\n"
+        "Returns a slim payload (`project_public_id`, "
+        "`project_abbreviation`, `project_name`, `work_date`, "
+        "`match_kind`) when a single (project, date) resolves on that "
+        "conversation, OR null when no match / ambiguous. Pass "
+        "`project_public_id` + `work_date` straight into "
+        "`apply_contract_labor_reviewer_decision`.\n\n"
         "`match_kind` will be `'conversation'` for strict ConversationId "
         "matches and `'fuzzy'` for fallback hits. The downstream apply "
         "path is identical either way.\n\n"
         "**Fuzzy fallback:** when ConversationId doesn't resolve "
-        "(non-Outlook clients sometimes lose it), pass all three "
-        "hints (`worker_hint`, `project_hint`, `work_date_hint`) parsed "
-        "from the reply's own subject. Single-result-or-null is "
-        "preserved — ambiguous cases return null so the email_specialist "
-        "stamps `flagged_needs_review`.\n\n"
+        "(non-Outlook clients sometimes lose it), pass `project_hint` + "
+        "`work_date_hint` parsed from the reply's own subject "
+        "(`worker_hint` is ignored). Single-result-or-null is preserved "
+        "— ambiguous cases return null so the email_specialist stamps "
+        "`flagged_needs_review`.\n\n"
         "Null result means: not a tracked CL conversation (or "
         "ambiguous). Report back to email_specialist; do NOT proceed "
         "to apply."
@@ -247,16 +250,20 @@ find_contract_labor_by_conversation_id = Tool(
 
 
 class _ApplyReviewerDecisionArgs(BaseModel):
-    contract_labor_public_id: str = Field(
-        description="The ContractLabor's public_id (UUID). Get from `find_contract_labor_by_conversation_id`.",
-    )
     project_public_id: str = Field(
         description=(
             "The matched Project's public_id (UUID). Comes from "
-            "`find_contract_labor_by_conversation_id` — represents the "
-            "specific project the PM's reply is about (CL notifications "
-            "are sent per-project, so one CL with multiple projects "
-            "produces multiple separate reviewer conversations)."
+            "`find_contract_labor_by_conversation_id` — the specific "
+            "project the PM's reply is about."
+        ),
+    )
+    work_date: str = Field(
+        description=(
+            "The matched work_date ('YYYY-MM-DD') from "
+            "`find_contract_labor_by_conversation_id`. Together with "
+            "project_public_id this keys the whole crew — every reviewable "
+            "ContractLabor with a line on that project+date gets the "
+            "decision applied."
         ),
     )
     decision: str = Field(
@@ -313,6 +320,7 @@ async def _apply_contract_labor_reviewer_decision(args: dict, ctx: ToolContext) 
     parsed = _ApplyReviewerDecisionArgs(**args)
     body = {
         'project_public_id': parsed.project_public_id,
+        'work_date': parsed.work_date,
         'decision': parsed.decision,
         'reviewer_email': parsed.reviewer_email,
     }
@@ -326,7 +334,7 @@ async def _apply_contract_labor_reviewer_decision(args: dict, ctx: ToolContext) 
         body['reviewer_email_message_public_id'] = parsed.reviewer_email_message_public_id
     return await ctx.call_api(
         'POST',
-        f'/api/v1/contract-labor/{parsed.contract_labor_public_id}/apply-reviewer-decision',
+        '/api/v1/contract-labor/apply-reviewer-decision',
         body=body,
     )
 
@@ -335,53 +343,53 @@ apply_contract_labor_reviewer_decision = Tool(
     name='apply_contract_labor_reviewer_decision',
     description=(
         "Apply a Project Manager / Owner's emailed approval or rejection "
-        "to a ContractLabor row by writing an insert-only Review row "
-        "(mirrors bill_specialist.apply_reviewer_decision exactly, using "
-        "the existing Review entity).\n\n"
+        "to the WHOLE crew on a (project, work_date) by writing one "
+        "insert-only Review row per laborer (mirrors "
+        "bill_specialist.apply_reviewer_decision per-CL semantics, "
+        "looped over the crew).\n\n"
+        "CONSOLIDATION (U-XXX): CL review notifications are one "
+        "consolidated draft per (project, date) listing every laborer, "
+        "so ONE reply codes the entire crew. This tool resolves all "
+        "reviewable ContractLabor with a line on that project+date and "
+        "applies the decision to each.\n\n"
         "**Flow** (call after find_contract_labor_by_conversation_id "
-        "resolves the (CL, Project) pair):\n"
+        "resolves the (Project, WorkDate) pair):\n"
         "  1. (Approval only) Resolve the PM's SCC shorthand via "
         "`find_sub_cost_code_for_reply`\n"
-        "  2. Call this tool with (contract_labor_public_id, "
-        "project_public_id, decision, reviewer_email, "
-        "sub_cost_code_public_id, ...).\n\n"
-        "**Side effects:**\n"
+        "  2. Call this tool with (project_public_id, work_date, "
+        "decision, reviewer_email, sub_cost_code_public_id, ...).\n\n"
+        "**Side effects (per crew member):**\n"
         "  - Approval: every ContractLaborLineItem on the matched "
         "Project gets the SCC + (optional) description applied. Other "
         "line fields (hours/rate/markup) are preserved.\n"
         "  - Overhead lines (NULL ProjectId, IsOverhead=true) are "
         "silently skipped — the PM is reviewing a specific project, "
-        "not the worker's overhead allocation.\n"
-        "  - When `description` is supplied AND multiple line items on "
-        "the same project match, the same description string overwrites "
-        "ALL of them (flattens distinct per-line descriptions). When "
-        "`description` is omitted, per-line descriptions are preserved. "
-        "Only pass `description` when the PM clearly intends a "
-        "project-wide overwrite.\n"
-        "  - Both: a new Review row is inserted with the chosen "
-        "ReviewStatus (approved → first IsFinal-non-Declined; rejected "
-        "→ first IsDeclined), the reviewer's user_id, raw_reply_text "
-        "as Comments, and EmailMessageId FK linking back to the reply.\n"
-        "  - The Review row is written BEFORE line-item updates so the "
-        "audit trail is always captured. On partial line-item failure "
-        "(rare; row-version conflict during scheduler aggregation), the "
-        "tool returns a 400 with a structured 'partial-failure' "
-        "message — AP reconciles via the React queue.\n"
-        "  - On approval, an auto-mirror (mirrors ReviewService.create's "
-        "canonical hook) flips ContractLabor.Status pending_review → "
-        "ready so Generate Bills picks it up — same behavior as the "
-        "React /advance/review path. On rejection, Status is untouched.\n\n"
+        "not overhead allocation.\n"
+        "  - When `description` is supplied, the same string overwrites "
+        "the description on every matched line across the crew. Only pass "
+        "`description` when the PM clearly intends a crew-wide overwrite.\n"
+        "  - Both: a new Review row is inserted per laborer with the "
+        "chosen ReviewStatus (approved → first IsFinal-non-Declined; "
+        "rejected → first IsDeclined), the reviewer's user_id, "
+        "raw_reply_text as Comments, and EmailMessageId FK.\n"
+        "  - On approval, each laborer's ContractLabor.Status mirrors "
+        "pending_review → ready so Generate Bills picks it up. On "
+        "rejection, Status is untouched.\n\n"
+        "**Return:** an aggregate (`crew_size`, `applied_count`, "
+        "`applied` per-CL results, `failures`). A partial success "
+        "returns normally with `failures` listed for AP to reconcile.\n\n"
         "**Multi-SCC bailout:** if the PM's reply mentions 2+ distinct "
         "SCCs (e.g. `Cleaning - 62.0 (...) Trim Labor - 44.0 (...)`), "
         "DO NOT call this tool. Report back to email_specialist with "
-        "the parsed SCC list so it can stamp `flagged_needs_review` "
-        "(per design Q1). Auto-splitting hours across SCCs is out of v1.\n\n"
+        "the parsed SCC list so it can stamp `flagged_needs_review`. "
+        "Auto-splitting hours across SCCs is out of v1.\n\n"
         "**Error responses (HTTP 400)** the agent should expect:\n"
-        "  - 'ContractLabor X is no longer pending_review' → CL has "
-        "advanced; tell email_specialist to classify `internal_reply` "
-        "+ `marked_irrelevant` (decision arrived too late).\n"
-        "  - 'Sender X is not an authorized reviewer' → from-address "
-        "isn't a PM/Owner on this project; classify same as above.\n"
+        "  - 'No reviewable ContractLabor found on project X for {date}' "
+        "→ the crew already advanced past review; tell email_specialist "
+        "to classify `internal_reply` + `marked_irrelevant` (too late).\n"
+        "  - 'failed for all N crew member(s) ...' with 'not an "
+        "authorized reviewer' → from-address isn't a PM/Owner on this "
+        "project; classify same as above.\n"
         "  - 'SubCostCode with public_id X not found' → pass the SCC's "
         "public_id verbatim from find_sub_cost_code_for_reply (don't "
         "pass the human-readable name).\n\n"

@@ -359,6 +359,107 @@ class ContractLaborService:
     def apply_reviewer_decision(
         self,
         *,
+        project_public_id: str,
+        work_date: str,
+        decision: str,
+        reviewer_email: str,
+        sub_cost_code_public_id: Optional[str] = None,
+        description: Optional[str] = None,
+        raw_reply_text: Optional[str] = None,
+        reviewer_email_message_public_id: Optional[str] = None,
+    ) -> dict:
+        """Apply a PM/Owner's emailed review decision to the WHOLE crew on
+        a (project, work_date).
+
+        CONSOLIDATION (U-XXX): the review notification is one consolidated
+        draft per (project, date) listing every laborer, so a single reply
+        codes the entire crew. Resolves all reviewable ContractLabor with a
+        line item on `project_public_id` at `work_date` and applies the
+        decision to each via `_apply_decision_to_single_cl` — identical
+        per-CL semantics (authz, SCC apply, Review-row audit, status
+        mirror, partial-failure handling), looped over the crew.
+
+        decision ∈ {'approved', 'rejected'}. Returns an aggregate dict:
+        decision, project, work_date, crew_size, applied_count, per-CL
+        `applied` results, and per-CL `failures`. Raises ValueError only
+        when the crew is empty or EVERY member failed (a hard, actionable
+        error for the agent); a partial success returns normally with the
+        failures listed for AP to reconcile.
+        """
+        if decision not in ('approved', 'rejected'):
+            raise ValueError(
+                f"decision must be 'approved' or 'rejected'; got '{decision}'"
+            )
+
+        project = ProjectService().read_by_public_id(public_id=project_public_id)
+        if project is None or project.id is None:
+            raise ValueError(
+                f"Project with public_id '{project_public_id}' not found."
+            )
+
+        crew = self.repo.read_reviewable_crew_by_project_and_date(
+            project_id=project.id, work_date=work_date,
+        )
+        if not crew:
+            raise ValueError(
+                f"No reviewable ContractLabor found on project "
+                f"{project_public_id} for {work_date} (records may have "
+                f"already advanced past review; the human must edit directly)."
+            )
+
+        applied: list[dict] = []
+        failures: list[str] = []
+        review_status_name: Optional[str] = None
+        for member in crew:
+            cl_public_id = member.get("contract_labor_public_id")
+            try:
+                result = self._apply_decision_to_single_cl(
+                    contract_labor_public_id=cl_public_id,
+                    project_public_id=project_public_id,
+                    decision=decision,
+                    reviewer_email=reviewer_email,
+                    sub_cost_code_public_id=sub_cost_code_public_id,
+                    description=description,
+                    raw_reply_text=raw_reply_text,
+                    reviewer_email_message_public_id=reviewer_email_message_public_id,
+                )
+                applied.append(result)
+                review_status_name = result.get('review_status') or review_status_name
+            except Exception as member_error:
+                failures.append(
+                    f"{cl_public_id} ({member.get('employee_name')}): "
+                    f"{type(member_error).__name__}: {member_error}"
+                )
+                logger.warning(
+                    "apply_reviewer_decision crew-member failed cl=%s project=%s date=%s: %s",
+                    cl_public_id, project_public_id, work_date, member_error,
+                )
+
+        # All-failed → hard error the agent can act on (e.g. unauthorized
+        # sender fails every member identically). Partial success returns
+        # normally; AP reconciles the listed failures from the React queue.
+        if failures and not applied:
+            raise ValueError(
+                f"apply_reviewer_decision failed for all {len(failures)} crew "
+                f"member(s) on project {project_public_id} for {work_date}: "
+                f"{'; '.join(failures)}"
+            )
+
+        return {
+            'decision_applied': decision,
+            'review_status': review_status_name,
+            'project_public_id': project_public_id,
+            'project_id': project.id,
+            'work_date': work_date,
+            'crew_size': len(crew),
+            'applied_count': len(applied),
+            'applied': applied,
+            'failures': failures,
+        }
+
+    def _apply_decision_to_single_cl(
+        self,
+        *,
         contract_labor_public_id: str,
         project_public_id: str,
         decision: str,
@@ -368,7 +469,15 @@ class ContractLaborService:
         raw_reply_text: Optional[str] = None,
         reviewer_email_message_public_id: Optional[str] = None,
     ) -> dict:
-        """Apply a Project Manager / Owner's emailed review decision to a CL row.
+        """Apply an already-parsed reviewer decision to ONE ContractLabor.
+
+        The per-CL primitive behind the crew-wide `apply_reviewer_decision`
+        (U-XXX consolidation): the public wrapper resolves the crew for a
+        (project, work_date) and loops this for each member. Kept as the
+        single source of the per-CL semantics (status guard, authz, SCC
+        apply, insert-only Review audit, status mirror, partial-failure
+        handling) so crew application stays identical to the pre-
+        consolidation single-worker behavior.
 
         Mirrors BillService.apply_reviewer_decision (entities/bill/
         business/service.py:1008) with `bill_id → contract_labor_id`.

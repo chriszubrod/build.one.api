@@ -148,21 +148,23 @@ def read_contract_labors_by_status(status: str, current_user: dict = Depends(req
     return list_response([r.to_dict() for r in results])
 
 
-@router.post("/{public_id}/apply-reviewer-decision")
+@router.post("/apply-reviewer-decision")
 def apply_reviewer_decision_router(
-    public_id: str,
     body: dict,
     current_user: dict = Depends(require_module_api(Modules.CONTRACT_LABOR, "can_update")),
 ):
-    """Apply an emailed Project Manager / Owner review decision to a ContractLabor row.
+    """Apply an emailed PM/Owner review decision to the WHOLE crew on a
+    (project, work_date).
 
-    Mirrors `BillService.apply_reviewer_decision` (Wave 3) using the
-    Review entity natively (entities/review/) — insert-only audit
-    trail, one Review row per reply, structured (reviewer user_id,
-    ReviewStatus transition, EmailMessageId FK).
+    CONSOLIDATION (U-XXX): ContractLabor review notifications are one
+    consolidated draft per (project, date) listing every laborer, so a
+    single reply codes the entire crew. The crew is resolved server-side
+    and one insert-only Review row is written per member (mirrors
+    `BillService.apply_reviewer_decision` per-CL semantics, looped).
 
     Body:
       project_public_id:        string (the matched project from find_for_reviewer_reply)
+      work_date:                string 'YYYY-MM-DD' (the matched date from find_for_reviewer_reply)
       decision:                 'approved' | 'rejected'
       reviewer_email:           string (must match a PM/Owner on the project)
       sub_cost_code_public_id:  string (required when decision='approved')
@@ -170,13 +172,14 @@ def apply_reviewer_decision_router(
       raw_reply_text:           string (the PM's reply body, persisted to Review.Comments)
       reviewer_email_message_public_id: string (FK to the source EmailMessage)
 
-    Errors are returned as ValueError → HTTP 400 with a descriptive
-    message the agent reads to compose its own final outcome.
+    Returns an aggregate (crew_size, applied_count, per-CL applied +
+    failures). Hard errors (empty crew, all members failed) surface as
+    ValueError → HTTP 400 with a descriptive message the agent reads.
     """
     try:
         result = ContractLaborService().apply_reviewer_decision(
-            contract_labor_public_id=public_id,
             project_public_id=body.get("project_public_id"),
+            work_date=body.get("work_date"),
             decision=body.get("decision"),
             reviewer_email=body.get("reviewer_email"),
             sub_cost_code_public_id=body.get("sub_cost_code_public_id"),
@@ -211,26 +214,27 @@ def find_contract_labor_by_conversation_id_router(
     ),
     current_user: dict = Depends(require_module_api(Modules.CONTRACT_LABOR)),
 ):
-    """Find the (ContractLabor, Project) pair linked to an email conversation.
+    """Find the (Project, WorkDate) linked to an email conversation.
 
     Used by the contract_labor_specialist agent during the
     email_specialist Step 1bx reviewer-reply branch detection: a PM's
-    reply lands in the same MS Graph conversation as the outbound CL
-    notification that cl_notification_service enqueued (one per
-    distinct project on the CL's line items). This lookup parses
-    `Contract Labor - {Worker} - {ProjectAbbr} - {YYYY-MM-DD}` out of
-    the outbound subject and binds back to the (CL, Project) pair.
+    reply lands in the same MS Graph conversation as the outbound
+    consolidated crew notification that cl_notification_service enqueued
+    (one per project+date). CONSOLIDATION (U-XXX): the outbound subject
+    is now `Contract Labor - {ProjectAbbr} - {YYYY-MM-DD}` (no worker),
+    so this binds the reply to the (Project, WorkDate) pair — the apply
+    step re-derives the full crew from those keys.
 
-    Fuzzy fallback: when conversation_id misses AND all three hints
-    (worker / project / work_date) are supplied, retries with the
-    hints. Single-result requirement — 0 or 2+ candidates return null
-    so ambiguous replies stay flagged for human review.
+    Fuzzy fallback: when conversation_id misses AND both (project,
+    work_date) hints are supplied, retries with the hints (worker hint is
+    accepted for compatibility but ignored). Single-result requirement —
+    0 or 2+ candidates return null so ambiguous replies stay flagged for
+    human review.
 
-    Returns null on no match, or a slim payload (contract_labor_id,
-    contract_labor_public_id, project_id, project_public_id,
-    project_abbreviation, project_name, parsed_worker, parsed_work_date,
-    contract_labor_status, match_kind) when one is. `match_kind` is
-    `'conversation'` for strict matches, `'fuzzy'` for fallback hits.
+    Returns null on no match, or a slim payload (project_id,
+    project_public_id, project_abbreviation, project_name, work_date,
+    match_kind) when one is. `match_kind` is `'conversation'` for strict
+    matches, `'fuzzy'` for fallback hits.
     """
     result = ContractLaborService().find_for_reviewer_reply(
         conversation_id=conversation_id,

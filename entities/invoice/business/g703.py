@@ -1,4 +1,10 @@
-"""AIA G703 Continuation Sheet — assembler (Budget SoV x draws) + landscape renderer."""
+"""AIA G703 Continuation Sheet — assembler (Budget SoV x draws) + landscape renderer.
+
+The renderer reproduces the AIA G703 grid (serif type, full cell borders, the A-I
+column-letter row with the WORK COMPLETED span over columns D+E, 4-decimal item
+numbers, and the bold GRAND TOTALS row + AIA validation footer) so a
+system-generated continuation sheet reads like the manual packets it replaces.
+"""
 
 from __future__ import annotations
 
@@ -7,6 +13,12 @@ from decimal import Decimal
 from typing import Any, Optional
 
 from entities.invoice.business.cover import _cost_code_sort_key, _format_money
+from entities.invoice.business.packet_render import (
+    SERIF,
+    SERIF_BOLD,
+    SERIF_ITALIC,
+    format_cc_number,
+)
 
 # Schedule-of-values line number for the Builder's Fee. It is driven by each draw's
 # COMPUTED fee (draw-financials), not by a work cost-code category, so it's split out
@@ -140,102 +152,47 @@ def build_g703_rows(sov: list, draws: list, current_label: str,
 
 
 def build_g703_pdf(header: dict, rows: list[dict], grand: dict) -> bytes:
-    """Landscape letter G703: header block + 10-column line-item table + grand totals."""
+    """Landscape letter G703 rendered as the AIA continuation sheet grid."""
     import html as _html
 
     from reportlab.lib import colors
-    from reportlab.lib.enums import TA_LEFT, TA_RIGHT
+    from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT
     from reportlab.lib.pagesizes import landscape, letter
     from reportlab.lib.styles import ParagraphStyle
     from reportlab.lib.units import inch
     from reportlab.platypus import LongTable, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
-    BLUE = colors.HexColor("#1F3864")
-    FONT_SIZE = 5  # tight enough to fit the full schedule of values in two pages
-    HDR_LEADING = FONT_SIZE + 1
-    BODY_LEADING = FONT_SIZE + 1
+    BLACK = colors.black
+    FONT_SIZE = 6.5  # serif; fits the full schedule of values in two pages
+    LEADING = FONT_SIZE + 1
 
     def P(text: str, style: ParagraphStyle) -> Paragraph:
         return Paragraph(_html.escape(text) if text else "", style)
 
-    title_style = ParagraphStyle(
-        "g703_title",
-        fontName="Helvetica-Bold",
-        fontSize=9,
-        leading=11,
-        textColor=BLUE,
-        alignment=TA_LEFT,
-    )
-    doc_id_style = ParagraphStyle(
-        "g703_doc_id",
-        fontName="Helvetica-Bold",
-        fontSize=8,
-        leading=10,
-        textColor=BLUE,
-        alignment=TA_LEFT,
-    )
-    static_style = ParagraphStyle(
-        "g703_static",
-        fontName="Helvetica",
-        fontSize=6.5,
-        leading=8,
-        alignment=TA_LEFT,
-    )
-    hdr_label_style = ParagraphStyle(
-        "g703_hdr_label",
-        fontName="Helvetica-Bold",
-        fontSize=6.5,
-        leading=8,
-        textColor=BLUE,
-        alignment=TA_RIGHT,
-    )
-    hdr_value_style = ParagraphStyle(
-        "g703_hdr_value",
-        fontName="Helvetica",
-        fontSize=6.5,
-        leading=8,
-        alignment=TA_RIGHT,
-    )
-    wrap_style = ParagraphStyle(
-        "g703_wrap",
-        fontName="Helvetica",
-        fontSize=FONT_SIZE,
-        leading=BODY_LEADING,
-        alignment=TA_LEFT,
-    )
-    hdr_center = ParagraphStyle(
-        "g703_hdr_c",
-        fontName="Helvetica-Bold",
-        fontSize=FONT_SIZE,
-        leading=HDR_LEADING,
-        textColor=BLUE,
-        alignment=TA_LEFT,
-    )
-    hdr_right = ParagraphStyle(
-        "g703_hdr_r",
-        fontName="Helvetica-Bold",
-        fontSize=FONT_SIZE,
-        leading=HDR_LEADING,
-        textColor=BLUE,
-        alignment=TA_RIGHT,
-    )
-    bold_right = ParagraphStyle(
-        "g703_bold_r",
-        fontName="Helvetica-Bold",
-        fontSize=FONT_SIZE,
-        leading=BODY_LEADING,
-        alignment=TA_RIGHT,
-    )
-    bold_left = ParagraphStyle(
-        "g703_bold_l",
-        fontName="Helvetica-Bold",
-        fontSize=FONT_SIZE,
-        leading=BODY_LEADING,
-        alignment=TA_LEFT,
-    )
-
-    def W(text: str) -> Paragraph:
-        return P(str(text) if text else "", wrap_style)
+    title_style = ParagraphStyle("g703_title", fontName=SERIF_BOLD, fontSize=13,
+                                 leading=15, alignment=TA_LEFT)
+    doc_id_style = ParagraphStyle("g703_doc_id", fontName=SERIF_ITALIC, fontSize=11,
+                                  leading=13, alignment=TA_RIGHT)
+    static_style = ParagraphStyle("g703_static", fontName=SERIF, fontSize=7, leading=8.5,
+                                  alignment=TA_LEFT)
+    hdr_label_style = ParagraphStyle("g703_hdr_label", fontName=SERIF_BOLD, fontSize=7,
+                                     leading=8.5, alignment=TA_RIGHT)
+    hdr_value_style = ParagraphStyle("g703_hdr_value", fontName=SERIF, fontSize=7,
+                                     leading=8.5, alignment=TA_LEFT)
+    wrap_style = ParagraphStyle("g703_wrap", fontName=SERIF, fontSize=FONT_SIZE,
+                                leading=LEADING, alignment=TA_LEFT)
+    letter_style = ParagraphStyle("g703_letter", fontName=SERIF, fontSize=FONT_SIZE,
+                                  leading=LEADING, alignment=TA_CENTER)
+    hdr_center = ParagraphStyle("g703_hdr_c", fontName=SERIF_BOLD, fontSize=FONT_SIZE,
+                                leading=LEADING, alignment=TA_CENTER)
+    money_style = ParagraphStyle("g703_money", fontName=SERIF, fontSize=FONT_SIZE,
+                                 leading=LEADING, alignment=TA_RIGHT)
+    bold_right = ParagraphStyle("g703_bold_r", fontName=SERIF_BOLD, fontSize=FONT_SIZE,
+                                leading=LEADING, alignment=TA_RIGHT)
+    bold_left = ParagraphStyle("g703_bold_l", fontName=SERIF_BOLD, fontSize=FONT_SIZE,
+                               leading=LEADING, alignment=TA_LEFT)
+    footer_bold = ParagraphStyle("g703_ftb", fontName=SERIF_BOLD, fontSize=7,
+                                 leading=9, alignment=TA_LEFT)
 
     application_no = header.get("application_no") or ""
     application_date = header.get("application_date") or ""
@@ -243,41 +200,33 @@ def build_g703_pdf(header: dict, rows: list[dict], grand: dict) -> bytes:
     architect_project_no = header.get("architect_project_no") or ""
 
     page_size = landscape(letter)
-    margin = 0.5 * inch
+    margin = 0.4 * inch
     usable_w = page_size[0] - 2 * margin
 
-    item_w = 0.42 * inch
-    desc_w = 1.55 * inch
+    # Column widths: A item, B description, then 8 numeric columns (C D E F G % H I).
+    item_w = 0.5 * inch
+    desc_w = 1.7 * inch
     money_w = (usable_w - item_w - desc_w) / 8.0
     col_widths = [item_w, desc_w] + [money_w] * 8
 
     buf = io.BytesIO()
     doc = SimpleDocTemplate(
-        buf,
-        pagesize=page_size,
-        leftMargin=margin,
-        rightMargin=margin,
-        topMargin=0.4 * inch,
-        bottomMargin=0.4 * inch,
+        buf, pagesize=page_size,
+        leftMargin=margin, rightMargin=margin,
+        topMargin=0.35 * inch, bottomMargin=0.35 * inch,
     )
 
     title_row = Table(
-        [
-            [
-                P("CONTINUATION SHEET", title_style),
-                P("AIA DOCUMENT G703", doc_id_style),
-            ]
-        ],
-        colWidths=[2.8 * inch, usable_w - 2.8 * inch],
+        [[P("CONTINUATION SHEET", title_style), P("AIA DOCUMENT G703", doc_id_style)]],
+        colWidths=[3.2 * inch, usable_w - 3.2 * inch],
     )
-    title_row.setStyle(
-        TableStyle([
-            ("VALIGN", (0, 0), (-1, -1), "BOTTOM"),
-            ("LEFTPADDING", (0, 0), (-1, -1), 0),
-            ("RIGHTPADDING", (0, 0), (-1, -1), 0),
-            ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
-        ])
-    )
+    title_row.setStyle(TableStyle([
+        ("VALIGN", (0, 0), (-1, -1), "BOTTOM"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 0),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
+        ("LINEBELOW", (0, 0), (-1, -1), 1.6, BLACK),
+    ]))
 
     static_block = "<br/>".join([
         "AIA Document G702, APPLICATION AND CERTIFICATION FOR PAYMENT, containing",
@@ -288,74 +237,68 @@ def build_g703_pdf(header: dict, rows: list[dict], grand: dict) -> bytes:
 
     header_fields = Table(
         [
-            [P("APPLICATION NO", hdr_label_style), P(application_no, hdr_value_style)],
-            [P("APPLICATION DATE", hdr_label_style), P(application_date, hdr_value_style)],
-            [P("PERIOD TO", hdr_label_style), P(period_to, hdr_value_style)],
-            [P("ARCHITECT'S PROJECT NO", hdr_label_style), P(architect_project_no, hdr_value_style)],
+            [P("APPLICATION NO:", hdr_label_style), P(application_no, hdr_value_style)],
+            [P("APPLICATION DATE:", hdr_label_style), P(application_date, hdr_value_style)],
+            [P("PERIOD TO:", hdr_label_style), P(period_to, hdr_value_style)],
+            [P("ARCHITECT'S PROJECT NO:", hdr_label_style), P(architect_project_no, hdr_value_style)],
         ],
-        colWidths=[1.35 * inch, 1.1 * inch],
+        colWidths=[1.5 * inch, 1.1 * inch],
     )
-    header_fields.setStyle(
-        TableStyle([
-            ("VALIGN", (0, 0), (-1, -1), "TOP"),
-            ("LEFTPADDING", (0, 0), (-1, -1), 0),
-            ("RIGHTPADDING", (0, 0), (-1, -1), 0),
-            ("TOPPADDING", (0, 0), (-1, -1), 0),
-            ("BOTTOMPADDING", (0, 0), (-1, -1), 1),
-        ])
-    )
+    header_fields.setStyle(TableStyle([
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 2),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 2),
+        ("TOPPADDING", (0, 0), (-1, -1), 0),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 1),
+    ]))
 
     intro = Table(
         [[Paragraph(static_block, static_style), header_fields]],
         colWidths=[usable_w - 2.6 * inch, 2.6 * inch],
     )
-    intro.setStyle(
-        TableStyle([
-            ("VALIGN", (0, 0), (-1, -1), "TOP"),
-            ("LEFTPADDING", (0, 0), (-1, -1), 0),
-            ("RIGHTPADDING", (0, 0), (-1, -1), 0),
-        ])
-    )
+    intro.setStyle(TableStyle([
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 0),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+    ]))
 
-    hdr_row_0 = [
-        P("A", hdr_center),
-        P("B", hdr_center),
-        P("C", hdr_center),
-        P("D", hdr_center),
-        P("E", hdr_center),
-        P("F", hdr_center),
-        P("G", hdr_center),
-        P("H", hdr_center),
-        P("I", hdr_center),
-        P("", hdr_center),
-    ]
-    hdr_row_1 = [
+    # 3-row grid header: letter row, then a labels row with WORK COMPLETED spanning
+    # D+E, then a sub-labels row for FROM PREVIOUS / THIS PERIOD.
+    div = "&#247;"  # ÷
+    letter_row = [P(x, letter_style) for x in ["A", "B", "C", "D", "E", "F", "G", "", "H", "I"]]
+    label_row = [
         P("ITEM NO", hdr_center),
         P("DESCRIPTION OF WORK", hdr_center),
-        P("SCHEDULED VALUE", hdr_right),
-        Paragraph("WORK COMPLETED<br/>FROM PREVIOUS APPLICATION", hdr_right),
-        P("THIS PERIOD", hdr_right),
-        P("MATERIALS PRESENTLY STORED", hdr_right),
-        P("TOTAL COMPLETED AND STORED TO DATE", hdr_right),
-        P("% (G/C)", hdr_right),
-        P("BALANCE TO FINISH (C-G)", hdr_right),
-        P("RETAINAGE", hdr_right),
+        P("SCHEDULED VALUE", hdr_center),
+        P("WORK COMPLETED", hdr_center),
+        "",
+        P("MATERIALS PRESENTLY STORED (NOT IN D OR E)", hdr_center),
+        P("TOTAL COMPLETED AND STORED TO DATE (D+E+F)", hdr_center),
+        Paragraph(f"% (G{div}C)", hdr_center),
+        P("BALANCE TO FINISH (C-G)", hdr_center),
+        P("RETAINAGE (IF VARIABLE RATE)", hdr_center),
+    ]
+    sub_row = [
+        "", "", "",
+        P("FROM PREVIOUS APPLICATION (D+E)", hdr_center),
+        P("THIS PERIOD", hdr_center),
+        "", "", "", "", "",
     ]
 
-    table_data: list[list] = [hdr_row_0, hdr_row_1]
+    table_data: list[list] = [letter_row, label_row, sub_row]
 
     for row in rows:
         table_data.append([
-            row.get("item_no") or "",
-            W(row.get("description") or ""),
-            _money(row["scheduled"]),
-            _money(row["prev"]),
-            _money(row["this_period"]),
-            _money(row["stored"]),
-            _money(row["total_to_date"]),
-            row.get("pct") or "",
-            _money(row["balance"]),
-            _money(row["retainage"]),
+            P(format_cc_number(row.get("item_no"), 4), wrap_style),
+            P(row.get("description") or "", wrap_style),
+            P(_money(row["scheduled"]), money_style),
+            P(_money(row["prev"]), money_style),
+            P(_money(row["this_period"]), money_style),
+            P(_money(row["stored"]), money_style),
+            P(_money(row["total_to_date"]), money_style),
+            P(row.get("pct") or "", money_style),
+            P(_money(row["balance"]), money_style),
+            P(_money(row["retainage"]), money_style),
         ])
 
     grand_idx = len(table_data)
@@ -372,35 +315,44 @@ def build_g703_pdf(header: dict, rows: list[dict], grand: dict) -> bytes:
         P(_money(grand["retainage"]), bold_right),
     ])
 
-    n_rows = len(table_data)
-    first_money_col = 2
-    last_col = 9
-
     style_cmds = [
-        ("FONTNAME", (0, 0), (-1, 1), "Helvetica-Bold"),
-        ("FONTSIZE", (0, 0), (-1, 1), FONT_SIZE),
-        ("TEXTCOLOR", (0, 0), (-1, 1), BLUE),
-        ("TOPPADDING", (0, 0), (-1, 1), 2),
-        ("BOTTOMPADDING", (0, 0), (-1, 1), 2),
-        ("LINEBELOW", (0, 1), (-1, 1), 0.75, BLUE),
-        ("FONTNAME", (0, 2), (-1, n_rows - 2), "Helvetica"),
-        ("FONTSIZE", (0, 2), (-1, n_rows - 2), FONT_SIZE),
-        ("TOPPADDING", (0, 2), (-1, n_rows - 1), 1),
-        ("BOTTOMPADDING", (0, 2), (-1, n_rows - 1), 1),
-        ("LINEBELOW", (0, 2), (-1, n_rows - 2), 0.25, colors.HexColor("#CCCCCC")),
-        ("ALIGN", (first_money_col, 0), (last_col, -1), "RIGHT"),
+        # Full cell borders on the entire grid (header + body + grand).
+        ("GRID", (0, 0), (-1, -1), 0.5, BLACK),
+        # header rows 0-2
+        ("SPAN", (3, 1), (4, 1)),        # WORK COMPLETED spans D+E
+        ("SPAN", (0, 1), (0, 2)),        # ITEM NO
+        ("SPAN", (1, 1), (1, 2)),        # DESCRIPTION
+        ("SPAN", (2, 1), (2, 2)),        # SCHEDULED VALUE
+        ("SPAN", (5, 1), (5, 2)),        # MATERIALS
+        ("SPAN", (6, 1), (6, 2)),        # TOTAL
+        ("SPAN", (7, 1), (7, 2)),        # %
+        ("SPAN", (8, 1), (8, 2)),        # BALANCE
+        ("SPAN", (9, 1), (9, 2)),        # RETAINAGE
+        ("VALIGN", (0, 0), (-1, 2), "MIDDLE"),
+        ("TOPPADDING", (0, 0), (-1, 2), 1),
+        ("BOTTOMPADDING", (0, 0), (-1, 2), 1),
+        # body
+        ("VALIGN", (0, 3), (-1, -1), "TOP"),
+        ("TOPPADDING", (0, 3), (-1, -1), 1),
+        ("BOTTOMPADDING", (0, 3), (-1, -1), 1),
         ("LEFTPADDING", (0, 0), (-1, -1), 2),
         ("RIGHTPADDING", (0, 0), (-1, -1), 2),
-        ("VALIGN", (0, 0), (-1, -1), "TOP"),
-        ("FONTNAME", (0, grand_idx), (-1, grand_idx), "Helvetica-Bold"),
-        ("LINEABOVE", (0, grand_idx), (-1, grand_idx), 0.75, colors.black),
-        ("TOPPADDING", (0, grand_idx), (-1, grand_idx), 4),
+        ("ALIGN", (2, 0), (-1, -1), "RIGHT"),
+        ("ALIGN", (0, 0), (0, -1), "CENTER"),
+        # grand totals row
+        ("TOPPADDING", (0, grand_idx), (-1, grand_idx), 3),
         ("BOTTOMPADDING", (0, grand_idx), (-1, grand_idx), 3),
     ]
 
-    main_table = LongTable(table_data, colWidths=col_widths, repeatRows=2)
+    main_table = LongTable(table_data, colWidths=col_widths, repeatRows=3)
     main_table.setStyle(TableStyle(style_cmds))
 
-    story = [title_row, intro, Spacer(1, 0.12 * inch), main_table]
+    footer = P(
+        "Users may obtain validation of this document by requesting a completed AIA "
+        "Document D401 - Certification of Document's Authenticity from the Licensee.",
+        footer_bold,
+    )
+
+    story = [title_row, intro, Spacer(1, 0.1 * inch), main_table, Spacer(1, 6), footer]
     doc.build(story)
     return buf.getvalue()

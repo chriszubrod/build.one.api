@@ -129,6 +129,15 @@ The full "create an invoice packet, get it approved, push it" workflow is wired 
 8. **(Optional preview)** propose `generate_invoice_packet` if the user wants the PDF before committing. Otherwise skip — `complete_invoice` regenerates the packet itself.
 9. **Propose `complete_invoice`**. Server-side: regenerates the packet, uploads packet + supporting PDFs to SharePoint with overwrite, writes the invoice number into the project's Excel DRAW REQUEST column, and enqueues the Box mirrors (packet → Box draw-requests folder; draw stamp → Box workbook). Both SharePoint and Box sides run from the one call — you do not orchestrate them separately.
 
+## Packet structure — the AIA draw packet (U-209, 2026-08-05)
+
+`generate_invoice_packet` / `complete_invoice` now render a full **AIA draw packet** programmatically from persisted system data (NOT fetched pre-made pages), reconciliation-by-construction — every page derives from the same reconciled sources so the totals agree by construction. Page order: **G702 (Application for Payment) → G703 (Continuation Sheet) → Draw Request (Invoice) → Trend → basic TOC → expanded TOC → attachment pages**. Renderers live in `entities/invoice/business/{g702,g703,draw_request,trend}.py` (shared serif/logo/number-format style in `packet_render.py`), assembled in `router._generate_invoice_packet`.
+
+**Hard prerequisites for the AIA pages — a QBO-Manual-only (un-linked) invoice produces an empty/broken packet:**
+- **The invoice must be a linked, coded draw.** G702/G703/Trend render only when the invoice appears in `DrawFinancialsService.coded_draws_for_project` — i.e. it has ≥1 **non-Manual** line (cost-coded + source-FK'd via **Step 4** linkage). An invoice whose lines are ALL `SourceType='Manual'` (freshly QBO-pulled, un-linked) has an empty cost-code rollup → **no G702/G703/Trend, an empty Draw Request, and `_generate_invoice_packet` raises 400 "No PDF attachments found"** (no non-Manual line → no attachment). **Step 4 linkage is a hard gate for a meaningful packet, not just for reconciliation** (e.g. HA-05/proj-128 sat as 52 Manual lines, $0 coded → not packet-ready until linked).
+- **A live Budget SoV must exist** for the project — G703 col C (Scheduled Value) = the live Budget schedule of values via `BudgetService.variance_by_public_id`; absent it, G702/G703 are skipped.
+- **Builder's Fee + G702 header come from the project's `dbo.Contract`.** Fee line = subtotal × `Contract.BuildersFeeRate`; the G702 Owner/Architect/Contract-For/Contract-Date fields come from the Contract header. **Until a Contract row with the fee rate + header fields is persisted for the project, the fee renders $0 and those header fields blank** (a Contract-persistence unit is queued; proj-128 has no such row yet — the 0.14 rate was passed manually only for the HA-04 review packet).
+
 ## Line item edits — verbatim copy is the rule
 
 `add_invoice_line_items` copies values directly from the source line. **No overrides.** If the user wants different description / amount / markup / price, the SOURCE line (Bill / Expense / BillCredit) must be edited first via that specialist, then re-run the add flow.

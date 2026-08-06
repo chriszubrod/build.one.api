@@ -5,7 +5,7 @@ from decimal import Decimal
 
 from pypdf import PdfReader
 
-from entities.invoice.business.cover import _format_money
+from entities.invoice.business.packet_render import money_number
 from entities.invoice.business.trend import build_trend_pdf
 
 
@@ -88,7 +88,9 @@ def test_trend_pdf_matrix_and_reconciliation():
     assert pdf[:4] == b"%PDF"
 
     text = _pdf_text(pdf)
-    assert "Trend" in text
+    # No page title (matches the manual packet); the gray band carries the columns.
+    assert "Category" in text
+    assert "Description" in text
     assert "April 1, 2026" in text
     assert "HA-01" in text
     assert "HA-02" in text
@@ -99,13 +101,14 @@ def test_trend_pdf_matrix_and_reconciliation():
     assert "Builder's Fee" in text
     assert "90.000" in text
 
-    assert _format_money(row_100) in text
-    assert _format_money(row_200) in text
-    assert _format_money(row_300) in text
-    assert _format_money(row_999) in text
-    assert _format_money(grand_subtotal) in text
+    # Money renders as split "$ | amount" cells — assert the bare amounts.
+    assert money_number(row_100) in text
+    assert money_number(row_200) in text
+    assert money_number(row_300) in text
+    assert money_number(row_999) in text
+    assert money_number(grand_subtotal) in text
 
-    per_draw_subtotals = [_format_money(d["subtotal"]) for d in draws]
+    per_draw_subtotals = [money_number(d["subtotal"]) for d in draws]
     for fmt in per_draw_subtotals:
         assert fmt in text
 
@@ -124,7 +127,7 @@ def test_trend_pdf_sums_duplicate_cost_codes_within_a_draw():
     assert _category_amount_for_draw(draw, "100") == Decimal("109.00")
     assert _union_cost_codes([draw]) == [("100", "Site Work")]
     text = _pdf_text(build_trend_pdf(_header(), [draw]))
-    assert _format_money(Decimal("109.00")) in text  # cell reconciles to subtotal
+    assert money_number(Decimal("109.00")) in text  # cell reconciles to subtotal
 
 
 def test_trend_pdf_coerces_non_str_cost_code_number():

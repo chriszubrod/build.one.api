@@ -715,7 +715,9 @@ def _generate_invoice_packet(public_id: str):
                         "project": project.name if project else "",
                         "application_no": invoice.invoice_number or "",
                         "period_to": date_str,
-                        "contractor_lines": _CONTRACTOR_BLOCK,
+                        # The AIA G702 contractor block is name + mailing address only
+                        # (no phone/email — those belong on the Draw Request/Trend).
+                        "contractor_lines": _CONTRACTOR_BLOCK[:3],
                         "architect_lines": [],
                         "contract_for": "",
                         "contract_date": "",

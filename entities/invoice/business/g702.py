@@ -1,4 +1,11 @@
-"""AIA G702 Application and Certification for Payment — portrait renderer."""
+"""AIA G702 Application and Certification for Payment — landscape renderer.
+
+Reproduces the 1992 AIA G702 form (serif type, bordered header grid with the
+Owner/Architect/Contractor distribution checkboxes, the 9-line contractor
+application ledger with the 5a/5b retainage sub-rows, the notary + architect
+certificate blocks, the Change Order Summary table, and the AIA footer) so a
+system-generated page reads like the manually produced packets it replaces.
+"""
 
 from __future__ import annotations
 
@@ -7,6 +14,12 @@ from decimal import Decimal
 from typing import Any
 
 from entities.invoice.business.cover import _format_money
+from entities.invoice.business.packet_render import (
+    SERIF,
+    SERIF_BOLD,
+    SERIF_ITALIC,
+    money_number,
+)
 
 
 def _dec(value: Any) -> Decimal:
@@ -63,106 +76,48 @@ def build_g702_lines(grand: dict, retainage_rate: Any = Decimal("0"),
 
 
 def build_g702_pdf(header: dict, lines: dict) -> bytes:
-    """Landscape letter G702 (single page): header band + contractor application
-    ledger + certification."""
+    """Landscape letter G702 (single page) rendered as the 1992 AIA form."""
     import html as _html
 
     from reportlab.lib import colors
-    from reportlab.lib.enums import TA_LEFT, TA_RIGHT
+    from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT
     from reportlab.lib.pagesizes import landscape, letter
     from reportlab.lib.styles import ParagraphStyle
     from reportlab.lib.units import inch
     from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
-    NAVY = colors.HexColor("#1F3864")
-    FONT_SIZE = 8
-    LEADING = FONT_SIZE + 2
+    BLACK = colors.black
 
-    def P(text: str, style: ParagraphStyle) -> Paragraph:
-        return Paragraph(_html.escape(text) if text else "", style)
+    def esc(text: Any) -> str:
+        return _html.escape(str(text)) if text not in (None, "") else ""
 
-    title_style = ParagraphStyle(
-        "g702_title",
-        fontName="Helvetica-Bold",
-        fontSize=10,
-        leading=12,
-        textColor=NAVY,
-        alignment=TA_LEFT,
-    )
-    doc_id_style = ParagraphStyle(
-        "g702_doc_id",
-        fontName="Helvetica-Bold",
-        fontSize=9,
-        leading=11,
-        textColor=NAVY,
-        alignment=TA_RIGHT,
-    )
-    section_hdr = ParagraphStyle(
-        "g702_section",
-        fontName="Helvetica-Bold",
-        fontSize=FONT_SIZE,
-        leading=LEADING,
-        textColor=NAVY,
-        alignment=TA_LEFT,
-    )
-    label_style = ParagraphStyle(
-        "g702_label",
-        fontName="Helvetica-Bold",
-        fontSize=7,
-        leading=9,
-        textColor=NAVY,
-        alignment=TA_LEFT,
-    )
-    body_style = ParagraphStyle(
-        "g702_body",
-        fontName="Helvetica",
-        fontSize=FONT_SIZE,
-        leading=LEADING,
-        alignment=TA_LEFT,
-    )
-    small_style = ParagraphStyle(
-        "g702_small",
-        fontName="Helvetica",
-        fontSize=7,
-        leading=9,
-        alignment=TA_LEFT,
-    )
-    ledger_label = ParagraphStyle(
-        "g702_ledger_l",
-        fontName="Helvetica",
-        fontSize=FONT_SIZE,
-        leading=LEADING,
-        alignment=TA_LEFT,
-    )
-    ledger_money = ParagraphStyle(
-        "g702_ledger_r",
-        fontName="Helvetica",
-        fontSize=FONT_SIZE,
-        leading=LEADING,
-        alignment=TA_RIGHT,
-    )
-    bold_ledger_label = ParagraphStyle(
-        "g702_ledger_bl",
-        fontName="Helvetica-Bold",
-        fontSize=FONT_SIZE,
-        leading=LEADING,
-        alignment=TA_LEFT,
-    )
-    bold_ledger_money = ParagraphStyle(
-        "g702_ledger_br",
-        fontName="Helvetica-Bold",
-        fontSize=FONT_SIZE,
-        leading=LEADING,
-        alignment=TA_RIGHT,
-    )
-    cert_style = ParagraphStyle(
-        "g702_cert",
-        fontName="Helvetica",
-        fontSize=7,
-        leading=9,
-        alignment=TA_LEFT,
-    )
+    # ---- paragraph styles -------------------------------------------------
+    title_style = ParagraphStyle("g702_title", fontName=SERIF_BOLD, fontSize=13,
+                                 leading=15, alignment=TA_LEFT)
+    doc_id_style = ParagraphStyle("g702_doc_id", fontName=SERIF_ITALIC, fontSize=11,
+                                  leading=13, alignment=TA_RIGHT)
+    hdr_label = ParagraphStyle("g702_hl", fontName=SERIF, fontSize=7.5, leading=9.5)
+    hdr_value = ParagraphStyle("g702_hv", fontName=SERIF_BOLD, fontSize=7.5, leading=9.5)
+    section_hdr = ParagraphStyle("g702_sec", fontName=SERIF_BOLD, fontSize=9, leading=11)
+    body = ParagraphStyle("g702_body", fontName=SERIF, fontSize=7.5, leading=9.5)
+    ledger_label = ParagraphStyle("g702_ll", fontName=SERIF, fontSize=7.5, leading=9.5)
+    ledger_sub = ParagraphStyle("g702_lsub", fontName=SERIF, fontSize=7, leading=8.5,
+                                leftIndent=10)
+    dollar_style = ParagraphStyle("g702_dol", fontName=SERIF, fontSize=7.5, leading=9.5,
+                                  alignment=TA_LEFT)
+    value_style = ParagraphStyle("g702_val", fontName=SERIF, fontSize=7.5, leading=9.5,
+                                 alignment=TA_RIGHT)
+    value_bold = ParagraphStyle("g702_valb", fontName=SERIF_BOLD, fontSize=7.5,
+                                leading=9.5, alignment=TA_RIGHT)
+    cert = ParagraphStyle("g702_cert", fontName=SERIF, fontSize=7, leading=9)
+    cert_bold = ParagraphStyle("g702_certb", fontName=SERIF_BOLD, fontSize=8.5, leading=11)
+    footer_style = ParagraphStyle("g702_ft", fontName=SERIF, fontSize=6, leading=7.5)
+    footer_bold = ParagraphStyle("g702_ftb", fontName=SERIF_BOLD, fontSize=6.5, leading=8)
+    box_label = ParagraphStyle("g702_box", fontName=SERIF, fontSize=7.5, leading=9.5)
+    co_hdr = ParagraphStyle("g702_cohdr", fontName=SERIF_BOLD, fontSize=7, leading=9,
+                            alignment=TA_CENTER)
 
+    # ---- header data ------------------------------------------------------
     owner_lines = header.get("owner_lines") or []
     contractor_lines = header.get("contractor_lines") or []
     architect_lines = header.get("architect_lines") or []
@@ -185,229 +140,291 @@ def build_g702_pdf(header: dict, lines: dict) -> bytes:
     co_ded = _dec(lines.get("co_deductions"))
     co_net = co_add - co_ded
 
-    margin = 0.5 * inch
+    margin = 0.45 * inch
     page_w = landscape(letter)[0]
     usable_w = page_w - 2 * margin
 
-    def _labeled_block(label: str, text_lines: list[str]) -> str:
-        body = "<br/>".join(_html.escape(ln) for ln in text_lines if ln is not None)
-        return f"<b>{_html.escape(label)}</b><br/>{body}"
-
-    left_hdr_text = "<br/><br/>".join([
-        _labeled_block("TO OWNER:", owner_lines),
-        _labeled_block("FROM CONTRACTOR:", contractor_lines),
-        f"<b>CONTRACT FOR:</b><br/>{_html.escape(contract_for)}",
-    ])
-    mid_hdr_text = "<br/><br/>".join([
-        f"<b>PROJECT:</b><br/>{_html.escape(project)}",
-        _labeled_block("VIA ARCHITECT:", architect_lines),
-        f"<b>CONTRACT DATE:</b><br/>{_html.escape(contract_date)}",
-    ])
-    dist_lines = "<br/>".join([
-        "Distribution to:",
-        "☐ OWNER",
-        "☐ ARCHITECT",
-        "☐ CONTRACTOR",
-    ])
-    right_hdr_text = "<br/><br/>".join([
-        f"<b>APPLICATION NO:</b><br/>{_html.escape(application_no)}",
-        f"<b>PERIOD TO:</b><br/>{_html.escape(period_to)}",
-        dist_lines,
-    ])
-    left_hdr = Paragraph(left_hdr_text, body_style)
-    mid_hdr = Paragraph(mid_hdr_text, body_style)
-    right_hdr = Paragraph(right_hdr_text, body_style)
-
-    col_w = usable_w / 3.0
-    header_band = Table(
-        [[left_hdr, mid_hdr, right_hdr]],
-        colWidths=[col_w, col_w, col_w],
-    )
-    header_band.setStyle(
-        TableStyle([
-            ("BOX", (0, 0), (-1, -1), 0.75, colors.black),
-            ("INNERGRID", (0, 0), (-1, -1), 0.5, colors.black),
-            ("VALIGN", (0, 0), (-1, -1), "TOP"),
-            ("LEFTPADDING", (0, 0), (-1, -1), 4),
-            ("RIGHTPADDING", (0, 0), (-1, -1), 4),
-            ("TOPPADDING", (0, 0), (-1, -1), 4),
-            ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
-        ])
-    )
-
+    # ---- title ------------------------------------------------------------
     title_row = Table(
-        [[P("APPLICATION AND CERTIFICATION FOR PAYMENT", title_style),
-          P("AIA DOCUMENT G702", doc_id_style)]],
-        colWidths=[usable_w * 0.72, usable_w * 0.28],
+        [[Paragraph("APPLICATION AND CERTIFICATION FOR PAYMENT", title_style),
+          Paragraph("AIA DOCUMENT G702", doc_id_style)]],
+        colWidths=[usable_w * 0.62, usable_w * 0.38],
     )
-    title_row.setStyle(
-        TableStyle([
-            ("VALIGN", (0, 0), (-1, -1), "BOTTOM"),
+    title_row.setStyle(TableStyle([
+        ("VALIGN", (0, 0), (-1, -1), "BOTTOM"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 0),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
+        ("LINEBELOW", (0, 0), (-1, -1), 1.6, BLACK),
+    ]))
+
+    def stacked(*blocks: str) -> Paragraph:
+        return Paragraph("<br/>".join(b for b in blocks if b), body)
+
+    def labeled(label: str, text_lines: list[str]) -> str:
+        inner = "<br/>".join(f"<b>{esc(ln)}</b>" for ln in text_lines if ln)
+        return f"{esc(label)}<br/>{inner}" if inner else esc(label)
+
+    # ---- header grid (4 columns, bordered) --------------------------------
+    owner_cell = stacked(
+        labeled("TO OWNER:", owner_lines),
+        "",
+        labeled("FROM CONTRACTOR:", contractor_lines),
+        "",
+        f"<i>CONTRACT FOR:</i>  <b>{esc(contract_for)}</b>",
+    )
+    project_cell = stacked(
+        f"PROJECT:  <b>{esc(project)}</b>",
+        "",
+        labeled("VIA ARCHITECT:", architect_lines),
+        "",
+        f"CONTRACT DATE:  <b>{esc(contract_date)}</b>",
+    )
+    appno_cell = stacked(
+        f"APPLICATION NO:  <b>{esc(application_no)}</b>",
+        "",
+        f"PERIOD TO:  <b>{esc(period_to)}</b>",
+    )
+
+    # Distribution checkbox mini-grid — real bordered squares (Times has no ballot
+    # glyph), an X marking the Contractor row.
+    def checkbox(marked: bool) -> Table:
+        t = Table([[("X" if marked else "")]], colWidths=[9], rowHeights=[9])
+        t.setStyle(TableStyle([
+            ("BOX", (0, 0), (-1, -1), 0.5, BLACK),
+            ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ("FONTNAME", (0, 0), (-1, -1), SERIF_BOLD),
+            ("FONTSIZE", (0, 0), (-1, -1), 7),
             ("LEFTPADDING", (0, 0), (-1, -1), 0),
             ("RIGHTPADDING", (0, 0), (-1, -1), 0),
-            ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
-        ])
+            ("TOPPADDING", (0, 0), (-1, -1), 0),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
+        ]))
+        return t
+
+    dist_grid = Table(
+        [
+            [Paragraph("Distribution to:", box_label), ""],
+            [checkbox(False), Paragraph("OWNER", box_label)],
+            [checkbox(False), Paragraph("ARCHITECT", box_label)],
+            [checkbox(True), Paragraph("CONTRACTOR", box_label)],
+        ],
+        colWidths=[0.24 * inch, 1.0 * inch],
     )
+    dist_grid.setStyle(TableStyle([
+        ("SPAN", (0, 0), (1, 0)),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 1),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 1),
+        ("TOPPADDING", (0, 0), (-1, -1), 2),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
+    ]))
 
-    ledger_w = usable_w * 0.52
-    money_col = 1.05 * inch
-    label_col = ledger_w - money_col
+    header_grid = Table(
+        [[owner_cell, project_cell, appno_cell, dist_grid]],
+        colWidths=[usable_w * 0.34, usable_w * 0.34, usable_w * 0.18, usable_w * 0.14],
+    )
+    header_grid.setStyle(TableStyle([
+        ("BOX", (0, 0), (-1, -1), 1.0, BLACK),
+        ("LINEAFTER", (0, 0), (-2, -1), 0.5, BLACK),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 5),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 5),
+        ("TOPPADDING", (0, 0), (-1, -1), 4),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+    ]))
 
-    ledger_rows: list[list] = [
-        [P("CONTRACTOR'S APPLICATION FOR PAYMENT", section_hdr), ""],
-        [
-            P("1. ORIGINAL CONTRACT SUM", ledger_label),
-            P(_money(l1), ledger_money),
-        ],
-        [
-            P("2. Net change by Change Orders", ledger_label),
-            P(_money(l2), ledger_money),
-        ],
-        [
-            P("3. CONTRACT SUM TO DATE (Line 1 +/- 2)", ledger_label),
-            P(_money(l3), ledger_money),
-        ],
-        [
-            P("4. TOTAL COMPLETED & STORED TO DATE (Column G on G703)", ledger_label),
-            P(_money(l4), ledger_money),
-        ],
-        [
-            P("5. RETAINAGE", ledger_label),
-            P(_money(l5), ledger_money),
-        ],
-        [
-            P("6. TOTAL EARNED LESS RETAINAGE (Line 4 less Line 5)", ledger_label),
-            P(_money(l6), ledger_money),
-        ],
-        [
-            P("7. LESS PREVIOUS CERTIFICATES FOR PAYMENT (Line 6 from prior Certificate)", ledger_label),
-            P(_money(l7), ledger_money),
-        ],
-        [
-            P("8. CURRENT PAYMENT DUE", bold_ledger_label),
-            P(_money(l8), bold_ledger_money),
-        ],
-        [
-            P("9. BALANCE TO FINISH INCLUDING RETAINAGE (Line 3 less 6)", ledger_label),
-            P(_money(l9), ledger_money),
-        ],
+    # ---- left column: application ledger ----------------------------------
+    intro = Paragraph(
+        "Application is made for payment, as shown below, in connection with the "
+        "Contract. Continuation Sheet, AIA Document G703, is attached.", body)
+
+    def lrow(label: str, value: Decimal, style=ledger_label, vstyle=value_style):
+        return [Paragraph(label, style), Paragraph("$", dollar_style),
+                Paragraph(money_number(value), vstyle)]
+
+    ledger_rows = [
+        [Paragraph("CONTRACTOR'S APPLICATION FOR PAYMENT", section_hdr), "", ""],
+        [intro, "", ""],
+        lrow("1. ORIGINAL CONTRACT SUM", l1),
+        lrow("2. Net change by Change Orders (Incl in line 1)", l2),
+        lrow("3. CONTRACT SUM TO DATE (Line 1 &#177; 2)", l3),
+        lrow("4. TOTAL COMPLETED &amp; STORED TO DATE (Column G on G703)", l4),
+        [Paragraph("5. RETAINAGE:", ledger_label), "", ""],
+        [Paragraph("a. _____ % of Completed Work (Column D + E on G703)", ledger_sub),
+         Paragraph("$", dollar_style), Paragraph(money_number(l5), value_style)],
+        [Paragraph("b. _____ % of Stored Material (Column F on G703)", ledger_sub),
+         Paragraph("$", dollar_style), Paragraph("n/a", value_style)],
+        [Paragraph("Total Retainage (Lines 5a + 5b or Total in Column I of G703)",
+                   ledger_sub), Paragraph("$", dollar_style),
+         Paragraph(money_number(l5), value_style)],
+        lrow("6. TOTAL EARNED LESS RETAINAGE (Line 4 Less Line 5 Total)", l6),
+        lrow("7. LESS PREVIOUS CERTIFICATES FOR PAYMENT (Line 6 from prior Certificate)", l7),
+        lrow("8. CURRENT PAYMENT DUE", l8, style=ledger_label, vstyle=value_bold),
+        lrow("9. BALANCE TO FINISH, INCLUDING RETAINAGE (Line 3 less 6)", l9),
     ]
 
-    co_table = Table(
-        [
-            [P("CHANGE ORDER SUMMARY", section_hdr), "", ""],
-            [P("ADDITIONS", label_style), P(_money(co_add), ledger_money), ""],
-            [P("DEDUCTIONS", label_style), P(_money(co_ded), ledger_money), ""],
-            [P("NET CHANGES", bold_ledger_label), P(_money(co_net), bold_ledger_money), ""],
-        ],
-        colWidths=[label_col * 0.55, money_col, label_col * 0.45 - money_col],
-    )
-    co_table.setStyle(
-        TableStyle([
-            ("SPAN", (0, 0), (-1, 0)),
-            ("LINEBELOW", (0, 0), (-1, 0), 0.5, NAVY),
-            ("TOPPADDING", (0, 0), (-1, -1), 2),
-            ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
-            ("LEFTPADDING", (0, 0), (-1, -1), 0),
-            ("RIGHTPADDING", (0, 0), (-1, -1), 0),
-        ])
-    )
+    ledger_w = usable_w * 0.52
+    dollar_w = 0.16 * inch
+    value_w = 0.95 * inch
+    label_w = ledger_w - dollar_w - value_w
+    # rows whose value cell carries the ruled-underline ledger look
+    ruled = {2, 3, 4, 5, 7, 8, 9, 10, 11, 12, 13}
+    ledger = Table(ledger_rows, colWidths=[label_w, dollar_w, value_w])
+    ledger_style = [
+        ("SPAN", (0, 0), (2, 0)),
+        ("SPAN", (0, 1), (2, 1)),
+        ("LINEBELOW", (0, 0), (-1, 0), 0.75, BLACK),
+        ("VALIGN", (0, 0), (-1, -1), "BOTTOM"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 0),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 2),
+        ("TOPPADDING", (0, 0), (-1, -1), 2),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
+        ("BOTTOMPADDING", (0, 1), (-1, 1), 6),
+    ]
+    for r in ruled:
+        ledger_style.append(("LINEBELOW", (2, r), (2, r), 0.5, BLACK))
+    ledger.setStyle(TableStyle(ledger_style))
 
-    ledger = Table(ledger_rows, colWidths=[label_col, money_col])
-    ledger.setStyle(
-        TableStyle([
-            ("SPAN", (0, 0), (1, 0)),
-            ("LINEBELOW", (0, 0), (-1, 0), 0.75, NAVY),
-            ("LINEBELOW", (0, 1), (-1, -2), 0.25, colors.HexColor("#CCCCCC")),
-            ("LINEBELOW", (0, -1), (-1, -1), 0.5, colors.black),
-            ("VALIGN", (0, 0), (-1, -1), "TOP"),
-            ("TOPPADDING", (0, 0), (-1, -1), 2),
-            ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
-            ("LEFTPADDING", (0, 0), (-1, -1), 0),
-            ("RIGHTPADDING", (0, 0), (-1, -1), 0),
-        ])
-    )
+    # Change Order Summary — bordered table
+    def co_val(v: Decimal) -> Paragraph:
+        return Paragraph(_money(v), value_style)
 
-    contractor_cert = (
+    co_rows = [
+        [Paragraph("CHANGE ORDER SUMMARY", co_hdr), Paragraph("ADDITIONS", co_hdr),
+         Paragraph("DEDUCTIONS", co_hdr)],
+        [Paragraph("Total changes approved in previous months by Owner", box_label),
+         co_val(Decimal("0")), co_val(Decimal("0"))],
+        [Paragraph("Total approved this Month", box_label),
+         co_val(co_add), co_val(co_ded)],
+        [Paragraph("TOTALS", cert_bold), co_val(co_add), co_val(co_ded)],
+        [Paragraph("NET CHANGES by Change Order", box_label), co_val(co_net), ""],
+    ]
+    co_table = Table(co_rows, colWidths=[ledger_w - 2 * 1.05 * inch, 1.05 * inch, 1.05 * inch])
+    co_table.setStyle(TableStyle([
+        ("BOX", (0, 0), (-1, -1), 0.75, BLACK),
+        ("INNERGRID", (0, 0), (-1, -1), 0.4, BLACK),
+        ("SPAN", (1, 4), (2, 4)),
+        ("ALIGN", (1, 0), (-1, -1), "RIGHT"),
+        ("ALIGN", (1, 0), (-1, 0), "CENTER"),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 3),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 3),
+        ("TOPPADDING", (0, 0), (-1, -1), 2),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
+        ("FONTNAME", (0, 0), (-1, -1), SERIF),
+        ("FONTSIZE", (0, 0), (-1, -1), 7),
+    ]))
+
+    left_col = Table([[ledger], [Spacer(1, 8)], [co_table]], colWidths=[ledger_w])
+    left_col.setStyle(TableStyle([
+        ("LEFTPADDING", (0, 0), (-1, -1), 0),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+        ("TOPPADDING", (0, 0), (-1, -1), 0),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
+    ]))
+
+    # ---- right column: certifications -------------------------------------
+    contractor_cert = Paragraph(
         "The undersigned Contractor certifies that to the best of the Contractor's "
         "knowledge, information and belief the Work covered by this Application for "
         "Payment has been completed in accordance with the Contract Documents, that "
         "all amounts have been paid by the Contractor for Work for which previous "
         "Certificates for Payment were issued and payments received from the Owner, "
-        "and that current payment shown herein is now due."
-    )
-    architect_cert = (
-        "ARCHITECT'S CERTIFICATE FOR PAYMENT<br/><br/>"
+        "and that current payment shown herein is now due.", cert)
+    notary = Paragraph(
+        "<b>CONTRACTOR:</b><br/><br/>"
+        "By: ______________________________   Date: ______________<br/><br/>"
+        "Subscribed and sworn to before me this ______ day of __________, 20____<br/>"
+        "County of: ______________   State of: ______________<br/>"
+        "Notary Public: ______________________________<br/>"
+        "My Commission expires: ______________", cert)
+    architect_cert = Paragraph(
         "In accordance with the Contract Documents, based on on-site observations and "
         "the data comprising this application, the Architect certifies to the Owner "
         "that to the best of the Architect's knowledge, information and belief the "
         "Work has progressed as indicated, the quality of the Work is in accordance "
         "with the Contract Documents, and the Contractor is entitled to payment of "
-        "the AMOUNT CERTIFIED."
-    )
-    notary_block = (
-        "<br/>State of ______________ County of ______________<br/>"
-        "Sworn before me this _____ day of _________, 20___ "
-        "Notary Public _________________________"
-    )
-    sig_line = "________________________    Date: __________"
+        "the AMOUNT CERTIFIED.", cert)
+    amount_certified = Paragraph(
+        "AMOUNT CERTIFIED . . . . . . . . . . $ ______________________<br/>"
+        "<i>(Attach explanation if amount certified differs from the amount applied. "
+        "Initial all figures on this Application and on the Continuation Sheet that "
+        "are changed to conform with the amount certified.)</i><br/><br/>"
+        "<b>ARCHITECT:</b><br/>"
+        "By: ______________________________   Date: ______________", cert)
+    not_negotiable = Paragraph(
+        "This Certificate is not negotiable. The AMOUNT CERTIFIED is payable only to "
+        "the Contractor named herein. Issuance, payment and acceptance of payment are "
+        "without prejudice to any rights of the Owner or Contractor under this "
+        "Contract.", cert)
 
     cert_w = usable_w - ledger_w
-    right_text = "<br/>".join([
-        contractor_cert,
-        "<br/><b>CONTRACTOR:</b><br/>By: " + sig_line,
-        notary_block,
-        architect_cert,
-        "<br/><b>AMOUNT CERTIFIED</b><br/>_______________________________________________",
-        "<br/><b>ARCHITECT:</b><br/>By: " + sig_line,
-    ])
-    right_col = Paragraph(right_text, cert_style)
+    right_rows = [
+        [contractor_cert],
+        [Spacer(1, 6)],
+        [notary],
+        [Spacer(1, 4)],
+        [Paragraph("ARCHITECT'S CERTIFICATE FOR PAYMENT", cert_bold)],
+        [architect_cert],
+        [Spacer(1, 4)],
+        [amount_certified],
+        [Spacer(1, 6)],
+        [not_negotiable],
+    ]
+    right_col = Table(right_rows, colWidths=[cert_w])
+    right_col.setStyle(TableStyle([
+        ("LINEABOVE", (0, 4), (-1, 4), 0.75, BLACK),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 0),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+        ("TOPPADDING", (0, 0), (-1, -1), 1),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 1),
+        ("TOPPADDING", (0, 4), (-1, 4), 4),
+    ]))
 
-    left_stack = Table(
-        [[ledger], [co_table]],
-        colWidths=[ledger_w],
-    )
-    left_stack.setStyle(
-        TableStyle([
-            ("TOPPADDING", (0, 1), (0, 1), 6),
-            ("LEFTPADDING", (0, 0), (-1, -1), 0),
-            ("RIGHTPADDING", (0, 0), (-1, -1), 0),
-        ])
-    )
+    body_tbl = Table([[left_col, right_col]], colWidths=[ledger_w, cert_w])
+    body_tbl.setStyle(TableStyle([
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("LEFTPADDING", (0, 0), (0, 0), 0),
+        ("RIGHTPADDING", (0, 0), (0, 0), 12),
+        ("LEFTPADDING", (1, 0), (1, 0), 12),
+        ("RIGHTPADDING", (1, 0), (-1, -1), 0),
+        ("LINEBEFORE", (1, 0), (1, 0), 0.5, BLACK),
+    ]))
 
-    body = Table([[left_stack, right_col]], colWidths=[ledger_w, cert_w])
-    body.setStyle(
-        TableStyle([
-            ("VALIGN", (0, 0), (-1, -1), "TOP"),
-            ("LEFTPADDING", (0, 0), (0, 0), 0),
-            ("RIGHTPADDING", (0, 0), (-1, -1), 0),
-            # Gutter between the ledger amounts and the certification column so the
-            # right-aligned money never butts against the certification text.
-            ("LEFTPADDING", (1, 0), (1, 0), 18),
-        ])
+    footer = Table(
+        [[Paragraph(
+            "AIA DOCUMENT G702 &#183; APPLICATION AND CERTIFICATION FOR PAYMENT &#183; "
+            "1992 EDITION &#183; AIA &#183; &#169;1992 &#183; THE AMERICAN INSTITUTE OF "
+            "ARCHITECTS, 1735 NEW YORK AVE., N.W., WASHINGTON, DC 20006-5292", footer_style)],
+         [Paragraph(
+            "Users may obtain validation of this document by requesting a completed AIA "
+            "Document D401 - Certification of Document's Authenticity from the Licensee.",
+            footer_bold)]],
+        colWidths=[usable_w],
     )
-
-    footer = P(
-        "AIA DOCUMENT G702 - APPLICATION AND CERTIFICATION FOR PAYMENT - 1992 EDITION",
-        small_style,
-    )
+    footer.setStyle(TableStyle([
+        ("LINEABOVE", (0, 0), (-1, 0), 0.5, BLACK),
+        ("LEFTPADDING", (0, 0), (-1, -1), 0),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+        ("TOPPADDING", (0, 0), (-1, 0), 3),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 1),
+    ]))
 
     buf = io.BytesIO()
     doc = SimpleDocTemplate(
-        buf,
-        pagesize=landscape(letter),
-        leftMargin=margin,
-        rightMargin=margin,
-        topMargin=0.45 * inch,
-        bottomMargin=0.4 * inch,
+        buf, pagesize=landscape(letter),
+        leftMargin=margin, rightMargin=margin,
+        topMargin=0.35 * inch, bottomMargin=0.3 * inch,
     )
-    story = [
+    doc.build([
         title_row,
-        header_band,
-        Spacer(1, 0.1 * inch),
-        body,
-        Spacer(1, 0.15 * inch),
+        header_grid,
+        Spacer(1, 8),
+        body_tbl,
+        Spacer(1, 8),
         footer,
-    ]
-    doc.build(story)
+    ])
     return buf.getvalue()

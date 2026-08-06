@@ -5,8 +5,8 @@ from decimal import Decimal
 
 from pypdf import PdfReader
 
-from entities.invoice.business.cover import _format_money
 from entities.invoice.business.g702 import build_g702_pdf
+from entities.invoice.business.packet_render import money_number
 
 
 def _pdf_text(pdf_bytes: bytes) -> str:
@@ -56,8 +56,10 @@ def test_g702_pdf_core_content():
     assert "ORIGINAL CONTRACT SUM" in text
     assert "CURRENT PAYMENT DUE" in text
     assert "Harbor View Residence" in text
-    assert _format_money(Decimal("850000.00")) in text
-    assert _format_money(Decimal("78000.00")) in text
+    # The ledger renders money as a split "$ | amount" cell — assert the bare amount
+    # (the "$" lives in its own column, not necessarily contiguous in extracted text).
+    assert money_number(Decimal("850000.00")) in text   # "850,000.00"
+    assert money_number(Decimal("78000.00")) in text     # "78,000.00"
 
 
 def test_g702_lines_reconcile_from_g703_grand():

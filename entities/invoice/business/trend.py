@@ -1,4 +1,10 @@
-"""Pure ReportLab renderer for a construction Trend page (per cost-code × draw matrix)."""
+"""Pure ReportLab renderer for a construction Trend page (per cost-code × draw matrix).
+
+Shares the packet house style — serif type, the Rogers Build mark top-right, a gray
+column-header band, 3-decimal Category numbers, and split ``$ | amount`` money cells
+(an empty cell renders ``$  -``). Kept in landscape so the draw columns keep fitting
+as a project accumulates draws.
+"""
 
 from __future__ import annotations
 
@@ -6,9 +12,17 @@ import io
 from decimal import Decimal
 from typing import Any, Optional
 
-from entities.invoice.business.cover import _cost_code_sort_key, _format_money
+from entities.invoice.business.cover import _cost_code_sort_key
+from entities.invoice.business.packet_render import (
+    BAND_FILL,
+    SERIF,
+    SERIF_BOLD,
+    format_cc_number,
+    logo_flowable,
+    money_number,
+)
 
-FEE_ITEM_NUMBER = "90.000"
+FEE_ITEM_NUMBER = "90"
 
 
 def _as_decimal(value: Any) -> Decimal:
@@ -29,7 +43,7 @@ def _category_amount_for_draw(draw: dict, cost_code_number: str) -> Optional[Dec
     so a draw whose categories aren't pre-grouped by number still reconciles to its
     own subtotal (the canonical producer build_cover_rollup pre-groups, but the
     renderer must not silently drop a duplicate). None when the code is absent or
-    all its cells are None → renders a blank cell."""
+    all its cells are None → renders an empty ($  -) cell."""
     total: Optional[Decimal] = None
     for cat in draw.get("categories") or []:
         if _cc_num(cat) == cost_code_number:
@@ -62,204 +76,168 @@ def build_trend_pdf(header: dict, draws: list[dict]) -> bytes:
     from reportlab.lib.units import inch
     from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
-    BLUE = colors.HexColor("#1F3864")
-    FONT_SIZE = 7
+    BLACK = colors.black
+    BAND = colors.HexColor(BAND_FILL)
+    FONT_SIZE = 7.5
 
-    wrap_style = ParagraphStyle(
-        "tr_wrap", fontName="Helvetica", fontSize=FONT_SIZE, leading=FONT_SIZE + 2
-    )
-    wrap_hdr = ParagraphStyle(
-        "tr_wrap_hdr",
-        fontName="Helvetica-Bold",
-        fontSize=FONT_SIZE,
-        leading=FONT_SIZE + 2,
-        textColor=BLUE,
-    )
-    hdr_right = ParagraphStyle(
-        "tr_hdr_right",
-        fontName="Helvetica-Bold",
-        fontSize=FONT_SIZE,
-        leading=FONT_SIZE + 2,
-        textColor=BLUE,
-        alignment=TA_RIGHT,
-    )
-    bold_right = ParagraphStyle(
-        "tr_bold_right",
-        fontName="Helvetica-Bold",
-        fontSize=FONT_SIZE,
-        leading=FONT_SIZE + 2,
-        alignment=TA_RIGHT,
-    )
-    from_style = ParagraphStyle(
-        "tr_from", fontName="Helvetica", fontSize=8, leading=10, alignment=TA_LEFT
-    )
-    to_style = ParagraphStyle(
-        "tr_to", fontName="Helvetica", fontSize=8, leading=10, alignment=TA_CENTER
-    )
+    def esc(text) -> str:
+        return _html.escape(str(text)) if text not in (None, "") else ""
 
-    def W(text: str) -> Paragraph:
-        return Paragraph(_html.escape(str(text)) if text else "", wrap_style)
+    wrap_style = ParagraphStyle("tr_wrap", fontName=SERIF, fontSize=FONT_SIZE,
+                                leading=FONT_SIZE + 2)
+    cat_style = ParagraphStyle("tr_cat", fontName=SERIF, fontSize=FONT_SIZE,
+                               leading=FONT_SIZE + 2, alignment=TA_LEFT)
+    band_style = ParagraphStyle("tr_band", fontName=SERIF_BOLD, fontSize=FONT_SIZE,
+                                leading=FONT_SIZE + 2)
+    band_right = ParagraphStyle("tr_band_r", fontName=SERIF_BOLD, fontSize=FONT_SIZE,
+                                leading=FONT_SIZE + 2, alignment=TA_RIGHT)
+    money_style = ParagraphStyle("tr_money", fontName=SERIF, fontSize=FONT_SIZE,
+                                 leading=FONT_SIZE + 2, alignment=TA_RIGHT)
+    dollar_style = ParagraphStyle("tr_dollar", fontName=SERIF, fontSize=FONT_SIZE,
+                                  leading=FONT_SIZE + 2)
+    bold_right = ParagraphStyle("tr_bold_r", fontName=SERIF_BOLD, fontSize=FONT_SIZE,
+                                leading=FONT_SIZE + 2, alignment=TA_RIGHT)
+    bold_dollar = ParagraphStyle("tr_bold_d", fontName=SERIF_BOLD, fontSize=FONT_SIZE,
+                                 leading=FONT_SIZE + 2)
+    date_style = ParagraphStyle("tr_date", fontName=SERIF, fontSize=10, leading=13,
+                                alignment=TA_CENTER)
+    from_style = ParagraphStyle("tr_from", fontName=SERIF, fontSize=9, leading=11.5,
+                                alignment=TA_LEFT)
 
     date_str = header.get("date") or ""
     to_name = header.get("to_name") or ""
-    from_lines: list[str] = list(header.get("from_lines") or [])
-    to_lines: list[str] = list(header.get("to_lines") or [])
+    from_lines = list(header.get("from_lines") or [])
+    to_lines = list(header.get("to_lines") or [])
 
-    from_body = "<br/>".join(_html.escape(line) for line in from_lines if line)
-    to_parts = [_html.escape("To:")]
-    if to_name:
-        to_parts.append(f"<b>{_html.escape(to_name)}</b>")
-    to_parts.extend(_html.escape(line) for line in to_lines if line)
+    page_w = landscape(letter)[0]
+    margin = 0.5 * inch
+    usable_w = page_w - 2 * margin
+
+    # ---- header: Date over From/To, logo top-right (no page title) ---------
+    from_body = "<br/>".join(esc(ln) for ln in from_lines if ln)
+    to_parts = [f"To:&nbsp;&nbsp;{esc(to_name)}"] if to_name else ["To:"]
+    to_parts.extend(esc(ln) for ln in to_lines if ln)
     to_body = "<br/>".join(to_parts)
 
-    page_size = landscape(letter)
-    margin = 0.75 * inch
-    usable_w = page_size[0] - 2 * margin
+    left_w = usable_w * 0.80
+    logo = logo_flowable(usable_w * 0.18, 1.0 * inch)
+    from_to = Table(
+        [[Paragraph(from_body, from_style), Paragraph(to_body, from_style)]],
+        colWidths=[left_w * 0.45, left_w * 0.55],
+    )
+    from_to.setStyle(TableStyle([
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 0),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+    ]))
+    left_stack = Table(
+        [[Paragraph(f"Date:&nbsp;&nbsp;&nbsp;{esc(date_str)}", date_style)], [from_to]],
+        colWidths=[left_w],
+    )
+    left_stack.setStyle(TableStyle([
+        ("LEFTPADDING", (0, 0), (-1, -1), 0),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+        ("BOTTOMPADDING", (0, 0), (0, 0), 8),
+    ]))
+    header_table = Table([[left_stack, logo or ""]], colWidths=[left_w, usable_w - left_w])
+    header_table.setStyle(TableStyle([
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("ALIGN", (1, 0), (1, 0), "RIGHT"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 0),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+    ]))
 
+    # ---- matrix: each money group is two physical columns ($, value) -------
     n_draws = len(draws)
-    cat_w = 0.7 * inch  # fits the "Category" header on one line at 7pt
-    desc_w = 1.35 * inch
-    money_cols = n_draws + 1  # draws + Total; always >= 1
-    money_w = max(0.45 * inch, (usable_w - cat_w - desc_w) / money_cols)
-    col_widths = [cat_w, desc_w] + [money_w] * money_cols
+    groups = n_draws + 1  # draws + Total
+    cat_w = 0.55 * inch
+    desc_w = 1.5 * inch
+    group_w = max(0.62 * inch, (usable_w - cat_w - desc_w) / groups)
+    dollar_w = 0.14 * inch
+    value_w = group_w - dollar_w
+    col_widths = [cat_w, desc_w] + [dollar_w, value_w] * groups
 
-    buf = io.BytesIO()
-    doc = SimpleDocTemplate(
-        buf,
-        pagesize=page_size,
-        leftMargin=margin,
-        rightMargin=margin,
-        topMargin=0.5 * inch,
-        bottomMargin=0.5 * inch,
-    )
+    def money_cells(value, *, bold=False, dash_when_none=True):
+        dsty = bold_dollar if bold else dollar_style
+        vsty = bold_right if bold else money_style
+        text = money_number(value) if (value is not None or dash_when_none) else ""
+        return [Paragraph("$", dsty), Paragraph(text, vsty)]
 
-    story: list = [
-        Paragraph(
-            f"Date: {_html.escape(date_str)}",
-            ParagraphStyle(
-                "tr_date",
-                fontName="Helvetica",
-                fontSize=8,
-                textColor=BLUE,
-                alignment=TA_CENTER,
-                spaceAfter=8,
-            ),
-        ),
-    ]
-
-    header_table = Table(
-        [[Paragraph(from_body, from_style) if from_body else "", Paragraph(to_body, to_style) if to_body else ""]],
-        colWidths=[usable_w / 2, usable_w / 2],
-    )
-    header_table.setStyle(
-        TableStyle([
-            ("VALIGN", (0, 0), (-1, -1), "TOP"),
-            ("LEFTPADDING", (0, 0), (-1, -1), 0),
-            ("RIGHTPADDING", (0, 0), (-1, -1), 0),
-        ])
-    )
-    story.append(header_table)
-    story.append(
-        Paragraph(
-            "Trend",
-            ParagraphStyle(
-                "tr_title",
-                fontName="Helvetica",
-                fontSize=9,
-                textColor=BLUE,
-                alignment=TA_CENTER,
-                spaceBefore=4,
-                spaceAfter=10,
-            ),
-        )
-    )
-
-    header_row: list = [
-        Paragraph("Category", wrap_hdr),
-        Paragraph("Description", wrap_hdr),
-    ]
+    # header band
+    band_row: list = [Paragraph("Category", band_style), Paragraph("Description", band_style)]
     for draw in draws:
-        header_row.append(Paragraph(_html.escape(str(draw.get("label") or "")), hdr_right))
-    header_row.append(Paragraph("Total", hdr_right))
+        band_row += [Paragraph(esc(draw.get("label") or ""), band_right), ""]
+    band_row += [Paragraph("Total", band_right), ""]
+    table_data: list[list] = [band_row]
 
-    table_data: list[list] = [header_row]
     cost_codes = _union_cost_codes(draws)
-
     for number, name in cost_codes:
-        row: list = [number, W(name)]
+        row: list = [Paragraph(esc(format_cc_number(number, 3)), cat_style),
+                     Paragraph(esc(name), wrap_style)]
         row_sum = Decimal("0")
         for draw in draws:
             amt = _category_amount_for_draw(draw, number)
-            if amt is None:
-                row.append("")
-            else:
-                row.append(_format_money(amt))
+            row += money_cells(amt)
+            if amt is not None:
                 row_sum += amt
-        row.append(_format_money(row_sum))
+        row += money_cells(row_sum)
         table_data.append(row)
 
-    table_data.append([""] * len(header_row))
-    spacer_idx = len(table_data) - 1
+    def totals_row(label, per_draw_value, grand, *, bold):
+        lstyle = bold_right if bold else wrap_style
+        row = ["", Paragraph(label, lstyle)]
+        for draw in draws:
+            row += money_cells(per_draw_value(draw), bold=bold)
+        row += money_cells(grand, bold=bold)
+        return row
 
     grand_subtotal = sum((_as_decimal(d.get("subtotal", 0)) for d in draws), Decimal("0"))
-    subtotal_row: list = ["", Paragraph("Subtotal", bold_right)]
-    for draw in draws:
-        subtotal_row.append(Paragraph(_format_money(_as_decimal(draw.get("subtotal", 0))), bold_right))
-    subtotal_row.append(Paragraph(_format_money(grand_subtotal), bold_right))
-    table_data.append(subtotal_row)
+    table_data.append(totals_row("Subtotal", lambda d: _as_decimal(d.get("subtotal", 0)),
+                                 grand_subtotal, bold=True))
     subtotal_idx = len(table_data) - 1
 
     grand_fee = sum((_as_decimal(d.get("builders_fee", 0)) for d in draws), Decimal("0"))
-    fee_row: list = [FEE_ITEM_NUMBER, W("Builder's Fee")]
+    fee_row = [Paragraph(format_cc_number(FEE_ITEM_NUMBER, 3), cat_style),
+               Paragraph("Builder's Fee", wrap_style)]
     for draw in draws:
-        fee_row.append(_format_money(_as_decimal(draw.get("builders_fee", 0))))
-    fee_row.append(_format_money(grand_fee))
+        fee_row += money_cells(_as_decimal(draw.get("builders_fee", 0)))
+    fee_row += money_cells(grand_fee)
     table_data.append(fee_row)
 
     grand_total = sum((_as_decimal(d.get("total", 0)) for d in draws), Decimal("0"))
-    total_row: list = ["", Paragraph("Total Due", bold_right)]
-    for draw in draws:
-        total_row.append(Paragraph(_format_money(_as_decimal(draw.get("total", 0))), bold_right))
-    total_row.append(Paragraph(_format_money(grand_total), bold_right))
-    table_data.append(total_row)
+    table_data.append(totals_row("Total Due", lambda d: _as_decimal(d.get("total", 0)),
+                                 grand_total, bold=True))
     total_idx = len(table_data) - 1
 
-    n_rows = len(table_data)
-    first_money_col = 2
-    last_col = 2 + n_draws
-
     style_cmds = [
-        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-        ("FONTSIZE", (0, 0), (-1, 0), FONT_SIZE),
-        ("TEXTCOLOR", (0, 0), (-1, 0), BLUE),
-        ("TOPPADDING", (0, 0), (-1, 0), 3),
-        ("BOTTOMPADDING", (0, 0), (-1, 0), 4),
-        ("LINEBELOW", (0, 0), (-1, 0), 0.75, BLUE),
-        ("FONTNAME", (0, 1), (-1, n_rows - 1), "Helvetica"),
-        ("FONTSIZE", (0, 1), (-1, n_rows - 1), FONT_SIZE),
-        ("TOPPADDING", (0, 1), (-1, n_rows - 1), 2),
-        ("BOTTOMPADDING", (0, 1), (-1, n_rows - 1), 2),
-        ("LINEBELOW", (0, 1), (-1, n_rows - 1), 0.25, colors.HexColor("#CCCCCC")),
-        ("ALIGN", (first_money_col, 0), (last_col, -1), "RIGHT"),
+        ("BACKGROUND", (0, 0), (-1, 0), BAND),
+        ("TOPPADDING", (0, 0), (-1, 0), 5),
+        ("BOTTOMPADDING", (0, 0), (-1, 0), 5),
+        ("TOPPADDING", (0, 1), (-1, -1), 3),
+        ("BOTTOMPADDING", (0, 1), (-1, -1), 3),
         ("LEFTPADDING", (0, 0), (-1, -1), 3),
         ("RIGHTPADDING", (0, 0), (-1, -1), 3),
-        ("VALIGN", (0, 0), (-1, -1), "TOP"),
-        ("FONTNAME", (0, total_idx), (-1, total_idx), "Helvetica-Bold"),
-        ("LINEABOVE", (0, total_idx), (-1, total_idx), 0.75, colors.black),
-        ("TOPPADDING", (0, total_idx), (-1, total_idx), 4),
-        ("BOTTOMPADDING", (0, total_idx), (-1, total_idx), 3),
-        ("FONTNAME", (0, subtotal_idx), (-1, subtotal_idx), "Helvetica-Bold"),
-        ("LINEABOVE", (0, subtotal_idx), (-1, subtotal_idx), 0.5, colors.HexColor("#888888")),
-        ("TOPPADDING", (0, subtotal_idx), (-1, subtotal_idx), 3),
-        ("TOPPADDING", (0, spacer_idx), (-1, spacer_idx), 2),
-        ("BOTTOMPADDING", (0, spacer_idx), (-1, spacer_idx), 2),
-        ("LINEBELOW", (0, spacer_idx), (-1, spacer_idx), 0, colors.white),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
     ]
+    # each money group: SPAN its band label across ($, value); hug $ to value
+    for g in range(groups):
+        dcol = 2 + 2 * g
+        vcol = dcol + 1
+        style_cmds.append(("SPAN", (dcol, 0), (vcol, 0)))
+        style_cmds.append(("RIGHTPADDING", (dcol, 0), (dcol, -1), 0))
+        style_cmds.append(("LEFTPADDING", (vcol, 0), (vcol, -1), 0))
+        # rule above the money cells on the Subtotal + Total Due rows
+        style_cmds.append(("LINEABOVE", (dcol, subtotal_idx), (vcol, subtotal_idx), 0.6, BLACK))
+        style_cmds.append(("LINEABOVE", (dcol, total_idx), (vcol, total_idx), 0.6, BLACK))
 
     table = Table(table_data, colWidths=col_widths, repeatRows=1)
     table.setStyle(TableStyle(style_cmds))
-    story.append(table)
-    story.append(Spacer(1, 0.2 * inch))
 
-    doc.build(story)
+    buf = io.BytesIO()
+    doc = SimpleDocTemplate(
+        buf, pagesize=landscape(letter),
+        leftMargin=margin, rightMargin=margin,
+        topMargin=0.5 * inch, bottomMargin=0.5 * inch,
+    )
+    doc.build([header_table, Spacer(1, 0.2 * inch), table])
     return buf.getvalue()

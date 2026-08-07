@@ -334,6 +334,15 @@ Box (`integrations/box/`, live 2026-06-16) mirrors the two MS write pipelines pe
 
 Mappings are per-project: `[box].[ProjectWorkbook]` (one workbook per project; `BoxFileId` + `WorksheetName`, default `DETAILS`) and `[box].[ProjectFolder]` (one folder per `(ProjectId, DocClass)`; DocClass ∈ `'invoices'` | `'draw_requests'`; a Box folder may be SHARED across sub-unit projects, so `BoxFolderId` is deliberately not unique). **Forward-only**: only new completions push; never back-fill old entities into Box (no dedup against hand-filed docs).
 
+### 8. The MS DETAILS-row insert is NOT drain-idempotent — a failed workbook read blind-inserts DUPLICATES
+
+The MS drain handler `_handle_insert_excel_row` does a **blind `insert_excel_rows` at a pre-computed `row_index` — zero dedup at drain**. The ONLY dedup is *earlier*, when the writer (`{Bill,Invoice}Service.sync_to_excel_workbook`, per CRITICAL #3) reads the workbook's col-Z line-item public_ids to decide skip-vs-insert and compute the row. If that read is unreliable — run where the Excel `createSession` fails (symptom: *"createSession succeeded but returned no session ID"*, the signature of a gate-off / non-prod box) — the writer never sees the existing keys and enqueues a **duplicate DETAILS row**. **Box is immune** (its `apply_rows_to_details` re-reads col-Z *at drain* and skips-present — CRITICAL #7); only the MS/SharePoint side carries this exposure, because its dedup lives at write-time, not drain-time.
+
+- **Rule:** run DETAILS-row inserts ONLY where the Graph workbook session works (**prod**). Never from a gate-off / local env — the `createSession` read silently no-ops the dedup and every insert becomes a blind append.
+- **Detect:** download the workbook → `_sanitize_workbook_bytes` (strips the `#N/A` print-title defined names openpyxl rejects) → read col-Z (column 26) of the DETAILS tab → flag any line-item public_id appearing >1×.
+- **Remediate:** surgically delete the extra row(s) per duplicated key, on prod (reliable Graph). **Do NOT "just replace the SharePoint workbook with the Box copy"** — the two trackers have diverged (Box is openpyxl-sanitized and can LEAD on the Draw/G702/G703 tabs; each side can hold DETAILS rows the other lacks), so a wholesale swap risks dropping SP-unique rows and downgrading formulas.
+- **Incident 2026-08-06:** a bill-completion doc-backfill run from a gate-off local env (createSession failing) blind-inserted **27 duplicate DETAILS rows across 8 project trackers** — HP2 8, OHR2 6, MR2-MAIN 4, HP 3, HA 2, OHR2-GUEST 2, SHT 1, WVA 1 (five more projects clean). Enumerated read-only via the detect recipe above; remediated surgically. Root cause: MS insert is not drain-idempotent AND the local createSession couldn't read col-Z to dedup.
+
 ---
 
 ## Step 1 — Resolve project + QBO mapping + duplicate screen + Box mappings

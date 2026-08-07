@@ -11,6 +11,9 @@ from typing import Any, List, Optional
 # Local Imports
 from shared.access import assert_can_access_bill
 from shared.authz import current_user_id, current_is_system_admin
+# errors.py is a stdlib-only leaf — safe at module top despite this file's
+# lazy-import convention for circular service deps.
+from integrations.intuit.qbo.base.errors import QboBudgetExceededError
 from entities.attachment.business.service import AttachmentService
 from entities.bill.api.schemas import BillUpdate
 from entities.bill.business.model import Bill
@@ -1868,6 +1871,9 @@ class BillService:
                     logger.info(
                         f"Bill {bill.public_id} synced {attachments_synced} attachments to QBO"
                     )
+            except QboBudgetExceededError:
+                # U-211: see _sync_attachments_to_qbo — park, don't drop.
+                raise
             except Exception:
                 logger.exception(
                     f"Attachment sync failed for Bill {bill.public_id} — "
@@ -1925,6 +1931,14 @@ class BillService:
                 )
                 synced_attachment_ids.add(attachment_link.attachment_id)
                 attachments_synced += 1
+            except QboBudgetExceededError:
+                # U-211: a tripped monthly API budget is environmental, not an
+                # attachment failure — best-effort isolation must not swallow
+                # it, or the outbox row marks done with attachments silently
+                # dropped. Propagate so the worker parks the row until the cap
+                # resets (re-drain is idempotent: header updates, already-
+                # mapped attachments skip).
+                raise
             except Exception as e:
                 error_msg = f"Attachment {attachment.id} sync failed: {str(e)}"
                 logger.error(f"Failed to sync attachment {attachment.id} to QBO for Bill {bill_id}: {e}")

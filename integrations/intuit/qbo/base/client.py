@@ -24,6 +24,7 @@ from integrations.intuit.qbo.base.errors import (
     QboValidationError,
     QboWriteRefusedError,
 )
+from integrations.intuit.qbo.base.budget import QboApiBudget, get_qbo_api_budget
 from integrations.intuit.qbo.base.idempotency import resolve_idempotency_key
 from integrations.intuit.qbo.base.retry import RetryPolicy, execute_with_retry
 
@@ -98,8 +99,10 @@ class QboHttpClient:
         minor_version: Optional[Union[int, str]] = None,
         auth_service: Optional[Any] = None,
         http_client: Optional[httpx.Client] = None,
+        api_budget: Optional[QboApiBudget] = None,
     ):
         self.realm_id = realm_id
+        self._api_budget = api_budget or get_qbo_api_budget()
         self.base_url = (base_url or DEFAULT_PROD_BASE_URL).rstrip("/")
         self.minor_version = str(minor_version) if minor_version is not None else None
 
@@ -449,6 +452,12 @@ class QboHttpClient:
         json_body: Optional[Any],
     ) -> httpx.Response:
         """Pure HTTP send with auth header injection. Isolated so the 401-retry can reuse it."""
+        # U-211 meter + breaker: every real HTTP round-trip to the QBO API —
+        # including the 401-retry resend and each retry-loop attempt — passes
+        # through here. Increments first, then refuses (QboBudgetExceededError)
+        # over the block threshold — the monthly CorePlus cap is a hard block
+        # at Intuit's side; refusing locally preserves the remaining headroom.
+        self._api_budget.record_call_or_raise(self.realm_id, method=method, path=url)
         headers = {
             "Accept": "application/json",
             "Content-Type": "application/json",

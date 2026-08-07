@@ -170,6 +170,34 @@ class QboWriteRefusedError(QboClientError):
     """
 
 
+class QboBudgetExceededError(QboClientError):
+    """
+    Raised by the shared client's per-call budget breaker (U-211) when the
+    month-to-date QBO API call count has crossed the block threshold
+    (default 95% of the Intuit CorePlus monthly hard cap).
+
+    Like QboWriteRefusedError, this is a local refusal — the request never
+    leaves the process. `is_retryable=False` so the in-process retry loop
+    does not spin against a monthly ceiling; the outbox worker special-cases
+    this error to park rows until the cap resets on the 1st (it must never
+    dead-letter them).
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        month_key: Optional[str] = None,
+        call_count: Optional[int] = None,
+        budget: Optional[int] = None,
+        **kwargs,
+    ):
+        super().__init__(message, **kwargs)
+        self.month_key = month_key
+        self.call_count = call_count
+        self.budget = budget
+
+
 # ---------------------------------------------------------------------------
 # Catch-all.
 # ---------------------------------------------------------------------------

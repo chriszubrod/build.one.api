@@ -12,6 +12,7 @@ from integrations.intuit.qbo.attachable.external.schemas import (
     QboAttachableQueryResponse,
     QboAttachableResponse,
 )
+from integrations.intuit.qbo.base.budget import QboApiBudget, get_qbo_api_budget
 from integrations.intuit.qbo.base.errors import (
     QboError,
     QboAuthError,
@@ -38,10 +39,12 @@ class QboAttachableClient:
         minor_version: Optional[int] = 65,
         timeout: float = 30.0,
         session: Optional[httpx.Client] = None,
+        api_budget: Optional["QboApiBudget"] = None,
     ):
         self.access_token = access_token
         self.realm_id = realm_id
         self.minor_version = minor_version
+        self._api_budget = api_budget or get_qbo_api_budget()
         self._owns_client = session is None
         self._client = session or httpx.Client(base_url=base_url.rstrip("/"), timeout=timeout)
         self._client.headers.update(
@@ -70,10 +73,21 @@ class QboAttachableClient:
             return f"{base_path}{path}?minorversion={self.minor_version}"
         return f"{base_path}{path}"
 
+    def _meter_call(self, method: str, path: str) -> None:
+        """
+        U-211 meter + breaker. This client does not route through the shared
+        QboHttpClient (a known gap booked in TODO), so it meters its own
+        calls to the QBO API host. `download_attachable` is deliberately NOT
+        metered: it GETs a pre-signed TempDownloadUri on a different host,
+        which does not count against the Intuit CorePlus cap.
+        """
+        self._api_budget.record_call_or_raise(self.realm_id, method=method, path=path)
+
     def _request(self, method: str, path: str, **kwargs) -> Dict[str, Any]:
         """Make HTTP request and handle errors."""
         url = self._build_url(path)
         logger.debug(f"QBO Attachable API request: {method} {url}")
+        self._meter_call(method, url)
 
         try:
             response = self._client.request(method, url, **kwargs)
@@ -150,6 +164,7 @@ class QboAttachableClient:
             query_url = f"{query_url}?minorversion={self.minor_version}"
 
         logger.debug(f"Querying Attachables with query: {query_string}")
+        self._meter_call("GET", query_url)
 
         try:
             response = self._client.request("GET", query_url, params={"query": query_string})
@@ -236,6 +251,7 @@ class QboAttachableClient:
             query_url = f"{query_url}?minorversion={self.minor_version}"
 
         logger.debug(f"Querying Attachables for {entity_type} {entity_id}")
+        self._meter_call("GET", query_url)
 
         try:
             response = self._client.request("GET", query_url, params={"query": query_string})
@@ -359,6 +375,8 @@ class QboAttachableClient:
                 ),
             }
             
+            self._meter_call("POST", upload_url)
+
             # Create a new client for multipart upload (different headers)
             with httpx.Client(
                 base_url=self._client.base_url,

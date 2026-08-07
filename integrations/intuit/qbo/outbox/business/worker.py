@@ -9,7 +9,12 @@ from integrations.intuit.qbo.base.correlation import (
     idempotency_key_context,
     set_correlation_id,
 )
-from integrations.intuit.qbo.base.errors import QboError, QboSyncTokenMismatchError
+from integrations.intuit.qbo.base.budget import QboApiBudget, get_qbo_api_budget, reset_at_for_month
+from integrations.intuit.qbo.base.errors import (
+    QboBudgetExceededError,
+    QboError,
+    QboSyncTokenMismatchError,
+)
 from integrations.intuit.qbo.base.locking import qbo_app_lock
 from integrations.intuit.qbo.base.retry import RetryPolicy, compute_backoff_seconds
 from integrations.intuit.qbo.outbox.business.model import QboOutbox
@@ -55,8 +60,13 @@ class QboOutboxWorker:
     goes to dead_letter for human triage.
     """
 
-    def __init__(self, repo: Optional[QboOutboxRepository] = None):
+    def __init__(
+        self,
+        repo: Optional[QboOutboxRepository] = None,
+        api_budget: Optional[QboApiBudget] = None,
+    ):
         self.repo = repo or QboOutboxRepository()
+        self._api_budget = api_budget or get_qbo_api_budget()
         # Kind → handler. Handlers take a QboOutbox row and perform the
         # actual QBO write. Each handler runs inside an idempotency_key
         # context so all POST/PUTs it issues carry the row's RequestId.
@@ -79,6 +89,22 @@ class QboOutboxWorker:
         processed (successfully or not), False if nothing was ready or the
         drain lock couldn't be acquired.
         """
+        # U-211: don't claim rows while the monthly API budget breaker is
+        # tripped — rows stay pending (no attempt burned, nothing to recover)
+        # and drain resumes automatically after the cap resets on the 1st.
+        budget = self._api_budget.status()
+        if budget.blocked:
+            logger.warning(
+                "qbo.outbox.drain.skipped_budget_blocked",
+                extra={
+                    "event_name": "qbo.outbox.drain.skipped_budget_blocked",
+                    "month_key": budget.month_key,
+                    "call_count": budget.call_count,
+                    "block_threshold": budget.block_threshold,
+                },
+            )
+            return False
+
         with qbo_app_lock(DRAIN_LOCK_NAME, timeout_ms=DRAIN_LOCK_TIMEOUT_MS) as got_lock:
             if not got_lock:
                 logger.debug("qbo.outbox.drain.skipped_lock_busy")
@@ -219,6 +245,35 @@ class QboOutboxWorker:
         """Decide whether to retry or dead-letter based on the error class."""
         attempts_so_far = (row.attempts or 0) + 1
         next_attempt = attempts_so_far + 1
+
+        # U-211: a tripped monthly budget breaker is neither the row's fault
+        # nor retryable-with-backoff in-month — park the row until the cap
+        # resets on the 1st (UTC). Never dead-letter on budget: the row is
+        # perfectly healthy; only the calendar is against it. Checked before
+        # the is_retryable branch because the error is is_retryable=False
+        # (so the in-process retry loop won't spin), yet dead-letter would
+        # be wrong.
+        if isinstance(error, QboBudgetExceededError):
+            reset_at = reset_at_for_month(error.month_key)
+            logger.warning(
+                "qbo.outbox.row.parked_budget_blocked",
+                extra={
+                    "event_name": "qbo.outbox.row.parked_budget_blocked",
+                    "correlation_id": row.correlation_id,
+                    "outbox_public_id": row.public_id,
+                    "month_key": error.month_key,
+                    "call_count": error.call_count,
+                    "budget": error.budget,
+                    "next_retry_at": reset_at.isoformat(),
+                },
+            )
+            self.repo.mark_failed(
+                id=row.id,
+                row_version=row.row_version,
+                next_retry_at=reset_at,
+                last_error=f"Parked: monthly QBO API budget exhausted ({error})",
+            )
+            return
 
         if not error.is_retryable:
             logger.warning(

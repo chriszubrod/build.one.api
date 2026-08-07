@@ -14,7 +14,18 @@ from typing import Optional
 # NOT byte-identical: the Box outbox additionally appends a deterministic
 # `-{8hex}` identity suffix (its 409-recovery idempotency key) and collapses
 # whitespace runs — a Box name equals its SP counterpart plus that suffix.
-_FILENAME_SANITIZE_RE = re.compile(r'[<>:"/\\|?*]')
+#
+# Control characters (\x00-\x1f, \x7f) are in the class because a line
+# description can carry embedded newlines — a worker's multi-line note reaches
+# BillLineItem.Description verbatim from QBO. An interior \n survives .strip()
+# and the length clip, lands in the filename, and then in the Graph URL path,
+# where httpx raises InvalidURL("non-printable ASCII character in URL"). That
+# exception escapes the per-file loop, so ONE bad description aborted the whole
+# SharePoint batch (TB3-20, 2026-08-07: synced_count=0 on 133 files). Sibling
+# of the KI-45 length cap — that fixed name LENGTH, this fixes name LEGALITY.
+# Replaced with "_" rather than " " deliberately: Box collapses whitespace
+# runs, so a space would desync the SP and Box names; "_" survives both.
+_FILENAME_SANITIZE_RE = re.compile(r'[<>:"/\\|?*\x00-\x1f\x7f]')
 
 # SharePoint rejects uploads whose DECODED URL path exceeds 400 characters
 # (site + library + per-invoice subfolder prefix runs ~110+). Contract-labor

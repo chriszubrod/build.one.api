@@ -371,7 +371,7 @@ class ContractLaborService:
         """Apply a PM/Owner's emailed review decision to the WHOLE crew on
         a (project, work_date).
 
-        CONSOLIDATION (U-XXX): the review notification is one consolidated
+        CONSOLIDATION (U-210): the review notification is one consolidated
         draft per (project, date) listing every laborer, so a single reply
         codes the entire crew. Resolves all reviewable ContractLabor with a
         line item on `project_public_id` at `work_date` and applies the
@@ -410,6 +410,7 @@ class ContractLaborService:
         applied: list[dict] = []
         failures: list[str] = []
         review_status_name: Optional[str] = None
+        ready_flipped_count = 0
         for member in crew:
             cl_public_id = member.get("contract_labor_public_id")
             try:
@@ -425,6 +426,8 @@ class ContractLaborService:
                 )
                 applied.append(result)
                 review_status_name = result.get('review_status') or review_status_name
+                if result.get('ready_flipped'):
+                    ready_flipped_count += 1
             except Exception as member_error:
                 failures.append(
                     f"{cl_public_id} ({member.get('employee_name')}): "
@@ -453,6 +456,7 @@ class ContractLaborService:
             'work_date': work_date,
             'crew_size': len(crew),
             'applied_count': len(applied),
+            'ready_flipped_count': ready_flipped_count,
             'applied': applied,
             'failures': failures,
         }
@@ -472,7 +476,7 @@ class ContractLaborService:
         """Apply an already-parsed reviewer decision to ONE ContractLabor.
 
         The per-CL primitive behind the crew-wide `apply_reviewer_decision`
-        (U-XXX consolidation): the public wrapper resolves the crew for a
+        (U-210 consolidation): the public wrapper resolves the crew for a
         (project, work_date) and loops this for each member. Kept as the
         single source of the per-CL semantics (status guard, authz, SCC
         apply, insert-only Review audit, status mirror, partial-failure
@@ -497,9 +501,12 @@ class ContractLaborService:
              with the target ReviewStatus + raw_reply_text as comments +
              email_message_id link.
 
-        CL.Status stays at 'pending_review' either way (per design Q3):
-        the PM-supplied SCC + description is applied, AP still has to
-        enter rate/markup before mark_as_ready.
+        On approval: may flip CL.Status to 'ready' via
+        mark_as_ready_via_review_approval (only when every project-
+        anchored line has a SubCostCodeId; overhead lines with NULL
+        project_id are exempt). Multi-project workers stay reviewable
+        until each project's PM codes their lines. Rejection leaves
+        status unchanged.
 
         decision ∈ {'approved', 'rejected'} — same vocab as Bill's.
 
@@ -719,17 +726,22 @@ class ContractLaborService:
 
         # ── Auto-mirror Review → ContractLabor.status ──────────────
         # When the new Review row lands at an approved final state
-        # (IsFinal=true, IsDeclined=false), flip CL.Status pending_review
-        # → ready so Generate Bills picks it up. Mirrors
-        # ReviewService.create() lines 95-111 (the canonical hook fired
-        # by the React /advance/review path); replicated here because
+        # (IsFinal=true, IsDeclined=false), flip CL.Status → ready via
+        # mark_as_ready_via_review_approval (the shared choke point that
+        # enforces the fully-coded invariant for all callers). Mirrors
+        # ReviewService.create() lines 95-111; replicated here because
         # we go through ReviewRepository.create directly (Bill mirror
         # pattern for created_by_user_id=reviewer attribution).
         # Failure-isolated: log + continue; the Review row is the
         # authoritative audit and stands on its own.
+        ready_flipped = False
         if new_review.status_is_final and not new_review.status_is_declined:
             try:
-                self.mark_as_ready_via_review_approval(contract_labor_id=cl.id)
+                updated_cl = self.mark_as_ready_via_review_approval(
+                    contract_labor_id=cl.id,
+                )
+                if updated_cl is not None and updated_cl.status == "ready":
+                    ready_flipped = True
             except Exception:
                 logger.exception(
                     "Failed to mirror ContractLabor.status after Review approval "
@@ -748,6 +760,7 @@ class ContractLaborService:
             'project_public_id': project_public_id,
             'project_id': project.id,
             'contract_labor_id': cl.id,
+            'ready_flipped': ready_flipped,
         }
 
     def find_for_reviewer_reply(
@@ -817,17 +830,46 @@ class ContractLaborService:
     def mark_as_ready_via_review_approval(self, *, contract_labor_id: int) -> Optional[ContractLabor]:
         """
         Flip status to 'ready' after Review reaches an approved (IsFinal=1,
-        IsDeclined=0) state. Bypasses the legacy mark_as_ready validation —
-        in the Review workflow, the reviewer's approval IS the validation.
-        Parent-row fields like sub_cost_code_id/hourly_rate are no longer
-        populated (line items carry those now). Looks up by internal id
-        since the caller is ReviewService which has the FK at hand.
+        IsDeclined=0) state. Enforced for ALL callers (ReviewService.create,
+        apply_reviewer_decision, etc.).
+
+        Fully-coded invariant: every line item with a non-NULL project_id
+        must have a non-NULL sub_cost_code_id before the flip (overhead
+        lines with project_id NULL are exempt). If any project-anchored
+        line is still uncoded, returns the existing record unchanged.
+
+        Bypasses the legacy mark_as_ready validation — in the Review
+        workflow, the reviewer's approval IS the validation. Parent-row
+        fields like sub_cost_code_id/hourly_rate are no longer populated
+        (line items carry those now). Looks up by internal id since callers
+        typically have the FK at hand.
         """
+        from entities.contract_labor.persistence.line_item_repo import (
+            ContractLaborLineItemRepository,
+        )
+
         existing = self.repo.read_by_id(contract_labor_id)
         if not existing:
             return None
         if existing.status == "ready" or existing.status == "billed":
             return existing  # idempotent; no-op if already advanced
+
+        all_lines = ContractLaborLineItemRepository().read_by_contract_labor_id(
+            contract_labor_id=contract_labor_id,
+        )
+        uncoded_count = sum(
+            1 for li in all_lines
+            if li.project_id is not None and li.sub_cost_code_id is None
+        )
+        if uncoded_count:
+            logger.info(
+                "mark_as_ready_via_review_approval defer_ready "
+                "contract_labor_id=%s uncoded_project_line_count=%d",
+                contract_labor_id,
+                uncoded_count,
+            )
+            return existing
+
         existing.status = "ready"
         return self.repo.update_by_id(existing)
 

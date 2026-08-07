@@ -483,7 +483,7 @@ class ContractLaborRepository:
     ) -> Optional[dict]:
         """Find the (Project, WorkDate) a PM/Owner reply is reviewing.
 
-        CONSOLIDATION (U-XXX): notifications are per-(project, date) crew
+        CONSOLIDATION (U-210): notifications are per-(project, date) crew
         drafts, so a reply resolves to that pair — NOT a single CL.
         apply_reviewer_decision re-derives the full reviewable crew from
         these keys via read_reviewable_crew_by_project_and_date.

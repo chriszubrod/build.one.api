@@ -1,7 +1,7 @@
 """
 Consolidated per-(project, date) crew draft email for ContractLabor reviews.
 
-CONSOLIDATION (U-XXX, 2026-08-05): the review-notification is now ONE
+CONSOLIDATION (U-210, 2026-08-05): the review-notification is now ONE
 draft per (project, work_date) that COMBINES every laborer on that
 project+date — not one draft per (worker, project). It also gates on the
 whole date: a draft only releases once EVERY ContractLabor for the
@@ -121,7 +121,7 @@ class ContractLaborReviewNotificationService:
             project_label = self._format_project_label(meta, project_id)
             subject = f"Contract Labor - {project_label} - {work_date_str}"
 
-            # ── CLAIM (dedup + straggler-manual + race guard) ────────
+            # ── CLAIM (dedup + straggler-manual + race guard) ────
             # Atomically insert the (project, date) token; only the
             # inserter enqueues the draft. If the token already exists
             # (this project+date released in a prior cycle), skip — a
@@ -141,22 +141,26 @@ class ContractLaborReviewNotificationService:
                 )
                 continue
 
-            recipients_by_project = self._fetch_recipients(representative_cl_id)
-            bucket = recipients_by_project.get(project_id, {"pms": [], "owners": []})
-            pms = bucket.get("pms", [])
-            owners = bucket.get("owners", [])
-
-            to_addresses = self._build_recipient_addresses(pms)
-            cc_addresses = self._build_recipient_addresses(owners)
-            body = self._build_body(
-                project_label=project_label,
-                work_date=work_date_str,
-                lines=lines,
-                pms=pms,
-            )
-
+            # Claim is held from here down. Any exit without an outbox row releases it so a later
+            # trigger can retry. One project's failure must never abort the remaining projects.
+            # NOTE: _claim_notification is self-guarded and cannot raise; if that ever changes, move
+            # it back inside the try or per-project isolation degrades to whole-run.
             try:
-                outbox.enqueue_send_mail(
+                recipients_by_project = self._fetch_recipients(representative_cl_id)
+                bucket = recipients_by_project.get(project_id, {"pms": [], "owners": []})
+                pms = bucket.get("pms", [])
+                owners = bucket.get("owners", [])
+
+                to_addresses = self._build_recipient_addresses(pms)
+                cc_addresses = self._build_recipient_addresses(owners)
+                body = self._build_body(
+                    project_label=project_label,
+                    work_date=work_date_str,
+                    lines=lines,
+                    pms=pms,
+                )
+
+                outbox_row = outbox.enqueue_send_mail(
                     entity_type="ContractLabor",
                     entity_public_id=str(cl_public_id or ""),
                     to_addresses=to_addresses,
@@ -167,13 +171,23 @@ class ContractLaborReviewNotificationService:
                     body_type="HTML",
                     mode="draft",
                 )
-                enqueued += 1
+                if outbox_row:
+                    enqueued += 1
+                    continue
+                logger.error(
+                    "cl_review_notification.enqueue_project_no_row "
+                    "project_id=%s work_date=%s (tenant/gate — releasing claim)",
+                    project_id, work_date_str,
+                )
             except Exception as error:
                 logger.exception(
                     "cl_review_notification.enqueue_project_failed "
                     "project_id=%s work_date=%s: %s",
                     project_id, work_date_str, error,
                 )
+            self._release_notification_claim(
+                project_id=project_id, work_date=work_date,
+            )
 
         logger.info(
             "cl_review_notification.enqueued work_date=%s projects=%d drafts=%d",
@@ -259,6 +273,28 @@ class ContractLaborReviewNotificationService:
                 project_id, work_date, error,
             )
             return False
+
+    def _release_notification_claim(self, *, project_id: int, work_date) -> None:
+        """Drop the (project, date) claim so a failed draft can retry.
+
+        Failure-isolated: logs and swallows — never raises. A failed
+        release leaves the pair stuck (dedup blocks forever); log loudly."""
+        try:
+            with get_connection() as conn:
+                cur = conn.cursor()
+                cur.execute(
+                    """DELETE FROM dbo.[ContractLaborNotification]
+                       WHERE [ProjectId] = ? AND [WorkDate] = ?""",
+                    (project_id, work_date),
+                )
+                conn.commit()
+        except Exception as error:
+            logger.error(
+                "cl_review_notification.release_claim_failed project_id=%s "
+                "work_date=%s: %s — claim row may be stuck; consolidated "
+                "draft for this pair will not retry until manual cleanup",
+                project_id, work_date, error,
+            )
 
     # =========================================================================
     # Internals

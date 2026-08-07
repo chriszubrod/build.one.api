@@ -156,7 +156,7 @@ def apply_reviewer_decision_router(
     """Apply an emailed PM/Owner review decision to the WHOLE crew on a
     (project, work_date).
 
-    CONSOLIDATION (U-XXX): ContractLabor review notifications are one
+    CONSOLIDATION (U-210): ContractLabor review notifications are one
     consolidated draft per (project, date) listing every laborer, so a
     single reply codes the entire crew. The crew is resolved server-side
     and one insert-only Review row is written per member (mirrors
@@ -220,7 +220,7 @@ def find_contract_labor_by_conversation_id_router(
     email_specialist Step 1bx reviewer-reply branch detection: a PM's
     reply lands in the same MS Graph conversation as the outbound
     consolidated crew notification that cl_notification_service enqueued
-    (one per project+date). CONSOLIDATION (U-XXX): the outbound subject
+    (one per project+date). CONSOLIDATION (U-210): the outbound subject
     is now `Contract Labor - {ProjectAbbr} - {YYYY-MM-DD}` (no worker),
     so this binds the reply to the (Project, WorkDate) pair — the apply
     step re-derives the full crew from those keys.

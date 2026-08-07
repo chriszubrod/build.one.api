@@ -1556,7 +1556,7 @@ GO
 -- ContractLaborNotification — dedup + reply-binding token populated by
 -- cl_notification_service at outbound-enqueue time.
 --
--- U-XXX (2026-08-05) CONSOLIDATION: notifications are now ONE row per
+-- U-210 (2026-08-05) CONSOLIDATION: notifications are now ONE row per
 -- (Project, WorkDate) — the consolidated crew draft — not one per
 -- (CL, Project). [WorkDate] is the new binding key; [ContractLaborId]
 -- is retained (NOT NULL, FK-valid) but now holds a REPRESENTATIVE crew
@@ -1567,8 +1567,10 @@ GO
 -- (cl_notification_service inserts conditionally on NOT EXISTS).
 --
 -- Prod-apply: this base file is the single source and is idempotent
--- (fresh CREATE guarded by OBJECT_ID IS NULL + additive ALTER/backfill
--- guarded by sys.columns/sys.indexes). Apply the whole file to prod via
+-- (fresh CREATE guarded by OBJECT_ID IS NULL + additive column/index
+-- migration ONLY guarded by sys.columns/sys.indexes — no WorkDate
+-- backfill; legacy rows intentionally keep WorkDate NULL). Apply the
+-- whole file to prod via
 -- `python scripts/run_sql.py entities/contract_labor/sql/dbo.contract_labor.sql`.
 -- ─────────────────────────────────────────────────────────────────────
 
@@ -1600,8 +1602,7 @@ END;
 GO
 
 -- Idempotent migration for existing databases: add [WorkDate] + the
--- (ProjectId, WorkDate) dedup index, backfilling WorkDate for historical
--- rows from the linked ContractLabor. Safe to re-run (guards on presence).
+-- (ProjectId, WorkDate) dedup index. Safe to re-run (guards on presence).
 IF OBJECT_ID('dbo.ContractLaborNotification', 'U') IS NOT NULL
    AND NOT EXISTS (SELECT 1 FROM sys.columns
                    WHERE object_id = OBJECT_ID('dbo.ContractLaborNotification')
@@ -1611,20 +1612,19 @@ BEGIN
 END;
 GO
 
--- Backfill any NULL WorkDate from the representative CL (separate batch so
--- the freshly-added column is visible to the UPDATE).
-IF OBJECT_ID('dbo.ContractLaborNotification', 'U') IS NOT NULL
-   AND EXISTS (SELECT 1 FROM sys.columns
-               WHERE object_id = OBJECT_ID('dbo.ContractLaborNotification')
-                 AND name = 'WorkDate')
-BEGIN
-    UPDATE cln
-       SET cln.[WorkDate] = cl.[WorkDate]
-      FROM dbo.[ContractLaborNotification] cln
-      INNER JOIN dbo.[ContractLabor] cl ON cl.[Id] = cln.[ContractLaborId]
-     WHERE cln.[WorkDate] IS NULL;
-END;
-GO
+-- DO NOT backfill NULL [WorkDate] on legacy ContractLaborNotification rows.
+-- Those ~297 rows were written by the retired per-worker notification path
+-- and must keep WorkDate NULL on purpose: the consolidated claim predicate
+-- is (ProjectId = @ProjectId AND WorkDate = @WorkDate), and in SQL Server
+-- NULL = @WorkDate is never true — so a legacy row cannot satisfy NOT EXISTS
+-- and block the first consolidated crew draft. OutboundSubject binding for
+-- legacy rows is project-only (WorkDate NULL): FindContractLaborForReviewerReply
+-- yields no usable (project, date) pair, so replies to OLD per-worker drafts
+-- are deliberately not appliable — they fail cleanly ("No reviewable ContractLabor
+-- found") and are a manual follow-up. Backfilling WorkDate from the linked CL
+-- would turn each legacy row into a valid (ProjectId, WorkDate) claim and
+-- permanently suppress the first consolidated draft for every pair the old path
+-- had already notified.
 
 IF OBJECT_ID('dbo.ContractLaborNotification', 'U') IS NOT NULL
    AND NOT EXISTS (SELECT 1 FROM sys.indexes
@@ -1644,7 +1644,7 @@ GO
 -- through EmailMessage; FUZZY fallback handles non-Outlook clients that
 -- lose ConversationId.
 --
--- U-XXX (2026-08-05) CONSOLIDATION: notifications are per-(Project,
+-- U-210 (2026-08-05) CONSOLIDATION: notifications are per-(Project,
 -- WorkDate) now, so the reply resolves to that pair — NOT a single CL.
 -- apply_reviewer_decision re-derives the full reviewable crew from these
 -- two keys. Worker hint is retained in the signature for caller
@@ -1745,15 +1745,15 @@ GO
 
 
 -- ─────────────────────────────────────────────────────────────────────
--- U-XXX (2026-08-05) CONSOLIDATION — three reads supporting the
+-- U-210 (2026-08-05) CONSOLIDATION — three reads supporting the
 -- per-(Project, WorkDate) crew review-notification flow:
 --   1. CountPendingContractLaborByWorkDate  — the date gate (hold until
 --      no ContractLabor for the date is still 'pending_review').
 --   2. ReadSubmittedContractLaborLinesByWorkDate — the consolidated draft
 --      body: every submitted line for the date, joined to Project, so the
 --      notification service can group by project and list each laborer.
---   3. ReadReviewableContractLaborByProjectAndDate — the reply crew: the
---      distinct ContractLabor rows a PM's (project, date) reply codes.
+--   3. ReadReviewableContractLaborByProjectAndDate — the reply crew: must
+--      match the emailed crew (same 'submitted' filter as the draft body).
 -- ─────────────────────────────────────────────────────────────────────
 
 CREATE OR ALTER PROCEDURE CountPendingContractLaborByWorkDate
@@ -1816,10 +1816,14 @@ AS
 BEGIN
     SET NOCOUNT ON;
 
-    -- Distinct reviewable ContractLabor rows a PM's (project, date) reply
-    -- applies to: those with at least one line item on @ProjectId at
-    -- @WorkDate, still open to reviewer edits ('pending_review' or
-    -- 'submitted'). apply_reviewer_decision loops these, coding each.
+    -- Distinct ContractLabor rows a PM's (project, date) reply codes.
+    -- INVARIANT: the reply crew must equal the emailed crew — same filter
+    -- as ReadSubmittedContractLaborLinesByWorkDate (Status = 'submitted').
+    -- Including 'pending_review' would sweep in laborers added after the
+    -- draft was sent but never listed in the email the PM read.
+    -- Residual: a worker who submits AFTER the draft is sent but BEFORE
+    -- the PM replies still lands in 'submitted' and will be coded by that
+    -- reply; status alone cannot distinguish them from the emailed crew.
     SELECT DISTINCT
         cl.[Id]                             AS ContractLaborId,
         CAST(cl.[PublicId] AS NVARCHAR(36)) AS ContractLaborPublicId,
@@ -1829,7 +1833,7 @@ BEGIN
     INNER JOIN dbo.[ContractLaborLineItem] cli ON cli.[ContractLaborId] = cl.[Id]
     WHERE cli.[ProjectId] = @ProjectId
       AND cl.[WorkDate] = @WorkDate
-      AND cl.[Status] IN ('pending_review', 'submitted');
+      AND cl.[Status] = 'submitted';
 END;
 GO
 

@@ -50,8 +50,10 @@ def page_all_record_ids(
     start_position = 1
 
     for _page in range(max_pages):
+        # Id-only projection: the loop reads nothing but Id, and full rows
+        # (headers + line arrays) are ~50-100x the payload per 1000-row page.
         query_string = (
-            f"SELECT * FROM {entity} STARTPOSITION {start_position} "
+            f"SELECT Id FROM {entity} STARTPOSITION {start_position} "
             f"MAXRESULTS {page_size}"
         )
         data = http_client.get(

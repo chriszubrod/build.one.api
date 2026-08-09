@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 
 # Local Imports
 from integrations.intuit.qbo.auth.business.service import QboAuthService
-from integrations.intuit.qbo.base.errors import QboValidationError
+from integrations.intuit.qbo.base.errors import QboNotFoundError, QboValidationError
 from integrations.intuit.qbo.report.external.client import QboReportClient
 from shared.api.responses import item_response
 from shared.rbac import require_module_api
@@ -61,6 +61,10 @@ def get_qbo_report_router(
     try:
         with QboReportClient(realm_id=resolved_realm_id) as client:
             data = client.get_report(report_name, params=params)
+    except QboNotFoundError as e:
+        # U-212 maps QBO fault 610 (Object Not Found) to QboNotFoundError at
+        # the shared client — surface it as 404, not a 500.
+        raise HTTPException(status_code=404, detail=str(e))
     except QboValidationError as e:
         raise HTTPException(status_code=400, detail=str(e))
 

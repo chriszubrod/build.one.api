@@ -90,6 +90,14 @@ class QboServiceUnavailableError(QboServerError):
     """
 
 
+class QboMalformedResponseError(QboServerError):
+    """
+    Raised when QBO returns a 2xx whose body is empty or unparseable —
+    a transient server-side anomaly, retryable via QboServerError (U-212;
+    rationale in base/delete_reconcile.py).
+    """
+
+
 # ---------------------------------------------------------------------------
 # Client errors — NOT retryable by default; retry won't fix the input.
 # ---------------------------------------------------------------------------

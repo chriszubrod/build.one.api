@@ -591,7 +591,12 @@ class ReconciliationService:
         (should invoices referencing the bill be recomputed? did a user delete
         in error?) and deserves human judgment.
         """
-        from integrations.intuit.qbo.base.errors import QboNotFoundError
+        from integrations.intuit.qbo.base.errors import (
+            QboAuthError,
+            QboBudgetExceededError,
+            QboNotFoundError,
+            QboRateLimitError,
+        )
         from integrations.intuit.qbo.base.ids import normalize_qbo_id
         from integrations.intuit.qbo.bill.external.client import QboBillClient
         from integrations.intuit.qbo.bill.connector.bill.persistence.repo import (
@@ -723,6 +728,20 @@ class ReconciliationService:
                         reconcile_run_id=run_id,
                     ):
                         void_keys.add(key)
+                except (QboAuthError, QboBudgetExceededError, QboRateLimitError):
+                    # U-212 backport from base/delete_reconcile.py: systemic —
+                    # no later candidate's confirm can succeed; stop burning
+                    # one metered call per remaining candidate.
+                    errors += 1
+                    logger.warning(
+                        "qbo.reconcile.bill_qbo_voided.confirm_aborted_systemic",
+                        extra={
+                            "event_name": "qbo.reconcile.bill_qbo_voided.confirm_aborted_systemic",
+                            "realm_id": realm_id,
+                            "reconcile_run_id": run_id,
+                        },
+                    )
+                    break
                 except Exception:
                     errors += 1
                     logger.exception(
@@ -874,7 +893,12 @@ class ReconciliationService:
         set that large is far more likely to be a bad id fetch than a real mass
         deletion.
         """
-        from integrations.intuit.qbo.base.errors import QboNotFoundError
+        from integrations.intuit.qbo.base.errors import (
+            QboAuthError,
+            QboBudgetExceededError,
+            QboNotFoundError,
+            QboRateLimitError,
+        )
         from integrations.intuit.qbo.base.ids import normalize_qbo_id
         from integrations.intuit.qbo.purchase.external.client import QboPurchaseClient
         from integrations.intuit.qbo.purchase.connector.expense.persistence.repo import (
@@ -995,6 +1019,20 @@ class ReconciliationService:
                         reconcile_run_id=run_id,
                     ):
                         void_keys.add(key)
+                except (QboAuthError, QboBudgetExceededError, QboRateLimitError):
+                    # U-212 backport from base/delete_reconcile.py: systemic —
+                    # no later candidate's confirm can succeed; stop burning
+                    # one metered call per remaining candidate.
+                    errors += 1
+                    logger.warning(
+                        "qbo.reconcile.purchase_qbo_voided.confirm_aborted_systemic",
+                        extra={
+                            "event_name": "qbo.reconcile.purchase_qbo_voided.confirm_aborted_systemic",
+                            "realm_id": realm_id,
+                            "reconcile_run_id": run_id,
+                        },
+                    )
+                    break
                 except Exception:
                     errors += 1
                     logger.exception(
@@ -1142,7 +1180,12 @@ class ReconciliationService:
         set that large is far more likely to be a bad id fetch than a real mass
         deletion.
         """
-        from integrations.intuit.qbo.base.errors import QboNotFoundError
+        from integrations.intuit.qbo.base.errors import (
+            QboAuthError,
+            QboBudgetExceededError,
+            QboNotFoundError,
+            QboRateLimitError,
+        )
         from integrations.intuit.qbo.base.ids import normalize_qbo_id
         from integrations.intuit.qbo.vendorcredit.external.client import QboVendorCreditClient
         from integrations.intuit.qbo.vendorcredit.connector.bill_credit.persistence.repo import (
@@ -1263,6 +1306,20 @@ class ReconciliationService:
                         reconcile_run_id=run_id,
                     ):
                         void_keys.add(key)
+                except (QboAuthError, QboBudgetExceededError, QboRateLimitError):
+                    # U-212 backport from base/delete_reconcile.py: systemic —
+                    # no later candidate's confirm can succeed; stop burning
+                    # one metered call per remaining candidate.
+                    errors += 1
+                    logger.warning(
+                        "qbo.reconcile.vendor_credit_qbo_voided.confirm_aborted_systemic",
+                        extra={
+                            "event_name": "qbo.reconcile.vendor_credit_qbo_voided.confirm_aborted_systemic",
+                            "realm_id": realm_id,
+                            "reconcile_run_id": run_id,
+                        },
+                    )
+                    break
                 except Exception:
                     errors += 1
                     logger.exception(

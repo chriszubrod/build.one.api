@@ -114,17 +114,20 @@ class QboBillService:
         # Delete reconciliation: only valid on a full, unfiltered sync so the API
         # response represents the complete current state of QBO.
         if reconcile_deletes and last_updated_time is None and not start_date and not end_date:
-            self._reconcile_deleted_bills(realm_id, qbo_bills)
+            self._reconcile_deleted_bills(realm_id)
 
         return synced_bills
 
-    def _reconcile_deleted_bills(self, realm_id: str, qbo_bills: list) -> int:
+    def _reconcile_deleted_bills(self, realm_id: str) -> int:
         """
         Delete local records for QBO bills that no longer exist in QBO.
 
-        Only called on full syncs (no last_updated_time / date filters) so the API
-        response represents the complete current state of QBO. Mirrors
-        QboPurchaseService._reconcile_deleted_purchases.
+        Only called on full syncs (no last_updated_time / date filters).
+        U-212: the diff runs against the STRICT id pager (complete-or-abort)
+        with a candidate ceiling and per-candidate GET confirmation — never
+        against the lenient list pager, whose silent truncation made a partial
+        fetch indistinguishable from a mass deletion. An aborted gate deletes
+        nothing. Mirrors QboPurchaseService._reconcile_deleted_purchases.
 
         Deletion order (respects FK NO ACTION constraints):
           1. BillLineItemBillLine mapping rows for the bill's lines.
@@ -133,12 +136,27 @@ class QboBillService:
              InvoiceLineItem FK nullified first by BillService.delete_by_public_id).
           4. The QboBill (FK_QboBillLine_QboBill ON DELETE CASCADE handles qbo.BillLine).
         """
+        from integrations.intuit.qbo.base.delete_reconcile import (
+            record_partial_delete_issue,
+            strict_confirmed_deleted_ids,
+        )
+        from integrations.intuit.qbo.base.ids import normalize_qbo_id
         from integrations.intuit.qbo.bill.connector.bill.persistence.repo import BillBillRepository
         from integrations.intuit.qbo.bill.connector.bill_line_item.persistence.repo import BillLineItemBillLineRepository
         from entities.bill.business.service import BillService
 
-        qbo_ids_from_api = {b.id for b in qbo_bills}
         local_bills = self.repo.read_by_realm_id(realm_id)
+
+        with QboBillClient(realm_id=realm_id) as client:
+            confirmed = strict_confirmed_deleted_ids(
+                entity_type="Bill",
+                realm_id=realm_id,
+                fetch_live_ids=client.query_all_bill_ids,
+                confirm_get=client.get_bill,
+                local_qbo_ids=[b.qbo_id for b in local_bills],
+            )
+        if not confirmed:
+            return 0
 
         bill_bill_repo = BillBillRepository()
         line_mapping_repo = BillLineItemBillLineRepository()
@@ -146,13 +164,14 @@ class QboBillService:
 
         deleted = 0
         for local in local_bills:
-            if local.qbo_id in qbo_ids_from_api:
+            if normalize_qbo_id(local.qbo_id) not in confirmed:
                 continue
 
             logger.warning(
-                f"QboBill qbo_id={local.qbo_id} (local id={local.id}) not found in QBO — "
+                f"QboBill qbo_id={local.qbo_id} (local id={local.id}) confirmed deleted in QBO — "
                 f"deleting local record and mapped Bill"
             )
+            mapping_removed = False
             try:
                 # Step 1: line mappings (before BillLineItem deletion — FK NO ACTION).
                 for line in self.line_repo.read_by_qbo_bill_id(local.id):
@@ -160,6 +179,7 @@ class QboBillService:
                         lm = line_mapping_repo.read_by_qbo_bill_line_id(line.id)
                         if lm:
                             line_mapping_repo.delete_by_id(lm.id)
+                            mapping_removed = True
                     except Exception as e:
                         logger.warning(
                             f"Could not delete BillLineItemBillLine mapping for "
@@ -171,6 +191,7 @@ class QboBillService:
                 if bb_mapping:
                     try:
                         bill_bill_repo.delete_by_id(bb_mapping.id)
+                        mapping_removed = True
                     except Exception as e:
                         logger.warning(f"Could not delete BillBill mapping for QboBill {local.qbo_id}: {e}")
                     bill = bill_service.read_by_id(bb_mapping.bill_id)
@@ -184,6 +205,16 @@ class QboBillService:
                 deleted += 1
             except Exception as e:
                 logger.error(f"Failed to delete stale QboBill {local.qbo_id}: {e}")
+                if mapping_removed:
+                    record_partial_delete_issue(
+                        entity_type="Bill",
+                        mapping_label="BillBill/BillLineItemBillLine",
+                        mapped_label="Bill",
+                        realm_id=realm_id,
+                        qbo_id=local.qbo_id,
+                        local_id=local.id,
+                        error=e,
+                    )
 
         if deleted:
             logger.info(f"Reconciled {deleted} deleted QBO bill(s) for realm {realm_id}")

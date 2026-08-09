@@ -115,7 +115,7 @@ class QboPurchaseService:
         # Delete reconciliation: only valid on a full, unfiltered sync so we have
         # a complete picture of what QBO currently holds.
         if reconcile_deletes and last_updated_time is None and not start_date and not end_date:
-            self._reconcile_deleted_purchases(realm_id, qbo_purchases)
+            self._reconcile_deleted_purchases(realm_id)
 
         return synced_purchases
 
@@ -380,13 +380,13 @@ class QboPurchaseService:
     def _reconcile_deleted_purchases(
         self,
         realm_id: str,
-        qbo_purchases: list,
     ) -> int:
         """
         Delete local records for QBO purchases that no longer exist in QBO.
 
-        Only called on full syncs (no last_updated_time / date filters) so the
-        API response represents the complete current state of QBO.
+        Only called on full syncs (no last_updated_time / date filters).
+        U-212: diffs against the strict id pager with ceiling + GET-confirm —
+        see base/delete_reconcile.py. An aborted gate deletes nothing.
 
         Order of deletion (respects FK NO ACTION constraints added by the FK migration):
           1. Delete all PurchaseLineExpenseLineItem mapping rows for the purchase's lines
@@ -397,12 +397,27 @@ class QboPurchaseService:
           4. Delete the QboPurchase — FK_QboPurchaseLine_QboPurchase CASCADE handles
              qbo.PurchaseLine rows; mapping rows were already removed in steps 1–2.
         """
+        from integrations.intuit.qbo.base.delete_reconcile import (
+            record_partial_delete_issue,
+            strict_confirmed_deleted_ids,
+        )
+        from integrations.intuit.qbo.base.ids import normalize_qbo_id
         from integrations.intuit.qbo.purchase.connector.expense.persistence.repo import PurchaseExpenseRepository
         from integrations.intuit.qbo.purchase.connector.expense_line_item.persistence.repo import PurchaseLineExpenseLineItemRepository
         from entities.expense.business.service import ExpenseService
 
-        qbo_ids_from_api = {p.id for p in qbo_purchases}
         local_purchases = self.repo.read_by_realm_id(realm_id)
+
+        with QboPurchaseClient(realm_id=realm_id) as client:
+            confirmed = strict_confirmed_deleted_ids(
+                entity_type="Purchase",
+                realm_id=realm_id,
+                fetch_live_ids=client.query_all_purchase_ids,
+                confirm_get=client.get_purchase,
+                local_qbo_ids=[p.qbo_id for p in local_purchases],
+            )
+        if not confirmed:
+            return 0
 
         purchase_expense_repo = PurchaseExpenseRepository()
         line_mapping_repo = PurchaseLineExpenseLineItemRepository()
@@ -410,13 +425,14 @@ class QboPurchaseService:
 
         deleted = 0
         for local in local_purchases:
-            if local.qbo_id in qbo_ids_from_api:
+            if normalize_qbo_id(local.qbo_id) not in confirmed:
                 continue
 
             logger.warning(
-                f"QboPurchase qbo_id={local.qbo_id} (local id={local.id}) not found in QBO — "
+                f"QboPurchase qbo_id={local.qbo_id} (local id={local.id}) confirmed deleted in QBO — "
                 f"deleting local record and mapped Expense"
             )
+            mapping_removed = False
             try:
                 # Step 1: Delete PurchaseLineExpenseLineItem mappings for every line of this purchase.
                 # Must come before ExpenseLineItem deletion: FK_PurchaseLineExpenseLineItem_ExpenseLineItem
@@ -427,6 +443,7 @@ class QboPurchaseService:
                         line_mapping = line_mapping_repo.read_by_qbo_purchase_line_id(line.id)
                         if line_mapping:
                             line_mapping_repo.delete_by_id(line_mapping.id)
+                            mapping_removed = True
                     except Exception as e:
                         logger.warning(
                             f"Could not delete PurchaseLineExpenseLineItem mapping for "
@@ -440,6 +457,7 @@ class QboPurchaseService:
                 if pe_mapping:
                     try:
                         purchase_expense_repo.delete_by_id(pe_mapping.id)
+                        mapping_removed = True
                     except Exception as e:
                         logger.warning(
                             f"Could not delete PurchaseExpense mapping for QboPurchase {local.qbo_id}: {e}"
@@ -459,6 +477,16 @@ class QboPurchaseService:
                 deleted += 1
             except Exception as e:
                 logger.error(f"Failed to delete stale QboPurchase {local.qbo_id}: {e}")
+                if mapping_removed:
+                    record_partial_delete_issue(
+                        entity_type="Purchase",
+                        mapping_label="PurchaseExpense/PurchaseLineExpenseLineItem",
+                        mapped_label="Expense",
+                        realm_id=realm_id,
+                        qbo_id=local.qbo_id,
+                        local_id=local.id,
+                        error=e,
+                    )
 
         if deleted:
             logger.info(f"Reconciled {deleted} deleted QBO purchase(s) for realm {realm_id}")

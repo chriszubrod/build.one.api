@@ -13,6 +13,7 @@ from integrations.intuit.qbo.base.errors import (
     QboAuthError,
     QboConflictError,
     QboDuplicateError,
+    QboMalformedResponseError,
     QboNotFoundError,
     QboRateLimitError,
     QboServerError,
@@ -424,12 +425,22 @@ class QboHttpClient:
                     "metric_value": duration_ms,
                 },
             )
-            if not response.text:
-                return {}
-            try:
-                return response.json()
-            except Exception:
-                return {}
+            # U-212: an empty/unparseable 2xx body raises (retryable) rather
+            # than returning {} — see base/delete_reconcile.py for why.
+            if response.text:
+                try:
+                    return response.json()
+                except Exception:
+                    pass
+            raise QboMalformedResponseError(
+                f"QBO returned HTTP {response.status_code} with an "
+                f"{'empty' if not response.text else 'unparseable'} body",
+                detail=response.text[:200] or None,
+                http_status=response.status_code,
+                request_method=method,
+                request_path=request_path,
+                correlation_id=correlation_id,
+            )
 
         self._raise_for_status(
             response=response,
@@ -541,6 +552,13 @@ class QboHttpClient:
         )
 
         if status == 400:
+            # QBO fault code 610 = Object Not Found. Intuit signals a GET on a
+            # HARD-DELETED transaction as HTTP 400/610, NOT 404 — mapping it
+            # here is what lets the reconcile void detectors and the pull-side
+            # delete-confirm actually see real deletions (U-212/U-213; the
+            # 2026-08-07 audit found deletions landing in generic errors).
+            if fault_code == "610":
+                raise QboNotFoundError(message, **common)
             # QBO fault code 5010 = Stale Object Error (SyncToken mismatch).
             # Surface separately so the outbox worker can recover by pulling
             # fresh state and retrying.

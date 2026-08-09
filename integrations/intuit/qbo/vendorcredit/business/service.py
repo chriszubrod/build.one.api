@@ -2,7 +2,6 @@
 import logging
 import time
 from typing import List, Optional
-from decimal import Decimal
 
 # Third-party Imports
 
@@ -83,7 +82,7 @@ class QboVendorCreditService:
         # Delete reconciliation: only valid on a full, unfiltered sync so the API
         # response represents the complete current state of QBO.
         if reconcile_deletes and last_updated_time is None and not start_date and not end_date:
-            self._reconcile_deleted_vendor_credits(realm_id, vendor_credits)
+            self._reconcile_deleted_vendor_credits(realm_id)
 
         return synced
 
@@ -99,13 +98,14 @@ class QboVendorCreditService:
         lines = self.repo.read_lines_by_vendor_credit_id(local_vc.id)
         return local_vc, lines
 
-    def _reconcile_deleted_vendor_credits(self, realm_id: str, qbo_vcs: list) -> int:
+    def _reconcile_deleted_vendor_credits(self, realm_id: str) -> int:
         """
         Delete local records for QBO vendor credits that no longer exist in QBO.
 
-        Only called on full syncs (no last_updated_time / date filters) so the API
-        response represents the complete current state of QBO. Mirrors
-        QboPurchaseService._reconcile_deleted_purchases.
+        Only called on full syncs (no last_updated_time / date filters).
+        U-212: diffs against the strict id pager with ceiling + GET-confirm —
+        see base/delete_reconcile.py. An aborted gate deletes nothing.
+        Mirrors QboPurchaseService._reconcile_deleted_purchases.
 
         Deletion order (respects FK NO ACTION constraints):
           1. VendorCreditLineItemBillCreditLineItem mapping rows for the credit's lines.
@@ -114,6 +114,11 @@ class QboVendorCreditService:
              with any InvoiceLineItem FK nullified first by the line-item delete).
           4. The QboVendorCredit (FK_QboVendorCreditLine_QboVendorCredit CASCADE handles lines).
         """
+        from integrations.intuit.qbo.base.delete_reconcile import (
+            record_partial_delete_issue,
+            strict_confirmed_deleted_ids,
+        )
+        from integrations.intuit.qbo.base.ids import normalize_qbo_id
         from integrations.intuit.qbo.vendorcredit.connector.bill_credit.persistence.repo import (
             VendorCreditBillCreditMappingRepository,
         )
@@ -122,8 +127,18 @@ class QboVendorCreditService:
         )
         from entities.bill_credit.business.service import BillCreditService
 
-        qbo_ids_from_api = {vc.id for vc in qbo_vcs}
         local_vcs = self.repo.read_by_realm_id(realm_id)
+
+        with QboVendorCreditClient(realm_id=realm_id) as client:
+            confirmed = strict_confirmed_deleted_ids(
+                entity_type="VendorCredit",
+                realm_id=realm_id,
+                fetch_live_ids=client.query_all_vendor_credit_ids,
+                confirm_get=client.get_vendor_credit,
+                local_qbo_ids=[vc.qbo_id for vc in local_vcs],
+            )
+        if not confirmed:
+            return 0
 
         bc_mapping_repo = VendorCreditBillCreditMappingRepository()
         line_mapping_repo = VendorCreditLineItemBillCreditLineItemMappingRepository()
@@ -131,13 +146,14 @@ class QboVendorCreditService:
 
         deleted = 0
         for local in local_vcs:
-            if local.qbo_id in qbo_ids_from_api:
+            if normalize_qbo_id(local.qbo_id) not in confirmed:
                 continue
 
             logger.warning(
-                f"QboVendorCredit qbo_id={local.qbo_id} (local id={local.id}) not found in QBO — "
+                f"QboVendorCredit qbo_id={local.qbo_id} (local id={local.id}) confirmed deleted in QBO — "
                 f"deleting local record and mapped BillCredit"
             )
+            mapping_removed = False
             try:
                 # Step 1: line mappings (before BillCreditLineItem deletion).
                 for line in self.repo.read_lines_by_vendor_credit_id(local.id):
@@ -145,6 +161,7 @@ class QboVendorCreditService:
                         lm = line_mapping_repo.read_by_qbo_line_id(line.id)
                         if lm:
                             line_mapping_repo.delete_by_id(lm.id)
+                            mapping_removed = True
                     except Exception as e:
                         logger.warning(
                             f"Could not delete VendorCreditLineItemBillCreditLineItem mapping for "
@@ -156,6 +173,7 @@ class QboVendorCreditService:
                 if bc_mapping:
                     try:
                         bc_mapping_repo.delete_by_qbo_vendor_credit_id(local.id)
+                        mapping_removed = True
                     except Exception as e:
                         logger.warning(f"Could not delete VendorCreditBillCredit mapping for VC {local.qbo_id}: {e}")
                     bc = bill_credit_service.read_by_id(bc_mapping.bill_credit_id)
@@ -169,6 +187,16 @@ class QboVendorCreditService:
                 deleted += 1
             except Exception as e:
                 logger.error(f"Failed to delete stale QboVendorCredit {local.qbo_id}: {e}")
+                if mapping_removed:
+                    record_partial_delete_issue(
+                        entity_type="VendorCredit",
+                        mapping_label="VendorCreditBillCredit/VendorCreditLineItemBillCreditLineItem",
+                        mapped_label="BillCredit",
+                        realm_id=realm_id,
+                        qbo_id=local.qbo_id,
+                        local_id=local.id,
+                        error=e,
+                    )
 
         if deleted:
             logger.info(f"Reconciled {deleted} deleted QBO vendor credit(s) for realm {realm_id}")

@@ -10,7 +10,7 @@ from integrations.intuit.qbo.term.business.model import QboTerm
 from integrations.intuit.qbo.term.persistence.repo import QboTermRepository
 from integrations.intuit.qbo.term.external.client import QboTermClient
 from integrations.intuit.qbo.term.external.schemas import QboTerm as QboTermExternalSchema
-from integrations.intuit.qbo.base.sync_outcome import SyncOutcome, coerce_outcome
+from integrations.intuit.qbo.base.sync_outcome import SyncOutcome
 from shared.database import with_retry, is_transient_error
 
 logger = logging.getLogger(__name__)
@@ -36,8 +36,7 @@ class QboTermService:
         realm_id: str,
         last_updated_time: Optional[str] = None,
         sync_to_modules: bool = False,
-        outcome: Optional[SyncOutcome] = None,
-    ) -> List[QboTerm]:
+    ) -> SyncOutcome[QboTerm]:
         """
         Fetch Terms from QBO API and store locally.
         Uses upsert pattern: creates if not exists, updates if exists.
@@ -47,14 +46,11 @@ class QboTermService:
             last_updated_time: Optional ISO format datetime string. If provided, only fetches
                 Terms where Metadata.LastUpdatedTime > last_updated_time.
             sync_to_modules: If True, also sync to PaymentTerm module
-            outcome: Optional shared failure accumulator for watermark runners.
-                Staging upsert failures recorded here prevent advancing the watermark
-                past QBO records that never reached qbo.*.
         
         Returns:
-            List[QboTerm]: The synced term records
+            SyncOutcome[QboTerm]: Pull run envelope including synced staging rows
         """
-        outcome = coerce_outcome(outcome)
+        outcome: SyncOutcome[QboTerm] = SyncOutcome.for_service_pull()
         # Fetch Terms from QBO API. QboHttpClient (via QboTermClient) resolves
         # and refreshes the access token lazily, so no upfront auth call is needed.
         with QboTermClient(realm_id=realm_id) as client:
@@ -65,12 +61,11 @@ class QboTermService:
         outcome.fetched = len(qbo_terms)
         if not qbo_terms:
             logger.info(f"No Terms found since {last_updated_time or 'beginning'}")
-            return []
+            return outcome
         
         logger.info(f"Retrieved {len(qbo_terms)} terms from QBO")
         
         # Process each term with retry logic and batch delays
-        synced_terms = []
         
         for i, qbo_term in enumerate(qbo_terms):
             try:
@@ -82,8 +77,7 @@ class QboTermService:
                     max_retries=MAX_RETRIES,
                     initial_delay=INITIAL_RETRY_DELAY,
                 )
-                synced_terms.append(local_term)
-                outcome.record_synced()
+                outcome.record_synced(local_term)
                 logger.debug(f"Upserted term {qbo_term.id} ({i + 1}/{len(qbo_terms)})")
             except Exception as e:
                 logger.error(f"Failed to upsert term {qbo_term.id}: {e}")
@@ -101,9 +95,9 @@ class QboTermService:
         
         # Sync to modules if requested
         if sync_to_modules:
-            self._sync_to_payment_terms(synced_terms)
+            self._sync_to_payment_terms(outcome.synced, outcome)
         
-        return synced_terms
+        return outcome
 
     def _upsert_term(self, qbo_term: QboTermExternalSchema, realm_id: str) -> QboTerm:
         """
@@ -155,7 +149,7 @@ class QboTermService:
                 due_days=qbo_term.due_days,
             )
 
-    def _sync_to_payment_terms(self, terms: List[QboTerm]) -> None:
+    def _sync_to_payment_terms(self, terms: List[QboTerm], outcome: SyncOutcome) -> None:
         """
         Sync terms to PaymentTerm module.
         
@@ -174,8 +168,14 @@ class QboTermService:
             try:
                 payment_term = connector.sync_from_qbo_term(term)
                 logger.info(f"Synced QboTerm {term.id} to PaymentTerm {payment_term.id}")
+                outcome.record_projected()
             except Exception as e:
-                logger.error(f"Failed to sync QboTerm {term.id} to PaymentTerm: {e}")
+                outcome.record_projection_error(
+                    term.qbo_id,
+                    e,
+                    label="Term->PaymentTerm",
+                    logger=logger,
+                )
 
     def read_all(self) -> List[QboTerm]:
         """

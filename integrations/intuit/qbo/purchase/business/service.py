@@ -10,7 +10,7 @@ from integrations.intuit.qbo.purchase.business.model import QboPurchase, QboPurc
 from integrations.intuit.qbo.purchase.persistence.repo import QboPurchaseRepository, QboPurchaseLineRepository
 from integrations.intuit.qbo.purchase.external.client import QboPurchaseClient
 from integrations.intuit.qbo.purchase.external.schemas import QboPurchase as QboPurchaseExternalSchema
-from integrations.intuit.qbo.base.sync_outcome import SyncOutcome, coerce_outcome
+from integrations.intuit.qbo.base.sync_outcome import SyncOutcome
 from shared.authz import current_user_id, current_is_system_admin
 from shared.database import with_retry
 
@@ -45,8 +45,7 @@ class QboPurchaseService:
         end_date: Optional[str] = None,
         sync_to_modules: bool = False,
         reconcile_deletes: bool = False,
-        outcome: Optional[SyncOutcome] = None,
-    ) -> List[QboPurchase]:
+    ) -> SyncOutcome[QboPurchase]:
         """
         Fetch Purchases from QBO API and store locally.
         Uses upsert pattern: creates if not exists, updates if exists.
@@ -60,14 +59,12 @@ class QboPurchaseService:
             end_date: Optional date string (YYYY-MM-DD). If provided, only fetches
                 Purchases where TxnDate <= end_date.
             sync_to_modules: If True, also sync to Expense/ExpenseLineItem modules
-            outcome: Optional shared failure accumulator for watermark runners.
-                Staging upsert failures recorded here prevent advancing the watermark
-                past QBO records that never reached qbo.*.
+            reconcile_deletes: If True, reconcile deletes (full sync only)
         
         Returns:
-            List[QboPurchase]: The synced purchase records
+            SyncOutcome[QboPurchase]: Pull run envelope including synced staging rows
         """
-        outcome = coerce_outcome(outcome)
+        outcome: SyncOutcome[QboPurchase] = SyncOutcome.for_service_pull()
         self._realm_id = realm_id
 
         # Fetch Purchases from QBO API. QboHttpClient (via QboPurchaseClient) resolves
@@ -82,12 +79,11 @@ class QboPurchaseService:
         outcome.fetched = len(qbo_purchases)
         if not qbo_purchases:
             logger.info(f"No Purchases found since {last_updated_time or 'beginning'}")
-            return []
+            return outcome
         
         logger.info(f"Retrieved {len(qbo_purchases)} purchases from QBO")
         
         # Process each purchase with retry logic and batch delays
-        synced_purchases = []
 
         for i, qbo_purchase in enumerate(qbo_purchases):
             try:
@@ -99,8 +95,7 @@ class QboPurchaseService:
                     max_retries=MAX_RETRIES,
                     initial_delay=INITIAL_RETRY_DELAY,
                 )
-                synced_purchases.append(local_purchase)
-                outcome.record_synced()
+                outcome.record_synced(local_purchase)
                 logger.debug(f"Upserted purchase {qbo_purchase.id} ({i + 1}/{len(qbo_purchases)})")
             except Exception as e:
                 logger.error(f"Failed to upsert purchase {qbo_purchase.id}: {e}")
@@ -119,14 +114,14 @@ class QboPurchaseService:
         
         # Sync to modules if requested
         if sync_to_modules:
-            self._sync_to_expenses(synced_purchases)
+            self._sync_to_expenses(outcome.synced, outcome)
 
         # Delete reconciliation: only valid on a full, unfiltered sync so we have
         # a complete picture of what QBO currently holds.
         if reconcile_deletes and last_updated_time is None and not start_date and not end_date:
             self._reconcile_deleted_purchases(realm_id)
 
-        return synced_purchases
+        return outcome
 
     def upsert_from_external(
         self, qbo_purchase: QboPurchaseExternalSchema, realm_id: str,
@@ -501,7 +496,7 @@ class QboPurchaseService:
             logger.info(f"Reconciled {deleted} deleted QBO purchase(s) for realm {realm_id}")
         return deleted
 
-    def _sync_to_expenses(self, purchases: List[QboPurchase]) -> None:
+    def _sync_to_expenses(self, purchases: List[QboPurchase], outcome: SyncOutcome) -> None:
         """
         Sync purchases to Expense module. Attachables are synced in the main sync loop.
         
@@ -522,8 +517,14 @@ class QboPurchaseService:
                 purchase_lines = self.line_repo.read_by_qbo_purchase_id(purchase.id)
                 expense = connector.sync_from_qbo_purchase(purchase, purchase_lines)
                 logger.info(f"Synced QboPurchase {purchase.id} to Expense {expense.id}")
+                outcome.record_projected()
             except Exception as e:
-                logger.error(f"Failed to sync QboPurchase {purchase.id} to Expense: {e}")
+                outcome.record_projection_error(
+                    purchase.qbo_id,
+                    e,
+                    label="Purchase->Expense",
+                    logger=logger,
+                )
 
     def read_all(self) -> List[QboPurchase]:
         """

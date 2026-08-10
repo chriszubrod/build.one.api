@@ -90,8 +90,7 @@ def sync_qbo_to_local(
     qbo_item_service: QboItemService,
     cost_code_connector: ItemCostCodeConnector,
     sub_cost_code_connector: ItemSubCostCodeConnector,
-    outcome: SyncOutcome,
-) -> dict:
+) -> tuple[dict, SyncOutcome]:
     """
     Sync Items from QBO API to local database and modules.
     
@@ -103,16 +102,17 @@ def sync_qbo_to_local(
         sub_cost_code_connector: ItemSubCostCodeConnector instance
     
     Returns:
-        dict: Sync results including items synced
+        tuple[dict, SyncOutcome]: Sync results envelope and service pull outcome
     """
     logger.info(f"Syncing Items from QBO API for realm_id: {realm_id}")
     
     # Fetch items from QBO and store locally (without auto-syncing to modules)
-    items = qbo_item_service.sync_from_qbo(
+    outcome = qbo_item_service.sync_from_qbo(
         realm_id=realm_id,
         last_updated_time=last_sync_time,
         sync_to_modules=False  # We'll handle module sync separately for better control
     )
+    items = outcome.synced
     
     if not items:
         logger.info(f"No Item updates found since {last_sync_time or 'beginning'}")
@@ -121,10 +121,9 @@ def sync_qbo_to_local(
             "cost_codes_synced": 0,
             "sub_cost_codes_synced": 0,
             "items": [],
-        }
+        }, outcome
     
     logger.info(f"Retrieved {len(items)} items from QBO")
-    outcome.fetched = len(items)
     
     # Separate parent and child items
     parent_items = [item for item in items if item.is_parent]
@@ -143,7 +142,7 @@ def sync_qbo_to_local(
                 initial_delay=INITIAL_RETRY_DELAY,
             )
             cost_codes_synced += 1
-            outcome.record_synced()
+            outcome.record_projected()
             logger.info(f"Synced QboItem {item.id} to CostCode {cost_code.id}")
         except Exception as e:
             outcome.record_projection_error(
@@ -168,7 +167,7 @@ def sync_qbo_to_local(
                 initial_delay=INITIAL_RETRY_DELAY,
             )
             sub_cost_codes_synced += 1
-            outcome.record_synced()
+            outcome.record_projected()
             logger.info(f"Synced QboItem {item.id} to SubCostCode {sub_cost_code.id}")
         except Exception as e:
             outcome.record_projection_error(
@@ -185,7 +184,7 @@ def sync_qbo_to_local(
         "cost_codes_synced": cost_codes_synced,
         "sub_cost_codes_synced": sub_cost_codes_synced,
         "items": [item.to_dict() for item in items],
-    }
+    }, outcome
 
 
 def sync_local_to_qbo(
@@ -444,14 +443,12 @@ def sync_qbo_item() -> dict:
         else:
             logger.info("No previous sync found. Performing full sync.")
 
-        outcome = SyncOutcome()
-        qbo_to_local_result = sync_qbo_to_local(
+        qbo_to_local_result, outcome = sync_qbo_to_local(
             realm_id=realm_id,
             last_sync_time=last_sync_time,
             qbo_item_service=qbo_item_service,
             cost_code_connector=cost_code_connector,
             sub_cost_code_connector=sub_cost_code_connector,
-            outcome=outcome,
         )
         
         # Step 2: Local -> QBO push disabled in batch sync (one-way intake only).

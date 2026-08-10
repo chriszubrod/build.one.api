@@ -10,7 +10,7 @@ from integrations.intuit.qbo.invoice.business.model import QboInvoice, QboInvoic
 from integrations.intuit.qbo.invoice.persistence.repo import QboInvoiceRepository, QboInvoiceLineRepository
 from integrations.intuit.qbo.invoice.external.client import QboInvoiceClient
 from integrations.intuit.qbo.invoice.external.schemas import QboInvoice as QboInvoiceExternalSchema
-from integrations.intuit.qbo.base.sync_outcome import SyncOutcome, coerce_outcome
+from integrations.intuit.qbo.base.sync_outcome import SyncOutcome
 from shared.database import with_retry
 
 logger = logging.getLogger(__name__)
@@ -44,8 +44,7 @@ class QboInvoiceService:
         end_date: Optional[str] = None,
         customer_ref: Optional[str] = None,
         sync_to_modules: bool = False,
-        outcome: Optional[SyncOutcome] = None,
-    ) -> List[QboInvoice]:
+    ) -> SyncOutcome[QboInvoice]:
         """
         Fetch Invoices from QBO API and store locally.
         Uses upsert pattern: creates if not exists, updates if exists.
@@ -61,14 +60,11 @@ class QboInvoiceService:
             customer_ref: Optional QBO Customer ID. If provided, only fetches
                 Invoices where CustomerRef = customer_ref.
             sync_to_modules: If True, also sync to Invoice/InvoiceLineItem modules
-            outcome: Optional shared failure accumulator for watermark runners.
-                Staging upsert failures recorded here prevent advancing the watermark
-                past QBO records that never reached qbo.*.
         
         Returns:
-            List[QboInvoice]: The synced invoice records
+            SyncOutcome[QboInvoice]: Pull run envelope including synced staging rows
         """
-        outcome = coerce_outcome(outcome)
+        outcome: SyncOutcome[QboInvoice] = SyncOutcome.for_service_pull()
         # Fetch Invoices from QBO API. QboHttpClient (via QboInvoiceClient) resolves
         # and refreshes the access token lazily, so no upfront auth call is needed.
         with QboInvoiceClient(realm_id=realm_id) as client:
@@ -82,7 +78,7 @@ class QboInvoiceService:
         outcome.fetched = len(qbo_invoices)
         if not qbo_invoices:
             logger.info(f"No Invoices found since {last_updated_time or 'beginning'}")
-            return []
+            return outcome
         
         logger.info(f"Retrieved {len(qbo_invoices)} invoices from QBO")
 
@@ -100,7 +96,6 @@ class QboInvoiceService:
         logger.info(f"Pre-loaded {len(existing_lines_map)} existing QboInvoiceLines")
 
         # Process each invoice with retry logic and batch delays
-        synced_invoices = []
         changed_invoices = []  # Only invoices actually modified (not sync_token-skipped)
 
         for i, qbo_invoice in enumerate(qbo_invoices):
@@ -116,8 +111,7 @@ class QboInvoiceService:
                     max_retries=MAX_RETRIES,
                     initial_delay=INITIAL_RETRY_DELAY,
                 )
-                synced_invoices.append(local_invoice)
-                outcome.record_synced()
+                outcome.record_synced(local_invoice)
                 # Only propagate to modules if the invoice was actually created or updated
                 if existing_before is None or existing_before.sync_token != qbo_invoice.sync_token:
                     changed_invoices.append(local_invoice)
@@ -137,9 +131,9 @@ class QboInvoiceService:
         
         # Sync to modules if requested (only changed invoices — skipped ones haven't changed)
         if sync_to_modules:
-            self._sync_to_invoices(changed_invoices)
+            self._sync_to_invoices(changed_invoices, outcome)
         
-        return synced_invoices
+        return outcome
 
     def upsert_from_external(
         self, qbo_invoice: QboInvoiceExternalSchema, realm_id: str,
@@ -412,7 +406,7 @@ class QboInvoiceService:
                 except Exception as e:
                     logger.warning(f"Could not delete stale QboInvoiceLine {stored_line.id}: {e}")
 
-    def _sync_to_invoices(self, invoices: List[QboInvoice]) -> None:
+    def _sync_to_invoices(self, invoices: List[QboInvoice], outcome: SyncOutcome) -> None:
         """
         Sync invoices to Invoice module.
         
@@ -434,8 +428,14 @@ class QboInvoiceService:
                 invoice_lines = self.line_repo.read_by_qbo_invoice_id(invoice.id)
                 invoice_module = connector.sync_from_qbo_invoice(invoice, invoice_lines)
                 logger.info(f"Synced QboInvoice {invoice.id} to Invoice {invoice_module.id}")
+                outcome.record_projected()
             except Exception as e:
-                logger.error(f"Failed to sync QboInvoice {invoice.id} to Invoice: {e}")
+                outcome.record_projection_error(
+                    invoice.qbo_id,
+                    e,
+                    label="Invoice->Invoice",
+                    logger=logger,
+                )
 
     def read_all(self) -> List[QboInvoice]:
         """

@@ -9,6 +9,7 @@ from integrations.intuit.qbo.item.business.model import QboItem
 from integrations.intuit.qbo.item.persistence.repo import QboItemRepository
 from integrations.intuit.qbo.item.external.client import QboItemClient
 from integrations.intuit.qbo.item.external.schemas import QboItem as QboItemExternalSchema
+from integrations.intuit.qbo.base.sync_outcome import SyncOutcome
 from integrations.intuit.qbo.item.connector.cost_code.business.service import ItemCostCodeConnector
 from integrations.intuit.qbo.item.connector.sub_cost_code.business.service import ItemSubCostCodeConnector
 
@@ -29,7 +30,7 @@ class QboItemService:
         realm_id: str,
         last_updated_time: Optional[str] = None,
         sync_to_modules: bool = True
-    ) -> List[QboItem]:
+    ) -> SyncOutcome[QboItem]:
         """
         Fetch Items from QBO API and store locally.
         Uses upsert pattern: creates if not exists, updates if exists.
@@ -41,8 +42,9 @@ class QboItemService:
             sync_to_modules: If True, also sync to CostCode/SubCostCode modules
         
         Returns:
-            List[QboItem]: The synced item records
+            SyncOutcome[QboItem]: Pull run envelope including synced staging rows
         """
+        outcome: SyncOutcome[QboItem] = SyncOutcome.for_service_pull()
         # Fetch Items from QBO API. QboHttpClient (via QboItemClient) resolves
         # and refreshes the access token lazily, so no upfront auth call is needed.
         with QboItemClient(realm_id=realm_id) as client:
@@ -50,21 +52,21 @@ class QboItemService:
                 last_updated_time=last_updated_time
             )
         
+        outcome.fetched = len(qbo_items)
         if not qbo_items:
             logger.info(f"No Items found since {last_updated_time or 'beginning'}")
-            return []
+            return outcome
         
         logger.info(f"Retrieved {len(qbo_items)} items from QBO")
         
         # Process each item
-        synced_items = []
         parent_items = []
         child_items = []
         
         for qbo_item in qbo_items:
             # Store in local database
             local_item = self._upsert_item(qbo_item, realm_id)
-            synced_items.append(local_item)
+            outcome.record_synced(local_item)
             
             # Categorize for module sync
             if qbo_item.parent_ref is None:
@@ -74,10 +76,10 @@ class QboItemService:
         
         # Sync to modules if requested
         if sync_to_modules:
-            self._sync_to_cost_codes(parent_items)
-            self._sync_to_sub_cost_codes(child_items)
+            self._sync_to_cost_codes(parent_items, outcome)
+            self._sync_to_sub_cost_codes(child_items, outcome)
         
-        return synced_items
+        return outcome
 
     def _upsert_item(self, qbo_item: QboItemExternalSchema, realm_id: str) -> QboItem:
         """
@@ -151,7 +153,7 @@ class QboItemService:
                 expense_account_ref_name=expense_account_ref_name,
             )
 
-    def _sync_to_cost_codes(self, parent_items: List[QboItem]) -> None:
+    def _sync_to_cost_codes(self, parent_items: List[QboItem], outcome: SyncOutcome) -> None:
         """
         Sync parent items to CostCode module.
         
@@ -167,10 +169,16 @@ class QboItemService:
             try:
                 cost_code = connector.sync_from_qbo_item(item)
                 logger.info(f"Synced QboItem {item.id} to CostCode {cost_code.id}")
+                outcome.record_projected()
             except Exception as e:
-                logger.error(f"Failed to sync QboItem {item.id} to CostCode: {e}")
+                outcome.record_projection_error(
+                    item.qbo_id,
+                    e,
+                    label="Item->CostCode",
+                    logger=logger,
+                )
 
-    def _sync_to_sub_cost_codes(self, child_items: List[QboItem]) -> None:
+    def _sync_to_sub_cost_codes(self, child_items: List[QboItem], outcome: SyncOutcome) -> None:
         """
         Sync child items to SubCostCode module.
         
@@ -186,8 +194,14 @@ class QboItemService:
             try:
                 sub_cost_code = connector.sync_from_qbo_item(item)
                 logger.info(f"Synced QboItem {item.id} to SubCostCode {sub_cost_code.id}")
+                outcome.record_projected()
             except Exception as e:
-                logger.error(f"Failed to sync QboItem {item.id} to SubCostCode: {e}")
+                outcome.record_projection_error(
+                    item.qbo_id,
+                    e,
+                    label="Item->SubCostCode",
+                    logger=logger,
+                )
 
     def read_all(self) -> List[QboItem]:
         """

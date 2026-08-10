@@ -13,6 +13,7 @@ from integrations.intuit.qbo.reimburse_charge.business.parse import (
 )
 from integrations.intuit.qbo.reimburse_charge.persistence.repo import QboReimburseChargeRepository
 from integrations.intuit.qbo.invoice.external.client import QboInvoiceClient
+from integrations.intuit.qbo.base.sync_outcome import SyncOutcome
 from shared.database import with_retry
 
 logger = logging.getLogger(__name__)
@@ -44,7 +45,7 @@ class QboReimburseChargeService:
         last_updated_time: Optional[str] = None,
         start_date: Optional[str] = None,
         end_date: Optional[str] = None,
-    ) -> dict:
+    ) -> SyncOutcome[QboReimburseCharge]:
         """
         Fetch ReimburseCharges from QBO and upsert into staging.
 
@@ -55,19 +56,15 @@ class QboReimburseChargeService:
             start_date / end_date: Optional TxnDate bounds (YYYY-MM-DD).
 
         Returns:
-            dict: {
-                "synced": List[QboReimburseCharge],   # upserted records
-                "failed_ids": List[str],              # RCs that failed to persist
-                "fetched_count": int,                 # RCs returned by QBO
-                "skipped_no_id": List[dict],          # malformed RCs (no Id)
-            }
+            SyncOutcome[QboReimburseCharge]: Pull run envelope including synced staging rows
 
-        WATERMARK CONTRACT: `failed_ids` is what makes RC capture safe. Capturing
+        WATERMARK CONTRACT: ``staging_failed_ids`` is what makes RC capture safe. Capturing
         the source pointer pre-invoice is one-shot (QBO drops it on the invoiced
         flip, KI-32), so the caller MUST NOT advance the dbo.Sync watermark while
         any RC in the window failed to persist — the upserts are idempotent, so
         re-pulling the same window next tick is safe.
         """
+        outcome: SyncOutcome[QboReimburseCharge] = SyncOutcome.for_service_pull()
         with QboInvoiceClient(realm_id=realm_id) as client:
             raw_records = client.query_all_reimburse_charges(
                 last_updated_time=last_updated_time,
@@ -77,13 +74,11 @@ class QboReimburseChargeService:
 
         if not raw_records:
             logger.info(f"No ReimburseCharges found since {last_updated_time or 'beginning'}")
-            return {"synced": [], "failed_ids": [], "fetched_count": 0, "skipped_no_id": []}
+            outcome.fetched = 0
+            return outcome
 
+        outcome.fetched = len(raw_records)
         logger.info(f"Retrieved {len(raw_records)} reimburse charges from QBO")
-
-        synced: List[QboReimburseCharge] = []
-        failed: List[str] = []
-        skipped_no_id: List[dict] = []
 
         for i, raw in enumerate(raw_records):
             parsed = parse_reimburse_charge(raw)
@@ -91,7 +86,7 @@ class QboReimburseChargeService:
                 # Malformed RC (QBO entity with no Id) — can never persist or be
                 # retried, so it does NOT hold the watermark (would stall forever).
                 logger.warning(f"Skipping ReimburseCharge with no Id: {raw}")
-                skipped_no_id.append(raw)
+                outcome.record_staging_skip("<no-id>", "ReimburseCharge with no Id")
                 continue
             try:
                 record = with_retry(
@@ -101,28 +96,26 @@ class QboReimburseChargeService:
                     max_retries=MAX_RETRIES,
                     initial_delay=INITIAL_RETRY_DELAY,
                 )
-                synced.append(record)
+                outcome.record_synced(record)
                 logger.debug(f"Upserted reimburse charge {parsed['qbo_id']} ({i + 1}/{len(raw_records)})")
             except Exception as e:
                 # Transient persistence failure — MUST hold the watermark so the
                 # window is re-pulled (idempotent) before the RC's pointer is
                 # lost to the invoiced flip.
                 logger.error(f"Failed to upsert reimburse charge {parsed.get('qbo_id')}: {e}")
-                failed.append(parsed["qbo_id"])
+                outcome.record_staging_failure(parsed["qbo_id"], e)
 
             if (i + 1) % BATCH_SIZE == 0 and i + 1 < len(raw_records):
                 logger.debug(f"Processed {i + 1}/{len(raw_records)} reimburse charges, pausing...")
                 time.sleep(BATCH_DELAY)
 
-        if failed:
-            logger.warning(f"Failed to upsert {len(failed)} reimburse charges: {failed}")
+        if outcome.staging_failed_ids:
+            logger.warning(
+                f"Failed to upsert {len(outcome.staging_failed_ids)} reimburse charges: "
+                f"{outcome.staging_failed_ids}"
+            )
 
-        return {
-            "synced": synced,
-            "failed_ids": failed,
-            "fetched_count": len(raw_records),
-            "skipped_no_id": skipped_no_id,
-        }
+        return outcome
 
     def _upsert(self, parsed: dict, realm_id: str) -> QboReimburseCharge:
         """

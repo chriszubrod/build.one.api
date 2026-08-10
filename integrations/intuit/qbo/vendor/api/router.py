@@ -37,14 +37,14 @@ def sync_qbo_vendors_router(body: QboVendorSync, current_user: dict = Depends(re
     prior_isa = current_is_system_admin.get()
     set_authz_context(user_id=None, company_id=None, is_system_admin=True)
     try:
-        vendors = service.sync_from_qbo(
+        result = service.sync_from_qbo(
             realm_id=body.realm_id,
             last_updated_time=body.last_updated_time,
             sync_to_modules=body.sync_to_modules
         )
     finally:
         set_authz_context(user_id=prior_uid, company_id=prior_cid, is_system_admin=prior_isa)
-    return list_response([vendor.to_dict() for vendor in vendors])
+    return list_response([vendor.to_dict() for vendor in result.synced])
 
 
 @router.get("/get/qbo-vendors/realm/{realm_id}")

@@ -157,11 +157,10 @@ def sync_qbo_to_local(
     last_sync_time: Optional[str],
     qbo_invoice_service: QboInvoiceService,
     invoice_connector: InvoiceInvoiceConnector,
-    outcome: SyncOutcome,
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
     customer_ref: Optional[str] = None,
-) -> dict:
+) -> tuple[dict, SyncOutcome]:
     """
     Sync Invoices from QBO API to local database and modules.
     
@@ -175,7 +174,7 @@ def sync_qbo_to_local(
         customer_ref: Optional QBO Customer ID for filtering by customer
     
     Returns:
-        dict: Sync results including invoices synced
+        tuple[dict, SyncOutcome]: Sync results envelope and service pull outcome
     """
     if customer_ref:
         logger.info(f"Syncing Invoices from QBO API for realm_id: {realm_id} (CustomerRef: {customer_ref})")
@@ -185,15 +184,15 @@ def sync_qbo_to_local(
         logger.info(f"Syncing Invoices from QBO API for realm_id: {realm_id}")
     
     # Fetch invoices from QBO and store locally (without auto-syncing to modules)
-    invoices = qbo_invoice_service.sync_from_qbo(
+    outcome = qbo_invoice_service.sync_from_qbo(
         realm_id=realm_id,
         last_updated_time=last_sync_time,
         start_date=start_date,
         end_date=end_date,
         customer_ref=customer_ref,
         sync_to_modules=False,
-        outcome=outcome,
     )
+    invoices = outcome.synced
     
     if not invoices:
         logger.info(f"No Invoice updates found since {last_sync_time or 'beginning'}")
@@ -201,7 +200,7 @@ def sync_qbo_to_local(
             "invoices_synced": 0,
             "invoices_module_synced": 0,
             "invoices": [],
-        }
+        }, outcome
     
     logger.info(f"Retrieved {len(invoices)} invoices from QBO")
 
@@ -217,7 +216,6 @@ def sync_qbo_to_local(
     logger.info(f"Pre-loaded {len(all_lines)} QboInvoiceLines for {len(lines_by_invoice)} invoices")
 
     # Sync invoices to Invoice module sequentially
-    invoices_module_synced = 0
 
     for i, invoice in enumerate(invoices):
         try:
@@ -229,7 +227,7 @@ def sync_qbo_to_local(
                 max_retries=MAX_RETRIES,
                 initial_delay=INITIAL_RETRY_DELAY,
             )
-            invoices_module_synced += 1
+            outcome.record_projected()
             logger.info(f"Synced QboInvoice {invoice.id} to Invoice {invoice_module.id} ({i + 1}/{len(invoices)})")
         except Exception as e:
             outcome.record_projection_error(
@@ -242,9 +240,9 @@ def sync_qbo_to_local(
     
     return {
         "invoices_synced": len(invoices),
-        "invoices_module_synced": invoices_module_synced,
+        "invoices_module_synced": outcome.projected_count,
         "invoices": [invoice.to_dict() for invoice in invoices],
-    }
+    }, outcome
 
 
 def sync_qbo_invoice(
@@ -337,13 +335,11 @@ def sync_qbo_invoice(
                 "status_code": 200,
             }
 
-        outcome = SyncOutcome()
-        qbo_to_local_result = sync_qbo_to_local(
+        qbo_to_local_result, outcome = sync_qbo_to_local(
             realm_id=realm_id,
             last_sync_time=last_sync_time,
             qbo_invoice_service=qbo_invoice_service,
             invoice_connector=invoice_connector,
-            outcome=outcome,
             start_date=start_date,
             end_date=end_date,
             customer_ref=customer_ref,

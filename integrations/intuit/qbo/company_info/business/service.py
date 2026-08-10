@@ -10,6 +10,7 @@ from integrations.intuit.qbo.company_info.business.model import QboCompanyInfo
 from integrations.intuit.qbo.company_info.persistence.repo import QboCompanyInfoRepository
 from integrations.intuit.qbo.company_info.external.client import QboCompanyInfoClient
 from integrations.intuit.qbo.company_info.external.schemas import QboCompanyInfo as QboCompanyInfoExternalSchema
+from integrations.intuit.qbo.base.sync_outcome import SyncOutcome
 from integrations.intuit.qbo.physical_address.persistence.repo import QboPhysicalAddressRepository
 
 logger = logging.getLogger(__name__)
@@ -24,7 +25,7 @@ class QboCompanyInfoService:
         """Initialize the QboCompanyInfoService."""
         self.repo = repo or QboCompanyInfoRepository()
 
-    def sync_from_qbo(self, realm_id: str, last_updated_time: Optional[str] = None) -> Optional[QboCompanyInfo]:
+    def sync_from_qbo(self, realm_id: str, last_updated_time: Optional[str] = None) -> SyncOutcome[QboCompanyInfo]:
         """
         Fetch CompanyInfo from QBO API and store locally.
         Extracts PhysicalAddress objects and creates/updates them first.
@@ -34,11 +35,12 @@ class QboCompanyInfoService:
             realm_id: QBO company realm ID
             last_updated_time: Optional ISO format datetime string. If provided, only fetches
                 CompanyInfo where Metadata.LastUpdatedTime > last_updated_time.
-                If no records match, returns None.
+                If no records match, returns an outcome with empty ``synced``.
         
         Returns:
-            QboCompanyInfo: The synced company info record, or None if no updates found
+            SyncOutcome[QboCompanyInfo]: Pull run envelope; ``synced`` holds 0 or 1 row
         """
+        outcome: SyncOutcome[QboCompanyInfo] = SyncOutcome.for_service_pull()
         # Fetch CompanyInfo from QBO API. QboHttpClient resolves and refreshes
         # the access token lazily, so no upfront auth call is needed.
         with QboCompanyInfoClient(realm_id=realm_id) as client:
@@ -50,13 +52,16 @@ class QboCompanyInfoService:
                 # If no CompanyInfo found (e.g., no updates since last sync), return None
                 if "No CompanyInfo found" in str(e):
                     logger.info(f"No CompanyInfo updates found since {last_updated_time or 'beginning'}")
-                    return None
+                    outcome.fetched = 0
+                    return outcome
                 raise
         
         if not qbo_company_info:
             logger.info("No CompanyInfo found in QBO API response")
-            return None
-        
+            outcome.fetched = 0
+            return outcome
+
+        outcome.fetched = 1
         # Extract and sync PhysicalAddress records
         company_addr_id = None
         legal_addr_id = None
@@ -112,7 +117,7 @@ class QboCompanyInfoService:
         if existing:
             # Update existing record
             logger.info(f"Updating existing QBO company info for realm_id: {realm_id}")
-            return self.repo.update_by_qbo_id(
+            record = self.repo.update_by_qbo_id(
                 qbo_id=qbo_company_info.id or existing.qbo_id,
                 row_version=existing.row_version_bytes,
                 sync_token=qbo_company_info.sync_token or existing.sync_token,
@@ -132,7 +137,7 @@ class QboCompanyInfoService:
         else:
             # Create new record
             logger.info(f"Creating new QBO company info for realm_id: {realm_id}")
-            return self.repo.create(
+            record = self.repo.create(
                 qbo_id=qbo_company_info.id,
                 sync_token=qbo_company_info.sync_token,
                 realm_id=realm_id,
@@ -148,6 +153,8 @@ class QboCompanyInfoService:
                 web_addr=web_addr_str,
                 currency_ref=currency_ref_str,
             )
+        outcome.record_synced(record)
+        return outcome
 
     def _sync_physical_address(
         self,

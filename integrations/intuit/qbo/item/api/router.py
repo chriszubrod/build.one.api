@@ -19,12 +19,12 @@ def sync_qbo_items_router(body: QboItemSync, current_user: dict = Depends(requir
     """
     Sync Items from QBO.
     """
-    items = service.sync_from_qbo(
+    result = service.sync_from_qbo(
         realm_id=body.realm_id,
         last_updated_time=body.last_updated_time,
         sync_to_modules=body.sync_to_modules
     )
-    return list_response([item.to_dict() for item in items])
+    return list_response([item.to_dict() for item in result.synced])
 
 
 @router.get("/get/qbo-items")

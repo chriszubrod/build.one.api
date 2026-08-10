@@ -10,7 +10,7 @@ from integrations.intuit.qbo.vendor.business.model import QboVendor
 from integrations.intuit.qbo.vendor.persistence.repo import QboVendorRepository
 from integrations.intuit.qbo.vendor.external.client import QboVendorClient
 from integrations.intuit.qbo.vendor.external.schemas import QboVendor as QboVendorExternalSchema
-from integrations.intuit.qbo.base.sync_outcome import SyncOutcome, coerce_outcome
+from integrations.intuit.qbo.base.sync_outcome import SyncOutcome
 from integrations.intuit.qbo.physical_address.business.service import QboPhysicalAddressService
 from shared.database import with_retry, is_transient_error
 
@@ -38,8 +38,7 @@ class QboVendorService:
         realm_id: str,
         last_updated_time: Optional[str] = None,
         sync_to_modules: bool = False,
-        outcome: Optional[SyncOutcome] = None,
-    ) -> List[QboVendor]:
+    ) -> SyncOutcome[QboVendor]:
         """
         Fetch Vendors from QBO API and store locally.
         Uses upsert pattern: creates if not exists, updates if exists.
@@ -49,14 +48,11 @@ class QboVendorService:
             last_updated_time: Optional ISO format datetime string. If provided, only fetches
                 Vendors where Metadata.LastUpdatedTime > last_updated_time.
             sync_to_modules: If True, also sync to Vendor/VendorAddress modules
-            outcome: Optional shared failure accumulator for watermark runners.
-                Staging upsert failures recorded here prevent advancing the watermark
-                past QBO records that never reached qbo.*.
         
         Returns:
-            List[QboVendor]: The synced vendor records
+            SyncOutcome[QboVendor]: Pull run envelope including synced staging rows
         """
-        outcome = coerce_outcome(outcome)
+        outcome: SyncOutcome[QboVendor] = SyncOutcome.for_service_pull()
         # Fetch Vendors from QBO API. QboHttpClient (via QboVendorClient) resolves
         # and refreshes the access token lazily, so no upfront auth call is needed.
         with QboVendorClient(realm_id=realm_id) as client:
@@ -67,12 +63,11 @@ class QboVendorService:
         outcome.fetched = len(qbo_vendors)
         if not qbo_vendors:
             logger.info(f"No Vendors found since {last_updated_time or 'beginning'}")
-            return []
+            return outcome
         
         logger.info(f"Retrieved {len(qbo_vendors)} vendors from QBO")
         
         # Process each vendor with retry logic and batch delays
-        synced_vendors = []
         
         for i, qbo_vendor in enumerate(qbo_vendors):
             try:
@@ -84,8 +79,7 @@ class QboVendorService:
                     max_retries=MAX_RETRIES,
                     initial_delay=INITIAL_RETRY_DELAY,
                 )
-                synced_vendors.append(local_vendor)
-                outcome.record_synced()
+                outcome.record_synced(local_vendor)
                 logger.debug(f"Upserted vendor {qbo_vendor.id} ({i + 1}/{len(qbo_vendors)})")
             except Exception as e:
                 logger.error(f"Failed to upsert vendor {qbo_vendor.id}: {e}")
@@ -103,9 +97,9 @@ class QboVendorService:
         
         # Sync to modules if requested
         if sync_to_modules:
-            self._sync_to_vendors(synced_vendors)
+            self._sync_to_vendors(outcome.synced, outcome)
         
-        return synced_vendors
+        return outcome
 
     def _upsert_vendor(self, qbo_vendor: QboVendorExternalSchema, realm_id: str) -> QboVendor:
         """
@@ -199,7 +193,7 @@ class QboVendorService:
                 web_addr=web_addr,
             )
 
-    def _sync_to_vendors(self, vendors: List[QboVendor]) -> None:
+    def _sync_to_vendors(self, vendors: List[QboVendor], outcome: SyncOutcome) -> None:
         """
         Sync vendors to Vendor module.
         
@@ -218,8 +212,14 @@ class QboVendorService:
             try:
                 vendor_module = connector.sync_from_qbo_vendor(vendor)
                 logger.info(f"Synced QboVendor {vendor.id} to Vendor {vendor_module.id}")
+                outcome.record_projected()
             except Exception as e:
-                logger.error(f"Failed to sync QboVendor {vendor.id} to Vendor: {e}")
+                outcome.record_projection_error(
+                    vendor.qbo_id,
+                    e,
+                    label="Vendor->Vendor",
+                    logger=logger,
+                )
 
     def _upsert_physical_address(
         self,

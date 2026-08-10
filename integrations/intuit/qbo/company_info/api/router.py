@@ -19,8 +19,9 @@ def sync_qbo_company_info_router(body: QboCompanyInfoSync, current_user: dict = 
     """
     Sync CompanyInfo from QBO.
     """
-    company_info = service.sync_from_qbo(realm_id=body.realm_id)
-    return item_response(company_info.to_dict())
+    result = service.sync_from_qbo(realm_id=body.realm_id)
+    # Deliberate improvement: empty pull returns null item instead of AttributeError 500.
+    return item_response(result.synced[0].to_dict() if result.synced else None)
 
 
 @router.get("/get/qbo-company-infos")

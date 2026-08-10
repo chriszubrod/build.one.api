@@ -39,14 +39,14 @@ def sync_qbo_customers_router(body: QboCustomerSync, current_user: dict = Depend
     prior_isa = current_is_system_admin.get()
     set_authz_context(user_id=None, company_id=None, is_system_admin=True)
     try:
-        customers = service.sync_from_qbo(
+        result = service.sync_from_qbo(
             realm_id=body.realm_id,
             last_updated_time=body.last_updated_time,
             sync_to_modules=body.sync_to_modules
         )
     finally:
         set_authz_context(user_id=prior_uid, company_id=prior_cid, is_system_admin=prior_isa)
-    return list_response([customer.to_dict() for customer in customers])
+    return list_response([customer.to_dict() for customer in result.synced])
 
 
 @router.get("/get/qbo-customers")

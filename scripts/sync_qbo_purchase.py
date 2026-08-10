@@ -108,10 +108,9 @@ def sync_qbo_to_local(
     last_sync_time: Optional[str],
     qbo_purchase_service: QboPurchaseService,
     purchase_connector: PurchaseExpenseConnector,
-    outcome: SyncOutcome,
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
-) -> dict:
+) -> tuple[dict, SyncOutcome]:
     """
     Sync Purchases from QBO API to local database and modules.
     
@@ -124,7 +123,7 @@ def sync_qbo_to_local(
         end_date: Optional end date (YYYY-MM-DD) for filtering by TxnDate
     
     Returns:
-        dict: Sync results including purchases synced
+        tuple[dict, SyncOutcome]: Sync results envelope and service pull outcome
     """
     if start_date or end_date:
         logger.info(f"Syncing Purchases from QBO API for realm_id: {realm_id} (TxnDate: {start_date or 'beginning'} to {end_date or 'now'})")
@@ -132,15 +131,15 @@ def sync_qbo_to_local(
         logger.info(f"Syncing Purchases from QBO API for realm_id: {realm_id}")
     
     # Fetch purchases from QBO and store locally (without auto-syncing to modules)
-    purchases = qbo_purchase_service.sync_from_qbo(
+    outcome = qbo_purchase_service.sync_from_qbo(
         realm_id=realm_id,
         last_updated_time=last_sync_time,
         start_date=start_date,
         end_date=end_date,
         sync_to_modules=False,  # Module sync handled below for better control
         reconcile_deletes=True,  # Removes local records for purchases deleted in QBO (full syncs only)
-        outcome=outcome,
     )
+    purchases = outcome.synced
     
     if not purchases:
         logger.info(f"No Purchase updates found since {last_sync_time or 'beginning'}")
@@ -156,12 +155,11 @@ def sync_qbo_to_local(
             "failed_purchase_ids": outcome.projection_failed_ids,
             "staging_failed_qbo_ids": outcome.staging_failed_ids,
             "purchases": [],
-        }
+        }, outcome
     
     logger.info(f"Retrieved {len(purchases)} purchases from QBO")
     
     # Sync purchases to Expense module
-    expenses_module_synced = 0
     attachments_linked = 0
     excel_rows_synced = 0
     sharepoint_uploads_synced = 0
@@ -201,7 +199,7 @@ def sync_qbo_to_local(
                 max_retries=MAX_RETRIES,
                 initial_delay=INITIAL_RETRY_DELAY,
             )
-            expenses_module_synced += 1
+            outcome.record_projected()
             expense_id = int(expense.id) if isinstance(expense.id, str) else expense.id
             synced_expenses.append((expense, expense_id))
             logger.info(f"Synced QboPurchase {purchase.id} to Expense {expense.id}")
@@ -325,7 +323,7 @@ def sync_qbo_to_local(
 
     return {
         "purchases_synced": len(purchases),
-        "expenses_module_synced": expenses_module_synced,
+        "expenses_module_synced": outcome.projected_count,
         "expenses_completed": expenses_completed,
         "attachments_linked": attachments_linked,
         "excel_rows_synced": excel_rows_synced,
@@ -338,7 +336,7 @@ def sync_qbo_to_local(
         "failed_purchase_ids": outcome.projection_failed_ids,
         "staging_failed_qbo_ids": outcome.staging_failed_ids,
         "purchases": [purchase.to_dict() for purchase in purchases],
-    }
+    }, outcome
 
 
 def sync_qbo_purchase(
@@ -418,13 +416,11 @@ def sync_qbo_purchase(
                 "status_code": 200,
             }
 
-        outcome = SyncOutcome()
-        qbo_to_local_result = sync_qbo_to_local(
+        qbo_to_local_result, outcome = sync_qbo_to_local(
             realm_id=realm_id,
             last_sync_time=last_sync_time,
             qbo_purchase_service=qbo_purchase_service,
             purchase_connector=purchase_connector,
-            outcome=outcome,
             start_date=start_date,
             end_date=end_date,
         )

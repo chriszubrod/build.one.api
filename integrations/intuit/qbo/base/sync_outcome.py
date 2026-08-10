@@ -1,9 +1,11 @@
 # Python Standard Library Imports
 import logging
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Generic, Optional, TypeVar
 
 _module_logger = logging.getLogger(__name__)
+
+T = TypeVar("T")
 
 # Third-party Imports
 
@@ -12,7 +14,7 @@ from integrations.intuit.qbo.base.errors import is_retryable_error
 
 
 @dataclass
-class SyncOutcome:
+class SyncOutcome(Generic[T]):
     """
     Shared failure vocabulary for QBO pull runs: staging (QBO → qbo.*) and
     module projection (qbo.* → dbo.*) both append into the same envelope so
@@ -23,7 +25,17 @@ class SyncOutcome:
     staging_failed_ids: list[str] = field(default_factory=list)
     projection_failed_ids: list[str] = field(default_factory=list)
     skipped_ids: list[str] = field(default_factory=list)
-    synced_count: int = 0
+    synced: list[T] = field(default_factory=list)
+    projected_count: int = 0
+    # Set True ONLY by a service's sync_from_qbo; WatermarkRun.commit requires this
+    # provenance marker so a hand-built or laundered outcome can never advance a watermark.
+    # Default False is the safe default — an outcome nobody stamped must be refused.
+    from_service_pull: bool = False
+
+    @classmethod
+    def for_service_pull(cls) -> "SyncOutcome[T]":
+        """The only sanctioned way to stamp pull provenance on a service-owned outcome."""
+        return cls(from_service_pull=True)
 
     def record_staging_failure(self, qbo_id, error=None) -> None:
         self.staging_failed_ids.append(str(qbo_id))
@@ -32,7 +44,11 @@ class SyncOutcome:
         self.projection_failed_ids.append(str(qbo_id))
 
     def _record_skip(self, qbo_id, reason=None) -> None:
-        """Permanent data issues (e.g. vendor not mapped); never triggers a hold."""
+        """Permanent projection skips; callers must use record_projection_error."""
+        self.skipped_ids.append(str(qbo_id))
+
+    def record_staging_skip(self, qbo_id, reason=None) -> None:
+        """Permanent staging-tier skip (e.g. malformed QBO row with no Id)."""
         self.skipped_ids.append(str(qbo_id))
 
     def record_projection_error(
@@ -56,15 +72,15 @@ class SyncOutcome:
         costs one redundant re-pull of an idempotent upsert; a wrong skip loses
         the record until someone edits it in QBO again, so unknown errors hold.
 
-        Permanent data issues (plain ``ValueError``) will never self-resolve on
-        retry, so they must not block the watermark. Transient errors MUST block
-        the watermark so the record is re-fetched on the next run.
+        Permanent data issues (plain ``ValueError``) are classified as skip — they
+        do not hold the watermark when this run commits one. Transient errors are
+        classified as failure / hold when a watermark is committed for this pull.
         """
         log = logger if logger is not None else _module_logger
         if is_retryable_error(error):
             self.record_projection_failure(qbo_id, error)
             log.error(
-                "Failed to project %s %s (watermark holds for retry): %s",
+                "Failed to project %s %s (classified retryable — holds the watermark if this run commits one): %s",
                 label,
                 qbo_id,
                 error,
@@ -73,7 +89,7 @@ class SyncOutcome:
         if isinstance(error, ValueError):
             self._record_skip(qbo_id, str(error))
             log.info(
-                "Skipped %s %s (permanent data issue, watermark advances): %s",
+                "Skipped %s %s (permanent data issue — does not hold the watermark): %s",
                 label,
                 qbo_id,
                 error,
@@ -81,15 +97,24 @@ class SyncOutcome:
             return "skip"
         self.record_projection_failure(qbo_id, error)
         log.error(
-            "Failed to project %s %s (watermark holds for retry): %s",
+            "Failed to project %s %s (classified retryable — holds the watermark if this run commits one): %s",
             label,
             qbo_id,
             error,
         )
         return "failure"
 
-    def record_synced(self) -> None:
-        self.synced_count += 1
+    def record_synced(self, record: T) -> None:
+        """Append one staging upsert success (the pulled qbo.* row)."""
+        self.synced.append(record)
+
+    @property
+    def synced_count(self) -> int:
+        return len(self.synced)
+
+    def record_projected(self) -> None:
+        """Count one module-projection success, qbo.* → dbo.*."""
+        self.projected_count += 1
 
     @property
     def should_hold(self) -> bool:
@@ -109,6 +134,7 @@ class SyncOutcome:
         return {
             "fetched": self.fetched,
             "synced": self.synced_count,
+            "projected": self.projected_count,
             "failed_count": self.failed_count,
             "staging_failed_ids": list(self.staging_failed_ids),
             "projection_failed_ids": list(self.projection_failed_ids),
@@ -125,7 +151,3 @@ class SyncOutcome:
         if self.projection_failed_ids:
             parts.append(f"projection failed: {', '.join(self.projection_failed_ids)}")
         return "; ".join(parts)
-
-
-def coerce_outcome(outcome: Optional["SyncOutcome"]) -> "SyncOutcome":
-    return outcome if outcome is not None else SyncOutcome()

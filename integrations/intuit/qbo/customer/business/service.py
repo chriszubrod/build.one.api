@@ -9,6 +9,7 @@ from integrations.intuit.qbo.customer.business.model import QboCustomer
 from integrations.intuit.qbo.customer.persistence.repo import QboCustomerRepository
 from integrations.intuit.qbo.customer.external.client import QboCustomerClient
 from integrations.intuit.qbo.customer.external.schemas import QboCustomer as QboCustomerExternalSchema
+from integrations.intuit.qbo.base.sync_outcome import SyncOutcome
 from integrations.intuit.qbo.customer.connector.customer.business.service import CustomerCustomerConnector
 from integrations.intuit.qbo.customer.connector.project.business.service import CustomerProjectConnector
 from integrations.intuit.qbo.physical_address.business.service import QboPhysicalAddressService
@@ -31,7 +32,7 @@ class QboCustomerService:
         realm_id: str,
         last_updated_time: Optional[str] = None,
         sync_to_modules: bool = False
-    ) -> List[QboCustomer]:
+    ) -> SyncOutcome[QboCustomer]:
         """
         Fetch Customers from QBO API and store locally.
         Uses upsert pattern: creates if not exists, updates if exists.
@@ -43,8 +44,9 @@ class QboCustomerService:
             sync_to_modules: If True, also sync to Customer/Project modules
         
         Returns:
-            List[QboCustomer]: The synced customer records
+            SyncOutcome[QboCustomer]: Pull run envelope including synced staging rows
         """
+        outcome: SyncOutcome[QboCustomer] = SyncOutcome.for_service_pull()
         # Fetch Customers from QBO API. QboHttpClient (via QboCustomerClient) resolves
         # and refreshes the access token lazily, so no upfront auth call is needed.
         with QboCustomerClient(realm_id=realm_id) as client:
@@ -52,21 +54,21 @@ class QboCustomerService:
                 last_updated_time=last_updated_time
             )
         
+        outcome.fetched = len(qbo_customers)
         if not qbo_customers:
             logger.info(f"No Customers found since {last_updated_time or 'beginning'}")
-            return []
+            return outcome
         
         logger.info(f"Retrieved {len(qbo_customers)} customers from QBO")
         
         # Process each customer
-        synced_customers = []
         parent_customers = []
         job_customers = []
         
         for qbo_customer in qbo_customers:
             # Store in local database
             local_customer = self._upsert_customer(qbo_customer, realm_id)
-            synced_customers.append(local_customer)
+            outcome.record_synced(local_customer)
             
             # Categorize for module sync
             if qbo_customer.job:
@@ -76,10 +78,10 @@ class QboCustomerService:
         
         # Sync to modules if requested
         if sync_to_modules:
-            self._sync_to_customers(parent_customers)
-            self._sync_to_projects(job_customers)
+            self._sync_to_customers(parent_customers, outcome)
+            self._sync_to_projects(job_customers, outcome)
         
-        return synced_customers
+        return outcome
 
     def _upsert_customer(self, qbo_customer: QboCustomerExternalSchema, realm_id: str) -> QboCustomer:
         """
@@ -191,7 +193,7 @@ class QboCustomerService:
                 print_on_check_name=qbo_customer.print_on_check_name,
             )
 
-    def _sync_to_customers(self, parent_customers: List[QboCustomer]) -> None:
+    def _sync_to_customers(self, parent_customers: List[QboCustomer], outcome: SyncOutcome) -> None:
         """
         Sync parent customers to Customer module.
         
@@ -207,10 +209,16 @@ class QboCustomerService:
             try:
                 customer_module = connector.sync_from_qbo_customer(customer)
                 logger.info(f"Synced QboCustomer {customer.id} to Customer {customer_module.id}")
+                outcome.record_projected()
             except Exception as e:
-                logger.error(f"Failed to sync QboCustomer {customer.id} to Customer: {e}")
+                outcome.record_projection_error(
+                    customer.qbo_id,
+                    e,
+                    label="Customer->Customer",
+                    logger=logger,
+                )
 
-    def _sync_to_projects(self, job_customers: List[QboCustomer]) -> None:
+    def _sync_to_projects(self, job_customers: List[QboCustomer], outcome: SyncOutcome) -> None:
         """
         Sync job customers to Project module.
         
@@ -226,8 +234,14 @@ class QboCustomerService:
             try:
                 project = connector.sync_from_qbo_customer(customer)
                 logger.info(f"Synced QboCustomer {customer.id} to Project {project.id}")
+                outcome.record_projected()
             except Exception as e:
-                logger.error(f"Failed to sync QboCustomer {customer.id} to Project: {e}")
+                outcome.record_projection_error(
+                    customer.qbo_id,
+                    e,
+                    label="Customer->Project",
+                    logger=logger,
+                )
 
     def read_all(self) -> List[QboCustomer]:
         """

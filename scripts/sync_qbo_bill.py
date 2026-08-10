@@ -253,12 +253,11 @@ def sync_qbo_to_local(
     last_sync_time: Optional[str],
     qbo_bill_service: QboBillService,
     bill_connector: BillBillConnector,
-    outcome: SyncOutcome,
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
     sync_attachments: bool = False,
     attachable_service: Optional[QboAttachableService] = None,
-) -> dict:
+) -> tuple[dict, SyncOutcome]:
     """
     Sync Bills from QBO API to local database and modules.
     
@@ -273,7 +272,7 @@ def sync_qbo_to_local(
         attachable_service: QboAttachableService instance (required if sync_attachments is True)
     
     Returns:
-        dict: Sync results including bills synced
+        tuple[dict, SyncOutcome]: Sync results envelope and service pull outcome
     """
     if start_date or end_date:
         logger.info(f"Syncing Bills from QBO API for realm_id: {realm_id} (TxnDate: {start_date or 'beginning'} to {end_date or 'now'})")
@@ -283,15 +282,15 @@ def sync_qbo_to_local(
     # Fetch and upsert QboBill/QboBillLine mirror records only.
     # Module sync (Bill/BillLineItem) is handled below per-bill with retry logic
     # and attachment sync — passing sync_to_modules=True here would double-sync.
-    bills = qbo_bill_service.sync_from_qbo(
+    outcome = qbo_bill_service.sync_from_qbo(
         realm_id=realm_id,
         last_updated_time=last_sync_time,
         start_date=start_date,
         end_date=end_date,
         sync_to_modules=False,
         reconcile_deletes=True,  # full-sync-only guard inside: removes local records deleted in QBO
-        outcome=outcome,
     )
+    bills = outcome.synced
     
     if not bills:
         logger.info(f"No Bill updates found since {last_sync_time or 'beginning'}")
@@ -305,12 +304,11 @@ def sync_qbo_to_local(
             # failed_bill_ids: qbo.Bill staging PKs; staging_failed_qbo_ids: QBO API Ids
             "failed_bill_ids": outcome.projection_failed_ids,
             "staging_failed_qbo_ids": outcome.staging_failed_ids,
-        }
+        }, outcome
     
     logger.info(f"Retrieved {len(bills)} bills from QBO")
     
     # Sync bills to Bill module
-    bills_module_synced = 0
     attachments_synced = 0
     excel_rows_synced = 0
     sharepoint_uploads_synced = 0
@@ -347,7 +345,7 @@ def sync_qbo_to_local(
                 max_retries=MAX_RETRIES,
                 initial_delay=INITIAL_RETRY_DELAY,
             )
-            bills_module_synced += 1
+            outcome.record_projected()
             logger.info(f"Synced QboBill {bill.id} to Bill {bill_module.id}")
             # Collect for batched budget-tracker Excel sync after the loop
             synced_bills.append((bill_module, bill_module.id))
@@ -465,7 +463,7 @@ def sync_qbo_to_local(
 
     return {
         "bills_synced": len(bills),
-        "bills_module_synced": bills_module_synced,
+        "bills_module_synced": outcome.projected_count,
         "attachments_synced": attachments_synced,
         "excel_rows_synced": excel_rows_synced,
         "sharepoint_uploads_synced": sharepoint_uploads_synced,
@@ -477,7 +475,7 @@ def sync_qbo_to_local(
         "failed_bill_ids": outcome.projection_failed_ids,
         "staging_failed_qbo_ids": outcome.staging_failed_ids,
         "bills": [bill.to_dict() for bill in bills],
-    }
+    }, outcome
 
 
 def sync_local_to_qbo(
@@ -834,13 +832,11 @@ def sync_qbo_bill(
             }
 
         # Step 1: Sync from QBO to local
-        outcome = SyncOutcome()
-        qbo_to_local_result = sync_qbo_to_local(
+        qbo_to_local_result, outcome = sync_qbo_to_local(
             realm_id=realm_id,
             last_sync_time=last_sync_time,
             qbo_bill_service=qbo_bill_service,
             bill_connector=bill_connector,
-            outcome=outcome,
             start_date=start_date,
             end_date=end_date,
             sync_attachments=sync_attachments,
@@ -876,8 +872,7 @@ def sync_qbo_bill(
         end_time_str = _normalize_last_sync(end_time.isoformat())
 
         if push_run is not None:
-            push_run.commit(
-                SyncOutcome(),
+            push_run.commit_push(
                 skip=(pull_only or skip_sync_record_update or local_to_qbo_result is None),
             )
 

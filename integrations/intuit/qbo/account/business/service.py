@@ -10,7 +10,7 @@ from integrations.intuit.qbo.account.business.model import QboAccount
 from integrations.intuit.qbo.account.persistence.repo import QboAccountRepository
 from integrations.intuit.qbo.account.external.client import QboAccountClient
 from integrations.intuit.qbo.account.external.schemas import QboAccount as QboAccountExternalSchema
-from integrations.intuit.qbo.base.sync_outcome import SyncOutcome, coerce_outcome
+from integrations.intuit.qbo.base.sync_outcome import SyncOutcome
 from shared.database import with_retry
 
 logger = logging.getLogger(__name__)
@@ -36,8 +36,7 @@ class QboAccountService:
         realm_id: str,
         last_updated_time: Optional[str] = None,
         reconcile_deletes: bool = False,
-        outcome: Optional[SyncOutcome] = None,
-    ) -> List[QboAccount]:
+    ) -> SyncOutcome[QboAccount]:
         """
         Fetch Accounts from QBO API and store locally.
         Uses upsert pattern: creates if not exists, updates if exists.
@@ -48,14 +47,10 @@ class QboAccountService:
                 Accounts where Metadata.LastUpdatedTime > last_updated_time.
             reconcile_deletes: If True, deactivate local records that no longer exist in QBO.
                 Only runs on full sync (when last_updated_time is None).
-            outcome: Optional shared failure accumulator for watermark runners.
-                Staging upsert failures recorded here prevent advancing the watermark
-                past QBO records that never reached qbo.*.
-
         Returns:
-            List[QboAccount]: The synced account records
+            SyncOutcome[QboAccount]: Pull run envelope including synced staging rows
         """
-        outcome = coerce_outcome(outcome)
+        outcome: SyncOutcome[QboAccount] = SyncOutcome.for_service_pull()
         self._realm_id = realm_id
 
         # Fetch Accounts from QBO API. QboHttpClient (via QboAccountClient) resolves
@@ -68,12 +63,11 @@ class QboAccountService:
         outcome.fetched = len(qbo_accounts)
         if not qbo_accounts:
             logger.info(f"No Accounts found since {last_updated_time or 'beginning'}")
-            return []
+            return outcome
 
         logger.info(f"Retrieved {len(qbo_accounts)} accounts from QBO")
 
         # Process each account with retry logic and batch delays
-        synced_accounts = []
         deactivated_count = 0
 
         for i, qbo_account in enumerate(qbo_accounts):
@@ -86,8 +80,7 @@ class QboAccountService:
                     max_retries=MAX_RETRIES,
                     initial_delay=INITIAL_RETRY_DELAY,
                 )
-                synced_accounts.append(local_account)
-                outcome.record_synced()
+                outcome.record_synced(local_account)
 
                 # Track deactivated accounts from QBO
                 if qbo_account.active is False:
@@ -118,7 +111,7 @@ class QboAccountService:
         if reconcile_deletes and last_updated_time is None:
             self._reconcile_deleted_accounts(realm_id, qbo_accounts)
 
-        return synced_accounts
+        return outcome
 
     def _reconcile_deleted_accounts(
         self,

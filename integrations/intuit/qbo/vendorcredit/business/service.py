@@ -13,7 +13,7 @@ from integrations.intuit.qbo.vendorcredit.external.schemas import (
     QboVendorCredit as QboVendorCreditSchema,
     QboVendorCreditLine as QboVendorCreditLineSchema,
 )
-from integrations.intuit.qbo.base.sync_outcome import SyncOutcome, coerce_outcome
+from integrations.intuit.qbo.base.sync_outcome import SyncOutcome
 logger = logging.getLogger(__name__)
 
 
@@ -31,8 +31,7 @@ class QboVendorCreditService:
         end_date: Optional[str] = None,
         sync_to_modules: bool = True,
         reconcile_deletes: bool = False,
-        outcome: Optional[SyncOutcome] = None,
-    ) -> List[QboVendorCredit]:
+    ) -> SyncOutcome[QboVendorCredit]:
         """
         Sync VendorCredits from QBO to local cache.
         
@@ -42,15 +41,12 @@ class QboVendorCreditService:
             start_date: Filter by transaction date start
             end_date: Filter by transaction date end
             sync_to_modules: Whether to also sync to BillCredit module
-            outcome: Optional shared failure accumulator for watermark runners.
-                Staging upsert failures recorded here prevent advancing the watermark
-                past QBO records that never reached qbo.*.
+            reconcile_deletes: If True, reconcile deletes (full sync only)
             
         Returns:
-            List of synced VendorCredits
+            SyncOutcome[QboVendorCredit]: Pull run envelope including synced staging rows
         """
-        outcome = coerce_outcome(outcome)
-        synced = []
+        outcome: SyncOutcome[QboVendorCredit] = SyncOutcome.for_service_pull()
 
         # QboHttpClient (via QboVendorCreditClient) resolves and refreshes the
         # access token lazily, so no upfront auth call is needed.
@@ -70,8 +66,7 @@ class QboVendorCreditService:
                 try:
                     local_vc = self._upsert_vendor_credit(vc, realm_id)
                     if local_vc:
-                        synced.append(local_vc)
-                        outcome.record_synced()
+                        outcome.record_synced(local_vc)
                         
                         # Sync line items
                         if vc.line:
@@ -91,15 +86,15 @@ class QboVendorCreditService:
                     continue
         
         # Sync to BillCredit module if requested
-        if sync_to_modules and synced:
-            self._sync_to_bill_credits(synced)
+        if sync_to_modules and outcome.synced:
+            self._sync_to_bill_credits(outcome.synced, outcome)
 
         # Delete reconciliation: only valid on a full, unfiltered sync so the API
         # response represents the complete current state of QBO.
         if reconcile_deletes and last_updated_time is None and not start_date and not end_date:
             self._reconcile_deleted_vendor_credits(realm_id)
 
-        return synced
+        return outcome
 
     def upsert_from_external(
         self, qbo_vc: QboVendorCreditSchema, realm_id: str,
@@ -373,7 +368,7 @@ class QboVendorCreditService:
                 except Exception as e:
                     logger.warning(f"Could not delete stale QboVendorCreditLine {stored_line.id}: {e}")
 
-    def _sync_to_bill_credits(self, vendor_credits: List[QboVendorCredit]) -> None:
+    def _sync_to_bill_credits(self, vendor_credits: List[QboVendorCredit], outcome: SyncOutcome) -> None:
         """Sync VendorCredits to BillCredit module via connector."""
         from integrations.intuit.qbo.vendorcredit.connector.bill_credit.business.service import VendorCreditBillCreditConnector
         
@@ -383,8 +378,14 @@ class QboVendorCreditService:
             try:
                 lines = self.repo.read_lines_by_vendor_credit_id(vc.id)
                 connector.sync_from_qbo_vendor_credit(vc, lines)
+                outcome.record_projected()
             except Exception as e:
-                logger.error(f"Error syncing VendorCredit {vc.id} to BillCredit: {e}")
+                outcome.record_projection_error(
+                    vc.qbo_id,
+                    e,
+                    label="VendorCredit->BillCredit",
+                    logger=logger,
+                )
 
     # Read methods
     def read_all(self) -> List[QboVendorCredit]:

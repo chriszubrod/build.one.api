@@ -18,7 +18,6 @@ from scripts.sync_helper import (
     _normalize_watermark_value,
     assert_cli_system_admin,
 )
-from integrations.intuit.qbo.base.sync_outcome import SyncOutcome
 from integrations.sync.business.service import SyncService
 from integrations.intuit.qbo.reimburse_charge.business.service import QboReimburseChargeService
 from integrations.intuit.qbo.auth.business.service import QboAuthService
@@ -83,27 +82,13 @@ def sync_qbo_reimburse_charge(
         else:
             logger.info("No previous sync found. Performing full sync.")
 
-        # ONE-SHOT capture (KI-32): staging upsert failures must flow into SyncOutcome
-        # so WatermarkRun.commit can hold — a failed RC upsert must NOT advance the
-        # watermark, or the RC's source pointer is lost forever once QBO drops the
-        # reverse LinkedTxn on the invoiced flip.
-        outcome = SyncOutcome()
-
         # Pull + upsert
-        sync_result = rc_service.sync_from_qbo(
+        outcome = rc_service.sync_from_qbo(
             realm_id=realm_id,
             last_updated_time=last_sync_time,
             start_date=start_date,
             end_date=end_date,
         )
-        fetched_count = sync_result["fetched_count"]
-        outcome.fetched = fetched_count
-        synced_count = len(sync_result["synced"])
-        failed_ids = sync_result["failed_ids"]
-        for fid in failed_ids:
-            outcome.record_staging_failure(fid)
-        for _ in sync_result["synced"]:
-            outcome.record_synced()
 
         end_time = datetime.now(timezone.utc)
         end_time_str = _normalize_last_sync(end_time.isoformat())
@@ -124,15 +109,15 @@ def sync_qbo_reimburse_charge(
                 **outcome.summary(),
                 "committed_last_sync_datetime": updated_sync.last_sync_datetime,
             },
-            "reimburse_charges_fetched": fetched_count,
-            "reimburse_charges_synced": synced_count,
+            "reimburse_charges_fetched": outcome.fetched,
+            "reimburse_charges_synced": outcome.synced_count,
             "failed_count": outcome.failed_count,
-            "failed_ids": failed_ids,
+            "failed_ids": outcome.staging_failed_ids,
         }
 
         logger.info(
-            f"QBO ReimburseCharge sync completed. Fetched: {fetched_count}, "
-            f"Synced: {synced_count}, Failed: {outcome.failed_count}"
+            f"QBO ReimburseCharge sync completed. Fetched: {outcome.fetched}, "
+            f"Synced: {outcome.synced_count}, Failed: {outcome.failed_count}"
         )
 
         return {

@@ -26,14 +26,14 @@ def sync_qbo_purchases_router(body: QboPurchaseSync, current_user: dict = Depend
     """
     Sync Purchases from QBO.
     """
-    purchases = service.sync_from_qbo(
+    result = service.sync_from_qbo(
         realm_id=body.realm_id,
         last_updated_time=body.last_updated_time,
         start_date=body.start_date,
         end_date=body.end_date,
         sync_to_modules=body.sync_to_modules
     )
-    return list_response([purchase.to_dict() for purchase in purchases])
+    return list_response([purchase.to_dict() for purchase in result.synced])
 
 
 @router.get("/get/qbo-purchases/realm/{realm_id}")

@@ -10,7 +10,7 @@ from integrations.intuit.qbo.bill.business.model import QboBill, QboBillLine
 from integrations.intuit.qbo.bill.persistence.repo import QboBillRepository, QboBillLineRepository
 from integrations.intuit.qbo.bill.external.client import QboBillClient
 from integrations.intuit.qbo.bill.external.schemas import QboBill as QboBillExternalSchema
-from integrations.intuit.qbo.base.sync_outcome import SyncOutcome, coerce_outcome
+from integrations.intuit.qbo.base.sync_outcome import SyncOutcome
 from shared.database import with_retry
 
 logger = logging.getLogger(__name__)
@@ -44,8 +44,7 @@ class QboBillService:
         end_date: Optional[str] = None,
         sync_to_modules: bool = False,
         reconcile_deletes: bool = False,
-        outcome: Optional[SyncOutcome] = None,
-    ) -> List[QboBill]:
+    ) -> SyncOutcome[QboBill]:
         """
         Fetch Bills from QBO API and store locally.
         Uses upsert pattern: creates if not exists, updates if exists.
@@ -59,14 +58,12 @@ class QboBillService:
             end_date: Optional date string (YYYY-MM-DD). If provided, only fetches
                 Bills where TxnDate <= end_date.
             sync_to_modules: If True, also sync to Bill/BillLineItem modules
-            outcome: Optional shared failure accumulator for watermark runners.
-                Staging upsert failures recorded here prevent advancing the watermark
-                past QBO records that never reached qbo.*.
+            reconcile_deletes: If True, reconcile deletes (full sync only)
         
         Returns:
-            List[QboBill]: The synced bill records
+            SyncOutcome[QboBill]: Pull run envelope including synced staging rows
         """
-        outcome = coerce_outcome(outcome)
+        outcome: SyncOutcome[QboBill] = SyncOutcome.for_service_pull()
         self._realm_id = realm_id
 
         # Fetch Bills from QBO API. QboHttpClient (via QboBillClient) resolves
@@ -81,12 +78,11 @@ class QboBillService:
         outcome.fetched = len(qbo_bills)
         if not qbo_bills:
             logger.info(f"No Bills found since {last_updated_time or 'beginning'}")
-            return []
+            return outcome
         
         logger.info(f"Retrieved {len(qbo_bills)} bills from QBO")
         
         # Process each bill with retry logic and batch delays
-        synced_bills = []
         
         for i, qbo_bill in enumerate(qbo_bills):
             try:
@@ -98,8 +94,7 @@ class QboBillService:
                     max_retries=MAX_RETRIES,
                     initial_delay=INITIAL_RETRY_DELAY,
                 )
-                synced_bills.append(local_bill)
-                outcome.record_synced()
+                outcome.record_synced(local_bill)
                 logger.debug(f"Upserted bill {qbo_bill.id} ({i + 1}/{len(qbo_bills)})")
             except Exception as e:
                 logger.error(f"Failed to upsert bill {qbo_bill.id}: {e}")
@@ -118,14 +113,14 @@ class QboBillService:
         
         # Sync to modules if requested
         if sync_to_modules:
-            self._sync_to_bills(synced_bills)
+            self._sync_to_bills(outcome.synced, outcome)
 
         # Delete reconciliation: only valid on a full, unfiltered sync so the API
         # response represents the complete current state of QBO.
         if reconcile_deletes and last_updated_time is None and not start_date and not end_date:
             self._reconcile_deleted_bills(realm_id)
 
-        return synced_bills
+        return outcome
 
     def _reconcile_deleted_bills(self, realm_id: str) -> int:
         """
@@ -472,7 +467,7 @@ class QboBillService:
                     except Exception as e:
                         logger.warning(f"Could not delete stale QboBillLine {stored_line.id}: {e}")
 
-    def _sync_to_bills(self, bills: List[QboBill]) -> None:
+    def _sync_to_bills(self, bills: List[QboBill], outcome: SyncOutcome) -> None:
         """
         Sync bills to Bill module.
         
@@ -493,8 +488,14 @@ class QboBillService:
                 bill_lines = self.line_repo.read_by_qbo_bill_id(bill.id)
                 bill_module = connector.sync_from_qbo_bill(bill, bill_lines)
                 logger.info(f"Synced QboBill {bill.id} to Bill {bill_module.id}")
+                outcome.record_projected()
             except Exception as e:
-                logger.error(f"Failed to sync QboBill {bill.id} to Bill: {e}")
+                outcome.record_projection_error(
+                    bill.qbo_id,
+                    e,
+                    label="Bill->Bill",
+                    logger=logger,
+                )
 
     def read_all(self) -> List[QboBill]:
         """

@@ -87,9 +87,8 @@ def sync_qbo_to_local(
     realm_id: str,
     last_sync_time: Optional[str],
     qbo_account_service: QboAccountService,
-    outcome: SyncOutcome,
     reconcile_deletes: bool = False,
-) -> dict:
+) -> tuple[dict, SyncOutcome]:
     """
     Sync Accounts from QBO API to local database.
 
@@ -97,35 +96,34 @@ def sync_qbo_to_local(
         realm_id: QBO realm ID
         last_sync_time: Last sync timestamp for incremental sync
         qbo_account_service: QboAccountService instance
-        outcome: Shared failure accumulator for watermark commit
         reconcile_deletes: If True, deactivate local records not found in QBO (full sync only)
 
     Returns:
-        dict: Sync results including accounts synced
+        tuple[dict, SyncOutcome]: Sync results envelope and service pull outcome
     """
     logger.info(f"Syncing Accounts from QBO API for realm_id: {realm_id}")
 
     # Fetch accounts from QBO and store locally
-    accounts = qbo_account_service.sync_from_qbo(
+    outcome = qbo_account_service.sync_from_qbo(
         realm_id=realm_id,
         last_updated_time=last_sync_time,
         reconcile_deletes=reconcile_deletes,
-        outcome=outcome,
     )
+    accounts = outcome.synced
     
     if not accounts:
         logger.info(f"No Account updates found since {last_sync_time or 'beginning'}")
         return {
             "accounts_synced": 0,
             "accounts": [],
-        }
+        }, outcome
     
     logger.info(f"Synced {len(accounts)} accounts from QBO")
     
     return {
         "accounts_synced": len(accounts),
         "accounts": [account.to_dict() for account in accounts],
-    }
+    }, outcome
 
 
 def sync_qbo_account(
@@ -193,12 +191,10 @@ def sync_qbo_account(
                 "status_code": 200,
             }
 
-        outcome = SyncOutcome()
-        qbo_to_local_result = sync_qbo_to_local(
+        qbo_to_local_result, outcome = sync_qbo_to_local(
             realm_id=realm_id,
             last_sync_time=last_sync_time,
             qbo_account_service=qbo_account_service,
-            outcome=outcome,
             reconcile_deletes=reconcile_deletes,
         )
 

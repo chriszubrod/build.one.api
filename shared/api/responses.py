@@ -22,7 +22,7 @@ def list_response(data: list[dict], count: Optional[int] = None) -> dict:
     }
 
 
-def item_response(data: dict) -> dict:
+def item_response(data: Optional[dict]) -> dict:
     """Standard envelope for single-entity endpoints."""
     return {"data": data}
 

@@ -230,6 +230,22 @@ class WatermarkRun:
         logger.error(msg)
         raise RuntimeError(msg)
 
+    def commit_push(self, *, skip: bool = False) -> Sync:
+        """
+        Persist the push-direction watermark.
+
+        Push runs have no pull SyncOutcome, so provenance stamping does not apply.
+        Uses the same write path as commit for end_date-less advances.
+        """
+        if not self.sync_record:
+            raise RuntimeError("WatermarkRun.open() must be called before commit_push")
+
+        if skip:
+            logger.info("Skipping sync record update")
+            return self.sync_record
+
+        return self._write(self.watermark_value)
+
     def commit(
         self,
         outcome: SyncOutcome,
@@ -239,6 +255,14 @@ class WatermarkRun:
     ) -> Sync:
         if not self.sync_record:
             raise RuntimeError("WatermarkRun.open() must be called before commit")
+
+        if not outcome.from_service_pull:
+            raise RuntimeError(
+                "WatermarkRun.commit requires the SyncOutcome returned by the service's sync_from_qbo "
+                "(U-220): an outcome that was hand-built, rebound, or laundered through a helper does not "
+                "carry the run's staging/projection failures, so committing it would advance the watermark "
+                "past records that never persisted. Use commit_push() for a non-pull watermark."
+            )
 
         if skip:
             logger.info("Skipping sync record update")

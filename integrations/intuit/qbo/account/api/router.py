@@ -19,11 +19,11 @@ def sync_qbo_accounts_router(body: QboAccountSync, current_user: dict = Depends(
     """
     Sync Accounts from QBO.
     """
-    accounts = service.sync_from_qbo(
+    result = service.sync_from_qbo(
         realm_id=body.realm_id,
         last_updated_time=body.last_updated_time,
     )
-    return list_response([account.to_dict() for account in accounts])
+    return list_response([account.to_dict() for account in result.synced])
 
 
 @router.get("/get/qbo-accounts/realm/{realm_id}")

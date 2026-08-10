@@ -45,8 +45,7 @@ def sync_qbo_to_local(
     qbo_customer_service: QboCustomerService,
     customer_connector: CustomerCustomerConnector,
     project_connector: CustomerProjectConnector,
-    outcome: SyncOutcome,
-) -> dict:
+) -> tuple[dict, SyncOutcome]:
     """
     Sync Customers from QBO API to local database and modules.
     
@@ -58,16 +57,17 @@ def sync_qbo_to_local(
         project_connector: CustomerProjectConnector instance
     
     Returns:
-        dict: Sync results including customers synced
+        tuple[dict, SyncOutcome]: Sync results envelope and service pull outcome
     """
     logger.info(f"Syncing Customers from QBO API for realm_id: {realm_id}")
     
     # Fetch customers from QBO and store locally (without auto-syncing to modules)
-    customers = qbo_customer_service.sync_from_qbo(
+    outcome = qbo_customer_service.sync_from_qbo(
         realm_id=realm_id,
         last_updated_time=last_sync_time,
         sync_to_modules=False  # We'll handle module sync separately for better control
     )
+    customers = outcome.synced
     
     if not customers:
         logger.info(f"No Customer updates found since {last_sync_time or 'beginning'}")
@@ -76,10 +76,9 @@ def sync_qbo_to_local(
             "customers_module_synced": 0,
             "projects_synced": 0,
             "customers": [],
-        }
+        }, outcome
     
     logger.info(f"Retrieved {len(customers)} customers from QBO")
-    outcome.fetched = len(customers)
     
     # Separate parent customers and job customers
     parent_customers = [customer for customer in customers if customer.is_parent_customer]
@@ -98,7 +97,7 @@ def sync_qbo_to_local(
                 initial_delay=INITIAL_RETRY_DELAY,
             )
             customers_module_synced += 1
-            outcome.record_synced()
+            outcome.record_projected()
             logger.info(f"Synced QboCustomer {customer.id} to Customer {customer_module.id}")
         except Exception as e:
             outcome.record_projection_error(
@@ -123,7 +122,7 @@ def sync_qbo_to_local(
                 initial_delay=INITIAL_RETRY_DELAY,
             )
             projects_synced += 1
-            outcome.record_synced()
+            outcome.record_projected()
             logger.info(f"Synced QboCustomer {customer.id} to Project {project.id}")
         except Exception as e:
             outcome.record_projection_error(
@@ -140,7 +139,7 @@ def sync_qbo_to_local(
         "customers_module_synced": customers_module_synced,
         "projects_synced": projects_synced,
         "customers": [customer.to_dict() for customer in customers],
-    }
+    }, outcome
 
 
 def sync_local_to_qbo(
@@ -230,14 +229,12 @@ def sync_qbo_customer() -> dict:
         else:
             logger.info("No previous sync found. Performing full sync.")
 
-        outcome = SyncOutcome()
-        qbo_to_local_result = sync_qbo_to_local(
+        qbo_to_local_result, outcome = sync_qbo_to_local(
             realm_id=realm_id,
             last_sync_time=last_sync_time,
             qbo_customer_service=qbo_customer_service,
             customer_connector=customer_connector,
             project_connector=project_connector,
-            outcome=outcome,
         )
         
         # Step 2: Local -> QBO push disabled in batch sync (one-way intake only).

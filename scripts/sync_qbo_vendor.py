@@ -42,8 +42,7 @@ def sync_qbo_to_local(
     last_sync_time: Optional[str],
     qbo_vendor_service: QboVendorService,
     vendor_connector: VendorVendorConnector,
-    outcome: SyncOutcome,
-) -> dict:
+) -> tuple[dict, SyncOutcome]:
     """
     Sync Vendors from QBO API to local database and modules.
     
@@ -54,17 +53,17 @@ def sync_qbo_to_local(
         vendor_connector: VendorVendorConnector instance
     
     Returns:
-        dict: Sync results including vendors synced
+        tuple[dict, SyncOutcome]: Sync results envelope and service pull outcome
     """
     logger.info(f"Syncing Vendors from QBO API for realm_id: {realm_id}")
     
     # Fetch vendors from QBO and store locally (without auto-syncing to modules)
-    vendors = qbo_vendor_service.sync_from_qbo(
+    outcome = qbo_vendor_service.sync_from_qbo(
         realm_id=realm_id,
         last_updated_time=last_sync_time,
         sync_to_modules=False,  # We'll handle module sync separately for better control
-        outcome=outcome,
     )
+    vendors = outcome.synced
     
     if not vendors:
         logger.info(f"No Vendor updates found since {last_sync_time or 'beginning'}")
@@ -72,12 +71,11 @@ def sync_qbo_to_local(
             "vendors_synced": 0,
             "vendors_module_synced": 0,
             "vendors": [],
-        }
+        }, outcome
     
     logger.info(f"Retrieved {len(vendors)} vendors from QBO")
     
     # Sync vendors to Vendor module
-    vendors_module_synced = 0
     
     for i, vendor in enumerate(vendors):
         try:
@@ -88,7 +86,7 @@ def sync_qbo_to_local(
                 max_retries=MAX_RETRIES,
                 initial_delay=INITIAL_RETRY_DELAY,
             )
-            vendors_module_synced += 1
+            outcome.record_projected()
             logger.info(f"Synced QboVendor {vendor.id} to Vendor {vendor_module.id}")
         except Exception as e:
             outcome.record_projection_error(
@@ -102,9 +100,9 @@ def sync_qbo_to_local(
     
     return {
         "vendors_synced": len(vendors),
-        "vendors_module_synced": vendors_module_synced,
+        "vendors_module_synced": outcome.projected_count,
         "vendors": [vendor.to_dict() for vendor in vendors],
-    }
+    }, outcome
 
 
 def sync_local_to_qbo(
@@ -189,13 +187,11 @@ def sync_qbo_vendor() -> dict:
         else:
             logger.info("No previous sync found. Performing full sync.")
 
-        outcome = SyncOutcome()
-        qbo_to_local_result = sync_qbo_to_local(
+        qbo_to_local_result, outcome = sync_qbo_to_local(
             realm_id=realm_id,
             last_sync_time=last_sync_time,
             qbo_vendor_service=qbo_vendor_service,
             vendor_connector=vendor_connector,
-            outcome=outcome,
         )
         
         # Step 2: Local -> QBO push disabled in batch sync (one-way intake only).

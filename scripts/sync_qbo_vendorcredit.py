@@ -193,12 +193,11 @@ def sync_qbo_to_local(
     last_sync_time: Optional[str],
     qbo_vendor_credit_service: QboVendorCreditService,
     vendor_credit_connector: VendorCreditBillCreditConnector,
-    outcome: SyncOutcome,
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
     sync_attachments: bool = True,
     attachable_service: Optional[QboAttachableService] = None,
-) -> dict:
+) -> tuple[dict, SyncOutcome]:
     """
     Sync VendorCredits from QBO API to local database and modules.
 
@@ -213,7 +212,7 @@ def sync_qbo_to_local(
         attachable_service: QboAttachableService instance (required if sync_attachments is True)
 
     Returns:
-        dict: Sync results including vendor credits and attachments synced
+        tuple[dict, SyncOutcome]: Sync results envelope and service pull outcome
     """
     if start_date or end_date:
         logger.info(f"Syncing VendorCredits from QBO API for realm_id: {realm_id} (TxnDate: {start_date or 'beginning'} to {end_date or 'now'})")
@@ -221,15 +220,15 @@ def sync_qbo_to_local(
         logger.info(f"Syncing VendorCredits from QBO API for realm_id: {realm_id}")
     
     # Fetch vendor credits from QBO and store locally (without auto-syncing to modules)
-    vendor_credits = qbo_vendor_credit_service.sync_from_qbo(
+    outcome = qbo_vendor_credit_service.sync_from_qbo(
         realm_id=realm_id,
         last_updated_time=last_sync_time,
         start_date=start_date,
         end_date=end_date,
         sync_to_modules=False,  # We'll handle module sync separately for better control
         reconcile_deletes=True,  # full-sync-only guard inside: removes local records deleted in QBO
-        outcome=outcome,
     )
+    vendor_credits = outcome.synced
     
     if not vendor_credits:
         logger.info(f"No VendorCredit updates found since {last_sync_time or 'beginning'}")
@@ -243,12 +242,11 @@ def sync_qbo_to_local(
             # failed_vendor_credit_ids: qbo.VendorCredit staging PKs; staging_failed_qbo_ids: QBO API Ids
             "failed_vendor_credit_ids": outcome.projection_failed_ids,
             "staging_failed_qbo_ids": outcome.staging_failed_ids,
-        }
+        }, outcome
     
     logger.info(f"Retrieved {len(vendor_credits)} vendor credits from QBO")
     
     # Sync vendor credits to BillCredit module
-    bill_credits_module_synced = 0
     attachments_synced = 0
     excel_rows_synced = 0
     sharepoint_uploads_synced = 0
@@ -285,7 +283,7 @@ def sync_qbo_to_local(
                 initial_delay=INITIAL_RETRY_DELAY,
             )
             if bill_credit:
-                bill_credits_module_synced += 1
+                outcome.record_projected()
                 logger.info(f"Synced QboVendorCredit {vendor_credit.id} to BillCredit {bill_credit.id}")
                 # Collect for batched budget-tracker Excel sync after the loop
                 synced_credits.append((bill_credit, bill_credit.id))
@@ -404,7 +402,7 @@ def sync_qbo_to_local(
 
     return {
         "vendor_credits_synced": len(vendor_credits),
-        "bill_credits_module_synced": bill_credits_module_synced,
+        "bill_credits_module_synced": outcome.projected_count,
         "attachments_synced": attachments_synced,
         "excel_rows_synced": excel_rows_synced,
         "sharepoint_uploads_synced": sharepoint_uploads_synced,
@@ -416,7 +414,7 @@ def sync_qbo_to_local(
         "failed_vendor_credit_ids": outcome.projection_failed_ids,
         "staging_failed_qbo_ids": outcome.staging_failed_ids,
         "vendor_credits": [vc.to_dict() for vc in vendor_credits],
-    }
+    }, outcome
 
 
 def sync_qbo_vendorcredit(
@@ -500,13 +498,11 @@ def sync_qbo_vendorcredit(
                 "status_code": 200,
             }
 
-        outcome = SyncOutcome()
-        qbo_to_local_result = sync_qbo_to_local(
+        qbo_to_local_result, outcome = sync_qbo_to_local(
             realm_id=realm_id,
             last_sync_time=last_sync_time,
             qbo_vendor_credit_service=qbo_vendor_credit_service,
             vendor_credit_connector=vendor_credit_connector,
-            outcome=outcome,
             start_date=start_date,
             end_date=end_date,
         )

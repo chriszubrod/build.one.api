@@ -17,7 +17,6 @@ from scripts.sync_helper import (
     _normalize_watermark_value,
     assert_cli_system_admin,
 )
-from integrations.intuit.qbo.base.sync_outcome import SyncOutcome
 from integrations.sync.business.service import SyncService
 from integrations.intuit.qbo.company_info.business.service import QboCompanyInfoService
 from integrations.intuit.qbo.company_info.connector.business.service import CompanyInfoCompanyConnector
@@ -58,17 +57,15 @@ def sync_qbo_company_info() -> dict:
         else:
             logger.info("No previous sync found. Fetching all CompanyInfo records.")
 
-        outcome = SyncOutcome()
-
         # Sync CompanyInfo from QBO API
         logger.info(f"Syncing CompanyInfo from QBO API for realm_id: {realm_id}")
-        company_info = company_info_service.sync_from_qbo(
+        outcome = company_info_service.sync_from_qbo(
             realm_id=realm_id,
             last_updated_time=last_sync_time
         )
 
-        # QBO returns None when nothing changed since the watermark — not a failure; still commit.
-        if not company_info:
+        # QBO returns empty synced when nothing changed since the watermark — not a failure; still commit.
+        if not outcome.synced:
             logger.info("No CompanyInfo updates found since last sync.")
             end_time = datetime.now(timezone.utc)
             end_time_str = _normalize_last_sync(end_time.isoformat())
@@ -93,7 +90,7 @@ def sync_qbo_company_info() -> dict:
                 "status_code": 200,
             }
 
-        outcome.fetched = 1
+        company_info = outcome.synced[0]
 
         # Sync PhysicalAddress records to Address module via connector
         addresses_synced = []
@@ -123,7 +120,7 @@ def sync_qbo_company_info() -> dict:
                     qbo_company_info_id=company_info.id,
                     realm_id=realm_id
                 )
-                outcome.record_synced()
+                outcome.record_projected()
                 logger.info(f"Successfully synced to Company module. Company ID: {company.id}")
             except Exception as e:
                 outcome.record_projection_error(

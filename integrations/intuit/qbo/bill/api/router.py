@@ -28,12 +28,12 @@ def sync_qbo_bills_router(body: QboBillSync, current_user: dict = Depends(requir
     """
     Sync Bills from QBO.
     """
-    bills = service.sync_from_qbo(
+    result = service.sync_from_qbo(
         realm_id=body.realm_id,
         last_updated_time=body.last_updated_time,
         sync_to_modules=body.sync_to_modules
     )
-    return list_response([bill.to_dict() for bill in bills])
+    return list_response([bill.to_dict() for bill in result.synced])
 
 
 @router.get("/get/qbo-bills/realm/{realm_id}")

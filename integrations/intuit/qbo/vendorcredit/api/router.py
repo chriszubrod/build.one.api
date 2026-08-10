@@ -23,7 +23,7 @@ def sync_qbo_vendor_credits_router(
     """
     try:
         service = QboVendorCreditService()
-        vendor_credits = service.sync_from_qbo(
+        result = service.sync_from_qbo(
             realm_id=body.realm_id,
             last_updated_time=body.last_updated_time,
             start_date=body.start_date,
@@ -32,8 +32,8 @@ def sync_qbo_vendor_credits_router(
         )
         return {
             "status": "success",
-            "count": len(vendor_credits),
-            "vendor_credits": [vc.to_dict() for vc in vendor_credits],
+            "count": len(result.synced),
+            "vendor_credits": [vc.to_dict() for vc in result.synced],
         }
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))

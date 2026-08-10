@@ -7,9 +7,11 @@ scripts/sync_qbo_*.py — no live DB or network.
 from __future__ import annotations
 
 import ast
+import functools
 import importlib
 import inspect
 import sys
+import typing
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Optional
@@ -24,7 +26,7 @@ from integrations.intuit.qbo.base.errors import (
     QboTransportError,
     is_retryable_error,
 )
-from integrations.intuit.qbo.base.sync_outcome import SyncOutcome, coerce_outcome
+from integrations.intuit.qbo.base.sync_outcome import SyncOutcome
 from integrations.sync.business.model import Sync
 from integrations.sync.persistence.repo import SyncRepository
 
@@ -220,7 +222,7 @@ def test_should_hold_true_when_only_projection_failure_recorded():
 def test_should_hold_false_when_only_skips_recorded():
     """Permanent data gaps (e.g. unmapped vendor) must not wedge the watermark forever."""
     outcome = SyncOutcome()
-    outcome._record_skip("7", reason="vendor not mapped")
+    outcome.record_staging_skip("7", reason="vendor not mapped")
     # Skips are intentional permanent data issues — they will never self-resolve on retry,
     # so holding the watermark on them would stall incremental sync indefinitely.
     assert outcome.should_hold is False
@@ -231,19 +233,22 @@ def test_failed_count_sums_both_tiers_and_excludes_skips():
     outcome = SyncOutcome()
     outcome.record_staging_failure("1")
     outcome.record_projection_failure("2")
-    outcome._record_skip("3")
+    outcome.record_staging_skip("3")
     assert outcome.failed_count == 2
 
 
 def test_summary_carries_all_fields_and_list_copies():
     """Downstream logging must not mutate internal failure id lists via summary()."""
-    outcome = SyncOutcome(fetched=5, synced_count=4)
+    outcome = SyncOutcome(fetched=5)
+    for _ in range(4):
+        outcome.record_synced(object())
     outcome.record_staging_failure("s1")
     outcome.record_projection_failure("p1")
-    outcome._record_skip("k1")
+    outcome.record_staging_skip("k1")
     summary = outcome.summary()
     assert summary["fetched"] == 5
     assert summary["synced"] == 4
+    assert outcome.synced_count == 4
     assert summary["failed_count"] == 2
     assert summary["staging_failed_ids"] == ["s1"]
     assert summary["projection_failed_ids"] == ["p1"]
@@ -264,17 +269,6 @@ def test_hold_reason_none_when_not_holding_and_names_both_tiers_when_both_failed
     assert reason is not None
     assert "staging failed: a" in reason
     assert "projection failed: b" in reason
-
-
-def test_coerce_outcome_none_returns_fresh_distinct_instances():
-    """Shared mutable default on coerce_outcome(None) would poison every pull run."""
-    first = coerce_outcome(None)
-    second = coerce_outcome(None)
-    assert isinstance(first, SyncOutcome)
-    assert isinstance(second, SyncOutcome)
-    assert first is not second
-    first.record_staging_failure("x")
-    assert second.staging_failed_ids == []
 
 
 def test_record_projection_error_plain_value_error_is_skip_without_hold():
@@ -481,6 +475,36 @@ def test_record_projection_error_vendor_not_mapped_still_skips_after_extra_trans
     assert outcome.should_hold is False
 
 
+def test_record_projected_increments_projected_count_and_is_separate_from_synced():
+    outcome = SyncOutcome()
+    outcome.record_projected()
+    outcome.record_projected()
+    assert outcome.projected_count == 2
+    assert outcome.synced_count == 0
+    outcome.record_synced(object())
+    assert outcome.synced_count == 1
+    assert outcome.projected_count == 2
+
+
+def test_summary_reports_projected_separately_from_synced():
+    outcome = SyncOutcome()
+    outcome.record_synced(object())
+    outcome.record_synced(object())
+    outcome.record_projected()
+    outcome.record_projected()
+    outcome.record_projected()
+    summary = outcome.summary()
+    assert summary["synced"] == 2
+    assert summary["projected"] == 3
+
+
+def test_record_projected_does_not_affect_should_hold():
+    outcome = SyncOutcome()
+    for _ in range(5):
+        outcome.record_projected()
+    assert outcome.should_hold is False
+
+
 # --------------------------------------------------------------------------- #
 # B. Watermark value arithmetic
 # --------------------------------------------------------------------------- #
@@ -500,7 +524,7 @@ def test_committed_watermark_is_query_start_minus_overlap_not_post_work_wall_clo
     # Simulate a long run: query_start was captured at run open; commit happens "minutes later"
     # without advancing any clock the production code reads — watermark must still anchor to
     # query_start minus overlap, strictly before query_start, never a later wall-clock stamp.
-    outcome = SyncOutcome()
+    outcome = SyncOutcome(from_service_pull=True)
     run.commit(outcome)
     assert len(fake.updates) == 1
     committed = fake.updates[0][1].last_sync_datetime
@@ -541,7 +565,7 @@ def test_commit_skip_true_writes_nothing_on_clean_outcome():
     """--skip-sync-update must not mutate dbo.Sync even when the pull succeeded."""
     fake = FakeSyncService([_make_sync()])
     run = _opened_run(fake)
-    run.commit(SyncOutcome(), skip=True)
+    run.commit(SyncOutcome(from_service_pull=True), skip=True)
     assert fake.updates == []
 
 
@@ -549,7 +573,7 @@ def test_commit_skip_true_writes_nothing_even_with_end_date():
     """Skip must outrank historical end_date imports that would otherwise stamp the watermark."""
     fake = FakeSyncService([_make_sync()])
     run = _opened_run(fake)
-    run.commit(SyncOutcome(), end_date="2020-01-01", skip=True)
+    run.commit(SyncOutcome(from_service_pull=True), end_date="2020-01-01", skip=True)
     assert fake.updates == []
 
 
@@ -557,7 +581,7 @@ def test_commit_holding_outcome_writes_nothing_even_when_end_date_supplied():
     """Bill/vendorcredit bug: end_date must not advance the watermark past a failed batch import."""
     fake = FakeSyncService([_make_sync()])
     run = _opened_run(fake)
-    outcome = SyncOutcome()
+    outcome = SyncOutcome(from_service_pull=True)
     outcome.record_projection_failure("vc-1")
     before = run.sync_record.last_sync_datetime
     run.commit(outcome, end_date="2019-12-31")
@@ -569,7 +593,7 @@ def test_commit_staging_only_failure_holds_with_no_write():
     """Audit S-01: staging failures invisible to scripts used to advance past missing qbo.* rows."""
     fake = FakeSyncService([_make_sync()])
     run = _opened_run(fake)
-    outcome = SyncOutcome()
+    outcome = SyncOutcome(from_service_pull=True)
     outcome.record_staging_failure("staging-only")
     run.commit(outcome)
     assert fake.updates == []
@@ -579,8 +603,8 @@ def test_commit_skips_only_outcome_advances_watermark_normally():
     """Benign permanent skips must not block incremental sync from moving forward."""
     fake = FakeSyncService([_make_sync()])
     run = _opened_run(fake)
-    outcome = SyncOutcome()
-    outcome._record_skip("perm")
+    outcome = SyncOutcome(from_service_pull=True)
+    outcome.record_staging_skip("perm")
     run.commit(outcome)
     assert len(fake.updates) == 1
     assert fake.updates[0][1].last_sync_datetime == run.watermark_value
@@ -590,7 +614,7 @@ def test_commit_clean_outcome_with_end_date_writes_end_of_day_stamp():
     """Historical TxnDate window imports must stamp the watermark to the batch end date."""
     fake = FakeSyncService([_make_sync()])
     run = _opened_run(fake)
-    run.commit(SyncOutcome(), end_date="2024-07-04")
+    run.commit(SyncOutcome(from_service_pull=True), end_date="2024-07-04")
     assert fake.updates[0][1].last_sync_datetime == "2024-07-04T23:59:59"
 
 
@@ -598,8 +622,70 @@ def test_commit_clean_outcome_without_end_date_writes_watermark_value():
     """Incremental pulls must persist query_start-minus-overlap on success."""
     fake = FakeSyncService([_make_sync()])
     run = _opened_run(fake)
-    run.commit(SyncOutcome())
+    run.commit(SyncOutcome(from_service_pull=True))
     assert fake.updates[0][1].last_sync_datetime == run.watermark_value
+
+
+def test_commit_refuses_an_unstamped_outcome():
+    fake = FakeSyncService([_make_sync()])
+    run = _opened_run(fake)
+    with pytest.raises(RuntimeError, match="sync_from_qbo"):
+        run.commit(SyncOutcome())
+    assert fake.updates == []
+
+
+def test_commit_push_writes_watermark_without_pull_outcome():
+    fake = FakeSyncService([_make_sync()])
+    run = _opened_run(fake)
+    run.commit_push()
+    assert len(fake.updates) == 1
+
+
+def test_commit_push_skip_writes_nothing():
+    fake = FakeSyncService([_make_sync()])
+    run = _opened_run(fake)
+    run.commit_push(skip=True)
+    assert fake.updates == []
+
+
+def test_commit_accepts_the_service_stamped_outcome():
+    fake = FakeSyncService([_make_sync()])
+    run = _opened_run(fake)
+    run.commit(SyncOutcome(from_service_pull=True))
+    assert len(fake.updates) == 1
+
+
+def test_commit_refuses_unstamped_even_when_skipping():
+    fake = FakeSyncService([_make_sync()])
+    run = _opened_run(fake)
+    with pytest.raises(RuntimeError, match="sync_from_qbo"):
+        run.commit(SyncOutcome(), skip=True)
+    assert fake.updates == []
+
+
+def test_every_pull_service_stamps_its_outcome():
+    qbo_root = REPO_ROOT / "integrations" / "intuit" / "qbo"
+    unstamped: list[str] = []
+    for entity in _QBO_SERVICE_MODULE_BY_ENTITY:
+        service_path = qbo_root / entity / "business" / "service.py"
+        if not _sync_from_qbo_outcome_stamps_from_service_pull(service_path):
+            unstamped.append(str(service_path))
+    assert not unstamped, (
+        "an unstamped service outcome will raise at watermark commit: "
+        + ", ".join(unstamped)
+    )
+
+
+def test_laundered_outcome_from_helper_is_refused_at_commit():
+    def sync_qbo_to_local_laundering():
+        return {}, SyncOutcome()
+
+    fake = FakeSyncService([_make_sync()])
+    run = _opened_run(fake)
+    _, outcome = sync_qbo_to_local_laundering()
+    with pytest.raises(RuntimeError, match="sync_from_qbo"):
+        run.commit(outcome)
+    assert fake.updates == []
 
 
 # --------------------------------------------------------------------------- #
@@ -744,10 +830,6 @@ def test_push_last_sync_cutoff_accepts_string_and_datetime_equivalently():
 
 _SYNC_SCRIPT_GLOB = "sync_qbo_*.py"
 _FORBIDDEN_WATERMARK_HELPERS = frozenset({"_get_or_create_sync_record", "_update_sync_record"})
-_ENTITIES_WITH_OUTCOME_PARAM = frozenset(
-    {"bill", "purchase", "vendorcredit", "invoice", "vendor", "account", "term"}
-)
-_ENTITIES_WITHOUT_OUTCOME_PARAM = frozenset({"customer", "item", "company_info"})
 
 _QBO_SERVICE_MODULE_BY_ENTITY = {
     "bill": "integrations.intuit.qbo.bill.business.service.QboBillService",
@@ -760,34 +842,45 @@ _QBO_SERVICE_MODULE_BY_ENTITY = {
     "customer": "integrations.intuit.qbo.customer.business.service.QboCustomerService",
     "item": "integrations.intuit.qbo.item.business.service.QboItemService",
     "company_info": "integrations.intuit.qbo.company_info.business.service.QboCompanyInfoService",
+    "reimburse_charge": "integrations.intuit.qbo.reimburse_charge.business.service.QboReimburseChargeService",
 }
+
+_PULL_ENTITY_NAMES = frozenset(_QBO_SERVICE_MODULE_BY_ENTITY.keys())
+_EXEMPT_NON_PULL_SYNC_FROM_QBO_ENTITIES = frozenset({"attachable", "physical_address"})
 
 
 def _iter_sync_script_paths() -> list[Path]:
     return sorted(SCRIPTS_DIR.glob(_SYNC_SCRIPT_GLOB))
 
 
-def _function_param_types(tree: ast.AST) -> dict[str, dict[str, str]]:
-    """Map function name -> {arg_name: annotation id}."""
-    out: dict[str, dict[str, str]] = {}
-    for node in ast.walk(tree):
-        if isinstance(node, ast.FunctionDef):
-            mapping: dict[str, str] = {}
-            for arg in node.args.args:
-                if arg.annotation and isinstance(arg.annotation, ast.Name):
-                    mapping[arg.arg] = arg.annotation.id
-            out[node.name] = mapping
-    return out
+@functools.lru_cache(maxsize=None)
+def _parsed_script(path_str: str) -> ast.AST:
+    return ast.parse(Path(path_str).read_text(encoding="utf-8"), filename=path_str)
 
 
-def _import_aliases(tree: ast.AST) -> dict[str, str]:
-    aliases: dict[str, str] = {}
-    for node in ast.walk(tree):
-        if isinstance(node, ast.ImportFrom) and node.module:
-            for alias in node.names:
-                name = alias.asname or alias.name
-                aliases[name] = f"{node.module}.{alias.name}"
-    return aliases
+def _offending_attr_call_sites(
+    attr_names: frozenset[str],
+    *,
+    receiver: Optional[str] = "outcome",
+) -> list[str]:
+    offenders: list[str] = []
+    for path in _iter_sync_script_paths():
+        tree = _parsed_script(str(path))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            if not isinstance(node.func, ast.Attribute):
+                continue
+            if node.func.attr not in attr_names:
+                continue
+            if receiver is not None:
+                if not (
+                    isinstance(node.func.value, ast.Name)
+                    and node.func.value.id == receiver
+                ):
+                    continue
+            offenders.append(f"{path.name}:{node.lineno}")
+    return offenders
 
 
 def _resolve_class(module_path: str):
@@ -796,62 +889,96 @@ def _resolve_class(module_path: str):
     return getattr(module, class_name)
 
 
-def _entity_from_qbo_service_class(class_name: str) -> str:
-    if class_name == "QboCompanyInfoService":
-        return "company_info"
-    if class_name == "QboVendorCreditService":
-        return "vendorcredit"
-    if class_name.startswith("Qbo") and class_name.endswith("Service"):
-        inner = class_name[len("Qbo") : -len("Service")]
-        return inner.lower()
-    raise ValueError(f"Unrecognized QBO service class name: {class_name}")
-
-
-def _collect_sync_from_qbo_outcome_call_sites() -> set[str]:
+def _qbo_entity_dirs_with_sync_from_qbo() -> set[str]:
+    """Entity folder names under integrations/intuit/qbo that define sync_from_qbo on their service."""
+    qbo_root = REPO_ROOT / "integrations" / "intuit" / "qbo"
     entities: set[str] = set()
+    for service_path in qbo_root.glob("*/business/service.py"):
+        tree = _parsed_script(str(service_path))
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == "sync_from_qbo":
+                entities.add(service_path.parent.parent.name)
+                break
+    return entities
+
+
+def test_every_pull_service_returns_sync_outcome():
+    """Watermarked pull services must return SyncOutcome — not List/Optional/dict accumulators."""
+    for entity, module_path in _QBO_SERVICE_MODULE_BY_ENTITY.items():
+        service_cls = _resolve_class(module_path)
+        hints = typing.get_type_hints(service_cls.sync_from_qbo, globalns={"SyncOutcome": SyncOutcome})
+        return_hint = hints.get("return", inspect.signature(service_cls.sync_from_qbo).return_annotation)
+        origin = typing.get_origin(return_hint)
+        assert origin is SyncOutcome, (
+            f"{entity}: sync_from_qbo return type must be SyncOutcome[T] (U-220 contract); "
+            f"got {return_hint!r}. Returning a list/dict or taking an outcome= accumulator "
+            f"is the silent-omission regression this unit removed."
+        )
+
+
+def test_no_pull_service_accepts_an_outcome_parameter():
+    """Return value cannot be forgotten; an injected outcome= accumulator can be."""
+    for entity, module_path in _QBO_SERVICE_MODULE_BY_ENTITY.items():
+        service_cls = _resolve_class(module_path)
+        sig = inspect.signature(service_cls.sync_from_qbo)
+        assert "outcome" not in sig.parameters, (
+            f"{entity}: sync_from_qbo must not accept outcome=; callers get SyncOutcome from the "
+            f"return value so staging failures cannot be dropped by a forgotten keyword."
+        )
+
+
+def test_sync_scripts_never_construct_a_sync_outcome():
+    """Scripts must not mint SyncOutcome — the service return is the only legitimate envelope."""
+    offenders: list[str] = []
     for path in _iter_sync_script_paths():
-        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-        param_types = _function_param_types(tree)
-        import_aliases = _import_aliases(tree)
+        tree = _parsed_script(str(path))
         for node in ast.walk(tree):
             if not isinstance(node, ast.Call):
                 continue
-            if not isinstance(node.func, ast.Attribute):
-                continue
-            if node.func.attr != "sync_from_qbo":
-                continue
-            if not any(kw.arg == "outcome" for kw in node.keywords):
-                continue
-            if not isinstance(node.func.value, ast.Name):
-                continue
-            receiver = node.func.value.id
-            class_name: Optional[str] = None
-            for func_name, args in param_types.items():
-                if receiver in args:
-                    class_name = args[receiver]
-                    break
-            if class_name is None:
-                pytest.fail(
-                    f"{path.name}: sync_from_qbo(..., outcome=) on {receiver!r} "
-                    f"could not be resolved to a typed service parameter"
-                )
-            module_path = import_aliases.get(class_name)
-            if not module_path:
-                pytest.fail(
-                    f"{path.name}: no import alias for service type {class_name!r} "
-                    f"used in sync_from_qbo outcome call"
-                )
-            entities.add(_entity_from_qbo_service_class(class_name))
-    return entities
+            func = node.func
+            if isinstance(func, ast.Name) and func.id == "SyncOutcome":
+                offenders.append(f"{path.name}:{node.lineno}")
+    assert not offenders, (
+        "a script that constructs its own SyncOutcome is laundering failures — the outcome must "
+        "come from the service's sync_from_qbo return, and WatermarkRun.commit refuses an "
+        "unstamped one at runtime. Offenders: " + ", ".join(offenders)
+    )
+
+
+def test_every_pull_script_commits_a_watermark():
+    for path in _iter_sync_script_paths():
+        text = path.read_text(encoding="utf-8")
+        assert "run.commit(" in text or ".commit(" in text, path.name
+
+
+def test_sync_scripts_never_call_record_synced():
+    offenders = _offending_attr_call_sites(frozenset({"record_synced"}), receiver=None)
+    assert not offenders, (
+        "staging successes are service-owned; scripts record PROJECTION successes via "
+        "record_projected(). Calling record_synced in a script conflated what summary()['synced'] "
+        "meant per entity. Offenders: " + ", ".join(offenders)
+    )
+
+
+def test_non_watermarked_qbo_services_are_explicitly_classified():
+    defining_entities = _qbo_entity_dirs_with_sync_from_qbo()
+    expected = _PULL_ENTITY_NAMES | _EXEMPT_NON_PULL_SYNC_FROM_QBO_ENTITIES
+    assert defining_entities == expected, (
+        "Every sync_from_qbo on a QBO business service must be either one of the eleven "
+        "watermarked pull entities (return SyncOutcome) or an explicit exempt (attachable, "
+        "physical_address). A new watermarked pull must join the eleven — do not let it "
+        "quietly land only in the exempt set. "
+        f"defining={sorted(defining_entities)!r} expected={sorted(expected)!r}"
+    )
 
 
 def test_sync_scripts_do_not_define_per_script_watermark_helpers():
     """Per-script watermark copies are the drift vector U-217 removed; extend WatermarkRun instead."""
     offenders: list[str] = []
     for path in _iter_sync_script_paths():
-        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        tree = _parsed_script(str(path))
         for node in ast.walk(tree):
-            if isinstance(node, ast.FunctionDef) and node.name in _FORBIDDEN_WATERMARK_HELPERS:
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name in _FORBIDDEN_WATERMARK_HELPERS:
                 offenders.append(f"{path.name}:{node.name}")
     assert not offenders, (
         "the per-script watermark copies are the drift vector U-217 removed; "
@@ -874,44 +1001,16 @@ def test_every_sync_qbo_script_references_watermark_run():
     )
 
 
-def test_qbo_services_outcome_param_matches_script_usage():
-    """Scripts must only pass outcome= into staging services that accept and record failures."""
-    called_entities = _collect_sync_from_qbo_outcome_call_sites()
-    assert called_entities == _ENTITIES_WITH_OUTCOME_PARAM
-
-    with_outcome: set[str] = set()
-    without_outcome: set[str] = set()
-    for entity, module_path in _QBO_SERVICE_MODULE_BY_ENTITY.items():
-        service_cls = _resolve_class(module_path)
-        sig = inspect.signature(service_cls.sync_from_qbo)
-        if "outcome" in sig.parameters:
-            with_outcome.add(entity)
-        else:
-            without_outcome.add(entity)
-
-    assert with_outcome == _ENTITIES_WITH_OUTCOME_PARAM
-    assert _ENTITIES_WITHOUT_OUTCOME_PARAM <= without_outcome
-    for entity in _ENTITIES_WITHOUT_OUTCOME_PARAM:
-        assert entity not in with_outcome
-
-
 def test_sync_scripts_never_call_outcome_record_skip_directly():
-    """Skip vs hold must go through record_projection_error, not except ValueError typing."""
-    offenders: list[str] = []
-    for path in _iter_sync_script_paths():
-        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-        for node in ast.walk(tree):
-            if not isinstance(node, ast.Call):
-                continue
-            if not isinstance(node.func, ast.Attribute):
-                continue
-            if node.func.attr not in ("record_skip", "_record_skip"):
-                continue
-            if isinstance(node.func.value, ast.Name) and node.func.value.id == "outcome":
-                offenders.append(f"{path.name}:{node.lineno}")
+    """Skip vs hold must go through record_projection_error, not service-only skip verbs."""
+    offenders = _offending_attr_call_sites(
+        frozenset({"record_skip", "_record_skip", "record_staging_skip"}),
+        receiver="outcome",
+    )
     assert not offenders, (
         "classifying by exception type is what let a transient DB error become a permanent skip; "
-        "route it through record_projection_error. Offenders: " + ", ".join(offenders)
+        "route projection skips through record_projection_error and keep staging skips in the "
+        "service. Offenders: " + ", ".join(offenders)
     )
 
 
@@ -928,11 +1027,32 @@ def _except_handlers_containing_record_projection_error(tree: ast.AST) -> list[a
     return handlers
 
 
+def _sync_from_qbo_outcome_stamps_from_service_pull(service_path: Path) -> bool:
+    tree = _parsed_script(str(service_path))
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        if node.name != "sync_from_qbo":
+            continue
+        for sub in ast.walk(node):
+            if not isinstance(sub, ast.Call):
+                continue
+            func = sub.func
+            if (
+                isinstance(func, ast.Attribute)
+                and isinstance(func.value, ast.Name)
+                and func.value.id == "SyncOutcome"
+                and func.attr == "for_service_pull"
+            ):
+                return True
+    return False
+
+
 def test_sync_scripts_projection_except_blocks_do_not_append_parallel_failure_lists():
     """Failure bookkeeping belongs in SyncOutcome; parallel local lists are U-217 drift."""
     offenders: list[str] = []
     for path in _iter_sync_script_paths():
-        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        tree = _parsed_script(str(path))
         for handler in _except_handlers_containing_record_projection_error(tree):
             for child in ast.walk(handler):
                 if not isinstance(child, ast.Call):

@@ -47,8 +47,7 @@ def sync_qbo_to_local(
     last_sync_time: Optional[str],
     qbo_term_service: QboTermService,
     term_connector: TermPaymentTermConnector,
-    outcome: SyncOutcome,
-) -> dict:
+) -> tuple[dict, SyncOutcome]:
     """
     Sync Terms from QBO API to local database and PaymentTerm module.
     
@@ -59,17 +58,17 @@ def sync_qbo_to_local(
         term_connector: TermPaymentTermConnector instance
     
     Returns:
-        dict: Sync results including terms synced
+        tuple[dict, SyncOutcome]: Sync results envelope and service pull outcome
     """
     logger.info(f"Syncing Terms from QBO API for realm_id: {realm_id}")
     
     # Fetch terms from QBO and store locally (without auto-syncing to modules)
-    terms = qbo_term_service.sync_from_qbo(
+    outcome = qbo_term_service.sync_from_qbo(
         realm_id=realm_id,
         last_updated_time=last_sync_time,
         sync_to_modules=False,  # We'll handle module sync separately for better control
-        outcome=outcome,
     )
+    terms = outcome.synced
     
     if not terms:
         logger.info(f"No Term updates found since {last_sync_time or 'beginning'}")
@@ -77,7 +76,7 @@ def sync_qbo_to_local(
             "terms_synced": 0,
             "payment_terms_synced": 0,
             "terms": [],
-        }
+        }, outcome
     
     logger.info(f"Retrieved {len(terms)} terms from QBO")
     
@@ -94,6 +93,7 @@ def sync_qbo_to_local(
                 initial_delay=INITIAL_RETRY_DELAY,
             )
             payment_terms_synced += 1
+            outcome.record_projected()
             logger.info(f"Synced QboTerm {term.id} to PaymentTerm {payment_term.id}")
         except Exception as e:
             outcome.record_projection_error(
@@ -109,7 +109,7 @@ def sync_qbo_to_local(
         "terms_synced": len(terms),
         "payment_terms_synced": payment_terms_synced,
         "terms": [term.to_dict() for term in terms],
-    }
+    }, outcome
 
 
 def sync_existing_terms_to_payment_terms(
@@ -167,6 +167,7 @@ def sync_existing_terms_to_payment_terms(
                 initial_delay=INITIAL_RETRY_DELAY,
             )
             payment_terms_synced += 1
+            outcome.record_projected()
             logger.info(f"Synced QboTerm {term.id} ({term.name}) to PaymentTerm {payment_term.id}")
         except Exception as e:
             outcome.record_projection_error(
@@ -271,13 +272,11 @@ def sync_qbo_term(resync_existing: bool = False) -> dict:
         else:
             logger.info("No previous sync found. Performing full sync.")
 
-        outcome = SyncOutcome()
-        qbo_to_local_result = sync_qbo_to_local(
+        qbo_to_local_result, outcome = sync_qbo_to_local(
             realm_id=realm_id,
             last_sync_time=last_sync_time,
             qbo_term_service=qbo_term_service,
             term_connector=term_connector,
-            outcome=outcome,
         )
 
         existing_sync_result = sync_existing_terms_to_payment_terms(

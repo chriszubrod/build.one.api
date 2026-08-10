@@ -10,6 +10,7 @@ from integrations.intuit.qbo.invoice.business.model import QboInvoice, QboInvoic
 from integrations.intuit.qbo.invoice.persistence.repo import QboInvoiceRepository, QboInvoiceLineRepository
 from integrations.intuit.qbo.invoice.external.client import QboInvoiceClient
 from integrations.intuit.qbo.invoice.external.schemas import QboInvoice as QboInvoiceExternalSchema
+from integrations.intuit.qbo.base.sync_outcome import SyncOutcome, coerce_outcome
 from shared.database import with_retry
 
 logger = logging.getLogger(__name__)
@@ -43,6 +44,7 @@ class QboInvoiceService:
         end_date: Optional[str] = None,
         customer_ref: Optional[str] = None,
         sync_to_modules: bool = False,
+        outcome: Optional[SyncOutcome] = None,
     ) -> List[QboInvoice]:
         """
         Fetch Invoices from QBO API and store locally.
@@ -59,10 +61,14 @@ class QboInvoiceService:
             customer_ref: Optional QBO Customer ID. If provided, only fetches
                 Invoices where CustomerRef = customer_ref.
             sync_to_modules: If True, also sync to Invoice/InvoiceLineItem modules
+            outcome: Optional shared failure accumulator for watermark runners.
+                Staging upsert failures recorded here prevent advancing the watermark
+                past QBO records that never reached qbo.*.
         
         Returns:
             List[QboInvoice]: The synced invoice records
         """
+        outcome = coerce_outcome(outcome)
         # Fetch Invoices from QBO API. QboHttpClient (via QboInvoiceClient) resolves
         # and refreshes the access token lazily, so no upfront auth call is needed.
         with QboInvoiceClient(realm_id=realm_id) as client:
@@ -72,7 +78,8 @@ class QboInvoiceService:
                 end_date=end_date,
                 customer_ref=customer_ref,
             )
-        
+
+        outcome.fetched = len(qbo_invoices)
         if not qbo_invoices:
             logger.info(f"No Invoices found since {last_updated_time or 'beginning'}")
             return []
@@ -95,7 +102,6 @@ class QboInvoiceService:
         # Process each invoice with retry logic and batch delays
         synced_invoices = []
         changed_invoices = []  # Only invoices actually modified (not sync_token-skipped)
-        failed_invoices = []
 
         for i, qbo_invoice in enumerate(qbo_invoices):
             try:
@@ -111,20 +117,23 @@ class QboInvoiceService:
                     initial_delay=INITIAL_RETRY_DELAY,
                 )
                 synced_invoices.append(local_invoice)
+                outcome.record_synced()
                 # Only propagate to modules if the invoice was actually created or updated
                 if existing_before is None or existing_before.sync_token != qbo_invoice.sync_token:
                     changed_invoices.append(local_invoice)
                 logger.debug(f"Upserted invoice {qbo_invoice.id} ({i + 1}/{len(qbo_invoices)})")
             except Exception as e:
                 logger.error(f"Failed to upsert invoice {qbo_invoice.id}: {e}")
-                failed_invoices.append(qbo_invoice.id)
+                outcome.record_staging_failure(qbo_invoice.id, e)
 
             if (i + 1) % BATCH_SIZE == 0 and i + 1 < len(qbo_invoices):
                 logger.debug(f"Processed {i + 1}/{len(qbo_invoices)} invoices, pausing...")
                 time.sleep(BATCH_DELAY)
         
-        if failed_invoices:
-            logger.warning(f"Failed to upsert {len(failed_invoices)} invoices: {failed_invoices}")
+        if outcome.staging_failed_ids:
+            logger.warning(
+                f"Failed to upsert {len(outcome.staging_failed_ids)} invoices: {outcome.staging_failed_ids}"
+            )
         
         # Sync to modules if requested (only changed invoices — skipped ones haven't changed)
         if sync_to_modules:

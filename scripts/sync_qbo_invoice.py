@@ -13,10 +13,15 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 # Third-party Imports
 
 # Local Imports
-from scripts.sync_helper import _normalize_last_sync, assert_cli_system_admin
-from shared.database import with_retry, is_transient_error
+from scripts.sync_helper import (
+    WatermarkRun,
+    _normalize_last_sync,
+    _normalize_watermark_value,
+    assert_cli_system_admin,
+)
+from integrations.intuit.qbo.base.sync_outcome import SyncOutcome
+from shared.database import with_retry
 from integrations.sync.business.service import SyncService
-from integrations.sync.business.model import Sync
 from integrations.intuit.qbo.invoice.business.service import QboInvoiceService
 from integrations.intuit.qbo.invoice.business.model import QboInvoice
 from integrations.intuit.qbo.invoice.external.client import QboInvoiceClient
@@ -41,47 +46,6 @@ BATCH_SIZE = 10  # Process invoices in batches
 BATCH_DELAY = 0.5  # Delay between batches (seconds)
 MAX_RETRIES = 3  # Max retries for transient errors
 INITIAL_RETRY_DELAY = 2.0  # Initial retry delay (seconds)
-
-
-def _get_or_create_sync_record(sync_service: SyncService, provider: str, env: str, entity: str) -> Sync:
-    """
-    Get or create a Sync record for the given provider/env/entity.
-    """
-    all_syncs = sync_service.read_all()
-    sync_record = next(
-        (sync for sync in all_syncs if sync.provider == provider and sync.env == env and sync.entity == entity),
-        None,
-    )
-    
-    if not sync_record:
-        sync_record = sync_service.create(
-            provider=provider,
-            env=env,
-            entity=entity,
-            last_sync_datetime=None,
-        )
-        logger.info(f"Created new sync record for {provider}/{env}/{entity}")
-    
-    return sync_record
-
-
-def _update_sync_record(sync_service: SyncService, sync_record: Sync, end_time_str: str) -> Sync:
-    """
-    Update the sync record with new last_sync_datetime.
-    """
-    updated_sync = Sync(
-        id=sync_record.id,
-        public_id=sync_record.public_id,
-        row_version=sync_record.row_version,
-        created_datetime=sync_record.created_datetime,
-        modified_datetime=sync_record.modified_datetime,
-        provider=sync_record.provider,
-        env=sync_record.env,
-        entity=sync_record.entity,
-        last_sync_datetime=end_time_str,
-    )
-    sync_service.update_by_public_id(sync_record.public_id, updated_sync)
-    return updated_sync
 
 
 def _resolve_project_to_customer_ref(project_name: str) -> str:
@@ -193,6 +157,7 @@ def sync_qbo_to_local(
     last_sync_time: Optional[str],
     qbo_invoice_service: QboInvoiceService,
     invoice_connector: InvoiceInvoiceConnector,
+    outcome: SyncOutcome,
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
     customer_ref: Optional[str] = None,
@@ -227,6 +192,7 @@ def sync_qbo_to_local(
         end_date=end_date,
         customer_ref=customer_ref,
         sync_to_modules=False,
+        outcome=outcome,
     )
     
     if not invoices:
@@ -252,7 +218,6 @@ def sync_qbo_to_local(
 
     # Sync invoices to Invoice module sequentially
     invoices_module_synced = 0
-    failed_invoices = []
 
     for i, invoice in enumerate(invoices):
         try:
@@ -267,15 +232,13 @@ def sync_qbo_to_local(
             invoices_module_synced += 1
             logger.info(f"Synced QboInvoice {invoice.id} to Invoice {invoice_module.id} ({i + 1}/{len(invoices)})")
         except Exception as e:
-            logger.error(f"Failed to sync QboInvoice {invoice.id} to Invoice: {e}")
-            failed_invoices.append(invoice.id)
+            outcome.record_projection_error(
+                invoice.id, e, label="QboInvoice->Invoice", logger=logger
+            )
 
         if (i + 1) % BATCH_SIZE == 0 and i + 1 < len(invoices):
             logger.debug(f"Processed {i + 1}/{len(invoices)} invoices, pausing...")
             time.sleep(BATCH_DELAY)
-
-    if failed_invoices:
-        logger.warning(f"Failed to sync {len(failed_invoices)} invoices: {failed_invoices}")
     
     return {
         "invoices_synced": len(invoices),
@@ -307,26 +270,28 @@ def sync_qbo_invoice(
         dry_run: If True, fetch from QBO and report what would be synced without writing anything.
     """
     try:
-        # Create start time variable
-        start_time = datetime.now(timezone.utc)
-        start_time_str = _normalize_last_sync(start_time.isoformat())
-        logger.info(f"QBO Invoice sync triggered at: {start_time_str}")
-        
-        if start_date or end_date:
-            logger.info(f"Date range filter: {start_date or 'beginning'} to {end_date or 'now'}")
-        
         # Resolve --project to --customer-ref if provided
         if project and not customer_ref:
             customer_ref = _resolve_project_to_customer_ref(project)
         
         if customer_ref:
             logger.info(f"Customer filter: QBO CustomerRef = {customer_ref}")
-        
-        # Initialize services
+
         sync_service = SyncService()
         qbo_invoice_service = QboInvoiceService()
         invoice_connector = InvoiceInvoiceConnector()
         auth_service = QboAuthService()
+
+        provider = 'qbo'
+        entity = 'invoice'
+        env = 'prod'
+
+        run = WatermarkRun(sync_service, provider, env, entity).open()
+        start_time_str = _normalize_watermark_value(run.query_start)
+        logger.info(f"QBO Invoice sync triggered at: {start_time_str}")
+        
+        if start_date or end_date:
+            logger.info(f"Date range filter: {start_date or 'beginning'} to {end_date or 'now'}")
         
         # Get realm ID
         all_auths = auth_service.read_all()
@@ -334,21 +299,14 @@ def sync_qbo_invoice(
             raise ValueError("No QBO authentication found. Please connect your QuickBooks account first.")
         realm_id = all_auths[0].realm_id
         logger.info(f"Using realm_id: {realm_id}")
-        
-        # Get or create Sync record
-        provider = 'qbo'
-        entity = 'invoice'
-        env = 'prod'
-
-        sync_record = _get_or_create_sync_record(sync_service, provider, env, entity)
 
         # For date range or customer-specific queries, don't use last_sync_time
         # For regular incremental sync, use last_sync_time
         last_sync_time = None
         if start_date or end_date or customer_ref:
             logger.info("Filtered sync mode - using filters instead of last sync time")
-        elif sync_record and sync_record.last_sync_datetime:
-            last_sync_time = sync_record.last_sync_datetime
+        elif run.last_sync_time:
+            last_sync_time = run.last_sync_time
             logger.info(f"Last sync time: {last_sync_time}. Fetching only updated records.")
         else:
             logger.info("No previous sync found. Performing full sync.")
@@ -379,33 +337,31 @@ def sync_qbo_invoice(
                 "status_code": 200,
             }
 
-        # Sync from QBO to local
+        outcome = SyncOutcome()
         qbo_to_local_result = sync_qbo_to_local(
             realm_id=realm_id,
             last_sync_time=last_sync_time,
             qbo_invoice_service=qbo_invoice_service,
             invoice_connector=invoice_connector,
+            outcome=outcome,
             start_date=start_date,
             end_date=end_date,
             customer_ref=customer_ref,
         )
 
-        # Update Sync record
         end_time = datetime.now(timezone.utc)
         end_time_str = _normalize_last_sync(end_time.isoformat())
 
-        if skip_sync_record_update or customer_ref:
-            if customer_ref:
-                logger.info("Skipping sync record update (customer-specific sync)")
-            else:
-                logger.info("Skipping sync record update (--skip-sync-update flag)")
-            updated_sync = sync_record
-        elif end_date:
-            sync_datetime = f"{end_date}T23:59:59"
-            logger.info(f"Setting sync record to end_date: {sync_datetime}")
-            updated_sync = _update_sync_record(sync_service, sync_record, sync_datetime)
-        else:
-            updated_sync = _update_sync_record(sync_service, sync_record, end_time_str)
+        skip_watermark = skip_sync_record_update or bool(customer_ref)
+        if customer_ref:
+            logger.info(
+                "Skipping sync record update (customer-specific sync; watermark will not advance)"
+            )
+        updated_sync = run.commit(
+            outcome,
+            end_date=end_date,
+            skip=skip_watermark,
+        )
         
         result = {
             "success": True,
@@ -418,6 +374,10 @@ def sync_qbo_invoice(
                 "end_date": end_date,
             } if (start_date or end_date) else None,
             "sync_record": updated_sync.to_dict(),
+            "watermark": {
+                **outcome.summary(),
+                "committed_last_sync_datetime": updated_sync.last_sync_datetime,
+            },
             "qbo_to_local": qbo_to_local_result,
         }
         

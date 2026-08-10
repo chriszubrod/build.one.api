@@ -13,6 +13,7 @@ from integrations.intuit.qbo.vendorcredit.external.schemas import (
     QboVendorCredit as QboVendorCreditSchema,
     QboVendorCreditLine as QboVendorCreditLineSchema,
 )
+from integrations.intuit.qbo.base.sync_outcome import SyncOutcome, coerce_outcome
 logger = logging.getLogger(__name__)
 
 
@@ -30,6 +31,7 @@ class QboVendorCreditService:
         end_date: Optional[str] = None,
         sync_to_modules: bool = True,
         reconcile_deletes: bool = False,
+        outcome: Optional[SyncOutcome] = None,
     ) -> List[QboVendorCredit]:
         """
         Sync VendorCredits from QBO to local cache.
@@ -40,10 +42,14 @@ class QboVendorCreditService:
             start_date: Filter by transaction date start
             end_date: Filter by transaction date end
             sync_to_modules: Whether to also sync to BillCredit module
+            outcome: Optional shared failure accumulator for watermark runners.
+                Staging upsert failures recorded here prevent advancing the watermark
+                past QBO records that never reached qbo.*.
             
         Returns:
             List of synced VendorCredits
         """
+        outcome = coerce_outcome(outcome)
         synced = []
 
         # QboHttpClient (via QboVendorCreditClient) resolves and refreshes the
@@ -55,7 +61,8 @@ class QboVendorCreditService:
                 start_date=start_date,
                 end_date=end_date,
             )
-            
+
+            outcome.fetched = len(vendor_credits)
             logger.info(f"Fetched {len(vendor_credits)} VendorCredits from QBO")
             
             # Process each VendorCredit
@@ -64,15 +71,23 @@ class QboVendorCreditService:
                     local_vc = self._upsert_vendor_credit(vc, realm_id)
                     if local_vc:
                         synced.append(local_vc)
+                        outcome.record_synced()
                         
                         # Sync line items
                         if vc.line:
                             self._upsert_vendor_credit_lines(local_vc.id, vc.line)
+                    else:
+                        # Bucket contract: every fetched record → synced / staging_failed / skipped.
+                        logger.error(
+                            f"VendorCredit {vc.id}: upsert returned no row"
+                        )
+                        outcome.record_staging_failure(vc.id)
                     
                     # Small delay to avoid overwhelming DB
                     time.sleep(0.05)
                 except Exception as e:
                     logger.error(f"Error syncing VendorCredit {vc.id}: {e}")
+                    outcome.record_staging_failure(vc.id, e)
                     continue
         
         # Sync to BillCredit module if requested

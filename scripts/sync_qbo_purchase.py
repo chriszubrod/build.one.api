@@ -13,11 +13,16 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 # Third-party Imports
 
 # Local Imports
-from scripts.sync_helper import _normalize_last_sync, assert_cli_system_admin
-from shared.database import with_retry, is_transient_error
+from scripts.sync_helper import (
+    WatermarkRun,
+    _normalize_last_sync,
+    _normalize_watermark_value,
+    assert_cli_system_admin,
+)
+from integrations.intuit.qbo.base.sync_outcome import SyncOutcome
+from shared.database import with_retry
 from integrations.intuit.qbo.base.pull_race import read_lines_riding_out_race, header_has_amount
 from integrations.sync.business.service import SyncService
-from integrations.sync.business.model import Sync
 from integrations.intuit.qbo.purchase.business.service import QboPurchaseService
 from integrations.intuit.qbo.purchase.business.model import QboPurchase
 from integrations.intuit.qbo.purchase.connector.expense.business.service import (
@@ -42,47 +47,6 @@ BATCH_SIZE = 10  # Process purchases in batches
 BATCH_DELAY = 0.5  # Delay between batches (seconds)
 MAX_RETRIES = 3  # Max retries for transient errors
 INITIAL_RETRY_DELAY = 2.0  # Initial retry delay (seconds)
-
-
-def _get_or_create_sync_record(sync_service: SyncService, provider: str, env: str, entity: str) -> Sync:
-    """
-    Get or create a Sync record for the given provider/env/entity.
-    """
-    all_syncs = sync_service.read_all()
-    sync_record = next(
-        (sync for sync in all_syncs if sync.provider == provider and sync.env == env and sync.entity == entity),
-        None,
-    )
-    
-    if not sync_record:
-        sync_record = sync_service.create(
-            provider=provider,
-            env=env,
-            entity=entity,
-            last_sync_datetime=None,
-        )
-        logger.info(f"Created new sync record for {provider}/{env}/{entity}")
-    
-    return sync_record
-
-
-def _update_sync_record(sync_service: SyncService, sync_record: Sync, end_time_str: str) -> Sync:
-    """
-    Update the sync record with new last_sync_datetime.
-    """
-    updated_sync = Sync(
-        id=sync_record.id,
-        public_id=sync_record.public_id,
-        row_version=sync_record.row_version,
-        created_datetime=sync_record.created_datetime,
-        modified_datetime=sync_record.modified_datetime,
-        provider=sync_record.provider,
-        env=sync_record.env,
-        entity=sync_record.entity,
-        last_sync_datetime=end_time_str,
-    )
-    sync_service.update_by_public_id(sync_record.public_id, updated_sync)
-    return updated_sync
 
 
 def _dry_run_preview(
@@ -144,6 +108,7 @@ def sync_qbo_to_local(
     last_sync_time: Optional[str],
     qbo_purchase_service: QboPurchaseService,
     purchase_connector: PurchaseExpenseConnector,
+    outcome: SyncOutcome,
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
 ) -> dict:
@@ -174,6 +139,7 @@ def sync_qbo_to_local(
         end_date=end_date,
         sync_to_modules=False,  # Module sync handled below for better control
         reconcile_deletes=True,  # Removes local records for purchases deleted in QBO (full syncs only)
+        outcome=outcome,
     )
     
     if not purchases:
@@ -185,8 +151,10 @@ def sync_qbo_to_local(
             "excel_rows_synced": 0,
             "skipped_count": 0,
             "skipped_purchase_ids": [],
-            "failed_count": 0,
-            "failed_purchase_ids": [],
+            "failed_count": outcome.failed_count,
+            # failed_purchase_ids: qbo.Purchase staging PKs; staging_failed_qbo_ids: QBO API Ids
+            "failed_purchase_ids": outcome.projection_failed_ids,
+            "staging_failed_qbo_ids": outcome.staging_failed_ids,
             "purchases": [],
         }
     
@@ -198,8 +166,6 @@ def sync_qbo_to_local(
     excel_rows_synced = 0
     sharepoint_uploads_synced = 0
     box_excel_batches = 0
-    skipped_purchases = []   # permanent data issues (missing vendor, etc.) — don't block timestamp
-    failed_purchases = []    # transient errors (DB, connection) — block timestamp for retry
     synced_expenses = []     # (expense, expense_id) — collected for batched Excel sync
     attachable_service = QboAttachableService()
 
@@ -257,31 +223,15 @@ def sync_qbo_to_local(
                 except Exception as att_e:
                     logger.warning(f"Could not sync/link attachments for Purchase {purchase.qbo_id}: {att_e}")
 
-        except ValueError as e:
-            # Permanent data issue: missing vendor mapping, missing expense date, etc.
-            # Will never self-resolve on retry — skip without blocking the sync timestamp.
-            logger.info(
-                f"Skipped QboPurchase {purchase.id} (entity_ref={purchase.entity_ref_value}, "
-                f"name={purchase.entity_ref_name}): {e}"
-            )
-            skipped_purchases.append(purchase.id)
         except Exception as e:
-            # Transient error (DB, connection, etc.) — must block timestamp for retry.
-            logger.error(f"Failed to sync QboPurchase {purchase.id} to Expense: {e}")
-            failed_purchases.append(purchase.id)
+            outcome.record_projection_error(
+                purchase.id, e, label="QboPurchase->Expense", logger=logger
+            )
 
         # Add delay between batches to keep connection alive
         if (i + 1) % BATCH_SIZE == 0 and i + 1 < len(purchases):
             logger.debug(f"Processed {i + 1}/{len(purchases)} purchases, pausing...")
             time.sleep(BATCH_DELAY)
-
-    if skipped_purchases:
-        logger.info(
-            f"Skipped {len(skipped_purchases)} purchase(s) due to permanent data issues "
-            f"(missing vendor mapping, etc.). These will not block the sync timestamp."
-        )
-    if failed_purchases:
-        logger.warning(f"Failed to sync {len(failed_purchases)} purchases: {failed_purchases}")
 
     # --- Batch Excel sync: one worksheet read + one insert per project ---
     # Collect all line items across all synced expenses, group by project,
@@ -381,10 +331,12 @@ def sync_qbo_to_local(
         "excel_rows_synced": excel_rows_synced,
         "sharepoint_uploads_synced": sharepoint_uploads_synced,
         "box_excel_batches": box_excel_batches,
-        "skipped_count": len(skipped_purchases),
-        "skipped_purchase_ids": skipped_purchases,
-        "failed_count": len(failed_purchases),
-        "failed_purchase_ids": failed_purchases,
+        "skipped_count": len(outcome.skipped_ids),
+        "skipped_purchase_ids": outcome.skipped_ids,
+        "failed_count": outcome.failed_count,
+        # failed_purchase_ids: qbo.Purchase staging PKs; staging_failed_qbo_ids: QBO API Ids
+        "failed_purchase_ids": outcome.projection_failed_ids,
+        "staging_failed_qbo_ids": outcome.staging_failed_ids,
         "purchases": [purchase.to_dict() for purchase in purchases],
     }
 
@@ -407,19 +359,21 @@ def sync_qbo_purchase(
         dry_run: If True, fetch from QBO and report what would be synced without writing anything.
     """
     try:
-        # Create start time variable
-        start_time = datetime.now(timezone.utc)
-        start_time_str = _normalize_last_sync(start_time.isoformat())
-        logger.info(f"QBO Purchase sync triggered at: {start_time_str}")
-
-        if start_date or end_date:
-            logger.info(f"Date range filter: {start_date or 'beginning'} to {end_date or 'now'}")
-
-        # Initialize services
         sync_service = SyncService()
         qbo_purchase_service = QboPurchaseService()
         purchase_connector = PurchaseExpenseConnector()
         auth_service = QboAuthService()
+
+        provider = 'qbo'
+        entity = 'purchase'
+        env = 'prod'
+
+        run = WatermarkRun(sync_service, provider, env, entity).open()
+        start_time_str = _normalize_watermark_value(run.query_start)
+        logger.info(f"QBO Purchase sync triggered at: {start_time_str}")
+
+        if start_date or end_date:
+            logger.info(f"Date range filter: {start_date or 'beginning'} to {end_date or 'now'}")
 
         # Get realm ID
         all_auths = auth_service.read_all()
@@ -428,20 +382,13 @@ def sync_qbo_purchase(
         realm_id = all_auths[0].realm_id
         logger.info(f"Using realm_id: {realm_id}")
 
-        # Get or create Sync record
-        provider = 'qbo'
-        entity = 'purchase'
-        env = 'prod'
-
-        sync_record = _get_or_create_sync_record(sync_service, provider, env, entity)
-
         # For date range queries, don't use last_sync_time (we're doing historical batch)
         # For regular incremental sync, use last_sync_time
         last_sync_time = None
         if start_date or end_date:
             logger.info("Historical batch sync mode - using date range filter instead of last sync time")
-        elif sync_record and sync_record.last_sync_datetime:
-            last_sync_time = sync_record.last_sync_datetime
+        elif run.last_sync_time:
+            last_sync_time = run.last_sync_time
             logger.info(f"Last sync time: {last_sync_time}. Fetching only updated records.")
         else:
             logger.info("No previous sync found. Performing full sync.")
@@ -471,42 +418,21 @@ def sync_qbo_purchase(
                 "status_code": 200,
             }
 
-        # Sync from QBO to local
+        outcome = SyncOutcome()
         qbo_to_local_result = sync_qbo_to_local(
             realm_id=realm_id,
             last_sync_time=last_sync_time,
             qbo_purchase_service=qbo_purchase_service,
             purchase_connector=purchase_connector,
+            outcome=outcome,
             start_date=start_date,
             end_date=end_date,
         )
         
-        # Update Sync record
         end_time = datetime.now(timezone.utc)
         end_time_str = _normalize_last_sync(end_time.isoformat())
-        
-        failed_count = qbo_to_local_result.get("failed_count", 0)
 
-        if skip_sync_record_update:
-            logger.info("Skipping sync record update (--skip-sync-update flag)")
-            updated_sync = sync_record
-        elif failed_count > 0:
-            # Do not advance the timestamp when purchases failed — they must be
-            # retried on the next run.  QBO will re-return them because their
-            # LastUpdatedTime is older than the preserved last_sync_time.
-            logger.warning(
-                f"Sync record timestamp NOT updated: {failed_count} purchase(s) failed. "
-                f"They will be re-fetched and retried on the next incremental sync."
-            )
-            updated_sync = sync_record
-        elif end_date:
-            # When end_date is provided, use it as the sync record timestamp
-            sync_datetime = f"{end_date}T23:59:59"
-            logger.info(f"Setting sync record to end_date: {sync_datetime}")
-            updated_sync = _update_sync_record(sync_service, sync_record, sync_datetime)
-        else:
-            # Normal incremental sync — advance to current time
-            updated_sync = _update_sync_record(sync_service, sync_record, end_time_str)
+        updated_sync = run.commit(outcome, end_date=end_date, skip=skip_sync_record_update)
         
         result = {
             "success": True,
@@ -518,6 +444,10 @@ def sync_qbo_purchase(
                 "end_date": end_date,
             } if (start_date or end_date) else None,
             "sync_record": updated_sync.to_dict(),
+            "watermark": {
+                **outcome.summary(),
+                "committed_last_sync_datetime": updated_sync.last_sync_datetime,
+            },
             "qbo_to_local": qbo_to_local_result,
         }
         

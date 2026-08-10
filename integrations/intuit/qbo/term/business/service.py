@@ -10,6 +10,7 @@ from integrations.intuit.qbo.term.business.model import QboTerm
 from integrations.intuit.qbo.term.persistence.repo import QboTermRepository
 from integrations.intuit.qbo.term.external.client import QboTermClient
 from integrations.intuit.qbo.term.external.schemas import QboTerm as QboTermExternalSchema
+from integrations.intuit.qbo.base.sync_outcome import SyncOutcome, coerce_outcome
 from shared.database import with_retry, is_transient_error
 
 logger = logging.getLogger(__name__)
@@ -34,7 +35,8 @@ class QboTermService:
         self,
         realm_id: str,
         last_updated_time: Optional[str] = None,
-        sync_to_modules: bool = False
+        sync_to_modules: bool = False,
+        outcome: Optional[SyncOutcome] = None,
     ) -> List[QboTerm]:
         """
         Fetch Terms from QBO API and store locally.
@@ -45,17 +47,22 @@ class QboTermService:
             last_updated_time: Optional ISO format datetime string. If provided, only fetches
                 Terms where Metadata.LastUpdatedTime > last_updated_time.
             sync_to_modules: If True, also sync to PaymentTerm module
+            outcome: Optional shared failure accumulator for watermark runners.
+                Staging upsert failures recorded here prevent advancing the watermark
+                past QBO records that never reached qbo.*.
         
         Returns:
             List[QboTerm]: The synced term records
         """
+        outcome = coerce_outcome(outcome)
         # Fetch Terms from QBO API. QboHttpClient (via QboTermClient) resolves
         # and refreshes the access token lazily, so no upfront auth call is needed.
         with QboTermClient(realm_id=realm_id) as client:
             qbo_terms: List[QboTermExternalSchema] = client.query_all_terms(
                 last_updated_time=last_updated_time
             )
-        
+
+        outcome.fetched = len(qbo_terms)
         if not qbo_terms:
             logger.info(f"No Terms found since {last_updated_time or 'beginning'}")
             return []
@@ -64,7 +71,6 @@ class QboTermService:
         
         # Process each term with retry logic and batch delays
         synced_terms = []
-        failed_terms = []
         
         for i, qbo_term in enumerate(qbo_terms):
             try:
@@ -77,18 +83,21 @@ class QboTermService:
                     initial_delay=INITIAL_RETRY_DELAY,
                 )
                 synced_terms.append(local_term)
+                outcome.record_synced()
                 logger.debug(f"Upserted term {qbo_term.id} ({i + 1}/{len(qbo_terms)})")
             except Exception as e:
                 logger.error(f"Failed to upsert term {qbo_term.id}: {e}")
-                failed_terms.append(qbo_term.id)
+                outcome.record_staging_failure(qbo_term.id, e)
             
             # Add delay between batches to prevent connection exhaustion
             if (i + 1) % BATCH_SIZE == 0 and i + 1 < len(qbo_terms):
                 logger.debug(f"Processed {i + 1}/{len(qbo_terms)} terms, pausing...")
                 time.sleep(BATCH_DELAY)
         
-        if failed_terms:
-            logger.warning(f"Failed to upsert {len(failed_terms)} terms: {failed_terms}")
+        if outcome.staging_failed_ids:
+            logger.warning(
+                f"Failed to upsert {len(outcome.staging_failed_ids)} terms: {outcome.staging_failed_ids}"
+            )
         
         # Sync to modules if requested
         if sync_to_modules:

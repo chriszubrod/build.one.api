@@ -177,6 +177,47 @@ class SyncRepository:
             logger.error(f"Error during read sync by provider: {error}")
             raise map_database_error(error)
 
+    def read_candidates_for(
+        self, provider: str, env: str, entity: str
+    ) -> list[Sync]:
+        """All Sync rows for (provider, env, entity); one ReadSyncs round trip."""
+        return [
+            row
+            for row in self.read_all()
+            if row.provider == provider and row.env == env and row.entity == entity
+        ]
+
+    def pick_canonical(self, candidates: list[Sync]) -> Optional[Sync]:
+        """Newest LastSyncDatetime, then highest Id on ties; empty → None."""
+        if not candidates:
+            return None
+        winner = candidates[0]
+        for candidate in candidates[1:]:
+            if _sync_row_is_newer(candidate, winner):
+                winner = candidate
+        return winner
+
+    def watermark_is_at_or_ahead(self, sync: Sync, iso_value: str) -> bool:
+        """True when sync.last_sync_datetime parses to >= iso_value (concurrent-run adopt)."""
+        intended = _parse_sync_last_sync(iso_value)
+        stored = _parse_sync_last_sync(sync.last_sync_datetime)
+        if intended is None or stored is None:
+            return False
+        return stored >= intended
+
+    def read_by_provider_env_entity(
+        self, provider: str, env: str, entity: str
+    ) -> Optional[Sync]:
+        """
+        Resolve the canonical Sync row for (provider, env, entity).
+
+        dbo.Sync is tiny; filter in Python over ReadSyncs. When duplicates exist
+        (pre-unique-index legacy), pick_canonical picks deterministically.
+        """
+        return self.pick_canonical(
+            self.read_candidates_for(provider, env, entity)
+        )
+
     _QBO_PULL_ENTITIES = frozenset({"bill", "invoice", "purchase", "vendorcredit"})
 
     def read_qbo_pull_watermarks(self) -> list[Sync]:

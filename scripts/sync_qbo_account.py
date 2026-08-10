@@ -12,9 +12,14 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 # Third-party Imports
 
 # Local Imports
-from scripts.sync_helper import _normalize_last_sync, assert_cli_system_admin
+from scripts.sync_helper import (
+    WatermarkRun,
+    _normalize_last_sync,
+    _normalize_watermark_value,
+    assert_cli_system_admin,
+)
+from integrations.intuit.qbo.base.sync_outcome import SyncOutcome
 from integrations.sync.business.service import SyncService
-from integrations.sync.business.model import Sync
 from integrations.intuit.qbo.account.business.service import QboAccountService
 from integrations.intuit.qbo.account.external.client import QboAccountClient
 from integrations.intuit.qbo.account.persistence.repo import QboAccountRepository
@@ -26,47 +31,6 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
-
-
-def _get_or_create_sync_record(sync_service: SyncService, provider: str, env: str, entity: str) -> Sync:
-    """
-    Get or create a Sync record for the given provider/env/entity.
-    """
-    all_syncs = sync_service.read_all()
-    sync_record = next(
-        (sync for sync in all_syncs if sync.provider == provider and sync.env == env and sync.entity == entity),
-        None,
-    )
-    
-    if not sync_record:
-        sync_record = sync_service.create(
-            provider=provider,
-            env=env,
-            entity=entity,
-            last_sync_datetime=None,
-        )
-        logger.info(f"Created new sync record for {provider}/{env}/{entity}")
-    
-    return sync_record
-
-
-def _update_sync_record(sync_service: SyncService, sync_record: Sync, end_time_str: str) -> Sync:
-    """
-    Update the sync record with new last_sync_datetime.
-    """
-    updated_sync = Sync(
-        id=sync_record.id,
-        public_id=sync_record.public_id,
-        row_version=sync_record.row_version,
-        created_datetime=sync_record.created_datetime,
-        modified_datetime=sync_record.modified_datetime,
-        provider=sync_record.provider,
-        env=sync_record.env,
-        entity=sync_record.entity,
-        last_sync_datetime=end_time_str,
-    )
-    sync_service.update_by_public_id(sync_record.public_id, updated_sync)
-    return updated_sync
 
 
 def _dry_run_preview(
@@ -123,6 +87,7 @@ def sync_qbo_to_local(
     realm_id: str,
     last_sync_time: Optional[str],
     qbo_account_service: QboAccountService,
+    outcome: SyncOutcome,
     reconcile_deletes: bool = False,
 ) -> dict:
     """
@@ -132,6 +97,7 @@ def sync_qbo_to_local(
         realm_id: QBO realm ID
         last_sync_time: Last sync timestamp for incremental sync
         qbo_account_service: QboAccountService instance
+        outcome: Shared failure accumulator for watermark commit
         reconcile_deletes: If True, deactivate local records not found in QBO (full sync only)
 
     Returns:
@@ -144,6 +110,7 @@ def sync_qbo_to_local(
         realm_id=realm_id,
         last_updated_time=last_sync_time,
         reconcile_deletes=reconcile_deletes,
+        outcome=outcome,
     )
     
     if not accounts:
@@ -177,15 +144,17 @@ def sync_qbo_account(
         dry_run: If True, fetch from QBO and report what would be synced without writing anything.
     """
     try:
-        # Create start time variable
-        start_time = datetime.now(timezone.utc)
-        start_time_str = _normalize_last_sync(start_time.isoformat())
-        logger.info(f"QBO Account sync triggered at: {start_time_str}")
-
-        # Initialize services
         sync_service = SyncService()
         qbo_account_service = QboAccountService()
         auth_service = QboAuthService()
+
+        provider = 'qbo'
+        entity = 'account'
+        env = 'prod'
+
+        run = WatermarkRun(sync_service, provider, env, entity).open()
+        start_time_str = _normalize_watermark_value(run.query_start)
+        logger.info(f"QBO Account sync triggered at: {start_time_str}")
 
         # Get realm ID
         all_auths = auth_service.read_all()
@@ -194,17 +163,9 @@ def sync_qbo_account(
         realm_id = all_auths[0].realm_id
         logger.info(f"Using realm_id: {realm_id}")
 
-        # Get or create Sync record
-        provider = 'qbo'
-        entity = 'account'
-        env = 'prod'
-
-        sync_record = _get_or_create_sync_record(sync_service, provider, env, entity)
-
-        # Get last sync time for incremental sync
         last_sync_time = None
-        if sync_record and sync_record.last_sync_datetime:
-            last_sync_time = sync_record.last_sync_datetime
+        if run.last_sync_time:
+            last_sync_time = run.last_sync_time
             logger.info(f"Last sync time: {last_sync_time}. Fetching only updated records.")
         else:
             logger.info("No previous sync found. Performing full sync.")
@@ -232,23 +193,19 @@ def sync_qbo_account(
                 "status_code": 200,
             }
 
-        # Sync from QBO to local
+        outcome = SyncOutcome()
         qbo_to_local_result = sync_qbo_to_local(
             realm_id=realm_id,
             last_sync_time=last_sync_time,
             qbo_account_service=qbo_account_service,
+            outcome=outcome,
             reconcile_deletes=reconcile_deletes,
         )
 
-        # Update Sync record
         end_time = datetime.now(timezone.utc)
         end_time_str = _normalize_last_sync(end_time.isoformat())
 
-        if skip_sync_record_update:
-            logger.info("Skipping sync record update (--skip-sync-update flag)")
-            updated_sync = sync_record
-        else:
-            updated_sync = _update_sync_record(sync_service, sync_record, end_time_str)
+        updated_sync = run.commit(outcome, skip=skip_sync_record_update)
 
         result = {
             "success": True,
@@ -256,6 +213,10 @@ def sync_qbo_account(
             "start_time": start_time_str,
             "end_time": end_time_str,
             "sync_record": updated_sync.to_dict(),
+            "watermark": {
+                **outcome.summary(),
+                "committed_last_sync_datetime": updated_sync.last_sync_datetime,
+            },
             "qbo_to_local": qbo_to_local_result,
         }
 

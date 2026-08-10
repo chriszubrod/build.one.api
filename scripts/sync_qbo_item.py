@@ -12,10 +12,15 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 # Third-party Imports
 
 # Local Imports
-from scripts.sync_helper import _normalize_last_sync, assert_cli_system_admin
-from shared.database import with_retry, is_transient_error
+from scripts.sync_helper import (
+    WatermarkRun,
+    _normalize_last_sync,
+    _normalize_watermark_value,
+    assert_cli_system_admin,
+)
+from integrations.intuit.qbo.base.sync_outcome import SyncOutcome
+from shared.database import with_retry
 from integrations.sync.business.service import SyncService
-from integrations.sync.business.model import Sync
 from integrations.intuit.qbo.item.business.service import QboItemService
 from integrations.intuit.qbo.item.business.model import QboItem
 from integrations.intuit.qbo.item.connector.cost_code.business.service import ItemCostCodeConnector
@@ -79,53 +84,13 @@ def _parse_datetime(datetime_input) -> Optional[datetime]:
         return None
 
 
-def _get_or_create_sync_record(sync_service: SyncService, provider: str, env: str, entity: str) -> Sync:
-    """
-    Get or create a Sync record for the given provider/env/entity.
-    """
-    all_syncs = sync_service.read_all()
-    sync_record = next(
-        (sync for sync in all_syncs if sync.provider == provider and sync.env == env and sync.entity == entity),
-        None,
-    )
-    
-    if not sync_record:
-        sync_record = sync_service.create(
-            provider=provider,
-            env=env,
-            entity=entity,
-            last_sync_datetime=None,
-        )
-        logger.info(f"Created new sync record for {provider}/{env}/{entity}")
-    
-    return sync_record
-
-
-def _update_sync_record(sync_service: SyncService, sync_record: Sync, end_time_str: str) -> Sync:
-    """
-    Update the sync record with new last_sync_datetime.
-    """
-    updated_sync = Sync(
-        id=sync_record.id,
-        public_id=sync_record.public_id,
-        row_version=sync_record.row_version,
-        created_datetime=sync_record.created_datetime,
-        modified_datetime=sync_record.modified_datetime,
-        provider=sync_record.provider,
-        env=sync_record.env,
-        entity=sync_record.entity,
-        last_sync_datetime=end_time_str,
-    )
-    sync_service.update_by_public_id(sync_record.public_id, updated_sync)
-    return updated_sync
-
-
 def sync_qbo_to_local(
     realm_id: str,
     last_sync_time: Optional[str],
     qbo_item_service: QboItemService,
     cost_code_connector: ItemCostCodeConnector,
     sub_cost_code_connector: ItemSubCostCodeConnector,
+    outcome: SyncOutcome,
 ) -> dict:
     """
     Sync Items from QBO API to local database and modules.
@@ -159,6 +124,7 @@ def sync_qbo_to_local(
         }
     
     logger.info(f"Retrieved {len(items)} items from QBO")
+    outcome.fetched = len(items)
     
     # Separate parent and child items
     parent_items = [item for item in items if item.is_parent]
@@ -166,7 +132,6 @@ def sync_qbo_to_local(
     
     # Sync parent items to CostCode first (children depend on parents)
     cost_codes_synced = 0
-    failed_parents = []
     
     for i, item in enumerate(parent_items):
         try:
@@ -178,10 +143,12 @@ def sync_qbo_to_local(
                 initial_delay=INITIAL_RETRY_DELAY,
             )
             cost_codes_synced += 1
+            outcome.record_synced()
             logger.info(f"Synced QboItem {item.id} to CostCode {cost_code.id}")
         except Exception as e:
-            logger.error(f"Failed to sync parent QboItem {item.id} to CostCode: {e}")
-            failed_parents.append(item.id)
+            outcome.record_projection_error(
+                item.id, e, label="QboItem->CostCode", logger=logger
+            )
         
         # Add delay between batches to keep connection alive
         if (i + 1) % BATCH_SIZE == 0 and i + 1 < len(parent_items):
@@ -190,7 +157,6 @@ def sync_qbo_to_local(
     
     # Sync child items to SubCostCode
     sub_cost_codes_synced = 0
-    failed_children = []
     
     for i, item in enumerate(child_items):
         try:
@@ -202,20 +168,17 @@ def sync_qbo_to_local(
                 initial_delay=INITIAL_RETRY_DELAY,
             )
             sub_cost_codes_synced += 1
+            outcome.record_synced()
             logger.info(f"Synced QboItem {item.id} to SubCostCode {sub_cost_code.id}")
         except Exception as e:
-            logger.error(f"Failed to sync child QboItem {item.id} to SubCostCode: {e}")
-            failed_children.append(item.id)
+            outcome.record_projection_error(
+                item.id, e, label="QboItem->SubCostCode", logger=logger
+            )
         
         # Add delay between batches to keep connection alive
         if (i + 1) % BATCH_SIZE == 0 and i + 1 < len(child_items):
             logger.debug(f"Processed {i + 1}/{len(child_items)} child items, pausing...")
             time.sleep(BATCH_DELAY)
-    
-    if failed_parents:
-        logger.warning(f"Failed to sync {len(failed_parents)} parent items: {failed_parents}")
-    if failed_children:
-        logger.warning(f"Failed to sync {len(failed_children)} child items: {failed_children}")
     
     return {
         "items_synced": len(items),
@@ -448,12 +411,6 @@ def sync_qbo_item() -> dict:
     when a record is marked Complete.
     """
     try:
-        # Create start time variable
-        start_time = datetime.now(timezone.utc)
-        start_time_str = _normalize_last_sync(start_time.isoformat())
-        logger.info(f"QBO Item sync triggered at: {start_time_str}")
-        
-        # Initialize services
         sync_service = SyncService()
         qbo_item_service = QboItemService()
         qbo_item_repo = QboItemRepository()
@@ -472,28 +429,29 @@ def sync_qbo_item() -> dict:
         realm_id = all_auths[0].realm_id
         logger.info(f"Using realm_id: {realm_id}")
         
-        # Get or create Sync record
         provider = 'qbo'
         entity = 'item'
         env = 'prod'
-        
-        sync_record = _get_or_create_sync_record(sync_service, provider, env, entity)
-        
-        # Get last sync time for incremental sync
+
+        run = WatermarkRun(sync_service, provider, env, entity).open()
+        start_time_str = _normalize_watermark_value(run.query_start)
+        logger.info(f"QBO Item sync triggered at: {start_time_str}")
+
         last_sync_time = None
-        if sync_record and sync_record.last_sync_datetime:
-            last_sync_time = sync_record.last_sync_datetime
+        if run.last_sync_time:
+            last_sync_time = run.last_sync_time
             logger.info(f"Last sync time: {last_sync_time}. Fetching only updated records.")
         else:
             logger.info("No previous sync found. Performing full sync.")
-        
-        # Step 1: Sync from QBO to local
+
+        outcome = SyncOutcome()
         qbo_to_local_result = sync_qbo_to_local(
             realm_id=realm_id,
             last_sync_time=last_sync_time,
             qbo_item_service=qbo_item_service,
             cost_code_connector=cost_code_connector,
             sub_cost_code_connector=sub_cost_code_connector,
+            outcome=outcome,
         )
         
         # Step 2: Local -> QBO push disabled in batch sync (one-way intake only).
@@ -501,17 +459,20 @@ def sync_qbo_item() -> dict:
         # when a record is marked Complete.
         local_to_qbo_result = {"cost_codes_pushed": 0, "sub_cost_codes_pushed": 0}
         
-        # Update Sync record
         end_time = datetime.now(timezone.utc)
         end_time_str = _normalize_last_sync(end_time.isoformat())
-        updated_sync = _update_sync_record(sync_service, sync_record, end_time_str)
-        
+        updated_sync = run.commit(outcome)
+
         result = {
             "success": True,
             "realm_id": realm_id,
             "start_time": start_time_str,
             "end_time": end_time_str,
             "sync_record": updated_sync.to_dict(),
+            "watermark": {
+                **outcome.summary(),
+                "committed_last_sync_datetime": updated_sync.last_sync_datetime,
+            },
             "qbo_to_local": qbo_to_local_result,
             "local_to_qbo": local_to_qbo_result,
         }

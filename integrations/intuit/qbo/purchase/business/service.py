@@ -10,6 +10,7 @@ from integrations.intuit.qbo.purchase.business.model import QboPurchase, QboPurc
 from integrations.intuit.qbo.purchase.persistence.repo import QboPurchaseRepository, QboPurchaseLineRepository
 from integrations.intuit.qbo.purchase.external.client import QboPurchaseClient
 from integrations.intuit.qbo.purchase.external.schemas import QboPurchase as QboPurchaseExternalSchema
+from integrations.intuit.qbo.base.sync_outcome import SyncOutcome, coerce_outcome
 from shared.authz import current_user_id, current_is_system_admin
 from shared.database import with_retry
 
@@ -44,6 +45,7 @@ class QboPurchaseService:
         end_date: Optional[str] = None,
         sync_to_modules: bool = False,
         reconcile_deletes: bool = False,
+        outcome: Optional[SyncOutcome] = None,
     ) -> List[QboPurchase]:
         """
         Fetch Purchases from QBO API and store locally.
@@ -58,10 +60,14 @@ class QboPurchaseService:
             end_date: Optional date string (YYYY-MM-DD). If provided, only fetches
                 Purchases where TxnDate <= end_date.
             sync_to_modules: If True, also sync to Expense/ExpenseLineItem modules
+            outcome: Optional shared failure accumulator for watermark runners.
+                Staging upsert failures recorded here prevent advancing the watermark
+                past QBO records that never reached qbo.*.
         
         Returns:
             List[QboPurchase]: The synced purchase records
         """
+        outcome = coerce_outcome(outcome)
         self._realm_id = realm_id
 
         # Fetch Purchases from QBO API. QboHttpClient (via QboPurchaseClient) resolves
@@ -72,7 +78,8 @@ class QboPurchaseService:
                 start_date=start_date,
                 end_date=end_date,
             )
-        
+
+        outcome.fetched = len(qbo_purchases)
         if not qbo_purchases:
             logger.info(f"No Purchases found since {last_updated_time or 'beginning'}")
             return []
@@ -81,7 +88,6 @@ class QboPurchaseService:
         
         # Process each purchase with retry logic and batch delays
         synced_purchases = []
-        failed_purchases = []
 
         for i, qbo_purchase in enumerate(qbo_purchases):
             try:
@@ -94,10 +100,11 @@ class QboPurchaseService:
                     initial_delay=INITIAL_RETRY_DELAY,
                 )
                 synced_purchases.append(local_purchase)
+                outcome.record_synced()
                 logger.debug(f"Upserted purchase {qbo_purchase.id} ({i + 1}/{len(qbo_purchases)})")
             except Exception as e:
                 logger.error(f"Failed to upsert purchase {qbo_purchase.id}: {e}")
-                failed_purchases.append(qbo_purchase.id)
+                outcome.record_staging_failure(qbo_purchase.id, e)
             
             # Add delay between batches to prevent connection exhaustion.
             # Token refresh is handled automatically by QboHttpClient on each request.
@@ -105,8 +112,10 @@ class QboPurchaseService:
                 logger.debug(f"Processed {i + 1}/{len(qbo_purchases)} purchases, pausing...")
                 time.sleep(BATCH_DELAY)
         
-        if failed_purchases:
-            logger.warning(f"Failed to upsert {len(failed_purchases)} purchases: {failed_purchases}")
+        if outcome.staging_failed_ids:
+            logger.warning(
+                f"Failed to upsert {len(outcome.staging_failed_ids)} purchases: {outcome.staging_failed_ids}"
+            )
         
         # Sync to modules if requested
         if sync_to_modules:

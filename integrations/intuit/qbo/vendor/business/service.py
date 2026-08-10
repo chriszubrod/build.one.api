@@ -10,6 +10,7 @@ from integrations.intuit.qbo.vendor.business.model import QboVendor
 from integrations.intuit.qbo.vendor.persistence.repo import QboVendorRepository
 from integrations.intuit.qbo.vendor.external.client import QboVendorClient
 from integrations.intuit.qbo.vendor.external.schemas import QboVendor as QboVendorExternalSchema
+from integrations.intuit.qbo.base.sync_outcome import SyncOutcome, coerce_outcome
 from integrations.intuit.qbo.physical_address.business.service import QboPhysicalAddressService
 from shared.database import with_retry, is_transient_error
 
@@ -36,7 +37,8 @@ class QboVendorService:
         self,
         realm_id: str,
         last_updated_time: Optional[str] = None,
-        sync_to_modules: bool = False
+        sync_to_modules: bool = False,
+        outcome: Optional[SyncOutcome] = None,
     ) -> List[QboVendor]:
         """
         Fetch Vendors from QBO API and store locally.
@@ -47,17 +49,22 @@ class QboVendorService:
             last_updated_time: Optional ISO format datetime string. If provided, only fetches
                 Vendors where Metadata.LastUpdatedTime > last_updated_time.
             sync_to_modules: If True, also sync to Vendor/VendorAddress modules
+            outcome: Optional shared failure accumulator for watermark runners.
+                Staging upsert failures recorded here prevent advancing the watermark
+                past QBO records that never reached qbo.*.
         
         Returns:
             List[QboVendor]: The synced vendor records
         """
+        outcome = coerce_outcome(outcome)
         # Fetch Vendors from QBO API. QboHttpClient (via QboVendorClient) resolves
         # and refreshes the access token lazily, so no upfront auth call is needed.
         with QboVendorClient(realm_id=realm_id) as client:
             qbo_vendors: List[QboVendorExternalSchema] = client.query_all_vendors(
                 last_updated_time=last_updated_time
             )
-        
+
+        outcome.fetched = len(qbo_vendors)
         if not qbo_vendors:
             logger.info(f"No Vendors found since {last_updated_time or 'beginning'}")
             return []
@@ -66,7 +73,6 @@ class QboVendorService:
         
         # Process each vendor with retry logic and batch delays
         synced_vendors = []
-        failed_vendors = []
         
         for i, qbo_vendor in enumerate(qbo_vendors):
             try:
@@ -79,18 +85,21 @@ class QboVendorService:
                     initial_delay=INITIAL_RETRY_DELAY,
                 )
                 synced_vendors.append(local_vendor)
+                outcome.record_synced()
                 logger.debug(f"Upserted vendor {qbo_vendor.id} ({i + 1}/{len(qbo_vendors)})")
             except Exception as e:
                 logger.error(f"Failed to upsert vendor {qbo_vendor.id}: {e}")
-                failed_vendors.append(qbo_vendor.id)
+                outcome.record_staging_failure(qbo_vendor.id, e)
             
             # Add delay between batches to prevent connection exhaustion
             if (i + 1) % BATCH_SIZE == 0 and i + 1 < len(qbo_vendors):
                 logger.debug(f"Processed {i + 1}/{len(qbo_vendors)} vendors, pausing...")
                 time.sleep(BATCH_DELAY)
         
-        if failed_vendors:
-            logger.warning(f"Failed to upsert {len(failed_vendors)} vendors: {failed_vendors}")
+        if outcome.staging_failed_ids:
+            logger.warning(
+                f"Failed to upsert {len(outcome.staging_failed_ids)} vendors: {outcome.staging_failed_ids}"
+            )
         
         # Sync to modules if requested
         if sync_to_modules:

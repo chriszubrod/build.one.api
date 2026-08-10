@@ -235,3 +235,22 @@ BEGIN
     COMMIT TRANSACTION;
 END;
 GO
+
+-- Pre-index duplicates for the same (Provider, Env, Entity) forced the repo's
+-- _sync_row_is_newer tie-breaker; this unique index prevents new duplicates.
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'UQ_Sync_Provider_Env_Entity' AND object_id = OBJECT_ID('dbo.Sync'))
+   AND NOT EXISTS (
+        SELECT 1
+        FROM dbo.[Sync]
+        GROUP BY [Provider], [Env], [Entity]
+        HAVING COUNT(*) > 1
+    )
+    CREATE UNIQUE INDEX UQ_Sync_Provider_Env_Entity ON dbo.[Sync] ([Provider], [Env], [Entity]);
+ELSE IF NOT EXISTS (
+    SELECT 1 FROM sys.indexes WHERE name = 'UQ_Sync_Provider_Env_Entity' AND object_id = OBJECT_ID('dbo.Sync')
+)
+BEGIN
+    PRINT 'WARNING: UQ_Sync_Provider_Env_Entity not created — duplicate (Provider, Env, Entity) rows exist.';
+    PRINT 'Dedupe dbo.Sync to one row per (Provider, Env, Entity), then re-apply this file.';
+END;
+GO

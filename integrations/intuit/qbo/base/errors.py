@@ -4,6 +4,35 @@ from typing import Optional
 # Third-party Imports
 
 # Local Imports
+from shared.database import is_transient_error
+
+_CHAIN_WALK_MAX = 5
+
+# SQLSTATEs and message substrings that shared.database.is_transient_error does not yet
+# cover (e.g. HYT00 / "Query timeout expired"). A wrong "not retryable" verdict at the
+# QBO watermark seam permanently skips the record until someone edits it in QBO again.
+# Consolidate these vocabularies with shared.database in a follow-up unit (TODO.md).
+_EXTRA_TRANSIENT_SQLSTATES = frozenset({"HYT00", "HYT01"})  # query timeout / connection timeout
+_EXTRA_TRANSIENT_MESSAGES = (
+    "query timeout expired",
+    "timeout expired",
+    "login timeout expired",
+)
+
+
+def _matches_extra_transient(error: BaseException) -> bool:
+    """True when pyodbc timeout failures missed by shared.database.is_transient_error."""
+    if hasattr(error, "args") and len(error.args) >= 1 and error.args[0] is not None:
+        sqlstate = str(error.args[0]).upper()
+        if sqlstate in _EXTRA_TRANSIENT_SQLSTATES:
+            return True
+
+    error_str = str(error).lower()
+    for msg in _EXTRA_TRANSIENT_MESSAGES:
+        if msg in error_str:
+            return True
+
+    return False
 
 
 class QboError(Exception):
@@ -217,3 +246,42 @@ class QboUnexpectedError(QboError):
     unexpected status codes, malformed responses, etc. Worth flagging for
     investigation rather than retrying blindly.
     """
+
+
+def is_retryable_error(error: BaseException | None) -> bool:
+    """
+    True when any link in the exception chain is retryable for watermark hold decisions.
+
+    Unions two vocabularies: (1) QBO typed errors expose ``is_retryable`` on
+    ``QboError`` subclasses (transport, timeout, rate limit, 5xx, SyncToken mismatch);
+    (2) ``shared.database.is_transient_error`` matches pyodbc/SQL Server transient
+    failures by SQLSTATE and message substring. Projection loops can raise either —
+    e.g. ``QboTimeoutError`` from Attachable fan-out inside the same try as dbo writes,
+    or ``raise ValueError(...) from db_err`` when a connector wraps a deadlock.
+    """
+    if error is None:
+        return False
+
+    seen: set[int] = set()
+    stack: list[BaseException] = [error]
+
+    while stack and len(seen) < _CHAIN_WALK_MAX:
+        current = stack.pop()
+        oid = id(current)
+        if oid in seen:
+            continue
+        seen.add(oid)
+
+        if (
+            getattr(current, "is_retryable", False)
+            or is_transient_error(current)
+            or _matches_extra_transient(current)
+        ):
+            return True
+
+        if current.__cause__ is not None:
+            stack.append(current.__cause__)
+        if current.__context__ is not None:
+            stack.append(current.__context__)
+
+    return False

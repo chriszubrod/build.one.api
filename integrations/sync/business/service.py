@@ -47,6 +47,25 @@ class SyncService:
         """
         return self.repo.read_by_provider(provider)
 
+    def read_candidates_for(
+        self, provider: str, env: str, entity: str
+    ) -> list[Sync]:
+        return self.repo.read_candidates_for(provider, env, entity)
+
+    def pick_canonical(self, candidates: list[Sync]) -> Optional[Sync]:
+        return self.repo.pick_canonical(candidates)
+
+    def watermark_is_at_or_ahead(self, sync: Sync, iso_value: str) -> bool:
+        return self.repo.watermark_is_at_or_ahead(sync, iso_value)
+
+    def read_by_provider_env_entity(
+        self, provider: str, env: str, entity: str
+    ) -> Optional[Sync]:
+        """
+        Canonical Sync row for a pull watermark key; see repository tie-breaker.
+        """
+        return self.repo.read_by_provider_env_entity(provider, env, entity)
+
     def update_by_public_id(self, public_id: str, sync) -> Optional[Sync]:
         """
         Update a sync record by public ID.

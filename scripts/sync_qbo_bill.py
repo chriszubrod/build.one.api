@@ -13,11 +13,16 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 # Third-party Imports
 
 # Local Imports
-from scripts.sync_helper import _normalize_last_sync, assert_cli_system_admin
-from shared.database import with_retry, is_transient_error
+from scripts.sync_helper import (
+    WatermarkRun,
+    _normalize_last_sync,
+    _normalize_watermark_value,
+    assert_cli_system_admin,
+)
+from integrations.intuit.qbo.base.sync_outcome import SyncOutcome
+from shared.database import with_retry
 from integrations.intuit.qbo.base.pull_race import read_lines_riding_out_race, header_has_amount
 from integrations.sync.business.service import SyncService
-from integrations.sync.business.model import Sync
 from integrations.intuit.qbo.bill.business.service import QboBillService
 from integrations.intuit.qbo.bill.business.model import QboBill
 from integrations.intuit.qbo.bill.external.client import QboBillClient
@@ -90,47 +95,6 @@ def _parse_datetime(datetime_input) -> Optional[datetime]:
     except (ValueError, AttributeError) as e:
         logger.warning(f"Failed to parse datetime '{datetime_str}': {e}")
         return None
-
-
-def _get_or_create_sync_record(sync_service: SyncService, provider: str, env: str, entity: str) -> Sync:
-    """
-    Get or create a Sync record for the given provider/env/entity.
-    """
-    all_syncs = sync_service.read_all()
-    sync_record = next(
-        (sync for sync in all_syncs if sync.provider == provider and sync.env == env and sync.entity == entity),
-        None,
-    )
-    
-    if not sync_record:
-        sync_record = sync_service.create(
-            provider=provider,
-            env=env,
-            entity=entity,
-            last_sync_datetime=None,
-        )
-        logger.info(f"Created new sync record for {provider}/{env}/{entity}")
-    
-    return sync_record
-
-
-def _update_sync_record(sync_service: SyncService, sync_record: Sync, end_time_str: str) -> Sync:
-    """
-    Update the sync record with new last_sync_datetime.
-    """
-    updated_sync = Sync(
-        id=sync_record.id,
-        public_id=sync_record.public_id,
-        row_version=sync_record.row_version,
-        created_datetime=sync_record.created_datetime,
-        modified_datetime=sync_record.modified_datetime,
-        provider=sync_record.provider,
-        env=sync_record.env,
-        entity=sync_record.entity,
-        last_sync_datetime=end_time_str,
-    )
-    sync_service.update_by_public_id(sync_record.public_id, updated_sync)
-    return updated_sync
 
 
 def _link_attachments_to_bill_line_items(
@@ -289,6 +253,7 @@ def sync_qbo_to_local(
     last_sync_time: Optional[str],
     qbo_bill_service: QboBillService,
     bill_connector: BillBillConnector,
+    outcome: SyncOutcome,
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
     sync_attachments: bool = False,
@@ -325,6 +290,7 @@ def sync_qbo_to_local(
         end_date=end_date,
         sync_to_modules=False,
         reconcile_deletes=True,  # full-sync-only guard inside: removes local records deleted in QBO
+        outcome=outcome,
     )
     
     if not bills:
@@ -333,6 +299,12 @@ def sync_qbo_to_local(
             "bills_synced": 0,
             "bills_module_synced": 0,
             "bills": [],
+            "skipped_count": 0,
+            "skipped_bill_ids": [],
+            "failed_count": outcome.failed_count,
+            # failed_bill_ids: qbo.Bill staging PKs; staging_failed_qbo_ids: QBO API Ids
+            "failed_bill_ids": outcome.projection_failed_ids,
+            "staging_failed_qbo_ids": outcome.staging_failed_ids,
         }
     
     logger.info(f"Retrieved {len(bills)} bills from QBO")
@@ -340,8 +312,6 @@ def sync_qbo_to_local(
     # Sync bills to Bill module
     bills_module_synced = 0
     attachments_synced = 0
-    skipped_bills = []   # permanent data issues (e.g. vendor not mapped) — do NOT block the watermark
-    failed_bills = []    # transient errors (DB, connection) — block the watermark for retry
     excel_rows_synced = 0
     sharepoint_uploads_synced = 0
     box_excel_batches = 0
@@ -401,26 +371,13 @@ def sync_qbo_to_local(
                         )
                 except Exception as att_e:
                     logger.error(f"Failed to sync attachments for Bill {bill.qbo_id}: {att_e}")
-        except ValueError as e:
-            # Permanent data issue (e.g. vendor not mapped) — will never self-resolve
-            # on retry, so skip WITHOUT blocking the sync watermark.
-            logger.info(f"Skipped QboBill {bill.id} (permanent data issue): {e}")
-            skipped_bills.append(bill.id)
         except Exception as e:
-            # Transient error (DB, connection, etc.) — MUST block the watermark so this
-            # bill is re-fetched and retried on the next incremental sync.
-            logger.error(f"Failed to sync QboBill {bill.id} to Bill: {e}")
-            failed_bills.append(bill.id)
+            outcome.record_projection_error(bill.id, e, label="QboBill->Bill", logger=logger)
 
         # Add delay between batches to keep connection alive
         if (i + 1) % BATCH_SIZE == 0 and i + 1 < len(bills):
             logger.debug(f"Processed {i + 1}/{len(bills)} bills, pausing...")
             time.sleep(BATCH_DELAY)
-
-    if skipped_bills:
-        logger.info(f"Skipped {len(skipped_bills)} bill(s) due to permanent data issues (won't block watermark): {skipped_bills}")
-    if failed_bills:
-        logger.warning(f"Failed to sync {len(failed_bills)} bills (watermark will hold for retry): {failed_bills}")
 
     # --- Batch budget-tracker Excel sync: one worksheet read + batched insert per project ---
     # Mirrors the purchase pull (sync_expenses_batch_to_excel). Best-effort: an Excel
@@ -513,10 +470,12 @@ def sync_qbo_to_local(
         "excel_rows_synced": excel_rows_synced,
         "sharepoint_uploads_synced": sharepoint_uploads_synced,
         "box_excel_batches": box_excel_batches,
-        "skipped_count": len(skipped_bills),
-        "skipped_bill_ids": skipped_bills,
-        "failed_count": len(failed_bills),
-        "failed_bill_ids": failed_bills,
+        "skipped_count": len(outcome.skipped_ids),
+        "skipped_bill_ids": outcome.skipped_ids,
+        "failed_count": outcome.failed_count,
+        # failed_bill_ids: qbo.Bill staging PKs; staging_failed_qbo_ids: QBO API Ids
+        "failed_bill_ids": outcome.projection_failed_ids,
+        "staging_failed_qbo_ids": outcome.staging_failed_ids,
         "bills": [bill.to_dict() for bill in bills],
     }
 
@@ -552,6 +511,11 @@ def sync_local_to_qbo(
         dict: Sync results including bills_pushed, attachments_pushed, errors
     """
     logger.info("Checking for local Bills to push to QBO")
+    
+    # WatermarkRun.last_sync_time is a normalized STRING; ReadSyncs returned datetime objects.
+    # Normalize once so mod_dt > cutoff compares datetime-to-datetime (also fixes
+    # push_last_sync_time=start_time_str on a fresh DB before WatermarkRun).
+    last_sync_cutoff = _parse_datetime(last_sync_time) if last_sync_time else None
     
     bills_pushed = 0
     attachments_pushed = 0
@@ -620,7 +584,7 @@ def sync_local_to_qbo(
         
         for bill in unmapped_bills:
             mod_dt = parse_modified_datetime(bill.modified_datetime) if bill.modified_datetime else None
-            if mod_dt and mod_dt > last_sync_time:
+            if mod_dt and last_sync_cutoff and mod_dt > last_sync_cutoff:
                 new_bills.append(bill)
             else:
                 retry_bills.append(bill)
@@ -806,14 +770,6 @@ def sync_qbo_bill(
         dry_run: If True, fetch from QBO and report what would be synced without writing anything.
     """
     try:
-        # Create start time variable
-        start_time = datetime.now(timezone.utc)
-        start_time_str = _normalize_last_sync(start_time.isoformat())
-        logger.info(f"QBO Bill sync triggered at: {start_time_str}")
-        
-        if start_date or end_date:
-            logger.info(f"Date range filter: {start_date or 'beginning'} to {end_date or 'now'}")
-        
         # Initialize services
         sync_service = SyncService()
         qbo_bill_service = QboBillService()
@@ -823,6 +779,17 @@ def sync_qbo_bill(
         auth_service = QboAuthService()
         attachable_service = QboAttachableService() if sync_attachments else None
         
+        provider = 'qbo'
+        entity = 'bill'
+        env = 'prod'
+
+        run = WatermarkRun(sync_service, provider, env, entity).open()
+        start_time_str = _normalize_watermark_value(run.query_start)
+        logger.info(f"QBO Bill sync triggered at: {start_time_str}")
+        
+        if start_date or end_date:
+            logger.info(f"Date range filter: {start_date or 'beginning'} to {end_date or 'now'}")
+        
         # Get realm ID
         all_auths = auth_service.read_all()
         if not all_auths or len(all_auths) == 0:
@@ -830,20 +797,13 @@ def sync_qbo_bill(
         realm_id = all_auths[0].realm_id
         logger.info(f"Using realm_id: {realm_id}")
         
-        # Get or create Sync record
-        provider = 'qbo'
-        entity = 'bill'
-        env = 'prod'
-        
-        sync_record = _get_or_create_sync_record(sync_service, provider, env, entity)
-        
         # For date range queries, don't use last_sync_time (we're doing historical batch)
         # For regular incremental sync, use last_sync_time
         last_sync_time = None
         if start_date or end_date:
             logger.info("Historical batch sync mode - using date range filter instead of last sync time")
-        elif sync_record and sync_record.last_sync_datetime:
-            last_sync_time = sync_record.last_sync_datetime
+        elif run.last_sync_time:
+            last_sync_time = run.last_sync_time
             logger.info(f"Last sync time: {last_sync_time}. Fetching only updated records.")
         else:
             logger.info("No previous sync found. Performing full sync.")
@@ -874,11 +834,13 @@ def sync_qbo_bill(
             }
 
         # Step 1: Sync from QBO to local
+        outcome = SyncOutcome()
         qbo_to_local_result = sync_qbo_to_local(
             realm_id=realm_id,
             last_sync_time=last_sync_time,
             qbo_bill_service=qbo_bill_service,
             bill_connector=bill_connector,
+            outcome=outcome,
             start_date=start_date,
             end_date=end_date,
             sync_attachments=sync_attachments,
@@ -886,14 +848,14 @@ def sync_qbo_bill(
         )
         
         local_to_qbo_result = None
+        push_run = None
         if not pull_only:
             # Step 2: Sync from local to QBO (reverse sync)
-            push_entity = 'bill_push'
-            push_sync_record = _get_or_create_sync_record(sync_service, provider, env, push_entity)
+            push_run = WatermarkRun(sync_service, provider, env, 'bill_push').open()
             
             push_last_sync_time = None
-            if push_sync_record and push_sync_record.last_sync_datetime:
-                push_last_sync_time = push_sync_record.last_sync_datetime
+            if push_run.last_sync_time:
+                push_last_sync_time = push_run.last_sync_time
                 logger.info(f"Push sync - last sync time: {push_last_sync_time}")
             else:
                 logger.info("No previous push sync found. Will only sync bills from now onward.")
@@ -910,39 +872,16 @@ def sync_qbo_bill(
         else:
             logger.info("Pull-only mode - skipping push to QBO")
         
-        # Update Sync records
         end_time = datetime.now(timezone.utc)
         end_time_str = _normalize_last_sync(end_time.isoformat())
-        
-        if not pull_only and not skip_sync_record_update and local_to_qbo_result is not None:
-            push_entity = 'bill_push'
-            push_sync_record = _get_or_create_sync_record(sync_service, provider, env, push_entity)
-            _update_sync_record(sync_service, push_sync_record, end_time_str)
-            logger.info(f"Updated push sync record to: {end_time_str}")
-        
-        # Update Pull Sync record
-        if skip_sync_record_update:
-            logger.info("Skipping sync record update (--skip-sync-update flag)")
-            updated_sync = sync_record
-        elif end_date:
-            # When end_date is provided, use it as the sync record timestamp
-            # This allows tracking progress through historical batch imports
-            sync_datetime = f"{end_date}T23:59:59"
-            logger.info(f"Setting sync record to end_date: {sync_datetime}")
-            updated_sync = _update_sync_record(sync_service, sync_record, sync_datetime)
-        elif qbo_to_local_result.get("failed_count", 0) > 0:
-            # Do NOT advance the watermark when bills failed to sync — they must be
-            # re-fetched and retried next run (QBO re-returns them; their
-            # LastUpdatedTime stays > the preserved watermark). Permanent skips
-            # (vendor not mapped, etc.) are excluded — they never block.
-            logger.warning(
-                f"Pull watermark NOT advanced: {qbo_to_local_result['failed_count']} bill(s) failed "
-                f"({qbo_to_local_result.get('failed_bill_ids')}). Will retry next run."
+
+        if push_run is not None:
+            push_run.commit(
+                SyncOutcome(),
+                skip=(pull_only or skip_sync_record_update or local_to_qbo_result is None),
             )
-            updated_sync = sync_record
-        else:
-            # Normal incremental sync - use current time
-            updated_sync = _update_sync_record(sync_service, sync_record, end_time_str)
+
+        updated_sync = run.commit(outcome, end_date=end_date, skip=skip_sync_record_update)
         
         result = {
             "success": True,
@@ -954,6 +893,10 @@ def sync_qbo_bill(
                 "end_date": end_date,
             } if (start_date or end_date) else None,
             "sync_record": updated_sync.to_dict(),
+            "watermark": {
+                **outcome.summary(),
+                "committed_last_sync_datetime": updated_sync.last_sync_datetime,
+            },
             "qbo_to_local": qbo_to_local_result,
             "local_to_qbo": local_to_qbo_result,
         }

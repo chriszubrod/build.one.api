@@ -11,7 +11,13 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 # Third-party Imports
 
 # Local Imports
-from scripts.sync_helper import _normalize_last_sync, assert_cli_system_admin
+from scripts.sync_helper import (
+    WatermarkRun,
+    _normalize_last_sync,
+    _normalize_watermark_value,
+    assert_cli_system_admin,
+)
+from integrations.intuit.qbo.base.sync_outcome import SyncOutcome
 from integrations.sync.business.service import SyncService
 from integrations.intuit.qbo.company_info.business.service import QboCompanyInfoService
 from integrations.intuit.qbo.company_info.connector.business.service import CompanyInfoCompanyConnector
@@ -26,87 +32,57 @@ def sync_qbo_company_info() -> dict:
     Sync CompanyInfo from QBO API and then sync to Company module via connector.
     """
     try:
-        # Create start time variable
-        start_time = datetime.now(timezone.utc)
-        start_time_str = _normalize_last_sync(start_time.isoformat())
-        logger.info(f"HTTP Function triggered at: {start_time_str}")
-        
-        # Initialize the services
         sync_service = SyncService()
         company_info_service = QboCompanyInfoService()
         company_connector = CompanyInfoCompanyConnector()
         address_connector = PhysicalAddressAddressConnector()
         auth_service = QboAuthService()
-        
-        
+
+        provider = 'qbo'
+        entity = 'company_info'
+        env = 'prod'
+
+        run = WatermarkRun(sync_service, provider, env, entity).open()
+        start_time_str = _normalize_watermark_value(run.query_start)
+        logger.info(f"HTTP Function triggered at: {start_time_str}")
+
         all_auths = auth_service.read_all()
         if not all_auths or len(all_auths) == 0:
             raise ValueError("No QBO authentication found. Please connect your QuickBooks account first.")
         realm_id = all_auths[0].realm_id
-        #print(f"Realm ID: {realm_id}")
-        
-        
-        # Get or create Sync record
-        provider = 'qbo'
-        entity = 'company_info'
-        env = 'prod'
-        
-        all_syncs = sync_service.read_all()
-        sync_record = next(
-            (sync for sync in all_syncs if sync.provider == provider and sync.env == env and sync.entity == entity),
-            None,
-        )
-        #print(f"Sync record: {sync_record}")
 
-        if not sync_record:
-            sync_record = sync_service.create(
-                provider=provider,
-                env=env,
-                entity=entity,
-                last_sync_datetime=None,
-            )
-            print(sync_record)
-        
-        # Get last sync time for incremental sync
         last_sync_time = None
-        if sync_record and sync_record.last_sync_datetime:
-            last_sync_time = sync_record.last_sync_datetime
+        if run.last_sync_time:
+            last_sync_time = run.last_sync_time
             logger.info(f"Last sync time: {last_sync_time}. Fetching only updated records.")
         else:
             logger.info("No previous sync found. Fetching all CompanyInfo records.")
-        
+
+        outcome = SyncOutcome()
+
         # Sync CompanyInfo from QBO API
         logger.info(f"Syncing CompanyInfo from QBO API for realm_id: {realm_id}")
         company_info = company_info_service.sync_from_qbo(
             realm_id=realm_id,
             last_updated_time=last_sync_time
         )
-        
-        # If no updates found, still update sync record timestamp and return early
+
+        # QBO returns None when nothing changed since the watermark — not a failure; still commit.
         if not company_info:
-            logger.info("No CompanyInfo updates found. Updating sync timestamp.")
+            logger.info("No CompanyInfo updates found since last sync.")
             end_time = datetime.now(timezone.utc)
             end_time_str = _normalize_last_sync(end_time.isoformat())
-            
-            from integrations.sync.business.model import Sync
-            updated_sync = Sync(
-                id=sync_record.id,
-                public_id=sync_record.public_id,
-                row_version=sync_record.row_version,
-                created_datetime=sync_record.created_datetime,
-                modified_datetime=sync_record.modified_datetime,
-                provider=sync_record.provider,
-                env=sync_record.env,
-                entity=sync_record.entity,
-                last_sync_datetime=end_time_str,
-            )
-            sync_service.update_by_public_id(sync_record.public_id, updated_sync)
-            
+            updated_sync = run.commit(outcome)
+
             result = {
                 "success": True,
                 "company_info": None,
                 "company": None,
                 "sync_record": updated_sync.to_dict(),
+                "watermark": {
+                    **outcome.summary(),
+                    "committed_last_sync_datetime": updated_sync.last_sync_datetime,
+                },
                 "start_time": start_time_str,
                 "end_time": end_time_str,
                 "realm_id": realm_id,
@@ -116,7 +92,9 @@ def sync_qbo_company_info() -> dict:
                 "result": result,
                 "status_code": 200,
             }
-        
+
+        outcome.fetched = 1
+
         # Sync PhysicalAddress records to Address module via connector
         addresses_synced = []
         address_ids_to_sync = [
@@ -131,9 +109,11 @@ def sync_qbo_company_info() -> dict:
                     addresses_synced.append(address.id if address else None)
                     logger.info(f"Successfully synced PhysicalAddress {addr_id} to Address module. Address ID: {address.id if address else 'None'}")
                 except Exception as e:
-                    logger.warning(f"Failed to sync PhysicalAddress {addr_id} to Address module: {e}")
+                    outcome.record_projection_error(
+                        addr_id, e, label="PhysicalAddress->Address", logger=logger
+                    )
                     addresses_synced.append(None)
-        
+
         # Sync CompanyInfo to Company module via connector
         company = None
         if company_info and company_info.id:
@@ -143,42 +123,34 @@ def sync_qbo_company_info() -> dict:
                     qbo_company_info_id=company_info.id,
                     realm_id=realm_id
                 )
+                outcome.record_synced()
                 logger.info(f"Successfully synced to Company module. Company ID: {company.id}")
             except Exception as e:
-                logger.warning(f"Failed to sync CompanyInfo to Company module: {e}")
-                # Continue execution even if connector sync fails
+                outcome.record_projection_error(
+                    company_info.id, e, label="QboCompanyInfo->Company", logger=logger
+                )
         else:
             logger.warning("CompanyInfo sync completed but no ID found. Skipping Company module sync.")
 
-        # Update Sync record
         end_time = datetime.now(timezone.utc)
         end_time_str = _normalize_last_sync(end_time.isoformat())
-        
-        from integrations.sync.business.model import Sync
-        updated_sync = Sync(
-            id=sync_record.id,
-            public_id=sync_record.public_id,
-            row_version=sync_record.row_version,
-            created_datetime=sync_record.created_datetime,
-            modified_datetime=sync_record.modified_datetime,
-            provider=sync_record.provider,
-            env=sync_record.env,
-            entity=sync_record.entity,
-            last_sync_datetime=end_time_str,
-        )
-        sync_service.update_by_public_id(sync_record.public_id, updated_sync)
-        
+        updated_sync = run.commit(outcome)
+
         result = {
             "success": True,
             "company_info": company_info.to_dict(),
             "company": company.to_dict() if company else None,
             "addresses_synced": addresses_synced,
             "sync_record": updated_sync.to_dict(),
+            "watermark": {
+                **outcome.summary(),
+                "committed_last_sync_datetime": updated_sync.last_sync_datetime,
+            },
             "start_time": start_time_str,
             "end_time": end_time_str,
             "realm_id": realm_id,
         }
-        
+
         return {
             "result": result,
             "status_code": 200,

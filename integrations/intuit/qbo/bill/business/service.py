@@ -10,6 +10,7 @@ from integrations.intuit.qbo.bill.business.model import QboBill, QboBillLine
 from integrations.intuit.qbo.bill.persistence.repo import QboBillRepository, QboBillLineRepository
 from integrations.intuit.qbo.bill.external.client import QboBillClient
 from integrations.intuit.qbo.bill.external.schemas import QboBill as QboBillExternalSchema
+from integrations.intuit.qbo.base.sync_outcome import SyncOutcome, coerce_outcome
 from shared.database import with_retry
 
 logger = logging.getLogger(__name__)
@@ -43,6 +44,7 @@ class QboBillService:
         end_date: Optional[str] = None,
         sync_to_modules: bool = False,
         reconcile_deletes: bool = False,
+        outcome: Optional[SyncOutcome] = None,
     ) -> List[QboBill]:
         """
         Fetch Bills from QBO API and store locally.
@@ -57,10 +59,14 @@ class QboBillService:
             end_date: Optional date string (YYYY-MM-DD). If provided, only fetches
                 Bills where TxnDate <= end_date.
             sync_to_modules: If True, also sync to Bill/BillLineItem modules
+            outcome: Optional shared failure accumulator for watermark runners.
+                Staging upsert failures recorded here prevent advancing the watermark
+                past QBO records that never reached qbo.*.
         
         Returns:
             List[QboBill]: The synced bill records
         """
+        outcome = coerce_outcome(outcome)
         self._realm_id = realm_id
 
         # Fetch Bills from QBO API. QboHttpClient (via QboBillClient) resolves
@@ -71,7 +77,8 @@ class QboBillService:
                 start_date=start_date,
                 end_date=end_date,
             )
-        
+
+        outcome.fetched = len(qbo_bills)
         if not qbo_bills:
             logger.info(f"No Bills found since {last_updated_time or 'beginning'}")
             return []
@@ -80,7 +87,6 @@ class QboBillService:
         
         # Process each bill with retry logic and batch delays
         synced_bills = []
-        failed_bills = []
         
         for i, qbo_bill in enumerate(qbo_bills):
             try:
@@ -93,10 +99,11 @@ class QboBillService:
                     initial_delay=INITIAL_RETRY_DELAY,
                 )
                 synced_bills.append(local_bill)
+                outcome.record_synced()
                 logger.debug(f"Upserted bill {qbo_bill.id} ({i + 1}/{len(qbo_bills)})")
             except Exception as e:
                 logger.error(f"Failed to upsert bill {qbo_bill.id}: {e}")
-                failed_bills.append(qbo_bill.id)
+                outcome.record_staging_failure(qbo_bill.id, e)
             
             # Add delay between batches to prevent connection exhaustion.
             # Token refresh is handled automatically by QboHttpClient on each request.
@@ -104,8 +111,10 @@ class QboBillService:
                 logger.debug(f"Processed {i + 1}/{len(qbo_bills)} bills, pausing...")
                 time.sleep(BATCH_DELAY)
         
-        if failed_bills:
-            logger.warning(f"Failed to upsert {len(failed_bills)} bills: {failed_bills}")
+        if outcome.staging_failed_ids:
+            logger.warning(
+                f"Failed to upsert {len(outcome.staging_failed_ids)} bills: {outcome.staging_failed_ids}"
+            )
         
         # Sync to modules if requested
         if sync_to_modules:

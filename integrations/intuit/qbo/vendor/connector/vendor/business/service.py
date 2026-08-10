@@ -1,6 +1,6 @@
 # Python Standard Library Imports
 import logging
-from typing import Optional
+from typing import Optional, Union
 
 # Third-party Imports
 
@@ -9,6 +9,8 @@ from integrations.intuit.qbo.vendor.connector.vendor.business.model import Vendo
 from integrations.intuit.qbo.vendor.connector.vendor.persistence.repo import VendorVendorRepository
 from integrations.intuit.qbo.vendor.business.model import QboVendor
 from integrations.intuit.qbo.physical_address.connector.business.service import PhysicalAddressAddressConnector
+from integrations.intuit.qbo.reconciliation.persistence.repo import ReconciliationIssueRepository
+from integrations.intuit.qbo.base.field_ownership import preserve_human_edited_name
 from entities.vendor.business.service import VendorService
 from entities.vendor.business.model import Vendor
 from entities.vendor_address.business.service import VendorAddressService
@@ -17,6 +19,10 @@ logger = logging.getLogger(__name__)
 
 # Address type ID for billing (typically ID 1)
 ADDRESS_TYPE_BILLING = 1
+
+
+def _coerce_id(value: Union[int, str]) -> int:
+    return int(value) if isinstance(value, str) else value
 
 
 class VendorVendorConnector:
@@ -30,12 +36,14 @@ class VendorVendorConnector:
         vendor_service: Optional[VendorService] = None,
         vendor_address_service: Optional[VendorAddressService] = None,
         address_connector: Optional[PhysicalAddressAddressConnector] = None,
+        reconciliation_repo: Optional[ReconciliationIssueRepository] = None,
     ):
         """Initialize the VendorVendorConnector."""
         self.mapping_repo = mapping_repo or VendorVendorRepository()
         self.vendor_service = vendor_service or VendorService()
         self.vendor_address_service = vendor_address_service or VendorAddressService()
         self.address_connector = address_connector or PhysicalAddressAddressConnector()
+        self.reconciliation_repo = reconciliation_repo or ReconciliationIssueRepository()
 
     def sync_from_qbo_vendor(self, qbo_vendor: QboVendor) -> Vendor:
         """
@@ -51,50 +59,242 @@ class VendorVendorConnector:
         Returns:
             Vendor: The synced Vendor record
         """
-        # Map QBO Vendor fields to Vendor module fields
-        vendor_name = qbo_vendor.display_name
-        
-        # Check for existing mapping
+        # Normalize once: VendorService.create strips the name and dedups on the stripped
+        # value, so an unstripped lookup here would miss the adopt branch and then collide
+        # inside create() — detaching the QboVendor permanently. Empty/whitespace-only
+        # collapses to None so the `if vendor_name` guards below skip the lookups.
+        vendor_name = (qbo_vendor.display_name or "").strip() or None
         mapping = self.mapping_repo.read_by_qbo_vendor_id(qbo_vendor.id)
-        
+
         if mapping:
-            # Found existing mapping - update the Vendor
             vendor = self.vendor_service.read_by_id(mapping.vendor_id)
             if vendor:
                 logger.info(f"Updating existing Vendor {vendor.id} from QboVendor {qbo_vendor.id}")
-                vendor.name = vendor_name
-                vendor = self.vendor_service.repo.update_by_id(vendor)
-                
-                # Sync addresses for existing vendor
-                self._sync_addresses(qbo_vendor, vendor.id)
-                
-                return vendor
-            else:
-                # Mapping exists but Vendor not found - recreate Vendor
-                logger.warning(f"Mapping exists but Vendor {mapping.vendor_id} not found. Creating new Vendor.")
-                self.mapping_repo.delete_by_id(mapping.id)
-                mapping = None
-        
-        # Create new Vendor
+                return self._apply_vendor_fields_and_sync(
+                    vendor, qbo_vendor=qbo_vendor, incoming_name=vendor_name
+                )
+
+            # HEAL — mapping exists but the bound Vendor reads empty.
+            # NEVER delete the mapping and NEVER fall through to create (audit P1-08).
+            # dbo.ReadVendorById filters IsDeleted = 0, so a locally soft-deleted vendor lands
+            # here DETERMINISTICALLY, not just on a transient read.
+            replacement = self.vendor_service.read_by_name(vendor_name) if vendor_name else None
+            if replacement:
+                replacement_id = _coerce_id(replacement.id)
+                existing_map = self.mapping_repo.read_by_vendor_id(replacement_id)
+                if existing_map and existing_map.qbo_vendor_id != qbo_vendor.id:
+                    # Name-matched vendor is already bound to a DIFFERENT QboVendor — a genuine
+                    # QBO-side duplicate vendor. Repointing would break the 1:1 mapping.
+                    self._raise_duplicate_qbo_vendor_issue(
+                        qbo_vendor=qbo_vendor,
+                        local_vendor=replacement,
+                        existing_mapping=existing_map,
+                    )
+                    raise ValueError(
+                        f"VendorVendor mapping {mapping.id} points at missing Vendor "
+                        f"{mapping.vendor_id}; name match Vendor {replacement_id} is already "
+                        f"bound to QboVendor {existing_map.qbo_vendor_id}."
+                    )
+                if mapping.vendor_id != replacement_id:
+                    # Repoint IN PLACE via update_by_id — no delete, no window.
+                    old_vendor_id = mapping.vendor_id
+                    mapping.vendor_id = replacement_id
+                    self.mapping_repo.update_by_id(mapping)
+                    logger.info(
+                        f"Healed VendorVendor mapping {mapping.id}: repointed QboVendor "
+                        f"{qbo_vendor.id} from missing Vendor {old_vendor_id} to Vendor "
+                        f"{replacement_id} ({vendor_name})"
+                    )
+                return self._apply_vendor_fields_and_sync(
+                    replacement, qbo_vendor=qbo_vendor, incoming_name=vendor_name
+                )
+
+            # No replacement resolvable — record and RAISE, mutating nothing. Mapping is preserved
+            # (QboVendor<->Vendor binding intact; no duplicate minted). sync_qbo_vendor advances the
+            # watermark unconditionally (hold booked U-217), so this is a permanent skip until QBO
+            # touches the vendor again or a full re-sync. The ReconciliationIssue row is the durable
+            # follow-up — recovery is restore the soft-deleted Vendor or repoint the mapping by hand.
+            self._raise_missing_vendor_issue(qbo_vendor=qbo_vendor, mapping=mapping)
+            raise ValueError(
+                f"VendorVendor mapping {mapping.id} points at missing Vendor "
+                f"{mapping.vendor_id} and no local Vendor named \"{vendor_name}\" could be "
+                f"resolved for QboVendor {qbo_vendor.id}; preserving mapping, skipping."
+            )
+
+        # No mapping. Adopt an existing unmapped local Vendor by exact name BEFORE creating —
+        # VendorService.create refuses a duplicate name, so without this a name collision detaches
+        # the QBO vendor permanently (audit P1-08's second half).
+        existing_local = self.vendor_service.read_by_name(vendor_name) if vendor_name else None
+        if existing_local:
+            existing_local_id = _coerce_id(existing_local.id)
+            existing_map_for_local = self.mapping_repo.read_by_vendor_id(existing_local_id)
+            if existing_map_for_local:
+                self._raise_duplicate_qbo_vendor_issue(
+                    qbo_vendor=qbo_vendor,
+                    local_vendor=existing_local,
+                    existing_mapping=existing_map_for_local,
+                )
+                raise ValueError(
+                    f"QboVendor {qbo_vendor.id} name-matches local Vendor {existing_local_id} "
+                    f"which is already bound to QboVendor {existing_map_for_local.qbo_vendor_id}."
+                )
+            logger.info(
+                f"Binding existing local Vendor {existing_local_id} ({vendor_name}) "
+                f"to QboVendor {qbo_vendor.id} by name match"
+            )
+            self.create_mapping(vendor_id=existing_local_id, qbo_vendor_id=qbo_vendor.id)
+            self._sync_addresses(qbo_vendor, existing_local_id)
+            return existing_local
+
+        # Create a new Vendor + mapping.
         logger.info(f"Creating new Vendor from QboVendor {qbo_vendor.id}: name={vendor_name}")
         vendor = self.vendor_service.create(
             name=vendor_name,
             abbreviation=None,
-            is_draft=False
+            is_draft=False,
         )
-        
-        # Create mapping
-        vendor_id = int(vendor.id) if isinstance(vendor.id, str) else vendor.id
+        vendor_id = _coerce_id(vendor.id)
         try:
-            mapping = self.create_mapping(vendor_id=vendor_id, qbo_vendor_id=qbo_vendor.id)
+            self.create_mapping(vendor_id=vendor_id, qbo_vendor_id=qbo_vendor.id)
             logger.info(f"Created mapping: Vendor {vendor_id} <-> QboVendor {qbo_vendor.id}")
         except ValueError as e:
-            logger.warning(f"Could not create mapping: {e}")
-        
-        # Sync addresses for new vendor
+            # Do NOT swallow (audit P1-08). Surface it so the caller's per-item handler logs + skips.
+            # The orphaned Vendor can be adopted by the name-match branch on a later pull that includes
+            # this vendor — after unconditional watermark advance that means the next QBO-side touch or
+            # a full re-sync, not necessarily the next scheduler tick.
+            logger.error(
+                f"Mapping creation failed after Vendor {vendor_id} create "
+                f"(QboVendor {qbo_vendor.id}): {e}. Orphaned Vendor may be adopted on a later pull "
+                f"that includes this vendor (QBO-side touch or full re-sync), not necessarily the "
+                f"next scheduler tick."
+            )
+            raise
         self._sync_addresses(qbo_vendor, vendor_id)
-        
         return vendor
+
+    def _apply_vendor_fields_and_sync(
+        self,
+        vendor: Vendor,
+        *,
+        qbo_vendor: QboVendor,
+        incoming_name: Optional[str],
+    ) -> Vendor:
+        """
+        Write the QboVendor-derived name onto an existing Vendor when appropriate,
+        persist it, and sync addresses. Shared by the normal existing-mapping update path
+        and the heal-in-place repoint path so the QboVendor->Vendor field mapping lives
+        in exactly one place (no drift between the two update sites).
+        """
+        resolved_name = preserve_human_edited_name(vendor.name, incoming_name)
+        # Nothing to fill an empty name FROM when QBO supplied no DisplayName; [Name] is NOT NULL
+        # and unguarded in UpdateVendorById, so a blank write is either SQL 515 or silent data loss.
+        if resolved_name and resolved_name != vendor.name:
+            vendor.name = resolved_name
+            vendor = self.vendor_service.repo.update_by_id(vendor)
+            logger.info(
+                f"Filled Vendor {vendor.id} name from QBO DisplayName "
+                f"(was empty or whitespace-only)"
+            )
+        else:
+            # Name is this connector's ONLY mapped dbo.Vendor field, so once the curated
+            # name is preserved the UPDATE is a pure no-op — writing it anyway would churn
+            # ModifiedDatetime on every vendor on every 4-hour pull.
+            if vendor.name and vendor.name.strip():
+                logger.debug(
+                    f"Preserved curated Vendor {vendor.id} name "
+                    f"(QBO DisplayName='{incoming_name}' ignored)"
+                )
+            else:
+                logger.debug(
+                    f"Skipped Vendor {vendor.id} name write "
+                    f"(stored and QBO DisplayName both blank/whitespace-only)"
+                )
+        vendor_id = _coerce_id(vendor.id)
+        self._sync_addresses(qbo_vendor, vendor_id)
+        return vendor
+
+    def _record_reconciliation_issue(
+        self,
+        *,
+        drift_type: str,
+        entity_public_id: Optional[str],
+        qbo_vendor: QboVendor,
+        details: str,
+    ) -> None:
+        """
+        Insert a critical qbo.ReconciliationIssue for a manual-review Vendor-mapping
+        drift, failure-isolated: a failed insert is logged loud but never breaks the
+        sync. Shared scaffold for the two detectors below (duplicate-vendor and
+        orphaned-mapping) — only drift_type / entity_public_id / details vary.
+        """
+        try:
+            self.reconciliation_repo.create(
+                drift_type=drift_type,
+                severity="critical",
+                action="manual_review",
+                entity_type="Vendor",
+                entity_public_id=entity_public_id,
+                qbo_id=str(qbo_vendor.qbo_id) if qbo_vendor.qbo_id else None,
+                realm_id=qbo_vendor.realm_id or "",
+                details=details,
+            )
+            logger.warning(details)
+        except Exception as exc:
+            # Don't break the sync because reconciliation insert failed. Log loud.
+            logger.error(f"Failed to record reconciliation issue: {exc}. Details: {details}")
+
+    def _raise_duplicate_qbo_vendor_issue(
+        self,
+        *,
+        qbo_vendor: QboVendor,
+        local_vendor: Vendor,
+        existing_mapping: VendorVendor,
+    ) -> None:
+        """
+        Record a duplicate-vendor detection on qbo.ReconciliationIssue.
+
+        Triggered when a fresh QboVendor pull finds an existing local Vendor by exact
+        name match but that Vendor is already bound to a different QboVendor. Treated as
+        critical because every subsequent sync will re-detect it until resolved upstream
+        in QBO.
+        """
+        details = (
+            f"Duplicate QBO vendor detected. QboVendor {qbo_vendor.id} "
+            f"(QboId={qbo_vendor.qbo_id}, DisplayName='{qbo_vendor.display_name}') "
+            f"name-matches local Vendor {local_vendor.id} which is already bound to "
+            f"QboVendor {existing_mapping.qbo_vendor_id}. Resolve by merging or "
+            f"renaming one of the QBO vendors."
+        )
+        self._record_reconciliation_issue(
+            drift_type="duplicate_qbo_vendor",
+            entity_public_id=str(local_vendor.public_id) if local_vendor.public_id else None,
+            qbo_vendor=qbo_vendor,
+            details=details,
+        )
+
+    def _raise_missing_vendor_issue(self, *, qbo_vendor: QboVendor, mapping: VendorVendor) -> None:
+        """
+        Record an orphaned-mapping detection on qbo.ReconciliationIssue.
+
+        Triggered when a VendorVendor mapping exists but its bound Vendor is missing AND
+        no local Vendor can be resolved by name to repoint it to. We deliberately do NOT
+        delete the mapping or create a Vendor here; the row is left intact for a human to
+        resolve / the next tick to heal.
+        """
+        details = (
+            f"Orphaned VendorVendor mapping. Mapping {mapping.id} (QboVendor "
+            f"{qbo_vendor.id}, QboId={qbo_vendor.qbo_id}, DisplayName="
+            f"'{qbo_vendor.display_name}') points at Vendor {mapping.vendor_id} which no "
+            f"longer reads, and no local Vendor name-matches to repoint it. Mapping preserved; "
+            f"no Vendor created. A soft-deleted vendor is the deterministic cause — restore "
+            f"it or repoint the mapping by hand."
+        )
+        self._record_reconciliation_issue(
+            drift_type="orphaned_vendor_vendor_mapping",
+            entity_public_id=None,
+            qbo_vendor=qbo_vendor,
+            details=details,
+        )
 
     def _sync_addresses(self, qbo_vendor: QboVendor, vendor_id: int) -> None:
         """
@@ -108,7 +308,7 @@ class VendorVendorConnector:
         if qbo_vendor.bill_addr_id:
             try:
                 address = self.address_connector.sync_from_qbo_to_address(qbo_vendor.bill_addr_id)
-                address_id = int(address.id) if isinstance(address.id, str) else address.id
+                address_id = _coerce_id(address.id)
                 self._ensure_vendor_address(vendor_id, address_id, ADDRESS_TYPE_BILLING)
                 logger.debug(f"Synced billing address {address_id} for Vendor {vendor_id}")
             except Exception as e:
@@ -133,14 +333,14 @@ class VendorVendorConnector:
         all_vendor_addresses = self.vendor_address_service.read_all()
         existing = None
         for va in all_vendor_addresses:
-            va_vendor_id = int(va.vendor_id) if isinstance(va.vendor_id, str) else va.vendor_id
-            va_address_type_id = int(va.address_type_id) if isinstance(va.address_type_id, str) else va.address_type_id
+            va_vendor_id = _coerce_id(va.vendor_id)
+            va_address_type_id = _coerce_id(va.address_type_id)
             if va_vendor_id == vendor_id and va_address_type_id == address_type_id:
                 existing = va
                 break
         
         if existing:
-            existing_address_id = int(existing.address_id) if isinstance(existing.address_id, str) else existing.address_id
+            existing_address_id = _coerce_id(existing.address_id)
             if existing_address_id != address_id:
                 # Update with new address
                 existing.address_id = str(address_id)

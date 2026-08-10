@@ -148,6 +148,30 @@ def preserve_human_edited_ref(
     return stored_value
 
 
+def preserve_human_edited_name(
+    stored_value: Optional[str], incoming_value: Optional[str]
+) -> Optional[str]:
+    """Reference-entity NAME sibling of `preserve_human_edited_ref`: keep a non-blank
+    stored value on re-pull UPDATE, else take the incoming QBO-derived name. Pure; no I/O.
+
+    Not `preserve_human_edited_ref` because names have no ``QBO-<id>`` placeholder —
+    a ``qbo_id`` param would encode a dead upgrade branch.
+
+    First caller is QBO Vendor pull: Vendor.Name is W-9/DBA curated locally, push to
+    QBO is a stub, so DisplayName is guaranteed to diverge — curation must win.
+
+    Blankness differs from `preserve_human_edited_ref` in this module: that helper
+    treats blank as falsy (`not stored_value`), so whitespace-only stored values are
+    preserved; here ``stored_value.strip()`` decides, so whitespace-only is replaced.
+
+    ACCEPTED RESIDUAL: once a local name exists, a legitimate QBO-side rename is
+    ignored (same tradeoff as document numbers — never clobber curation).
+    """
+    if stored_value and stored_value.strip():
+        return stored_value
+    return incoming_value
+
+
 # ---------------------------------------------------------------------------
 # Per-entity rules
 # ---------------------------------------------------------------------------
@@ -256,6 +280,33 @@ PURCHASE = FieldOwnership(
 )
 
 
+VENDOR = FieldOwnership(
+    entity="Vendor",
+    qbo_owned=[
+        # Billing-address projection lands on VendorAddress/Address (via
+        # PhysicalAddressAddressConnector), not on dbo.Vendor columns.
+        "bill_addr",
+    ],
+    app_owned=[
+        "abbreviation",
+        "vendor_type_id",
+        "taxpayer_id",
+        "is_draft",
+        "is_deleted",
+        "is_contract_labor",
+        "notes",
+        "hourly_rate",
+        "markup",
+        "track_compliance",
+    ],
+    both_editable=[
+        # DisplayName in QBO, curated locally; the pull resolves via
+        # preserve_human_edited_name (U-214 / audit P1-09).
+        "name",
+    ],
+)
+
+
 VENDOR_CREDIT = FieldOwnership(
     entity="BillCredit",   # local entity name; corresponds to QBO VendorCredit
     qbo_owned=[
@@ -283,6 +334,7 @@ _REGISTRY: Dict[str, FieldOwnership] = {
     "Invoice": INVOICE,
     "Expense": PURCHASE,
     "BillCredit": VENDOR_CREDIT,
+    "Vendor": VENDOR,
     # QBO entity name aliases.
     "Purchase": PURCHASE,
     "VendorCredit": VENDOR_CREDIT,

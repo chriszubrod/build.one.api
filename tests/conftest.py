@@ -2,10 +2,28 @@ import pathlib
 import sys
 import types
 from decimal import Decimal
+from pathlib import Path
 
 import pytest
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+
+_SKIP_DIR_NAMES = frozenset({".venv", ".git", "__pycache__", "node_modules", ".pytest_cache"})
+
+
+def iter_prod_python_sources(root: Path | None = None, *, skip_files: frozenset[str] = frozenset()):
+    """Yield production Python source files under repo root, excluding tests and venv."""
+    repo_root = root or REPO_ROOT
+    for path in repo_root.rglob("*.py"):
+        if any(part in _SKIP_DIR_NAMES for part in path.parts):
+            continue
+        if path.name in skip_files:
+            continue
+        if "tests" in path.parts:
+            continue
+        yield path
 
 
 def pytest_configure(config):

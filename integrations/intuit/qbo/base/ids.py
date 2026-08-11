@@ -1,5 +1,5 @@
 # Python Standard Library Imports
-from typing import Optional
+from typing import Optional, Union
 
 
 def normalize_qbo_id(value) -> Optional[str]:
@@ -10,3 +10,8 @@ def normalize_qbo_id(value) -> Optional[str]:
         return None
     normalized = str(value).strip()
     return normalized if normalized else None
+
+
+def coerce_id(value: Union[int, str]) -> int:
+    """Canonical local-PK form (→int). QBO-side ids use `normalize_qbo_id` (→str)."""
+    return int(value) if isinstance(value, str) else value

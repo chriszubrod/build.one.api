@@ -172,8 +172,23 @@ def preserve_human_edited_name(
     return incoming_value
 
 
+def _raise_if_inactive(
+    active: Optional[bool],
+    *,
+    qbo_label: str,
+    qbo_id,
+    message: str,
+) -> None:
+    if active is False:
+        raise ValueError(message)
+
+
 def raise_if_inactive_unmapped(
-    active: Optional[bool], *, qbo_label: str, qbo_id, target: str
+    active: Optional[bool],
+    *,
+    qbo_label: str,
+    qbo_id,
+    target: str,
 ) -> None:
     """Refuse to bind a QBO record that is inactive and has no local mapping.
 
@@ -192,16 +207,52 @@ def raise_if_inactive_unmapped(
     a permanent skip that advances the watermark — the correct bucket, since an
     inactive record will not become bindable on a retry.
 
-    CALL SITE ORDERING IS LOAD-BEARING and cannot be enforced here: call this
-    AFTER the mapping lookup (so a mapped record still updates) and BEFORE any
-    adopt-by-name/number lookup (so an unmapped one cannot hijack a live row).
+    CALL SITE ORDERING IS LOAD-BEARING and cannot be enforced here. Two
+    sanctioned positions:
+
+    1. Unmapped adopt/create path — AFTER the mapping lookup (no mapping found)
+       and BEFORE any adopt-by-name/number lookup (so an unmapped inactive record
+       cannot hijack a live row).
+
+    2. Mapped happy path — do NOT call here; inactive mapped records still update.
+
+    For the heal branch (mapping exists but bound entity reads empty), use
+    `raise_if_inactive_orphaned_mapping` instead.
     """
-    if active is False:
-        raise ValueError(
+    _raise_if_inactive(
+        active,
+        qbo_label=qbo_label,
+        qbo_id=qbo_id,
+        message=(
             f"{qbo_label} {qbo_id} is inactive in QBO and has no local "
             f"{target} mapping; skipping (deactivated records are never bound "
             f"to a local row)."
-        )
+        ),
+    )
+
+
+def raise_if_inactive_orphaned_mapping(
+    active: Optional[bool],
+    *,
+    qbo_label: str,
+    qbo_id,
+    target: str,
+) -> None:
+    """Heal-branch guard: refuse repoint/heal for an inactive QBO record with an orphaned mapping.
+
+    CALL AFTER the mapping lookup AND AFTER the bound-entity read (mapping exists but
+    local row is missing), BEFORE any re-resolve by number.
+    """
+    _raise_if_inactive(
+        active,
+        qbo_label=qbo_label,
+        qbo_id=qbo_id,
+        message=(
+            f"{qbo_label} {qbo_id} is inactive in QBO; local {target} mapping "
+            f"exists but its bound row is missing and cannot be safely repointed "
+            f"for a deactivated record; skipping."
+        ),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -339,6 +390,22 @@ VENDOR = FieldOwnership(
 )
 
 
+COST_CODE = FieldOwnership(
+    entity="CostCode",
+    qbo_owned=["number", "description"],
+    app_owned=[],
+    both_editable=["name"],
+)
+
+
+SUB_COST_CODE = FieldOwnership(
+    entity="SubCostCode",
+    qbo_owned=["number", "description", "cost_code_id"],
+    app_owned=["aliases"],
+    both_editable=["name"],
+)
+
+
 VENDOR_CREDIT = FieldOwnership(
     entity="BillCredit",   # local entity name; corresponds to QBO VendorCredit
     qbo_owned=[
@@ -367,6 +434,8 @@ _REGISTRY: Dict[str, FieldOwnership] = {
     "Expense": PURCHASE,
     "BillCredit": VENDOR_CREDIT,
     "Vendor": VENDOR,
+    "CostCode": COST_CODE,
+    "SubCostCode": SUB_COST_CODE,
     # QBO entity name aliases.
     "Purchase": PURCHASE,
     "VendorCredit": VENDOR_CREDIT,

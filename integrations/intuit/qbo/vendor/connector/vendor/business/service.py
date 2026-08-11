@@ -1,6 +1,6 @@
 # Python Standard Library Imports
 import logging
-from typing import Optional, Union
+from typing import Optional
 
 # Third-party Imports
 
@@ -14,6 +14,7 @@ from integrations.intuit.qbo.base.field_ownership import (
     preserve_human_edited_name,
     raise_if_inactive_unmapped,
 )
+from integrations.intuit.qbo.base.ids import coerce_id
 from entities.vendor.business.service import VendorService
 from entities.vendor.business.model import Vendor
 from entities.vendor_address.business.service import VendorAddressService
@@ -22,10 +23,6 @@ logger = logging.getLogger(__name__)
 
 # Address type ID for billing (typically ID 1)
 ADDRESS_TYPE_BILLING = 1
-
-
-def _coerce_id(value: Union[int, str]) -> int:
-    return int(value) if isinstance(value, str) else value
 
 
 class VendorVendorConnector:
@@ -83,7 +80,7 @@ class VendorVendorConnector:
             # here DETERMINISTICALLY, not just on a transient read.
             replacement = self.vendor_service.read_by_name(vendor_name) if vendor_name else None
             if replacement:
-                replacement_id = _coerce_id(replacement.id)
+                replacement_id = coerce_id(replacement.id)
                 existing_map = self.mapping_repo.read_by_vendor_id(replacement_id)
                 if existing_map and existing_map.qbo_vendor_id != qbo_vendor.id:
                     # Name-matched vendor is already bound to a DIFFERENT QboVendor — a genuine
@@ -133,7 +130,7 @@ class VendorVendorConnector:
         # the QBO vendor permanently (audit P1-08's second half).
         existing_local = self.vendor_service.read_by_name(vendor_name) if vendor_name else None
         if existing_local:
-            existing_local_id = _coerce_id(existing_local.id)
+            existing_local_id = coerce_id(existing_local.id)
             existing_map_for_local = self.mapping_repo.read_by_vendor_id(existing_local_id)
             if existing_map_for_local:
                 self._raise_duplicate_qbo_vendor_issue(
@@ -160,7 +157,7 @@ class VendorVendorConnector:
             abbreviation=None,
             is_draft=False,
         )
-        vendor_id = _coerce_id(vendor.id)
+        vendor_id = coerce_id(vendor.id)
         try:
             self.create_mapping(vendor_id=vendor_id, qbo_vendor_id=qbo_vendor.id)
             logger.info(f"Created mapping: Vendor {vendor_id} <-> QboVendor {qbo_vendor.id}")
@@ -216,7 +213,7 @@ class VendorVendorConnector:
                     f"Skipped Vendor {vendor.id} name write "
                     f"(stored and QBO DisplayName both blank/whitespace-only)"
                 )
-        vendor_id = _coerce_id(vendor.id)
+        vendor_id = coerce_id(vendor.id)
         self._sync_addresses(qbo_vendor, vendor_id)
         return vendor
 
@@ -315,7 +312,7 @@ class VendorVendorConnector:
         if qbo_vendor.bill_addr_id:
             try:
                 address = self.address_connector.sync_from_qbo_to_address(qbo_vendor.bill_addr_id)
-                address_id = _coerce_id(address.id)
+                address_id = coerce_id(address.id)
                 self._ensure_vendor_address(vendor_id, address_id, ADDRESS_TYPE_BILLING)
                 logger.debug(f"Synced billing address {address_id} for Vendor {vendor_id}")
             except Exception as e:
@@ -340,14 +337,14 @@ class VendorVendorConnector:
         all_vendor_addresses = self.vendor_address_service.read_all()
         existing = None
         for va in all_vendor_addresses:
-            va_vendor_id = _coerce_id(va.vendor_id)
-            va_address_type_id = _coerce_id(va.address_type_id)
+            va_vendor_id = coerce_id(va.vendor_id)
+            va_address_type_id = coerce_id(va.address_type_id)
             if va_vendor_id == vendor_id and va_address_type_id == address_type_id:
                 existing = va
                 break
         
         if existing:
-            existing_address_id = _coerce_id(existing.address_id)
+            existing_address_id = coerce_id(existing.address_id)
             if existing_address_id != address_id:
                 # Update with new address
                 existing.address_id = str(address_id)

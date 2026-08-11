@@ -325,7 +325,7 @@ class CustomerProjectConnector:
             f"no Project created. Investigate whether the Project was deleted/renamed."
         )
         self._record_reconciliation_issue(
-            drift_type="orphaned_customer_project_mapping",
+            drift_type="orphaned_cust_project_mapping",
             entity_public_id=None,
             qbo_customer=qbo_customer,
             details=details,

@@ -17,6 +17,7 @@ from entities.bill_credit_line_item.business.service import BillCreditLineItemSe
 from entities.vendor.business.service import VendorService
 from integrations.intuit.qbo.base.pull_race import guard_lines_present
 from integrations.intuit.qbo.base.compensation import rollback_orphan_header
+from integrations.intuit.qbo.base.reconciliation_recorder import record_mapping_issue
 from integrations.intuit.qbo.base.field_ownership import preserve_human_edited_ref, qbo_ref_or_placeholder
 from integrations.intuit.qbo.reconciliation.persistence.repo import ReconciliationIssueRepository
 
@@ -179,6 +180,9 @@ class VendorCreditBillCreditConnector:
                         delete_header=lambda: self.bill_credit_service.delete_by_public_id(bill_credit.public_id),
                         delete_mapping=lambda: self.mapping_repo.delete_by_qbo_vendor_credit_id(qbo_vc.id),
                         entity_label='BillCredit', entity_id=bill_credit.id,
+                        on_header_delete_failed=lambda exc: self._record_orphan_header_issue(
+                            bill_credit=bill_credit, qbo_vc=qbo_vc, exc=exc
+                        ),
                     )
                     raise
                 
@@ -194,6 +198,28 @@ class VendorCreditBillCreditConnector:
             # block the watermark and retry next run, instead of silently dropping it.
             logger.error(f"Error syncing VendorCredit {qbo_vc.qbo_id} to BillCredit: {e}")
             raise
+
+    def _record_orphan_header_issue(
+        self,
+        *,
+        bill_credit: BillCredit,
+        qbo_vc: QboVendorCredit,
+        exc: Exception,
+    ) -> None:
+        record_mapping_issue(
+            self.reconciliation_repo,
+            drift_type="orphan_billcredit_header",
+            entity_type="BillCredit",
+            entity_public_id=str(bill_credit.public_id) if bill_credit.public_id else None,
+            qbo_id=str(qbo_vc.qbo_id) if qbo_vc.qbo_id else None,
+            realm_id=qbo_vc.realm_id or "",
+            details=(
+                f"Compensating rollback deleted VendorCreditBillCredit mapping but "
+                f"failed to delete orphan BillCredit {bill_credit.id} "
+                f"({bill_credit.public_id}): {exc}. Header blocks re-pull until "
+                f"manually resolved."
+            ),
+        )
 
     def _record_missing_bill_credit_issue(
         self,
@@ -230,21 +256,15 @@ class VendorCreditBillCreditConnector:
             f"preserved; no BillCredit created. Investigate whether the BillCredit was "
             f"deleted/renumbered."
         )
-        try:
-            self.reconciliation_repo.create(
-                drift_type="orphaned_vendorcredit_billcredit_mapping",
-                severity="critical",
-                action="manual_review",
-                entity_type="BillCredit",
-                entity_public_id=None,
-                qbo_id=str(qbo_vc.qbo_id) if qbo_vc.qbo_id else None,
-                realm_id=qbo_vc.realm_id or "",
-                details=details,
-            )
-            logger.warning(details)
-        except Exception as exc:
-            # Don't break the sync because the reconciliation insert failed. Log loud.
-            logger.error(f"Failed to record reconciliation issue: {exc}. Details: {details}")
+        record_mapping_issue(
+            self.reconciliation_repo,
+            drift_type="orphaned_vc_billcredit_mapping",
+            entity_type="BillCredit",
+            entity_public_id=None,
+            qbo_id=str(qbo_vc.qbo_id) if qbo_vc.qbo_id else None,
+            realm_id=qbo_vc.realm_id or "",
+            details=details,
+        )
 
     def _get_vendor_public_id(self, qbo_vendor_ref_value: Optional[str]) -> Optional[str]:
         """Resolve QBO vendor ref (QBO API string ID) to local Vendor public_id.

@@ -266,7 +266,8 @@ def _build_sub_cost_code_connector() -> ItemSubCostCodeConnector:
         qbo_item_repo=Mock(),
     )
     connector.mapping_repo.read_by_qbo_item_id.return_value = None
-    connector.sub_cost_code_service.read_by_number.return_value = None
+    connector.sub_cost_code_service.repo = Mock()
+    connector.sub_cost_code_service.repo.read_by_cost_code_id.return_value = []
     connector.qbo_item_repo.read_by_qbo_id.return_value = SimpleNamespace(id=99)
     connector.cost_code_mapping_repo.read_by_qbo_item_id.return_value = SimpleNamespace(
         cost_code_id=10
@@ -559,7 +560,7 @@ def test_scheduler_isolated_restores_prior_context_in_callers_context(monkeypatc
         (_build_cost_code_connector, "sync_from_qbo_item", _make_qbo_item, {"parent_ref_value": None},
          "cost_code_service", "read_by_number"),
         (_build_sub_cost_code_connector, "sync_from_qbo_item", _make_qbo_item,
-         {"parent_ref_value": "parent-qbo-id"}, "sub_cost_code_service", "read_by_number"),
+         {"parent_ref_value": "parent-qbo-id"}, "sub_cost_code_service", "read_by_cost_code_id"),
     ],
     ids=["vendor", "project", "cost_code", "sub_cost_code"],
 )
@@ -582,9 +583,11 @@ def test_inactive_unmapped_record_is_not_adopted_onto_a_live_local_row(
     the adopt lookup to None.
     """
     connector = connector_builder()
-    live_row = SimpleNamespace(id=42, name="Live Local Row", description="keep me")
+    live_row = SimpleNamespace(id=42, name="Live Local Row", description="keep me", number="01")
     service = getattr(connector, service_attr)
-    getattr(service, lookup_attr).return_value = live_row
+    getattr(service, lookup_attr).return_value = (
+        [live_row] if lookup_attr == "read_by_cost_code_id" else live_row
+    )
     connector.create_mapping = Mock()
     # Pin the reverse-mapping lookups to None so the connector would take the
     # genuine ADOPT-AND-BIND path without the guard. A bare Mock returns a truthy

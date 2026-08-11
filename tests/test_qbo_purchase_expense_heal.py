@@ -121,7 +121,7 @@ def test_genuinely_missing_records_issue_and_raises():
 
     connector.reconciliation_repo.create.assert_called_once()
     call_kwargs = connector.reconciliation_repo.create.call_args.kwargs
-    assert call_kwargs["drift_type"] == "orphaned_purchase_expense_mapping"
+    assert call_kwargs["drift_type"] == "orphaned_purch_expense_mapping"
     assert call_kwargs["entity_type"] == "Expense"
     assert call_kwargs["severity"] == "critical"
     # No destructive action.

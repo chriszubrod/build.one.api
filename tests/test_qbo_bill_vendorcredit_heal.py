@@ -305,7 +305,7 @@ def test_vc_genuinely_missing_records_issue_and_raises():
 
     connector.reconciliation_repo.create.assert_called_once()
     kw = connector.reconciliation_repo.create.call_args.kwargs
-    assert kw["drift_type"] == "orphaned_vendorcredit_billcredit_mapping"
+    assert kw["drift_type"] == "orphaned_vc_billcredit_mapping"
     assert kw["entity_type"] == "BillCredit"
     assert kw["severity"] == "critical"
     connector.bill_credit_service.create.assert_not_called()

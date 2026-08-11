@@ -19,9 +19,11 @@ procedure in api/TODO.md; run it periodically against prod.
 
 import ast
 import re
+import sys
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from conftest import REPO_ROOT, iter_prod_python_sources
 
 
 def _dict_string_keys(node: ast.AST) -> set[str]:
@@ -53,10 +55,7 @@ def _func_var_keys(fn: ast.AST) -> dict[str, set[str]]:
 def _collect_callsites() -> list[tuple[str, int, str, set[str]]]:
     """(relpath, lineno, sproc, param_keys) for every call_procedure(name=..., params=...)."""
     out = []
-    for path in REPO_ROOT.rglob("*.py"):
-        sp = str(path)
-        if "/.venv/" in sp or "/tests/" in sp:
-            continue
+    for path in iter_prod_python_sources():
         try:
             tree = ast.parse(path.read_text(encoding="utf-8"))
         except SyntaxError:

@@ -14,6 +14,8 @@ from integrations.intuit.qbo.base.field_ownership import (
     is_qbo_placeholder_ref,
     preserve_human_edited_ref,
     qbo_ref_or_placeholder,
+    raise_if_inactive_orphaned_mapping,
+    raise_if_inactive_unmapped,
 )
 
 
@@ -95,3 +97,35 @@ def test_placeholder_stays_placeholder_when_incoming_is_placeholder():
 def test_int_qbo_id_upgrades_placeholder():
     # Same behavior when qbo_id is an int.
     assert preserve_human_edited_ref("QBO-77", "5001", 77) == "5001"
+
+
+def test_raise_if_inactive_unmapped_default_message():
+    with pytest.raises(ValueError, match="inactive in QBO and has no local CostCode mapping"):
+        raise_if_inactive_unmapped(
+            False, qbo_label="QboItem", qbo_id=1, target="CostCode"
+        )
+
+
+def test_raise_if_inactive_orphaned_mapping_message():
+    with pytest.raises(
+        ValueError,
+        match="mapping exists but its bound row is missing and cannot be safely repointed",
+    ):
+        raise_if_inactive_orphaned_mapping(
+            False,
+            qbo_label="QboItem",
+            qbo_id=1,
+            target="SubCostCode",
+        )
+
+
+def test_raise_if_inactive_unmapped_active_true_is_noop():
+    raise_if_inactive_unmapped(
+        True, qbo_label="QboItem", qbo_id=1, target="CostCode"
+    )
+
+
+def test_raise_if_inactive_unmapped_active_none_is_noop():
+    raise_if_inactive_unmapped(
+        None, qbo_label="QboItem", qbo_id=1, target="CostCode"
+    )

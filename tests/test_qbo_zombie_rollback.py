@@ -1,11 +1,18 @@
 """Pure-logic tests for QBO->dbo compensating rollback on line-sync failure."""
 from decimal import Decimal
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 import pytest
 
+from integrations.intuit.qbo.base.compensation import rollback_orphan_header
 from integrations.intuit.qbo.bill.connector.bill.business.service import BillBillConnector
+from integrations.intuit.qbo.vendorcredit.connector.bill_credit.business.service import (
+    VendorCreditBillCreditConnector,
+)
+from integrations.intuit.qbo.vendorcredit.connector.bill_credit_line_item.business.service import (
+    VendorCreditLineItemConnector,
+)
 
 
 def _make_qbo_bill(*, bill_id=100, qbo_id="QB-1", total=Decimal("100.00"), realm_id="realm-1"):
@@ -50,6 +57,92 @@ def _build_connector(**overrides):
         setattr(connector, key, value)
     connector._get_vendor_public_id = Mock(return_value="vendor-pub-id")
     return connector
+
+
+def test_rollback_orphan_header_deletes_mapping_before_header():
+    """Mapping delete must precede header delete (mapping FK is NO_ACTION)."""
+    call_order = []
+
+    rollback_orphan_header(
+        delete_header=lambda: call_order.append("header"),
+        delete_mapping=lambda: call_order.append("mapping"),
+        entity_label="BillCredit",
+        entity_id=42,
+    )
+
+    assert call_order == ["mapping", "header"]
+
+
+def test_rollback_orphan_header_header_delete_failure_invokes_callback():
+    """Failed header delete after mapping delete invokes on_header_delete_failed."""
+    callback = Mock()
+    header_exc = RuntimeError("FK 547")
+
+    rollback_orphan_header(
+        delete_header=Mock(side_effect=header_exc),
+        delete_mapping=Mock(),
+        entity_label="BillCredit",
+        entity_id=42,
+        on_header_delete_failed=callback,
+    )
+
+    callback.assert_called_once_with(header_exc)
+
+
+def test_rollback_orphan_header_both_deletes_fail_does_not_invoke_callback():
+    """When mapping delete also failed, header delete failure must not invoke the callback."""
+    callback = Mock()
+    mapping_exc = RuntimeError("mapping FK 547")
+    header_exc = RuntimeError("header FK 547")
+
+    rollback_orphan_header(
+        delete_header=Mock(side_effect=header_exc),
+        delete_mapping=Mock(side_effect=mapping_exc),
+        entity_label="BillCredit",
+        entity_id=42,
+        on_header_delete_failed=callback,
+    )
+
+    callback.assert_not_called()
+
+
+def _rollback_preserves_original_exception(*, delete_mapping, delete_header, on_header_delete_failed=None):
+    """Simulate connector usage: rollback runs in except, then original re-raises."""
+    original = RuntimeError("line sync failed")
+    with pytest.raises(RuntimeError, match="line sync failed") as exc_info:
+        try:
+            raise original
+        except RuntimeError:
+            rollback_orphan_header(
+                delete_header=delete_header,
+                delete_mapping=delete_mapping,
+                entity_label="BillCredit",
+                entity_id=42,
+                on_header_delete_failed=on_header_delete_failed,
+            )
+            raise
+    assert exc_info.value is original
+
+
+def test_rollback_orphan_header_both_deletes_fail_preserves_original_exception():
+    callback = Mock()
+    _rollback_preserves_original_exception(
+        delete_mapping=Mock(side_effect=RuntimeError("mapping FK")),
+        delete_header=Mock(side_effect=RuntimeError("header FK")),
+        on_header_delete_failed=callback,
+    )
+    callback.assert_not_called()
+
+
+def test_rollback_orphan_header_header_delete_fail_preserves_original_exception():
+    callback = Mock()
+    header_exc = RuntimeError("header FK")
+    _rollback_preserves_original_exception(
+        delete_mapping=Mock(),
+        delete_header=Mock(side_effect=header_exc),
+        on_header_delete_failed=callback,
+    )
+    callback.assert_called_once_with(header_exc)
 
 
 def test_new_bill_line_sync_failure_compensating_rollback():
@@ -153,3 +246,248 @@ def test_existing_mapping_resync_failure_does_not_compensating_delete():
 
     bill_service.delete_by_public_id.assert_not_called()
     mapping_repo.delete_by_id.assert_not_called()
+
+
+# --- VendorCredit line connector: unswallow + parent rollback (U-218a) ---
+
+
+def _make_qbo_vc(*, vc_id=100, qbo_id="VC-1", total=Decimal("100.00"), realm_id="realm-1"):
+    return SimpleNamespace(
+        id=vc_id,
+        qbo_id=qbo_id,
+        realm_id=realm_id,
+        vendor_ref_value="vend-1",
+        doc_number="VC-001",
+        txn_date="2026-01-15",
+        private_note="memo",
+        total_amt=total,
+    )
+
+
+def _make_qbo_vc_line(*, line_id=1, qbo_line_id="line-1", amount=Decimal("100.00")):
+    return SimpleNamespace(
+        id=line_id,
+        qbo_line_id=qbo_line_id,
+        amount=amount,
+        customer_ref_value=None,
+        item_ref_value=None,
+        description="line",
+        qty=Decimal("1"),
+        unit_price=amount,
+        billable_status=None,
+    )
+
+
+def _build_vc_connector(**overrides):
+    mapping_repo = Mock()
+    bill_credit_service = Mock()
+    connector = VendorCreditBillCreditConnector(
+        mapping_repo=mapping_repo,
+        bill_credit_service=bill_credit_service,
+        bill_credit_line_item_service=Mock(),
+        vendor_service=Mock(),
+        reconciliation_repo=Mock(),
+    )
+    for key, value in overrides.items():
+        setattr(connector, key, value)
+    connector._get_vendor_public_id = Mock(return_value="vendor-pub-id")
+    return connector
+
+
+def test_vendorcredit_sync_from_qbo_line_propagates_exception():
+    """Line connector must raise on projection failure, not return None."""
+    connector = VendorCreditLineItemConnector()
+    connector.mapping_repo.read_by_qbo_line_id = Mock(return_value=None)
+    connector.bill_credit_line_item_service = Mock()
+    connector.bill_credit_line_item_service.read_by_bill_credit_id.return_value = []
+    connector.bill_credit_line_item_service.create.side_effect = RuntimeError("projection failed")
+
+    qbo_line = _make_qbo_vc_line()
+    qbo_line.id = None  # skip fingerprint branch; exercise create path only
+
+    with pytest.raises(RuntimeError, match="projection failed"):
+        connector.sync_from_qbo_line(1, "bc-pub-1", qbo_line)
+
+
+def test_new_vendorcredit_line_sync_failure_compensating_rollback():
+    """NEW-credit path: line sync failure deletes mapping then header and re-raises."""
+    fake_bc = SimpleNamespace(id=42, public_id="bc-pub-42")
+    call_order = []
+
+    mapping_repo = Mock()
+    mapping_repo.read_by_qbo_vendor_credit_id.return_value = None
+    mapping_repo.delete_by_qbo_vendor_credit_id.side_effect = lambda *_: call_order.append("mapping")
+
+    bill_credit_service = Mock()
+    bill_credit_service.create.return_value = fake_bc
+    bill_credit_service.delete_by_public_id.side_effect = lambda *_: call_order.append("header")
+
+    connector = _build_vc_connector(mapping_repo=mapping_repo, bill_credit_service=bill_credit_service)
+    connector._sync_line_items = Mock(side_effect=RuntimeError("line sync failed"))
+
+    qbo_vc = _make_qbo_vc()
+    qbo_lines = [_make_qbo_vc_line()]
+
+    with pytest.raises(RuntimeError, match="line sync failed"):
+        connector.sync_from_qbo_vendor_credit(qbo_vc, qbo_lines)
+
+    mapping_repo.delete_by_qbo_vendor_credit_id.assert_called_once_with(qbo_vc.id)
+    bill_credit_service.delete_by_public_id.assert_called_once_with("bc-pub-42")
+    assert call_order == ["mapping", "header"]
+
+
+def test_existing_vendorcredit_resync_failure_does_not_compensating_delete():
+    """Existing-mapping re-sync: line sync failure must NOT delete the bill credit."""
+    existing_mapping = SimpleNamespace(bill_credit_id=42, id=99)
+    fake_bc = SimpleNamespace(
+        id=42,
+        public_id="bc-pub-42",
+        row_version="rv1",
+        credit_number="VC-EXISTING",
+    )
+
+    mapping_repo = Mock()
+    mapping_repo.read_by_qbo_vendor_credit_id.return_value = existing_mapping
+
+    bill_credit_service = Mock()
+    bill_credit_service.read_by_id.return_value = fake_bc
+    bill_credit_service.update_by_public_id.return_value = fake_bc
+    bill_credit_service.delete_by_public_id = Mock()
+
+    connector = _build_vc_connector(mapping_repo=mapping_repo, bill_credit_service=bill_credit_service)
+    connector._sync_line_items = Mock(side_effect=RuntimeError("line sync failed"))
+
+    qbo_vc = _make_qbo_vc()
+    qbo_lines = [_make_qbo_vc_line()]
+
+    with pytest.raises(RuntimeError, match="line sync failed"):
+        connector.sync_from_qbo_vendor_credit(qbo_vc, qbo_lines)
+
+    bill_credit_service.delete_by_public_id.assert_not_called()
+
+
+@patch(
+    "integrations.intuit.qbo.vendorcredit.connector.bill_credit_line_item.business.service.VendorCreditLineItemConnector"
+)
+def test_vendorcredit_sync_line_items_aggregates_failures(mock_line_connector_cls):
+    """_sync_line_items collects N line failures into one RuntimeError."""
+    mock_line_connector = Mock()
+    mock_line_connector_cls.return_value = mock_line_connector
+    mock_line_connector.sync_from_qbo_line.side_effect = [
+        SimpleNamespace(id=1),
+        RuntimeError("line 2 fail"),
+        ValueError("line 3 fail"),
+    ]
+
+    connector = _build_vc_connector()
+    lines = [
+        _make_qbo_vc_line(line_id=1, qbo_line_id="L1"),
+        _make_qbo_vc_line(line_id=2, qbo_line_id="L2"),
+        _make_qbo_vc_line(line_id=3, qbo_line_id="L3"),
+    ]
+
+    with pytest.raises(RuntimeError, match="2 of 3 credit line\\(s\\) failed"):
+        connector._sync_line_items(10, "bc-pub-10", lines, "realm-1")
+
+    assert mock_line_connector.sync_from_qbo_line.call_count == 3
+
+
+QBO_CUSTOMER_REPO_PATH = "integrations.intuit.qbo.customer.persistence.repo.QboCustomerRepository"
+CUSTOMER_PROJECT_REPO_PATH = (
+    "integrations.intuit.qbo.customer.connector.project.persistence.repo.CustomerProjectRepository"
+)
+ITEM_SCC_REPO_PATH = (
+    "integrations.intuit.qbo.item.connector.sub_cost_code.persistence.repo.ItemSubCostCodeRepository"
+)
+QBO_ITEM_REPO_PATH = "integrations.intuit.qbo.item.persistence.repo.QboItemRepository"
+
+
+def test_vendorcredit_get_project_public_id_db_error_propagates():
+    """A DB error inside the customer-ref resolver must propagate."""
+    qbo_customer_repo = Mock()
+    qbo_customer_repo.read_by_qbo_id.side_effect = ValueError("db blip")
+
+    connector = VendorCreditLineItemConnector()
+
+    with patch(QBO_CUSTOMER_REPO_PATH, return_value=qbo_customer_repo), patch(
+        CUSTOMER_PROJECT_REPO_PATH, return_value=Mock()
+    ):
+        with pytest.raises(ValueError, match="db blip"):
+            connector._get_project_public_id("QBO-100")
+
+
+def test_vendorcredit_get_project_public_id_not_found_returns_none():
+    """Genuine not-found in customer-ref resolver returns None."""
+    qbo_customer_repo = Mock()
+    qbo_customer_repo.read_by_qbo_id.return_value = None
+
+    connector = VendorCreditLineItemConnector()
+
+    with patch(QBO_CUSTOMER_REPO_PATH, return_value=qbo_customer_repo), patch(
+        CUSTOMER_PROJECT_REPO_PATH, return_value=Mock()
+    ):
+        assert connector._get_project_public_id("QBO-100") is None
+
+
+def test_vendorcredit_get_sub_cost_code_id_db_error_propagates():
+    """A DB error inside the item-ref resolver must propagate."""
+    qbo_item_repo = Mock()
+    qbo_item_repo.read_by_qbo_id.side_effect = ValueError("db blip")
+
+    connector = VendorCreditLineItemConnector()
+
+    with patch(QBO_ITEM_REPO_PATH, return_value=qbo_item_repo), patch(
+        ITEM_SCC_REPO_PATH, return_value=Mock()
+    ):
+        with pytest.raises(ValueError, match="db blip"):
+            connector._get_sub_cost_code_id("ITEM-1")
+
+
+def test_vendorcredit_get_sub_cost_code_id_not_found_returns_none():
+    """Genuine not-found in item-ref resolver returns None."""
+    qbo_item_repo = Mock()
+    qbo_item_repo.read_by_qbo_id.return_value = None
+
+    connector = VendorCreditLineItemConnector()
+
+    with patch(QBO_ITEM_REPO_PATH, return_value=qbo_item_repo), patch(
+        ITEM_SCC_REPO_PATH, return_value=Mock()
+    ):
+        assert connector._get_sub_cost_code_id("ITEM-1") is None
+
+
+def test_vendorcredit_get_sub_cost_code_id_dangling_mapping_returns_none():
+    """Dangling ItemSubCostCode mapping (missing SubCostCode row) returns None."""
+    qbo_item = SimpleNamespace(id=50)
+    qbo_item_repo = Mock()
+    qbo_item_repo.read_by_qbo_id.return_value = qbo_item
+    item_scc_repo = Mock()
+    item_scc_repo.read_by_qbo_item_id.return_value = SimpleNamespace(sub_cost_code_id=999)
+
+    connector = VendorCreditLineItemConnector()
+    connector.sub_cost_code_service = Mock()
+    connector.sub_cost_code_service.read_by_id.return_value = None
+
+    with patch(QBO_ITEM_REPO_PATH, return_value=qbo_item_repo), patch(
+        ITEM_SCC_REPO_PATH, return_value=item_scc_repo
+    ):
+        assert connector._get_sub_cost_code_id("ITEM-1") is None
+
+
+def test_vendorcredit_get_sub_cost_code_id_sub_cost_code_read_db_error_propagates():
+    """A DB error verifying SubCostCode existence must propagate."""
+    qbo_item = SimpleNamespace(id=50)
+    qbo_item_repo = Mock()
+    qbo_item_repo.read_by_qbo_id.return_value = qbo_item
+    item_scc_repo = Mock()
+    item_scc_repo.read_by_qbo_item_id.return_value = SimpleNamespace(sub_cost_code_id=999)
+
+    connector = VendorCreditLineItemConnector()
+    connector.sub_cost_code_service = Mock()
+    connector.sub_cost_code_service.read_by_id.side_effect = ValueError("db blip")
+
+    with patch(QBO_ITEM_REPO_PATH, return_value=qbo_item_repo), patch(
+        ITEM_SCC_REPO_PATH, return_value=item_scc_repo
+    ):
+        with pytest.raises(ValueError, match="db blip"):
+            connector._get_sub_cost_code_id("ITEM-1")

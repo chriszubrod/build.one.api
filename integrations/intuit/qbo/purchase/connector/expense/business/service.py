@@ -275,7 +275,7 @@ class PurchaseExpenseConnector:
         )
         try:
             self.reconciliation_repo.create(
-                drift_type="orphaned_purchase_expense_mapping",
+                drift_type="orphaned_purch_expense_mapping",
                 severity="critical",
                 action="manual_review",
                 entity_type="Expense",

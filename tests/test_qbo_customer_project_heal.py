@@ -187,7 +187,7 @@ def test_heal_raises_and_records_issue_when_project_missing_and_name_miss():
 
     reconciliation_repo.create.assert_called_once()
     call_kwargs = reconciliation_repo.create.call_args.kwargs
-    assert call_kwargs["drift_type"] == "orphaned_customer_project_mapping"
+    assert call_kwargs["drift_type"] == "orphaned_cust_project_mapping"
     mapping_repo.delete_by_id.assert_not_called()
     project_service.create.assert_not_called()
 

@@ -960,7 +960,7 @@ class InvoiceService:
 
         return attachment_rows
 
-    def _enqueue_box_line_pdfs(self, invoice, line_items: list) -> dict:
+    def _enqueue_box_line_pdfs(self, invoice, line_items: list, *, force: bool = False) -> dict:
         """
         Mirror of `_upload_to_sharepoint` for Box: enqueue one Box upload per
         unique line-item attachment referenced by this invoice, all landing
@@ -986,6 +986,9 @@ class InvoiceService:
             and defeat the whole point of subfoldering).
           - Any exception in the DB SELECT loop is caught + logged so a
             single bad row can't take down invoice completion.
+
+        `force=True` sets payload ``force`` — operator-repair bypass, sticky
+        across coalesce.
         """
         import os as _os
         summary = {"success": True, "enqueued": 0, "skipped": 0, "reason": None}
@@ -1106,6 +1109,7 @@ class InvoiceService:
                         box_folder_id=subfolder_id,
                         attachment_id=att_id,
                         project_id=invoice.project_id,
+                        force=force,
                     )
                     if created is not None:
                         enqueued += 1

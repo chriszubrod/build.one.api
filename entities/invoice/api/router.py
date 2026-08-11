@@ -884,7 +884,9 @@ def _generate_invoice_packet(public_id: str):
     })
 
 
-def _enqueue_box_packet_upload(invoice, attachment, blob_url: str, filename: str) -> None:
+def _enqueue_box_packet_upload(
+    invoice, attachment, blob_url: str, filename: str, *, force: bool = False
+) -> None:
     """
     Enqueue a Box upload for the invoice packet attachment.
 
@@ -895,6 +897,9 @@ def _enqueue_box_packet_upload(invoice, attachment, blob_url: str, filename: str
     `entities/invoice/business/service.py::_upload_to_sharepoint` (lines
     1016-1030). Additive + failure-isolated — any exception is logged and
     swallowed so Box can never affect the packet flow.
+
+    `force=True` sets payload ``force`` — operator-repair bypass, sticky
+    across coalesce.
     """
     import os as _os
     if _os.getenv("ALLOW_BOX_WRITES", "").strip().lower() != "true":
@@ -953,6 +958,7 @@ def _enqueue_box_packet_upload(invoice, attachment, blob_url: str, filename: str
             box_folder_id=target_folder_id,
             attachment_id=attachment.id,
             project_id=invoice.project_id,
+            force=force,
         )
     except Exception as e:
         logger.warning(f"box.enqueue.failed invoice={invoice.public_id}: {e}")
@@ -1225,7 +1231,9 @@ def sync_invoice_box_router(public_id: str, current_user: dict = Depends(require
 
     # 1. Line-item PDFs. Failure-isolated inside the helper; the summary is
     # surfaced so a structural failure is distinguishable from success.
-    line_result = service._enqueue_box_line_pdfs(invoice=invoice, line_items=line_items)
+    line_result = service._enqueue_box_line_pdfs(
+        invoice=invoice, line_items=line_items, force=True
+    )
 
     # 2. Packet PDF. Look up the current packet attachment on this invoice
     # (category='invoice_packet'); if none exists, the packet has never been
@@ -1254,6 +1262,7 @@ def sync_invoice_box_router(public_id: str, current_user: dict = Depends(require
             attachment=packet_att,
             blob_url=packet_att.blob_url,
             filename=packet_att.filename or f"Invoice-{invoice.invoice_number or public_id}-Packet.pdf",
+            force=True,
         )
     else:
         logger.info(

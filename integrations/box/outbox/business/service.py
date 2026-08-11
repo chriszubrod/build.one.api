@@ -103,6 +103,7 @@ class BoxOutboxService:
         attachment_id: Optional[int] = None,
         project_id: Optional[int] = None,
         ready_after_seconds: int = DEFAULT_READY_AFTER_SECONDS,
+        force: bool = False,
     ) -> Optional[BoxOutbox]:
         """
         Enqueue a Box file upload for background dispatch.
@@ -111,7 +112,8 @@ class BoxOutboxService:
         (write gate closed, or (entity_type, doc_kind) outside
         ALLOWED_PUSH_CLASSES). `blob_path` is the Azure Blob Storage path the
         worker downloads at drain time; `box_folder_id` is the Box folder id
-        string from the project-folder mapping.
+        string from the project-folder mapping. `force=True` sets payload
+        ``force`` — operator-repair bypass, sticky across coalesce.
         """
         correlation_id = get_correlation_id()
 
@@ -178,6 +180,8 @@ class BoxOutboxService:
             "doc_kind": doc_kind,
             "project_id": project_id,
         }
+        if force:
+            payload["force"] = True
 
         # Policy C coalesce — per-attachment, not per-entity: one entity can
         # legitimately have several pending uploads (one per attachment).
@@ -201,6 +205,12 @@ class BoxOutboxService:
                 existing_payload = json.loads(existing.payload) if existing.payload else {}
             except (ValueError, TypeError):
                 existing_payload = {}
+            # force is an operator INTENT, not a target field — "latest target wins"
+            # must apply to box_folder_id/filename, but a later caller must never be
+            # able to revoke a repair.
+            force_requested = bool(force or existing_payload.get("force"))
+            if force_requested:
+                payload["force"] = True
             if existing_payload != payload:
                 updated_row = self.repo.update_payload(
                     id=existing.id,
@@ -210,6 +220,17 @@ class BoxOutboxService:
                 if updated_row:
                     refreshed = updated_row
                     payload_refreshed = True
+                elif force_requested:
+                    logger.warning(
+                        "box.outbox.force_refresh_failed",
+                        extra={
+                            "event_name": "box.outbox.force_refresh_failed",
+                            "outbox_public_id": existing.public_id,
+                            "entity_type": entity_type,
+                            "entity_public_id": entity_public_id,
+                            "attachment_id": attachment_id,
+                        },
+                    )
             updated = self.repo.update_ready_after(
                 id=refreshed.id,
                 row_version=refreshed.row_version,
@@ -228,6 +249,7 @@ class BoxOutboxService:
                     "attachment_id": attachment_id,
                     "new_ready_after": ready_after.isoformat(),
                     "payload_refreshed": payload_refreshed,
+                    "force_requested": force_requested,
                 },
             )
             return updated or refreshed

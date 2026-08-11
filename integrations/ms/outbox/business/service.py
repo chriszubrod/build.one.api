@@ -11,6 +11,7 @@ from integrations.ms.base.correlation import get_correlation_id
 from integrations.ms.base.errors import MsWriteRefusedError
 from integrations.ms.outbox.business.model import MsOutbox
 from integrations.ms.outbox.persistence.repo import MsOutboxRepository
+from shared.fanout_guard import idempotency_guards_disabled, same_attachment_id
 
 logger = logging.getLogger(__name__)
 
@@ -320,14 +321,78 @@ class MsOutboxService:
         """
         Queue a SharePoint upload for background dispatch. `blob_path` is the
         Azure Blob Storage URL/path where the content lives; the worker
-        downloads it at drain time. `attachment_id` is optional — when
-        supplied, the worker links the uploaded DriveItem back to the
-        Attachment record after a successful upload.
+        downloads it at drain time.
+
+        `attachment_id` is optional and is carried in the payload as part of
+        this upload's IDENTITY (see the guard below). It is NOT a linkback:
+        the worker persists nothing on success — it uploads and returns —
+        so `ms.DriveItem` / `ms.DriveItemAttachment` hold no rows for these
+        uploads and `DriveItemAttachmentService` has no callers. That absence
+        is precisely why the guard keys on the completed outbox row: it is the
+        only durable proof in the system that a SharePoint write happened.
         """
+        if _writes_allowed() and not idempotency_guards_disabled():
+            # Idempotency guard — SKIP requires positive proof of EVERY identity field.
+            # Any missing row, NULL hash, absent id, unparseable payload, or read that
+            # raises => ENQUEUE. A wrong enqueue costs one PUT; a wrong skip loses a
+            # document forever. (Same asymmetry as integrations/intuit/qbo/base/sync_outcome.py.)
+            try:
+                completed_rows = self.repo.read_completed_by_entity(
+                    entity_type=entity_type,
+                    entity_public_id=entity_public_id,
+                    kind=KIND_UPLOAD_SHAREPOINT_FILE,
+                )
+                for prior in completed_rows:
+                    try:
+                        parsed = json.loads(prior.payload) if prior.payload else None
+                    except Exception:
+                        continue
+                    if not isinstance(parsed, dict):
+                        continue
+                    prior_attachment = parsed.get("attachment_id")
+                    # Eager evaluation — if this were lazy inside the if, a prior
+                    # row with a non-numeric attachment_id would be silently skipped
+                    # instead of raising, and a LATER row could then match and
+                    # suppress the upload.
+                    attachment_match = same_attachment_id(prior_attachment, attachment_id)
+                    if (
+                        parsed.get("drive_id") == drive_id
+                        and parsed.get("parent_item_id") == parent_item_id
+                        and parsed.get("filename") == filename
+                        and parsed.get("blob_path") == blob_path
+                        and attachment_match
+                        # Defense-in-depth mirroring ReadCompletedMsOutboxByEntity's
+                        # status='done' predicate — not a substitute for it.
+                        and str(prior.status or "").lower() == "done"
+                    ):
+                        logger.info(
+                            "ms.outbox.upload.skipped_already_uploaded",
+                            extra={
+                                "event_name": "ms.outbox.upload.skipped_already_uploaded",
+                                "entity_type": entity_type,
+                                "entity_public_id": entity_public_id,
+                                "file_name": filename,
+                                "outbox_public_id": prior.public_id,
+                                "outcome": "skipped_already_uploaded",
+                            },
+                        )
+                        return prior
+            except Exception as error:
+                logger.warning(
+                    "ms.outbox.guard.read_failed",
+                    extra={
+                        "event_name": "ms.outbox.guard.read_failed",
+                        "entity_type": entity_type,
+                        "entity_public_id": entity_public_id,
+                        "error_class": type(error).__name__,
+                    },
+                )
+
         tenant_id = _resolve_tenant_id()
         if not tenant_id:
             logger.error("ms.outbox.enqueue_sharepoint_upload.no_tenant_id")
             return None
+
         return self.enqueue(
             kind=KIND_UPLOAD_SHAREPOINT_FILE,
             entity_type=entity_type,

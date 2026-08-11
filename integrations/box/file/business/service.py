@@ -17,6 +17,7 @@ from integrations.box.file.persistence.repo import (
     BoxFileRepository,
     BoxPushLogRepository,
 )
+from shared.fanout_guard import idempotency_guards_disabled, same_attachment_id
 
 logger = get_box_logger(__name__)
 
@@ -63,9 +64,10 @@ class BoxFileService:
         integrity via sha1, then record the registry row + push log.
 
         Expected payload keys: blob_path, filename, content_type,
-        box_folder_id, doc_kind, attachment_id, project_id — plus
-        entity_type / entity_public_id added by the outbox worker from the
-        claimed row (required for conflict-ownership recovery).
+        box_folder_id, doc_kind, attachment_id, project_id, force (optional;
+        operator-repair bypass, sticky across coalesce) — plus entity_type /
+        entity_public_id added by the outbox worker from the claimed row
+        (required for conflict-ownership recovery).
 
         Returns the Box file entry dict (entries[0] of the upload response).
         """
@@ -86,6 +88,66 @@ class BoxFileService:
 
         data = self._fetch_blob(blob_path)
         computed_sha1 = hashlib.sha1(data).hexdigest()
+
+        # Idempotency guard — SKIP requires positive proof of EVERY identity field.
+        # Any missing row, NULL hash, absent id, unparseable payload, or read that
+        # raises => UPLOAD. A wrong upload costs one PUT; a wrong skip loses a
+        # document forever. (Same asymmetry as integrations/intuit/qbo/base/sync_outcome.py.)
+        # Operator-initiated repair (payload force=True) asserts intent that outranks
+        # the registry, so it always re-uploads.
+        if (
+            entity_type
+            and entity_public_id
+            and not payload.get("force")
+            and not idempotency_guards_disabled()
+        ):
+            # try deliberately spans registry read AND identity comparison — any
+            # raise anywhere in the guard (e.g. int() on a non-numeric attachment id)
+            # logs and falls through to UPLOAD, never aborting the push.
+            try:
+                rows = self.repo.read_by_entity(entity_type, entity_public_id)
+                matches = [
+                    r
+                    for r in rows
+                    if str(r.box_folder_id) == str(box_folder_id)
+                    and (r.name or "") == filename
+                    and r.sha1
+                    and r.sha1.lower() == computed_sha1.lower()
+                    and same_attachment_id(r.attachment_id, attachment_id)
+                ]
+                if len(matches) == 1:
+                    row = matches[0]
+                    logger.info(
+                        "box.file.push.skipped_identical",
+                        extra={
+                            "event_name": "box.file.push.skipped_identical",
+                            "box_file_id": row.box_file_id,
+                            "box_folder_id": str(box_folder_id),
+                            "file_name": filename,
+                            "entity_type": entity_type,
+                            "entity_public_id": entity_public_id,
+                            "outbox_id": outbox_id,
+                            "outcome": "skipped_identical",
+                        },
+                    )
+                    return {
+                        "id": row.box_file_id,
+                        "name": row.name,
+                        "sha1": row.sha1,
+                        "etag": row.etag,
+                        "file_version": {"id": row.file_version_id},
+                    }
+            except Exception as error:
+                logger.warning(
+                    "box.file.guard.read_failed",
+                    extra={
+                        "event_name": "box.file.guard.read_failed",
+                        "entity_type": entity_type,
+                        "entity_public_id": entity_public_id,
+                        "outbox_id": outbox_id,
+                        "error_class": type(error).__name__,
+                    },
+                )
 
         try:
             result = client.upload_file(

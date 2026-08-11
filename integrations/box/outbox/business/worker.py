@@ -489,7 +489,8 @@ class BoxOutboxWorker:
             "box_folder_id": "1234567890",
             "attachment_id": 42,        // nullable
             "doc_kind": "attachment",
-            "project_id": 7             // nullable
+            "project_id": 7,            // nullable
+            "force": true               // optional; operator-repair bypass, sticky across coalesce
           }
 
         The row's entity identity is threaded into the payload before

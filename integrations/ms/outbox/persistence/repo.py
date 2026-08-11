@@ -2,7 +2,7 @@
 import base64
 import logging
 from datetime import datetime
-from typing import Optional
+from typing import List, Optional
 
 # Third-party Imports
 import pyodbc
@@ -197,6 +197,35 @@ class MsOutboxRepository:
                         pass
         except Exception as error:
             logger.error(f"Error during read pending ms outbox by entity: {error}")
+            raise map_database_error(error)
+
+    def read_completed_by_entity(
+        self,
+        entity_type: str,
+        entity_public_id: str,
+        kind: str,
+    ) -> List[MsOutbox]:
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                try:
+                    call_procedure(
+                        cursor=cursor,
+                        name="ReadCompletedMsOutboxByEntity",
+                        params={
+                            "EntityType": entity_type,
+                            "EntityPublicId": entity_public_id,
+                            "Kind": kind,
+                        },
+                    )
+                    return [self._from_db(r) for r in cursor.fetchall() if r]
+                finally:
+                    try:
+                        cursor.close()
+                    except Exception:
+                        pass
+        except Exception as error:
+            logger.error(f"Error during read completed ms outbox by entity: {error}")
             raise map_database_error(error)
 
     # --- Update ---

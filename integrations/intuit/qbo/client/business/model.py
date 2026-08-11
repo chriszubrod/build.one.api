@@ -1,5 +1,5 @@
 # Python Standard Library Imports
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from typing import Optional
 
 # Third-party Imports
@@ -15,6 +15,11 @@ class QboClient:
 
     def to_dict(self) -> dict:
         """
-        Convert the QboClient dataclass to a dictionary.
+        Serialize for API responses. client_secret is deliberately excluded;
+        internal callers needing the secret must read the client_secret attribute.
         """
-        return asdict(self)
+        return {
+            "app": self.app,
+            "client_id": self.client_id,
+            "client_secret_set": bool(self.client_secret),
+        }

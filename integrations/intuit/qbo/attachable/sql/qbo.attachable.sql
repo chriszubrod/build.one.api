@@ -389,7 +389,3 @@ BEGIN
     COMMIT TRANSACTION;
 END;
 GO
-
-
-SELECT COUNT(Id) AS TotalCount
-FROM qbo.Attachable;

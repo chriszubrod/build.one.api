@@ -838,26 +838,3 @@ BEGIN
     COMMIT TRANSACTION;
 END;
 GO
-
-
-
-
-
-SELECT BillableStatus, COUNT(*) as cnt 
-FROM qbo.BillLine 
-GROUP BY BillableStatus
-ORDER BY cnt DESC;
-
--- Update IsBillable in dbo.BillLineItem based on qbo.BillLine.BillableStatus
--- "Billable" or "HasBeenBilled" = 1 (True), "NotBillable" = 0 (False)
-
-UPDATE bli
-SET bli.[IsBillable] = CASE 
-    WHEN bl.[BillableStatus] IN ('Billable', 'HasBeenBilled') THEN 1
-    WHEN bl.[BillableStatus] = 'NotBillable' THEN 0
-    ELSE bli.[IsBillable]  -- Keep existing if NULL
-END
-FROM dbo.[BillLineItem] bli
-INNER JOIN qbo.[BillLineItemBillLine] map ON map.[BillLineItemId] = bli.[Id]
-INNER JOIN qbo.[BillLine] bl ON bl.[Id] = map.[QboBillLineId]
-WHERE bl.[BillableStatus] IS NOT NULL;

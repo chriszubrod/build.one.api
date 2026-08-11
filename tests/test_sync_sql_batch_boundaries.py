@@ -25,6 +25,9 @@ MODULE_SQL = REPO_ROOT / "entities" / "module" / "sql" / "dbo.module.sql"
 ROLE_MODULE_SQL = (
     REPO_ROOT / "entities" / "role_module" / "sql" / "dbo.rolemodule.sql"
 )
+QBO_BILL_SQL = (
+    REPO_ROOT / "integrations" / "intuit" / "qbo" / "bill" / "sql" / "qbo.bill.sql"
+)
 
 # Hand-listed, not derived from ENTITY_BASE_FILES: the BEGIN/END depth tracker
 # false-positives on multi-line CASE…END in other base files (e.g. bill's
@@ -33,11 +36,14 @@ ROLE_MODULE_SQL = (
 # then, add your file here when you convert an entity to single-source.
 # U-053 added MODULE_SQL (IX_Module_PublicId GO fix) and ROLE_MODULE_SQL
 # (U-048's DeleteRoleModuleById GO fix — now guarded against regression).
+# U-216 added QBO_BILL_SQL: trailing ad-hoc DML removed there; guarded from both
+# directions (no bare DML tail, no missing GO swallowing DML into the last procedure).
 _BATCH_BOUNDARY_SQL_FILES = (
     SYNC_SQL,
     USER_PROJECT_SQL,
     MODULE_SQL,
     ROLE_MODULE_SQL,
+    QBO_BILL_SQL,
 )
 
 _PROCEDURE_PATTERN = re.compile(

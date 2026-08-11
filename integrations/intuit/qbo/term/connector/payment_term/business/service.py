@@ -5,6 +5,10 @@ from typing import Optional
 # Third-party Imports
 
 # Local Imports
+from integrations.intuit.qbo.base.field_ownership import (
+    preserve_human_edited_name,
+    raise_if_inactive_unmapped,
+)
 from integrations.intuit.qbo.term.connector.payment_term.business.model import TermPaymentTerm
 from integrations.intuit.qbo.term.connector.payment_term.persistence.repo import TermPaymentTermRepository
 from integrations.intuit.qbo.term.business.model import QboTerm
@@ -63,7 +67,7 @@ class TermPaymentTermConnector:
             payment_term = self.payment_term_service.read_by_id(mapping.payment_term_id)
             if payment_term:
                 logger.info(f"Updating existing PaymentTerm {payment_term.id} from QboTerm {qbo_term.id}")
-                payment_term.name = term_name
+                payment_term.name = preserve_human_edited_name(payment_term.name, term_name)
                 payment_term.description = description
                 payment_term.discount_percent = float(qbo_term.discount_percent) if qbo_term.discount_percent else None
                 payment_term.discount_days = qbo_term.discount_days
@@ -77,6 +81,10 @@ class TermPaymentTermConnector:
                 mapping = None
         
         # Create new PaymentTerm
+        # Deactivation guard (U-219): no adopt path; directly before create.
+        raise_if_inactive_unmapped(
+            qbo_term.active, qbo_label="QboTerm", qbo_id=qbo_term.id, target="PaymentTerm"
+        )
         logger.info(f"Creating new PaymentTerm from QboTerm {qbo_term.id}: name={term_name}")
         payment_term = self.payment_term_service.create(
             name=term_name,

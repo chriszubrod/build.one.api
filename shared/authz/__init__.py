@@ -13,6 +13,7 @@ from shared.authz.context import (
     current_can_view_team,
     set_authz_context,
     clear_authz_context,
+    system_authz,
 )
 from shared.authz.row_scope import (
     ROW_SCOPE_RULES,
@@ -28,6 +29,7 @@ __all__ = [
     "current_can_view_team",
     "set_authz_context",
     "clear_authz_context",
+    "system_authz",
     "ROW_SCOPE_RULES",
     "row_scope_for",
     "RowScope",

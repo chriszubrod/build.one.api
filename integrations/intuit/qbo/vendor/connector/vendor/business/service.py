@@ -10,7 +10,10 @@ from integrations.intuit.qbo.vendor.connector.vendor.persistence.repo import Ven
 from integrations.intuit.qbo.vendor.business.model import QboVendor
 from integrations.intuit.qbo.physical_address.connector.business.service import PhysicalAddressAddressConnector
 from integrations.intuit.qbo.reconciliation.persistence.repo import ReconciliationIssueRepository
-from integrations.intuit.qbo.base.field_ownership import preserve_human_edited_name
+from integrations.intuit.qbo.base.field_ownership import (
+    preserve_human_edited_name,
+    raise_if_inactive_unmapped,
+)
 from entities.vendor.business.service import VendorService
 from entities.vendor.business.model import Vendor
 from entities.vendor_address.business.service import VendorAddressService
@@ -121,6 +124,10 @@ class VendorVendorConnector:
                 f"resolved for QboVendor {qbo_vendor.id}; preserving mapping, skipping."
             )
 
+        # Deactivation guard (U-219): after the mapping lookup, before the adopt-by-name bind.
+        raise_if_inactive_unmapped(
+            qbo_vendor.active, qbo_label="QboVendor", qbo_id=qbo_vendor.id, target="Vendor"
+        )
         # No mapping. Adopt an existing unmapped local Vendor by exact name BEFORE creating —
         # VendorService.create refuses a duplicate name, so without this a name collision detaches
         # the QBO vendor permanently (audit P1-08's second half).

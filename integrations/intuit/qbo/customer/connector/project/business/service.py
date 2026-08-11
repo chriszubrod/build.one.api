@@ -5,6 +5,10 @@ from typing import Optional
 # Third-party Imports
 
 # Local Imports
+from integrations.intuit.qbo.base.field_ownership import (
+    preserve_human_edited_name,
+    raise_if_inactive_unmapped,
+)
 from integrations.intuit.qbo.customer.connector.project.business.model import CustomerProject
 from integrations.intuit.qbo.customer.connector.project.persistence.repo import CustomerProjectRepository
 from integrations.intuit.qbo.customer.connector.customer.persistence.repo import CustomerCustomerRepository
@@ -152,6 +156,13 @@ class CustomerProjectConnector:
                     f'resolved for QboCustomer {qbo_customer.id}; preserving mapping, skipping.'
                 )
 
+        # Deactivation guard (U-219): after the mapping lookup, before the adopt-by-name bind.
+        raise_if_inactive_unmapped(
+            qbo_customer.active,
+            qbo_label="QboCustomer",
+            qbo_id=qbo_customer.id,
+            target="Project",
+        )
         # No mapping. Before creating a fresh Project, look for a matching local row
         # by exact (case-insensitive — SQL Server default collation) Name. This
         # catches the original-import-time gap where dbo.Project rows exist with
@@ -229,7 +240,7 @@ class CustomerProjectConnector:
         and the heal-in-place repoint path so the QboCustomer->Project field mapping
         lives in exactly one place (no drift between the two update sites).
         """
-        project.name = name
+        project.name = preserve_human_edited_name(project.name, name)
         project.description = description
         project.status = status
         project.customer_id = customer_id

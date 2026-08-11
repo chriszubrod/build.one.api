@@ -52,6 +52,13 @@ def page_all_record_ids(
     for _page in range(max_pages):
         # Id-only projection: the loop reads nothing but Id, and full rows
         # (headers + line arrays) are ~50-100x the payload per 1000-row page.
+        # NOTE (U-219): this id projection has NO `Active` predicate, so it sees only
+        # ACTIVE records. Harmless today — the only callers are bill/purchase/vendorcredit,
+        # transactions with no Active concept. But the reference entities' full-row pulls
+        # now query `Active IN (true, false)`. Any future strict id pager for a REFERENCE
+        # entity (vendor/customer/item/account/term) MUST add that predicate, or
+        # delete_reconcile's `mapped_ids - live_ids` will flag every deactivated record
+        # as hard-deleted — the exact inverse of what U-219 established.
         query_string = (
             f"SELECT Id FROM {entity} STARTPOSITION {start_position} "
             f"MAXRESULTS {page_size}"

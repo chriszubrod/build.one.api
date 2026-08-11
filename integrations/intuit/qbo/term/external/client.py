@@ -175,19 +175,20 @@ class QboTermClient:
             start_position: 1-based pagination offset.
             max_results: Max rows per page (QBO caps at 1000).
         """
+        where_clauses: List[str] = []
         if last_updated_time:
             formatted = _format_datetime_for_qbo_query(last_updated_time)
-            query_string = (
-                f"SELECT * FROM Term WHERE Metadata.LastUpdatedTime > '{formatted}' "
-                f"STARTPOSITION {start_position} MAXRESULTS {max_results}"
-            )
+            where_clauses.append(f"Metadata.LastUpdatedTime > '{formatted}'")
             logger.debug(
                 f"Querying Terms with WHERE clause: Metadata.LastUpdatedTime > '{formatted}'"
             )
-        else:
-            query_string = (
-                f"SELECT * FROM Term STARTPOSITION {start_position} MAXRESULTS {max_results}"
-            )
+        # QBO's query API hides inactive records by default, so a deactivation (and every
+        # merge, which deactivates the merged-from record) would otherwise never reach us (U-219).
+        where_clauses.append("Active IN (true, false)")
+        query_string = (
+            f"SELECT * FROM Term WHERE {' AND '.join(where_clauses)} "
+            f"STARTPOSITION {start_position} MAXRESULTS {max_results}"
+        )
 
         data = self._http_client.get(
             "query",

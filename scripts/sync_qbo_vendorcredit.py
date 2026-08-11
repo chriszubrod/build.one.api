@@ -195,7 +195,7 @@ def sync_qbo_to_local(
     vendor_credit_connector: VendorCreditBillCreditConnector,
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
-    sync_attachments: bool = True,
+    sync_attachments: bool = False,
     attachable_service: Optional[QboAttachableService] = None,
 ) -> tuple[dict, SyncOutcome]:
     """
@@ -417,6 +417,23 @@ def sync_qbo_to_local(
     }, outcome
 
 
+def _attachment_kill_switch_engaged() -> bool:
+    """Env kill switch for the vendor-credit attachment pull (U-219).
+
+    This pull path had never executed in production before U-219 wired it (the
+    attachable service was built but never passed in), and BOTH recurring callers
+    -- the APScheduler fallback and the scheduler Function's POST -- take the
+    `sync_attachments=True` default, so the CLI's `--skip-attachments` cannot reach
+    them. Setting `QBO_VENDORCREDIT_SYNC_ATTACHMENTS=false` in App Service settings
+    turns the pull off with a restart instead of a code edit + redeploy.
+
+    Deliberately one-way: it can only DISABLE. An explicit caller asking for
+    attachments is still refused when the switch is set, but the switch never
+    turns attachments ON for a caller that asked to skip them.
+    """
+    return os.getenv("QBO_VENDORCREDIT_SYNC_ATTACHMENTS", "true").strip().lower() == "false"
+
+
 def sync_qbo_vendorcredit(
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
@@ -438,6 +455,13 @@ def sync_qbo_vendorcredit(
         dry_run: If True, fetch from QBO and report what would be synced without writing anything.
     """
     try:
+        if sync_attachments and _attachment_kill_switch_engaged():
+            logger.warning(
+                "QBO_VENDORCREDIT_SYNC_ATTACHMENTS=false — skipping vendor-credit "
+                "attachment sync for this run (env kill switch)."
+            )
+            sync_attachments = False
+
         sync_service = SyncService()
         qbo_vendor_credit_service = QboVendorCreditService()
         vendor_credit_connector = VendorCreditBillCreditConnector()
@@ -505,6 +529,8 @@ def sync_qbo_vendorcredit(
             vendor_credit_connector=vendor_credit_connector,
             start_date=start_date,
             end_date=end_date,
+            sync_attachments=sync_attachments,
+            attachable_service=attachable_service,
         )
         
         end_time = datetime.now(timezone.utc)

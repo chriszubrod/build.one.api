@@ -172,6 +172,38 @@ def preserve_human_edited_name(
     return incoming_value
 
 
+def raise_if_inactive_unmapped(
+    active: Optional[bool], *, qbo_label: str, qbo_id, target: str
+) -> None:
+    """Refuse to bind a QBO record that is inactive and has no local mapping.
+
+    The reference pulls query `Active IN (true, false)`, so deactivations and
+    merges now reach the connectors. A record we ALREADY map must still update —
+    that is the whole point of widening the query. But a record with no mapping
+    must not be bound to a local row AT ALL, neither adopted nor created: QBO
+    renames deactivated records with a " (deleted)" suffix, so binding one either
+    mints a name-variant duplicate or (where the connector adopts by parsed
+    NUMBER, which survives that suffix) hijacks and renames a LIVE local row.
+
+    `active is False` deliberately, NOT a falsy check: None means QBO did not
+    report the field and must never suppress.
+
+    Raises ValueError, which `SyncOutcome.record_projection_error` classifies as
+    a permanent skip that advances the watermark — the correct bucket, since an
+    inactive record will not become bindable on a retry.
+
+    CALL SITE ORDERING IS LOAD-BEARING and cannot be enforced here: call this
+    AFTER the mapping lookup (so a mapped record still updates) and BEFORE any
+    adopt-by-name/number lookup (so an unmapped one cannot hijack a live row).
+    """
+    if active is False:
+        raise ValueError(
+            f"{qbo_label} {qbo_id} is inactive in QBO and has no local "
+            f"{target} mapping; skipping (deactivated records are never bound "
+            f"to a local row)."
+        )
+
+
 # ---------------------------------------------------------------------------
 # Per-entity rules
 # ---------------------------------------------------------------------------

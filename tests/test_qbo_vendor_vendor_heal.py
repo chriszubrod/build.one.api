@@ -27,6 +27,7 @@ def _make_qbo_vendor(
         display_name=display_name,
         realm_id=realm_id,
         bill_addr_id=bill_addr_id,
+        active=None,
     )
 
 

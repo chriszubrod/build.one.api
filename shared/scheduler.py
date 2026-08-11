@@ -4,6 +4,8 @@ import logging
 import os
 from typing import Optional
 
+from shared.authz import system_authz
+
 logger = logging.getLogger(__name__)
 
 
@@ -143,37 +145,46 @@ def _register_qbo_pull_jobs(scheduler) -> None:
         """
 
         def _run_sync() -> None:
-            logger.info(
-                "qbo.sync.pull.started",
-                extra={
-                    "event_name": "qbo.sync.pull.started",
-                    "operation_name": f"qbo.sync.{entity_name}",
-                    "entity_type": entity_name,
-                },
-            )
-            try:
-                result = sync_fn()
+            # System intent (U-219): the sync scripts' own belt
+            # (assert_cli_system_admin) only fires under __main__, and the HTTP
+            # path gets its context from _require_drain_secret. This in-process
+            # fallback is the third entry point and had neither — every guarded
+            # connector read raised EntityNotAccessibleError, so each pull failed
+            # 100% and re-pulled the same growing window every tick. Prior context
+            # is restored on exit so we never leak system-admin into whatever ran
+            # us. Mirrors MsOutboxWorker._process.
+            with system_authz():
                 logger.info(
-                    "qbo.sync.pull.completed",
+                    "qbo.sync.pull.started",
                     extra={
-                        "event_name": "qbo.sync.pull.completed",
+                        "event_name": "qbo.sync.pull.started",
                         "operation_name": f"qbo.sync.{entity_name}",
                         "entity_type": entity_name,
-                        "outcome": "success",
-                        "result_summary": _summarize_sync_result(result),
                     },
                 )
-            except Exception as error:
-                logger.exception(
-                    "qbo.sync.pull.failed",
-                    extra={
-                        "event_name": "qbo.sync.pull.failed",
-                        "operation_name": f"qbo.sync.{entity_name}",
-                        "entity_type": entity_name,
-                        "outcome": "failure",
-                        "error_class": type(error).__name__,
-                    },
-                )
+                try:
+                    result = sync_fn()
+                    logger.info(
+                        "qbo.sync.pull.completed",
+                        extra={
+                            "event_name": "qbo.sync.pull.completed",
+                            "operation_name": f"qbo.sync.{entity_name}",
+                            "entity_type": entity_name,
+                            "outcome": "success",
+                            "result_summary": _summarize_sync_result(result),
+                        },
+                    )
+                except Exception as error:
+                    logger.exception(
+                        "qbo.sync.pull.failed",
+                        extra={
+                            "event_name": "qbo.sync.pull.failed",
+                            "operation_name": f"qbo.sync.{entity_name}",
+                            "entity_type": entity_name,
+                            "outcome": "failure",
+                            "error_class": type(error).__name__,
+                        },
+                    )
 
         async def run() -> None:
             await asyncio.to_thread(_run_sync)

@@ -5,6 +5,10 @@ from typing import Optional
 # Third-party Imports
 
 # Local Imports
+from integrations.intuit.qbo.base.field_ownership import (
+    preserve_human_edited_name,
+    raise_if_inactive_unmapped,
+)
 from integrations.intuit.qbo.customer.connector.customer.business.model import CustomerCustomer
 from integrations.intuit.qbo.customer.connector.customer.persistence.repo import CustomerCustomerRepository
 from integrations.intuit.qbo.customer.business.model import QboCustomer
@@ -62,7 +66,7 @@ class CustomerCustomerConnector:
             customer = self.customer_service.read_by_id(mapping.customer_id)
             if customer:
                 logger.info(f"Updating existing Customer {customer.id} from QboCustomer {qbo_customer.id}")
-                customer.name = customer_name
+                customer.name = preserve_human_edited_name(customer.name, customer_name)
                 customer.email = customer_email
                 customer.phone = customer_phone
                 customer = self.customer_service.repo.update_by_id(customer)
@@ -74,6 +78,13 @@ class CustomerCustomerConnector:
                 mapping = None
         
         # Create new Customer
+        # Deactivation guard (U-219): no adopt path; directly before create.
+        raise_if_inactive_unmapped(
+            qbo_customer.active,
+            qbo_label="QboCustomer",
+            qbo_id=qbo_customer.id,
+            target="Customer",
+        )
         logger.info(f"Creating new Customer from QboCustomer {qbo_customer.id}: name={customer_name}")
         customer = self.customer_service.create(
             name=customer_name,

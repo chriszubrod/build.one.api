@@ -13,8 +13,9 @@ request.
 """
 from __future__ import annotations
 
+from contextlib import contextmanager
 from contextvars import ContextVar
-from typing import Optional
+from typing import Iterator, Optional
 
 # Active subject (User.Id) for the current request. None when the
 # request is unauthenticated or the auth dependency hasn't run yet.
@@ -73,6 +74,34 @@ def clear_authz_context() -> None:
     current_company_id.set(None)
     current_is_system_admin.set(False)
     current_can_view_team_modules.set(frozenset())
+
+
+@contextmanager
+def system_authz() -> Iterator[None]:
+    """Assert system intent at a non-HTTP boundary, restoring prior context on exit.
+
+    Drain workers, the in-process scheduler and CLI entry points process rows that
+    span all users by design, so guarded service reads must bypass the per-row
+    access UDFs. Restores on exit so system-admin never leaks into whatever ran us.
+
+    NOTE: saves and restores current_can_view_team_modules too. The six hand-copied
+    versions of this block save only (user_id, company_id, is_system_admin), but
+    set_authz_context also RESETS can_view_team_modules — so their "restore" call
+    silently clears the caller's team-view set. Inert on the scheduler path (the
+    thread gets a copied context) but live at the two qbo router call sites.
+    """
+    prior_uid = current_user_id.get()
+    prior_cid = current_company_id.get()
+    prior_isa = current_is_system_admin.get()
+    prior_team = current_can_view_team_modules.get()
+    set_authz_context(user_id=None, company_id=None, is_system_admin=True)
+    try:
+        yield
+    finally:
+        set_authz_context(
+            user_id=prior_uid, company_id=prior_cid, is_system_admin=prior_isa
+        )
+        current_can_view_team_modules.set(prior_team)
 
 
 def current_can_view_team(module_name: str) -> bool:

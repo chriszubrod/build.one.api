@@ -84,19 +84,20 @@ class QboItemClient:
         max_results: int = 1000,
     ) -> List[QboItem]:
         """Query items from QuickBooks using the query endpoint."""
+        where_clauses: List[str] = []
         if last_updated_time:
             formatted = _format_datetime_for_qbo_query(last_updated_time)
-            query_string = (
-                f"SELECT * FROM Item WHERE Metadata.LastUpdatedTime > '{formatted}' "
-                f"STARTPOSITION {start_position} MAXRESULTS {max_results}"
-            )
+            where_clauses.append(f"Metadata.LastUpdatedTime > '{formatted}'")
             logger.debug(
                 f"Querying Items with WHERE clause: Metadata.LastUpdatedTime > '{formatted}'"
             )
-        else:
-            query_string = (
-                f"SELECT * FROM Item STARTPOSITION {start_position} MAXRESULTS {max_results}"
-            )
+        # QBO's query API hides inactive records by default, so a deactivation (and every
+        # merge, which deactivates the merged-from record) would otherwise never reach us (U-219).
+        where_clauses.append("Active IN (true, false)")
+        query_string = (
+            f"SELECT * FROM Item WHERE {' AND '.join(where_clauses)} "
+            f"STARTPOSITION {start_position} MAXRESULTS {max_results}"
+        )
 
         data = self._http_client.get(
             "query",

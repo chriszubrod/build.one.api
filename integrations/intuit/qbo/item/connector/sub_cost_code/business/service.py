@@ -5,6 +5,10 @@ from typing import Optional
 # Third-party Imports
 
 # Local Imports
+from integrations.intuit.qbo.base.field_ownership import (
+    preserve_human_edited_name,
+    raise_if_inactive_unmapped,
+)
 from integrations.intuit.qbo.item.connector.sub_cost_code.business.model import ItemSubCostCode
 from integrations.intuit.qbo.item.connector.sub_cost_code.persistence.repo import ItemSubCostCodeRepository
 from integrations.intuit.qbo.item.connector.cost_code.persistence.repo import ItemCostCodeRepository
@@ -92,7 +96,7 @@ class ItemSubCostCodeConnector:
             if sub_cost_code:
                 logger.info(f"Updating existing SubCostCode {sub_cost_code.id} from QboItem {qbo_item.id}")
                 sub_cost_code.number = number
-                sub_cost_code.name = name
+                sub_cost_code.name = preserve_human_edited_name(sub_cost_code.name, name)
                 sub_cost_code.description = description
                 sub_cost_code.cost_code_id = cost_code_id
                 sub_cost_code = self.sub_cost_code_service.repo.update_by_id(sub_cost_code)
@@ -103,6 +107,10 @@ class ItemSubCostCodeConnector:
                 mapping = None
         
         if not sub_cost_code:
+            # Deactivation guard (U-219): inside `if not sub_cost_code:`, before read_by_number.
+            raise_if_inactive_unmapped(
+                qbo_item.active, qbo_label="QboItem", qbo_id=qbo_item.id, target="SubCostCode"
+            )
             # Check if SubCostCode exists by number (to prevent duplicates)
             existing_by_number = self.sub_cost_code_service.read_by_number(number)
             if existing_by_number:

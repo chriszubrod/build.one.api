@@ -5,6 +5,10 @@ from typing import Optional
 # Third-party Imports
 
 # Local Imports
+from integrations.intuit.qbo.base.field_ownership import (
+    preserve_human_edited_name,
+    raise_if_inactive_unmapped,
+)
 from integrations.intuit.qbo.item.connector.cost_code.business.model import ItemCostCode
 from integrations.intuit.qbo.item.connector.cost_code.persistence.repo import ItemCostCodeRepository
 from integrations.intuit.qbo.item.business.model import QboItem
@@ -64,7 +68,7 @@ class ItemCostCodeConnector:
             if cost_code:
                 logger.info(f"Updating existing CostCode {cost_code.id} from QboItem {qbo_item.id}")
                 cost_code.number = number
-                cost_code.name = name
+                cost_code.name = preserve_human_edited_name(cost_code.name, name)
                 cost_code.description = description
                 cost_code = self.cost_code_service.repo.update_by_id(cost_code)
             else:
@@ -74,6 +78,10 @@ class ItemCostCodeConnector:
                 mapping = None
         
         if not cost_code:
+            # Deactivation guard (U-219): inside `if not cost_code:`, before read_by_number.
+            raise_if_inactive_unmapped(
+                qbo_item.active, qbo_label="QboItem", qbo_id=qbo_item.id, target="CostCode"
+            )
             # Check if CostCode exists by number (to prevent duplicates)
             existing_by_number = self.cost_code_service.read_by_number(number)
             if existing_by_number:

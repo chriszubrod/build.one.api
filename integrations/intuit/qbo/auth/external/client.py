@@ -12,30 +12,20 @@ logger = logging.getLogger(__name__)
 from fastapi import Request
 
 # Local Imports
-from integrations.intuit.qbo.base.helper import get_intuit_discovery_document
+# `get_intuit_discovery_document` is imported but no longer called directly here —
+# every call site now goes through `get_intuit_endpoint`. KEEP THE IMPORT: this module
+# once carried a verbatim COPY of that function which SHADOWED the base one, and the
+# shadowed copy is the one that actually executed (no timeout, bare `except`, returned
+# an error *string* that callers then subscripted). Binding the name to the base helper
+# here is what makes a re-introduced local `def` a visible redefinition rather than a
+# silent one, and `tests/test_qbo_auth_resilience.py` asserts this exact identity.
+from integrations.intuit.qbo.base.helper import get_intuit_discovery_document, get_intuit_endpoint
 from integrations.intuit.qbo.client.persistence.repo import QboClientRepository
 from integrations.intuit.qbo.auth.persistence.repo import QboAuthRepository
 from integrations.intuit.qbo.auth.business.state import create_state, verify_state
 
 qbo_client_repo = QboClientRepository()
 qbo_auth_repo = QboAuthRepository()
-
-
-def get_intuit_discovery_document():
-    try:
-        url = "https://developer.api.intuit.com/.well-known/openid_configuration"
-        headers = {
-            "Accept": "application/json"
-        }
-        resp = requests.get(url=url, headers=headers)
-        if resp.status_code == 400:
-            return "An error occured during intuit discovery document. " + resp.text
-
-        if resp.status_code == 200:
-            return json.loads(resp.text)
-
-    except:
-        return "An error occured while trying to call openid production configuration."
 
 
 def connect_intuit_oauth_2_endpoint():
@@ -45,10 +35,15 @@ def connect_intuit_oauth_2_endpoint():
 
     state = create_state()
 
-    auth_endpoint = get_intuit_discovery_document()
+    authorization_url = get_intuit_endpoint("authorization_endpoint")
+
+    if authorization_url is None:
+        raise RuntimeError(
+            "Intuit discovery document unavailable — cannot resolve authorization_endpoint"
+        )
 
     endpoint = str(
-        auth_endpoint['authorization_endpoint'] +
+        authorization_url +
         "?" +
         "client_id=" + client_id +
         "&scope=com.intuit.quickbooks.accounting%20openid%20email%20profile%20address%20phone" +
@@ -91,13 +86,12 @@ def connect_intuit_oauth_2_token_endpoint(request: Request):
 
     realmId = request.query_params.get('realmId', '')
 
-    token_endpoint = get_intuit_discovery_document()
-    
-    # Check if discovery document returned an error (string instead of dict)
-    if isinstance(token_endpoint, str):
+    token_url = get_intuit_endpoint("token_endpoint")
+
+    if token_url is None:
         return {
-            "message": token_endpoint,
-            "status_code": 500
+            "message": "Intuit discovery document unavailable — cannot resolve token_endpoint",
+            "status_code": 503,
         }
 
     s = bytes(
@@ -107,7 +101,7 @@ def connect_intuit_oauth_2_token_endpoint(request: Request):
         encoding='utf-8'
     )
 
-    url = token_endpoint['token_endpoint']
+    url = token_url
     headers = {
         "Accept": "application/json",
         "Content-Type": "application/x-www-form-urlencoded",
@@ -118,7 +112,7 @@ def connect_intuit_oauth_2_token_endpoint(request: Request):
         "code": code,
         "redirect_uri": "https://buildone-esgaducjg4d3eucf.eastus-01.azurewebsites.net/api/v1/intuit/qbo/auth/request/callback"
     }
-    resp = requests.post(url=url, data=data, headers=headers)
+    resp = requests.post(url=url, data=data, headers=headers, timeout=30)
 
     if resp.status_code == 400:
         resp = {
@@ -191,14 +185,20 @@ def connect_intuit_oauth_2_token_endpoint_refresh():
     client_secret = client.client_secret
     client_id_and_secret = bytes(client_id + ":" + client_secret, encoding='utf-8')
 
-    token_endpoint = get_intuit_discovery_document()
-    #print("token_endpoint: ", token_endpoint)
+    token_url = get_intuit_endpoint("token_endpoint")
+    #print("token_endpoint: ", token_url)
+
+    if token_url is None:
+        return {
+            "message": "Intuit discovery document unavailable — cannot resolve token_endpoint",
+            "status_code": 503,
+        }
 
     db_intuit_auth_resp = qbo_auth_repo.read_all()
     auth = db_intuit_auth_resp[0]
     refresh_token = auth.refresh_token
 
-    url = token_endpoint['token_endpoint']
+    url = token_url
     headers = {
         "Accept": "application/json",
         "Content-Type": "application/x-www-form-urlencoded",
@@ -289,13 +289,19 @@ def connect_intuit_oauth_2_token_endpoint_revoke():
     client_secret = client.client_secret
     client_id_and_secret = bytes(client_id + ":" + client_secret, encoding='utf-8')
 
-    revocation_endpoint = get_intuit_discovery_document()
+    revocation_url = get_intuit_endpoint("revocation_endpoint")
+
+    if revocation_url is None:
+        return {
+            "message": "Intuit discovery document unavailable — cannot resolve revocation_endpoint",
+            "status_code": 503,
+        }
 
     db_intuit_auth_resp = qbo_auth_repo.read_all()
     auth = db_intuit_auth_resp[0]
     access_token = auth.access_token
 
-    url = revocation_endpoint['revocation_endpoint']
+    url = revocation_url
     headers = {
         "Accept": "application/json",
         "Content-Type": "application/x-www-form-urlencoded",
@@ -304,7 +310,7 @@ def connect_intuit_oauth_2_token_endpoint_revoke():
     data = {
         "token": access_token
     }
-    resp = requests.post(url=url, data=data, headers=headers)
+    resp = requests.post(url=url, data=data, headers=headers, timeout=30)
     
     if resp.status_code == 400:
         return {

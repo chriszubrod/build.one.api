@@ -6,6 +6,11 @@ from typing import Optional
 import base64
 
 # Local Imports
+from integrations.intuit.qbo.base.errors import AuthFailureKind
+
+__all__ = ["AuthFailureKind", "QboAuth"]
+
+# re-exported for existing importers
 
 
 @dataclass

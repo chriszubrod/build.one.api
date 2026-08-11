@@ -226,6 +226,46 @@ class QboOutboxRepository:
             logger.error(f"Error during claim next pending qbo outbox: {error}")
             raise map_database_error(error)
 
+    def reclaim_stranded(self, stale_before: datetime, max_attempts: int) -> list[dict]:
+        """
+        Reclaim rows stranded in 'in_progress' since before stale_before.
+        Returns a list of reclaimed-row summaries (not full QboOutbox models).
+        """
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                try:
+                    call_procedure(
+                        cursor=cursor,
+                        name="ReclaimStrandedQboOutbox",
+                        params={
+                            "StaleBeforeUtc": stale_before,
+                            "MaxAttempts": max_attempts,
+                        },
+                    )
+                    rows = cursor.fetchall()
+                    return [
+                        {
+                            "id": row.Id,
+                            "public_id": str(row.PublicId),
+                            "status": row.Status,
+                            "attempts": row.Attempts,
+                            "kind": row.Kind,
+                            "entity_type": row.EntityType,
+                            "entity_public_id": str(row.EntityPublicId),
+                            "started_at": row.StartedAt,
+                        }
+                        for row in rows
+                    ]
+                finally:
+                    try:
+                        cursor.close()
+                    except Exception:
+                        pass
+        except Exception as error:
+            logger.error(f"Error during reclaim stranded qbo outbox: {error}")
+            raise map_database_error(error)
+
     def mark_done(self, id: int, row_version: str) -> None:
         try:
             with get_connection() as conn:

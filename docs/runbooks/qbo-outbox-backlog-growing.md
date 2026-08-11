@@ -98,9 +98,38 @@ SET [Status] = 'dead_letter',
 WHERE [Id] = <the_stuck_id>;
 ```
 
-### Recovery C — Unstick an `in_progress` row
+### Recovery C — Unstick an `in_progress` row — **AUTOMATIC since U-215**
 
-If a row has been in `in_progress` for >5 minutes it's almost certainly stranded:
+**You should not need to do this by hand any more.** The drain worker reclaims stranded
+rows itself: every tick, *before* claiming new work and while holding the drain applock,
+`QboOutboxWorker._reclaim_stranded_rows()` calls `ReclaimStrandedQboOutbox` and moves any
+row that has sat `in_progress` longer than `QBO_OUTBOX_RECLAIM_AFTER_SECONDS` (default
+**900s / 15 min**) back to `failed` with `NextRetryAt = now`.
+
+Two properties worth knowing when you are diagnosing:
+
+- **It cannot fire against a live worker.** The reclaim runs inside the same
+  `qbo_outbox_drain` applock that a processing worker holds, so a slow-but-healthy row is
+  never yanked out from under its handler. The 15-minute age threshold is defence in
+  depth on top of that, not the primary guarantee.
+- **It counts the attempt.** The reclaim increments `Attempts` and dead-letters at
+  `MAX_ATTEMPTS`. That is deliberate: a *poison* row (one whose handler kills the process
+  every time) is retried a bounded number of times and then dead-lettered for triage,
+  rather than being reclaimed forever in a loop.
+
+Each reclaim emits a `qbo.outbox.row.reclaimed_stranded` warning — one line per row, with
+`outbox_public_id`, `entity_type`, `attempts`, `started_at` and the resulting status. If
+you are seeing a backlog, **search for that event first**: repeated reclaims of the same
+`outbox_public_id` mean the handler is crashing the process, which is a different problem
+from a slow QBO.
+
+The reclaim **fails open**: if `ReclaimStrandedQboOutbox` is missing (SQL not yet applied)
+or errors, it is logged as `qbo.outbox.reclaim.failed` and the drain continues normally —
+behaviour identical to before U-215.
+
+Reach for manual SQL only in the two cases the automatic path deliberately does not cover:
+a row whose `StartedAt` is `NULL` (its age is unknowable, so the sproc skips it), or a row
+you need unstuck sooner than the threshold.
 
 ```sql
 UPDATE [qbo].[Outbox]
@@ -108,7 +137,8 @@ SET [Status] = 'failed',
     [NextRetryAt] = SYSUTCDATETIME(),
     [LastError] = 'Manual recovery: row was stranded in_progress'
 WHERE [Status] = 'in_progress'
-  AND [StartedAt] < DATEADD(minute, -5, SYSUTCDATETIME());
+  AND ([StartedAt] IS NULL
+       OR [StartedAt] < DATEADD(minute, -5, SYSUTCDATETIME()));
 ```
 
 Next worker tick picks it up.

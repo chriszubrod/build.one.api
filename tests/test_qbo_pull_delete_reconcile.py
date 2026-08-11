@@ -9,6 +9,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from integrations.intuit.qbo.auth.business.model import AuthFailureKind
 from integrations.intuit.qbo.base.client import QboHttpClient
 from integrations.intuit.qbo.base.delete_reconcile import strict_confirmed_deleted_ids
 from integrations.intuit.qbo.base.errors import (
@@ -95,7 +96,10 @@ def _send_once(client, body_text, json_raises=False):
         resp.json.side_effect = ValueError("not json")
     else:
         resp.json.return_value = {"QueryResponse": {}}
-    client.auth_service.ensure_valid_token.return_value = MagicMock(access_token="tok")
+    client.auth_service.ensure_valid_token_classified.return_value = (
+        MagicMock(access_token="tok"),
+        AuthFailureKind.NONE,
+    )
     with patch.object(client, "_send_http", return_value=resp):
         return client._send_once(
             method="GET",

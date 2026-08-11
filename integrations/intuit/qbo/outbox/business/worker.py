@@ -1,5 +1,6 @@
 # Python Standard Library Imports
 import logging
+import os
 from datetime import datetime, timedelta, timezone
 from typing import Callable, Dict, Optional
 
@@ -43,6 +44,27 @@ DRAIN_LOCK_NAME = "qbo_outbox_drain"
 # How long to wait for the drain lock before giving up. Short: if another
 # worker is draining, we just try again on the next tick.
 DRAIN_LOCK_TIMEOUT_MS = 1000
+
+# 15 minutes — drain cadence is 5s in-process / 60s from the scheduler
+# Function App, and the longest legitimate handler is _handle_sync_bill (bill
+# push with a 30s retry budget plus a best-effort per-attachment loop). This
+# is an order of magnitude above any realistic handler while still being vastly
+# faster than 'never'. The numeric threshold is defense-in-depth only: the
+# structural guarantee is that reclaim runs while holding the drain applock,
+# which a live worker also holds.
+DEFAULT_RECLAIM_AFTER_SECONDS = 900
+
+
+def reclaim_after_seconds() -> int:
+    """Seconds before an in_progress row is considered stranded."""
+    raw = os.getenv("QBO_OUTBOX_RECLAIM_AFTER_SECONDS", "").strip()
+    if not raw:
+        return DEFAULT_RECLAIM_AFTER_SECONDS
+    try:
+        value = int(raw)
+        return value if value > 0 else DEFAULT_RECLAIM_AFTER_SECONDS
+    except ValueError:
+        return DEFAULT_RECLAIM_AFTER_SECONDS
 
 
 class QboOutboxWorker:
@@ -110,6 +132,8 @@ class QboOutboxWorker:
                 logger.debug("qbo.outbox.drain.skipped_lock_busy")
                 return False
 
+            self._reclaim_stranded_rows()
+
             row = self.repo.claim_next_pending()
             if not row:
                 return False
@@ -128,6 +152,41 @@ class QboOutboxWorker:
                 break
             processed += 1
         return processed
+
+    # ------------------------------------------------------------------ #
+    # Stranded-row reclaim
+    # ------------------------------------------------------------------ #
+
+    def _reclaim_stranded_rows(self) -> None:
+        """
+        Reclaim rows stranded in 'in_progress' after a worker crash/restart.
+        Fail-open: a reclaim failure (e.g. the sproc not yet applied in prod)
+        must NEVER block the drain — falls back to pre-unit behavior.
+        """
+        try:
+            stale_seconds = reclaim_after_seconds()
+            stale_before = datetime.now(timezone.utc) - timedelta(seconds=stale_seconds)
+            reclaimed = self.repo.reclaim_stranded(
+                stale_before=stale_before,
+                max_attempts=MAX_ATTEMPTS,
+            )
+            for row in reclaimed:
+                logger.warning(
+                    "qbo.outbox.row.reclaimed_stranded",
+                    extra={
+                        "event_name": "qbo.outbox.row.reclaimed_stranded",
+                        "outbox_public_id": row["public_id"],
+                        "entity_type": row["entity_type"],
+                        "entity_public_id": row["entity_public_id"],
+                        "kind": row["kind"],
+                        "attempts": row["attempts"],
+                        "started_at": row["started_at"],
+                        "new_status": row["status"],
+                        "stale_after_seconds": stale_seconds,
+                    },
+                )
+        except Exception:
+            logger.exception("qbo.outbox.reclaim.failed")
 
     # ------------------------------------------------------------------ #
     # Per-row processing

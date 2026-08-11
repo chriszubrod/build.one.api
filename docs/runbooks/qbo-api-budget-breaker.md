@@ -30,8 +30,19 @@ Medium. QBO sync is paused by design; no data is lost. Pulls resume on the next 
 
 - **Legitimate exhaustion (real usage hit the cap):** wait for the 1st (Intuit resets monthly) or upgrade the Intuit tier. Everything self-resumes; no action needed.
 - **Runaway loop ate the budget:** find and stop the loop first (this breaker bounds the damage to ~5% headroom — that margin is why block is 95%, not 100%). The remaining budget covers essential pushes if you temporarily raise `QBO_BUDGET_BLOCK_PCT`.
-- **False trip / threshold misconfigured:** fix the env var (`QBO_MONTHLY_CALL_BUDGET` / `QBO_BUDGET_BLOCK_PCT` on the App Service) — new calls unblock immediately (env is read per call, no restart needed). **Already-parked rows do NOT auto-unpark** (booked gap): release them with
-  `UPDATE qbo.Outbox SET NextRetryAt = SYSUTCDATETIME() WHERE Status='failed' AND LastError LIKE 'Parked:%'`.
+- **False trip / threshold misconfigured:** fix the env var (`QBO_MONTHLY_CALL_BUDGET` / `QBO_BUDGET_BLOCK_PCT` on the App Service) — new calls unblock immediately (env is read per call, no restart needed). Already-parked rows still hold their `NextRetryAt` on the 1st, so release them with the **unpark script** (U-215 — this closes the previously booked gap; the hand-written `UPDATE` is no longer the recommended path):
+
+  ```bash
+  python scripts/unpark_qbo_outbox_budget.py            # dry-run: lists what would be released
+  python scripts/unpark_qbo_outbox_budget.py --apply    # sets NextRetryAt = now
+  ```
+
+  Notes:
+  - **Dry-run by default** — it prints the matched rows and changes nothing until `--apply`.
+  - It matches on `LastError LIKE 'Parked: monthly QBO API budget exhausted%'`, which is what distinguishes a budget-parked row from one legitimately sleeping out its exponential-backoff window. It will not yank a healthy retry forward.
+  - Its `UPDATE` re-asserts that predicate, so a row the drain worker claimed between the scan and the update is left alone rather than having its `RowVersion` bumped underneath the worker (which would silently void that worker's `CompleteQboOutbox` and strand the row `in_progress`).
+  - If fewer rows are updated than were matched, it prints an explicit warning naming the difference — that is the race above, and re-running is safe.
+  - `--reset-attempts` additionally zeroes `Attempts`. Not the default: a park burns one attempt even though the row is healthy, but parks are rare (the drain skips claiming entirely while blocked, so a park only happens when the breaker trips mid-handler). Use it only if a row is near the 5-attempt dead-letter ceiling.
 - **Kill switch:** `QBO_BUDGET_ENFORCE=false` disables blocking entirely (use only if the breaker itself misbehaves — you are then unprotected against the Intuit hard cap).
 
 ## Verification

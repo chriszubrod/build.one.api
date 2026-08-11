@@ -82,6 +82,17 @@ END
 GO
 
 
+-- Stranded-row reclaim: makes the per-tick in_progress age check an empty
+-- index seek rather than a scan.
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_Outbox_InProgress' AND object_id = OBJECT_ID('qbo.Outbox'))
+BEGIN
+    CREATE INDEX IX_Outbox_InProgress
+        ON [qbo].[Outbox] ([StartedAt])
+        WHERE [Status] = 'in_progress';
+END
+GO
+
+
 -- ============================================================================
 -- CreateQboOutbox
 -- Inserts a new pending outbox row. `ReadyAfter` enforces the initial
@@ -489,5 +500,83 @@ BEGIN
     WHERE [Id] = @Id AND [RowVersion] = @RowVersion;
 
     COMMIT TRANSACTION;
+END;
+GO
+
+
+-- ============================================================================
+-- ReclaimStrandedQboOutbox
+-- Reclaims rows stranded in 'in_progress' when a worker died mid-drain
+-- (e.g., container restart during deploy). Runs inside the drain applock,
+-- never against a live worker.
+--
+-- The Attempts increment is what makes this safe against a POISON row — a
+-- row whose handler kills the process is re-attempted a bounded number of
+-- times and then dead-letters, instead of being reclaimed forever.
+--
+-- Rows with a NULL StartedAt are deliberately NOT reclaimed (their age is
+-- unknowable; the runbook covers that manual case).
+-- ============================================================================
+CREATE OR ALTER PROCEDURE ReclaimStrandedQboOutbox
+(
+    @StaleBeforeUtc DATETIME2(3),
+    @MaxAttempts    INT
+)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();
+
+    DECLARE @Reclaimed TABLE (
+        [Id]              BIGINT,
+        [PublicId]        UNIQUEIDENTIFIER,
+        [Status]          NVARCHAR(16),
+        [Attempts]        INT,
+        [Kind]            NVARCHAR(64),
+        [EntityType]      NVARCHAR(32),
+        [EntityPublicId]  UNIQUEIDENTIFIER,
+        [StartedAt]       DATETIME2(3)
+    );
+
+    BEGIN TRANSACTION;
+
+    UPDATE o
+    SET o.[Attempts]         = o.[Attempts] + 1,
+        o.[Status]           = CASE WHEN o.[Attempts] + 1 >= @MaxAttempts THEN 'dead_letter' ELSE 'failed' END,
+        o.[NextRetryAt]      = @Now,
+        o.[DeadLetteredAt]   = CASE WHEN o.[Attempts] + 1 >= @MaxAttempts THEN @Now ELSE o.[DeadLetteredAt] END,
+        o.[LastError]        = 'Reclaimed: row was stranded in_progress since ' + CONVERT(VARCHAR(19), o.[StartedAt], 120) + ' (worker died mid-drain or the process restarted)',
+        o.[ModifiedDatetime] = @Now
+    OUTPUT
+        inserted.[Id],
+        inserted.[PublicId],
+        inserted.[Status],
+        inserted.[Attempts],
+        inserted.[Kind],
+        inserted.[EntityType],
+        inserted.[EntityPublicId],
+        deleted.[StartedAt]
+    INTO @Reclaimed ([Id], [PublicId], [Status], [Attempts], [Kind], [EntityType], [EntityPublicId], [StartedAt])
+    FROM [qbo].[Outbox] o WITH (UPDLOCK, READPAST, ROWLOCK)
+    WHERE o.[Status] = 'in_progress'
+      AND o.[StartedAt] IS NOT NULL
+      AND o.[StartedAt] <= @StaleBeforeUtc;
+
+    COMMIT TRANSACTION;
+
+    -- Always run the SELECT so pyodbc always gets a result set, even when
+    -- nothing was reclaimed (same rationale as ClaimNextPendingQboOutbox).
+    SELECT
+        [Id],
+        [PublicId],
+        [Status],
+        [Attempts],
+        [Kind],
+        [EntityType],
+        [EntityPublicId],
+        CONVERT(VARCHAR(19), [StartedAt], 120) AS [StartedAt]
+    FROM @Reclaimed
+    ORDER BY [Id];
 END;
 GO

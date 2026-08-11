@@ -1,4 +1,5 @@
 # Python Standard Library Imports
+from enum import Enum
 from typing import Optional
 
 # Third-party Imports
@@ -7,6 +8,24 @@ from typing import Optional
 from shared.database import is_transient_error
 
 _CHAIN_WALK_MAX = 5
+
+# ---------------------------------------------------------------------------
+# Auth failure vocabulary — classifies token-refresh failures for retry vs
+# dead-letter decisions at the auth seam.
+# ---------------------------------------------------------------------------
+
+
+class AuthFailureKind(str, Enum):
+    """
+    Classification of token-refresh failures for retry vs dead-letter decisions.
+
+    TRANSIENT = worth retrying (lock timeout, Intuit 5xx/429, network/DB blip).
+    PERMANENT = only a human re-authorization fixes it (invalid_grant, no auth record).
+    """
+
+    NONE = "none"
+    TRANSIENT = "transient"
+    PERMANENT = "permanent"
 
 # SQLSTATEs and message substrings that shared.database.is_transient_error does not yet
 # cover (e.g. HYT00 / "Query timeout expired"). A wrong "not retryable" verdict at the
@@ -147,6 +166,20 @@ class QboAuthError(QboClientError):
     shared client's 401 handler will attempt a token refresh and retry
     once before surfacing this to the caller.
     """
+
+
+class QboAuthTransientError(QboAuthError):
+    """
+    Raised when the token could not be obtained for a reason that is expected
+    to clear on its own — refresh-applock timeout, Intuit token-endpoint
+    429/5xx/timeout, or a DB/network blip. Deliberately a SUBCLASS of
+    QboAuthError so every existing 'except QboAuthError' site keeps catching
+    it unchanged; only the retry / dead-letter / watermark-hold decision
+    changes. No request ever left the process when this is raised, so an
+    in-process retry cannot duplicate a write.
+    """
+
+    is_retryable = True
 
 
 class QboValidationError(QboClientError):

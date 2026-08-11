@@ -6,11 +6,33 @@ import logging
 # Third-party Imports
 
 # Local Imports
-from integrations.intuit.qbo.auth.business.model import QboAuth
+from integrations.intuit.qbo.auth.business.model import AuthFailureKind, QboAuth
 from integrations.intuit.qbo.auth.persistence.repo import QboAuthRepository
 from integrations.intuit.qbo.auth.external.client import connect_intuit_oauth_2_token_endpoint_refresh
 
 logger = logging.getLogger(__name__)
+
+
+def _classify_failure(
+    message: str,
+    kind: AuthFailureKind,
+    *,
+    exc_info: bool = False,
+) -> tuple[None, AuthFailureKind]:
+    """
+    Log a refresh failure and return the `(None, kind)` classification in one step.
+
+    The point is that the kind in the LOG and the kind in the RETURN can never disagree.
+    They were previously two hand-written literals per site across six sites, and that log
+    line is the operator's only signal for why an outbox row retried instead of
+    dead-lettering — a mismatch would send whoever is triaging in the wrong direction.
+    """
+    log_msg = f"{message} (failure_kind={kind.value})"
+    if exc_info:
+        logger.exception(log_msg)
+    else:
+        logger.error(log_msg)
+    return None, kind
 
 
 class QboAuthService:
@@ -21,6 +43,12 @@ class QboAuthService:
     def __init__(self, repo: Optional[QboAuthRepository] = None):
         """Initialize the QboAuthService."""
         self.repo = repo or QboAuthRepository()
+
+    def _read_auth_by_realm_or_first(self, realm_id: Optional[str]) -> Optional[QboAuth]:
+        if realm_id:
+            return self.read_by_realm_id(realm_id)
+        all_auths = self.read_all()
+        return all_auths[0] if all_auths else None
 
     def create(self, *, code: str, realm_id: str, state: str, token_type: str, id_token: str, access_token: str, expires_in: int, refresh_token: str, x_refresh_token_expires_in: int) -> QboAuth:
         """
@@ -156,6 +184,33 @@ class QboAuthService:
         Returns:
             QboAuth object with valid token, or None if refresh failed.
         """
+        auth, _kind = self.ensure_valid_token_classified(
+            realm_id=realm_id,
+            buffer_seconds=buffer_seconds,
+            force_refresh=force_refresh,
+        )
+        return auth
+
+    def ensure_valid_token_classified(
+        self,
+        realm_id: Optional[str] = None,
+        buffer_seconds: int = 300,
+        force_refresh: bool = False,
+    ) -> tuple[Optional[QboAuth], AuthFailureKind]:
+        """
+        Ensure the access token is valid, classifying any failure for retry decisions.
+
+        See ensure_valid_token() for parameter semantics.
+
+        Returns:
+            (QboAuth, AuthFailureKind.NONE) on success, or (None, kind) on failure.
+        """
+        # ASYMMETRY: the SAFE DEFAULT IS TRANSIENT. A wrong 'transient' costs a
+        # bounded handful of retries and then dead-letters anyway at MAX_ATTEMPTS=5;
+        # a wrong 'permanent' dead-letters a pending money-path push on attempt 1
+        # and needs manual recovery. So anything not positively identified as
+        # invalid_grant or a missing auth record is TRANSIENT.
+
         # Get auth record - use specific realm_id if provided, otherwise use first
         if realm_id:
             qbo_auth = self.read_by_realm_id(realm_id)
@@ -164,19 +219,32 @@ class QboAuthService:
             all_auths = self.read_all()
             if not all_auths or len(all_auths) == 0:
                 logger.error("No QboAuth records found")
-                return None
+                return None, AuthFailureKind.PERMANENT
             qbo_auth = all_auths[0]
             # Get realm_id from the auth record for logging/refresh
             realm_id = qbo_auth.realm_id
 
         if not qbo_auth:
             logger.error(f"No QboAuth found for realm_id: {realm_id}")
-            return None
+            return None, AuthFailureKind.PERMANENT
 
         # Skip expiry check when force_refresh is requested
         if not force_refresh and not self.is_token_expired(qbo_auth, buffer_seconds):
             logger.debug(f"Token for realm_id {realm_id} is still valid")
-            return qbo_auth
+            return qbo_auth, AuthFailureKind.NONE
+
+        # Best-effort cache warm so the discovery fetch inside the lock is a
+        # cache hit; a failure here is not fatal because the in-lock call
+        # re-attempts and the caller classifies the result.
+        try:
+            from integrations.intuit.qbo.base.helper import get_intuit_discovery_document
+            get_intuit_discovery_document()
+        except Exception as exc:
+            logger.debug(
+                "Discovery document pre-warm failed for realm_id %s: %s",
+                realm_id,
+                exc,
+            )
 
         # Serialize concurrent refreshes across processes (API + standalone scripts
         # can both reach this path simultaneously; without the lock, both would call
@@ -187,25 +255,23 @@ class QboAuthService:
         lock_resource = f"qbo_auth_refresh:{realm_id}"
         with qbo_app_lock(lock_resource, timeout_ms=15000) as got_lock:
             if not got_lock:
-                logger.error(
-                    f"Could not acquire token refresh lock for realm {realm_id} within timeout"
+                return _classify_failure(
+                    f"Could not acquire token refresh lock for realm {realm_id} within timeout",
+                    AuthFailureKind.TRANSIENT,
                 )
-                return None
 
             # Re-read after acquiring the lock. Another caller may have just finished
             # refreshing while we waited — in which case the token is now fresh and
             # we don't need to call Intuit at all. Also ensures that if we DO still
             # need to refresh, we use the latest refresh_token (not the one we read
             # before the lock).
-            if realm_id:
-                qbo_auth = self.read_by_realm_id(realm_id)
-            else:
-                all_auths = self.read_all()
-                qbo_auth = all_auths[0] if all_auths else None
+            qbo_auth = self._read_auth_by_realm_or_first(realm_id)
 
             if not qbo_auth:
-                logger.error(f"No QboAuth found for realm_id {realm_id} after acquiring lock")
-                return None
+                return _classify_failure(
+                    f"No QboAuth found for realm_id {realm_id} after acquiring lock",
+                    AuthFailureKind.PERMANENT,
+                )
 
             # If another caller refreshed while we waited and force_refresh is False,
             # the freshly-read token is already valid — skip the Intuit call entirely.
@@ -213,7 +279,7 @@ class QboAuthService:
                 logger.info(
                     f"Token for realm_id {realm_id} was refreshed by a concurrent caller"
                 )
-                return qbo_auth
+                return qbo_auth, AuthFailureKind.NONE
 
             if force_refresh:
                 logger.info(f"Force-refreshing token for realm_id {realm_id}")
@@ -226,22 +292,40 @@ class QboAuthService:
 
                 if isinstance(refresh_result, dict) and refresh_result.get("status_code") == 201:
                     # Refresh successful, read the updated auth
-                    if realm_id:
-                        updated_auth = self.read_by_realm_id(realm_id)
-                    else:
-                        all_auths = self.read_all()
-                        updated_auth = all_auths[0] if all_auths else None
+                    updated_auth = self._read_auth_by_realm_or_first(realm_id)
 
                     if updated_auth:
                         logger.info(f"Token refreshed successfully for realm_id: {realm_id}")
-                        return updated_auth
+                        return updated_auth, AuthFailureKind.NONE
                     else:
-                        logger.error(f"Token refresh succeeded but could not read updated QboAuth for realm_id: {realm_id}")
-                        return None
-                else:
-                    error_message = refresh_result.get("message", "Unknown error") if isinstance(refresh_result, dict) else str(refresh_result)
-                    logger.error(f"Token refresh failed for realm_id {realm_id}: {error_message}")
-                    return None
+                        return _classify_failure(
+                            f"Token refresh succeeded but could not read updated QboAuth for realm_id: {realm_id}",
+                            AuthFailureKind.TRANSIENT,
+                        )
+
+                status_code = (
+                    refresh_result.get("status_code")
+                    if isinstance(refresh_result, dict)
+                    else None
+                )
+                error_message = (
+                    refresh_result.get("message", "Unknown error")
+                    if isinstance(refresh_result, dict)
+                    else str(refresh_result)
+                )
+                if status_code == 400:
+                    return _classify_failure(
+                        f"Token refresh failed for realm_id {realm_id}: {error_message}",
+                        AuthFailureKind.PERMANENT,
+                    )
+
+                return _classify_failure(
+                    f"Token refresh failed for realm_id {realm_id}: {error_message}",
+                    AuthFailureKind.TRANSIENT,
+                )
             except Exception as e:
-                logger.exception(f"Exception during token refresh for realm_id {realm_id}: {e}")
-                return None
+                return _classify_failure(
+                    f"Exception during token refresh for realm_id {realm_id}: {e}",
+                    AuthFailureKind.TRANSIENT,
+                    exc_info=True,
+                )

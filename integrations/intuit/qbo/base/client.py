@@ -2,7 +2,7 @@
 import logging
 import os
 import time
-from typing import Any, Dict, Optional, Union
+from typing import Any, Dict, NoReturn, Optional, Union
 
 # Third-party Imports
 import httpx
@@ -10,7 +10,9 @@ import httpx
 # Local Imports
 from integrations.intuit.qbo.base.correlation import ensure_correlation_id, get_idempotency_key
 from integrations.intuit.qbo.base.errors import (
+    AuthFailureKind,
     QboAuthError,
+    QboAuthTransientError,
     QboConflictError,
     QboDuplicateError,
     QboMalformedResponseError,
@@ -130,6 +132,45 @@ class QboHttpClient:
     def close(self) -> None:
         if self._owns_http_client:
             self._http_client.close()
+
+    def _resolve_auth(self, force_refresh: bool) -> tuple[Any, AuthFailureKind]:
+        """
+        Resolve a valid QboAuth plus the classification of any failure.
+
+        Deliberately NO fallback to the unclassified `ensure_valid_token`: the
+        only failure kind such a fallback could report is PERMANENT, which is
+        precisely the attempt-1 dead-letter this unit exists to remove — a
+        silent revert to it would be invisible. Every auth service reaching
+        this seam is a `QboAuthService`; anything else should fail loudly.
+        """
+        return self.auth_service.ensure_valid_token_classified(
+            realm_id=self.realm_id,
+            force_refresh=force_refresh,
+        )
+
+    def _raise_auth_unavailable(
+        self,
+        *,
+        failure_kind: AuthFailureKind,
+        reason: str,
+        request_method: str,
+        request_path: str,
+        correlation_id: str,
+        http_status: Optional[int] = None,
+    ) -> NoReturn:
+        kwargs: Dict[str, Any] = {
+            "request_method": request_method,
+            "request_path": request_path,
+            "correlation_id": correlation_id,
+        }
+        if http_status is not None:
+            kwargs["http_status"] = http_status
+        detail, error_class = (
+            ("transient refresh failure", QboAuthTransientError)
+            if failure_kind == AuthFailureKind.TRANSIENT
+            else ("permanent — re-authorization required", QboAuthError)
+        )
+        raise error_class(f"{reason} ({detail})", **kwargs)
 
     # ------------------------------------------------------------------ #
     # Public verb methods
@@ -295,10 +336,11 @@ class QboHttpClient:
         QboError on failure, returns parsed JSON on success. Wrapped by the
         retry loop in `_execute` for 429/5xx handling.
         """
-        auth = self.auth_service.ensure_valid_token(realm_id=self.realm_id)
+        auth, failure_kind = self._resolve_auth(force_refresh=False)
         if not auth or not auth.access_token:
-            raise QboAuthError(
-                "No valid QBO auth token available",
+            self._raise_auth_unavailable(
+                failure_kind=failure_kind,
+                reason="No valid QBO auth token available",
                 request_method=method,
                 request_path=request_path,
                 correlation_id=correlation_id,
@@ -333,9 +375,7 @@ class QboHttpClient:
                         "reason": "401_on_request",
                     },
                 )
-                refreshed = self.auth_service.ensure_valid_token(
-                    realm_id=self.realm_id, force_refresh=True,
-                )
+                refreshed, refresh_failure_kind = self._resolve_auth(force_refresh=True)
                 if not refreshed or not refreshed.access_token:
                     logger.error(
                         "qbo.auth.token.refresh.failed",
@@ -343,14 +383,16 @@ class QboHttpClient:
                             "event_name": "qbo.auth.token.refresh.failed",
                             "correlation_id": correlation_id,
                             "realm_id": self.realm_id,
+                            "failure_kind": refresh_failure_kind.value,
                         },
                     )
-                    raise QboAuthError(
-                        "Token refresh after 401 did not yield a new token",
-                        http_status=401,
+                    self._raise_auth_unavailable(
+                        failure_kind=refresh_failure_kind,
+                        reason="Token refresh after 401 did not yield a new token",
                         request_method=method,
                         request_path=request_path,
                         correlation_id=correlation_id,
+                        http_status=401,
                     )
                 logger.info(
                     "qbo.auth.token.refresh.completed",

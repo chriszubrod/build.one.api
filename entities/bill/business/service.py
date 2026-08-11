@@ -1640,16 +1640,23 @@ class BillService:
         all happen at the worker.
         """
         try:
-            qbo_auth = self.qbo_auth_service.ensure_valid_token()
-            if not qbo_auth or not qbo_auth.realm_id:
+            # Enqueue must never depend on TOKEN HEALTH — we need only realm_id, a
+            # stored column. Forcing a refresh here meant a transient auth blip dropped
+            # the push entirely (no outbox row = nothing to retry and nothing to recover),
+            # which is worse than a dead-letter. Token validity is the outbox worker's
+            # problem, and since U-215 the worker RETRIES transient auth failures instead
+            # of dead-lettering them.
+            auths = self.qbo_auth_service.read_all()
+            realm_id = auths[0].realm_id if auths else None
+            if not realm_id:
                 logger.warning(
-                    f"Skipping QBO enqueue for Bill {bill.public_id}: no valid QBO auth"
+                    f"Skipping QBO enqueue for Bill {bill.public_id}: no QBO auth record configured"
                 )
                 return {
                     "success": False,
-                    "message": "No valid QBO authentication",
+                    "message": "No QBO auth record configured",
                     "qbo_sync_queued": False,
-                    "errors": [{"step": "qbo_enqueue", "error": "No valid QBO auth"}],
+                    "errors": [{"step": "qbo_enqueue", "error": "No QBO auth record configured"}],
                 }
 
             from integrations.intuit.qbo.outbox.business.service import QboOutboxService
@@ -1657,7 +1664,7 @@ class BillService:
                 kind="sync_bill_to_qbo",
                 entity_type="Bill",
                 entity_public_id=str(bill.public_id),
-                realm_id=qbo_auth.realm_id,
+                realm_id=realm_id,
             )
             logger.info(
                 f"Enqueued QBO sync for Bill {bill.public_id} "

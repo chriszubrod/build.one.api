@@ -215,7 +215,7 @@ def _setup_confirm_gate_mocks(monkeypatch, *, writes_allowed: bool, recode_write
     svc.mark_enqueued = mark_enqueued_spy
 
     monkeypatch.setattr(
-        "integrations.intuit.qbo.base.client._writes_allowed",
+        "integrations.intuit.qbo.base.client.writes_allowed",
         lambda: writes_allowed,
     )
     monkeypatch.setattr(
@@ -330,7 +330,7 @@ def test_recode_write_gate_reason_truth_table(monkeypatch):
     ]
     for writes_allowed, recode_writes_allowed, expected in cases:
         monkeypatch.setattr(
-            "integrations.intuit.qbo.base.client._writes_allowed",
+            "integrations.intuit.qbo.base.client.writes_allowed",
             lambda w=writes_allowed: w,
         )
         monkeypatch.setattr(

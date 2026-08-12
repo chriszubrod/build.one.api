@@ -11,10 +11,12 @@ from integrations.intuit.qbo.base.correlation import (
     set_correlation_id,
 )
 from integrations.intuit.qbo.base.budget import QboApiBudget, get_qbo_api_budget, reset_at_for_month
+from integrations.intuit.qbo.base.client import writes_allowed
 from integrations.intuit.qbo.base.errors import (
     QboBudgetExceededError,
     QboError,
     QboSyncTokenMismatchError,
+    QboWriteRefusedError,
 )
 from integrations.intuit.qbo.base.locking import qbo_app_lock
 from integrations.intuit.qbo.base.retry import RetryPolicy, compute_backoff_seconds
@@ -35,6 +37,14 @@ logger = logging.getLogger(__name__)
 # `attempts + 1 >= MAX_ATTEMPTS` before marking failed (would become
 # dead-letter on the attempt after this).
 MAX_ATTEMPTS = 5
+
+# Write-refused parks: 15 min between retries. Mid-handler defence-in-depth only —
+# drain_once skips claiming entirely while ALLOW_QBO_WRITES is off (mirroring the
+# budget breaker), so parks are rare (~flag flip mid-handler). A permanently-unset
+# prod flag logs qbo.outbox.drain.skipped_writes_disabled at ERROR on every tick,
+# which is a better alarm than per-row dead-letters.
+WRITE_REFUSED_PARK_PREFIX = "Parked: QBO writes disabled"
+WRITE_REFUSED_PARK_INTERVAL = timedelta(minutes=15)
 
 # The drain lock name is stable across processes: only one drain loop
 # (API process or standalone worker) holds this at a time. Prevents two
@@ -123,6 +133,19 @@ class QboOutboxWorker:
                     "month_key": budget.month_key,
                     "call_count": budget.call_count,
                     "block_threshold": budget.block_threshold,
+                },
+            )
+            return False
+
+        # U-218b: don't claim rows while QBO writes are disabled — rows stay
+        # pending (no attempt burned). Mirrors the budget pre-claim guard above;
+        # a permanently-unset ALLOW_QBO_WRITES logs ERROR every drain tick so
+        # ops notice faster than scattered per-row dead-letters would.
+        if not writes_allowed():
+            logger.error(
+                "qbo.outbox.drain.skipped_writes_disabled",
+                extra={
+                    "event_name": "qbo.outbox.drain.skipped_writes_disabled",
                 },
             )
             return False
@@ -331,6 +354,28 @@ class QboOutboxWorker:
                 row_version=row.row_version,
                 next_retry_at=reset_at,
                 last_error=f"Parked: monthly QBO API budget exhausted ({error})",
+            )
+            return
+
+        if isinstance(error, QboWriteRefusedError):
+            # Defence-in-depth for a flag that flips mid-handler (same category
+            # as budget exceeded: refused locally before any byte left the process).
+            next_retry_at = datetime.now(timezone.utc) + WRITE_REFUSED_PARK_INTERVAL
+            logger.error(
+                "qbo.outbox.row.parked_write_refused",
+                extra={
+                    "event_name": "qbo.outbox.row.parked_write_refused",
+                    "correlation_id": row.correlation_id,
+                    "outbox_public_id": row.public_id,
+                    "attempt": attempts_so_far,
+                    "next_retry_at": next_retry_at.isoformat(),
+                },
+            )
+            self.repo.mark_failed(
+                id=row.id,
+                row_version=row.row_version,
+                next_retry_at=next_retry_at,
+                last_error=f"{WRITE_REFUSED_PARK_PREFIX} ({error})",
             )
             return
 

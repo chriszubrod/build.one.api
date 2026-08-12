@@ -773,6 +773,9 @@ def _drain_lock(acquired=True):
     with patch(
         "integrations.intuit.qbo.outbox.business.worker.qbo_app_lock",
         fake_lock,
+    ), patch(
+        "integrations.intuit.qbo.outbox.business.worker.writes_allowed",
+        return_value=True,
     ):
         yield
 

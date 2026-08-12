@@ -50,7 +50,7 @@ def _make_outbox_row():
 # tests/test_expense_coding_item.py — the canonical home for the confirm() gate suite.
 
 
-@patch("integrations.intuit.qbo.base.client._writes_allowed", return_value=True)
+@patch("integrations.intuit.qbo.base.client.writes_allowed", return_value=True)
 @patch("integrations.intuit.qbo.base.client._recode_writes_allowed", return_value=True)
 def test_confirm_mapping_missing_no_confirmation_or_enqueue(
     _mock_recode_writes_allowed,

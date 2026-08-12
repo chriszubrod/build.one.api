@@ -365,6 +365,50 @@ def test_drain_once_skips_claim_when_blocked():
     repo.claim_next_pending.assert_not_called()
 
 
+def _unblocked_budget_mock():
+    budget = MagicMock()
+    budget.status.return_value = _make_status(blocked=False)
+    return budget
+
+
+def test_drain_once_skips_claim_when_writes_disabled(caplog):
+    """U-218b pre-claim guard: rows stay pending; no attempt burned."""
+    repo = MagicMock()
+    worker = QboOutboxWorker(repo=repo, api_budget=_unblocked_budget_mock())
+
+    with patch(
+        "integrations.intuit.qbo.outbox.business.worker.writes_allowed",
+        return_value=False,
+    ):
+        with caplog.at_level("ERROR"):
+            assert worker.drain_once() is False
+
+    repo.claim_next_pending.assert_not_called()
+    assert any(
+        "qbo.outbox.drain.skipped_writes_disabled" in record.message
+        or getattr(record, "event_name", "") == "qbo.outbox.drain.skipped_writes_disabled"
+        for record in caplog.records
+    )
+
+
+def test_drain_once_claims_when_writes_allowed():
+    """Pins polarity of the U-218b pre-claim guard (must fail if inverted)."""
+    repo = MagicMock()
+    repo.claim_next_pending.return_value = None
+    worker = QboOutboxWorker(repo=repo, api_budget=_unblocked_budget_mock())
+
+    with patch(
+        "integrations.intuit.qbo.outbox.business.worker.writes_allowed",
+        return_value=True,
+    ), patch(
+        "integrations.intuit.qbo.outbox.business.worker.qbo_app_lock"
+    ) as lock_mock:
+        lock_mock.return_value.__enter__.return_value = True
+        assert worker.drain_once() is False
+
+    repo.claim_next_pending.assert_called_once()
+
+
 def test_drain_all_stops_on_blocked_budget():
     repo = MagicMock()
     budget = MagicMock()

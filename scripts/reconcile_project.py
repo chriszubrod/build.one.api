@@ -5,7 +5,8 @@ DB is the middle layer — all sync flows through DB.
 
 Four directions:
 
-  1. DB -> QBO   Bills missing a BillBill QBO mapping are pushed via sync_to_qbo_bill().
+  1. DB -> QBO   Bills missing a BillBill QBO mapping are reported (not pushed — use
+                 bill completion or POST /sync/bill-to-qbo to enqueue via the outbox).
                  BillLineItems missing BillLineItemBillLine mappings are repaired by
                  matching to QboBillLines by description + amount.
 
@@ -27,9 +28,9 @@ Four directions:
 
 Usage:
   python scripts/reconcile_project.py --project-id 128         # dry run
-  python scripts/reconcile_project.py --project-id 128 --write # apply all repairs
+  python scripts/reconcile_project.py --project-id 128 --write # apply repairs (excludes QBO bill push)
   python scripts/reconcile_project.py                           # all projects (dry run)
-  python scripts/reconcile_project.py --write                   # all projects, apply
+  python scripts/reconcile_project.py --write                   # all projects, apply repairs
 """
 
 import argparse
@@ -290,16 +291,18 @@ def _load_expenses_for_project(
 def check_db_to_qbo(
     bills_by_id: Dict,
     line_items_by_bill_id: Dict,
-    bill_bill_repo: BillBillRepository,
+    mapped_bill_ids: Set[int],
     bill_line_item_bill_line_repo: BillLineItemBillLineRepository,
 ) -> List[str]:
-    """Check every non-draft bill and line item has a QBO mapping."""
+    """Check mapped bills' line items have QBO mappings.
+
+    Bill-level missing BillBill mappings are reported separately by
+    report_db_to_qbo_bills (report-only) to avoid double-counting.
+    """
     issues = []
     for bill_id, bill in bills_by_id.items():
-        if not bill_bill_repo.read_by_bill_id(bill_id):
-            issues.append(
-                f"  [DB->QBO] Bill #{bill.bill_number} (id={bill_id}) — missing BillBill QBO mapping"
-            )
+        if bill_id not in mapped_bill_ids:
+            continue  # Unmapped bills: report_db_to_qbo_bills reports these
         for li in line_items_by_bill_id.get(bill_id, []):
             if not bill_line_item_bill_line_repo.read_by_bill_line_item_id(li.id):
                 issues.append(
@@ -309,39 +312,24 @@ def check_db_to_qbo(
     return issues
 
 
-def repair_db_to_qbo_bills(
+def report_db_to_qbo_bills(
     bills_by_id: Dict,
-    bill_bill_repo: BillBillRepository,
-    connector: BillBillConnector,
-    realm_id: str,
-    dry_run: bool,
-) -> Tuple[List[str], int]:
-    """Push bills with no BillBill mapping to QBO via sync_to_qbo_bill()."""
-    issues = []
-    repairs_count = 0
+    mapped_bill_ids: Set[int],
+) -> int:
+    """Report bills with no BillBill mapping (diagnostic only — does not write to QBO)."""
+    reported_count = 0
 
     for bill_id, bill in bills_by_id.items():
-        if bill_bill_repo.read_by_bill_id(bill_id):
+        if bill_id in mapped_bill_ids:
             continue  # Already mapped
 
         print(
-            f"  [DB->QBO] Bill #{bill.bill_number} (id={bill_id}) — pushing to QBO"
+            f"  [DB->QBO] Bill #{bill.bill_number} (id={bill_id}) — missing BillBill mapping "
+            f"(report only; enqueue via bill completion or POST /sync/bill-to-qbo)"
         )
-        if dry_run:
-            print(f"    DRY RUN: would call sync_to_qbo_bill()")
-            repairs_count += 1
-            continue
+        reported_count += 1
 
-        try:
-            connector.sync_to_qbo_bill(bill=bill, realm_id=realm_id)
-            print(f"    Pushed to QBO")
-            repairs_count += 1
-        except Exception as e:
-            issues.append(
-                f"  [DB->QBO] Bill #{bill.bill_number} (id={bill_id}): push failed: {e}"
-            )
-
-    return issues, repairs_count
+    return reported_count
 
 
 def repair_qbo_line_item_mappings(
@@ -357,7 +345,7 @@ def repair_qbo_line_item_mappings(
     are missing BillLineItemBillLine records, match each BillLineItem to its
     QboBillLine by description + amount and create the missing mapping.
 
-    Bills with no BillBill mapping at all are skipped (handled by repair_db_to_qbo_bills).
+    Bills with no BillBill mapping at all are skipped (handled by report_db_to_qbo_bills).
 
     Returns (issues, repairs_count).
     """
@@ -974,7 +962,7 @@ def process_project(
     stats = {
         "db_to_qbo_issues": 0,
         "qbo_repairs": 0,
-        "db_pushes": 0,
+        "db_unmapped_bills": 0,
         "qbo_to_db_synced": 0,
         "qbo_to_db_issues": 0,
         "db_to_excel_issues": 0,
@@ -1058,9 +1046,10 @@ def process_project(
     if not bills_by_id:
         print("  No completed bills — skipping DB->QBO check.")
     else:
+        mapped_bill_ids = bill_bill_repo.read_all_bill_ids()
         qbo_issues = check_db_to_qbo(
             bills_by_id, line_items_by_bill_id,
-            bill_bill_repo, bill_line_item_bill_line_repo,
+            mapped_bill_ids, bill_line_item_bill_line_repo,
         )
         for issue in qbo_issues:
             print(issue)
@@ -1069,20 +1058,11 @@ def process_project(
             total_lines = sum(len(v) for v in line_items_by_bill_id.values())
             print(f"  OK — all {len(bills_by_id)} bills and {total_lines} line items have QBO mappings")
 
-        # Push bills missing BillBill mapping
-        if realm_id:
-            push_issues, push_count = repair_db_to_qbo_bills(
-                bills_by_id=bills_by_id,
-                bill_bill_repo=bill_bill_repo,
-                connector=bill_bill_connector,
-                realm_id=realm_id,
-                dry_run=dry_run,
-            )
-            for issue in push_issues:
-                print(issue)
-            stats["db_pushes"] = push_count
-        else:
-            print("  No QBO auth found — skipping DB->QBO push repair.")
+        # Report bills missing BillBill mapping (no QBO push from this script)
+        stats["db_unmapped_bills"] = report_db_to_qbo_bills(
+            bills_by_id=bills_by_id,
+            mapped_bill_ids=mapped_bill_ids,
+        )
 
         # Repair BillLineItemBillLine mappings
         repair_issues, repairs_count = repair_qbo_line_item_mappings(
@@ -1271,7 +1251,7 @@ def main():
     totals = {
         "db_to_qbo_issues": 0,
         "qbo_repairs": 0,
-        "db_pushes": 0,
+        "db_unmapped_bills": 0,
         "qbo_to_db_synced": 0,
         "qbo_to_db_issues": 0,
         "db_to_excel_issues": 0,
@@ -1319,7 +1299,7 @@ def main():
         action = "would" if dry_run else "did"
         print(f"\n  Project summary:")
         print(f"    DB->QBO issues:          {stats['db_to_qbo_issues']}")
-        print(f"    DB->QBO bill pushes:     {stats['db_pushes']} ({action} push)")
+        print(f"    DB->QBO bills unmapped (reported): {stats['db_unmapped_bills']}")
         print(f"    QBO line mappings:       {stats['qbo_repairs']} ({action} create)")
         print(f"    QBO->DB synced:          {stats['qbo_to_db_synced']} ({action} sync)")
         print(f"    QBO->DB issues:          {stats['qbo_to_db_issues']}")
@@ -1333,7 +1313,7 @@ def main():
     print(f"TOTAL SUMMARY {'(DRY RUN)' if dry_run else ''}")
     action = "would" if dry_run else "did"
     print(f"  DB->QBO issues:          {totals['db_to_qbo_issues']}")
-    print(f"  DB->QBO bill pushes:     {totals['db_pushes']} ({action} push)")
+    print(f"  DB->QBO bills unmapped (reported): {totals['db_unmapped_bills']}")
     print(f"  QBO line mappings:       {totals['qbo_repairs']} ({action} create)")
     print(f"  QBO->DB synced:          {totals['qbo_to_db_synced']} ({action} sync)")
     print(f"  QBO->DB issues:          {totals['qbo_to_db_issues']}")
@@ -1346,7 +1326,7 @@ def main():
     if dry_run:
         any_action = any(
             totals[k] > 0 for k in [
-                "db_pushes", "qbo_repairs", "qbo_to_db_synced",
+                "qbo_repairs", "qbo_to_db_synced",
                 "db_to_excel_written", "backfills", "orphan_clears",
             ]
         )

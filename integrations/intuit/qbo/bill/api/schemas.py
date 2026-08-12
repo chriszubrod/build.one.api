@@ -26,7 +26,3 @@ class QboBillPush(BaseModel):
     realm_id: str = Field(
         description="QBO company realm ID.",
     )
-    sync_attachments: bool = Field(
-        default=True,
-        description="If True, also sync attachments for the bill to QBO.",
-    )

@@ -40,7 +40,7 @@ DEFAULT_SANDBOX_BASE_URL = "https://sandbox-quickbooks.api.intuit.com/v3/company
 DEFAULT_USER_AGENT = "buildone-qbo-client/1.0"
 
 
-def _writes_allowed() -> bool:
+def writes_allowed() -> bool:
     """
     Default-deny local-dev safety gate.
 
@@ -56,7 +56,7 @@ def _writes_allowed() -> bool:
 def _recode_writes_allowed() -> bool:
     """
     Default-deny feature gate for the expense-coding cockpit's QBO recode
-    (U-005 Phase F). Mirrors `_writes_allowed()` and is AND-ed with it.
+    (U-005 Phase F). Mirrors `writes_allowed()` and is AND-ed with it.
 
     Returns True only when `ALLOW_EXPENSE_RECODE_WRITES` is explicitly set to
     `"true"` (case-insensitive). Any other value — including unset or a
@@ -73,7 +73,7 @@ def recode_write_gate_reason() -> Optional[str]:
     enabled. Checks the global ALLOW_QBO_WRITES gate first, then the
     ALLOW_EXPENSE_RECODE_WRITES feature gate.
     """
-    if not _writes_allowed():
+    if not writes_allowed():
         return "qbo_writes_disabled"
     if not _recode_writes_allowed():
         return "recode_writes_disabled"
@@ -248,7 +248,7 @@ class QboHttpClient:
         the flag is accidentally unset and in local dev to diagnose
         "why is my write failing").
         """
-        if _writes_allowed():
+        if writes_allowed():
             return
 
         correlation_id = ensure_correlation_id()

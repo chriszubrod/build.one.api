@@ -60,6 +60,25 @@ CREATE INDEX IX_QboBill_DocNumber ON [qbo].[Bill] ([DocNumber]);
 END
 GO
 
+IF OBJECT_ID('qbo.Bill', 'U') IS NOT NULL AND NOT EXISTS (
+    SELECT 1 FROM sys.indexes i
+    WHERE i.name = 'UQ_QboBill_QboId_RealmId'
+      AND i.object_id = OBJECT_ID('qbo.Bill')
+      AND i.is_unique = 1
+      AND i.is_disabled = 0
+      AND i.ignore_dup_key = 0
+      AND (
+          SELECT STRING_AGG(COL_NAME(ic.object_id, ic.column_id), ',')
+                 WITHIN GROUP (ORDER BY ic.key_ordinal)
+          FROM sys.index_columns ic
+          WHERE ic.object_id = i.object_id AND ic.index_id = i.index_id AND ic.key_ordinal > 0
+      ) = N'QboId,RealmId'
+)
+BEGIN
+CREATE UNIQUE INDEX UQ_QboBill_QboId_RealmId ON [qbo].[Bill] ([QboId], [RealmId]) WHERE [QboId] IS NOT NULL AND [RealmId] IS NOT NULL;
+END
+GO
+
 
 IF OBJECT_ID('qbo.BillLine', 'U') IS NULL
 BEGIN

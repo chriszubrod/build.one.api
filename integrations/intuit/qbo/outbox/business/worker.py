@@ -141,21 +141,28 @@ class QboOutboxWorker:
         # pending (no attempt burned). Mirrors the budget pre-claim guard above;
         # a permanently-unset ALLOW_QBO_WRITES logs ERROR every drain tick so
         # ops notice faster than scattered per-row dead-letters would.
-        if not writes_allowed():
+        writes_off = not writes_allowed()
+        if writes_off:
             logger.error(
                 "qbo.outbox.drain.skipped_writes_disabled",
                 extra={
                     "event_name": "qbo.outbox.drain.skipped_writes_disabled",
                 },
             )
-            return False
 
         with qbo_app_lock(DRAIN_LOCK_NAME, timeout_ms=DRAIN_LOCK_TIMEOUT_MS) as got_lock:
             if not got_lock:
                 logger.debug("qbo.outbox.drain.skipped_lock_busy")
                 return False
 
+            # Reclaim BEFORE the write gate: stranding is a DB-only condition and
+            # its repair (in_progress -> pending) issues no QBO call, so leaving it
+            # behind the write gate meant a deploy restart during a writes-off
+            # window stranded rows that nothing would ever release.
             self._reclaim_stranded_rows()
+
+            if writes_off:
+                return False
 
             row = self.repo.claim_next_pending()
             if not row:

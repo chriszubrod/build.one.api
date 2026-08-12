@@ -50,6 +50,7 @@ from entities.expense.persistence.repo import ExpenseRepository
 from entities.expense_line_item.persistence.repo import ExpenseLineItemRepository
 from entities.vendor.persistence.repo import VendorRepository
 from integrations.intuit.qbo.auth.business.service import QboAuthService
+from scripts.sync_helper import assert_cli_system_admin
 from integrations.intuit.qbo.bill.connector.bill.business.service import BillBillConnector
 from integrations.intuit.qbo.bill.connector.bill.persistence.repo import BillBillRepository
 from integrations.intuit.qbo.bill.connector.bill_line_item.persistence.repo import BillLineItemBillLineRepository
@@ -325,7 +326,11 @@ def report_db_to_qbo_bills(
 
         print(
             f"  [DB->QBO] Bill #{bill.bill_number} (id={bill_id}) — missing BillBill mapping "
-            f"(report only; enqueue via bill completion or POST /sync/bill-to-qbo)"
+            f"(report only). If this bill's push DEAD-LETTERED, replay it with "
+            f"scripts/retry_qbo_outbox_dead_letters.py, which PRESERVES the original "
+            f"RequestId. Do NOT use POST /sync/bill-to-qbo for it: enqueue() mints a "
+            f"fresh RequestId, forfeiting Intuit dedup, and a bill whose push reached "
+            f"QBO but whose mapping write failed would be created a SECOND time."
         )
         reported_count += 1
 
@@ -1339,4 +1344,10 @@ def main():
 
 
 if __name__ == "__main__":
+    # System intent MUST be declared before any read: this script's --write path
+    # calls BillBillConnector.sync_from_qbo_bill, whose CREATE path reads back the
+    # Bill it just created. Without system intent those per-row access guards
+    # (shared/access.py) return None for a scoped read, and the connector strands
+    # an orphan header-only Bill. Mirrors every scripts/sync_qbo_*.py.
+    assert_cli_system_admin()
     main()

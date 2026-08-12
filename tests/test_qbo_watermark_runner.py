@@ -7,6 +7,7 @@ scripts/sync_qbo_*.py — no live DB or network.
 from __future__ import annotations
 
 import ast
+import contextlib
 import functools
 import importlib
 import inspect
@@ -14,7 +15,9 @@ import sys
 import typing
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Optional
+from unittest.mock import Mock, patch
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -35,9 +38,14 @@ SCRIPTS_DIR = REPO_ROOT / "scripts"
 if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 
+import sync_helper  # noqa: E402
 from sync_helper import (  # noqa: E402
     WatermarkRun,
+    _QboSyncEntityMeta,
+    _held_duration,
     _normalize_watermark_value,
+    _resolve_staging_qbo_id,
+    _watermark_hold_bound_seconds,
     _watermark_overlap_seconds,
 )
 
@@ -579,7 +587,9 @@ def test_commit_skip_true_writes_nothing_even_with_end_date():
 
 def test_commit_holding_outcome_writes_nothing_even_when_end_date_supplied():
     """Bill/vendorcredit bug: end_date must not advance the watermark past a failed batch import."""
-    fake = FakeSyncService([_make_sync()])
+    # modified_datetime a few minutes before query_start — well under the hold bound (U-228),
+    # so this exercises the ordinary (not bound-exceeded) hold path.
+    fake = FakeSyncService([_make_sync(modified_datetime="2026-03-10T14:25:00")])
     run = _opened_run(fake)
     outcome = SyncOutcome(from_service_pull=True)
     outcome.record_projection_failure("vc-1")
@@ -591,12 +601,208 @@ def test_commit_holding_outcome_writes_nothing_even_when_end_date_supplied():
 
 def test_commit_staging_only_failure_holds_with_no_write():
     """Audit S-01: staging failures invisible to scripts used to advance past missing qbo.* rows."""
-    fake = FakeSyncService([_make_sync()])
+    fake = FakeSyncService([_make_sync(modified_datetime="2026-03-10T14:25:00")])
     run = _opened_run(fake)
     outcome = SyncOutcome(from_service_pull=True)
     outcome.record_staging_failure("staging-only")
     run.commit(outcome)
     assert fake.updates == []
+
+
+# --------------------------------------------------------------------------- #
+# U-228: bound-exceeded hold force-advances instead of holding forever
+# --------------------------------------------------------------------------- #
+
+
+@contextlib.contextmanager
+def _patch_bound_forced_advance_deps(*, realm_id="realm-1", resolved_qbo_id=None):
+    """
+    Patch _record_bound_forced_advance's lazy-imported dependencies at their origin modules
+    (function-local `from X import Y` re-resolves via sys.modules[X].Y at call time, so patching
+    the origin is correct regardless of which sync_helper module object is under test — see
+    _opened_run's sys.path trick above). Yields `recorded`, which accumulates every
+    record_mapping_issue(**kwargs) call so assertions can inspect exactly what was written.
+    """
+    recorded = []
+
+    def _fake_record_mapping_issue(_repo, **kwargs):
+        recorded.append(kwargs)
+
+    mock_auth_service = Mock(return_value=Mock(read_all=Mock(return_value=[SimpleNamespace(realm_id=realm_id)])))
+    with contextlib.ExitStack() as stack:
+        stack.enter_context(patch("integrations.intuit.qbo.auth.business.service.QboAuthService", mock_auth_service))
+        stack.enter_context(patch("integrations.intuit.qbo.reconciliation.persistence.repo.ReconciliationIssueRepository", Mock()))
+        stack.enter_context(patch("integrations.intuit.qbo.base.reconciliation_recorder.record_mapping_issue", side_effect=_fake_record_mapping_issue))
+        stack.enter_context(patch("sync_helper._resolve_staging_qbo_id", return_value=resolved_qbo_id))
+        yield recorded
+
+
+def test_commit_holding_outcome_past_bound_force_advances_and_records_issues():
+    """
+    Core U-228 behavior: once held longer than the bound, commit() must advance the watermark
+    exactly like a clean success AND record a critical issue per blocking id.
+    """
+    # Default _make_sync() modified_datetime (2026-01-01T00:00:00) is ~68 days before
+    # FIXED_QUERY_START (2026-03-10T14:30:00) — comfortably past the 7200s default bound.
+    fake = FakeSyncService([_make_sync()])
+    run = _opened_run(fake)
+    outcome = SyncOutcome(from_service_pull=True)
+    outcome.record_projection_failure("42")   # internal staging PK
+    outcome.record_staging_failure("QB-99")   # real QBO id
+
+    with _patch_bound_forced_advance_deps(resolved_qbo_id=None) as recorded:
+        result = run.commit(outcome)
+
+    assert len(fake.updates) == 1
+    assert result.last_sync_datetime == run.watermark_value
+    assert len(recorded) == 2  # one critical issue per blocking id (1 staging + 1 projection)
+    by_qbo_id = {kwargs["qbo_id"] for kwargs in recorded}
+    assert "QB-99" in by_qbo_id            # staging_failed_ids recorded at face value
+    assert None in by_qbo_id               # projection_failed_ids: resolver mocked to miss
+    assert all(kwargs["severity"] == "critical" for kwargs in recorded)
+    assert all(kwargs["drift_type"] == "watermark_hold_bound_exceeded" for kwargs in recorded)
+
+
+def test_commit_holding_outcome_exactly_at_bound_force_advances():
+    """
+    Boundary case: held == bound exactly must still force-advance (the check is `>=`, not `>`)
+    — the bound is a ceiling on how long a hold may persist, not a strictly-greater-than gate.
+    """
+    at_bound_modified = (FIXED_QUERY_START - timedelta(seconds=_watermark_hold_bound_seconds())).strftime("%Y-%m-%dT%H:%M:%S")
+    fake = FakeSyncService([_make_sync(modified_datetime=at_bound_modified)])
+    run = _opened_run(fake)
+    outcome = SyncOutcome(from_service_pull=True)
+    outcome.record_projection_failure("42")
+
+    with _patch_bound_forced_advance_deps():
+        result = run.commit(outcome)
+
+    assert len(fake.updates) == 1
+    assert result.last_sync_datetime == run.watermark_value
+
+
+def test_commit_holding_outcome_one_second_under_bound_does_not_force_advance():
+    """Mirror of the boundary test above: one second under the bound must still be a plain hold."""
+    under_bound_modified = (
+        FIXED_QUERY_START - timedelta(seconds=_watermark_hold_bound_seconds() - 1)
+    ).strftime("%Y-%m-%dT%H:%M:%S")
+    fake = FakeSyncService([_make_sync(modified_datetime=under_bound_modified)])
+    run = _opened_run(fake)
+    outcome = SyncOutcome(from_service_pull=True)
+    outcome.record_projection_failure("42")
+
+    result = run.commit(outcome)
+
+    assert fake.updates == []
+    assert result is run.sync_record
+
+
+def test_commit_holding_outcome_past_bound_resolves_real_qbo_id_for_projection_failure():
+    """The staging-repo resolver, when it hits, must supply the real id — not just the PK."""
+    fake = FakeSyncService([_make_sync()])
+    run = _opened_run(fake)
+    outcome = SyncOutcome(from_service_pull=True)
+    outcome.record_projection_failure("42")
+
+    with _patch_bound_forced_advance_deps(resolved_qbo_id="QB-resolved-42") as recorded:
+        run.commit(outcome)
+
+    assert len(recorded) == 1
+    assert recorded[0]["qbo_id"] == "QB-resolved-42"
+
+
+def test_commit_holding_outcome_past_bound_with_end_date_writes_end_of_day_stamp():
+    """Bound-exceeded must respect end_date exactly like the clean-success path does."""
+    fake = FakeSyncService([_make_sync()])
+    run = _opened_run(fake)
+    outcome = SyncOutcome(from_service_pull=True)
+    outcome.record_projection_failure("42")
+
+    with _patch_bound_forced_advance_deps():
+        run.commit(outcome, end_date="2024-07-04")
+
+    assert fake.updates[0][1].last_sync_datetime == "2024-07-04T23:59:59"
+
+
+def test_commit_holding_outcome_unparseable_anchor_never_force_advances():
+    """
+    Safety net against the U-217-class inverted-default bug: when held_duration cannot be
+    determined (unparseable/missing anchor), commit() must fall through to the ORDINARY hold —
+    never force-advance on a None. A wrong hold costs a redundant re-pull; a wrong force-advance
+    permanently loses a still-failing record.
+    """
+    fake = FakeSyncService([_make_sync(modified_datetime="not-a-real-datetime", created_datetime="also-not-a-datetime")])
+    run = _opened_run(fake)
+    outcome = SyncOutcome(from_service_pull=True)
+    outcome.record_projection_failure("42")
+
+    # No dependency patches: if this ever reached _record_bound_forced_advance it would try a
+    # real DB call and fail loudly, making any accidental force-advance obvious.
+    result = run.commit(outcome)
+
+    assert fake.updates == []
+    assert result is run.sync_record
+
+
+def test_commit_holding_outcome_realm_resolution_failure_still_force_advances():
+    """
+    A failure resolving the QBO realm (e.g. no auth row) must not block the force-advance —
+    the advance is the load-bearing guarantee; the reconciliation write is best-effort.
+    """
+    fake = FakeSyncService([_make_sync()])
+    run = _opened_run(fake)
+    outcome = SyncOutcome(from_service_pull=True)
+    outcome.record_projection_failure("42")
+
+    mock_auth_service = Mock(return_value=Mock(read_all=Mock(return_value=[])))  # no auth rows
+    with patch("integrations.intuit.qbo.auth.business.service.QboAuthService", mock_auth_service):
+        result = run.commit(outcome)
+
+    assert len(fake.updates) == 1
+    assert result.last_sync_datetime == run.watermark_value
+
+
+def test_watermark_hold_bound_seconds_default_and_env_validation(monkeypatch):
+    """Mirrors test_watermark_overlap_seconds_default_and_env_validation for the new bound env var."""
+    monkeypatch.delenv("QBO_WATERMARK_HOLD_BOUND_SECONDS", raising=False)
+    assert _watermark_hold_bound_seconds() == 7200
+    monkeypatch.setenv("QBO_WATERMARK_HOLD_BOUND_SECONDS", "3600")
+    assert _watermark_hold_bound_seconds() == 3600
+    monkeypatch.setenv("QBO_WATERMARK_HOLD_BOUND_SECONDS", "not-a-number")
+    assert _watermark_hold_bound_seconds() == 7200
+    monkeypatch.setenv("QBO_WATERMARK_HOLD_BOUND_SECONDS", "-5")
+    assert _watermark_hold_bound_seconds() == 7200
+
+
+def test_held_duration_falls_back_to_created_datetime_when_never_advanced():
+    sync_record = _make_sync(modified_datetime=None, created_datetime="2026-03-10T12:30:00")
+    now = datetime(2026, 3, 10, 14, 30, 0, tzinfo=timezone.utc)
+    assert _held_duration(sync_record, now) == timedelta(hours=2)
+
+
+def test_held_duration_none_when_anchor_unparseable():
+    sync_record = _make_sync(modified_datetime="garbage", created_datetime="also-garbage")
+    assert _held_duration(sync_record, datetime.now(timezone.utc)) is None
+
+
+def test_resolve_staging_qbo_id_none_for_entity_with_no_staging_repo():
+    """reimburse_charge has no read_by_id on its staging repo — must miss cleanly, not raise."""
+    assert _resolve_staging_qbo_id("reimburse_charge", 42) is None
+
+
+def test_resolve_staging_qbo_id_resolves_via_the_entity_staging_repo(monkeypatch):
+    # _QBO_SYNC_ENTITY_META holds a direct class reference captured at sync_helper's import
+    # time, not a by-name lookup — patch the registry entry itself, not the origin module.
+    fake_row = SimpleNamespace(qbo_id="QB-real-id")
+    mock_repo_cls = Mock(return_value=Mock(read_by_id=Mock(return_value=fake_row)))
+    monkeypatch.setitem(sync_helper._QBO_SYNC_ENTITY_META, "bill", _QboSyncEntityMeta(label="Bill", staging_repo=mock_repo_cls))
+    assert _resolve_staging_qbo_id("bill", 42) == "QB-real-id"
+
+
+def test_resolve_staging_qbo_id_none_when_repo_lookup_raises(monkeypatch):
+    mock_repo_cls = Mock(return_value=Mock(read_by_id=Mock(side_effect=RuntimeError("db down"))))
+    monkeypatch.setitem(sync_helper._QBO_SYNC_ENTITY_META, "bill", _QboSyncEntityMeta(label="Bill", staging_repo=mock_repo_cls))
+    assert _resolve_staging_qbo_id("bill", 42) is None
 
 
 def test_commit_skips_only_outcome_advances_watermark_normally():

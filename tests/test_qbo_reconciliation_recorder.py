@@ -17,6 +17,11 @@ from integrations.intuit.qbo.base.reconciliation_recorder import (
     record_mapping_issue,
 )
 
+_SCRIPTS_DIR = REPO_ROOT / "scripts"
+if str(_SCRIPTS_DIR) not in sys.path:
+    sys.path.insert(0, str(_SCRIPTS_DIR))
+from sync_helper import _QBO_SYNC_ENTITY_META  # noqa: E402
+
 _RECONCILIATION_ISSUE_SQL = (
     REPO_ROOT
     / "integrations"
@@ -54,6 +59,13 @@ _DEFAULT_KWARGS = {
     "severity": "critical",
     "action": _ACTION_DEFAULT,
 }
+# WatermarkRun._record_bound_forced_advance (scripts/sync_helper.py, U-228) passes
+# entity_type=<a local var derived from self.entity via _QBO_SYNC_ENTITY_META, falling back to
+# self.entity unchanged> — not a literal, since WatermarkRun is shared across all pull scripts.
+# Derived from the real registry (not hand-typed) so the two can't drift; the width check uses
+# the longest RAW key as the worst case, which also covers every mapped display label (all
+# shorter than "reimburse_charge", 16 chars) since the fallback path is unbounded.
+_QBO_SYNC_ENTITY_NAMES = frozenset(_QBO_SYNC_ENTITY_META)
 
 
 @dataclass(frozen=True)
@@ -164,6 +176,8 @@ def _resolve_entity_type_for_call(rel_path: str, kind: str, raw: Dict[str, Optio
             return "Project"
         if "vendor/connector/vendor" in rel_path.replace("\\", "/"):
             return "Vendor"
+    if kind == "record_mapping_issue" and rel_path.replace("\\", "/") == "scripts/sync_helper.py":
+        return max(_QBO_SYNC_ENTITY_NAMES, key=len)
     return None
 
 

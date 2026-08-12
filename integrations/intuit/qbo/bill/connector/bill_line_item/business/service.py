@@ -206,6 +206,15 @@ class BillLineItemConnector:
         
         # Create mapping
         line_item_id = int(line_item.id) if isinstance(line_item.id, str) else line_item.id
+        # Deliberately ValueError-only (not DatabaseConstraintError): dbo.BillLineItem carries no
+        # uniqueness constraint of any kind (unlike dbo.Bill, protected by
+        # UQ_Bill_VendorId_BillNumber_BillDate), so a concurrent-pull race that loses this mapping
+        # insert must NOT be silently swallowed here — the just-created `line_item` above would be
+        # an undetectable, permanently duplicate row with no reconciliation trail. Left uncaught, a
+        # DatabaseConstraintError propagates to _sync_line_items' per-line catch, which raises
+        # RuntimeError and correctly triggers rollback_orphan_header (new-bill path) or holds the
+        # watermark (existing-bill path) — the pre-existing, self-healing behavior. See U-228
+        # Pass-1 hunt (confirmed P1) and the TODO.md follow-up for a proper adopt-on-race heal.
         try:
             mapping = self.create_mapping(bill_line_item_id=line_item_id, qbo_bill_line_id=qbo_bill_line.id)
             logger.info(f"Created mapping: BillLineItem {line_item_id} <-> QboBillLine {qbo_bill_line.id}")

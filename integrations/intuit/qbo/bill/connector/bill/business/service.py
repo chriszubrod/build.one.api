@@ -35,6 +35,7 @@ from integrations.intuit.qbo.base.pull_race import guard_lines_present
 from integrations.intuit.qbo.base.compensation import rollback_orphan_header
 from integrations.intuit.qbo.base.field_ownership import preserve_human_edited_ref, qbo_ref_or_placeholder
 from integrations.intuit.qbo.reconciliation.persistence.repo import ReconciliationIssueRepository
+from shared.database import DatabaseConstraintError
 
 logger = logging.getLogger(__name__)
 
@@ -214,7 +215,7 @@ class BillBillConnector:
         try:
             mapping = self.create_mapping(bill_id=bill_id, qbo_bill_id=qbo_bill.id)
             logger.info(f"Created mapping: Bill {bill_id} <-> QboBill {qbo_bill.id}")
-        except ValueError as e:
+        except (ValueError, DatabaseConstraintError) as e:
             logger.warning(f"Could not create mapping: {e}")
         
         # Compensating rollback — a permanent line failure must not leave a header-only zombie;

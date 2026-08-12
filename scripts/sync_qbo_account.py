@@ -56,12 +56,12 @@ def _dry_run_preview(
 
     would_create = [a for a in qbo_accounts if a.id not in existing_qbo_ids]
     would_update = [a for a in qbo_accounts if a.id in existing_qbo_ids]
-    deactivated_in_qbo = [a for a in qbo_accounts if a.active is False]
+    inactive_in_qbo = [a for a in qbo_accounts if a.active is False]
 
     logger.info(f"[DRY RUN] QBO staging table (qbo.Account):")
     logger.info(f"[DRY RUN]   {len(would_create)} would be CREATED")
     logger.info(f"[DRY RUN]   {len(would_update)} would be UPDATED")
-    logger.info(f"[DRY RUN]   {len(deactivated_in_qbo)} are deactivated in QBO")
+    logger.info(f"[DRY RUN]   {len(inactive_in_qbo)} are inactive in QBO")
     logger.info("[DRY RUN] No changes were made to the local database.")
 
     sample = [
@@ -77,7 +77,7 @@ def _dry_run_preview(
             "would_create": len(would_create),
             "would_update": len(would_update),
         },
-        "deactivated_in_qbo": len(deactivated_in_qbo),
+        "inactive_in_qbo": len(inactive_in_qbo),
         "local_accounts_existing": len(existing),
         "sample_new_records": sample,
     }
@@ -87,7 +87,6 @@ def sync_qbo_to_local(
     realm_id: str,
     last_sync_time: Optional[str],
     qbo_account_service: QboAccountService,
-    reconcile_deletes: bool = False,
 ) -> tuple[dict, SyncOutcome]:
     """
     Sync Accounts from QBO API to local database.
@@ -96,18 +95,15 @@ def sync_qbo_to_local(
         realm_id: QBO realm ID
         last_sync_time: Last sync timestamp for incremental sync
         qbo_account_service: QboAccountService instance
-        reconcile_deletes: If True, deactivate local records not found in QBO (full sync only)
 
     Returns:
         tuple[dict, SyncOutcome]: Sync results envelope and service pull outcome
     """
     logger.info(f"Syncing Accounts from QBO API for realm_id: {realm_id}")
 
-    # Fetch accounts from QBO and store locally
     outcome = qbo_account_service.sync_from_qbo(
         realm_id=realm_id,
         last_updated_time=last_sync_time,
-        reconcile_deletes=reconcile_deletes,
     )
     accounts = outcome.synced
     
@@ -128,7 +124,6 @@ def sync_qbo_to_local(
 
 def sync_qbo_account(
     skip_sync_record_update: bool = False,
-    reconcile_deletes: bool = False,
     dry_run: bool = False,
 ) -> dict:
     """
@@ -138,7 +133,6 @@ def sync_qbo_account(
 
     Args:
         skip_sync_record_update: If True, don't update the sync record timestamp.
-        reconcile_deletes: If True, deactivate local records not found in QBO (full sync only).
         dry_run: If True, fetch from QBO and report what would be synced without writing anything.
     """
     try:
@@ -195,7 +189,6 @@ def sync_qbo_account(
             realm_id=realm_id,
             last_sync_time=last_sync_time,
             qbo_account_service=qbo_account_service,
-            reconcile_deletes=reconcile_deletes,
         )
 
         end_time = datetime.now(timezone.utc)
@@ -250,13 +243,6 @@ Examples:
 
   # Full sync without updating sync record
   python scripts/sync_qbo_account.py --skip-sync-update
-
-  # Full sync with delete reconciliation (deactivates local records not in QBO)
-  python scripts/sync_qbo_account.py --reconcile-deletes
-
-Note: --reconcile-deletes only works on full syncs (no last_sync_datetime).
-It compares ALL local records against the full QBO account list and deactivates
-any local records whose QboId is no longer present in QBO.
         """
     )
 
@@ -264,12 +250,6 @@ any local records whose QboId is no longer present in QBO.
         '--skip-sync-update',
         action='store_true',
         help='Skip updating the sync record timestamp.'
-    )
-
-    parser.add_argument(
-        '--reconcile-deletes',
-        action='store_true',
-        help='Deactivate local accounts not found in QBO. Only runs on full sync (no prior sync timestamp).'
     )
 
     parser.add_argument(
@@ -287,7 +267,6 @@ if __name__ == "__main__":
 
     result = sync_qbo_account(
         skip_sync_record_update=args.skip_sync_update,
-        reconcile_deletes=args.reconcile_deletes,
         dry_run=args.dry_run,
     )
 

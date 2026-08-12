@@ -35,7 +35,6 @@ class QboAccountService:
         self,
         realm_id: str,
         last_updated_time: Optional[str] = None,
-        reconcile_deletes: bool = False,
     ) -> SyncOutcome[QboAccount]:
         """
         Fetch Accounts from QBO API and store locally.
@@ -45,8 +44,6 @@ class QboAccountService:
             realm_id: QBO company realm ID
             last_updated_time: Optional ISO format datetime string. If provided, only fetches
                 Accounts where Metadata.LastUpdatedTime > last_updated_time.
-            reconcile_deletes: If True, deactivate local records that no longer exist in QBO.
-                Only runs on full sync (when last_updated_time is None).
         Returns:
             SyncOutcome[QboAccount]: Pull run envelope including synced staging rows
         """
@@ -106,74 +103,11 @@ class QboAccountService:
                 f"Failed to upsert {len(outcome.staging_failed_ids)} accounts: {outcome.staging_failed_ids}"
             )
 
-        # Reconcile deletes: find local accounts that no longer exist in QBO
-        # Only runs on full sync to avoid false positives from incremental queries
-        if reconcile_deletes and last_updated_time is None:
-            self._reconcile_deleted_accounts(realm_id, qbo_accounts)
+        # Delete-reconcile retired (U-218c): U-219 wide pull mirrors QBO Active directly;
+        # QBO cannot hard-delete Accounts, so absent-from-response deactivation was a no-op
+        # that could mass-deactivate hidden inactive staging rows if ever armed.
 
         return outcome
-
-    def _reconcile_deleted_accounts(
-        self,
-        realm_id: str,
-        qbo_accounts: List[QboAccountExternalSchema],
-    ) -> int:
-        """
-        Find local QboAccount records that no longer exist in QBO and deactivate them.
-
-        Compares local records against the full QBO account list. Any local record
-        whose QboId is not in the QBO response is marked Active=False.
-
-        Args:
-            realm_id: QBO realm ID
-            qbo_accounts: Complete list of accounts from QBO (must be a full sync, not incremental)
-
-        Returns:
-            int: Number of accounts deactivated locally
-        """
-        # Build set of QBO IDs from the API response
-        qbo_ids_from_api = {acc.id for acc in qbo_accounts}
-
-        # Get all local accounts for this realm
-        local_accounts = self.repo.read_by_realm_id(realm_id)
-
-        deactivated = 0
-        for local in local_accounts:
-            if local.qbo_id not in qbo_ids_from_api and local.active is not False:
-                logger.warning(
-                    f"Local QBO account {local.qbo_id} ({local.name}) not found in QBO — "
-                    f"marking as inactive (likely deleted in QBO)"
-                )
-                try:
-                    self.repo.update_by_qbo_id(
-                        qbo_id=local.qbo_id,
-                        row_version=local.row_version_bytes,
-                        sync_token=local.sync_token,
-                        realm_id=realm_id,
-                        name=local.name,
-                        acct_num=local.acct_num,
-                        description=local.description,
-                        active=False,
-                        classification=local.classification,
-                        account_type=local.account_type,
-                        account_sub_type=local.account_sub_type,
-                        fully_qualified_name=local.fully_qualified_name,
-                        sub_account=local.sub_account,
-                        parent_ref_value=local.parent_ref_value,
-                        parent_ref_name=local.parent_ref_name,
-                        current_balance=local.current_balance,
-                        current_balance_with_sub_accounts=local.current_balance_with_sub_accounts,
-                        currency_ref_value=local.currency_ref_value,
-                        currency_ref_name=local.currency_ref_name,
-                    )
-                    deactivated += 1
-                except Exception as e:
-                    logger.error(f"Failed to deactivate local account {local.qbo_id}: {e}")
-
-        if deactivated:
-            logger.info(f"Deactivated {deactivated} local accounts not found in QBO")
-
-        return deactivated
 
     def _upsert_account(self, qbo_account: QboAccountExternalSchema, realm_id: str) -> QboAccount:
         """

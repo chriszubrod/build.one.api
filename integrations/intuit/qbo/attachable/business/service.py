@@ -53,10 +53,7 @@ class QboAttachableService:
             raise ValueError(f"No valid QBO auth found for realm {realm_id}")
 
         # Fetch attachables from QBO
-        with QboAttachableClient(
-            access_token=qbo_auth.access_token,
-            realm_id=realm_id
-        ) as client:
+        with QboAttachableClient(realm_id=realm_id) as client:
             qbo_attachables: List[QboAttachableExternalSchema] = client.query_all_attachables()
 
         logger.info(f"Fetched {len(qbo_attachables)} attachables from QBO for realm {realm_id}")
@@ -136,10 +133,7 @@ class QboAttachableService:
             raise ValueError(f"No valid QBO auth found for realm {realm_id}")
 
         # Fetch attachables for this bill from QBO
-        with QboAttachableClient(
-            access_token=qbo_auth.access_token,
-            realm_id=realm_id
-        ) as client:
+        with QboAttachableClient(realm_id=realm_id) as client:
             qbo_attachables = self._query_attachables_with_fallback(client, "Bill", bill_qbo_id)
 
         logger.info(f"Fetched {len(qbo_attachables)} attachables for Bill {bill_qbo_id}")
@@ -182,10 +176,7 @@ class QboAttachableService:
         if not qbo_auth or not qbo_auth.access_token:
             raise ValueError(f"No valid QBO auth found for realm {realm_id}")
 
-        with QboAttachableClient(
-            access_token=qbo_auth.access_token,
-            realm_id=realm_id
-        ) as client:
+        with QboAttachableClient(realm_id=realm_id) as client:
             qbo_attachables = self._query_attachables_with_fallback(client, "VendorCredit", vendor_credit_qbo_id)
 
         logger.info(f"Fetched {len(qbo_attachables)} attachables for VendorCredit {vendor_credit_qbo_id}")
@@ -226,10 +217,7 @@ class QboAttachableService:
         if not qbo_auth or not qbo_auth.access_token:
             raise ValueError(f"No valid QBO auth found for realm {realm_id}")
 
-        with QboAttachableClient(
-            access_token=qbo_auth.access_token,
-            realm_id=realm_id
-        ) as client:
+        with QboAttachableClient(realm_id=realm_id) as client:
             qbo_attachables = self._query_attachables_with_fallback(client, "Purchase", purchase_qbo_id)
 
         logger.info(f"Fetched {len(qbo_attachables)} attachables for Purchase {purchase_qbo_id}")

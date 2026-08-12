@@ -2,7 +2,7 @@
 import logging
 import os
 import time
-from typing import Any, Dict, NoReturn, Optional, Union
+from typing import Any, Dict, List, NoReturn, Optional, Tuple, Union
 
 # Third-party Imports
 import httpx
@@ -38,6 +38,16 @@ logger = logging.getLogger(__name__)
 DEFAULT_PROD_BASE_URL = "https://quickbooks.api.intuit.com/v3/company"
 DEFAULT_SANDBOX_BASE_URL = "https://sandbox-quickbooks.api.intuit.com/v3/company"
 DEFAULT_USER_AGENT = "buildone-qbo-client/1.0"
+
+# Tiered timeouts. Per-call `timeout_tier` selects A/B/C.
+_TIMEOUT_TIERS: Dict[str, httpx.Timeout] = {
+    "A": httpx.Timeout(connect=5.0, read=30.0, write=30.0, pool=5.0),
+    "B": httpx.Timeout(connect=5.0, read=60.0, write=60.0, pool=5.0),
+    "C": httpx.Timeout(connect=5.0, read=120.0, write=120.0, pool=5.0),
+}
+
+# Multipart parts: (field_name, (filename, payload, content_type)).
+_MultipartParts = List[Tuple[str, Tuple[Optional[str], Union[str, bytes], Optional[str]]]]
 
 
 def writes_allowed() -> bool:
@@ -181,6 +191,7 @@ class QboHttpClient:
         path: str,
         *,
         params: Optional[Dict[str, Any]] = None,
+        timeout_tier: str = "A",
         operation_name: Optional[str] = None,
     ) -> Dict[str, Any]:
         return self._execute(
@@ -188,8 +199,11 @@ class QboHttpClient:
             path=path,
             params=params,
             json_body=None,
+            files=None,
             idempotency_key=None,
             policy=RetryPolicy.for_reads(),
+            timeout_tier=timeout_tier,
+            include_requestid=False,
             operation_name=operation_name,
         )
 
@@ -200,6 +214,7 @@ class QboHttpClient:
         json: Optional[Any] = None,
         params: Optional[Dict[str, Any]] = None,
         idempotency_key: Optional[str] = None,
+        timeout_tier: str = "A",
         operation_name: Optional[str] = None,
     ) -> Dict[str, Any]:
         self._enforce_write_gate("POST", path, operation_name)
@@ -208,8 +223,45 @@ class QboHttpClient:
             path=path,
             params=params,
             json_body=json,
+            files=None,
             idempotency_key=idempotency_key,
             policy=RetryPolicy.for_writes(),
+            timeout_tier=timeout_tier,
+            include_requestid=True,
+            operation_name=operation_name,
+        )
+
+    def post_multipart(
+        self,
+        path: str,
+        *,
+        files: _MultipartParts,
+        params: Optional[Dict[str, Any]] = None,
+        timeout_tier: str = "C",
+        include_requestid: bool = False,
+        operation_name: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        POST multipart/form-data (e.g. /upload). Defaults to tier C and
+        omits requestid — Intuit's /upload endpoint is not documented to
+        honour requestid; flipping include_requestid on is booked behind a
+        live probe.
+
+        Uses for_uploads_single() (max_attempts=1): retrying a create without an
+        idempotency token duplicates Attachables when attempt 1 already committed.
+        Outbox-level retry is mapping-guarded; 401-refresh-resend stays in _send_once.
+        """
+        self._enforce_write_gate("POST", path, operation_name)
+        return self._execute(
+            method="POST",
+            path=path,
+            params=params,
+            json_body=None,
+            files=files,
+            idempotency_key=None,
+            policy=RetryPolicy.for_uploads_single(),
+            timeout_tier=timeout_tier,
+            include_requestid=include_requestid,
             operation_name=operation_name,
         )
 
@@ -220,6 +272,7 @@ class QboHttpClient:
         json: Optional[Any] = None,
         params: Optional[Dict[str, Any]] = None,
         idempotency_key: Optional[str] = None,
+        timeout_tier: str = "A",
         operation_name: Optional[str] = None,
     ) -> Dict[str, Any]:
         self._enforce_write_gate("PUT", path, operation_name)
@@ -228,8 +281,11 @@ class QboHttpClient:
             path=path,
             params=params,
             json_body=json,
+            files=None,
             idempotency_key=idempotency_key,
             policy=RetryPolicy.for_writes(),
+            timeout_tier=timeout_tier,
+            include_requestid=True,
             operation_name=operation_name,
         )
 
@@ -283,14 +339,21 @@ class QboHttpClient:
         path: str,
         params: Optional[Dict[str, Any]],
         json_body: Optional[Any],
+        files: Optional[_MultipartParts],
         idempotency_key: Optional[str],
         policy: RetryPolicy,
+        timeout_tier: str,
+        include_requestid: bool,
         operation_name: Optional[str],
     ) -> Dict[str, Any]:
         correlation_id = ensure_correlation_id()
 
+        if timeout_tier not in _TIMEOUT_TIERS:
+            raise ValueError(f"Unknown timeout_tier: {timeout_tier!r} (expected 'A', 'B', or 'C')")
+        timeout = _TIMEOUT_TIERS[timeout_tier]
+
         effective_params: Dict[str, Any] = dict(params or {})
-        if method in ("POST", "PUT"):
+        if method in ("POST", "PUT") and include_requestid:
             # Fallback order: explicit caller-supplied key → context-var key
             # (set by the outbox worker) → freshly-generated UUID.
             key = idempotency_key or get_idempotency_key()
@@ -308,6 +371,8 @@ class QboHttpClient:
                 request_path=path,
                 params=effective_params,
                 json_body=json_body,
+                files=files,
+                timeout=timeout,
                 correlation_id=correlation_id,
                 operation_name=op_name,
             )
@@ -328,6 +393,8 @@ class QboHttpClient:
         request_path: str,
         params: Dict[str, Any],
         json_body: Optional[Any],
+        files: Optional[_MultipartParts],
+        timeout: httpx.Timeout,
         correlation_id: str,
         operation_name: str,
     ) -> Dict[str, Any]:
@@ -360,7 +427,9 @@ class QboHttpClient:
         )
 
         try:
-            response = self._send_http(method, url, auth.access_token, params, json_body)
+            response = self._send_http(
+                method, url, auth.access_token, params, json_body, files, timeout
+            )
 
             # 401-refresh-retry-once: a single-shot recovery that is intentionally
             # distinct from the retry layer (the retry layer handles 429/5xx).
@@ -402,7 +471,9 @@ class QboHttpClient:
                         "realm_id": self.realm_id,
                     },
                 )
-                response = self._send_http(method, url, refreshed.access_token, params, json_body)
+                response = self._send_http(
+                    method, url, refreshed.access_token, params, json_body, files, timeout
+                )
 
         except httpx.TimeoutException as error:
             duration_ms = (time.monotonic() - start) * 1000
@@ -503,6 +574,8 @@ class QboHttpClient:
         access_token: str,
         params: Dict[str, Any],
         json_body: Optional[Any],
+        files: Optional[_MultipartParts],
+        timeout: httpx.Timeout,
     ) -> httpx.Response:
         """Pure HTTP send with auth header injection. Isolated so the 401-retry can reuse it."""
         # U-211 meter + breaker: every real HTTP round-trip to the QBO API —
@@ -511,18 +584,24 @@ class QboHttpClient:
         # over the block threshold — the monthly CorePlus cap is a hard block
         # at Intuit's side; refusing locally preserves the remaining headroom.
         self._api_budget.record_call_or_raise(self.realm_id, method=method, path=url)
-        headers = {
+        headers: Dict[str, str] = {
             "Accept": "application/json",
-            "Content-Type": "application/json",
             "User-Agent": DEFAULT_USER_AGENT,
             "Authorization": f"Bearer {access_token}",
         }
+        # Guard on files is None (not json_body) so the nine JSON clients stay
+        # byte-identical on the wire. Multipart: never set Content-Type — httpx
+        # must own the boundary parameter.
+        if files is None:
+            headers["Content-Type"] = "application/json"
         return self._http_client.request(
             method=method,
             url=url,
             headers=headers,
             params=params,
-            json=json_body,
+            json=json_body if files is None else None,
+            files=files,
+            timeout=timeout,
         )
 
     def _raise_for_status(

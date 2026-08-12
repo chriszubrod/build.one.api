@@ -13,7 +13,7 @@ from shared.access import assert_can_access_bill
 from shared.authz import current_user_id, current_is_system_admin
 # errors.py is a stdlib-only leaf — safe at module top despite this file's
 # lazy-import convention for circular service deps.
-from integrations.intuit.qbo.base.errors import QboBudgetExceededError
+from integrations.intuit.qbo.base.errors import QboBudgetExceededError, QboWriteRefusedError
 from entities.attachment.business.service import AttachmentService
 from entities.bill.api.schemas import BillUpdate
 from entities.bill.business.model import Bill
@@ -1881,6 +1881,11 @@ class BillService:
             except QboBudgetExceededError:
                 # U-211: see _sync_attachments_to_qbo — park, don't drop.
                 raise
+            except QboWriteRefusedError:
+                # U-218e: write gate refused locally — propagate so the worker
+                # parks the row; swallowing would mark the bill pushed with no
+                # attachments.
+                raise
             except Exception:
                 logger.exception(
                     f"Attachment sync failed for Bill {bill.public_id} — "
@@ -1945,6 +1950,10 @@ class BillService:
                 # dropped. Propagate so the worker parks the row until the cap
                 # resets (re-drain is idempotent: header updates, already-
                 # mapped attachments skip).
+                raise
+            except QboWriteRefusedError:
+                # U-218e: same category as budget — refused locally, no bytes
+                # sent; propagate so the worker parks instead of reporting pushed.
                 raise
             except Exception as e:
                 error_msg = f"Attachment {attachment.id} sync failed: {str(e)}"

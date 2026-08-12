@@ -267,10 +267,7 @@ class AttachableAttachmentConnector:
             logger.error(f"QboAttachable {qbo_attachable.id} has no qbo_id")
             return None
 
-        with QboAttachableClient(
-            access_token=qbo_auth.access_token,
-            realm_id=realm_id
-        ) as client:
+        with QboAttachableClient(realm_id=realm_id) as client:
             # Fetch fresh attachable from QBO to get a current TempDownloadUri
             # (the stored URI expires after a few minutes)
             try:
@@ -413,10 +410,7 @@ class AttachableAttachmentConnector:
         
         logger.info(f"Uploading attachment {attachment_id} to QBO: {filename} -> {entity_type} {entity_id}")
         
-        with QboAttachableClient(
-            access_token=qbo_auth.access_token,
-            realm_id=realm_id
-        ) as client:
+        with QboAttachableClient(realm_id=realm_id) as client:
             qbo_attachable_response = client.upload_attachable(
                 file_content=file_content,
                 filename=filename,

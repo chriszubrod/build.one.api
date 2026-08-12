@@ -14,6 +14,11 @@ logger = logging.getLogger(__name__)
 
 T = TypeVar("T")
 
+# Tier-C per-request timeout ceiling, mirroring client.py _TIMEOUT_TIERS['C']
+# (read/write 120s + connect 5s, plus a small margin). A single upload attempt
+# can burn a full tier-C timeout before QBO answers.
+TIER_C_REQUEST_CEILING_SECONDS: float = 130.0
+
 
 @dataclass(frozen=True)
 class RetryPolicy:
@@ -44,6 +49,18 @@ class RetryPolicy:
     @classmethod
     def for_reads(cls) -> "RetryPolicy":
         return cls(max_attempts=5)
+
+    @classmethod
+    def for_uploads_single(cls) -> "RetryPolicy":
+        # QBO /upload multipart CREATE must be at-most-once. Retrying without an
+        # idempotency token duplicates Attachables when attempt 1 already committed
+        # (timeout, 503, or 2xx with empty/unparseable body are all POST-COMMIT-
+        # AMBIGUOUS). Intuit does not document requestid on /upload, so we omit it.
+        # Transient resilience lives one level up: the outbox row retries with a
+        # mapping guard, so a lost upload does not silently orphan QBO documents.
+        # 401-refresh-resend in _send_once is unchanged — 401 means not processed.
+        max_total_budget_seconds = TIER_C_REQUEST_CEILING_SECONDS + 10.0
+        return cls(max_attempts=1, max_total_budget_seconds=max_total_budget_seconds)
 
 
 def compute_backoff_seconds(

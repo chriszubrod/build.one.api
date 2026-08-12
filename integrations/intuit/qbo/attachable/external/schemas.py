@@ -77,15 +77,3 @@ class QboAttachable(_QboBaseModel):
 class QboAttachableResponse(_QboBaseModel):
     """Response wrapper for single Attachable."""
     attachable: Optional[QboAttachable] = Field(default=None, alias="Attachable")
-
-
-class QboAttachableQueryResponse(_QboBaseModel):
-    """Response wrapper for Attachable query."""
-    query_response: Optional[Dict[str, Any]] = Field(default=None, alias="QueryResponse")
-
-    def get_attachables(self) -> List[QboAttachable]:
-        """Extract Attachables from query response."""
-        if not self.query_response:
-            return []
-        attachables_data = self.query_response.get("Attachable", [])
-        return [QboAttachable(**a) for a in attachables_data]

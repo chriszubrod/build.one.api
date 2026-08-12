@@ -101,12 +101,16 @@ def _send_once(client, body_text, json_raises=False):
         AuthFailureKind.NONE,
     )
     with patch.object(client, "_send_http", return_value=resp):
+        from integrations.intuit.qbo.base.client import _TIMEOUT_TIERS
+
         return client._send_once(
             method="GET",
             url="https://qbo/query",
             request_path="query",
             params={},
             json_body=None,
+            files=None,
+            timeout=_TIMEOUT_TIERS["A"],
             correlation_id="c",
             operation_name="op",
         )

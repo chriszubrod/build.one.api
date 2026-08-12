@@ -18,8 +18,8 @@ from integrations.intuit.qbo.base.budget import (
     next_month_start,
     reset_at_for_month,
 )
-from integrations.intuit.qbo.base.client import QboHttpClient
-from integrations.intuit.qbo.base.errors import QboBudgetExceededError
+from integrations.intuit.qbo.base.client import QboHttpClient, _TIMEOUT_TIERS
+from integrations.intuit.qbo.base.errors import QboBudgetExceededError, QboWriteRefusedError
 from integrations.intuit.qbo.outbox.business.model import QboOutbox
 from integrations.intuit.qbo.outbox.business.worker import MAX_ATTEMPTS, QboOutboxWorker
 
@@ -236,7 +236,9 @@ def test_send_http_blocked_raises_without_sending():
     budget.record_call_or_raise.side_effect = _budget_exceeded_error()
     client, http = _make_client(budget)
     with pytest.raises(QboBudgetExceededError):
-        client._send_http("GET", "https://qbo/v3/company/x/bill/1", "tok", {}, None)
+        client._send_http(
+            "GET", "https://qbo/v3/company/x/bill/1", "tok", {}, None, None, _TIMEOUT_TIERS["A"]
+        )
     http.request.assert_not_called()
 
 
@@ -244,7 +246,9 @@ def test_send_http_unblocked_meters_and_sends():
     budget = MagicMock()
     budget.record_call_or_raise.return_value = _make_status(call_count=42)
     client, http = _make_client(budget)
-    client._send_http("GET", "https://qbo/v3/company/x/bill/1", "tok", {}, None)
+    client._send_http(
+        "GET", "https://qbo/v3/company/x/bill/1", "tok", {}, None, None, _TIMEOUT_TIERS["A"]
+    )
     budget.record_call_or_raise.assert_called_once_with(
         REALM_ID, method="GET", path="https://qbo/v3/company/x/bill/1"
     )
@@ -252,67 +256,102 @@ def test_send_http_unblocked_meters_and_sends():
 
 
 # --------------------------------------------------------------------------- #
-# Attachable client: the one CorePlus caller outside QboHttpClient
+# Attachable client: routed through QboHttpClient (U-218e)
 # --------------------------------------------------------------------------- #
 
 
-def _make_attachable_client(session, budget):
+def _make_attachable_client(http_mock, budget):
     from integrations.intuit.qbo.attachable.external.client import QboAttachableClient
 
-    return QboAttachableClient(
-        access_token="tok", realm_id=REALM_ID, session=session, api_budget=budget
+    auth = MagicMock()
+    auth.ensure_valid_token_classified.return_value = (MagicMock(access_token="tok"), None)
+    shared = QboHttpClient(
+        realm_id=REALM_ID,
+        auth_service=auth,
+        http_client=http_mock,
+        api_budget=budget,
     )
+    return QboAttachableClient(realm_id=REALM_ID, http_client=shared), shared
 
 
-def test_attachable_request_blocked_raises_without_sending():
+def test_attachable_get_blocked_raises_without_sending():
     budget = MagicMock()
     budget.record_call_or_raise.side_effect = _budget_exceeded_error()
-    session = MagicMock()
-    client = _make_attachable_client(session, budget)
+    http = MagicMock()
+    client, _ = _make_attachable_client(http, budget)
     with pytest.raises(QboBudgetExceededError):
-        client._request("GET", "/v3/company/x/attachable/1")
-    session.request.assert_not_called()
+        client.get_attachable("att-1")
+    http.request.assert_not_called()
 
 
-def test_attachable_request_unblocked_meters_once_and_sends():
+def test_attachable_get_unblocked_meters_once_and_sends():
     budget = MagicMock()
     budget.record_call_or_raise.return_value = _make_status(call_count=42)
-    session = MagicMock()
-    session.request.return_value = MagicMock(status_code=200, json=lambda: {})
-    client = _make_attachable_client(session, budget)
-    client._request("GET", "/v3/company/x/attachable/1")
+    http = MagicMock()
+    http.request.return_value = MagicMock(
+        status_code=200,
+        text='{"Attachable":{"Id":"1","SyncToken":"0"}}',
+        json=lambda: {"Attachable": {"Id": "1", "SyncToken": "0"}},
+    )
+    client, _ = _make_attachable_client(http, budget)
+    client.get_attachable("att-1")
     budget.record_call_or_raise.assert_called_once()
-    assert budget.record_call_or_raise.call_args.args == (REALM_ID,)
-    session.request.assert_called_once()
+    http.request.assert_called_once()
 
 
 def test_attachable_query_blocked_raises_without_sending():
     budget = MagicMock()
     budget.record_call_or_raise.side_effect = _budget_exceeded_error()
-    session = MagicMock()
-    client = _make_attachable_client(session, budget)
+    http = MagicMock()
+    client, _ = _make_attachable_client(http, budget)
     with pytest.raises(QboBudgetExceededError):
         client.query_attachables()
-    session.request.assert_not_called()
+    http.request.assert_not_called()
 
 
-def test_attachable_upload_blocked_raises_before_upload():
+def test_attachable_upload_blocked_raises_before_upload(monkeypatch):
+    monkeypatch.delenv("ALLOW_QBO_WRITES", raising=False)
     budget = MagicMock()
-    budget.record_call_or_raise.side_effect = _budget_exceeded_error()
-    session = MagicMock()
-    client = _make_attachable_client(session, budget)
-    with patch(
-        "integrations.intuit.qbo.attachable.external.client.httpx.Client"
-    ) as upload_client_cls:
-        with pytest.raises(QboBudgetExceededError):
-            client.upload_attachable(
-                file_content=b"pdf",
-                filename="a.pdf",
-                content_type="application/pdf",
-                entity_type="Bill",
-                entity_id="123",
-            )
-    upload_client_cls.assert_not_called()
+    http = MagicMock()
+    client, _ = _make_attachable_client(http, budget)
+    with pytest.raises(QboWriteRefusedError):
+        client.upload_attachable(
+            file_content=b"pdf",
+            filename="a.pdf",
+            content_type="application/pdf",
+            entity_type="Bill",
+            entity_id="123",
+        )
+    http.request.assert_not_called()
+    budget.record_call_or_raise.assert_not_called()
+
+
+def test_attachable_download_records_zero_metered_calls():
+    from integrations.intuit.qbo.attachable.external.client import QboAttachableClient
+    from integrations.intuit.qbo.attachable.external.schemas import QboAttachable
+
+    budget = MagicMock()
+    shared = QboHttpClient(
+        realm_id=REALM_ID,
+        auth_service=MagicMock(),
+        http_client=MagicMock(),
+        api_budget=budget,
+    )
+    client = QboAttachableClient(realm_id=REALM_ID, http_client=shared)
+    attachable = QboAttachable(
+        id="1",
+        sync_token="0",
+        temp_download_uri="https://download.example/file",
+    )
+
+    with patch("integrations.intuit.qbo.attachable.external.client.httpx.Client") as dl_cls:
+        dl_cls.return_value.__enter__.return_value.get.return_value = MagicMock(
+            status_code=200, content=b"file-bytes"
+        )
+        result = client.download_attachable(attachable)
+
+    assert result == b"file-bytes"
+    budget.record_call_or_raise.assert_not_called()
 
 
 # --------------------------------------------------------------------------- #

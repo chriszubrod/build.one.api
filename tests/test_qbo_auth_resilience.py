@@ -358,12 +358,16 @@ def _make_http_client(auth_service=None):
 
 
 def _send_once_kwargs(client):
+    from integrations.intuit.qbo.base.client import _TIMEOUT_TIERS
+
     return dict(
         method="GET",
         url=f"https://qbo/v3/company/{REALM_ID}/bill/1",
         request_path="bill/1",
         params={},
         json_body=None,
+        files=None,
+        timeout=_TIMEOUT_TIERS["A"],
         correlation_id="corr-1",
         operation_name="GET bill/1",
     )

@@ -415,10 +415,18 @@ def test_drain_once_skips_claim_when_writes_disabled(caplog):
     repo = MagicMock()
     worker = QboOutboxWorker(repo=repo, api_budget=_unblocked_budget_mock())
 
+    # The drain lock must be patched here as well as in the writes-allowed
+    # sibling below: stranded-row reclaim now runs BEFORE the write gate (a
+    # deploy restart during a writes-off window would otherwise strand rows
+    # nothing releases), so this path acquires sp_getapplock and is no longer
+    # pure-logic. Without the patch this test needs a live DB.
     with patch(
         "integrations.intuit.qbo.outbox.business.worker.writes_allowed",
         return_value=False,
-    ):
+    ), patch(
+        "integrations.intuit.qbo.outbox.business.worker.qbo_app_lock"
+    ) as lock_mock:
+        lock_mock.return_value.__enter__.return_value = True
         with caplog.at_level("ERROR"):
             assert worker.drain_once() is False
 

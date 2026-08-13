@@ -188,6 +188,13 @@ class BillBillConnector:
                 is_draft=False,
                 row_version=bill.row_version,
             )
+            bill_id = int(bill.id) if isinstance(bill.id, str) else bill.id
+            self.bill_service.repo.set_qbo_identity(
+                id=bill_id,
+                qbo_id=qbo_bill.qbo_id,
+                realm_id=qbo_bill.realm_id,
+                sync_token=getattr(qbo_bill, "sync_token", None),
+            )
 
             # Sync line items for existing bill
             self._sync_line_items(bill.id, qbo_bill_lines, qbo_bill.realm_id)
@@ -213,7 +220,13 @@ class BillBillConnector:
         # Create mapping
         bill_id = int(bill.id) if isinstance(bill.id, str) else bill.id
         try:
-            mapping = self.create_mapping(bill_id=bill_id, qbo_bill_id=qbo_bill.id)
+            mapping = self.create_mapping(
+                bill_id=bill_id,
+                qbo_bill_id=qbo_bill.id,
+                qbo_id=qbo_bill.qbo_id,
+                realm_id=qbo_bill.realm_id,
+                sync_token=getattr(qbo_bill, "sync_token", None),
+            )
             logger.info(f"Created mapping: Bill {bill_id} <-> QboBill {qbo_bill.id}")
         except (ValueError, DatabaseConstraintError) as e:
             logger.warning(f"Could not create mapping: {e}")
@@ -354,7 +367,15 @@ class BillBillConnector:
                 f"bill_id={bill_id}: {failed}"
             )
 
-    def create_mapping(self, bill_id: int, qbo_bill_id: int) -> BillBill:
+    def create_mapping(
+        self,
+        bill_id: int,
+        qbo_bill_id: int,
+        *,
+        qbo_id: Optional[str],
+        realm_id: Optional[str],
+        sync_token: Optional[str] = None,
+    ) -> BillBill:
         """
         Create a mapping between Bill and QboBill.
         
@@ -381,8 +402,17 @@ class BillBillConnector:
                 f"QboBill {qbo_bill_id} is already mapped to Bill {existing_by_qbo_bill.bill_id}"
             )
         
-        # Create mapping
-        return self.mapping_repo.create(bill_id=bill_id, qbo_bill_id=qbo_bill_id)
+        # Stamp dbo-native identity FIRST — if this fails, nothing else has been
+        # created yet, so the caller's existing rollback (delete the just-created
+        # entity) fully cleans up with no orphaned mapping row.
+        self.bill_service.repo.set_qbo_identity(
+            id=bill_id,
+            qbo_id=qbo_id,
+            realm_id=realm_id,
+            sync_token=sync_token,
+        )
+        mapping = self.mapping_repo.create(bill_id=bill_id, qbo_bill_id=qbo_bill_id)
+        return mapping
 
     def get_mapping_by_bill_id(self, bill_id: int) -> Optional[BillBill]:
         """
@@ -556,7 +586,13 @@ class BillBillConnector:
         # Create mapping
         qbo_bill_id = int(local_qbo_bill.id) if isinstance(local_qbo_bill.id, str) else local_qbo_bill.id
         try:
-            mapping = self.create_mapping(bill_id=bill_id, qbo_bill_id=qbo_bill_id)
+            mapping = self.create_mapping(
+                bill_id=bill_id,
+                qbo_bill_id=qbo_bill_id,
+                qbo_id=local_qbo_bill.qbo_id,
+                realm_id=local_qbo_bill.realm_id or realm_id,
+                sync_token=getattr(local_qbo_bill, "sync_token", None),
+            )
             logger.info(f"Created mapping: Bill {bill_id} <-> QboBill {qbo_bill_id}")
         except ValueError as e:
             logger.warning(f"Could not create mapping: {e}")

@@ -417,3 +417,48 @@ BEGIN
     COMMIT TRANSACTION;
 END;
 GO
+
+CREATE OR ALTER PROCEDURE SetExpenseQboIdentity
+(
+    @Id BIGINT,
+    @QboId NVARCHAR(50),
+    @RealmId NVARCHAR(50),
+    @SyncToken NVARCHAR(50) = NULL
+)
+AS
+BEGIN
+    SET NOCOUNT ON;
+    DECLARE @Stolen BIT = 0;
+
+    IF @QboId IS NOT NULL
+    BEGIN
+        UPDATE dbo.[Expense]
+        SET [QboId] = NULL, [RealmId] = NULL, [SyncToken] = NULL, [ModifiedDatetime] = SYSUTCDATETIME()
+        WHERE [Id] <> @Id
+          AND [QboId] = @QboId
+          AND (([RealmId] = @RealmId) OR ([RealmId] IS NULL AND @RealmId IS NULL));
+
+        IF @@ROWCOUNT > 0
+            SET @Stolen = 1;
+    END
+
+    UPDATE dbo.[Expense]
+    SET
+        [QboId] = CASE WHEN @QboId IS NOT NULL THEN @QboId ELSE [QboId] END,
+        [RealmId] = CASE WHEN @RealmId IS NOT NULL THEN @RealmId ELSE [RealmId] END,
+        [SyncToken] = CASE WHEN @SyncToken IS NOT NULL THEN @SyncToken ELSE [SyncToken] END,
+        [ModifiedDatetime] = SYSUTCDATETIME()
+    OUTPUT
+        INSERTED.[Id],
+        INSERTED.[QboId],
+        INSERTED.[RealmId],
+        INSERTED.[SyncToken],
+        @Stolen AS [Stolen]
+    WHERE [Id] = @Id
+      AND (
+            (@QboId IS NOT NULL AND ([QboId] IS NULL OR [QboId] <> @QboId))
+         OR (@RealmId IS NOT NULL AND ([RealmId] IS NULL OR [RealmId] <> @RealmId))
+         OR (@SyncToken IS NOT NULL AND ([SyncToken] IS NULL OR [SyncToken] <> @SyncToken))
+      );
+END;
+GO

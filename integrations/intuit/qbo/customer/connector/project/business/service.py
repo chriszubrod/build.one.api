@@ -98,7 +98,7 @@ class CustomerProjectConnector:
             project = self.project_service.read_by_id(mapping.project_id)
             if project:
                 logger.info(f"Updating existing Project {project.id} from QboCustomer {qbo_customer.id}")
-                return self._apply_project_fields_and_sync(
+                updated = self._apply_project_fields_and_sync(
                     project,
                     qbo_customer=qbo_customer,
                     name=project_name,
@@ -106,6 +106,12 @@ class CustomerProjectConnector:
                     status=project_status,
                     customer_id=customer_id,
                 )
+                self.project_service.repo.set_qbo_identity(
+                    id=int(updated.id),
+                    qbo_id=qbo_customer.qbo_id,
+                    realm_id=qbo_customer.realm_id,
+                )
+                return updated
             else:
                 # Mapping exists but the bound Project is missing (a transient empty-read,
                 # or a renamed/deleted project). HEAL in place — do NOT delete-then-maybe-
@@ -137,6 +143,11 @@ class CustomerProjectConnector:
                             f'{qbo_customer.id} from missing Project {old_project_id} to Project '
                             f'{replacement.id} ({project_name})'
                         )
+                    self.project_service.repo.set_qbo_identity(
+                        id=int(replacement.id),
+                        qbo_id=qbo_customer.qbo_id,
+                        realm_id=qbo_customer.realm_id,
+                    )
                     return self._apply_project_fields_and_sync(
                         replacement,
                         qbo_customer=qbo_customer,
@@ -189,7 +200,12 @@ class CustomerProjectConnector:
                 f"Binding existing local Project {existing_local.id} ({project_name}) "
                 f"to QboCustomer {qbo_customer.id} by name match"
             )
-            self.create_mapping(project_id=existing_local.id, qbo_customer_id=qbo_customer.id)
+            self.create_mapping(
+                project_id=existing_local.id,
+                qbo_customer_id=qbo_customer.id,
+                qbo_id=qbo_customer.qbo_id,
+                realm_id=qbo_customer.realm_id,
+            )
             self._sync_addresses(qbo_customer, existing_local.id)
             return existing_local
 
@@ -210,7 +226,12 @@ class CustomerProjectConnector:
         # row can be retried next tick (with the orphaned Project now visible
         # to the name-match branch above).
         try:
-            mapping = self.create_mapping(project_id=project_id, qbo_customer_id=qbo_customer.id)
+            mapping = self.create_mapping(
+                project_id=project_id,
+                qbo_customer_id=qbo_customer.id,
+                qbo_id=qbo_customer.qbo_id,
+                realm_id=qbo_customer.realm_id,
+            )
             logger.info(f"Created mapping: Project {project_id} <-> QboCustomer {qbo_customer.id}")
         except ValueError as e:
             logger.error(
@@ -392,7 +413,14 @@ class CustomerProjectConnector:
             )
             logger.debug(f"Created ProjectAddress for Project {project_id}, Address {address_id}, Type {address_type_id}")
 
-    def create_mapping(self, project_id: int, qbo_customer_id: int) -> CustomerProject:
+    def create_mapping(
+        self,
+        project_id: int,
+        qbo_customer_id: int,
+        *,
+        qbo_id: Optional[str],
+        realm_id: Optional[str],
+    ) -> CustomerProject:
         """
         Create a mapping between Project and QboCustomer.
         
@@ -419,8 +447,16 @@ class CustomerProjectConnector:
                 f"QboCustomer {qbo_customer_id} is already mapped to Project {existing_by_qbo_customer.project_id}"
             )
         
-        # Create mapping
-        return self.mapping_repo.create(project_id=project_id, qbo_customer_id=qbo_customer_id)
+        # Stamp dbo-native identity FIRST — if this fails, nothing else has been
+        # created yet, so the caller's existing rollback (delete the just-created
+        # entity) fully cleans up with no orphaned mapping row.
+        self.project_service.repo.set_qbo_identity(
+            id=project_id,
+            qbo_id=qbo_id,
+            realm_id=realm_id,
+        )
+        mapping = self.mapping_repo.create(project_id=project_id, qbo_customer_id=qbo_customer_id)
+        return mapping
 
     def get_mapping_by_project_id(self, project_id: int) -> Optional[CustomerProject]:
         """
@@ -467,7 +503,12 @@ class CustomerProjectConnector:
                 existing_mapping=existing_mapping_for_local,
             )
             return None
-        self.create_mapping(project_id=existing_local.id, qbo_customer_id=qbo_customer.id)
+        self.create_mapping(
+            project_id=existing_local.id,
+            qbo_customer_id=qbo_customer.id,
+            qbo_id=qbo_customer.qbo_id,
+            realm_id=qbo_customer.realm_id,
+        )
         self._sync_addresses(qbo_customer, existing_local.id)
         logger.info(
             f'Auto-healed missing CustomerProject mapping: bound Project {existing_local.id} '

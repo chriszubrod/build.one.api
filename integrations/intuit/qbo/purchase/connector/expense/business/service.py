@@ -162,7 +162,13 @@ class PurchaseExpenseConnector:
         # otherwise the unmapped expense will be duplicated on every subsequent sync run.
         expense_id = int(expense.id) if isinstance(expense.id, str) else expense.id
         try:
-            mapping = self.create_mapping(expense_id=expense_id, qbo_purchase_id=qbo_purchase.id)
+            mapping = self.create_mapping(
+                expense_id=expense_id,
+                qbo_purchase_id=qbo_purchase.id,
+                qbo_id=qbo_purchase.qbo_id,
+                realm_id=qbo_purchase.realm_id,
+                sync_token=getattr(qbo_purchase, "sync_token", None),
+            )
             logger.info(f"Created mapping: Expense {expense_id} <-> QboPurchase {qbo_purchase.id}")
         except Exception as e:
             try:
@@ -234,6 +240,13 @@ class PurchaseExpenseConnector:
             memo=memo,
             is_draft=False,
             is_credit=qbo_purchase.credit or False,
+        )
+        expense_id = int(updated.id) if isinstance(updated.id, str) else updated.id
+        self.expense_service.repo.set_qbo_identity(
+            id=expense_id,
+            qbo_id=qbo_purchase.qbo_id,
+            realm_id=qbo_purchase.realm_id,
+            sync_token=getattr(qbo_purchase, "sync_token", None),
         )
         self._sync_line_items(updated.id, updated.public_id, qbo_purchase_lines, qbo_purchase.realm_id)
         return updated
@@ -359,7 +372,15 @@ class PurchaseExpenseConnector:
                 f"line item(s) failed to project: {failed_line_ids}"
             )
 
-    def create_mapping(self, expense_id: int, qbo_purchase_id: int) -> PurchaseExpense:
+    def create_mapping(
+        self,
+        expense_id: int,
+        qbo_purchase_id: int,
+        *,
+        qbo_id: Optional[str],
+        realm_id: Optional[str],
+        sync_token: Optional[str] = None,
+    ) -> PurchaseExpense:
         """
         Create a mapping between Expense and QboPurchase.
         
@@ -386,8 +407,17 @@ class PurchaseExpenseConnector:
                 f"QboPurchase {qbo_purchase_id} is already mapped to Expense {existing_by_qbo_purchase.expense_id}"
             )
         
-        # Create mapping
-        return self.mapping_repo.create(expense_id=expense_id, qbo_purchase_id=qbo_purchase_id)
+        # Stamp dbo-native identity FIRST — if this fails, nothing else has been
+        # created yet, so the caller's existing rollback (delete the just-created
+        # entity) fully cleans up with no orphaned mapping row.
+        self.expense_service.repo.set_qbo_identity(
+            id=expense_id,
+            qbo_id=qbo_id,
+            realm_id=realm_id,
+            sync_token=sync_token,
+        )
+        mapping = self.mapping_repo.create(expense_id=expense_id, qbo_purchase_id=qbo_purchase_id)
+        return mapping
 
     def get_mapping_by_expense_id(self, expense_id: int) -> Optional[PurchaseExpense]:
         """

@@ -517,3 +517,45 @@ BEGIN
     WHERE r.rn = 1
     ORDER BY r.Confidence DESC, p.[Name] ASC;
 END;
+GO
+
+CREATE OR ALTER PROCEDURE SetProjectQboIdentity
+(
+    @Id BIGINT,
+    @QboId NVARCHAR(50),
+    @RealmId NVARCHAR(50)
+)
+AS
+BEGIN
+    SET NOCOUNT ON;
+    DECLARE @Stolen BIT = 0;
+
+    IF @QboId IS NOT NULL
+    BEGIN
+        UPDATE dbo.[Project]
+        SET [QboId] = NULL, [RealmId] = NULL, [ModifiedDatetime] = SYSUTCDATETIME()
+        WHERE [Id] <> @Id
+          AND [QboId] = @QboId
+          AND (([RealmId] = @RealmId) OR ([RealmId] IS NULL AND @RealmId IS NULL));
+
+        IF @@ROWCOUNT > 0
+            SET @Stolen = 1;
+    END
+
+    UPDATE dbo.[Project]
+    SET
+        [QboId] = CASE WHEN @QboId IS NOT NULL THEN @QboId ELSE [QboId] END,
+        [RealmId] = CASE WHEN @RealmId IS NOT NULL THEN @RealmId ELSE [RealmId] END,
+        [ModifiedDatetime] = SYSUTCDATETIME()
+    OUTPUT
+        INSERTED.[Id],
+        INSERTED.[QboId],
+        INSERTED.[RealmId],
+        @Stolen AS [Stolen]
+    WHERE [Id] = @Id
+      AND (
+            (@QboId IS NOT NULL AND ([QboId] IS NULL OR [QboId] <> @QboId))
+         OR (@RealmId IS NOT NULL AND ([RealmId] IS NULL OR [RealmId] <> @RealmId))
+      );
+END;
+GO

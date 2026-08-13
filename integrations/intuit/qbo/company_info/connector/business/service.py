@@ -158,7 +158,12 @@ class CompanyInfoCompanyConnector:
             # Create new mapping if needed
             if not mapping:
                 try:
-                    mapping = self.create_mapping(company_id_int, qbo_company_info_id)
+                    mapping = self.create_mapping(
+                        company_id_int,
+                        qbo_company_info_id,
+                        qbo_id=qbo_company_info.qbo_id,
+                        realm_id=qbo_company_info.realm_id or realm_id,
+                    )
                     logger.info(f"Created mapping: Company {company_id_int} <-> QboCompanyInfo {qbo_company_info_id}")
                 except ValueError as e:
                     logger.warning(f"Could not create mapping: {e}")
@@ -331,7 +336,14 @@ class CompanyInfoCompanyConnector:
         
         return qbo_company_info
 
-    def create_mapping(self, company_id: int, qbo_company_info_id: int) -> CompanyInfoCompany:
+    def create_mapping(
+        self,
+        company_id: int,
+        qbo_company_info_id: int,
+        *,
+        qbo_id: Optional[str],
+        realm_id: Optional[str],
+    ) -> CompanyInfoCompany:
         """
         Create a mapping between Company and QboCompanyInfo.
         
@@ -358,8 +370,16 @@ class CompanyInfoCompanyConnector:
                 f"QboCompanyInfo {qbo_company_info_id} is already mapped to Company {existing_by_qbo.company_id}"
             )
         
-        # Create mapping
-        return self.mapping_repo.create(company_id=company_id, qbo_company_info_id=qbo_company_info_id)
+        # Stamp dbo-native identity FIRST — if this fails, nothing else has been
+        # created yet, so the caller's existing rollback (delete the just-created
+        # entity) fully cleans up with no orphaned mapping row.
+        self.company_service.repo.set_qbo_identity(
+            id=company_id,
+            qbo_id=qbo_id,
+            realm_id=realm_id,
+        )
+        mapping = self.mapping_repo.create(company_id=company_id, qbo_company_info_id=qbo_company_info_id)
+        return mapping
 
     def get_mapping_by_company_id(self, company_id: int) -> Optional[CompanyInfoCompany]:
         """

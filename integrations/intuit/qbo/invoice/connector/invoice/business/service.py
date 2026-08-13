@@ -142,6 +142,13 @@ class InvoiceInvoiceConnector:
                     memo=memo,
                     is_draft=False,
                 )
+                invoice_id = int(invoice.id) if isinstance(invoice.id, str) else invoice.id
+                self.invoice_service.repo.set_qbo_identity(
+                    id=invoice_id,
+                    qbo_id=qbo_invoice.qbo_id,
+                    realm_id=qbo_invoice.realm_id,
+                    sync_token=getattr(qbo_invoice, "sync_token", None),
+                )
                 # Update invoice cache with fresh record
                 if self._invoice_cache is not None:
                     self._invoice_cache[invoice.id] = invoice
@@ -221,7 +228,13 @@ class InvoiceInvoiceConnector:
                     from entities.invoice_line_item.business.service import InvoiceLineItemService
                     had_lines = bool(InvoiceLineItemService().read_by_invoice_id(int(existing_local.id)))
                     if not existing_map:
-                        self.create_mapping(invoice_id=int(existing_local.id), qbo_invoice_id=qbo_invoice.id)
+                        self.create_mapping(
+                            invoice_id=int(existing_local.id),
+                            qbo_invoice_id=qbo_invoice.id,
+                            qbo_id=qbo_invoice.qbo_id,
+                            realm_id=qbo_invoice.realm_id,
+                            sync_token=getattr(qbo_invoice, "sync_token", None),
+                        )
                     # Preserve a human-corrected number here too: re-adopting a RENAMED invoice
                     # must not overwrite its number back to the QBO-derived value (that would
                     # re-clobber the very edit the fingerprint let us find). Placeholder/empty
@@ -239,6 +252,13 @@ class InvoiceInvoiceConnector:
                         total_amount=Decimal(str(total_amount)) if total_amount is not None else None,
                         memo=memo,
                         is_draft=False,
+                    )
+                    updated_id = int(updated.id) if isinstance(updated.id, str) else updated.id
+                    self.invoice_service.repo.set_qbo_identity(
+                        id=updated_id,
+                        qbo_id=qbo_invoice.qbo_id,
+                        realm_id=qbo_invoice.realm_id,
+                        sync_token=getattr(qbo_invoice, "sync_token", None),
                     )
                     if self._invoice_cache is not None:
                         self._invoice_cache[updated.id] = updated
@@ -280,7 +300,13 @@ class InvoiceInvoiceConnector:
         # Create mapping
         invoice_id = int(invoice.id) if isinstance(invoice.id, str) else invoice.id
         try:
-            mapping = self.create_mapping(invoice_id=invoice_id, qbo_invoice_id=qbo_invoice.id)
+            mapping = self.create_mapping(
+                invoice_id=invoice_id,
+                qbo_invoice_id=qbo_invoice.id,
+                qbo_id=qbo_invoice.qbo_id,
+                realm_id=qbo_invoice.realm_id,
+                sync_token=getattr(qbo_invoice, "sync_token", None),
+            )
             logger.info(f"Created mapping: Invoice {invoice_id} <-> QboInvoice {qbo_invoice.id}")
         except ValueError as e:
             # Do NOT leave an orphan invoice with no mapping — that is exactly how the phantom -N
@@ -520,7 +546,15 @@ class InvoiceInvoiceConnector:
                 # U-006). Do not change this to raise without adding rollback_orphan_header there.
                 logger.error(f"Failed to sync QboInvoiceLine {qbo_line.id} to InvoiceLineItem: {e}")
 
-    def create_mapping(self, invoice_id: int, qbo_invoice_id: int) -> InvoiceInvoice:
+    def create_mapping(
+        self,
+        invoice_id: int,
+        qbo_invoice_id: int,
+        *,
+        qbo_id: Optional[str],
+        realm_id: Optional[str],
+        sync_token: Optional[str] = None,
+    ) -> InvoiceInvoice:
         """
         Create a mapping between Invoice and QboInvoice.
         
@@ -548,6 +582,15 @@ class InvoiceInvoiceConnector:
                     f"QboInvoice {qbo_invoice_id} is already mapped to Invoice {existing_by_qbo_invoice.invoice_id}"
                 )
 
+        # Stamp dbo-native identity FIRST — if this fails, nothing else has been
+        # created yet, so the caller's existing rollback (delete the just-created
+        # entity) fully cleans up with no orphaned mapping row.
+        self.invoice_service.repo.set_qbo_identity(
+            id=invoice_id,
+            qbo_id=qbo_id,
+            realm_id=realm_id,
+            sync_token=sync_token,
+        )
         # Create mapping and update cache
         new_mapping = self.mapping_repo.create(invoice_id=invoice_id, qbo_invoice_id=qbo_invoice_id)
         self._invoice_mapping_cache[qbo_invoice_id] = new_mapping
@@ -828,7 +871,13 @@ class InvoiceInvoiceConnector:
         # Create InvoiceInvoice mapping
         qbo_invoice_id_local = int(local_qbo_invoice.id) if isinstance(local_qbo_invoice.id, str) else local_qbo_invoice.id
         try:
-            self.create_mapping(invoice_id=invoice_id, qbo_invoice_id=qbo_invoice_id_local)
+            self.create_mapping(
+                invoice_id=invoice_id,
+                qbo_invoice_id=qbo_invoice_id_local,
+                qbo_id=local_qbo_invoice.qbo_id,
+                realm_id=local_qbo_invoice.realm_id or realm_id,
+                sync_token=getattr(local_qbo_invoice, "sync_token", None),
+            )
             logger.info(f"Created mapping: Invoice {invoice_id} <-> QboInvoice {qbo_invoice_id_local}")
         except ValueError as e:
             logger.warning(f"Could not create InvoiceInvoice mapping: {e}")

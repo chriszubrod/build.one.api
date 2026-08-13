@@ -201,7 +201,7 @@ class QboHttpClient:
             json_body=None,
             files=None,
             idempotency_key=None,
-            policy=RetryPolicy.for_reads(),
+            policy=RetryPolicy.for_reads(timeout_tier=timeout_tier),
             timeout_tier=timeout_tier,
             include_requestid=False,
             operation_name=operation_name,
@@ -225,7 +225,7 @@ class QboHttpClient:
             json_body=json,
             files=None,
             idempotency_key=idempotency_key,
-            policy=RetryPolicy.for_writes(),
+            policy=RetryPolicy.for_writes(timeout_tier=timeout_tier),
             timeout_tier=timeout_tier,
             include_requestid=True,
             operation_name=operation_name,
@@ -283,7 +283,7 @@ class QboHttpClient:
             json_body=json,
             files=None,
             idempotency_key=idempotency_key,
-            policy=RetryPolicy.for_writes(),
+            policy=RetryPolicy.for_writes(timeout_tier=timeout_tier),
             timeout_tier=timeout_tier,
             include_requestid=True,
             operation_name=operation_name,
@@ -348,6 +348,12 @@ class QboHttpClient:
     ) -> Dict[str, Any]:
         correlation_id = ensure_correlation_id()
 
+        # For get/post/put, an invalid timeout_tier already raised inside the
+        # RetryPolicy.for_reads/for_writes(timeout_tier=...) call the caller made
+        # to build `policy` before calling this method (retry.py's _budget_for_tier
+        # validates the same tier set) -- this check is a backstop for those three,
+        # and the ONLY validator for post_multipart, whose for_uploads_single()
+        # policy doesn't take a tier.
         if timeout_tier not in _TIMEOUT_TIERS:
             raise ValueError(f"Unknown timeout_tier: {timeout_tier!r} (expected 'A', 'B', or 'C')")
         timeout = _TIMEOUT_TIERS[timeout_tier]

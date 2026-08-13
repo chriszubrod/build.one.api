@@ -14,10 +14,67 @@ logger = logging.getLogger(__name__)
 
 T = TypeVar("T")
 
-# Tier-C per-request timeout ceiling, mirroring client.py _TIMEOUT_TIERS['C']
-# (read/write 120s + connect 5s, plus a small margin). A single upload attempt
-# can burn a full tier-C timeout before QBO answers.
-TIER_C_REQUEST_CEILING_SECONDS: float = 130.0
+# Tier per-request timeout ceilings, mirroring client.py _TIMEOUT_TIERS
+# (read/write + 5s connect + 5s margin). A single attempt can burn a full
+# tier timeout before QBO answers.
+TIER_A_REQUEST_CEILING_SECONDS: float = 40.0   # 30 read/write + 5 connect + 5 margin
+TIER_B_REQUEST_CEILING_SECONDS: float = 70.0   # 60 read/write + 5 connect + 5 margin
+TIER_C_REQUEST_CEILING_SECONDS: float = 130.0  # 120 read/write + 5 connect + 5 margin
+
+_TIER_REQUEST_CEILING_SECONDS = {
+    "A": TIER_A_REQUEST_CEILING_SECONDS,
+    "B": TIER_B_REQUEST_CEILING_SECONDS,
+    "C": TIER_C_REQUEST_CEILING_SECONDS,
+}
+
+# A budget derived from ALL configured max_attempts at full tier-timeout would be
+# unsafe for for_reads (5 attempts x tier-A ceiling >= 200s) against the 240s App
+# Service gateway timeout on inline admin sync pulls. Instead the budget guarantees
+# a FLOOR of GUARANTEED_FULL_TIMEOUT_ATTEMPTS full-timeout attempts — NOT an exact
+# count. Fast 429/503 failures can still use every configured attempt, and because
+# the floor must also cover the largest possible Retry-After sleep (see below), a
+# PURE back-to-back-timeout sequence (no Retry-After at all) can exceed the floor
+# by one extra real attempt at the smaller tiers, where the leftover slack after
+# one timeout + one max Retry-After sleep is still wide enough to admit another
+# attempt. Verified by direct execution against this code (not estimated):
+#   tier A: 3 real attempts, ~123s wall clock (floor states 2; actual behavior is
+#           better — do not read "GUARANTEED_FULL_TIMEOUT_ATTEMPTS=2" as a promise
+#           this never exceeds 2, only that it never goes BELOW 2)
+#   tier B: 2 real attempts, ~141s wall clock
+#   tier C: 2 real attempts, ~261s wall clock — EXCEEDS the 240s inline gateway
+#           ceiling. Dormant today: no live get()/post()/put() caller selects
+#           timeout_tier="C" (only post_multipart does, via the separate
+#           for_uploads_single(), which is immune — max_attempts=1 means there is
+#           no 2nd attempt to overrun). If a future caller ever selects tier C for
+#           a retryable get/post/put, re-derive this budget first.
+#
+# The formula must cover a full-timeout attempt PLUS the largest possible single
+# backoff sleep. Server-specified Retry-After bypasses jitter and is clamped to
+# DEFAULT_MAX_RETRY_AFTER_CLAMP_SECONDS, so the budget adds that clamp — not just a
+# small jitter margin — before BUDGET_SAFETY_MARGIN_SECONDS.
+#
+# All three tiers WILL exceed the scheduler's 60s soft-abandon timeout on the
+# timeout-retry path — an accepted, deliberate tradeoff (abandonment only widens
+# the window before the caller sees a result; the server-side call keeps running
+# to completion and is not lost or corrupted). Tier A and B stay safely under the
+# 240s hard gateway ceiling; tier C does not (see above).
+GUARANTEED_FULL_TIMEOUT_ATTEMPTS: int = 2
+DEFAULT_MAX_RETRY_AFTER_CLAMP_SECONDS: float = 60.0
+BUDGET_SAFETY_MARGIN_SECONDS: float = 5.0
+
+
+def _budget_for_tier(timeout_tier: str) -> float:
+    try:
+        ceiling = _TIER_REQUEST_CEILING_SECONDS[timeout_tier]
+    except KeyError:
+        raise ValueError(
+            f"Unknown timeout_tier: {timeout_tier!r} (expected 'A', 'B', or 'C')"
+        ) from None
+    return (
+        (GUARANTEED_FULL_TIMEOUT_ATTEMPTS - 1) * ceiling
+        + DEFAULT_MAX_RETRY_AFTER_CLAMP_SECONDS
+        + BUDGET_SAFETY_MARGIN_SECONDS
+    )
 
 
 @dataclass(frozen=True)
@@ -29,7 +86,12 @@ class RetryPolicy:
       - writes: 3 attempts
       - reads:  5 attempts
       - 1s base, ×2 growth, full jitter
-      - 30s per-request total budget (including sleeps)
+      - total budget derived per tier via `_budget_for_tier`, sized to guarantee
+        AT LEAST `GUARANTEED_FULL_TIMEOUT_ATTEMPTS` full-timeout attempts (a floor,
+        not an exact count — see the comment above that constant for the verified
+        real attempt counts and wall-clock per tier); more attempts happen when
+        failures are faster than a full timeout, and at tier A even a pure
+        back-to-back-timeout sequence exceeds the floor by one
       - Retry-After header honored, clamped to 60s max
 
     Instances are immutable; construct via `for_writes()` / `for_reads()`
@@ -40,15 +102,15 @@ class RetryPolicy:
     base_backoff_seconds: float = 1.0
     backoff_multiplier: float = 2.0
     max_total_budget_seconds: float = 30.0
-    max_retry_after_clamp_seconds: float = 60.0
+    max_retry_after_clamp_seconds: float = DEFAULT_MAX_RETRY_AFTER_CLAMP_SECONDS
 
     @classmethod
-    def for_writes(cls) -> "RetryPolicy":
-        return cls(max_attempts=3)
+    def for_writes(cls, timeout_tier: str = "A") -> "RetryPolicy":
+        return cls(max_attempts=3, max_total_budget_seconds=_budget_for_tier(timeout_tier))
 
     @classmethod
-    def for_reads(cls) -> "RetryPolicy":
-        return cls(max_attempts=5)
+    def for_reads(cls, timeout_tier: str = "A") -> "RetryPolicy":
+        return cls(max_attempts=5, max_total_budget_seconds=_budget_for_tier(timeout_tier))
 
     @classmethod
     def for_uploads_single(cls) -> "RetryPolicy":

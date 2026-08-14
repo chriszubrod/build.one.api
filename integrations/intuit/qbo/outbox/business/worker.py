@@ -17,6 +17,7 @@ from integrations.intuit.qbo.base.errors import (
     QboError,
     QboSyncTokenMismatchError,
     QboWriteRefusedError,
+    is_retryable_error,
 )
 from integrations.intuit.qbo.base.locking import qbo_app_lock
 from integrations.intuit.qbo.base.retry import RetryPolicy, compute_backoff_seconds
@@ -300,17 +301,7 @@ class QboOutboxWorker:
             self._handle_qbo_error(row, error)
             return
         except Exception as error:
-            # Unexpected non-QboError — treat as non-retryable failure.
-            logger.exception(
-                "qbo.outbox.row.unexpected_error",
-                extra={
-                    "event_name": "qbo.outbox.row.unexpected_error",
-                    "correlation_id": row.correlation_id,
-                    "outbox_public_id": row.public_id,
-                    "error_class": type(error).__name__,
-                },
-            )
-            self._dead_letter(row, f"Unexpected {type(error).__name__}: {error}")
+            self._handle_unexpected_error(row, error)
             return
 
         # Success
@@ -401,6 +392,73 @@ class QboOutboxWorker:
             self._dead_letter(row, f"{type(error).__name__}: {error}")
             return
 
+        self._schedule_retry_or_dead_letter(
+            row,
+            last_error=f"{type(error).__name__}: {error}",
+            error_class_name=type(error).__name__,
+            retry_after_seconds=error.retry_after_seconds,
+            extra_log_fields={"qbo_fault_code": error.code},
+        )
+
+    def _handle_unexpected_error(self, row: QboOutbox, error: Exception) -> None:
+        """
+        Retry or dead-letter a non-QboError handler failure.
+
+        Asymmetry: a wrong retry costs at most MAX_ATTEMPTS bounded,
+        idempotency-keyed attempts (a QBO call that already landed dedups via
+        the row's RequestId rather than duplicating); a wrong dead-letter
+        permanently strands a money-path push until a human runs
+        scripts/retry_qbo_outbox_dead_letters.py — so an unknown/unclassified
+        exception should retry. See the three-rule policy below (mirrored from
+        base/sync_outcome.py::record_projection_error, the other caller of
+        is_retryable_error) for how "unknown" is distinguished from
+        "confirmed permanent."
+        """
+        logger.exception(
+            "qbo.outbox.row.unexpected_error",
+            extra={
+                "event_name": "qbo.outbox.row.unexpected_error",
+                "correlation_id": row.correlation_id,
+                "outbox_public_id": row.public_id,
+                "error_class": type(error).__name__,
+            },
+        )
+        last_error = f"Unexpected {type(error).__name__}: {error}"
+
+        # Mirrors base/sync_outcome.py::record_projection_error's hold-vs-skip policy
+        # for this same classifier: retryable errors retry; a plain ValueError is the
+        # connectors' permanent-data-issue convention and dead-letters; anything else
+        # is unrecognized and, per the retry/dead-letter asymmetry above, retries
+        # rather than risk permanently stranding a transient failure that simply
+        # didn't match a known transient signature.
+        permanent_data_issue = isinstance(error, ValueError) and not is_retryable_error(error)
+        if permanent_data_issue:
+            self._dead_letter(row, last_error)
+            return
+
+        self._schedule_retry_or_dead_letter(
+            row,
+            last_error=last_error,
+            error_class_name=type(error).__name__,
+        )
+
+    def _schedule_retry_or_dead_letter(
+        self,
+        row: QboOutbox,
+        *,
+        last_error: str,
+        error_class_name: str,
+        retry_after_seconds: Optional[float] = None,
+        extra_log_fields: Optional[dict] = None,
+    ) -> None:
+        """
+        Schedule the next attempt with backoff, or dead-letter once MAX_ATTEMPTS
+        is exhausted. Shared tail for every already-decided-retryable failure
+        (QboError.is_retryable, and _handle_unexpected_error's classification).
+        """
+        attempts_so_far = (row.attempts or 0) + 1
+        next_attempt = attempts_so_far + 1
+
         if next_attempt > MAX_ATTEMPTS:
             logger.error(
                 "qbo.outbox.row.retry_exhausted",
@@ -410,17 +468,16 @@ class QboOutboxWorker:
                     "outbox_public_id": row.public_id,
                     "attempts": attempts_so_far,
                     "max_attempts": MAX_ATTEMPTS,
-                    "error_class": type(error).__name__,
+                    "error_class": error_class_name,
                 },
             )
-            self._dead_letter(row, f"Retries exhausted after {attempts_so_far}: {error}")
+            self._dead_letter(row, f"Retries exhausted after {attempts_so_far}: {last_error}")
             return
 
-        # Retryable: schedule next attempt with backoff.
         backoff_seconds = compute_backoff_seconds(
             attempt=attempts_so_far,
             policy=self._retry_policy,
-            retry_after_seconds=error.retry_after_seconds,
+            retry_after_seconds=retry_after_seconds,
         )
         next_retry_at = datetime.now(timezone.utc) + timedelta(seconds=backoff_seconds)
 
@@ -428,22 +485,21 @@ class QboOutboxWorker:
             id=row.id,
             row_version=row.row_version,
             next_retry_at=next_retry_at,
-            last_error=f"{type(error).__name__}: {error}",
+            last_error=last_error,
         )
-        logger.warning(
-            "qbo.outbox.row.retry_scheduled",
-            extra={
-                "event_name": "qbo.outbox.row.retry_scheduled",
-                "correlation_id": row.correlation_id,
-                "outbox_public_id": row.public_id,
-                "attempts": attempts_so_far,
-                "next_attempt": next_attempt,
-                "sleep_seconds": backoff_seconds,
-                "next_retry_at": next_retry_at.isoformat(),
-                "error_class": type(error).__name__,
-                "qbo_fault_code": error.code,
-            },
-        )
+        log_fields = {
+            "event_name": "qbo.outbox.row.retry_scheduled",
+            "correlation_id": row.correlation_id,
+            "outbox_public_id": row.public_id,
+            "attempts": attempts_so_far,
+            "next_attempt": next_attempt,
+            "sleep_seconds": backoff_seconds,
+            "next_retry_at": next_retry_at.isoformat(),
+            "error_class": error_class_name,
+        }
+        if extra_log_fields:
+            log_fields.update(extra_log_fields)
+        logger.warning("qbo.outbox.row.retry_scheduled", extra=log_fields)
 
     def _dead_letter(self, row: QboOutbox, last_error: str) -> None:
         self.repo.mark_dead_letter(

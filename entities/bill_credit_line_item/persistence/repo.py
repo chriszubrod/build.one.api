@@ -244,3 +244,41 @@ class BillCreditLineItemRepository:
         except Exception as error:
             logger.error(f"Error during delete bill credit line item by ID: {error}")
             raise map_database_error(error)
+
+    def set_qbo_identity(
+        self,
+        *,
+        id: int,
+        qbo_id: Optional[str],
+        realm_id: Optional[str],
+    ) -> None:
+        """Stamp dbo-native QBO identity columns (idempotent-safe via CASE WHEN sproc)."""
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(
+                    cursor=cursor,
+                    name="SetBillCreditLineItemQboIdentity",
+                    params={
+                        "Id": id,
+                        "QboId": qbo_id,
+                        "RealmId": realm_id,
+                    },
+                )
+                row = cursor.fetchone()
+                if row and getattr(row, "Stolen", False):
+                    logger.warning(
+                        "BillCreditLineItem %s stole QBO identity (qbo_id=%s realm_id=%s) from a "
+                        "different BillCreditLineItem row under the same BillCredit — a stale "
+                        "duplicate identity existed before this stamp",
+                        id, qbo_id, realm_id,
+                    )
+        except Exception as error:
+            logger.error(
+                "Error stamping BillCreditLineItem QBO identity (bill_credit_line_item_id=%s qbo_id=%s realm_id=%s): %s",
+                id,
+                qbo_id,
+                realm_id,
+                error,
+            )
+            raise map_database_error(error)

@@ -68,6 +68,7 @@ def test_preserve_stored_value(default_value, qbo_value, stored_value, expected)
 def _make_qbo_line(
     *,
     line_id=101,
+    qbo_line_id="1",
     description="Materials",
     amount=Decimal("300"),
     qty=None,
@@ -81,7 +82,7 @@ def _make_qbo_line(
         created_datetime=None,
         modified_datetime=None,
         qbo_purchase_id=1,
-        qbo_line_id="1",
+        qbo_line_id=qbo_line_id,
         line_num=1,
         description=description,
         amount=amount,
@@ -130,6 +131,7 @@ def _build_connector():
     mapping_repo.read_by_expense_line_item_id.return_value = None
     expense_line_item_service = Mock()
     expense_line_item_service.read_by_expense_id.return_value = []
+    expense_line_item_service.repo = Mock()
     connector = PurchaseLineExpenseLineItemConnector(
         mapping_repo=mapping_repo,
         expense_line_item_service=expense_line_item_service,
@@ -339,4 +341,58 @@ def test_fingerprint_tier2_adopts_post_fix_stored_shape():
     mapping_repo.create.assert_called_once_with(
         expense_line_item_id=88,
         qbo_purchase_line_id=999,
+    )
+
+
+def test_sync_from_qbo_purchase_line_identity_stamp_failure_does_not_delete_line_item():
+    """U-238b fix-round: stamp failure after successful mapping must not roll back the line item."""
+    connector, mapping_repo, eli_svc = _build_connector()
+    created = _make_line_item(line_item_id=50, public_id="eli-pub-50")
+    eli_svc.create.return_value = created
+    mapping_repo.create.return_value = SimpleNamespace(id=1, expense_line_item_id=50)
+    eli_svc.repo.set_qbo_identity.side_effect = RuntimeError("stamp failed")
+
+    qbo_line = _make_qbo_line(line_id=101, qbo_line_id="QBO-LINE-REAL")
+
+    result = connector.sync_from_qbo_purchase_line(10, "exp-pub", qbo_line, realm_id="realm-1")
+
+    assert result.id == 50
+    eli_svc.delete_by_public_id.assert_not_called()
+
+
+def test_sync_from_qbo_purchase_line_create_path_dual_writes_identity():
+    """U-238b: create branch stamps dbo QboId with the real QboLineId string, not staging surrogate id."""
+    connector, mapping_repo, eli_svc = _build_connector()
+    created = _make_line_item(line_item_id=50)
+    eli_svc.create.return_value = created
+    mapping_repo.create.return_value = SimpleNamespace(id=1, expense_line_item_id=50)
+
+    qbo_line = _make_qbo_line(line_id=101, qbo_line_id="QBO-LINE-REAL")
+
+    connector.sync_from_qbo_purchase_line(10, "exp-pub", qbo_line, realm_id="realm-create")
+
+    eli_svc.repo.set_qbo_identity.assert_called_once_with(
+        id=50,
+        qbo_id="QBO-LINE-REAL",
+        realm_id="realm-create",
+    )
+
+
+def test_sync_from_qbo_purchase_line_update_path_dual_writes_identity():
+    """U-238b: update branch re-stamps dbo identity on every pull."""
+    connector, mapping_repo, eli_svc = _build_connector()
+    mapping = SimpleNamespace(id=1, expense_line_item_id=50)
+    line_item = _make_line_item(line_item_id=50)
+    mapping_repo.read_by_qbo_purchase_line_id.return_value = mapping
+    eli_svc.read_by_id.return_value = line_item
+    eli_svc.update_by_public_id.return_value = line_item
+
+    qbo_line = _make_qbo_line(line_id=101, qbo_line_id="QBO-LINE-UPD")
+
+    connector.sync_from_qbo_purchase_line(10, "exp-pub", qbo_line, realm_id="realm-update")
+
+    eli_svc.repo.set_qbo_identity.assert_called_once_with(
+        id=50,
+        qbo_id="QBO-LINE-UPD",
+        realm_id="realm-update",
     )

@@ -19,6 +19,7 @@ from entities.bill_line_item.business.service import BillLineItemService
 from entities.bill_line_item.business.model import BillLineItem
 from entities.bill.business.service import BillService
 from entities.project.business.service import ProjectService
+from integrations.intuit.qbo.base.identity_drift import stamp_line_identity_or_warn
 
 logger = logging.getLogger(__name__)
 
@@ -180,6 +181,14 @@ class BillLineItemConnector:
                     is_draft=False,
                     row_version=line_item.row_version,
                 )
+                # U-238b: dbo line identity dual-write (create+update pairing for U-238c).
+                stamp_line_identity_or_warn(
+                    self.bill_line_item_service.repo,
+                    id=int(line_item.id),
+                    qbo_id=qbo_bill_line.qbo_line_id,
+                    realm_id=realm_id,
+                    context=f"Updated BillLineItem {line_item.id}",
+                )
                 return line_item
             else:
                 # Mapping exists but BillLineItem not found - recreate
@@ -220,7 +229,17 @@ class BillLineItemConnector:
             logger.info(f"Created mapping: BillLineItem {line_item_id} <-> QboBillLine {qbo_bill_line.id}")
         except ValueError as e:
             logger.warning(f"Could not create mapping: {e}")
-        
+
+        # U-238b: dbo line identity dual-write (create+update pairing for U-238c).
+        # Mapping is already committed — a stamp failure must NOT roll back the line item.
+        stamp_line_identity_or_warn(
+            self.bill_line_item_service.repo,
+            id=line_item_id,
+            qbo_id=qbo_bill_line.qbo_line_id,
+            realm_id=realm_id,
+            context=f"Created mapping for BillLineItem {line_item_id} for QboBillLine {qbo_bill_line.id}",
+        )
+
         return line_item
 
     # One of FOUR near-identical QBO customer-ref -> Project resolvers (invoice /

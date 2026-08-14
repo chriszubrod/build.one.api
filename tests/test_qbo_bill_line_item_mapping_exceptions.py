@@ -32,9 +32,10 @@ def _unique_violation() -> DatabaseConstraintError:
     return error
 
 
-def _make_qbo_bill_line(*, line_id=1, amount=Decimal("108.82")):
+def _make_qbo_bill_line(*, line_id=1, qbo_line_id="QBO-LINE-1", amount=Decimal("108.82")):
     return SimpleNamespace(
         id=line_id,
+        qbo_line_id=qbo_line_id,
         description="Service Charge",
         amount=amount,
         qty=None,
@@ -59,6 +60,7 @@ def _build_connector():
     bill_line_item_service = Mock()
     bill_line_item_service.read_by_bill_id.return_value = []  # no unmapped lines (Shape B miss)
     bill_line_item_service.create.return_value = SimpleNamespace(id=200, public_id="bli-pub-1")
+    bill_line_item_service.repo = Mock()
 
     connector = BillLineItemConnector(
         mapping_repo=mapping_repo,
@@ -96,3 +98,65 @@ def test_sync_from_qbo_bill_line_database_constraint_error_from_create_mapping_p
 
     with pytest.raises(DatabaseConstraintError):
         connector.sync_from_qbo_bill_line(100, _make_qbo_bill_line())
+
+
+def test_sync_from_qbo_bill_line_create_path_dual_writes_identity():
+    """U-238b: create branch stamps dbo QboId with the real QboLineId string, not staging surrogate id."""
+    connector, mapping_repo = _build_connector()
+    mapping_repo.create.return_value = SimpleNamespace(id=1)
+
+    connector.sync_from_qbo_bill_line(
+        100,
+        _make_qbo_bill_line(line_id=1, qbo_line_id="QBO-LINE-REAL"),
+        realm_id="realm-create",
+    )
+
+    connector.bill_line_item_service.repo.set_qbo_identity.assert_called_once_with(
+        id=200,
+        qbo_id="QBO-LINE-REAL",
+        realm_id="realm-create",
+    )
+
+
+def test_sync_from_qbo_bill_line_identity_stamp_failure_does_not_propagate():
+    """
+    U-238b fix-round 2 regression: a set_qbo_identity failure on the CREATE path must not
+    propagate out of sync_from_qbo_bill_line — create_mapping already committed by that point,
+    and an uncaught DatabaseError here (set_qbo_identity never raises ValueError) would reach
+    BillBillConnector._sync_line_items' per-line RuntimeError aggregation, which on the
+    NEW-BILL path triggers rollback_orphan_header and deletes the just-created, already-mapped
+    Bill + BillLineItem over a purely cosmetic identity-cache write failure.
+    """
+    connector, mapping_repo = _build_connector()
+    mapping_repo.create.return_value = SimpleNamespace(id=1)
+    connector.bill_line_item_service.repo.set_qbo_identity.side_effect = _unique_violation()
+
+    result = connector.sync_from_qbo_bill_line(
+        100,
+        _make_qbo_bill_line(line_id=1, qbo_line_id="QBO-LINE-REAL"),
+        realm_id="realm-create",
+    )
+
+    assert result.id == 200  # returns normally; stamp failure is swallowed-and-warned, not raised
+
+
+def test_sync_from_qbo_bill_line_update_path_dual_writes_identity():
+    """U-238b: update branch re-stamps dbo identity on every pull."""
+    connector, mapping_repo = _build_connector()
+    mapping = SimpleNamespace(id=10, bill_line_item_id=200)
+    line_item = SimpleNamespace(id=200, public_id="bli-pub-1", row_version="rv")
+    mapping_repo.read_by_qbo_bill_line_id.return_value = mapping
+    connector.bill_line_item_service.read_by_id.return_value = line_item
+    connector.bill_line_item_service.update_by_public_id.return_value = line_item
+
+    connector.sync_from_qbo_bill_line(
+        100,
+        _make_qbo_bill_line(line_id=1, qbo_line_id="QBO-LINE-UPD"),
+        realm_id="realm-update",
+    )
+
+    connector.bill_line_item_service.repo.set_qbo_identity.assert_called_once_with(
+        id=200,
+        qbo_id="QBO-LINE-UPD",
+        realm_id="realm-update",
+    )

@@ -12,6 +12,7 @@ from entities.bill_credit_line_item.business.service import BillCreditLineItemSe
 from entities.bill_credit_line_item.business.model import BillCreditLineItem
 from entities.project.business.service import ProjectService
 from entities.sub_cost_code.business.service import SubCostCodeService
+from integrations.intuit.qbo.base.identity_drift import stamp_line_identity_or_warn
 
 logger = logging.getLogger(__name__)
 
@@ -101,7 +102,7 @@ class VendorCreditLineItemConnector:
                     logger.warning(f"Could not adopt orphaned BillCreditLineItem {orphan.id}: {e}")
 
         if existing is not None:
-            return self.bill_credit_line_item_service.update_by_public_id(
+            line_item = self.bill_credit_line_item_service.update_by_public_id(
                 existing.public_id,
                 row_version=existing.row_version,
                 sub_cost_code_id=sub_cost_code_id,
@@ -115,6 +116,15 @@ class VendorCreditLineItemConnector:
                 billable_amount=billable_amount,
                 is_draft=False,
             )
+            # U-238b: dbo line identity dual-write (create+update pairing for U-238c).
+            stamp_line_identity_or_warn(
+                self.bill_credit_line_item_service.repo,
+                id=int(line_item.id),
+                qbo_id=qbo_line.qbo_line_id,
+                realm_id=realm_id,
+                context=f"Updated BillCreditLineItem {line_item.id}",
+            )
+            return line_item
 
         # --- No match: create a new line item + mapping ---
         line_item = self.bill_credit_line_item_service.create(
@@ -151,6 +161,18 @@ class VendorCreditLineItemConnector:
                 logger.warning(
                     f"Created BillCreditLineItem {line_item.id} but could not create "
                     f"VendorCreditLineItemBillCreditLineItem mapping: {mapping_err}"
+                )
+            else:
+                # U-238b: dbo line identity dual-write (create+update pairing for U-238c).
+                stamp_line_identity_or_warn(
+                    self.bill_credit_line_item_service.repo,
+                    id=int(line_item.id),
+                    qbo_id=qbo_line.qbo_line_id,
+                    realm_id=realm_id,
+                    context=(
+                        f"Created BillCreditLineItem {line_item.id} mapping for "
+                        f"QboVendorCreditLine {qbo_line.id}"
+                    ),
                 )
 
         return line_item

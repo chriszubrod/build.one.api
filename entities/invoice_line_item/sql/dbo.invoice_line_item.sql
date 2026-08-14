@@ -436,3 +436,40 @@ BEGIN
     COMMIT TRANSACTION;
 END;
 GO
+
+CREATE OR ALTER PROCEDURE SetInvoiceLineItemQboIdentity
+(
+    @Id BIGINT,
+    @QboId NVARCHAR(50),
+    @RealmId NVARCHAR(50)
+)
+AS
+BEGIN
+    SET NOCOUNT ON;
+    DECLARE @Stolen BIT = 0;
+
+    IF @QboId IS NOT NULL
+    BEGIN
+        UPDATE sib SET sib.[QboId] = NULL, sib.[RealmId] = NULL, sib.[ModifiedDatetime] = SYSUTCDATETIME()
+        FROM dbo.[InvoiceLineItem] sib
+        INNER JOIN dbo.[InvoiceLineItem] tgt ON tgt.[InvoiceId] = sib.[InvoiceId]
+        WHERE tgt.[Id] = @Id AND sib.[Id] <> @Id AND sib.[QboId] = @QboId;
+
+        IF @@ROWCOUNT > 0
+            SET @Stolen = 1;
+    END
+
+    UPDATE dbo.[InvoiceLineItem]
+    SET
+        [QboId] = CASE WHEN @QboId IS NOT NULL THEN @QboId ELSE [QboId] END,
+        [RealmId] = CASE WHEN @RealmId IS NOT NULL THEN @RealmId ELSE [RealmId] END,
+        [ModifiedDatetime] = SYSUTCDATETIME()
+    WHERE [Id] = @Id
+      AND (
+            (@QboId IS NOT NULL AND ([QboId] IS NULL OR [QboId] <> @QboId))
+         OR (@RealmId IS NOT NULL AND ([RealmId] IS NULL OR [RealmId] <> @RealmId))
+      );
+
+    SELECT @Id AS [Id], @QboId AS [QboId], @RealmId AS [RealmId], @Stolen AS [Stolen];
+END;
+GO

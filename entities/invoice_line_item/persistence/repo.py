@@ -255,3 +255,41 @@ class InvoiceLineItemRepository:
         except Exception as error:
             logger.error(f"Error during LinkInvoiceLineItemSource: {error}")
             raise map_database_error(error)
+
+    def set_qbo_identity(
+        self,
+        *,
+        id: int,
+        qbo_id: Optional[str],
+        realm_id: Optional[str],
+    ) -> None:
+        """Stamp dbo-native QBO identity columns (idempotent-safe via CASE WHEN sproc)."""
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(
+                    cursor=cursor,
+                    name="SetInvoiceLineItemQboIdentity",
+                    params={
+                        "Id": id,
+                        "QboId": qbo_id,
+                        "RealmId": realm_id,
+                    },
+                )
+                row = cursor.fetchone()
+                if row and getattr(row, "Stolen", False):
+                    logger.warning(
+                        "InvoiceLineItem %s stole QBO identity (qbo_id=%s realm_id=%s) from a "
+                        "different InvoiceLineItem row under the same Invoice — a stale duplicate "
+                        "identity existed before this stamp",
+                        id, qbo_id, realm_id,
+                    )
+        except Exception as error:
+            logger.error(
+                "Error stamping InvoiceLineItem QBO identity (invoice_line_item_id=%s qbo_id=%s realm_id=%s): %s",
+                id,
+                qbo_id,
+                realm_id,
+                error,
+            )
+            raise map_database_error(error)

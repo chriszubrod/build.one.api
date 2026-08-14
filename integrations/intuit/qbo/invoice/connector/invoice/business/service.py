@@ -154,7 +154,9 @@ class InvoiceInvoiceConnector:
                     self._invoice_cache[invoice.id] = invoice
 
                 # Sync line items for existing invoice
-                self._sync_line_items(invoice.id, invoice.public_id, qbo_invoice_lines)
+                self._sync_line_items(
+                    invoice.id, invoice.public_id, qbo_invoice_lines, qbo_invoice.realm_id
+                )
 
                 return invoice
             else:
@@ -268,7 +270,9 @@ class InvoiceInvoiceConnector:
                     # a phantom Manual duplicate. A populated invoice keeps its lines; re-establishing
                     # the header mapping lets future UPDATE pulls reconcile via the existing line maps.
                     if not had_lines:
-                        self._sync_line_items(updated.id, updated.public_id, qbo_invoice_lines)
+                        self._sync_line_items(
+                            updated.id, updated.public_id, qbo_invoice_lines, qbo_invoice.realm_id
+                        )
                     return updated
 
         # Create new Invoice, handling duplicate invoice numbers
@@ -335,7 +339,9 @@ class InvoiceInvoiceConnector:
         # integrations.intuit.qbo.base.compensation.rollback_orphan_header (delete the
         # just-created header + qbo.InvoiceInvoice mapping, then re-raise) or it will
         # reintroduce the zombie-invoice bug. See U-006.
-        self._sync_line_items(invoice_id, invoice.public_id, qbo_invoice_lines)
+        self._sync_line_items(
+            invoice_id, invoice.public_id, qbo_invoice_lines, qbo_invoice.realm_id
+        )
 
         return invoice
 
@@ -517,7 +523,13 @@ class InvoiceInvoiceConnector:
         self._project_cache[cache_key] = project.public_id
         return project.public_id
 
-    def _sync_line_items(self, invoice_id: int, invoice_public_id: str, qbo_invoice_lines: List[QboInvoiceLine]) -> None:
+    def _sync_line_items(
+        self,
+        invoice_id: int,
+        invoice_public_id: str,
+        qbo_invoice_lines: List[QboInvoiceLine],
+        realm_id: Optional[str] = None,
+    ) -> None:
         """
         Sync invoice line items to InvoiceLineItem module.
 
@@ -525,6 +537,7 @@ class InvoiceInvoiceConnector:
             invoice_id: Database ID of the Invoice
             invoice_public_id: Public ID of the Invoice
             qbo_invoice_lines: List of QboInvoiceLine records
+            realm_id: QBO realm ID from the parent staging header
         """
         if not qbo_invoice_lines:
             return
@@ -539,7 +552,9 @@ class InvoiceInvoiceConnector:
 
         for qbo_line in qbo_invoice_lines:
             try:
-                line_connector.sync_from_qbo_invoice_line(invoice_id, invoice_public_id, qbo_line)
+                line_connector.sync_from_qbo_invoice_line(
+                    invoice_id, invoice_public_id, qbo_line, realm_id
+                )
             except Exception as e:
                 # LOAD-BEARING: swallowing (not raising) is what keeps the NEW-invoice path
                 # zombie-safe without a compensating rollback (see the create-path note above /

@@ -17,6 +17,7 @@ from entities.expense_line_item.business.service import ExpenseLineItemService
 from entities.expense_line_item.business.model import ExpenseLineItem
 from entities.sub_cost_code.business.service import SubCostCodeService
 from entities.project.business.service import ProjectService
+from integrations.intuit.qbo.base.identity_drift import stamp_line_identity_or_warn
 
 logger = logging.getLogger(__name__)
 
@@ -204,7 +205,15 @@ class PurchaseLineExpenseLineItemConnector:
                     price=price,
                     is_draft=False,
                 )
-                
+                # U-238b: dbo line identity dual-write (create+update pairing for U-238c).
+                stamp_line_identity_or_warn(
+                    self.expense_line_item_service.repo,
+                    id=int(line_item.id),
+                    qbo_id=qbo_line.qbo_line_id,
+                    realm_id=realm_id,
+                    context=f"Updated ExpenseLineItem {line_item.id}",
+                )
+
                 return line_item
             else:
                 # Mapping exists but ExpenseLineItem not found - recreate
@@ -247,7 +256,17 @@ class PurchaseLineExpenseLineItemConnector:
             raise ValueError(
                 f"Failed to create PurchaseLineExpenseLineItem mapping for QboPurchaseLine {qbo_line.id}: {e}"
             ) from e
-        
+
+        # U-238b: dbo line identity dual-write (create+update pairing for U-238c).
+        # Mapping is already committed — a stamp failure must NOT roll back the line item.
+        stamp_line_identity_or_warn(
+            self.expense_line_item_service.repo,
+            id=line_item_id,
+            qbo_id=qbo_line.qbo_line_id,
+            realm_id=realm_id,
+            context=f"Created mapping for ExpenseLineItem {line_item_id} for QboPurchaseLine {qbo_line.id}",
+        )
+
         return line_item
 
     def _get_sub_cost_code_id(self, qbo_item_ref_value: str) -> Optional[int]:

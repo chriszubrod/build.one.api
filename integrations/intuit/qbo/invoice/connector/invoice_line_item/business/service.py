@@ -12,6 +12,7 @@ from integrations.intuit.qbo.invoice.business.model import QboInvoiceLine
 from entities.invoice_line_item.business.service import InvoiceLineItemService
 from entities.invoice_line_item.business.model import InvoiceLineItem
 from entities.invoice.business.service import InvoiceService
+from integrations.intuit.qbo.base.identity_drift import stamp_line_identity_or_warn
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +44,7 @@ class InvoiceLineItemConnector:
         invoice_id: int,
         invoice_public_id: str,
         qbo_invoice_line: QboInvoiceLine,
+        realm_id: Optional[str] = None,
     ) -> InvoiceLineItem:
         """
         Sync data from QboInvoiceLine to InvoiceLineItem module.
@@ -152,6 +154,14 @@ class InvoiceLineItemConnector:
                     price=Decimal(str(price)) if price is not None else None,
                     is_draft=False,
                 )
+                # U-238b: dbo line identity dual-write (create+update pairing for U-238c).
+                stamp_line_identity_or_warn(
+                    self.invoice_line_item_service.repo,
+                    id=int(line_item.id),
+                    qbo_id=qbo_invoice_line.qbo_line_id,
+                    realm_id=realm_id,
+                    context=f"Updated InvoiceLineItem {line_item.id}",
+                )
                 # Update line item cache with fresh record
                 if self._line_item_cache is not None:
                     self._line_item_cache[line_item.id] = line_item
@@ -183,7 +193,17 @@ class InvoiceLineItemConnector:
             logger.info(f"Created mapping: InvoiceLineItem {line_item_id} <-> QboInvoiceLine {qbo_invoice_line.id}")
         except ValueError as e:
             logger.warning(f"Could not create mapping: {e}")
-        
+
+        # U-238b: dbo line identity dual-write (create+update pairing for U-238c).
+        # Mapping is already committed — a stamp failure must NOT roll back the line item.
+        stamp_line_identity_or_warn(
+            self.invoice_line_item_service.repo,
+            id=line_item_id,
+            qbo_id=qbo_invoice_line.qbo_line_id,
+            realm_id=realm_id,
+            context=f"Created mapping for InvoiceLineItem {line_item_id} for QboInvoiceLine {qbo_invoice_line.id}",
+        )
+
         return line_item
 
     # ------------------------------------------------------------------ #

@@ -1,31 +1,13 @@
 # Python Standard Library Imports
-from enum import Enum
 from typing import Optional
 
 # Third-party Imports
 
 # Local Imports
+from shared.auth_failure import AuthFailureKind  # re-exported for existing importers
 from shared.database import is_transient_error
 
 _CHAIN_WALK_MAX = 5
-
-# ---------------------------------------------------------------------------
-# Auth failure vocabulary — classifies token-refresh failures for retry vs
-# dead-letter decisions at the auth seam.
-# ---------------------------------------------------------------------------
-
-
-class AuthFailureKind(str, Enum):
-    """
-    Classification of token-refresh failures for retry vs dead-letter decisions.
-
-    TRANSIENT = worth retrying (lock timeout, Intuit 5xx/429, network/DB blip).
-    PERMANENT = only a human re-authorization fixes it (invalid_grant, no auth record).
-    """
-
-    NONE = "none"
-    TRANSIENT = "transient"
-    PERMANENT = "permanent"
 
 # SQLSTATEs and message substrings that shared.database.is_transient_error does not yet
 # cover (e.g. HYT00 / "Query timeout expired"). A wrong "not retryable" verdict at the

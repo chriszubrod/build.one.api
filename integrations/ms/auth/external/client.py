@@ -364,7 +364,7 @@ def connect_ms_oauth_2_token_endpoint_refresh():
         if resp.status_code != 200:
             return {
                 "message": f"Token refresh failed: {resp.text}",
-                "status_code": 500
+                "status_code": resp.status_code
             }
 
         resp_json = json.loads(resp.text)

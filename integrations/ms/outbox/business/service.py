@@ -410,12 +410,14 @@ class MsOutboxService:
 
 
 def _resolve_tenant_id() -> Optional[str]:
-    """Look up the tenant_id from the single-tenant MsAuth record."""
+    """Look up the tenant_id from the single-tenant MsAuth record (no token refresh — this is a
+    plain identity-field read, not an auth-freshness check; must not depend on Microsoft being
+    reachable just to learn which tenant we're enqueueing for)."""
     try:
         from integrations.ms.auth.business.service import MsAuthService
 
-        auth = MsAuthService().ensure_valid_token()
-        return auth.tenant_id if auth else None
+        all_auths = MsAuthService().read_all()
+        return all_auths[0].tenant_id if all_auths else None
     except Exception as error:
         logger.error(f"Error resolving tenant_id: {error}")
         return None

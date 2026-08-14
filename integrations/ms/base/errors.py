@@ -1,9 +1,10 @@
 # Python Standard Library Imports
-from typing import Optional
+from typing import Any, Dict, Optional
 
 # Third-party Imports
 
 # Local Imports
+from shared.auth_failure import AuthFailureKind  # noqa: F401  (re-exported for MS auth classification, U-224)
 
 
 class MsGraphError(Exception):
@@ -112,6 +113,20 @@ class MsAuthError(MsClientError):
     """
 
 
+class MsAuthTransientError(MsAuthError):
+    """
+    Raised when the token could not be obtained for a reason that is expected
+    to clear on its own — refresh-applock timeout, Microsoft token-endpoint
+    429/5xx/timeout, or a DB/network blip. Deliberately a SUBCLASS of
+    MsAuthError so every existing 'except MsAuthError' site keeps catching
+    it unchanged; only the retry / dead-letter decision changes. No request
+    ever left the process when this is raised, so an in-process retry
+    cannot duplicate a write.
+    """
+
+    is_retryable = True
+
+
 class MsValidationError(MsClientError):
     """
     Raised when Graph rejects the request body (HTTP 400) with validation
@@ -168,3 +183,35 @@ class MsUnexpectedError(MsGraphError):
     unexpected status codes, malformed responses, etc. Worth flagging for
     investigation rather than retrying blindly.
     """
+
+
+def build_error_envelope(
+    e: "MsGraphError",
+    *,
+    extra: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """
+    Translate a typed MsGraphError into the legacy dict-envelope shape that callers in
+    integrations/ms/sharepoint/external/client.py and integrations/ms/mail/external/client.py
+    return (the "Option X" pattern — see MsOutboxWorker._raise_if_external_error). Additional
+    default-value fields (e.g. `"sites": []`) flow through `extra` so the response shape stays
+    stable on the failure branch.
+
+    Carries `is_retryable` and `is_auth_error` from the origin exception (U-224) — status_code
+    alone can't distinguish MsAuthTransientError from MsAuthError (both may collapse to the same
+    numeric bucket), and MsOutboxWorker._raise_if_external_error needs the real signal to
+    reconstruct the correct retry-vs-dead-letter decision. `is_auth_error` is a separate, stricter
+    signal from `is_retryable` — only True when the origin exception was actually an
+    MsAuthError/MsAuthTransientError instance, not merely "any non-retryable exception that
+    happened to collapse to a 500-shaped envelope."
+    """
+    status = e.http_status or 500
+    base: Dict[str, Any] = {
+        "status_code": status,
+        "message": str(e),
+        "is_retryable": bool(getattr(e, "is_retryable", False)),
+        "is_auth_error": isinstance(e, MsAuthError),
+    }
+    if extra:
+        base.update(extra)
+    return base

@@ -12,6 +12,7 @@ import config
 from integrations.box.base.client import BOX_OAUTH_TOKEN_URL, _parse_retry_after
 from integrations.box.base.errors import (
     BoxAuthError,
+    BoxMalformedResponseError,
     BoxRateLimitError,
     BoxServerError,
     BoxTimeoutError,
@@ -99,6 +100,8 @@ class BoxAuthService:
 
         Raises:
             BoxAuthError: credentials missing or rejected by the token endpoint.
+            BoxMalformedResponseError: token endpoint returned HTTP 200 with a
+                broken body (retryable — mirrors QboMalformedResponseError, U-224).
             BoxTimeoutError / BoxTransportError: infrastructure blip reaching
                 the token endpoint (retryable — the caller's retry layer or the
                 Phase 2 drain handles it; never classified as poison).
@@ -289,7 +292,7 @@ class BoxAuthService:
         try:
             payload = response.json()
         except Exception as error:
-            raise BoxAuthError(
+            raise BoxMalformedResponseError(
                 "Box token mint returned HTTP 200 with a non-JSON body",
                 http_status=200,
                 request_method="POST",
@@ -298,7 +301,7 @@ class BoxAuthService:
 
         access_token = payload.get("access_token") if isinstance(payload, dict) else None
         if not access_token:
-            raise BoxAuthError(
+            raise BoxMalformedResponseError(
                 "Box token mint succeeded but the response carried no access_token",
                 http_status=200,
                 request_method="POST",

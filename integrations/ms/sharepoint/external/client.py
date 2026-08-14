@@ -5,7 +5,7 @@ from typing import Any, Dict, Optional
 
 # Local Imports
 from integrations.ms.base.client import DEFAULT_BASE_URL, MsGraphClient
-from integrations.ms.base.errors import MsGraphError
+from integrations.ms.base.errors import MsGraphError, build_error_envelope
 from integrations.ms.base.locking import ms_app_lock
 
 logger = logging.getLogger(__name__)
@@ -17,17 +17,8 @@ logger = logging.getLogger(__name__)
 
 
 def _error_response(e: MsGraphError, *, extra: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    """
-    Translate a typed MsGraphError into the legacy dict-envelope shape
-    that callers expect: `{"status_code": int, "message": str, ...}`.
-    Additional default-value fields (e.g., `"sites": []`) flow through
-    `extra` so the response shape stays stable on the failure branch.
-    """
-    status = e.http_status or 500
-    base: Dict[str, Any] = {"status_code": status, "message": str(e)}
-    if extra:
-        base.update(extra)
-    return base
+    """Delegates to the shared envelope builder — see build_error_envelope's docstring."""
+    return build_error_envelope(e, extra=extra)
 
 
 def _strip_base(absolute_url: str) -> str:

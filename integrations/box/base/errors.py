@@ -100,6 +100,14 @@ class BoxServiceUnavailableError(BoxServerError):
     """
 
 
+class BoxMalformedResponseError(BoxServerError):
+    """
+    Raised when Box returns a 2xx whose body is empty, unparseable, or missing
+    an expected field — a transient server-side anomaly, retryable via
+    BoxServerError (mirrors QboMalformedResponseError, U-224).
+    """
+
+
 # ---------------------------------------------------------------------------
 # Client errors — NOT retryable by default; retry won't fix the input.
 # ---------------------------------------------------------------------------

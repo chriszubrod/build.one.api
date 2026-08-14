@@ -734,16 +734,35 @@ class MsOutboxWorker:
         The sharepoint external client still returns dict envelopes (Option X).
         If the status_code indicates failure, re-raise as a typed MsGraphError
         so the worker's retry/dead-letter logic picks it up.
+
+        `is_retryable` (U-224 fix-round 1) disambiguates the 401/403 bucket, where the numeric
+        status_code alone can't tell a transient auth failure from a permanent one
+        (MsAuthTransientError vs MsAuthError both reconstruct to the same code).
+
+        `is_auth_error` (U-224 fix-round 2) additionally gates the 500-599 fallback bucket. A
+        permanent auth failure raised before any HTTP request left the process has no real HTTP
+        status and collapses to this fallback with is_retryable=False — but so do unrelated
+        exceptions that share that same shape (e.g. MsWriteRefusedError from the ALLOW_MS_WRITES
+        gate, or a bare MsGraphError raised for a Graph response-shape anomaly unrelated to auth).
+        `is_retryable is False` alone is NOT a safe signal for "this was an auth failure" — only
+        reclassify to MsAuthError here when `is_auth_error` is explicitly True, confirming the
+        origin exception really was MsAuthError/MsAuthTransientError. Any envelope that doesn't set
+        these keys (every hand-built dict in the two external clients that isn't produced by
+        _error_response) reads as None here and falls through to the pre-existing
+        status_code-only behavior, unchanged.
         """
         status_code = result.get("status_code", 500) if isinstance(result, dict) else 500
         if 200 <= status_code < 300:
             return
 
         message = result.get("message") if isinstance(result, dict) else "unknown"
+        is_retryable_hint = result.get("is_retryable") if isinstance(result, dict) else None
+        is_auth_error_hint = result.get("is_auth_error") if isinstance(result, dict) else None
         # Map status_code to the right MsGraphError subclass so retry logic
         # picks up the correct is_retryable value.
         from integrations.ms.base.errors import (
             MsAuthError,
+            MsAuthTransientError,
             MsClientError,
             MsConflictError,
             MsNotFoundError,
@@ -757,6 +776,8 @@ class MsOutboxWorker:
         if status_code == 400:
             raise MsValidationError(message, http_status=status_code)
         if status_code in (401, 403):
+            if is_retryable_hint:
+                raise MsAuthTransientError(message, http_status=status_code)
             raise MsAuthError(message, http_status=status_code)
         if status_code == 404:
             raise MsNotFoundError(message, http_status=status_code)
@@ -769,6 +790,11 @@ class MsOutboxWorker:
         if 400 <= status_code < 500:
             raise MsClientError(message, http_status=status_code)
         if 500 <= status_code < 600:
+            if is_auth_error_hint is True and is_retryable_hint is False:
+                # Only reached by a confirmed permanent auth failure (is_auth_error verified the
+                # origin exception was actually MsAuthError-family, not just any non-retryable
+                # exception that happened to collapse to this bucket).
+                raise MsAuthError(message, http_status=status_code)
             raise MsServerError(message, http_status=status_code)
         raise MsUnexpectedError(message, http_status=status_code)
 

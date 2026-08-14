@@ -9,6 +9,7 @@ from integrations.ms.auth.business.model import MsAuth
 from integrations.ms.auth.persistence.repo import MsAuthRepository
 from integrations.ms.auth.external.client import connect_ms_oauth_2_token_endpoint_refresh
 from integrations.ms.base.logger import get_ms_logger
+from shared.auth_failure import AuthFailureKind, classify_failure
 
 logger = get_ms_logger(__name__)
 
@@ -104,6 +105,12 @@ class MsAuthService:
         Read a MsAuth by tenant ID.
         """
         return self.repo.read_by_tenant_id(tenant_id)
+
+    def _read_auth_by_tenant_id_or_first(self, tenant_id: Optional[str]) -> Optional[MsAuth]:
+        if tenant_id:
+            return self.read_by_tenant_id(tenant_id)
+        all_auths = self.read_all()
+        return all_auths[0] if all_auths else None
 
     def update_by_tenant_id(self, code: str, state: str, token_type: str, access_token: str, expires_in: int, refresh_token: str, scope: str, tenant_id: str, user_id: Optional[str] = None) -> Optional[MsAuth]:
         """
@@ -205,29 +212,54 @@ class MsAuthService:
 
         Returns:
             MsAuth object with valid token, or None if refresh failed
+
+        Delegates to ensure_valid_token_classified() and discards the classification —
+        see that method when the caller needs to distinguish retryable vs permanent failure.
         """
+        auth, _kind = self.ensure_valid_token_classified(
+            tenant_id=tenant_id,
+            buffer_seconds=buffer_seconds,
+            force_refresh=force_refresh,
+        )
+        return auth
+
+    def ensure_valid_token_classified(
+        self,
+        tenant_id: Optional[str] = None,
+        buffer_seconds: int = 60,
+        force_refresh: bool = False,
+    ) -> tuple[Optional[MsAuth], AuthFailureKind]:
+        """
+        Ensure the access token is valid, classifying any failure for retry decisions.
+
+        See ensure_valid_token() for parameter semantics.
+
+        Returns:
+            (MsAuth, AuthFailureKind.NONE) on success, or (None, kind) on failure.
+        """
+        # ASYMMETRY: the SAFE DEFAULT IS TRANSIENT. A wrong 'transient' costs a
+        # bounded handful of retries and then dead-letters anyway at MAX_ATTEMPTS=5;
+        # a wrong 'permanent' dead-letters a real SharePoint/mail push on attempt 1
+        # and needs manual recovery. So anything not positively identified as
+        # invalid_grant or a missing auth record is TRANSIENT.
+
         # Get auth record - use specific tenant_id if provided, otherwise use first
-        if tenant_id:
-            ms_auth = self.read_by_tenant_id(tenant_id)
-        else:
-            # Single-tenant: just get the first (and only) auth record
-            all_auths = self.read_all()
-            if not all_auths or len(all_auths) == 0:
+        ms_auth = self._read_auth_by_tenant_id_or_first(tenant_id)
+        if not tenant_id:
+            if not ms_auth:
                 logger.error("No MsAuth records found")
-                return None
-            ms_auth = all_auths[0]
-            # Get tenant_id from the auth record for logging/refresh
+                return None, AuthFailureKind.PERMANENT
             tenant_id = ms_auth.tenant_id
 
         if not ms_auth:
             logger.error(f"No MsAuth found for tenant_id: {tenant_id}")
-            return None
+            return None, AuthFailureKind.PERMANENT
 
         # Skip expiry check when force_refresh is requested
         if not force_refresh and not self.is_token_expired(ms_auth, buffer_seconds):
             logger.debug(f"Token for tenant_id {tenant_id} is still valid")
             _emit_token_expiration_check(ms_auth)
-            return ms_auth
+            return ms_auth, AuthFailureKind.NONE
 
         # Serialize concurrent refreshes across processes (API + standalone scripts
         # can both reach this path simultaneously; without the lock, both would call
@@ -238,25 +270,25 @@ class MsAuthService:
         lock_resource = f"ms_auth_refresh:{tenant_id}"
         with ms_app_lock(lock_resource, timeout_ms=15000) as got_lock:
             if not got_lock:
-                logger.error(
-                    f"Could not acquire token refresh lock for tenant {tenant_id} within timeout"
+                return classify_failure(
+                    logger,
+                    f"Could not acquire token refresh lock for tenant {tenant_id} within timeout",
+                    AuthFailureKind.TRANSIENT,
                 )
-                return None
 
             # Re-read after acquiring the lock. Another caller may have just finished
             # refreshing while we waited — in which case the token is now fresh and
             # we don't need to call MS at all. Also ensures that if we DO still
             # need to refresh, we use the latest refresh_token (not the one we read
             # before the lock).
-            if tenant_id:
-                ms_auth = self.read_by_tenant_id(tenant_id)
-            else:
-                all_auths = self.read_all()
-                ms_auth = all_auths[0] if all_auths else None
+            ms_auth = self._read_auth_by_tenant_id_or_first(tenant_id)
 
             if not ms_auth:
-                logger.error(f"No MsAuth found for tenant_id {tenant_id} after acquiring lock")
-                return None
+                return classify_failure(
+                    logger,
+                    f"No MsAuth found for tenant_id {tenant_id} after acquiring lock",
+                    AuthFailureKind.PERMANENT,
+                )
 
             # If another caller refreshed while we waited and force_refresh is False,
             # the freshly-read token is already valid — skip the MS call entirely.
@@ -265,7 +297,7 @@ class MsAuthService:
                     f"Token for tenant_id {tenant_id} was refreshed by a concurrent caller"
                 )
                 _emit_token_expiration_check(ms_auth)
-                return ms_auth
+                return ms_auth, AuthFailureKind.NONE
 
             if force_refresh:
                 logger.info(f"Force-refreshing token for tenant_id {tenant_id}")
@@ -278,23 +310,45 @@ class MsAuthService:
 
                 if isinstance(refresh_result, dict) and refresh_result.get("status_code") == 201:
                     # Refresh successful, read the updated auth
-                    if tenant_id:
-                        updated_auth = self.read_by_tenant_id(tenant_id)
-                    else:
-                        all_auths = self.read_all()
-                        updated_auth = all_auths[0] if all_auths else None
+                    updated_auth = self._read_auth_by_tenant_id_or_first(tenant_id)
 
                     if updated_auth:
                         logger.info(f"Token refreshed successfully for tenant_id: {tenant_id}")
                         _emit_token_expiration_check(updated_auth)
-                        return updated_auth
+                        return updated_auth, AuthFailureKind.NONE
                     else:
-                        logger.error(f"Token refresh succeeded but could not read updated MsAuth for tenant_id: {tenant_id}")
-                        return None
-                else:
-                    error_message = refresh_result.get("message", "Unknown error") if isinstance(refresh_result, dict) else str(refresh_result)
-                    logger.error(f"Token refresh failed for tenant_id {tenant_id}: {error_message}")
-                    return None
+                        return classify_failure(
+                            logger,
+                            f"Token refresh succeeded but could not read updated MsAuth for tenant_id: {tenant_id}",
+                            AuthFailureKind.TRANSIENT,
+                        )
+
+                status_code = (
+                    refresh_result.get("status_code")
+                    if isinstance(refresh_result, dict)
+                    else None
+                )
+                error_message = (
+                    refresh_result.get("message", "Unknown error")
+                    if isinstance(refresh_result, dict)
+                    else str(refresh_result)
+                )
+                if status_code == 400:
+                    return classify_failure(
+                        logger,
+                        f"Token refresh failed for tenant_id {tenant_id}: {error_message}",
+                        AuthFailureKind.PERMANENT,
+                    )
+
+                return classify_failure(
+                    logger,
+                    f"Token refresh failed for tenant_id {tenant_id}: {error_message}",
+                    AuthFailureKind.TRANSIENT,
+                )
             except Exception as e:
-                logger.exception(f"Exception during token refresh for tenant_id {tenant_id}: {e}")
-                return None
+                return classify_failure(
+                    logger,
+                    f"Exception during token refresh for tenant_id {tenant_id}: {e}",
+                    AuthFailureKind.TRANSIENT,
+                    exc_info=True,
+                )

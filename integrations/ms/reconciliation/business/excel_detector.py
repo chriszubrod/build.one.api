@@ -113,11 +113,13 @@ class ExcelMissingRowDetector:
 
     @staticmethod
     def _resolve_tenant_id() -> Optional[str]:
+        """Plain identity-field read off the stored MsAuth record — no token refresh, so a
+        transient Microsoft blip can't make the daily reconcile silently no-op."""
         from integrations.ms.auth.business.service import MsAuthService
 
         try:
-            auth = MsAuthService().ensure_valid_token()
-            return auth.tenant_id if auth else None
+            all_auths = MsAuthService().read_all()
+            return all_auths[0].tenant_id if all_auths else None
         except Exception:
             logger.exception("ms.reconcile.excel.tenant_resolve_failed")
             return None

@@ -5,7 +5,7 @@ from typing import Any, Dict, List, Optional
 
 # Local Imports
 from integrations.ms.base.client import DEFAULT_BASE_URL, MsGraphClient
-from integrations.ms.base.errors import MsGraphError
+from integrations.ms.base.errors import MsGraphError, build_error_envelope
 
 logger = logging.getLogger(__name__)
 
@@ -16,11 +16,8 @@ logger = logging.getLogger(__name__)
 
 
 def _error_response(e: MsGraphError, *, extra: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    status = e.http_status or 500
-    base: Dict[str, Any] = {"status_code": status, "message": str(e)}
-    if extra:
-        base.update(extra)
-    return base
+    """Delegates to the shared envelope builder — see build_error_envelope's docstring."""
+    return build_error_envelope(e, extra=extra)
 
 
 def _mailbox_path(mailbox: Optional[str] = None) -> str:

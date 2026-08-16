@@ -15,7 +15,14 @@
 
 **Post-deploy verification:** `Set*QboIdentity` param lists match the repo layer (`@Id/@QboId/@RealmId`); a transactional round-trip on `dbo.Vendor` confirmed stamping works and that the "steal" path moves an identity between rows without violating the filtered unique index, then rolled back clean (0 rows stamped in prod). Zero new `qbo.ReconciliationIssue` rows.
 
-**Owed next:** `scripts/backfill_qbo_identity_reference.py --apply` — deliberately NOT run (dual-write is deployed, which is the precondition; backfill was not in scope of the go-ahead). All 8 entities currently show 0 stamped rows. Also still owed: re-run the `reimburse_charge` seed from a stable connection, then uncomment its timer and republish the scheduler.
+**Backfill RUN and COMPLETE** (`scripts/backfill_qbo_identity_reference.py --apply`, batched smallest-first with verification between each): PaymentTerm 6, Customer 73, CostCode 76, SubCostCode 475, BillCredit 438, Vendor 1193, Address 774 (after Stage 0 applied 940 staging RealmIds), Attachment 4110 in 1000-row batches — **7,145 rows stamped, every entity `identity_match=PASS zero_collision=PASS`.** A confirming full dry-run afterward showed eligible == stamped and 0 remaining on all 8.
+
+- Note on reading the dry-run: `identity_match=FAIL` **before** the backfill is the expected state, not a defect — `_mismatch_sql` counts `t.QboId IS NULL`, so every mapped-but-unstamped row registers as a mismatch. It flips to PASS once stamped.
+- Fan-out invariant verified independently of the script's own check, via the two views: zero QboIds appearing in both `CostCode`+`SubCostCode` or both `Customer`+`Project`.
+- **`check_qbo_identity_drift_all.py` across all 17 topologies: 0 drift, 0 orphan, exit 0** — headers (Bill 19890, Expense 11550, Invoice 981, Project 134, Company 1), lines (BillLineItem 23452, InvoiceLineItem 30179, ExpenseLineItem 12062, BillCreditLineItem 445), and all 8 reference entities. Phase 2 of the staging-removal program is now fully materialized on dbo.
+- **Known residual — Address `pending=2`.** Three `qbo.PhysicalAddress` rows (Ids 1, 2, 3) carry plain numeric QboIds (`2`, `898`, `1612`) instead of the composite `N_bill`/`N_ship` form Stage 0's parser expects, so they never resolve a parent realm and stay NULL; two of them are mapped (dbo.Address 7, 8) and therefore report as `pending`. Legacy rows predating the composite scheme. Benign — classified `pending`, not `drift`/`orphan`, and dual-write will stamp them if QBO re-pulls with a proper composite id. Related to the already-logged PhysicalAddress composite-QboId collision follow-up.
+
+**Owed next:** re-run the `reimburse_charge` seed from a stable connection, then uncomment its timer in the scheduler's `function_app.py` and republish. Also unreconciled: the 6 prod-drifted sprocs listed above.
 
 ## Session: U-238c — Staging-removal Phase 2, reference entities (2026-08-16)
 

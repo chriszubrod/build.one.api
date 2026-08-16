@@ -525,8 +525,50 @@ class ExpenseService:
             except Exception as e:
                 logger.warning(f"Error processing expense line item {line_item.id if line_item.id else 'unknown'}: {e}")
         
-        # Step 4: Delete the Expense record
-        return self.repo.delete_by_id(existing.id)
+        # Clear this Expense's own qbo.PurchaseExpense mapping row, then delete the header. FK
+        # is NO_ACTION in prod, so an unmapped delete either 547s a QBO-pulled expense or leaves
+        # a permanent dangling mapping. If the header delete fails for any other reason (e.g. an
+        # orphaned ExpenseLineItem — qbo.PurchaseLineExpenseLineItem cleanup is a separate,
+        # deferred gap, see the audit script) after the mapping is gone, restore it so a failed
+        # attempt never unmaps a still-live expense (U-226).
+        from integrations.intuit.qbo.purchase.connector.expense.persistence.repo import (
+            PurchaseExpenseRepository,
+        )
+        from integrations.intuit.qbo.base.mapping_cleanup import delete_own_qbo_mapping_before_header
+
+        _purchase_expense_repo = PurchaseExpenseRepository()
+
+        def _on_expense_mapping_restore_failed(mapping, restore_exc):
+            try:
+                from integrations.intuit.qbo.base.delete_reconcile import record_partial_delete_issue
+                from integrations.intuit.qbo.purchase.persistence.repo import QboPurchaseRepository
+
+                staging = QboPurchaseRepository().read_by_id(mapping.qbo_purchase_id)
+                record_partial_delete_issue(
+                    entity_type="Expense",
+                    mapping_label="PurchaseExpense",
+                    mapped_label="Expense",
+                    realm_id=staging.realm_id if staging else "",
+                    qbo_id=staging.qbo_id if staging else "",
+                    local_id=expense_id,
+                    error=restore_exc,
+                )
+            except Exception:
+                logger.exception(
+                    f"Failed to record partial-delete reconciliation issue for Expense {expense_id}"
+                )
+
+        return delete_own_qbo_mapping_before_header(
+            read_mapping=lambda: _purchase_expense_repo.read_by_expense_id(expense_id),
+            delete_mapping=lambda m: _purchase_expense_repo.delete_by_id(m.id),
+            recreate_mapping=lambda m: _purchase_expense_repo.create(
+                qbo_purchase_id=m.qbo_purchase_id, expense_id=m.expense_id
+            ),
+            delete_header=lambda: self.repo.delete_by_id(existing.id),
+            entity_label="Expense",
+            entity_id=expense_id,
+            on_restore_failed=_on_expense_mapping_restore_failed,
+        )
 
     def complete_expense(self, public_id: str) -> dict:
         """

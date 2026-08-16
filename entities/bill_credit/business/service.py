@@ -307,5 +307,50 @@ class BillCreditService:
             except Exception as e:
                 logger.warning(f"Error processing bill credit line item {line_item.id if line_item.id else 'unknown'}: {e}")
         
-        # Step 4: Delete the BillCredit record
-        return self.repo.delete_by_id(existing.id)
+        # Clear this BillCredit's own qbo.VendorCreditBillCredit mapping row, then delete the
+        # header. FK is NO_ACTION in prod (not CASCADE — the base .sql file's CREATE TABLE only
+        # applies on first create, so an already-existing prod table never picked it up), so an
+        # unmapped delete either 547s a QBO-pulled credit or leaves a permanent dangling
+        # mapping. If the header delete fails for any other reason after the mapping is gone,
+        # the mapping is restored so a failed attempt never unmaps a still-live credit (U-226).
+        from integrations.intuit.qbo.vendorcredit.connector.bill_credit.persistence.repo import (
+            VendorCreditBillCreditMappingRepository,
+        )
+        from integrations.intuit.qbo.base.mapping_cleanup import delete_own_qbo_mapping_before_header
+
+        _vc_bc_mapping_repo = VendorCreditBillCreditMappingRepository()
+
+        def _on_bc_mapping_restore_failed(mapping, restore_exc):
+            try:
+                from integrations.intuit.qbo.base.delete_reconcile import record_partial_delete_issue
+                from integrations.intuit.qbo.vendorcredit.persistence.repo import QboVendorCreditRepository
+
+                staging = QboVendorCreditRepository().read_by_id(mapping.qbo_vendor_credit_id)
+                record_partial_delete_issue(
+                    entity_type="BillCredit",
+                    mapping_label="VendorCreditBillCredit",
+                    mapped_label="BillCredit",
+                    realm_id=staging.realm_id if staging else "",
+                    qbo_id=staging.qbo_id if staging else "",
+                    local_id=bill_credit_id,
+                    error=restore_exc,
+                )
+            except Exception:
+                logger.exception(
+                    f"Failed to record partial-delete reconciliation issue for BillCredit {bill_credit_id}"
+                )
+
+        return delete_own_qbo_mapping_before_header(
+            read_mapping=lambda: _vc_bc_mapping_repo.read_by_bill_credit_id(bill_credit_id),
+            delete_mapping=lambda m: _vc_bc_mapping_repo.delete_by_qbo_vendor_credit_id(
+                m.qbo_vendor_credit_id
+            ),
+            recreate_mapping=lambda m: _vc_bc_mapping_repo.create(
+                qbo_vendor_credit_id=m.qbo_vendor_credit_id,
+                bill_credit_id=m.bill_credit_id,
+            ),
+            delete_header=lambda: self.repo.delete_by_id(existing.id),
+            entity_label="BillCredit",
+            entity_id=bill_credit_id,
+            on_restore_failed=_on_bc_mapping_restore_failed,
+        )

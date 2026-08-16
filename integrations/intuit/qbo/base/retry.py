@@ -118,8 +118,13 @@ class RetryPolicy:
         # idempotency token duplicates Attachables when attempt 1 already committed
         # (timeout, 503, or 2xx with empty/unparseable body are all POST-COMMIT-
         # AMBIGUOUS). Intuit does not document requestid on /upload, so we omit it.
-        # Transient resilience lives one level up: the outbox row retries with a
-        # mapping guard, so a lost upload does not silently orphan QBO documents.
+        # max_attempts=1 means a failed upload here is NOT retried by anything above
+        # this layer either — the outbox row retries the OUTER bill/entity push, and
+        # the per-attachment catch in _sync_attachments_to_qbo (entities/bill/business/
+        # service.py) stops an upload failure from ever reaching the outbox as a
+        # retryable row. U-234: AttachableAttachmentConnector.sync_attachment_to_qbo
+        # records a durable qbo.ReconciliationIssue (drift_type="attachment_upload_failed")
+        # on failure so a dropped attachment is tracked, not silently lost.
         # 401-refresh-resend in _send_once is unchanged — 401 means not processed.
         max_total_budget_seconds = TIER_C_REQUEST_CEILING_SECONDS + 10.0
         return cls(max_attempts=1, max_total_budget_seconds=max_total_budget_seconds)

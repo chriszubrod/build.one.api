@@ -13,6 +13,9 @@ from integrations.intuit.qbo.attachable.business.model import QboAttachable
 from integrations.intuit.qbo.attachable.persistence.repo import QboAttachableRepository
 from integrations.intuit.qbo.attachable.external.client import QboAttachableClient
 from integrations.intuit.qbo.auth.business.service import QboAuthService
+from integrations.intuit.qbo.base.errors import QboBudgetExceededError, QboWriteRefusedError
+from integrations.intuit.qbo.base.reconciliation_recorder import record_mapping_issue
+from integrations.intuit.qbo.reconciliation.persistence.repo import ReconciliationIssueRepository
 from entities.attachment.business.service import AttachmentService
 from entities.attachment.business.model import Attachment
 from shared.storage import AzureBlobStorage, AzureBlobStorageError
@@ -31,11 +34,13 @@ class AttachableAttachmentConnector:
         mapping_repo: Optional[AttachableAttachmentRepository] = None,
         attachment_service: Optional[AttachmentService] = None,
         auth_service: Optional[QboAuthService] = None,
+        reconciliation_repo: Optional[ReconciliationIssueRepository] = None,
     ):
         """Initialize the AttachableAttachmentConnector."""
         self.mapping_repo = mapping_repo or AttachableAttachmentRepository()
         self.attachment_service = attachment_service or AttachmentService()
         self.auth_service = auth_service or QboAuthService()
+        self.reconciliation_repo = reconciliation_repo or ReconciliationIssueRepository()
 
     def sync_from_qbo_attachable(
         self,
@@ -449,49 +454,96 @@ class AttachableAttachmentConnector:
         content_type = attachment.content_type or metadata.get("content_type", "application/octet-stream")
         
         logger.info(f"Uploading attachment {attachment_id} to QBO: {filename} -> {entity_type} {entity_id}")
-        
-        with QboAttachableClient(realm_id=realm_id) as client:
-            qbo_attachable_response = client.upload_attachable(
-                file_content=file_content,
-                filename=filename,
-                content_type=content_type,
-                entity_type=entity_type,
-                entity_id=entity_id,
-                note=attachment.description,
-            )
-        
-        logger.info(f"Created QBO Attachable {qbo_attachable_response.id} for {entity_type} {entity_id}")
-        
-        # Store QboAttachable locally
-        qbo_attachable_repo = QboAttachableRepository()
-        local_qbo_attachable = qbo_attachable_repo.create(
-            qbo_id=qbo_attachable_response.id,
-            sync_token=qbo_attachable_response.sync_token,
-            realm_id=realm_id,
-            file_name=qbo_attachable_response.file_name,
-            note=qbo_attachable_response.note,
-            category=qbo_attachable_response.category,
-            content_type=qbo_attachable_response.content_type,
-            size=qbo_attachable_response.size,
-            file_access_uri=qbo_attachable_response.file_access_uri,
-            temp_download_uri=qbo_attachable_response.temp_download_uri,
-            entity_ref_type=entity_type,
-            entity_ref_value=entity_id,
-        )
-        
-        logger.info(f"Stored local QboAttachable {local_qbo_attachable.id}")
-        
-        # Create mapping
-        qbo_attachable_id = int(local_qbo_attachable.id) if isinstance(local_qbo_attachable.id, str) else local_qbo_attachable.id
+
+        qbo_attachable_response = None
         try:
-            self._create_mapping(
-                attachment_id=attachment_id,
-                qbo_attachable_id=qbo_attachable_id,
+            with QboAttachableClient(realm_id=realm_id) as client:
+                qbo_attachable_response = client.upload_attachable(
+                    file_content=file_content,
+                    filename=filename,
+                    content_type=content_type,
+                    entity_type=entity_type,
+                    entity_id=entity_id,
+                    note=attachment.description,
+                )
+
+            logger.info(f"Created QBO Attachable {qbo_attachable_response.id} for {entity_type} {entity_id}")
+
+            # Store QboAttachable locally
+            qbo_attachable_repo = QboAttachableRepository()
+            local_qbo_attachable = qbo_attachable_repo.create(
                 qbo_id=qbo_attachable_response.id,
+                sync_token=qbo_attachable_response.sync_token,
                 realm_id=realm_id,
+                file_name=qbo_attachable_response.file_name,
+                note=qbo_attachable_response.note,
+                category=qbo_attachable_response.category,
+                content_type=qbo_attachable_response.content_type,
+                size=qbo_attachable_response.size,
+                file_access_uri=qbo_attachable_response.file_access_uri,
+                temp_download_uri=qbo_attachable_response.temp_download_uri,
+                entity_ref_type=entity_type,
+                entity_ref_value=entity_id,
             )
-            logger.info(f"Created mapping: Attachment {attachment_id} <-> QboAttachable {qbo_attachable_id}")
-        except ValueError as e:
-            logger.warning(f"Could not create mapping: {e}")
-        
-        return local_qbo_attachable
+
+            logger.info(f"Stored local QboAttachable {local_qbo_attachable.id}")
+
+            # Create mapping
+            qbo_attachable_id = int(local_qbo_attachable.id) if isinstance(local_qbo_attachable.id, str) else local_qbo_attachable.id
+            try:
+                self._create_mapping(
+                    attachment_id=attachment_id,
+                    qbo_attachable_id=qbo_attachable_id,
+                    qbo_id=qbo_attachable_response.id,
+                    realm_id=realm_id,
+                )
+                logger.info(f"Created mapping: Attachment {attachment_id} <-> QboAttachable {qbo_attachable_id}")
+            except ValueError as e:
+                logger.warning(f"Could not create mapping: {e}")
+                record_mapping_issue(
+                    self.reconciliation_repo,
+                    drift_type="attachment_mapping_orphaned",
+                    entity_type="Attachment",
+                    entity_public_id=str(attachment.public_id) if attachment.public_id else None,
+                    qbo_id=str(qbo_attachable_response.id) if qbo_attachable_response and qbo_attachable_response.id else None,
+                    realm_id=realm_id,
+                    severity="critical",
+                    details=(
+                        f"Attachment mapping race: local Attachment public_id="
+                        f"{attachment.public_id!s} id={attachment_id}, target {entity_type} {entity_id}. "
+                        f"QBO Attachable {qbo_attachable_response.id} was created and is now orphaned "
+                        f"(unmapped) because of a concurrent mapping race ({e}). "
+                        f"It must NOT be re-uploaded — it already exists at QBO and needs manual "
+                        f"mapping/dedup resolution."
+                    ),
+                )
+
+            return local_qbo_attachable
+        except (QboBudgetExceededError, QboWriteRefusedError):
+            raise
+        except Exception as exc:
+            if qbo_attachable_response is not None and qbo_attachable_response.id:
+                details = (
+                    f"Attachment upload post-commit failure: local Attachment public_id="
+                    f"{attachment.public_id!s} id={attachment_id}, target {entity_type} {entity_id}. "
+                    f"QBO Attachable {qbo_attachable_response.id} was already created and must NOT be "
+                    f"blindly re-uploaded — create/repair the local mapping manually. Exception: {exc!r}"
+                )
+            else:
+                details = (
+                    f"Attachment upload failed: local Attachment public_id="
+                    f"{attachment.public_id!s} id={attachment_id}, target {entity_type} {entity_id}. "
+                    f"Upload attempt failed and may or may not have committed server-side "
+                    f"(2xx-malformed-body is POST-COMMIT-AMBIGUOUS). Exception: {exc!r}"
+                ) + (f" Response detail: {exc.detail}" if getattr(exc, "detail", None) else "")
+            record_mapping_issue(
+                self.reconciliation_repo,
+                drift_type="attachment_upload_failed",
+                entity_type="Attachment",
+                entity_public_id=str(attachment.public_id) if attachment.public_id else None,
+                qbo_id=str(qbo_attachable_response.id) if qbo_attachable_response and qbo_attachable_response.id else None,
+                realm_id=realm_id,
+                severity="critical",
+                details=details,
+            )
+            raise

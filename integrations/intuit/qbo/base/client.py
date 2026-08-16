@@ -249,7 +249,9 @@ class QboHttpClient:
 
         Uses for_uploads_single() (max_attempts=1): retrying a create without an
         idempotency token duplicates Attachables when attempt 1 already committed.
-        Outbox-level retry is mapping-guarded; 401-refresh-resend stays in _send_once.
+        There is no retry above this layer either — a failed upload is recorded as a
+        durable qbo.ReconciliationIssue by the caller (U-234), not retried.
+        401-refresh-resend stays in _send_once.
         """
         self._enforce_write_gate("POST", path, operation_name)
         return self._execute(

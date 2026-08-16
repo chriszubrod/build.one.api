@@ -222,5 +222,11 @@ class QboAttachableClient:
             )
             return attachable
 
-        logger.error(f"Unexpected upload response format: {data}")
-        raise QboValidationError("Unexpected upload response format")
+        data_repr = str(data)
+        logger.error(f"Unexpected upload response format: {data_repr}")
+        raise QboValidationError(
+            "Unexpected upload response format — QBO returned a successful 2xx with "
+            "a parseable body, so the Attachable was almost certainly created "
+            "server-side despite the unrecognized shape",
+            detail=data_repr[:500],
+        )

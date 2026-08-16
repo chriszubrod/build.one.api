@@ -78,6 +78,41 @@ def test_sync_bill_to_qbo_router_returns_202_and_enqueues():
         }
 
 
+def test_sync_bill_to_qbo_router_refuses_with_409_when_dead_letter_exists():
+    from fastapi import HTTPException
+    from integrations.intuit.qbo.bill.api import router as router_mod
+    from integrations.intuit.qbo.bill.api.schemas import QboBillPush
+    from integrations.intuit.qbo.outbox.business.service import QboOutboxDeadLetterExistsError
+
+    bill = MagicMock()
+    bill.public_id = "11111111-1111-1111-1111-111111111111"
+    bill.is_draft = False
+
+    dead_letter_error = QboOutboxDeadLetterExistsError(
+        entity_type="Bill",
+        entity_public_id=str(bill.public_id),
+        kind="sync_bill_to_qbo",
+        dead_letter_public_id="dead-letter-outbox-1",
+    )
+
+    with patch.object(router_mod, "BillService") as bill_svc_cls, patch.object(
+        router_mod, "QboOutboxService"
+    ) as outbox_svc_cls:
+        bill_svc_cls.return_value.read_by_public_id.return_value = bill
+        outbox_svc_cls.return_value.enqueue.side_effect = dead_letter_error
+
+        with pytest.raises(HTTPException) as exc_info:
+            router_mod.sync_bill_to_qbo_router(
+                bill_public_id=str(bill.public_id),
+                body=QboBillPush(realm_id=REALM_ID),
+                current_user={"sub": "user"},
+            )
+
+    assert exc_info.value.status_code == 409
+    assert "retry_qbo_outbox_dead_letters.py" in exc_info.value.detail
+    assert "dead-letter-outbox-1" in exc_info.value.detail
+
+
 def test_qbo_bill_push_schema_has_no_sync_attachments():
     from integrations.intuit.qbo.bill.api.schemas import QboBillPush
 

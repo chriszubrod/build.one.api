@@ -176,6 +176,42 @@ class QboOutboxRepository:
             logger.error(f"Error during read pending qbo outbox by entity: {error}")
             raise map_database_error(error)
 
+    def read_dead_letter_by_entity(
+        self,
+        entity_type: str,
+        entity_public_id: str,
+        kind: str,
+    ) -> Optional[QboOutbox]:
+        """
+        Find the most recent dead-lettered outbox row for this entity+kind.
+        Used by the service layer's enqueue-time hard guard (U-232) — a
+        dead-lettered push may have already reached QBO before its mapping
+        write failed, so a fresh enqueue must not mint a new RequestId while
+        one exists.
+        """
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                try:
+                    call_procedure(
+                        cursor=cursor,
+                        name="ReadDeadLetterQboOutboxByEntity",
+                        params={
+                            "EntityType": entity_type,
+                            "EntityPublicId": entity_public_id,
+                            "Kind": kind,
+                        },
+                    )
+                    return self._from_db(cursor.fetchone())
+                finally:
+                    try:
+                        cursor.close()
+                    except Exception:
+                        pass
+        except Exception as error:
+            logger.error(f"Error during read dead letter qbo outbox by entity: {error}")
+            raise map_database_error(error)
+
     # ------------------------------------------------------------------ #
     # Update
     # ------------------------------------------------------------------ #

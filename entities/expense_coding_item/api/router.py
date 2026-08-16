@@ -13,6 +13,7 @@ from entities.expense_coding_item.api.schemas import (
 from entities.expense_coding_item.business.service import ExpenseCodingItemService
 from entities.expense_coding_item.business.suggestion_service import ExpenseCodingSuggestionService
 from integrations.intuit.qbo.base.client import recode_write_gate_reason
+from integrations.intuit.qbo.outbox.business.service import QboOutboxDeadLetterExistsError
 from integrations.intuit.qbo.purchase.business.service import QboPurchaseService
 from shared.api.responses import item_response, list_response, raise_database_error, raise_not_found
 from shared.authz import current_user_id
@@ -207,6 +208,8 @@ def confirm_expense_coding_item_router(
             was_overridden=body.was_overridden,
             user_id=user_id,
         )
+    except QboOutboxDeadLetterExistsError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
     except Exception as error:
         logger.exception("Failed to confirm expense coding item %s.", public_id)
         raise_database_error(error)

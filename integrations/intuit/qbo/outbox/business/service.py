@@ -19,6 +19,42 @@ logger = logging.getLogger(__name__)
 DEFAULT_DEBOUNCE_SECONDS = 5
 
 
+class QboOutboxDeadLetterExistsError(Exception):
+    """
+    Raised by QboOutboxService.enqueue() when a dead-lettered outbox row
+    already exists for this (entity_type, entity_public_id, kind) and there
+    is no pending/failed row to coalesce into.
+
+    A dead-lettered push may have already reached QBO before its mapping
+    write failed. Minting a fresh RequestId here would be new to Intuit's
+    dedup and risks creating a DUPLICATE record in QBO. Recovery must go
+    through the diagnosed, RequestId-preserving replay path documented in
+    docs/runbooks/qbo-outbox-dead-letter-replay.md — never through a fresh
+    enqueue.
+    """
+
+    def __init__(
+        self,
+        *,
+        entity_type: str,
+        entity_public_id: str,
+        kind: str,
+        dead_letter_public_id: str,
+    ):
+        self.entity_type = entity_type
+        self.entity_public_id = entity_public_id
+        self.kind = kind
+        self.dead_letter_public_id = dead_letter_public_id
+        super().__init__(
+            f"A dead-lettered QBO outbox row (public_id={dead_letter_public_id}) already exists for "
+            f"{entity_type} {entity_public_id} ({kind}). Refusing to enqueue a fresh push: its RequestId "
+            f"would be unknown to Intuit, and the dead-lettered attempt may already have reached QBO before "
+            f"its mapping write failed — retrying here risks creating a DUPLICATE QBO record. Diagnose via "
+            f"docs/runbooks/qbo-outbox-dead-letter-replay.md, then replay with "
+            f"scripts/retry_qbo_outbox_dead_letters.py --kind {kind} --apply (preserves the original RequestId)."
+        )
+
+
 class QboOutboxService:
     """
     Service for enqueueing QBO write operations into the durable outbox.
@@ -102,6 +138,31 @@ class QboOutboxService:
                 },
             )
             return updated or existing
+
+        dead_letter = self.repo.read_dead_letter_by_entity(
+            entity_type=entity_type,
+            entity_public_id=entity_public_id,
+            kind=kind,
+        )
+        if dead_letter:
+            logger.warning(
+                "qbo.outbox.enqueue.refused_dead_letter_exists",
+                extra={
+                    "event_name": "qbo.outbox.enqueue.refused_dead_letter_exists",
+                    "correlation_id": correlation_id,
+                    "operation_name": kind,
+                    "realm_id": realm_id,
+                    "entity_type": entity_type,
+                    "entity_public_id": entity_public_id,
+                    "dead_letter_outbox_public_id": dead_letter.public_id,
+                },
+            )
+            raise QboOutboxDeadLetterExistsError(
+                entity_type=entity_type,
+                entity_public_id=entity_public_id,
+                kind=kind,
+                dead_letter_public_id=dead_letter.public_id,
+            )
 
         # No existing row; create fresh.
         request_id = str(uuid.uuid4())

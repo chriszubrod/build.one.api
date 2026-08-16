@@ -290,6 +290,54 @@ GO
 
 
 -- ============================================================================
+-- ReadDeadLetterQboOutboxByEntity
+-- For the enqueue-time hard guard: find the most recent dead-lettered row
+-- for the same (EntityType, EntityPublicId, Kind). A dead-lettered push may
+-- have already reached QBO before its mapping write failed; enqueue() must
+-- refuse to mint a fresh RequestId when this returns a row (see
+-- QboOutboxService.enqueue and docs/runbooks/qbo-outbox-dead-letter-replay.md).
+-- ============================================================================
+CREATE OR ALTER PROCEDURE ReadDeadLetterQboOutboxByEntity
+(
+    @EntityType     NVARCHAR(32),
+    @EntityPublicId UNIQUEIDENTIFIER,
+    @Kind           NVARCHAR(64)
+)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    SELECT TOP 1
+        [Id],
+        [PublicId],
+        [RowVersion],
+        CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
+        CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
+        [Kind],
+        [EntityType],
+        [EntityPublicId],
+        [RealmId],
+        [RequestId],
+        [Status],
+        [Attempts],
+        CONVERT(VARCHAR(19), [NextRetryAt], 120) AS [NextRetryAt],
+        CONVERT(VARCHAR(19), [ReadyAfter], 120) AS [ReadyAfter],
+        [LastError],
+        [CorrelationId],
+        CONVERT(VARCHAR(19), [StartedAt], 120) AS [StartedAt],
+        CONVERT(VARCHAR(19), [CompletedAt], 120) AS [CompletedAt],
+        CONVERT(VARCHAR(19), [DeadLetteredAt], 120) AS [DeadLetteredAt]
+    FROM [qbo].[Outbox]
+    WHERE [EntityType]     = @EntityType
+      AND [EntityPublicId] = @EntityPublicId
+      AND [Kind]           = @Kind
+      AND [Status]         = 'dead_letter'
+    ORDER BY [DeadLetteredAt] DESC, [Id] DESC;
+END;
+GO
+
+
+-- ============================================================================
 -- UpdateQboOutboxReadyAfter
 -- Extend the Policy C debounce window on an existing pending/failed row
 -- when a new edit coalesces into it.

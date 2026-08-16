@@ -8,7 +8,10 @@ from fastapi.responses import JSONResponse
 # Local Imports
 from integrations.intuit.qbo.bill.api.schemas import QboBillSync, QboBillPush
 from integrations.intuit.qbo.bill.business.service import QboBillService
-from integrations.intuit.qbo.outbox.business.service import QboOutboxService
+from integrations.intuit.qbo.outbox.business.service import (
+    QboOutboxDeadLetterExistsError,
+    QboOutboxService,
+)
 from entities.bill.business.service import BillService
 from shared.rbac import require_module_api
 from shared.rbac_constants import Modules
@@ -105,12 +108,15 @@ def sync_bill_to_qbo_router(
             detail="Bill must be finalized (is_draft=False) before syncing to QBO"
         )
 
-    outbox_row = QboOutboxService().enqueue(
-        kind="sync_bill_to_qbo",
-        entity_type="Bill",
-        entity_public_id=str(bill.public_id),
-        realm_id=body.realm_id,
-    )
+    try:
+        outbox_row = QboOutboxService().enqueue(
+            kind="sync_bill_to_qbo",
+            entity_type="Bill",
+            entity_public_id=str(bill.public_id),
+            realm_id=body.realm_id,
+        )
+    except QboOutboxDeadLetterExistsError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
     logger.info(
         f"Enqueued QBO sync for Bill {bill.public_id} (outbox {outbox_row.public_id})"
     )

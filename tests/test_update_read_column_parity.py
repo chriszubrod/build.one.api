@@ -55,6 +55,26 @@ _NULL_GUARD_EXCEPTIONS: dict[str, frozenset[str] | None] = {
     # U-093 entities are fully guarded by design — their update semantics are
     # partial-update (NULL = don't change), unlike the full-row-writer default.
     "UpdateVendorInsurancePolicyById": None,
+    # U-238c identity stamp sprocs — partial-update semantics (NULL = preserve).
+    "SetVendorQboIdentity": None,
+    "SetCustomerQboIdentity": None,
+    "SetCostCodeQboIdentity": None,
+    "SetSubCostCodeQboIdentity": None,
+    "SetPaymentTermQboIdentity": None,
+    "SetAddressQboIdentity": None,
+    "SetAttachmentQboIdentity": None,
+    "SetBillCreditQboIdentity": None,
+    # U-238a identity stamp sprocs (registered retroactively — same partial-update shape).
+    "SetBillQboIdentity": None,
+    "SetExpenseQboIdentity": None,
+    "SetInvoiceQboIdentity": None,
+    "SetProjectQboIdentity": None,
+    "SetCompanyQboIdentity": None,
+    # U-238b line-item identity stamp sprocs.
+    "SetBillLineItemQboIdentity": None,
+    "SetInvoiceLineItemQboIdentity": None,
+    "SetExpenseLineItemQboIdentity": None,
+    "SetBillCreditLineItemQboIdentity": None,
 }
 
 

@@ -148,6 +148,11 @@ class VendorCreditBillCreditConnector:
                     memo=qbo_vc.private_note,
                 )
                 if updated:
+                    self.bill_credit_service.repo.set_qbo_identity(
+                        id=int(updated.id) if isinstance(updated.id, str) else updated.id,
+                        qbo_id=qbo_vc.qbo_id,
+                        realm_id=qbo_vc.realm_id,
+                    )
                     # Sync line items
                     self._sync_line_items(updated.id, updated.public_id, qbo_lines, qbo_vc.realm_id)
                 return updated
@@ -163,6 +168,11 @@ class VendorCreditBillCreditConnector:
             )
             
             if bill_credit:
+                self.bill_credit_service.repo.set_qbo_identity(
+                    id=int(bill_credit.id) if isinstance(bill_credit.id, str) else bill_credit.id,
+                    qbo_id=qbo_vc.qbo_id,
+                    realm_id=qbo_vc.realm_id,
+                )
                 # Step 4: Create mapping
                 self.mapping_repo.create(
                     qbo_vendor_credit_id=qbo_vc.id,

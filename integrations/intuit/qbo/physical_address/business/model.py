@@ -16,6 +16,7 @@ class QboPhysicalAddress:
     created_datetime: Optional[str]
     modified_datetime: Optional[str]
     qbo_id: Optional[str]
+    realm_id: Optional[str]
     line1: Optional[str]
     line2: Optional[str]
     city: Optional[str]

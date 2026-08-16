@@ -70,6 +70,11 @@ class CustomerCustomerConnector:
                 customer.email = customer_email
                 customer.phone = customer_phone
                 customer = self.customer_service.repo.update_by_id(customer)
+                self.customer_service.repo.set_qbo_identity(
+                    id=int(customer.id) if isinstance(customer.id, str) else customer.id,
+                    qbo_id=qbo_customer.qbo_id,
+                    realm_id=qbo_customer.realm_id,
+                )
                 return customer
             else:
                 # Mapping exists but Customer not found - recreate Customer
@@ -95,14 +100,26 @@ class CustomerCustomerConnector:
         # Create mapping
         customer_id = int(customer.id) if isinstance(customer.id, str) else customer.id
         try:
-            mapping = self.create_mapping(customer_id=customer_id, qbo_customer_id=qbo_customer.id)
+            mapping = self.create_mapping(
+                customer_id=customer_id,
+                qbo_customer_id=qbo_customer.id,
+                qbo_id=qbo_customer.qbo_id,
+                realm_id=qbo_customer.realm_id,
+            )
             logger.info(f"Created mapping: Customer {customer_id} <-> QboCustomer {qbo_customer.id}")
         except ValueError as e:
             logger.warning(f"Could not create mapping: {e}")
         
         return customer
 
-    def create_mapping(self, customer_id: int, qbo_customer_id: int) -> CustomerCustomer:
+    def create_mapping(
+        self,
+        customer_id: int,
+        qbo_customer_id: int,
+        *,
+        qbo_id: Optional[str],
+        realm_id: Optional[str],
+    ) -> CustomerCustomer:
         """
         Create a mapping between Customer and QboCustomer.
         
@@ -129,7 +146,11 @@ class CustomerCustomerConnector:
                 f"QboCustomer {qbo_customer_id} is already mapped to Customer {existing_by_qbo_customer.customer_id}"
             )
         
-        # Create mapping
+        self.customer_service.repo.set_qbo_identity(
+            id=customer_id,
+            qbo_id=qbo_id,
+            realm_id=realm_id,
+        )
         return self.mapping_repo.create(customer_id=customer_id, qbo_customer_id=qbo_customer_id)
 
     def get_mapping_by_customer_id(self, customer_id: int) -> Optional[CustomerCustomer]:

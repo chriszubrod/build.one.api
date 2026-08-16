@@ -85,6 +85,17 @@ class AttachableAttachmentConnector:
 
                 if blob_ok:
                     logger.info(f"Found existing Attachment {attachment.id} for QboAttachable {qbo_attachable.id}")
+                    existing_qbo_id = getattr(attachment, "qbo_id", None)
+                    existing_realm_id = getattr(attachment, "realm_id", None)
+                    if not (
+                        (existing_qbo_id or "") == (qbo_attachable.qbo_id or "")
+                        and (existing_realm_id or "") == (realm_id or "")
+                    ):
+                        self.attachment_service.repo.set_qbo_identity(
+                            id=int(attachment.id) if isinstance(attachment.id, str) else attachment.id,
+                            qbo_id=qbo_attachable.qbo_id,
+                            realm_id=realm_id,
+                        )
                     return attachment
 
                 # Blob is missing — re-download from QBO and re-upload
@@ -115,7 +126,14 @@ class AttachableAttachmentConnector:
                     # to the sweep; DI never runs inline in the realm pull.
                     self._mark_pending_extraction(attachment.id)
                     # Re-read to get updated record
-                    return self.attachment_service.read_by_id(attachment.id)
+                    refreshed = self.attachment_service.read_by_id(attachment.id)
+                    if refreshed:
+                        self.attachment_service.repo.set_qbo_identity(
+                            id=int(refreshed.id) if isinstance(refreshed.id, str) else refreshed.id,
+                            qbo_id=qbo_attachable.qbo_id,
+                            realm_id=realm_id,
+                        )
+                    return refreshed
                 else:
                     # Blob is gone AND re-download failed — do NOT return a record that
                     # points at a missing blob (it would get linked to line items and
@@ -186,7 +204,12 @@ class AttachableAttachmentConnector:
                 # Re-uploaded fresh bytes for a healed blob — queue extraction (U-187).
                 self._mark_pending_extraction(existing_by_hash.id)
             # Create mapping to existing attachment
-            self._create_mapping(attachment_id=existing_by_hash.id, qbo_attachable_id=qbo_attachable.id)
+            self._create_mapping(
+                attachment_id=existing_by_hash.id,
+                qbo_attachable_id=qbo_attachable.id,
+                qbo_id=qbo_attachable.qbo_id,
+                realm_id=realm_id,
+            )
             return existing_by_hash
         
         # Upload to Azure Blob Storage (use converted content/type/filename)
@@ -216,7 +239,12 @@ class AttachableAttachmentConnector:
         )
         
         # Create mapping
-        self._create_mapping(attachment_id=attachment.id, qbo_attachable_id=qbo_attachable.id)
+        self._create_mapping(
+            attachment_id=attachment.id,
+            qbo_attachable_id=qbo_attachable.id,
+            qbo_id=qbo_attachable.qbo_id,
+            realm_id=realm_id,
+        )
         logger.info(f"Created mapping: Attachment {attachment.id} <-> QboAttachable {qbo_attachable.id}")
 
         # New source document — queue text extraction (U-187). Marked 'pending'
@@ -313,7 +341,14 @@ class AttachableAttachmentConnector:
         logger.debug(f"Uploaded file to blob: {blob_url}")
         return blob_url
 
-    def _create_mapping(self, attachment_id: int, qbo_attachable_id: int) -> AttachableAttachment:
+    def _create_mapping(
+        self,
+        attachment_id: int,
+        qbo_attachable_id: int,
+        *,
+        qbo_id: Optional[str],
+        realm_id: Optional[str],
+    ) -> AttachableAttachment:
         """
         Create a mapping between Attachment and QboAttachable.
         """
@@ -330,6 +365,11 @@ class AttachableAttachmentConnector:
                 f"QboAttachable {qbo_attachable_id} is already mapped to Attachment {existing_by_qbo.attachment_id}"
             )
         
+        self.attachment_service.repo.set_qbo_identity(
+            id=attachment_id,
+            qbo_id=qbo_id,
+            realm_id=realm_id,
+        )
         return self.mapping_repo.create(attachment_id=attachment_id, qbo_attachable_id=qbo_attachable_id)
 
     def _ensure_pdf_filename(self, file_name: str) -> str:
@@ -444,7 +484,12 @@ class AttachableAttachmentConnector:
         # Create mapping
         qbo_attachable_id = int(local_qbo_attachable.id) if isinstance(local_qbo_attachable.id, str) else local_qbo_attachable.id
         try:
-            self._create_mapping(attachment_id=attachment_id, qbo_attachable_id=qbo_attachable_id)
+            self._create_mapping(
+                attachment_id=attachment_id,
+                qbo_attachable_id=qbo_attachable_id,
+                qbo_id=qbo_attachable_response.id,
+                realm_id=realm_id,
+            )
             logger.info(f"Created mapping: Attachment {attachment_id} <-> QboAttachable {qbo_attachable_id}")
         except ValueError as e:
             logger.warning(f"Could not create mapping: {e}")

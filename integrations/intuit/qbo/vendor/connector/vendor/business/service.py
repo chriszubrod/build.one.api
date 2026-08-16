@@ -70,9 +70,15 @@ class VendorVendorConnector:
             vendor = self.vendor_service.read_by_id(mapping.vendor_id)
             if vendor:
                 logger.info(f"Updating existing Vendor {vendor.id} from QboVendor {qbo_vendor.id}")
-                return self._apply_vendor_fields_and_sync(
+                updated = self._apply_vendor_fields_and_sync(
                     vendor, qbo_vendor=qbo_vendor, incoming_name=vendor_name
                 )
+                self.vendor_service.repo.set_qbo_identity(
+                    id=coerce_id(updated.id),
+                    qbo_id=qbo_vendor.qbo_id,
+                    realm_id=qbo_vendor.realm_id,
+                )
+                return updated
 
             # HEAL — mapping exists but the bound Vendor reads empty.
             # NEVER delete the mapping and NEVER fall through to create (audit P1-08).
@@ -105,6 +111,11 @@ class VendorVendorConnector:
                         f"{qbo_vendor.id} from missing Vendor {old_vendor_id} to Vendor "
                         f"{replacement_id} ({vendor_name})"
                     )
+                self.vendor_service.repo.set_qbo_identity(
+                    id=replacement_id,
+                    qbo_id=qbo_vendor.qbo_id,
+                    realm_id=qbo_vendor.realm_id,
+                )
                 return self._apply_vendor_fields_and_sync(
                     replacement, qbo_vendor=qbo_vendor, incoming_name=vendor_name
                 )
@@ -146,7 +157,12 @@ class VendorVendorConnector:
                 f"Binding existing local Vendor {existing_local_id} ({vendor_name}) "
                 f"to QboVendor {qbo_vendor.id} by name match"
             )
-            self.create_mapping(vendor_id=existing_local_id, qbo_vendor_id=qbo_vendor.id)
+            self.create_mapping(
+                vendor_id=existing_local_id,
+                qbo_vendor_id=qbo_vendor.id,
+                qbo_id=qbo_vendor.qbo_id,
+                realm_id=qbo_vendor.realm_id,
+            )
             self._sync_addresses(qbo_vendor, existing_local_id)
             return existing_local
 
@@ -159,7 +175,12 @@ class VendorVendorConnector:
         )
         vendor_id = coerce_id(vendor.id)
         try:
-            self.create_mapping(vendor_id=vendor_id, qbo_vendor_id=qbo_vendor.id)
+            self.create_mapping(
+                vendor_id=vendor_id,
+                qbo_vendor_id=qbo_vendor.id,
+                qbo_id=qbo_vendor.qbo_id,
+                realm_id=qbo_vendor.realm_id,
+            )
             logger.info(f"Created mapping: Vendor {vendor_id} <-> QboVendor {qbo_vendor.id}")
         except ValueError as e:
             # Do NOT swallow (audit P1-08). Surface it so the caller's per-item handler logs + skips.
@@ -359,7 +380,14 @@ class VendorVendorConnector:
             )
             logger.debug(f"Created VendorAddress for Vendor {vendor_id}, Address {address_id}, Type {address_type_id}")
 
-    def create_mapping(self, vendor_id: int, qbo_vendor_id: int) -> VendorVendor:
+    def create_mapping(
+        self,
+        vendor_id: int,
+        qbo_vendor_id: int,
+        *,
+        qbo_id: Optional[str],
+        realm_id: Optional[str],
+    ) -> VendorVendor:
         """
         Create a mapping between Vendor and QboVendor.
         
@@ -386,7 +414,14 @@ class VendorVendorConnector:
                 f"QboVendor {qbo_vendor_id} is already mapped to Vendor {existing_by_qbo_vendor.vendor_id}"
             )
         
-        # Create mapping
+        # Stamp dbo-native identity FIRST — if this fails, nothing else has been
+        # created yet, so the caller's existing rollback fully cleans up with no
+        # orphaned mapping row.
+        self.vendor_service.repo.set_qbo_identity(
+            id=vendor_id,
+            qbo_id=qbo_id,
+            realm_id=realm_id,
+        )
         return self.mapping_repo.create(vendor_id=vendor_id, qbo_vendor_id=qbo_vendor_id)
 
     def get_mapping_by_vendor_id(self, vendor_id: int) -> Optional[VendorVendor]:

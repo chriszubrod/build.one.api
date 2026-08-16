@@ -1,5 +1,5 @@
 """Pure classification logic + shared entity topology for dbo vs qbo staging
-identity drift (U-238a headers, U-238b line items)."""
+identity drift (U-238a headers, U-238b line items, U-238c reference entities)."""
 
 from __future__ import annotations
 
@@ -11,14 +11,14 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
-class HeaderEntitySpec:
-    """One row of the dbo<->qbo mapping<->qbo staging topology for a header entity.
+class FlatEntitySpec:
+    """One row of the flat dbo<->qbo mapping<->qbo staging topology (no line-parent hop).
 
-    Single source of truth shared by scripts/backfill_qbo_identity_headers.py and
-    scripts/check_qbo_identity_drift_headers.py — both scripts describe the same
-    5 entities and previously hand-typed two independent, driftable copies of
-    this table. `dbo_table` was dropped as a field: it was always identical to
-    `label` in both callers, so callers use `.label` directly.
+    Single source of truth for 13 entities across 4 backfill/drift scripts:
+    scripts/backfill_qbo_identity_headers.py, scripts/check_qbo_identity_drift_headers.py,
+    scripts/backfill_qbo_identity_reference.py, and scripts/check_qbo_identity_drift_reference.py
+    (U-238a transaction headers + U-238c reference entities). `dbo_table` was dropped as a
+    field: it was always identical to `label`, so callers use `.label` directly.
     """
 
     key: str
@@ -31,12 +31,24 @@ class HeaderEntitySpec:
     sproc: str
 
 
-HEADER_ENTITY_SPECS: tuple[HeaderEntitySpec, ...] = (
-    HeaderEntitySpec("bill", "Bill", "BillBill", "Bill", "BillId", "QboBillId", True, "SetBillQboIdentity"),
-    HeaderEntitySpec("expense", "Expense", "PurchaseExpense", "Purchase", "ExpenseId", "QboPurchaseId", True, "SetExpenseQboIdentity"),
-    HeaderEntitySpec("invoice", "Invoice", "InvoiceInvoice", "Invoice", "InvoiceId", "QboInvoiceId", True, "SetInvoiceQboIdentity"),
-    HeaderEntitySpec("project", "Project", "CustomerProject", "Customer", "ProjectId", "QboCustomerId", False, "SetProjectQboIdentity"),
-    HeaderEntitySpec("company", "Company", "CompanyInfoCompany", "CompanyInfo", "CompanyId", "QboCompanyInfoId", False, "SetCompanyQboIdentity"),
+HEADER_ENTITY_SPECS: tuple[FlatEntitySpec, ...] = (
+    FlatEntitySpec("bill", "Bill", "BillBill", "Bill", "BillId", "QboBillId", True, "SetBillQboIdentity"),
+    FlatEntitySpec("expense", "Expense", "PurchaseExpense", "Purchase", "ExpenseId", "QboPurchaseId", True, "SetExpenseQboIdentity"),
+    FlatEntitySpec("invoice", "Invoice", "InvoiceInvoice", "Invoice", "InvoiceId", "QboInvoiceId", True, "SetInvoiceQboIdentity"),
+    FlatEntitySpec("project", "Project", "CustomerProject", "Customer", "ProjectId", "QboCustomerId", False, "SetProjectQboIdentity"),
+    FlatEntitySpec("company", "Company", "CompanyInfoCompany", "CompanyInfo", "CompanyId", "QboCompanyInfoId", False, "SetCompanyQboIdentity"),
+)
+
+
+REFERENCE_ENTITY_SPECS: tuple[FlatEntitySpec, ...] = (
+    FlatEntitySpec("vendor", "Vendor", "VendorVendor", "Vendor", "VendorId", "QboVendorId", False, "SetVendorQboIdentity"),
+    FlatEntitySpec("customer", "Customer", "CustomerCustomer", "Customer", "CustomerId", "QboCustomerId", False, "SetCustomerQboIdentity"),
+    FlatEntitySpec("cost_code", "CostCode", "ItemCostCode", "Item", "CostCodeId", "QboItemId", False, "SetCostCodeQboIdentity"),
+    FlatEntitySpec("sub_cost_code", "SubCostCode", "ItemSubCostCode", "Item", "SubCostCodeId", "QboItemId", False, "SetSubCostCodeQboIdentity"),
+    FlatEntitySpec("payment_term", "PaymentTerm", "TermPaymentTerm", "Term", "PaymentTermId", "QboTermId", False, "SetPaymentTermQboIdentity"),
+    FlatEntitySpec("address", "Address", "PhysicalAddressAddress", "PhysicalAddress", "AddressId", "QboPhysicalAddressId", False, "SetAddressQboIdentity"),
+    FlatEntitySpec("attachment", "Attachment", "AttachableAttachment", "Attachable", "AttachmentId", "QboAttachableId", False, "SetAttachmentQboIdentity"),
+    FlatEntitySpec("bill_credit", "BillCredit", "VendorCreditBillCredit", "VendorCredit", "BillCreditId", "QboVendorCreditId", False, "SetBillCreditQboIdentity"),
 )
 
 

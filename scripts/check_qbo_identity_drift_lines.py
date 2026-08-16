@@ -87,7 +87,7 @@ def _scan_entity(spec: LineEntitySpec) -> dict[str, int]:
     return counts
 
 
-def main() -> None:
+def main() -> int:
     ap = argparse.ArgumentParser(description="Detect dbo vs qbo line identity drift (read-only).")
     ap.add_argument(
         "--entity",
@@ -127,7 +127,8 @@ def main() -> None:
         logger.error("Orphan dbo values (no mapping): %s row(s) — investigate dual-write bugs", total_orphan)
     if not total_drift and not total_orphan:
         logger.info("No drift or orphan dbo values detected.")
+    return 1 if (total_drift or total_orphan) else 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

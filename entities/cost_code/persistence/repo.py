@@ -225,3 +225,35 @@ class CostCodeRepository:
         except Exception as error:
             logger.error(f"Error during delete cost code by ID: {error}")
             raise map_database_error(error)
+
+    def set_qbo_identity(
+        self,
+        *,
+        id: int,
+        qbo_id: Optional[str],
+        realm_id: Optional[str],
+    ) -> None:
+        """Stamp dbo-native QBO identity columns (idempotent-safe via CASE WHEN sproc)."""
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(
+                    cursor=cursor,
+                    name="SetCostCodeQboIdentity",
+                    params={
+                        "Id": id,
+                        "QboId": qbo_id,
+                        "RealmId": realm_id,
+                    },
+                )
+                row = cursor.fetchone()
+                if row and getattr(row, "Stolen", False):
+                    logger.warning(
+                        "CostCode %s stole QBO identity (qbo_id=%s realm_id=%s) from a different "
+                        "CostCode row — a stale duplicate identity existed before this stamp",
+                        id, qbo_id, realm_id,
+                    )
+        except Exception as error:
+            logger.error(f"Error during set cost code qbo identity: {error}")
+            raise map_database_error(error)
+

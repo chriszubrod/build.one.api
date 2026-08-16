@@ -176,11 +176,29 @@ class PhysicalAddressAddressConnector:
             # Create new mapping if needed
             if not mapping:
                 try:
-                    mapping = self.create_mapping(address_id_int, qbo_physical_address_id)
+                    mapping = self.create_mapping(
+                        address_id_int,
+                        qbo_physical_address_id,
+                        qbo_id=qbo_physical_address.qbo_id,
+                        realm_id=qbo_physical_address.realm_id,
+                    )
                     logger.info(f"Created mapping: Address {address_id_int} <-> QboPhysicalAddress {qbo_physical_address_id}")
                 except ValueError as e:
                     logger.warning(f"Could not create mapping: {e}")
         
+        if (
+            not needs_mapping_repair
+            and mapping is not None
+            and mapping.qbo_physical_address_id == qbo_physical_address_id
+        ):
+            # Only stamp when the resolved mapping points back at this QboPhysicalAddress.
+            # Step 2's cannot-remap branch may leave `mapping` bound to a different staging row.
+            self.address_service.repo.set_qbo_identity(
+                id=int(address.id) if isinstance(address.id, str) else address.id,
+                qbo_id=qbo_physical_address.qbo_id,
+                realm_id=qbo_physical_address.realm_id,
+            )
+
         return address
 
     def sync_from_address_to_qbo(self, address_id: int) -> QboPhysicalAddress:
@@ -268,7 +286,14 @@ class PhysicalAddressAddressConnector:
         
         return qbo_physical_address
 
-    def create_mapping(self, address_id: int, qbo_physical_address_id: int) -> PhysicalAddressAddress:
+    def create_mapping(
+        self,
+        address_id: int,
+        qbo_physical_address_id: int,
+        *,
+        qbo_id: Optional[str],
+        realm_id: Optional[str],
+    ) -> PhysicalAddressAddress:
         """
         Create a mapping between Address and QboPhysicalAddress.
         
@@ -295,7 +320,11 @@ class PhysicalAddressAddressConnector:
                 f"QboPhysicalAddress {qbo_physical_address_id} is already mapped to Address {existing_by_qbo.address_id}"
             )
         
-        # Create mapping
+        self.address_service.repo.set_qbo_identity(
+            id=address_id,
+            qbo_id=qbo_id,
+            realm_id=realm_id,
+        )
         return self.mapping_repo.create(address_id=address_id, qbo_physical_address_id=qbo_physical_address_id)
 
     def get_mapping_by_address_id(self, address_id: int) -> Optional[PhysicalAddressAddress]:

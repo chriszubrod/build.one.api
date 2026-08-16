@@ -41,6 +41,7 @@ class QboPhysicalAddressRepository:
                 created_datetime=row.CreatedDatetime,
                 modified_datetime=row.ModifiedDatetime,
                 qbo_id=row.QboId,
+                realm_id=getattr(row, "RealmId", None),
                 line1=row.Line1,
                 line2=row.Line2,
                 city=row.City,
@@ -65,6 +66,7 @@ class QboPhysicalAddressRepository:
         country: Optional[str],
         country_sub_division_code: Optional[str],
         postal_code: Optional[str],
+        realm_id: Optional[str] = None,
     ) -> QboPhysicalAddress:
         """
         Create a new QboPhysicalAddress.
@@ -77,6 +79,7 @@ class QboPhysicalAddressRepository:
                     name="CreateQboPhysicalAddress",
                     params={
                         "QboId": qbo_id,
+                        "RealmId": realm_id,
                         "Line1": line1,
                         "Line2": line2,
                         "City": city,    
@@ -177,6 +180,7 @@ class QboPhysicalAddressRepository:
         country: Optional[str],
         country_sub_division_code: Optional[str],
         postal_code: Optional[str],
+        realm_id: Optional[str] = None,
     ) -> Optional[QboPhysicalAddress]:
         """
         Update a QboPhysicalAddress by ID.
@@ -191,6 +195,7 @@ class QboPhysicalAddressRepository:
                         "Id": id,
                         "RowVersion": row_version,
                         "QboId": qbo_id,
+                        "RealmId": realm_id,
                         "Line1": line1,
                         "Line2": line2,
                         "City": city,

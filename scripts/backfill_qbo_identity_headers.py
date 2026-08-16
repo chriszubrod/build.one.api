@@ -17,7 +17,7 @@ import argparse
 import logging
 from typing import Optional
 
-from integrations.intuit.qbo.base.identity_drift import HEADER_ENTITY_SPECS, HeaderEntitySpec
+from integrations.intuit.qbo.base.identity_drift import HEADER_ENTITY_SPECS, FlatEntitySpec
 from scripts.sync_helper import assert_cli_system_admin
 from shared.database import get_connection
 
@@ -49,7 +49,7 @@ def _stamp_via_sproc(
 ENTITY_SPECS = {spec.key: spec for spec in HEADER_ENTITY_SPECS}
 
 
-def _count_sql(spec: HeaderEntitySpec) -> str:
+def _count_sql(spec: FlatEntitySpec) -> str:
     return f"""
     SELECT
         (SELECT COUNT(*) FROM qbo.[{spec.mapping_table}]) AS mapping_count,
@@ -66,7 +66,7 @@ def _count_sql(spec: HeaderEntitySpec) -> str:
     """
 
 
-def _batch_select_sql(spec: HeaderEntitySpec, *, limit: int) -> str:
+def _batch_select_sql(spec: FlatEntitySpec, *, limit: int) -> str:
     sync_select = ", s.[SyncToken]" if spec.has_sync_token else ""
     return f"""
     SELECT TOP ({limit})
@@ -82,14 +82,14 @@ def _batch_select_sql(spec: HeaderEntitySpec, *, limit: int) -> str:
     """
 
 
-def _fetch_counts(cursor, spec: HeaderEntitySpec) -> dict:
+def _fetch_counts(cursor, spec: FlatEntitySpec) -> dict:
     cursor.execute(_count_sql(spec))
     row = cursor.fetchone()
     cols = [c[0] for c in cursor.description]
     return dict(zip(cols, row))
 
 
-def _print_counts(spec: HeaderEntitySpec, counts: dict, *, prefix: str) -> None:
+def _print_counts(spec: FlatEntitySpec, counts: dict, *, prefix: str) -> None:
     print(
         f"{prefix} {spec.label}: "
         f"mapping={counts['mapping_count']} staging={counts['staging_count']} "
@@ -99,7 +99,7 @@ def _print_counts(spec: HeaderEntitySpec, counts: dict, *, prefix: str) -> None:
 
 
 def backfill_entity(
-    spec: HeaderEntitySpec,
+    spec: FlatEntitySpec,
     *,
     apply: bool,
     batch_size: int,

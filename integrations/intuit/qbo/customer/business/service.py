@@ -297,6 +297,7 @@ class QboCustomerService:
                 id=existing.id,
                 row_version=existing.row_version_bytes,
                 qbo_id=qbo_id,
+                realm_id=realm_id,
                 line1=qbo_address.line1,
                 line2=qbo_address.line2,
                 city=qbo_address.city,
@@ -310,6 +311,7 @@ class QboCustomerService:
             logger.debug(f"Creating new QBO physical address {qbo_id}")
             created = self.physical_address_service.create(
                 qbo_id=qbo_id,
+                realm_id=realm_id,
                 line1=qbo_address.line1,
                 line2=qbo_address.line2,
                 city=qbo_address.city,

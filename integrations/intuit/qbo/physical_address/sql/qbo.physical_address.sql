@@ -23,9 +23,17 @@ CREATE TABLE [qbo].[PhysicalAddress]
 END
 GO
 
+IF OBJECT_ID('qbo.PhysicalAddress', 'U') IS NOT NULL
+   AND NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('qbo.PhysicalAddress') AND name = 'RealmId')
+BEGIN
+    ALTER TABLE [qbo].[PhysicalAddress] ADD [RealmId] NVARCHAR(50) NULL;
+END
+GO
+
 CREATE OR ALTER PROCEDURE CreateQboPhysicalAddress
 (
     @QboId NVARCHAR(MAX),
+    @RealmId NVARCHAR(50) = NULL,
     @Line1 NVARCHAR(MAX),
     @Line2 NVARCHAR(MAX),
     @City NVARCHAR(MAX),
@@ -39,7 +47,7 @@ BEGIN
 
     DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();
 
-    INSERT INTO [qbo].[PhysicalAddress] ([CreatedDatetime], [ModifiedDatetime], [QboId], [Line1], [Line2], [City], [Country], [CountrySubDivisionCode], [PostalCode])
+    INSERT INTO [qbo].[PhysicalAddress] ([CreatedDatetime], [ModifiedDatetime], [QboId], [RealmId], [Line1], [Line2], [City], [Country], [CountrySubDivisionCode], [PostalCode])
     OUTPUT
         INSERTED.[Id],
         INSERTED.[PublicId],
@@ -47,13 +55,14 @@ BEGIN
         CONVERT(VARCHAR(19), INSERTED.[CreatedDatetime], 120) AS [CreatedDatetime],
         CONVERT(VARCHAR(19), INSERTED.[ModifiedDatetime], 120) AS [ModifiedDatetime],
         INSERTED.[QboId],
+        INSERTED.[RealmId],
         INSERTED.[Line1],
         INSERTED.[Line2],
         INSERTED.[City],
         INSERTED.[Country],
         INSERTED.[CountrySubDivisionCode],
         INSERTED.[PostalCode]
-    VALUES (@Now, @Now, @QboId, @Line1, @Line2, @City, @Country, @CountrySubDivisionCode, @PostalCode);
+    VALUES (@Now, @Now, @QboId, @RealmId, @Line1, @Line2, @City, @Country, @CountrySubDivisionCode, @PostalCode);
 
     COMMIT TRANSACTION;
 END;
@@ -76,6 +85,7 @@ BEGIN
         CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
         CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
         [QboId],
+        [RealmId],
         [Line1],
         [Line2],
         [City],
@@ -108,6 +118,7 @@ BEGIN
         CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
         CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
         [QboId],
+        [RealmId],
         [Line1],
         [Line2],
         [City],
@@ -137,6 +148,7 @@ BEGIN
         CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
         CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
         [QboId],
+        [RealmId],
         [Line1],
         [Line2],
         [City],
@@ -171,6 +183,7 @@ BEGIN
         CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
         CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
         [QboId],
+        [RealmId],
         [Line1],
         [Line2],
         [City],
@@ -195,6 +208,7 @@ CREATE OR ALTER PROCEDURE UpdateQboPhysicalAddressById
     @Id BIGINT,
     @RowVersion BINARY(8),
     @QboId NVARCHAR(MAX),
+    @RealmId NVARCHAR(50) = NULL,
     @Line1 NVARCHAR(MAX),
     @Line2 NVARCHAR(MAX),
     @City NVARCHAR(MAX),
@@ -211,6 +225,7 @@ BEGIN
     UPDATE [qbo].[PhysicalAddress]
     SET [ModifiedDatetime] = @Now,
         [QboId] = CASE WHEN @QboId IS NULL THEN [QboId] ELSE @QboId END,
+        [RealmId] = CASE WHEN @RealmId IS NULL THEN [RealmId] ELSE @RealmId END,
         [Line1] = CASE WHEN @Line1 IS NULL THEN [Line1] ELSE @Line1 END,
         [Line2] = CASE WHEN @Line2 IS NULL THEN [Line2] ELSE @Line2 END,
         [City] = CASE WHEN @City IS NULL THEN [City] ELSE @City END,
@@ -224,6 +239,7 @@ BEGIN
         CONVERT(VARCHAR(19), INSERTED.[CreatedDatetime], 120) AS [CreatedDatetime],
         CONVERT(VARCHAR(19), INSERTED.[ModifiedDatetime], 120) AS [ModifiedDatetime],
         INSERTED.[QboId],
+        INSERTED.[RealmId],
         INSERTED.[Line1],
         INSERTED.[Line2],
         INSERTED.[City],
@@ -257,6 +273,7 @@ BEGIN
         CONVERT(VARCHAR(19), DELETED.[CreatedDatetime], 120) AS [CreatedDatetime],
         CONVERT(VARCHAR(19), DELETED.[ModifiedDatetime], 120) AS [ModifiedDatetime],
         DELETED.[QboId],
+        DELETED.[RealmId],
         DELETED.[Line1],
         DELETED.[Line2],
         DELETED.[City],

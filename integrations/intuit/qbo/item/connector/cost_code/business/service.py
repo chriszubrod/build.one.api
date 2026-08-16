@@ -73,12 +73,18 @@ class ItemCostCodeConnector:
             cost_code = self.cost_code_service.read_by_id(str(mapping.cost_code_id))
             if cost_code:
                 logger.info(f"Updating existing CostCode {cost_code.id} from QboItem {qbo_item.id}")
-                return self._apply_cost_code_fields_and_sync(
+                updated = self._apply_cost_code_fields_and_sync(
                     cost_code,
                     number=number,
                     incoming_name=name,
                     description=description,
                 )
+                self.cost_code_service.repo.set_qbo_identity(
+                    id=coerce_id(updated.id),
+                    qbo_id=qbo_item.qbo_id,
+                    realm_id=qbo_item.realm_id,
+                )
+                return updated
 
             # HEAL — mapping exists but the bound CostCode reads empty.
             # NEVER delete the mapping and NEVER fall through to create (audit P1-08).
@@ -113,6 +119,11 @@ class ItemCostCodeConnector:
                         f"{qbo_item.id} from missing CostCode {old_cost_code_id} to "
                         f"CostCode {replacement_id} ({number})"
                     )
+                self.cost_code_service.repo.set_qbo_identity(
+                    id=replacement_id,
+                    qbo_id=qbo_item.qbo_id,
+                    realm_id=qbo_item.realm_id,
+                )
                 return self._apply_cost_code_fields_and_sync(
                     replacement,
                     number=number,
@@ -159,6 +170,8 @@ class ItemCostCodeConnector:
             self._bind_mapping_or_raise(
                 cost_code_id=existing_id,
                 qbo_item_id=qbo_item.id,
+                qbo_id=qbo_item.qbo_id,
+                realm_id=qbo_item.realm_id,
                 context=f"CostCode {existing_id} adopt",
                 prefetched_by_cost_code=existing_map_for_local,
             )
@@ -175,6 +188,8 @@ class ItemCostCodeConnector:
         self._bind_mapping_or_raise(
             cost_code_id=cost_code_id,
             qbo_item_id=qbo_item.id,
+            qbo_id=qbo_item.qbo_id,
+            realm_id=qbo_item.realm_id,
             context=f"CostCode {cost_code_id} create",
         )
         return cost_code
@@ -202,6 +217,8 @@ class ItemCostCodeConnector:
         *,
         cost_code_id: int,
         qbo_item_id: int,
+        qbo_id: Optional[str],
+        realm_id: Optional[str],
         context: str,
         prefetched_by_cost_code=_PREFETCH_UNSET,
     ) -> None:
@@ -209,6 +226,8 @@ class ItemCostCodeConnector:
             self.create_mapping(
                 cost_code_id=cost_code_id,
                 qbo_item_id=qbo_item_id,
+                qbo_id=qbo_id,
+                realm_id=realm_id,
                 prefetched_by_cost_code=prefetched_by_cost_code,
             )
             logger.info(f"Created mapping: CostCode {cost_code_id} <-> QboItem {qbo_item_id}")
@@ -265,6 +284,8 @@ class ItemCostCodeConnector:
         cost_code_id: int,
         qbo_item_id: int,
         *,
+        qbo_id: Optional[str],
+        realm_id: Optional[str],
         prefetched_by_cost_code=_PREFETCH_UNSET,
     ) -> ItemCostCode:
         """
@@ -296,7 +317,11 @@ class ItemCostCodeConnector:
                 f"QboItem {qbo_item_id} is already mapped to CostCode {existing_by_qbo_item.cost_code_id}"
             )
         
-        # Create mapping
+        self.cost_code_service.repo.set_qbo_identity(
+            id=cost_code_id,
+            qbo_id=qbo_id,
+            realm_id=realm_id,
+        )
         return self.mapping_repo.create(cost_code_id=cost_code_id, qbo_item_id=qbo_item_id)
 
     def get_mapping_by_cost_code_id(self, cost_code_id: int) -> Optional[ItemCostCode]:

@@ -283,3 +283,35 @@ class VendorRepository:
         except Exception as error:
             logger.error(f"Error during soft delete vendor by public ID: {error}")
             raise map_database_error(error)
+
+    def set_qbo_identity(
+        self,
+        *,
+        id: int,
+        qbo_id: Optional[str],
+        realm_id: Optional[str],
+    ) -> None:
+        """Stamp dbo-native QBO identity columns (idempotent-safe via CASE WHEN sproc)."""
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(
+                    cursor=cursor,
+                    name="SetVendorQboIdentity",
+                    params={
+                        "Id": id,
+                        "QboId": qbo_id,
+                        "RealmId": realm_id,
+                    },
+                )
+                row = cursor.fetchone()
+                if row and getattr(row, "Stolen", False):
+                    logger.warning(
+                        "Vendor %s stole QBO identity (qbo_id=%s realm_id=%s) from a different "
+                        "Vendor row — a stale duplicate identity existed before this stamp",
+                        id, qbo_id, realm_id,
+                    )
+        except Exception as error:
+            logger.error(f"Error during set vendor qbo identity: {error}")
+            raise map_database_error(error)
+

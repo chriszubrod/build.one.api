@@ -73,6 +73,11 @@ class TermPaymentTermConnector:
                 payment_term.discount_days = qbo_term.discount_days
                 payment_term.due_days = qbo_term.due_days
                 payment_term = self.payment_term_service.repo.update_by_id(payment_term)
+                self.payment_term_service.repo.set_qbo_identity(
+                    id=int(payment_term.id) if isinstance(payment_term.id, str) else payment_term.id,
+                    qbo_id=qbo_term.qbo_id,
+                    realm_id=qbo_term.realm_id,
+                )
                 return payment_term
             else:
                 # Mapping exists but PaymentTerm not found - recreate PaymentTerm
@@ -97,14 +102,26 @@ class TermPaymentTermConnector:
         # Create mapping
         payment_term_id = int(payment_term.id) if isinstance(payment_term.id, str) else payment_term.id
         try:
-            mapping = self.create_mapping(payment_term_id=payment_term_id, qbo_term_id=qbo_term.id)
+            mapping = self.create_mapping(
+                payment_term_id=payment_term_id,
+                qbo_term_id=qbo_term.id,
+                qbo_id=qbo_term.qbo_id,
+                realm_id=qbo_term.realm_id,
+            )
             logger.info(f"Created mapping: PaymentTerm {payment_term_id} <-> QboTerm {qbo_term.id}")
         except ValueError as e:
             logger.warning(f"Could not create mapping: {e}")
         
         return payment_term
 
-    def create_mapping(self, payment_term_id: int, qbo_term_id: int) -> TermPaymentTerm:
+    def create_mapping(
+        self,
+        payment_term_id: int,
+        qbo_term_id: int,
+        *,
+        qbo_id: Optional[str],
+        realm_id: Optional[str],
+    ) -> TermPaymentTerm:
         """
         Create a mapping between PaymentTerm and QboTerm.
         
@@ -131,7 +148,11 @@ class TermPaymentTermConnector:
                 f"QboTerm {qbo_term_id} is already mapped to PaymentTerm {existing_by_qbo_term.payment_term_id}"
             )
         
-        # Create mapping
+        self.payment_term_service.repo.set_qbo_identity(
+            id=payment_term_id,
+            qbo_id=qbo_id,
+            realm_id=realm_id,
+        )
         return self.mapping_repo.create(payment_term_id=payment_term_id, qbo_term_id=qbo_term_id)
 
     def get_mapping_by_payment_term_id(self, payment_term_id: int) -> Optional[TermPaymentTerm]:

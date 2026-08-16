@@ -31,12 +31,14 @@ class QboPhysicalAddressService:
         country: Optional[str],
         country_sub_division_code: Optional[str],
         postal_code: Optional[str],
+        realm_id: Optional[str] = None,
     ) -> QboPhysicalAddress:
         """
         Create a new QboPhysicalAddress.
         """
         return self.repo.create(
             qbo_id=qbo_id,
+            realm_id=realm_id,
             line1=line1,
             line2=line2,
             city=city,
@@ -74,6 +76,7 @@ class QboPhysicalAddressService:
         country: Optional[str],
         country_sub_division_code: Optional[str],
         postal_code: Optional[str],
+        realm_id: Optional[str] = None,
     ) -> Optional[QboPhysicalAddress]:
         """
         Update a QboPhysicalAddress by ID.
@@ -84,6 +87,7 @@ class QboPhysicalAddressService:
                 id=id,
                 row_version=row_version,
                 qbo_id=qbo_id,
+                realm_id=realm_id,
                 line1=line1,
                 line2=line2,
                 city=city,
@@ -144,6 +148,7 @@ class QboPhysicalAddressService:
                     id=existing.id,
                     row_version=existing.row_version,
                     qbo_id=record_id,
+                    realm_id=realm_id,
                     line1=qbo_address.line1,
                     line2=qbo_address.line2,
                     city=qbo_address.city,
@@ -156,6 +161,7 @@ class QboPhysicalAddressService:
                 logger.info(f"Creating new QBO physical address with ID: {record_id}")
                 return self.repo.create(
                     qbo_id=record_id,
+                    realm_id=realm_id,
                     line1=qbo_address.line1,
                     line2=qbo_address.line2,
                     city=qbo_address.city,

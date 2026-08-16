@@ -10,8 +10,8 @@ but each rung is a full multi-turn `run_agent` instead of one completion.
 Escalation RE-RUNS the agent on a new model, so this is safe only for agents
 whose tools are READ-ONLY (no entity mutations) and whose final message is a
 structured `{...,"confidence":float}` answer. Running a SIDE-EFFECTING agent
-(e.g. email_specialist, which creates Bills) through this would double its side
-effects on every escalation. The pattern for side-effecting work is
+(e.g. any specialist that creates entities via tool calls) through this would
+double its side effects on every escalation. The pattern for side-effecting work is
 "decide cheap, act once" — run a read-only DECISION agent through the cascade,
 then perform the mutation a single time after acceptance. That separation is a
 documented follow-up; this module deliberately does not attempt it.

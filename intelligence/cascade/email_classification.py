@@ -1,9 +1,9 @@
 """Pilot cascade task: email pre-classification.
 
-Classifies a polled inbox email into the controlled vocabulary the
-email_specialist already uses (`EmailMessage.AgentClassification`). This is a
-discrete, single-shot task with a deterministic validator (the label must be
-in-vocabulary), which makes it the ideal first proof of the cascade gate.
+Classifies a polled inbox email into the controlled vocabulary stamped on
+`EmailMessage.AgentClassification`. This is a discrete, single-shot task
+with a deterministic validator (the label must be in-vocabulary), which
+makes it the ideal first proof of the cascade gate.
 
 Payload shape (a plain dict):
     {

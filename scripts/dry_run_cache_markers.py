@@ -13,9 +13,9 @@ This script exists so any future refactor that breaks the markers fails
 loudly here instead of silently regressing prod cost.
 
 Run:
-    .venv/bin/python scripts/dry_run_cache_markers.py              # email_specialist
-    .venv/bin/python scripts/dry_run_cache_markers.py buildone
+    .venv/bin/python scripts/dry_run_cache_markers.py              # buildone
     .venv/bin/python scripts/dry_run_cache_markers.py bill_specialist
+    .venv/bin/python scripts/dry_run_cache_markers.py expense_specialist
 
 Exits 0 on PASS, 1 on FAIL. No DB, no network.
 """
@@ -47,7 +47,6 @@ def _import_agent_modules() -> None:
     import intelligence.agents.bill_credit_specialist  # noqa: F401
     import intelligence.agents.expense_specialist     # noqa: F401
     import intelligence.agents.invoice_specialist     # noqa: F401
-    import intelligence.agents.email_specialist       # noqa: F401
     import intelligence.agents.contract_labor_specialist  # noqa: F401
     import intelligence.agents.time_tracking_specialist   # noqa: F401
 
@@ -130,5 +129,5 @@ def verify(agent_name: str) -> int:
 
 
 if __name__ == "__main__":
-    name = sys.argv[1] if len(sys.argv) > 1 else "email_specialist"
+    name = sys.argv[1] if len(sys.argv) > 1 else "buildone"
     sys.exit(verify(name))

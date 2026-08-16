@@ -194,10 +194,10 @@ _register_tool(make_delegation_tool(
 ))
 
 # Inbound delegation INTO Build.One. Registered here (not on each caller)
-# following the project_specialist pattern, so any trigger source —
-# email_specialist today, scheduler/MCP later — can share one registration
-# without colliding on register(). The task string carries an
-# EntityActionEnvelope (JSON); Build.One's prompt parses it and routes.
+# following the project_specialist pattern, so any trigger source
+# (scheduler / MCP / chat) can share one registration without colliding
+# on register(). The task string carries an EntityActionEnvelope (JSON);
+# Build.One's prompt parses it and routes.
 _register_tool(make_delegation_tool(
     name="delegate_to_buildone_orchestrator",
     target_agent="buildone",

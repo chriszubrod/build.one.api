@@ -29,7 +29,7 @@ Any of:
 
 | Condition | Severity | Expected response |
 |---|---|---|
-| Single agent run died mid-flight after a deploy | Warning | Cosmetic; finish manually. Any work that's already persisted (mark_email_outcome, record_extracted_fields, etc.) is intact — only the AgentSession finalization is missing. |
+| Single agent run died mid-flight after a deploy | Warning | Cosmetic; finish manually. Any work that's already persisted is intact — only the AgentSession finalization is missing. |
 | Multiple agent runs hung within the deploy window | High | Pause the scheduler immediately. Investigate which sprocs/columns changed; verify which version of code is now running before un-pausing. |
 | Cron-triggered work (outbox drain, QBO sync) erroring during the window | High | Errors are typically transient and clear after the next tick. Check that the next tick succeeds; only escalate if errors continue past 2 minutes. |
 
@@ -55,20 +55,6 @@ migration runs ATOMICALLY against the database; the App Service code
 change rolls out probabilistically over the swap window. So during the
 window, OLD code talks to NEW database — if any contract changed,
 that's a runtime error.
-
-The build.one email_specialist agent is particularly sensitive because:
-- A run takes ~1–10 minutes (delegation can pause indefinitely on
-  bill_specialist's approval gate).
-- Mid-run worker recycle kills the asyncio task → final `done` event
-  never fires → session_runner never calls `session_repo.complete` →
-  the row is stuck `running` forever.
-- Tool calls during the window return HTTP 500; the agent sees them as
-  errors and may degrade to `needs_review` instead of the right
-  classification, or it may succeed via fallback paths despite the
-  errors (the cassidy@rogersbuild.com run on 2026-05-06 still
-  classified correctly as `internal_reply` despite both
-  `search_email_sender_history` calls 500'ing — the agent had enough
-  email-signal alone).
 
 ## Diagnosis
 
@@ -119,9 +105,8 @@ or "Invalid column name" within the deploy window confirm the diagnosis.
 
 ### Recovery A — single agent run hung
 
-Most common case. Persisted state (EmailMessage row, EmailAttachment
-typed columns, Bill rows, etc.) is intact — only the AgentSession
-finalization is missing.
+Most common case. Persisted state (application rows) is intact — only
+the AgentSession finalization is missing.
 
 1. Confirm the run hung mid-finalize: query the session.
 
@@ -132,10 +117,10 @@ finalization is missing.
 
    Status='running' + Tokens=0 + CompletedAt=NULL = stuck.
 
-2. Verify the work-side state is consistent. For email runs, check
-   `EmailMessage.AgentClassification` / `AgentDecidedAction` /
-   `ProcessingStatus`. If they match what the agent should have stamped,
-   the run effectively succeeded.
+2. Verify the work-side state is consistent — whichever entity the run
+   was mutating (Bill, Expense, etc.) should carry the fields the agent
+   was supposed to stamp. If they do, the run effectively succeeded and
+   only the session row is stranded.
 
 3. Manually finalize the session row:
 
@@ -147,91 +132,7 @@ finalization is missing.
    WHERE PublicId = '<uuid>' AND Status = 'running';
    ```
 
-4. If the EmailMessage row's classification is wrong or missing,
-   re-run the agent on it: temp-bump conflicting `pending` rows to
-   `processing` so claim picks the target, then `POST /admin/email/process_one`.
-
-### Recovery B — multi-run damage
-
-If multiple agent runs hung during the window:
-
-1. Pause the Function App's `process_email_inbox` timer to stop new
-   runs:
-
-   ```bash
-   az functionapp config appsettings set \
-     --name build-one-scheduler --resource-group buildone_group \
-     --settings "AzureWebJobs.process_email_inbox.Disabled=true"
-   ```
-
-2. Wait until App Service is fully on the new image. The simplest signal:
-   make a curl call to a known endpoint that demonstrates the new
-   behavior (e.g., for a sproc rename, hit the endpoint that calls it
-   and confirm 200 instead of 500).
-
-3. Run Recovery A on each hung session row.
-
-4. Identify EmailMessage rows whose agent run failed without persisting
-   classification — those have `AgentSessionId` linked but
-   `AgentClassification IS NULL` (or workflow status is `processing`
-   with no progress). Reset them:
-
-   ```sql
-   UPDATE dbo.EmailMessage
-   SET ProcessingStatus = 'pending',
-       AgentSessionId = NULL,
-       LastError = 'reset after deploy-restart timing race; see runbook'
-   WHERE Id IN (<list>);
-   ```
-
-5. Un-pause the timer:
-
-   ```bash
-   az functionapp config appsettings set \
-     --name build-one-scheduler --resource-group buildone_group \
-     --settings "AzureWebJobs.process_email_inbox.Disabled=false"
-   ```
-
-   **⚠ Warning — Flex Consumption gotcha (2026-05-06 incident):** Setting
-   `AzureWebJobs.<funcName>.Disabled=true` on a Flex Consumption Function
-   App **de-registers the function from the host's discovery list**, and
-   setting it back to `false` (or deleting the app-setting) does NOT
-   cause the host to re-register it on its own — even after a stop+start
-   cycle. The other timers will keep firing; only the disabled-then-
-   re-enabled one stays missing. Symptoms: the function name vanishes
-   from `az functionapp function list` and from the host's "Found the
-   following functions" log message in App Insights traces.
-
-   **Recovery is a fresh code redeploy.** `func azure functionapp
-   publish <name>` republishes the source via OneDeploy and forces the
-   host to rediscover all `@app.timer_trigger` decorators:
-
-   ```bash
-   cd /Users/chris/Applications/build.one/build.one.scheduler
-   func azure functionapp publish build-one-scheduler --python
-   ```
-
-   After redeploy, verify with both:
-
-   ```bash
-   # 1. Function shows up in the registered list
-   az functionapp function list --name build-one-scheduler \
-     --resource-group buildone_group --query "[].name" -o tsv | grep <funcName>
-
-   # 2. App Insights confirms it's actually firing (within ~1 minute)
-   az monitor app-insights query --app <id> \
-     --analytics-query "requests | where timestamp > ago(5m) | where name == '<funcName>' | count" -o tsv
-   ```
-
-   **Prefer NOT using the `AzureWebJobs.<name>.Disabled` flag at all on
-   Flex Consumption.** When you need to pause a function for testing,
-   either: (a) deploy a code change with `disabled=True` in the
-   decorator, or (b) leave the function on but ignore its outputs
-   (often safer because the trigger keeps registering and you don't
-   end up in this stuck state). The classic Disabled flag works fine
-   on the older Consumption + Premium plans; Flex is the outlier.
-
-### Recovery C — outbox / scheduled work
+### Recovery B — outbox / scheduled work
 
 QBO and MS outbox draining is naturally retry-friendly: failed rows
 remain `pending` and the next tick (30s later) picks them up. No manual
@@ -240,11 +141,9 @@ intervention needed unless errors persist past 2 minutes.
 ## Verification
 
 1. The hung session row(s) now show `Status = completed`.
-2. The associated EmailMessage row(s) show consistent classification +
-   workflow status.
-3. A fresh agent run kicked off after the deploy window completes
+2. A fresh agent run kicked off after the deploy window completes
    cleanly with `TotalInputTokens > 0` and a recorded `CompletedAt`.
-4. App Insights shows zero `DatabaseOperationError` events with the
+3. App Insights shows zero `DatabaseOperationError` events with the
    contract-mismatch signature in the last 5 minutes.
 
 ## Prevention

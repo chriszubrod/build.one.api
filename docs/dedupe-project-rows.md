@@ -153,7 +153,7 @@ The 2026-05-27 backfill set `IsSystemAdmin=1 × every Project`. After merge, the
 
 - `dbo.UserProject` has a `(UserId, ProjectId)` natural-key likely already enforced — if it isn't, the merge will create duplicate rows for users who had grants on both the dup AND original Ids. Drop those duplicates as part of step 2.
 - `dbo.ProjectAddress` has rows on the original SJC (id=129, 2 rows). Verify the merge doesn't create a duplicate address row if a dup Id somehow accumulated one (none do today, but worth defending).
-- `dbo.MsMessageProject.ProjectId` may carry email-message → project bindings from the email_specialist pipeline. Re-pointing these to the kept Id is fine; verify the keep Id makes sense as the "real" project the message was about.
+- `dbo.MsMessageProject.ProjectId` may carry email-message → project bindings from prior email intake. Re-pointing these to the kept Id is fine; verify the keep Id makes sense as the "real" project the message was about.
 - iOS CoreData has `CDProject` rows cached client-side. After merge, iOS clients will still see the deleted Ids until they pull fresh. Force a re-sync hint in the next iOS release notes, or just let it self-correct on next `ReadProjectsByUserId` refresh.
 - The 2026-05-27 ReadProjectsByUserId admin-bypass workaround backfill is still in place (see `build.one.api/TODO.md`). When that sproc is patched to honor `IsSystemAdmin`, the backfilled rows on the kept Ids become redundant but harmless.
 

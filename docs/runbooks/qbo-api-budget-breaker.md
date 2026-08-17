@@ -3,7 +3,7 @@
 ## Symptom
 
 - Logs show `qbo.budget.threshold_crossed` with `band=blocked` (ERROR) or `band=warn` (WARNING).
-- Outbox drain ticks log `qbo.outbox.drain.skipped_budget_blocked` and process nothing; QBO outbox rows accumulate as `pending` (or `failed` with `LastError LIKE 'Parked:%'` and `NextRetryAt` on the 1st of next month).
+- Outbox drain ticks log `qbo.outbox.drain.skipped_writes_blocked` (`reason=budget_blocked`) and process nothing; QBO outbox rows accumulate as `pending` (or `failed` with `LastError LIKE 'Parked:%'` and `NextRetryAt` on the 1st of next month).
 - QBO calls fail with `QboBudgetExceededError` ("QBO call refused: month-to-date API usage … crossed the block threshold …").
 - Distinct from Intuit's own block: Intuit returns `429 ThrottleExceeded` (errorCode 003001) — see the July 2026 incident in `project_qbo_reconcile_firehose_monthly_cap`. The breaker exists to refuse calls locally *before* Intuit hard-blocks the app.
 
@@ -47,7 +47,7 @@ Medium. QBO sync is paused by design; no data is lost. Pulls resume on the next 
 
 ## Verification
 
-- `qbo.outbox.drain.skipped_budget_blocked` stops appearing; outbox `pending` count drains to 0.
+- `qbo.outbox.drain.skipped_writes_blocked` with `reason=budget_blocked` stops appearing; outbox `pending` count drains to 0. (U-231: this event is shared with the `ALLOW_QBO_WRITES` gate — filter on `reason=budget_blocked` specifically, since `reason=writes_disabled` is a different, unrelated cause.)
 - `dbo.Sync WHERE Provider='qbo'` watermarks advance again on the next 15-min ticks.
 
 ## Prevention

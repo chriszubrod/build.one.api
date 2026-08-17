@@ -21,7 +21,12 @@ from integrations.intuit.qbo.base.budget import (
 from integrations.intuit.qbo.base.client import QboHttpClient, _TIMEOUT_TIERS
 from integrations.intuit.qbo.base.errors import QboBudgetExceededError, QboWriteRefusedError
 from integrations.intuit.qbo.outbox.business.model import QboOutbox
-from integrations.intuit.qbo.outbox.business.worker import MAX_ATTEMPTS, QboOutboxWorker
+from integrations.intuit.qbo.outbox.business.worker import (
+    MAX_ATTEMPTS,
+    QboOutboxWorker,
+    WriteGateDecision,
+    can_worker_do_external_writes_now,
+)
 
 REALM_ID = "realm-test"
 
@@ -400,8 +405,13 @@ def test_drain_once_skips_claim_when_blocked():
     budget = MagicMock()
     budget.status.return_value = _make_status(blocked=True, call_count=475_001)
     worker = QboOutboxWorker(repo=repo, api_budget=budget)
-    assert worker.drain_once() is False
+    with patch(
+        "integrations.intuit.qbo.outbox.business.worker.qbo_app_lock"
+    ) as lock_mock:
+        lock_mock.return_value.__enter__.return_value = True
+        assert worker.drain_once() is False
     repo.claim_next_pending.assert_not_called()
+    repo.reclaim_stranded.assert_called_once()
 
 
 def _unblocked_budget_mock():
@@ -432,8 +442,8 @@ def test_drain_once_skips_claim_when_writes_disabled(caplog):
 
     repo.claim_next_pending.assert_not_called()
     assert any(
-        "qbo.outbox.drain.skipped_writes_disabled" in record.message
-        or getattr(record, "event_name", "") == "qbo.outbox.drain.skipped_writes_disabled"
+        "qbo.outbox.drain.skipped_writes_blocked" in record.message
+        or getattr(record, "event_name", "") == "qbo.outbox.drain.skipped_writes_blocked"
         for record in caplog.records
     )
 
@@ -461,5 +471,160 @@ def test_drain_all_stops_on_blocked_budget():
     budget = MagicMock()
     budget.status.return_value = _make_status(blocked=True, call_count=475_001)
     worker = QboOutboxWorker(repo=repo, api_budget=budget)
-    assert worker.drain_all(max_rows=50) == 0
+    with patch(
+        "integrations.intuit.qbo.outbox.business.worker.qbo_app_lock"
+    ) as lock_mock:
+        lock_mock.return_value.__enter__.return_value = True
+        assert worker.drain_all(max_rows=50) == 0
     repo.claim_next_pending.assert_not_called()
+
+
+# --------------------------------------------------------------------------- #
+# Unified write-gate decision (can_worker_do_external_writes_now)
+# --------------------------------------------------------------------------- #
+
+
+def test_can_worker_do_external_writes_now_allowed_when_budget_ok_and_writes_on():
+    budget = MagicMock()
+    budget.status.return_value = _make_status(blocked=False)
+    with patch(
+        "integrations.intuit.qbo.outbox.business.worker.writes_allowed",
+        return_value=True,
+    ):
+        decision = can_worker_do_external_writes_now(budget)
+    assert decision.allowed is True
+    assert decision.reason is None
+    assert budget.status.call_count == 1
+
+
+def test_can_worker_do_external_writes_now_blocked_reason_budget_blocked():
+    budget = MagicMock()
+    budget.status.return_value = _make_status(blocked=True, call_count=475_001)
+    with patch(
+        "integrations.intuit.qbo.outbox.business.worker.writes_allowed",
+        return_value=True,
+    ):
+        decision = can_worker_do_external_writes_now(budget)
+    assert decision.allowed is False
+    assert decision.reason == "budget_blocked"
+    assert budget.status.call_count == 1
+
+
+def test_can_worker_do_external_writes_now_blocked_reason_writes_disabled():
+    budget = MagicMock()
+    budget.status.return_value = _make_status(blocked=False)
+    with patch(
+        "integrations.intuit.qbo.outbox.business.worker.writes_allowed",
+        return_value=False,
+    ):
+        decision = can_worker_do_external_writes_now(budget)
+    assert decision.allowed is False
+    assert decision.reason == "writes_disabled"
+    assert budget.status.call_count == 1
+
+
+def test_can_worker_do_external_writes_now_precedence_budget_wins_when_both_blocked():
+    budget = MagicMock()
+    budget.status.return_value = _make_status(blocked=True, call_count=475_001)
+    with patch(
+        "integrations.intuit.qbo.outbox.business.worker.writes_allowed",
+        return_value=False,
+    ) as mock_writes_allowed:
+        decision = can_worker_do_external_writes_now(budget)
+    assert decision.reason == "budget_blocked"
+    mock_writes_allowed.assert_not_called()
+    assert budget.status.call_count == 1
+
+
+# --------------------------------------------------------------------------- #
+# Unified write-gate logging
+# --------------------------------------------------------------------------- #
+
+
+def test_drain_once_logs_unified_event_for_budget_blocked(caplog):
+    repo = MagicMock()
+    budget = MagicMock()
+    budget.status.return_value = _make_status(blocked=True, call_count=475_001)
+    worker = QboOutboxWorker(repo=repo, api_budget=budget)
+
+    with patch(
+        "integrations.intuit.qbo.outbox.business.worker.qbo_app_lock"
+    ) as lock_mock:
+        lock_mock.return_value.__enter__.return_value = True
+        with caplog.at_level("WARNING"):
+            assert worker.drain_once() is False
+
+    matching = [
+        record
+        for record in caplog.records
+        if getattr(record, "event_name", "") == "qbo.outbox.drain.skipped_writes_blocked"
+        and getattr(record, "reason", "") == "budget_blocked"
+    ]
+    assert len(matching) == 1
+    record = matching[0]
+    assert record.levelname == "WARNING"
+    assert record.month_key == "2026-08"
+    assert record.call_count == 475_001
+    assert record.block_threshold == 475_000
+    assert budget.status.call_count == 1
+
+
+def test_drain_once_logs_decision_time_budget_snapshot_not_second_read(caplog):
+    repo = MagicMock()
+    budget = MagicMock()
+    budget.status.side_effect = [
+        _make_status(blocked=True, call_count=475_001),
+        BudgetStatus(
+            month_key="2026-08",
+            call_count=0,
+            budget=500_000,
+            block_threshold=475_000,
+            warn_threshold=400_000,
+            enforced=True,
+            meter_unavailable=True,
+        ),
+    ]
+    worker = QboOutboxWorker(repo=repo, api_budget=budget)
+
+    with patch(
+        "integrations.intuit.qbo.outbox.business.worker.qbo_app_lock"
+    ) as lock_mock:
+        lock_mock.return_value.__enter__.return_value = True
+        with caplog.at_level("WARNING"):
+            assert worker.drain_once() is False
+
+    matching = [
+        record
+        for record in caplog.records
+        if getattr(record, "event_name", "") == "qbo.outbox.drain.skipped_writes_blocked"
+        and getattr(record, "reason", "") == "budget_blocked"
+    ]
+    assert len(matching) == 1
+    assert matching[0].call_count == 475_001
+    assert budget.status.call_count == 1
+
+
+def test_drain_once_logs_unified_event_for_writes_disabled(caplog):
+    repo = MagicMock()
+    budget = _unblocked_budget_mock()
+    worker = QboOutboxWorker(repo=repo, api_budget=budget)
+
+    with patch(
+        "integrations.intuit.qbo.outbox.business.worker.writes_allowed",
+        return_value=False,
+    ), patch(
+        "integrations.intuit.qbo.outbox.business.worker.qbo_app_lock"
+    ) as lock_mock:
+        lock_mock.return_value.__enter__.return_value = True
+        with caplog.at_level("ERROR"):
+            assert worker.drain_once() is False
+
+    matching = [
+        record
+        for record in caplog.records
+        if getattr(record, "event_name", "") == "qbo.outbox.drain.skipped_writes_blocked"
+        and getattr(record, "reason", "") == "writes_disabled"
+    ]
+    assert len(matching) == 1
+    assert matching[0].levelname == "ERROR"
+    assert budget.status.call_count == 1

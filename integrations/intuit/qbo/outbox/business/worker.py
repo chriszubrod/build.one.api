@@ -1,6 +1,7 @@
 # Python Standard Library Imports
 import logging
 import os
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Callable, Dict, Optional
 
@@ -10,7 +11,12 @@ from integrations.intuit.qbo.base.correlation import (
     idempotency_key_context,
     set_correlation_id,
 )
-from integrations.intuit.qbo.base.budget import QboApiBudget, get_qbo_api_budget, reset_at_for_month
+from integrations.intuit.qbo.base.budget import (
+    BudgetStatus,
+    QboApiBudget,
+    get_qbo_api_budget,
+    reset_at_for_month,
+)
 from integrations.intuit.qbo.base.client import writes_allowed
 from integrations.intuit.qbo.base.errors import (
     QboBudgetExceededError,
@@ -40,10 +46,11 @@ logger = logging.getLogger(__name__)
 MAX_ATTEMPTS = 5
 
 # Write-refused parks: 15 min between retries. Mid-handler defence-in-depth only —
-# drain_once skips claiming entirely while ALLOW_QBO_WRITES is off (mirroring the
-# budget breaker), so parks are rare (~flag flip mid-handler). A permanently-unset
-# prod flag logs qbo.outbox.drain.skipped_writes_disabled at ERROR on every tick,
-# which is a better alarm than per-row dead-letters.
+# drain_once skips claiming entirely while external writes are blocked (budget
+# breaker or ALLOW_QBO_WRITES off), so parks are rare (~flag flip mid-handler).
+# A permanently-unset prod flag logs qbo.outbox.drain.skipped_writes_blocked
+# (reason=writes_disabled) at ERROR on every tick, which is a better alarm than
+# per-row dead-letters.
 WRITE_REFUSED_PARK_PREFIX = "Parked: QBO writes disabled"
 WRITE_REFUSED_PARK_INTERVAL = timedelta(minutes=15)
 
@@ -64,6 +71,32 @@ DRAIN_LOCK_TIMEOUT_MS = 1000
 # structural guarantee is that reclaim runs while holding the drain applock,
 # which a live worker also holds.
 DEFAULT_RECLAIM_AFTER_SECONDS = 900
+
+
+@dataclass(frozen=True)
+class WriteGateDecision:
+    reason: Optional[str]  # "budget_blocked" | "writes_disabled" | None
+    budget_status: BudgetStatus
+
+    @property
+    def allowed(self) -> bool:
+        return self.reason is None
+
+
+def can_worker_do_external_writes_now(api_budget: QboApiBudget) -> WriteGateDecision:
+    """
+    Single pre-claim decision point for the QBO outbox drain loop. Checks the
+    monthly API budget breaker (U-211) first, then the ALLOW_QBO_WRITES
+    dev-safety gate (U-218b) — precedence matches the pre-unification code,
+    where a blocked budget short-circuited before writes_allowed() was ever
+    consulted.
+    """
+    status = api_budget.status()
+    if status.blocked:
+        return WriteGateDecision(reason="budget_blocked", budget_status=status)
+    if not writes_allowed():
+        return WriteGateDecision(reason="writes_disabled", budget_status=status)
+    return WriteGateDecision(reason=None, budget_status=status)
 
 
 def reclaim_after_seconds() -> int:
@@ -122,47 +155,24 @@ class QboOutboxWorker:
         processed (successfully or not), False if nothing was ready or the
         drain lock couldn't be acquired.
         """
-        # U-211: don't claim rows while the monthly API budget breaker is
-        # tripped — rows stay pending (no attempt burned, nothing to recover)
-        # and drain resumes automatically after the cap resets on the 1st.
-        budget = self._api_budget.status()
-        if budget.blocked:
-            logger.warning(
-                "qbo.outbox.drain.skipped_budget_blocked",
-                extra={
-                    "event_name": "qbo.outbox.drain.skipped_budget_blocked",
-                    "month_key": budget.month_key,
-                    "call_count": budget.call_count,
-                    "block_threshold": budget.block_threshold,
-                },
-            )
-            return False
-
-        # U-218b: don't claim rows while QBO writes are disabled — rows stay
-        # pending (no attempt burned). Mirrors the budget pre-claim guard above;
-        # a permanently-unset ALLOW_QBO_WRITES logs ERROR every drain tick so
-        # ops notice faster than scattered per-row dead-letters would.
-        writes_off = not writes_allowed()
-        if writes_off:
-            logger.error(
-                "qbo.outbox.drain.skipped_writes_disabled",
-                extra={
-                    "event_name": "qbo.outbox.drain.skipped_writes_disabled",
-                },
-            )
+        decision = can_worker_do_external_writes_now(self._api_budget)
+        if not decision.allowed:
+            self._log_writes_blocked(decision)
 
         with qbo_app_lock(DRAIN_LOCK_NAME, timeout_ms=DRAIN_LOCK_TIMEOUT_MS) as got_lock:
             if not got_lock:
                 logger.debug("qbo.outbox.drain.skipped_lock_busy")
                 return False
 
-            # Reclaim BEFORE the write gate: stranding is a DB-only condition and
-            # its repair (in_progress -> pending) issues no QBO call, so leaving it
-            # behind the write gate meant a deploy restart during a writes-off
-            # window stranded rows that nothing would ever release.
+            # Reclaim BEFORE the write gate is enforced (regardless of WHY writes
+            # are currently blocked — budget breaker or ALLOW_QBO_WRITES off):
+            # stranding is a DB-only condition and its repair (in_progress ->
+            # pending) issues no QBO call, so leaving it behind either gate would
+            # mean a deploy restart during a budget-blocked OR writes-off window
+            # stranded rows that nothing would ever release.
             self._reclaim_stranded_rows()
 
-            if writes_off:
+            if not decision.allowed:
                 return False
 
             row = self.repo.claim_next_pending()
@@ -171,6 +181,21 @@ class QboOutboxWorker:
 
             self._process(row)
             return True
+
+    def _log_writes_blocked(self, decision: WriteGateDecision) -> None:
+        # Mirrors QboApiBudget._log_band_crossing's shape (base/budget.py): pick
+        # the log function once, single call site. No `else` needed to stay safe
+        # against a future third reason — ERROR is the right default severity
+        # for an unrecognized block reason (alarm loudly, don't warn quietly).
+        extra = {
+            "event_name": "qbo.outbox.drain.skipped_writes_blocked",
+            "reason": decision.reason,
+            "month_key": decision.budget_status.month_key,
+            "call_count": decision.budget_status.call_count,
+            "block_threshold": decision.budget_status.block_threshold,
+        }
+        log = logger.warning if decision.reason == "budget_blocked" else logger.error
+        log("qbo.outbox.drain.skipped_writes_blocked", extra=extra)
 
     def drain_all(self, max_rows: int = 100) -> int:
         """

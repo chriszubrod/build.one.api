@@ -139,7 +139,6 @@ def _link_attachments_to_bill_credit_line_items(
 
 def _dry_run_preview(
     realm_id: str,
-    qbo_auth,
     last_sync_time: Optional[str] = None,
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
@@ -501,12 +500,8 @@ def sync_qbo_vendorcredit(
 
         # --- DRY RUN path: fetch from QBO only, no DB writes ---
         if dry_run:
-            qbo_auth = auth_service.ensure_valid_token()
-            if not qbo_auth or not qbo_auth.access_token:
-                raise ValueError("No valid QBO access token found")
             preview = _dry_run_preview(
                 realm_id=realm_id,
-                qbo_auth=qbo_auth,
                 last_sync_time=last_sync_time,
                 start_date=start_date,
                 end_date=end_date,

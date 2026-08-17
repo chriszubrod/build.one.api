@@ -94,7 +94,6 @@ def _resolve_project_to_customer_ref(project_name: str) -> str:
 
 def _dry_run_preview(
     realm_id: str,
-    qbo_auth,
     last_sync_time: Optional[str] = None,
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
@@ -313,12 +312,8 @@ def sync_qbo_invoice(
 
         # --- DRY RUN path: fetch from QBO only, no DB writes ---
         if dry_run:
-            qbo_auth = auth_service.ensure_valid_token(realm_id=realm_id)
-            if not qbo_auth or not qbo_auth.access_token:
-                raise ValueError(f"No valid access token found for realm_id: {realm_id}")
             preview = _dry_run_preview(
                 realm_id=realm_id,
-                qbo_auth=qbo_auth,
                 last_sync_time=last_sync_time,
                 start_date=start_date,
                 end_date=end_date,

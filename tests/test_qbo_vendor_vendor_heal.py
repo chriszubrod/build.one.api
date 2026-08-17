@@ -10,7 +10,11 @@ from integrations.intuit.qbo.base.field_ownership import (
     preserve_human_edited_name,
 )
 from integrations.intuit.qbo.vendor.connector.vendor.business.model import VendorVendor
-from integrations.intuit.qbo.vendor.connector.vendor.business.service import VendorVendorConnector
+from integrations.intuit.qbo.vendor.connector.vendor.business.service import (
+    ADDRESS_TYPE_BILLING,
+    VendorVendorConnector,
+)
+from entities.vendor_address.business.model import VendorAddress
 
 
 def _make_qbo_vendor(
@@ -337,3 +341,73 @@ def test_for_entity_vendor_field_ownership_registry():
     """Vendor registry key resolves and name is both_editable (typo in _REGISTRY would KeyError)."""
     rules = for_entity("Vendor")
     assert rules.ownership_of("name") == BOTH_EDITABLE
+
+
+def _make_vendor_address(*, va_id=1, vendor_id=100, address_id=10, address_type_id=ADDRESS_TYPE_BILLING):
+    return VendorAddress(
+        id=str(va_id),
+        public_id="va-pub-1",
+        row_version=None,
+        created_datetime=None,
+        modified_datetime=None,
+        vendor_id=str(vendor_id),
+        address_id=str(address_id),
+        address_type_id=str(address_type_id),
+    )
+
+
+def test_ensure_vendor_address_uses_read_all_by_vendor_id_not_read_by_vendor_id():
+    connector = _build_vendor_vendor_connector()
+    connector.vendor_address_service.read_all_by_vendor_id.return_value = []
+
+    connector._ensure_vendor_address(vendor_id=100, address_id=20, address_type_id=ADDRESS_TYPE_BILLING)
+
+    connector.vendor_address_service.read_by_vendor_id.assert_not_called()
+    connector.vendor_address_service.read_all.assert_not_called()
+    connector.vendor_address_service.read_all_by_vendor_id.assert_called_once_with(100)
+    connector.vendor_address_service.create.assert_called_once_with(
+        vendor_id="100",
+        address_id="20",
+        address_type_id=str(ADDRESS_TYPE_BILLING),
+    )
+
+
+def test_ensure_vendor_address_updates_when_existing_differs():
+    connector = _build_vendor_vendor_connector()
+    existing = _make_vendor_address(vendor_id=100, address_id=10)
+    connector.vendor_address_service.read_all_by_vendor_id.return_value = [existing]
+
+    connector._ensure_vendor_address(vendor_id=100, address_id=20, address_type_id=ADDRESS_TYPE_BILLING)
+
+    connector.vendor_address_service.read_all_by_vendor_id.assert_called_once_with(100)
+    connector.vendor_address_service.create.assert_not_called()
+    connector.vendor_address_service.repo.update_by_id.assert_called_once_with(existing)
+    assert existing.address_id == "20"
+
+
+def test_ensure_vendor_address_noop_when_existing_same_address():
+    connector = _build_vendor_vendor_connector()
+    existing = _make_vendor_address(vendor_id=100, address_id=20)
+    connector.vendor_address_service.read_all_by_vendor_id.return_value = [existing]
+
+    connector._ensure_vendor_address(vendor_id=100, address_id=20, address_type_id=ADDRESS_TYPE_BILLING)
+
+    connector.vendor_address_service.read_all_by_vendor_id.assert_called_once_with(100)
+    connector.vendor_address_service.create.assert_not_called()
+    connector.vendor_address_service.repo.update_by_id.assert_not_called()
+
+
+def test_ensure_vendor_address_creates_when_no_matching_type():
+    connector = _build_vendor_vendor_connector()
+    other_type = _make_vendor_address(vendor_id=100, address_id=10, address_type_id=99)
+    connector.vendor_address_service.read_all_by_vendor_id.return_value = [other_type]
+
+    connector._ensure_vendor_address(vendor_id=100, address_id=20, address_type_id=ADDRESS_TYPE_BILLING)
+
+    connector.vendor_address_service.read_all_by_vendor_id.assert_called_once_with(100)
+    connector.vendor_address_service.repo.update_by_id.assert_not_called()
+    connector.vendor_address_service.create.assert_called_once_with(
+        vendor_id="100",
+        address_id="20",
+        address_type_id=str(ADDRESS_TYPE_BILLING),
+    )

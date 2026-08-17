@@ -188,7 +188,6 @@ def _link_attachments_to_bill_line_items(
 
 def _dry_run_preview(
     realm_id: str,
-    qbo_auth,
     last_sync_time: Optional[str] = None,
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
@@ -255,6 +254,8 @@ def sync_qbo_to_local(
     end_date: Optional[str] = None,
     sync_attachments: bool = False,
     attachable_service: Optional[QboAttachableService] = None,
+    *,
+    include_bill_payload: bool = False,
 ) -> tuple[dict, SyncOutcome]:
     """
     Sync Bills from QBO API to local database and modules.
@@ -472,7 +473,7 @@ def sync_qbo_to_local(
         # failed_bill_ids: qbo.Bill staging PKs; staging_failed_qbo_ids: QBO API Ids
         "failed_bill_ids": outcome.projection_failed_ids,
         "staging_failed_qbo_ids": outcome.staging_failed_ids,
-        "bills": [bill.to_dict() for bill in bills],
+        "bills": [bill.to_dict() for bill in bills] if include_bill_payload else [],
     }, outcome
 
 
@@ -484,6 +485,8 @@ def sync_qbo_bill(
     skip_sync_record_update: bool = False,
     sync_attachments: bool = True,
     dry_run: bool = False,
+    *,
+    include_bill_payload: bool = False,
 ) -> dict:
     """
     One-way sync for QBO Bills -> Bill module (QBO -> Local only).
@@ -540,12 +543,8 @@ def sync_qbo_bill(
 
         # --- DRY RUN path: fetch from QBO only, no DB writes, no QBO writes ---
         if dry_run:
-            qbo_auth = auth_service.ensure_valid_token(realm_id=realm_id)
-            if not qbo_auth or not qbo_auth.access_token:
-                raise ValueError(f"No valid access token found for realm_id: {realm_id}")
             preview = _dry_run_preview(
                 realm_id=realm_id,
-                qbo_auth=qbo_auth,
                 last_sync_time=last_sync_time,
                 start_date=start_date,
                 end_date=end_date,
@@ -573,8 +572,9 @@ def sync_qbo_bill(
             end_date=end_date,
             sync_attachments=sync_attachments,
             attachable_service=attachable_service,
+            include_bill_payload=include_bill_payload,
         )
-        
+
         end_time = datetime.now(timezone.utc)
         end_time_str = _normalize_last_sync(end_time.isoformat())
 
@@ -716,8 +716,9 @@ if __name__ == "__main__":
         skip_sync_record_update=args.skip_sync_update,
         sync_attachments=not args.skip_attachments,
         dry_run=args.dry_run,
+        include_bill_payload=True,
     )
-    
+
     import json
     print(json.dumps(result, indent=2, default=str))
     exit_nonzero_on_sync_failure(result)

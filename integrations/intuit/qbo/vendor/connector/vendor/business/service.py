@@ -349,18 +349,12 @@ class VendorVendorConnector:
             address_id: Database ID of the Address
             address_type_id: Type of address (billing)
         """
-        # Check for existing VendorAddress by vendor_id
-        # Note: read_by_vendor_id may return a single VendorAddress or None
-        existing_address = self.vendor_address_service.read_by_vendor_id(str(vendor_id))
-        
-        # Also check by vendor_id and address_type_id by reading all and filtering
-        # This handles the case where a vendor might have multiple addresses
-        all_vendor_addresses = self.vendor_address_service.read_all()
+        # Filter by address_type_id among this vendor's addresses (may have multiple types)
+        vendor_addresses = self.vendor_address_service.read_all_by_vendor_id(vendor_id)
         existing = None
-        for va in all_vendor_addresses:
-            va_vendor_id = coerce_id(va.vendor_id)
+        for va in vendor_addresses:
             va_address_type_id = coerce_id(va.address_type_id)
-            if va_vendor_id == vendor_id and va_address_type_id == address_type_id:
+            if va_address_type_id == address_type_id:
                 existing = va
                 break
         

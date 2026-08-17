@@ -30,6 +30,7 @@ to run — no need to reverse-engineer the system under pressure.
 | [box-excel-conflict-storm.md](box-excel-conflict-storm.md) | Box DETAILS-tab `update_box_excel` rows deferring/failing — human WOPI co-edit lock, 412 version-churn storms, stuck file/app locks, col-Z no-op idempotency |
 | [deploy-restart-timing.md](deploy-restart-timing.md) | Work triggered within ~2 min of `az webapp restart` runs against OLD code while DB is on NEW migrations — sproc-rename / column-add contract mismatches surface as 500s and stuck `running` agent sessions |
 | [review-notification-failed.md](review-notification-failed.md) | Bill submitted for review but the expected notification didn't land in `invoice@rogersbuild.com`'s Drafts folder, or landed with wrong recipients / missing attachment |
+| [fanout-guard-suppressed-upload.md](fanout-guard-suppressed-upload.md) | A completed bill/expense/invoice document is missing from SharePoint or Box because a U-221 fan-out idempotency guard suppressed a legitimate re-upload |
 
 ## Runbook format
 

@@ -36,7 +36,6 @@ logger = logging.getLogger(__name__)
 
 def _dry_run_preview(
     realm_id: str,
-    qbo_auth,
     last_sync_time: Optional[str] = None,
 ) -> dict:
     """
@@ -165,12 +164,8 @@ def sync_qbo_account(
 
         # --- DRY RUN path: fetch from QBO only, no DB writes ---
         if dry_run:
-            qbo_auth = auth_service.ensure_valid_token(realm_id=realm_id)
-            if not qbo_auth or not qbo_auth.access_token:
-                raise ValueError(f"No valid access token found for realm_id: {realm_id}")
             preview = _dry_run_preview(
                 realm_id=realm_id,
-                qbo_auth=qbo_auth,
                 last_sync_time=last_sync_time,
             )
             end_time = datetime.now(timezone.utc)

@@ -18,5 +18,7 @@ class MsClient:
     def to_dict(self) -> dict:
         """
         Convert the MsClient dataclass to a dictionary.
+        Unlike QboClient.to_dict() (U-216), this currently asdict()s the full
+        dataclass including client_secret — redact before exposing to callers.
         """
         return asdict(self)

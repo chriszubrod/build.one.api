@@ -1,5 +1,27 @@
 # Session Notes
 
+## Session: U-218f ReimburseCharge seed COMPLETE + timer enabled (2026-08-16/17)
+
+**Seed complete: 26,582 / 26,582 realm ReimburseCharges staged** — 23,632 created + 2,950 updated, **0 failed, 0 skipped, 0 duplicate QboIds**. Verified independently: row count, distinct QboId count, and zero NULL RealmId.
+
+**Timer ENABLED** — scheduler `940126f` published; live function list 24 → 25, sole delta `sync_qbo_reimburse_charge`; email timers still absent; always-ready pin on `drain_qbo_outbox` intact. **First live tick verified**: watermark advanced `22:09:45 → 00:27:01` (U-217 overlap applied), `ModifiedDatetime` stamped at commit, staged count unchanged (0 new records, exactly as predicted), 0 new ReconciliationIssues.
+
+### ⚠️ KI-32's premise does not hold — measured, not inferred
+**QBO returns NO `LinkedTxn` on ReimburseCharge.** Verified three ways against the live realm: the `SELECT *` query response, a direct `GET /reimbursecharge/{id}`, and minorversions **65 / 70 / 75** — including for `HasBeenInvoiced=false` records, which is precisely when the reverse pointer is supposed to exist. All 26,582 staged rows therefore carry a NULL source pointer, and `parse_reimburse_charge`'s `_SOURCE_TXN_TYPES = ("Bill","Purchase")` extraction is dead code against this surface.
+
+This invalidates the stated rationale for the 15-minute cadence ("data is IRRECOVERABLE if missed") that appears in `function_app.py`, the service docstring, and TODO.md. The staged inventory is still correct and useful (CustomerRef, Amount, TxnDate, HasBeenInvoiced, and the line's `ReimburseLineDetail.ItemRef` = cost code). **Deterministic Tier-0 source linking needs its own unit and a different signal** — fingerprint matching on (customer, amount, date, item) is the obvious candidate. Until then, the 15-min cadence is buying less than its comments claim; re-evaluate it.
+
+### Watermark set BY HAND, deliberately bypassing WatermarkRun.commit
+Set to **2026-08-16T22:09:45Z** = the seed's pre-fetch start anchor minus 5 min for clock skew, so records modified during the 124-minute run are re-pulled rather than skipped. Measured before enabling: the first tick pulls **0 records**, i.e. far inside the scheduler's 60s `_post` budget — that was the entire reason the timer was held back.
+
+Bypassed the commit path on purpose: its hold-bound force-advance anchors on `dbo.Sync.ModifiedDatetime`, which `--skip-sync-update` never stamps. It was **4 days stale** (2026-08-12), so the 7200s bound was already exceeded and the very first commit would have force-advanced **past any failed record**. The manual UPDATE also refreshed `ModifiedDatetime`, restarting the bound. Real fix = **U-240**.
+
+### How the seed was actually run (the normal path could not finish)
+`scripts/sync_qbo_reimburse_charge.py` was measured at ~132 rec/min locally and **~70 rec/min via the prod admin endpoint** — 3.4h and ~6h respectively. The in-Azure attempt was stopped (API restarted) because it was *slower* AND would have committed the watermark through the buggy path above. Final run was a one-time loader reusing the exact production path (`parse_reimburse_charge` + `service._upsert`, so the KI-32 merge and sproc CASE-WHEN preserve both applied) with two changes: ONE shared pyodbc connection instead of ~2 per record, and no `BATCH_DELAY`. Completed in 124 min at ~3.6 rec/s. **The floor is network round-trip latency (~110ms x 2 round-trips/record from a laptop), not connection setup** — an in-Azure runner would be minutes. Booked implicitly for U-240's `set_qbo_identity`-style connection follow-up.
+
+### Also found empirically
+**QBO REJECTS `TxnDate` filters on ReimburseCharge** (`Invalid query`) — both `SELECT *` and `COUNT(*)`. So `--start-date`/`--end-date` on the sync script are dead for this entity and the CLI epilog documents a mode that cannot work; it also ruled out date-partitioned parallelism for the seed. `Metadata.LastUpdatedTime` and `HasBeenInvoiced` filters DO work. Folded into **U-240**.
+
 ## Session: U-218f email teardown + U-238c SQL apply & deploy (2026-08-16)
 
 **Scheduler published first, decoupled from U-218f's seed** (`build.one.scheduler` `34b4782`). The three email timers (`poll_email_inbox`, `process_email_inbox`, `recover_stuck_email_processing`) were removed by `59cecd7` but unpublishable, because the same publish would have activated `056e83a`'s `reimburse_charge` timer whose `qbo.ReimburseCharge` seed is incomplete (~2,950 staged rows, `dbo.Sync` watermark still NULL). Held that timer back **in code** (commented out) — not via `AzureWebJobs.<fn>.Disabled`, which de-registers permanently on Flex. Live function list went 27 → 24, delta was exactly the three email timers, always-ready pin on `drain_qbo_outbox` intact. Ordering matters: the scheduler is the *caller*, so it must lose the timer before the API loses the route.

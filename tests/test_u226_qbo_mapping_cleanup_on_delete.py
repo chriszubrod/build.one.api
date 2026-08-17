@@ -1,4 +1,5 @@
 """Pure-logic tests for U-226 — clear own qbo.* mapping on entity header delete."""
+from contextlib import contextmanager
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
@@ -10,6 +11,12 @@ from entities.expense.business.service import ExpenseService
 from integrations.intuit.qbo.base.mapping_cleanup import delete_own_qbo_mapping_before_header
 
 
+@contextmanager
+def _granted_lock(*_args, **_kwargs):
+    yield True
+
+
+@patch("integrations.intuit.qbo.base.mapping_cleanup.qbo_app_lock", _granted_lock)
 def test_delete_own_qbo_mapping_before_header_no_mapping_calls_delete_header():
     delete_header = Mock(return_value="header-result")
     recreate_mapping = Mock()
@@ -25,6 +32,7 @@ def test_delete_own_qbo_mapping_before_header_no_mapping_calls_delete_header():
     recreate_mapping.assert_not_called()
 
 
+@patch("integrations.intuit.qbo.base.mapping_cleanup.qbo_app_lock", _granted_lock)
 def test_delete_own_qbo_mapping_before_header_success_returns_delete_header_result():
     mapping = SimpleNamespace(id=99)
     delete_mapping = Mock()
@@ -47,6 +55,7 @@ def test_delete_own_qbo_mapping_before_header_success_returns_delete_header_resu
     assert result == "header-result"
 
 
+@patch("integrations.intuit.qbo.base.mapping_cleanup.qbo_app_lock", _granted_lock)
 def test_delete_own_qbo_mapping_before_header_read_failure_raises_value_error():
     read_exc = RuntimeError("db blip")
     delete_header = Mock()
@@ -63,6 +72,7 @@ def test_delete_own_qbo_mapping_before_header_read_failure_raises_value_error():
     delete_header.assert_not_called()
 
 
+@patch("integrations.intuit.qbo.base.mapping_cleanup.qbo_app_lock", _granted_lock)
 def test_delete_own_qbo_mapping_before_header_delete_failure_raises_value_error():
     mapping = SimpleNamespace(id=99)
     delete_exc = RuntimeError("FK 547")
@@ -80,6 +90,7 @@ def test_delete_own_qbo_mapping_before_header_delete_failure_raises_value_error(
     delete_header.assert_not_called()
 
 
+@patch("integrations.intuit.qbo.base.mapping_cleanup.qbo_app_lock", _granted_lock)
 def test_delete_own_qbo_mapping_before_header_header_failure_restores_mapping():
     mapping = SimpleNamespace(id=99)
     header_exc = RuntimeError("header delete 547")
@@ -101,6 +112,7 @@ def test_delete_own_qbo_mapping_before_header_header_failure_restores_mapping():
     on_restore_failed.assert_not_called()
 
 
+@patch("integrations.intuit.qbo.base.mapping_cleanup.qbo_app_lock", _granted_lock)
 def test_delete_own_qbo_mapping_before_header_header_failure_restore_also_fails():
     mapping = SimpleNamespace(id=99)
     header_exc = RuntimeError("header delete 547")
@@ -123,6 +135,7 @@ def test_delete_own_qbo_mapping_before_header_header_failure_restore_also_fails(
     on_restore_failed.assert_called_once_with(mapping, restore_exc)
 
 
+@patch("integrations.intuit.qbo.base.mapping_cleanup.qbo_app_lock", _granted_lock)
 def test_delete_own_qbo_mapping_before_header_restore_failed_callback_failure_still_raises_header():
     mapping = SimpleNamespace(id=99)
     header_exc = RuntimeError("header delete 547")
@@ -145,6 +158,7 @@ def test_delete_own_qbo_mapping_before_header_restore_failed_callback_failure_st
     on_restore_failed.assert_called_once_with(mapping, restore_exc)
 
 
+@patch("integrations.intuit.qbo.base.mapping_cleanup.qbo_app_lock", _granted_lock)
 def test_bill_credit_delete_clears_qbo_mapping_before_header():
     bill_credit = SimpleNamespace(id=42, public_id="bc-pub")
     call_order = []
@@ -177,6 +191,7 @@ def test_bill_credit_delete_clears_qbo_mapping_before_header():
     mock_repo.delete_by_id.assert_called_once_with(42)
 
 
+@patch("integrations.intuit.qbo.base.mapping_cleanup.qbo_app_lock", _granted_lock)
 def test_bill_delete_clears_qbo_mapping_before_header():
     bill = SimpleNamespace(id=7, public_id="bill-pub")
     call_order = []
@@ -211,6 +226,7 @@ def test_bill_delete_clears_qbo_mapping_before_header():
     mock_repo.delete_by_id.assert_called_once_with(7)
 
 
+@patch("integrations.intuit.qbo.base.mapping_cleanup.qbo_app_lock", _granted_lock)
 def test_expense_delete_clears_qbo_mapping_before_header():
     expense = SimpleNamespace(id=99, public_id="exp-pub")
     call_order = []
@@ -241,6 +257,7 @@ def test_expense_delete_clears_qbo_mapping_before_header():
     mock_repo.delete_by_id.assert_called_once_with(99)
 
 
+@patch("integrations.intuit.qbo.base.mapping_cleanup.qbo_app_lock", _granted_lock)
 def test_expense_delete_header_failure_restores_qbo_mapping():
     expense = SimpleNamespace(id=99, public_id="exp-pub")
     header_exc = RuntimeError("FK 547 on Expense delete")
@@ -272,6 +289,7 @@ def test_expense_delete_header_failure_restores_qbo_mapping():
     mock_repo.delete_by_id.assert_called_once_with(99)
 
 
+@patch("integrations.intuit.qbo.base.mapping_cleanup.qbo_app_lock", _granted_lock)
 def test_expense_delete_header_and_mapping_restore_failure_records_reconciliation_issue():
     expense = SimpleNamespace(id=99, public_id="exp-pub")
     header_exc = RuntimeError("FK 547 on Expense delete")

@@ -319,29 +319,17 @@ class InvoiceService:
         from integrations.intuit.qbo.invoice.connector.invoice.persistence.repo import (
             InvoiceInvoiceRepository,
         )
-        from integrations.intuit.qbo.base.mapping_cleanup import delete_own_qbo_mapping_before_header
+        from integrations.intuit.qbo.base.mapping_cleanup import (
+            delete_own_qbo_mapping_before_header,
+            make_restore_failed_recorder,
+        )
 
         _invoice_invoice_repo = InvoiceInvoiceRepository()
 
-        def _on_invoice_mapping_restore_failed(mapping, restore_exc):
-            try:
-                from integrations.intuit.qbo.base.delete_reconcile import record_partial_delete_issue
-                from integrations.intuit.qbo.invoice.persistence.repo import QboInvoiceRepository
+        def _invoice_staging_repo():
+            from integrations.intuit.qbo.invoice.persistence.repo import QboInvoiceRepository
 
-                staging = QboInvoiceRepository().read_by_id(mapping.qbo_invoice_id)
-                record_partial_delete_issue(
-                    entity_type="Invoice",
-                    mapping_label="InvoiceInvoice",
-                    mapped_label="Invoice",
-                    realm_id=staging.realm_id if staging else "",
-                    qbo_id=staging.qbo_id if staging else "",
-                    local_id=invoice_id,
-                    error=restore_exc,
-                )
-            except Exception:
-                logger.exception(
-                    f"Failed to record partial-delete reconciliation issue for Invoice {invoice_id}"
-                )
+            return QboInvoiceRepository()
 
         return delete_own_qbo_mapping_before_header(
             read_mapping=lambda: _invoice_invoice_repo.read_by_invoice_id(invoice_id),
@@ -352,7 +340,13 @@ class InvoiceService:
             delete_header=lambda: self.repo.delete_by_id(existing.id),
             entity_label="Invoice",
             entity_id=invoice_id,
-            on_restore_failed=_on_invoice_mapping_restore_failed,
+            on_restore_failed=make_restore_failed_recorder(
+                entity_type="Invoice",
+                mapping_label="InvoiceInvoice",
+                staging_repo_factory=_invoice_staging_repo,
+                qbo_id_from_mapping=lambda m: m.qbo_invoice_id,
+                local_id=invoice_id,
+            ),
         )
 
     def complete_invoice(self, public_id: str) -> dict:

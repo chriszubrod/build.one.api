@@ -12,7 +12,40 @@ U-241) — the mechanism does not distinguish header vs line item; it clears one
 mapping row before deleting the row it points at."""
 import logging
 
+from integrations.intuit.qbo.base.locking import qbo_app_lock
+
 logger = logging.getLogger(__name__)
+
+
+def make_restore_failed_recorder(
+    *,
+    entity_type,
+    mapping_label,
+    staging_repo_factory,
+    qbo_id_from_mapping,
+    local_id,
+):
+    """Factory for delete_own_qbo_mapping_before_header's on_restore_failed hook — records a durable qbo.ReconciliationIssue for the mapping-permanently-lost state. Never masks the original header-delete exception (the caller re-raises it unconditionally after invoking this)."""
+    def _on_mapping_restore_failed(mapping, restore_exc):
+        try:
+            from integrations.intuit.qbo.base.delete_reconcile import record_partial_delete_issue
+
+            staging = staging_repo_factory().read_by_id(qbo_id_from_mapping(mapping))
+            record_partial_delete_issue(
+                entity_type=entity_type,
+                mapping_label=mapping_label,
+                mapped_label=entity_type,
+                realm_id=staging.realm_id if staging else "",
+                qbo_id=staging.qbo_id if staging else "",
+                local_id=local_id,
+                error=restore_exc,
+            )
+        except Exception:
+            logger.exception(
+                f"Failed to record partial-delete reconciliation issue for {entity_type} {local_id}"
+            )
+
+    return _on_mapping_restore_failed
 
 
 def delete_own_qbo_mapping_before_header(
@@ -33,6 +66,10 @@ def delete_own_qbo_mapping_before_header(
     leaves a still-live, QBO-synced entity permanently unmapped (which would risk a
     duplicate on the next QBO pull). The original delete_header() exception always
     propagates unchanged — restoration is a side effect, not a swallow. See U-226.
+
+    The entire operation runs under a per-entity sp_getapplock keyed
+    ``qbo_mapping_delete:{entity_label}:{entity_id}`` so concurrent deletes of the same
+    entity cannot interleave mapping removal and compensating restore.
 
     read_mapping: zero-arg callable -> the mapping row, or falsy/None if unmapped.
     delete_mapping: one-arg callable(mapping) -> deletes it. Raises are fatal (see below).
@@ -56,50 +93,57 @@ def delete_own_qbo_mapping_before_header(
     mapping fails — same behavior as before, the header delete is never attempted in that
     case (an unclearable mapping would 547 the header anyway, or silently orphan it).
     """
-    try:
-        mapping = read_mapping()
-    except Exception as e:
-        logger.error(f"Error reading qbo mapping for {entity_label} {entity_id}: {e}")
-        raise ValueError(
-            f"Cannot delete {entity_label}: failed to read qbo mapping for {entity_id}"
-        ) from e
+    with qbo_app_lock(f"qbo_mapping_delete:{entity_label}:{entity_id}") as got_lock:
+        if not got_lock:
+            raise ValueError(
+                f"Cannot delete {entity_label}: could not acquire mapping-cleanup lock for "
+                f"{entity_id} (a concurrent delete may be in progress)"
+            )
 
-    if not mapping:
-        return delete_header()
-
-    try:
-        delete_mapping(mapping)
-        logger.info(f"Deleted qbo mapping for {entity_label} {entity_id}")
-    except Exception as e:
-        logger.error(f"Error deleting qbo mapping for {entity_label} {entity_id}: {e}")
-        raise ValueError(
-            f"Cannot delete {entity_label}: failed to delete qbo mapping for {entity_id}"
-        ) from e
-
-    try:
-        return delete_header()
-    except Exception as header_exc:
         try:
-            recreate_mapping(mapping)
-            logger.error(
-                f"Header delete failed for {entity_label} {entity_id} after its qbo "
-                f"mapping was already deleted; mapping RESTORED so the still-live entity "
-                f"stays mapped: {header_exc}"
-            )
-        except Exception as restore_exc:
-            logger.critical(
-                f"Header delete failed for {entity_label} {entity_id} after its qbo "
-                f"mapping was already deleted, AND restoring the mapping ALSO failed — "
-                f"{entity_label} {entity_id} is now a live, QBO-synced entity with NO "
-                f"mapping row. Needs manual reconciliation. header_exc={header_exc} "
-                f"restore_exc={restore_exc}"
-            )
-            if on_restore_failed is not None:
-                try:
-                    on_restore_failed(mapping, restore_exc)
-                except Exception as callback_exc:
-                    logger.error(
-                        f"on_restore_failed callback itself failed for {entity_label} "
-                        f"{entity_id}: {callback_exc}"
-                    )
-        raise
+            mapping = read_mapping()
+        except Exception as e:
+            logger.error(f"Error reading qbo mapping for {entity_label} {entity_id}: {e}")
+            raise ValueError(
+                f"Cannot delete {entity_label}: failed to read qbo mapping for {entity_id}"
+            ) from e
+
+        if not mapping:
+            return delete_header()
+
+        try:
+            delete_mapping(mapping)
+            logger.info(f"Deleted qbo mapping for {entity_label} {entity_id}")
+        except Exception as e:
+            logger.error(f"Error deleting qbo mapping for {entity_label} {entity_id}: {e}")
+            raise ValueError(
+                f"Cannot delete {entity_label}: failed to delete qbo mapping for {entity_id}"
+            ) from e
+
+        try:
+            return delete_header()
+        except Exception as header_exc:
+            try:
+                recreate_mapping(mapping)
+                logger.error(
+                    f"Header delete failed for {entity_label} {entity_id} after its qbo "
+                    f"mapping was already deleted; mapping RESTORED so the still-live entity "
+                    f"stays mapped: {header_exc}"
+                )
+            except Exception as restore_exc:
+                logger.critical(
+                    f"Header delete failed for {entity_label} {entity_id} after its qbo "
+                    f"mapping was already deleted, AND restoring the mapping ALSO failed — "
+                    f"{entity_label} {entity_id} is now a live, QBO-synced entity with NO "
+                    f"mapping row. Needs manual reconciliation. header_exc={header_exc} "
+                    f"restore_exc={restore_exc}"
+                )
+                if on_restore_failed is not None:
+                    try:
+                        on_restore_failed(mapping, restore_exc)
+                    except Exception as callback_exc:
+                        logger.error(
+                            f"on_restore_failed callback itself failed for {entity_label} "
+                            f"{entity_id}: {callback_exc}"
+                        )
+            raise

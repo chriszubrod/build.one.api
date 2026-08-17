@@ -1344,29 +1344,17 @@ class BillService:
         # other reason (e.g. an orphaned child row) after the mapping is gone, restore it so a
         # failed attempt never unmaps a still-live, QBO-synced Bill (U-226).
         from integrations.intuit.qbo.bill.connector.bill.persistence.repo import BillBillRepository
-        from integrations.intuit.qbo.base.mapping_cleanup import delete_own_qbo_mapping_before_header
+        from integrations.intuit.qbo.base.mapping_cleanup import (
+            delete_own_qbo_mapping_before_header,
+            make_restore_failed_recorder,
+        )
 
         _bill_bill_repo = BillBillRepository()
 
-        def _on_bill_mapping_restore_failed(mapping, restore_exc):
-            try:
-                from integrations.intuit.qbo.base.delete_reconcile import record_partial_delete_issue
-                from integrations.intuit.qbo.bill.persistence.repo import QboBillRepository
+        def _bill_staging_repo():
+            from integrations.intuit.qbo.bill.persistence.repo import QboBillRepository
 
-                staging = QboBillRepository().read_by_id(mapping.qbo_bill_id)
-                record_partial_delete_issue(
-                    entity_type="Bill",
-                    mapping_label="BillBill",
-                    mapped_label="Bill",
-                    realm_id=staging.realm_id if staging else "",
-                    qbo_id=staging.qbo_id if staging else "",
-                    local_id=bill_id,
-                    error=restore_exc,
-                )
-            except Exception:
-                logger.exception(
-                    f"Failed to record partial-delete reconciliation issue for Bill {bill_id}"
-                )
+            return QboBillRepository()
 
         return delete_own_qbo_mapping_before_header(
             read_mapping=lambda: _bill_bill_repo.read_by_bill_id(bill_id),
@@ -1377,7 +1365,13 @@ class BillService:
             delete_header=lambda: self.repo.delete_by_id(existing.id),
             entity_label="Bill",
             entity_id=bill_id,
-            on_restore_failed=_on_bill_mapping_restore_failed,
+            on_restore_failed=make_restore_failed_recorder(
+                entity_type="Bill",
+                mapping_label="BillBill",
+                staging_repo_factory=_bill_staging_repo,
+                qbo_id_from_mapping=lambda m: m.qbo_bill_id,
+                local_id=bill_id,
+            ),
         )
 
 

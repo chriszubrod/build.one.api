@@ -316,29 +316,17 @@ class BillCreditService:
         from integrations.intuit.qbo.vendorcredit.connector.bill_credit.persistence.repo import (
             VendorCreditBillCreditMappingRepository,
         )
-        from integrations.intuit.qbo.base.mapping_cleanup import delete_own_qbo_mapping_before_header
+        from integrations.intuit.qbo.base.mapping_cleanup import (
+            delete_own_qbo_mapping_before_header,
+            make_restore_failed_recorder,
+        )
 
         _vc_bc_mapping_repo = VendorCreditBillCreditMappingRepository()
 
-        def _on_bc_mapping_restore_failed(mapping, restore_exc):
-            try:
-                from integrations.intuit.qbo.base.delete_reconcile import record_partial_delete_issue
-                from integrations.intuit.qbo.vendorcredit.persistence.repo import QboVendorCreditRepository
+        def _bill_credit_staging_repo():
+            from integrations.intuit.qbo.vendorcredit.persistence.repo import QboVendorCreditRepository
 
-                staging = QboVendorCreditRepository().read_by_id(mapping.qbo_vendor_credit_id)
-                record_partial_delete_issue(
-                    entity_type="BillCredit",
-                    mapping_label="VendorCreditBillCredit",
-                    mapped_label="BillCredit",
-                    realm_id=staging.realm_id if staging else "",
-                    qbo_id=staging.qbo_id if staging else "",
-                    local_id=bill_credit_id,
-                    error=restore_exc,
-                )
-            except Exception:
-                logger.exception(
-                    f"Failed to record partial-delete reconciliation issue for BillCredit {bill_credit_id}"
-                )
+            return QboVendorCreditRepository()
 
         return delete_own_qbo_mapping_before_header(
             read_mapping=lambda: _vc_bc_mapping_repo.read_by_bill_credit_id(bill_credit_id),
@@ -352,5 +340,11 @@ class BillCreditService:
             delete_header=lambda: self.repo.delete_by_id(existing.id),
             entity_label="BillCredit",
             entity_id=bill_credit_id,
-            on_restore_failed=_on_bc_mapping_restore_failed,
+            on_restore_failed=make_restore_failed_recorder(
+                entity_type="BillCredit",
+                mapping_label="VendorCreditBillCredit",
+                staging_repo_factory=_bill_credit_staging_repo,
+                qbo_id_from_mapping=lambda m: m.qbo_vendor_credit_id,
+                local_id=bill_credit_id,
+            ),
         )

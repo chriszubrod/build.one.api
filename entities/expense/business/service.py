@@ -534,29 +534,17 @@ class ExpenseService:
         from integrations.intuit.qbo.purchase.connector.expense.persistence.repo import (
             PurchaseExpenseRepository,
         )
-        from integrations.intuit.qbo.base.mapping_cleanup import delete_own_qbo_mapping_before_header
+        from integrations.intuit.qbo.base.mapping_cleanup import (
+            delete_own_qbo_mapping_before_header,
+            make_restore_failed_recorder,
+        )
 
         _purchase_expense_repo = PurchaseExpenseRepository()
 
-        def _on_expense_mapping_restore_failed(mapping, restore_exc):
-            try:
-                from integrations.intuit.qbo.base.delete_reconcile import record_partial_delete_issue
-                from integrations.intuit.qbo.purchase.persistence.repo import QboPurchaseRepository
+        def _expense_staging_repo():
+            from integrations.intuit.qbo.purchase.persistence.repo import QboPurchaseRepository
 
-                staging = QboPurchaseRepository().read_by_id(mapping.qbo_purchase_id)
-                record_partial_delete_issue(
-                    entity_type="Expense",
-                    mapping_label="PurchaseExpense",
-                    mapped_label="Expense",
-                    realm_id=staging.realm_id if staging else "",
-                    qbo_id=staging.qbo_id if staging else "",
-                    local_id=expense_id,
-                    error=restore_exc,
-                )
-            except Exception:
-                logger.exception(
-                    f"Failed to record partial-delete reconciliation issue for Expense {expense_id}"
-                )
+            return QboPurchaseRepository()
 
         return delete_own_qbo_mapping_before_header(
             read_mapping=lambda: _purchase_expense_repo.read_by_expense_id(expense_id),
@@ -567,7 +555,13 @@ class ExpenseService:
             delete_header=lambda: self.repo.delete_by_id(existing.id),
             entity_label="Expense",
             entity_id=expense_id,
-            on_restore_failed=_on_expense_mapping_restore_failed,
+            on_restore_failed=make_restore_failed_recorder(
+                entity_type="Expense",
+                mapping_label="PurchaseExpense",
+                staging_repo_factory=_expense_staging_repo,
+                qbo_id_from_mapping=lambda m: m.qbo_purchase_id,
+                local_id=expense_id,
+            ),
         )
 
     def complete_expense(self, public_id: str) -> dict:

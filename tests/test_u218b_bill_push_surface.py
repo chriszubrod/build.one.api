@@ -17,11 +17,7 @@ from integrations.intuit.qbo.base.errors import (
     QboWriteRefusedError,
 )
 from integrations.intuit.qbo.outbox.business.model import QboOutbox
-from integrations.intuit.qbo.outbox.business.worker import (
-    QboOutboxWorker,
-    WRITE_REFUSED_PARK_INTERVAL,
-    WRITE_REFUSED_PARK_PREFIX,
-)
+from integrations.intuit.qbo.outbox.business.worker import QboOutboxWorker
 from scripts.reconcile_project import report_db_to_qbo_bills
 
 REALM_ID = "realm-test"
@@ -78,6 +74,41 @@ def test_sync_bill_to_qbo_router_returns_202_and_enqueues():
         }
 
 
+def _make_bill(is_draft, public_id="11111111-1111-1111-1111-111111111111"):
+    bill = MagicMock()
+    bill.public_id = public_id
+    bill.is_draft = is_draft
+    return bill
+
+
+@pytest.mark.parametrize(
+    "bill, expected_status",
+    [
+        pytest.param(None, 404, id="not_found"),
+        pytest.param(_make_bill(is_draft=True), 400, id="draft"),
+    ],
+)
+def test_sync_bill_to_qbo_router_rejects_invalid_bill(bill, expected_status):
+    from fastapi import HTTPException
+    from integrations.intuit.qbo.bill.api import router as router_mod
+    from integrations.intuit.qbo.bill.api.schemas import QboBillPush
+
+    with patch.object(router_mod, "BillService") as bill_svc_cls, patch.object(
+        router_mod, "QboOutboxService"
+    ) as outbox_svc_cls:
+        bill_svc_cls.return_value.read_by_public_id.return_value = bill
+
+        with pytest.raises(HTTPException) as exc_info:
+            router_mod.sync_bill_to_qbo_router(
+                bill_public_id="11111111-1111-1111-1111-111111111111",
+                body=QboBillPush(realm_id=REALM_ID),
+                current_user={"sub": "user"},
+            )
+
+    assert exc_info.value.status_code == expected_status
+    outbox_svc_cls.return_value.enqueue.assert_not_called()
+
+
 def test_sync_bill_to_qbo_router_refuses_with_409_when_dead_letter_exists():
     from fastapi import HTTPException
     from integrations.intuit.qbo.bill.api import router as router_mod
@@ -120,15 +151,18 @@ def test_qbo_bill_push_schema_has_no_sync_attachments():
 
 
 def test_report_db_to_qbo_bills_reports_unmapped_without_qbo_write():
-    bill = MagicMock(id=42, bill_number="B-100")
+    bill = MagicMock(id=42, bill_number="B-100", public_id="44444444-4444-4444-4444-444444444444")
 
     with patch(
         "integrations.intuit.qbo.bill.connector.bill.business.service.BillBillConnector.sync_to_qbo_bill"
-    ) as sync_mock:
+    ) as sync_mock, patch(
+        "integrations.intuit.qbo.outbox.business.service.QboOutboxService.enqueue"
+    ) as enqueue_mock:
         count = report_db_to_qbo_bills({42: bill}, mapped_bill_ids=set())
 
     assert count == 1
     sync_mock.assert_not_called()
+    enqueue_mock.assert_not_called()
 
 
 def test_recover_duplicate_qbo_bill_records_issue_and_reraises_typed_error():
@@ -241,6 +275,13 @@ def test_sync_to_qbo_bill_duplicate_records_issue_and_propagates_typed_error():
 
 
 def test_write_refused_error_parks_with_prefix_and_scheduled_retry():
+    # Runbook SQL predicate — must stay in sync with worker.py's
+    # WRITE_REFUSED_PARK_PREFIX / WRITE_REFUSED_PARK_INTERVAL. Hardcoded here
+    # (not imported from the module under test) so a drift in either constant
+    # is caught rather than silently moving both sides of the assertion together.
+    park_prefix = "Parked: QBO writes disabled"
+    park_interval = timedelta(minutes=15)
+
     repo = MagicMock()
     worker = QboOutboxWorker(repo=repo, api_budget=MagicMock())
     error = QboWriteRefusedError("ALLOW_QBO_WRITES is not true")
@@ -251,9 +292,9 @@ def test_write_refused_error_parks_with_prefix_and_scheduled_retry():
     repo.mark_failed.assert_called_once()
     repo.mark_dead_letter.assert_not_called()
     kwargs = repo.mark_failed.call_args.kwargs
-    assert kwargs["last_error"].startswith(WRITE_REFUSED_PARK_PREFIX)
+    assert kwargs["last_error"].startswith(park_prefix)
     next_retry_at = kwargs["next_retry_at"]
-    assert before + WRITE_REFUSED_PARK_INTERVAL <= next_retry_at <= before + WRITE_REFUSED_PARK_INTERVAL + timedelta(seconds=5)
+    assert before + park_interval <= next_retry_at <= before + park_interval + timedelta(seconds=5)
 
 
 def test_budget_error_still_parks_until_month_reset():
@@ -341,10 +382,12 @@ def test_retry_qbo_dead_letters_apply_reasserts_dead_letter_status_and_preserves
     rows = [
         (10, "pid-10", "sync_bill_to_qbo", "Bill", "ent-10", 5, "2026-08-01", "err"),
     ]
+    before = datetime.now(timezone.utc)
     _, cursor, conn, exit_code = _run_retry_main(
         ["retry_qbo_outbox_dead_letters.py", "--kind", "sync_bill_to_qbo", "--apply"],
         rows=rows,
     )
+    after = datetime.now(timezone.utc)
     assert exit_code == 0
     conn.commit.assert_called_once()
     select_call = cursor.execute.call_args_list[0]
@@ -358,11 +401,12 @@ def test_retry_qbo_dead_letters_apply_reasserts_dead_letter_status_and_preserves
     assert "RequestId" not in sql
     assert "LastError" not in sql
     assert "DeadLetteredAt" not in sql
-    assert update_call.args[1:] == (
-        update_call.args[1],
-        update_call.args[2],
-        10,
-    )
+    assert len(update_call.args) == 4
+    assert isinstance(update_call.args[1], datetime)
+    assert isinstance(update_call.args[2], datetime)
+    assert before <= update_call.args[1] <= after
+    assert update_call.args[1] == update_call.args[2]
+    assert update_call.args[3] == 10
 
 
 def test_retry_qbo_dead_letters_reports_actual_rowcount_not_scan_count():

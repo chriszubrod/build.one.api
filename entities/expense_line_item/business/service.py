@@ -222,5 +222,28 @@ class ExpenseLineItemService:
                 "Error during attachment cleanup for ExpenseLineItem %s: %s", existing.id, e
             )
 
-        # Step 3: Delete the line item
-        return self.repo.delete_by_id(existing.id)
+        # Step 3: Delete the line item — clear its qbo.PurchaseLineExpenseLineItem mapping first.
+        # PurchaseLineExpenseLineItem already has a live, enforced NO-ACTION FK in prod — deleting
+        # a QBO-synced ExpenseLineItem is ALREADY BROKEN today (547), not merely a future risk. If
+        # the line delete fails for any other reason after the mapping is gone, restore it so a
+        # failed attempt never unmaps a still-live, QBO-synced line (U-241).
+        from integrations.intuit.qbo.purchase.connector.expense_line_item.persistence.repo import (
+            PurchaseLineExpenseLineItemRepository,
+        )
+        from integrations.intuit.qbo.base.mapping_cleanup import delete_own_qbo_mapping_before_header
+
+        _pleli_repo = PurchaseLineExpenseLineItemRepository()
+
+        return delete_own_qbo_mapping_before_header(
+            read_mapping=lambda: _pleli_repo.read_by_expense_line_item_id(existing.id),
+            delete_mapping=lambda m: _pleli_repo.delete_by_id(m.id),
+            recreate_mapping=lambda m: _pleli_repo.create(
+                qbo_purchase_line_id=m.qbo_purchase_line_id,
+                expense_line_item_id=m.expense_line_item_id,
+            ),
+            delete_header=lambda: self.repo.delete_by_id(existing.id),
+            entity_label="ExpenseLineItem",
+            entity_id=existing.id,
+            # on_restore_failed=None: see mapping_cleanup.py's on_restore_failed docstring (U-241).
+            on_restore_failed=None,
+        )

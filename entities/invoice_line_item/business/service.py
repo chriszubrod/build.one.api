@@ -204,4 +204,28 @@ class InvoiceLineItemService:
                 except Exception:
                     pass
 
-        return self.repo.delete_by_id(existing.id)
+        # Clear this InvoiceLineItem's own qbo.InvoiceLineItemInvoiceLine mapping row, then delete
+        # the line. InvoiceLineItemInvoiceLine has no FK today, so an unmapped delete silently
+        # orphans it (a future FK migration would turn that into a 547 instead). If the line delete
+        # fails for any other reason after the mapping is gone, restore it so a failed attempt never
+        # unmaps a still-live, QBO-synced line (U-241).
+        from integrations.intuit.qbo.invoice.connector.invoice_line_item.persistence.repo import (
+            InvoiceLineItemInvoiceLineRepository,
+        )
+        from integrations.intuit.qbo.base.mapping_cleanup import delete_own_qbo_mapping_before_header
+
+        _ili_invoice_line_repo = InvoiceLineItemInvoiceLineRepository()
+
+        return delete_own_qbo_mapping_before_header(
+            read_mapping=lambda: _ili_invoice_line_repo.read_by_invoice_line_item_id(existing.id),
+            delete_mapping=lambda m: _ili_invoice_line_repo.delete_by_id(m.id),
+            recreate_mapping=lambda m: _ili_invoice_line_repo.create(
+                invoice_line_item_id=m.invoice_line_item_id,
+                qbo_invoice_line_id=m.qbo_invoice_line_id,
+            ),
+            delete_header=lambda: self.repo.delete_by_id(existing.id),
+            entity_label="InvoiceLineItem",
+            entity_id=existing.id,
+            # on_restore_failed=None: see mapping_cleanup.py's on_restore_failed docstring (U-241).
+            on_restore_failed=None,
+        )

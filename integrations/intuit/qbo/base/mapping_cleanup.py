@@ -1,11 +1,15 @@
-"""Clears a header entity's own qbo.* mapping row when the entity itself is being deleted.
+"""Clears an entity's own qbo.* mapping row when the entity itself is being deleted.
 
 Entity delete services (Bill, BillCredit, Expense) hand-cascade their own children but,
 absent this, never clear the qbo.* mapping row that points back at their own header row —
 leaving a permanent dangling mapping, or (where the mapping FK is NO_ACTION rather than
 CASCADE in prod — VendorCreditBillCredit and PurchaseExpense) a SQL 547 on the header
 delete itself. If the header delete fails after the mapping is cleared, the mapping is
-best-effort restored so a failed attempt never unmaps a still-live entity. See U-226."""
+best-effort restored so a failed attempt never unmaps a still-live entity. See U-226.
+
+Also used for line-item mapping cleanup (BillLineItem, InvoiceLineItem, ExpenseLineItem,
+U-241) — the mechanism does not distinguish header vs line item; it clears one qbo.*
+mapping row before deleting the row it points at."""
 import logging
 
 logger = logging.getLogger(__name__)
@@ -41,7 +45,12 @@ def delete_own_qbo_mapping_before_header(
         only when recreate_mapping() itself raises after a header-delete failure — for durably
         recording the "mapping permanently lost" state (e.g. via qbo.ReconciliationIssue).
         Never allowed to mask the original header-delete exception, which always still
-        propagates.
+        propagates. Header call sites (Bill/BillCredit/Expense/Invoice) wire this to record a
+        qbo.ReconciliationIssue. Line-item call sites (BillLineItem/InvoiceLineItem/
+        ExpenseLineItem, U-241) currently pass None — resolving a line mapping's realm_id/
+        qbo_id needs an extra hop through its parent staging row that no line-item call site
+        has wired yet; the logger.critical above still captures the double-failure for manual
+        reconciliation either way.
 
     Raises ValueError (chaining the original exception) if reading or deleting a found
     mapping fails — same behavior as before, the header delete is never attempted in that

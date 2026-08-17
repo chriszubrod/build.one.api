@@ -227,5 +227,28 @@ class BillLineItemService:
             for cl_entry in cl_repo.read_by_bill_line_item_id(existing.id):
                 cl_entry.bill_line_item_id = None
                 cl_repo.update_by_id(cl_entry)
-            return self.repo.delete_by_id(existing.id)
+            # Clear this BillLineItem's own qbo.BillLineItemBillLine mapping row, then delete the
+            # line. BillLineItemBillLine has no FK today, so an unmapped delete silently orphans it
+            # (a future FK migration would turn that into a 547 instead). If the line delete fails
+            # for any other reason after the mapping is gone, restore it so a failed attempt never
+            # unmaps a still-live, QBO-synced line (U-241).
+            from integrations.intuit.qbo.bill.connector.bill_line_item.persistence.repo import (
+                BillLineItemBillLineRepository,
+            )
+            from integrations.intuit.qbo.base.mapping_cleanup import delete_own_qbo_mapping_before_header
+
+            _bli_bill_line_repo = BillLineItemBillLineRepository()
+
+            return delete_own_qbo_mapping_before_header(
+                read_mapping=lambda: _bli_bill_line_repo.read_by_bill_line_item_id(existing.id),
+                delete_mapping=lambda m: _bli_bill_line_repo.delete_by_id(m.id),
+                recreate_mapping=lambda m: _bli_bill_line_repo.create(
+                    bill_line_item_id=m.bill_line_item_id, qbo_bill_line_id=m.qbo_bill_line_id
+                ),
+                delete_header=lambda: self.repo.delete_by_id(existing.id),
+                entity_label="BillLineItem",
+                entity_id=existing.id,
+                # on_restore_failed=None: see mapping_cleanup.py's on_restore_failed docstring (U-241).
+                on_restore_failed=None,
+            )
         return None

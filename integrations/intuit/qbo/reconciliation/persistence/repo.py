@@ -167,3 +167,165 @@ class ReconciliationIssueRepository:
         except Exception as error:
             logger.error(f"Error during count reconciliation issues: {error}")
             raise map_database_error(error)
+
+    def acknowledge(self, id: int) -> Optional[ReconciliationIssue]:
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                try:
+                    call_procedure(
+                        cursor=cursor,
+                        name="AcknowledgeQboReconciliationIssue",
+                        params={"Id": id},
+                    )
+                    return self._from_db(cursor.fetchone())
+                finally:
+                    try:
+                        cursor.close()
+                    except Exception:
+                        pass
+        except Exception as error:
+            logger.error(f"Error during acknowledge reconciliation issue: {error}")
+            raise map_database_error(error)
+
+    def resolve(self, id: int) -> Optional[ReconciliationIssue]:
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                try:
+                    call_procedure(
+                        cursor=cursor,
+                        name="ResolveQboReconciliationIssue",
+                        params={"Id": id},
+                    )
+                    return self._from_db(cursor.fetchone())
+                finally:
+                    try:
+                        cursor.close()
+                    except Exception:
+                        pass
+        except Exception as error:
+            logger.error(f"Error during resolve reconciliation issue: {error}")
+            raise map_database_error(error)
+
+    def preview_bulk_resolve(
+        self,
+        *,
+        drift_type: Optional[str] = None,
+        entity_type: Optional[str] = None,
+        created_before=None,
+        realm_id: Optional[str] = None,
+        status: str = "open",
+        max_rows: int = 1000,
+    ) -> List[dict]:
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                try:
+                    call_procedure(
+                        cursor=cursor,
+                        name="BulkResolveQboReconciliationIssuesByFilter",
+                        params={
+                            "DriftType": drift_type,
+                            "EntityType": entity_type,
+                            "CreatedBefore": created_before,
+                            "RealmId": realm_id,
+                            "Status": status,
+                            "MaxRows": max_rows,
+                            "DryRun": True,
+                        },
+                    )
+                    rows = cursor.fetchall()
+                    if not rows:
+                        return []
+                    return [
+                        {
+                            "id": r.Id,
+                            "drift_type": r.DriftType,
+                            "entity_type": r.EntityType,
+                            "qbo_id": r.QboId,
+                            "created_datetime": r.CreatedDatetime,
+                            "total_match_count": r.TotalMatchCount,
+                        }
+                        for r in rows if r
+                    ]
+                finally:
+                    try:
+                        cursor.close()
+                    except Exception:
+                        pass
+        except Exception as error:
+            logger.error(f"Error during preview bulk resolve reconciliation issues: {error}")
+            raise map_database_error(error)
+
+    def bulk_resolve(
+        self,
+        *,
+        drift_type: Optional[str] = None,
+        entity_type: Optional[str] = None,
+        created_before=None,
+        realm_id: Optional[str] = None,
+        status: str = "open",
+        max_rows: int = 1000,
+    ) -> List[int]:
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                try:
+                    call_procedure(
+                        cursor=cursor,
+                        name="BulkResolveQboReconciliationIssuesByFilter",
+                        params={
+                            "DriftType": drift_type,
+                            "EntityType": entity_type,
+                            "CreatedBefore": created_before,
+                            "RealmId": realm_id,
+                            "Status": status,
+                            "MaxRows": max_rows,
+                            "DryRun": False,
+                        },
+                    )
+                    rows = cursor.fetchall()
+                    return [r.Id for r in rows if r]
+                finally:
+                    try:
+                        cursor.close()
+                    except Exception:
+                        pass
+        except Exception as error:
+            logger.error(f"Error during bulk resolve reconciliation issues: {error}")
+            raise map_database_error(error)
+
+    def triage_summary(self) -> List[dict]:
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                try:
+                    call_procedure(
+                        cursor=cursor,
+                        name="ReadQboReconciliationIssueTriageSummary",
+                        params={},
+                    )
+                    rows = cursor.fetchall()
+                    return [
+                        {
+                            "drift_type": r.DriftType,
+                            "entity_type": r.EntityType,
+                            "severity": r.Severity,
+                            "action": r.Action,
+                            "status": r.Status,
+                            "row_count": r.RowCount,
+                            "unique_key_count": r.UniqueKeyCount,
+                            "first_seen": r.FirstSeen,
+                            "last_seen": r.LastSeen,
+                        }
+                        for r in rows if r
+                    ]
+                finally:
+                    try:
+                        cursor.close()
+                    except Exception:
+                        pass
+        except Exception as error:
+            logger.error(f"Error during triage summary reconciliation issues: {error}")
+            raise map_database_error(error)

@@ -2,6 +2,7 @@
 import logging
 from typing import Optional
 
+from integrations.intuit.qbo.base.drift_types import KNOWN_DRIFT_TYPES
 from integrations.intuit.qbo.reconciliation.persistence.repo import ReconciliationIssueRepository
 
 logger = logging.getLogger(__name__)
@@ -46,7 +47,13 @@ def record_mapping_issue(
     Failure-isolated: a failed insert is logged loud but never breaks the sync.
     """
     try:
+        original_drift_type = drift_type
         drift_type = _clamp_field("drift_type", drift_type, _FIELD_LIMITS["drift_type"])
+        if original_drift_type not in KNOWN_DRIFT_TYPES:
+            logger.error(
+                f"Unregistered ReconciliationIssue DriftType {original_drift_type!r} — "
+                f"add it to integrations/intuit/qbo/base/drift_types.py"
+            )
         entity_type = _clamp_field("entity_type", entity_type, _FIELD_LIMITS["entity_type"])
         severity = _clamp_field("severity", severity, _FIELD_LIMITS["severity"])
         action = _clamp_field("action", action, _FIELD_LIMITS["action"])

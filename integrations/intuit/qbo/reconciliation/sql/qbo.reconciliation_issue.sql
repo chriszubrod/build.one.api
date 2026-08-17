@@ -189,3 +189,180 @@ BEGIN
 END;
 GO
 -- ========================== U-160 END ==========================
+
+
+-- ========================= U-246 BEGIN =========================
+
+CREATE OR ALTER PROCEDURE AcknowledgeQboReconciliationIssue
+(
+    @Id BIGINT
+)
+AS
+BEGIN
+    SET NOCOUNT ON;
+    DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();
+
+    BEGIN TRANSACTION;
+
+    UPDATE [qbo].[ReconciliationIssue]
+    SET [Status] = 'acknowledged',
+        [AcknowledgedAt] = @Now,
+        [ModifiedDatetime] = @Now
+    WHERE [Id] = @Id
+      AND [Status] = 'open';
+
+    SELECT
+        [Id], [PublicId], [RowVersion],
+        CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
+        CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
+        [DriftType], [Severity], [Action],
+        [EntityType], [EntityPublicId], [QboId], [RealmId],
+        [Details], [Status], [ReconcileRunId],
+        CONVERT(VARCHAR(19), [AcknowledgedAt], 120) AS [AcknowledgedAt],
+        CONVERT(VARCHAR(19), [ResolvedAt], 120) AS [ResolvedAt]
+    FROM [qbo].[ReconciliationIssue]
+    WHERE [Id] = @Id;
+
+    COMMIT TRANSACTION;
+END;
+GO
+
+
+CREATE OR ALTER PROCEDURE ResolveQboReconciliationIssue
+(
+    @Id BIGINT
+)
+AS
+BEGIN
+    SET NOCOUNT ON;
+    DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();
+
+    BEGIN TRANSACTION;
+
+    UPDATE [qbo].[ReconciliationIssue]
+    SET [Status] = 'resolved',
+        [ResolvedAt] = @Now,
+        [ModifiedDatetime] = @Now
+    WHERE [Id] = @Id
+      AND [Status] IN ('open', 'acknowledged');
+
+    SELECT
+        [Id], [PublicId], [RowVersion],
+        CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
+        CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
+        [DriftType], [Severity], [Action],
+        [EntityType], [EntityPublicId], [QboId], [RealmId],
+        [Details], [Status], [ReconcileRunId],
+        CONVERT(VARCHAR(19), [AcknowledgedAt], 120) AS [AcknowledgedAt],
+        CONVERT(VARCHAR(19), [ResolvedAt], 120) AS [ResolvedAt]
+    FROM [qbo].[ReconciliationIssue]
+    WHERE [Id] = @Id;
+
+    COMMIT TRANSACTION;
+END;
+GO
+
+
+CREATE OR ALTER PROCEDURE BulkResolveQboReconciliationIssuesByFilter
+(
+    @DriftType       NVARCHAR(32)  = NULL,
+    @EntityType      NVARCHAR(32)  = NULL,
+    @CreatedBefore   DATETIME2(3)  = NULL,
+    @RealmId         NVARCHAR(64)  = NULL,
+    @Status          NVARCHAR(16)  = 'open',
+    @MaxRows         INT           = 1000,
+    @DryRun          BIT           = 0
+)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    IF @MaxRows > 5000 SET @MaxRows = 5000;
+    IF @MaxRows < 1 SET @MaxRows = 1;
+
+    IF @DriftType IS NULL AND @EntityType IS NULL AND @CreatedBefore IS NULL
+    BEGIN
+        RAISERROR('BulkResolveQboReconciliationIssuesByFilter requires at least one of @DriftType, @EntityType, @CreatedBefore', 16, 1);
+        RETURN;
+    END;
+
+    -- Single definition of "eligible" — both the dry-run preview and the real
+    -- resolve below operate on exactly this materialized candidate set, so they
+    -- can never see a different row set from each other.
+    SELECT [Id]
+    INTO #Candidates
+    FROM [qbo].[ReconciliationIssue]
+    WHERE [Status] = @Status
+      AND [Status] IN ('open', 'acknowledged')
+      AND (@DriftType IS NULL OR [DriftType] = @DriftType)
+      AND (@EntityType IS NULL OR [EntityType] = @EntityType)
+      AND (@CreatedBefore IS NULL OR [CreatedDatetime] < @CreatedBefore)
+      AND (@RealmId IS NULL OR [RealmId] = @RealmId);
+
+    IF @DryRun = 1
+    BEGIN
+        DECLARE @TotalMatchCount INT = (SELECT COUNT(*) FROM #Candidates);
+
+        SELECT TOP (10)
+            ri.[Id], ri.[DriftType], ri.[EntityType], ri.[QboId],
+            CONVERT(VARCHAR(19), ri.[CreatedDatetime], 120) AS [CreatedDatetime],
+            @TotalMatchCount AS [TotalMatchCount]
+        FROM [qbo].[ReconciliationIssue] ri
+        JOIN #Candidates c ON c.[Id] = ri.[Id]
+        ORDER BY ri.[CreatedDatetime] ASC;
+
+        DROP TABLE #Candidates;
+        RETURN;
+    END;
+
+    DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();
+
+    BEGIN TRANSACTION;
+
+    ;WITH [Batch] AS (
+        SELECT TOP (@MaxRows) c.[Id]
+        FROM #Candidates c
+        JOIN [qbo].[ReconciliationIssue] ri ON ri.[Id] = c.[Id]
+        ORDER BY ri.[CreatedDatetime] ASC
+    )
+    -- #Candidates is a snapshot taken before this transaction opened — re-check
+    -- Status here so a row resolved by a concurrent call between the snapshot
+    -- and this UPDATE is excluded rather than having its ResolvedAt clobbered.
+    UPDATE ri
+    SET [Status] = 'resolved',
+        [ResolvedAt] = @Now,
+        [ModifiedDatetime] = @Now
+    OUTPUT INSERTED.[Id]
+    FROM [qbo].[ReconciliationIssue] ri
+    JOIN [Batch] b ON b.[Id] = ri.[Id]
+    WHERE ri.[Status] IN ('open', 'acknowledged');
+
+    COMMIT TRANSACTION;
+
+    DROP TABLE #Candidates;
+END;
+GO
+
+
+CREATE OR ALTER PROCEDURE ReadQboReconciliationIssueTriageSummary
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SELECT
+        [DriftType],
+        [EntityType],
+        [Severity],
+        [Action],
+        [Status],
+        COUNT(*) AS [RowCount],
+        COUNT(DISTINCT CASE WHEN [QboId] IS NOT NULL
+            THEN CONCAT([EntityType], '|', [QboId]) END) AS [UniqueKeyCount],
+        MIN([CreatedDatetime]) AS [FirstSeen],
+        MAX([CreatedDatetime]) AS [LastSeen]
+    FROM [qbo].[ReconciliationIssue]
+    GROUP BY [DriftType], [EntityType], [Severity], [Action], [Status]
+    ORDER BY [RowCount] DESC;
+END;
+GO
+
+-- ========================== U-246 END ==========================

@@ -5,6 +5,16 @@ import uuid
 from typing import Optional
 
 # Local Imports
+from integrations.intuit.qbo.base.drift_types import (
+    DRIFT_DUPLICATE_MAPPING,
+    DRIFT_FIELD_MISMATCH,
+    DRIFT_INVOICE_DRAW_MISMATCH,
+    DRIFT_LOCAL_MISSING_QBO,
+    DRIFT_MISSING_MAPPING,
+    DRIFT_QBO_MISSING_LOCALLY,
+    DRIFT_QBO_VOIDED,
+    DRIFT_STALE_SYNC_TOKEN,
+)
 from integrations.intuit.qbo.reconciliation.persistence.repo import (
     ReconciliationIssueRepository,
 )
@@ -12,22 +22,12 @@ from integrations.intuit.qbo.reconciliation.persistence.repo import (
 logger = logging.getLogger(__name__)
 
 
-# Drift-type taxonomy. Each value carries an implied severity tier for
-# the tiered auto-fix/flag policy (Chapter 5).
+# Drift-type severity policy for the tiered auto-fix/flag reconciler (Chapter 5).
+# DriftType string constants live in integrations.intuit.qbo.base.drift_types.
 #
 # - low   → auto-fixable; service applies the fix and writes the issue for audit.
 # - medium → flagged; operator reviews and decides.
 # - high   → flagged; human judgment required (never auto-fix).
-DRIFT_QBO_MISSING_LOCALLY = "qbo_missing_locally"    # low — pull it
-DRIFT_LOCAL_MISSING_QBO = "local_missing_qbo"        # medium — could be user-deleted locally OR QBO-deleted
-DRIFT_STALE_SYNC_TOKEN = "stale_sync_token"          # low — pull + refresh cache
-DRIFT_MISSING_MAPPING = "missing_mapping"            # low — create mapping row
-DRIFT_FIELD_MISMATCH = "field_mismatch"              # medium — needs field-level source-of-truth rules (task #19)
-DRIFT_DUPLICATE_MAPPING = "duplicate_mapping"        # high — data bug; never auto-unlink
-DRIFT_QBO_VOIDED = "qbo_voided"                      # low — mark local as void (task #21 work)
-DRIFT_INVOICE_DRAW_MISMATCH = "invoice_draw_mismatch"  # medium — customer-invoice ↔ QBO/billing-state drift
-
-
 SEVERITY_BY_DRIFT = {
     DRIFT_QBO_MISSING_LOCALLY: "low",
     DRIFT_LOCAL_MISSING_QBO: "medium",

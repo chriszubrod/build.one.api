@@ -11,6 +11,10 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from conftest import REPO_ROOT, iter_prod_python_sources
+from integrations.intuit.qbo.base.drift_types import (
+    DRIFT_ORPHANED_ITEM_SCC_MAPPING,
+    KNOWN_DRIFT_TYPES as _KNOWN_DRIFT_TYPES,
+)
 from integrations.intuit.qbo.base.reconciliation_recorder import (
     _ACTION_DEFAULT,
     _FIELD_LIMITS,
@@ -38,22 +42,6 @@ _SQL_COLUMN_WIDTH_RE = re.compile(
 # Production call sites as of U-218a — guard must discover at least this many writers.
 # record_mapping_issue (5) + _record_reconciliation_issue (4) + direct repo.create (4).
 _MIN_CALL_SITES = 13
-_KNOWN_DRIFT_TYPES = frozenset(
-    {
-        "duplicate_qbo_item",
-        "duplicate_qbo_customer",
-        "duplicate_qbo_vendor",
-        "orphaned_item_scc_mapping",
-        "orphaned_item_cost_code_mapping",
-        "orphan_billcredit_header",
-        "orphaned_vc_billcredit_mapping",
-        "orphaned_cust_project_mapping",
-        "orphaned_purch_expense_mapping",
-        "orphaned_bill_bill_mapping",
-        "orphaned_vendor_vendor_mapping",
-        "pull_delete_reconcile",
-    }
-)
 _SKIP_FILES = frozenset({"reconciliation_recorder.py"})
 _DEFAULT_KWARGS = {
     "severity": "critical",
@@ -299,9 +287,46 @@ def test_reconciliation_issue_write_literals_fit_prod_column_widths():
                     f"{rel_path}:{lineno}: {field}={value!r} is {len(value)} chars (max {max_len})"
                 )
 
-    assert _KNOWN_DRIFT_TYPES <= found_drift_types, (
-        f"Missing expected drift_type literals: {_KNOWN_DRIFT_TYPES - found_drift_types}"
+    assert found_drift_types <= _KNOWN_DRIFT_TYPES, (
+        f"Undeclared drift_type literals in production writers: "
+        f"{found_drift_types - _KNOWN_DRIFT_TYPES}"
     )
 
     if violations:
         pytest.fail("ReconciliationIssue writer literals exceed prod column widths:\n" + "\n".join(violations))
+
+
+def test_record_mapping_issue_known_drift_type_does_not_log_unregistered(caplog):
+    repo = Mock()
+    with caplog.at_level("ERROR"):
+        record_mapping_issue(
+            repo,
+            drift_type=DRIFT_ORPHANED_ITEM_SCC_MAPPING,
+            entity_type="SubCostCode",
+            entity_public_id=None,
+            qbo_id="QBO-1",
+            realm_id="realm-1",
+            details="details",
+        )
+    assert not any("Unregistered ReconciliationIssue DriftType" in m for m in caplog.messages)
+    repo.create.assert_called_once()
+
+
+def test_record_mapping_issue_unregistered_drift_type_logs_but_still_writes(caplog):
+    repo = Mock()
+    with caplog.at_level("ERROR"):
+        record_mapping_issue(
+            repo,
+            drift_type="not_a_real_drift_type",
+            entity_type="SubCostCode",
+            entity_public_id=None,
+            qbo_id="QBO-1",
+            realm_id="realm-1",
+            details="details",
+        )
+    assert any(
+        "Unregistered ReconciliationIssue DriftType 'not_a_real_drift_type'" in m
+        for m in caplog.messages
+    )
+    repo.create.assert_called_once()
+    assert repo.create.call_args.kwargs["drift_type"] == "not_a_real_drift_type"

@@ -1,5 +1,28 @@
 # Session Notes
 
+## 🚀 Deploy — 2026-08-17: 12-commit QBO wave (SQL-first, ordered) — LIVE at `141491d4`
+
+**Deployed:** ACR run `ca9e` → `sha256:c3508204`, tagged `:latest` AND `:141491d4` (traceability verified: both resolve to one digest). Built from a **clean detached worktree** at `origin/master` — confirmed empty `git status` so none of the six concurrent sessions' WIP was swept in. Previous live image was `ba266543`.
+
+**Units in range:** U-225 `8fcd80c0` · U-226 `a4c2b768` · U-231 `48ff5226` · U-232 `40fec02f` · U-233 `7d10fcca` · U-234 `3b3c7a09` · U-240 `141491d4` · U-241 `1c3aa9b7` · plus 4 docs commits.
+
+### A 20-agent pre-deploy dependency sweep is what made this safe — run it again
+This wave had **four separate "code deployed without its SQL" near-misses** (U-238a, U-238c, U-232, U-240), so before building, a Workflow fan-out enumerated every DB object the undeployed range requires at runtime and checked each against prod. **10 confirmed blockers, 6 refuted, 0 agents errored.** All 10 resolved to exactly the two SQL files already planned — the sweep *validated* the plan rather than changing it, which is the outcome you want but cannot assume.
+
+The headline blocker was **outage-class, not degraded**: `SyncRepository._from_db` (`integrations/sync/persistence/repo.py:74`) reads `row.HoldStartedDatetime` as a bare attribute, and it is the single mapper for EVERY Sync sproc. The sweep *reproduced it live read-only* — `SyncRepository().read_all()` against prod raised `'pyodbc.Row' object has no attribute 'HoldStartedDatetime'`. Deploying U-240's code without its SQL would have killed every QBO pull at `WatermarkRun.open()` before any QBO I/O, plus `GET /get/syncs` and the invoice-audit freshness step. It also found true **parameter drift** (`dbo.UpdateSyncById` had no `@HoldStartedDatetime`; `call_procedure` builds a NAMED-param EXEC, so SQL Server would raise 8145) — the only such drift across **1,089 `call_procedure` sites** besides the known outbox sproc. Adding the column alone would NOT have been enough; the sprocs had to be re-applied.
+
+### Applied, in this order
+1. `integrations/sync/sql/dbo.sync.sql` — `HoldStartedDatetime` column + 7 sprocs re-applied. Verified after: column present, `UpdateSyncById` now carries `@HoldStartedDatetime`, and `ReadSyncs`/`ReadSyncByPublicId`/`CreateSync`/`DeleteSyncById` all reference it. **Re-ran the sweep's failing repro: `read_all()` now returns 12 rows clean.**
+2. `integrations/intuit/qbo/outbox/sql/qbo.outbox.sql` — `ReadDeadLetterQboOutboxByEntity`. Wider blast radius than the U-232 feature: the guard runs on every enqueue with no pending row to coalesce into, so it would have broken bill-completion push, the manual push endpoint, and expense-coding confirm (500 instead of the intended 409) — and *intermittently*, since coalescing enqueues still succeed.
+3. Container build + restart.
+4. `scripts/migrations/u225_qbo_mapping_fk_gaps.sql` — **deliberately LAST.** It constrains 11 previously unconstrained mapping tables, so it had to follow U-226/U-241's app-level cleanup going live, or silent orphaning would have become user-visible SQL 547s. qbo.* FKs went **14 → 36**, 22 of them `WITH NOCHECK` to tolerate the ~141 pre-existing orphans.
+
+### NOT applied, deliberately
+`integrations/intuit/qbo/vendorcredit/connector/bill_credit/sql/qbo.vendorcredit_bill_credit.sql`. The base==live diff found **genuine prod drift** on `DeleteVendorCreditBillCreditByQboVendorCreditId` that U-225 never touched. U-225's edit to that file only deletes a duplicate `CREATE TABLE` body and adds comments — the table already exists and the body was `IF OBJECT_ID IS NULL`-guarded, so **the file needs no prod apply at all**, and applying it would have reverted an unrelated sproc. The base==live discipline paid for itself twice today (6 drifted sprocs caught earlier on the U-238c entity files).
+
+### Acceptance — behaviour, not a health check
+A 200/401 cannot distinguish images. Verified instead that the system does its job under the new code + new schema: **all five 15-minute-cadence watermarks advanced post-restart** (bill 01:15:01, invoice 01:18:01, purchase 01:06:02, vendorcredit 01:09:02, reimburse_charge 01:12:01), with **0 new ReconciliationIssues, 0 dead-lettered outbox rows, 0 pending backlog**, `HoldStartedDatetime` NULL everywhere (no holds), and API healthy. The 4-hour-cadence entities were legitimately unchanged in the window.
+
 ## Session: U-218f ReimburseCharge seed COMPLETE + timer enabled (2026-08-16/17)
 
 **Seed complete: 26,582 / 26,582 realm ReimburseCharges staged** — 23,632 created + 2,950 updated, **0 failed, 0 skipped, 0 duplicate QboIds**. Verified independently: row count, distinct QboId count, and zero NULL RealmId.

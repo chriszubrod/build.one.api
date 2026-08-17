@@ -22,12 +22,7 @@ from integrations.ms.outbox.business.service import (
     KIND_UPLOAD_SHAREPOINT_FILE,
 )
 from integrations.ms.outbox.persistence.repo import MsOutboxRepository
-from shared.authz.context import (
-    current_user_id,
-    current_company_id,
-    current_is_system_admin,
-    set_authz_context,
-)
+from shared.authz.context import system_authz
 
 logger = get_ms_logger(__name__)
 
@@ -105,18 +100,12 @@ class MsOutboxWorker:
 
     def _process(self, row: MsOutbox) -> None:
         # Drain workers process rows that span all users by design — assert
-        # system intent at the boundary so callers (HTTP endpoint, in-process
-        # scheduler, REPL) don't have to remember `set_authz_context`. Prior
-        # context is restored on exit so we don't leak system-admin into
-        # whatever ran us.
-        prior_uid = current_user_id.get()
-        prior_cid = current_company_id.get()
-        prior_isa = current_is_system_admin.get()
-        set_authz_context(user_id=None, company_id=None, is_system_admin=True)
-        try:
+        # system intent at the boundary via the shared `system_authz()`
+        # contextmanager so callers (HTTP endpoint, in-process scheduler,
+        # REPL) don't hand-roll save/restore. Prior context is restored on
+        # exit so we don't leak system-admin into whatever ran us.
+        with system_authz():
             self._process_inner(row)
-        finally:
-            set_authz_context(user_id=prior_uid, company_id=prior_cid, is_system_admin=prior_isa)
 
     def _process_inner(self, row: MsOutbox) -> None:
         if row.correlation_id:

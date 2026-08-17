@@ -84,11 +84,16 @@ def system_authz() -> Iterator[None]:
     span all users by design, so guarded service reads must bypass the per-row
     access UDFs. Restores on exit so system-admin never leaks into whatever ran us.
 
-    NOTE: saves and restores current_can_view_team_modules too. The six hand-copied
-    versions of this block save only (user_id, company_id, is_system_admin), but
-    set_authz_context also RESETS can_view_team_modules — so their "restore" call
-    silently clears the caller's team-view set. Inert on the scheduler path (the
-    thread gets a copied context) but live at the two qbo router call sites.
+    Saves and restores current_can_view_team_modules too — a hand-copied version of
+    this block that saves only (user_id, company_id, is_system_admin) leaves this
+    ContextVar wrongly EMPTY after "restore" (set_authz_context always resets it to
+    empty), a fail-closed bug: current_can_view_team() then reads False for a caller
+    who actually holds the grant. It can only narrow what a caller sees, never widen
+    it — system admins already bypass current_can_view_team() via the is_system_admin
+    short-circuit regardless. One hand-copy of the old pattern remains at
+    entities/completion_job/business/service.py::run_job (out of this unit's scope,
+    booked as a follow-up in TODO.md) — prefer this contextmanager over re-copying
+    the block anywhere new.
     """
     prior_uid = current_user_id.get()
     prior_cid = current_company_id.get()

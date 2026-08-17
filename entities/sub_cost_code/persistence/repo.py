@@ -45,6 +45,7 @@ class SubCostCodeRepository:
                 description=row.Description,
                 cost_code_id=row.CostCodeId,
                 aliases=getattr(row, "Aliases", None),
+                qbo_active=getattr(row, "QboActive", None),
             )
         except AttributeError as error:
             logger.error(f"Attribute error during from db: {error}")

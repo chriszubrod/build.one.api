@@ -45,6 +45,7 @@ class PaymentTermRepository:
                 discount_percent=row.DiscountPercent,
                 discount_days=row.DiscountDays,
                 due_days=row.DueDays,
+                qbo_active=getattr(row, "QboActive", None),
             )
         except AttributeError as error:
             logger.error(f"Attribute error during payment term mapping: {error}")

@@ -51,23 +51,34 @@ GO
 -- ============================================================================
 -- SubCostCode — View (single source of truth for column formatting)
 -- ============================================================================
+-- QboActive (U-255) is a byproduct of every sproc that resolves through this
+-- view, including CreateSubCostCode/UpdateSubCostCodeById/DeleteSubCostCodeById/
+-- UpsertSubCostCode — their mutation responses now carry it too, unlike
+-- Vendor/PaymentTerm's Create/Update/Delete OUTPUT clauses, which deliberately
+-- do NOT (T-SQL's OUTPUT clause on INSERT has no FROM/JOIN support at all, and
+-- UPDATE/DELETE's OUTPUT...FROM...JOIN form is easy to get syntactically wrong
+-- against the INSERTED/DELETED pseudo-tables — not worth the risk for a
+-- cosmetic contract difference no consumer depends on yet). Accepted
+-- inconsistency, not a bug — see TODO.md.
 
 GO
 
 CREATE OR ALTER VIEW [dbo].[vw_SubCostCode]
 AS
     SELECT
-        [Id],
-        [PublicId],
-        [RowVersion],
-        CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
-        CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
-        [Number],
-        [Name],
-        [Description],
-        [CostCodeId],
-        [Aliases]
-    FROM dbo.[SubCostCode];
+        sc.[Id],
+        sc.[PublicId],
+        sc.[RowVersion],
+        CONVERT(VARCHAR(19), sc.[CreatedDatetime], 120) AS [CreatedDatetime],
+        CONVERT(VARCHAR(19), sc.[ModifiedDatetime], 120) AS [ModifiedDatetime],
+        sc.[Number],
+        sc.[Name],
+        sc.[Description],
+        sc.[CostCodeId],
+        sc.[Aliases],
+        qi.[Active] AS [QboActive]
+    FROM dbo.[SubCostCode] sc
+    LEFT JOIN qbo.[Item] qi ON qi.[QboId] = sc.[QboId] AND qi.[RealmId] = sc.[RealmId];
 GO
 
 

@@ -275,24 +275,28 @@ def _register_qbo_reconcile_jobs(scheduler) -> None:
     now_utc = datetime.now(timezone.utc)
 
     def _sync_reconcile_bills() -> None:
-        from integrations.intuit.qbo.auth.business.service import QboAuthService
-        from integrations.intuit.qbo.reconciliation.business.service import (
-            ReconciliationService,
-        )
-        auth = QboAuthService().ensure_valid_token()
-        if not auth or not auth.realm_id:
-            logger.warning("qbo.reconcile.bill.skipped: no valid QBO auth")
-            return
-        svc = ReconciliationService()
-        for name, fn in (
-            ("bill", svc.reconcile_bills),
-            ("purchase", svc.reconcile_purchases),
-            ("vendor_credit", svc.reconcile_vendor_credits),
-        ):
-            try:
-                fn(realm_id=auth.realm_id)
-            except Exception:
-                logger.exception(f"qbo.reconcile.{name}.tick_failed")
+        # System intent (U-255): dormant in prod (ENABLE_SCHEDULER=false) but
+        # closes a latent gap — reconciliation sweeps all users' rows. Mirrors
+        # _isolated._run_sync's system_authz() wrap.
+        with system_authz():
+            from integrations.intuit.qbo.auth.business.service import QboAuthService
+            from integrations.intuit.qbo.reconciliation.business.service import (
+                ReconciliationService,
+            )
+            auth = QboAuthService().ensure_valid_token()
+            if not auth or not auth.realm_id:
+                logger.warning("qbo.reconcile.bill.skipped: no valid QBO auth")
+                return
+            svc = ReconciliationService()
+            for name, fn in (
+                ("bill", svc.reconcile_bills),
+                ("purchase", svc.reconcile_purchases),
+                ("vendor_credit", svc.reconcile_vendor_credits),
+            ):
+                try:
+                    fn(realm_id=auth.realm_id)
+                except Exception:
+                    logger.exception(f"qbo.reconcile.{name}.tick_failed")
 
     async def _reconcile_bills() -> None:
         try:
@@ -349,10 +353,14 @@ def _register_ms_reconcile_jobs(scheduler) -> None:
     now_utc = datetime.now(timezone.utc)
 
     def _sync_reconcile_excel() -> None:
-        from integrations.ms.reconciliation.business.excel_detector import (
-            ExcelMissingRowDetector,
-        )
-        ExcelMissingRowDetector().run()
+        # System intent (U-255): dormant in prod (ENABLE_SCHEDULER=false) but
+        # closes a latent gap — Excel reconciliation reads every project
+        # workbook. Mirrors _isolated._run_sync's system_authz() wrap.
+        with system_authz():
+            from integrations.ms.reconciliation.business.excel_detector import (
+                ExcelMissingRowDetector,
+            )
+            ExcelMissingRowDetector().run()
 
     async def _reconcile_excel() -> None:
         try:

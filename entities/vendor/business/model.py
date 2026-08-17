@@ -33,6 +33,7 @@ class Vendor:
     # override over these defaults.
     hourly_rate: Optional[Decimal] = None
     markup: Optional[Decimal] = None
+    qbo_active: Optional[bool] = None
 
     @property
     def row_version_bytes(self) -> Optional[bytes]:

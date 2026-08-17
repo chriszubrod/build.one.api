@@ -20,6 +20,7 @@ class PaymentTerm:
     discount_percent: Optional[float]
     discount_days: Optional[int]
     due_days: Optional[int]
+    qbo_active: Optional[bool] = None
 
     @property
     def row_version_bytes(self) -> Optional[bytes]:

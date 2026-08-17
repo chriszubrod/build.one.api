@@ -52,6 +52,7 @@ class VendorRepository:
                 notes=getattr(row, "Notes", None),
                 hourly_rate=getattr(row, "HourlyRate", None),
                 markup=getattr(row, "Markup", None),
+                qbo_active=getattr(row, "QboActive", None),
             )
         except AttributeError as error:
             logger.error(f"Attribute error during vendor mapping: {error}")

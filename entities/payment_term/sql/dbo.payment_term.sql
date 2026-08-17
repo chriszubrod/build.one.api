@@ -63,18 +63,20 @@ BEGIN
     BEGIN TRANSACTION;
 
     SELECT
-        [Id],
-        [PublicId],
-        [RowVersion],
-        CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
-        CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
-        [Name],
-        [Description],
-        [DiscountPercent],
-        [DiscountDays],
-        [DueDays]
-    FROM dbo.[PaymentTerm]
-    ORDER BY [Name] ASC;
+        pt.[Id],
+        pt.[PublicId],
+        pt.[RowVersion],
+        CONVERT(VARCHAR(19), pt.[CreatedDatetime], 120) AS [CreatedDatetime],
+        CONVERT(VARCHAR(19), pt.[ModifiedDatetime], 120) AS [ModifiedDatetime],
+        pt.[Name],
+        pt.[Description],
+        pt.[DiscountPercent],
+        pt.[DiscountDays],
+        pt.[DueDays],
+        qt.[Active] AS [QboActive]
+    FROM dbo.[PaymentTerm] pt
+    LEFT JOIN qbo.[Term] qt ON qt.[QboId] = pt.[QboId] AND qt.[RealmId] = pt.[RealmId]
+    ORDER BY pt.[Name] ASC;
 
     COMMIT TRANSACTION;
 END;
@@ -92,18 +94,20 @@ BEGIN
     BEGIN TRANSACTION;
 
     SELECT
-        [Id],
-        [PublicId],
-        [RowVersion],
-        CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
-        CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
-        [Name],
-        [Description],
-        [DiscountPercent],
-        [DiscountDays],
-        [DueDays]
-    FROM dbo.[PaymentTerm]
-    WHERE [Id] = @Id;
+        pt.[Id],
+        pt.[PublicId],
+        pt.[RowVersion],
+        CONVERT(VARCHAR(19), pt.[CreatedDatetime], 120) AS [CreatedDatetime],
+        CONVERT(VARCHAR(19), pt.[ModifiedDatetime], 120) AS [ModifiedDatetime],
+        pt.[Name],
+        pt.[Description],
+        pt.[DiscountPercent],
+        pt.[DiscountDays],
+        pt.[DueDays],
+        qt.[Active] AS [QboActive]
+    FROM dbo.[PaymentTerm] pt
+    LEFT JOIN qbo.[Term] qt ON qt.[QboId] = pt.[QboId] AND qt.[RealmId] = pt.[RealmId]
+    WHERE pt.[Id] = @Id;
 
     COMMIT TRANSACTION;
 END;
@@ -121,18 +125,20 @@ BEGIN
     BEGIN TRANSACTION;
 
     SELECT
-        [Id],
-        [PublicId],
-        [RowVersion],
-        CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
-        CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
-        [Name],
-        [Description],
-        [DiscountPercent],
-        [DiscountDays],
-        [DueDays]
-    FROM dbo.[PaymentTerm]
-    WHERE [PublicId] = @PublicId;
+        pt.[Id],
+        pt.[PublicId],
+        pt.[RowVersion],
+        CONVERT(VARCHAR(19), pt.[CreatedDatetime], 120) AS [CreatedDatetime],
+        CONVERT(VARCHAR(19), pt.[ModifiedDatetime], 120) AS [ModifiedDatetime],
+        pt.[Name],
+        pt.[Description],
+        pt.[DiscountPercent],
+        pt.[DiscountDays],
+        pt.[DueDays],
+        qt.[Active] AS [QboActive]
+    FROM dbo.[PaymentTerm] pt
+    LEFT JOIN qbo.[Term] qt ON qt.[QboId] = pt.[QboId] AND qt.[RealmId] = pt.[RealmId]
+    WHERE pt.[PublicId] = @PublicId;
 
     COMMIT TRANSACTION;
 END;
@@ -150,18 +156,20 @@ BEGIN
     BEGIN TRANSACTION;
 
     SELECT
-        [Id],
-        [PublicId],
-        [RowVersion],
-        CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
-        CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
-        [Name],
-        [Description],
-        [DiscountPercent],
-        [DiscountDays],
-        [DueDays]
-    FROM dbo.[PaymentTerm]
-    WHERE [Name] = @Name;
+        pt.[Id],
+        pt.[PublicId],
+        pt.[RowVersion],
+        CONVERT(VARCHAR(19), pt.[CreatedDatetime], 120) AS [CreatedDatetime],
+        CONVERT(VARCHAR(19), pt.[ModifiedDatetime], 120) AS [ModifiedDatetime],
+        pt.[Name],
+        pt.[Description],
+        pt.[DiscountPercent],
+        pt.[DiscountDays],
+        pt.[DueDays],
+        qt.[Active] AS [QboActive]
+    FROM dbo.[PaymentTerm] pt
+    LEFT JOIN qbo.[Term] qt ON qt.[QboId] = pt.[QboId] AND qt.[RealmId] = pt.[RealmId]
+    WHERE pt.[Name] = @Name;
 
     COMMIT TRANSACTION;
 END;

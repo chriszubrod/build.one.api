@@ -148,25 +148,27 @@ CREATE OR ALTER PROCEDURE ReadVendors
 AS
 BEGIN
     SELECT
-        [Id],
-        [PublicId],
-        [RowVersion],
-        CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
-        CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
-        [Name],
-        [Abbreviation],
-        [VendorTypeId],
-        [TaxpayerId],
-        [IsDraft],
-        [IsDeleted],
-        [IsContractLabor],
-        [Notes],
-        [HourlyRate],
-        [Markup],
-        [TrackCompliance]
-    FROM dbo.[Vendor]
-    WHERE [IsDeleted] = 0
-    ORDER BY [Name] ASC;
+        v.[Id],
+        v.[PublicId],
+        v.[RowVersion],
+        CONVERT(VARCHAR(19), v.[CreatedDatetime], 120) AS [CreatedDatetime],
+        CONVERT(VARCHAR(19), v.[ModifiedDatetime], 120) AS [ModifiedDatetime],
+        v.[Name],
+        v.[Abbreviation],
+        v.[VendorTypeId],
+        v.[TaxpayerId],
+        v.[IsDraft],
+        v.[IsDeleted],
+        v.[IsContractLabor],
+        v.[Notes],
+        v.[HourlyRate],
+        v.[Markup],
+        v.[TrackCompliance],
+        qv.[Active] AS [QboActive]
+    FROM dbo.[Vendor] v
+    LEFT JOIN qbo.[Vendor] qv ON qv.[QboId] = v.[QboId] AND qv.[RealmId] = v.[RealmId]
+    WHERE v.[IsDeleted] = 0
+    ORDER BY v.[Name] ASC;
 END;
 GO
 
@@ -177,24 +179,26 @@ CREATE OR ALTER PROCEDURE ReadVendorById
 AS
 BEGIN
     SELECT
-        [Id],
-        [PublicId],
-        [RowVersion],
-        CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
-        CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
-        [Name],
-        [Abbreviation],
-        [VendorTypeId],
-        [TaxpayerId],
-        [IsDraft],
-        [IsDeleted],
-        [IsContractLabor],
-        [Notes],
-        [HourlyRate],
-        [Markup],
-        [TrackCompliance]
-    FROM dbo.[Vendor]
-    WHERE [Id] = @Id AND [IsDeleted] = 0;
+        v.[Id],
+        v.[PublicId],
+        v.[RowVersion],
+        CONVERT(VARCHAR(19), v.[CreatedDatetime], 120) AS [CreatedDatetime],
+        CONVERT(VARCHAR(19), v.[ModifiedDatetime], 120) AS [ModifiedDatetime],
+        v.[Name],
+        v.[Abbreviation],
+        v.[VendorTypeId],
+        v.[TaxpayerId],
+        v.[IsDraft],
+        v.[IsDeleted],
+        v.[IsContractLabor],
+        v.[Notes],
+        v.[HourlyRate],
+        v.[Markup],
+        v.[TrackCompliance],
+        qv.[Active] AS [QboActive]
+    FROM dbo.[Vendor] v
+    LEFT JOIN qbo.[Vendor] qv ON qv.[QboId] = v.[QboId] AND qv.[RealmId] = v.[RealmId]
+    WHERE v.[Id] = @Id AND v.[IsDeleted] = 0;
 END;
 GO
 
@@ -205,24 +209,26 @@ CREATE OR ALTER PROCEDURE ReadVendorByPublicId
 AS
 BEGIN
     SELECT
-        [Id],
-        [PublicId],
-        [RowVersion],
-        CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
-        CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
-        [Name],
-        [Abbreviation],
-        [VendorTypeId],
-        [TaxpayerId],
-        [IsDraft],
-        [IsDeleted],
-        [IsContractLabor],
-        [Notes],
-        [HourlyRate],
-        [Markup],
-        [TrackCompliance]
-    FROM dbo.[Vendor]
-    WHERE [PublicId] = @PublicId AND [IsDeleted] = 0;
+        v.[Id],
+        v.[PublicId],
+        v.[RowVersion],
+        CONVERT(VARCHAR(19), v.[CreatedDatetime], 120) AS [CreatedDatetime],
+        CONVERT(VARCHAR(19), v.[ModifiedDatetime], 120) AS [ModifiedDatetime],
+        v.[Name],
+        v.[Abbreviation],
+        v.[VendorTypeId],
+        v.[TaxpayerId],
+        v.[IsDraft],
+        v.[IsDeleted],
+        v.[IsContractLabor],
+        v.[Notes],
+        v.[HourlyRate],
+        v.[Markup],
+        v.[TrackCompliance],
+        qv.[Active] AS [QboActive]
+    FROM dbo.[Vendor] v
+    LEFT JOIN qbo.[Vendor] qv ON qv.[QboId] = v.[QboId] AND qv.[RealmId] = v.[RealmId]
+    WHERE v.[PublicId] = @PublicId AND v.[IsDeleted] = 0;
 END;
 GO
 
@@ -233,24 +239,26 @@ CREATE OR ALTER PROCEDURE ReadVendorByName
 AS
 BEGIN
     SELECT TOP 1
-        [Id],
-        [PublicId],
-        [RowVersion],
-        CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
-        CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
-        [Name],
-        [Abbreviation],
-        [VendorTypeId],
-        [TaxpayerId],
-        [IsDraft],
-        [IsDeleted],
-        [IsContractLabor],
-        [Notes],
-        [HourlyRate],
-        [Markup],
-        [TrackCompliance]
-    FROM dbo.[Vendor]
-    WHERE [Name] = @Name AND [IsDeleted] = 0;
+        v.[Id],
+        v.[PublicId],
+        v.[RowVersion],
+        CONVERT(VARCHAR(19), v.[CreatedDatetime], 120) AS [CreatedDatetime],
+        CONVERT(VARCHAR(19), v.[ModifiedDatetime], 120) AS [ModifiedDatetime],
+        v.[Name],
+        v.[Abbreviation],
+        v.[VendorTypeId],
+        v.[TaxpayerId],
+        v.[IsDraft],
+        v.[IsDeleted],
+        v.[IsContractLabor],
+        v.[Notes],
+        v.[HourlyRate],
+        v.[Markup],
+        v.[TrackCompliance],
+        qv.[Active] AS [QboActive]
+    FROM dbo.[Vendor] v
+    LEFT JOIN qbo.[Vendor] qv ON qv.[QboId] = v.[QboId] AND qv.[RealmId] = v.[RealmId]
+    WHERE v.[Name] = @Name AND v.[IsDeleted] = 0;
 END;
 GO
 

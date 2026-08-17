@@ -23,12 +23,7 @@ from integrations.box.base.retry import RetryPolicy, compute_backoff_seconds
 from integrations.box.outbox.business.model import BoxOutbox
 from integrations.box.outbox.business.service import KIND_UPDATE_EXCEL, KIND_UPLOAD_FILE
 from integrations.box.outbox.persistence.repo import BoxOutboxRepository
-from shared.authz.context import (
-    current_user_id,
-    current_company_id,
-    current_is_system_admin,
-    set_authz_context,
-)
+from shared.authz.context import system_authz
 
 logger = get_box_logger(__name__)
 
@@ -237,18 +232,12 @@ class BoxOutboxWorker:
 
     def _process(self, row: BoxOutbox) -> str:
         # Drain workers process rows that span all users by design — assert
-        # system intent at the boundary so callers (HTTP endpoint, in-process
-        # scheduler, REPL) don't have to remember `set_authz_context`. Prior
-        # context is restored on exit so we don't leak system-admin into
-        # whatever ran us.
-        prior_uid = current_user_id.get()
-        prior_cid = current_company_id.get()
-        prior_isa = current_is_system_admin.get()
-        set_authz_context(user_id=None, company_id=None, is_system_admin=True)
-        try:
+        # system intent at the boundary via the shared `system_authz()`
+        # contextmanager so callers (HTTP endpoint, in-process scheduler,
+        # REPL) don't hand-roll save/restore. Prior context is restored on
+        # exit so we don't leak system-admin into whatever ran us.
+        with system_authz():
             return self._process_inner(row)
-        finally:
-            set_authz_context(user_id=prior_uid, company_id=prior_cid, is_system_admin=prior_isa)
 
     def _process_inner(self, row: BoxOutbox) -> str:
         """Process one claimed row. Returns 'done' | 'failed' | 'dead_lettered'."""

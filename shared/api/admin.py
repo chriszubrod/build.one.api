@@ -14,6 +14,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Path, Query, stat
 
 # Local Imports
 import config
+from integrations.intuit.qbo.base.locking import qbo_app_lock
 from shared.authz import set_authz_context
 
 logger = logging.getLogger(__name__)
@@ -419,8 +420,23 @@ async def sync_qbo_router(
     sync_fn = _qbo_sync_fn(entity)
     if not attachments and entity in _QBO_ENTITIES_WITH_ATTACHMENTS:
         sync_fn = partial(sync_fn, sync_attachments=False)
-    envelope = await _timed(f"sync.qbo.{entity}", sync_fn)
+    lock_resource = f"qbo_sync:{entity}"
+
+    def _locked_sync_fn():
+        with qbo_app_lock(lock_resource, timeout_ms=0) as got_lock:
+            if not got_lock:
+                return {"skipped": True}
+            return sync_fn()
+
+    envelope = await _timed(f"sync.qbo.{entity}", _locked_sync_fn)
     inner = envelope.get("result")
+    if isinstance(inner, dict) and inner.get("skipped"):
+        logger.info("qbo.sync.skipped_lock_busy entity=%s", entity)
+        return {
+            "status": "skipped",
+            "job": f"sync.qbo.{entity}",
+            "reason": "lock_busy",
+        }
     inner_status = inner.get("status_code") if isinstance(inner, dict) else None
     if isinstance(inner_status, int) and inner_status >= 400:
         detail_result = inner.get("result") if isinstance(inner, dict) else None

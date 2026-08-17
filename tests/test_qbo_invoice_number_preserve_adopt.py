@@ -182,6 +182,7 @@ def test_mapping_lost_renamed_invoice_readopts_via_fingerprint_no_phantom():
     connector.invoice_service.repo.read_by_invoice_number_and_project_id.return_value = None
     # Fingerprint scan operates over the preloaded cache (production batch path).
     connector._invoice_cache = {renamed.id: renamed}
+    connector._caches_preloaded = True
     # The renamed invoice is unmapped at the HEADER (mapping-lost signature) but retains
     # QBO LINE provenance (its InvoiceLineItemInvoiceLine mapping survives), which is what
     # marks it a mapping-lost QBO invoice (not a manual one).
@@ -226,6 +227,7 @@ def test_fingerprint_mismatch_does_not_adopt_creates_new():
     connector.project_service.read_by_public_id.return_value = SimpleNamespace(id=200)
     connector.invoice_service.repo.read_by_invoice_number_and_project_id.return_value = None
     connector._invoice_cache = {other.id: other}
+    connector._caches_preloaded = True
     connector.mapping_repo.read_by_invoice_id.return_value = None
     connector.invoice_service.create.return_value = _make_invoice(
         invoice_number="INV-100", inv_id=1058, public_id="inv-pub-1058"
@@ -253,6 +255,7 @@ def test_fingerprint_candidate_mapped_to_other_qbo_is_not_adopted():
     connector.project_service.read_by_public_id.return_value = SimpleNamespace(id=200)
     connector.invoice_service.repo.read_by_invoice_number_and_project_id.return_value = None
     connector._invoice_cache = {other.id: other}
+    connector._caches_preloaded = True
 
     def _read_by_invoice_id(invoice_id):
         # The fingerprint candidate is bound to a DIFFERENT QboInvoice; the freshly
@@ -288,6 +291,7 @@ def test_fingerprint_match_without_qbo_provenance_is_not_adopted():
     connector.project_service.read_by_public_id.return_value = SimpleNamespace(id=200)
     connector.invoice_service.repo.read_by_invoice_number_and_project_id.return_value = None
     connector._invoice_cache = {manual.id: manual}
+    connector._caches_preloaded = True
     connector.mapping_repo.read_by_invoice_id.return_value = None  # unmapped
     # No line-mapping provenance -> manual invoice.
     connector.line_mapping_repo.read_by_invoice_line_item_id.return_value = None

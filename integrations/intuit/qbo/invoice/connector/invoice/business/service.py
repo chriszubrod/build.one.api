@@ -15,10 +15,12 @@ from integrations.intuit.qbo.customer.connector.project.persistence.repo import 
 from entities.invoice.business.service import InvoiceService
 from entities.invoice.business.model import Invoice
 from entities.project.business.service import ProjectService
+from integrations.intuit.qbo.base.cache_lookup import cached_or_read
 from integrations.intuit.qbo.base.field_ownership import (
     preserve_human_edited_ref,
     qbo_ref_or_placeholder,
 )
+from shared.database import DatabaseConstraintError
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +53,7 @@ class InvoiceInvoiceConnector:
         self._line_mapping_cache: dict = {}     # {qbo_invoice_line_id: InvoiceLineItemInvoiceLine}
         self._invoice_cache: dict = {}          # {invoice_id: Invoice}
         self._line_item_cache: dict = {}        # {invoice_line_item_id: InvoiceLineItem}
+        self._caches_preloaded: bool = False
 
     def preload_caches(self) -> None:
         """
@@ -80,6 +83,8 @@ class InvoiceInvoiceConnector:
         self._line_item_cache = {item.id: item for item in all_line_items}
         logger.info(f"Pre-loaded {len(self._line_item_cache)} InvoiceLineItem records")
 
+        self._caches_preloaded = True
+
     def sync_from_qbo_invoice(self, qbo_invoice: QboInvoice, qbo_invoice_lines: List[QboInvoiceLine]) -> Invoice:
         """
         Sync data from QboInvoice to Invoice module.
@@ -108,15 +113,18 @@ class InvoiceInvoiceConnector:
         memo = qbo_invoice.private_note
         total_amount = qbo_invoice.total_amt
         
-        # Check for existing mapping (use cache if populated, else fall back to DB)
-        if self._invoice_mapping_cache:
-            mapping = self._invoice_mapping_cache.get(qbo_invoice.id)
-        else:
-            mapping = self.mapping_repo.read_by_qbo_invoice_id(qbo_invoice.id)
-        
+        # Check for existing mapping (use cache when pre-loaded, else fall back to DB)
+        mapping = cached_or_read(
+            self._caches_preloaded, self._invoice_mapping_cache, qbo_invoice.id,
+            self.mapping_repo.read_by_qbo_invoice_id,
+        )
+
         if mapping:
             # Found existing mapping - use cached Invoice record to avoid DB read
-            invoice = self._invoice_cache.get(mapping.invoice_id) if self._invoice_cache else self.invoice_service.read_by_id(mapping.invoice_id)
+            invoice = cached_or_read(
+                self._caches_preloaded, self._invoice_cache, mapping.invoice_id,
+                self.invoice_service.read_by_id,
+            )
             if invoice:
                 logger.info(f"Updating existing Invoice {invoice.id} from QboInvoice {qbo_invoice.id}")
 
@@ -312,7 +320,7 @@ class InvoiceInvoiceConnector:
                 sync_token=getattr(qbo_invoice, "sync_token", None),
             )
             logger.info(f"Created mapping: Invoice {invoice_id} <-> QboInvoice {qbo_invoice.id}")
-        except ValueError as e:
+        except (ValueError, DatabaseConstraintError) as e:
             # Do NOT leave an orphan invoice with no mapping — that is exactly how the phantom -N
             # invoices accrued. Roll back the just-created (still line-less) header and re-raise so
             # the caller's watermark holds and the invoice retries cleanly next sync.
@@ -371,7 +379,7 @@ class InvoiceInvoiceConnector:
         rather than risk a wrong QBO-to-QBO bind.
 
         Candidate source is the preloaded _invoice_cache (production batch path) or a full
-        read when unpopulated. Pure in-memory scan; the per-candidate mapping read only
+        read when caches_preloaded=False. Pure in-memory scan; the per-candidate mapping read only
         runs for the tiny subset that already passed the fingerprint filter.
         """
         qbo_date = str(invoice_date or "").strip()[:10]
@@ -382,7 +390,7 @@ class InvoiceInvoiceConnector:
 
         candidates = (
             list(self._invoice_cache.values())
-            if self._invoice_cache
+            if self._caches_preloaded
             else self.invoice_service.read_all()
         )
         matches = []
@@ -548,6 +556,7 @@ class InvoiceInvoiceConnector:
         line_connector = InvoiceLineItemConnector(
             line_mapping_cache=self._line_mapping_cache,
             line_item_cache=self._line_item_cache,
+            caches_preloaded=self._caches_preloaded,
         )
 
         for qbo_line in qbo_invoice_lines:
@@ -583,9 +592,9 @@ class InvoiceInvoiceConnector:
         Raises:
             ValueError: If mapping already exists or validation fails
         """
-        # Validate 1:1 constraints only when the cache isn't populated.
-        # When the cache is pre-loaded, we already checked it before calling create_mapping.
-        if not self._invoice_mapping_cache:
+        # Validate 1:1 constraints only when caches_preloaded is False.
+        # When caches_preloaded=True, we already checked before calling create_mapping.
+        if not self._caches_preloaded:
             existing_by_invoice = self.mapping_repo.read_by_invoice_id(invoice_id)
             if existing_by_invoice:
                 raise ValueError(

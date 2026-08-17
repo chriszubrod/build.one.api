@@ -12,7 +12,9 @@ from integrations.intuit.qbo.invoice.business.model import QboInvoiceLine
 from entities.invoice_line_item.business.service import InvoiceLineItemService
 from entities.invoice_line_item.business.model import InvoiceLineItem
 from entities.invoice.business.service import InvoiceService
+from integrations.intuit.qbo.base.cache_lookup import cached_or_read
 from integrations.intuit.qbo.base.identity_drift import stamp_line_identity_or_warn
+from shared.database import DatabaseConstraintError
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +31,7 @@ class InvoiceLineItemConnector:
         invoice_service: Optional[InvoiceService] = None,
         line_mapping_cache: Optional[dict] = None,
         line_item_cache: Optional[dict] = None,
+        caches_preloaded: bool = False,
     ):
         """Initialize the InvoiceLineItemConnector."""
         self.mapping_repo = mapping_repo or InvoiceLineItemInvoiceLineRepository()
@@ -38,6 +41,7 @@ class InvoiceLineItemConnector:
         self._line_mapping_cache: dict = line_mapping_cache if line_mapping_cache is not None else {}
         # Shared cache from the parent connector: {invoice_line_item_id: InvoiceLineItem}
         self._line_item_cache: dict = line_item_cache if line_item_cache is not None else {}
+        self._caches_preloaded = caches_preloaded
 
     def sync_from_qbo_invoice_line(
         self,
@@ -73,11 +77,11 @@ class InvoiceLineItemConnector:
         if qbo_invoice_line.unit_price is not None and qbo_invoice_line.qty is not None:
             price = qbo_invoice_line.unit_price
         
-        # Check for existing mapping (use cache if populated, else fall back to DB)
-        if self._line_mapping_cache:
-            mapping = self._line_mapping_cache.get(qbo_invoice_line.id)
-        else:
-            mapping = self.mapping_repo.read_by_qbo_invoice_line_id(qbo_invoice_line.id)
+        # Check for existing mapping (use cache when pre-loaded, else fall back to DB)
+        mapping = cached_or_read(
+            self._caches_preloaded, self._line_mapping_cache, qbo_invoice_line.id,
+            self.mapping_repo.read_by_qbo_invoice_line_id,
+        )
 
         if not mapping:
             # Shape B fallback (task #17): content-fingerprint match when QBO
@@ -99,14 +103,24 @@ class InvoiceLineItemConnector:
                         invoice_line_item_id=int(orphan.id),
                         qbo_invoice_line_id=qbo_invoice_line.id,
                     )
-                except Exception as error:
+                except (ValueError, DatabaseConstraintError) as error:
+                    # U-247: do NOT fall through to "Create new InvoiceLineItem" below on a
+                    # failed adopt — the orphan is a real, already-existing InvoiceLineItem;
+                    # minting a NEW one here would be the exact self-amplifying duplication
+                    # this unit exists to close. Re-raise so the caller's per-line catch
+                    # (InvoiceInvoiceConnector._sync_line_items) logs and retries this QBO
+                    # line on the next pass instead of duplicating it on this one.
                     logger.warning(
                         f"Could not adopt orphaned InvoiceLineItem {orphan.id}: {error}"
                     )
+                    raise
 
         if mapping:
             # Found existing mapping - use cached record to avoid DB read
-            line_item = self._line_item_cache.get(mapping.invoice_line_item_id) if self._line_item_cache else self.invoice_line_item_service.read_by_id(mapping.invoice_line_item_id)
+            line_item = cached_or_read(
+                self._caches_preloaded, self._line_item_cache, mapping.invoice_line_item_id,
+                self.invoice_line_item_service.read_by_id,
+            )
             if line_item:
                 logger.info(f"Updating existing InvoiceLineItem {line_item.id} from QboInvoiceLine {qbo_invoice_line.id}")
 
@@ -191,8 +205,25 @@ class InvoiceLineItemConnector:
         try:
             mapping = self.create_mapping(invoice_line_item_id=line_item_id, qbo_invoice_line_id=qbo_invoice_line.id)
             logger.info(f"Created mapping: InvoiceLineItem {line_item_id} <-> QboInvoiceLine {qbo_invoice_line.id}")
-        except ValueError as e:
-            logger.warning(f"Could not create mapping: {e}")
+        except (ValueError, DatabaseConstraintError) as e:
+            # Compensating delete (U-247): an ILI created above but never mapped is an
+            # unmapped-but-Manual phantom row. Delete it and re-raise so the caller's
+            # per-line catch (InvoiceInvoiceConnector._sync_line_items) logs and moves on
+            # to the next line — this connector has no header-level compensating rollback
+            # today (see that method's own "U-006" note on why NOT to add one casually);
+            # this stays scoped to the single orphaned line, it does not touch the invoice
+            # header.
+            logger.warning(f"Could not create mapping for InvoiceLineItem {line_item_id}: {e}")
+            try:
+                self.invoice_line_item_service.repo.delete_by_id(line_item_id)
+            except Exception as cleanup_error:
+                logger.error(
+                    f"Compensating delete failed for orphan InvoiceLineItem {line_item_id}: {cleanup_error}"
+                )
+            else:
+                if self._line_item_cache is not None:
+                    self._line_item_cache.pop(line_item.id, None)
+            raise
 
         # U-238b: dbo line identity dual-write (create+update pairing for U-238c).
         # Mapping is already committed — a stamp failure must NOT roll back the line item.
@@ -231,26 +262,45 @@ class InvoiceLineItemConnector:
         amount,
     ):
         """
-        Find at most one unmapped InvoiceLineItem on this invoice whose
-        content matches.
+        Find an unmapped Manual InvoiceLineItem on this invoice whose content matches.
 
-        Only considers lines with `source_type='Manual'`. Bill- and
-        Expense-sourced invoice lines are matched via their source FKs
-        elsewhere; attempting to adopt them here would break the source
-        linkage.
+        Only considers lines with `source_type='Manual'`. Bill- and Expense-sourced
+        invoice lines are matched via their source FKs elsewhere; attempting to adopt
+        them here would break the source linkage.
 
-        Uses (description, amount) as the fingerprint — qty/rate are less
-        reliable for invoice lines because QBO can normalize them during
-        entry. Returns None on zero or ambiguous matches.
+        Uses (description, amount) as the fingerprint — qty/rate are less reliable for
+        invoice lines because QBO can normalize them during entry. Returns None when no
+        match; when multiple unmapped candidates share the fingerprint, deterministically
+        adopts the lowest-id candidate (U-247 — returning None on ambiguity caused
+        self-amplifying duplicate rows).
+
+        Reads from the connector's pre-loaded ``_line_item_cache`` and
+        ``_line_mapping_cache`` when ``caches_preloaded=True`` (U-247 — avoids O(n^2) DB
+        round trips on large invoices); falls back to DB reads otherwise.
         """
         from entities.invoice_line_item.business.service import InvoiceLineItemService
 
-        existing = InvoiceLineItemService().read_by_invoice_id(invoice_id)
+        if self._caches_preloaded:
+            existing = [
+                li
+                for li in self._line_item_cache.values()
+                if getattr(li, "invoice_id", None) == invoice_id
+            ]
+            mapped_line_item_ids = {
+                m.invoice_line_item_id for m in self._line_mapping_cache.values()
+            }
+        else:
+            existing = InvoiceLineItemService().read_by_invoice_id(invoice_id)
+            mapped_line_item_ids = None
+
         unmapped = []
         for li in existing:
             if getattr(li, "source_type", None) != "Manual":
                 continue
-            if self.mapping_repo.read_by_invoice_line_item_id(int(li.id)):
+            if mapped_line_item_ids is not None:
+                if int(li.id) in mapped_line_item_ids:
+                    continue
+            elif self.mapping_repo.read_by_invoice_line_item_id(int(li.id)):
                 continue
             unmapped.append(li)
 
@@ -268,14 +318,17 @@ class InvoiceLineItemConnector:
             if candidate_fp == target:
                 matches.append(candidate)
 
+        if len(matches) == 0:
+            return None
         if len(matches) == 1:
             return matches[0]
-        if len(matches) > 1:
-            logger.info(
-                f"Content-fingerprint match ambiguous: {len(matches)} unmapped "
-                f"Manual InvoiceLineItems have identical fingerprint; creating new"
-            )
-        return None
+        adopted = min(matches, key=lambda li: int(li.id))
+        logger.info(
+            f"Content-fingerprint match ambiguous: {len(matches)} unmapped "
+            f"Manual InvoiceLineItems have identical fingerprint; adopting lowest id "
+            f"{adopted.id}"
+        )
+        return adopted
 
     def create_mapping(self, invoice_line_item_id: int, qbo_invoice_line_id: int) -> InvoiceLineItemInvoiceLine:
         """
@@ -291,9 +344,9 @@ class InvoiceLineItemConnector:
         Raises:
             ValueError: If mapping already exists or validation fails
         """
-        # Validate 1:1 constraints only when the cache isn't populated.
-        # When the cache is pre-loaded, we already checked it before calling create_mapping.
-        if not self._line_mapping_cache:
+        # Validate 1:1 constraints only when caches_preloaded is False.
+        # When caches_preloaded=True, we already checked before calling create_mapping.
+        if not self._caches_preloaded:
             existing_by_line_item = self.mapping_repo.read_by_invoice_line_item_id(invoice_line_item_id)
             if existing_by_line_item:
                 raise ValueError(

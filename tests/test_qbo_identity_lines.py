@@ -331,9 +331,531 @@ def test_invoice_sync_from_qbo_invoice_forwards_realm_id_to_line_connector():
     ) as mock_line_connector_cls:
         connector.sync_from_qbo_invoice(qbo_invoice, [qbo_line])
 
+    mock_line_connector_cls.assert_called_once_with(
+        line_mapping_cache=connector._line_mapping_cache,
+        line_item_cache=connector._line_item_cache,
+        caches_preloaded=False,
+    )
     mock_line_connector_cls.return_value.sync_from_qbo_invoice_line.assert_called_once_with(
         invoice.id,
         invoice.public_id,
         qbo_line,
         "realm-forward-test",
     )
+
+
+def test_invoice_invoice_connector_fresh_instance_caches_not_preloaded():
+    from integrations.intuit.qbo.invoice.connector.invoice.business.service import (
+        InvoiceInvoiceConnector,
+    )
+
+    connector = InvoiceInvoiceConnector()
+    assert connector._caches_preloaded is False
+
+
+def test_invoice_invoice_connector_preload_caches_sets_flag():
+    from integrations.intuit.qbo.invoice.connector.invoice.business.service import (
+        InvoiceInvoiceConnector,
+    )
+
+    connector = InvoiceInvoiceConnector(
+        mapping_repo=MagicMock(read_all=MagicMock(return_value=[])),
+        line_mapping_repo=MagicMock(read_all=MagicMock(return_value=[])),
+        invoice_service=MagicMock(read_all=MagicMock(return_value=[])),
+    )
+    assert connector._caches_preloaded is False
+
+    with patch(
+        "entities.invoice_line_item.business.service.InvoiceLineItemService"
+    ) as mock_li_svc_cls:
+        mock_li_svc_cls.return_value.read_all.return_value = []
+        connector.preload_caches()
+
+    assert connector._caches_preloaded is True
+
+
+# ---------------------------------------------------------------------------
+# U-247: fingerprint ambiguity, cache-vs-DB, compensating delete
+# ---------------------------------------------------------------------------
+
+
+def test_find_and_match_manual_by_fingerprint_adopts_lowest_id_on_ambiguity():
+    """Mutation-test: reverting sort-and-pick-lowest back to return None must fail."""
+    from integrations.intuit.qbo.invoice.connector.invoice_line_item.business.service import (
+        InvoiceLineItemConnector,
+    )
+
+    li_low = SimpleNamespace(
+        id=100,
+        invoice_id=7,
+        source_type="Manual",
+        description="Work",
+        amount=Decimal("50"),
+    )
+    li_high = SimpleNamespace(
+        id=200,
+        invoice_id=7,
+        source_type="Manual",
+        description="Work",
+        amount=Decimal("50"),
+    )
+    li_other_invoice = SimpleNamespace(
+        id=1,
+        invoice_id=99,
+        source_type="Manual",
+        description="Work",
+        amount=Decimal("50"),
+    )
+
+    mapping_repo = MagicMock()
+    invoice_line_item_service = MagicMock()
+
+    connector = InvoiceLineItemConnector(
+        mapping_repo=mapping_repo,
+        invoice_line_item_service=invoice_line_item_service,
+        line_item_cache={100: li_low, 200: li_high, 1: li_other_invoice},
+        line_mapping_cache={
+            999: SimpleNamespace(invoice_line_item_id=999, qbo_invoice_line_id=999),
+        },
+        caches_preloaded=True,
+    )
+
+    with patch("entities.invoice_line_item.business.service.InvoiceLineItemService") as mock_svc_cls:
+        result = connector._find_and_match_manual_by_fingerprint(
+            invoice_id=7,
+            description="Work",
+            amount=Decimal("50"),
+        )
+
+    assert result is not None
+    assert int(result.id) == 100
+    mock_svc_cls.assert_not_called()
+    mapping_repo.read_by_invoice_line_item_id.assert_not_called()
+
+
+def test_find_and_match_manual_by_fingerprint_uses_cache_not_db():
+    from integrations.intuit.qbo.invoice.connector.invoice_line_item.business.service import (
+        InvoiceLineItemConnector,
+    )
+
+    li = SimpleNamespace(
+        id=42,
+        invoice_id=7,
+        source_type="Manual",
+        description="Cached",
+        amount=Decimal("10"),
+    )
+    mapped_li = SimpleNamespace(
+        id=99,
+        invoice_id=7,
+        source_type="Manual",
+        description="Cached",
+        amount=Decimal("10"),
+    )
+    mapping = SimpleNamespace(invoice_line_item_id=99, qbo_invoice_line_id=1)
+
+    mapping_repo = MagicMock()
+    invoice_line_item_service = MagicMock()
+
+    connector = InvoiceLineItemConnector(
+        mapping_repo=mapping_repo,
+        invoice_line_item_service=invoice_line_item_service,
+        line_item_cache={42: li, 99: mapped_li},
+        line_mapping_cache={1: mapping},
+        caches_preloaded=True,
+    )
+
+    with patch("entities.invoice_line_item.business.service.InvoiceLineItemService") as mock_svc_cls:
+        result = connector._find_and_match_manual_by_fingerprint(
+            invoice_id=7,
+            description="Cached",
+            amount=Decimal("10"),
+        )
+
+    assert result is li
+    mock_svc_cls.assert_not_called()
+    mapping_repo.read_by_invoice_line_item_id.assert_not_called()
+
+
+def test_find_and_match_manual_by_fingerprint_falls_back_to_db_when_cache_empty():
+    from integrations.intuit.qbo.invoice.connector.invoice_line_item.business.service import (
+        InvoiceLineItemConnector,
+    )
+
+    li = SimpleNamespace(
+        id=42,
+        invoice_id=7,
+        source_type="Manual",
+        description="DB",
+        amount=Decimal("10"),
+    )
+
+    mapping_repo = MagicMock()
+    mapping_repo.read_by_invoice_line_item_id.return_value = None
+    invoice_line_item_service = MagicMock()
+
+    connector = InvoiceLineItemConnector(
+        mapping_repo=mapping_repo,
+        invoice_line_item_service=invoice_line_item_service,
+    )
+
+    with patch("entities.invoice_line_item.business.service.InvoiceLineItemService") as mock_svc_cls:
+        mock_svc_cls.return_value.read_by_invoice_id.return_value = [li]
+        result = connector._find_and_match_manual_by_fingerprint(
+            invoice_id=7,
+            description="DB",
+            amount=Decimal("10"),
+        )
+
+    assert result is li
+    mock_svc_cls.return_value.read_by_invoice_id.assert_called_once_with(7)
+    mapping_repo.read_by_invoice_line_item_id.assert_called_once_with(42)
+
+
+def test_find_and_match_manual_by_fingerprint_ignores_partial_cache_without_preload():
+    """Regression: non-empty but incomplete cache must not block DB fallback (outbox path)."""
+    from integrations.intuit.qbo.invoice.connector.invoice_line_item.business.service import (
+        InvoiceLineItemConnector,
+    )
+
+    partial_cached = SimpleNamespace(
+        id=10,
+        invoice_id=7,
+        source_type="Manual",
+        description="Other",
+        amount=Decimal("5"),
+    )
+    orphan = SimpleNamespace(
+        id=42,
+        invoice_id=7,
+        source_type="Manual",
+        description="Orphan",
+        amount=Decimal("10"),
+    )
+
+    mapping_repo = MagicMock()
+    mapping_repo.read_by_invoice_line_item_id.return_value = None
+    invoice_line_item_service = MagicMock()
+
+    connector = InvoiceLineItemConnector(
+        mapping_repo=mapping_repo,
+        invoice_line_item_service=invoice_line_item_service,
+        line_item_cache={10: partial_cached},
+    )
+
+    with patch("entities.invoice_line_item.business.service.InvoiceLineItemService") as mock_svc_cls:
+        mock_svc_cls.return_value.read_by_invoice_id.return_value = [partial_cached, orphan]
+        result = connector._find_and_match_manual_by_fingerprint(
+            invoice_id=7,
+            description="Orphan",
+            amount=Decimal("10"),
+        )
+
+    assert result is orphan
+    mock_svc_cls.return_value.read_by_invoice_id.assert_called_once_with(7)
+    mapping_repo.read_by_invoice_line_item_id.assert_any_call(42)
+
+
+def test_sync_from_qbo_invoice_line_ignores_partial_cache_without_preload():
+    """Regression: partial cache must not skip DB reads or delete valid mappings (outbox path)."""
+    from integrations.intuit.qbo.invoice.connector.invoice_line_item.business.service import (
+        InvoiceLineItemConnector,
+    )
+
+    unrelated_line = SimpleNamespace(
+        id=10,
+        public_id="ili-unrelated",
+        invoice_id=7,
+        source_type="Manual",
+        description="Other",
+        amount=Decimal("5"),
+        row_version="rv1",
+    )
+    real_line = SimpleNamespace(
+        id=42,
+        public_id="ili-real",
+        invoice_id=7,
+        source_type="Manual",
+        description="Service",
+        amount=Decimal("100"),
+        row_version="rv42",
+    )
+    real_mapping = SimpleNamespace(
+        id=99,
+        invoice_line_item_id=42,
+        qbo_invoice_line_id=55,
+    )
+    unrelated_mapping = SimpleNamespace(
+        id=88,
+        invoice_line_item_id=10,
+        qbo_invoice_line_id=11,
+    )
+
+    mapping_repo = MagicMock()
+    mapping_repo.read_by_qbo_invoice_line_id.return_value = real_mapping
+
+    invoice_line_item_service = MagicMock()
+    invoice_line_item_service.read_by_id.return_value = real_line
+    updated_line = SimpleNamespace(**vars(real_line))
+    invoice_line_item_service.update_by_public_id.return_value = updated_line
+    invoice_line_item_service.repo = MagicMock()
+
+    connector = InvoiceLineItemConnector(
+        mapping_repo=mapping_repo,
+        invoice_line_item_service=invoice_line_item_service,
+        line_item_cache={10: unrelated_line},
+        line_mapping_cache={11: unrelated_mapping},
+        caches_preloaded=False,
+    )
+
+    qbo_line = SimpleNamespace(
+        id=55,
+        qbo_line_id="QBO-INV-LINE-55",
+        description="Service",
+        amount=Decimal("100"),
+        unit_price=None,
+        qty=None,
+    )
+
+    with patch(
+        "integrations.intuit.qbo.invoice.connector.invoice_line_item.business.service.stamp_line_identity_or_warn"
+    ):
+        result = connector.sync_from_qbo_invoice_line(100, "inv-pub", qbo_line)
+
+    mapping_repo.read_by_qbo_invoice_line_id.assert_called_once_with(55)
+    invoice_line_item_service.read_by_id.assert_called_once_with(42)
+    mapping_repo.delete_by_id.assert_not_called()
+    invoice_line_item_service.create.assert_not_called()
+    assert result is updated_line
+
+
+def test_sync_from_qbo_invoice_line_compensating_delete_on_mapping_failure():
+    from integrations.intuit.qbo.invoice.connector.invoice_line_item.business.service import (
+        InvoiceLineItemConnector,
+    )
+
+    mapping_repo = MagicMock()
+    mapping_repo.read_by_qbo_invoice_line_id.return_value = None
+
+    created_line = SimpleNamespace(id=999, public_id="ili-pub-999")
+    invoice_line_item_service = MagicMock()
+    invoice_line_item_service.create.return_value = created_line
+    invoice_line_item_service.repo = MagicMock()
+
+    connector = InvoiceLineItemConnector(
+        mapping_repo=mapping_repo,
+        invoice_line_item_service=invoice_line_item_service,
+        line_item_cache={},
+        line_mapping_cache={},
+    )
+    connector._find_and_match_manual_by_fingerprint = MagicMock(return_value=None)
+    connector.create_mapping = MagicMock(side_effect=ValueError("already mapped"))
+
+    qbo_line = SimpleNamespace(
+        id=1,
+        qbo_line_id="QBO-INV-LINE-ORPHAN",
+        description="Service",
+        amount=Decimal("100"),
+        unit_price=None,
+        qty=None,
+    )
+
+    with pytest.raises(ValueError, match="already mapped"):
+        connector.sync_from_qbo_invoice_line(100, "inv-pub", qbo_line)
+
+    invoice_line_item_service.repo.delete_by_id.assert_called_once_with(999)
+    invoice_line_item_service.repo.set_qbo_identity.assert_not_called()
+    assert 999 not in connector._line_item_cache
+
+
+def test_sync_from_qbo_invoice_line_compensating_delete_on_database_constraint_error():
+    from integrations.intuit.qbo.invoice.connector.invoice_line_item.business.service import (
+        InvoiceLineItemConnector,
+    )
+    from shared.database import DatabaseConstraintError
+    from shared.db_constraints import UNIQUE_VIOLATION
+
+    mapping_repo = MagicMock()
+    mapping_repo.read_by_qbo_invoice_line_id.return_value = None
+
+    created_line = SimpleNamespace(id=999, public_id="ili-pub-999")
+    invoice_line_item_service = MagicMock()
+    invoice_line_item_service.create.return_value = created_line
+    invoice_line_item_service.repo = MagicMock()
+
+    connector = InvoiceLineItemConnector(
+        mapping_repo=mapping_repo,
+        invoice_line_item_service=invoice_line_item_service,
+        line_item_cache={999: created_line},
+        line_mapping_cache={},
+    )
+    connector._find_and_match_manual_by_fingerprint = MagicMock(return_value=None)
+    connector.create_mapping = MagicMock(
+        side_effect=DatabaseConstraintError(UNIQUE_VIOLATION, "duplicate mapping")
+    )
+
+    qbo_line = SimpleNamespace(
+        id=1,
+        qbo_line_id="QBO-INV-LINE-ORPHAN",
+        description="Service",
+        amount=Decimal("100"),
+        unit_price=None,
+        qty=None,
+    )
+
+    with pytest.raises(DatabaseConstraintError):
+        connector.sync_from_qbo_invoice_line(100, "inv-pub", qbo_line)
+
+    invoice_line_item_service.repo.delete_by_id.assert_called_once_with(999)
+    assert 999 not in connector._line_item_cache
+
+
+def test_sync_from_qbo_invoice_line_compensating_delete_cleanup_failure_still_raises_original():
+    from integrations.intuit.qbo.invoice.connector.invoice_line_item.business.service import (
+        InvoiceLineItemConnector,
+    )
+
+    mapping_repo = MagicMock()
+    mapping_repo.read_by_qbo_invoice_line_id.return_value = None
+
+    created_line = SimpleNamespace(id=999, public_id="ili-pub-999")
+    invoice_line_item_service = MagicMock()
+    invoice_line_item_service.create.return_value = created_line
+    invoice_line_item_service.repo = MagicMock()
+    invoice_line_item_service.repo.delete_by_id.side_effect = RuntimeError("cleanup failed")
+
+    connector = InvoiceLineItemConnector(
+        mapping_repo=mapping_repo,
+        invoice_line_item_service=invoice_line_item_service,
+        line_item_cache={999: created_line},
+        line_mapping_cache={},
+    )
+    connector._find_and_match_manual_by_fingerprint = MagicMock(return_value=None)
+    connector.create_mapping = MagicMock(side_effect=ValueError("already mapped"))
+
+    qbo_line = SimpleNamespace(
+        id=1,
+        qbo_line_id="QBO-INV-LINE-ORPHAN",
+        description="Service",
+        amount=Decimal("100"),
+        unit_price=None,
+        qty=None,
+    )
+
+    with pytest.raises(ValueError, match="already mapped"):
+        connector.sync_from_qbo_invoice_line(100, "inv-pub", qbo_line)
+
+    invoice_line_item_service.repo.delete_by_id.assert_called_once_with(999)
+
+
+def test_sync_from_qbo_invoice_line_adopt_failure_does_not_fall_through_to_create():
+    from integrations.intuit.qbo.invoice.connector.invoice_line_item.business.service import (
+        InvoiceLineItemConnector,
+    )
+
+    orphan = SimpleNamespace(
+        id=42,
+        invoice_id=100,
+        source_type="Manual",
+        description="Service",
+        amount=Decimal("100"),
+    )
+
+    mapping_repo = MagicMock()
+    mapping_repo.read_by_qbo_invoice_line_id.return_value = None
+    invoice_line_item_service = MagicMock()
+
+    connector = InvoiceLineItemConnector(
+        mapping_repo=mapping_repo,
+        invoice_line_item_service=invoice_line_item_service,
+        line_item_cache={42: orphan},
+        line_mapping_cache={},
+    )
+    connector._find_and_match_manual_by_fingerprint = MagicMock(return_value=orphan)
+    connector.create_mapping = MagicMock(side_effect=ValueError("already mapped"))
+
+    qbo_line = SimpleNamespace(
+        id=1,
+        qbo_line_id="QBO-INV-LINE-ORPHAN",
+        description="Service",
+        amount=Decimal("100"),
+        unit_price=None,
+        qty=None,
+    )
+
+    with pytest.raises(ValueError, match="already mapped"):
+        connector.sync_from_qbo_invoice_line(100, "inv-pub", qbo_line)
+
+    invoice_line_item_service.create.assert_not_called()
+
+
+def _build_invoice_header_create_connector(created_invoice):
+    from integrations.intuit.qbo.invoice.connector.invoice.business.service import (
+        InvoiceInvoiceConnector,
+    )
+
+    mapping_repo = MagicMock()
+    mapping_repo.read_by_qbo_invoice_id.return_value = None
+
+    invoice_service = MagicMock()
+    invoice_service.create.return_value = created_invoice
+    invoice_service.repo.read_by_invoice_number_and_project_id.return_value = None
+
+    project_service = MagicMock()
+    project_service.read_by_public_id.return_value = SimpleNamespace(id=200)
+
+    connector = InvoiceInvoiceConnector(
+        mapping_repo=mapping_repo,
+        line_mapping_repo=MagicMock(),
+        invoice_service=invoice_service,
+        project_service=project_service,
+        qbo_customer_repo=MagicMock(),
+        customer_project_repo=MagicMock(),
+    )
+    connector._get_project_public_id = MagicMock(return_value="proj-pub-1")
+    connector._find_adoptable_invoice_by_fingerprint = MagicMock(return_value=None)
+    connector._sync_line_items = MagicMock()
+    return connector
+
+
+def _make_qbo_invoice_for_header_create():
+    return SimpleNamespace(
+        id=5001,
+        qbo_id="INV-QBO",
+        customer_ref_value="cust1",
+        realm_id="realm-1",
+        doc_number="INV-100",
+        txn_date="2026-07-01",
+        due_date="2026-07-15",
+        private_note="note",
+        total_amt=Decimal("100"),
+    )
+
+
+def test_sync_from_qbo_invoice_compensating_delete_on_mapping_failure():
+    created_invoice = SimpleNamespace(id=1057, public_id="inv-pub-1057")
+    connector = _build_invoice_header_create_connector(created_invoice)
+    connector.create_mapping = MagicMock(side_effect=ValueError("already mapped"))
+
+    with pytest.raises(ValueError, match="already mapped"):
+        connector.sync_from_qbo_invoice(_make_qbo_invoice_for_header_create(), [])
+
+    connector.invoice_service.delete_by_public_id.assert_called_once_with("inv-pub-1057")
+    connector._sync_line_items.assert_not_called()
+
+
+def test_sync_from_qbo_invoice_compensating_delete_on_database_constraint_error():
+    from shared.database import DatabaseConstraintError
+    from shared.db_constraints import UNIQUE_VIOLATION
+
+    created_invoice = SimpleNamespace(id=1057, public_id="inv-pub-1057")
+    connector = _build_invoice_header_create_connector(created_invoice)
+    connector.create_mapping = MagicMock(
+        side_effect=DatabaseConstraintError(UNIQUE_VIOLATION, "duplicate mapping")
+    )
+
+    with pytest.raises(DatabaseConstraintError):
+        connector.sync_from_qbo_invoice(_make_qbo_invoice_for_header_create(), [])
+
+    connector.invoice_service.delete_by_public_id.assert_called_once_with("inv-pub-1057")
+    connector._sync_line_items.assert_not_called()

@@ -13,6 +13,8 @@ from entities.bill_credit_line_item.business.model import BillCreditLineItem
 from entities.project.business.service import ProjectService
 from entities.sub_cost_code.business.service import SubCostCodeService
 from integrations.intuit.qbo.base.identity_drift import stamp_line_identity_or_warn
+from integrations.intuit.qbo.item.connector.sub_cost_code.persistence.repo import ItemSubCostCodeRepository
+from integrations.intuit.qbo.item.persistence.repo import QboItemRepository
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +27,19 @@ class VendorCreditLineItemConnector:
         self.project_service = ProjectService()
         self.sub_cost_code_service = SubCostCodeService()
         self.mapping_repo = VendorCreditLineItemBillCreditLineItemMappingRepository()
+        self.qbo_item_repo = QboItemRepository()
+        self.item_scc_repo = ItemSubCostCodeRepository()
+        # Run-scoped memo (U-229) — same shape as the sibling PurchaseLineExpenseLineItemConnector's
+        # _sub_cost_code_cache (purchase/connector/expense_line_item/business/service.py), which
+        # already ships this exact pattern in prod: keyed by qbo_item_ref_value, caches hits AND
+        # misses, never invalidated for the life of this instance. Accepted tradeoff, not a bug: a
+        # mid-run repoint or delete of the underlying ItemSubCostCode/SubCostCode (a rare,
+        # permission-gated admin action) can feed a stale id to a later line in the same run. That
+        # fails safe — a stale id pointing at a deleted SubCostCode trips the BillCreditLineItem FK,
+        # which the per-line try/except in _sync_line_items turns into a per-credit skip that
+        # retries next run, never partial/corrupt data; a stale id pointing at a repointed-but-
+        # still-valid SubCostCode at worst misattributes one line's cost coding until the next pull.
+        self._sub_cost_code_cache: dict = {}
 
     def sync_from_qbo_line(
         self,
@@ -248,19 +263,21 @@ class VendorCreditLineItemConnector:
         return project.public_id if project else None
 
     def _get_sub_cost_code_id(self, qbo_item_ref_value: str) -> Optional[int]:
-        """Resolve QBO item ref to local sub_cost_code_id (QboItem by qbo_id -> ItemSubCostCode by qbo_item_id)."""
+        """Resolve QBO item ref to local sub_cost_code_id, memoized for this connector's lifetime."""
         if not qbo_item_ref_value:
             return None
+        if qbo_item_ref_value in self._sub_cost_code_cache:
+            return self._sub_cost_code_cache[qbo_item_ref_value]
+        result = self._resolve_sub_cost_code_id(qbo_item_ref_value)
+        self._sub_cost_code_cache[qbo_item_ref_value] = result
+        return result
 
-        from integrations.intuit.qbo.item.connector.sub_cost_code.persistence.repo import ItemSubCostCodeRepository
-        from integrations.intuit.qbo.item.persistence.repo import QboItemRepository
-
-        qbo_item_repo = QboItemRepository()
-        item_scc_repo = ItemSubCostCodeRepository()
-        qbo_item = qbo_item_repo.read_by_qbo_id(qbo_item_ref_value)
+    def _resolve_sub_cost_code_id(self, qbo_item_ref_value: str) -> Optional[int]:
+        """Uncached resolution: QboItem by qbo_id -> ItemSubCostCode by qbo_item_id -> SubCostCode existence check."""
+        qbo_item = self.qbo_item_repo.read_by_qbo_id(qbo_item_ref_value)
         if not qbo_item:
             return None
-        mapping = item_scc_repo.read_by_qbo_item_id(qbo_item.id)
+        mapping = self.item_scc_repo.read_by_qbo_item_id(qbo_item.id)
         if not mapping:
             return None
         sub_cost_code = self.sub_cost_code_service.read_by_id(str(mapping.sub_cost_code_id))

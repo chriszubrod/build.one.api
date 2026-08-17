@@ -366,20 +366,16 @@ def test_existing_vendorcredit_resync_failure_does_not_compensating_delete():
     bill_credit_service.delete_by_public_id.assert_not_called()
 
 
-@patch(
-    "integrations.intuit.qbo.vendorcredit.connector.bill_credit_line_item.business.service.VendorCreditLineItemConnector"
-)
-def test_vendorcredit_sync_line_items_aggregates_failures(mock_line_connector_cls):
+def test_vendorcredit_sync_line_items_aggregates_failures():
     """_sync_line_items collects N line failures into one RuntimeError."""
     mock_line_connector = Mock()
-    mock_line_connector_cls.return_value = mock_line_connector
     mock_line_connector.sync_from_qbo_line.side_effect = [
         SimpleNamespace(id=1),
         RuntimeError("line 2 fail"),
         ValueError("line 3 fail"),
     ]
 
-    connector = _build_vc_connector()
+    connector = _build_vc_connector(line_item_connector=mock_line_connector)
     lines = [
         _make_qbo_vc_line(line_id=1, qbo_line_id="L1"),
         _make_qbo_vc_line(line_id=2, qbo_line_id="L2"),
@@ -396,10 +392,6 @@ QBO_CUSTOMER_REPO_PATH = "integrations.intuit.qbo.customer.persistence.repo.QboC
 CUSTOMER_PROJECT_REPO_PATH = (
     "integrations.intuit.qbo.customer.connector.project.persistence.repo.CustomerProjectRepository"
 )
-ITEM_SCC_REPO_PATH = (
-    "integrations.intuit.qbo.item.connector.sub_cost_code.persistence.repo.ItemSubCostCodeRepository"
-)
-QBO_ITEM_REPO_PATH = "integrations.intuit.qbo.item.persistence.repo.QboItemRepository"
 
 
 def test_vendorcredit_get_project_public_id_db_error_propagates():
@@ -431,63 +423,51 @@ def test_vendorcredit_get_project_public_id_not_found_returns_none():
 
 def test_vendorcredit_get_sub_cost_code_id_db_error_propagates():
     """A DB error inside the item-ref resolver must propagate."""
-    qbo_item_repo = Mock()
-    qbo_item_repo.read_by_qbo_id.side_effect = ValueError("db blip")
-
     connector = VendorCreditLineItemConnector()
+    connector.qbo_item_repo = Mock()
+    connector.qbo_item_repo.read_by_qbo_id.side_effect = ValueError("db blip")
+    connector.item_scc_repo = Mock()
 
-    with patch(QBO_ITEM_REPO_PATH, return_value=qbo_item_repo), patch(
-        ITEM_SCC_REPO_PATH, return_value=Mock()
-    ):
-        with pytest.raises(ValueError, match="db blip"):
-            connector._get_sub_cost_code_id("ITEM-1")
+    with pytest.raises(ValueError, match="db blip"):
+        connector._get_sub_cost_code_id("ITEM-1")
 
 
 def test_vendorcredit_get_sub_cost_code_id_not_found_returns_none():
     """Genuine not-found in item-ref resolver returns None."""
-    qbo_item_repo = Mock()
-    qbo_item_repo.read_by_qbo_id.return_value = None
-
     connector = VendorCreditLineItemConnector()
+    connector.qbo_item_repo = Mock()
+    connector.qbo_item_repo.read_by_qbo_id.return_value = None
+    connector.item_scc_repo = Mock()
 
-    with patch(QBO_ITEM_REPO_PATH, return_value=qbo_item_repo), patch(
-        ITEM_SCC_REPO_PATH, return_value=Mock()
-    ):
-        assert connector._get_sub_cost_code_id("ITEM-1") is None
+    assert connector._get_sub_cost_code_id("ITEM-1") is None
 
 
 def test_vendorcredit_get_sub_cost_code_id_dangling_mapping_returns_none():
     """Dangling ItemSubCostCode mapping (missing SubCostCode row) returns None."""
     qbo_item = SimpleNamespace(id=50)
-    qbo_item_repo = Mock()
-    qbo_item_repo.read_by_qbo_id.return_value = qbo_item
-    item_scc_repo = Mock()
-    item_scc_repo.read_by_qbo_item_id.return_value = SimpleNamespace(sub_cost_code_id=999)
 
     connector = VendorCreditLineItemConnector()
+    connector.qbo_item_repo = Mock()
+    connector.qbo_item_repo.read_by_qbo_id.return_value = qbo_item
+    connector.item_scc_repo = Mock()
+    connector.item_scc_repo.read_by_qbo_item_id.return_value = SimpleNamespace(sub_cost_code_id=999)
     connector.sub_cost_code_service = Mock()
     connector.sub_cost_code_service.read_by_id.return_value = None
 
-    with patch(QBO_ITEM_REPO_PATH, return_value=qbo_item_repo), patch(
-        ITEM_SCC_REPO_PATH, return_value=item_scc_repo
-    ):
-        assert connector._get_sub_cost_code_id("ITEM-1") is None
+    assert connector._get_sub_cost_code_id("ITEM-1") is None
 
 
 def test_vendorcredit_get_sub_cost_code_id_sub_cost_code_read_db_error_propagates():
     """A DB error verifying SubCostCode existence must propagate."""
     qbo_item = SimpleNamespace(id=50)
-    qbo_item_repo = Mock()
-    qbo_item_repo.read_by_qbo_id.return_value = qbo_item
-    item_scc_repo = Mock()
-    item_scc_repo.read_by_qbo_item_id.return_value = SimpleNamespace(sub_cost_code_id=999)
 
     connector = VendorCreditLineItemConnector()
+    connector.qbo_item_repo = Mock()
+    connector.qbo_item_repo.read_by_qbo_id.return_value = qbo_item
+    connector.item_scc_repo = Mock()
+    connector.item_scc_repo.read_by_qbo_item_id.return_value = SimpleNamespace(sub_cost_code_id=999)
     connector.sub_cost_code_service = Mock()
     connector.sub_cost_code_service.read_by_id.side_effect = ValueError("db blip")
 
-    with patch(QBO_ITEM_REPO_PATH, return_value=qbo_item_repo), patch(
-        ITEM_SCC_REPO_PATH, return_value=item_scc_repo
-    ):
-        with pytest.raises(ValueError, match="db blip"):
-            connector._get_sub_cost_code_id("ITEM-1")
+    with pytest.raises(ValueError, match="db blip"):
+        connector._get_sub_cost_code_id("ITEM-1")

@@ -11,6 +11,9 @@ from integrations.intuit.qbo.vendorcredit.connector.bill_credit.persistence.repo
     VendorCreditBillCreditMappingRepository,
     VendorCreditBillCreditMapping,
 )
+from integrations.intuit.qbo.vendorcredit.connector.bill_credit_line_item.business.service import (
+    VendorCreditLineItemConnector,
+)
 from entities.bill_credit.business.service import BillCreditService
 from entities.bill_credit.business.model import BillCredit
 from entities.bill_credit_line_item.business.service import BillCreditLineItemService
@@ -34,12 +37,18 @@ class VendorCreditBillCreditConnector:
         bill_credit_line_item_service: Optional[BillCreditLineItemService] = None,
         vendor_service: Optional[VendorService] = None,
         reconciliation_repo: Optional[ReconciliationIssueRepository] = None,
+        line_item_connector: Optional[VendorCreditLineItemConnector] = None,
     ):
         self.mapping_repo = mapping_repo or VendorCreditBillCreditMappingRepository()
         self.bill_credit_service = bill_credit_service or BillCreditService()
         self.bill_credit_line_item_service = bill_credit_line_item_service or BillCreditLineItemService()
         self.vendor_service = vendor_service or VendorService()
         self.reconciliation_repo = reconciliation_repo or ReconciliationIssueRepository()
+        # Run-scoped (U-229): built once here and reused across every credit processed by
+        # this connector instance, so VendorCreditLineItemConnector._sub_cost_code_cache
+        # persists for the whole pull run instead of resetting per credit. Mirrors
+        # PurchaseExpenseConnector's identical hoist of PurchaseLineExpenseLineItemConnector.
+        self.line_item_connector = line_item_connector or VendorCreditLineItemConnector()
 
     def sync_from_qbo_vendor_credit(
         self,
@@ -331,10 +340,6 @@ class VendorCreditBillCreditConnector:
         vector entirely (an invoice-referenced line is updated, never re-created).
         Stale-line cleanup (lines QBO removed) is handled in the snapshot layer.
         """
-        from integrations.intuit.qbo.vendorcredit.connector.bill_credit_line_item.business.service import VendorCreditLineItemConnector
-
-        connector = VendorCreditLineItemConnector()
-
         # Upsert each QBO line in place. No delete-then-recreate: stale-line cleanup
         # lives in the snapshot layer, and the connector matches existing
         # BillCreditLineItems via the (now-stable) line mapping (with a content
@@ -345,7 +350,7 @@ class VendorCreditBillCreditConnector:
         failed = []
         for line in qbo_lines:
             try:
-                connector.sync_from_qbo_line(bill_credit_id, bill_credit_public_id, line, realm_id)
+                self.line_item_connector.sync_from_qbo_line(bill_credit_id, bill_credit_public_id, line, realm_id)
             except Exception as e:
                 logger.error(f"Error syncing line item {line.qbo_line_id}: {e}")
                 failed.append((line.qbo_line_id, str(e)))

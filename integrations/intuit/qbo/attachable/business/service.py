@@ -7,6 +7,7 @@ from typing import List, Optional
 # Local Imports
 from integrations.intuit.qbo.attachable.business.model import QboAttachable
 from integrations.intuit.qbo.attachable.external.client import QboAttachableClient
+from integrations.intuit.qbo.base.errors import QboBudgetExceededError, QboWriteRefusedError
 from integrations.intuit.qbo.attachable.external.schemas import QboAttachable as QboAttachableExternalSchema
 from integrations.intuit.qbo.attachable.persistence.repo import QboAttachableRepository
 from integrations.intuit.qbo.auth.business.service import QboAuthService
@@ -323,6 +324,8 @@ class QboAttachableService:
                 attachment = connector.sync_from_qbo_attachable(att, realm_id)
                 logger.info(f"Synced QboAttachable {att.id} to Attachment {attachment.id}")
                 healthy.append(att)
+            except (QboBudgetExceededError, QboWriteRefusedError):
+                raise
             except Exception as e:
                 logger.error(f"Failed to sync QboAttachable {att.id} to Attachment: {e}")
 

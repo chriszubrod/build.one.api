@@ -21,6 +21,7 @@ T = TypeVar('T')
 # /etc/odbcinst.ini has `[ODBC] Pooling=Yes` for the driver to actually pool.
 pyodbc.pooling = True
 
+@functools.lru_cache(maxsize=1)
 def _get_db_config():
     """Get database configuration from settings."""
     settings = config.Settings()

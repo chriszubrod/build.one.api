@@ -31,6 +31,7 @@ import sys
 
 from scripts.sync_helper import assert_cli_system_admin
 from shared.database import get_connection, with_retry
+from integrations.intuit.qbo.base.errors import QboBudgetExceededError, QboWriteRefusedError
 from integrations.intuit.qbo.base.pull_race import read_lines_riding_out_race, header_has_amount
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
@@ -184,6 +185,8 @@ def apply_backfill(rows, limit, include_null):
                 if atts:
                     _link_attachments_to_bill_line_items(bill_id=bill_module.id, qbo_attachables=atts)
                     attach_synced += len(atts)
+            except (QboBudgetExceededError, QboWriteRefusedError):
+                raise
             except Exception as att_e:
                 logger.warning(f"  attachments failed for qbo_id={qid}: {att_e}")
         except ValueError as ve:

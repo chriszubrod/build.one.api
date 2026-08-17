@@ -141,7 +141,11 @@ class QboApiUsageRepository:
     """Persistence for `[qbo].[ApiUsage]` via sprocs in `base/sql/qbo.api_usage.sql`."""
 
     def increment(self, realm_id: str, month_key: str) -> int:
-        """Atomically add one to the month's counter; return the new total."""
+        """Atomically add one to the single (RealmId, MonthKey) counter; return its new total.
+
+        See ``QboApiBudget.record_call`` for how this per-realm count is compared
+        against ``status()``'s cross-realm sum.
+        """
         # Lazy import: keep budget.py importable in the pure-logic test
         # harness without a DB driver present.
         from shared.database import call_procedure, get_connection, map_database_error
@@ -215,7 +219,15 @@ class QboApiBudget:
         self._logged_band: Dict[str, str] = {}
 
     def record_call(self, realm_id: str) -> BudgetStatus:
-        """Meter one QBO API call and return the resulting budget status."""
+        """Meter one QBO API call and return the resulting budget status.
+
+        Compares the per-realm ``increment`` count for ``realm_id`` against the
+        block threshold. ``status()`` reports the cross-realm ``read_month_total``
+        sum instead — identical while realm count == 1; with multiple realms each
+        realm's breaker can under-block while ``status()`` already shows the
+        combined total over the cap. Known, deliberately deferred — see TODO.md
+        "Per-realm vs cross-realm breaker inconsistency".
+        """
         month_key = current_month_key()
         try:
             count = self.repo.increment(realm_id, month_key)

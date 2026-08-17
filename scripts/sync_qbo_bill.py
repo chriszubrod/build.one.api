@@ -21,6 +21,7 @@ from scripts.sync_helper import (
     assert_cli_system_admin,
     exit_nonzero_on_sync_failure,
 )
+from integrations.intuit.qbo.base.errors import QboBudgetExceededError, QboWriteRefusedError
 from integrations.intuit.qbo.base.sync_outcome import SyncOutcome
 from shared.database import with_retry
 from integrations.intuit.qbo.base.pull_race import read_lines_riding_out_race, header_has_amount
@@ -366,6 +367,14 @@ def sync_qbo_to_local(
                             bill_id=bill_module.id,
                             qbo_attachables=bill_attachables,
                         )
+                except QboBudgetExceededError:
+                    # U-211: environmental refusal — propagate so the pull holds the
+                    # watermark instead of reporting complete with attachments dropped.
+                    raise
+                except QboWriteRefusedError:
+                    # U-218e: local write gate — same category as budget; propagate
+                    # so the pull holds instead of advancing past a refused month.
+                    raise
                 except Exception as att_e:
                     logger.error(f"Failed to sync attachments for Bill {bill.qbo_id}: {att_e}")
         except Exception as e:

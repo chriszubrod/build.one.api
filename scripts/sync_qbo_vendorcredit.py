@@ -21,6 +21,7 @@ from scripts.sync_helper import (
     assert_cli_system_admin,
     exit_nonzero_on_sync_failure,
 )
+from integrations.intuit.qbo.base.errors import QboBudgetExceededError, QboWriteRefusedError
 from integrations.intuit.qbo.base.sync_outcome import SyncOutcome
 from shared.database import with_retry
 from integrations.intuit.qbo.base.pull_race import read_lines_riding_out_race, header_has_amount
@@ -304,6 +305,8 @@ def sync_qbo_to_local(
                                 bill_credit_id=bill_credit.id,
                                 qbo_attachables=bill_attachables,
                             )
+                    except (QboBudgetExceededError, QboWriteRefusedError):
+                        raise
                     except Exception as att_e:
                         logger.error(f"Failed to sync attachments for VendorCredit {vendor_credit.qbo_id}: {att_e}")
             else:

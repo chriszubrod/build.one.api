@@ -79,6 +79,33 @@ def _clean_budget_env(monkeypatch):
         monkeypatch.delenv(var, raising=False)
 
 
+def test_record_call_enforces_per_realm_status_reports_cross_realm_sum():
+    """Tripwire: record_call meters increment (per-realm); status() reads the sum.
+
+    Identical while realm count == 1; diverges with multiple realms. See TODO.md
+    "Per-realm vs cross-realm breaker inconsistency".
+    """
+    repo = MagicMock()
+    # Each realm is under the block threshold alone (475k) but the cross-realm sum is over it.
+    per_realm_counts = {"A": 300_000, "B": 200_000}
+    repo.increment.side_effect = lambda realm_id, month_key: per_realm_counts[realm_id]
+    repo.read_month_total.return_value = sum(per_realm_counts.values())
+    budget = QboApiBudget(repo=repo)
+
+    status_a = budget.record_call("A")
+    assert status_a.call_count == 300_000
+    assert status_a.call_count != 500_000
+    assert not status_a.blocked
+
+    status_b = budget.record_call("B")
+    assert status_b.call_count == 200_000
+    assert not status_b.blocked
+
+    status_report = budget.status()
+    assert status_report.call_count == 500_000
+    assert status_report.blocked
+
+
 def test_record_call_under_thresholds_is_clean():
     status = _budget_with_count(100).record_call(REALM_ID)
     assert status.call_count == 100

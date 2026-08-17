@@ -306,6 +306,8 @@ class AttachableAttachmentConnector:
             try:
                 fresh_attachable = client.get_attachable(qbo_attachable.qbo_id)
                 logger.debug(f"Fetched fresh attachable {qbo_attachable.qbo_id} for download")
+            except (QboBudgetExceededError, QboWriteRefusedError):
+                raise
             except Exception as e:
                 logger.error(f"Failed to fetch fresh attachable {qbo_attachable.qbo_id}: {e}")
                 return None

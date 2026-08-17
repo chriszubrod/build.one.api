@@ -69,6 +69,8 @@ class CustomerProjectConnector:
         
         Raises:
             ValueError: If the customer has Job=false (is not a job/sub-customer)
+            ValueError: On a detected duplicate QBO sub-customer (name-matched local
+                Project already bound to a different QboCustomer)
         """
         if not qbo_customer.is_job:
             raise ValueError(f"QboCustomer {qbo_customer.id} has Job=false and is not a job/sub-customer")
@@ -131,7 +133,11 @@ class CustomerProjectConnector:
                             local_project=replacement,
                             existing_mapping=existing_map_for_replacement,
                         )
-                        return replacement
+                        raise ValueError(
+                            f'CustomerProject mapping {mapping.id} points at missing Project '
+                            f'{mapping.project_id}; name match Project {replacement.id} is already '
+                            f'bound to QboCustomer {existing_map_for_replacement.qbo_customer_id}.'
+                        )
                     # Replacement is unbound (or already bound to THIS QboCustomer) — repoint
                     # the stale mapping to it IN PLACE (no delete, no window).
                     if mapping.project_id != replacement.id:
@@ -193,7 +199,10 @@ class CustomerProjectConnector:
                     local_project=existing_local,
                     existing_mapping=existing_mapping_for_local,
                 )
-                return existing_local
+                raise ValueError(
+                    f'QboCustomer {qbo_customer.id} name-matches local Project {existing_local.id} '
+                    f'which is already bound to QboCustomer {existing_mapping_for_local.qbo_customer_id}.'
+                )
 
             # Local Project exists with no QBO mapping — bind it.
             logger.info(

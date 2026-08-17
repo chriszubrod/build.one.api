@@ -136,10 +136,16 @@ class VendorVendorConnector:
         raise_if_inactive_unmapped(
             qbo_vendor.active, qbo_label="QboVendor", qbo_id=qbo_vendor.id, target="Vendor"
         )
+        if not vendor_name:
+            self._raise_blank_display_name_issue(qbo_vendor=qbo_vendor)
+            raise ValueError(
+                f"QboVendor {qbo_vendor.id} has a blank DisplayName and no local mapping; "
+                f"cannot create or adopt a Vendor without a name."
+            )
         # No mapping. Adopt an existing unmapped local Vendor by exact name BEFORE creating —
         # VendorService.create refuses a duplicate name, so without this a name collision detaches
         # the QBO vendor permanently (audit P1-08's second half).
-        existing_local = self.vendor_service.read_by_name(vendor_name) if vendor_name else None
+        existing_local = self.vendor_service.read_by_name(vendor_name)
         if existing_local:
             existing_local_id = coerce_id(existing_local.id)
             existing_map_for_local = self.mapping_repo.read_by_vendor_id(existing_local_id)
@@ -293,6 +299,28 @@ class VendorVendorConnector:
         self._record_reconciliation_issue(
             drift_type="duplicate_qbo_vendor",
             entity_public_id=str(local_vendor.public_id) if local_vendor.public_id else None,
+            qbo_vendor=qbo_vendor,
+            details=details,
+        )
+
+    def _raise_blank_display_name_issue(self, *, qbo_vendor: QboVendor) -> None:
+        """
+        Record a blank-DisplayName detection on qbo.ReconciliationIssue.
+
+        Triggered when a fresh QboVendor pull has no local mapping and QBO supplied
+        a blank or whitespace-only DisplayName, so the connector cannot create or
+        adopt a local Vendor. Treated as critical because the row will re-fail every
+        sync until a DisplayName is set in QBO.
+        """
+        details = (
+            f"Blank QBO vendor DisplayName. QboVendor {qbo_vendor.id} "
+            f"(QboId={qbo_vendor.qbo_id}) has a blank or whitespace-only DisplayName "
+            f"and no local VendorVendor mapping; cannot create or adopt a Vendor without "
+            f"a name. Resolve by setting a DisplayName in QBO."
+        )
+        self._record_reconciliation_issue(
+            drift_type="blank_display_name_qbo_vendor",
+            entity_public_id=None,
             qbo_vendor=qbo_vendor,
             details=details,
         )

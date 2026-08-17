@@ -285,6 +285,22 @@ def test_normal_update_blank_stored_name_no_qbo_display_name_skips_name_write():
     connector._sync_addresses.assert_called_once()
 
 
+@pytest.mark.parametrize("display_name", [None, "   "])
+def test_create_path_raises_and_records_issue_when_display_name_blank_no_mapping(display_name):
+    """No mapping + blank DisplayName — record issue and raise before create."""
+    connector = _build_vendor_vendor_connector()
+    qbo_vendor = _make_qbo_vendor(display_name=display_name)
+
+    connector.mapping_repo.read_by_qbo_vendor_id.return_value = None
+
+    with pytest.raises(ValueError, match="blank DisplayName and no local mapping"):
+        connector.sync_from_qbo_vendor(qbo_vendor)
+
+    connector.reconciliation_repo.create.assert_called_once()
+    assert connector.reconciliation_repo.create.call_args.kwargs["drift_type"] == "blank_display_name_qbo_vendor"
+    connector.vendor_service.create.assert_not_called()
+
+
 def test_create_path_raises_duplicate_when_local_name_already_mapped():
     """No mapping — name-matched local Vendor already bound to another QboVendor."""
     connector = _build_vendor_vendor_connector()

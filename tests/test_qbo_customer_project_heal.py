@@ -225,15 +225,34 @@ def test_heal_duplicate_qbo_customer_when_replacement_bound_to_other():
     project_service.read_by_name.return_value = replacement
     mapping_repo.read_by_project_id.return_value = other_mapping
 
-    result = connector.sync_from_qbo_customer(qbo_customer)
+    with pytest.raises(ValueError, match="already bound to QboCustomer"):
+        connector.sync_from_qbo_customer(qbo_customer)
 
-    assert result is replacement
     reconciliation_repo.create.assert_called_once()
     call_kwargs = reconciliation_repo.create.call_args.kwargs
     assert call_kwargs["drift_type"] == "duplicate_qbo_customer"
     mapping_repo.update_by_id.assert_not_called()
     mapping_repo.delete_by_id.assert_not_called()
     project_service.create.assert_not_called()
+
+
+def test_create_path_raises_duplicate_when_local_name_already_mapped():
+    """No mapping — name-matched local Project already bound to another QboCustomer."""
+    connector, mapping_repo, project_service, reconciliation_repo = _build_customer_project_connector()
+    qbo_customer = _make_qbo_customer(customer_id=2)
+    existing = _make_project(project_id=500, name="Dup Name")
+    existing_map = _make_mapping(mapping_id=30, project_id=500, qbo_customer_id=99)
+
+    mapping_repo.read_by_qbo_customer_id.return_value = None
+    project_service.read_by_name.return_value = existing
+    mapping_repo.read_by_project_id.return_value = existing_map
+
+    with pytest.raises(ValueError, match="already bound to QboCustomer"):
+        connector.sync_from_qbo_customer(qbo_customer)
+
+    project_service.create.assert_not_called()
+    reconciliation_repo.create.assert_called_once()
+    assert reconciliation_repo.create.call_args.kwargs["drift_type"] == "duplicate_qbo_customer"
 
 
 # --- PART 2: InvoiceInvoiceConnector._get_project_public_id ---

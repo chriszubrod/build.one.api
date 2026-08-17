@@ -1,4 +1,5 @@
 # Python Standard Library Imports
+import asyncio
 import io
 import logging
 import secrets
@@ -297,60 +298,67 @@ async def upload_attachment_router(
     try:
         # Read file content
         file_content = await file.read()
-        file_size = len(file_content)
-
-        # Validate file size (before compaction)
-        service.validate_file_size(file_size)
-
-        # Compact PDFs to reduce stored size (lossless when possible)
         content_type = file.content_type or "application/octet-stream"
-        if content_type == "application/pdf":
-            file_content = compact_pdf(file_content)
+
+        # U-237 — slow PDF compaction / blob upload / DB must not block the shared event loop.
+        # file_content is a reassignable default param (not a closure read) so compact_pdf's
+        # result can bind back to the same name without an UnboundLocalError.
+        def _upload_blocking(file_content=file_content):
             file_size = len(file_content)
 
-        # Calculate hash
-        file_hash = service.calculate_hash(file_content)
+            # Validate file size (before compaction)
+            service.validate_file_size(file_size)
 
-        # Check for duplicates (optional - can warn or prevent)
-        existing = service.read_by_hash(file_hash)
-        if existing:
-            logger.info(f"Duplicate file detected: {existing.public_id}")
-            # Return existing attachment instead of creating duplicate
-            # Uncomment to prevent duplicates:
-            # raise HTTPException(status_code=409, detail="File already exists")
+            # Compact PDFs to reduce stored size (lossless when possible)
+            if content_type == "application/pdf":
+                file_content = compact_pdf(file_content)
+                file_size = len(file_content)
 
-        # Extract file extension
-        file_extension = service.extract_extension(file.filename or "")
+            # Calculate hash
+            file_hash = service.calculate_hash(file_content)
 
-        # Generate unique blob name using public_id only (with extension)
-        public_id = str(uuid.uuid4())
-        blob_name = service.build_blob_name(public_id, file_extension)
+            # Check for duplicates (optional - can warn or prevent)
+            existing = service.read_by_hash(file_hash)
+            if existing:
+                logger.info(f"Duplicate file detected: {existing.public_id}")
+                # Return existing attachment instead of creating duplicate
+                # Uncomment to prevent duplicates:
+                # raise HTTPException(status_code=409, detail="File already exists")
 
-        # Upload to Azure Blob Storage
-        storage = AzureBlobStorage()
-        blob_url = storage.upload_file(
-            blob_name=blob_name,
-            file_content=file_content,
-            content_type=content_type,
-        )
+            # Extract file extension
+            file_extension = service.extract_extension(file.filename or "")
 
-        # Create attachment record
-        attachment = service.create(
-            filename=file.filename,
-            original_filename=file.filename,
-            file_extension=file_extension,
-            content_type=content_type,
-            file_size=file_size,
-            file_hash=file_hash,
-            blob_url=blob_url,
-            description=description,
-            category=category,
-            tags=tags,
-            is_archived=False,
-            status=status,
-            expiration_date=expiration_date,
-            storage_tier="Hot",
-        )
+            # Generate unique blob name using public_id only (with extension)
+            public_id = str(uuid.uuid4())
+            blob_name = service.build_blob_name(public_id, file_extension)
+
+            # Upload to Azure Blob Storage
+            storage = AzureBlobStorage()
+            blob_url = storage.upload_file(
+                blob_name=blob_name,
+                file_content=file_content,
+                content_type=content_type,
+            )
+
+            # Create attachment record
+            return service.create(
+                filename=file.filename,
+                original_filename=file.filename,
+                file_extension=file_extension,
+                content_type=content_type,
+                file_size=file_size,
+                file_hash=file_hash,
+                blob_url=blob_url,
+                description=description,
+                category=category,
+                tags=tags,
+                is_archived=False,
+                status=status,
+                expiration_date=expiration_date,
+                storage_tier="Hot",
+            )
+
+        attachment = await asyncio.to_thread(_upload_blocking)
 
         # U-187 — receipt intake: queue text extraction for pdf + image uploads.
         # Deferred to the extraction sweep; the request returns immediately.
@@ -382,53 +390,60 @@ async def upload_bill_line_item_attachment_router(
     try:
         # Read file content
         file_content = await file.read()
-        file_size = len(file_content)
-
-        # Validate file size (before compaction)
-        service.validate_file_size(file_size)
-
-        # Compact PDFs to reduce stored size (lossless when possible)
         content_type = file.content_type or "application/octet-stream"
-        if content_type == "application/pdf":
-            file_content = compact_pdf(file_content)
+
+        # U-237 — slow PDF compaction / blob upload / DB must not block the shared event loop.
+        # file_content is a reassignable default param (not a closure read) so compact_pdf's
+        # result can bind back to the same name without an UnboundLocalError.
+        def _upload_blocking(file_content=file_content):
             file_size = len(file_content)
 
-        # Calculate hash
-        file_hash = service.calculate_hash(file_content)
+            # Validate file size (before compaction)
+            service.validate_file_size(file_size)
 
-        # Extract file extension
-        file_extension = service.extract_extension(file.filename or "")
+            # Compact PDFs to reduce stored size (lossless when possible)
+            if content_type == "application/pdf":
+                file_content = compact_pdf(file_content)
+                file_size = len(file_content)
 
-        # Generate unique blob name using public_id only (with extension)
-        public_id = str(uuid.uuid4())
-        blob_name = service.build_blob_name(public_id, file_extension)
+            # Calculate hash
+            file_hash = service.calculate_hash(file_content)
 
-        # Upload to Azure Blob Storage
-        storage = AzureBlobStorage()
-        blob_url = storage.upload_file(
-            blob_name=blob_name,
-            file_content=file_content,
-            content_type=content_type,
-        )
-        logger.info(f"Uploaded bill line item attachment to Azure Blob: {blob_url}")
+            # Extract file extension
+            file_extension = service.extract_extension(file.filename or "")
 
-        # Create attachment record in database
-        attachment = service.create(
-            filename=file.filename,
-            original_filename=file.filename,
-            file_extension=file_extension,
-            content_type=content_type,
-            file_size=file_size,
-            file_hash=file_hash,
-            blob_url=blob_url,
-            description=description,
-            category="bill_line_item",
-            tags=None,
-            is_archived=False,
-            status=None,
-            expiration_date=None,
-            storage_tier="Hot",
-        )
+            # Generate unique blob name using public_id only (with extension)
+            public_id = str(uuid.uuid4())
+            blob_name = service.build_blob_name(public_id, file_extension)
+
+            # Upload to Azure Blob Storage
+            storage = AzureBlobStorage()
+            blob_url = storage.upload_file(
+                blob_name=blob_name,
+                file_content=file_content,
+                content_type=content_type,
+            )
+            logger.info(f"Uploaded bill line item attachment to Azure Blob: {blob_url}")
+
+            # Create attachment record in database
+            return service.create(
+                filename=file.filename,
+                original_filename=file.filename,
+                file_extension=file_extension,
+                content_type=content_type,
+                file_size=file_size,
+                file_hash=file_hash,
+                blob_url=blob_url,
+                description=description,
+                category="bill_line_item",
+                tags=None,
+                is_archived=False,
+                status=None,
+                expiration_date=None,
+                storage_tier="Hot",
+            )
+
+        attachment = await asyncio.to_thread(_upload_blocking)
 
         # U-187 — these are category='bill_line_item' source documents; queue text
         # extraction for pdf + image so they enter the sweep (the drain skips

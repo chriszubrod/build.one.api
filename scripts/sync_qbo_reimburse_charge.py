@@ -17,6 +17,7 @@ from scripts.sync_helper import (
     _normalize_last_sync,
     _normalize_watermark_value,
     assert_cli_system_admin,
+    exit_nonzero_on_sync_failure,
 )
 from integrations.sync.business.service import SyncService
 from integrations.intuit.qbo.reimburse_charge.business.service import QboReimburseChargeService
@@ -44,8 +45,9 @@ def sync_qbo_reimburse_charge(
     deterministic Tier-0 invoice-line linking possible.
 
     Args:
-        start_date: Optional TxnDate lower bound (YYYY-MM-DD). Historical batch.
-        end_date: Optional TxnDate upper bound (YYYY-MM-DD). Historical batch.
+        start_date: NOT supported — QBO rejects TxnDate filters on ReimburseCharge.
+            Passing this raises QboValidationError before any QBO I/O.
+        end_date: NOT supported — same as start_date.
         skip_sync_record_update: If True, don't advance the watermark.
     """
     try:
@@ -147,25 +149,23 @@ Examples:
   # Full incremental realm-wide sync (uses last sync timestamp)
   python scripts/sync_qbo_reimburse_charge.py
 
-  # Historical batch for a date range - sync record set to end_date
-  python scripts/sync_qbo_reimburse_charge.py --start-date 2026-01-01 --end-date 2026-06-30
-
-  # Historical batch without advancing the watermark
-  python scripts/sync_qbo_reimburse_charge.py --start-date 2026-01-01 --end-date 2026-06-30 --skip-sync-update
+  # ReimburseCharge does not support TxnDate filtering (QBO rejects it) — there is
+  # no historical date-range mode for this entity. Use the full incremental sync
+  # above, or a full realm-wide pull with no filter.
         """
     )
 
     parser.add_argument(
         '--start-date',
         type=str,
-        help='Start date for filtering reimburse charges by TxnDate (YYYY-MM-DD). Inclusive.',
+        help='NOT supported for ReimburseCharge (QBO rejects TxnDate filters); passing this raises.',
         default=None,
     )
 
     parser.add_argument(
         '--end-date',
         type=str,
-        help='End date for filtering reimburse charges by TxnDate (YYYY-MM-DD). Inclusive.',
+        help='NOT supported for ReimburseCharge (QBO rejects TxnDate filters); passing this raises.',
         default=None,
     )
 
@@ -205,6 +205,14 @@ if __name__ == "__main__":
         print(f"Error: start-date ({args.start_date}) must be before or equal to end-date ({args.end_date}).")
         sys.exit(1)
 
+    if args.start_date or args.end_date:
+        print(
+            "Error: --start-date/--end-date are not supported for ReimburseCharge — "
+            "QBO rejects TxnDate filters on this entity. Use the full incremental sync "
+            "(no flags) instead."
+        )
+        sys.exit(1)
+
     result = sync_qbo_reimburse_charge(
         start_date=args.start_date,
         end_date=args.end_date,
@@ -213,3 +221,4 @@ if __name__ == "__main__":
 
     import json
     print(json.dumps(result, indent=2, default=str))
+    exit_nonzero_on_sync_failure(result)

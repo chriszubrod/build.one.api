@@ -12,7 +12,10 @@ from integrations.intuit.qbo.reimburse_charge.business.parse import (
     parse_reimburse_charge,
 )
 from integrations.intuit.qbo.reimburse_charge.persistence.repo import QboReimburseChargeRepository
-from integrations.intuit.qbo.invoice.external.client import QboInvoiceClient
+from integrations.intuit.qbo.invoice.external.client import (
+    QboInvoiceClient,
+    reject_reimburse_charge_txndate_filter,
+)
 from integrations.intuit.qbo.base.sync_outcome import SyncOutcome
 from shared.database import with_retry
 
@@ -53,7 +56,8 @@ class QboReimburseChargeService:
             realm_id: QBO company realm ID.
             last_updated_time: Optional ISO datetime; only RCs with
                 Metadata.LastUpdatedTime > this are fetched (incremental).
-            start_date / end_date: Optional TxnDate bounds (YYYY-MM-DD).
+            start_date / end_date: Unsupported — QBO rejects TxnDate filters on
+                ReimburseCharge; passing either raises QboValidationError.
 
         Returns:
             SyncOutcome[QboReimburseCharge]: Pull run envelope including synced staging rows
@@ -64,6 +68,7 @@ class QboReimburseChargeService:
         any RC in the window failed to persist — the upserts are idempotent, so
         re-pulling the same window next tick is safe.
         """
+        reject_reimburse_charge_txndate_filter(start_date, end_date)
         outcome: SyncOutcome[QboReimburseCharge] = SyncOutcome.for_service_pull()
         with QboInvoiceClient(realm_id=realm_id) as client:
             raw_records = client.query_all_reimburse_charges(

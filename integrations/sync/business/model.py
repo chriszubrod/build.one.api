@@ -19,7 +19,8 @@ class Sync:
     env: Optional[str]
     entity: Optional[str]
     last_sync_datetime: Optional[str]
-    
+    hold_started_datetime: Optional[str] = None
+
     @property
     def row_version_bytes(self) -> Optional[bytes]:
         if self.row_version:

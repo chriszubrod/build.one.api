@@ -26,6 +26,31 @@ from integrations.sync.persistence.repo import _parse_sync_last_sync
 logger = logging.getLogger(__name__)
 
 
+# Shared by every sync_qbo_*.py CLI epilog that supports --start-date/--end-date
+# historical batches (bill, purchase, invoice, vendorcredit) — one source of truth
+# for the --end-date clamp behavior implemented in WatermarkRun._clamp_historical_stamp.
+END_DATE_CLAMP_EPILOG_NOTE = (
+    "Note: When --end-date is provided, the sync record timestamp is normally set to the\n"
+    "end_date (end of day) so you can track progress through historical batch imports —\n"
+    "UNLESS that end-of-day value would land at or after the moment this run started, in\n"
+    "which case it is clamped to the run's own current-time watermark instead (protects\n"
+    "the incremental cursor from a same-day/future end_date)."
+)
+
+
+def exit_nonzero_on_sync_failure(result: dict) -> None:
+    """
+    Every sync_qbo_*.py's __main__ must call this AFTER printing its result.
+    A {"success": False} result that falls off the end of __main__ exits 0 —
+    indistinguishable from success to a scripted historical-batch chunk loop
+    or to anything else invoking these scripts as a subprocess.
+    """
+    status_code = result.get("status_code")
+    success = (result.get("result") or {}).get("success")
+    if success is False or (isinstance(status_code, int) and status_code >= 400):
+        raise SystemExit(1)
+
+
 def assert_cli_system_admin() -> None:
     """
     CLI sync scripts span all users by design; declare system intent so the
@@ -141,14 +166,13 @@ def _watermark_hold_bound_seconds() -> int:
 
 def _held_duration(sync_record: Sync, now: datetime) -> Optional[timedelta]:
     """
-    How long the watermark has been held since its last successful advance.
-
-    Anchors on modified_datetime, falling back to created_datetime when the row
-    has never successfully advanced. Returns None when the anchor is missing or
-    unparseable — callers must treat that as "cannot determine; do not force-advance".
+    How long the CURRENT hold streak has persisted, anchored on HoldStartedDatetime
+    (stamped by WatermarkRun.commit the first time a real, non-skip commit observes
+    outcome.should_hold=True since the last successful advance, cleared on the next
+    successful advance). Returns None when the anchor is missing or unparseable —
+    callers must treat that as "cannot determine; do not force-advance".
     """
-    anchor_raw = sync_record.modified_datetime or sync_record.created_datetime
-    anchor = _parse_sync_last_sync(anchor_raw)
+    anchor = _parse_sync_last_sync(sync_record.hold_started_datetime)
     if anchor is None:
         return None
     return now - anchor
@@ -282,7 +306,7 @@ class WatermarkRun:
         stamp = self.query_start - overlap
         return stamp.strftime("%Y-%m-%dT%H:%M:%SZ")
 
-    def _persist_watermark(self, sync_record: Sync, value: str) -> Optional[Sync]:
+    def _persist_watermark(self, sync_record: Sync, value: str, *, hold_started_datetime: Optional[str] = None) -> Optional[Sync]:
         updated_sync = Sync(
             id=sync_record.id,
             public_id=sync_record.public_id,
@@ -293,13 +317,23 @@ class WatermarkRun:
             env=sync_record.env,
             entity=sync_record.entity,
             last_sync_datetime=value,
+            hold_started_datetime=hold_started_datetime,
         )
         return self.sync_service.update_by_public_id(sync_record.public_id, updated_sync)
 
     def _write(self, value: str) -> Sync:
         if not self.sync_record:
             raise RuntimeError("WatermarkRun.open() must be called before commit")
-        persisted = self._persist_watermark(self.sync_record, value)
+        if self.sync_service.watermark_is_at_or_ahead(self.sync_record, value):
+            logger.warning(
+                "Refusing to move sync watermark for %s/%s/%s backward: stored=%s intended=%s; leaving unchanged",
+                self.provider, self.env, self.entity,
+                self.sync_record.last_sync_datetime, value,
+            )
+            if self.sync_record.hold_started_datetime is not None:
+                self._clear_hold_marker()
+            return self.sync_record
+        persisted = self._persist_watermark(self.sync_record, value, hold_started_datetime=None)
         if persisted:
             self.sync_record = persisted
             return persisted
@@ -327,9 +361,11 @@ class WatermarkRun:
                 value,
             )
             self.sync_record = current
-            return current
+            if current.hold_started_datetime is not None:
+                self._clear_hold_marker()
+            return self.sync_record
 
-        persisted = self._persist_watermark(current, value)
+        persisted = self._persist_watermark(current, value, hold_started_datetime=None)
         if persisted:
             self.sync_record = persisted
             return persisted
@@ -340,6 +376,75 @@ class WatermarkRun:
         )
         logger.error(msg)
         raise RuntimeError(msg)
+
+    def _set_hold_marker(self, value: Optional[str]) -> None:
+        """
+        Best-effort persist of HoldStartedDatetime, without touching LastSyncDatetime.
+        `value` is a fresh stamp to start a hold streak, or None to clear one. Must
+        never raise and must never be load-bearing for correctness: on any failure to
+        persist, `self.sync_record.hold_started_datetime` simply keeps its prior value
+        for this run — a still-None value only delays a force-advance (never causes a
+        premature one), and a still-set stale value self-heals on this entity's next
+        clean commit (which always clears it via `_write`'s normal advance path).
+
+        Shared by `_stamp_hold_start` (start a streak) and `_clear_hold_marker` (end
+        one) — both are thin wrappers so callers keep an intent-revealing name.
+        """
+        try:
+            persisted = self._persist_watermark(
+                self.sync_record,
+                self.sync_record.last_sync_datetime,
+                hold_started_datetime=value,
+            )
+        except Exception:
+            logger.exception(
+                "Failed to update hold_started_datetime for %s/%s/%s to %r",
+                self.provider, self.env, self.entity, value,
+            )
+            return
+        if persisted:
+            self.sync_record = persisted
+            return
+        current = self.sync_service.pick_canonical(
+            self.sync_service.read_candidates_for(self.provider, self.env, self.entity)
+        )
+        if current is not None:
+            self.sync_record = current
+
+    def _stamp_hold_start(self) -> None:
+        """Persist when THIS hold streak began — see `_set_hold_marker`."""
+        self._set_hold_marker(_normalize_watermark_value(self.query_start))
+
+    def _clear_hold_marker(self) -> None:
+        """
+        Clear a stale HoldStartedDatetime when the primary write path could not move
+        LastSyncDatetime forward (the monotonicity guard blocked it — a concurrent run
+        already advanced past our intended value, or a rare arithmetic edge case).
+        Left uncleared, it would make the NEXT unrelated hold force-advance immediately.
+        See `_set_hold_marker`.
+        """
+        self._set_hold_marker(None)
+
+    def _clamp_historical_stamp(self, end_date: str) -> str:
+        """
+        FINDING 2: end_date is a TxnDate bound, but LastSyncDatetime is read back
+        exclusively as a Metadata.LastUpdatedTime cursor for the NEXT incremental
+        pull — unrelated time axes. Stamping the naive end-of-day value is safe
+        only when it is strictly before this run's own query_start: an end_date
+        on-or-after "now" would poison the cursor for the remainder of the day
+        (any record edited between this run finishing and the stamped end-of-day
+        moment would permanently fall below the next incremental pull's strict
+        '>' filter). Clamp to this run's own watermark_value (query_start minus
+        overlap — the same value an ordinary incremental commit would write) in
+        that case; otherwise use the naive end-of-day stamp unchanged, preserving
+        the existing resumable sequential-historical-batch behavior documented in
+        every sync_qbo_*.py CLI epilog.
+        """
+        end_of_day = f"{end_date}T23:59:59"
+        naive = _parse_sync_last_sync(end_of_day)
+        if naive >= self.query_start:
+            return self.watermark_value
+        return end_of_day
 
     def _record_bound_forced_advance(self, outcome: SyncOutcome, held: timedelta) -> None:
         try:
@@ -451,6 +556,9 @@ class WatermarkRun:
             return self.sync_record
 
         if outcome.should_hold:
+            if self.sync_record.hold_started_datetime is None:
+                self._stamp_hold_start()
+
             # Anchor on query_start (captured once at open(), already this class's "now")
             # rather than a fresh datetime.now() read — avoids a second wall-clock read per
             # run and reuses the exact injection point tests already control.
@@ -472,7 +580,7 @@ class WatermarkRun:
                     outcome.staging_failed_ids,
                 )
                 if end_date:
-                    return self._write(f"{end_date}T23:59:59")
+                    return self._write(self._clamp_historical_stamp(end_date))
                 return self._write(self.watermark_value)
 
             reason = outcome.hold_reason()
@@ -483,6 +591,6 @@ class WatermarkRun:
             return self.sync_record
 
         if end_date:
-            return self._write(f"{end_date}T23:59:59")
+            return self._write(self._clamp_historical_stamp(end_date))
 
         return self._write(self.watermark_value)

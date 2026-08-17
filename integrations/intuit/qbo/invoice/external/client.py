@@ -5,6 +5,7 @@ from typing import Any, Dict, List, Optional
 
 # Local Imports
 from integrations.intuit.qbo.base.client import QboHttpClient
+from integrations.intuit.qbo.base.errors import QboValidationError
 from integrations.intuit.qbo.invoice.external.schemas import (
     QboInvoice,
     QboInvoiceCreate,
@@ -13,6 +14,27 @@ from integrations.intuit.qbo.invoice.external.schemas import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def reject_reimburse_charge_txndate_filter(
+    start_date: Optional[str], end_date: Optional[str]
+) -> None:
+    """
+    QBO rejects TxnDate filters on ReimburseCharge outright (confirmed empirically,
+    2026-08-16 — 'SELECT * FROM ReimburseCharge WHERE TxnDate ...' -> "Invalid
+    query"). Single source of truth for this guard: called both here (the query
+    builder) and by QboReimburseChargeService.sync_from_qbo (which must fail before
+    even constructing this client) so the condition and message can't drift apart.
+    """
+    if start_date or end_date:
+        raise QboValidationError(
+            "ReimburseCharge does not support TxnDate filtering — QBO rejects "
+            "'SELECT * FROM ReimburseCharge WHERE TxnDate ...' outright (confirmed "
+            "empirically, 2026-08-16). Supported filters for this entity are "
+            "Metadata.LastUpdatedTime (incremental, via last_updated_time) and "
+            "boolean/reference fields (HasBeenInvoiced, CustomerRef). Do not pass "
+            "start_date/end_date to query_reimburse_charges_page/query_all_reimburse_charges."
+        )
 
 
 def _format_datetime_for_qbo_query(datetime_input) -> Optional[str]:
@@ -281,13 +303,7 @@ class QboInvoiceClient:
             where_clauses.append(f"Metadata.LastUpdatedTime > '{formatted_time}'")
             logger.debug(f"Adding WHERE clause: Metadata.LastUpdatedTime > '{formatted_time}'")
 
-        if start_date:
-            where_clauses.append(f"TxnDate >= '{start_date}'")
-            logger.debug(f"Adding WHERE clause: TxnDate >= '{start_date}'")
-
-        if end_date:
-            where_clauses.append(f"TxnDate <= '{end_date}'")
-            logger.debug(f"Adding WHERE clause: TxnDate <= '{end_date}'")
+        reject_reimburse_charge_txndate_filter(start_date, end_date)
 
         if where_clauses:
             where_clause = " AND ".join(where_clauses)

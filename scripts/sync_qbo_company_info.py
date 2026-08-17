@@ -16,6 +16,7 @@ from scripts.sync_helper import (
     _normalize_last_sync,
     _normalize_watermark_value,
     assert_cli_system_admin,
+    exit_nonzero_on_sync_failure,
 )
 from integrations.sync.business.service import SyncService
 from integrations.intuit.qbo.company_info.business.service import QboCompanyInfoService
@@ -169,3 +170,4 @@ if __name__ == "__main__":
     assert_cli_system_admin()
     result = sync_qbo_company_info()
     print(result)
+    exit_nonzero_on_sync_failure(result)

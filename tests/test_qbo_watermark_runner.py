@@ -27,10 +27,12 @@ from integrations.intuit.qbo.base.errors import (
     QboServerError,
     QboTimeoutError,
     QboTransportError,
+    QboValidationError,
     is_retryable_error,
 )
 from integrations.intuit.qbo.base.sync_outcome import SyncOutcome
 from integrations.sync.business.model import Sync
+from integrations.sync.business.service import SyncService
 from integrations.sync.persistence.repo import SyncRepository
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -54,6 +56,8 @@ ENV = "prod"
 ENTITY = "bill"
 
 FIXED_QUERY_START = datetime(2026, 3, 10, 14, 30, 0, tzinfo=timezone.utc)
+# 68 days before FIXED_QUERY_START — comfortably past the 7200s default hold bound.
+PAST_BOUND_HOLD = (FIXED_QUERY_START - timedelta(days=68)).strftime("%Y-%m-%dT%H:%M:%S")
 
 
 class FakeSyncService:
@@ -151,6 +155,7 @@ class FakeSyncService:
                             last_sync_datetime=self._advance_last_sync_on_failed_write,
                             created_datetime=row.created_datetime,
                             modified_datetime=row.modified_datetime,
+                            hold_started_datetime=row.hold_started_datetime,
                         )
             return None
         for idx, row in enumerate(self.rows):
@@ -163,6 +168,7 @@ class FakeSyncService:
                     env=row.env,
                     entity=row.entity,
                     last_sync_datetime=sync.last_sync_datetime,
+                    hold_started_datetime=sync.hold_started_datetime,
                     created_datetime=row.created_datetime,
                     modified_datetime=row.modified_datetime,
                 )
@@ -182,6 +188,7 @@ def _make_sync(
     env: str = ENV,
     entity: str = ENTITY,
     last_sync_datetime: Optional[str] = None,
+    hold_started_datetime: Optional[str] = None,
 ) -> Sync:
     return Sync(
         id=id,
@@ -193,6 +200,7 @@ def _make_sync(
         env=env,
         entity=entity,
         last_sync_datetime=last_sync_datetime,
+        hold_started_datetime=hold_started_datetime,
     )
 
 
@@ -564,6 +572,23 @@ def test_normalize_watermark_value_handles_datetime_and_string_shapes():
     assert _normalize_watermark_value(None) is None
 
 
+def test_clamp_historical_stamp_future_end_date_uses_watermark_value_not_end_of_day():
+    """Future end_date must clamp to watermark_value, not poison the incremental cursor."""
+    fake = FakeSyncService([_make_sync()])
+    run = _opened_run(fake)
+    run.commit(SyncOutcome(from_service_pull=True), end_date="2026-03-10")
+    assert fake.updates[0][1].last_sync_datetime == run.watermark_value
+    assert fake.updates[0][1].last_sync_datetime != "2026-03-10T23:59:59"
+
+
+def test_clamp_historical_stamp_past_end_date_keeps_end_of_day_stamp_unchanged():
+    """Past end_date still produces the naive end-of-day stamp for resumable historical batches."""
+    fake = FakeSyncService([_make_sync()])
+    run = _opened_run(fake)
+    run.commit(SyncOutcome(from_service_pull=True), end_date="2024-07-04")
+    assert fake.updates[0][1].last_sync_datetime == "2024-07-04T23:59:59"
+
+
 # --------------------------------------------------------------------------- #
 # C. WatermarkRun.commit precedence
 # --------------------------------------------------------------------------- #
@@ -585,11 +610,24 @@ def test_commit_skip_true_writes_nothing_even_with_end_date():
     assert fake.updates == []
 
 
-def test_commit_holding_outcome_writes_nothing_even_when_end_date_supplied():
-    """Bill/vendorcredit bug: end_date must not advance the watermark past a failed batch import."""
-    # modified_datetime a few minutes before query_start — well under the hold bound (U-228),
-    # so this exercises the ordinary (not bound-exceeded) hold path.
-    fake = FakeSyncService([_make_sync(modified_datetime="2026-03-10T14:25:00")])
+def test_commit_first_hold_of_fresh_streak_stamps_hold_started_datetime_only():
+    """First hold in a streak writes once to stamp HoldStartedDatetime; LastSyncDatetime unchanged."""
+    fake = FakeSyncService([_make_sync(hold_started_datetime=None)])
+    run = _opened_run(fake)
+    outcome = SyncOutcome(from_service_pull=True)
+    outcome.record_projection_failure("vc-1")
+    before = run.sync_record.last_sync_datetime
+    run.commit(outcome, end_date="2019-12-31")
+    assert len(fake.updates) == 1
+    assert fake.updates[0][1].last_sync_datetime == before
+    assert fake.updates[0][1].hold_started_datetime == "2026-03-10T14:30:00Z"
+    assert run.sync_record.hold_started_datetime == "2026-03-10T14:30:00Z"
+    assert run.sync_record.last_sync_datetime == before
+
+
+def test_commit_continuing_hold_streak_writes_nothing_even_when_end_date_supplied():
+    """Second-or-later hold in an existing streak must not write — end_date must not advance watermark."""
+    fake = FakeSyncService([_make_sync(hold_started_datetime="2026-03-10T14:25:00")])
     run = _opened_run(fake)
     outcome = SyncOutcome(from_service_pull=True)
     outcome.record_projection_failure("vc-1")
@@ -599,14 +637,88 @@ def test_commit_holding_outcome_writes_nothing_even_when_end_date_supplied():
     assert run.sync_record.last_sync_datetime == before
 
 
+def test_commit_staging_only_failure_fresh_streak_stamps_hold_start_once():
+    """First staging-only hold in a fresh streak writes once to stamp HoldStartedDatetime."""
+    fake = FakeSyncService([_make_sync(hold_started_datetime=None)])
+    run = _opened_run(fake)
+    outcome = SyncOutcome(from_service_pull=True)
+    outcome.record_staging_failure("staging-only")
+    before = run.sync_record.last_sync_datetime
+    run.commit(outcome)
+    assert len(fake.updates) == 1
+    assert fake.updates[0][1].last_sync_datetime == before
+    assert fake.updates[0][1].hold_started_datetime == "2026-03-10T14:30:00Z"
+
+
 def test_commit_staging_only_failure_holds_with_no_write():
-    """Audit S-01: staging failures invisible to scripts used to advance past missing qbo.* rows."""
-    fake = FakeSyncService([_make_sync(modified_datetime="2026-03-10T14:25:00")])
+    """Audit S-01: continuing hold streak must not write when staging failures block advance."""
+    fake = FakeSyncService([_make_sync(hold_started_datetime="2026-03-10T14:25:00")])
     run = _opened_run(fake)
     outcome = SyncOutcome(from_service_pull=True)
     outcome.record_staging_failure("staging-only")
     run.commit(outcome)
     assert fake.updates == []
+
+
+def test_first_hold_after_long_skip_gap_does_not_force_advance_even_with_ancient_modified_datetime():
+    """
+    Regression for Finding 1: stale modified_datetime after a long --skip-sync-update gap must
+    not cause an immediate force-advance on the first real hold observation.
+    """
+    ancient = (FIXED_QUERY_START - timedelta(days=90)).strftime("%Y-%m-%dT%H:%M:%S")
+    fake = FakeSyncService([
+        _make_sync(
+            modified_datetime=ancient,
+            created_datetime=ancient,
+            hold_started_datetime=None,
+        )
+    ])
+    run = _opened_run(fake)
+    outcome = SyncOutcome(from_service_pull=True)
+    outcome.record_projection_failure("42")
+    for _ in range(3):
+        run.commit(outcome, skip=True)
+    assert fake.updates == []
+    before = run.sync_record.last_sync_datetime
+    run.commit(outcome)
+    assert len(fake.updates) == 1
+    assert fake.updates[0][1].hold_started_datetime == "2026-03-10T14:30:00Z"
+    assert run.sync_record.last_sync_datetime == before
+
+
+def test_hold_streak_second_evaluation_reuses_existing_hold_started_datetime_no_extra_write():
+    """Continuing hold streak must not re-stamp hold_started_datetime."""
+    hold_start = (FIXED_QUERY_START - timedelta(minutes=30)).strftime("%Y-%m-%dT%H:%M:%S")
+    fake = FakeSyncService([_make_sync(hold_started_datetime=hold_start)])
+    run = _opened_run(fake)
+    outcome = SyncOutcome(from_service_pull=True)
+    outcome.record_projection_failure("42")
+    run.commit(outcome)
+    assert fake.updates == []
+    assert _held_duration(run.sync_record, FIXED_QUERY_START) == timedelta(minutes=30)
+
+
+def test_hold_cleared_on_successful_advance_after_recovering():
+    """Successful watermark advance must clear hold_started_datetime."""
+    fake = FakeSyncService([_make_sync(hold_started_datetime="2026-03-10T12:00:00")])
+    run = _opened_run(fake)
+    run.commit(SyncOutcome(from_service_pull=True))
+    assert fake.updates[-1][1].hold_started_datetime is None
+
+
+def test_force_advance_with_future_end_date_also_clamps():
+    """Bound-exceeded force-advance with a future end_date must clamp to watermark_value."""
+    past_bound_hold = PAST_BOUND_HOLD
+    fake = FakeSyncService([_make_sync(hold_started_datetime=past_bound_hold)])
+    run = _opened_run(fake)
+    outcome = SyncOutcome(from_service_pull=True)
+    outcome.record_projection_failure("42")
+
+    with _patch_bound_forced_advance_deps():
+        run.commit(outcome, end_date="2026-03-10")
+
+    assert fake.updates[0][1].last_sync_datetime == run.watermark_value
+    assert fake.updates[0][1].last_sync_datetime != "2026-03-10T23:59:59"
 
 
 # --------------------------------------------------------------------------- #
@@ -642,9 +754,9 @@ def test_commit_holding_outcome_past_bound_force_advances_and_records_issues():
     Core U-228 behavior: once held longer than the bound, commit() must advance the watermark
     exactly like a clean success AND record a critical issue per blocking id.
     """
-    # Default _make_sync() modified_datetime (2026-01-01T00:00:00) is ~68 days before
-    # FIXED_QUERY_START (2026-03-10T14:30:00) — comfortably past the 7200s default bound.
-    fake = FakeSyncService([_make_sync()])
+    # hold_started_datetime ~68 days before FIXED_QUERY_START — comfortably past the 7200s default bound.
+    past_bound_hold = PAST_BOUND_HOLD
+    fake = FakeSyncService([_make_sync(hold_started_datetime=past_bound_hold)])
     run = _opened_run(fake)
     outcome = SyncOutcome(from_service_pull=True)
     outcome.record_projection_failure("42")   # internal staging PK
@@ -668,8 +780,8 @@ def test_commit_holding_outcome_exactly_at_bound_force_advances():
     Boundary case: held == bound exactly must still force-advance (the check is `>=`, not `>`)
     — the bound is a ceiling on how long a hold may persist, not a strictly-greater-than gate.
     """
-    at_bound_modified = (FIXED_QUERY_START - timedelta(seconds=_watermark_hold_bound_seconds())).strftime("%Y-%m-%dT%H:%M:%S")
-    fake = FakeSyncService([_make_sync(modified_datetime=at_bound_modified)])
+    at_bound_hold = (FIXED_QUERY_START - timedelta(seconds=_watermark_hold_bound_seconds())).strftime("%Y-%m-%dT%H:%M:%S")
+    fake = FakeSyncService([_make_sync(hold_started_datetime=at_bound_hold)])
     run = _opened_run(fake)
     outcome = SyncOutcome(from_service_pull=True)
     outcome.record_projection_failure("42")
@@ -683,10 +795,10 @@ def test_commit_holding_outcome_exactly_at_bound_force_advances():
 
 def test_commit_holding_outcome_one_second_under_bound_does_not_force_advance():
     """Mirror of the boundary test above: one second under the bound must still be a plain hold."""
-    under_bound_modified = (
+    under_bound_hold = (
         FIXED_QUERY_START - timedelta(seconds=_watermark_hold_bound_seconds() - 1)
     ).strftime("%Y-%m-%dT%H:%M:%S")
-    fake = FakeSyncService([_make_sync(modified_datetime=under_bound_modified)])
+    fake = FakeSyncService([_make_sync(hold_started_datetime=under_bound_hold)])
     run = _opened_run(fake)
     outcome = SyncOutcome(from_service_pull=True)
     outcome.record_projection_failure("42")
@@ -699,7 +811,8 @@ def test_commit_holding_outcome_one_second_under_bound_does_not_force_advance():
 
 def test_commit_holding_outcome_past_bound_resolves_real_qbo_id_for_projection_failure():
     """The staging-repo resolver, when it hits, must supply the real id — not just the PK."""
-    fake = FakeSyncService([_make_sync()])
+    past_bound_hold = PAST_BOUND_HOLD
+    fake = FakeSyncService([_make_sync(hold_started_datetime=past_bound_hold)])
     run = _opened_run(fake)
     outcome = SyncOutcome(from_service_pull=True)
     outcome.record_projection_failure("42")
@@ -713,7 +826,8 @@ def test_commit_holding_outcome_past_bound_resolves_real_qbo_id_for_projection_f
 
 def test_commit_holding_outcome_past_bound_with_end_date_writes_end_of_day_stamp():
     """Bound-exceeded must respect end_date exactly like the clean-success path does."""
-    fake = FakeSyncService([_make_sync()])
+    past_bound_hold = PAST_BOUND_HOLD
+    fake = FakeSyncService([_make_sync(hold_started_datetime=past_bound_hold)])
     run = _opened_run(fake)
     outcome = SyncOutcome(from_service_pull=True)
     outcome.record_projection_failure("42")
@@ -731,7 +845,7 @@ def test_commit_holding_outcome_unparseable_anchor_never_force_advances():
     never force-advance on a None. A wrong hold costs a redundant re-pull; a wrong force-advance
     permanently loses a still-failing record.
     """
-    fake = FakeSyncService([_make_sync(modified_datetime="not-a-real-datetime", created_datetime="also-not-a-datetime")])
+    fake = FakeSyncService([_make_sync(hold_started_datetime="not-a-real-datetime")])
     run = _opened_run(fake)
     outcome = SyncOutcome(from_service_pull=True)
     outcome.record_projection_failure("42")
@@ -749,7 +863,8 @@ def test_commit_holding_outcome_realm_resolution_failure_still_force_advances():
     A failure resolving the QBO realm (e.g. no auth row) must not block the force-advance —
     the advance is the load-bearing guarantee; the reconciliation write is best-effort.
     """
-    fake = FakeSyncService([_make_sync()])
+    past_bound_hold = PAST_BOUND_HOLD
+    fake = FakeSyncService([_make_sync(hold_started_datetime=past_bound_hold)])
     run = _opened_run(fake)
     outcome = SyncOutcome(from_service_pull=True)
     outcome.record_projection_failure("42")
@@ -774,14 +889,14 @@ def test_watermark_hold_bound_seconds_default_and_env_validation(monkeypatch):
     assert _watermark_hold_bound_seconds() == 7200
 
 
-def test_held_duration_falls_back_to_created_datetime_when_never_advanced():
-    sync_record = _make_sync(modified_datetime=None, created_datetime="2026-03-10T12:30:00")
+def test_held_duration_reads_hold_started_datetime():
+    sync_record = _make_sync(hold_started_datetime="2026-03-10T12:30:00")
     now = datetime(2026, 3, 10, 14, 30, 0, tzinfo=timezone.utc)
     assert _held_duration(sync_record, now) == timedelta(hours=2)
 
 
 def test_held_duration_none_when_anchor_unparseable():
-    sync_record = _make_sync(modified_datetime="garbage", created_datetime="also-garbage")
+    sync_record = _make_sync(hold_started_datetime="garbage")
     assert _held_duration(sync_record, datetime.now(timezone.utc)) is None
 
 
@@ -969,6 +1084,149 @@ def test_open_ignores_rows_with_different_provider_env_or_entity():
 # --------------------------------------------------------------------------- #
 
 
+def test_write_refuses_to_move_watermark_backward_on_primary_path():
+    """
+    Primary _write path must refuse backward watermark moves (must fail against pre-fix _write).
+    """
+    original = _make_sync(last_sync_datetime="2026-03-01T00:00:00Z")
+    fake = FakeSyncService([original])
+    run = _opened_run(fake)
+    persisted = run._write("2026-02-01T00:00:00Z")
+    assert fake.updates == []
+    assert persisted.last_sync_datetime == "2026-03-01T00:00:00Z"
+    assert run.sync_record.last_sync_datetime == "2026-03-01T00:00:00Z"
+
+
+def test_write_backward_guard_clears_stale_hold_marker():
+    """
+    When the monotonicity guard blocks a backward/equal write and a hold marker is set,
+    _write must clear the stale marker. Must fail against pre-fix _write (early return
+    left hold_started_datetime untouched).
+    """
+    stored = "2026-03-01T00:00:00Z"
+    original = _make_sync(
+        last_sync_datetime=stored,
+        hold_started_datetime="2026-02-15T12:00:00Z",
+    )
+    fake = FakeSyncService([original])
+    run = _opened_run(fake)
+    persisted = run._write("2026-02-01T00:00:00Z")
+    assert len(fake.updates) == 1
+    assert fake.updates[-1][1].hold_started_datetime is None
+    assert fake.updates[-1][1].last_sync_datetime == stored
+    assert persisted.last_sync_datetime == stored
+    assert run.sync_record.hold_started_datetime is None
+    assert run.sync_record.last_sync_datetime == stored
+
+
+def test_write_backward_guard_no_write_when_no_hold_marker_to_clear():
+    """Sibling negative control: blocked backward write with no hold marker must not write."""
+    stored = "2026-03-01T00:00:00Z"
+    original = _make_sync(last_sync_datetime=stored, hold_started_datetime=None)
+    fake = FakeSyncService([original])
+    run = _opened_run(fake)
+    persisted = run._write("2026-02-01T00:00:00Z")
+    assert fake.updates == []
+    assert persisted.last_sync_datetime == stored
+    assert run.sync_record.last_sync_datetime == stored
+
+
+def test_sync_service_update_by_public_id_preserves_hold_marker_for_generic_update_payload():
+    """SyncUpdate HTTP path lacks hold_started_datetime — must preserve existing marker."""
+    existing = _make_sync(
+        public_id="pub-hold",
+        hold_started_datetime="2026-01-01T00:00:00",
+        last_sync_datetime="2026-01-15T00:00:00Z",
+    )
+    repo = Mock()
+    repo.read_by_public_id.return_value = existing
+    repo.update_by_id.side_effect = lambda s: s
+
+    generic_payload = SimpleNamespace(
+        row_version="rv-new",
+        provider="qbo",
+        env="prod",
+        entity="bill",
+        last_sync_datetime="2026-02-01T00:00:00Z",
+    )
+    result = SyncService(repo=repo).update_by_public_id(
+        public_id="pub-hold",
+        sync=generic_payload,
+    )
+    assert result.hold_started_datetime == "2026-01-01T00:00:00"
+    repo.update_by_id.assert_called_once()
+    passed = repo.update_by_id.call_args[0][0]
+    assert passed.hold_started_datetime == "2026-01-01T00:00:00"
+
+    # WatermarkRun._persist_watermark always threads hold_started_datetime explicitly.
+    watermark_payload = SimpleNamespace(
+        row_version="rv-new",
+        provider="qbo",
+        env="prod",
+        entity="bill",
+        last_sync_datetime="2026-02-01T00:00:00Z",
+        hold_started_datetime=None,
+    )
+    repo.reset_mock()
+    repo.read_by_public_id.return_value = existing
+    result = SyncService(repo=repo).update_by_public_id(
+        public_id="pub-hold",
+        sync=watermark_payload,
+    )
+    assert result.hold_started_datetime is None
+    passed = repo.update_by_id.call_args[0][0]
+    assert passed.hold_started_datetime is None
+
+
+def test_stamp_hold_start_adopts_canonical_row_on_write_conflict():
+    """_stamp_hold_start must adopt the canonical row when the stamp write loses a ROWVERSION race."""
+    original = _make_sync(hold_started_datetime=None, last_sync_datetime="2026-01-01T00:00:00Z")
+    fake = FakeSyncService([original])
+    fake.configure_update_failures(
+        1,
+        advance_last_sync_to="2026-06-01T00:00:00Z",
+    )
+    run = _opened_run(fake)
+    outcome = SyncOutcome(from_service_pull=True)
+    outcome.record_projection_failure("42")
+    run.commit(outcome)
+    assert run.sync_record.last_sync_datetime == "2026-06-01T00:00:00Z"
+    assert len(fake.updates) == 1
+    assert fake.updates[0][1].hold_started_datetime == "2026-03-10T14:30:00Z"
+
+
+def test_clear_hold_marker_adopts_canonical_row_on_write_conflict():
+    """_clear_hold_marker must adopt the canonical row when the clear write loses a ROWVERSION race."""
+    stored = "2026-03-01T00:00:00Z"
+    hold_start = "2026-02-15T12:00:00Z"
+    original = _make_sync(
+        last_sync_datetime=stored,
+        hold_started_datetime=hold_start,
+    )
+    fake = FakeSyncService([original])
+    fake.configure_update_failures(1, advance_last_sync_to=stored)
+    run = _opened_run(fake)
+    persisted = run._write("2026-02-01T00:00:00Z")
+    assert persisted.last_sync_datetime == stored
+    assert run.sync_record.last_sync_datetime == stored
+    assert run.sync_record.hold_started_datetime == hold_start
+    assert len(fake.updates) == 1
+    assert fake.updates[0][1].hold_started_datetime is None
+
+
+def test_write_allows_forward_or_equal_writes_on_primary_path():
+    """Monotonicity guard must not block legitimate forward writes; equal value is a no-op success."""
+    original = _make_sync(last_sync_datetime="2026-03-01T00:00:00Z")
+    fake = FakeSyncService([original])
+    run = _opened_run(fake)
+    persisted = run._write("2026-03-01T00:00:00Z")
+    assert fake.updates == []
+    assert persisted.last_sync_datetime == "2026-03-01T00:00:00Z"
+    persisted = run._write("2026-04-01T00:00:00Z")
+    assert len(fake.updates) == 1
+    assert persisted.last_sync_datetime == "2026-04-01T00:00:00Z"
+
+
 def test_write_raises_when_update_returns_none_and_leaves_sync_record_unchanged():
     """ROWVERSION races / missing rows must not report an advanced watermark that never persisted."""
     original = _make_sync(last_sync_datetime="2026-01-01T00:00:00Z")
@@ -993,6 +1251,28 @@ def test_write_adopts_concurrent_ahead_watermark_without_raising():
     assert persisted.last_sync_datetime == "2026-03-01T00:00:00Z"
     assert run.sync_record.last_sync_datetime == "2026-03-01T00:00:00Z"
     assert len(fake.updates) == 1
+
+
+def test_write_adopt_branch_clears_stale_hold_marker_on_adopted_row():
+    """Adopting a concurrently-advanced watermark must clear a stale hold marker on that row."""
+    original = _make_sync(
+        last_sync_datetime="2026-01-01T00:00:00Z",
+        hold_started_datetime="2026-02-15T12:00:00Z",
+    )
+    fake = FakeSyncService([original])
+    fake.configure_update_failures(
+        1,
+        advance_last_sync_to="2026-03-01T00:00:00Z",
+    )
+    run = _opened_run(fake)
+    persisted = run._write("2026-02-01T00:00:00Z")
+    assert persisted.last_sync_datetime == "2026-03-01T00:00:00Z"
+    assert run.sync_record.last_sync_datetime == "2026-03-01T00:00:00Z"
+    assert persisted.hold_started_datetime is None
+    assert run.sync_record.hold_started_datetime is None
+    assert len(fake.updates) == 2
+    assert fake.updates[0][1].hold_started_datetime is None
+    assert fake.updates[-1][1].hold_started_datetime is None
 
 
 def test_write_retries_once_after_rowversion_race_then_succeeds():
@@ -1207,6 +1487,20 @@ def test_every_sync_qbo_script_references_watermark_run():
     )
 
 
+def test_every_sync_qbo_script_calls_exit_nonzero_on_sync_failure():
+    """A script that prints a failure result and falls off the end exits 0 — Finding 5 (U-240)."""
+    missing: list[str] = []
+    for path in _iter_sync_script_paths():
+        text = path.read_text(encoding="utf-8")
+        if "exit_nonzero_on_sync_failure(" not in text:
+            missing.append(path.name)
+    assert not missing, (
+        "every sync_qbo_*.py must route its __main__ result through "
+        "exit_nonzero_on_sync_failure so a failed run cannot exit 0. Missing: "
+        + ", ".join(missing)
+    )
+
+
 def test_sync_scripts_never_call_outcome_record_skip_directly():
     """Skip vs hold must go through record_projection_error, not service-only skip verbs."""
     offenders = _offending_attr_call_sites(
@@ -1276,3 +1570,39 @@ def test_sync_scripts_projection_except_blocks_do_not_append_parallel_failure_li
         "failure bookkeeping belongs in SyncOutcome; a parallel local list is the drift U-217 removed. "
         "Offenders: " + ", ".join(offenders)
     )
+
+
+# --------------------------------------------------------------------------- #
+# G. ReimburseCharge TxnDate filter rejection (Finding 4)
+# --------------------------------------------------------------------------- #
+
+
+def test_query_reimburse_charges_page_raises_on_start_date():
+    from integrations.intuit.qbo.invoice.external.client import QboInvoiceClient
+
+    mock_http = Mock()
+    client = QboInvoiceClient(realm_id="r1", http_client=mock_http)
+    with pytest.raises(QboValidationError):
+        client.query_reimburse_charges_page(start_date="2026-01-01")
+    mock_http.get.assert_not_called()
+    mock_http.post.assert_not_called()
+
+
+def test_query_reimburse_charges_page_raises_on_end_date():
+    from integrations.intuit.qbo.invoice.external.client import QboInvoiceClient
+
+    mock_http = Mock()
+    client = QboInvoiceClient(realm_id="r1", http_client=mock_http)
+    with pytest.raises(QboValidationError):
+        client.query_reimburse_charges_page(end_date="2026-06-30")
+    mock_http.get.assert_not_called()
+    mock_http.post.assert_not_called()
+
+
+def test_sync_from_qbo_reimburse_charge_raises_on_start_date_before_any_io():
+    from integrations.intuit.qbo.reimburse_charge.business.service import QboReimburseChargeService
+
+    with patch("integrations.intuit.qbo.reimburse_charge.business.service.QboInvoiceClient") as mock_client_cls:
+        with pytest.raises(QboValidationError):
+            QboReimburseChargeService().sync_from_qbo(realm_id="r1", start_date="2026-01-01")
+        mock_client_cls.assert_not_called()

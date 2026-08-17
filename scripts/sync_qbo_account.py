@@ -17,6 +17,7 @@ from scripts.sync_helper import (
     _normalize_last_sync,
     _normalize_watermark_value,
     assert_cli_system_admin,
+    exit_nonzero_on_sync_failure,
 )
 from integrations.intuit.qbo.base.sync_outcome import SyncOutcome
 from integrations.sync.business.service import SyncService
@@ -272,3 +273,4 @@ if __name__ == "__main__":
 
     import json
     print(json.dumps(result, indent=2, default=str))
+    exit_nonzero_on_sync_failure(result)

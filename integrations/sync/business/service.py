@@ -77,6 +77,7 @@ class SyncService:
             existing.env = sync.env
             existing.entity = sync.entity
             existing.last_sync_datetime = sync.last_sync_datetime
+            existing.hold_started_datetime = getattr(sync, "hold_started_datetime", existing.hold_started_datetime)
             return self.repo.update_by_id(existing)
         return None
 

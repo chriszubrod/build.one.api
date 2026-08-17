@@ -17,6 +17,7 @@ from scripts.sync_helper import (
     _normalize_last_sync,
     _normalize_watermark_value,
     assert_cli_system_admin,
+    exit_nonzero_on_sync_failure,
 )
 from integrations.intuit.qbo.base.sync_outcome import SyncOutcome
 from shared.database import with_retry
@@ -338,3 +339,4 @@ if __name__ == "__main__":
     assert_cli_system_admin()
     result = sync_qbo_term()
     print(result)
+    exit_nonzero_on_sync_failure(result)

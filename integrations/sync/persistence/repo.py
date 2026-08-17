@@ -70,7 +70,8 @@ class SyncRepository:
                 provider=row.Provider,
                 env=row.Env,
                 entity=row.Entity,
-                last_sync_datetime=row.LastSyncDatetime
+                last_sync_datetime=row.LastSyncDatetime,
+                hold_started_datetime=row.HoldStartedDatetime,
             )
         except AttributeError as error:
             logger.error(f"Attribute error during sync mapping: {error}")
@@ -267,6 +268,7 @@ class SyncRepository:
                         "Env": sync.env,
                         "Entity": sync.entity,
                         "LastSyncDatetime": sync.last_sync_datetime,
+                        "HoldStartedDatetime": sync.hold_started_datetime,
                     },
                 )
                 row = cursor.fetchone()

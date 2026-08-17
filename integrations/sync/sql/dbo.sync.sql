@@ -25,7 +25,14 @@ BEGIN
 END
 GO
 
-
+IF NOT EXISTS (
+    SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
+    WHERE TABLE_NAME = 'Sync' AND COLUMN_NAME = 'HoldStartedDatetime'
+)
+BEGIN
+    ALTER TABLE dbo.Sync
+    ADD HoldStartedDatetime DATETIME2(3) NULL;
+END
 GO
 
 CREATE OR ALTER PROCEDURE CreateSync
@@ -33,7 +40,8 @@ CREATE OR ALTER PROCEDURE CreateSync
     @Provider NVARCHAR(50),
     @Env NVARCHAR(255),
     @Entity NVARCHAR(255),
-    @LastSyncDatetime DATETIME2(3) = NULL
+    @LastSyncDatetime DATETIME2(3) = NULL,
+    @HoldStartedDatetime DATETIME2(3) = NULL
 )
 AS
 BEGIN
@@ -41,7 +49,7 @@ BEGIN
 
     DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();
 
-    INSERT INTO dbo.[Sync] ([CreatedDatetime], [ModifiedDatetime], [Provider], [Env], [Entity], [LastSyncDatetime])
+    INSERT INTO dbo.[Sync] ([CreatedDatetime], [ModifiedDatetime], [Provider], [Env], [Entity], [LastSyncDatetime], [HoldStartedDatetime])
     OUTPUT
         INSERTED.[Id],
         INSERTED.[PublicId],
@@ -51,8 +59,9 @@ BEGIN
         INSERTED.[Provider],
         INSERTED.[Env],
         INSERTED.[Entity],
-        CONVERT(VARCHAR(19), INSERTED.[LastSyncDatetime], 120) AS [LastSyncDatetime]
-    VALUES (@Now, @Now, @Provider, @Env, @Entity, @LastSyncDatetime);
+        CONVERT(VARCHAR(19), INSERTED.[LastSyncDatetime], 120) AS [LastSyncDatetime],
+        CONVERT(VARCHAR(19), INSERTED.[HoldStartedDatetime], 120) AS [HoldStartedDatetime]
+    VALUES (@Now, @Now, @Provider, @Env, @Entity, @LastSyncDatetime, @HoldStartedDatetime);
 
     COMMIT TRANSACTION;
 END;
@@ -75,7 +84,8 @@ BEGIN
         [Provider],
         [Env],
         [Entity],
-        [LastSyncDatetime]
+        [LastSyncDatetime],
+        [HoldStartedDatetime]
     FROM dbo.[Sync]
     ORDER BY [Provider] ASC;
 
@@ -103,7 +113,8 @@ BEGIN
         [Provider],
         [Env],
         [Entity],
-        [LastSyncDatetime]
+        [LastSyncDatetime],
+        [HoldStartedDatetime]
     FROM dbo.[Sync]
     WHERE [Id] = @Id;
 
@@ -131,7 +142,8 @@ BEGIN
         [Provider],
         [Env],
         [Entity],
-        [LastSyncDatetime]
+        [LastSyncDatetime],
+        [HoldStartedDatetime]
     FROM dbo.[Sync]
     WHERE [PublicId] = @PublicId;
 
@@ -159,7 +171,8 @@ BEGIN
         [Provider],
         [Env],
         [Entity],
-        [LastSyncDatetime]
+        [LastSyncDatetime],
+        [HoldStartedDatetime]
     FROM dbo.[Sync]
     WHERE [Provider] = @Provider;
 
@@ -177,7 +190,8 @@ CREATE OR ALTER PROCEDURE UpdateSyncById
     @Provider NVARCHAR(50),
     @Env NVARCHAR(255),
     @Entity NVARCHAR(255),
-    @LastSyncDatetime DATETIME2(3) = NULL
+    @LastSyncDatetime DATETIME2(3) = NULL,
+    @HoldStartedDatetime DATETIME2(3) = NULL
 )
 AS
 BEGIN
@@ -191,7 +205,8 @@ BEGIN
         [Provider] = @Provider,
         [Env] = @Env,
         [Entity] = @Entity,
-        [LastSyncDatetime] = @LastSyncDatetime
+        [LastSyncDatetime] = @LastSyncDatetime,
+        [HoldStartedDatetime] = @HoldStartedDatetime
     OUTPUT
         INSERTED.[Id],
         INSERTED.[PublicId],
@@ -201,7 +216,8 @@ BEGIN
         INSERTED.[Provider],
         INSERTED.[Env],
         INSERTED.[Entity],
-        CONVERT(VARCHAR(19), INSERTED.[LastSyncDatetime], 120) AS [LastSyncDatetime]
+        CONVERT(VARCHAR(19), INSERTED.[LastSyncDatetime], 120) AS [LastSyncDatetime],
+        CONVERT(VARCHAR(19), INSERTED.[HoldStartedDatetime], 120) AS [HoldStartedDatetime]
     WHERE [Id] = @Id AND [RowVersion] = @RowVersion;
 
     COMMIT TRANSACTION;
@@ -229,7 +245,8 @@ BEGIN
         DELETED.[Provider],
         DELETED.[Env],
         DELETED.[Entity],
-        CONVERT(VARCHAR(19), DELETED.[LastSyncDatetime], 120) AS [LastSyncDatetime]
+        CONVERT(VARCHAR(19), DELETED.[LastSyncDatetime], 120) AS [LastSyncDatetime],
+        CONVERT(VARCHAR(19), DELETED.[HoldStartedDatetime], 120) AS [HoldStartedDatetime]
     WHERE [Id] = @Id;
 
     COMMIT TRANSACTION;

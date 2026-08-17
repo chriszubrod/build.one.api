@@ -14,10 +14,12 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 
 # Local Imports
 from scripts.sync_helper import (
+    END_DATE_CLAMP_EPILOG_NOTE,
     WatermarkRun,
     _normalize_last_sync,
     _normalize_watermark_value,
     assert_cli_system_admin,
+    exit_nonzero_on_sync_failure,
 )
 from integrations.intuit.qbo.base.sync_outcome import SyncOutcome
 from shared.database import with_retry
@@ -623,7 +625,7 @@ def parse_args():
     parser = argparse.ArgumentParser(
         description='Sync QBO Bills to BuildOne',
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
+        epilog=f"""
 Examples:
   # Full incremental sync (uses last sync timestamp)
   python scripts/sync_qbo_bill.py
@@ -639,8 +641,7 @@ Examples:
   # Historical batch without updating sync record
   python scripts/sync_qbo_bill.py --start-date 2022-01-01 --end-date 2022-12-31 --skip-sync-update
 
-Note: When --end-date is provided, the sync record timestamp is set to the end_date,
-allowing you to track progress through historical batch imports.
+{END_DATE_CLAMP_EPILOG_NOTE}
         """
     )
     
@@ -719,3 +720,4 @@ if __name__ == "__main__":
     
     import json
     print(json.dumps(result, indent=2, default=str))
+    exit_nonzero_on_sync_failure(result)

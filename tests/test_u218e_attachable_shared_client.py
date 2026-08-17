@@ -20,7 +20,12 @@ from integrations.intuit.qbo.base.errors import (
     QboTransportError,
     QboWriteRefusedError,
 )
-from integrations.intuit.qbo.base.retry import RetryPolicy, TIER_C_REQUEST_CEILING_SECONDS, execute_with_retry
+from integrations.intuit.qbo.base.retry import (
+    RetryPolicy,
+    TIER_A_REQUEST_CEILING_SECONDS,
+    TIER_C_REQUEST_CEILING_SECONDS,
+    execute_with_retry,
+)
 
 REALM_ID = "realm-test"
 
@@ -288,18 +293,24 @@ class _FailThenSucceed:
         return {"ok": True}
 
 
-@pytest.fixture
-def deterministic_retry(monkeypatch):
+def _deterministic_clock(monkeypatch, ceiling_seconds):
+    """Advance the fake monotonic clock by `ceiling_seconds` per call -- mirrors
+    tests/test_qbo_retry_budget.py's `_deterministic_every_attempt_full_timeout_clock`."""
     calls = {"n": 0}
 
     def fake_monotonic():
         calls["n"] += 1
-        return 1000.0 if calls["n"] == 1 else 1000.0 + 120.0
+        return 1000.0 + (calls["n"] - 1) * ceiling_seconds
 
     monkeypatch.setattr(retry_module.time, "monotonic", fake_monotonic)
     monkeypatch.setattr(retry_module.time, "sleep", lambda _s: None)
     monkeypatch.setattr(retry_module.random, "uniform", lambda _a, _b: 0.01)
     return calls
+
+
+@pytest.fixture
+def deterministic_retry(monkeypatch):
+    return _deterministic_clock(monkeypatch, TIER_C_REQUEST_CEILING_SECONDS)
 
 
 def test_for_uploads_single_is_at_most_once():
@@ -308,11 +319,22 @@ def test_for_uploads_single_is_at_most_once():
     assert policy.max_total_budget_seconds >= TIER_C_REQUEST_CEILING_SECONDS
 
 
-def test_for_writes_budget_exceeds_on_same_scenario(deterministic_retry):
+def test_for_writes_survives_full_tier_a_timeout_then_succeeds(monkeypatch):
+    """
+    Regression guard for U-233: a for_writes() call that fails once, after
+    consuming a full realistic tier-A timeout, must still get a second
+    attempt and succeed -- under the OLD flat 30s budget this scenario
+    would have raised after exactly 1 call (budget spent entirely on the
+    first timed-out attempt). Uses its own local clock (not the shared
+    `deterministic_retry` fixture, which models tier C) because for_writes()
+    defaults to tier A.
+    """
+    _deterministic_clock(monkeypatch, TIER_A_REQUEST_CEILING_SECONDS)
+
     op = _FailThenSucceed(fail_times=1)
-    with pytest.raises(QboServiceUnavailableError):
-        execute_with_retry(op, RetryPolicy.for_writes(), operation_name="qbo.attachable.upload")
-    assert op.calls == 1
+    result = execute_with_retry(op, RetryPolicy.for_writes(), operation_name="qbo.attachable.upload")
+    assert result == {"ok": True}
+    assert op.calls == 2
 
 
 # --------------------------------------------------------------------------- #

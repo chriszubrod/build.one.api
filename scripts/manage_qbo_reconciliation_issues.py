@@ -15,6 +15,7 @@ Usage:
   PYTHONPATH=. ./.venv/bin/python scripts/manage_qbo_reconciliation_issues.py acknowledge --id 12345
   PYTHONPATH=. ./.venv/bin/python scripts/manage_qbo_reconciliation_issues.py resolve --id 12345
   PYTHONPATH=. ./.venv/bin/python scripts/manage_qbo_reconciliation_issues.py bulk-resolve --drift-type orphaned_item_scc_mapping --created-before-days 30
+  PYTHONPATH=. ./.venv/bin/python scripts/manage_qbo_reconciliation_issues.py bulk-resolve --drift-type qbo_missing_locally --entity-type Bill --created-before-date 2026-06-21
   PYTHONPATH=. ./.venv/bin/python scripts/manage_qbo_reconciliation_issues.py bulk-resolve --drift-type pull_delete_reconcile --entity-type Bill --apply
 """
 from __future__ import annotations
@@ -37,6 +38,15 @@ def _utc_cutoff(days: int) -> datetime:
         print(f"Refusing: days must be >= 0 (got {days}).")
         sys.exit(2)
     return datetime.utcnow() - timedelta(days=days)
+
+
+def _parse_created_before_date(date_str: str) -> datetime:
+    """Parse YYYY-MM-DD as naive UTC midnight (pyodbc DATETIME2 convention)."""
+    try:
+        return datetime.strptime(date_str, "%Y-%m-%d")
+    except ValueError:
+        print(f"Refusing: --created-before-date must be YYYY-MM-DD (got {date_str!r}).")
+        sys.exit(2)
 
 
 def _validate_max_rows(max_rows: int) -> int:
@@ -192,17 +202,24 @@ def cmd_resolve(args: argparse.Namespace) -> int:
 
 
 def _build_bulk_resolve_filters(args: argparse.Namespace):
-    if not args.drift_type and not args.entity_type and args.created_before_days is None:
+    if (
+        not args.drift_type
+        and not args.entity_type
+        and args.created_before_days is None
+        and args.created_before_date is None
+    ):
         print(
             "Refusing bulk-resolve: at least one of --drift-type, --entity-type, "
-            "or --created-before-days is required."
+            "--created-before-days, or --created-before-date is required."
         )
         sys.exit(2)
 
     max_rows = _validate_max_rows(args.max_rows)
 
     created_before: Optional[datetime] = None
-    if args.created_before_days is not None:
+    if args.created_before_date is not None:
+        created_before = _parse_created_before_date(args.created_before_date)
+    elif args.created_before_days is not None:
         created_before = _utc_cutoff(args.created_before_days)
 
     resolve_kwargs = {
@@ -274,11 +291,17 @@ def main() -> int:
     )
     bulk_parser.add_argument("--drift-type", default=None)
     bulk_parser.add_argument("--entity-type", default=None)
-    bulk_parser.add_argument(
+    cutoff_group = bulk_parser.add_mutually_exclusive_group()
+    cutoff_group.add_argument(
         "--created-before-days",
         type=int,
         default=None,
         help="Only rows created more than N days ago.",
+    )
+    cutoff_group.add_argument(
+        "--created-before-date",
+        default=None,
+        help="Only rows created before this UTC date (YYYY-MM-DD). Mutually exclusive with --created-before-days.",
     )
     bulk_parser.add_argument("--realm-id", default=None)
     bulk_parser.add_argument(

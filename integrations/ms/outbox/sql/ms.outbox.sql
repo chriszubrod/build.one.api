@@ -203,11 +203,22 @@ GO
 
 -- ============================================================================
 -- ReadPendingMsOutboxByEntity
--- Policy C coalesce: find an existing pending/failed row for the same
+-- Policy C coalesce lookup: pending/failed rows for the same
 -- (EntityType, EntityPublicId, Kind). Only upload_sharepoint_file coalesces
 -- on the service side; excel_* kinds always create fresh rows even if this
 -- sproc would return a match. The sproc doesn't enforce that — it's up to
 -- the service layer to decide whether to call this or not.
+--
+-- Returns ALL matching rows — NOT `TOP 1` as it did originally — because one
+-- entity legitimately has several pending uploads, one per ATTACHMENT.
+-- MsOutboxService._find_coalescible scans the payloads in Python and collapses
+-- only the row whose `attachment_id` matches; with `TOP 1` the newest row was
+-- the only candidate, so a second attachment enqueued for the same bill inside
+-- one debounce window collapsed into the first row's payload and its document
+-- was silently dropped. Payload discrimination stays in Python (same as the
+-- box variant) — no new parameter here, so an unapplied sproc degrades to
+-- "at most one candidate" (an extra outbox row) instead of erroring.
+-- Newest first.
 -- ============================================================================
 CREATE OR ALTER PROCEDURE ReadPendingMsOutboxByEntity
 (
@@ -219,7 +230,7 @@ AS
 BEGIN
     SET NOCOUNT ON;
 
-    SELECT TOP 1
+    SELECT
         [Id], [PublicId], [RowVersion],
         CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
         CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],

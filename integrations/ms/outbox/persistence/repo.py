@@ -175,7 +175,22 @@ class MsOutboxRepository:
         entity_type: str,
         entity_public_id: str,
         kind: str,
-    ) -> Optional[MsOutbox]:
+    ) -> List[MsOutbox]:
+        """
+        All `pending`/`failed` rows for an (entity_type, entity_public_id, kind)
+        triple, newest first.
+
+        Returns a LIST (was a single row): one entity can have several pending
+        uploads — one per attachment — and Policy C coalescing inspects each
+        row's payload to find the one whose `attachment_id` matches. Mirrors
+        `BoxOutboxRepository.read_pending_by_entity`.
+
+        SQL-FIRST but degrade-safe: `ReadPendingMsOutboxByEntity` lost its
+        `TOP 1` in the same change. No parameter changed, so an unapplied sproc
+        does not error — it just returns at most the newest row, and the Python
+        filter's ambiguity-means-no-coalesce bias turns that into an extra
+        outbox row rather than a dropped document.
+        """
         try:
             with get_connection() as conn:
                 cursor = conn.cursor()
@@ -189,7 +204,7 @@ class MsOutboxRepository:
                             "Kind": kind,
                         },
                     )
-                    return self._from_db(cursor.fetchone())
+                    return [self._from_db(r) for r in cursor.fetchall() if r]
                 finally:
                     try:
                         cursor.close()

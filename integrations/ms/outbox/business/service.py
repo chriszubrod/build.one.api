@@ -31,9 +31,28 @@ KIND_SEND_MAIL = "send_mail"  # Phase 4
 # same attachment should collapse). Excel rows NEVER coalesce — each bill is
 # a distinct row; two enqueues for the same bill must not collapse into one.
 # Mail sends also don't coalesce (don't want to risk losing an intended send).
+#
+# "Same ATTACHMENT", not "same entity": collapsing on (EntityType,
+# EntityPublicId, Kind) alone silently dropped the second of two attachments
+# enqueued for one bill inside a debounce window (the first payload won and the
+# second document was never uploaded — no dead-letter, no ReconciliationIssue).
+# `_find_coalescible` below does the per-attachment discrimination.
 _COALESCING_KINDS: Set[str] = {
     KIND_UPLOAD_SHAREPOINT_FILE,
 }
+
+# Fields that identify WHERE/WHAT a SharePoint upload writes. Two enqueues that
+# agree on every one of these are the same physical upload.
+_UPLOAD_TARGET_KEYS = ("drive_id", "parent_item_id", "filename", "blob_path")
+
+# Worker-owned payload keys. `_handle_upload_sharepoint_file` checkpoints
+# resumable-upload state into Payload mid-flight (see worker.py
+# `_upload_large_file_with_resume`), and a `failed` row — which IS coalescible —
+# can carry a partial checkpoint. A blanket payload refresh would restart a
+# half-uploaded 200MB file from byte 0; carrying the checkpoint across a CHANGED
+# target would be worse (an uploadUrl is bound to drive/parent/filename and
+# `completed_bytes` to the blob). So: preserve only when the target is identical.
+_UPLOAD_SESSION_KEYS = ("upload_session_url", "completed_bytes", "total_bytes")
 
 
 def _writes_allowed() -> bool:
@@ -63,6 +82,10 @@ class MsOutboxService:
     Kinds always create fresh rows. `payload` is a per-row JSON dict the
     worker's handler understands — for Excel rows it carries the actual row
     values; for uploads it tracks upload-session state after the first chunk.
+
+    Coalescing is scoped to a single ATTACHMENT (`payload["attachment_id"]`),
+    not to the entity: two attachments enqueued for one bill inside a debounce
+    window stay two rows. See `_find_coalescible`.
     """
 
     def __init__(self, repo: Optional[MsOutboxRepository] = None):
@@ -108,18 +131,55 @@ class MsOutboxService:
         payload_json = json.dumps(payload) if payload is not None else None
 
         if kind in _COALESCING_KINDS:
-            existing = self.repo.read_pending_by_entity(
+            # Policy C coalesce — per-ATTACHMENT, not per-entity. One entity
+            # legitimately has several pending uploads (one per attachment);
+            # only the row representing the SAME physical upload collapses.
+            existing = self._find_coalescible(
                 entity_type=entity_type,
                 entity_public_id=entity_public_id,
                 kind=kind,
+                payload=payload,
             )
             if existing:
-                # Extend debounce. Don't touch RequestId (so Graph still
-                # dedups) or Payload (we trust the stored state for the
-                # current attempt).
+                # Latest target wins: a re-enqueue can carry a corrected
+                # parent_item_id / filename (e.g. a completion re-run after a
+                # folder mapping fix). Extending only the debounce window would
+                # drain the STALE payload and make the repair a silent no-op.
+                # RequestId is deliberately untouched so Graph still dedups.
+                refreshed = existing
+                payload_refreshed = False
+                existing_payload = self._parse_payload(existing.payload)
+                merged = self._merge_coalesced_payload(existing_payload, payload)
+                if merged != existing_payload:
+                    updated_row = self.repo.update_payload(
+                        id=existing.id,
+                        row_version=existing.row_version,
+                        payload=json.dumps(merged),
+                    )
+                    if updated_row:
+                        refreshed = updated_row
+                        payload_refreshed = True
+                    else:
+                        # ROWVERSION lost — a worker claimed the row between
+                        # our read and this write, so it drains the PREVIOUS
+                        # payload. Same attachment either way (that is the
+                        # coalesce predicate), so no document is dropped, but
+                        # a corrected target may not land. Never silent.
+                        logger.warning(
+                            "ms.outbox.coalesce_payload_refresh_failed",
+                            extra={
+                                "event_name": "ms.outbox.coalesce_payload_refresh_failed",
+                                "correlation_id": correlation_id,
+                                "operation_name": kind,
+                                "outbox_public_id": existing.public_id,
+                                "entity_type": entity_type,
+                                "entity_public_id": entity_public_id,
+                                "attachment_id": merged.get("attachment_id"),
+                            },
+                        )
                 updated = self.repo.update_ready_after(
-                    id=existing.id,
-                    row_version=existing.row_version,
+                    id=refreshed.id,
+                    row_version=refreshed.row_version,
                     ready_after=ready_after,
                 )
                 logger.info(
@@ -132,10 +192,12 @@ class MsOutboxService:
                         "outbox_public_id": existing.public_id,
                         "entity_type": entity_type,
                         "entity_public_id": entity_public_id,
+                        "attachment_id": merged.get("attachment_id"),
+                        "payload_refreshed": payload_refreshed,
                         "new_ready_after": ready_after.isoformat(),
                     },
                 )
-                return updated or existing
+                return updated or refreshed
 
         request_id = str(uuid.uuid4())
         created = self.repo.create(
@@ -163,6 +225,123 @@ class MsOutboxService:
             },
         )
         return created
+
+    # ------------------------------------------------------------------ #
+    # Coalescing internals
+    # ------------------------------------------------------------------ #
+
+    @staticmethod
+    def _parse_payload(raw: Optional[str]) -> Dict[str, Any]:
+        """Best-effort JSON→dict. Anything not a dict becomes `{}`."""
+        if not raw:
+            return {}
+        try:
+            parsed = json.loads(raw)
+        except (ValueError, TypeError):
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+
+    def _find_coalescible(
+        self,
+        *,
+        entity_type: str,
+        entity_public_id: str,
+        kind: str,
+        payload: Optional[Dict[str, Any]],
+    ) -> Optional[MsOutbox]:
+        """
+        Find a pending/failed row for the same (entity_type, entity_public_id,
+        kind) that represents the SAME physical upload — mirroring
+        `integrations/box/outbox/business/service.py::_find_coalescible`.
+
+        Coalescing is DESTRUCTIVE: only the winning row's payload ever drains,
+        so a false match silently loses a document while a false miss costs one
+        extra outbox row (one extra PUT). The predicate therefore requires
+        POSITIVE proof of identity, and every ambiguous case falls through to
+        "no match":
+
+          - candidate `Payload` NULL / empty          → skip
+          - candidate `Payload` unparsable or non-dict → skip
+            (a NULL/garbage payload must never behave as a wildcard that
+            matches everything; such rows dead-letter at drain time anyway)
+          - `attachment_id` not int-comparable on either side → skip
+          - the upload DESTINATION differs → skip. Every one of
+            `_UPLOAD_TARGET_KEYS` must match, ALWAYS — not merely as a fallback
+            when `attachment_id` is NULL. One attachment legitimately fans out to
+            several SharePoint targets (project module folder + general receipts
+            folder; one folder per project on a multi-project bill), and those are
+            different physical uploads sharing an attachment_id.
+
+        Callers with no dict payload never coalesce at all.
+        """
+        if not isinstance(payload, dict):
+            return None
+
+        candidates = self.repo.read_pending_by_entity(
+            entity_type=entity_type,
+            entity_public_id=entity_public_id,
+            kind=kind,
+        )
+        attachment_id = payload.get("attachment_id")
+        for candidate in candidates or []:
+            if not candidate or not candidate.payload:
+                continue
+            try:
+                candidate_payload = json.loads(candidate.payload)
+            except (ValueError, TypeError):
+                continue
+            if not isinstance(candidate_payload, dict):
+                continue
+            try:
+                if not same_attachment_id(candidate_payload.get("attachment_id"), attachment_id):
+                    continue
+            except (TypeError, ValueError):
+                # Non-numeric attachment_id on either side — identity unprovable.
+                continue
+            # The DESTINATION is part of the identity, ALWAYS — not just when
+            # attachment_id is absent. MS deliberately fans ONE attachment out to
+            # MULTIPLE SharePoint targets: `ExpenseService.complete()` enqueues the
+            # same attachment to the project module folder AND to the general
+            # receipts folder back-to-back inside the debounce window, and
+            # `complete_bill` enqueues a shared invoice PDF once per project folder
+            # on a multi-project bill. Those are DIFFERENT physical uploads that
+            # merely share an attachment_id. Keying on attachment_id alone collapses
+            # them, and with the payload refresh below that destroys whichever
+            # destination enqueued FIRST. (Box's precedent can key on attachment
+            # alone only because Box has exactly one destination folder per project;
+            # SharePoint does not.)
+            if any(
+                candidate_payload.get(key) != payload.get(key) for key in _UPLOAD_TARGET_KEYS
+            ):
+                continue
+            return candidate
+        return None
+
+    @staticmethod
+    def _merge_coalesced_payload(
+        existing_payload: Dict[str, Any],
+        new_payload: Optional[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        """
+        Latest target wins; worker checkpoint preserved only when the target is
+        unchanged.
+
+        Caller-supplied fields come from the NEW enqueue so a corrected folder
+        or filename actually drains. The worker-owned resumable-upload
+        checkpoint (`_UPLOAD_SESSION_KEYS`) is carried forward ONLY when every
+        `_UPLOAD_TARGET_KEYS` field is byte-identical — an uploadUrl is bound to
+        (drive, parent, filename) and `completed_bytes` to the blob's content,
+        so resuming either against a changed target would corrupt the upload.
+        """
+        merged: Dict[str, Any] = dict(new_payload or {})
+        target_unchanged = all(
+            existing_payload.get(key) == merged.get(key) for key in _UPLOAD_TARGET_KEYS
+        )
+        if target_unchanged:
+            for key in _UPLOAD_SESSION_KEYS:
+                if key in existing_payload:
+                    merged[key] = existing_payload[key]
+        return merged
 
     # ------------------------------------------------------------------ #
     # Convenience methods for callers that don't want to build payload /

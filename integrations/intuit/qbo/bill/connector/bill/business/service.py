@@ -535,40 +535,71 @@ class BillBillConnector:
         vendor = self.vendor_service.read_by_id(bill.vendor_id) if bill.vendor_id else None
         vendor_name = vendor.name if vendor else None
         
-        # Store QboBill locally
-        local_qbo_bill = self.qbo_bill_repo.create(
-            qbo_id=created_bill.id,
-            sync_token=created_bill.sync_token,
-            realm_id=realm_id,
-            vendor_ref_value=qbo_vendor_ref.value,
-            vendor_ref_name=vendor_name,
-            txn_date=created_bill.txn_date,
-            due_date=created_bill.due_date,
-            doc_number=created_bill.doc_number,
-            private_note=created_bill.private_note,
-            total_amt=created_bill.total_amt,
-            balance=created_bill.balance,
-            ap_account_ref_value=created_bill.ap_account_ref.value if created_bill.ap_account_ref else None,
-            ap_account_ref_name=created_bill.ap_account_ref.name if created_bill.ap_account_ref else None,
-            sales_term_ref_value=created_bill.sales_term_ref.value if created_bill.sales_term_ref else None,
-            sales_term_ref_name=created_bill.sales_term_ref.name if created_bill.sales_term_ref else None,
-            currency_ref_value=created_bill.currency_ref.value if created_bill.currency_ref else None,
-            currency_ref_name=created_bill.currency_ref.name if created_bill.currency_ref else None,
-            exchange_rate=created_bill.exchange_rate,
-            department_ref_value=created_bill.department_ref.value if created_bill.department_ref else None,
-            department_ref_name=created_bill.department_ref.name if created_bill.department_ref else None,
-            global_tax_calculation=created_bill.global_tax_calculation,
+        # Store QboBill locally — reuse on retry if a prior attempt already persisted it
+        existing_local_qbo_bill = self.qbo_bill_repo.read_by_qbo_id_and_realm_id(
+            created_bill.id, realm_id
         )
-        
-        logger.info(f"Stored local QboBill {local_qbo_bill.id}")
+        if existing_local_qbo_bill:
+            conflicting_mapping = self.mapping_repo.read_by_qbo_bill_id(
+                existing_local_qbo_bill.id
+            )
+            if conflicting_mapping:
+                raise ValueError(
+                    f"QboBill {existing_local_qbo_bill.id} (QboId={created_bill.id}) is already mapped to a "
+                    f"different Bill {conflicting_mapping.bill_id}; cannot push Bill {bill_id} onto it. This "
+                    f"indicates a race between this push retry and an independent pull, or a duplicate local "
+                    f"Bill. Manual investigation required."
+                )
+            local_qbo_bill = existing_local_qbo_bill
+            logger.info(
+                f"QboBill already stored locally for QboId {created_bill.id} "
+                f"(retry after prior partial success) — reusing local record {local_qbo_bill.id}"
+            )
+        else:
+            local_qbo_bill = self.qbo_bill_repo.create(
+                qbo_id=created_bill.id,
+                sync_token=created_bill.sync_token,
+                realm_id=realm_id,
+                vendor_ref_value=qbo_vendor_ref.value,
+                vendor_ref_name=vendor_name,
+                txn_date=created_bill.txn_date,
+                due_date=created_bill.due_date,
+                doc_number=created_bill.doc_number,
+                private_note=created_bill.private_note,
+                total_amt=created_bill.total_amt,
+                balance=created_bill.balance,
+                ap_account_ref_value=created_bill.ap_account_ref.value if created_bill.ap_account_ref else None,
+                ap_account_ref_name=created_bill.ap_account_ref.name if created_bill.ap_account_ref else None,
+                sales_term_ref_value=created_bill.sales_term_ref.value if created_bill.sales_term_ref else None,
+                sales_term_ref_name=created_bill.sales_term_ref.name if created_bill.sales_term_ref else None,
+                currency_ref_value=created_bill.currency_ref.value if created_bill.currency_ref else None,
+                currency_ref_name=created_bill.currency_ref.name if created_bill.currency_ref else None,
+                exchange_rate=created_bill.exchange_rate,
+                department_ref_value=created_bill.department_ref.value if created_bill.department_ref else None,
+                department_ref_name=created_bill.department_ref.name if created_bill.department_ref else None,
+                global_tax_calculation=created_bill.global_tax_calculation,
+            )
+            logger.info(f"Stored local QboBill {local_qbo_bill.id}")
         
         # Store QboBillLines locally and create line item mappings
         if created_bill.line:
             from integrations.intuit.qbo.bill.connector.bill_line_item.business.service import BillLineItemConnector
             line_connector = BillLineItemConnector()
 
+            existing_lines_by_qbo_line_id = {
+                line.qbo_line_id: line
+                for line in self.qbo_bill_line_repo.read_by_qbo_bill_id(local_qbo_bill.id)
+                if line.qbo_line_id
+            }
+
             for qbo_line in created_bill.line:
-                stored_line = self._store_qbo_bill_line(local_qbo_bill.id, qbo_line)
+                stored_line = (
+                    existing_lines_by_qbo_line_id.get(qbo_line.id)
+                    if qbo_line.id
+                    else None
+                )
+                if not stored_line:
+                    stored_line = self._store_qbo_bill_line(local_qbo_bill.id, qbo_line)
 
                 # Create BillLineItem <-> QboBillLine mapping using line_num match
                 if stored_line and qbo_line.line_num and qbo_line.line_num in line_num_to_line_item_id:

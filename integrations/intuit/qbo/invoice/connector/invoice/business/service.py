@@ -815,51 +815,78 @@ class InvoiceInvoiceConnector:
 
         logger.info(f"Created QBO Invoice {created_invoice.id} (SyncToken={created_invoice.sync_token})")
 
-        # Store local QboInvoice mirror
-        local_qbo_invoice = qbo_invoice_repo.create(
-            qbo_id=created_invoice.id,
-            sync_token=created_invoice.sync_token,
-            realm_id=realm_id,
-            customer_ref_value=customer_ref.value,
-            customer_ref_name=customer_ref.name,
-            txn_date=created_invoice.txn_date,
-            due_date=created_invoice.due_date,
-            ship_date=None,
-            doc_number=created_invoice.doc_number,
-            private_note=created_invoice.private_note,
-            customer_memo=None,
-            bill_email=None,
-            total_amt=created_invoice.total_amt,
-            balance=created_invoice.balance,
-            deposit=None,
-            sales_term_ref_value=None,
-            sales_term_ref_name=None,
-            currency_ref_value=created_invoice.currency_ref.value if created_invoice.currency_ref else None,
-            currency_ref_name=created_invoice.currency_ref.name if created_invoice.currency_ref else None,
-            exchange_rate=created_invoice.exchange_rate,
-            department_ref_value=None,
-            department_ref_name=None,
-            class_ref_value=None,
-            class_ref_name=None,
-            ship_method_ref_value=None,
-            ship_method_ref_name=None,
-            tracking_num=None,
-            print_status=None,
-            email_status=None,
-            allow_online_ach_payment=None,
-            allow_online_credit_card_payment=None,
-            apply_tax_after_discount=None,
-            global_tax_calculation=None,
+        # Store local QboInvoice mirror — reuse on retry if a prior attempt already persisted it
+        existing_local_qbo_invoice = qbo_invoice_repo.read_by_qbo_id_and_realm_id(
+            created_invoice.id, realm_id
         )
-
-        logger.info(f"Stored local QboInvoice {local_qbo_invoice.id}")
+        if existing_local_qbo_invoice:
+            conflicting_mapping = self.mapping_repo.read_by_qbo_invoice_id(
+                existing_local_qbo_invoice.id
+            )
+            if conflicting_mapping:
+                raise ValueError(
+                    f"QboInvoice {existing_local_qbo_invoice.id} (QboId={created_invoice.id}) is already mapped to a "
+                    f"different Invoice {conflicting_mapping.invoice_id}; cannot push Invoice {invoice_id} onto it. This "
+                    f"indicates a race between this push retry and an independent pull, or a duplicate local "
+                    f"Invoice. Manual investigation required."
+                )
+            local_qbo_invoice = existing_local_qbo_invoice
+            logger.info(
+                f"QboInvoice already stored locally for QboId {created_invoice.id} "
+                f"(retry after prior partial success) — reusing local record {local_qbo_invoice.id}"
+            )
+        else:
+            local_qbo_invoice = qbo_invoice_repo.create(
+                qbo_id=created_invoice.id,
+                sync_token=created_invoice.sync_token,
+                realm_id=realm_id,
+                customer_ref_value=customer_ref.value,
+                customer_ref_name=customer_ref.name,
+                txn_date=created_invoice.txn_date,
+                due_date=created_invoice.due_date,
+                ship_date=None,
+                doc_number=created_invoice.doc_number,
+                private_note=created_invoice.private_note,
+                customer_memo=None,
+                bill_email=None,
+                total_amt=created_invoice.total_amt,
+                balance=created_invoice.balance,
+                deposit=None,
+                sales_term_ref_value=None,
+                sales_term_ref_name=None,
+                currency_ref_value=created_invoice.currency_ref.value if created_invoice.currency_ref else None,
+                currency_ref_name=created_invoice.currency_ref.name if created_invoice.currency_ref else None,
+                exchange_rate=created_invoice.exchange_rate,
+                department_ref_value=None,
+                department_ref_name=None,
+                class_ref_value=None,
+                class_ref_name=None,
+                ship_method_ref_value=None,
+                ship_method_ref_name=None,
+                tracking_num=None,
+                print_status=None,
+                email_status=None,
+                allow_online_ach_payment=None,
+                allow_online_credit_card_payment=None,
+                apply_tax_after_discount=None,
+                global_tax_calculation=None,
+            )
+            logger.info(f"Stored local QboInvoice {local_qbo_invoice.id}")
 
         # Store local QboInvoiceLine mirrors
         if created_invoice.line:
+            existing_lines_by_qbo_line_id = {
+                line.qbo_line_id: line
+                for line in qbo_invoice_line_repo.read_by_qbo_invoice_id(local_qbo_invoice.id)
+                if line.qbo_line_id
+            }
+
             for qbo_line in created_invoice.line:
                 if qbo_line.detail_type != "SalesItemLineDetail":
                     continue
                 try:
+                    if qbo_line.id and existing_lines_by_qbo_line_id.get(qbo_line.id):
+                        continue
                     detail = qbo_line.sales_item_line_detail
                     qbo_invoice_line_repo.create(
                         qbo_invoice_id=local_qbo_invoice.id,

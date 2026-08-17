@@ -30,7 +30,6 @@ from integrations.ms.sharepoint.external.client import (
     close_workbook_session,
 )
 from entities.bill.business.service import find_insertion_row_for_subcostcode
-from shared.storage import AzureBlobStorage, AzureBlobStorageError
 from shared.api.money import to_decimal_or_none
 
 logger = logging.getLogger(__name__)
@@ -381,10 +380,11 @@ class BillCreditCompleteService:
     ) -> dict:
         """
         Upload attachments for line items to the project's module folder in SharePoint.
-        Downloads from Azure Blob Storage and uploads to SharePoint with final filename.
-        
+        Enqueues each into the durable MS outbox (see MsOutboxService.enqueue_sharepoint_upload) —
+        the worker fetches the blob and performs the actual Graph upload at drain time.
+
         Returns:
-            Dict with success, synced_count, and errors
+            Dict with success, synced_count, skipped_count, and errors
         """
         try:
             # Get the BillCredit module (try multiple names)
@@ -469,20 +469,16 @@ class BillCreditCompleteService:
                     "errors": [{"error": f"Project {project_id} not found"}]
                 }
             
-            # Initialize Azure Blob Storage
-            try:
-                storage = AzureBlobStorage()
-            except Exception as e:
-                return {
-                    "success": False,
-                    "message": f"Failed to initialize storage: {str(e)}",
-                    "synced_count": 0,
-                    "errors": [{"error": f"Failed to initialize storage: {str(e)}"}]
-                }
-            
             synced_count = 0
+            skipped_count = 0
             errors = []
-            uploaded_attachments = {}  # Track to avoid duplicates
+            uploaded_attachment_outcomes = {}  # attachment_id -> was_skipped bool
+
+            from integrations.ms.outbox.business.service import (
+                MsOutboxService,
+                sharepoint_upload_outcome,
+            )
+            ms_outbox = MsOutboxService()
 
             print(f"  SharePoint sync: Processing {len(line_items)} line items for project {project_id}")
             logger.info(f"SharePoint sync: Processing {len(line_items)} line items for project {project_id}")
@@ -509,9 +505,12 @@ class BillCreditCompleteService:
                     logger.info(f"    Found attachment link for line item {line_item.public_id}, attachment_id={attachment_link.attachment_id}")
                     
                     # Check if already uploaded
-                    if attachment_link.attachment_id in uploaded_attachments:
+                    if attachment_link.attachment_id in uploaded_attachment_outcomes:
                         logger.info(f"Attachment {attachment_link.attachment_id} already uploaded, skipping")
-                        synced_count += 1
+                        if uploaded_attachment_outcomes[attachment_link.attachment_id]:
+                            skipped_count += 1
+                        else:
+                            synced_count += 1
                         continue
                     
                     # Get attachment record
@@ -594,58 +593,38 @@ class BillCreditCompleteService:
                         file_extension = "." + file_extension
                     
                     sharepoint_filename = base_filename + file_extension
-                    
-                    # Download from Azure Blob Storage
-                    try:
-                        logger.info(f"Downloading attachment from Azure: {attachment.blob_url}")
-                        file_content, metadata = storage.download_file(attachment.blob_url)
-                        logger.info(f"Downloaded {len(file_content)} bytes")
-                    except AzureBlobStorageError as e:
-                        error_msg = str(e)
-                        logger.error(f"Failed to download: {error_msg}")
-                        errors.append({
-                            "line_item_id": line_item.id,
-                            "line_item_public_id": line_item.public_id,
-                            "error": f"Failed to download from Azure: {error_msg}"
-                        })
-                        continue
-                    except Exception as e:
-                        logger.exception("Error downloading attachment")
-                        errors.append({
-                            "line_item_id": line_item.id,
-                            "line_item_public_id": line_item.public_id,
-                            "error": f"Error downloading: {str(e)}"
-                        })
-                        continue
-                    
-                    # Upload to SharePoint
-                    content_type = attachment.content_type or metadata.get("content_type", "application/octet-stream")
-                    logger.info(f"Uploading '{sharepoint_filename}' to SharePoint folder '{module_folder.get('name')}'")
-                    
-                    upload_result = self.driveitem_service.upload_file(
-                        drive_public_id=drive.public_id,
+
+                    content_type = attachment.content_type or "application/octet-stream"
+                    queued = ms_outbox.enqueue_sharepoint_upload(
+                        entity_type="BillCredit",
+                        entity_public_id=str(bill_credit.public_id),
+                        drive_id=drive.drive_id,
                         parent_item_id=folder_item_id,
                         filename=sharepoint_filename,
-                        content=file_content,
-                        content_type=content_type
+                        content_type=content_type,
+                        blob_path=attachment.blob_url,
+                        attachment_id=attachment.id,
                     )
-                    
-                    upload_status = upload_result.get("status_code")
-                    if upload_status not in [200, 201]:
-                        error_msg = upload_result.get('message', 'Unknown error')
-                        logger.error(f"SharePoint upload failed: {error_msg}")
+                    outcome = sharepoint_upload_outcome(queued)
+                    if outcome == "refused":
+                        logger.error(f"SharePoint upload enqueue refused for '{sharepoint_filename}'")
                         errors.append({
                             "line_item_id": line_item.id,
                             "line_item_public_id": line_item.public_id,
-                            "error": f"SharePoint upload failed: {error_msg}"
+                            "error": "SharePoint upload enqueue refused (ALLOW_MS_WRITES=false or enqueue failure)"
                         })
                         continue
-                    
-                    # Success
-                    uploaded_attachments[attachment_link.attachment_id] = sharepoint_filename
-                    synced_count += 1
-                    uploaded_item = upload_result.get("item", {})
-                    logger.info(f"Uploaded to SharePoint: '{sharepoint_filename}' (item_id: {uploaded_item.get('item_id')})")
+
+                    was_skipped = outcome == "skipped"
+                    uploaded_attachment_outcomes[attachment_link.attachment_id] = was_skipped
+                    if was_skipped:
+                        skipped_count += 1
+                    else:
+                        synced_count += 1
+                    logger.info(
+                        f"Queued SharePoint upload: '{sharepoint_filename}' "
+                        f"(outbox {queued.public_id}, attachment_id={attachment.id})"
+                    )
 
                 except Exception as e:
                     logger.exception(f"Error processing line item {line_item.id}")
@@ -655,8 +634,10 @@ class BillCreditCompleteService:
                         "error": f"Unexpected error: {str(e)}"
                     })
             
-            success = synced_count > 0 or len(errors) == 0
-            message = f"Uploaded {synced_count} file(s) to SharePoint"
+            success = synced_count > 0 or skipped_count > 0 or len(errors) == 0
+            message = f"Queued {synced_count} file(s) for SharePoint upload"
+            if skipped_count > 0:
+                message += f", {skipped_count} already uploaded (skipped)"
             if errors:
                 message += f" with {len(errors)} error(s)"
             
@@ -664,6 +645,7 @@ class BillCreditCompleteService:
                 "success": success,
                 "message": message,
                 "synced_count": synced_count,
+                "skipped_count": skipped_count,
                 "errors": errors
             }
             
@@ -673,6 +655,7 @@ class BillCreditCompleteService:
                 "success": False,
                 "message": f"Error: {str(e)}",
                 "synced_count": 0,
+                "skipped_count": 0,
                 "errors": [{"error": str(e)}]
             }
 

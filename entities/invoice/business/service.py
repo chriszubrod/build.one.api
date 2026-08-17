@@ -14,7 +14,6 @@ from shared.authz import current_user_id, current_is_system_admin
 from entities.payment_term.business.service import PaymentTermService
 from entities.project.business.service import ProjectService
 from entities.module.business.service import ModuleService
-from shared.storage import AzureBlobStorage, AzureBlobStorageError
 from shared.api.money import to_decimal_or_none
 
 logger = logging.getLogger(__name__)
@@ -1554,16 +1553,12 @@ class InvoiceService:
             if not drive:
                 return {"success": False, "message": "Drive not found", "synced_count": 0, "errors": [{"error": "Drive not found"}]}
 
-            try:
-                storage = AzureBlobStorage()
-            except Exception as e:
-                return {"success": False, "message": str(e), "synced_count": 0, "errors": [{"error": str(e)}]}
-
             att_service = AttachmentService()
             invoice_number = invoice.invoice_number or invoice.public_id
             errors = []
             synced_count = 0
-            uploaded_attachment_ids: set = set()
+            skipped_count = 0
+            uploaded_attachment_outcomes: dict = {}  # attachment_id -> skipped bool
 
             # Create (or reuse) a subfolder named after the invoice
             # number. Uses read_or_create so re-runs of complete_invoice
@@ -1586,11 +1581,20 @@ class InvoiceService:
                 invoice=invoice, line_items=line_items
             )
 
+            from integrations.ms.outbox.business.service import (
+                MsOutboxService,
+                sharepoint_upload_outcome,
+            )
+            ms_outbox = MsOutboxService()
+
             # 3. Upload each unique attachment
             for row_data in attachment_rows:
                 att_id = row_data["attachment_id"]
-                if att_id in uploaded_attachment_ids:
-                    synced_count += 1
+                if att_id in uploaded_attachment_outcomes:
+                    if uploaded_attachment_outcomes[att_id]:
+                        skipped_count += 1
+                    else:
+                        synced_count += 1
                     continue
                 blob_url = row_data["blob_url"]
                 if not blob_url:
@@ -1613,25 +1617,33 @@ class InvoiceService:
                 )
 
                 try:
-                    file_content, metadata = storage.download_file(blob_url)
+                    queued = ms_outbox.enqueue_sharepoint_upload(
+                        entity_type="Invoice",
+                        entity_public_id=str(invoice.public_id),
+                        drive_id=drive.drive_id,
+                        parent_item_id=upload_folder_item_id,
+                        filename=sharepoint_filename,
+                        content_type=row_data["content_type"] or "application/octet-stream",
+                        blob_path=blob_url,
+                        attachment_id=att_id,
+                    )
+                    outcome = sharepoint_upload_outcome(queued)
+                    if outcome == "refused":
+                        errors.append({
+                            "attachment_id": att_id,
+                            "error": "SharePoint upload enqueue refused (ALLOW_MS_WRITES=false or enqueue failure)"
+                        })
+                        continue
+
+                    was_skipped = outcome == "skipped"
+                    uploaded_attachment_outcomes[att_id] = was_skipped
+                    if was_skipped:
+                        skipped_count += 1
+                    else:
+                        synced_count += 1
                 except Exception as e:
                     errors.append({"attachment_id": att_id, "error": str(e)})
                     continue
-
-                content_type = row_data["content_type"] or metadata.get("content_type", "application/octet-stream")
-                upload_result = self.driveitem_service.upload_file(
-                    drive_public_id=drive.public_id,
-                    parent_item_id=upload_folder_item_id,
-                    filename=sharepoint_filename,
-                    content=file_content,
-                    content_type=content_type,
-                )
-                if upload_result.get("status_code") not in [200, 201]:
-                    errors.append({"attachment_id": att_id, "error": upload_result.get("message", "Unknown error")})
-                    continue
-
-                uploaded_attachment_ids.add(att_id)
-                synced_count += 1
 
             # 4. Upload packet PDF if one has already been generated
             existing_links = self.invoice_attachment_service.read_by_invoice_id(invoice_id=invoice.id)
@@ -1642,28 +1654,45 @@ class InvoiceService:
                 if not packet_att or packet_att.category != "invoice_packet" or not packet_att.blob_url:
                     continue
                 try:
-                    file_content, _ = storage.download_file(packet_att.blob_url)
                     from entities.invoice.business.naming import build_packet_filename
                     packet_filename = build_packet_filename(invoice_number)
-                    upload_result = self.driveitem_service.upload_file(
-                        drive_public_id=drive.public_id,
+                    queued = ms_outbox.enqueue_sharepoint_upload(
+                        entity_type="Invoice",
+                        entity_public_id=str(invoice.public_id),
+                        drive_id=drive.drive_id,
                         parent_item_id=upload_folder_item_id,
                         filename=packet_filename,
-                        content=file_content,
                         content_type="application/pdf",
+                        blob_path=packet_att.blob_url,
+                        attachment_id=packet_att.id,
                     )
-                    if upload_result.get("status_code") in [200, 201]:
-                        synced_count += 1
+                    outcome = sharepoint_upload_outcome(queued)
+                    if outcome == "refused":
+                        errors.append({
+                            "packet": True,
+                            "error": "SharePoint upload enqueue refused (ALLOW_MS_WRITES=false or enqueue failure)"
+                        })
+                    elif outcome == "skipped":
+                        skipped_count += 1
                     else:
-                        errors.append({"packet": True, "error": upload_result.get("message", "Unknown error")})
+                        synced_count += 1
                 except Exception as e:
                     errors.append({"packet": True, "error": str(e)})
 
-            return {"success": not errors, "message": f"Uploaded {synced_count} file(s)", "synced_count": synced_count, "errors": errors}
+            message = f"Queued {synced_count} file(s) for SharePoint upload"
+            if skipped_count > 0:
+                message += f", {skipped_count} already uploaded (skipped)"
+            return {
+                "success": not errors,
+                "message": message,
+                "synced_count": synced_count,
+                "skipped_count": skipped_count,
+                "errors": errors,
+            }
 
         except Exception as e:
             logger.exception("Error uploading invoice attachments to SharePoint")
-            return {"success": False, "message": str(e), "synced_count": 0, "errors": [{"error": str(e)}]}
+            return {"success": False, "message": str(e), "synced_count": 0, "skipped_count": 0, "errors": [{"error": str(e)}]}
 
     def _sync_billed_status_to_qbo(self, line_items: list, realm_id: str) -> None:
         """

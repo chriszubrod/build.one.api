@@ -27,6 +27,14 @@ KIND_APPEND_EXCEL_ROW = "append_excel_row"
 KIND_INSERT_EXCEL_ROW = "insert_excel_row"
 KIND_SEND_MAIL = "send_mail"  # Phase 4
 
+
+def sharepoint_upload_outcome(queued: Optional[MsOutbox]) -> str:
+    """Classify an enqueue_sharepoint_upload() return: 'refused' | 'skipped' | 'synced'."""
+    if queued is None:
+        return "refused"
+    return "skipped" if queued.status == "done" else "synced"
+
+
 # Per the Round 0 decision: only uploads coalesce (duplicate enqueues for the
 # same attachment should collapse). Excel rows NEVER coalesce — each bill is
 # a distinct row; two enqueues for the same bill must not collapse into one.
@@ -161,10 +169,9 @@ class MsOutboxService:
                         payload_refreshed = True
                     else:
                         # ROWVERSION lost — a worker claimed the row between
-                        # our read and this write, so it drains the PREVIOUS
-                        # payload. Same attachment either way (that is the
-                        # coalesce predicate), so no document is dropped, but
-                        # a corrected target may not land. Never silent.
+                        # our read and this write. A corrected non-target field
+                        # (e.g. content_type) would be silently dropped if we
+                        # kept the stale row; fall through to create a fresh one.
                         logger.warning(
                             "ms.outbox.coalesce_payload_refresh_failed",
                             extra={
@@ -175,29 +182,32 @@ class MsOutboxService:
                                 "entity_type": entity_type,
                                 "entity_public_id": entity_public_id,
                                 "attachment_id": merged.get("attachment_id"),
+                                "outcome": "created_new_row",
                             },
                         )
-                updated = self.repo.update_ready_after(
-                    id=refreshed.id,
-                    row_version=refreshed.row_version,
-                    ready_after=ready_after,
-                )
-                logger.info(
-                    "ms.outbox.row.coalesced",
-                    extra={
-                        "event_name": "ms.outbox.row.coalesced",
-                        "correlation_id": correlation_id,
-                        "operation_name": kind,
-                        "tenant_id": tenant_id,
-                        "outbox_public_id": existing.public_id,
-                        "entity_type": entity_type,
-                        "entity_public_id": entity_public_id,
-                        "attachment_id": merged.get("attachment_id"),
-                        "payload_refreshed": payload_refreshed,
-                        "new_ready_after": ready_after.isoformat(),
-                    },
-                )
-                return updated or refreshed
+                        existing = None
+                if existing:
+                    updated = self.repo.update_ready_after(
+                        id=refreshed.id,
+                        row_version=refreshed.row_version,
+                        ready_after=ready_after,
+                    )
+                    logger.info(
+                        "ms.outbox.row.coalesced",
+                        extra={
+                            "event_name": "ms.outbox.row.coalesced",
+                            "correlation_id": correlation_id,
+                            "operation_name": kind,
+                            "tenant_id": tenant_id,
+                            "outbox_public_id": existing.public_id,
+                            "entity_type": entity_type,
+                            "entity_public_id": entity_public_id,
+                            "attachment_id": merged.get("attachment_id"),
+                            "payload_refreshed": payload_refreshed,
+                            "new_ready_after": ready_after.isoformat(),
+                        },
+                    )
+                    return updated or refreshed
 
         request_id = str(uuid.uuid4())
         created = self.repo.create(

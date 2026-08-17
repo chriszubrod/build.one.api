@@ -408,12 +408,8 @@ def test_coalesce_no_payload_write_when_nothing_changed(svc_repo):
     assert repo.payload_update_calls == []
 
 
-def test_coalesce_payload_refresh_failure_is_logged(svc_repo, caplog):
-    """ROWVERSION lost to a concurrent claim must never be silent.
-
-    Exercised on a SAME-target coalesce (the only kind that exists now), with a
-    non-target payload field changing so a refresh is actually attempted.
-    """
+def test_coalesce_payload_refresh_success_still_coalesces(svc_repo):
+    """Non-target payload correction on a happy-path coalesce still merges in-place."""
     svc, repo = svc_repo
 
     def _enq(content_type):
@@ -425,6 +421,36 @@ def test_coalesce_payload_refresh_failure_is_logged(svc_repo, caplog):
         )
 
     first = _enq("application/octet-stream")
+    second = _enq("application/pdf")
+
+    assert second.id == first.id
+    assert len(repo.rows) == 1
+    assert json.loads(repo.rows[0].payload)["content_type"] == "application/pdf"
+    assert repo.payload_update_calls
+
+
+def test_coalesce_payload_refresh_failure_creates_new_row(svc_repo, caplog):
+    """ROWVERSION lost to a concurrent claim must create a fresh row with the correction."""
+    svc, repo = svc_repo
+
+    def _enq(content_type):
+        return svc.enqueue_sharepoint_upload(
+            entity_type=_ENTITY_TYPE, entity_public_id=_ENTITY_PUBLIC_ID,
+            drive_id=_DRIVE_ID, parent_item_id=_PARENT_ITEM_ID,
+            filename="invoice.pdf", content_type=content_type,
+            blob_path="attachments/invoice.pdf", attachment_id=42,
+        )
+
+    first = _enq("application/octet-stream")
+    payload = json.loads(first.payload)
+    payload.update(
+        {
+            "upload_session_url": "https://graph/session/abc",
+            "completed_bytes": 5242880,
+            "total_bytes": 10485760,
+        }
+    )
+    first.payload = json.dumps(payload)
 
     # Identical TARGET (so it coalesces) but a changed non-target field, so a
     # payload refresh is genuinely attempted. A worker claiming the row between
@@ -433,8 +459,18 @@ def test_coalesce_payload_refresh_failure_is_logged(svc_repo, caplog):
     with patch.object(repo, "update_payload", return_value=None), caplog.at_level("WARNING"):
         result = _enq("application/pdf")
 
-    assert result.id == first.id
-    assert len(repo.rows) == 1
+    assert result.id != first.id
+    assert len(repo.rows) == 2
+    original_payload = json.loads(repo.rows[0].payload)
+    new_payload = json.loads(repo.rows[1].payload)
+    assert original_payload["content_type"] == "application/octet-stream"
+    assert new_payload["content_type"] == "application/pdf"
+    assert original_payload["upload_session_url"] == "https://graph/session/abc"
+    assert original_payload["completed_bytes"] == 5242880
+    assert original_payload["total_bytes"] == 10485760
+    assert "upload_session_url" not in new_payload
+    assert "completed_bytes" not in new_payload
+    assert "total_bytes" not in new_payload
     record = next(
         (r for r in caplog.records if r.getMessage() == "ms.outbox.coalesce_payload_refresh_failed"),
         None,
@@ -442,6 +478,7 @@ def test_coalesce_payload_refresh_failure_is_logged(svc_repo, caplog):
     assert record is not None
     assert record.outbox_public_id == first.public_id
     assert record.attachment_id == 42
+    assert record.outcome == "created_new_row"
 
 def test_null_payload_candidate_never_coalesces(svc_repo):
     svc, repo = svc_repo

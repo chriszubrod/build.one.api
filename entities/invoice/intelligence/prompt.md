@@ -1089,8 +1089,17 @@ This intentionally does NOT propagate to QBO — `BillableStatus` on the QBO lin
 ```python
 result = InvoiceService()._upload_to_sharepoint(invoice=invoice, line_items=line_items)
 # Verify: success=True, errors=[].
-# synced_count == 1 (packet) + number of line-item→attachment LINKS
+# (synced_count + skipped_count) == 1 (packet) + number of line-item→attachment LINKS
 # (a line with N attachments counts N — not "lines with attachments").
+# skipped_count = files already uploaded in a prior run (U-221 idempotency guard hit);
+# synced_count = genuinely new/coalesced enqueues. On a re-run (e.g. KI-45 recovery),
+# previously-delivered files land in skipped_count, not synced_count — check the SUM,
+# not synced_count alone, or a healthy idempotent re-run looks incomplete.
+# NOTE (U-253, 2026-08-17): success/errors here mean the files were ENQUEUED into the
+# MS outbox, not that they have reached SharePoint yet — actual delivery happens async
+# on the outbox drain (~5-30s). A delivery failure after this point dead-letters
+# silently from this call's perspective (see [ms].[ReconciliationIssue]); it is not
+# re-surfaced to complete_invoice/push_draw/this retry step. See TODO.md U-260.
 ```
 
 URL-length failures on long-named files (contract-labor narratives) = KI-45 — fixed in `naming.py` (desc clipped to 120, base capped at 200); on a pre-fix deployment recover by re-uploading with a clipped description.

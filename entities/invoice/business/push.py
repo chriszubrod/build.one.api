@@ -8,6 +8,8 @@ from typing import Any, Callable, Optional
 
 from fastapi import HTTPException
 
+from shared.env_flags import is_truthy
+
 from entities.invoice.business.audit import InvoiceDrawAuditService
 from entities.invoice.business.reconciliation import InvoiceReconciliationService
 from entities.invoice.business.service import InvoiceService
@@ -259,7 +261,7 @@ def _enqueue_parent_details_sync(
 
 
 def _env_writes_enabled(value: Optional[str]) -> bool:
-    return (value or "").strip().lower() == "true"
+    return is_truthy(value)
 
 
 def writes_enabled(ms_value: Optional[str], box_value: Optional[str]) -> bool:

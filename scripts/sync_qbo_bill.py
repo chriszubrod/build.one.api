@@ -444,8 +444,8 @@ def sync_qbo_to_local(
         # Best-effort, ALLOW_BOX_WRITES-gated. Box Excel is batched per project (one
         # download/edit/upload per workbook for all the project's pulled bills) since the
         # drain rewrites the whole .xlsx; per-entity would churn one Box version per bill.
-        import os as _os
-        if _os.getenv("ALLOW_BOX_WRITES", "").strip().lower() == "true":
+        from shared.env_flags import env_flag_enabled
+        if env_flag_enabled("ALLOW_BOX_WRITES"):
             from integrations.box.outbox.business.service import BoxOutboxService
             from integrations.box.excel.business.mapping_service import BoxProjectWorkbookService
             _box_outbox = BoxOutboxService()
@@ -533,10 +533,7 @@ def sync_qbo_bill(
             logger.info(f"Date range filter: {start_date or 'beginning'} to {end_date or 'now'}")
         
         # Get realm ID
-        all_auths = auth_service.read_all()
-        if not all_auths or len(all_auths) == 0:
-            raise ValueError("No QBO authentication found. Please connect your QuickBooks account first.")
-        realm_id = all_auths[0].realm_id
+        realm_id = auth_service.resolve_realm_id()
         logger.info(f"Using realm_id: {realm_id}")
         
         # For date range queries, don't use last_sync_time (we're doing historical batch)

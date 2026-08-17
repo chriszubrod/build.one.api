@@ -1,7 +1,7 @@
 # Python Standard Library Imports
 import logging
-import os
 import time
+from datetime import datetime
 from typing import Any, Dict, List, NoReturn, Optional, Tuple, Union
 
 # Third-party Imports
@@ -30,9 +30,47 @@ from integrations.intuit.qbo.base.errors import (
 from integrations.intuit.qbo.base.budget import QboApiBudget, get_qbo_api_budget
 from integrations.intuit.qbo.base.idempotency import resolve_idempotency_key
 from integrations.intuit.qbo.base.retry import RetryPolicy, execute_with_retry
+from shared.env_flags import env_flag_enabled
 
 
 logger = logging.getLogger(__name__)
+
+
+def _format_datetime_for_qbo_query(datetime_input, *, logger: Optional[logging.Logger] = None) -> Optional[str]:
+    """
+    Format a datetime for a QBO query WHERE clause (ISO 8601 with +HH:MM offset).
+
+    `logger` lets each of the 9 entity clients that call this log their fallback
+    warning under their OWN module logger (matching pre-extraction behavior)
+    instead of this shared module's — pass the caller's `logger` explicitly.
+    """
+    log = logger if logger is not None else logging.getLogger(__name__)
+    if not datetime_input:
+        return None if datetime_input is None else str(datetime_input)
+
+    if isinstance(datetime_input, datetime):
+        datetime_str = datetime_input.isoformat()
+    else:
+        datetime_str = str(datetime_input)
+
+    dt_str = datetime_str.rstrip("Z")
+    if dt_str.endswith("+00:00"):
+        dt_str = dt_str[:-6]
+
+    try:
+        if "T" in dt_str:
+            if "." in dt_str:
+                dt_str = dt_str.split(".")[0]
+            if dt_str.count(":") == 1:
+                dt_str += ":00"
+        else:
+            dt_str += "T00:00:00"
+        return f"{dt_str}+00:00"
+    except Exception as error:
+        log.warning(
+            f"Failed to format datetime '{datetime_str}' for QBO query: {error}. Using as-is."
+        )
+        return datetime_str
 
 
 DEFAULT_PROD_BASE_URL = "https://quickbooks.api.intuit.com/v3/company"
@@ -60,7 +98,7 @@ def writes_allowed() -> bool:
     dev environments are refused by default so a fresh checkout cannot
     accidentally push to real QBO.
     """
-    return os.getenv("ALLOW_QBO_WRITES", "").strip().lower() == "true"
+    return env_flag_enabled("ALLOW_QBO_WRITES")
 
 
 def _recode_writes_allowed() -> bool:
@@ -73,7 +111,7 @@ def _recode_writes_allowed() -> bool:
     malformed string — returns False, so the cockpit ships writes-off and
     go-live is a deliberate, reversible flip of this one flag.
     """
-    return os.getenv("ALLOW_EXPENSE_RECODE_WRITES", "").strip().lower() == "true"
+    return env_flag_enabled("ALLOW_EXPENSE_RECODE_WRITES")
 
 
 def recode_write_gate_reason() -> Optional[str]:

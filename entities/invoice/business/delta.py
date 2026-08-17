@@ -139,10 +139,10 @@ class InvoiceDrawDeltaService:
         immediate verify would show an expected transient SP-cleared/Box-not-yet
         mismatch. Ambiguous rows are never touched.
         """
-        import os
+        from shared.env_flags import env_flag_enabled
 
-        ms_ok = os.getenv("ALLOW_MS_WRITES", "").strip().lower() == "true"
-        box_ok = os.getenv("ALLOW_BOX_WRITES", "").strip().lower() == "true"
+        ms_ok = env_flag_enabled("ALLOW_MS_WRITES")
+        box_ok = env_flag_enabled("ALLOW_BOX_WRITES")
         if not (ms_ok and box_ok):
             return {
                 "status": "halt",

@@ -9,11 +9,11 @@ safe direction globally when a guard is suspected of wrongly skipping.
 Set DISABLE_FANOUT_IDEMPOTENCY_GUARDS=true, restart, re-run the completion
 or let the next pull tick re-push, then unset.
 """
-import os
+from shared.env_flags import env_flag_enabled
 
 
 def idempotency_guards_disabled() -> bool:
-    return os.getenv("DISABLE_FANOUT_IDEMPOTENCY_GUARDS", "").strip().lower() == "true"
+    return env_flag_enabled("DISABLE_FANOUT_IDEMPOTENCY_GUARDS")
 
 
 def same_attachment_id(a, b) -> bool:

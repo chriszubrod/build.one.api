@@ -1,10 +1,9 @@
 # Python Standard Library Imports
 import logging
-from datetime import datetime
 from typing import Optional
 
 # Local Imports
-from integrations.intuit.qbo.base.client import QboHttpClient
+from integrations.intuit.qbo.base.client import QboHttpClient, _format_datetime_for_qbo_query
 from integrations.intuit.qbo.base.errors import QboError, QboValidationError
 from integrations.intuit.qbo.company_info.external.schemas import (
     QboCompanyInfo,
@@ -12,36 +11,6 @@ from integrations.intuit.qbo.company_info.external.schemas import (
 )
 
 logger = logging.getLogger(__name__)
-
-
-def _format_datetime_for_qbo_query(datetime_input) -> Optional[str]:
-    """Format a datetime for a QBO query WHERE clause (ISO 8601 with +HH:MM offset)."""
-    if not datetime_input:
-        return None if datetime_input is None else str(datetime_input)
-
-    if isinstance(datetime_input, datetime):
-        datetime_str = datetime_input.isoformat()
-    else:
-        datetime_str = str(datetime_input)
-
-    dt_str = datetime_str.rstrip("Z")
-    if dt_str.endswith("+00:00"):
-        dt_str = dt_str[:-6]
-
-    try:
-        if "T" in dt_str:
-            if "." in dt_str:
-                dt_str = dt_str.split(".")[0]
-            if dt_str.count(":") == 1:
-                dt_str += ":00"
-        else:
-            dt_str += "T00:00:00"
-        return f"{dt_str}+00:00"
-    except Exception as error:
-        logger.warning(
-            f"Failed to format datetime '{datetime_str}' for QBO query: {error}. Using as-is."
-        )
-        return datetime_str
 
 
 class QboCompanyInfoClient:
@@ -92,7 +61,7 @@ class QboCompanyInfoClient:
             return QboCompanyInfoResponse(**data).company_info
 
         if last_updated_time:
-            formatted = _format_datetime_for_qbo_query(last_updated_time)
+            formatted = _format_datetime_for_qbo_query(last_updated_time, logger=logger)
             query_string = (
                 f"SELECT * FROM CompanyInfo WHERE Metadata.LastUpdatedTime > '{formatted}'"
             )

@@ -209,10 +209,7 @@ def sync_qbo_customer() -> dict:
         auth_service = QboAuthService()
         
         # Get realm ID
-        all_auths = auth_service.read_all()
-        if not all_auths or len(all_auths) == 0:
-            raise ValueError("No QBO authentication found. Please connect your QuickBooks account first.")
-        realm_id = all_auths[0].realm_id
+        realm_id = auth_service.resolve_realm_id()
         logger.info(f"Using realm_id: {realm_id}")
         
         provider = 'qbo'

@@ -35,7 +35,7 @@ Resolver model (Phase 2 — Access Control Rebuild)
 from __future__ import annotations
 
 import logging
-import os
+from shared.env_flags import env_flag_enabled
 import threading
 import time
 from typing import Optional
@@ -98,7 +98,7 @@ _cache_lock = threading.Lock()
 def _phase_timing_enabled() -> bool:
     # U-084 /time-entries latency diagnosis. Single definition — also
     # imported by entities/time_entry/api/router.py. Log-only flag.
-    return os.environ.get("TIME_ENTRIES_PHASE_TIMING", "").strip().lower() == "true"
+    return env_flag_enabled("TIME_ENTRIES_PHASE_TIMING")
 
 
 def _cache_key_for(user_sub: str, *, is_system_admin: bool, company_id: Optional[int]) -> _CacheKey:

@@ -1,49 +1,15 @@
 # Python Standard Library Imports
 import logging
-from datetime import datetime
 from typing import List, Optional
 
 # Local Imports
-from integrations.intuit.qbo.base.client import QboHttpClient
+from integrations.intuit.qbo.base.client import QboHttpClient, _format_datetime_for_qbo_query
 from integrations.intuit.qbo.account.external.schemas import (
     QboAccount,
     QboAccountResponse,
 )
 
 logger = logging.getLogger(__name__)
-
-
-def _format_datetime_for_qbo_query(datetime_input) -> Optional[str]:
-    """
-    Format a datetime (string or datetime object) for a QBO query WHERE clause.
-    QBO expects ISO 8601 with a timezone offset: 'YYYY-MM-DDTHH:MM:SS+HH:MM'.
-    """
-    if not datetime_input:
-        return None if datetime_input is None else str(datetime_input)
-
-    if isinstance(datetime_input, datetime):
-        datetime_str = datetime_input.isoformat()
-    else:
-        datetime_str = str(datetime_input)
-
-    dt_str = datetime_str.rstrip("Z")
-    if dt_str.endswith("+00:00"):
-        dt_str = dt_str[:-6]
-
-    try:
-        if "T" in dt_str:
-            if "." in dt_str:
-                dt_str = dt_str.split(".")[0]
-            if dt_str.count(":") == 1:
-                dt_str += ":00"
-        else:
-            dt_str += "T00:00:00"
-        return f"{dt_str}+00:00"
-    except Exception as error:
-        logger.warning(
-            f"Failed to format datetime '{datetime_str}' for QBO query: {error}. Using as-is."
-        )
-        return datetime_str
 
 
 class QboAccountClient:
@@ -109,7 +75,7 @@ class QboAccountClient:
         """
         where_clauses: List[str] = []
         if last_updated_time:
-            formatted = _format_datetime_for_qbo_query(last_updated_time)
+            formatted = _format_datetime_for_qbo_query(last_updated_time, logger=logger)
             where_clauses.append(f"Metadata.LastUpdatedTime > '{formatted}'")
             logger.debug(
                 f"Querying Accounts with WHERE clause: Metadata.LastUpdatedTime > '{formatted}'"

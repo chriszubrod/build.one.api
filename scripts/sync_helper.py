@@ -1,6 +1,5 @@
 # Python Standard Library Imports
 import logging
-import os
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Dict, Optional
@@ -22,6 +21,7 @@ from integrations.intuit.qbo.vendorcredit.persistence.repo import QboVendorCredi
 from integrations.sync.business.model import Sync
 from integrations.sync.business.service import SyncService
 from integrations.sync.persistence.repo import _parse_sync_last_sync
+from shared.env_flags import _env_positive_int
 
 logger = logging.getLogger(__name__)
 
@@ -110,27 +110,7 @@ def _watermark_overlap_seconds() -> int:
     Box doc push, workbook lock) — transactional pulls run every 15m, so a larger overlap
     re-scans a meaningful fraction of each interval.
     """
-    default = 60
-    raw = os.environ.get("QBO_SYNC_WATERMARK_OVERLAP_SECONDS")
-    if raw is None or raw == "":
-        return default
-    try:
-        parsed = int(raw)
-    except ValueError:
-        logger.warning(
-            "Invalid QBO_SYNC_WATERMARK_OVERLAP_SECONDS=%r; using default %s",
-            raw,
-            default,
-        )
-        return default
-    if parsed < 0:
-        logger.warning(
-            "Negative QBO_SYNC_WATERMARK_OVERLAP_SECONDS=%s; using default %s",
-            parsed,
-            default,
-        )
-        return default
-    return parsed
+    return _env_positive_int("QBO_SYNC_WATERMARK_OVERLAP_SECONDS", 60, minimum=0, warn=True, logger=logger)
 
 
 def _watermark_hold_bound_seconds() -> int:
@@ -141,27 +121,7 @@ def _watermark_hold_bound_seconds() -> int:
     (e.g. purchase held ~47min on 2026-08-12 and self-cleared) against bounding
     worst-case silent-loss exposure when a hold would otherwise never advance.
     """
-    default = 7200
-    raw = os.environ.get("QBO_WATERMARK_HOLD_BOUND_SECONDS")
-    if raw is None or raw == "":
-        return default
-    try:
-        parsed = int(raw)
-    except ValueError:
-        logger.warning(
-            "Invalid QBO_WATERMARK_HOLD_BOUND_SECONDS=%r; using default %s",
-            raw,
-            default,
-        )
-        return default
-    if parsed < 0:
-        logger.warning(
-            "Negative QBO_WATERMARK_HOLD_BOUND_SECONDS=%s; using default %s",
-            parsed,
-            default,
-        )
-        return default
-    return parsed
+    return _env_positive_int("QBO_WATERMARK_HOLD_BOUND_SECONDS", 7200, minimum=0, warn=True, logger=logger)
 
 
 def _held_duration(sync_record: Sync, now: datetime) -> Optional[timedelta]:

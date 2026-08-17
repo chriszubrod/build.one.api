@@ -1,10 +1,10 @@
 # Python Standard Library Imports
 import asyncio
 import logging
-import os
 from typing import Optional
 
 from shared.authz import system_authz
+from shared.env_flags import env_flag_enabled
 
 logger = logging.getLogger(__name__)
 
@@ -35,7 +35,7 @@ def _scheduler_enabled() -> bool:
     Default-deny gate. Local dev doesn't start the scheduler unless opted in.
     Production App Service sets ENABLE_SCHEDULER=true in Application Settings.
     """
-    return os.getenv("ENABLE_SCHEDULER", "").strip().lower() == "true"
+    return env_flag_enabled("ENABLE_SCHEDULER")
 
 
 def start_scheduler() -> None:

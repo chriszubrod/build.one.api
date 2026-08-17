@@ -293,10 +293,7 @@ def sync_qbo_invoice(
             logger.info(f"Date range filter: {start_date or 'beginning'} to {end_date or 'now'}")
         
         # Get realm ID
-        all_auths = auth_service.read_all()
-        if not all_auths or len(all_auths) == 0:
-            raise ValueError("No QBO authentication found. Please connect your QuickBooks account first.")
-        realm_id = all_auths[0].realm_id
+        realm_id = auth_service.resolve_realm_id()
         logger.info(f"Using realm_id: {realm_id}")
 
         # For date range or customer-specific queries, don't use last_sync_time

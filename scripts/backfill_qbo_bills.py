@@ -137,10 +137,9 @@ def apply_backfill(rows, limit, include_null):
     bill_service = BillService()
     bill_line_item_service = BillLineItemService()
 
-    auths = QboAuthService().read_all()
-    if not auths:
-        raise ValueError("No QBO authentication found. Connect QuickBooks first.")
-    realm_id = auths[0].realm_id
+    realm_id = QboAuthService().resolve_realm_id(
+        no_auth_message="No QBO authentication found. Connect QuickBooks first."
+    )
     print(f"\n=== APPLY: projecting {len(to_process)} bill(s) | realm={realm_id} ===")
 
     created, attach_synced, failed, skipped, deferred = 0, 0, 0, 0, 0

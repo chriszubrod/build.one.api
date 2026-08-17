@@ -46,10 +46,7 @@ def sync_qbo_company_info() -> dict:
         start_time_str = _normalize_watermark_value(run.query_start)
         logger.info(f"HTTP Function triggered at: {start_time_str}")
 
-        all_auths = auth_service.read_all()
-        if not all_auths or len(all_auths) == 0:
-            raise ValueError("No QBO authentication found. Please connect your QuickBooks account first.")
-        realm_id = all_auths[0].realm_id
+        realm_id = auth_service.resolve_realm_id()
 
         last_sync_time = None
         if run.last_sync_time:

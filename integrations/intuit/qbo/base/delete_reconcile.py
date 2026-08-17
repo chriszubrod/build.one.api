@@ -31,7 +31,7 @@ that module's contract.
 
 # Python Standard Library Imports
 import logging
-import os
+from shared.env_flags import _env_positive_int
 from typing import Callable, Iterable, List, Optional, Set
 
 # Local Imports
@@ -50,12 +50,9 @@ DEFAULT_DELETE_MAX_CANDIDATES = 50
 
 
 def _delete_max_candidates() -> int:
-    raw = os.getenv("QBO_PULL_DELETE_MAX_CANDIDATES", "").strip()
-    try:
-        value = int(raw)
-    except ValueError:
-        return DEFAULT_DELETE_MAX_CANDIDATES
-    return value if value > 0 else DEFAULT_DELETE_MAX_CANDIDATES
+    return _env_positive_int(
+        "QBO_PULL_DELETE_MAX_CANDIDATES", DEFAULT_DELETE_MAX_CANDIDATES, minimum=1, warn=False
+    )
 
 
 def strict_confirmed_deleted_ids(

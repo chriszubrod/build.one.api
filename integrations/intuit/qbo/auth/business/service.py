@@ -90,6 +90,15 @@ class QboAuthService:
         """
         return self.repo.read_by_realm_id(realm_id)
 
+    def resolve_realm_id(self, *, no_auth_message: Optional[str] = None) -> str:
+        all_auths = self.read_all()
+        if not all_auths:
+            raise ValueError(
+                no_auth_message
+                or "No QBO authentication found. Please connect your QuickBooks account first."
+            )
+        return all_auths[0].realm_id
+
     def update_by_realm_id(self, code: str, realm_id: str, state: str, token_type: str, id_token: str, access_token: str, expires_in: int, refresh_token: str, x_refresh_token_expires_in: int) -> Optional[QboAuth]:
         """
         Update a QboAuth by realm ID.

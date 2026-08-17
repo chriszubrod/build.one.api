@@ -1,4 +1,24 @@
-"""Invoice source-linking (playbook Step 4 / U-177)."""
+"""Invoice source-linking (playbook Step 4 / U-177).
+
+Ambiguous-match policy (U-244): resolve_link_proposals never auto-applies a guessed
+link. The only tie-break it performs is one bounded positional rule (see the inline
+comments in the group-resolution loop below) -- anything that doesn't come out a
+clean unique match under that rule is status="ambiguous", proposed=None. The
+dominant real-world ambiguous case (same-day multi-worker crew lines sharing an
+identical fingerprint) is not guaranteed to resolve via that rule and remains a
+known, accepted limit of this fingerprint family -- see
+docs/rc_source_linking_signal_2026_08_16.md Section 2, which also motivates the
+ItemRef tightening added to ProposeInvoiceSourceLinks by this same unit.
+
+KI-35 unmapped candidates: a fingerprint match against a qbo.BillLine/PurchaseLine
+row is only surfaced as a Tier-1/Tier-2 candidate when that row has a
+BillLineItemBillLine/PurchaseLineExpenseLineItem mapping (ProposeInvoiceSourceLinks
+requires this via INNER JOIN) -- an unmapped qbo row is never itself surfaced, and
+this decision engine does not attempt to repair or backfill that mapping (KI-35
+precedent: a separate scoped sync_qbo_bill.py-style re-run is the recovery path).
+See _filter_candidates_ki35 for the separate DirectDbo fallback, which proposes a
+distinct local match rather than repairing this one.
+"""
 
 from __future__ import annotations
 
@@ -49,7 +69,10 @@ def _existing_link_proposed(line: dict) -> dict:
 def _filter_candidates_ki35(
     candidates: list[dict],
 ) -> list[dict]:
-    """KI-35: direct-dbo Bill fallback only when no qbo staging match exists."""
+    """KI-35: direct-dbo Bill fallback only when no qbo staging match exists.
+
+    See module docstring for why unmapped qbo staging rows never reach this filter.
+    """
     staging = [c for c in candidates if not c.get("direct_dbo")]
     if staging:
         return staging
@@ -216,11 +239,16 @@ def resolve_link_proposals(
         n_lines = len(group_items)
         n_sources = len(ordered_sources)
 
+        # The one bounded positional tie-break (U-244 module docstring): only when
+        # this group's line count exactly matches its distinct-source count do we
+        # pair them up, by sorting both sides on LineNum and matching index-for-index.
         if n_lines == n_sources:
             for i, (line, base, _accepted) in enumerate(group_items):
                 chosen = ordered_sources[i]
                 source_key = (chosen["source_type"], chosen["source_line_item_id"])
                 ili_id = line["invoice_line_item_id"]
+                # A source already claimed by another group's pairing this call is a
+                # cross-group collision -- never double-assign the same source line.
                 if source_key in used_sources:
                     outcome[ili_id] = {
                         **base,
@@ -242,6 +270,9 @@ def resolve_link_proposals(
                         "reject_reason": None,
                     }
         else:
+            # Line count != source count (e.g. two crew lines sharing one source, or
+            # one line tied between two same-tier sources) -- no positional rule
+            # applies, so every line in the group is ambiguous.
             for line, base, _accepted in group_items:
                 outcome[line["invoice_line_item_id"]] = {
                     **base,
@@ -315,11 +346,10 @@ class InvoiceReconciliationService:
 
             prop = row["proposed"]
             assert prop is not None
-            # Tier-0 (LinkedTxn -> staged ReimburseCharge -> source, U-186) applies
-            # through the same link path as the fingerprint tiers; it is no longer
-            # stubbed out, but never fires in practice today because
-            # qbo.ReimburseCharge.SourceTxnId is never populated (U-242 measurement —
-            # see docs/rc_source_linking_signal_2026_08_16.md).
+            # Tier-0 (direct LinkedTxn -> staged Bill/Purchase, U-186) applies through
+            # the same link path as the fingerprint tiers. The RC-mediated Tier-0 arms
+            # were removed from ProposeInvoiceSourceLinks (U-244) — see
+            # docs/rc_source_linking_signal_2026_08_16.md.
             source_type = prop["source_type"]
             bli = eli = bcli = None
             if source_type == "BillLineItem":

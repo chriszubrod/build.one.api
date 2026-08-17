@@ -1,3 +1,13 @@
+"""U-242 RC fingerprint measurement helpers (scripts/analyze_rc_source_fingerprint.py).
+
+MatchOutcome (unmatched/unique/ambiguous) and the A/B/C tier letters are this
+measurement unit's internal vocabulary only. The production reconciliation path
+(entities/invoice/business/reconciliation.py) does NOT import or call this
+module; it uses its own status vocabulary (no_match/linkable/ambiguous/
+already_linked/etc.) plus the numeric Tier scale (0-3) defined in
+ProposeInvoiceSourceLinks.
+"""
+
 # Python Standard Library Imports
 from collections import Counter
 from dataclasses import dataclass

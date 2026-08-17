@@ -11,15 +11,15 @@ python scripts/run_sql.py integrations/intuit/qbo/reimburse_charge/sql/qbo.reimb
 ## Why this table exists
 
 QBO auto-creates a **ReimburseCharge (RC)** for every Bill/Purchase line marked
-Billable with a `CustomerRef`. Each RC carries a reverse `LinkedTxn` back to its
-source Bill/Purchase (and that source's line). **QBO drops that reverse
-`LinkedTxn` once the RC is consumed by an invoice (`HasBeenInvoiced=true`)** —
-see KI-32. Because the invoice-linking playbook runs *after* the invoice is
-completed in QBO, the RC→source hop is structurally unavailable at link time.
+Billable with a `CustomerRef`. **Measured 2026-08-16 (U-242): QBO never exposes
+a reverse Bill/Purchase `LinkedTxn`** — un-invoiced RCs carry no `LinkedTxn`;
+invoiced RCs carry a forward Invoice pointer only. See
+`docs/rc_source_linking_signal_2026_08_16.md` (supersedes the original KI-32
+assumption).
 
-This table captures RCs on **scheduler cadence while still un-invoiced** and
-**preserves the captured source pointer across the invoiced-flip re-pull**, so
-deterministic Tier-0 linking can resolve:
+This table captures RCs on scheduler cadence and **preserves any stored source
+pointer across re-pulls** (defensive/forward-compatible), so Tier-0 linking can
+resolve if/when a source signal becomes available:
 
 ```
 qbo.InvoiceLine.LinkedTxnId  ->  qbo.ReimburseCharge.QboId
@@ -37,11 +37,11 @@ qbo.InvoiceLine.LinkedTxnId  ->  qbo.ReimburseCharge.QboId
 | `UpdateQboReimburseChargeByQboId` | ROWVERSION-guarded upsert-update |
 
 `UpdateQboReimburseChargeByQboId` uses **CASE-WHEN-preserve** on
-`SourceTxnType` / `SourceTxnId` / `SourceTxnLineId`: the invoiced-flip re-pull
-carries NULL for those, and must NOT null a captured pointer.
+`SourceTxnType` / `SourceTxnId` / `SourceTxnLineId` when re-pull carries NULL
+(defensive/forward-compatible — QBO does not currently populate these fields;
+see `docs/rc_source_linking_signal_2026_08_16.md`).
 
-**Pull-only staging:** no delete / reconcile-delete sproc — a captured pointer
-must survive; nothing removes staged RCs.
+**Pull-only staging:** no delete / reconcile-delete sproc.
 
 ## Keyspace
 

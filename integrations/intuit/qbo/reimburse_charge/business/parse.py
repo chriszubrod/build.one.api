@@ -6,10 +6,16 @@ from typing import Any, Optional
 
 # Local Imports
 
-# The RC's reverse LinkedTxn points at exactly one source transaction; only a
+# If QBO ever exposes a reverse LinkedTxn to the source Bill/Purchase, only a
 # Bill/Purchase entry is a usable source pointer (an Invoice entry, if present,
-# is the forward consumption link, not the source).
+# is the forward consumption link, not the source). Measured 2026-08-16: no
+# Bill/Purchase LinkedTxn observed at any lifecycle stage — see
+# docs/rc_source_linking_signal_2026_08_16.md.
 _SOURCE_TXN_TYPES = ("Bill", "Purchase")
+
+# Public alias — the one place other modules (e.g. the U-242 measurement
+# script) should import this rule from, rather than re-declaring it.
+SOURCE_TXN_TYPES = _SOURCE_TXN_TYPES
 
 
 def _as_decimal(value: Any) -> Optional[Decimal]:
@@ -40,9 +46,12 @@ def parse_reimburse_charge(raw: dict) -> dict:
         SourceTxnId      = LinkedTxn.TxnId     (source Bill/Purchase QBO id)
         SourceTxnLineId  = LinkedTxn.TxnLineId (source line id; may be absent)
 
-    Once the RC is consumed by an invoice (HasBeenInvoiced=true), QBO drops the
-    reverse LinkedTxn (KI-32) so the source fields come back None — the caller's
-    merge preserves the previously-captured pointer.
+    Measured 2026-08-16 (U-242): QBO never exposes a reverse Bill/Purchase
+    LinkedTxn — un-invoiced RCs carry no LinkedTxn; invoiced RCs carry a forward
+    Invoice pointer only. Source fields therefore parse as None today. The
+    caller's merge still preserves any previously-stored pointer defensively
+    (forward-compatible if QBO ever adds the reverse link) — see
+    docs/rc_source_linking_signal_2026_08_16.md.
     """
     raw = raw or {}
 
@@ -91,8 +100,8 @@ def merge_reimburse_charge(stored: dict, incoming: dict) -> dict:
     Non-source fields take the incoming value (HasBeenInvoiced flips to true,
     amount / date / customer refs refresh). The source pointer is PRESERVED when
     the incoming re-pull carries NULL for it — mirrors the SQL CASE-WHEN-preserve
-    so an invoiced-flip re-pull can never null out a pointer captured while the
-    RC was still un-invoiced (KI-32).
+    defensively (nothing is captured from QBO today, but a stored pointer must
+    not be nulled on re-pull) — see docs/rc_source_linking_signal_2026_08_16.md.
     """
     stored = stored or {}
     merged = dict(incoming or {})

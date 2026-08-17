@@ -22,8 +22,10 @@ class QboReimburseChargeRepository:
     """
     Repository for QboReimburseCharge persistence operations.
 
-    Pull-only staging: create + upsert-update + reads. No delete (a captured
-    source pointer must survive the invoiced-flip; nothing reconcile-deletes it).
+    Pull-only staging: create + upsert-update + reads. No delete sproc.
+    SourceTxn* preserve on UPDATE is defensive/forward-compatible — measured
+    2026-08-16 (U-242) found no reverse Bill/Purchase LinkedTxn from QBO; see
+    docs/rc_source_linking_signal_2026_08_16.md.
     """
 
     def __init__(self):
@@ -183,7 +185,8 @@ class QboReimburseChargeRepository:
         Update a QboReimburseCharge by QBO ID.
 
         The sproc CASE-WHEN-preserves SourceTxn* when the passed value is NULL,
-        so an invoiced-flip re-pull never nulls a captured pointer (KI-32).
+        so a re-pull never nulls a stored pointer (defensive — QBO does not
+        currently populate these fields; see docs/rc_source_linking_signal_2026_08_16.md).
         """
         try:
             with get_connection() as conn:

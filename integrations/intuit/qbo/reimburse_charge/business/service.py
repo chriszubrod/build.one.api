@@ -33,9 +33,10 @@ class QboReimburseChargeService:
     Service for QboReimburseCharge staging (U-186).
 
     Upsert-only capture of QBO ReimburseCharges: NO module / Excel / Box / QBO
-    fan-out. Its sole job is to keep qbo.ReimburseCharge current so Tier-0
-    invoice-line linking can resolve deterministically, and to PRESERVE each RC's
-    captured source pointer across the HasBeenInvoiced=true flip (KI-32).
+    fan-out. Its sole job is to keep qbo.ReimburseCharge current for invoice-line
+    linking and to PRESERVE any stored source pointer across re-pulls
+    (defensive/forward-compatible — QBO does not currently expose a reverse
+    Bill/Purchase LinkedTxn; see docs/rc_source_linking_signal_2026_08_16.md).
     """
 
     def __init__(self, repo: Optional[QboReimburseChargeRepository] = None):
@@ -62,11 +63,11 @@ class QboReimburseChargeService:
         Returns:
             SyncOutcome[QboReimburseCharge]: Pull run envelope including synced staging rows
 
-        WATERMARK CONTRACT: ``staging_failed_ids`` is what makes RC capture safe. Capturing
-        the source pointer pre-invoice is one-shot (QBO drops it on the invoiced
-        flip, KI-32), so the caller MUST NOT advance the dbo.Sync watermark while
-        any RC in the window failed to persist — the upserts are idempotent, so
-        re-pulling the same window next tick is safe.
+        WATERMARK CONTRACT: ``staging_failed_ids`` holds the watermark on any RC
+        that failed to persist so the caller can idempotently re-pull the same
+        window on the next tick. This is conservative good practice regardless of
+        QBO pointer behavior (the original KI-32 one-shot rationale is not
+        supported by measurement — see docs/rc_source_linking_signal_2026_08_16.md).
         """
         reject_reimburse_charge_txndate_filter(start_date, end_date)
         outcome: SyncOutcome[QboReimburseCharge] = SyncOutcome.for_service_pull()
@@ -104,9 +105,8 @@ class QboReimburseChargeService:
                 outcome.record_synced(record)
                 logger.debug(f"Upserted reimburse charge {parsed['qbo_id']} ({i + 1}/{len(raw_records)})")
             except Exception as e:
-                # Transient persistence failure — MUST hold the watermark so the
-                # window is re-pulled (idempotent) before the RC's pointer is
-                # lost to the invoiced flip.
+                # Transient persistence failure — hold the watermark so the
+                # window is re-pulled idempotently on the next tick.
                 logger.error(f"Failed to upsert reimburse charge {parsed.get('qbo_id')}: {e}")
                 outcome.record_staging_failure(parsed["qbo_id"], e)
 
@@ -126,9 +126,11 @@ class QboReimburseChargeService:
         """
         Create or update one staging record from a parsed RC dict.
 
-        On update, `merge_reimburse_charge` preserves a previously-captured
-        source pointer when the incoming parse carries NULL (invoiced-flip),
-        belt-and-suspenders with the sproc's CASE-WHEN-preserve.
+        On update, `merge_reimburse_charge` preserves a previously-stored
+        source pointer when the incoming parse carries NULL (defensive —
+        QBO does not currently populate these fields; see
+        docs/rc_source_linking_signal_2026_08_16.md), belt-and-suspenders
+        with the sproc's CASE-WHEN-preserve.
         """
         qbo_id = parsed["qbo_id"]
         existing = self.repo.read_by_qbo_id_and_realm_id(qbo_id=qbo_id, realm_id=realm_id)

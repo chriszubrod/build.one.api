@@ -15,11 +15,11 @@ class QboReimburseCharge:
     Represents a QBO ReimburseCharge captured into durable staging (U-186).
 
     QBO auto-creates a ReimburseCharge for each Billable Bill/Purchase line with
-    a CustomerRef. `source_txn_*` is the reverse pointer back to that source
-    transaction/line — captured while un-invoiced and preserved across the
-    HasBeenInvoiced=true re-pull (QBO drops the reverse LinkedTxn on the flip,
-    KI-32). All QBO ids here are STRING ids (disjoint from the qbo.*.Id BIGINT
-    keyspace).
+    a CustomerRef. `source_txn_*` would hold a reverse pointer to that source
+    transaction/line if QBO ever exposed one. Measured 2026-08-16 (U-242): QBO
+    never returns a reverse Bill/Purchase LinkedTxn; preserve on re-pull is
+    defensive/forward-compatible only. See docs/rc_source_linking_signal_2026_08_16.md.
+    All QBO ids here are STRING ids (disjoint from the qbo.*.Id BIGINT keyspace).
     """
     id: Optional[int]
     public_id: Optional[str]

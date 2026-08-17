@@ -315,9 +315,11 @@ class InvoiceReconciliationService:
 
             prop = row["proposed"]
             assert prop is not None
-            # Tier-0 (deterministic LinkedTxn -> staged ReimburseCharge -> source,
-            # U-186) applies through the same link path as the fingerprint tiers;
-            # it is no longer stubbed out.
+            # Tier-0 (LinkedTxn -> staged ReimburseCharge -> source, U-186) applies
+            # through the same link path as the fingerprint tiers; it is no longer
+            # stubbed out, but never fires in practice today because
+            # qbo.ReimburseCharge.SourceTxnId is never populated (U-242 measurement —
+            # see docs/rc_source_linking_signal_2026_08_16.md).
             source_type = prop["source_type"]
             bli = eli = bcli = None
             if source_type == "BillLineItem":

@@ -4,11 +4,11 @@ GO
 -- qbo.ReimburseCharge — durable staging for QBO ReimburseCharge records (U-186).
 --
 -- QBO auto-creates a ReimburseCharge (RC) for every Bill/Purchase line marked
--- Billable with a CustomerRef. Each RC carries a reverse LinkedTxn back to the
--- source Bill/Purchase (+ that source's line id). QBO DROPS that reverse
--- LinkedTxn once the RC is consumed by an invoice (HasBeenInvoiced=true, KI-32),
--- so we capture RCs into this table on scheduler cadence WHILE still un-invoiced
--- and PRESERVE the captured source pointer across the invoiced-flip re-pull.
+-- Billable with a CustomerRef. Measured 2026-08-16 (U-242): QBO never exposes a
+-- reverse Bill/Purchase LinkedTxn (un-invoiced RCs: none; invoiced RCs: forward
+-- Invoice pointer only). See docs/rc_source_linking_signal_2026_08_16.md.
+-- We capture RCs on scheduler cadence and PRESERVE any stored source pointer
+-- across re-pulls (defensive/forward-compatible).
 --
 -- Deterministic Tier-0 invoice-line linking then resolves:
 --   qbo.InvoiceLine.LinkedTxnId  ->  qbo.ReimburseCharge (QboId)
@@ -17,7 +17,7 @@ GO
 --
 -- KEYSPACE: QboId / SourceTxnId / SourceTxnLineId are QBO STRING ids
 -- (qbo.*.Id BIGINT keyspace is disjoint — never conflate). Pull-only staging:
--- no delete / reconcile-delete sproc (a captured pointer must survive the flip).
+-- no delete / reconcile-delete sproc.
 -- =============================================================================
 
 GO
@@ -219,9 +219,9 @@ GO
 
 GO
 
--- Invoiced-flip preserve: on the re-pull that flips HasBeenInvoiced=true, QBO no
--- longer returns the RC's reverse LinkedTxn, so the incoming SourceTxn* fields
--- arrive NULL. CASE-WHEN-preserve keeps the pointer captured while un-invoiced.
+-- SourceTxn* CASE-WHEN-preserve: incoming NULL must not null stored values
+-- (defensive/forward-compatible — measured 2026-08-16 U-242 found no reverse
+-- Bill/Purchase LinkedTxn from QBO; see docs/rc_source_linking_signal_2026_08_16.md).
 -- (Same NULL-coalescing UPDATE idiom the other qbo.* staging sprocs use.)
 CREATE OR ALTER PROCEDURE UpdateQboReimburseChargeByQboId
 (
@@ -254,8 +254,9 @@ BEGIN
         [TxnDate] = CASE WHEN @TxnDate IS NULL THEN [TxnDate] ELSE @TxnDate END,
         [Amount] = CASE WHEN @Amount IS NULL THEN [Amount] ELSE @Amount END,
         [HasBeenInvoiced] = CASE WHEN @HasBeenInvoiced IS NULL THEN [HasBeenInvoiced] ELSE @HasBeenInvoiced END,
-        -- Preserve a captured source pointer when the incoming re-pull carries NULL
-        -- (the HasBeenInvoiced=true flip drops the RC's reverse LinkedTxn).
+        -- Preserve a stored source pointer when the incoming re-pull carries NULL
+        -- (defensive — QBO does not currently populate these fields; see
+        -- docs/rc_source_linking_signal_2026_08_16.md).
         [SourceTxnType] = CASE WHEN @SourceTxnType IS NULL THEN [SourceTxnType] ELSE @SourceTxnType END,
         [SourceTxnId] = CASE WHEN @SourceTxnId IS NULL THEN [SourceTxnId] ELSE @SourceTxnId END,
         [SourceTxnLineId] = CASE WHEN @SourceTxnLineId IS NULL THEN [SourceTxnLineId] ELSE @SourceTxnLineId END

@@ -1,5 +1,24 @@
 # Session Notes
 
+## 🚀 Deploy — 2026-08-17 #2: U-243 + U-242, and the RC cadence relaxed to hourly
+
+**API LIVE at `7d533d53`** — ACR run `ca9f` → `sha256:c0b9a2ab`, tagged `:latest` AND `:7d533d53` (both resolve to one digest). Built from a clean detached worktree. **Container-only: no SQL applied.** `integrations/intuit/qbo/reimburse_charge/sql/qbo.reimburse_charge.sql` appears in the range but changed **comments only** — verified `model.py` gained no fields and `repo.py` gained no `row.X` reads or sproc params, so there was no repeat of the U-240 pattern.
+
+**Scheduler LIVE at `54869fa`** — RC cadence relaxed **15 min → hourly** (`0 13 * * * *`). Function count unchanged at 25, always-ready pin intact, live schedule confirmed via `az functionapp function show`.
+
+**Units:** U-243 `dcf87132` (mapping-cleanup double-submit race + closure factory) · U-242 `7d533d53` (RC source-linking signal measured; KI-32 comments corrected).
+
+### Why the cadence changed — the premise was false, not merely weak
+The 15-minute cadence existed solely because KI-32 claimed QBO destroys the RC's reverse LinkedTxn on the `HasBeenInvoiced` flip, making pre-flip capture one-shot. **U-242 measured it: QBO never exposes a reverse Bill/Purchase LinkedTxn on ReimburseCharge at all** — via query, via GET-by-id, and at minorversions 65/70/75, including for `HasBeenInvoiced=false` records. There is no one-shot capture to race. Replacement signal is the U-242 fingerprint (customer + amount + date + description + cost-code `item_ref`) at **97.14% unique / 1.06% ambiguous / 1.80% unmatched** over the full 26,582-row population — explicitly **not deterministic**, which is why the implementation unit must handle ambiguity by design rather than discover it in prod. Call cost drops ~2.9K → ~720/month against a 500K cap; the saving is immaterial, the point is the rationale was untrue.
+
+### U-243's fix is at the right altitude — worth remembering
+The lock went **inside the shared helper** (`mapping_cleanup.py`, `sp_getapplock` keyed `qbo_mapping_delete:{entity_label}:{entity_id}`), so all **7** call sites are covered transitively — including the 3 `*_line_item` services, whose files needed no change at all. Same-entity deletes serialize; different-entity deletes do not; a contended lock **fails closed** with a raise rather than proceeding unsafely. Urgency was real: since `u225_qbo_mapping_fk_gaps.sql` landed (qbo.* FKs 14 → 36), a lost race raises **SQL 547** at the user instead of silently orphaning.
+
+### Acceptance — behaviour, including a negative control
+`bill` 02:30:03 → 02:45:02 and `vendorcredit` 02:24:00 → 02:39:03 advanced under the new image; 0 new ReconciliationIssues, 0 dead-lettered outbox rows, no holds, API healthy. **The cadence change has a negative control:** `reimburse_charge` held at 02:27:00 and did NOT fire at :28 or :43 as the old 15-minute schedule would have — behavioural proof, not just a config read.
+
+**Owed next:** the Tier C implementation unit — wire the fingerprint into `entities/invoice/business/reconciliation.py` and handle the ~1% ambiguous / ~2% unmatched explicitly. Fully scoped in `docs/rc_source_linking_signal_2026_08_16.md` Section 5.
+
 ## 🚀 Deploy — 2026-08-17: 12-commit QBO wave (SQL-first, ordered) — LIVE at `141491d4`
 
 **Deployed:** ACR run `ca9e` → `sha256:c3508204`, tagged `:latest` AND `:141491d4` (traceability verified: both resolve to one digest). Built from a **clean detached worktree** at `origin/master` — confirmed empty `git status` so none of the six concurrent sessions' WIP was swept in. Previous live image was `ba266543`.

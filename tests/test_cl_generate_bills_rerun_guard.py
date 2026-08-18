@@ -535,6 +535,66 @@ def test_billing_period_skips_off_period_group(monkeypatch):
     assert "2026.06.15.TB3" in lookup_calls
 
 
+def test_period_fallback_derives_from_work_date_not_billing_period_start(monkeypatch):
+    """Regression (U-266): when the group's computed period_end is
+    unavailable (malformed line_date), the fallback must derive the period
+    end from work_date via _period_end_for — never from
+    entry.billing_period_start, which holds the period START (1st/16th)
+    since U-266, not the period END this code path requires."""
+    svc = _make_svc()
+    vendor = _vendor()
+    project = _project()
+    scc = _scc()
+    entry = _cl(1, work_date="2026-06-20")
+    # Simulate a post-U-266 CL row: billing_period_start holds the START
+    # value, which must NOT be read as if it were the period END.
+    entry.billing_period_start = "2026-06-16"
+    ready = [entry]
+    # Malformed line_date forces _period_end_for to fail during grouping,
+    # so group_period is None and the fallback branch fires.
+    line_items_by_cl = {1: [_li(101, 1, line_date="not-a-date")]}
+
+    lookup_calls = []
+
+    def lookup_bill(bill_number, vendor_id):
+        lookup_calls.append(bill_number)
+        return None
+
+    new_bill = _bill(bill_id=504, invoice="2026.06.30.TB3")
+
+    _wire_minimal(svc, vendor, [project], [scc], ready, line_items_by_cl)
+    svc.bill_service = types.SimpleNamespace(
+        repo=types.SimpleNamespace(
+            read_by_bill_number_and_vendor_id=lookup_bill,
+            update_by_id=lambda b: b,
+        ),
+        create=lambda **kwargs: new_bill,
+        delete_by_public_id=lambda pid: None,
+    )
+    new_bli = _bli(902)
+    svc.bill_line_item_service = types.SimpleNamespace(
+        read_by_bill_id=lambda bill_id: [],
+        create=lambda **kwargs: new_bli,
+        repo=types.SimpleNamespace(delete_by_id=lambda bli_id: None),
+    )
+    svc.cl_repo = types.SimpleNamespace(
+        read_by_vendor_id=lambda vid: [],
+        read_by_bill_line_item_id=lambda bli_id: [],
+        read_by_id=lambda id: next((e for e in ready if e.id == id), None),
+        update_by_id=lambda entry: entry,
+    )
+
+    _patch_pdf_pipeline(monkeypatch)
+    result = svc.generate_bills_for_vendor(vendor_id=1)
+
+    assert result["bills_created"] == 1
+    # Correct: derived from work_date (day=20 -> period end = last day of June).
+    assert "2026.06.30.TB3" in lookup_calls
+    # Wrong (pre-fix-equivalent): would have used billing_period_start
+    # verbatim (the period START, "2026-06-16") as if it were the period end.
+    assert "2026.06.16.TB3" not in lookup_calls
+
+
 def test_delete_by_public_id_billed_raises_and_skips_repo_delete():
     svc = ContractLaborService()
     billed = _cl(1, status="billed")

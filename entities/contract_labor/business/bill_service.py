@@ -150,6 +150,26 @@ class ContractLaborBillService:
                 return True
         return False
 
+    def _period_end_for(self, date_str: Optional[str]) -> Optional[str]:
+        """
+        Compute the period END for a given date. Bi-monthly periods:
+        day 1-15 → period ending on the 15th of that month; day 16-end →
+        period ending on the last day of that month. Drives bill_date and
+        the YYYY.MM.DD.<project> invoice_number segment. Independent of
+        ContractLabor.billing_period_start, which holds the period START
+        (1st/16th, U-266) — never derive a period END from that field.
+        """
+        if not date_str:
+            return None
+        try:
+            d = datetime.strptime(date_str[:10], "%Y-%m-%d")
+            if d.day <= 15:
+                return d.replace(day=15).strftime("%Y-%m-%d")
+            last = monthrange(d.year, d.month)[1]
+            return d.replace(day=last).strftime("%Y-%m-%d")
+        except Exception:
+            return None
+
     def generate_invoice_number(self, billing_period: str, project_abbreviation: str) -> str:
         """
         Generate invoice number in format: YYYY.MM.DD.{ProjectAbbreviation}
@@ -226,23 +246,6 @@ class ContractLaborBillService:
         project_groups = {}
         entry_ids_by_project = {}
 
-        # Compute the period key for a given date. Bi-monthly periods:
-        # day 1-15  → period ending on the 15th of that month
-        # day 16-end → period ending on the last day of that month
-        # Returns YYYY-MM-DD of the period END; this doubles as bill_date
-        # and drives the YYYY.MM.DD.<project> invoice_number.
-        def _period_end_for(date_str: Optional[str]) -> Optional[str]:
-            if not date_str:
-                return None
-            try:
-                d = datetime.strptime(date_str[:10], "%Y-%m-%d")
-                if d.day <= 15:
-                    return d.replace(day=15).strftime("%Y-%m-%d")
-                last = monthrange(d.year, d.month)[1]
-                return d.replace(day=last).strftime("%Y-%m-%d")
-            except Exception:
-                return None
-
         for entry in vendor_entries:
             line_items = self.line_item_repo.read_by_contract_labor_id(contract_labor_id=entry.id)
             entry_added = False
@@ -264,7 +267,7 @@ class ContractLaborBillService:
                 # half. Prevents multiple periods collapsing into one bill,
                 # which is what happened before this fix. Note: overhead
                 # lines (project=None) still group per-period.
-                period_end = _period_end_for(
+                period_end = self._period_end_for(
                     str(li.line_date) if li.line_date else (str(entry.work_date) if entry.work_date else None)
                 )
                 group_key = (li_project_id, period_end)  # None-safe on either
@@ -306,7 +309,7 @@ class ContractLaborBillService:
                 entry_project_count[eid] = entry_project_count.get(eid, 0) + 1
 
         expected_period_end = (
-            _period_end_for(billing_period_start) if billing_period_start else None
+            self._period_end_for(billing_period_start) if billing_period_start else None
         )
         billed_cls_cache = None
         billed_cl_line_items_cache: dict = {}
@@ -342,13 +345,16 @@ class ContractLaborBillService:
                     memo = "Contract Labor - Overhead"
 
                 # Bill date IS the period end (per Chris' bi-monthly rule).
-                # Fall back to the first entry's fields only when the group's
-                # computed period is missing (unexpected — every LI has a
-                # line_date or entry.work_date to derive from).
+                # Fall back to deriving the period end from the first entry's
+                # work_date only when the group's computed period is missing
+                # (unexpected — every LI has a line_date or entry.work_date
+                # to derive from). NEVER fall back to entry.billing_period_start
+                # — that field holds the period START (1st/16th, U-266), not
+                # the period END this value must be.
                 billing_period = group_period
                 if not billing_period:
                     first_entry = items[0]["entry"]
-                    billing_period = first_entry.billing_period_start or first_entry.work_date
+                    billing_period = self._period_end_for(str(first_entry.work_date))
                 if not billing_period:
                     billing_period = datetime.now().strftime("%Y-%m-%d")
 
@@ -982,9 +988,12 @@ class ContractLaborBillService:
                 all_elements.append(PageBreak())
             first_page = False
 
-            # Determine billing period from first entry
+            # Determine billing period (period END, for invoice_number/due_date)
+            # from the first entry's work_date. NEVER read
+            # entry.billing_period_start here — that field holds the period
+            # START (1st/16th, U-266), not the period END this value must be.
             first_entry = items[0]["entry"]
-            billing_period = first_entry.billing_period_start or first_entry.work_date
+            billing_period = self._period_end_for(str(first_entry.work_date))
             if not billing_period:
                 billing_period = datetime.now().strftime("%Y-%m-%d")
 

@@ -107,33 +107,31 @@ class ContractLabor:
     @staticmethod
     def calculate_billing_period_start(work_date: str) -> Optional[str]:
         """
-        Calculate the billing period date from a work date.
-        Period 1: 1st - 15th → billing period is the 15th
-        Period 2: 16th - end of month → billing period is the last day of month
-        
+        Calculate the billing period START date from a work date.
+        Period 1: 1st - 15th → billing period starts on the 1st
+        Period 2: 16th - end of month → billing period starts on the 16th
+
         Args:
             work_date: Date in YYYY-MM-DD format
-            
+
         Returns:
-            Billing period date in YYYY-MM-DD format
+            Billing period start date in YYYY-MM-DD format
         """
         if not work_date:
             return None
-        
+
         try:
-            from calendar import monthrange
             parts = work_date.split("-")
             year = int(parts[0])
             month = int(parts[1])
             day = int(parts[2])
-            
+
             if day <= 15:
-                # First half of month → 15th
-                return f"{year:04d}-{month:02d}-15"
+                # First half of month → starts on the 1st
+                return f"{year:04d}-{month:02d}-01"
             else:
-                # Second half of month → last day of month
-                last_day = monthrange(year, month)[1]
-                return f"{year:04d}-{month:02d}-{last_day:02d}"
+                # Second half of month → starts on the 16th
+                return f"{year:04d}-{month:02d}-16"
         except (IndexError, ValueError):
             return None
 

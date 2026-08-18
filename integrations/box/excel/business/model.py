@@ -32,3 +32,25 @@ class BoxProjectWorkbook:
     box_file_id: Optional[str] = None
     worksheet_name: Optional[str] = None
     created_by_user_id: Optional[int] = None
+
+
+@dataclass
+class BoxWorkbookEntityPush:
+    """
+    Row in `[box].[WorkbookEntityPush]` — freshness cache for Box Excel
+    DETAILS sync. One row per (workbook, entity) records the content hash of
+    the last successful push so drain can skip unchanged entities before
+    acquiring the file lock or calling Box.
+    """
+
+    id: Optional[int] = None
+    public_id: Optional[str] = None
+    row_version: Optional[str] = None
+    created_datetime: Optional[str] = None
+    modified_datetime: Optional[str] = None
+
+    box_file_id: Optional[str] = None
+    entity_type: Optional[str] = None
+    entity_public_id: Optional[str] = None
+    content_hash: Optional[str] = None
+    last_pushed_at: Optional[str] = None

@@ -146,4 +146,36 @@ SPROC_DRIFT_LEDGER: dict[str, frozenset[str]] = {
         'entities/email_message/sql/migrations/004_imid_merge_key.sql',
         'scripts/migrations/gap2_adjacent_threading.sql',
     }),  # known-dup, home=entities/email_message/sql/dbo.email_message.sql, entities/email_message/sql/dbo.email_message_recipients.sql
+    "InvalidateBoxFile": frozenset({
+        'integrations/box/file/sql/box.file.sql',
+        'scripts/migrations/u256_box_integrity.sql',
+    }),  # known-dup, home=integrations/box/file/sql/box.file.sql (U-256 self-contained migration)
+    "ReadBoxFileByBoxFileId": frozenset({
+        'integrations/box/file/sql/box.file.sql',
+        'scripts/migrations/u256_box_integrity.sql',
+    }),  # known-dup, home=integrations/box/file/sql/box.file.sql (U-256 self-contained migration)
+    "ReadBoxFilesByEntity": frozenset({
+        'integrations/box/file/sql/box.file.sql',
+        'scripts/migrations/u256_box_integrity.sql',
+    }),  # known-dup, home=integrations/box/file/sql/box.file.sql (U-256 self-contained migration)
+    "ReadBoxWorkbookEntityPush": frozenset({
+        'integrations/box/excel/sql/box.workbook_entity_push.sql',
+        'scripts/migrations/u256_box_integrity.sql',
+    }),  # known-dup, home=integrations/box/excel/sql/box.workbook_entity_push.sql (U-256 self-contained migration)
+    "ReadBoxWorkbookEntityPushByFile": frozenset({
+        'integrations/box/excel/sql/box.workbook_entity_push.sql',
+        'scripts/migrations/u256_box_integrity.sql',
+    }),  # known-dup, home=integrations/box/excel/sql/box.workbook_entity_push.sql (U-256 self-contained migration)
+    "ReadRecentBoxFiles": frozenset({
+        'integrations/box/file/sql/box.file.sql',
+        'scripts/migrations/u256_box_integrity.sql',
+    }),  # known-dup, home=integrations/box/file/sql/box.file.sql (U-256 self-contained migration)
+    "UpsertBoxFile": frozenset({
+        'integrations/box/file/sql/box.file.sql',
+        'scripts/migrations/u256_box_integrity.sql',
+    }),  # known-dup, home=integrations/box/file/sql/box.file.sql (U-256 self-contained migration)
+    "UpsertBoxWorkbookEntityPush": frozenset({
+        'integrations/box/excel/sql/box.workbook_entity_push.sql',
+        'scripts/migrations/u256_box_integrity.sql',
+    }),  # known-dup, home=integrations/box/excel/sql/box.workbook_entity_push.sql (U-256 self-contained migration)
 }

@@ -242,6 +242,17 @@ class BoxReconcileService:
                         ),
                         drive_item_id=str(box_file_id),
                     )
+                    try:
+                        self.file_repo.invalidate(box_file_id)
+                    except Exception as error:
+                        logger.warning(
+                            "box.reconcile.invalidate_failed",
+                            extra={
+                                "event_name": "box.reconcile.invalidate_failed",
+                                "box_file_id": box_file_id,
+                                "error_class": type(error).__name__,
+                            },
+                        )
                 except BoxPermissionError:
                     summary["files_missing"] += 1
                     _flag(

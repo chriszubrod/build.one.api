@@ -7,7 +7,7 @@ from typing import List, Optional
 import pyodbc
 
 # Local Imports
-from integrations.box.excel.business.model import BoxProjectWorkbook
+from integrations.box.excel.business.model import BoxProjectWorkbook, BoxWorkbookEntityPush
 from shared.database import (
     call_procedure,
     get_connection,
@@ -152,4 +152,116 @@ class BoxProjectWorkbookRepository:
                         pass
         except Exception as error:
             logger.error(f"Error during delete box project workbook: {error}")
+            raise map_database_error(error)
+
+
+class BoxWorkbookEntityPushRepository:
+    """Persistence for `[box].[WorkbookEntityPush]` — Excel freshness cache."""
+
+    def __init__(self):
+        pass
+
+    def _from_db(self, row: pyodbc.Row) -> Optional[BoxWorkbookEntityPush]:
+        if not row:
+            return None
+        try:
+            return BoxWorkbookEntityPush(
+                id=getattr(row, "Id", None),
+                public_id=str(row.PublicId) if getattr(row, "PublicId", None) else None,
+                row_version=base64.b64encode(row.RowVersion).decode("ascii") if getattr(row, "RowVersion", None) else None,
+                created_datetime=getattr(row, "CreatedDatetime", None),
+                modified_datetime=getattr(row, "ModifiedDatetime", None),
+                box_file_id=getattr(row, "BoxFileId", None),
+                entity_type=getattr(row, "EntityType", None),
+                entity_public_id=str(row.EntityPublicId) if getattr(row, "EntityPublicId", None) else None,
+                content_hash=getattr(row, "ContentHash", None),
+                last_pushed_at=getattr(row, "LastPushedAt", None),
+            )
+        except Exception as error:
+            logger.error(f"Error mapping BoxWorkbookEntityPush row: {error}")
+            raise map_database_error(error)
+
+    def upsert(
+        self,
+        *,
+        box_file_id: str,
+        entity_type: str,
+        entity_public_id: str,
+        content_hash: str,
+    ) -> BoxWorkbookEntityPush:
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                try:
+                    call_procedure(
+                        cursor=cursor,
+                        name="UpsertBoxWorkbookEntityPush",
+                        params={
+                            "BoxFileId": box_file_id,
+                            "EntityType": entity_type,
+                            "EntityPublicId": entity_public_id,
+                            "ContentHash": content_hash,
+                        },
+                    )
+                    row = cursor.fetchone()
+                    if not row:
+                        raise map_database_error(Exception("upsert box workbook entity push failed"))
+                    return self._from_db(row)
+                finally:
+                    try:
+                        cursor.close()
+                    except Exception:
+                        pass
+        except Exception as error:
+            logger.error(f"Error during upsert box workbook entity push: {error}")
+            raise map_database_error(error)
+
+    def read_one(
+        self,
+        *,
+        box_file_id: str,
+        entity_type: str,
+        entity_public_id: str,
+    ) -> Optional[BoxWorkbookEntityPush]:
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                try:
+                    call_procedure(
+                        cursor=cursor,
+                        name="ReadBoxWorkbookEntityPush",
+                        params={
+                            "BoxFileId": box_file_id,
+                            "EntityType": entity_type,
+                            "EntityPublicId": entity_public_id,
+                        },
+                    )
+                    return self._from_db(cursor.fetchone())
+                finally:
+                    try:
+                        cursor.close()
+                    except Exception:
+                        pass
+        except Exception as error:
+            logger.error(f"Error during read box workbook entity push: {error}")
+            raise map_database_error(error)
+
+    def read_all_for_file(self, *, box_file_id: str) -> List[BoxWorkbookEntityPush]:
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                try:
+                    call_procedure(
+                        cursor=cursor,
+                        name="ReadBoxWorkbookEntityPushByFile",
+                        params={"BoxFileId": box_file_id},
+                    )
+                    return [self._from_db(row) for row in cursor.fetchall()]
+                finally:
+                    try:
+                        cursor.close()
+                    except Exception:
+                        pass
+        except Exception as error:
+            logger.error(f"Error during read box workbook entity push by file: {error}")
             raise map_database_error(error)

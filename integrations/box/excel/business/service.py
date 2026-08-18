@@ -1,8 +1,9 @@
 # Python Standard Library Imports
 import hashlib
+import json
 import logging
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 # Local Imports
 from integrations.box.base.errors import (
@@ -41,6 +42,7 @@ OP_CLEAR_DRAW_REQUEST = "clear_draw_request"
 # Stamp-like ops: passive column-H writes on existing rows, single-entity, never
 # claim workbook ownership in the registry (see push_entity_* below).
 STAMP_LIKE_OPERATIONS = (OP_STAMP_DRAW_REQUEST, OP_CLEAR_DRAW_REQUEST)
+STAMP_LIKE_ENTITY_TYPE = "invoice"
 KNOWN_OPERATIONS = (OP_INSERT, OP_STAMP_DRAW_REQUEST, OP_CLEAR_DRAW_REQUEST)
 
 
@@ -127,6 +129,79 @@ class BoxExcelUpdateService:
                 "update_box_excel payload missing entity_type / entity_public_id"
             )
 
+        from integrations.box.excel.persistence.repo import BoxWorkbookEntityPushRepository
+
+        push_cache_repo = BoxWorkbookEntityPushRepository()
+        box_file_id_str = str(box_file_id)
+
+        # Freshness pre-check BEFORE lock/Box API — skip when content unchanged.
+        fresh_entities: List[Dict[str, Any]] = []
+        insert_rows: Optional[List[Any]] = None
+        stamp_updates: Optional[List[Any]] = None
+        stamp_content_hash: Optional[str] = None
+
+        if operation in STAMP_LIKE_OPERATIONS:
+            stamp_updates, stamp_content_hash = self._build_stamp_plan(
+                operation=operation,
+                entity_public_id=str(entity_public_id),
+                source_public_ids=source_public_ids,
+            )
+            if not stamp_updates:
+                logger.info(
+                    "box.outbox.excel.skipped_unchanged",
+                    extra={
+                        "event_name": "box.outbox.excel.skipped_unchanged",
+                        "box_file_id": box_file_id_str,
+                        "entity_type": entity_type,
+                        "entity_public_id": entity_public_id,
+                        "operation": operation,
+                        "reason": "no_updates",
+                    },
+                )
+                return
+            if self._is_cache_fresh(
+                push_cache_repo,
+                box_file_id=box_file_id_str,
+                entity_type=STAMP_LIKE_ENTITY_TYPE,
+                entity_public_id=str(entity_public_id),
+                content_hash=stamp_content_hash,
+            ):
+                logger.info(
+                    "box.outbox.excel.skipped_unchanged",
+                    extra={
+                        "event_name": "box.outbox.excel.skipped_unchanged",
+                        "box_file_id": box_file_id_str,
+                        "entity_type": entity_type,
+                        "entity_public_id": entity_public_id,
+                        "operation": operation,
+                    },
+                )
+                return
+        else:
+            entity_list = (
+                entities
+                if entities is not None
+                else [{"entity_type": entity_type, "entity_public_id": entity_public_id}]
+            )
+            fresh_entities, insert_rows = self._filter_fresh_insert_entities(
+                push_cache_repo=push_cache_repo,
+                box_file_id=box_file_id_str,
+                entity_list=entity_list,
+                project_id=project_id,
+            )
+            if not fresh_entities:
+                logger.info(
+                    "box.outbox.excel.skipped_unchanged",
+                    extra={
+                        "event_name": "box.outbox.excel.skipped_unchanged",
+                        "box_file_id": box_file_id_str,
+                        "entity_type": entity_type,
+                        "entity_public_id": entity_public_id,
+                        "entity_count": len(entity_list),
+                    },
+                )
+                return
+
         # Step 2: cross-process serialization on the file. Lock busy → raise a
         # retryable error so the row requeues (do NOT mark done).
         with box_app_lock(f"box_file_write:{box_file_id}") as got:
@@ -140,17 +215,31 @@ class BoxExcelUpdateService:
             from integrations.box.base.client import BoxHttpClient
 
             with BoxHttpClient() as client:
-                self._run_locked(
+                record_freshness = self._run_locked(
                     client=client,
                     row=row,
-                    box_file_id=str(box_file_id),
+                    box_file_id=box_file_id_str,
                     worksheet_name=worksheet_name,
                     entity_type=entity_type,
                     entity_public_id=str(entity_public_id),
                     project_id=project_id,
-                    entities=entities,
                     operation=operation,
-                    source_public_ids=source_public_ids,
+                    insert_rows=insert_rows,
+                    stamp_updates=stamp_updates,
+                )
+
+        if record_freshness:
+            if operation in STAMP_LIKE_OPERATIONS:
+                if stamp_content_hash:
+                    self._record_stamp_freshness(
+                        push_cache_repo,
+                        box_file_id_str,
+                        str(entity_public_id),
+                        stamp_content_hash,
+                    )
+            else:
+                self._record_insert_freshness(
+                    push_cache_repo, box_file_id_str, fresh_entities
                 )
 
     # ------------------------------------------------------------------ #
@@ -167,10 +256,10 @@ class BoxExcelUpdateService:
         entity_type: str,
         entity_public_id: str,
         project_id: Optional[int],
-        entities: Optional[list] = None,
         operation: str = "insert",
-        source_public_ids: Optional[list] = None,
-    ) -> None:
+        insert_rows: Optional[list] = None,
+        stamp_updates: Optional[list] = None,
+    ) -> bool:
         # Step 3: read meta (etag + lock + name).
         meta = client.get(
             f"files/{box_file_id}",
@@ -226,36 +315,13 @@ class BoxExcelUpdateService:
             #   "stamp_draw_request" — invoice stamps column H on existing
             #     rows by col-Z match; never inserts. Re-stamping the same
             #     value is a no-op.
-            from integrations.box.excel.business.row_builder import (
-                build_details_rows,
-                build_invoice_draw_stamp_pairs,
-                DRAW_REQUEST_COL_INDEX,
-            )
             from integrations.box.excel.business.workbook_editor import (
                 apply_rows_to_details,
                 stamp_columns_by_key,
             )
 
             if operation in STAMP_LIKE_OPERATIONS:
-                # Invoice path. Batch payloads are rejected upstream in handle().
-                # stamp → write the draw number onto this invoice's current source
-                # rows; clear → blank column H on the payload's explicit col-Z keys
-                # (rows whose source line was unlinked from the draw).
-                if operation == OP_CLEAR_DRAW_REQUEST:
-                    clear_keys = [
-                        str(pid).strip()
-                        for pid in (source_public_ids or [])
-                        if pid and str(pid).strip()
-                    ]
-                    updates = [
-                        (pid, {DRAW_REQUEST_COL_INDEX: ""}) for pid in clear_keys
-                    ]
-                else:
-                    pairs = build_invoice_draw_stamp_pairs(entity_public_id)
-                    updates = [
-                        (source_pid, {DRAW_REQUEST_COL_INDEX: draw_value})
-                        for source_pid, draw_value in pairs
-                    ]
+                updates = stamp_updates or []
                 if not updates:
                     logger.info(
                         "box.outbox.excel.no_rows",
@@ -267,28 +333,13 @@ class BoxExcelUpdateService:
                             "operation": operation,
                         },
                     )
-                    return
+                    return False
                 data = client.download_file(
                     box_file_id, operation_name="box.excel.download"
                 )
                 result = stamp_columns_by_key(data, worksheet_name, updates)
             else:
-                if entities:
-                    # Batch: concatenate fresh rows for every entity. Each
-                    # entity is scoped to `project_id` from the payload so a
-                    # multi-project parent never writes lines that belong to
-                    # other projects into this workbook (review finding F1).
-                    rows = []
-                    for ent in entities:
-                        rows.extend(build_details_rows(
-                            ent["entity_type"],
-                            ent["entity_public_id"],
-                            project_id=project_id,
-                        ))
-                else:
-                    rows = build_details_rows(
-                        entity_type, entity_public_id, project_id=project_id,
-                    )
+                rows = insert_rows or []
                 if not rows:
                     logger.info(
                         "box.outbox.excel.no_rows",
@@ -300,12 +351,17 @@ class BoxExcelUpdateService:
                             "operation": operation,
                         },
                     )
-                    return
+                    return False
 
                 data = client.download_file(
                     box_file_id, operation_name="box.excel.download"
                 )
                 result = apply_rows_to_details(data, worksheet_name, rows)
+
+            stamp_incomplete = (
+                operation in STAMP_LIKE_OPERATIONS
+                and result.get("skipped", 0) > 0
+            )
 
             # Step 6: no-op when nothing was written. Two distinct reasons,
             # both yield bytes=None from the editor — an invoice stamp that
@@ -333,7 +389,7 @@ class BoxExcelUpdateService:
                         "skipped": result.get("skipped"),
                     },
                 )
-                return
+                return not stamp_incomplete
 
             new_bytes = result["bytes"]
             # Upload a new version — use etag1 from the LOCK response (the lock
@@ -381,10 +437,144 @@ class BoxExcelUpdateService:
                     "outcome": "success",
                 },
             )
+            return not stamp_incomplete
         finally:
             # Step 7: best-effort unlock. A human may have force-unlocked us;
             # never let unlock failure fail/raise the operation.
             self._best_effort_unlock(client, box_file_id)
+
+    @staticmethod
+    def _build_stamp_plan(
+        *,
+        operation: str,
+        entity_public_id: str,
+        source_public_ids: Optional[list],
+    ) -> Tuple[Optional[List[Any]], Optional[str]]:
+        from integrations.box.excel.business.row_builder import (
+            build_invoice_draw_stamp_pairs,
+            DRAW_REQUEST_COL_INDEX,
+        )
+
+        if operation == OP_CLEAR_DRAW_REQUEST:
+            clear_keys = [
+                str(pid).strip()
+                for pid in (source_public_ids or [])
+                if pid and str(pid).strip()
+            ]
+            updates = [(pid, {DRAW_REQUEST_COL_INDEX: ""}) for pid in clear_keys]
+        else:
+            pairs = build_invoice_draw_stamp_pairs(entity_public_id)
+            updates = [
+                (source_pid, {DRAW_REQUEST_COL_INDEX: draw_value})
+                for source_pid, draw_value in pairs
+            ]
+        if not updates:
+            return None, None
+        updates.sort(key=lambda pair: pair[0] or "")
+        content_hash = _content_hash(updates)
+        return updates, content_hash
+
+    @staticmethod
+    def _is_cache_fresh(
+        push_cache_repo,
+        *,
+        box_file_id: str,
+        entity_type: str,
+        entity_public_id: str,
+        content_hash: str,
+    ) -> bool:
+        existing = push_cache_repo.read_one(
+            box_file_id=box_file_id,
+            entity_type=entity_type,
+            entity_public_id=entity_public_id,
+        )
+        return bool(existing and existing.content_hash == content_hash)
+
+    @staticmethod
+    def _filter_fresh_insert_entities(
+        *,
+        push_cache_repo,
+        box_file_id: str,
+        entity_list: List[Dict[str, Any]],
+        project_id: Optional[int],
+    ) -> Tuple[List[Dict[str, Any]], List[Any]]:
+        from integrations.box.excel.business.row_builder import build_details_rows
+        from integrations.box.excel.business.workbook_editor import DEFAULT_KEY_COL_INDEX
+
+        cached_rows = push_cache_repo.read_all_for_file(box_file_id=box_file_id)
+        cache_by_entity = {
+            (row.entity_type, row.entity_public_id): row.content_hash
+            for row in cached_rows
+        }
+
+        fresh_entities: List[Dict[str, Any]] = []
+        insert_rows: List[Any] = []
+        for ent in entity_list:
+            ent_type = ent["entity_type"]
+            ent_public_id = str(ent["entity_public_id"])
+            rows = build_details_rows(
+                ent_type, ent_public_id, project_id=project_id,
+            )
+            if not rows:
+                continue
+            rows.sort(key=lambda row: (row[DEFAULT_KEY_COL_INDEX] or "",))
+            content_hash = _content_hash(rows)
+            cached_hash = cache_by_entity.get((ent_type, ent_public_id))
+            if cached_hash is None or cached_hash != content_hash:
+                fresh_entities.append(
+                    {
+                        "entity_type": ent_type,
+                        "entity_public_id": ent_public_id,
+                        "content_hash": content_hash,
+                    }
+                )
+                insert_rows.extend(rows)
+        return fresh_entities, insert_rows
+
+    def _record_insert_freshness(
+        self, push_cache_repo, box_file_id: str, fresh_entities: List[Dict[str, Any]]
+    ) -> None:
+        try:
+            for ent in fresh_entities:
+                push_cache_repo.upsert(
+                    box_file_id=box_file_id,
+                    entity_type=ent["entity_type"],
+                    entity_public_id=ent["entity_public_id"],
+                    content_hash=ent["content_hash"],
+                )
+        except Exception as error:
+            logger.warning(
+                "box.outbox.excel.freshness_record_failed",
+                extra={
+                    "event_name": "box.outbox.excel.freshness_record_failed",
+                    "box_file_id": box_file_id,
+                    "error_class": type(error).__name__,
+                },
+            )
+
+    def _record_stamp_freshness(
+        self,
+        push_cache_repo,
+        box_file_id: str,
+        entity_public_id: str,
+        content_hash: str,
+    ) -> None:
+        try:
+            push_cache_repo.upsert(
+                box_file_id=box_file_id,
+                entity_type=STAMP_LIKE_ENTITY_TYPE,
+                entity_public_id=entity_public_id,
+                content_hash=content_hash,
+            )
+        except Exception as error:
+            logger.warning(
+                "box.outbox.excel.freshness_record_failed",
+                extra={
+                    "event_name": "box.outbox.excel.freshness_record_failed",
+                    "box_file_id": box_file_id,
+                    "error_class": type(error).__name__,
+                },
+            )
 
     @staticmethod
     def _is_live_human_lock(lock: Optional[Dict[str, Any]]) -> bool:
@@ -491,6 +681,12 @@ class BoxExcelUpdateService:
                     "error_class": type(error).__name__,
                 },
             )
+
+
+def _content_hash(payload: Any) -> str:
+    return hashlib.sha1(
+        json.dumps(payload, sort_keys=True, default=str).encode("utf-8")
+    ).hexdigest()
 
 
 def _unwrap_upload_entry(result: Dict[str, Any]) -> Dict[str, Any]:

@@ -41,6 +41,11 @@ class BoxFile:
     file_version_id: Optional[str] = None
     last_pushed_at: Optional[str] = None
 
+    # Drift invalidation (U-256): set when reconcile proves the Box-side file
+    # is gone; idempotency guard ignores rows with is_deleted=True.
+    is_deleted: Optional[bool] = None
+    invalidated_at: Optional[str] = None
+
 
 @dataclass
 class BoxPushLog:

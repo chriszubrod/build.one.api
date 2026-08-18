@@ -46,6 +46,8 @@ class BoxFileRepository:
                 etag=getattr(row, "Etag", None),
                 file_version_id=getattr(row, "FileVersionId", None),
                 last_pushed_at=getattr(row, "LastPushedAt", None),
+                is_deleted=bool(getattr(row, "IsDeleted", 0)),
+                invalidated_at=getattr(row, "InvalidatedAt", None),
             )
         except Exception as error:
             logger.error(f"Error mapping BoxFile row: {error}")
@@ -127,7 +129,14 @@ class BoxFileRepository:
             logger.error(f"Error during read box file by box file id: {error}")
             raise map_database_error(error)
 
-    def read_by_entity(self, entity_type: str, entity_public_id: str) -> List[BoxFile]:
+    def read_by_entity(
+        self,
+        entity_type: str,
+        entity_public_id: str,
+        *,
+        box_folder_id: Optional[str] = None,
+        name: Optional[str] = None,
+    ) -> List[BoxFile]:
         try:
             with get_connection() as conn:
                 cursor = conn.cursor()
@@ -138,6 +147,8 @@ class BoxFileRepository:
                         params={
                             "EntityType": entity_type,
                             "EntityPublicId": entity_public_id,
+                            "BoxFolderId": box_folder_id,
+                            "Name": name,
                         },
                     )
                     return [self._from_db(row) for row in cursor.fetchall()]
@@ -148,6 +159,26 @@ class BoxFileRepository:
                         pass
         except Exception as error:
             logger.error(f"Error during read box files by entity: {error}")
+            raise map_database_error(error)
+
+    def invalidate(self, box_file_id: str) -> Optional[BoxFile]:
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                try:
+                    call_procedure(
+                        cursor=cursor,
+                        name="InvalidateBoxFile",
+                        params={"BoxFileId": box_file_id},
+                    )
+                    return self._from_db(cursor.fetchone())
+                finally:
+                    try:
+                        cursor.close()
+                    except Exception:
+                        pass
+        except Exception as error:
+            logger.error(f"Error during invalidate box file: {error}")
             raise map_database_error(error)
 
     def read_recent(self, limit: int = 25) -> List[BoxFile]:

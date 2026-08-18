@@ -105,7 +105,12 @@ class BoxFileService:
             # raise anywhere in the guard (e.g. int() on a non-numeric attachment id)
             # logs and falls through to UPLOAD, never aborting the push.
             try:
-                rows = self.repo.read_by_entity(entity_type, entity_public_id)
+                rows = self.repo.read_by_entity(
+                    entity_type,
+                    entity_public_id,
+                    box_folder_id=box_folder_id,
+                    name=filename,
+                )
                 matches = [
                     r
                     for r in rows
@@ -114,6 +119,7 @@ class BoxFileService:
                     and r.sha1
                     and r.sha1.lower() == computed_sha1.lower()
                     and same_attachment_id(r.attachment_id, attachment_id)
+                    and not r.is_deleted
                 ]
                 if len(matches) == 1:
                     row = matches[0]

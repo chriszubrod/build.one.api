@@ -156,7 +156,9 @@ def test_box_skips_on_exact_registry_match(box_service):
         "etag": "etag-1",
         "file_version": {"id": "ver-1"},
     }
-    repo.read_by_entity.assert_called_once_with(_ENTITY_TYPE, _ENTITY_PUBLIC_ID)
+    repo.read_by_entity.assert_called_once_with(
+        _ENTITY_TYPE, _ENTITY_PUBLIC_ID, box_folder_id=_BOX_FOLDER, name=_FILENAME
+    )
     client.upload_file.assert_not_called()
     repo.upsert.assert_not_called()
     push_log_repo.create.assert_not_called()
@@ -273,6 +275,36 @@ def test_box_uploads_when_registry_attachment_id_set_payload_none(box_service):
     client.upload_file.assert_called_once()
 
 
+def test_box_uploads_when_registry_row_is_deleted(box_service):
+    svc, repo, push_log_repo, client = box_service
+    repo.read_by_entity.return_value = [_registry_row(is_deleted=True)]
+
+    _run_box_push(svc, client, _box_payload())
+
+    client.upload_file.assert_called_once()
+    repo.upsert.assert_called_once()
+
+
+def test_box_skips_after_upsert_reactivates_deleted_row(box_service):
+    """UpsertBoxFile clears IsDeleted; guard must skip again on the next drain."""
+    svc, repo, push_log_repo, client = box_service
+
+    repo.read_by_entity.return_value = [_registry_row(is_deleted=True)]
+    _run_box_push(svc, client, _box_payload())
+    client.upload_file.assert_called_once()
+    repo.upsert.assert_called_once()
+    client.upload_file.reset_mock()
+    repo.upsert.reset_mock()
+
+    repo.read_by_entity.return_value = [_registry_row(is_deleted=False)]
+
+    result = _run_box_push(svc, client, _box_payload())
+
+    assert result["id"] == "box-file-99"
+    client.upload_file.assert_not_called()
+    repo.upsert.assert_not_called()
+
+
 def test_box_force_true_uploads_on_exact_registry_match(box_service):
     svc, repo, push_log_repo, client = box_service
     repo.read_by_entity.return_value = [_registry_row()]
@@ -289,7 +321,9 @@ def test_box_read_by_entity_called_with_payload_entity_keys(box_service):
 
     _run_box_push(svc, client, _box_payload())
 
-    repo.read_by_entity.assert_called_once_with(_ENTITY_TYPE, _ENTITY_PUBLIC_ID)
+    repo.read_by_entity.assert_called_once_with(
+        _ENTITY_TYPE, _ENTITY_PUBLIC_ID, box_folder_id=_BOX_FOLDER, name=_FILENAME
+    )
 
 
 @pytest.mark.parametrize(

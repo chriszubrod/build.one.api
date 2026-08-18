@@ -74,6 +74,22 @@ END
 GO
 
 
+IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('box.File') AND name = 'IsDeleted')
+BEGIN
+    ALTER TABLE [box].[File]
+    ADD [IsDeleted] BIT NOT NULL CONSTRAINT DF_BoxFile_IsDeleted DEFAULT 0;
+END
+GO
+
+
+IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('box.File') AND name = 'InvalidatedAt')
+BEGIN
+    ALTER TABLE [box].[File]
+    ADD [InvalidatedAt] DATETIME2(3) NULL;
+END
+GO
+
+
 IF OBJECT_ID('box.PushLog', 'U') IS NULL
 BEGIN
 CREATE TABLE [box].[PushLog]
@@ -159,7 +175,9 @@ BEGIN
             t.[Sha1]             = COALESCE(@Sha1,           t.[Sha1]),
             t.[Etag]             = COALESCE(@Etag,           t.[Etag]),
             t.[FileVersionId]    = COALESCE(@FileVersionId,  t.[FileVersionId]),
-            t.[LastPushedAt]     = COALESCE(@LastPushedAt,   t.[LastPushedAt])
+            t.[LastPushedAt]     = COALESCE(@LastPushedAt,   t.[LastPushedAt]),
+            t.[IsDeleted]        = 0,
+            t.[InvalidatedAt]    = NULL
     WHEN NOT MATCHED THEN
         INSERT (
             [CreatedDatetime], [ModifiedDatetime],
@@ -183,7 +201,9 @@ BEGIN
         [BoxFileId], [BoxFolderId], [Name], [Kind],
         [EntityType], [EntityPublicId], [AttachmentId], [ProjectId],
         [Sha1], [Etag], [FileVersionId],
-        CONVERT(VARCHAR(19), [LastPushedAt], 120) AS [LastPushedAt]
+        CONVERT(VARCHAR(19), [LastPushedAt], 120) AS [LastPushedAt],
+        [IsDeleted],
+        CONVERT(VARCHAR(19), [InvalidatedAt], 120) AS [InvalidatedAt]
     FROM [box].[File]
     WHERE [BoxFileId] = @BoxFileId;
 END;
@@ -208,7 +228,9 @@ BEGIN
         [BoxFileId], [BoxFolderId], [Name], [Kind],
         [EntityType], [EntityPublicId], [AttachmentId], [ProjectId],
         [Sha1], [Etag], [FileVersionId],
-        CONVERT(VARCHAR(19), [LastPushedAt], 120) AS [LastPushedAt]
+        CONVERT(VARCHAR(19), [LastPushedAt], 120) AS [LastPushedAt],
+        [IsDeleted],
+        CONVERT(VARCHAR(19), [InvalidatedAt], 120) AS [InvalidatedAt]
     FROM [box].[File]
     WHERE [BoxFileId] = @BoxFileId;
 END;
@@ -217,12 +239,16 @@ GO
 
 -- ============================================================================
 -- ReadBoxFilesByEntity
--- All registry rows for a local entity, newest first.
+-- All registry rows for a local entity, newest first. Optional @BoxFolderId
+-- and @Name filters (NULL = unfiltered) let the idempotency guard scope to
+-- folder+name in SQL instead of loading the entity's full push history.
 -- ============================================================================
 CREATE OR ALTER PROCEDURE ReadBoxFilesByEntity
 (
     @EntityType     NVARCHAR(64),
-    @EntityPublicId UNIQUEIDENTIFIER
+    @EntityPublicId UNIQUEIDENTIFIER,
+    @BoxFolderId    NVARCHAR(32)  = NULL,
+    @Name           NVARCHAR(255) = NULL
 )
 AS
 BEGIN
@@ -235,10 +261,14 @@ BEGIN
         [BoxFileId], [BoxFolderId], [Name], [Kind],
         [EntityType], [EntityPublicId], [AttachmentId], [ProjectId],
         [Sha1], [Etag], [FileVersionId],
-        CONVERT(VARCHAR(19), [LastPushedAt], 120) AS [LastPushedAt]
+        CONVERT(VARCHAR(19), [LastPushedAt], 120) AS [LastPushedAt],
+        [IsDeleted],
+        CONVERT(VARCHAR(19), [InvalidatedAt], 120) AS [InvalidatedAt]
     FROM [box].[File]
     WHERE [EntityType]     = @EntityType
       AND [EntityPublicId] = @EntityPublicId
+      AND (@BoxFolderId IS NULL OR [BoxFolderId] = @BoxFolderId)
+      AND (@Name IS NULL OR [Name] = @Name)
     ORDER BY [Id] DESC;
 END;
 GO
@@ -265,9 +295,52 @@ BEGIN
         [BoxFileId], [BoxFolderId], [Name], [Kind],
         [EntityType], [EntityPublicId], [AttachmentId], [ProjectId],
         [Sha1], [Etag], [FileVersionId],
-        CONVERT(VARCHAR(19), [LastPushedAt], 120) AS [LastPushedAt]
+        CONVERT(VARCHAR(19), [LastPushedAt], 120) AS [LastPushedAt],
+        [IsDeleted],
+        CONVERT(VARCHAR(19), [InvalidatedAt], 120) AS [InvalidatedAt]
     FROM [box].[File]
+    WHERE [IsDeleted] = 0
     ORDER BY COALESCE([LastPushedAt], [CreatedDatetime]) DESC, [Id] DESC;
+END;
+GO
+
+
+-- ============================================================================
+-- InvalidateBoxFile
+-- Soft-delete a registry row when reconcile proves the Box-side file is gone.
+-- Idempotent: a second call on an already-invalidated row is a WHERE miss, but
+-- the trailing SELECT still returns current state. Always-COMMIT.
+-- ============================================================================
+CREATE OR ALTER PROCEDURE InvalidateBoxFile
+(
+    @BoxFileId NVARCHAR(32)
+)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();
+
+    BEGIN TRANSACTION;
+
+    UPDATE [box].[File]
+    SET [IsDeleted] = 1, [InvalidatedAt] = @Now, [ModifiedDatetime] = @Now
+    WHERE [BoxFileId] = @BoxFileId AND [IsDeleted] = 0;
+
+    COMMIT TRANSACTION;
+
+    SELECT
+        [Id], [PublicId], [RowVersion],
+        CONVERT(VARCHAR(19), [CreatedDatetime], 120)  AS [CreatedDatetime],
+        CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
+        [BoxFileId], [BoxFolderId], [Name], [Kind],
+        [EntityType], [EntityPublicId], [AttachmentId], [ProjectId],
+        [Sha1], [Etag], [FileVersionId],
+        CONVERT(VARCHAR(19), [LastPushedAt], 120) AS [LastPushedAt],
+        [IsDeleted],
+        CONVERT(VARCHAR(19), [InvalidatedAt], 120) AS [InvalidatedAt]
+    FROM [box].[File]
+    WHERE [BoxFileId] = @BoxFileId;
 END;
 GO
 

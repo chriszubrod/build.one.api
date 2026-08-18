@@ -307,14 +307,31 @@ def cmd_bulk_resolve(args: argparse.Namespace) -> int:
             # Printing a bare "Matched 0" here invites the operator to widen the
             # filter, which is the opposite of the correct reaction. Say what
             # actually happened instead.
-            print(
-                "  keep-newest-per-group ON: NOTHING would be resolved — every matched "
-                f"row is the newest of its own {GROUP_KEY} group.\n"
-                "  This is the expected, SAFE result for per-entity drift (each row "
-                "carries its own QboId, so it groups alone). It does NOT mean the "
-                "filter matched nothing — do not widen the filter on the strength of "
-                "this message."
-            )
+            # An empty preview is AMBIGUOUS: either the filter matched nothing, or
+            # it matched rows and keep-newest withheld every one (the safe no-op).
+            # Those demand opposite operator reactions — fix the filter vs. do
+            # nothing — so resolve it by re-previewing WITHOUT keep-newest instead
+            # of asserting either. (Caught in review: the first version of this
+            # message claimed "it does NOT mean the filter matched nothing", which
+            # is exactly what a mistyped filter DOES mean.)
+            probe = dict(resolve_kwargs)
+            probe["keep_newest_per_group"] = False
+            probe_rows = repo.preview_bulk_resolve(**probe)
+            matched = probe_rows[0]["total_match_count"] if probe_rows else 0
+            if matched:
+                print(
+                    f"  keep-newest-per-group ON: {matched} row(s) matched, and NOTHING "
+                    f"would be resolved — each is the newest of its own {GROUP_KEY} "
+                    "group.\n  This is the expected, SAFE result for per-entity drift "
+                    "(every row carries its own QboId, so it groups alone). "
+                    "Do NOT widen the filter."
+                )
+            else:
+                print(
+                    "  The filter matched NO rows at all — this is NOT a keep-newest "
+                    "no-op; the scoping itself selected nothing. Check --drift-type / "
+                    "--entity-type spelling and casing before re-running."
+                )
         else:
             kept = preview_rows[0].get("total_kept_count")
             print(

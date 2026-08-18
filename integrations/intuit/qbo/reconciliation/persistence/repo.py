@@ -208,6 +208,34 @@ class ReconciliationIssueRepository:
             logger.error(f"Error during resolve reconciliation issue: {error}")
             raise map_database_error(error)
 
+    # ---------------------------------------------------------------- bulk ops
+    # SQL-FIRST: these four methods bind params BY NAME. The @Severity / @Action /
+    # @KeepNewestPerGroup params and the whole BulkAcknowledge... sproc must be
+    # applied to prod (integrations/intuit/qbo/reconciliation/sql/
+    # qbo.reconciliation_issue.sql) BEFORE these run, or SQL Server raises 8145.
+
+    # NB the param dicts below are written out LITERALLY at each call_procedure
+    # site rather than built by a shared helper. tests/test_repo_sproc_param_contract
+    # walks the AST for dict literals (or a local `params` var); a helper CALL is
+    # opaque to it, which would silently switch off 8145-detection on exactly the
+    # four riskiest call sites in this repo. Verbosity is the price of that guard.
+
+    @staticmethod
+    def _preview_row(r) -> dict:
+        return {
+            "id": r.Id,
+            "drift_type": r.DriftType,
+            "entity_type": r.EntityType,
+            "qbo_id": r.QboId,
+            "severity": getattr(r, "Severity", None),
+            "action": getattr(r, "Action", None),
+            "created_datetime": r.CreatedDatetime,
+            "total_match_count": r.TotalMatchCount,
+            # Only bulk-resolve's preview returns TotalKeptCount (rows withheld by
+            # keep-newest). Absent on bulk-acknowledge, which has no keep-newest.
+            "total_kept_count": getattr(r, "TotalKeptCount", None),
+        }
+
     def preview_bulk_resolve(
         self,
         *,
@@ -215,8 +243,11 @@ class ReconciliationIssueRepository:
         entity_type: Optional[str] = None,
         created_before=None,
         realm_id: Optional[str] = None,
+        severity: Optional[str] = None,
+        action: Optional[str] = None,
         status: str = "open",
         max_rows: int = 1000,
+        keep_newest_per_group: bool = False,
     ) -> List[dict]:
         try:
             with get_connection() as conn:
@@ -230,25 +261,18 @@ class ReconciliationIssueRepository:
                             "EntityType": entity_type,
                             "CreatedBefore": created_before,
                             "RealmId": realm_id,
+                            "Severity": severity,
+                            "Action": action,
                             "Status": status,
                             "MaxRows": max_rows,
+                            "KeepNewestPerGroup": keep_newest_per_group,
                             "DryRun": True,
                         },
                     )
                     rows = cursor.fetchall()
                     if not rows:
                         return []
-                    return [
-                        {
-                            "id": r.Id,
-                            "drift_type": r.DriftType,
-                            "entity_type": r.EntityType,
-                            "qbo_id": r.QboId,
-                            "created_datetime": r.CreatedDatetime,
-                            "total_match_count": r.TotalMatchCount,
-                        }
-                        for r in rows if r
-                    ]
+                    return [self._preview_row(r) for r in rows if r]
                 finally:
                     try:
                         cursor.close()
@@ -265,8 +289,11 @@ class ReconciliationIssueRepository:
         entity_type: Optional[str] = None,
         created_before=None,
         realm_id: Optional[str] = None,
+        severity: Optional[str] = None,
+        action: Optional[str] = None,
         status: str = "open",
         max_rows: int = 1000,
+        keep_newest_per_group: bool = False,
     ) -> List[int]:
         try:
             with get_connection() as conn:
@@ -280,6 +307,95 @@ class ReconciliationIssueRepository:
                             "EntityType": entity_type,
                             "CreatedBefore": created_before,
                             "RealmId": realm_id,
+                            "Severity": severity,
+                            "Action": action,
+                            "Status": status,
+                            "MaxRows": max_rows,
+                            "KeepNewestPerGroup": keep_newest_per_group,
+                            "DryRun": False,
+                        },
+                    )
+                    rows = cursor.fetchall()
+                    return [r.Id for r in rows if r]
+                finally:
+                    try:
+                        cursor.close()
+                    except Exception:
+                        pass
+        except Exception as error:
+            logger.error(f"Error during bulk resolve reconciliation issues: {error}")
+            raise map_database_error(error)
+
+    def preview_bulk_acknowledge(
+        self,
+        *,
+        drift_type: Optional[str] = None,
+        entity_type: Optional[str] = None,
+        created_before=None,
+        realm_id: Optional[str] = None,
+        severity: Optional[str] = None,
+        action: Optional[str] = None,
+        status: str = "open",
+        max_rows: int = 1000,
+    ) -> List[dict]:
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                try:
+                    call_procedure(
+                        cursor=cursor,
+                        name="BulkAcknowledgeQboReconciliationIssuesByFilter",
+                        params={
+                            "DriftType": drift_type,
+                            "EntityType": entity_type,
+                            "CreatedBefore": created_before,
+                            "RealmId": realm_id,
+                            "Severity": severity,
+                            "Action": action,
+                            "Status": status,
+                            "MaxRows": max_rows,
+                            "DryRun": True,
+                        },
+                    )
+                    rows = cursor.fetchall()
+                    if not rows:
+                        return []
+                    return [self._preview_row(r) for r in rows if r]
+                finally:
+                    try:
+                        cursor.close()
+                    except Exception:
+                        pass
+        except Exception as error:
+            logger.error(f"Error during preview bulk acknowledge reconciliation issues: {error}")
+            raise map_database_error(error)
+
+    def bulk_acknowledge(
+        self,
+        *,
+        drift_type: Optional[str] = None,
+        entity_type: Optional[str] = None,
+        created_before=None,
+        realm_id: Optional[str] = None,
+        severity: Optional[str] = None,
+        action: Optional[str] = None,
+        status: str = "open",
+        max_rows: int = 1000,
+    ) -> List[int]:
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                try:
+                    call_procedure(
+                        cursor=cursor,
+                        name="BulkAcknowledgeQboReconciliationIssuesByFilter",
+                        params={
+                            "DriftType": drift_type,
+                            "EntityType": entity_type,
+                            "CreatedBefore": created_before,
+                            "RealmId": realm_id,
+                            "Severity": severity,
+                            "Action": action,
                             "Status": status,
                             "MaxRows": max_rows,
                             "DryRun": False,
@@ -293,7 +409,7 @@ class ReconciliationIssueRepository:
                     except Exception:
                         pass
         except Exception as error:
-            logger.error(f"Error during bulk resolve reconciliation issues: {error}")
+            logger.error(f"Error during bulk acknowledge reconciliation issues: {error}")
             raise map_database_error(error)
 
     def triage_summary(self) -> List[dict]:

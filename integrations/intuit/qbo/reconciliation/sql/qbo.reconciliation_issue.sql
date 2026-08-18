@@ -1,9 +1,18 @@
 -- ============================================================================
 -- qbo.ReconciliationIssue — record of drift between local DB and QBO.
 --
--- WARNING: this base file has NOT been verified against prod (sys.sql_modules)
--- and may be stale — do NOT re-apply it wholesale. The U-160 sproc at the bottom
--- is wrapped in a BEGIN/END banner so it can be extracted and applied on its own.
+-- VERIFIED vs PROD 2026-08-18 (U-249): all 8 sprocs this file defined at that point
+-- were diffed against prod sys.sql_modules (normalizing CREATE OR ALTER -> CREATE)
+-- and were byte-identical. The earlier "not verified, may be stale" warning is
+-- retired — the table/index blocks are IF NOT EXISTS guarded and every sproc uses
+-- CREATE OR ALTER, so a whole-file re-apply is idempotent.
+--
+-- ⚠️ UNAPPLIED AS OF 2026-08-18: the U-249 changes below are NOT yet in prod —
+--    (1) BulkResolveQboReconciliationIssuesByFilter gained @Severity, @Action and
+--        @KeepNewestPerGroup;  (2) BulkAcknowledgeQboReconciliationIssuesByFilter
+--        is new. The repo layer sends params BY NAME, so calling either against the
+--        current prod definition fails hard (SQL 8145 / "not a parameter for
+--        procedure"). APPLY THIS FILE FIRST, then run the CLI.
 --
 -- Written by the reconciliation job when it detects a mismatch between
 -- what QBO says and what we have locally. Each row represents one finding.
@@ -263,15 +272,58 @@ END;
 GO
 
 
+-- U-249 GAP 2: @Severity / @Action narrowing filters + @KeepNewestPerGroup.
+--
+-- ---------------------------------------------------------------------------
+-- THE GROUPING KEY (load-bearing — "newest per WHAT" is stated here, not implied)
+--
+--   (RealmId, DriftType, EntityType, QboId, EntityPublicId, Severity, Action)
+--
+-- "Newest" = MAX(CreatedDatetime), tie-broken by MAX(Id) so "exactly one
+-- survivor per group" is deterministic even when two rows share a millisecond
+-- (DATETIME2(3) collisions are real: the 20 qbo_voided Expense rows were all
+-- emitted inside a 28-second window).
+--
+-- WHY THESE COLUMNS:
+--   * RealmId/DriftType/EntityType/QboId/EntityPublicId = the IDENTITY of the
+--     underlying condition. Including QboId is the safety property that makes
+--     this feature non-destructive: a per-entity finding (e.g. qbo_voided, which
+--     carries a distinct QboId per voided doc) lands ALONE in its own group, so
+--     keep-newest is a provable NO-OP on it and cannot collapse 26 real drift
+--     rows into 1. Only rows that are literally about the same thing collapse.
+--   * Severity/Action = the CLASSIFICATION. Included so keep-newest can never
+--     resolve a 'critical'/'manual_review' row in favour of a newer
+--     'low'/'flagged' one about the same entity. Measured on live data: 210
+--     identity groups span more than one Severity/Action, so this is load-bearing,
+--     not decorative. (On today's open backlog it changes nothing — identity
+--     groups and full groups are equal — so it costs zero on the target workload.)
+--
+-- DELIBERATELY EXCLUDED:
+--   * ReconcileRunId and CreatedDatetime — these are exactly what VARIES between
+--     repeats of the same finding. Including either would make every row its own
+--     group and turn keep-newest into a no-op, defeating the whole feature.
+--   * Status — lifecycle position, and the caller already scopes it via @Status.
+--   * Details — free NVARCHAR(MAX) narrative; varies per run.
+--
+-- SCOPE OF "NEWEST": the survivor is chosen WITHIN the caller's filtered set,
+-- never outside it. The sproc never reaches past the filters the operator stated.
+-- Consequence: if a @CreatedBefore cutoff splits a group, the newest row BELOW
+-- the cutoff is kept and rows above the cutoff were never candidates — so more
+-- than one row may survive. That errs toward keeping signal, which is the correct
+-- direction to be wrong in, and a re-run without the cutoff collapses it.
+-- ---------------------------------------------------------------------------
 CREATE OR ALTER PROCEDURE BulkResolveQboReconciliationIssuesByFilter
 (
-    @DriftType       NVARCHAR(32)  = NULL,
-    @EntityType      NVARCHAR(32)  = NULL,
-    @CreatedBefore   DATETIME2(3)  = NULL,
-    @RealmId         NVARCHAR(64)  = NULL,
-    @Status          NVARCHAR(16)  = 'open',
-    @MaxRows         INT           = 1000,
-    @DryRun          BIT           = 0
+    @DriftType           NVARCHAR(32)  = NULL,
+    @EntityType          NVARCHAR(32)  = NULL,
+    @CreatedBefore       DATETIME2(3)  = NULL,
+    @RealmId             NVARCHAR(64)  = NULL,
+    @Severity            NVARCHAR(16)  = NULL,
+    @Action              NVARCHAR(16)  = NULL,
+    @Status              NVARCHAR(16)  = 'open',
+    @MaxRows             INT           = 1000,
+    @KeepNewestPerGroup  BIT           = 0,
+    @DryRun              BIT           = 0
 )
 AS
 BEGIN
@@ -280,6 +332,9 @@ BEGIN
     IF @MaxRows > 5000 SET @MaxRows = 5000;
     IF @MaxRows < 1 SET @MaxRows = 1;
 
+    -- @Severity/@Action are NARROWING-ONLY: they deliberately do NOT satisfy this
+    -- guard. '@Severity = low' alone would match every low-severity row of every
+    -- drift type in the table — far too broad to be a blast-radius bound.
     IF @DriftType IS NULL AND @EntityType IS NULL AND @CreatedBefore IS NULL
     BEGIN
         RAISERROR('BulkResolveQboReconciliationIssuesByFilter requires at least one of @DriftType, @EntityType, @CreatedBefore', 16, 1);
@@ -289,29 +344,55 @@ BEGIN
     -- Single definition of "eligible" — both the dry-run preview and the real
     -- resolve below operate on exactly this materialized candidate set, so they
     -- can never see a different row set from each other.
+    -- #Ranked holds the full filtered set WITH its per-group recency rank;
+    -- #Candidates is #Ranked minus the survivors. Deriving one from the other
+    -- keeps the filter predicate written exactly once.
+    SELECT [Id], [RecencyRank]
+    INTO #Ranked
+    FROM (
+        SELECT [Id],
+               ROW_NUMBER() OVER (
+                   PARTITION BY [RealmId], [DriftType], [EntityType],
+                                [QboId], [EntityPublicId], [Severity], [Action]
+                   ORDER BY [CreatedDatetime] DESC, [Id] DESC
+               ) AS [RecencyRank]
+        FROM [qbo].[ReconciliationIssue]
+        WHERE [Status] = @Status
+          AND [Status] IN ('open', 'acknowledged')
+          AND (@DriftType IS NULL OR [DriftType] = @DriftType)
+          AND (@EntityType IS NULL OR [EntityType] = @EntityType)
+          AND (@CreatedBefore IS NULL OR [CreatedDatetime] < @CreatedBefore)
+          AND (@RealmId IS NULL OR [RealmId] = @RealmId)
+          AND (@Severity IS NULL OR [Severity] = @Severity)
+          AND (@Action IS NULL OR [Action] = @Action)
+    ) ranked;
+
+    -- RecencyRank = 1 is the newest row of its group. With @KeepNewestPerGroup = 1
+    -- it is withheld from the candidate set, so exactly one row per group survives.
     SELECT [Id]
     INTO #Candidates
-    FROM [qbo].[ReconciliationIssue]
-    WHERE [Status] = @Status
-      AND [Status] IN ('open', 'acknowledged')
-      AND (@DriftType IS NULL OR [DriftType] = @DriftType)
-      AND (@EntityType IS NULL OR [EntityType] = @EntityType)
-      AND (@CreatedBefore IS NULL OR [CreatedDatetime] < @CreatedBefore)
-      AND (@RealmId IS NULL OR [RealmId] = @RealmId);
+    FROM #Ranked
+    WHERE @KeepNewestPerGroup = 0 OR [RecencyRank] > 1;
 
     IF @DryRun = 1
     BEGIN
         DECLARE @TotalMatchCount INT = (SELECT COUNT(*) FROM #Candidates);
+        -- Rows the filter matched but keep-newest is withholding = one per group.
+        DECLARE @TotalKeptCount INT =
+            (SELECT COUNT(*) FROM #Ranked) - @TotalMatchCount;
 
         SELECT TOP (10)
             ri.[Id], ri.[DriftType], ri.[EntityType], ri.[QboId],
+            ri.[Severity], ri.[Action],
             CONVERT(VARCHAR(19), ri.[CreatedDatetime], 120) AS [CreatedDatetime],
-            @TotalMatchCount AS [TotalMatchCount]
+            @TotalMatchCount AS [TotalMatchCount],
+            @TotalKeptCount  AS [TotalKeptCount]
         FROM [qbo].[ReconciliationIssue] ri
         JOIN #Candidates c ON c.[Id] = ri.[Id]
         ORDER BY ri.[CreatedDatetime] ASC;
 
         DROP TABLE #Candidates;
+        DROP TABLE #Ranked;
         RETURN;
     END;
 
@@ -340,6 +421,7 @@ BEGIN
     COMMIT TRANSACTION;
 
     DROP TABLE #Candidates;
+    DROP TABLE #Ranked;
 END;
 GO
 
@@ -366,3 +448,113 @@ END;
 GO
 
 -- ========================== U-246 END ==========================
+
+
+-- ========================= U-249 BEGIN =========================
+-- GAP 1: bulk ACKNOWLEDGE. Acknowledgement and resolution are different verbs and
+-- must not be conflated:
+--   acknowledged = "a human has SEEN this; it is real and still awaiting action"
+--   resolved     = "this has been DEALT WITH"
+-- The qbo_voided backlog (Bill + Expense) is real, per-entity drift — one row per
+-- genuinely voided QBO document. Resolving it would erase live signal; the correct
+-- transition is open -> acknowledged, in bulk, instead of N single-row calls.
+--
+-- Shape, guards, clamps, dry-run contract and concurrency re-check are mirrored
+-- from BulkResolveQboReconciliationIssuesByFilter deliberately, so an operator who
+-- knows one knows the other.
+--
+-- NO @KeepNewestPerGroup here, by design. Keep-newest exists to thin RECURRING
+-- summary rows that all describe one condition; acknowledgement is applied to
+-- per-entity findings where every row is a distinct real item and must be seen.
+-- Thinning them would defeat the point of acknowledging them at all.
+CREATE OR ALTER PROCEDURE BulkAcknowledgeQboReconciliationIssuesByFilter
+(
+    @DriftType       NVARCHAR(32)  = NULL,
+    @EntityType      NVARCHAR(32)  = NULL,
+    @CreatedBefore   DATETIME2(3)  = NULL,
+    @RealmId         NVARCHAR(64)  = NULL,
+    @Severity        NVARCHAR(16)  = NULL,
+    @Action          NVARCHAR(16)  = NULL,
+    @Status          NVARCHAR(16)  = 'open',
+    @MaxRows         INT           = 1000,
+    @DryRun          BIT           = 0
+)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    IF @MaxRows > 5000 SET @MaxRows = 5000;
+    IF @MaxRows < 1 SET @MaxRows = 1;
+
+    -- Same blast-radius bound as bulk-resolve: @Severity/@Action narrow, they do
+    -- not authorise a sweep on their own.
+    IF @DriftType IS NULL AND @EntityType IS NULL AND @CreatedBefore IS NULL
+    BEGIN
+        RAISERROR('BulkAcknowledgeQboReconciliationIssuesByFilter requires at least one of @DriftType, @EntityType, @CreatedBefore', 16, 1);
+        RETURN;
+    END;
+
+    -- Single definition of "eligible", shared by the dry-run preview and the real
+    -- acknowledge below. Note the status predicate is intersected with 'open':
+    -- open is the ONLY legal source state for this transition (mirrors the
+    -- single-row AcknowledgeQboReconciliationIssue). A caller passing any other
+    -- @Status therefore selects nothing and the call is a safe no-op rather than
+    -- an illegal backwards transition from 'resolved'.
+    SELECT [Id]
+    INTO #AckCandidates
+    FROM [qbo].[ReconciliationIssue]
+    WHERE [Status] = @Status
+      AND [Status] = 'open'
+      AND (@DriftType IS NULL OR [DriftType] = @DriftType)
+      AND (@EntityType IS NULL OR [EntityType] = @EntityType)
+      AND (@CreatedBefore IS NULL OR [CreatedDatetime] < @CreatedBefore)
+      AND (@RealmId IS NULL OR [RealmId] = @RealmId)
+      AND (@Severity IS NULL OR [Severity] = @Severity)
+      AND (@Action IS NULL OR [Action] = @Action);
+
+    IF @DryRun = 1
+    BEGIN
+        DECLARE @TotalMatchCount INT = (SELECT COUNT(*) FROM #AckCandidates);
+
+        SELECT TOP (10)
+            ri.[Id], ri.[DriftType], ri.[EntityType], ri.[QboId],
+            ri.[Severity], ri.[Action],
+            CONVERT(VARCHAR(19), ri.[CreatedDatetime], 120) AS [CreatedDatetime],
+            @TotalMatchCount AS [TotalMatchCount]
+        FROM [qbo].[ReconciliationIssue] ri
+        JOIN #AckCandidates c ON c.[Id] = ri.[Id]
+        ORDER BY ri.[CreatedDatetime] ASC;
+
+        DROP TABLE #AckCandidates;
+        RETURN;
+    END;
+
+    DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();
+
+    BEGIN TRANSACTION;
+
+    ;WITH [Batch] AS (
+        SELECT TOP (@MaxRows) c.[Id]
+        FROM #AckCandidates c
+        JOIN [qbo].[ReconciliationIssue] ri ON ri.[Id] = c.[Id]
+        ORDER BY ri.[CreatedDatetime] ASC
+    )
+    -- #AckCandidates is a snapshot taken before this transaction opened — re-check
+    -- Status here so a row acknowledged or resolved by a concurrent call between
+    -- the snapshot and this UPDATE is excluded rather than having its
+    -- AcknowledgedAt clobbered (or being dragged back out of 'resolved').
+    UPDATE ri
+    SET [Status] = 'acknowledged',
+        [AcknowledgedAt] = @Now,
+        [ModifiedDatetime] = @Now
+    OUTPUT INSERTED.[Id]
+    FROM [qbo].[ReconciliationIssue] ri
+    JOIN [Batch] b ON b.[Id] = ri.[Id]
+    WHERE ri.[Status] = 'open';
+
+    COMMIT TRANSACTION;
+
+    DROP TABLE #AckCandidates;
+END;
+GO
+-- ========================== U-249 END ==========================

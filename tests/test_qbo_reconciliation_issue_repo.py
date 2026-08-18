@@ -100,8 +100,12 @@ def test_bulk_resolve_calls_sproc_and_returns_ids(mock_call_procedure, mock_get_
             "EntityType": "Bill",
             "CreatedBefore": created_before,
             "RealmId": "realm-42",
+            # U-249 additive params — defaults must preserve pre-U-249 behaviour.
+            "Severity": None,
+            "Action": None,
             "Status": "open",
             "MaxRows": 500,
+            "KeepNewestPerGroup": False,
             "DryRun": False,
         },
     )
@@ -144,8 +148,12 @@ def test_preview_bulk_resolve_calls_sproc_with_dry_run_and_maps_rows(
             "EntityType": "Bill",
             "CreatedBefore": created_before,
             "RealmId": "realm-42",
+            # U-249 additive params — defaults must preserve pre-U-249 behaviour.
+            "Severity": None,
+            "Action": None,
             "Status": "open",
             "MaxRows": 500,
+            "KeepNewestPerGroup": False,
             "DryRun": True,
         },
     )
@@ -155,8 +163,13 @@ def test_preview_bulk_resolve_calls_sproc_with_dry_run_and_maps_rows(
             "drift_type": "pull_delete_reconcile",
             "entity_type": "Bill",
             "qbo_id": "QBO-10",
+            # Severity/Action/TotalKeptCount are read defensively via getattr, so a
+            # pre-U-249 result row (no such columns) maps to None rather than raising.
+            "severity": None,
+            "action": None,
             "created_datetime": "2026-01-01 00:00:00",
             "total_match_count": 25,
+            "total_kept_count": None,
         }
     ]
 

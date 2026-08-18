@@ -93,8 +93,11 @@ def test_cmd_bulk_resolve_dry_run_uses_preview_not_bulk_resolve(capsys):
         created_before_days=None,
         created_before_date=None,
         realm_id=None,
+        severity=None,
+        action=None,
         status="open",
         max_rows=1000,
+        keep_newest_per_group=False,
         apply=False,
     )
 
@@ -111,8 +114,11 @@ def test_cmd_bulk_resolve_dry_run_uses_preview_not_bulk_resolve(capsys):
         entity_type=None,
         created_before=None,
         realm_id=None,
+        severity=None,
+        action=None,
         status="open",
         max_rows=1000,
+        keep_newest_per_group=False,
     )
     mock_repo.bulk_resolve.assert_not_called()
     assert "Matched 15 row(s)" in captured.out
@@ -140,8 +146,11 @@ def test_cmd_bulk_resolve_apply_calls_bulk_resolve(capsys):
         created_before_days=30,
         created_before_date=None,
         realm_id="realm-1",
+        severity=None,
+        action=None,
         status="open",
         max_rows=500,
+        keep_newest_per_group=False,
         apply=True,
     )
 
@@ -161,8 +170,11 @@ def test_cmd_bulk_resolve_apply_calls_bulk_resolve(capsys):
         "entity_type": "Bill",
         "created_before": datetime(2026, 1, 1, 0, 0, 0),
         "realm_id": "realm-1",
+        "severity": None,
+        "action": None,
         "status": "open",
         "max_rows": 500,
+        "keep_newest_per_group": False,
     }
     mock_repo.preview_bulk_resolve.assert_called_once_with(**expected_kwargs)
     mock_repo.bulk_resolve.assert_called_once_with(**expected_kwargs)
@@ -179,8 +191,11 @@ def test_cmd_bulk_resolve_no_matches(capsys):
         created_before_days=None,
         created_before_date=None,
         realm_id=None,
+        severity=None,
+        action=None,
         status="open",
         max_rows=1000,
+        keep_newest_per_group=False,
         apply=False,
     )
 

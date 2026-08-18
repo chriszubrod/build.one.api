@@ -176,7 +176,7 @@ class BillLineItemService:
                     raise ValueError(f"Bill with public_id '{bill_public_id}' not found.")
                 existing.bill_id = bill.id
             
-            # Validate SubCostCode exists if provided (or allow None to clear the relationship)
+            # Set SubCostCode only when provided; None PRESERVES the existing value (never clears).
             if sub_cost_code_id is not None:
                 # Note: SubCostCodeService.read_by_id expects a string
                 sub_cost_code = SubCostCodeService().read_by_id(id=str(sub_cost_code_id))
@@ -184,7 +184,9 @@ class BillLineItemService:
                     raise ValueError(f"SubCostCode with id '{sub_cost_code_id}' not found.")
                 existing.sub_cost_code_id = sub_cost_code_id
             
-            # Validate Project exists if provided (or allow None to clear the relationship)
+            # Set Project only when provided; None PRESERVES the existing value (never clears — the
+            # update sproc's unconditional [ProjectId] SET receives the loaded id, so it re-writes).
+            # No clear-a-project path exists; see U-172 (won't-fix, behavior ratified by U-111).
             if project_public_id is not None:
                 project = ProjectService().read_by_public_id(public_id=project_public_id)
                 if not project:

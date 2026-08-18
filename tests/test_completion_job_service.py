@@ -7,7 +7,14 @@ import pytest
 from entities.completion_job.business.model import CompletionJob
 from entities.completion_job.business.service import CompletionJobService
 from entities.completion_job.persistence.repo import CompletionJobRepository
-from shared.authz import current_is_system_admin, set_authz_context
+from shared.authz import (
+    clear_authz_context,
+    current_can_view_team_modules,
+    current_company_id,
+    current_is_system_admin,
+    current_user_id,
+    set_authz_context,
+)
 
 
 def _job(*, entity_type: str = "Bill", entity_public_id: str = "entity-uuid", public_id: str = "job-uuid"):
@@ -120,11 +127,17 @@ def test_run_job_never_re_raises():
         service.run_job(job)
 
 
-def test_run_job_enters_system_admin_authz_context():
+def test_run_job_restores_all_four_authz_vars_including_can_view_team():
+    """U-268: run_job must restore current_can_view_team_modules, not just
+    (user_id, company_id, is_system_admin). The hand-rolled save/set/restore
+    this replaced dropped it — set_authz_context always resets it to empty,
+    so a hand-rolled restore silently narrows the caller's team-visibility
+    grant after every reclaim."""
     repo = MagicMock()
     service = CompletionJobService(repo=repo)
     job = _job(entity_type="Invoice")
     seen = {}
+    prior_team = frozenset({"BILLS", "TIME_TRACKING"})
 
     def _capture_complete(*_args, **_kwargs):
         seen["isa"] = current_is_system_admin.get()
@@ -133,13 +146,18 @@ def test_run_job_enters_system_admin_authz_context():
         "entities.invoice.business.service.InvoiceService.complete_invoice",
         side_effect=_capture_complete,
     ):
-        set_authz_context(user_id=99, company_id=1, is_system_admin=False)
+        set_authz_context(user_id=99, company_id=7, is_system_admin=False)
+        current_can_view_team_modules.set(prior_team)
         try:
             service.run_job(job)
-        finally:
-            set_authz_context(user_id=None, company_id=None, is_system_admin=False)
 
-    assert seen["isa"] is True
+            assert seen["isa"] is True
+            assert current_user_id.get() == 99
+            assert current_company_id.get() == 7
+            assert current_is_system_admin.get() is False
+            assert current_can_view_team_modules.get() == prior_team
+        finally:
+            clear_authz_context()
 
 
 def test_mark_success_routes_to_guarded_sproc():

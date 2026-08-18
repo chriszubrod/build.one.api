@@ -5,7 +5,7 @@ from typing import Optional
 # Local Imports
 from entities.completion_job.business.model import CompletionJob
 from entities.completion_job.persistence.repo import CompletionJobRepository
-from shared.authz import current_company_id, current_is_system_admin, current_user_id, set_authz_context
+from shared.authz import current_company_id, system_authz
 
 logger = logging.getLogger(__name__)
 
@@ -55,14 +55,8 @@ class CompletionJobService:
         residual; the proper fix (column-Z re-check at Excel drain time) is a
         separate follow-up unit touching the shared MS Excel drain worker.
         """
-        prior_uid = current_user_id.get()
-        prior_cid = current_company_id.get()
-        prior_isa = current_is_system_admin.get()
-        set_authz_context(user_id=None, company_id=None, is_system_admin=True)
-        try:
+        with system_authz():
             self._run_job_inner(job)
-        finally:
-            set_authz_context(user_id=prior_uid, company_id=prior_cid, is_system_admin=prior_isa)
 
     def _run_job_inner(self, job: CompletionJob) -> None:
         public_id = job.entity_public_id

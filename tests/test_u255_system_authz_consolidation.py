@@ -27,8 +27,6 @@ from shared.authz.context import (
 )
 from shared.scheduler import _register_ms_reconcile_jobs, _register_qbo_reconcile_jobs
 
-ALLOWED_HAND_COPY = REPO_ROOT / "entities" / "completion_job" / "business" / "service.py"
-
 
 def _vendor_row(**overrides):
     defaults = {
@@ -314,21 +312,14 @@ def test_system_authz_contextmanager_is_not_hand_copy():
     assert _function_has_hand_copied_authz(fn) is False
 
 
-def test_no_hand_copied_three_var_authz_blocks_outside_completion_job():
+def test_no_hand_copied_three_var_authz_blocks_anywhere():
+    """U-268 closed the 6th and last hand-copy (completion_job.run_job) — no
+    whitelist remains; every hand-copied shape anywhere is now a regression."""
     matches = _find_hand_copied_authz_sites()
-    unexpected = [
-        (relpath, name, lineno)
-        for relpath, name, lineno in matches
-        if Path(relpath) != ALLOWED_HAND_COPY.relative_to(REPO_ROOT)
-    ]
-    assert unexpected == [], (
+    assert matches == [], (
         "Hand-copied 3-of-4-var authz blocks must use system_authz(); "
-        f"unexpected matches: {unexpected!r}"
+        f"unexpected matches: {matches!r}"
     )
-    assert any(
-        relpath == str(ALLOWED_HAND_COPY.relative_to(REPO_ROOT))
-        for relpath, _, _ in matches
-    ), "Expected completion_job run_job to remain as the sole allowed hand-copy"
 
 
 def _capture_scheduler_sync_fn(register_fn, job_id: str):

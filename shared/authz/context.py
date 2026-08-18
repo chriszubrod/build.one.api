@@ -90,10 +90,9 @@ def system_authz() -> Iterator[None]:
     empty), a fail-closed bug: current_can_view_team() then reads False for a caller
     who actually holds the grant. It can only narrow what a caller sees, never widen
     it — system admins already bypass current_can_view_team() via the is_system_admin
-    short-circuit regardless. One hand-copy of the old pattern remains at
-    entities/completion_job/business/service.py::run_job (out of this unit's scope,
-    booked as a follow-up in TODO.md) — prefer this contextmanager over re-copying
-    the block anywhere new.
+    short-circuit regardless. U-268 closed the last hand-copy of the old pattern
+    (entities/completion_job/business/service.py::run_job) — prefer this
+    contextmanager over re-copying the block anywhere new.
     """
     prior_uid = current_user_id.get()
     prior_cid = current_company_id.get()

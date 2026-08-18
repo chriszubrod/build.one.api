@@ -297,6 +297,10 @@ def sync_qbo_to_local(
         return {
             "bills_synced": 0,
             "bills_module_synced": 0,
+            "attachments_synced": 0,
+            "excel_rows_synced": 0,
+            "sharepoint_uploads_synced": 0,
+            "box_excel_batches": 0,
             "bills": [],
             "skipped_count": 0,
             "skipped_bill_ids": [],
@@ -605,9 +609,9 @@ def sync_qbo_bill(
         
         logger.info(f"QBO Bill sync completed. Bills from QBO: {qbo_to_local_result['bills_synced']}, "
                     f"Bills module synced: {qbo_to_local_result['bills_module_synced']}, "
-                    f"Excel rows synced: {qbo_to_local_result.get('excel_rows_synced', 0)}, "
-                    f"SharePoint uploads: {qbo_to_local_result.get('sharepoint_uploads_synced', 0)}, "
-                    f"Box Excel batches: {qbo_to_local_result.get('box_excel_batches', 0)}")
+                    f"Excel rows synced: {qbo_to_local_result['excel_rows_synced']}, "
+                    f"SharePoint uploads: {qbo_to_local_result['sharepoint_uploads_synced']}, "
+                    f"Box Excel batches: {qbo_to_local_result['box_excel_batches']}")
         
         return {
             "result": result,

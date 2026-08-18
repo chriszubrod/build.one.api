@@ -237,6 +237,10 @@ def sync_qbo_to_local(
         return {
             "vendor_credits_synced": 0,
             "bill_credits_module_synced": 0,
+            "attachments_synced": 0,
+            "excel_rows_synced": 0,
+            "sharepoint_uploads_synced": 0,
+            "box_excel_batches": 0,
             "vendor_credits": [],
             "skipped_count": 0,
             "skipped_vendor_credit_ids": [],
@@ -314,7 +318,10 @@ def sync_qbo_to_local(
                 logger.error(
                     f"QboVendorCredit {vendor_credit.id}: projection returned no BillCredit row"
                 )
-                outcome.record_projection_failure(vendor_credit.id)
+                outcome.record_projection_failure(
+                    vendor_credit.id,
+                    "sync_from_qbo_vendor_credit returned no BillCredit row",
+                )
 
         except Exception as e:
             outcome.record_projection_error(
@@ -555,10 +562,10 @@ def sync_qbo_vendorcredit(
         logger.info(
             f"QBO VendorCredit sync completed. VendorCredits from QBO: {qbo_to_local_result['vendor_credits_synced']}, "
             f"BillCredits module synced: {qbo_to_local_result['bill_credits_module_synced']}, "
-            f"attachments synced: {qbo_to_local_result.get('attachments_synced', 0)}, "
-            f"Excel rows synced: {qbo_to_local_result.get('excel_rows_synced', 0)}, "
-            f"SharePoint uploads: {qbo_to_local_result.get('sharepoint_uploads_synced', 0)}, "
-            f"Box Excel batches: {qbo_to_local_result.get('box_excel_batches', 0)}"
+            f"attachments synced: {qbo_to_local_result['attachments_synced']}, "
+            f"Excel rows synced: {qbo_to_local_result['excel_rows_synced']}, "
+            f"SharePoint uploads: {qbo_to_local_result['sharepoint_uploads_synced']}, "
+            f"Box Excel batches: {qbo_to_local_result['box_excel_batches']}"
         )
         
         return {

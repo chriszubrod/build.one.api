@@ -10,7 +10,7 @@ from integrations.intuit.qbo.bill.business.model import QboBill, QboBillLine
 from integrations.intuit.qbo.bill.persistence.repo import QboBillRepository, QboBillLineRepository
 from integrations.intuit.qbo.bill.external.client import QboBillClient
 from integrations.intuit.qbo.bill.external.schemas import QboBill as QboBillExternalSchema
-from integrations.intuit.qbo.base.sync_outcome import SyncOutcome
+from integrations.intuit.qbo.base.sync_outcome import SyncOutcome, project_records
 from shared.database import with_retry
 
 logger = logging.getLogger(__name__)
@@ -481,21 +481,18 @@ class QboBillService:
         from integrations.intuit.qbo.bill.connector.bill.business.service import BillBillConnector
         
         connector = BillBillConnector()
-        
-        for bill in bills:
-            try:
-                # Get bill lines for this bill
-                bill_lines = self.line_repo.read_by_qbo_bill_id(bill.id)
-                bill_module = connector.sync_from_qbo_bill(bill, bill_lines)
-                logger.info(f"Synced QboBill {bill.id} to Bill {bill_module.id}")
-                outcome.record_projected()
-            except Exception as e:
-                outcome.record_projection_error(
-                    bill.qbo_id,
-                    e,
-                    label="Bill->Bill",
-                    logger=logger,
-                )
+
+        def _project_bill(bill):
+            bill_lines = self.line_repo.read_by_qbo_bill_id(bill.id)
+            return connector.sync_from_qbo_bill(bill, bill_lines)
+
+        project_records(
+            bills,
+            outcome,
+            label="Bill->Bill",
+            project_one=_project_bill,
+            logger=logger,
+        )
 
     def read_all(self) -> List[QboBill]:
         """

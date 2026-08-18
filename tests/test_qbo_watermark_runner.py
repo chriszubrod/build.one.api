@@ -283,8 +283,8 @@ def test_hold_reason_none_when_not_holding_and_names_both_tiers_when_both_failed
     both.record_projection_failure("b")
     reason = both.hold_reason()
     assert reason is not None
-    assert "staging failed: a" in reason
-    assert "projection failed: b" in reason
+    assert "staging failed: a (no reason provided)" in reason
+    assert "projection failed: b (no reason provided)" in reason
 
 
 def test_record_projection_error_plain_value_error_is_skip_without_hold():
@@ -540,7 +540,7 @@ def test_committed_watermark_is_query_start_minus_overlap_not_post_work_wall_clo
     # Simulate a long run: query_start was captured at run open; commit happens "minutes later"
     # without advancing any clock the production code reads — watermark must still anchor to
     # query_start minus overlap, strictly before query_start, never a later wall-clock stamp.
-    outcome = SyncOutcome(from_service_pull=True)
+    outcome = SyncOutcome.for_service_pull()
     run.commit(outcome)
     assert len(fake.updates) == 1
     committed = fake.updates[0][1].last_sync_datetime
@@ -576,7 +576,7 @@ def test_clamp_historical_stamp_future_end_date_uses_watermark_value_not_end_of_
     """Future end_date must clamp to watermark_value, not poison the incremental cursor."""
     fake = FakeSyncService([_make_sync()])
     run = _opened_run(fake)
-    run.commit(SyncOutcome(from_service_pull=True), end_date="2026-03-10")
+    run.commit(SyncOutcome.for_service_pull(), end_date="2026-03-10")
     assert fake.updates[0][1].last_sync_datetime == run.watermark_value
     assert fake.updates[0][1].last_sync_datetime != "2026-03-10T23:59:59"
 
@@ -585,7 +585,7 @@ def test_clamp_historical_stamp_past_end_date_keeps_end_of_day_stamp_unchanged()
     """Past end_date still produces the naive end-of-day stamp for resumable historical batches."""
     fake = FakeSyncService([_make_sync()])
     run = _opened_run(fake)
-    run.commit(SyncOutcome(from_service_pull=True), end_date="2024-07-04")
+    run.commit(SyncOutcome.for_service_pull(), end_date="2024-07-04")
     assert fake.updates[0][1].last_sync_datetime == "2024-07-04T23:59:59"
 
 
@@ -598,7 +598,7 @@ def test_commit_skip_true_writes_nothing_on_clean_outcome():
     """--skip-sync-update must not mutate dbo.Sync even when the pull succeeded."""
     fake = FakeSyncService([_make_sync()])
     run = _opened_run(fake)
-    run.commit(SyncOutcome(from_service_pull=True), skip=True)
+    run.commit(SyncOutcome.for_service_pull(), skip=True)
     assert fake.updates == []
 
 
@@ -606,7 +606,7 @@ def test_commit_skip_true_writes_nothing_even_with_end_date():
     """Skip must outrank historical end_date imports that would otherwise stamp the watermark."""
     fake = FakeSyncService([_make_sync()])
     run = _opened_run(fake)
-    run.commit(SyncOutcome(from_service_pull=True), end_date="2020-01-01", skip=True)
+    run.commit(SyncOutcome.for_service_pull(), end_date="2020-01-01", skip=True)
     assert fake.updates == []
 
 
@@ -614,7 +614,7 @@ def test_commit_first_hold_of_fresh_streak_stamps_hold_started_datetime_only():
     """First hold in a streak writes once to stamp HoldStartedDatetime; LastSyncDatetime unchanged."""
     fake = FakeSyncService([_make_sync(hold_started_datetime=None)])
     run = _opened_run(fake)
-    outcome = SyncOutcome(from_service_pull=True)
+    outcome = SyncOutcome.for_service_pull()
     outcome.record_projection_failure("vc-1")
     before = run.sync_record.last_sync_datetime
     run.commit(outcome, end_date="2019-12-31")
@@ -629,7 +629,7 @@ def test_commit_continuing_hold_streak_writes_nothing_even_when_end_date_supplie
     """Second-or-later hold in an existing streak must not write — end_date must not advance watermark."""
     fake = FakeSyncService([_make_sync(hold_started_datetime="2026-03-10T14:25:00")])
     run = _opened_run(fake)
-    outcome = SyncOutcome(from_service_pull=True)
+    outcome = SyncOutcome.for_service_pull()
     outcome.record_projection_failure("vc-1")
     before = run.sync_record.last_sync_datetime
     run.commit(outcome, end_date="2019-12-31")
@@ -641,7 +641,7 @@ def test_commit_staging_only_failure_fresh_streak_stamps_hold_start_once():
     """First staging-only hold in a fresh streak writes once to stamp HoldStartedDatetime."""
     fake = FakeSyncService([_make_sync(hold_started_datetime=None)])
     run = _opened_run(fake)
-    outcome = SyncOutcome(from_service_pull=True)
+    outcome = SyncOutcome.for_service_pull()
     outcome.record_staging_failure("staging-only")
     before = run.sync_record.last_sync_datetime
     run.commit(outcome)
@@ -654,7 +654,7 @@ def test_commit_staging_only_failure_holds_with_no_write():
     """Audit S-01: continuing hold streak must not write when staging failures block advance."""
     fake = FakeSyncService([_make_sync(hold_started_datetime="2026-03-10T14:25:00")])
     run = _opened_run(fake)
-    outcome = SyncOutcome(from_service_pull=True)
+    outcome = SyncOutcome.for_service_pull()
     outcome.record_staging_failure("staging-only")
     run.commit(outcome)
     assert fake.updates == []
@@ -674,7 +674,7 @@ def test_first_hold_after_long_skip_gap_does_not_force_advance_even_with_ancient
         )
     ])
     run = _opened_run(fake)
-    outcome = SyncOutcome(from_service_pull=True)
+    outcome = SyncOutcome.for_service_pull()
     outcome.record_projection_failure("42")
     for _ in range(3):
         run.commit(outcome, skip=True)
@@ -691,7 +691,7 @@ def test_hold_streak_second_evaluation_reuses_existing_hold_started_datetime_no_
     hold_start = (FIXED_QUERY_START - timedelta(minutes=30)).strftime("%Y-%m-%dT%H:%M:%S")
     fake = FakeSyncService([_make_sync(hold_started_datetime=hold_start)])
     run = _opened_run(fake)
-    outcome = SyncOutcome(from_service_pull=True)
+    outcome = SyncOutcome.for_service_pull()
     outcome.record_projection_failure("42")
     run.commit(outcome)
     assert fake.updates == []
@@ -702,7 +702,7 @@ def test_hold_cleared_on_successful_advance_after_recovering():
     """Successful watermark advance must clear hold_started_datetime."""
     fake = FakeSyncService([_make_sync(hold_started_datetime="2026-03-10T12:00:00")])
     run = _opened_run(fake)
-    run.commit(SyncOutcome(from_service_pull=True))
+    run.commit(SyncOutcome.for_service_pull())
     assert fake.updates[-1][1].hold_started_datetime is None
 
 
@@ -711,7 +711,7 @@ def test_force_advance_with_future_end_date_also_clamps():
     past_bound_hold = PAST_BOUND_HOLD
     fake = FakeSyncService([_make_sync(hold_started_datetime=past_bound_hold)])
     run = _opened_run(fake)
-    outcome = SyncOutcome(from_service_pull=True)
+    outcome = SyncOutcome.for_service_pull()
     outcome.record_projection_failure("42")
 
     with _patch_bound_forced_advance_deps():
@@ -758,7 +758,7 @@ def test_commit_holding_outcome_past_bound_force_advances_and_records_issues():
     past_bound_hold = PAST_BOUND_HOLD
     fake = FakeSyncService([_make_sync(hold_started_datetime=past_bound_hold)])
     run = _opened_run(fake)
-    outcome = SyncOutcome(from_service_pull=True)
+    outcome = SyncOutcome.for_service_pull()
     outcome.record_projection_failure("42")   # internal staging PK
     outcome.record_staging_failure("QB-99")   # real QBO id
 
@@ -783,7 +783,7 @@ def test_commit_holding_outcome_exactly_at_bound_force_advances():
     at_bound_hold = (FIXED_QUERY_START - timedelta(seconds=_watermark_hold_bound_seconds())).strftime("%Y-%m-%dT%H:%M:%S")
     fake = FakeSyncService([_make_sync(hold_started_datetime=at_bound_hold)])
     run = _opened_run(fake)
-    outcome = SyncOutcome(from_service_pull=True)
+    outcome = SyncOutcome.for_service_pull()
     outcome.record_projection_failure("42")
 
     with _patch_bound_forced_advance_deps():
@@ -800,7 +800,7 @@ def test_commit_holding_outcome_one_second_under_bound_does_not_force_advance():
     ).strftime("%Y-%m-%dT%H:%M:%S")
     fake = FakeSyncService([_make_sync(hold_started_datetime=under_bound_hold)])
     run = _opened_run(fake)
-    outcome = SyncOutcome(from_service_pull=True)
+    outcome = SyncOutcome.for_service_pull()
     outcome.record_projection_failure("42")
 
     result = run.commit(outcome)
@@ -814,7 +814,7 @@ def test_commit_holding_outcome_past_bound_resolves_real_qbo_id_for_projection_f
     past_bound_hold = PAST_BOUND_HOLD
     fake = FakeSyncService([_make_sync(hold_started_datetime=past_bound_hold)])
     run = _opened_run(fake)
-    outcome = SyncOutcome(from_service_pull=True)
+    outcome = SyncOutcome.for_service_pull()
     outcome.record_projection_failure("42")
 
     with _patch_bound_forced_advance_deps(resolved_qbo_id="QB-resolved-42") as recorded:
@@ -829,7 +829,7 @@ def test_commit_holding_outcome_past_bound_with_end_date_writes_end_of_day_stamp
     past_bound_hold = PAST_BOUND_HOLD
     fake = FakeSyncService([_make_sync(hold_started_datetime=past_bound_hold)])
     run = _opened_run(fake)
-    outcome = SyncOutcome(from_service_pull=True)
+    outcome = SyncOutcome.for_service_pull()
     outcome.record_projection_failure("42")
 
     with _patch_bound_forced_advance_deps():
@@ -847,7 +847,7 @@ def test_commit_holding_outcome_unparseable_anchor_never_force_advances():
     """
     fake = FakeSyncService([_make_sync(hold_started_datetime="not-a-real-datetime")])
     run = _opened_run(fake)
-    outcome = SyncOutcome(from_service_pull=True)
+    outcome = SyncOutcome.for_service_pull()
     outcome.record_projection_failure("42")
 
     # No dependency patches: if this ever reached _record_bound_forced_advance it would try a
@@ -866,7 +866,7 @@ def test_commit_holding_outcome_realm_resolution_failure_still_force_advances():
     past_bound_hold = PAST_BOUND_HOLD
     fake = FakeSyncService([_make_sync(hold_started_datetime=past_bound_hold)])
     run = _opened_run(fake)
-    outcome = SyncOutcome(from_service_pull=True)
+    outcome = SyncOutcome.for_service_pull()
     outcome.record_projection_failure("42")
 
     mock_auth_service = Mock(return_value=Mock(read_all=Mock(return_value=[])))  # no auth rows
@@ -924,7 +924,7 @@ def test_commit_skips_only_outcome_advances_watermark_normally():
     """Benign permanent skips must not block incremental sync from moving forward."""
     fake = FakeSyncService([_make_sync()])
     run = _opened_run(fake)
-    outcome = SyncOutcome(from_service_pull=True)
+    outcome = SyncOutcome.for_service_pull()
     outcome.record_staging_skip("perm")
     run.commit(outcome)
     assert len(fake.updates) == 1
@@ -935,7 +935,7 @@ def test_commit_clean_outcome_with_end_date_writes_end_of_day_stamp():
     """Historical TxnDate window imports must stamp the watermark to the batch end date."""
     fake = FakeSyncService([_make_sync()])
     run = _opened_run(fake)
-    run.commit(SyncOutcome(from_service_pull=True), end_date="2024-07-04")
+    run.commit(SyncOutcome.for_service_pull(), end_date="2024-07-04")
     assert fake.updates[0][1].last_sync_datetime == "2024-07-04T23:59:59"
 
 
@@ -943,7 +943,7 @@ def test_commit_clean_outcome_without_end_date_writes_watermark_value():
     """Incremental pulls must persist query_start-minus-overlap on success."""
     fake = FakeSyncService([_make_sync()])
     run = _opened_run(fake)
-    run.commit(SyncOutcome(from_service_pull=True))
+    run.commit(SyncOutcome.for_service_pull())
     assert fake.updates[0][1].last_sync_datetime == run.watermark_value
 
 
@@ -972,7 +972,7 @@ def test_commit_push_skip_writes_nothing():
 def test_commit_accepts_the_service_stamped_outcome():
     fake = FakeSyncService([_make_sync()])
     run = _opened_run(fake)
-    run.commit(SyncOutcome(from_service_pull=True))
+    run.commit(SyncOutcome.for_service_pull())
     assert len(fake.updates) == 1
 
 
@@ -1187,7 +1187,7 @@ def test_stamp_hold_start_adopts_canonical_row_on_write_conflict():
         advance_last_sync_to="2026-06-01T00:00:00Z",
     )
     run = _opened_run(fake)
-    outcome = SyncOutcome(from_service_pull=True)
+    outcome = SyncOutcome.for_service_pull()
     outcome.record_projection_failure("42")
     run.commit(outcome)
     assert run.sync_record.last_sync_datetime == "2026-06-01T00:00:00Z"

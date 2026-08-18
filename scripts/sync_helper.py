@@ -8,7 +8,13 @@ from typing import Dict, Optional
 
 # Local Imports
 from integrations.intuit.qbo.account.persistence.repo import QboAccountRepository
-from integrations.intuit.qbo.base.sync_outcome import SyncOutcome
+from integrations.intuit.qbo.base.sync_outcome import (
+    DEFAULT_FAILURE_REASON,
+    FAILURE_REASON_PROJECTION,
+    FAILURE_REASON_STAGING,
+    SyncOutcome,
+    failure_reason_key,
+)
 from integrations.intuit.qbo.bill.persistence.repo import QboBillRepository
 from integrations.intuit.qbo.company_info.persistence.repo import QboCompanyInfoRepository
 from integrations.intuit.qbo.customer.persistence.repo import QboCustomerRepository
@@ -439,10 +445,15 @@ class WatermarkRun:
             # staging_failed_ids really do carry the real QBO id (the staging loop iterates the
             # raw external-API response, where .id IS the QBO id) — record them at face value.
             for qbo_id in outcome.staging_failed_ids:
+                reason = outcome.failure_reasons.get(
+                    failure_reason_key(FAILURE_REASON_STAGING, qbo_id),
+                    DEFAULT_FAILURE_REASON,
+                )
                 _record(qbo_id, (
                     f"QBO sync watermark hold bound exceeded for entity {self.entity}: staging "
-                    f"upsert qbo_id={qbo_id} held for {held_label}; watermark force-advanced past "
-                    f"it. Follow up via the QBO reconcile qbo_missing_locally detector."
+                    f"upsert qbo_id={qbo_id} failed ({reason}); held for {held_label}; "
+                    f"watermark force-advanced past it. Follow up via the QBO reconcile "
+                    f"qbo_missing_locally detector."
                 ))
 
             # projection_failed_ids do NOT carry the real QBO id — every sync_qbo_*.py projection
@@ -455,18 +466,23 @@ class WatermarkRun:
             # were a QBO id — qbo.ReconciliationIssue.QboId is documented as "QBO entity id".
             for staging_pk in outcome.projection_failed_ids:
                 resolved_qbo_id = _resolve_staging_qbo_id(self.entity, staging_pk)
+                reason = outcome.failure_reasons.get(
+                    failure_reason_key(FAILURE_REASON_PROJECTION, staging_pk),
+                    DEFAULT_FAILURE_REASON,
+                )
                 if resolved_qbo_id is not None:
                     _record(resolved_qbo_id, (
                         f"QBO sync watermark hold bound exceeded for entity {self.entity}: "
                         f"projection failed for qbo_id={resolved_qbo_id} (internal staging "
-                        f"id={staging_pk}) held for {held_label}; watermark force-advanced past "
-                        f"it. Follow up via the QBO reconcile qbo_missing_locally detector."
+                        f"id={staging_pk}, reason: {reason}) held for {held_label}; watermark "
+                        f"force-advanced past it. Follow up via the QBO reconcile "
+                        f"qbo_missing_locally detector."
                     ))
                 else:
                     _record(None, (
                         f"QBO sync watermark hold bound exceeded for entity {self.entity}: "
                         f"projection failed for internal qbo.{self.entity} staging id="
-                        f"{staging_pk} (could not resolve the real QBO id) held for "
+                        f"{staging_pk} (could not resolve the real QBO id, reason: {reason}) held for "
                         f"{held_label}; watermark force-advanced past it. Look up the staging "
                         f"row by this id to find the real QBO id, then follow up via the QBO "
                         f"reconcile qbo_missing_locally detector."

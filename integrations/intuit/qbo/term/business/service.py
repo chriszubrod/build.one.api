@@ -10,7 +10,7 @@ from integrations.intuit.qbo.term.business.model import QboTerm
 from integrations.intuit.qbo.term.persistence.repo import QboTermRepository
 from integrations.intuit.qbo.term.external.client import QboTermClient
 from integrations.intuit.qbo.term.external.schemas import QboTerm as QboTermExternalSchema
-from integrations.intuit.qbo.base.sync_outcome import SyncOutcome
+from integrations.intuit.qbo.base.sync_outcome import SyncOutcome, project_records
 from shared.database import with_retry, is_transient_error
 
 logger = logging.getLogger(__name__)
@@ -163,19 +163,14 @@ class QboTermService:
         from integrations.intuit.qbo.term.connector.payment_term.business.service import TermPaymentTermConnector
         
         connector = TermPaymentTermConnector()
-        
-        for term in terms:
-            try:
-                payment_term = connector.sync_from_qbo_term(term)
-                logger.info(f"Synced QboTerm {term.id} to PaymentTerm {payment_term.id}")
-                outcome.record_projected()
-            except Exception as e:
-                outcome.record_projection_error(
-                    term.qbo_id,
-                    e,
-                    label="Term->PaymentTerm",
-                    logger=logger,
-                )
+
+        project_records(
+            terms,
+            outcome,
+            label="Term->PaymentTerm",
+            project_one=connector.sync_from_qbo_term,
+            logger=logger,
+        )
 
     def read_all(self) -> List[QboTerm]:
         """

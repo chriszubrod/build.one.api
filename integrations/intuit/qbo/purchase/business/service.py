@@ -10,7 +10,7 @@ from integrations.intuit.qbo.purchase.business.model import QboPurchase, QboPurc
 from integrations.intuit.qbo.purchase.persistence.repo import QboPurchaseRepository, QboPurchaseLineRepository
 from integrations.intuit.qbo.purchase.external.client import QboPurchaseClient
 from integrations.intuit.qbo.purchase.external.schemas import QboPurchase as QboPurchaseExternalSchema
-from integrations.intuit.qbo.base.sync_outcome import SyncOutcome
+from integrations.intuit.qbo.base.sync_outcome import SyncOutcome, project_records
 from shared.authz import current_user_id, current_is_system_admin
 from shared.database import with_retry
 
@@ -511,20 +511,17 @@ class QboPurchaseService:
 
         connector = PurchaseExpenseConnector()
 
-        for purchase in purchases:
-            try:
-                # Get purchase lines for this purchase
-                purchase_lines = self.line_repo.read_by_qbo_purchase_id(purchase.id)
-                expense = connector.sync_from_qbo_purchase(purchase, purchase_lines)
-                logger.info(f"Synced QboPurchase {purchase.id} to Expense {expense.id}")
-                outcome.record_projected()
-            except Exception as e:
-                outcome.record_projection_error(
-                    purchase.qbo_id,
-                    e,
-                    label="Purchase->Expense",
-                    logger=logger,
-                )
+        def _project_purchase(purchase):
+            purchase_lines = self.line_repo.read_by_qbo_purchase_id(purchase.id)
+            return connector.sync_from_qbo_purchase(purchase, purchase_lines)
+
+        project_records(
+            purchases,
+            outcome,
+            label="Purchase->Expense",
+            project_one=_project_purchase,
+            logger=logger,
+        )
 
     def read_all(self) -> List[QboPurchase]:
         """

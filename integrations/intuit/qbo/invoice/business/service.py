@@ -10,7 +10,7 @@ from integrations.intuit.qbo.invoice.business.model import QboInvoice, QboInvoic
 from integrations.intuit.qbo.invoice.persistence.repo import QboInvoiceRepository, QboInvoiceLineRepository
 from integrations.intuit.qbo.invoice.external.client import QboInvoiceClient
 from integrations.intuit.qbo.invoice.external.schemas import QboInvoice as QboInvoiceExternalSchema
-from integrations.intuit.qbo.base.sync_outcome import SyncOutcome
+from integrations.intuit.qbo.base.sync_outcome import SyncOutcome, project_records
 from shared.database import with_retry
 
 logger = logging.getLogger(__name__)
@@ -422,20 +422,17 @@ class QboInvoiceService:
         connector = InvoiceInvoiceConnector()
         connector.preload_caches()
 
-        for invoice in invoices:
-            try:
-                # Get invoice lines for this invoice
-                invoice_lines = self.line_repo.read_by_qbo_invoice_id(invoice.id)
-                invoice_module = connector.sync_from_qbo_invoice(invoice, invoice_lines)
-                logger.info(f"Synced QboInvoice {invoice.id} to Invoice {invoice_module.id}")
-                outcome.record_projected()
-            except Exception as e:
-                outcome.record_projection_error(
-                    invoice.qbo_id,
-                    e,
-                    label="Invoice->Invoice",
-                    logger=logger,
-                )
+        def _project_invoice(invoice):
+            invoice_lines = self.line_repo.read_by_qbo_invoice_id(invoice.id)
+            return connector.sync_from_qbo_invoice(invoice, invoice_lines)
+
+        project_records(
+            invoices,
+            outcome,
+            label="Invoice->Invoice",
+            project_one=_project_invoice,
+            logger=logger,
+        )
 
     def read_all(self) -> List[QboInvoice]:
         """

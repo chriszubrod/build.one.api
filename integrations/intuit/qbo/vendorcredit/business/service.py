@@ -13,7 +13,7 @@ from integrations.intuit.qbo.vendorcredit.external.schemas import (
     QboVendorCredit as QboVendorCreditSchema,
     QboVendorCreditLine as QboVendorCreditLineSchema,
 )
-from integrations.intuit.qbo.base.sync_outcome import SyncOutcome
+from integrations.intuit.qbo.base.sync_outcome import SyncOutcome, project_records
 logger = logging.getLogger(__name__)
 
 
@@ -76,7 +76,10 @@ class QboVendorCreditService:
                         logger.error(
                             f"VendorCredit {vc.id}: upsert returned no row"
                         )
-                        outcome.record_staging_failure(vc.id)
+                        outcome.record_staging_failure(
+                            vc.id,
+                            "VendorCredit upsert returned no row",
+                        )
                     
                     # Small delay to avoid overwhelming DB
                     time.sleep(0.05)
@@ -370,22 +373,24 @@ class QboVendorCreditService:
 
     def _sync_to_bill_credits(self, vendor_credits: List[QboVendorCredit], outcome: SyncOutcome) -> None:
         """Sync VendorCredits to BillCredit module via connector."""
+        if not vendor_credits:
+            return
+
         from integrations.intuit.qbo.vendorcredit.connector.bill_credit.business.service import VendorCreditBillCreditConnector
-        
+
         connector = VendorCreditBillCreditConnector()
-        
-        for vc in vendor_credits:
-            try:
-                lines = self.repo.read_lines_by_vendor_credit_id(vc.id)
-                connector.sync_from_qbo_vendor_credit(vc, lines)
-                outcome.record_projected()
-            except Exception as e:
-                outcome.record_projection_error(
-                    vc.qbo_id,
-                    e,
-                    label="VendorCredit->BillCredit",
-                    logger=logger,
-                )
+
+        def _project_vendor_credit(vc):
+            lines = self.repo.read_lines_by_vendor_credit_id(vc.id)
+            return connector.sync_from_qbo_vendor_credit(vc, lines)
+
+        project_records(
+            vendor_credits,
+            outcome,
+            label="VendorCredit->BillCredit",
+            project_one=_project_vendor_credit,
+            logger=logger,
+        )
 
     # Read methods
     def read_all(self) -> List[QboVendorCredit]:

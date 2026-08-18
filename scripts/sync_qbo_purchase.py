@@ -148,8 +148,11 @@ def sync_qbo_to_local(
         return {
             "purchases_synced": 0,
             "expenses_module_synced": 0,
+            "expenses_completed": 0,
             "attachments_linked": 0,
             "excel_rows_synced": 0,
+            "sharepoint_uploads_synced": 0,
+            "box_excel_batches": 0,
             "skipped_count": 0,
             "skipped_purchase_ids": [],
             "failed_count": outcome.failed_count,
@@ -449,9 +452,9 @@ def sync_qbo_purchase(
                     f"Skipped: {qbo_to_local_result.get('skipped_count', 0)}, "
                     f"Failed: {qbo_to_local_result.get('failed_count', 0)}, "
                     f"Attachments linked: {qbo_to_local_result['attachments_linked']}, "
-                    f"Excel rows synced: {qbo_to_local_result.get('excel_rows_synced', 0)}, "
-                    f"SharePoint uploads: {qbo_to_local_result.get('sharepoint_uploads_synced', 0)}, "
-                    f"Box Excel batches: {qbo_to_local_result.get('box_excel_batches', 0)}")
+                    f"Excel rows synced: {qbo_to_local_result['excel_rows_synced']}, "
+                    f"SharePoint uploads: {qbo_to_local_result['sharepoint_uploads_synced']}, "
+                    f"Box Excel batches: {qbo_to_local_result['box_excel_batches']}")
         
         return {
             "result": result,

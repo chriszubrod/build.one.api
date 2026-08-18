@@ -10,7 +10,7 @@ from integrations.intuit.qbo.vendor.business.model import QboVendor
 from integrations.intuit.qbo.vendor.persistence.repo import QboVendorRepository
 from integrations.intuit.qbo.vendor.external.client import QboVendorClient
 from integrations.intuit.qbo.vendor.external.schemas import QboVendor as QboVendorExternalSchema
-from integrations.intuit.qbo.base.sync_outcome import SyncOutcome
+from integrations.intuit.qbo.base.sync_outcome import SyncOutcome, project_records
 from integrations.intuit.qbo.physical_address.business.service import QboPhysicalAddressService
 from shared.database import with_retry, is_transient_error
 
@@ -207,19 +207,14 @@ class QboVendorService:
         from integrations.intuit.qbo.vendor.connector.vendor.business.service import VendorVendorConnector
         
         connector = VendorVendorConnector()
-        
-        for vendor in vendors:
-            try:
-                vendor_module = connector.sync_from_qbo_vendor(vendor)
-                logger.info(f"Synced QboVendor {vendor.id} to Vendor {vendor_module.id}")
-                outcome.record_projected()
-            except Exception as e:
-                outcome.record_projection_error(
-                    vendor.qbo_id,
-                    e,
-                    label="Vendor->Vendor",
-                    logger=logger,
-                )
+
+        project_records(
+            vendors,
+            outcome,
+            label="Vendor->Vendor",
+            project_one=connector.sync_from_qbo_vendor,
+            logger=logger,
+        )
 
     def _upsert_physical_address(
         self,

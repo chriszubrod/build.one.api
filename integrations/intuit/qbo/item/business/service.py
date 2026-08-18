@@ -9,7 +9,7 @@ from integrations.intuit.qbo.item.business.model import QboItem
 from integrations.intuit.qbo.item.persistence.repo import QboItemRepository
 from integrations.intuit.qbo.item.external.client import QboItemClient
 from integrations.intuit.qbo.item.external.schemas import QboItem as QboItemExternalSchema
-from integrations.intuit.qbo.base.sync_outcome import SyncOutcome
+from integrations.intuit.qbo.base.sync_outcome import SyncOutcome, project_records
 from integrations.intuit.qbo.item.connector.cost_code.business.service import ItemCostCodeConnector
 from integrations.intuit.qbo.item.connector.sub_cost_code.business.service import ItemSubCostCodeConnector
 
@@ -164,19 +164,14 @@ class QboItemService:
             return
         
         connector = ItemCostCodeConnector()
-        
-        for item in parent_items:
-            try:
-                cost_code = connector.sync_from_qbo_item(item)
-                logger.info(f"Synced QboItem {item.id} to CostCode {cost_code.id}")
-                outcome.record_projected()
-            except Exception as e:
-                outcome.record_projection_error(
-                    item.qbo_id,
-                    e,
-                    label="Item->CostCode",
-                    logger=logger,
-                )
+
+        project_records(
+            parent_items,
+            outcome,
+            label="Item->CostCode",
+            project_one=connector.sync_from_qbo_item,
+            logger=logger,
+        )
 
     def _sync_to_sub_cost_codes(self, child_items: List[QboItem], outcome: SyncOutcome) -> None:
         """
@@ -189,19 +184,14 @@ class QboItemService:
             return
         
         connector = ItemSubCostCodeConnector()
-        
-        for item in child_items:
-            try:
-                sub_cost_code = connector.sync_from_qbo_item(item)
-                logger.info(f"Synced QboItem {item.id} to SubCostCode {sub_cost_code.id}")
-                outcome.record_projected()
-            except Exception as e:
-                outcome.record_projection_error(
-                    item.qbo_id,
-                    e,
-                    label="Item->SubCostCode",
-                    logger=logger,
-                )
+
+        project_records(
+            child_items,
+            outcome,
+            label="Item->SubCostCode",
+            project_one=connector.sync_from_qbo_item,
+            logger=logger,
+        )
 
     def read_all(self) -> List[QboItem]:
         """

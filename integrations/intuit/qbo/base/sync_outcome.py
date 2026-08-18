@@ -13,6 +13,50 @@ T = TypeVar("T")
 from integrations.intuit.qbo.base.errors import is_retryable_error
 
 
+FAILURE_REASON_STAGING = "staging"
+FAILURE_REASON_PROJECTION = "projection"
+FAILURE_REASON_SKIP = "skip"
+FAILURE_REASON_STAGING_SKIP = "staging_skip"
+
+DEFAULT_FAILURE_REASON = "no reason provided"
+
+
+def failure_reason_key(tier: str, qbo_id) -> str:
+    return f"{tier}:{qbo_id}"
+
+
+def _store_failure_reason(
+    failure_reasons: dict[str, str],
+    tier: str,
+    qbo_id,
+    error=None,
+    *,
+    reason=None,
+) -> None:
+    key = failure_reason_key(tier, qbo_id)
+    if error is not None:
+        failure_reasons[key] = str(error)
+    elif reason:
+        failure_reasons[key] = str(reason)
+    else:
+        failure_reasons[key] = DEFAULT_FAILURE_REASON
+
+
+def project_records(records, outcome, *, label, project_one, logger=None):
+    """Shared per-record projection loop: call project_one(record), record success/failure on outcome."""
+    log = logger if logger is not None else _module_logger
+    for record in records:
+        try:
+            target = project_one(record)
+            if target is not None and hasattr(target, "id"):
+                log.info(f"Synced {label} {record.qbo_id} to {target.id}")
+            else:
+                log.info(f"Synced {label} {record.qbo_id}")
+            outcome.record_projected()
+        except Exception as e:
+            outcome.record_projection_error(record.qbo_id, e, label=label, logger=log)
+
+
 @dataclass
 class SyncOutcome(Generic[T]):
     """
@@ -27,29 +71,48 @@ class SyncOutcome(Generic[T]):
     skipped_ids: list[str] = field(default_factory=list)
     synced: list[T] = field(default_factory=list)
     projected_count: int = 0
+    failure_reasons: dict[str, str] = field(default_factory=dict)
     # Set True ONLY by a service's sync_from_qbo; WatermarkRun.commit requires this
     # provenance marker so a hand-built or laundered outcome can never advance a watermark.
     # Default False is the safe default — an outcome nobody stamped must be refused.
-    from_service_pull: bool = False
+    _from_service_pull: bool = field(init=False, default=False, repr=False)
+
+    @property
+    def from_service_pull(self) -> bool:
+        return self._from_service_pull
 
     @classmethod
-    def for_service_pull(cls) -> "SyncOutcome[T]":
+    def for_service_pull(cls, **kwargs) -> "SyncOutcome[T]":
         """The only sanctioned way to stamp pull provenance on a service-owned outcome."""
-        return cls(from_service_pull=True)
+        instance = cls(**kwargs)
+        instance._from_service_pull = True
+        return instance
 
     def record_staging_failure(self, qbo_id, error=None) -> None:
         self.staging_failed_ids.append(str(qbo_id))
+        _store_failure_reason(
+            self.failure_reasons, FAILURE_REASON_STAGING, qbo_id, error
+        )
 
     def record_projection_failure(self, qbo_id, error=None) -> None:
         self.projection_failed_ids.append(str(qbo_id))
+        _store_failure_reason(
+            self.failure_reasons, FAILURE_REASON_PROJECTION, qbo_id, error
+        )
 
     def _record_skip(self, qbo_id, reason=None) -> None:
         """Permanent projection skips; callers must use record_projection_error."""
         self.skipped_ids.append(str(qbo_id))
+        _store_failure_reason(
+            self.failure_reasons, FAILURE_REASON_SKIP, qbo_id, reason=reason
+        )
 
     def record_staging_skip(self, qbo_id, reason=None) -> None:
         """Permanent staging-tier skip (e.g. malformed QBO row with no Id)."""
         self.skipped_ids.append(str(qbo_id))
+        _store_failure_reason(
+            self.failure_reasons, FAILURE_REASON_STAGING_SKIP, qbo_id, reason=reason
+        )
 
     def record_projection_error(
         self,
@@ -140,14 +203,25 @@ class SyncOutcome(Generic[T]):
             "projection_failed_ids": list(self.projection_failed_ids),
             "skipped_count": len(self.skipped_ids),
             "skipped_ids": list(self.skipped_ids),
+            "failure_reasons": dict(self.failure_reasons),
         }
+
+    def _format_failed_ids(self, ids: list[str], *, tier: str) -> str:
+        return ", ".join(
+            f"{qbo_id} ({self.failure_reasons.get(failure_reason_key(tier, qbo_id), DEFAULT_FAILURE_REASON)})"
+            for qbo_id in ids
+        )
 
     def hold_reason(self) -> Optional[str]:
         if not self.should_hold:
             return None
         parts: list[str] = []
         if self.staging_failed_ids:
-            parts.append(f"staging failed: {', '.join(self.staging_failed_ids)}")
+            parts.append(
+                f"staging failed: {self._format_failed_ids(self.staging_failed_ids, tier=FAILURE_REASON_STAGING)}"
+            )
         if self.projection_failed_ids:
-            parts.append(f"projection failed: {', '.join(self.projection_failed_ids)}")
+            parts.append(
+                f"projection failed: {self._format_failed_ids(self.projection_failed_ids, tier=FAILURE_REASON_PROJECTION)}"
+            )
         return "; ".join(parts)

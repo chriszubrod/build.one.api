@@ -9,7 +9,7 @@ from integrations.intuit.qbo.customer.business.model import QboCustomer
 from integrations.intuit.qbo.customer.persistence.repo import QboCustomerRepository
 from integrations.intuit.qbo.customer.external.client import QboCustomerClient
 from integrations.intuit.qbo.customer.external.schemas import QboCustomer as QboCustomerExternalSchema
-from integrations.intuit.qbo.base.sync_outcome import SyncOutcome
+from integrations.intuit.qbo.base.sync_outcome import SyncOutcome, project_records
 from integrations.intuit.qbo.customer.connector.customer.business.service import CustomerCustomerConnector
 from integrations.intuit.qbo.customer.connector.project.business.service import CustomerProjectConnector
 from integrations.intuit.qbo.physical_address.business.service import QboPhysicalAddressService
@@ -204,19 +204,14 @@ class QboCustomerService:
             return
         
         connector = CustomerCustomerConnector()
-        
-        for customer in parent_customers:
-            try:
-                customer_module = connector.sync_from_qbo_customer(customer)
-                logger.info(f"Synced QboCustomer {customer.id} to Customer {customer_module.id}")
-                outcome.record_projected()
-            except Exception as e:
-                outcome.record_projection_error(
-                    customer.qbo_id,
-                    e,
-                    label="Customer->Customer",
-                    logger=logger,
-                )
+
+        project_records(
+            parent_customers,
+            outcome,
+            label="Customer->Customer",
+            project_one=connector.sync_from_qbo_customer,
+            logger=logger,
+        )
 
     def _sync_to_projects(self, job_customers: List[QboCustomer], outcome: SyncOutcome) -> None:
         """
@@ -229,19 +224,14 @@ class QboCustomerService:
             return
         
         connector = CustomerProjectConnector()
-        
-        for customer in job_customers:
-            try:
-                project = connector.sync_from_qbo_customer(customer)
-                logger.info(f"Synced QboCustomer {customer.id} to Project {project.id}")
-                outcome.record_projected()
-            except Exception as e:
-                outcome.record_projection_error(
-                    customer.qbo_id,
-                    e,
-                    label="Customer->Project",
-                    logger=logger,
-                )
+
+        project_records(
+            job_customers,
+            outcome,
+            label="Customer->Project",
+            project_one=connector.sync_from_qbo_customer,
+            logger=logger,
+        )
 
     def read_all(self) -> List[QboCustomer]:
         """

@@ -9,11 +9,17 @@ from integrations.intuit.qbo.item.business.model import QboItem
 from integrations.intuit.qbo.item.persistence.repo import QboItemRepository
 from integrations.intuit.qbo.item.external.client import QboItemClient
 from integrations.intuit.qbo.item.external.schemas import QboItem as QboItemExternalSchema
+from integrations.intuit.qbo.base.pacing import pace_batch
 from integrations.intuit.qbo.base.sync_outcome import SyncOutcome, project_records
 from integrations.intuit.qbo.item.connector.cost_code.business.service import ItemCostCodeConnector
 from integrations.intuit.qbo.item.connector.sub_cost_code.business.service import ItemSubCostCodeConnector
+from shared.database import with_retry
 
 logger = logging.getLogger(__name__)
+
+# Sync configuration
+MAX_RETRIES = 3  # Max retries for transient errors
+INITIAL_RETRY_DELAY = 2.0  # Initial retry delay (seconds)
 
 
 class QboItemService:
@@ -59,21 +65,40 @@ class QboItemService:
         
         logger.info(f"Retrieved {len(qbo_items)} items from QBO")
         
-        # Process each item
+        # Process each item with retry logic and batch delays
         parent_items = []
         child_items = []
-        
-        for qbo_item in qbo_items:
-            # Store in local database
-            local_item = self._upsert_item(qbo_item, realm_id)
-            outcome.record_synced(local_item)
-            
-            # Categorize for module sync
-            if qbo_item.parent_ref is None:
-                parent_items.append(local_item)
-            else:
-                child_items.append(local_item)
-        
+
+        for i, qbo_item in enumerate(qbo_items):
+            try:
+                # Use retry logic for transient database errors
+                local_item = with_retry(
+                    self._upsert_item,
+                    qbo_item,
+                    realm_id,
+                    max_retries=MAX_RETRIES,
+                    initial_delay=INITIAL_RETRY_DELAY,
+                )
+                outcome.record_synced(local_item)
+                logger.debug(f"Upserted item {qbo_item.id} ({i + 1}/{len(qbo_items)})")
+
+                # Categorize for module sync
+                if qbo_item.parent_ref is None:
+                    parent_items.append(local_item)
+                else:
+                    child_items.append(local_item)
+            except Exception as e:
+                logger.error(f"Failed to upsert item {qbo_item.id}: {e}")
+                outcome.record_staging_failure(qbo_item.id, e)
+
+            # Add delay between batches to prevent connection exhaustion
+            pace_batch(i, len(qbo_items), logger, "items")
+
+        if outcome.staging_failed_ids:
+            logger.warning(
+                f"Failed to upsert {len(outcome.staging_failed_ids)} items: {outcome.staging_failed_ids}"
+            )
+
         # Sync to modules if requested
         if sync_to_modules:
             self._sync_to_cost_codes(parent_items, outcome)

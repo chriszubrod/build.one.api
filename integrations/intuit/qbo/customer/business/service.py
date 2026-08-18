@@ -9,12 +9,18 @@ from integrations.intuit.qbo.customer.business.model import QboCustomer
 from integrations.intuit.qbo.customer.persistence.repo import QboCustomerRepository
 from integrations.intuit.qbo.customer.external.client import QboCustomerClient
 from integrations.intuit.qbo.customer.external.schemas import QboCustomer as QboCustomerExternalSchema
+from integrations.intuit.qbo.base.pacing import pace_batch
 from integrations.intuit.qbo.base.sync_outcome import SyncOutcome, project_records
 from integrations.intuit.qbo.customer.connector.customer.business.service import CustomerCustomerConnector
 from integrations.intuit.qbo.customer.connector.project.business.service import CustomerProjectConnector
 from integrations.intuit.qbo.physical_address.business.service import QboPhysicalAddressService
+from shared.database import with_retry
 
 logger = logging.getLogger(__name__)
+
+# Sync configuration
+MAX_RETRIES = 3  # Max retries for transient errors
+INITIAL_RETRY_DELAY = 2.0  # Initial retry delay (seconds)
 
 
 class QboCustomerService:
@@ -61,21 +67,40 @@ class QboCustomerService:
         
         logger.info(f"Retrieved {len(qbo_customers)} customers from QBO")
         
-        # Process each customer
+        # Process each customer with retry logic and batch delays
         parent_customers = []
         job_customers = []
-        
-        for qbo_customer in qbo_customers:
-            # Store in local database
-            local_customer = self._upsert_customer(qbo_customer, realm_id)
-            outcome.record_synced(local_customer)
-            
-            # Categorize for module sync
-            if qbo_customer.job:
-                job_customers.append(local_customer)
-            else:
-                parent_customers.append(local_customer)
-        
+
+        for i, qbo_customer in enumerate(qbo_customers):
+            try:
+                # Use retry logic for transient database errors
+                local_customer = with_retry(
+                    self._upsert_customer,
+                    qbo_customer,
+                    realm_id,
+                    max_retries=MAX_RETRIES,
+                    initial_delay=INITIAL_RETRY_DELAY,
+                )
+                outcome.record_synced(local_customer)
+                logger.debug(f"Upserted customer {qbo_customer.id} ({i + 1}/{len(qbo_customers)})")
+
+                # Categorize for module sync
+                if qbo_customer.job:
+                    job_customers.append(local_customer)
+                else:
+                    parent_customers.append(local_customer)
+            except Exception as e:
+                logger.error(f"Failed to upsert customer {qbo_customer.id}: {e}")
+                outcome.record_staging_failure(qbo_customer.id, e)
+
+            # Add delay between batches to prevent connection exhaustion
+            pace_batch(i, len(qbo_customers), logger, "customers")
+
+        if outcome.staging_failed_ids:
+            logger.warning(
+                f"Failed to upsert {len(outcome.staging_failed_ids)} customers: {outcome.staging_failed_ids}"
+            )
+
         # Sync to modules if requested
         if sync_to_modules:
             self._sync_to_customers(parent_customers, outcome)

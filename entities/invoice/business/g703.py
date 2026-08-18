@@ -56,22 +56,47 @@ def _work_amounts(draw: dict) -> dict:
     return m
 
 
+def normalize_draw_date(value: Any) -> str:
+    """The 'YYYY-MM-DD' truncation draw_financials.py stamps on every draw's ``date``.
+    Callers computing ``current_date`` for build_g703_rows must go through this (not
+    re-derive the truncation inline) so the two never silently drift apart."""
+    return str(value or "")[:10]
+
+
 def build_g703_rows(sov: list, draws: list, current_label: str,
-                    fee_item_number: str = FEE_ITEM_NUMBER):
+                    fee_item_number: str = FEE_ITEM_NUMBER,
+                    current_date: Any = None):
     """Assemble G703 (rows, grand) from the live Budget schedule of values + the
     draw-financials.
 
     ``sov``: [{cost_code_number, cost_code_name, scheduled_value}] — the budget SoV
     (col C). ``draws``: the project's coded draws (ordered), each
-    {label, categories, subtotal, builders_fee, total}. ``current_label``: the invoice
-    being packeted — splits prior draws (col D, From Previous) from this one (col E,
-    This Period). Row set = SoV cost codes UNION any draw cost code not in the budget
-    (over-budget → C=$0, negative Balance). The Builder's Fee line
-    (``fee_item_number``) is a synthetic row: C from the budget fee line, D = sum of
-    prior draws' computed fees, E = the current draw's fee.
+    {label, date, categories, subtotal, builders_fee, total}. ``current_label``: the
+    invoice being packeted — splits prior draws (col D, From Previous) from this one
+    (col E, This Period). ``current_date``: that invoice's date — normalized
+    internally via ``normalize_draw_date`` (so callers need not pre-normalize) — used
+    ONLY to disambiguate when two draws share ``current_label`` (labels are the
+    invoice_number, unique per project by DB constraint under normal writes; this is a
+    defensive edge for legacy data / direct SQL, per the U-207 adversarial-review
+    finding). With a single label match (the common case) behavior is unchanged. With
+    no date match, or with BOTH label and date tied (an even deeper duplicate — two
+    rows identical on both fields, which ``draws`` carries no further identity to
+    break), falls back to the first match — never raises. That double-tie residual
+    can't be resolved without a stable id on each draw, which the draw-financials
+    shape deliberately doesn't carry today (see the caller in
+    ``entities/invoice/api/router.py``). Row set = SoV cost codes UNION any draw cost
+    code not in the budget (over-budget → C=$0, negative Balance). The Builder's Fee
+    line (``fee_item_number``) is a synthetic row: C from the budget fee line, D = sum
+    of prior draws' computed fees, E = the current draw's fee.
     """
-    labels = [d.get("label") for d in draws]
-    cur_idx = labels.index(current_label) if current_label in labels else len(draws)
+    current_date = normalize_draw_date(current_date) if current_date else None
+    label_matches = [i for i, d in enumerate(draws) if d.get("label") == current_label]
+    if not label_matches:
+        cur_idx = len(draws)
+    else:
+        date_matches = ([i for i in label_matches if draws[i].get("date") == current_date]
+                        if current_date else [])
+        cur_idx = date_matches[0] if len(date_matches) == 1 else label_matches[0]
     prior = draws[:cur_idx]
     current: Optional[dict] = draws[cur_idx] if cur_idx < len(draws) else None
 

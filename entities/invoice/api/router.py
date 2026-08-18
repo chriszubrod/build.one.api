@@ -688,13 +688,15 @@ def _generate_invoice_packet(public_id: str):
         logger.info(f"Packet [{public_id}]: current invoice not a coded draw — skipping G702/G703")
     if draws and current_is_coded_draw:
         try:
-            from entities.invoice.business.g703 import build_g703_pdf, build_g703_rows
+            from entities.invoice.business.g703 import build_g703_pdf, build_g703_rows, normalize_draw_date
             from entities.invoice.business.g702 import build_g702_lines, build_g702_pdf
             from entities.project.business.service import ProjectService
 
             sov = _budget_sov_for_project(invoice.project_id)
             if sov:
-                rows, grand = build_g703_rows(sov, draws, invoice.invoice_number or "")
+                current_date = normalize_draw_date(invoice.invoice_date)
+                rows, grand = build_g703_rows(sov, draws, invoice.invoice_number or "",
+                                              current_date=current_date)
                 date_str = _format_invoice_date(invoice.invoice_date)
                 g703_bytes = build_g703_pdf(
                     {

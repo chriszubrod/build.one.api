@@ -167,6 +167,65 @@ def test_g703_fee_line_resolves_by_number_prefix_or_name():
     assert any(r["item_no"] == "06" for r in rows)  # work row present, not double-counted
 
 
+def test_g703_rows_duplicate_label_disambiguated_by_date():
+    """U-270: two CODED draws sharing the same label (adversarial-review finding 4).
+
+    ``labels.index(current_label)`` (the pre-fix behavior) always resolves to the
+    FIRST same-labeled draw — misclassifying it as "current" and dropping the true
+    current draw's rollup entirely (it lands in neither the prior nor the current
+    column). ``current_date`` must disambiguate: the current invoice's own date
+    identifies which of the two same-labeled entries is "current"; the other is
+    "prior".
+    """
+    from decimal import Decimal
+    from entities.invoice.business.g703 import build_g703_rows
+
+    sov = [{"cost_code_number": "06", "cost_code_name": "Grading", "scheduled_value": Decimal("300000")}]
+    draws = [
+        {"label": "HA-DUP", "date": "2026-01-01",
+         "categories": [{"cost_code_number": "06", "cost_code_name": "Grading", "amount": Decimal("40000")}],
+         "subtotal": Decimal("40000"), "builders_fee": Decimal("5600"), "total": Decimal("45600")},
+        {"label": "HA-DUP", "date": "2026-02-01",
+         "categories": [{"cost_code_number": "06", "cost_code_name": "Grading", "amount": Decimal("25000")}],
+         "subtotal": Decimal("25000"), "builders_fee": Decimal("3500"), "total": Decimal("28500")},
+    ]
+
+    rows, grand = build_g703_rows(sov, draws, "HA-DUP", current_date="2026-02-01")
+    by = {r["item_no"]: r for r in rows}
+
+    # Earlier same-label draw (2026-01-01, $40000) -> PRIOR (col D).
+    # Later same-label draw (2026-02-01, $25000, matches current_date) -> CURRENT (col E).
+    assert by["06"]["prev"] == Decimal("40000")
+    assert by["06"]["this_period"] == Decimal("25000")
+    assert grand["prev"] == Decimal("45600")        # earlier draw's total (incl. fee)
+    assert grand["this_period"] == Decimal("28500")  # current draw's total (incl. fee)
+
+
+def test_g703_rows_duplicate_label_and_date_falls_back_deterministically():
+    """Deeper degenerate case: two draws tied on BOTH label AND date (a literal
+    duplicate row — draws carries no further identity to break the tie). Documented,
+    deliberate fallback to the first match: must not raise, and must be deterministic
+    (not e.g. depend on dict ordering)."""
+    from decimal import Decimal
+    from entities.invoice.business.g703 import build_g703_rows
+
+    sov = [{"cost_code_number": "06", "cost_code_name": "Grading", "scheduled_value": Decimal("100000")}]
+    draws = [
+        {"label": "HA-05", "date": "2026-03-01",
+         "categories": [{"cost_code_number": "06", "cost_code_name": "Grading", "amount": Decimal("10000")}],
+         "subtotal": Decimal("10000"), "builders_fee": Decimal("1400"), "total": Decimal("11400")},
+        {"label": "HA-05", "date": "2026-03-01",
+         "categories": [{"cost_code_number": "06", "cost_code_name": "Grading", "amount": Decimal("20000")}],
+         "subtotal": Decimal("20000"), "builders_fee": Decimal("2800"), "total": Decimal("22800")},
+    ]
+
+    rows, grand = build_g703_rows(sov, draws, "HA-05", current_date="2026-03-01")
+    by = {r["item_no"]: r for r in rows}
+    assert by["06"]["prev"] == Decimal("0")            # first match (index 0) treated as current
+    assert by["06"]["this_period"] == Decimal("10000")
+    assert grand["this_period"] == Decimal("11400")
+
+
 def test_g703_rows_current_absent_yields_zero_this_period():
     from decimal import Decimal
     from entities.invoice.business.g703 import build_g703_rows

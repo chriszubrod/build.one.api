@@ -9,32 +9,6 @@ from shared.database import is_transient_error
 
 _CHAIN_WALK_MAX = 5
 
-# SQLSTATEs and message substrings that shared.database.is_transient_error does not yet
-# cover (e.g. HYT00 / "Query timeout expired"). A wrong "not retryable" verdict at the
-# QBO watermark seam permanently skips the record until someone edits it in QBO again.
-# Consolidate these vocabularies with shared.database in a follow-up unit (TODO.md).
-_EXTRA_TRANSIENT_SQLSTATES = frozenset({"HYT00", "HYT01"})  # query timeout / connection timeout
-_EXTRA_TRANSIENT_MESSAGES = (
-    "query timeout expired",
-    "timeout expired",
-    "login timeout expired",
-)
-
-
-def _matches_extra_transient(error: BaseException) -> bool:
-    """True when pyodbc timeout failures missed by shared.database.is_transient_error."""
-    if hasattr(error, "args") and len(error.args) >= 1 and error.args[0] is not None:
-        sqlstate = str(error.args[0]).upper()
-        if sqlstate in _EXTRA_TRANSIENT_SQLSTATES:
-            return True
-
-    error_str = str(error).lower()
-    for msg in _EXTRA_TRANSIENT_MESSAGES:
-        if msg in error_str:
-            return True
-
-    return False
-
 
 class QboError(Exception):
     """
@@ -290,7 +264,6 @@ def is_retryable_error(error: BaseException | None) -> bool:
         if (
             getattr(current, "is_retryable", False)
             or is_transient_error(current)
-            or _matches_extra_transient(current)
         ):
             return True
 

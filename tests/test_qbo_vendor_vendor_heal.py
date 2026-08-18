@@ -4,6 +4,8 @@ from unittest.mock import Mock
 
 import pytest
 
+from entities.vendor.business.model import Vendor
+from entities.vendor.business.service import VendorService
 from integrations.intuit.qbo.base.field_ownership import (
     BOTH_EDITABLE,
     for_entity,
@@ -15,6 +17,7 @@ from integrations.intuit.qbo.vendor.connector.vendor.business.service import (
     VendorVendorConnector,
 )
 from entities.vendor_address.business.model import VendorAddress
+from shared.database import DatabaseConstraintError, map_database_error
 
 
 def _make_qbo_vendor(
@@ -339,6 +342,7 @@ def test_create_path_happy_path_creates_vendor_mapping_and_syncs_addresses():
         name="Totally New",
         abbreviation=None,
         is_draft=False,
+        prefetched_by_name=None,
     )
     connector.mapping_repo.create.assert_called_once_with(vendor_id=600, qbo_vendor_id=1)
     connector._sync_addresses.assert_called_once_with(qbo_vendor, 600)
@@ -357,6 +361,118 @@ def test_for_entity_vendor_field_ownership_registry():
     """Vendor registry key resolves and name is both_editable (typo in _REGISTRY would KeyError)."""
     rules = for_entity("Vendor")
     assert rules.ownership_of("name") == BOTH_EDITABLE
+
+
+def _vendor_name_unique_violation() -> DatabaseConstraintError:
+    raw = (
+        "('23000', \"[23000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]"
+        "Violation of UNIQUE KEY constraint 'UQ_Vendor_Name_Active'. "
+        "Cannot insert duplicate key in object 'dbo.Vendor'. (2627)\")"
+    )
+    error = map_database_error(Exception(raw))
+    assert isinstance(error, DatabaseConstraintError)
+    return error
+
+
+def _vendor_vendor_id_unique_violation() -> DatabaseConstraintError:
+    raw = (
+        "('23000', \"[23000] [Microsoft][ODBC Driver 17 for SQL Server][SQL Server]"
+        "Violation of UNIQUE KEY constraint 'UQ_VendorVendor_VendorId'. "
+        "Cannot insert duplicate key in object 'qbo.VendorVendor'. (2627)\")"
+    )
+    error = map_database_error(Exception(raw))
+    assert isinstance(error, DatabaseConstraintError)
+    return error
+
+
+def test_vendor_create_prefetch_skips_read_by_name():
+    """prefetched_by_name=None must skip read_by_name and proceed to insert."""
+    repo = Mock()
+    service = VendorService(repo=repo)
+    created = Vendor(
+        id=700,
+        public_id="vendor-pub-700",
+        row_version=None,
+        created_datetime=None,
+        modified_datetime=None,
+        name="Prefetch Vendor",
+        abbreviation=None,
+        taxpayer_id=None,
+        vendor_type_id=None,
+        is_draft=False,
+    )
+    service.read_by_name = Mock(
+        return_value=_make_vendor(vendor_id=999, name="Prefetch Vendor"),
+    )
+    repo.create.return_value = created
+
+    result = service.create(name="Prefetch Vendor", prefetched_by_name=None)
+
+    service.read_by_name.assert_not_called()
+    repo.create.assert_called_once()
+    assert result is created
+
+
+def test_create_mapping_prefetch_skips_mapping_reads():
+    """prefetched_by_vendor/qbo_vendor=None must skip both mapping lookups."""
+    connector = _build_vendor_vendor_connector()
+    connector.mapping_repo.read_by_vendor_id = Mock(
+        side_effect=AssertionError("read_by_vendor_id must not be called"),
+    )
+    connector.mapping_repo.read_by_qbo_vendor_id = Mock(
+        side_effect=AssertionError("read_by_qbo_vendor_id must not be called"),
+    )
+    connector.mapping_repo.create.return_value = _make_mapping(vendor_id=100, qbo_vendor_id=1)
+
+    result = connector.create_mapping(
+        vendor_id=100,
+        qbo_vendor_id=1,
+        qbo_id="QBO-200",
+        realm_id="realm-1",
+        prefetched_by_vendor=None,
+        prefetched_by_qbo_vendor=None,
+    )
+
+    connector.mapping_repo.read_by_vendor_id.assert_not_called()
+    connector.mapping_repo.read_by_qbo_vendor_id.assert_not_called()
+    connector.mapping_repo.create.assert_called_once_with(vendor_id=100, qbo_vendor_id=1)
+    assert result.vendor_id == 100
+
+
+def test_vendor_create_prefetch_race_translates_unique_constraint_to_value_error():
+    """Prefetch shortcut race on UQ_Vendor_Name_Active must surface as ValueError (skip)."""
+    repo = Mock()
+    service = VendorService(repo=repo)
+    repo.create.side_effect = _vendor_name_unique_violation()
+
+    with pytest.raises(ValueError, match="Vendor with name 'Race Vendor' already exists"):
+        service.create(name="Race Vendor", prefetched_by_name=None)
+
+
+def test_create_mapping_prefetch_race_translates_vendor_unique_constraint_to_value_error():
+    """Prefetch shortcut race on UQ_VendorVendor_VendorId must surface as ValueError (skip)."""
+    connector = _build_vendor_vendor_connector()
+    existing = _make_mapping(vendor_id=100, qbo_vendor_id=99)
+    read_by_vendor = Mock(return_value=existing)
+    read_by_qbo = Mock(
+        side_effect=AssertionError("read_by_qbo_vendor_id must not be called"),
+    )
+    connector.mapping_repo.read_by_vendor_id = read_by_vendor
+    connector.mapping_repo.read_by_qbo_vendor_id = read_by_qbo
+    connector.mapping_repo.create.side_effect = _vendor_vendor_id_unique_violation()
+
+    with pytest.raises(ValueError, match="Vendor 100 is already mapped to QboVendor 99"):
+        connector.create_mapping(
+            vendor_id=100,
+            qbo_vendor_id=1,
+            qbo_id="QBO-200",
+            realm_id="realm-1",
+            prefetched_by_vendor=None,
+            prefetched_by_qbo_vendor=None,
+        )
+
+    read_by_qbo.assert_not_called()
+    read_by_vendor.assert_called_once_with(100)
 
 
 def _make_vendor_address(*, va_id=1, vendor_id=100, address_id=10, address_type_id=ADDRESS_TYPE_BILLING):

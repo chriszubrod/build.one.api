@@ -182,6 +182,8 @@ TRANSIENT_ERROR_CODES = [
     '49918',  # Not enough resources (Azure SQL)
     '49919',  # Too many requests (Azure SQL)
     '49920',  # Too many requests (Azure SQL)
+    'HYT00',  # Query timeout (ODBC)
+    'HYT01',  # Connection timeout (ODBC)
 ]
 
 TRANSIENT_ERROR_MESSAGES = [
@@ -195,6 +197,9 @@ TRANSIENT_ERROR_MESSAGES = [
     'error code 0x274c',
     '10060',  # Connection timed out
     '10054',  # Connection reset by peer
+    'query timeout expired',
+    'timeout expired',
+    'login timeout expired',
 ]
 
 
@@ -204,7 +209,7 @@ def is_transient_error(error: Exception) -> bool:
     
     # Check error codes
     if hasattr(error, 'args') and len(error.args) >= 1:
-        error_code = str(error.args[0]) if error.args else ''
+        error_code = str(error.args[0]).upper() if error.args else ''
         if error_code in TRANSIENT_ERROR_CODES:
             return True
     

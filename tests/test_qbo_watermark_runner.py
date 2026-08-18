@@ -31,17 +31,8 @@ from integrations.intuit.qbo.base.errors import (
     is_retryable_error,
 )
 from integrations.intuit.qbo.base.sync_outcome import SyncOutcome
-from integrations.sync.business.model import Sync
-from integrations.sync.business.service import SyncService
-from integrations.sync.persistence.repo import SyncRepository
-
-REPO_ROOT = Path(__file__).resolve().parents[1]
-SCRIPTS_DIR = REPO_ROOT / "scripts"
-if str(SCRIPTS_DIR) not in sys.path:
-    sys.path.insert(0, str(SCRIPTS_DIR))
-
-import sync_helper  # noqa: E402
-from sync_helper import (  # noqa: E402
+from integrations.intuit.qbo.base import watermark as watermark_module
+from integrations.intuit.qbo.base.watermark import (
     WatermarkRun,
     _QboSyncEntityMeta,
     _held_duration,
@@ -50,6 +41,14 @@ from sync_helper import (  # noqa: E402
     _watermark_hold_bound_seconds,
     _watermark_overlap_seconds,
 )
+from integrations.sync.business.model import Sync
+from integrations.sync.business.service import SyncService
+from integrations.sync.persistence.repo import SyncRepository
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+SCRIPTS_DIR = REPO_ROOT / "scripts"
+if str(SCRIPTS_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPTS_DIR))
 
 PROVIDER = "qbo"
 ENV = "prod"
@@ -431,9 +430,10 @@ def test_is_retryable_error_hyt00_query_timeout_pyodbc_shape():
 def test_record_projection_error_hyt00_query_timeout_from_purchase_mapping_path_holds():
     """
     PurchaseExpenseConnector rolls back a just-created Expense and re-raises mapping-create
-    DB failures as ValueError(...) from e. HYT00 query timeouts are not in
-    shared.database.is_transient_error — classifying them as skip advances the watermark and
-    the QBO Purchase is not re-pulled until a human edits it in QBO again.
+    DB failures as ValueError(...) from e. HYT00 query timeouts are now in
+    shared.database.is_transient_error (U-262 Part 2); this test still verifies
+    is_retryable_error(...) is True for HYT00 via that consolidated path, and that
+    record_projection_error classifies the wrapped failure as a hold (not a skip).
     """
     db_err = Exception(
         "HYT00",
@@ -730,10 +730,10 @@ def test_force_advance_with_future_end_date_also_clamps():
 def _patch_bound_forced_advance_deps(*, realm_id="realm-1", resolved_qbo_id=None):
     """
     Patch _record_bound_forced_advance's lazy-imported dependencies at their origin modules
-    (function-local `from X import Y` re-resolves via sys.modules[X].Y at call time, so patching
-    the origin is correct regardless of which sync_helper module object is under test — see
-    _opened_run's sys.path trick above). Yields `recorded`, which accumulates every
-    record_mapping_issue(**kwargs) call so assertions can inspect exactly what was written.
+    (function-local `from X import Y` re-resolves via sys.modules[X].Y at call time, so
+    patching the origin is correct regardless of import order). Yields `recorded`, which
+    accumulates every record_mapping_issue(**kwargs) call so assertions can inspect exactly
+    what was written.
     """
     recorded = []
 
@@ -745,7 +745,12 @@ def _patch_bound_forced_advance_deps(*, realm_id="realm-1", resolved_qbo_id=None
         stack.enter_context(patch("integrations.intuit.qbo.auth.business.service.QboAuthService", mock_auth_service))
         stack.enter_context(patch("integrations.intuit.qbo.reconciliation.persistence.repo.ReconciliationIssueRepository", Mock()))
         stack.enter_context(patch("integrations.intuit.qbo.base.reconciliation_recorder.record_mapping_issue", side_effect=_fake_record_mapping_issue))
-        stack.enter_context(patch("sync_helper._resolve_staging_qbo_id", return_value=resolved_qbo_id))
+        stack.enter_context(
+            patch(
+                "integrations.intuit.qbo.base.watermark._resolve_staging_qbo_id",
+                return_value=resolved_qbo_id,
+            )
+        )
         yield recorded
 
 
@@ -910,13 +915,21 @@ def test_resolve_staging_qbo_id_resolves_via_the_entity_staging_repo(monkeypatch
     # time, not a by-name lookup — patch the registry entry itself, not the origin module.
     fake_row = SimpleNamespace(qbo_id="QB-real-id")
     mock_repo_cls = Mock(return_value=Mock(read_by_id=Mock(return_value=fake_row)))
-    monkeypatch.setitem(sync_helper._QBO_SYNC_ENTITY_META, "bill", _QboSyncEntityMeta(label="Bill", staging_repo=mock_repo_cls))
+    monkeypatch.setitem(
+        watermark_module._QBO_SYNC_ENTITY_META,
+        "bill",
+        _QboSyncEntityMeta(label="Bill", staging_repo=mock_repo_cls),
+    )
     assert _resolve_staging_qbo_id("bill", 42) == "QB-real-id"
 
 
 def test_resolve_staging_qbo_id_none_when_repo_lookup_raises(monkeypatch):
     mock_repo_cls = Mock(return_value=Mock(read_by_id=Mock(side_effect=RuntimeError("db down"))))
-    monkeypatch.setitem(sync_helper._QBO_SYNC_ENTITY_META, "bill", _QboSyncEntityMeta(label="Bill", staging_repo=mock_repo_cls))
+    monkeypatch.setitem(
+        watermark_module._QBO_SYNC_ENTITY_META,
+        "bill",
+        _QboSyncEntityMeta(label="Bill", staging_repo=mock_repo_cls),
+    )
     assert _resolve_staging_qbo_id("bill", 42) is None
 
 

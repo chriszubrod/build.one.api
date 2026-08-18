@@ -15,14 +15,27 @@ from integrations.intuit.qbo.base.field_ownership import (
     raise_if_inactive_unmapped,
 )
 from integrations.intuit.qbo.base.ids import coerce_id
+from integrations.intuit.qbo.base.reconciliation_recorder import record_mapping_issue
 from entities.vendor.business.service import VendorService
 from entities.vendor.business.model import Vendor
 from entities.vendor_address.business.service import VendorAddressService
+from shared.database import DatabaseConstraintError
+from shared.db_constraints import UNIQUE
 
 logger = logging.getLogger(__name__)
 
 # Address type ID for billing (typically ID 1)
 ADDRESS_TYPE_BILLING = 1
+
+_PREFETCH_UNSET = object()
+
+
+def _qbo_vendor_ref(qbo_vendor: QboVendor) -> tuple[Optional[str], str]:
+    """Shared qbo_id/realm_id derivation for this connector's record_mapping_issue calls."""
+    return (
+        str(qbo_vendor.qbo_id) if qbo_vendor.qbo_id else None,
+        qbo_vendor.realm_id or "",
+    )
 
 
 class VendorVendorConnector:
@@ -168,6 +181,8 @@ class VendorVendorConnector:
                 qbo_vendor_id=qbo_vendor.id,
                 qbo_id=qbo_vendor.qbo_id,
                 realm_id=qbo_vendor.realm_id,
+                prefetched_by_vendor=None,
+                prefetched_by_qbo_vendor=None,
             )
             self._sync_addresses(qbo_vendor, existing_local_id)
             return existing_local
@@ -178,6 +193,7 @@ class VendorVendorConnector:
             name=vendor_name,
             abbreviation=None,
             is_draft=False,
+            prefetched_by_name=None,
         )
         vendor_id = coerce_id(vendor.id)
         try:
@@ -186,6 +202,8 @@ class VendorVendorConnector:
                 qbo_vendor_id=qbo_vendor.id,
                 qbo_id=qbo_vendor.qbo_id,
                 realm_id=qbo_vendor.realm_id,
+                prefetched_by_vendor=None,
+                prefetched_by_qbo_vendor=None,
             )
             logger.info(f"Created mapping: Vendor {vendor_id} <-> QboVendor {qbo_vendor.id}")
         except ValueError as e:
@@ -244,36 +262,6 @@ class VendorVendorConnector:
         self._sync_addresses(qbo_vendor, vendor_id)
         return vendor
 
-    def _record_reconciliation_issue(
-        self,
-        *,
-        drift_type: str,
-        entity_public_id: Optional[str],
-        qbo_vendor: QboVendor,
-        details: str,
-    ) -> None:
-        """
-        Insert a critical qbo.ReconciliationIssue for a manual-review Vendor-mapping
-        drift, failure-isolated: a failed insert is logged loud but never breaks the
-        sync. Shared scaffold for the two detectors below (duplicate-vendor and
-        orphaned-mapping) — only drift_type / entity_public_id / details vary.
-        """
-        try:
-            self.reconciliation_repo.create(
-                drift_type=drift_type,
-                severity="critical",
-                action="manual_review",
-                entity_type="Vendor",
-                entity_public_id=entity_public_id,
-                qbo_id=str(qbo_vendor.qbo_id) if qbo_vendor.qbo_id else None,
-                realm_id=qbo_vendor.realm_id or "",
-                details=details,
-            )
-            logger.warning(details)
-        except Exception as exc:
-            # Don't break the sync because reconciliation insert failed. Log loud.
-            logger.error(f"Failed to record reconciliation issue: {exc}. Details: {details}")
-
     def _raise_duplicate_qbo_vendor_issue(
         self,
         *,
@@ -296,10 +284,14 @@ class VendorVendorConnector:
             f"QboVendor {existing_mapping.qbo_vendor_id}. Resolve by merging or "
             f"renaming one of the QBO vendors."
         )
-        self._record_reconciliation_issue(
+        qbo_id, realm_id = _qbo_vendor_ref(qbo_vendor)
+        record_mapping_issue(
+            self.reconciliation_repo,
             drift_type="duplicate_qbo_vendor",
+            entity_type="Vendor",
             entity_public_id=str(local_vendor.public_id) if local_vendor.public_id else None,
-            qbo_vendor=qbo_vendor,
+            qbo_id=qbo_id,
+            realm_id=realm_id,
             details=details,
         )
 
@@ -318,10 +310,14 @@ class VendorVendorConnector:
             f"and no local VendorVendor mapping; cannot create or adopt a Vendor without "
             f"a name. Resolve by setting a DisplayName in QBO."
         )
-        self._record_reconciliation_issue(
+        qbo_id, realm_id = _qbo_vendor_ref(qbo_vendor)
+        record_mapping_issue(
+            self.reconciliation_repo,
             drift_type="blank_display_name_qbo_vendor",
+            entity_type="Vendor",
             entity_public_id=None,
-            qbo_vendor=qbo_vendor,
+            qbo_id=qbo_id,
+            realm_id=realm_id,
             details=details,
         )
 
@@ -342,10 +338,14 @@ class VendorVendorConnector:
             f"no Vendor created. A soft-deleted vendor is the deterministic cause — restore "
             f"it or repoint the mapping by hand."
         )
-        self._record_reconciliation_issue(
+        qbo_id, realm_id = _qbo_vendor_ref(qbo_vendor)
+        record_mapping_issue(
+            self.reconciliation_repo,
             drift_type="orphaned_vendor_vendor_mapping",
+            entity_type="Vendor",
             entity_public_id=None,
-            qbo_vendor=qbo_vendor,
+            qbo_id=qbo_id,
+            realm_id=realm_id,
             details=details,
         )
 
@@ -409,6 +409,8 @@ class VendorVendorConnector:
         *,
         qbo_id: Optional[str],
         realm_id: Optional[str],
+        prefetched_by_vendor=_PREFETCH_UNSET,
+        prefetched_by_qbo_vendor=_PREFETCH_UNSET,
     ) -> VendorVendor:
         """
         Create a mapping between Vendor and QboVendor.
@@ -424,13 +426,19 @@ class VendorVendorConnector:
             ValueError: If mapping already exists or validation fails
         """
         # Validate 1:1 constraints
-        existing_by_vendor = self.mapping_repo.read_by_vendor_id(vendor_id)
+        if prefetched_by_vendor is _PREFETCH_UNSET:
+            existing_by_vendor = self.mapping_repo.read_by_vendor_id(vendor_id)
+        else:
+            existing_by_vendor = prefetched_by_vendor
         if existing_by_vendor:
             raise ValueError(
                 f"Vendor {vendor_id} is already mapped to QboVendor {existing_by_vendor.qbo_vendor_id}"
             )
-        
-        existing_by_qbo_vendor = self.mapping_repo.read_by_qbo_vendor_id(qbo_vendor_id)
+
+        if prefetched_by_qbo_vendor is _PREFETCH_UNSET:
+            existing_by_qbo_vendor = self.mapping_repo.read_by_qbo_vendor_id(qbo_vendor_id)
+        else:
+            existing_by_qbo_vendor = prefetched_by_qbo_vendor
         if existing_by_qbo_vendor:
             raise ValueError(
                 f"QboVendor {qbo_vendor_id} is already mapped to Vendor {existing_by_qbo_vendor.vendor_id}"
@@ -444,7 +452,30 @@ class VendorVendorConnector:
             qbo_id=qbo_id,
             realm_id=realm_id,
         )
-        return self.mapping_repo.create(vendor_id=vendor_id, qbo_vendor_id=qbo_vendor_id)
+        try:
+            return self.mapping_repo.create(vendor_id=vendor_id, qbo_vendor_id=qbo_vendor_id)
+        except DatabaseConstraintError as e:
+            if e.violation.kind != UNIQUE:
+                raise
+            if (
+                prefetched_by_vendor is not _PREFETCH_UNSET
+                and "UQ_VendorVendor_VendorId" in e.original
+            ):
+                existing_by_vendor = self.mapping_repo.read_by_vendor_id(vendor_id)
+                raise ValueError(
+                    f"Vendor {vendor_id} is already mapped to QboVendor "
+                    f"{existing_by_vendor.qbo_vendor_id}"
+                ) from e
+            if (
+                prefetched_by_qbo_vendor is not _PREFETCH_UNSET
+                and "UQ_VendorVendor_QboVendorId" in e.original
+            ):
+                existing_by_qbo_vendor = self.mapping_repo.read_by_qbo_vendor_id(qbo_vendor_id)
+                raise ValueError(
+                    f"QboVendor {qbo_vendor_id} is already mapped to Vendor "
+                    f"{existing_by_qbo_vendor.vendor_id}"
+                ) from e
+            raise
 
     def get_mapping_by_vendor_id(self, vendor_id: int) -> Optional[VendorVendor]:
         """

@@ -10,8 +10,8 @@ from unittest.mock import Mock, patch
 import pytest
 
 from integrations.intuit.qbo.base.sync_outcome import SyncOutcome, project_records
-from scripts import sync_helper
-from scripts.sync_helper import WatermarkRun
+from integrations.intuit.qbo.base import watermark as watermark_module
+from integrations.intuit.qbo.base.watermark import WatermarkRun
 
 
 # --------------------------------------------------------------------------- #
@@ -219,7 +219,9 @@ def test_record_bound_forced_advance_details_include_failure_reasons():
                 side_effect=_fake_record_mapping_issue,
             )
         )
-        stack.enter_context(patch.object(sync_helper, "_resolve_staging_qbo_id", return_value="QB-proj"))
+        stack.enter_context(
+            patch.object(watermark_module, "_resolve_staging_qbo_id", return_value="QB-proj")
+        )
         run = WatermarkRun(
             sync_service=Mock(),
             provider="qbo",

@@ -13,11 +13,13 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 
 # Local Imports
 from scripts.sync_helper import (
+    assert_cli_system_admin,
+    exit_nonzero_on_sync_failure,
+)
+from integrations.intuit.qbo.base.watermark import (
     WatermarkRun,
     _normalize_last_sync,
     _normalize_watermark_value,
-    assert_cli_system_admin,
-    exit_nonzero_on_sync_failure,
 )
 from integrations.sync.business.service import SyncService
 from integrations.intuit.qbo.reimburse_charge.business.service import QboReimburseChargeService

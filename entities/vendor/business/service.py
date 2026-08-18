@@ -11,6 +11,10 @@ from entities.taxpayer.business.service import TaxpayerService
 from entities.vendor_type.business.service import VendorTypeService
 from entities.vendor.persistence.repo import VendorRepository
 from shared.authz import current_user_id
+from shared.database import DatabaseConstraintError
+from shared.db_constraints import UNIQUE
+
+_PREFETCH_UNSET = object()
 
 
 class VendorService:
@@ -34,7 +38,7 @@ class VendorService:
         except (InvalidOperation, ValueError) as e:
             raise ValueError(f"Invalid decimal value: {value!r}") from e
 
-    def create(self, *, tenant_id: int = 1, name: str, abbreviation: Optional[str] = None, taxpayer_public_id: Optional[str] = None, vendor_type_public_id: Optional[str] = None, is_draft: bool = True, is_contract_labor: bool = False, track_compliance: bool = False, notes: Optional[str] = None, hourly_rate=None, markup=None) -> Vendor:
+    def create(self, *, tenant_id: int = 1, name: str, abbreviation: Optional[str] = None, taxpayer_public_id: Optional[str] = None, vendor_type_public_id: Optional[str] = None, is_draft: bool = True, is_contract_labor: bool = False, track_compliance: bool = False, notes: Optional[str] = None, hourly_rate=None, markup=None, prefetched_by_name=_PREFETCH_UNSET) -> Vendor:
         """
         Create a new vendor.
 
@@ -50,7 +54,10 @@ class VendorService:
             raise ValueError("Vendor name is required.")
         name = name.strip()
 
-        existing = self.read_by_name(name=name)
+        if prefetched_by_name is _PREFETCH_UNSET:
+            existing = self.read_by_name(name=name)
+        else:
+            existing = prefetched_by_name
         if existing:
             raise ValueError(f"Vendor with name '{name}' already exists.")
 
@@ -65,7 +72,29 @@ class VendorService:
             if vendor_type:
                 vendor_type_id = vendor_type.id
 
-        return self.repo.create(tenant_id=tenant_id, name=name, abbreviation=abbreviation, taxpayer_id=taxpayer_id, vendor_type_id=vendor_type_id, is_draft=is_draft, is_contract_labor=is_contract_labor, track_compliance=track_compliance, notes=notes, hourly_rate=self._coerce_decimal(hourly_rate), markup=self._coerce_decimal(markup), created_by_user_id=current_user_id.get())
+        try:
+            return self.repo.create(
+                tenant_id=tenant_id,
+                name=name,
+                abbreviation=abbreviation,
+                taxpayer_id=taxpayer_id,
+                vendor_type_id=vendor_type_id,
+                is_draft=is_draft,
+                is_contract_labor=is_contract_labor,
+                track_compliance=track_compliance,
+                notes=notes,
+                hourly_rate=self._coerce_decimal(hourly_rate),
+                markup=self._coerce_decimal(markup),
+                created_by_user_id=current_user_id.get(),
+            )
+        except DatabaseConstraintError as e:
+            if (
+                prefetched_by_name is not _PREFETCH_UNSET
+                and e.violation.kind == UNIQUE
+                and "UQ_Vendor_Name_Active" in e.original
+            ):
+                raise ValueError(f"Vendor with name '{name}' already exists.") from e
+            raise
 
     def read_all(self) -> list[Vendor]:
         """

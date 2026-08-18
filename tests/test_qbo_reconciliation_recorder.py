@@ -20,11 +20,7 @@ from integrations.intuit.qbo.base.reconciliation_recorder import (
     _FIELD_LIMITS,
     record_mapping_issue,
 )
-
-_SCRIPTS_DIR = REPO_ROOT / "scripts"
-if str(_SCRIPTS_DIR) not in sys.path:
-    sys.path.insert(0, str(_SCRIPTS_DIR))
-from sync_helper import _QBO_SYNC_ENTITY_META  # noqa: E402
+from integrations.intuit.qbo.base.watermark import _QBO_SYNC_ENTITY_META
 
 _RECONCILIATION_ISSUE_SQL = (
     REPO_ROOT
@@ -39,15 +35,15 @@ _SQL_COLUMN_WIDTH_RE = re.compile(
     r"\[(DriftType|EntityType|Severity|Action)\]\s+NVARCHAR\((\d+)\)",
     re.IGNORECASE,
 )
-# Production call sites as of U-218a — guard must discover at least this many writers.
-# record_mapping_issue (5) + _record_reconciliation_issue (4) + direct repo.create (4).
+# Production call sites as of U-262 — guard must discover at least this many writers.
+# record_mapping_issue (17) + _record_reconciliation_issue (0) + direct repo.create (1).
 _MIN_CALL_SITES = 13
 _SKIP_FILES = frozenset({"reconciliation_recorder.py"})
 _DEFAULT_KWARGS = {
     "severity": "critical",
     "action": _ACTION_DEFAULT,
 }
-# WatermarkRun._record_bound_forced_advance (scripts/sync_helper.py, U-228) passes
+# WatermarkRun._record_bound_forced_advance (integrations/intuit/qbo/base/watermark.py, U-228) passes
 # entity_type=<a local var derived from self.entity via _QBO_SYNC_ENTITY_META, falling back to
 # self.entity unchanged> — not a literal, since WatermarkRun is shared across all pull scripts.
 # Derived from the real registry (not hand-typed) so the two can't drift; the width check uses
@@ -164,7 +160,7 @@ def _resolve_entity_type_for_call(rel_path: str, kind: str, raw: Dict[str, Optio
             return "Project"
         if "vendor/connector/vendor" in rel_path.replace("\\", "/"):
             return "Vendor"
-    if kind == "record_mapping_issue" and rel_path.replace("\\", "/") == "scripts/sync_helper.py":
+    if kind == "record_mapping_issue" and rel_path.replace("\\", "/") == "integrations/intuit/qbo/base/watermark.py":
         return max(_QBO_SYNC_ENTITY_NAMES, key=len)
     return None
 

@@ -28,6 +28,15 @@ _LOGO_NATIVE_W = 232.0  # px — extracted from the reference packet
 _LOGO_NATIVE_H = 215.0
 
 
+def as_decimal(value: Any) -> Decimal:
+    """Coerce a draw-financials value to Decimal, mapping None/blank/0 to Decimal(0).
+    Shared by the packet data layer (draw_financials) and renderers (trend) so the
+    None convention can't drift between them."""
+    if isinstance(value, Decimal):
+        return value
+    return Decimal(str(value or 0))
+
+
 def format_cc_number(raw: Any, decimals: int) -> str:
     """Render a cost-code number the way the manual packets do: a fixed number of
     decimal places (G703 uses 4 → ``2.0000``; the Invoice/Trend use 3 → ``2.000``).

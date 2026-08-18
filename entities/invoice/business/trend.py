@@ -10,25 +10,20 @@ from __future__ import annotations
 
 import io
 from decimal import Decimal
-from typing import Any, Optional
+from typing import Optional
 
 from entities.invoice.business.cover import _cost_code_sort_key
 from entities.invoice.business.packet_render import (
     BAND_FILL,
     SERIF,
     SERIF_BOLD,
+    as_decimal as _as_decimal,
     format_cc_number,
     logo_flowable,
     money_number,
 )
 
 FEE_ITEM_NUMBER = "90"
-
-
-def _as_decimal(value: Any) -> Decimal:
-    if isinstance(value, Decimal):
-        return value
-    return Decimal(str(value))
 
 
 def _cc_num(cat: dict) -> str:

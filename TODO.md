@@ -2,6 +2,16 @@
 
 Carry-over items from sessions. Check off as done; prune anything stale.
 
+## U-271 follow-ups (Trend spans all historical pay applications) — deferred from the two-pass review
+
+U-271 made the packet **Trend** show a column for every historical pay application by deriving early/migrated (all-`Manual`) draws' cost codes from `qbo.InvoiceLine.ItemRefName` (`DrawFinancialsService.all_draws_for_project`). Shipped + reconciles (each column foots to its invoice total; cross-checked penny-level vs the project's Excel DETAILS). The Pass-1/Pass-2 review surfaced these **larger structural items, deliberately not done in the same unit**:
+
+- [ ] **Repair the corrupt `qbo.ItemSubCostCode` mapping** (maps '02 Dumpsters' → CostCode 09). U-271 works around it by parsing the self-describing `ItemRefName` string, but the bad table is still trusted by the bill/expense/bill_credit/invoice connectors. Fix the data/table, then expose a trustworthy QBO-side seam (e.g. `QboInvoiceService.cost_coded_lines_for_invoice(invoice_id) -> [(CostCode, Decimal)]`) so `draw_financials` sheds its inline QBO-repo reach + `ItemRefName` parser (moves QBO-integration logic out of the invoice-packet business module).
+- [ ] **Efficiency:** the packet path computes the coded rollup twice — `coded_draws_for_project` (G702/G703) + `all_draws_for_project` (Trend) each iterate & enrich every project invoice. Have `all_draws_for_project` also return the coded subset it already builds (it's captured pre-merge) so the router does ONE invoice pass; lock it with an equivalence test (`all[0] == coded_draws_for_project(...)`). ~0.3s on typical projects, seconds near the 500-invoice cap.
+- [ ] **Model draw re-issue/supersession as data**, not heuristics. Today a QBO-mirror is dropped by `(date, billed total)` while a re-issue (`-04-2`) is merged by a label regex guarded on "base exists in set" — which fires by numeric coincidence and hard-codes one project's numbering. A `supersedes_invoice_id`/revision FK (or the QBO DocNumber revision convention captured at pull time) collapses both into one identity rule.
+- [ ] **Unify markup handling** between coded draws (markup folded into `billed_price` per cost code) and QBO-derived draws (split markup lines land in an `Uncoded` row). Either distribute QBO markup back into sibling cost codes, or make markup a first-class labeled line in both paths; also split "markup (expected)" from "unresolved cost code (anomaly)" so a parse failure surfaces instead of hiding in `Uncoded`.
+- [ ] **One shared cost-code-number canonicalizer.** `_norm_cc_number` (strip leading zeros per dot-segment) is now a 3rd notion of "the cost-code number" alongside `format_cc_number` and the `.split(".")[0]` "parent" pattern duplicated in box/expense/bill/bill_credit. Converge on one helper (cost_code entity or `shared/`).
+
 ## ~~U-238a migration not applied~~ — **RESOLVED 2026-08-16, do not act on this**
 
 > ⚠️ **This entry is HISTORICAL. The migration IS applied.** Verified directly against prod

@@ -731,8 +731,19 @@ def _generate_invoice_packet(public_id: str):
 
     # Trend page (U-206): per-cost-code x per-draw matrix across the coded draws,
     # following the Draw Request in the packet. Failure-isolated.
+    #
+    # The Trend consumes ALL historical pay applications (U-271) — including early
+    # draws whose cost codes live only in QBO (migrated in as all-Manual lines) —
+    # so every draw is a column. G702/G703 above deliberately keep using the coded
+    # `draws` (they reconcile to the Budget SoV, a coded-only surface). Falls back
+    # to `draws` if the richer lookup fails.
     trend_bytes = None
-    if draws:
+    trend_draws = draws
+    try:
+        trend_draws = DrawFinancialsService().all_draws_for_project(invoice.project_id, fee_rate)
+    except Exception:
+        logger.exception(f"Packet [{public_id}]: all-draws lookup failed — Trend falls back to coded draws")
+    if trend_draws:
         try:
             from entities.invoice.business.trend import build_trend_pdf
 
@@ -743,7 +754,7 @@ def _generate_invoice_packet(public_id: str):
                     "to_lines": to_lines,
                     "date": _format_invoice_date(invoice.invoice_date),
                 },
-                draws,
+                trend_draws,
             )
         except Exception:
             logger.exception(f"Packet [{public_id}]: trend page generation failed — continuing without it")

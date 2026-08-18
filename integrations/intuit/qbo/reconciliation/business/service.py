@@ -15,6 +15,7 @@ from integrations.intuit.qbo.base.drift_types import (
     DRIFT_QBO_VOIDED,
     DRIFT_STALE_SYNC_TOKEN,
 )
+from integrations.intuit.qbo.base.delete_reconcile import DEFAULT_VOID_MAX_CANDIDATES
 from integrations.intuit.qbo.reconciliation.persistence.repo import (
     ReconciliationIssueRepository,
 )
@@ -44,21 +45,6 @@ SEVERITY_BY_DRIFT = {
 # flagged (it was really detected + 404-confirmed); only its duplicate
 # issue-write is suppressed. Do not add them together.
 RECONCILE_COUNT_KEYS = ("auto_fixed", "flagged", "flagged_deduped", "errors")
-
-
-# Sanity ceiling for the void query-diff. A diff that nominates more than this
-# many records is far more likely to be a bad id-fetch than a real mass deletion,
-# so the detector aborts with one summary issue instead of flagging them.
-DEFAULT_VOID_MAX_CANDIDATES = 200
-
-
-def _void_max_candidates() -> int:
-    raw = os.getenv("QBO_RECONCILE_VOID_MAX_CANDIDATES", "").strip()
-    try:
-        value = int(raw)
-    except (TypeError, ValueError):
-        return DEFAULT_VOID_MAX_CANDIDATES
-    return value if value > 0 else DEFAULT_VOID_MAX_CANDIDATES
 
 
 class ReconciliationService:
@@ -591,11 +577,8 @@ class ReconciliationService:
         (should invoices referencing the bill be recomputed? did a user delete
         in error?) and deserves human judgment.
         """
-        from integrations.intuit.qbo.base.errors import (
-            QboAuthError,
-            QboBudgetExceededError,
-            QboNotFoundError,
-            QboRateLimitError,
+        from integrations.intuit.qbo.base.delete_reconcile import (
+            detect_void_absent_candidates,
         )
         from integrations.intuit.qbo.base.ids import normalize_qbo_id
         from integrations.intuit.qbo.bill.external.client import QboBillClient
@@ -622,51 +605,19 @@ class ReconciliationService:
         errors = 0
 
         with QboBillClient(realm_id=realm_id) as client:
-            # Layer 1+2 - complete-or-abort. The id fetch is strict (see query_all_bill_ids);
-            # on ANY failure we re-raise so the caller records one error and this detector
-            # flags NOTHING. Never diff against a doubtful id set.
-            try:
-                live_ids = set(client.query_all_bill_ids())
-            except Exception:
-                logger.exception(
-                    "qbo.reconcile.bill_qbo_voided.id_fetch_failed",
-                    extra={
-                        "event_name": "qbo.reconcile.bill_qbo_voided.id_fetch_failed",
-                        "realm_id": realm_id,
-                        "reconcile_run_id": run_id,
-                    },
-                )
-                raise
+            diff = detect_void_absent_candidates(
+                local_rows=all_qbo_bills,
+                realm_id=realm_id,
+                reconcile_run_id=run_id,
+                log_prefix="qbo.reconcile.bill_qbo_voided",
+                fetch_live_ids=client.query_all_bill_ids,
+                confirm_get=client.get_bill,
+                extract_qbo_id=lambda row: normalize_qbo_id(row.qbo_id),
+                lookup_mapping=lambda row: mapping_repo.read_by_qbo_bill_id(row.id),
+            )
 
-            # mapped - live = candidates (NOT flags). The live-id test runs before the
-            # mapping lookup so the per-record DB read also drops to the candidate count.
-            candidates = []
-            for local_qbo_bill in all_qbo_bills:
-                qbo_id = normalize_qbo_id(local_qbo_bill.qbo_id)
-                if not qbo_id:
-                    continue
-                if qbo_id in live_ids:
-                    continue
-                mapping = mapping_repo.read_by_qbo_bill_id(local_qbo_bill.id)
-                if not mapping:
-                    continue
-                candidates.append((local_qbo_bill, qbo_id, mapping))
-
-            # Layer 2b - sanity gate. Above the ceiling, confirm nothing and flag nothing:
-            # write ONE high-severity summary so the anomaly is loud but the issue table
-            # is not flooded and no autofix can ever act on a diff artifact.
-            max_candidates = _void_max_candidates()
-            if len(candidates) > max_candidates:
-                logger.error(
-                    "qbo.reconcile.bill_qbo_voided.candidate_ceiling_exceeded",
-                    extra={
-                        "event_name": "qbo.reconcile.bill_qbo_voided.candidate_ceiling_exceeded",
-                        "realm_id": realm_id,
-                        "reconcile_run_id": run_id,
-                        "candidate_count": len(candidates),
-                        "max_candidates": max_candidates,
-                    },
-                )
+            if diff.aborted and diff.abort_reason == "ceiling_exceeded":
+                max_candidates = diff.ceiling
                 self._record_issue(
                     drift_type=DRIFT_QBO_VOIDED,
                     action="flagged",
@@ -675,9 +626,9 @@ class ReconciliationService:
                     qbo_id=None,
                     realm_id=realm_id,
                     details=(
-                        f"Void detection aborted: {len(candidates)} locally-mapped Bill(s) were absent "
+                        f"Void detection aborted: {diff.candidate_count} locally-mapped Bill(s) were absent "
                         f"from the QBO id query, above the {max_candidates} candidate ceiling "
-                        f"({len(all_qbo_bills)} mapped, {len(live_ids)} live). Nothing was flagged - "
+                        f"({diff.mapped_count} mapped, {diff.live_count} live). Nothing was flagged - "
                         f"this is far more likely an incomplete id fetch than a mass deletion. "
                         f"Raise QBO_RECONCILE_VOID_MAX_CANDIDATES only after confirming in QBO."
                     ),
@@ -685,79 +636,48 @@ class ReconciliationService:
                 )
                 return {"auto_fixed": 0, "flagged": 0, "flagged_deduped": 0, "errors": 1}
 
-            # Layer 3 - confirm each candidate with the same GET the old scan used, so every
-            # flag is still backed by a real 404 and an id set that was complete-looking but
-            # wrong degrades to a wasted GET rather than a false issue.
-            for local_qbo_bill, qbo_id, mapping in candidates:
-                try:
-                    client.get_bill(qbo_id)
-                except QboNotFoundError:
-                    flagged += 1
-                    key = (realm_id, "Bill", qbo_id)
-                    # fetched lazily on the first confirmed 404 — a run with no voids pays no
-                    # query; the instance cache keeps it to one fetch per run.
-                    void_keys = self._unresolved_void_keys()
-                    if key in void_keys:
-                        flagged_deduped += 1
-                        logger.info(
-                            "qbo.reconcile.bill_qbo_voided.void_issue_deduped",
-                            extra={
-                                "event_name": "qbo.reconcile.bill_qbo_voided.void_issue_deduped",
-                                "qbo_id": qbo_id,
-                                "realm_id": realm_id,
-                                "reconcile_run_id": run_id,
-                            },
-                        )
-                        continue
-                    # A failed write must NOT suppress a later retry — suppression is only
-                    # ever justified by a row that really exists.
-                    if self._record_issue(
-                        drift_type=DRIFT_QBO_VOIDED,
-                        action="flagged",
-                        entity_type="Bill",
-                        qbo_id=qbo_id,
-                        realm_id=realm_id,
-                        details=(
-                            f"QBO Bill {qbo_id} is mapped locally "
-                            f"(local QboBill id={local_qbo_bill.id}, mapped to "
-                            f"Bill id={mapping.bill_id}) but returns 404 from QBO. "
-                            f"Likely voided or deleted on the QBO side. Review "
-                            f"before taking action — downstream invoices may "
-                            f"reference this bill."
-                        ),
-                        reconcile_run_id=run_id,
-                    ):
-                        void_keys.add(key)
-                except (QboAuthError, QboBudgetExceededError, QboRateLimitError):
-                    # U-212 backport from base/delete_reconcile.py: systemic —
-                    # no later candidate's confirm can succeed; stop burning
-                    # one metered call per remaining candidate.
-                    errors += 1
-                    logger.warning(
-                        "qbo.reconcile.bill_qbo_voided.confirm_aborted_systemic",
+            errors += diff.errors
+
+            for candidate in diff.confirmed_voids:
+                local_qbo_bill = candidate.local_row
+                qbo_id = candidate.qbo_id
+                mapping = candidate.mapping
+                flagged += 1
+                key = (realm_id, "Bill", qbo_id)
+                # fetched lazily on the first confirmed 404 — a run with no voids pays no
+                # query; the instance cache keeps it to one fetch per run.
+                void_keys = self._unresolved_void_keys()
+                if key in void_keys:
+                    flagged_deduped += 1
+                    logger.info(
+                        "qbo.reconcile.bill_qbo_voided.void_issue_deduped",
                         extra={
-                            "event_name": "qbo.reconcile.bill_qbo_voided.confirm_aborted_systemic",
-                            "realm_id": realm_id,
-                            "reconcile_run_id": run_id,
-                        },
-                    )
-                    break
-                except Exception:
-                    errors += 1
-                    logger.exception(
-                        f"qbo.reconcile.bill_qbo_voided.detector_error for "
-                        f"qbo_id={qbo_id}"
-                    )
-                else:
-                    logger.warning(
-                        "qbo.reconcile.bill_qbo_voided.diff_false_positive",
-                        extra={
-                            "event_name": "qbo.reconcile.bill_qbo_voided.diff_false_positive",
+                            "event_name": "qbo.reconcile.bill_qbo_voided.void_issue_deduped",
                             "qbo_id": qbo_id,
                             "realm_id": realm_id,
                             "reconcile_run_id": run_id,
                         },
                     )
+                    continue
+                # A failed write must NOT suppress a later retry — suppression is only
+                # ever justified by a row that really exists.
+                if self._record_issue(
+                    drift_type=DRIFT_QBO_VOIDED,
+                    action="flagged",
+                    entity_type="Bill",
+                    qbo_id=qbo_id,
+                    realm_id=realm_id,
+                    details=(
+                        f"QBO Bill {qbo_id} is mapped locally "
+                        f"(local QboBill id={local_qbo_bill.id}, mapped to "
+                        f"Bill id={mapping.bill_id}) but returns 404 from QBO. "
+                        f"Likely voided or deleted on the QBO side. Review "
+                        f"before taking action — downstream invoices may "
+                        f"reference this bill."
+                    ),
+                    reconcile_run_id=run_id,
+                ):
+                    void_keys.add(key)
 
         return {"auto_fixed": 0, "flagged": flagged, "flagged_deduped": flagged_deduped, "errors": errors}
 
@@ -893,11 +813,8 @@ class ReconciliationService:
         set that large is far more likely to be a bad id fetch than a real mass
         deletion.
         """
-        from integrations.intuit.qbo.base.errors import (
-            QboAuthError,
-            QboBudgetExceededError,
-            QboNotFoundError,
-            QboRateLimitError,
+        from integrations.intuit.qbo.base.delete_reconcile import (
+            detect_void_absent_candidates,
         )
         from integrations.intuit.qbo.base.ids import normalize_qbo_id
         from integrations.intuit.qbo.purchase.external.client import QboPurchaseClient
@@ -924,43 +841,19 @@ class ReconciliationService:
         errors = 0
 
         with QboPurchaseClient(realm_id=realm_id) as client:
-            try:
-                live_ids = set(client.query_all_purchase_ids())
-            except Exception:
-                logger.exception(
-                    "qbo.reconcile.purchase_qbo_voided.id_fetch_failed",
-                    extra={
-                        "event_name": "qbo.reconcile.purchase_qbo_voided.id_fetch_failed",
-                        "realm_id": realm_id,
-                        "reconcile_run_id": run_id,
-                    },
-                )
-                raise
+            diff = detect_void_absent_candidates(
+                local_rows=all_qbo_purchases,
+                realm_id=realm_id,
+                reconcile_run_id=run_id,
+                log_prefix="qbo.reconcile.purchase_qbo_voided",
+                fetch_live_ids=client.query_all_purchase_ids,
+                confirm_get=client.get_purchase,
+                extract_qbo_id=lambda row: normalize_qbo_id(row.qbo_id),
+                lookup_mapping=lambda row: mapping_repo.read_by_qbo_purchase_id(row.id),
+            )
 
-            candidates = []
-            for local in all_qbo_purchases:
-                qbo_id = normalize_qbo_id(local.qbo_id)
-                if not qbo_id:
-                    continue
-                if qbo_id in live_ids:
-                    continue
-                mapping = mapping_repo.read_by_qbo_purchase_id(local.id)
-                if not mapping:
-                    continue
-                candidates.append((local, qbo_id, mapping))
-
-            max_candidates = _void_max_candidates()
-            if len(candidates) > max_candidates:
-                logger.error(
-                    "qbo.reconcile.purchase_qbo_voided.candidate_ceiling_exceeded",
-                    extra={
-                        "event_name": "qbo.reconcile.purchase_qbo_voided.candidate_ceiling_exceeded",
-                        "realm_id": realm_id,
-                        "reconcile_run_id": run_id,
-                        "candidate_count": len(candidates),
-                        "max_candidates": max_candidates,
-                    },
-                )
+            if diff.aborted and diff.abort_reason == "ceiling_exceeded":
+                max_candidates = diff.ceiling
                 self._record_issue(
                     drift_type=DRIFT_QBO_VOIDED,
                     action="flagged",
@@ -969,9 +862,9 @@ class ReconciliationService:
                     qbo_id=None,
                     realm_id=realm_id,
                     details=(
-                        f"Void detection aborted: {len(candidates)} locally-mapped Expense(s) were absent "
+                        f"Void detection aborted: {diff.candidate_count} locally-mapped Expense(s) were absent "
                         f"from the QBO id query, above the {max_candidates} candidate ceiling "
-                        f"({len(all_qbo_purchases)} mapped, {len(live_ids)} live). Nothing was flagged - "
+                        f"({diff.mapped_count} mapped, {diff.live_count} live). Nothing was flagged - "
                         f"this is far more likely an incomplete id fetch than a mass deletion. "
                         f"Raise QBO_RECONCILE_VOID_MAX_CANDIDATES only after confirming in QBO."
                     ),
@@ -979,76 +872,48 @@ class ReconciliationService:
                 )
                 return {"auto_fixed": 0, "flagged": 0, "flagged_deduped": 0, "errors": 1}
 
-            for local, qbo_id, mapping in candidates:
-                try:
-                    client.get_purchase(qbo_id)
-                except QboNotFoundError:
-                    flagged += 1
-                    key = (realm_id, "Expense", qbo_id)
-                    # fetched lazily on the first confirmed 404 — a run with no voids pays no
-                    # query; the instance cache keeps it to one fetch per run.
-                    void_keys = self._unresolved_void_keys()
-                    if key in void_keys:
-                        flagged_deduped += 1
-                        logger.info(
-                            "qbo.reconcile.purchase_qbo_voided.void_issue_deduped",
-                            extra={
-                                "event_name": "qbo.reconcile.purchase_qbo_voided.void_issue_deduped",
-                                "qbo_id": qbo_id,
-                                "realm_id": realm_id,
-                                "reconcile_run_id": run_id,
-                            },
-                        )
-                        continue
-                    # A failed write must NOT suppress a later retry — suppression is only
-                    # ever justified by a row that really exists.
-                    if self._record_issue(
-                        drift_type=DRIFT_QBO_VOIDED,
-                        action="flagged",
-                        entity_type="Expense",
-                        qbo_id=qbo_id,
-                        realm_id=realm_id,
-                        details=(
-                            f"QBO Purchase {qbo_id} is mapped locally "
-                            f"(local QboPurchase id={local.id}, mapped to "
-                            f"Expense id={mapping.expense_id}) but returns 404 from QBO. "
-                            f"Likely voided or deleted on the QBO side. Review "
-                            f"before taking action — downstream invoices may "
-                            f"reference this expense."
-                        ),
-                        reconcile_run_id=run_id,
-                    ):
-                        void_keys.add(key)
-                except (QboAuthError, QboBudgetExceededError, QboRateLimitError):
-                    # U-212 backport from base/delete_reconcile.py: systemic —
-                    # no later candidate's confirm can succeed; stop burning
-                    # one metered call per remaining candidate.
-                    errors += 1
-                    logger.warning(
-                        "qbo.reconcile.purchase_qbo_voided.confirm_aborted_systemic",
+            errors += diff.errors
+
+            for candidate in diff.confirmed_voids:
+                local = candidate.local_row
+                qbo_id = candidate.qbo_id
+                mapping = candidate.mapping
+                flagged += 1
+                key = (realm_id, "Expense", qbo_id)
+                # fetched lazily on the first confirmed 404 — a run with no voids pays no
+                # query; the instance cache keeps it to one fetch per run.
+                void_keys = self._unresolved_void_keys()
+                if key in void_keys:
+                    flagged_deduped += 1
+                    logger.info(
+                        "qbo.reconcile.purchase_qbo_voided.void_issue_deduped",
                         extra={
-                            "event_name": "qbo.reconcile.purchase_qbo_voided.confirm_aborted_systemic",
-                            "realm_id": realm_id,
-                            "reconcile_run_id": run_id,
-                        },
-                    )
-                    break
-                except Exception:
-                    errors += 1
-                    logger.exception(
-                        f"qbo.reconcile.purchase_qbo_voided.detector_error for "
-                        f"qbo_id={qbo_id}"
-                    )
-                else:
-                    logger.warning(
-                        "qbo.reconcile.purchase_qbo_voided.diff_false_positive",
-                        extra={
-                            "event_name": "qbo.reconcile.purchase_qbo_voided.diff_false_positive",
+                            "event_name": "qbo.reconcile.purchase_qbo_voided.void_issue_deduped",
                             "qbo_id": qbo_id,
                             "realm_id": realm_id,
                             "reconcile_run_id": run_id,
                         },
                     )
+                    continue
+                # A failed write must NOT suppress a later retry — suppression is only
+                # ever justified by a row that really exists.
+                if self._record_issue(
+                    drift_type=DRIFT_QBO_VOIDED,
+                    action="flagged",
+                    entity_type="Expense",
+                    qbo_id=qbo_id,
+                    realm_id=realm_id,
+                    details=(
+                        f"QBO Purchase {qbo_id} is mapped locally "
+                        f"(local QboPurchase id={local.id}, mapped to "
+                        f"Expense id={mapping.expense_id}) but returns 404 from QBO. "
+                        f"Likely voided or deleted on the QBO side. Review "
+                        f"before taking action — downstream invoices may "
+                        f"reference this expense."
+                    ),
+                    reconcile_run_id=run_id,
+                ):
+                    void_keys.add(key)
 
         return {"auto_fixed": 0, "flagged": flagged, "flagged_deduped": flagged_deduped, "errors": errors}
 
@@ -1180,11 +1045,8 @@ class ReconciliationService:
         set that large is far more likely to be a bad id fetch than a real mass
         deletion.
         """
-        from integrations.intuit.qbo.base.errors import (
-            QboAuthError,
-            QboBudgetExceededError,
-            QboNotFoundError,
-            QboRateLimitError,
+        from integrations.intuit.qbo.base.delete_reconcile import (
+            detect_void_absent_candidates,
         )
         from integrations.intuit.qbo.base.ids import normalize_qbo_id
         from integrations.intuit.qbo.vendorcredit.external.client import QboVendorCreditClient
@@ -1211,43 +1073,19 @@ class ReconciliationService:
         errors = 0
 
         with QboVendorCreditClient(realm_id=realm_id) as client:
-            try:
-                live_ids = set(client.query_all_vendor_credit_ids())
-            except Exception:
-                logger.exception(
-                    "qbo.reconcile.vendor_credit_qbo_voided.id_fetch_failed",
-                    extra={
-                        "event_name": "qbo.reconcile.vendor_credit_qbo_voided.id_fetch_failed",
-                        "realm_id": realm_id,
-                        "reconcile_run_id": run_id,
-                    },
-                )
-                raise
+            diff = detect_void_absent_candidates(
+                local_rows=all_qbo_vcs,
+                realm_id=realm_id,
+                reconcile_run_id=run_id,
+                log_prefix="qbo.reconcile.vendor_credit_qbo_voided",
+                fetch_live_ids=client.query_all_vendor_credit_ids,
+                confirm_get=client.get_vendor_credit,
+                extract_qbo_id=lambda row: normalize_qbo_id(row.qbo_id),
+                lookup_mapping=lambda row: mapping_repo.read_by_qbo_vendor_credit_id(row.id),
+            )
 
-            candidates = []
-            for local in all_qbo_vcs:
-                qbo_id = normalize_qbo_id(local.qbo_id)
-                if not qbo_id:
-                    continue
-                if qbo_id in live_ids:
-                    continue
-                mapping = mapping_repo.read_by_qbo_vendor_credit_id(local.id)
-                if not mapping:
-                    continue
-                candidates.append((local, qbo_id, mapping))
-
-            max_candidates = _void_max_candidates()
-            if len(candidates) > max_candidates:
-                logger.error(
-                    "qbo.reconcile.vendor_credit_qbo_voided.candidate_ceiling_exceeded",
-                    extra={
-                        "event_name": "qbo.reconcile.vendor_credit_qbo_voided.candidate_ceiling_exceeded",
-                        "realm_id": realm_id,
-                        "reconcile_run_id": run_id,
-                        "candidate_count": len(candidates),
-                        "max_candidates": max_candidates,
-                    },
-                )
+            if diff.aborted and diff.abort_reason == "ceiling_exceeded":
+                max_candidates = diff.ceiling
                 self._record_issue(
                     drift_type=DRIFT_QBO_VOIDED,
                     action="flagged",
@@ -1256,9 +1094,9 @@ class ReconciliationService:
                     qbo_id=None,
                     realm_id=realm_id,
                     details=(
-                        f"Void detection aborted: {len(candidates)} locally-mapped BillCredit(s) were absent "
+                        f"Void detection aborted: {diff.candidate_count} locally-mapped BillCredit(s) were absent "
                         f"from the QBO id query, above the {max_candidates} candidate ceiling "
-                        f"({len(all_qbo_vcs)} mapped, {len(live_ids)} live). Nothing was flagged - "
+                        f"({diff.mapped_count} mapped, {diff.live_count} live). Nothing was flagged - "
                         f"this is far more likely an incomplete id fetch than a mass deletion. "
                         f"Raise QBO_RECONCILE_VOID_MAX_CANDIDATES only after confirming in QBO."
                     ),
@@ -1266,76 +1104,48 @@ class ReconciliationService:
                 )
                 return {"auto_fixed": 0, "flagged": 0, "flagged_deduped": 0, "errors": 1}
 
-            for local, qbo_id, mapping in candidates:
-                try:
-                    client.get_vendor_credit(qbo_id)
-                except QboNotFoundError:
-                    flagged += 1
-                    key = (realm_id, "BillCredit", qbo_id)
-                    # fetched lazily on the first confirmed 404 — a run with no voids pays no
-                    # query; the instance cache keeps it to one fetch per run.
-                    void_keys = self._unresolved_void_keys()
-                    if key in void_keys:
-                        flagged_deduped += 1
-                        logger.info(
-                            "qbo.reconcile.vendor_credit_qbo_voided.void_issue_deduped",
-                            extra={
-                                "event_name": "qbo.reconcile.vendor_credit_qbo_voided.void_issue_deduped",
-                                "qbo_id": qbo_id,
-                                "realm_id": realm_id,
-                                "reconcile_run_id": run_id,
-                            },
-                        )
-                        continue
-                    # A failed write must NOT suppress a later retry — suppression is only
-                    # ever justified by a row that really exists.
-                    if self._record_issue(
-                        drift_type=DRIFT_QBO_VOIDED,
-                        action="flagged",
-                        entity_type="BillCredit",
-                        qbo_id=qbo_id,
-                        realm_id=realm_id,
-                        details=(
-                            f"QBO VendorCredit {qbo_id} is mapped locally "
-                            f"(local QboVendorCredit id={local.id}, mapped to "
-                            f"BillCredit id={mapping.bill_credit_id}) but returns 404 from QBO. "
-                            f"Likely voided or deleted on the QBO side. Review "
-                            f"before taking action — downstream invoices may "
-                            f"reference this bill credit."
-                        ),
-                        reconcile_run_id=run_id,
-                    ):
-                        void_keys.add(key)
-                except (QboAuthError, QboBudgetExceededError, QboRateLimitError):
-                    # U-212 backport from base/delete_reconcile.py: systemic —
-                    # no later candidate's confirm can succeed; stop burning
-                    # one metered call per remaining candidate.
-                    errors += 1
-                    logger.warning(
-                        "qbo.reconcile.vendor_credit_qbo_voided.confirm_aborted_systemic",
+            errors += diff.errors
+
+            for candidate in diff.confirmed_voids:
+                local = candidate.local_row
+                qbo_id = candidate.qbo_id
+                mapping = candidate.mapping
+                flagged += 1
+                key = (realm_id, "BillCredit", qbo_id)
+                # fetched lazily on the first confirmed 404 — a run with no voids pays no
+                # query; the instance cache keeps it to one fetch per run.
+                void_keys = self._unresolved_void_keys()
+                if key in void_keys:
+                    flagged_deduped += 1
+                    logger.info(
+                        "qbo.reconcile.vendor_credit_qbo_voided.void_issue_deduped",
                         extra={
-                            "event_name": "qbo.reconcile.vendor_credit_qbo_voided.confirm_aborted_systemic",
-                            "realm_id": realm_id,
-                            "reconcile_run_id": run_id,
-                        },
-                    )
-                    break
-                except Exception:
-                    errors += 1
-                    logger.exception(
-                        f"qbo.reconcile.vendor_credit_qbo_voided.detector_error for "
-                        f"qbo_id={qbo_id}"
-                    )
-                else:
-                    logger.warning(
-                        "qbo.reconcile.vendor_credit_qbo_voided.diff_false_positive",
-                        extra={
-                            "event_name": "qbo.reconcile.vendor_credit_qbo_voided.diff_false_positive",
+                            "event_name": "qbo.reconcile.vendor_credit_qbo_voided.void_issue_deduped",
                             "qbo_id": qbo_id,
                             "realm_id": realm_id,
                             "reconcile_run_id": run_id,
                         },
                     )
+                    continue
+                # A failed write must NOT suppress a later retry — suppression is only
+                # ever justified by a row that really exists.
+                if self._record_issue(
+                    drift_type=DRIFT_QBO_VOIDED,
+                    action="flagged",
+                    entity_type="BillCredit",
+                    qbo_id=qbo_id,
+                    realm_id=realm_id,
+                    details=(
+                        f"QBO VendorCredit {qbo_id} is mapped locally "
+                        f"(local QboVendorCredit id={local.id}, mapped to "
+                        f"BillCredit id={mapping.bill_credit_id}) but returns 404 from QBO. "
+                        f"Likely voided or deleted on the QBO side. Review "
+                        f"before taking action — downstream invoices may "
+                        f"reference this bill credit."
+                    ),
+                    reconcile_run_id=run_id,
+                ):
+                    void_keys.add(key)
 
         return {"auto_fixed": 0, "flagged": flagged, "flagged_deduped": flagged_deduped, "errors": errors}
 

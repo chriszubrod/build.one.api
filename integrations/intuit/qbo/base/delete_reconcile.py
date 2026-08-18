@@ -31,8 +31,9 @@ that module's contract.
 
 # Python Standard Library Imports
 import logging
+from dataclasses import dataclass, field
 from shared.env_flags import _env_positive_int
-from typing import Callable, Iterable, List, Optional, Set
+from typing import Callable, Iterable, List, Optional, Set, TypeVar
 
 # Local Imports
 from integrations.intuit.qbo.base.errors import (
@@ -46,7 +47,182 @@ from integrations.intuit.qbo.base.ids import normalize_qbo_id
 logger = logging.getLogger(__name__)
 
 
+# Errors where no later candidate's confirm/GET can succeed either (budget
+# breaker tripped, rate-limited, or auth expired) — both the pull-side delete
+# reconciler and the reconciliation void detectors abort their confirm loop
+# on this same set rather than burning one metered call per remaining candidate.
+SYSTEMIC_QBO_ERRORS = (QboAuthError, QboBudgetExceededError, QboRateLimitError)
+
+
 DEFAULT_DELETE_MAX_CANDIDATES = 50
+
+# Sanity ceiling for the reconciliation void query-diff (U-258). A diff that
+# nominates more than this many records is far more likely to be a bad id-fetch
+# than a real mass deletion, so the detector aborts with one summary issue
+# instead of flagging them.
+DEFAULT_VOID_MAX_CANDIDATES = 200
+
+LocalRowT = TypeVar("LocalRowT")
+
+
+@dataclass(frozen=True)
+class VoidCandidate:
+    """One locally-mapped row absent from the live QBO id set, 404-confirmed."""
+
+    local_row: object
+    qbo_id: str
+    mapping: object
+
+
+@dataclass
+class VoidDetectorResult:
+    """Outcome of one void query-diff pass (U-258).
+
+    ``confirmed_voids`` holds rows whose absence from the live id set was
+    confirmed by an individual GET returning QboNotFoundError. Issue-writing
+    and dedupe-cache checks remain the caller's responsibility.
+    """
+
+    confirmed_voids: List[VoidCandidate] = field(default_factory=list)
+    abort_reason: Optional[str] = None  # ceiling_exceeded | systemic_confirm_abort
+    candidate_count: int = 0
+    mapped_count: int = 0
+    live_count: int = 0
+    errors: int = 0
+    ceiling: int = 0  # QBO_RECONCILE_VOID_MAX_CANDIDATES value applied to this pass
+
+    @property
+    def aborted(self) -> bool:
+        return self.abort_reason is not None
+
+
+def _void_max_candidates() -> int:
+    return _env_positive_int(
+        "QBO_RECONCILE_VOID_MAX_CANDIDATES", DEFAULT_VOID_MAX_CANDIDATES, minimum=1, warn=False
+    )
+
+
+def detect_void_absent_candidates(
+    *,
+    local_rows: Iterable[LocalRowT],
+    realm_id: str,
+    reconcile_run_id: str,
+    log_prefix: str,
+    fetch_live_ids: Callable[[], List[str]],
+    confirm_get: Callable[[str], object],
+    extract_qbo_id: Callable[[LocalRowT], Optional[str]],
+    lookup_mapping: Callable[[LocalRowT], Optional[object]],
+) -> VoidDetectorResult:
+    """Single home for reconciliation void-detector control flow (U-258).
+
+    Mirrors the pull-side ``strict_confirmed_deleted_ids`` discipline
+    (U-212) layer-for-layer, but for the reconciliation service's
+    *flag-don't-delete* void detectors:
+
+      1. Live ids come from the STRICT id pager (complete-or-abort). Any
+         anomaly re-raises after logging — the caller flags nothing.
+      2. Diff mapped locals against live ids; only rows with BOTH a
+         normalized qbo_id AND a local mapping become candidates.
+      3. A candidate ceiling (``QBO_RECONCILE_VOID_MAX_CANDIDATES``, default
+         200): above it, confirm nothing and return ``abort_reason=
+         'ceiling_exceeded'`` so the caller can write one summary issue.
+      4. Every candidate is confirmed with an individual GET; only
+         QboNotFoundError adds it to ``confirmed_voids``. A systemic error
+         (budget breaker, rate limit, auth) aborts the confirm loop with
+         ``abort_reason='systemic_confirm_abort'`` and ``errors=1``. Any
+         other exception increments ``errors`` and continues. A successful
+         GET (200) is a diff false-positive — log and skip.
+
+    Dedupe-cache checking and ``ReconciliationIssue`` writes stay in the
+    caller; this function owns only the must-not-drift safety path.
+    """
+    try:
+        live_ids = set(fetch_live_ids())
+    except Exception:
+        logger.exception(
+            f"{log_prefix}.id_fetch_failed",
+            extra={
+                "event_name": f"{log_prefix}.id_fetch_failed",
+                "realm_id": realm_id,
+                "reconcile_run_id": reconcile_run_id,
+            },
+        )
+        raise
+
+    candidates: List[VoidCandidate] = []
+    mapped_count = 0
+    for local_row in local_rows:
+        mapped_count += 1
+        qbo_id = extract_qbo_id(local_row)
+        if not qbo_id:
+            continue
+        if qbo_id in live_ids:
+            continue
+        mapping = lookup_mapping(local_row)
+        if not mapping:
+            continue
+        candidates.append(VoidCandidate(local_row=local_row, qbo_id=qbo_id, mapping=mapping))
+
+    result = VoidDetectorResult(
+        candidate_count=len(candidates),
+        mapped_count=mapped_count,
+        live_count=len(live_ids),
+    )
+
+    if not candidates:
+        return result
+
+    ceiling = _void_max_candidates()
+    result.ceiling = ceiling
+    if len(candidates) > ceiling:
+        logger.error(
+            f"{log_prefix}.candidate_ceiling_exceeded",
+            extra={
+                "event_name": f"{log_prefix}.candidate_ceiling_exceeded",
+                "realm_id": realm_id,
+                "reconcile_run_id": reconcile_run_id,
+                "candidate_count": len(candidates),
+                "max_candidates": ceiling,
+            },
+        )
+        result.abort_reason = "ceiling_exceeded"
+        return result
+
+    for candidate in candidates:
+        qbo_id = candidate.qbo_id
+        try:
+            confirm_get(qbo_id)
+        except QboNotFoundError:
+            result.confirmed_voids.append(candidate)
+        except SYSTEMIC_QBO_ERRORS:
+            result.errors += 1
+            logger.warning(
+                f"{log_prefix}.confirm_aborted_systemic",
+                extra={
+                    "event_name": f"{log_prefix}.confirm_aborted_systemic",
+                    "realm_id": realm_id,
+                    "reconcile_run_id": reconcile_run_id,
+                },
+            )
+            result.abort_reason = "systemic_confirm_abort"
+            break
+        except Exception:
+            result.errors += 1
+            logger.exception(
+                f"{log_prefix}.detector_error for qbo_id={qbo_id}"
+            )
+        else:
+            logger.warning(
+                f"{log_prefix}.diff_false_positive",
+                extra={
+                    "event_name": f"{log_prefix}.diff_false_positive",
+                    "qbo_id": qbo_id,
+                    "realm_id": realm_id,
+                    "reconcile_run_id": reconcile_run_id,
+                },
+            )
+
+    return result
 
 
 def _delete_max_candidates() -> int:
@@ -126,7 +302,7 @@ def strict_confirmed_deleted_ids(
             confirm_get(qbo_id)
         except QboNotFoundError:
             confirmed.add(qbo_id)
-        except (QboBudgetExceededError, QboRateLimitError, QboAuthError):
+        except SYSTEMIC_QBO_ERRORS:
             # Systemic: no later candidate can succeed either. Abort the whole
             # reconcile (delete nothing) instead of burning one metered call +
             # a warning line per remaining candidate against a tripped breaker

@@ -200,6 +200,18 @@ class QboAuthService:
         )
         return auth
 
+    def _token_is_fresh(
+        self, qbo_auth: QboAuth, *, force_refresh: bool, buffer_seconds: int
+    ) -> bool:
+        """True when the row can be used as-is: not forcing, has a usable
+        access_token (a None here means its Fernet decrypt failed on this
+        read), and not expired."""
+        return (
+            not force_refresh
+            and bool(qbo_auth.access_token)
+            and not self.is_token_expired(qbo_auth, buffer_seconds)
+        )
+
     def ensure_valid_token_classified(
         self,
         realm_id: Optional[str] = None,
@@ -237,8 +249,9 @@ class QboAuthService:
             logger.error(f"No QboAuth found for realm_id: {realm_id}")
             return None, AuthFailureKind.PERMANENT
 
-        # Skip expiry check when force_refresh is requested
-        if not force_refresh and not self.is_token_expired(qbo_auth, buffer_seconds):
+        if self._token_is_fresh(
+            qbo_auth, force_refresh=force_refresh, buffer_seconds=buffer_seconds
+        ):
             logger.debug(f"Token for realm_id {realm_id} is still valid")
             return qbo_auth, AuthFailureKind.NONE
 
@@ -284,7 +297,9 @@ class QboAuthService:
 
             # If another caller refreshed while we waited and force_refresh is False,
             # the freshly-read token is already valid — skip the Intuit call entirely.
-            if not force_refresh and not self.is_token_expired(qbo_auth, buffer_seconds):
+            if self._token_is_fresh(
+                qbo_auth, force_refresh=force_refresh, buffer_seconds=buffer_seconds
+            ):
                 logger.info(
                     f"Token for realm_id {realm_id} was refreshed by a concurrent caller"
                 )

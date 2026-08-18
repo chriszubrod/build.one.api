@@ -198,6 +198,15 @@ def connect_intuit_oauth_2_token_endpoint_refresh():
     auth = db_intuit_auth_resp[0]
     refresh_token = auth.refresh_token
 
+    if not refresh_token:
+        return {
+            "message": (
+                "QboAuth.RefreshToken failed to decrypt locally (possible ENCRYPTION_KEY "
+                "mismatch or corrupted row) — refresh not attempted, no request sent to Intuit"
+            ),
+            "status_code": 503,
+        }
+
     url = token_url
     headers = {
         "Accept": "application/json",
@@ -300,6 +309,15 @@ def connect_intuit_oauth_2_token_endpoint_revoke():
     db_intuit_auth_resp = qbo_auth_repo.read_all()
     auth = db_intuit_auth_resp[0]
     access_token = auth.access_token
+
+    if not access_token:
+        return {
+            "message": (
+                "QboAuth.AccessToken failed to decrypt locally (possible ENCRYPTION_KEY "
+                "mismatch or corrupted row) — revoke not attempted, no request sent to Intuit"
+            ),
+            "status_code": 500,
+        }
 
     url = revocation_url
     headers = {

@@ -2,20 +2,22 @@
 
 Covers: token-refresh failure classification, QboAuthTransientError hierarchy,
 shared-client auth seams, outbox retry vs dead-letter decisions, discovery-
-document caching, stranded-row reclaim, bill enqueue durability, and the
-unpark script prefix contract.
+document caching, stranded-row reclaim, bill enqueue durability, the
+unpark script prefix contract, and per-field decrypt isolation in the auth repo.
 """
 import importlib.util
 import sys
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from integrations.intuit.qbo.auth.business.model import AuthFailureKind, QboAuth
 from integrations.intuit.qbo.auth.business.service import QboAuthService
+from integrations.intuit.qbo.auth.persistence.repo import QboAuthRepository
 from integrations.intuit.qbo.base.client import QboHttpClient
 from integrations.intuit.qbo.base.errors import (
     QboAuthError,
@@ -53,6 +55,57 @@ def _make_auth(**overrides):
     }
     defaults.update(overrides)
     return QboAuth(**defaults)
+
+
+def _make_auth_db_row(**overrides):
+    defaults = {
+        "Id": 42,
+        "PublicId": "00000000-0000-0000-0000-000000000042",
+        "RowVersion": b"\x00\x01",
+        "CreatedDatetime": "2026-08-11 10:00:00",
+        "ModifiedDatetime": "2026-08-11 10:00:00",
+        "Code": "code",
+        "RealmId": REALM_ID,
+        "State": "state",
+        "TokenType": "Bearer",
+        "IdToken": "cipher-id",
+        "AccessToken": "cipher-access",
+        "ExpiresIn": 3600,
+        "RefreshToken": "cipher-refresh",
+        "XRefreshTokenExpiresIn": 8640000,
+    }
+    defaults.update(overrides)
+    return SimpleNamespace(**defaults)
+
+
+def test_from_db_isolates_corrupt_access_token_decrypt(caplog):
+    row = _make_auth_db_row()
+
+    def decrypt_side(value, *, field_name):
+        if field_name == "qbo.Auth.AccessToken":
+            raise ValueError("decrypt failed")
+        if field_name == "qbo.Auth.IdToken":
+            return "id-token-plain"
+        if field_name == "qbo.Auth.RefreshToken":
+            return "refresh-plain"
+        return value
+
+    with patch(
+        "integrations.intuit.qbo.auth.persistence.repo.decrypt_if_encrypted",
+        side_effect=decrypt_side,
+    ), caplog.at_level("WARNING"):
+        result = QboAuthRepository()._from_db(row)
+
+    assert result is not None
+    assert result.id == 42
+    assert result.realm_id == REALM_ID
+    assert result.id_token == "id-token-plain"
+    assert result.access_token is None
+    assert result.refresh_token == "refresh-plain"
+    assert any(
+        "qbo.Auth.AccessToken" in record.message and "Id=42" in record.message
+        for record in caplog.records
+    )
 
 
 def _auth_service_with_repo(repo):
@@ -98,6 +151,28 @@ def test_valid_token_returns_auth_none_without_refresh():
     assert result_auth is auth
     assert kind is AuthFailureKind.NONE
     refresh.assert_not_called()
+
+
+def test_none_access_token_does_not_short_circuit_as_valid():
+    """Decrypt-isolated None access_token must not early-return NONE on timestamp alone."""
+    auth = _make_auth(access_token=None)
+    updated = _make_auth(access_token="fresh-tok")
+    repo = MagicMock()
+    repo.read_all.return_value = [auth]
+    repo.read_by_realm_id.side_effect = [auth, updated]
+    svc = _auth_service_with_repo(repo)
+
+    with patch.object(svc, "is_token_expired", return_value=False), _applock(
+        acquired=True
+    ), _patch_discovery_prewarm(), patch(
+        "integrations.intuit.qbo.auth.business.service.connect_intuit_oauth_2_token_endpoint_refresh",
+        return_value={"status_code": 201, "message": "ok"},
+    ) as refresh:
+        result_auth, kind = svc.ensure_valid_token_classified()
+
+    refresh.assert_called_once()
+    assert kind is AuthFailureKind.NONE
+    assert result_auth is updated
 
 
 def test_no_auth_records_classifies_permanent():
@@ -686,6 +761,62 @@ def test_auth_external_client_uses_helper_discovery_document_identity():
     from integrations.intuit.qbo.base.helper import get_intuit_discovery_document
 
     assert auth_client.get_intuit_discovery_document is get_intuit_discovery_document
+
+
+def test_refresh_skips_intuit_when_refresh_token_decrypt_failed():
+    auth = _make_auth(refresh_token=None)
+    with patch(
+        "integrations.intuit.qbo.auth.external.client.qbo_auth_repo"
+    ) as auth_repo, patch(
+        "integrations.intuit.qbo.auth.external.client.qbo_client_repo"
+    ) as client_repo, patch(
+        "integrations.intuit.qbo.auth.external.client.get_intuit_endpoint",
+        return_value="https://oauth.intuit.com/token",
+    ), patch(
+        "integrations.intuit.qbo.auth.external.client.requests.post"
+    ) as mock_post:
+        client_repo.read_all.return_value = [
+            MagicMock(client_id="client-id", client_secret="client-secret")
+        ]
+        auth_repo.read_all.return_value = [auth]
+
+        from integrations.intuit.qbo.auth.external.client import (
+            connect_intuit_oauth_2_token_endpoint_refresh,
+        )
+
+        result = connect_intuit_oauth_2_token_endpoint_refresh()
+
+    assert result["status_code"] == 503
+    assert "RefreshToken failed to decrypt locally" in result["message"]
+    mock_post.assert_not_called()
+
+
+def test_revoke_skips_intuit_when_access_token_decrypt_failed():
+    auth = _make_auth(access_token=None)
+    with patch(
+        "integrations.intuit.qbo.auth.external.client.qbo_auth_repo"
+    ) as auth_repo, patch(
+        "integrations.intuit.qbo.auth.external.client.qbo_client_repo"
+    ) as client_repo, patch(
+        "integrations.intuit.qbo.auth.external.client.get_intuit_endpoint",
+        return_value="https://oauth.intuit.com/revoke",
+    ), patch(
+        "integrations.intuit.qbo.auth.external.client.requests.post"
+    ) as mock_post:
+        client_repo.read_all.return_value = [
+            MagicMock(client_id="client-id", client_secret="client-secret")
+        ]
+        auth_repo.read_all.return_value = [auth]
+
+        from integrations.intuit.qbo.auth.external.client import (
+            connect_intuit_oauth_2_token_endpoint_revoke,
+        )
+
+        result = connect_intuit_oauth_2_token_endpoint_revoke()
+
+    assert result["status_code"] == 500
+    assert "AccessToken failed to decrypt locally" in result["message"]
+    mock_post.assert_not_called()
 
 
 _PRODUCTION_DISCOVERY_ENDPOINTS = (

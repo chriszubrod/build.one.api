@@ -122,7 +122,7 @@ class QboAttachableClient:
         Hits an absolute foreign URL with no Authorization header; deliberately
         NOT metered against the CorePlus cap.
         """
-        download_uri = attachable.temp_download_uri or attachable.file_access_uri
+        download_uri = attachable.temp_download_uri
         if not download_uri:
             logger.warning(f"No download URI for attachable {attachable.id}")
             return None

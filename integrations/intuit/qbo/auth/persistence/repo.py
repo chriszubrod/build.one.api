@@ -26,6 +26,27 @@ class QboAuthRepository:
         """Initialize the QboAuthRepository."""
         pass
 
+    def _decrypt_token_field(
+        self,
+        row: pyodbc.Row,
+        *,
+        column_name: str,
+        field_name: str,
+    ) -> Optional[str]:
+        try:
+            return decrypt_if_encrypted(
+                getattr(row, column_name, None),
+                field_name=field_name,
+            )
+        except Exception:
+            row_id = getattr(row, "Id", None)
+            logger.warning(
+                "Failed to decrypt qbo auth field %s for row Id=%s",
+                field_name,
+                row_id,
+            )
+            return None
+
     def _from_db(self, row: pyodbc.Row) -> Optional[QboAuth]:
         """
         Convert a database row into a QboAuth dataclass.
@@ -46,10 +67,16 @@ class QboAuthRepository:
                 realm_id=getattr(row, "RealmId", None),
                 state=getattr(row, "State", None),
                 token_type=getattr(row, "TokenType", None),
-                id_token=decrypt_if_encrypted(getattr(row, "IdToken", None), field_name="qbo.Auth.IdToken"),
-                access_token=decrypt_if_encrypted(getattr(row, "AccessToken", None), field_name="qbo.Auth.AccessToken"),
+                id_token=self._decrypt_token_field(
+                    row, column_name="IdToken", field_name="qbo.Auth.IdToken"
+                ),
+                access_token=self._decrypt_token_field(
+                    row, column_name="AccessToken", field_name="qbo.Auth.AccessToken"
+                ),
                 expires_in=getattr(row, "ExpiresIn", None),
-                refresh_token=decrypt_if_encrypted(getattr(row, "RefreshToken", None), field_name="qbo.Auth.RefreshToken"),
+                refresh_token=self._decrypt_token_field(
+                    row, column_name="RefreshToken", field_name="qbo.Auth.RefreshToken"
+                ),
                 x_refresh_token_expires_in=getattr(row, "XRefreshTokenExpiresIn", None)
             )
         except AttributeError as error:

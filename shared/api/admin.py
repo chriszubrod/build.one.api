@@ -16,6 +16,8 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Path, Query, stat
 import config
 from integrations.intuit.qbo.base.locking import qbo_app_lock
 from shared.authz import set_authz_context
+from shared.rbac import require_module_api
+from shared.rbac_constants import Modules
 
 logger = logging.getLogger(__name__)
 
@@ -391,6 +393,29 @@ def _qbo_sync_fn(entity: str):
 # Entities whose sync function accepts a `sync_attachments` kwarg. Others pull
 # no per-record attachments, so the `attachments` query param is a no-op there.
 _QBO_ENTITIES_WITH_ATTACHMENTS = {"bill", "vendorcredit"}
+
+
+@router.get("/qbo/budget")
+async def qbo_budget_status(
+    current_user: dict = Depends(require_module_api(Modules.QBO_SYNC)),
+):
+    """Read-only snapshot of the QBO API monthly call budget (in-process meter)."""
+    from integrations.intuit.qbo.base.budget import get_qbo_api_budget
+
+    budget_status = get_qbo_api_budget().status()
+    return {
+        "data": {
+            "month_key": budget_status.month_key,
+            "call_count": budget_status.call_count,
+            "budget": budget_status.budget,
+            "block_threshold": budget_status.block_threshold,
+            "warn_threshold": budget_status.warn_threshold,
+            "enforced": budget_status.enforced,
+            "meter_unavailable": budget_status.meter_unavailable,
+            "blocked": budget_status.blocked,
+            "warning": budget_status.warning,
+        }
+    }
 
 
 @router.post("/sync/qbo/{entity}", dependencies=[Depends(_require_drain_secret)])

@@ -28,12 +28,16 @@ Usage:
   python scripts/retry_qbo_outbox_dead_letters.py --apply --limit 50
 """
 # Python Standard Library Imports
-import argparse
 import sys
 from datetime import datetime, timezone
 
 # Local Imports — path dance so the script can be run from the repo root.
 sys.path.insert(0, ".")
+from scripts.outbox_replay_common import (
+    build_replay_parser,
+    preview_dead_letters,
+    validate_replay_limit,
+)
 from shared.database import get_connection
 
 # Must match QboOutboxWorker._dispatch_table keys.
@@ -49,30 +53,17 @@ MAX_LIMIT = 2098
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(
-        description="Reset qbo.Outbox dead-letter rows back to pending."
-    )
-    parser.add_argument(
-        "--apply",
-        action="store_true",
-        help="Actually mutate rows. Without this flag the script is read-only.",
-    )
-    parser.add_argument(
-        "--kind",
-        action="append",
-        default=[],
-        help="Only reset rows with the given Kind. Can be repeated. "
-             "Example: --kind sync_bill_to_qbo",
-    )
-    parser.add_argument(
-        "--limit",
-        type=int,
-        default=1000,
-        help=f"Cap the number of rows reset (default 1000, max {MAX_LIMIT}).",
+    parser = build_replay_parser(
+        description="Reset qbo.Outbox dead-letter rows back to pending.",
+        max_limit=MAX_LIMIT,
+        kind_help=(
+            "Only reset rows with the given Kind. Can be repeated. "
+            "Example: --kind sync_bill_to_qbo"
+        ),
     )
     args = parser.parse_args()
 
-    if args.limit < 1 or args.limit > MAX_LIMIT:
+    if validate_replay_limit(args.limit, max_limit=MAX_LIMIT):
         print(f"Error: --limit must be between 1 and {MAX_LIMIT}.")
         return 2
 
@@ -85,55 +76,19 @@ def main() -> int:
             )
             return 2
 
-    where_clauses = ["Status = 'dead_letter'"]
-    params: list = []
-    if args.kind:
-        placeholders = ",".join("?" for _ in args.kind)
-        where_clauses.append(f"Kind IN ({placeholders})")
-        params.extend(args.kind)
-    where = " AND ".join(where_clauses)
-
     with get_connection() as conn:
         cur = conn.cursor()
 
-        cur.execute(
-            f"""
-            SELECT TOP ({args.limit})
-                Id, PublicId, Kind, EntityType, EntityPublicId, Attempts,
-                CONVERT(VARCHAR(19), DeadLetteredAt, 120) AS DeadLetteredAt,
-                LEFT(LastError, 120) AS LastError
-            FROM qbo.Outbox
-            WHERE {where}
-            ORDER BY Id
-            """,
-            *params,
+        rows, exit_code = preview_dead_letters(
+            cur,
+            schema_table="qbo.Outbox",
+            limit=args.limit,
+            kinds=args.kind,
+            apply=args.apply,
+            qbo_blind_reset_warning=True,
         )
-        rows = cur.fetchall()
-        if not rows:
-            print("No dead-letter rows matched the filter. Nothing to do.")
-            return 0
-
-        scope = f" matching filter {args.kind!r}" if args.kind else " (ALL kinds)"
-        print(f"Found {len(rows)} dead-letter row(s){scope}:")
-        if not args.kind:
-            print()
-            print(
-                "WARNING: No --kind filter. A blind full reset can re-issue a write that "
-                "already landed in QBO. Prefer --kind sync_bill_to_qbo (or the specific "
-                "kind) after confirming LastError and entity state."
-            )
-        print()
-        for r in rows:
-            print(
-                f"  Id={r[0]:>6}  Kind={r[2]:<25} Entity={r[3]:<15} "
-                f"EntityPID={str(r[4])[:8]} Attempts={r[5]} "
-                f"DL={r[6]} Err={r[7]}"
-            )
-        print()
-
-        if not args.apply:
-            print("DRY-RUN: no rows modified. Re-run with --apply to reset these rows.")
-            return 0
+        if rows is None:
+            return exit_code
 
         now = datetime.now(timezone.utc)
         ids = [r[0] for r in rows]

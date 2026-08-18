@@ -5,10 +5,12 @@ errors, month-key/reset-date computation, the shared client's _send_http
 refuse-before-send behavior, and the outbox worker's park-don't-dead-letter
 handling of QboBudgetExceededError.
 """
+import inspect
 from datetime import datetime, timezone
 from unittest.mock import MagicMock, patch
 
 import pytest
+from fastapi.params import Depends as DependsParam
 
 from integrations.intuit.qbo.base.budget import (
     BudgetStatus,
@@ -384,6 +386,110 @@ def test_attachable_download_records_zero_metered_calls():
 
     assert result == b"file-bytes"
     budget.record_call_or_raise.assert_not_called()
+
+
+def test_attachable_download_does_not_fallback_to_file_access_uri():
+    from integrations.intuit.qbo.attachable.external.client import QboAttachableClient
+    from integrations.intuit.qbo.attachable.external.schemas import QboAttachable
+
+    budget = MagicMock()
+    shared = QboHttpClient(
+        realm_id=REALM_ID,
+        auth_service=MagicMock(),
+        http_client=MagicMock(),
+        api_budget=budget,
+    )
+    client = QboAttachableClient(realm_id=REALM_ID, http_client=shared)
+    attachable = QboAttachable(
+        id="1",
+        sync_token="0",
+        temp_download_uri=None,
+        file_access_uri="https://file-access.example/file",
+    )
+
+    with patch("integrations.intuit.qbo.attachable.external.client.httpx.Client") as dl_cls:
+        result = client.download_attachable(attachable)
+
+    assert result is None
+    dl_cls.assert_not_called()
+
+
+# --------------------------------------------------------------------------- #
+# Admin route: GET /api/v1/admin/qbo/budget
+# --------------------------------------------------------------------------- #
+
+
+def test_admin_qbo_budget_route_returns_status_envelope(monkeypatch):
+    import asyncio
+
+    import shared.api.admin as admin
+
+    status = BudgetStatus(
+        month_key="2026-08",
+        call_count=42,
+        budget=500_000,
+        block_threshold=475_000,
+        warn_threshold=400_000,
+        enforced=True,
+        meter_unavailable=False,
+    )
+    budget = MagicMock()
+    budget.status.return_value = status
+    monkeypatch.setattr(
+        "integrations.intuit.qbo.base.budget.get_qbo_api_budget",
+        lambda: budget,
+    )
+
+    result = asyncio.run(admin.qbo_budget_status(current_user={}))
+
+    assert result == {
+        "data": {
+            "month_key": "2026-08",
+            "call_count": 42,
+            "budget": 500_000,
+            "block_threshold": 475_000,
+            "warn_threshold": 400_000,
+            "enforced": True,
+            "meter_unavailable": False,
+            "blocked": status.blocked,
+            "warning": status.warning,
+        }
+    }
+    budget.status.assert_called_once()
+
+
+def test_admin_qbo_budget_route_uses_qbo_sync_module_rbac():
+    """Route introspection: GET /api/v1/admin/qbo/budget must wire require_module_api."""
+    from shared.api.admin import router
+    from shared.rbac_constants import Modules
+
+    endpoint = None
+    for route in router.routes:
+        path = getattr(route, "path", None)
+        if path is None:
+            continue
+        full_path = path if path.startswith(router.prefix) else f"{router.prefix}{path}"
+        if full_path != f"{router.prefix}/qbo/budget":
+            continue
+        methods = getattr(route, "methods", None) or set()
+        if "GET" in methods:
+            endpoint = route.endpoint
+            break
+
+    assert endpoint is not None, "no GET route registered for /api/v1/admin/qbo/budget"
+    sig = inspect.signature(endpoint)
+    assert "current_user" in sig.parameters, "route must declare current_user"
+    param = sig.parameters["current_user"]
+    assert param.default is not inspect.Parameter.empty, "current_user must use Depends(...)"
+    dep = param.default
+    assert isinstance(dep, DependsParam), "current_user must be a FastAPI Depends"
+    inner = dep.dependency
+    assert inner.__qualname__ == "require_module_api.<locals>._dependency", (
+        f"expected require_module_api RBAC, got {inner!r} ({inner.__qualname__})"
+    )
+    nonlocals = inspect.getclosurevars(inner).nonlocals
+    assert nonlocals.get("module_name") == Modules.QBO_SYNC, nonlocals
+    assert nonlocals.get("permission") == "can_read", nonlocals
 
 
 # --------------------------------------------------------------------------- #

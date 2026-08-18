@@ -1,6 +1,5 @@
 # Python Standard Library Imports
 import logging
-import time
 from typing import List, Optional
 
 # Third-party Imports
@@ -10,14 +9,13 @@ from integrations.intuit.qbo.account.business.model import QboAccount
 from integrations.intuit.qbo.account.persistence.repo import QboAccountRepository
 from integrations.intuit.qbo.account.external.client import QboAccountClient
 from integrations.intuit.qbo.account.external.schemas import QboAccount as QboAccountExternalSchema
+from integrations.intuit.qbo.base.pacing import pace_batch
 from integrations.intuit.qbo.base.sync_outcome import SyncOutcome
 from shared.database import with_retry
 
 logger = logging.getLogger(__name__)
 
 # Sync configuration
-BATCH_SIZE = 10  # Process accounts in batches
-BATCH_DELAY = 0.5  # Delay between batches (seconds)
 MAX_RETRIES = 3  # Max retries for transient errors
 INITIAL_RETRY_DELAY = 2.0  # Initial retry delay (seconds)
 
@@ -91,9 +89,7 @@ class QboAccountService:
 
             # Add delay between batches to prevent connection exhaustion.
             # Token refresh is handled automatically by QboHttpClient on each request.
-            if (i + 1) % BATCH_SIZE == 0 and i + 1 < len(qbo_accounts):
-                logger.debug(f"Processed {i + 1}/{len(qbo_accounts)} accounts, pausing...")
-                time.sleep(BATCH_DELAY)
+            pace_batch(i, len(qbo_accounts), logger, "accounts")
 
         if deactivated_count:
             logger.info(f"{deactivated_count} accounts are deactivated in QBO (Active=false synced locally)")

@@ -15,11 +15,12 @@ tests/sproc_drift_ledger.py): fix the sproc with SET NOCOUNT ON in its canonical
 instead of excepting it.
 """
 
-import os
 import re
 from pathlib import Path
 
 import pytest
+
+from tests.sql_corpus import DML_KEYWORDS as DML_KWS, iter_repo_sql_files
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -103,7 +104,6 @@ def depth_map(text):
     return depths
 
 
-DML_KWS = {"INSERT", "UPDATE", "DELETE", "MERGE"}
 STMT_STARTERS = {
     "SELECT",
     "INSERT",
@@ -409,11 +409,7 @@ def _proc_executable_body(proc_block: str) -> str:
 
 
 def _iter_sql_files(root: Path):
-    for dirpath, dirnames, filenames in os.walk(root):
-        dirnames[:] = [d for d in dirnames if d not in _SKIP_DIR_PARTS]
-        for name in filenames:
-            if name.endswith(".sql"):
-                yield Path(dirpath) / name
+    return iter_repo_sql_files(root, skip_dir_names=_SKIP_DIR_PARTS)
 
 
 def collect_nocount_shape_failures(root: Path) -> list[str]:

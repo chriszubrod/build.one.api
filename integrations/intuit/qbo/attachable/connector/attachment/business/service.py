@@ -14,6 +14,7 @@ from integrations.intuit.qbo.attachable.persistence.repo import QboAttachableRep
 from integrations.intuit.qbo.attachable.external.client import QboAttachableClient
 from integrations.intuit.qbo.auth.business.service import QboAuthService
 from integrations.intuit.qbo.base.errors import QboBudgetExceededError, QboWriteRefusedError
+from integrations.intuit.qbo.base.ids import coerce_id
 from integrations.intuit.qbo.base.reconciliation_recorder import record_mapping_issue
 from integrations.intuit.qbo.reconciliation.persistence.repo import ReconciliationIssueRepository
 from entities.attachment.business.service import AttachmentService
@@ -97,7 +98,7 @@ class AttachableAttachmentConnector:
                         and (existing_realm_id or "") == (realm_id or "")
                     ):
                         self.attachment_service.repo.set_qbo_identity(
-                            id=int(attachment.id) if isinstance(attachment.id, str) else attachment.id,
+                            id=coerce_id(attachment.id),
                             qbo_id=qbo_attachable.qbo_id,
                             realm_id=realm_id,
                         )
@@ -134,7 +135,7 @@ class AttachableAttachmentConnector:
                     refreshed = self.attachment_service.read_by_id(attachment.id)
                     if refreshed:
                         self.attachment_service.repo.set_qbo_identity(
-                            id=int(refreshed.id) if isinstance(refreshed.id, str) else refreshed.id,
+                            id=coerce_id(refreshed.id),
                             qbo_id=qbo_attachable.qbo_id,
                             realm_id=realm_id,
                         )
@@ -426,7 +427,7 @@ class AttachableAttachmentConnector:
         Raises:
             ValueError: If upload fails or file cannot be downloaded
         """
-        attachment_id = int(attachment.id) if isinstance(attachment.id, str) else attachment.id
+        attachment_id = coerce_id(attachment.id)
         
         # Check if already mapped
         existing_mapping = self.mapping_repo.read_by_attachment_id(attachment_id)
@@ -491,7 +492,7 @@ class AttachableAttachmentConnector:
             logger.info(f"Stored local QboAttachable {local_qbo_attachable.id}")
 
             # Create mapping
-            qbo_attachable_id = int(local_qbo_attachable.id) if isinstance(local_qbo_attachable.id, str) else local_qbo_attachable.id
+            qbo_attachable_id = coerce_id(local_qbo_attachable.id)
             try:
                 self._create_mapping(
                     attachment_id=attachment_id,

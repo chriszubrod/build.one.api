@@ -3,7 +3,6 @@ import argparse
 import logging
 import os
 import sys
-import time
 from datetime import datetime, timezone
 from typing import List, Optional
 
@@ -15,11 +14,14 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 # Local Imports
 from scripts.sync_helper import (
     END_DATE_CLAMP_EPILOG_NOTE,
+    assert_cli_system_admin,
+    exit_nonzero_on_sync_failure,
+)
+from integrations.intuit.qbo.base.pacing import pace_batch
+from integrations.intuit.qbo.base.watermark import (
     WatermarkRun,
     _normalize_last_sync,
     _normalize_watermark_value,
-    assert_cli_system_admin,
-    exit_nonzero_on_sync_failure,
 )
 from integrations.intuit.qbo.base.sync_outcome import SyncOutcome
 from shared.database import with_retry
@@ -44,8 +46,6 @@ logging.basicConfig(
 )
 
 # Sync configuration
-BATCH_SIZE = 10  # Process invoices in batches
-BATCH_DELAY = 0.5  # Delay between batches (seconds)
 MAX_RETRIES = 3  # Max retries for transient errors
 INITIAL_RETRY_DELAY = 2.0  # Initial retry delay (seconds)
 
@@ -235,9 +235,7 @@ def sync_qbo_to_local(
                 invoice.id, e, label="QboInvoice->Invoice", logger=logger
             )
 
-        if (i + 1) % BATCH_SIZE == 0 and i + 1 < len(invoices):
-            logger.debug(f"Processed {i + 1}/{len(invoices)} invoices, pausing...")
-            time.sleep(BATCH_DELAY)
+        pace_batch(i, len(invoices), logger, "invoices")
     
     return {
         "invoices_synced": len(invoices),

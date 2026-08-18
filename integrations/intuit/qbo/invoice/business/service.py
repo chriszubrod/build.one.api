@@ -1,6 +1,5 @@
 # Python Standard Library Imports
 import logging
-import time
 from typing import List, Optional
 
 # Third-party Imports
@@ -10,14 +9,13 @@ from integrations.intuit.qbo.invoice.business.model import QboInvoice, QboInvoic
 from integrations.intuit.qbo.invoice.persistence.repo import QboInvoiceRepository, QboInvoiceLineRepository
 from integrations.intuit.qbo.invoice.external.client import QboInvoiceClient
 from integrations.intuit.qbo.invoice.external.schemas import QboInvoice as QboInvoiceExternalSchema
+from integrations.intuit.qbo.base.pacing import pace_batch
 from integrations.intuit.qbo.base.sync_outcome import SyncOutcome, project_records
 from shared.database import with_retry
 
 logger = logging.getLogger(__name__)
 
 # Sync configuration
-BATCH_SIZE = 10  # Process invoices in batches
-BATCH_DELAY = 0.5  # Delay between batches (seconds)
 MAX_RETRIES = 3  # Max retries for transient errors
 INITIAL_RETRY_DELAY = 2.0  # Initial retry delay (seconds)
 
@@ -120,9 +118,7 @@ class QboInvoiceService:
                 logger.error(f"Failed to upsert invoice {qbo_invoice.id}: {e}")
                 outcome.record_staging_failure(qbo_invoice.id, e)
 
-            if (i + 1) % BATCH_SIZE == 0 and i + 1 < len(qbo_invoices):
-                logger.debug(f"Processed {i + 1}/{len(qbo_invoices)} invoices, pausing...")
-                time.sleep(BATCH_DELAY)
+            pace_batch(i, len(qbo_invoices), logger, "invoices")
         
         if outcome.staging_failed_ids:
             logger.warning(

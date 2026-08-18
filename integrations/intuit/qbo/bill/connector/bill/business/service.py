@@ -34,6 +34,8 @@ from entities.vendor.business.service import VendorService
 from integrations.intuit.qbo.base.pull_race import guard_lines_present
 from integrations.intuit.qbo.base.compensation import rollback_orphan_header
 from integrations.intuit.qbo.base.field_ownership import preserve_human_edited_ref, qbo_ref_or_placeholder
+from integrations.intuit.qbo.base.ids import coerce_id
+from integrations.intuit.qbo.base.reconciliation_recorder import record_mapping_issue
 from integrations.intuit.qbo.reconciliation.persistence.repo import ReconciliationIssueRepository
 from shared.database import DatabaseConstraintError
 
@@ -188,7 +190,7 @@ class BillBillConnector:
                 is_draft=False,
                 row_version=bill.row_version,
             )
-            bill_id = int(bill.id) if isinstance(bill.id, str) else bill.id
+            bill_id = coerce_id(bill.id)
             self.bill_service.repo.set_qbo_identity(
                 id=bill_id,
                 qbo_id=qbo_bill.qbo_id,
@@ -218,7 +220,7 @@ class BillBillConnector:
         )
         
         # Create mapping
-        bill_id = int(bill.id) if isinstance(bill.id, str) else bill.id
+        bill_id = coerce_id(bill.id)
         try:
             mapping = self.create_mapping(
                 bill_id=bill_id,
@@ -284,21 +286,15 @@ class BillBillConnector:
             f"reads.{fingerprint_note} Mapping preserved; no Bill created. Investigate "
             f"whether the Bill was deleted/renumbered."
         )
-        try:
-            self.reconciliation_repo.create(
-                drift_type="orphaned_bill_bill_mapping",
-                severity="critical",
-                action="manual_review",
-                entity_type="Bill",
-                entity_public_id=None,
-                qbo_id=str(qbo_bill.qbo_id) if qbo_bill.qbo_id else None,
-                realm_id=qbo_bill.realm_id or "",
-                details=details,
-            )
-            logger.warning(details)
-        except Exception as exc:
-            # Don't break the sync because the reconciliation insert failed. Log loud.
-            logger.error(f"Failed to record reconciliation issue: {exc}. Details: {details}")
+        record_mapping_issue(
+            self.reconciliation_repo,
+            drift_type="orphaned_bill_bill_mapping",
+            entity_type="Bill",
+            entity_public_id=None,
+            qbo_id=str(qbo_bill.qbo_id) if qbo_bill.qbo_id else None,
+            realm_id=qbo_bill.realm_id or "",
+            details=details,
+        )
 
     def _get_vendor_public_id(self, qbo_vendor_ref_value: str) -> Optional[str]:
         """
@@ -447,7 +443,7 @@ class BillBillConnector:
         Raises:
             ValueError: If mapping lookup fails (vendor not mapped, etc.)
         """
-        bill_id = int(bill.id) if isinstance(bill.id, str) else bill.id
+        bill_id = coerce_id(bill.id)
         
         # Check if already mapped
         existing_mapping = self.mapping_repo.read_by_bill_id(bill_id)
@@ -604,7 +600,7 @@ class BillBillConnector:
                 # Create BillLineItem <-> QboBillLine mapping using line_num match
                 if stored_line and qbo_line.line_num and qbo_line.line_num in line_num_to_line_item_id:
                     bill_line_item_id = line_num_to_line_item_id[qbo_line.line_num]
-                    stored_line_id = int(stored_line.id) if isinstance(stored_line.id, str) else stored_line.id
+                    stored_line_id = coerce_id(stored_line.id)
                     try:
                         line_connector.create_mapping(
                             bill_line_item_id=bill_line_item_id,
@@ -615,7 +611,7 @@ class BillBillConnector:
                         logger.warning(f"Could not create line mapping: {e}")
         
         # Create mapping
-        qbo_bill_id = int(local_qbo_bill.id) if isinstance(local_qbo_bill.id, str) else local_qbo_bill.id
+        qbo_bill_id = coerce_id(local_qbo_bill.id)
         try:
             mapping = self.create_mapping(
                 bill_id=bill_id,

@@ -17,6 +17,8 @@ live house style — a weaker regex would silently miss a re-added duplicate).
 import re
 from pathlib import Path
 
+from tests.sql_corpus import iter_repo_sql_files
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 PROJECT_BASE = REPO_ROOT / "entities" / "project" / "sql" / "dbo.project.sql"
@@ -77,9 +79,7 @@ def test_no_executable_actor_user_id_null_bypass_under_project_sql():
 
 def test_rbac_read_sprocs_defined_once_in_project_base_file():
     definitions: dict[str, list[Path]] = {}
-    for path in REPO_ROOT.rglob("*.sql"):
-        if ".venv" in path.parts:
-            continue
+    for path in iter_repo_sql_files(REPO_ROOT, skip_dir_names=frozenset({".venv"})):
         for match in _SPROC_HEADER.finditer(path.read_text(encoding="utf-8")):
             definitions.setdefault(_sproc_name(match), []).append(path)
 

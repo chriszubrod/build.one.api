@@ -19,13 +19,14 @@ from pathlib import Path
 
 import pytest
 
+from tests.sql_corpus import DML_KEYWORDS, iter_repo_sql_files
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 ROUTINE_DEF_RE = re.compile(
     r"CREATE\s+(?:OR\s+ALTER\s+)?(?:PROCEDURE|PROC|FUNCTION|TRIGGER|VIEW)\b",
     re.IGNORECASE,
 )
-DML_KEYWORDS = frozenset({"UPDATE", "INSERT", "DELETE", "MERGE"})
 _SKIP_SEGMENTS = frozenset({"dev", "migrations", ".venv"})
 
 # Permanent regression fixture: U-216 ad-hoc tail removed from qbo.bill.sql (pre-fix).
@@ -96,11 +97,6 @@ DELETE FROM dbo.Example WHERE Name = 'temp';
 """
 
 
-def _should_skip_sql_path(path: Path) -> bool:
-    rel_parts = path.relative_to(REPO_ROOT).parts
-    return bool(_SKIP_SEGMENTS.intersection(rel_parts))
-
-
 def _file_defines_routine(content: str) -> bool:
     return bool(ROUTINE_DEF_RE.search(content))
 
@@ -136,9 +132,7 @@ def find_adhoc_dml_violations(content: str, *, rel_path: str) -> list[str]:
 
 def _iter_guarded_sql_files() -> list[Path]:
     guarded: list[Path] = []
-    for path in sorted(REPO_ROOT.rglob("*.sql")):
-        if _should_skip_sql_path(path):
-            continue
+    for path in iter_repo_sql_files(REPO_ROOT, skip_dir_names=_SKIP_SEGMENTS):
         if _file_defines_routine(path.read_text(encoding="utf-8")):
             guarded.append(path)
     return guarded

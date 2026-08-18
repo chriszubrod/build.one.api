@@ -1,6 +1,5 @@
 # Python Standard Library Imports
 import logging
-import time
 from typing import List, Optional
 
 # Third-party Imports
@@ -10,6 +9,7 @@ from integrations.intuit.qbo.purchase.business.model import QboPurchase, QboPurc
 from integrations.intuit.qbo.purchase.persistence.repo import QboPurchaseRepository, QboPurchaseLineRepository
 from integrations.intuit.qbo.purchase.external.client import QboPurchaseClient
 from integrations.intuit.qbo.purchase.external.schemas import QboPurchase as QboPurchaseExternalSchema
+from integrations.intuit.qbo.base.pacing import pace_batch
 from integrations.intuit.qbo.base.sync_outcome import SyncOutcome, project_records
 from shared.authz import current_user_id, current_is_system_admin
 from shared.database import with_retry
@@ -17,8 +17,6 @@ from shared.database import with_retry
 logger = logging.getLogger(__name__)
 
 # Sync configuration
-BATCH_SIZE = 10  # Process purchases in batches
-BATCH_DELAY = 0.5  # Delay between batches (seconds)
 MAX_RETRIES = 3  # Max retries for transient errors
 INITIAL_RETRY_DELAY = 2.0  # Initial retry delay (seconds)
 
@@ -103,9 +101,7 @@ class QboPurchaseService:
             
             # Add delay between batches to prevent connection exhaustion.
             # Token refresh is handled automatically by QboHttpClient on each request.
-            if (i + 1) % BATCH_SIZE == 0 and i + 1 < len(qbo_purchases):
-                logger.debug(f"Processed {i + 1}/{len(qbo_purchases)} purchases, pausing...")
-                time.sleep(BATCH_DELAY)
+            pace_batch(i, len(qbo_purchases), logger, "purchases")
         
         if outcome.staging_failed_ids:
             logger.warning(

@@ -1,6 +1,5 @@
 # Python Standard Library Imports
 import logging
-import time
 from typing import List, Optional
 
 # Third-party Imports
@@ -10,14 +9,13 @@ from integrations.intuit.qbo.bill.business.model import QboBill, QboBillLine
 from integrations.intuit.qbo.bill.persistence.repo import QboBillRepository, QboBillLineRepository
 from integrations.intuit.qbo.bill.external.client import QboBillClient
 from integrations.intuit.qbo.bill.external.schemas import QboBill as QboBillExternalSchema
+from integrations.intuit.qbo.base.pacing import pace_batch
 from integrations.intuit.qbo.base.sync_outcome import SyncOutcome, project_records
 from shared.database import with_retry
 
 logger = logging.getLogger(__name__)
 
 # Sync configuration
-BATCH_SIZE = 10  # Process bills in batches
-BATCH_DELAY = 0.5  # Delay between batches (seconds)
 MAX_RETRIES = 3  # Max retries for transient errors
 INITIAL_RETRY_DELAY = 2.0  # Initial retry delay (seconds)
 
@@ -102,9 +100,7 @@ class QboBillService:
             
             # Add delay between batches to prevent connection exhaustion.
             # Token refresh is handled automatically by QboHttpClient on each request.
-            if (i + 1) % BATCH_SIZE == 0 and i + 1 < len(qbo_bills):
-                logger.debug(f"Processed {i + 1}/{len(qbo_bills)} bills, pausing...")
-                time.sleep(BATCH_DELAY)
+            pace_batch(i, len(qbo_bills), logger, "bills")
         
         if outcome.staging_failed_ids:
             logger.warning(

@@ -20,6 +20,7 @@ from integrations.intuit.qbo.base.field_ownership import (
     preserve_human_edited_ref,
     qbo_ref_or_placeholder,
 )
+from integrations.intuit.qbo.base.ids import coerce_id
 from shared.database import DatabaseConstraintError
 
 logger = logging.getLogger(__name__)
@@ -150,7 +151,7 @@ class InvoiceInvoiceConnector:
                     memo=memo,
                     is_draft=False,
                 )
-                invoice_id = int(invoice.id) if isinstance(invoice.id, str) else invoice.id
+                invoice_id = coerce_id(invoice.id)
                 self.invoice_service.repo.set_qbo_identity(
                     id=invoice_id,
                     qbo_id=qbo_invoice.qbo_id,
@@ -263,7 +264,7 @@ class InvoiceInvoiceConnector:
                         memo=memo,
                         is_draft=False,
                     )
-                    updated_id = int(updated.id) if isinstance(updated.id, str) else updated.id
+                    updated_id = coerce_id(updated.id)
                     self.invoice_service.repo.set_qbo_identity(
                         id=updated_id,
                         qbo_id=qbo_invoice.qbo_id,
@@ -310,7 +311,7 @@ class InvoiceInvoiceConnector:
             self._invoice_cache[invoice.id] = invoice
 
         # Create mapping
-        invoice_id = int(invoice.id) if isinstance(invoice.id, str) else invoice.id
+        invoice_id = coerce_id(invoice.id)
         try:
             mapping = self.create_mapping(
                 invoice_id=invoice_id,
@@ -665,7 +666,7 @@ class InvoiceInvoiceConnector:
         qbo_invoice_repo = QboInvoiceRepository()
         qbo_invoice_line_repo = QboInvoiceLineRepository()
 
-        invoice_id = int(invoice.id) if isinstance(invoice.id, str) else invoice.id
+        invoice_id = coerce_id(invoice.id)
 
         # Resolve QBO CustomerRef from project_id
         customer_ref = self._get_qbo_customer_ref(invoice.project_id)
@@ -920,7 +921,7 @@ class InvoiceInvoiceConnector:
                     logger.warning(f"Could not store QboInvoiceLine for QBO line {qbo_line.id}: {e}")
 
         # Create InvoiceInvoice mapping
-        qbo_invoice_id_local = int(local_qbo_invoice.id) if isinstance(local_qbo_invoice.id, str) else local_qbo_invoice.id
+        qbo_invoice_id_local = coerce_id(local_qbo_invoice.id)
         try:
             self.create_mapping(
                 invoice_id=invoice_id,

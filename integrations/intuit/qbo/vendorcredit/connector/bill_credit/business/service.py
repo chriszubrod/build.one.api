@@ -22,6 +22,7 @@ from integrations.intuit.qbo.base.pull_race import guard_lines_present
 from integrations.intuit.qbo.base.compensation import rollback_orphan_header
 from integrations.intuit.qbo.base.reconciliation_recorder import record_mapping_issue
 from integrations.intuit.qbo.base.field_ownership import preserve_human_edited_ref, qbo_ref_or_placeholder
+from integrations.intuit.qbo.base.ids import coerce_id
 from integrations.intuit.qbo.reconciliation.persistence.repo import ReconciliationIssueRepository
 
 logger = logging.getLogger(__name__)
@@ -158,7 +159,7 @@ class VendorCreditBillCreditConnector:
                 )
                 if updated:
                     self.bill_credit_service.repo.set_qbo_identity(
-                        id=int(updated.id) if isinstance(updated.id, str) else updated.id,
+                        id=coerce_id(updated.id),
                         qbo_id=qbo_vc.qbo_id,
                         realm_id=qbo_vc.realm_id,
                     )
@@ -178,7 +179,7 @@ class VendorCreditBillCreditConnector:
             
             if bill_credit:
                 self.bill_credit_service.repo.set_qbo_identity(
-                    id=int(bill_credit.id) if isinstance(bill_credit.id, str) else bill_credit.id,
+                    id=coerce_id(bill_credit.id),
                     qbo_id=qbo_vc.qbo_id,
                     realm_id=qbo_vc.realm_id,
                 )

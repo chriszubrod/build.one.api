@@ -1,6 +1,5 @@
 # Python Standard Library Imports
 import logging
-import time
 from typing import List, Optional
 
 # Third-party Imports
@@ -10,6 +9,7 @@ from integrations.intuit.qbo.vendor.business.model import QboVendor
 from integrations.intuit.qbo.vendor.persistence.repo import QboVendorRepository
 from integrations.intuit.qbo.vendor.external.client import QboVendorClient
 from integrations.intuit.qbo.vendor.external.schemas import QboVendor as QboVendorExternalSchema
+from integrations.intuit.qbo.base.pacing import pace_batch
 from integrations.intuit.qbo.base.sync_outcome import SyncOutcome, project_records
 from integrations.intuit.qbo.physical_address.business.service import QboPhysicalAddressService
 from shared.database import with_retry, is_transient_error
@@ -17,8 +17,6 @@ from shared.database import with_retry, is_transient_error
 logger = logging.getLogger(__name__)
 
 # Sync configuration
-BATCH_SIZE = 10  # Process vendors in batches
-BATCH_DELAY = 0.5  # Delay between batches (seconds)
 MAX_RETRIES = 3  # Max retries for transient errors
 INITIAL_RETRY_DELAY = 2.0  # Initial retry delay (seconds)
 
@@ -86,9 +84,7 @@ class QboVendorService:
                 outcome.record_staging_failure(qbo_vendor.id, e)
             
             # Add delay between batches to prevent connection exhaustion
-            if (i + 1) % BATCH_SIZE == 0 and i + 1 < len(qbo_vendors):
-                logger.debug(f"Processed {i + 1}/{len(qbo_vendors)} vendors, pausing...")
-                time.sleep(BATCH_DELAY)
+            pace_batch(i, len(qbo_vendors), logger, "vendors")
         
         if outcome.staging_failed_ids:
             logger.warning(

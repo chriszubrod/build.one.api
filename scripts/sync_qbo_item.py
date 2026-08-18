@@ -2,7 +2,6 @@
 import logging
 import os
 import sys
-import time
 from datetime import datetime, timezone
 from typing import List, Optional
 
@@ -13,11 +12,14 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 
 # Local Imports
 from scripts.sync_helper import (
+    assert_cli_system_admin,
+    exit_nonzero_on_sync_failure,
+)
+from integrations.intuit.qbo.base.pacing import pace_batch
+from integrations.intuit.qbo.base.watermark import (
     WatermarkRun,
     _normalize_last_sync,
     _normalize_watermark_value,
-    assert_cli_system_admin,
-    exit_nonzero_on_sync_failure,
 )
 from integrations.intuit.qbo.base.sync_outcome import SyncOutcome
 from shared.database import with_retry
@@ -36,8 +38,6 @@ from entities.sub_cost_code.business.service import SubCostCodeService
 logger = logging.getLogger(__name__)
 
 # Sync configuration
-BATCH_SIZE = 10  # Process items in batches
-BATCH_DELAY = 0.5  # Delay between batches (seconds)
 MAX_RETRIES = 3  # Max retries for transient errors
 INITIAL_RETRY_DELAY = 2.0  # Initial retry delay (seconds)
 
@@ -151,9 +151,7 @@ def sync_qbo_to_local(
             )
         
         # Add delay between batches to keep connection alive
-        if (i + 1) % BATCH_SIZE == 0 and i + 1 < len(parent_items):
-            logger.debug(f"Processed {i + 1}/{len(parent_items)} parent items, pausing...")
-            time.sleep(BATCH_DELAY)
+        pace_batch(i, len(parent_items), logger, "parent items")
     
     # Sync child items to SubCostCode
     sub_cost_codes_synced = 0
@@ -176,9 +174,7 @@ def sync_qbo_to_local(
             )
         
         # Add delay between batches to keep connection alive
-        if (i + 1) % BATCH_SIZE == 0 and i + 1 < len(child_items):
-            logger.debug(f"Processed {i + 1}/{len(child_items)} child items, pausing...")
-            time.sleep(BATCH_DELAY)
+        pace_batch(i, len(child_items), logger, "child items")
     
     return {
         "items_synced": len(items),

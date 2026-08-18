@@ -6,6 +6,7 @@ from typing import Optional
 # Third-party Imports
 
 # Local Imports
+from integrations.intuit.qbo.base.ids import coerce_id
 from integrations.intuit.qbo.company_info.connector.business.model import CompanyInfoCompany
 from integrations.intuit.qbo.company_info.connector.persistence.repo import CompanyInfoCompanyRepository
 from integrations.intuit.qbo.company_info.business.service import QboCompanyInfoService
@@ -83,7 +84,7 @@ class CompanyInfoCompanyConnector:
                 
                 # Check if this Company is already mapped to a different QboCompanyInfo
                 existing_company_mapping = self.mapping_repo.read_by_company_id(
-                    int(existing_company.id) if isinstance(existing_company.id, str) else existing_company.id
+                    coerce_id(existing_company.id)
                 )
                 if existing_company_mapping and existing_company_mapping.qbo_company_info_id != qbo_company_info_id:
                     logger.warning(
@@ -147,7 +148,7 @@ class CompanyInfoCompanyConnector:
         
         # Step 4: Repair or create mapping if needed
         if needs_mapping_repair:
-            company_id_int = int(company.id) if isinstance(company.id, str) else company.id
+            company_id_int = coerce_id(company.id)
             
             # Delete old broken mapping if it exists
             if mapping and mapping.company_id != company_id_int:

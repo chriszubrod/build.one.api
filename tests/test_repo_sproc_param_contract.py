@@ -24,6 +24,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from conftest import REPO_ROOT, iter_prod_python_sources
+from tests.sql_corpus import iter_repo_sql_files
 
 
 def _dict_string_keys(node: ast.AST) -> set[str]:
@@ -108,7 +109,7 @@ _PROC_RE = re.compile(
 def _collect_sql_params() -> dict[str, set[str]]:
     """sproc name (lower) -> union of declared @param names (lower) across ALL .sql."""
     defined: dict[str, set[str]] = {}
-    for path in REPO_ROOT.rglob("*.sql"):
+    for path in iter_repo_sql_files(REPO_ROOT):
         text = path.read_text(encoding="utf-8", errors="ignore")
         for m in _PROC_RE.finditer(text):
             name = m.group(1).lower()

@@ -1,6 +1,5 @@
 # Python Standard Library Imports
 import logging
-import time
 from typing import List, Optional
 
 # Third-party Imports
@@ -16,14 +15,13 @@ from integrations.intuit.qbo.invoice.external.client import (
     QboInvoiceClient,
     reject_reimburse_charge_txndate_filter,
 )
+from integrations.intuit.qbo.base.pacing import pace_batch
 from integrations.intuit.qbo.base.sync_outcome import SyncOutcome
 from shared.database import with_retry
 
 logger = logging.getLogger(__name__)
 
 # Sync configuration
-BATCH_SIZE = 10  # Process reimburse charges in batches
-BATCH_DELAY = 0.5  # Delay between batches (seconds)
 MAX_RETRIES = 3  # Max retries for transient errors
 INITIAL_RETRY_DELAY = 2.0  # Initial retry delay (seconds)
 
@@ -110,9 +108,7 @@ class QboReimburseChargeService:
                 logger.error(f"Failed to upsert reimburse charge {parsed.get('qbo_id')}: {e}")
                 outcome.record_staging_failure(parsed["qbo_id"], e)
 
-            if (i + 1) % BATCH_SIZE == 0 and i + 1 < len(raw_records):
-                logger.debug(f"Processed {i + 1}/{len(raw_records)} reimburse charges, pausing...")
-                time.sleep(BATCH_DELAY)
+            pace_batch(i, len(raw_records), logger, "reimburse charges")
 
         if outcome.staging_failed_ids:
             logger.warning(

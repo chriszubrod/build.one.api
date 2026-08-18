@@ -1,6 +1,5 @@
 # Python Standard Library Imports
 import logging
-import time
 from typing import List, Optional
 
 # Third-party Imports
@@ -10,14 +9,13 @@ from integrations.intuit.qbo.term.business.model import QboTerm
 from integrations.intuit.qbo.term.persistence.repo import QboTermRepository
 from integrations.intuit.qbo.term.external.client import QboTermClient
 from integrations.intuit.qbo.term.external.schemas import QboTerm as QboTermExternalSchema
+from integrations.intuit.qbo.base.pacing import pace_batch
 from integrations.intuit.qbo.base.sync_outcome import SyncOutcome, project_records
 from shared.database import with_retry, is_transient_error
 
 logger = logging.getLogger(__name__)
 
 # Sync configuration
-BATCH_SIZE = 10  # Process terms in batches
-BATCH_DELAY = 0.5  # Delay between batches (seconds)
 MAX_RETRIES = 3  # Max retries for transient errors
 INITIAL_RETRY_DELAY = 2.0  # Initial retry delay (seconds)
 
@@ -84,9 +82,7 @@ class QboTermService:
                 outcome.record_staging_failure(qbo_term.id, e)
             
             # Add delay between batches to prevent connection exhaustion
-            if (i + 1) % BATCH_SIZE == 0 and i + 1 < len(qbo_terms):
-                logger.debug(f"Processed {i + 1}/{len(qbo_terms)} terms, pausing...")
-                time.sleep(BATCH_DELAY)
+            pace_batch(i, len(qbo_terms), logger, "terms")
         
         if outcome.staging_failed_ids:
             logger.warning(

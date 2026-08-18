@@ -18,6 +18,8 @@ from entities.vendor.business.service import VendorService
 from integrations.intuit.qbo.base.pull_race import guard_lines_present
 from integrations.intuit.qbo.base.compensation import rollback_orphan_header
 from integrations.intuit.qbo.base.field_ownership import preserve_human_edited_ref, qbo_ref_or_placeholder
+from integrations.intuit.qbo.base.ids import coerce_id
+from integrations.intuit.qbo.base.reconciliation_recorder import record_mapping_issue
 from integrations.intuit.qbo.reconciliation.persistence.repo import ReconciliationIssueRepository
 
 logger = logging.getLogger(__name__)
@@ -160,7 +162,7 @@ class PurchaseExpenseConnector:
         
         # Create mapping — if this fails we must roll back the expense we just created,
         # otherwise the unmapped expense will be duplicated on every subsequent sync run.
-        expense_id = int(expense.id) if isinstance(expense.id, str) else expense.id
+        expense_id = coerce_id(expense.id)
         try:
             mapping = self.create_mapping(
                 expense_id=expense_id,
@@ -241,7 +243,7 @@ class PurchaseExpenseConnector:
             is_draft=False,
             is_credit=qbo_purchase.credit or False,
         )
-        expense_id = int(updated.id) if isinstance(updated.id, str) else updated.id
+        expense_id = coerce_id(updated.id)
         self.expense_service.repo.set_qbo_identity(
             id=expense_id,
             qbo_id=qbo_purchase.qbo_id,
@@ -286,21 +288,15 @@ class PurchaseExpenseConnector:
             f"preserved; no Expense created. Investigate whether the Expense was "
             f"deleted/renumbered."
         )
-        try:
-            self.reconciliation_repo.create(
-                drift_type="orphaned_purch_expense_mapping",
-                severity="critical",
-                action="manual_review",
-                entity_type="Expense",
-                entity_public_id=None,
-                qbo_id=str(qbo_purchase.qbo_id) if qbo_purchase.qbo_id else None,
-                realm_id=qbo_purchase.realm_id or "",
-                details=details,
-            )
-            logger.warning(details)
-        except Exception as exc:
-            # Don't break the sync because the reconciliation insert failed. Log loud.
-            logger.error(f"Failed to record reconciliation issue: {exc}. Details: {details}")
+        record_mapping_issue(
+            self.reconciliation_repo,
+            drift_type="orphaned_purch_expense_mapping",
+            entity_type="Expense",
+            entity_public_id=None,
+            qbo_id=str(qbo_purchase.qbo_id) if qbo_purchase.qbo_id else None,
+            realm_id=qbo_purchase.realm_id or "",
+            details=details,
+        )
 
     def _get_vendor_public_id(self, qbo_entity_ref_value: str) -> Optional[str]:
         """
@@ -446,7 +442,7 @@ class PurchaseExpenseConnector:
         Raises:
             ValueError: If no mapping exists, QBO record not found, or no valid line items
         """
-        expense_id = int(expense.id) if isinstance(expense.id, str) else expense.id
+        expense_id = coerce_id(expense.id)
         
         # 1. Get existing mapping (REQUIRED - must already exist from pull)
         mapping = self.mapping_repo.read_by_expense_id(expense_id)
@@ -922,7 +918,7 @@ class PurchaseExpenseConnector:
                 if line_num_to_expense_line_item_id and stored_line and qbo_line.line_num:
                     eli_id = line_num_to_expense_line_item_id.get(qbo_line.line_num)
                     if eli_id is not None:
-                        stored_line_id = int(stored_line.id) if isinstance(stored_line.id, str) else stored_line.id
+                        stored_line_id = coerce_id(stored_line.id)
                         existing_mapping = self._line_connector.get_mapping_by_qbo_purchase_line_id(stored_line_id)
                         if existing_mapping is None:
                             try:

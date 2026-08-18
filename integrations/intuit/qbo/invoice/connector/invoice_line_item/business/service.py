@@ -14,6 +14,7 @@ from entities.invoice_line_item.business.model import InvoiceLineItem
 from entities.invoice.business.service import InvoiceService
 from integrations.intuit.qbo.base.cache_lookup import cached_or_read
 from integrations.intuit.qbo.base.identity_drift import stamp_line_identity_or_warn
+from integrations.intuit.qbo.base.ids import coerce_id
 from shared.database import DatabaseConstraintError
 
 logger = logging.getLogger(__name__)
@@ -201,7 +202,7 @@ class InvoiceLineItemConnector:
             self._line_item_cache[line_item.id] = line_item
 
         # Create mapping
-        line_item_id = int(line_item.id) if isinstance(line_item.id, str) else line_item.id
+        line_item_id = coerce_id(line_item.id)
         try:
             mapping = self.create_mapping(invoice_line_item_id=line_item_id, qbo_invoice_line_id=qbo_invoice_line.id)
             logger.info(f"Created mapping: InvoiceLineItem {line_item_id} <-> QboInvoiceLine {qbo_invoice_line.id}")

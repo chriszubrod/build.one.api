@@ -20,6 +20,7 @@ from entities.bill_line_item.business.model import BillLineItem
 from entities.bill.business.service import BillService
 from entities.project.business.service import ProjectService
 from integrations.intuit.qbo.base.identity_drift import stamp_line_identity_or_warn
+from integrations.intuit.qbo.base.ids import coerce_id
 
 logger = logging.getLogger(__name__)
 
@@ -214,7 +215,7 @@ class BillLineItemConnector:
         )
         
         # Create mapping
-        line_item_id = int(line_item.id) if isinstance(line_item.id, str) else line_item.id
+        line_item_id = coerce_id(line_item.id)
         # Deliberately ValueError-only (not DatabaseConstraintError): dbo.BillLineItem carries no
         # uniqueness constraint of any kind (unlike dbo.Bill, protected by
         # UQ_Bill_VendorId_BillNumber_BillDate), so a concurrent-pull race that loses this mapping

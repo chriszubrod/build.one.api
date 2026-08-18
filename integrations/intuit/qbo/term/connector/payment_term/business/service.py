@@ -9,6 +9,7 @@ from integrations.intuit.qbo.base.field_ownership import (
     preserve_human_edited_name,
     raise_if_inactive_unmapped,
 )
+from integrations.intuit.qbo.base.ids import coerce_id
 from integrations.intuit.qbo.term.connector.payment_term.business.model import TermPaymentTerm
 from integrations.intuit.qbo.term.connector.payment_term.persistence.repo import TermPaymentTermRepository
 from integrations.intuit.qbo.term.business.model import QboTerm
@@ -74,7 +75,7 @@ class TermPaymentTermConnector:
                 payment_term.due_days = qbo_term.due_days
                 payment_term = self.payment_term_service.repo.update_by_id(payment_term)
                 self.payment_term_service.repo.set_qbo_identity(
-                    id=int(payment_term.id) if isinstance(payment_term.id, str) else payment_term.id,
+                    id=coerce_id(payment_term.id),
                     qbo_id=qbo_term.qbo_id,
                     realm_id=qbo_term.realm_id,
                 )
@@ -100,7 +101,7 @@ class TermPaymentTermConnector:
         )
         
         # Create mapping
-        payment_term_id = int(payment_term.id) if isinstance(payment_term.id, str) else payment_term.id
+        payment_term_id = coerce_id(payment_term.id)
         try:
             mapping = self.create_mapping(
                 payment_term_id=payment_term_id,

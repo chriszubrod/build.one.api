@@ -18,6 +18,7 @@ from entities.expense_line_item.business.model import ExpenseLineItem
 from entities.sub_cost_code.business.service import SubCostCodeService
 from entities.project.business.service import ProjectService
 from integrations.intuit.qbo.base.identity_drift import stamp_line_identity_or_warn
+from integrations.intuit.qbo.base.ids import coerce_id
 
 logger = logging.getLogger(__name__)
 
@@ -240,7 +241,7 @@ class PurchaseLineExpenseLineItemConnector:
         
         # Create mapping — if this fails we must roll back the line item we just created,
         # otherwise the unmapped line item will be duplicated on every subsequent sync run.
-        line_item_id = int(line_item.id) if isinstance(line_item.id, str) else line_item.id
+        line_item_id = coerce_id(line_item.id)
         try:
             mapping = self.create_mapping(expense_line_item_id=line_item_id, qbo_purchase_line_id=qbo_line.id)
             logger.debug(f"Created mapping: ExpenseLineItem {line_item_id} <-> QboPurchaseLine {qbo_line.id}")

@@ -9,6 +9,7 @@ from integrations.intuit.qbo.base.field_ownership import (
     preserve_human_edited_name,
     raise_if_inactive_unmapped,
 )
+from integrations.intuit.qbo.base.ids import coerce_id
 from integrations.intuit.qbo.customer.connector.customer.business.model import CustomerCustomer
 from integrations.intuit.qbo.customer.connector.customer.persistence.repo import CustomerCustomerRepository
 from integrations.intuit.qbo.customer.business.model import QboCustomer
@@ -71,7 +72,7 @@ class CustomerCustomerConnector:
                 customer.phone = customer_phone
                 customer = self.customer_service.repo.update_by_id(customer)
                 self.customer_service.repo.set_qbo_identity(
-                    id=int(customer.id) if isinstance(customer.id, str) else customer.id,
+                    id=coerce_id(customer.id),
                     qbo_id=qbo_customer.qbo_id,
                     realm_id=qbo_customer.realm_id,
                 )
@@ -98,7 +99,7 @@ class CustomerCustomerConnector:
         )
         
         # Create mapping
-        customer_id = int(customer.id) if isinstance(customer.id, str) else customer.id
+        customer_id = coerce_id(customer.id)
         try:
             mapping = self.create_mapping(
                 customer_id=customer_id,

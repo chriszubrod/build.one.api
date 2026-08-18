@@ -6,6 +6,7 @@ from typing import Optional
 # Third-party Imports
 
 # Local Imports
+from integrations.intuit.qbo.base.ids import coerce_id
 from integrations.intuit.qbo.physical_address.connector.business.model import PhysicalAddressAddress
 from integrations.intuit.qbo.physical_address.connector.persistence.repo import PhysicalAddressAddressRepository
 from integrations.intuit.qbo.physical_address.business.service import QboPhysicalAddressService
@@ -89,7 +90,7 @@ class PhysicalAddressAddressConnector:
                 
                 # Check if this Address is already mapped to a different QboPhysicalAddress
                 existing_address_mapping = self.mapping_repo.read_by_address_id(
-                    int(existing_address.id) if isinstance(existing_address.id, str) else existing_address.id
+                    coerce_id(existing_address.id)
                 )
                 if existing_address_mapping and existing_address_mapping.qbo_physical_address_id != qbo_physical_address_id:
                     logger.warning(
@@ -165,7 +166,7 @@ class PhysicalAddressAddressConnector:
         
         # Step 4: Repair or create mapping if needed
         if needs_mapping_repair:
-            address_id_int = int(address.id) if isinstance(address.id, str) else address.id
+            address_id_int = coerce_id(address.id)
             
             # Delete old broken mapping if it exists
             if mapping and mapping.address_id != address_id_int:
@@ -194,7 +195,7 @@ class PhysicalAddressAddressConnector:
             # Only stamp when the resolved mapping points back at this QboPhysicalAddress.
             # Step 2's cannot-remap branch may leave `mapping` bound to a different staging row.
             self.address_service.repo.set_qbo_identity(
-                id=int(address.id) if isinstance(address.id, str) else address.id,
+                id=coerce_id(address.id),
                 qbo_id=qbo_physical_address.qbo_id,
                 realm_id=qbo_physical_address.realm_id,
             )

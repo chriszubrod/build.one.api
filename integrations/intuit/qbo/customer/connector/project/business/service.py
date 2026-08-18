@@ -9,6 +9,7 @@ from integrations.intuit.qbo.base.field_ownership import (
     preserve_human_edited_name,
     raise_if_inactive_unmapped,
 )
+from integrations.intuit.qbo.base.ids import coerce_id
 from integrations.intuit.qbo.customer.connector.project.business.model import CustomerProject
 from integrations.intuit.qbo.customer.connector.project.persistence.repo import CustomerProjectRepository
 from integrations.intuit.qbo.customer.connector.customer.persistence.repo import CustomerCustomerRepository
@@ -16,6 +17,7 @@ from integrations.intuit.qbo.customer.business.model import QboCustomer
 from integrations.intuit.qbo.customer.persistence.repo import QboCustomerRepository
 from integrations.intuit.qbo.physical_address.connector.business.service import PhysicalAddressAddressConnector
 from integrations.intuit.qbo.reconciliation.persistence.repo import ReconciliationIssueRepository
+from integrations.intuit.qbo.base.reconciliation_recorder import record_mapping_issue
 from entities.project.business.service import ProjectService
 from entities.project.business.model import Project
 from entities.project_address.business.service import ProjectAddressService
@@ -227,7 +229,7 @@ class CustomerProjectConnector:
             customer_id=customer_id
         )
 
-        project_id = int(project.id) if isinstance(project.id, str) else project.id
+        project_id = coerce_id(project.id)
         # The mapping MUST land for the Project to be reachable on the next sync.
         # Previously this swallowed ValueError and left the Project orphaned,
         # producing a fresh duplicate on every subsequent run. Now we surface
@@ -278,36 +280,6 @@ class CustomerProjectConnector:
         self._sync_addresses(qbo_customer, updated.id)
         return updated
 
-    def _record_reconciliation_issue(
-        self,
-        *,
-        drift_type: str,
-        entity_public_id: Optional[str],
-        qbo_customer: QboCustomer,
-        details: str,
-    ) -> None:
-        """
-        Insert a critical qbo.ReconciliationIssue for a manual-review Project-mapping
-        drift, failure-isolated: a failed insert is logged loud but never breaks the
-        sync. Shared scaffold for the two detectors below (duplicate-sub-customer and
-        orphaned-mapping) — only drift_type / entity_public_id / details vary.
-        """
-        try:
-            self.reconciliation_repo.create(
-                drift_type=drift_type,
-                severity="critical",
-                action="manual_review",
-                entity_type="Project",
-                entity_public_id=entity_public_id,
-                qbo_id=str(qbo_customer.qbo_id) if qbo_customer.qbo_id else None,
-                realm_id=qbo_customer.realm_id or "",
-                details=details,
-            )
-            logger.warning(details)
-        except Exception as exc:
-            # Don't break the sync because reconciliation insert failed. Log loud.
-            logger.error(f"Failed to record reconciliation issue: {exc}. Details: {details}")
-
     def _raise_duplicate_qbo_customer_issue(
         self,
         *,
@@ -330,10 +302,13 @@ class CustomerProjectConnector:
             f"QboCustomer {existing_mapping.qbo_customer_id}. Resolve by merging or "
             f"renaming one of the QBO sub-customers."
         )
-        self._record_reconciliation_issue(
+        record_mapping_issue(
+            self.reconciliation_repo,
             drift_type="duplicate_qbo_customer",
+            entity_type="Project",
             entity_public_id=str(local_project.public_id) if local_project.public_id else None,
-            qbo_customer=qbo_customer,
+            qbo_id=str(qbo_customer.qbo_id) if qbo_customer.qbo_id else None,
+            realm_id=qbo_customer.realm_id or "",
             details=details,
         )
 
@@ -354,10 +329,13 @@ class CustomerProjectConnector:
             f"longer reads, and no local Project name-matches to repoint it. Mapping preserved; "
             f"no Project created. Investigate whether the Project was deleted/renamed."
         )
-        self._record_reconciliation_issue(
+        record_mapping_issue(
+            self.reconciliation_repo,
             drift_type="orphaned_cust_project_mapping",
+            entity_type="Project",
             entity_public_id=None,
-            qbo_customer=qbo_customer,
+            qbo_id=str(qbo_customer.qbo_id) if qbo_customer.qbo_id else None,
+            realm_id=qbo_customer.realm_id or "",
             details=details,
         )
 
@@ -373,7 +351,7 @@ class CustomerProjectConnector:
         if qbo_customer.bill_addr_id:
             try:
                 address = self.address_connector.sync_from_qbo_to_address(qbo_customer.bill_addr_id)
-                address_id = int(address.id) if isinstance(address.id, str) else address.id
+                address_id = coerce_id(address.id)
                 self._ensure_project_address(project_id, address_id, ADDRESS_TYPE_BILLING)
                 logger.debug(f"Synced billing address {address_id} for Project {project_id}")
             except Exception as e:
@@ -383,7 +361,7 @@ class CustomerProjectConnector:
         if qbo_customer.ship_addr_id:
             try:
                 address = self.address_connector.sync_from_qbo_to_address(qbo_customer.ship_addr_id)
-                address_id = int(address.id) if isinstance(address.id, str) else address.id
+                address_id = coerce_id(address.id)
                 self._ensure_project_address(project_id, address_id, ADDRESS_TYPE_SHIPPING)
                 logger.debug(f"Synced shipping address {address_id} for Project {project_id}")
             except Exception as e:

@@ -4,6 +4,7 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException
 
 # Local Imports
+from integrations.intuit.qbo.base.ids import coerce_id
 from integrations.intuit.qbo.purchase.api.schemas import QboPurchaseSync
 from integrations.intuit.qbo.purchase.business.service import QboPurchaseService
 from integrations.intuit.qbo.purchase.connector.expense.business.service import PurchaseExpenseConnector
@@ -92,7 +93,7 @@ def cancel_expense_from_qbo_purchase_router(
     expense = ExpenseService().read_by_public_id(public_id=expense_public_id)
     if not expense:
         raise HTTPException(status_code=404, detail=f"Expense not found")
-    expense_id = int(expense.id) if isinstance(expense.id, str) else expense.id
+    expense_id = coerce_id(expense.id)
 
     pe_repo = PurchaseExpenseRepository()
     pleli_repo = PurchaseLineExpenseLineItemRepository()

@@ -54,6 +54,7 @@ from pathlib import Path
 import pytest
 
 from tests.sproc_drift_ledger import SPROC_DRIFT_LEDGER
+from tests.sql_corpus import iter_repo_sql_files
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -376,9 +377,7 @@ def _sql_index() -> tuple[tuple[Path, frozenset[str], frozenset[str]], ...]:
     otherwise re-walk and re-read all ~372 .sql files (~2.2 MB) from scratch.
     """
     index = []
-    for path in REPO_ROOT.rglob("*.sql"):
-        if ".venv" in path.parts:
-            continue
+    for path in iter_repo_sql_files(REPO_ROOT, skip_dir_names=frozenset({".venv"})):
         text = path.read_text(encoding="utf-8")
         index.append(
             (path, _names_from_text(_SPROC_PATTERN, text), _names_from_text(_UDF_PATTERN, text))

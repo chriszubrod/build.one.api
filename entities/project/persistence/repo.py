@@ -46,6 +46,8 @@ class ProjectRepository:
                 customer_id=row.CustomerId,
                 abbreviation=row.Abbreviation,
                 notes=getattr(row, "Notes", None),
+                qbo_id=getattr(row, "QboId", None),
+                realm_id=getattr(row, "RealmId", None),
             )
         except AttributeError as error:
             logger.error(f"Attribute error during project mapping: {error}")
@@ -337,6 +339,38 @@ class ProjectRepository:
                 return self._from_db(row) if row else None
         except Exception as error:
             logger.error(f"Error during delete project by ID: {error}")
+            raise map_database_error(error)
+
+    def read_by_qbo_identity(
+        self,
+        qbo_id: str,
+        realm_id: Optional[str] = None,
+        *,
+        actor_user_id: Optional[int] = None,
+        actor_is_system_admin: Optional[bool] = None,
+    ) -> Optional[Project]:
+        """
+        Read a project directly by its dbo-native QBO identity (U-276), bypassing
+        the qbo.Customer / qbo.CustomerProject staging/mapping tables entirely.
+        RBAC-scoped like every other Project read.
+        """
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(
+                    cursor=cursor,
+                    name="ReadProjectByQboIdAndRealmId",
+                    params={
+                        "QboId": qbo_id,
+                        "RealmId": realm_id,
+                        "ActorUserId": actor_user_id,
+                        "ActorIsSystemAdmin": _bit(actor_is_system_admin),
+                    },
+                )
+                row = cursor.fetchone()
+                return self._from_db(row)
+        except Exception as error:
+            logger.error(f"Error during read project by QBO identity: {error}")
             raise map_database_error(error)
 
     def set_qbo_identity(

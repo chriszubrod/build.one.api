@@ -18,6 +18,11 @@ class Customer:
     name: Optional[str]
     email: Optional[str]
     phone: Optional[str]
+    # Dbo-native QBO identity (U-238c). Populated only by sprocs that
+    # select it (ReadCustomerById, ReadCustomerByQboIdAndRealmId) — None
+    # elsewhere, including on entities never synced from QBO.
+    qbo_id: Optional[str] = None
+    realm_id: Optional[str] = None
 
     @property
     def row_version_bytes(self) -> Optional[bytes]:

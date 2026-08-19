@@ -789,36 +789,45 @@ class PurchaseExpenseConnector:
     def _get_qbo_customer_ref(self, project_id: int):
         """
         Get QBO CustomerRef from local project_id.
-        
+
+        U-276 (Phase-4 pilot): reads dbo.Project.Name/.QboId directly (native
+        since U-238a) instead of hopping qbo.CustomerProject -> qbo.Customer
+        for DisplayName. Returns None if the Project has never been QBO-synced
+        (no QboId stamped) — same "not mapped, don't push" contract as before.
+        The dbo identity is verified against the mapping table before being
+        trusted (round-4 review) — dbo-internal uniqueness alone doesn't
+        guarantee the mapping table has caught up to the latest holder.
+
         Args:
             project_id: Local Project database ID
-            
+
         Returns:
             QboReferenceType with QBO customer value and name, or None
         """
         from integrations.intuit.qbo.purchase.external.schemas import QboReferenceType
+        from entities.project.business.service import ProjectService
         from integrations.intuit.qbo.customer.connector.project.persistence.repo import CustomerProjectRepository
         from integrations.intuit.qbo.customer.persistence.repo import QboCustomerRepository
-        
+        from integrations.intuit.qbo.base.identity_consistency import verify_project_qbo_identity
+
         if not project_id:
             return None
-        
-        customer_project_repo = CustomerProjectRepository()
-        qbo_customer_repo = QboCustomerRepository()
-        
-        # Find CustomerProject mapping
-        customer_mapping = customer_project_repo.read_by_project_id(project_id)
-        if not customer_mapping:
-            logger.debug(f"CustomerProject mapping not found for project_id: {project_id}")
+
+        project_service = ProjectService()
+        project = project_service.read_by_id(project_id)
+        if not project or not project.qbo_id:
+            logger.debug(f"Project {project_id} has no QBO identity (QboId) stamped")
             return None
-        
-        # Get QboCustomer
-        qbo_customer = qbo_customer_repo.read_by_id(customer_mapping.qbo_customer_id)
-        if not qbo_customer or not qbo_customer.qbo_id:
-            logger.debug(f"QboCustomer not found for qbo_customer_id: {customer_mapping.qbo_customer_id}")
+
+        verified_qbo_id = verify_project_qbo_identity(
+            project,
+            customer_project_repo=CustomerProjectRepository(),
+            qbo_customer_repo=QboCustomerRepository(),
+        )
+        if not verified_qbo_id:
             return None
-        
-        return QboReferenceType(value=qbo_customer.qbo_id, name=qbo_customer.display_name)
+
+        return QboReferenceType(value=verified_qbo_id, name=project.name)
 
     def _update_local_purchase_lines(
         self,

@@ -25,6 +25,11 @@ class Project:
     # FindProjectForInvoice for project-specific guidance (address
     # aliases, special handling rules).
     notes: Optional[str] = None
+    # Dbo-native QBO identity (U-238a). Populated only by sprocs that
+    # select it (ReadProjectById, ReadProjectByQboIdAndRealmId) — None
+    # elsewhere, including on entities never synced from QBO.
+    qbo_id: Optional[str] = None
+    realm_id: Optional[str] = None
 
     @property
     def row_version_bytes(self) -> Optional[bytes]:

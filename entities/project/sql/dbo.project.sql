@@ -54,6 +54,32 @@ BEGIN
 END
 GO
 
+-- Idempotent column add for existing environments. Live since migration
+-- 238a_qbo_identity_headers.sql (2026-06); declared here so a fresh
+-- environment built from just the base file matches prod. Pull-only
+-- entity — no SyncToken (no live Project push path).
+IF OBJECT_ID('dbo.Project', 'U') IS NOT NULL
+   AND NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('dbo.Project') AND name = 'QboId')
+BEGIN
+    ALTER TABLE [dbo].[Project] ADD [QboId] NVARCHAR(50) NULL;
+END
+GO
+
+IF OBJECT_ID('dbo.Project', 'U') IS NOT NULL
+   AND NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('dbo.Project') AND name = 'RealmId')
+BEGIN
+    ALTER TABLE [dbo].[Project] ADD [RealmId] NVARCHAR(50) NULL;
+END
+GO
+
+IF OBJECT_ID('dbo.Project', 'U') IS NOT NULL AND NOT EXISTS (
+    SELECT 1 FROM sys.indexes WHERE name = 'UQ_Project_QboId_RealmId' AND object_id = OBJECT_ID('dbo.Project')
+)
+BEGIN
+    CREATE UNIQUE INDEX UQ_Project_QboId_RealmId ON [dbo].[Project] ([QboId], [RealmId]) WHERE [QboId] IS NOT NULL;
+END
+GO
+
 
 GO
 
@@ -158,7 +184,9 @@ BEGIN
         [Status],
         [CustomerId],
         [Abbreviation],
-        [Notes]
+        [Notes],
+        [QboId],
+        [RealmId]
     FROM dbo.[Project] p
     WHERE [Id] = @Id
       AND (
@@ -557,5 +585,53 @@ BEGIN
             (@QboId IS NOT NULL AND ([QboId] IS NULL OR [QboId] <> @QboId))
          OR (@RealmId IS NOT NULL AND ([RealmId] IS NULL OR [RealmId] <> @RealmId))
       );
+END;
+GO
+
+-- U-276 (Phase-4 pilot): direct dbo-native identity lookup, mirrors
+-- dbo.customer.sql's ReadCustomerByQboIdAndRealmId. Lets a QBO connector
+-- resolve "does a dbo.Project already exist for this external QBO id"
+-- WITHOUT hopping through qbo.Customer / qbo.CustomerProject — every
+-- Project synced at least once already carries QboId/RealmId via
+-- SetProjectQboIdentity, so this is the steady-state fast path; the
+-- mapping-table lookup remains as a fallback for rows that predate
+-- identity stamping. RBAC-scoped like every other Project read.
+CREATE OR ALTER PROCEDURE ReadProjectByQboIdAndRealmId
+(
+    @QboId NVARCHAR(50),
+    @RealmId NVARCHAR(50) = NULL,
+    @ActorUserId BIGINT = NULL,
+    @ActorIsSystemAdmin BIT = NULL
+)
+AS
+BEGIN
+    BEGIN TRANSACTION;
+
+    SELECT
+        [Id],
+        [PublicId],
+        [RowVersion],
+        CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
+        CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
+        [Name],
+        [Description],
+        [Status],
+        [CustomerId],
+        [Abbreviation],
+        [Notes],
+        [QboId],
+        [RealmId]
+    FROM dbo.[Project] p
+    WHERE [QboId] = @QboId
+      AND (([RealmId] = @RealmId) OR ([RealmId] IS NULL AND @RealmId IS NULL))
+      AND (
+            @ActorIsSystemAdmin = 1
+            OR EXISTS (
+                SELECT 1 FROM dbo.[UserProject] up
+                WHERE up.[UserId] = @ActorUserId AND up.[ProjectId] = p.[Id]
+            )
+      );
+
+    COMMIT TRANSACTION;
 END;
 GO

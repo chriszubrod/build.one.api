@@ -88,6 +88,11 @@ def _build_customer_project_connector():
     mapping_repo = Mock()
     project_service = Mock()
     project_service.repo = Mock()
+    # U-276: the connector tries a direct dbo-identity lookup before the
+    # mapping-table path these tests exercise. Default it to a miss so
+    # existing fallback-path assertions are unaffected; the fast-path itself
+    # is covered by its own tests below.
+    project_service.read_by_qbo_identity.return_value = None
     reconciliation_repo = Mock()
     connector = CustomerProjectConnector(
         mapping_repo=mapping_repo,

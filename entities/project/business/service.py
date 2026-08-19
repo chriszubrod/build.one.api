@@ -111,6 +111,20 @@ class ProjectService:
             actor_is_system_admin=actor_is_system_admin,
         )
 
+    def read_by_qbo_identity(self, qbo_id: str, realm_id: Optional[str] = None) -> Optional[Project]:
+        """
+        Read a project directly by its dbo-native QBO identity (U-276) — the
+        Phase-4 repoint seam, bypassing the qbo.Customer/qbo.CustomerProject
+        staging/mapping tables.
+        """
+        actor_user_id, actor_is_system_admin = _actor_scope()
+        return self.repo.read_by_qbo_identity(
+            qbo_id,
+            realm_id,
+            actor_user_id=actor_user_id,
+            actor_is_system_admin=actor_is_system_admin,
+        )
+
     def read_by_abbreviation(self, abbreviation: str) -> Optional[Project]:
         """Resolve an active project by exact abbreviation (expense coding / memo codes)."""
         return self.repo.read_by_abbreviation(abbreviation)

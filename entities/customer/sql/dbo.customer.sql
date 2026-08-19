@@ -18,14 +18,38 @@ CREATE TABLE [dbo].[Customer]
 END
 GO
 
+-- Idempotent column add for existing environments. Live since migration
+-- 238c_qbo_identity_reference.sql (2026-06); declared here so a fresh
+-- environment built from just the base file matches prod. Pull-only
+-- entity — no SyncToken (no live Customer push path).
+IF OBJECT_ID('dbo.Customer', 'U') IS NOT NULL
+   AND NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('dbo.Customer') AND name = 'QboId')
+BEGIN
+    ALTER TABLE [dbo].[Customer] ADD [QboId] NVARCHAR(50) NULL;
+END
+GO
 
+IF OBJECT_ID('dbo.Customer', 'U') IS NOT NULL
+   AND NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('dbo.Customer') AND name = 'RealmId')
+BEGIN
+    ALTER TABLE [dbo].[Customer] ADD [RealmId] NVARCHAR(50) NULL;
+END
+GO
+
+IF OBJECT_ID('dbo.Customer', 'U') IS NOT NULL AND NOT EXISTS (
+    SELECT 1 FROM sys.indexes WHERE name = 'UQ_Customer_QboId_RealmId' AND object_id = OBJECT_ID('dbo.Customer')
+)
+BEGIN
+    CREATE UNIQUE INDEX UQ_Customer_QboId_RealmId ON [dbo].[Customer] ([QboId], [RealmId]) WHERE [QboId] IS NOT NULL;
+END
 GO
 
 CREATE OR ALTER PROCEDURE CreateCustomer
 (
     @Name NVARCHAR(50),
     @Email NVARCHAR(255),
-    @Phone NVARCHAR(50)
+    @Phone NVARCHAR(50),
+    @CreatedByUserId BIGINT = NULL
 )
 AS
 BEGIN
@@ -33,7 +57,7 @@ BEGIN
 
     DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();
 
-    INSERT INTO dbo.[Customer] ([CreatedDatetime], [ModifiedDatetime], [Name], [Email], [Phone])
+    INSERT INTO dbo.[Customer] ([CreatedDatetime], [ModifiedDatetime], [Name], [Email], [Phone], [CreatedByUserId])
     OUTPUT
         INSERTED.[Id],
         INSERTED.[PublicId],
@@ -43,7 +67,7 @@ BEGIN
         INSERTED.[Name],
         INSERTED.[Email],
         INSERTED.[Phone]
-    VALUES (@Now, @Now, @Name, @Email, @Phone);
+    VALUES (@Now, @Now, @Name, @Email, @Phone, COALESCE(@CreatedByUserId, 17));
 
     COMMIT TRANSACTION;
 END;
@@ -92,7 +116,9 @@ BEGIN
         CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
         [Name],
         [Email],
-        [Phone]
+        [Phone],
+        [QboId],
+        [RealmId]
     FROM dbo.[Customer]
     WHERE [Id] = @Id;
 
@@ -263,5 +289,41 @@ BEGIN
             (@QboId IS NOT NULL AND ([QboId] IS NULL OR [QboId] <> @QboId))
          OR (@RealmId IS NOT NULL AND ([RealmId] IS NULL OR [RealmId] <> @RealmId))
       );
+END;
+GO
+
+-- U-276 (Phase-4 pilot): direct dbo-native identity lookup. Lets a QBO
+-- connector resolve "does a dbo.Customer already exist for this external
+-- QBO id" WITHOUT hopping through the qbo.Customer / qbo.CustomerCustomer
+-- staging/mapping tables — every Customer synced at least once already
+-- carries QboId/RealmId via SetCustomerQboIdentity, so this is the
+-- steady-state fast path; the mapping-table lookup remains as a fallback
+-- for rows that predate identity stamping. RealmId NULL-equality mirrors
+-- SetCustomerQboIdentity's own stolen-identity comparison.
+CREATE OR ALTER PROCEDURE ReadCustomerByQboIdAndRealmId
+(
+    @QboId NVARCHAR(50),
+    @RealmId NVARCHAR(50) = NULL
+)
+AS
+BEGIN
+    BEGIN TRANSACTION;
+
+    SELECT
+        [Id],
+        [PublicId],
+        [RowVersion],
+        CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
+        CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
+        [Name],
+        [Email],
+        [Phone],
+        [QboId],
+        [RealmId]
+    FROM dbo.[Customer]
+    WHERE [QboId] = @QboId
+      AND (([RealmId] = @RealmId) OR ([RealmId] IS NULL AND @RealmId IS NULL));
+
+    COMMIT TRANSACTION;
 END;
 GO

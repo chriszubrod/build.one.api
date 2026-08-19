@@ -938,27 +938,36 @@ class InvoiceInvoiceConnector:
 
     def _get_qbo_customer_ref(self, project_id: int):
         """
-        Resolve local project_id to a QBO CustomerRef (value=qbo_id, name=display_name).
+        Resolve local project_id to a QBO CustomerRef (value=qbo_id, name=name).
 
-        Returns None if the mapping chain cannot be resolved.
+        U-276 (Phase-4 pilot): reads dbo.Project.Name/.QboId directly (native
+        since U-238a) instead of hopping qbo.CustomerProject -> qbo.Customer
+        for DisplayName. Returns None if the Project has never been QBO-synced
+        (no QboId stamped) — same "can't resolve" contract as before. The dbo
+        identity is verified against the mapping table before being trusted
+        (round-4 review) — dbo-internal uniqueness alone doesn't guarantee the
+        mapping table has caught up to the latest holder.
         """
         from integrations.intuit.qbo.invoice.external.schemas import QboReferenceType
+        from integrations.intuit.qbo.base.identity_consistency import verify_project_qbo_identity
 
         if not project_id:
             return None
 
-        customer_mapping = self.customer_project_repo.read_by_project_id(project_id)
-        if not customer_mapping:
-            logger.warning(f"CustomerProject mapping not found for project_id: {project_id}")
+        project = self.project_service.read_by_id(project_id)
+        if not project or not project.qbo_id:
+            logger.warning(f"Project {project_id} has no QBO identity (QboId) stamped")
             return None
 
-        qbo_customer = self.qbo_customer_repo.read_by_id(customer_mapping.qbo_customer_id)
-        if not qbo_customer or not qbo_customer.qbo_id:
-            logger.warning(f"QboCustomer not found for qbo_customer_id: {customer_mapping.qbo_customer_id}")
+        verified_qbo_id = verify_project_qbo_identity(
+            project,
+            customer_project_repo=self.customer_project_repo,
+            qbo_customer_repo=self.qbo_customer_repo,
+        )
+        if not verified_qbo_id:
             return None
 
-        from integrations.intuit.qbo.invoice.external.schemas import QboReferenceType
-        return QboReferenceType(value=qbo_customer.qbo_id, name=qbo_customer.display_name)
+        return QboReferenceType(value=verified_qbo_id, name=project.name)
 
     def _build_reimburse_charge_lookup(self, customer_ref_value: str, realm_id: str, access_token: Optional[str] = None) -> dict:
         """

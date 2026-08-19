@@ -31,9 +31,11 @@ from entities.bill.business.service import BillService
 from entities.bill.business.model import Bill
 from entities.bill_line_item.business.service import BillLineItemService
 from entities.vendor.business.service import VendorService
+from entities.project.business.service import ProjectService
 from integrations.intuit.qbo.base.pull_race import guard_lines_present
 from integrations.intuit.qbo.base.compensation import rollback_orphan_header
 from integrations.intuit.qbo.base.field_ownership import preserve_human_edited_ref, qbo_ref_or_placeholder
+from integrations.intuit.qbo.base.identity_consistency import verify_project_qbo_identity
 from integrations.intuit.qbo.base.ids import coerce_id
 from integrations.intuit.qbo.base.reconciliation_recorder import record_mapping_issue
 from integrations.intuit.qbo.reconciliation.persistence.repo import ReconciliationIssueRepository
@@ -61,6 +63,7 @@ class BillBillConnector:
         qbo_item_repo: Optional[QboItemRepository] = None,
         customer_project_repo: Optional[CustomerProjectRepository] = None,
         qbo_customer_repo: Optional[QboCustomerRepository] = None,
+        project_service: Optional[ProjectService] = None,
         qbo_account_repo: Optional[QboAccountRepository] = None,
         term_payment_term_repo: Optional[TermPaymentTermRepository] = None,
         qbo_term_repo: Optional[QboTermRepository] = None,
@@ -79,6 +82,7 @@ class BillBillConnector:
         self.qbo_item_repo = qbo_item_repo or QboItemRepository()
         self.customer_project_repo = customer_project_repo or CustomerProjectRepository()
         self.qbo_customer_repo = qbo_customer_repo or QboCustomerRepository()
+        self.project_service = project_service or ProjectService()
         self.qbo_account_repo = qbo_account_repo or QboAccountRepository()
         self.term_payment_term_repo = term_payment_term_repo or TermPaymentTermRepository()
         self.qbo_term_repo = qbo_term_repo or QboTermRepository()
@@ -832,29 +836,38 @@ class BillBillConnector:
     def _get_qbo_customer_ref(self, project_id: int) -> Optional[QboReferenceType]:
         """
         Get QBO CustomerRef from local project_id.
-        
+
+        U-276 (Phase-4 pilot): reads dbo.Project.Name/.QboId directly (native
+        since U-238a) instead of hopping qbo.CustomerProject -> qbo.Customer
+        for DisplayName. Returns None if the Project has never been QBO-synced
+        (no QboId stamped) — same "not mapped, don't push" contract as before.
+        The dbo identity is verified against the mapping table before being
+        trusted (round-4 review) — dbo-internal uniqueness alone doesn't
+        guarantee the mapping table has caught up to the latest holder.
+
         Args:
             project_id: Local Project database ID
-            
+
         Returns:
             QboReferenceType with QBO customer value and name, or None
         """
         if not project_id:
             return None
-        
-        # Find CustomerProject mapping
-        customer_mapping = self.customer_project_repo.read_by_project_id(project_id)
-        if not customer_mapping:
-            logger.debug(f"CustomerProject mapping not found for project_id: {project_id}")
+
+        project = self.project_service.read_by_id(project_id)
+        if not project or not project.qbo_id:
+            logger.debug(f"Project {project_id} has no QBO identity (QboId) stamped")
             return None
-        
-        # Get QboCustomer
-        qbo_customer = self.qbo_customer_repo.read_by_id(customer_mapping.qbo_customer_id)
-        if not qbo_customer or not qbo_customer.qbo_id:
-            logger.debug(f"QboCustomer not found for qbo_customer_id: {customer_mapping.qbo_customer_id}")
+
+        verified_qbo_id = verify_project_qbo_identity(
+            project,
+            customer_project_repo=self.customer_project_repo,
+            qbo_customer_repo=self.qbo_customer_repo,
+        )
+        if not verified_qbo_id:
             return None
-        
-        return QboReferenceType(value=qbo_customer.qbo_id, name=qbo_customer.display_name)
+
+        return QboReferenceType(value=verified_qbo_id, name=project.name)
 
     def _get_ap_account_ref(self, realm_id: str) -> Optional[QboReferenceType]:
         """

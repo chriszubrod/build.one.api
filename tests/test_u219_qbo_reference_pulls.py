@@ -230,6 +230,9 @@ def _build_customer_connector() -> CustomerCustomerConnector:
         customer_service=Mock(),
     )
     connector.mapping_repo.read_by_qbo_customer_id.return_value = None
+    # U-276: default the direct dbo-identity fast path to a miss so these
+    # tests keep exercising the mapping-table path they're testing.
+    connector.customer_service.read_by_qbo_identity.return_value = None
     return connector
 
 
@@ -244,6 +247,9 @@ def _build_project_connector() -> CustomerProjectConnector:
     )
     connector.mapping_repo.read_by_qbo_customer_id.return_value = None
     connector.project_service.read_by_name.return_value = None
+    # U-276: default the direct dbo-identity fast path to a miss so these
+    # tests keep exercising the mapping-table path they're testing.
+    connector.project_service.read_by_qbo_identity.return_value = None
     connector._sync_addresses = Mock()
     return connector
 

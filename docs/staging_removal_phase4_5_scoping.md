@@ -35,7 +35,7 @@
 | attachable | Attachment | 13 | No | Phase-4-ready. (Phase 5 retirement is a separate, deeper question — §6.) |
 | bill | Bill + BillLineItem | 23 | **Yes** | `ProposeInvoiceSourceLinks` (Invoice family) reads `qbo.BillLine.{CustomerRefValue,ItemRefValue,Amount,Description}` + `qbo.Bill.TxnDate` for cross-family source-link fingerprinting |
 | company_info | Company | 14 | No | Phase-4-ready. Sequence with `physical_address` (real coupling, see below). |
-| customer | Customer + Project | 20 | No | Phase-4-ready. One cross-family read (`DisplayName` in Bill's/Invoice's push helpers) has a ready dbo substitute (`dbo.Project.Name`/`.QboId`) — no new schema needed. |
+| customer | Customer + Project | 20 | No | Phase-4-ready. One cross-family read (`DisplayName` in Bill's/Invoice's push helpers) has a ready dbo substitute (`dbo.Project.Name`/`.QboId`) — no new schema needed. **Built (U-276, 2026-08-19, see §10).** |
 | invoice | Invoice + InvoiceLineItem | 23 | **Yes (narrower than scoped)** | `draw_financials.py` parses `qbo.InvoiceLine.ItemRefName` (Trend feature, workaround for corrupt `qbo.ItemSubCostCode`); `push.py`'s `ComputeInvoiceDrawMatrix` reads `qbo.Invoice.TotalAmt` + a `qbo.InvoiceLine` count as a hard invariant gate on every draw push. The 3rd reach the assignment flagged (audit.py/reconciliation.py ItemRefName) is resolved by the in-flight peer `U-272` work. |
 | item | CostCode + SubCostCode | 20 | **Yes** | `dbo.vw_SubCostCode` LEFT JOINs `qbo.Item.Active` (no dbo-native Active column); Bill's *live* push connector reads `qbo.Item.Name` for outbound `ItemRef.name` (Purchase's and Invoice's equivalent reads exist but are dormant/unreachable code paths) |
 | physical_address | Address | 14 | No | Phase-4-ready. Real blast radius is 3 producer families (company_info, customer, **and** vendor — the classify pass only found company_info), not 1. |
@@ -118,8 +118,8 @@ Not "one unit does all 13" — a dependency-ordered punch list:
 3. Reference-lookup-helper consolidation in Bill's push connector (§3b) — do once other reference families are ready
 
 **Track B — ready today, no prerequisite (6 families, can start independently, any order):**
-4. `vendorcredit` — header/reference repoint now (~3,500 LOC, 23 sprocs); **line-level staging deferred** — blocked behind the invoice-side line-provenance sub-unit (§7 resolved, coupled via `ProposeInvoiceSourceLinks`)
-5. `customer` — split `CustomerCustomer` (self-contained, small) from `CustomerProject` (wide fan-out — 5 other families read through it) as two sub-steps if a small pilot is wanted first
+4. `vendorcredit` — header/reference repoint now (~3,500 LOC, 23 sprocs); **line-level staging deferred** — blocked behind the invoice-side line-provenance sub-unit (§7 resolved, coupled via `ProposeInvoiceSourceLinks`). **Also carries a customer-staging-drop prerequisite from U-276 (§10):** its line connector's `_get_project_public_id` pull resolver still hops `qbo.Customer → qbo.CustomerProject` for Project identity — repoint it onto direct `dbo.Project.QboId`/`RealmId` lookup (mirror U-276's pattern) before `qbo.Customer` can actually be dropped in Phase 6.
+5. `customer` — **Built (U-276, 2026-08-19, see §10)** — split `CustomerCustomer` (self-contained, small) from `CustomerProject` (wide fan-out) as two sub-steps. Pull-resolver repoint deferred as an explicit prerequisite on U-278/283/284 (§10).
 6. `company_info` + `physical_address` — **must land together** (real FK-shaped coupling, no enforced constraint but `qbo.CompanyInfo.*AddrId` columns point at `qbo.PhysicalAddress.Id`); `physical_address`'s true producer surface is company_info **and** customer **and** vendor, not company_info alone
 7. `attachable` — Phase-4 repoint (~750 LOC, 13 sprocs); sequence back-to-back with whatever Phase 5 disposition is chosen so the connector isn't touched twice
 8. `reimburse_charge` — needs the keep-vs-retire decision (§5) before any code
@@ -127,8 +127,8 @@ Not "one unit does all 13" — a dependency-ordered punch list:
 **Track C — blocked, needs its own prerequisite first:**
 9. `account` — small, self-contained prerequisite (give `_get_ap_account_ref`'s one business fact a dbo-native home — a cached AP-account field on Settings/Company), then the rest of the family (no dbo projection exists or is needed) is a straightforward RETIRE, same shape as U-218c's account-delete-reconcile precedent
 10. `term`, `vendor`, `item` (SubCostCode side) — unblocked by Track A #1; `item`'s CostCode side has no blocker and could split off earlier
-11. `bill`, `purchase` — both blocked by `ProposeInvoiceSourceLinks`' cross-family reach; their **mapping tables** (`BillBill`/`BillLineItemBillLine`, `PurchaseExpense`/`PurchaseLineExpenseLineItem`) are NOT blocked and can repoint independently of the business-column question. `purchase` additionally needs the expense-coding-cockpit raw-field disposition decided (keep `qbo.Purchase`/`PurchaseLine` as permanent audit mirror vs. give `PrivateNote`/`AccountRefName` a dbo-native home) — shared with the Invoice fingerprint question, decide once.
-12. `invoice` — the narrower remaining blockers (§4): repair `qbo.ItemSubCostCode` + build the seam `draw_financials.py` needs (already scoped in `TODO.md`'s U-271 follow-ups, not picked up), and decide `ComputeInvoiceDrawMatrix`'s disposition. Sequence after Bill/Purchase land, since `ProposeInvoiceSourceLinks` depends on both.
+11. `bill`, `purchase` — both blocked by `ProposeInvoiceSourceLinks`' cross-family reach; their **mapping tables** (`BillBill`/`BillLineItemBillLine`, `PurchaseExpense`/`PurchaseLineExpenseLineItem`) are NOT blocked and can repoint independently of the business-column question. `purchase` additionally needs the expense-coding-cockpit raw-field disposition decided (keep `qbo.Purchase`/`PurchaseLine` as permanent audit mirror vs. give `PrivateNote`/`AccountRefName` a dbo-native home) — shared with the Invoice fingerprint question, decide once. **Also carries a customer-staging-drop prerequisite from U-276 (§10):** `bill_line_item`'s and `purchase`'s line connectors' `_get_project_public_id` pull resolvers still hop `qbo.Customer → qbo.CustomerProject` for Project identity — repoint both onto direct `dbo.Project.QboId`/`RealmId` lookup (mirror U-276's pattern) before `qbo.Customer` can actually be dropped in Phase 6.
+12. `invoice` — the narrower remaining blockers (§4): repair `qbo.ItemSubCostCode` + build the seam `draw_financials.py` needs (already scoped in `TODO.md`'s U-271 follow-ups, not picked up), and decide `ComputeInvoiceDrawMatrix`'s disposition. Sequence after Bill/Purchase land, since `ProposeInvoiceSourceLinks` depends on both. **Also carries a customer-staging-drop prerequisite from U-276 (§10):** the invoice connector's `_get_project_public_id` pull resolver still hops `qbo.Customer → qbo.CustomerProject` — repoint it too (same pattern; this one already has an auto-heal path calling `CustomerProjectConnector.heal_missing_mapping()`, verify that seam still makes sense post-repoint).
 
 **Track D — independent:**
 13. Phase 5 (`qbo.Attachable`/`qbo.AttachableAttachment`) — sequencing-independent, Chris's 3-option menu (§6)
@@ -169,6 +169,17 @@ tiers carry no `CustomerRefValue`/project narrowing.
 (only Bill had a `DirectDbo` fallback pre-U-274, so unmapped Purchases/VendorCredits were simply invisible to this
 sproc); previously QBO-mapped rows across all three families now match on a narrower (no-CustomerRef) fingerprint.
 
+**Gate-2 addendum (2026-08-19) — project scope RESTORED, reversing the ship-unscoped call.** An independent
+equivalence run (old prod sproc vs the new one over 25–80 real invoices, candidate-set diff) sized the "narrower
+fingerprint" effect the ship-unscoped decision accepted: dropping the old tiers' `CustomerRefValue` scope produced
+**66 gained cross-project candidates per 25 invoices**, all leaning on KI-37 as the *primary* filter (not a
+backstop) — plus candidate-set ambiguity KI-37's reject-status doesn't remove. That load and the parity gap were
+judged too large. The three dbo tiers now carry `AND (<line>.[ProjectId] = @ProjectId OR <line>.[ProjectId] IS NULL)`
+— the dbo-native equivalent of the old `CustomerRefValue = @CustomerRefValue` scope, NULL-permissive so a
+no-project source still matches. Re-verified: cross-project gains **66 → 8** (the residual 8 are NULL-project
+sources, still KI-37-backstopped); same-project gains (4, unmapped-row coverage — spot-check as correct-vs-coincidental)
+and description-drift losses (5) unchanged. KI-37 is back to being defense-in-depth, not the sole guard.
+
 No new dbo mirror table or backfill was needed — unlike U-272, Purchase's and VendorCredit's `DirectDbo` targets
 (`dbo.ExpenseLineItem`/`dbo.Expense`, `dbo.BillCreditLineItem`/`dbo.BillCredit`) were already live, populated entity
 tables with the needed columns. Deploy is a single `CREATE OR ALTER PROCEDURE` apply, no ordering trap.
@@ -178,6 +189,85 @@ their own family repoints (U-278 vendorcredit header/ref already ready, U-283 bi
 by this sproc. `purchase`'s family repoint is still separately gated on the expense-coding-cockpit raw-field
 disposition (§2's `purchase` row) — unrelated to this unit, which only stopped `ProposeInvoiceSourceLinks` from
 reading `qbo.Purchase*`, not retired the tables themselves.
+
+---
+
+## 10. U-276 resolved — `customer` family Phase-4 repoint, the pilot pattern (2026-08-19)
+
+Built as scoped: `CustomerCustomer` (self-contained pilot) and `CustomerProject` (wider fan-out) both
+repointed, per Chris's tight-scope call at Gate-1 — fix the doc-flagged `DisplayName` cross-family read plus
+each connector's own identity resolution; explicitly defer the 4 pull-resolvers (they don't read
+`DisplayName`, so out of the doc-flagged scope) to their owning families' own units.
+
+**The repoint pattern (template for U-277–284):**
+1. **Expose native identity on the primary read path.** `ReadCustomerById`/`ReadProjectById` gained
+   `QboId`/`RealmId` to their SELECT lists (columns already live since U-238a/c — purely additive, no schema
+   change); the dataclasses and repo `_from_db` mappers gained matching `qbo_id`/`realm_id` fields
+   (`getattr(row, "QboId", None)`-guarded, since most other Read* sprocs for the same entity don't select
+   them).
+2. **Add a reverse-identity lookup sproc + repo/service method.** New `Read{Entity}ByQboIdAndRealmId`
+   sproc (RealmId NULL-safety mirrors `Set{Entity}QboIdentity`'s own theft-detection comparison — `([RealmId]
+   = @RealmId) OR ([RealmId] IS NULL AND @RealmId IS NULL)`), a repo `read_by_qbo_identity()`, and a service
+   passthrough (threading RBAC actor scope where the entity has row-level RBAC — Project does, Customer
+   doesn't).
+3. **Connector fast path: check-then-write, not write-then-check.** The connector's `sync_from_qbo_*` tries
+   `{entity}_service.read_by_qbo_identity(...)` FIRST. If it hits, the mapping-table state is resolved via a
+   `_resolve_mapping_state()` helper — checking **both** directions (by-local-id and by-external-id, mirroring
+   `create_mapping`'s own existing 1:1 guards) — **before any field is written**, returning one of
+   `consistent` / `missing` / `conflict`. Only `consistent`/`missing` proceed to write; `conflict` records a
+   reconciliation issue (drift type registered in `drift_types.py`, message naming every conflicting row so a
+   two-directions-at-once "crossed" conflict doesn't silently drop either side) and falls through unchanged
+   to the pre-existing mapping-table-based path below it, which stays authoritative when the two identity
+   sources disagree. **Getting this ordering right took 3 review rounds** (Codex `xhigh`) — write-then-check
+   was the actual defect the first two rounds' fixes still carried: detecting a conflict *after* already
+   writing the dbo-identity-matched row corrupts that row's data in the (rare but real) case the mapping
+   table, not dbo identity, was still the correct side. Any repoint that skips a staging→mapping-table hop in
+   favor of dbo-native identity needs this same check-before-write discipline, not just conflict detection.
+4. **Push helpers read dbo-native, but VERIFY before trusting it externally.** `_get_qbo_customer_ref` in
+   Bill/Purchase/Invoice reads `dbo.Project.Name`/`.QboId` directly via the entity's own `read_by_id` (step 1
+   already exposed the identity on that path) — but round 4 found dbo-internal uniqueness
+   (`Set{Entity}QboIdentity`'s theft-detection) does NOT by itself guarantee the mapping table has caught up
+   to the latest holder, and an outbound push blindly trusting a stale/"stolen" `QboId` would misroute a live
+   Bill/Expense/Invoice to the wrong QBO customer's books. Fix: a small shared helper
+   (`integrations/intuit/qbo/base/identity_consistency.py::verify_project_qbo_identity`) checks the Project's
+   own mapping row (if any) agrees before the push helper trusts `.qbo_id` — trusts when there's no mapping
+   row yet (the ordinary not-fully-migrated state) or when it agrees, refuses (returns `None`, same "can't
+   resolve" contract the caller already handles) on disagreement. This is a **deliberate, documented residual
+   read** of `qbo.CustomerProject`/`qbo.Customer` on every push — narrower than the pre-repoint reach (identity
+   only, no `DisplayName`) but not fully eliminated; revisit when Phase 6 needs `qbo.Customer` gone entirely.
+
+**Deferred, booked as prerequisites (§8 items 4/11/12):** the 4 `_get_project_public_id` pull resolvers
+(`bill_line_item`, `vendorcredit`'s line connector, `purchase`'s line connector, `invoice`) still resolve an
+inbound QBO CustomerRef by hopping `qbo.Customer → qbo.CustomerProject` — not blocking this unit (they never
+read `DisplayName`, so outside the doc's flagged scope), but `qbo.Customer` can't actually be **dropped**
+(Phase 6) until they're repointed too. Same pattern as step 3 above, minus the write side (pull resolvers
+only ever read); each owning family's own U-277–284 unit should do this as part of its own repoint, not as a
+separate pass.
+
+**Verification:** full pytest green throughout (2322, up from 2285 baseline); mutation-proved RED→GREEN in
+an isolated worktree at every fix round (round-1's swallowed-conflict, round-3's write-then-check ordering,
+round-4's push-side blind-trust) — each reverted mutation caught by exactly the test(s) meant to catch it,
+nothing else regressing. Codex `xhigh` **4 rounds**, each finding something real: round 1 (P1, self-heal only
+checked one mapping direction and silently swallowed the resulting constraint violation), round 2 (P1/P2, the
+round-1 fix's own reconciliation call reused the wrong helper / didn't cover the local-side conflict at all),
+round 3 (P1, the conflict check ran *after* the dbo row was already written — could corrupt the wrong
+Project/Customer before anyone was told), round 4 (P1, the *push* helpers this unit also repointed had no
+analogous conflict check at all — financial misrouting risk; P2, a self-heal `create()` failure was logged as
+a bare warning instead of being re-checked and recorded when it's actually a race-induced conflict). Round 4's
+two fixes are self-verified (mutation-proved, full suite green) but not yet re-reviewed by Codex — 4 rounds
+already exceeds the standing 2-round cap, so per that guidance this is the point to switch fully to
+self-verification rather than loop further; flagging this explicitly rather than silently presenting a 5th
+"Codex PASS" that didn't happen. No SQL applied to prod — new sprocs verified via temp-named copies against
+real Customer/Project rows + a real mutation test (NULL-safe RealmId scoping, RBAC EXISTS guard) then dropped;
+base==live confirmed for every touched existing sproc (found + fixed one pre-existing drift along the way:
+`CreateCustomer`'s base-file copy was missing the already-live `@CreatedByUserId` param — reconciled as a
+precondition, not a feature change; **Chris's own Gate-2 SQL-apply step should still re-diff `sys.sql_modules`
+at apply-time**, standard practice for any base file with documented prod-drift history, not special to this
+unit). **`/simplify` pass (self-run, behavior-preserving):** `_resolve_mapping_state` was unconditionally
+reading the mapping table from both directions even on the common "consistent" path — since `QboCustomerId`
+is unique on the mapping table, a matching local-side row IS provably the same row the external-side lookup
+would return, so the second read is skipped on that path now (one fewer round trip on the steady-state case
+this whole unit exists to make cheap). Full suite re-confirmed green after.
 
 ---
 

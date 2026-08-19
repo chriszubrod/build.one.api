@@ -429,7 +429,7 @@ GO
 -- match independently — passing both increases recall.
 -- ============================================================================
 
-CREATE   PROCEDURE FindVendorForInvoice
+CREATE OR ALTER PROCEDURE FindVendorForInvoice
 (
     @VendorName NVARCHAR(450),
     @SenderDomain NVARCHAR(255) = NULL
@@ -563,7 +563,7 @@ GO
 -- SUPERSEDED stub — never reintroduce a body there.
 -- ─────────────────────────────────────────────────────────────────────
 
-CREATE   PROCEDURE FindContractLaborVendorByEmail
+CREATE OR ALTER PROCEDURE FindContractLaborVendorByEmail
 (
     @SenderEmail NVARCHAR(320)
 )

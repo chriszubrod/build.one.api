@@ -284,7 +284,7 @@ GO
 -- strategy. Returns up to 3 candidates ordered by confidence desc.
 -- ============================================================================
 
-CREATE   PROCEDURE FindSubCostCodeForReply
+CREATE OR ALTER PROCEDURE FindSubCostCodeForReply
 (
     @Hint NVARCHAR(255)
 )
@@ -383,7 +383,7 @@ GO
 
 -- Upsert by Number + CostCodeId (for import flows)
 -- Upsert by Number + CostCodeId (for import flows)
-CREATE   PROCEDURE UpsertSubCostCode
+CREATE OR ALTER PROCEDURE UpsertSubCostCode
 (
     @Number NVARCHAR(50),
     @Name NVARCHAR(255),

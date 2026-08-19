@@ -30,7 +30,7 @@ END
 GO
 
 -- ===== 5. CreatePaymentTerm =====
-CREATE   PROCEDURE CreatePaymentTerm
+CREATE OR ALTER PROCEDURE CreatePaymentTerm
 (
     @Name NVARCHAR(50),
     @Description NVARCHAR(255),

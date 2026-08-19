@@ -137,6 +137,50 @@ Not "one unit does all 13" — a dependency-ordered punch list:
 
 ---
 
+## 9. U-274 resolved — invoice-side line-matching re-homed off qbo.* (2026-08-19)
+
+The cross-family blocker §4 and §7 both pointed at — `ProposeInvoiceSourceLinks` reaching into
+`qbo.{Bill,Purchase,VendorCredit}Line` for line-fingerprint matching — is closed. `entities/invoice/sql/dbo.invoice.sql`:
+Bill's, Purchase's, and VendorCredit's fingerprint tiers now all match directly against
+`dbo.BillLineItem`/`dbo.Bill`, `dbo.ExpenseLineItem`/`dbo.Expense`, and `dbo.BillCreditLineItem`/`dbo.BillCredit`
+(Amount/Description/ServiceDate, `DirectDbo=1`) — the same dbo-native shape Bill's own fallback tier already used
+since U-177. The three prior `qbo.*Line`-staged arms (each `CustomerRefValue`-scoped) and the 3-clause `NOT EXISTS`
+"staging-preferred" guard they fed are removed; nothing is left to defer to. Tier 0 (LinkedTxn exact-identity
+match) is untouched — it's QBO-string identity, not fingerprint matching, and needs family-level dbo-native line
+identity to re-home (U-283's territory).
+
+**Accepted tradeoff, verified empirically against live prod data (80-invoice real sample, 2026-08-19):** the new
+tiers carry no `CustomerRefValue`/project narrowing.
+- **0.5% precision loss** (15 of 2940 old-sproc candidate rows) — every one traced individually; 100% caused by a
+  human-edited `Description` post-QBO-sync (e.g. "Topsoil" → "Topsoil/Dumptruck delivered 6/18"), never an amount
+  mismatch. The old qbo-staged fingerprint matched against the QBO-pull-time snapshot; the new one matches against
+  the current (possibly since-edited) dbo value.
+- **Cross-project false-positive noise** on recurring flat-rate line items — e.g. "Portable Toilet" $130.00 on the
+  same date recurs across 4-5 unrelated projects, and without project scoping the new tier proposes all of them as
+  candidates. Spot-checked 10/10 gained-Purchase-candidate cases in the sample were exactly this pattern. **Not a
+  live risk**: the existing, untouched `_apply_cross_project_guard` (KI-37) in
+  `entities/invoice/business/reconciliation.py` rejects any candidate whose `SourceProjectId` disagrees with the
+  invoice's own project before it can reach a human as a suggested link — the practical effect is
+  `status="cross_project_rejected"` or added ambiguity, never a wrong auto-link.
+- Chris's explicit Gate-1 call (2026-08-19): ship unscoped, exact parity with Bill's existing tier, rather than
+  adding `@ProjectId` narrowing to cut the noise at the SQL layer — the KI-37 guard was judged sufficient.
+
+**Net coverage change:** Purchase and VendorCredit gain fallback coverage for UNMAPPED rows they never had before
+(only Bill had a `DirectDbo` fallback pre-U-274, so unmapped Purchases/VendorCredits were simply invisible to this
+sproc); previously QBO-mapped rows across all three families now match on a narrower (no-CustomerRef) fingerprint.
+
+No new dbo mirror table or backfill was needed — unlike U-272, Purchase's and VendorCredit's `DirectDbo` targets
+(`dbo.ExpenseLineItem`/`dbo.Expense`, `dbo.BillCreditLineItem`/`dbo.BillCredit`) were already live, populated entity
+tables with the needed columns. Deploy is a single `CREATE OR ALTER PROCEDURE` apply, no ordering trap.
+
+Consequence for §8 item 11: `bill`'s and `vendorcredit`'s (§7) invoice-side line-matching coupling is resolved —
+their own family repoints (U-278 vendorcredit header/ref already ready, U-283 bill/purchase) are no longer blocked
+by this sproc. `purchase`'s family repoint is still separately gated on the expense-coding-cockpit raw-field
+disposition (§2's `purchase` row) — unrelated to this unit, which only stopped `ProposeInvoiceSourceLinks` from
+reading `qbo.Purchase*`, not retired the tables themselves.
+
+---
+
 ## Appendix — infra tables, explicitly untouched
 
 Per the assignment's own instruction, no disposition proposed for `qbo.Auth`, `qbo.Client`, `qbo.Outbox`, `qbo.ReconciliationIssue`, `qbo.ApiUsage` — these are program infra, not staging, and survive regardless of Phase 4/5/6 outcome.

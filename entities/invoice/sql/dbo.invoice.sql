@@ -489,18 +489,19 @@ BEGIN
     SET NOCOUNT ON;
 
     DECLARE @RealmId NVARCHAR(50);
-    DECLARE @CustomerRefValue NVARCHAR(50);
     DECLARE @ProjectId BIGINT;
 
     -- U-272: header identity now reads straight off dbo (Phase 2 promoted
-    -- Invoice.RealmId; Project.QboId IS the invoice's QBO CustomerRefValue —
-    -- verified empirically 982/982 mapped invoices, single-realm system).
-    -- Drops the qbo.InvoiceInvoice -> qbo.Invoice hop entirely, including for
-    -- @ProjectId, which was always redundant with dbo.Invoice.ProjectId.
+    -- Invoice.RealmId). Drops the qbo.InvoiceInvoice -> qbo.Invoice hop
+    -- entirely, including for @ProjectId, which was always redundant with
+    -- dbo.Invoice.ProjectId.
+    -- U-274: @CustomerRefValue (Project.QboId) dropped — its only consumers
+    -- were the qbo.*Line CustomerRefValue-scoping predicates this unit
+    -- removes. The Project join stays as an existence-filter only (an
+    -- invoice whose Project row is missing should not populate header vars).
     SELECT
         @ProjectId = i.[ProjectId],
-        @RealmId = i.[RealmId],
-        @CustomerRefValue = p.[QboId]
+        @RealmId = i.[RealmId]
     FROM dbo.[Invoice] i
     INNER JOIN dbo.[Project] p ON p.[Id] = i.[ProjectId]
     WHERE i.[Id] = @InvoiceId;
@@ -512,6 +513,9 @@ BEGIN
         -- ili.Description (those are human-editable snapshots — see
         -- InvoiceLineItemUpdate); TRY_CAST preserved (ServiceDate stays a
         -- raw string in the mirror, same as qbo.InvoiceLine.ServiceDate).
+        -- U-274: ItemRefValue dropped from this projection — it was only ever
+        -- consumed by the qbo.BillLine/PurchaseLine fingerprint tiers this unit
+        -- removes (see below); the DirectDbo tiers never had ItemRef narrowing.
         SELECT
             ili.[Id] AS [InvoiceLineItemId],
             prov.[LineNum],
@@ -519,8 +523,7 @@ BEGIN
             prov.[QboDescription] AS [QboDescription],
             TRY_CAST(prov.[ServiceDate] AS DATE) AS [ServiceDate],
             prov.[LinkedTxnType],
-            prov.[LinkedTxnId],
-            prov.[ItemRefValue] AS [QboItemRefValue]
+            prov.[LinkedTxnId]
         FROM dbo.[InvoiceLineItem] ili
         INNER JOIN dbo.[InvoiceLineItemSourceProvenance] prov ON prov.[InvoiceLineItemId] = ili.[Id]
         WHERE ili.[InvoiceId] = @InvoiceId
@@ -537,6 +540,11 @@ BEGIN
     -- never populated by QBO at any lifecycle stage — see
     -- docs/rc_source_linking_signal_2026_08_16.md. Only direct Bill/Purchase
     -- LinkedTxn hops (0c/0d) remain.
+    -- U-274 scope note: Tier 0's qbo.Bill/BillLine + qbo.Purchase/PurchaseLine
+    -- reach is QBO-string IDENTITY matching (LinkedTxnId), not fingerprint
+    -- line-matching, and stays out of this unit's scope — it needs family-level
+    -- dbo-native line identity to re-home (U-283's territory), not just the
+    -- amount/description/date fingerprint this unit re-homes below.
     -- =========================================================================
 
     -- Tier 0c: InvoiceLine.LinkedTxn points straight at a Bill (no RC intermediary).
@@ -577,72 +585,20 @@ BEGIN
 
     UNION ALL
 
-    SELECT
-        lc.[InvoiceLineItemId],
-        CAST(1 AS TINYINT) AS [Tier],
-        N'BillLineItem' AS [SourceType],
-        map.[BillLineItemId] AS [SourceLineItemId],
-        dbli.[ProjectId] AS [SourceProjectId],
-        bl.[LineNum] AS [SourceLineNum],
-        CAST(0 AS BIT) AS [DirectDbo]
-    FROM LineCtx lc
-    INNER JOIN qbo.[BillLine] bl
-        ON bl.[CustomerRefValue] = @CustomerRefValue
-        AND ABS(bl.[Amount] - lc.[QboAmount]) < 0.01
-        AND COALESCE(bl.[Description], N'') = COALESCE(lc.[QboDescription], N'')
-        -- ItemRefValue (U-244) is an OPTIONAL narrowing signal, not a required
-        -- identity field like Description/Amount/CustomerRef above: NULL on the
-        -- invoice line means "no cost-code signal, don't filter" rather than the
-        -- COALESCE-both-empty "both sides must agree" idiom used for those fields.
-        AND (lc.[QboItemRefValue] IS NULL OR bl.[ItemRefValue] = lc.[QboItemRefValue])
-    INNER JOIN qbo.[Bill] qb ON qb.[Id] = bl.[QboBillId] AND qb.[RealmId] = @RealmId
-        AND TRY_CAST(qb.[TxnDate] AS DATE) = lc.[ServiceDate]
-    INNER JOIN qbo.[BillLineItemBillLine] map ON map.[QboBillLineId] = bl.[Id]
-    INNER JOIN dbo.[BillLineItem] dbli ON dbli.[Id] = map.[BillLineItemId]
+    -- =========================================================================
+    -- U-274: Tiers 1/2/3 below are the invoice-side sproc's ONLY fingerprint
+    -- line-matching for Bill/Purchase/VendorCredit — all three now go straight
+    -- dbo-to-dbo (Amount/Description/ServiceDate), no qbo.{Bill,Purchase,
+    -- VendorCredit}Line reach left in this sproc. Replaces three qbo.*Line
+    -- CustomerRefValue-scoped staging arms and the NOT EXISTS guard that used
+    -- to defer to them ("KI-35 staging-preferred") — dead weight with no
+    -- staging tier left to defer to. Accepted precision tradeoff (no
+    -- CustomerRefValue/project narrowing) verified against live data and the
+    -- downstream KI-37 cross-project guard's mitigation of it — see
+    -- docs/staging_removal_phase4_5_scoping.md §9.
+    -- =========================================================================
 
-    UNION ALL
-
-    SELECT
-        lc.[InvoiceLineItemId],
-        CAST(2 AS TINYINT) AS [Tier],
-        N'ExpenseLineItem' AS [SourceType],
-        map.[ExpenseLineItemId] AS [SourceLineItemId],
-        deli.[ProjectId] AS [SourceProjectId],
-        pl.[LineNum] AS [SourceLineNum],
-        CAST(0 AS BIT) AS [DirectDbo]
-    FROM LineCtx lc
-    INNER JOIN qbo.[PurchaseLine] pl
-        ON pl.[CustomerRefValue] = @CustomerRefValue
-        AND ABS(pl.[Amount] - lc.[QboAmount]) < 0.01
-        AND COALESCE(pl.[Description], N'') = COALESCE(lc.[QboDescription], N'')
-        AND (lc.[QboItemRefValue] IS NULL OR pl.[ItemRefValue] = lc.[QboItemRefValue])
-    INNER JOIN qbo.[Purchase] qp ON qp.[Id] = pl.[QboPurchaseId] AND qp.[RealmId] = @RealmId
-        AND TRY_CAST(qp.[TxnDate] AS DATE) = lc.[ServiceDate]
-    INNER JOIN qbo.[PurchaseLineExpenseLineItem] map ON map.[QboPurchaseLineId] = pl.[Id]
-    INNER JOIN dbo.[ExpenseLineItem] deli ON deli.[Id] = map.[ExpenseLineItemId]
-
-    UNION ALL
-
-    SELECT
-        lc.[InvoiceLineItemId],
-        CAST(3 AS TINYINT) AS [Tier],
-        N'BillCreditLineItem' AS [SourceType],
-        map.[BillCreditLineItemId] AS [SourceLineItemId],
-        dbcli.[ProjectId] AS [SourceProjectId],
-        vcl.[LineNum] AS [SourceLineNum],
-        CAST(0 AS BIT) AS [DirectDbo]
-    FROM LineCtx lc
-    INNER JOIN qbo.[VendorCreditLine] vcl
-        ON vcl.[CustomerRefValue] = @CustomerRefValue
-        AND ABS(ABS(vcl.[Amount]) - ABS(lc.[QboAmount])) < 0.01
-        AND COALESCE(vcl.[Description], N'') = COALESCE(lc.[QboDescription], N'')
-    INNER JOIN qbo.[VendorCredit] qvc ON qvc.[Id] = vcl.[QboVendorCreditId] AND qvc.[RealmId] = @RealmId
-        AND TRY_CAST(qvc.[TxnDate] AS DATE) = lc.[ServiceDate]
-    INNER JOIN qbo.[VendorCreditLineItemBillCreditLineItem] map ON map.[QboVendorCreditLineId] = vcl.[Id]
-    INNER JOIN dbo.[BillCreditLineItem] dbcli ON dbcli.[Id] = map.[BillCreditLineItemId]
-
-    UNION ALL
-
+    -- Tier 1: Bill-sourced fingerprint, direct against dbo (was qbo.BillLine-staged).
     SELECT
         lc.[InvoiceLineItemId],
         CAST(1 AS TINYINT) AS [Tier],
@@ -657,40 +613,51 @@ BEGIN
         AND COALESCE(bli.[Description], N'') = COALESCE(lc.[QboDescription], N'')
     INNER JOIN dbo.[Bill] b ON b.[Id] = bli.[BillId]
         AND TRY_CAST(b.[BillDate] AS DATE) = lc.[ServiceDate]
-    WHERE NOT EXISTS (
-        SELECT 1
-        FROM qbo.[BillLine] bl
-        INNER JOIN qbo.[Bill] qb ON qb.[Id] = bl.[QboBillId] AND qb.[RealmId] = @RealmId
-        INNER JOIN qbo.[BillLineItemBillLine] map ON map.[QboBillLineId] = bl.[Id]
-        WHERE bl.[CustomerRefValue] = @CustomerRefValue
-            AND ABS(bl.[Amount] - lc.[QboAmount]) < 0.01
-            AND COALESCE(bl.[Description], N'') = COALESCE(lc.[QboDescription], N'')
-            AND (lc.[QboItemRefValue] IS NULL OR bl.[ItemRefValue] = lc.[QboItemRefValue])
-            AND TRY_CAST(qb.[TxnDate] AS DATE) = lc.[ServiceDate]
-    )
-    AND NOT EXISTS (
-        SELECT 1
-        FROM qbo.[PurchaseLine] pl
-        INNER JOIN qbo.[Purchase] qp ON qp.[Id] = pl.[QboPurchaseId] AND qp.[RealmId] = @RealmId
-        INNER JOIN qbo.[PurchaseLineExpenseLineItem] map ON map.[QboPurchaseLineId] = pl.[Id]
-        WHERE map.[ExpenseLineItemId] IS NOT NULL
-            AND pl.[CustomerRefValue] = @CustomerRefValue
-            AND ABS(pl.[Amount] - lc.[QboAmount]) < 0.01
-            AND COALESCE(pl.[Description], N'') = COALESCE(lc.[QboDescription], N'')
-            AND (lc.[QboItemRefValue] IS NULL OR pl.[ItemRefValue] = lc.[QboItemRefValue])
-            AND TRY_CAST(qp.[TxnDate] AS DATE) = lc.[ServiceDate]
-    )
-    AND NOT EXISTS (
-        SELECT 1
-        FROM qbo.[VendorCreditLine] vcl
-        INNER JOIN qbo.[VendorCredit] qvc ON qvc.[Id] = vcl.[QboVendorCreditId] AND qvc.[RealmId] = @RealmId
-        INNER JOIN qbo.[VendorCreditLineItemBillCreditLineItem] map ON map.[QboVendorCreditLineId] = vcl.[Id]
-        WHERE map.[BillCreditLineItemId] IS NOT NULL
-            AND vcl.[CustomerRefValue] = @CustomerRefValue
-            AND ABS(ABS(vcl.[Amount]) - ABS(lc.[QboAmount])) < 0.01
-            AND COALESCE(vcl.[Description], N'') = COALESCE(lc.[QboDescription], N'')
-            AND TRY_CAST(qvc.[TxnDate] AS DATE) = lc.[ServiceDate]
-    );
+
+    UNION ALL
+
+    -- Tier 2: Purchase-sourced (Expense) fingerprint, direct against dbo (was
+    -- qbo.PurchaseLine-staged; unlike Bill, Purchase had NO direct-dbo fallback
+    -- before U-274, so unmapped Purchases were never surfaced at all).
+    SELECT
+        lc.[InvoiceLineItemId],
+        CAST(2 AS TINYINT) AS [Tier],
+        N'ExpenseLineItem' AS [SourceType],
+        eli.[Id] AS [SourceLineItemId],
+        eli.[ProjectId] AS [SourceProjectId],
+        CAST(NULL AS INT) AS [SourceLineNum],
+        CAST(1 AS BIT) AS [DirectDbo]
+    FROM LineCtx lc
+    INNER JOIN dbo.[ExpenseLineItem] eli
+        ON ABS(eli.[Amount] - lc.[QboAmount]) < 0.01
+        AND COALESCE(eli.[Description], N'') = COALESCE(lc.[QboDescription], N'')
+    INNER JOIN dbo.[Expense] e ON e.[Id] = eli.[ExpenseId]
+        AND TRY_CAST(e.[ExpenseDate] AS DATE) = lc.[ServiceDate]
+
+    UNION ALL
+
+    -- Tier 3: VendorCredit-sourced (BillCredit) fingerprint, direct against dbo
+    -- (was qbo.VendorCreditLine-staged; same "no fallback before" gap as
+    -- Purchase). Double-ABS preserved from the old tier: dbo.BillCreditLineItem
+    -- .Amount is always stored positive (see entities/bill_credit/business/
+    -- complete_service.py's DETAILS-export negation comment) but lc.QboAmount
+    -- (the invoice line's own QBO amount) is not guaranteed same-signed, so
+    -- both sides are normalized to magnitude before comparing, matching the
+    -- old tier's defensive shape exactly.
+    SELECT
+        lc.[InvoiceLineItemId],
+        CAST(3 AS TINYINT) AS [Tier],
+        N'BillCreditLineItem' AS [SourceType],
+        bcli.[Id] AS [SourceLineItemId],
+        bcli.[ProjectId] AS [SourceProjectId],
+        CAST(NULL AS INT) AS [SourceLineNum],
+        CAST(1 AS BIT) AS [DirectDbo]
+    FROM LineCtx lc
+    INNER JOIN dbo.[BillCreditLineItem] bcli
+        ON ABS(ABS(bcli.[Amount]) - ABS(lc.[QboAmount])) < 0.01
+        AND COALESCE(bcli.[Description], N'') = COALESCE(lc.[QboDescription], N'')
+    INNER JOIN dbo.[BillCredit] bc ON bc.[Id] = bcli.[BillCreditId]
+        AND TRY_CAST(bc.[CreditDate] AS DATE) = lc.[ServiceDate];
 END;
 GO
 

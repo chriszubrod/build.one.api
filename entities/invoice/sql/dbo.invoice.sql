@@ -443,23 +443,26 @@ AS
 BEGIN
     SET NOCOUNT ON;
 
+    -- U-272: LineNum/ServiceDate/LinkedTxnType now read from the dbo-native
+    -- InvoiceLineItemSourceProvenance mirror instead of qbo.InvoiceLine via
+    -- the qbo.InvoiceLineItemInvoiceLine mapping. LEFT JOIN preserved as-is —
+    -- not every InvoiceLineItem has provenance (e.g. never QBO-synced lines).
     SELECT
         ili.[Id] AS [InvoiceLineItemId],
-        qil.[LineNum],
+        prov.[LineNum],
         ili.[Amount],
         ili.[Description],
-        qil.[ServiceDate],
+        prov.[ServiceDate],
         ili.[SourceType],
         ili.[BillLineItemId],
         ili.[ExpenseLineItemId],
         ili.[BillCreditLineItemId],
         COALESCE(bli.[ProjectId], eli.[ProjectId], bcli.[ProjectId]) AS [SourceProjectId],
-        qil.[LinkedTxnType],
+        prov.[LinkedTxnType],
         -- Hard-coded 0 until a later unit classifies markup derivatives via LinkedTxnId.
         CAST(0 AS BIT) AS [ManualDerivative]
     FROM dbo.[InvoiceLineItem] ili
-    LEFT JOIN qbo.[InvoiceLineItemInvoiceLine] ilil ON ilil.[InvoiceLineItemId] = ili.[Id]
-    LEFT JOIN qbo.[InvoiceLine] qil ON qil.[Id] = ilil.[QboInvoiceLineId]
+    LEFT JOIN dbo.[InvoiceLineItemSourceProvenance] prov ON prov.[InvoiceLineItemId] = ili.[Id]
     LEFT JOIN dbo.[BillLineItem] bli ON bli.[Id] = ili.[BillLineItemId]
     LEFT JOIN dbo.[ExpenseLineItem] eli ON eli.[Id] = ili.[ExpenseLineItemId]
     LEFT JOIN dbo.[BillCreditLineItem] bcli ON bcli.[Id] = ili.[BillCreditLineItemId]
@@ -469,6 +472,14 @@ END;
 GO
 
 
+-- ⚠️ DEPLOY ORDER (U-272): this sproc's LineCtx CTE INNER JOINs
+-- dbo.InvoiceLineItemSourceProvenance, which starts EMPTY on a fresh apply.
+-- Applying this file WITHOUT immediately following with
+-- `python scripts/backfill_invoice_line_source_provenance.py --apply` makes
+-- this sproc return ZERO propose candidates for every already-mapped invoice
+-- until the backfill completes — a silent read regression (no error, no data
+-- loss), not a crash. Run the backfill in the SAME maintenance window as this
+-- file's apply, before normal traffic re-hits the invoice source-link review UI.
 CREATE OR ALTER PROCEDURE ProposeInvoiceSourceLinks
 (
     @InvoiceId BIGINT
@@ -481,28 +492,37 @@ BEGIN
     DECLARE @CustomerRefValue NVARCHAR(50);
     DECLARE @ProjectId BIGINT;
 
+    -- U-272: header identity now reads straight off dbo (Phase 2 promoted
+    -- Invoice.RealmId; Project.QboId IS the invoice's QBO CustomerRefValue —
+    -- verified empirically 982/982 mapped invoices, single-realm system).
+    -- Drops the qbo.InvoiceInvoice -> qbo.Invoice hop entirely, including for
+    -- @ProjectId, which was always redundant with dbo.Invoice.ProjectId.
     SELECT
         @ProjectId = i.[ProjectId],
-        @RealmId = qi.[RealmId],
-        @CustomerRefValue = qi.[CustomerRefValue]
+        @RealmId = i.[RealmId],
+        @CustomerRefValue = p.[QboId]
     FROM dbo.[Invoice] i
-    INNER JOIN qbo.[InvoiceInvoice] ii ON ii.[InvoiceId] = i.[Id]
-    INNER JOIN qbo.[Invoice] qi ON qi.[Id] = ii.[QboInvoiceId]
+    INNER JOIN dbo.[Project] p ON p.[Id] = i.[ProjectId]
     WHERE i.[Id] = @InvoiceId;
 
     ;WITH LineCtx AS (
+        -- U-272: reads the dbo-native provenance mirror instead of
+        -- qbo.InvoiceLineItemInvoiceLine -> qbo.InvoiceLine. QboAmount/
+        -- QboDescription intentionally do NOT come from ili.Amount/
+        -- ili.Description (those are human-editable snapshots — see
+        -- InvoiceLineItemUpdate); TRY_CAST preserved (ServiceDate stays a
+        -- raw string in the mirror, same as qbo.InvoiceLine.ServiceDate).
         SELECT
             ili.[Id] AS [InvoiceLineItemId],
-            qil.[LineNum],
-            qil.[Amount] AS [QboAmount],
-            qil.[Description] AS [QboDescription],
-            TRY_CAST(qil.[ServiceDate] AS DATE) AS [ServiceDate],
-            qil.[LinkedTxnType],
-            qil.[LinkedTxnId],
-            qil.[ItemRefValue] AS [QboItemRefValue]
+            prov.[LineNum],
+            prov.[QboAmount] AS [QboAmount],
+            prov.[QboDescription] AS [QboDescription],
+            TRY_CAST(prov.[ServiceDate] AS DATE) AS [ServiceDate],
+            prov.[LinkedTxnType],
+            prov.[LinkedTxnId],
+            prov.[ItemRefValue] AS [QboItemRefValue]
         FROM dbo.[InvoiceLineItem] ili
-        INNER JOIN qbo.[InvoiceLineItemInvoiceLine] ilil ON ilil.[InvoiceLineItemId] = ili.[Id]
-        INNER JOIN qbo.[InvoiceLine] qil ON qil.[Id] = ilil.[QboInvoiceLineId]
+        INNER JOIN dbo.[InvoiceLineItemSourceProvenance] prov ON prov.[InvoiceLineItemId] = ili.[Id]
         WHERE ili.[InvoiceId] = @InvoiceId
     )
     -- =========================================================================

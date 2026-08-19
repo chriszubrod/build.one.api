@@ -293,3 +293,46 @@ class InvoiceLineItemRepository:
                 error,
             )
             raise map_database_error(error)
+
+    def set_source_provenance(
+        self,
+        *,
+        invoice_line_item_id: int,
+        line_num: Optional[int],
+        qbo_amount: Optional[Decimal],
+        qbo_description: Optional[str],
+        service_date: Optional[str],
+        linked_txn_type: Optional[str],
+        linked_txn_id: Optional[str],
+        item_ref_value: Optional[str],
+    ) -> None:
+        """Mirror the QBO invoice-line's source-linking fields onto dbo (U-272).
+
+        Unconditional upsert — every field is overwritten on each call, since
+        this table always reflects the most recent QBO pull (same mirror
+        semantics as qbo.InvoiceLine itself), not a merge with prior state.
+        """
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(
+                    cursor=cursor,
+                    name="UpsertInvoiceLineItemSourceProvenance",
+                    params={
+                        "InvoiceLineItemId": invoice_line_item_id,
+                        "LineNum": line_num,
+                        "QboAmount": qbo_amount,
+                        "QboDescription": qbo_description,
+                        "ServiceDate": service_date,
+                        "LinkedTxnType": linked_txn_type,
+                        "LinkedTxnId": linked_txn_id,
+                        "ItemRefValue": item_ref_value,
+                    },
+                )
+        except Exception as error:
+            logger.error(
+                "Error stamping InvoiceLineItem source provenance (invoice_line_item_id=%s): %s",
+                invoice_line_item_id,
+                error,
+            )
+            raise map_database_error(error)

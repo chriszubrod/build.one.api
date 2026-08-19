@@ -405,6 +405,12 @@ BEGIN
     JOIN dbo.InvoiceLineItem ili ON ili.Id = ila.InvoiceLineItemId
     WHERE ili.BillLineItemId = @BillLineItemId;
 
+    -- Remove InvoiceLineItemSourceProvenance rows first (FK constraint, U-272)
+    DELETE prov
+    FROM dbo.InvoiceLineItemSourceProvenance prov
+    JOIN dbo.InvoiceLineItem ili ON ili.Id = prov.InvoiceLineItemId
+    WHERE ili.BillLineItemId = @BillLineItemId;
+
     -- Delete the InvoiceLineItem records
     DELETE FROM dbo.InvoiceLineItem
     WHERE BillLineItemId = @BillLineItemId;
@@ -420,7 +426,20 @@ CREATE OR ALTER PROCEDURE DeleteInvoiceLineItemById
 )
 AS
 BEGIN
+    -- U-272 made this sproc multi-statement (a DELETE now precedes the
+    -- OUTPUT-clause DELETE below) — SET NOCOUNT ON is required or the leading
+    -- DELETE's rowcount message becomes the first "result" pyodbc's
+    -- cursor.fetchone() reads, hiding the OUTPUT row (see CLAUDE.md's
+    -- "Stored procedure result-set discipline").
+    SET NOCOUNT ON;
     BEGIN TRANSACTION;
+
+    -- U-272: clear the un-cascaded InvoiceLineItemSourceProvenance row in the
+    -- SAME transaction as the header delete (not a separate, independently
+    -- committed Python call) — closes the race where a concurrent QBO pull
+    -- re-inserts a provenance row between two separately-committed steps.
+    DELETE FROM dbo.[InvoiceLineItemSourceProvenance]
+    WHERE [InvoiceLineItemId] = @Id;
 
     DELETE FROM dbo.[InvoiceLineItem]
     OUTPUT
@@ -471,5 +490,114 @@ BEGIN
       );
 
     SELECT @Id AS [Id], @QboId AS [QboId], @RealmId AS [RealmId], @Stolen AS [Stolen];
+END;
+GO
+
+
+-- =========================================================================
+-- U-272 (staging-removal Phase 3): dbo-native QBO source-link provenance,
+-- 1:1 with InvoiceLineItem. Distinct from InvoiceLineItem.Amount/Description
+-- (user-editable "snapshot" fields, see InvoiceLineItemUpdate) — QboAmount/
+-- QboDescription are an immutable mirror of the QBO invoice line as last
+-- pulled, needed so a human edit never corrupts ProposeInvoiceSourceLinks'
+-- fingerprint matching. ServiceDate stays NVARCHAR(50) (raw QBO string, not
+-- DATE) to preserve ProposeInvoiceSourceLinks' existing TRY_CAST-to-NULL
+-- behavior on malformed QBO dates rather than throwing on insert.
+-- =========================================================================
+IF OBJECT_ID('dbo.InvoiceLineItemSourceProvenance', 'U') IS NULL
+BEGIN
+CREATE TABLE [dbo].[InvoiceLineItemSourceProvenance]
+(
+    [Id] BIGINT IDENTITY(1,1) PRIMARY KEY NOT NULL,
+    [PublicId] UNIQUEIDENTIFIER NOT NULL DEFAULT NEWID(),
+    [RowVersion] ROWVERSION NOT NULL,
+    [CreatedDatetime] DATETIME2(3) NOT NULL,
+    [ModifiedDatetime] DATETIME2(3) NULL,
+    [InvoiceLineItemId] BIGINT NOT NULL,
+    [LineNum] INT NULL,
+    [QboAmount] DECIMAL(18,2) NULL,
+    [QboDescription] NVARCHAR(4000) NULL,
+    [ServiceDate] NVARCHAR(50) NULL,
+    [LinkedTxnType] NVARCHAR(64) NULL,
+    [LinkedTxnId] NVARCHAR(50) NULL,
+    [ItemRefValue] NVARCHAR(50) NULL,
+    CONSTRAINT [FK_InvoiceLineItemSourceProvenance_InvoiceLineItem] FOREIGN KEY ([InvoiceLineItemId]) REFERENCES [dbo].[InvoiceLineItem]([Id]),
+    CONSTRAINT [UQ_InvoiceLineItemSourceProvenance_InvoiceLineItemId] UNIQUE ([InvoiceLineItemId])
+);
+END
+GO
+
+-- No separate IX_...InvoiceLineItemId index: UQ_InvoiceLineItemSourceProvenance_InvoiceLineItemId
+-- above already creates a unique index on that same single column.
+
+
+CREATE OR ALTER PROCEDURE UpsertInvoiceLineItemSourceProvenance
+(
+    @InvoiceLineItemId BIGINT,
+    @LineNum INT,
+    @QboAmount DECIMAL(18,2),
+    @QboDescription NVARCHAR(4000),
+    @ServiceDate NVARCHAR(50),
+    @LinkedTxnType NVARCHAR(64),
+    @LinkedTxnId NVARCHAR(50),
+    @ItemRefValue NVARCHAR(50)
+)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    -- Mirror semantics, not merge: every field is SET unconditionally (no CASE
+    -- WHEN NULL-preserve guard) because this table always reflects the most
+    -- recent QBO pull, same as qbo.InvoiceLine's own UpdateQboInvoiceLineById.
+    -- UPDATE-first / INSERT-fallback via a retry loop (not a duplicated
+    -- CATCH-block UPDATE) so the SET list appears exactly once: a concurrent
+    -- caller that wins the INSERT race just makes the next pass's UPDATE find
+    -- the row (same shape as qbo.api_usage.sql's IncrementQboApiUsage, which
+    -- accepts the same duplication for its much shorter 1-field SET list).
+    DECLARE @Retry BIT = 1;
+    WHILE @Retry = 1
+    BEGIN
+        SET @Retry = 0;
+
+        UPDATE dbo.[InvoiceLineItemSourceProvenance]
+        SET
+            [LineNum] = @LineNum,
+            [QboAmount] = @QboAmount,
+            [QboDescription] = @QboDescription,
+            [ServiceDate] = @ServiceDate,
+            [LinkedTxnType] = @LinkedTxnType,
+            [LinkedTxnId] = @LinkedTxnId,
+            [ItemRefValue] = @ItemRefValue,
+            [ModifiedDatetime] = SYSUTCDATETIME()
+        WHERE [InvoiceLineItemId] = @InvoiceLineItemId;
+
+        IF @@ROWCOUNT = 0
+        BEGIN
+            BEGIN TRY
+                INSERT INTO dbo.[InvoiceLineItemSourceProvenance] (
+                    [CreatedDatetime], [ModifiedDatetime], [InvoiceLineItemId],
+                    [LineNum], [QboAmount], [QboDescription], [ServiceDate],
+                    [LinkedTxnType], [LinkedTxnId], [ItemRefValue]
+                )
+                VALUES (
+                    SYSUTCDATETIME(), SYSUTCDATETIME(), @InvoiceLineItemId,
+                    @LineNum, @QboAmount, @QboDescription, @ServiceDate,
+                    @LinkedTxnType, @LinkedTxnId, @ItemRefValue
+                );
+            END TRY
+            BEGIN CATCH
+                -- A concurrent caller for the same InvoiceLineItemId won the
+                -- race and inserted between this pass's UPDATE-miss and
+                -- INSERT. Loop back instead of raising — the UPDATE above
+                -- will find that row on the next pass (at most one extra
+                -- pass in practice; the loop form, not a hardcoded single
+                -- retry, keeps this correct under N-way concurrency too).
+                IF ERROR_NUMBER() IN (2601, 2627)
+                    SET @Retry = 1;
+                ELSE
+                    THROW;
+            END CATCH
+        END
+    END
 END;
 GO

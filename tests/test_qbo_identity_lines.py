@@ -147,6 +147,11 @@ def test_invoice_line_connector_create_path_dual_writes_identity():
         amount=Decimal("100"),
         unit_price=None,
         qty=None,
+        line_num=1,
+        service_date="2026-07-15",
+        linked_txn_type="ReimburseCharge",
+        linked_txn_id="RC-1",
+        item_ref_value="ITEM-1",
     )
 
     connector.sync_from_qbo_invoice_line(100, "inv-pub", qbo_line, realm_id="realm-create")
@@ -155,6 +160,16 @@ def test_invoice_line_connector_create_path_dual_writes_identity():
         id=200,
         qbo_id="QBO-INV-LINE-REAL",
         realm_id="realm-create",
+    )
+    invoice_line_item_service.repo.set_source_provenance.assert_called_once_with(
+        invoice_line_item_id=200,
+        line_num=1,
+        qbo_amount=Decimal("100"),
+        qbo_description="Service",
+        service_date="2026-07-15",
+        linked_txn_type="ReimburseCharge",
+        linked_txn_id="RC-1",
+        item_ref_value="ITEM-1",
     )
 
 
@@ -185,6 +200,11 @@ def test_invoice_line_connector_update_path_dual_writes_identity():
         amount=Decimal("100"),
         unit_price=None,
         qty=None,
+        line_num=2,
+        service_date="2026-07-16",
+        linked_txn_type=None,
+        linked_txn_id=None,
+        item_ref_value="ITEM-2",
     )
 
     connector.sync_from_qbo_invoice_line(100, "inv-pub", qbo_line, realm_id="realm-update")
@@ -193,6 +213,16 @@ def test_invoice_line_connector_update_path_dual_writes_identity():
         id=200,
         qbo_id="QBO-INV-LINE-UPD",
         realm_id="realm-update",
+    )
+    invoice_line_item_service.repo.set_source_provenance.assert_called_once_with(
+        invoice_line_item_id=200,
+        line_num=2,
+        qbo_amount=Decimal("100"),
+        qbo_description="Service",
+        service_date="2026-07-16",
+        linked_txn_type=None,
+        linked_txn_id=None,
+        item_ref_value="ITEM-2",
     )
 
 
@@ -615,6 +645,11 @@ def test_sync_from_qbo_invoice_line_ignores_partial_cache_without_preload():
         amount=Decimal("100"),
         unit_price=None,
         qty=None,
+        line_num=None,
+        service_date=None,
+        linked_txn_type=None,
+        linked_txn_id=None,
+        item_ref_value=None,
     )
 
     with patch(

@@ -20,6 +20,31 @@ from shared.database import DatabaseConstraintError
 logger = logging.getLogger(__name__)
 
 
+def _stamp_source_provenance_or_warn(repo, *, qbo_invoice_line: QboInvoiceLine, invoice_line_item_id: int, context: str) -> None:
+    """Best-effort dbo source-link provenance mirror (U-272). By every call
+    site the line item is already committed, so a stamp failure must never
+    abort or roll back otherwise-successful sync work — log and move on, same
+    non-blocking shape as stamp_line_identity_or_warn (U-238b). NOTE the blast
+    radius differs from that precedent: nothing reads InvoiceLineItem.QboId/
+    RealmId yet, but ProposeInvoiceSourceLinks/ReadInvoiceSourceLinkLines read
+    THIS table live — a swallowed failure here silently drops that one line
+    from source-link proposals until it self-heals on a future QBO pull of the
+    same invoice (not guaranteed to be soon; the pull is watermark-incremental)."""
+    try:
+        repo.set_source_provenance(
+            invoice_line_item_id=invoice_line_item_id,
+            line_num=qbo_invoice_line.line_num,
+            qbo_amount=qbo_invoice_line.amount,
+            qbo_description=qbo_invoice_line.description,
+            service_date=qbo_invoice_line.service_date,
+            linked_txn_type=qbo_invoice_line.linked_txn_type,
+            linked_txn_id=qbo_invoice_line.linked_txn_id,
+            item_ref_value=qbo_invoice_line.item_ref_value,
+        )
+    except Exception as stamp_err:
+        logger.warning(f"{context} but could not stamp dbo source provenance: {stamp_err}")
+
+
 class InvoiceLineItemConnector:
     """
     Connector service for synchronization between QboInvoiceLine and InvoiceLineItem modules.
@@ -177,6 +202,13 @@ class InvoiceLineItemConnector:
                     realm_id=realm_id,
                     context=f"Updated InvoiceLineItem {line_item.id}",
                 )
+                # U-272: dbo source-link provenance mirror (create+update pairing).
+                _stamp_source_provenance_or_warn(
+                    self.invoice_line_item_service.repo,
+                    qbo_invoice_line=qbo_invoice_line,
+                    invoice_line_item_id=int(line_item.id),
+                    context=f"Updated InvoiceLineItem {line_item.id}",
+                )
                 # Update line item cache with fresh record
                 if self._line_item_cache is not None:
                     self._line_item_cache[line_item.id] = line_item
@@ -233,6 +265,13 @@ class InvoiceLineItemConnector:
             id=line_item_id,
             qbo_id=qbo_invoice_line.qbo_line_id,
             realm_id=realm_id,
+            context=f"Created mapping for InvoiceLineItem {line_item_id} for QboInvoiceLine {qbo_invoice_line.id}",
+        )
+        # U-272: dbo source-link provenance mirror (create+update pairing).
+        _stamp_source_provenance_or_warn(
+            self.invoice_line_item_service.repo,
+            qbo_invoice_line=qbo_invoice_line,
+            invoice_line_item_id=line_item_id,
             context=f"Created mapping for InvoiceLineItem {line_item_id} for QboInvoiceLine {qbo_invoice_line.id}",
         )
 

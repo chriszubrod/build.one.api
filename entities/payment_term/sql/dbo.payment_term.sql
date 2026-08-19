@@ -29,13 +29,15 @@ BEGIN
 END
 GO
 
-CREATE OR ALTER PROCEDURE CreatePaymentTerm
+-- ===== 5. CreatePaymentTerm =====
+CREATE   PROCEDURE CreatePaymentTerm
 (
     @Name NVARCHAR(50),
     @Description NVARCHAR(255),
     @DiscountPercent DECIMAL(5,2) NULL,
     @DiscountDays INT NULL,
-    @DueDays INT NULL
+    @DueDays INT NULL,
+    @CreatedByUserId BIGINT = NULL
 )
 AS
 BEGIN
@@ -43,7 +45,7 @@ BEGIN
 
     DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();
 
-    INSERT INTO dbo.[PaymentTerm] ([CreatedDatetime], [ModifiedDatetime], [Name], [Description], [DiscountPercent], [DiscountDays], [DueDays])
+    INSERT INTO dbo.[PaymentTerm] ([CreatedDatetime], [ModifiedDatetime], [Name], [Description], [DiscountPercent], [DiscountDays], [DueDays], [CreatedByUserId])
     OUTPUT
         INSERTED.[Id],
         INSERTED.[PublicId],
@@ -55,14 +57,10 @@ BEGIN
         INSERTED.[DiscountPercent],
         INSERTED.[DiscountDays],
         INSERTED.[DueDays]
-    VALUES (@Now, @Now, @Name, @Description, @DiscountPercent, @DiscountDays, @DueDays);
+    VALUES (@Now, @Now, @Name, @Description, @DiscountPercent, @DiscountDays, @DueDays, COALESCE(@CreatedByUserId, 17));
 
     COMMIT TRANSACTION;
 END;
-
-
-
-
 GO
 
 CREATE OR ALTER PROCEDURE ReadPaymentTerms
@@ -250,12 +248,6 @@ BEGIN
 
     COMMIT TRANSACTION;
 END;
-
--- PublicId index
-IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_PaymentTerm_PublicId' AND object_id = OBJECT_ID('dbo.PaymentTerm'))
-BEGIN
-    CREATE INDEX [IX_PaymentTerm_PublicId] ON [dbo].[PaymentTerm] ([PublicId]);
-END
 GO
 
 CREATE OR ALTER PROCEDURE SetPaymentTermQboIdentity

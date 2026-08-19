@@ -104,7 +104,7 @@ CREATE OR ALTER PROCEDURE CreateSubCostCode
     @Description NVARCHAR(255) = NULL,
     @CostCodeId BIGINT,
     @Aliases NVARCHAR(500) = NULL,
-    @CreatedByUserId BIGINT = NULL   -- U-092: Gap-2 actor threading (was only in gap2_reference_threading.sql; base re-apply reverted prod -> 8145)
+    @CreatedByUserId BIGINT = NULL
 )
 AS
 BEGIN
@@ -268,7 +268,23 @@ GO
 -- strategy. Returns up to 3 candidates ordered by confidence desc.
 -- ============================================================================
 
-CREATE OR ALTER PROCEDURE FindSubCostCodeForReply
+-- ============================================================================
+-- FindSubCostCodeForReply — single-call ranked SubCostCode lookup for
+-- reviewer-reply parsing. PMs reply with shorthand ("13.1") that doesn't
+-- always match Number exactly ("13.01"). Strategies:
+--
+--   1.00  exact_number             — Number = @Hint
+--   0.95  exact_number_normalized  — segment-pad each "."-delimited part
+--                                    to 2 digits (so "13.1" → "13.01")
+--   0.90  exact_alias              — pipe-delimited Alias matches @Hint
+--   0.80  substring_alias          — Aliases CONTAINS @Hint
+--   0.75  substring_name           — Name CONTAINS @Hint
+--
+-- Each SubCostCode row appears at most once at its highest-scoring
+-- strategy. Returns up to 3 candidates ordered by confidence desc.
+-- ============================================================================
+
+CREATE   PROCEDURE FindSubCostCodeForReply
 (
     @Hint NVARCHAR(255)
 )
@@ -366,7 +382,8 @@ GO
 
 
 -- Upsert by Number + CostCodeId (for import flows)
-CREATE OR ALTER PROCEDURE UpsertSubCostCode
+-- Upsert by Number + CostCodeId (for import flows)
+CREATE   PROCEDURE UpsertSubCostCode
 (
     @Number NVARCHAR(50),
     @Name NVARCHAR(255),

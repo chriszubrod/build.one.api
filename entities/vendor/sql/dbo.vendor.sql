@@ -409,7 +409,27 @@ GO
 -- match independently — passing both increases recall.
 -- ============================================================================
 
-CREATE OR ALTER PROCEDURE FindVendorForInvoice
+-- ============================================================================
+-- FindVendorForInvoice — single-call multi-strategy ranked vendor lookup for
+-- invoice classification. Designed for the bill_specialist agent so it doesn't
+-- have to retry search_vendors with progressively-shorter substrings.
+--
+-- Strategies (descending confidence):
+--   1.00  domain_contact       — Vendor has a Contact whose Email ends in @<sender_domain>
+--   0.95  exact_name           — case-insensitive Name == @VendorName
+--   0.90  exact_abbreviation   — case-insensitive Abbreviation == @VendorName
+--   0.85  prefix_name          — Name STARTS WITH first 2 words of @VendorName
+--   0.75  substring_two_words  — Name CONTAINS first 2 words of @VendorName
+--   0.65  substring_first_word — Name CONTAINS first word of @VendorName
+--
+-- Each Vendor row appears at most once — at its highest-scoring strategy.
+-- Returns up to 5 candidates ordered by confidence desc.
+--
+-- Caller passes BOTH @VendorName and (optionally) @SenderDomain. Either may
+-- match independently — passing both increases recall.
+-- ============================================================================
+
+CREATE   PROCEDURE FindVendorForInvoice
 (
     @VendorName NVARCHAR(450),
     @SenderDomain NVARCHAR(255) = NULL
@@ -534,7 +554,16 @@ GO
 -- SUPERSEDED stub — never reintroduce a body there.
 -- ─────────────────────────────────────────────────────────────────────
 
-CREATE OR ALTER PROCEDURE FindContractLaborVendorByEmail
+-- ─────────────────────────────────────────────────────────────────────
+-- FindContractLaborVendorByEmail — sender-keyed lookup for the
+-- contract_labor_specialist agent. Binds a worker's email address back
+-- to the Vendor row carrying their IsContractLabor flag.
+--
+-- This base file is the sole canonical home (U-142); migration 001 is a
+-- SUPERSEDED stub — never reintroduce a body there.
+-- ─────────────────────────────────────────────────────────────────────
+
+CREATE   PROCEDURE FindContractLaborVendorByEmail
 (
     @SenderEmail NVARCHAR(320)
 )

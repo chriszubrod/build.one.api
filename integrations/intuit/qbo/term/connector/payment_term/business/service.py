@@ -78,6 +78,7 @@ class TermPaymentTermConnector:
                     id=coerce_id(payment_term.id),
                     qbo_id=qbo_term.qbo_id,
                     realm_id=qbo_term.realm_id,
+                    active=qbo_term.active,
                 )
                 return payment_term
             else:
@@ -108,6 +109,7 @@ class TermPaymentTermConnector:
                 qbo_term_id=qbo_term.id,
                 qbo_id=qbo_term.qbo_id,
                 realm_id=qbo_term.realm_id,
+                active=qbo_term.active,
             )
             logger.info(f"Created mapping: PaymentTerm {payment_term_id} <-> QboTerm {qbo_term.id}")
         except ValueError as e:
@@ -122,6 +124,7 @@ class TermPaymentTermConnector:
         *,
         qbo_id: Optional[str],
         realm_id: Optional[str],
+        active: Optional[bool] = None,
     ) -> TermPaymentTerm:
         """
         Create a mapping between PaymentTerm and QboTerm.
@@ -153,6 +156,7 @@ class TermPaymentTermConnector:
             id=payment_term_id,
             qbo_id=qbo_id,
             realm_id=realm_id,
+            active=active,
         )
         return self.mapping_repo.create(payment_term_id=payment_term_id, qbo_term_id=qbo_term_id)
 

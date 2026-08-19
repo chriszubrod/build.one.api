@@ -47,12 +47,24 @@ BEGIN
 END
 GO
 
+-- Add QboActive column if it does not exist (U-275: dbo-native mirror of
+-- qbo.Item.Active, replacing vw_SubCostCode's read-side LEFT JOIN). NULL =
+-- no QBO identity yet or not yet backfilled; populated at pull time via
+-- SetSubCostCodeQboIdentity, backfilled for existing rows by
+-- scripts/backfill_qbo_active_mirror.py.
+IF COL_LENGTH('dbo.SubCostCode', 'QboActive') IS NULL
+BEGIN
+    ALTER TABLE [dbo].[SubCostCode] ADD [QboActive] BIT NULL;
+END
+GO
+
 
 -- ============================================================================
 -- SubCostCode — View (single source of truth for column formatting)
 -- ============================================================================
--- QboActive (U-255) is a byproduct of every sproc that resolves through this
--- view, including CreateSubCostCode/UpdateSubCostCodeById/DeleteSubCostCodeById/
+-- QboActive (U-255, dbo-native as of U-275) is a byproduct of every sproc
+-- that resolves through this view, including
+-- CreateSubCostCode/UpdateSubCostCodeById/DeleteSubCostCodeById/
 -- UpsertSubCostCode — their mutation responses now carry it too, unlike
 -- Vendor/PaymentTerm's Create/Update/Delete OUTPUT clauses, which deliberately
 -- do NOT (T-SQL's OUTPUT clause on INSERT has no FROM/JOIN support at all, and
@@ -76,9 +88,8 @@ AS
         sc.[Description],
         sc.[CostCodeId],
         sc.[Aliases],
-        qi.[Active] AS [QboActive]
-    FROM dbo.[SubCostCode] sc
-    LEFT JOIN qbo.[Item] qi ON qi.[QboId] = sc.[QboId] AND qi.[RealmId] = sc.[RealmId];
+        sc.[QboActive]
+    FROM dbo.[SubCostCode] sc;
 GO
 
 
@@ -397,7 +408,8 @@ CREATE OR ALTER PROCEDURE SetSubCostCodeQboIdentity
 (
     @Id BIGINT,
     @QboId NVARCHAR(50) = NULL,
-    @RealmId NVARCHAR(50) = NULL
+    @RealmId NVARCHAR(50) = NULL,
+    @Active BIT = NULL
 )
 AS
 BEGIN
@@ -407,7 +419,7 @@ BEGIN
     IF @QboId IS NOT NULL
     BEGIN
         UPDATE dbo.[SubCostCode]
-        SET [QboId] = NULL, [RealmId] = NULL, [ModifiedDatetime] = SYSUTCDATETIME()
+        SET [QboId] = NULL, [RealmId] = NULL, [QboActive] = NULL, [ModifiedDatetime] = SYSUTCDATETIME()
         WHERE [Id] <> @Id
           AND [QboId] = @QboId
           AND (([RealmId] = @RealmId) OR ([RealmId] IS NULL AND @RealmId IS NULL));
@@ -420,16 +432,19 @@ BEGIN
     SET
         [QboId] = CASE WHEN @QboId IS NOT NULL THEN @QboId ELSE [QboId] END,
         [RealmId] = CASE WHEN @RealmId IS NOT NULL THEN @RealmId ELSE [RealmId] END,
+        [QboActive] = CASE WHEN @Active IS NOT NULL THEN @Active ELSE [QboActive] END,
         [ModifiedDatetime] = SYSUTCDATETIME()
     OUTPUT
         INSERTED.[Id],
         INSERTED.[QboId],
         INSERTED.[RealmId],
+        INSERTED.[QboActive],
         @Stolen AS [Stolen]
     WHERE [Id] = @Id
       AND (
             (@QboId IS NOT NULL AND ([QboId] IS NULL OR [QboId] <> @QboId))
          OR (@RealmId IS NOT NULL AND ([RealmId] IS NULL OR [RealmId] <> @RealmId))
+         OR (@Active IS NOT NULL AND ([QboActive] IS NULL OR [QboActive] <> @Active))
       );
 END;
 GO

@@ -90,6 +90,7 @@ class VendorVendorConnector:
                     id=coerce_id(updated.id),
                     qbo_id=qbo_vendor.qbo_id,
                     realm_id=qbo_vendor.realm_id,
+                    active=qbo_vendor.active,
                 )
                 return updated
 
@@ -128,6 +129,7 @@ class VendorVendorConnector:
                     id=replacement_id,
                     qbo_id=qbo_vendor.qbo_id,
                     realm_id=qbo_vendor.realm_id,
+                    active=qbo_vendor.active,
                 )
                 return self._apply_vendor_fields_and_sync(
                     replacement, qbo_vendor=qbo_vendor, incoming_name=vendor_name
@@ -181,6 +183,7 @@ class VendorVendorConnector:
                 qbo_vendor_id=qbo_vendor.id,
                 qbo_id=qbo_vendor.qbo_id,
                 realm_id=qbo_vendor.realm_id,
+                active=qbo_vendor.active,
                 prefetched_by_vendor=None,
                 prefetched_by_qbo_vendor=None,
             )
@@ -202,6 +205,7 @@ class VendorVendorConnector:
                 qbo_vendor_id=qbo_vendor.id,
                 qbo_id=qbo_vendor.qbo_id,
                 realm_id=qbo_vendor.realm_id,
+                active=qbo_vendor.active,
                 prefetched_by_vendor=None,
                 prefetched_by_qbo_vendor=None,
             )
@@ -409,6 +413,7 @@ class VendorVendorConnector:
         *,
         qbo_id: Optional[str],
         realm_id: Optional[str],
+        active: Optional[bool] = None,
         prefetched_by_vendor=_PREFETCH_UNSET,
         prefetched_by_qbo_vendor=_PREFETCH_UNSET,
     ) -> VendorVendor:
@@ -451,6 +456,7 @@ class VendorVendorConnector:
             id=vendor_id,
             qbo_id=qbo_id,
             realm_id=realm_id,
+            active=active,
         )
         try:
             return self.mapping_repo.create(vendor_id=vendor_id, qbo_vendor_id=qbo_vendor_id)

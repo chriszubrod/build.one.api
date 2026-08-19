@@ -130,6 +130,7 @@ class ItemSubCostCodeConnector:
                     id=coerce_id(updated.id),
                     qbo_id=qbo_item.qbo_id,
                     realm_id=qbo_item.realm_id,
+                    active=qbo_item.active,
                 )
                 return updated
 
@@ -170,6 +171,7 @@ class ItemSubCostCodeConnector:
                     id=replacement_id,
                     qbo_id=qbo_item.qbo_id,
                     realm_id=qbo_item.realm_id,
+                    active=qbo_item.active,
                 )
                 return self._apply_sub_cost_code_fields_and_sync(
                     replacement,
@@ -222,6 +224,7 @@ class ItemSubCostCodeConnector:
                 qbo_id=qbo_item.qbo_id,
                 realm_id=qbo_item.realm_id,
                 context=f"SubCostCode {existing_id} adopt",
+                active=qbo_item.active,
                 prefetched_by_sub_cost_code=existing_map_for_local,
             )
             return sub_cost_code
@@ -241,6 +244,7 @@ class ItemSubCostCodeConnector:
             qbo_id=qbo_item.qbo_id,
             realm_id=qbo_item.realm_id,
             context=f"SubCostCode {sub_cost_code_id} create",
+            active=qbo_item.active,
         )
         return sub_cost_code
 
@@ -272,6 +276,7 @@ class ItemSubCostCodeConnector:
         qbo_id: Optional[str],
         realm_id: Optional[str],
         context: str,
+        active: Optional[bool] = None,
         prefetched_by_sub_cost_code=_PREFETCH_UNSET,
     ) -> None:
         try:
@@ -280,6 +285,7 @@ class ItemSubCostCodeConnector:
                 qbo_item_id=qbo_item_id,
                 qbo_id=qbo_id,
                 realm_id=realm_id,
+                active=active,
                 prefetched_by_sub_cost_code=prefetched_by_sub_cost_code,
             )
             logger.info(f"Created mapping: SubCostCode {sub_cost_code_id} <-> QboItem {qbo_item_id}")
@@ -338,6 +344,7 @@ class ItemSubCostCodeConnector:
         *,
         qbo_id: Optional[str],
         realm_id: Optional[str],
+        active: Optional[bool] = None,
         prefetched_by_sub_cost_code=_PREFETCH_UNSET,
     ) -> ItemSubCostCode:
         """
@@ -373,6 +380,7 @@ class ItemSubCostCodeConnector:
             id=sub_cost_code_id,
             qbo_id=qbo_id,
             realm_id=realm_id,
+            active=active,
         )
         return self.mapping_repo.create(sub_cost_code_id=sub_cost_code_id, qbo_item_id=qbo_item_id)
 

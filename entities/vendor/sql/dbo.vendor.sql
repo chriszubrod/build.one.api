@@ -73,6 +73,17 @@ BEGIN
 END
 GO
 
+-- Add QboActive column if it does not exist (U-275: dbo-native mirror of
+-- qbo.Vendor.Active, replacing the read-side LEFT JOIN). NULL = no QBO
+-- identity yet (never pulled) or not yet backfilled; populated at pull time
+-- via SetVendorQboIdentity, backfilled for existing rows by
+-- scripts/backfill_qbo_active_mirror.py.
+IF COL_LENGTH('dbo.Vendor', 'QboActive') IS NULL
+BEGIN
+    ALTER TABLE [dbo].[Vendor] ADD [QboActive] BIT NULL;
+END
+GO
+
 -- FK constraint: VendorTypeId -> VendorType.Id
 IF NOT EXISTS (SELECT 1 FROM sys.foreign_keys WHERE name = 'FK_Vendor_VendorType')
 BEGIN
@@ -164,9 +175,8 @@ BEGIN
         v.[HourlyRate],
         v.[Markup],
         v.[TrackCompliance],
-        qv.[Active] AS [QboActive]
+        v.[QboActive]
     FROM dbo.[Vendor] v
-    LEFT JOIN qbo.[Vendor] qv ON qv.[QboId] = v.[QboId] AND qv.[RealmId] = v.[RealmId]
     WHERE v.[IsDeleted] = 0
     ORDER BY v.[Name] ASC;
 END;
@@ -195,9 +205,8 @@ BEGIN
         v.[HourlyRate],
         v.[Markup],
         v.[TrackCompliance],
-        qv.[Active] AS [QboActive]
+        v.[QboActive]
     FROM dbo.[Vendor] v
-    LEFT JOIN qbo.[Vendor] qv ON qv.[QboId] = v.[QboId] AND qv.[RealmId] = v.[RealmId]
     WHERE v.[Id] = @Id AND v.[IsDeleted] = 0;
 END;
 GO
@@ -225,9 +234,8 @@ BEGIN
         v.[HourlyRate],
         v.[Markup],
         v.[TrackCompliance],
-        qv.[Active] AS [QboActive]
+        v.[QboActive]
     FROM dbo.[Vendor] v
-    LEFT JOIN qbo.[Vendor] qv ON qv.[QboId] = v.[QboId] AND qv.[RealmId] = v.[RealmId]
     WHERE v.[PublicId] = @PublicId AND v.[IsDeleted] = 0;
 END;
 GO
@@ -255,9 +263,8 @@ BEGIN
         v.[HourlyRate],
         v.[Markup],
         v.[TrackCompliance],
-        qv.[Active] AS [QboActive]
+        v.[QboActive]
     FROM dbo.[Vendor] v
-    LEFT JOIN qbo.[Vendor] qv ON qv.[QboId] = v.[QboId] AND qv.[RealmId] = v.[RealmId]
     WHERE v.[Name] = @Name AND v.[IsDeleted] = 0;
 END;
 GO
@@ -562,7 +569,8 @@ CREATE OR ALTER PROCEDURE SetVendorQboIdentity
 (
     @Id BIGINT,
     @QboId NVARCHAR(50) = NULL,
-    @RealmId NVARCHAR(50) = NULL
+    @RealmId NVARCHAR(50) = NULL,
+    @Active BIT = NULL
 )
 AS
 BEGIN
@@ -572,7 +580,7 @@ BEGIN
     IF @QboId IS NOT NULL
     BEGIN
         UPDATE dbo.[Vendor]
-        SET [QboId] = NULL, [RealmId] = NULL, [ModifiedDatetime] = SYSUTCDATETIME()
+        SET [QboId] = NULL, [RealmId] = NULL, [QboActive] = NULL, [ModifiedDatetime] = SYSUTCDATETIME()
         WHERE [Id] <> @Id
           AND [QboId] = @QboId
           AND (([RealmId] = @RealmId) OR ([RealmId] IS NULL AND @RealmId IS NULL));
@@ -585,16 +593,19 @@ BEGIN
     SET
         [QboId] = CASE WHEN @QboId IS NOT NULL THEN @QboId ELSE [QboId] END,
         [RealmId] = CASE WHEN @RealmId IS NOT NULL THEN @RealmId ELSE [RealmId] END,
+        [QboActive] = CASE WHEN @Active IS NOT NULL THEN @Active ELSE [QboActive] END,
         [ModifiedDatetime] = SYSUTCDATETIME()
     OUTPUT
         INSERTED.[Id],
         INSERTED.[QboId],
         INSERTED.[RealmId],
+        INSERTED.[QboActive],
         @Stolen AS [Stolen]
     WHERE [Id] = @Id
       AND (
             (@QboId IS NOT NULL AND ([QboId] IS NULL OR [QboId] <> @QboId))
          OR (@RealmId IS NOT NULL AND ([RealmId] IS NULL OR [RealmId] <> @RealmId))
+         OR (@Active IS NOT NULL AND ([QboActive] IS NULL OR [QboActive] <> @Active))
       );
 END;
 GO

@@ -18,7 +18,15 @@ CREATE TABLE [dbo].[PaymentTerm]
 END
 GO
 
-
+-- Add QboActive column if it does not exist (U-275: dbo-native mirror of
+-- qbo.Term.Active, replacing the read-side LEFT JOIN). NULL = no QBO
+-- identity yet or not yet backfilled; populated at pull time via
+-- SetPaymentTermQboIdentity, backfilled for existing rows by
+-- scripts/backfill_qbo_active_mirror.py.
+IF COL_LENGTH('dbo.PaymentTerm', 'QboActive') IS NULL
+BEGIN
+    ALTER TABLE [dbo].[PaymentTerm] ADD [QboActive] BIT NULL;
+END
 GO
 
 CREATE OR ALTER PROCEDURE CreatePaymentTerm
@@ -73,9 +81,8 @@ BEGIN
         pt.[DiscountPercent],
         pt.[DiscountDays],
         pt.[DueDays],
-        qt.[Active] AS [QboActive]
+        pt.[QboActive]
     FROM dbo.[PaymentTerm] pt
-    LEFT JOIN qbo.[Term] qt ON qt.[QboId] = pt.[QboId] AND qt.[RealmId] = pt.[RealmId]
     ORDER BY pt.[Name] ASC;
 
     COMMIT TRANSACTION;
@@ -104,9 +111,8 @@ BEGIN
         pt.[DiscountPercent],
         pt.[DiscountDays],
         pt.[DueDays],
-        qt.[Active] AS [QboActive]
+        pt.[QboActive]
     FROM dbo.[PaymentTerm] pt
-    LEFT JOIN qbo.[Term] qt ON qt.[QboId] = pt.[QboId] AND qt.[RealmId] = pt.[RealmId]
     WHERE pt.[Id] = @Id;
 
     COMMIT TRANSACTION;
@@ -135,9 +141,8 @@ BEGIN
         pt.[DiscountPercent],
         pt.[DiscountDays],
         pt.[DueDays],
-        qt.[Active] AS [QboActive]
+        pt.[QboActive]
     FROM dbo.[PaymentTerm] pt
-    LEFT JOIN qbo.[Term] qt ON qt.[QboId] = pt.[QboId] AND qt.[RealmId] = pt.[RealmId]
     WHERE pt.[PublicId] = @PublicId;
 
     COMMIT TRANSACTION;
@@ -166,9 +171,8 @@ BEGIN
         pt.[DiscountPercent],
         pt.[DiscountDays],
         pt.[DueDays],
-        qt.[Active] AS [QboActive]
+        pt.[QboActive]
     FROM dbo.[PaymentTerm] pt
-    LEFT JOIN qbo.[Term] qt ON qt.[QboId] = pt.[QboId] AND qt.[RealmId] = pt.[RealmId]
     WHERE pt.[Name] = @Name;
 
     COMMIT TRANSACTION;
@@ -258,7 +262,8 @@ CREATE OR ALTER PROCEDURE SetPaymentTermQboIdentity
 (
     @Id BIGINT,
     @QboId NVARCHAR(50) = NULL,
-    @RealmId NVARCHAR(50) = NULL
+    @RealmId NVARCHAR(50) = NULL,
+    @Active BIT = NULL
 )
 AS
 BEGIN
@@ -268,7 +273,7 @@ BEGIN
     IF @QboId IS NOT NULL
     BEGIN
         UPDATE dbo.[PaymentTerm]
-        SET [QboId] = NULL, [RealmId] = NULL, [ModifiedDatetime] = SYSUTCDATETIME()
+        SET [QboId] = NULL, [RealmId] = NULL, [QboActive] = NULL, [ModifiedDatetime] = SYSUTCDATETIME()
         WHERE [Id] <> @Id
           AND [QboId] = @QboId
           AND (([RealmId] = @RealmId) OR ([RealmId] IS NULL AND @RealmId IS NULL));
@@ -281,16 +286,19 @@ BEGIN
     SET
         [QboId] = CASE WHEN @QboId IS NOT NULL THEN @QboId ELSE [QboId] END,
         [RealmId] = CASE WHEN @RealmId IS NOT NULL THEN @RealmId ELSE [RealmId] END,
+        [QboActive] = CASE WHEN @Active IS NOT NULL THEN @Active ELSE [QboActive] END,
         [ModifiedDatetime] = SYSUTCDATETIME()
     OUTPUT
         INSERTED.[Id],
         INSERTED.[QboId],
         INSERTED.[RealmId],
+        INSERTED.[QboActive],
         @Stolen AS [Stolen]
     WHERE [Id] = @Id
       AND (
             (@QboId IS NOT NULL AND ([QboId] IS NULL OR [QboId] <> @QboId))
          OR (@RealmId IS NOT NULL AND ([RealmId] IS NULL OR [RealmId] <> @RealmId))
+         OR (@Active IS NOT NULL AND ([QboActive] IS NULL OR [QboActive] <> @Active))
       );
 END;
 GO

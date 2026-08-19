@@ -330,8 +330,9 @@ class SubCostCodeRepository:
         id: int,
         qbo_id: Optional[str],
         realm_id: Optional[str],
+        active: Optional[bool] = None,
     ) -> None:
-        """Stamp dbo-native QBO identity columns (idempotent-safe via CASE WHEN sproc)."""
+        """Stamp dbo-native QBO identity + active-mirror columns (idempotent-safe via CASE WHEN sproc)."""
         try:
             with get_connection() as conn:
                 cursor = conn.cursor()
@@ -342,6 +343,7 @@ class SubCostCodeRepository:
                         "Id": id,
                         "QboId": qbo_id,
                         "RealmId": realm_id,
+                        "Active": active,
                     },
                 )
                 row = cursor.fetchone()

@@ -167,13 +167,31 @@ def test_resolve_parent_realm_id(realm_ids, expected_realm, expected_status):
 
 
 @pytest.mark.parametrize(
-    "repo_path,sproc",
+    "repo_path,sproc,extra_params",
     [
-        ("entities.vendor.persistence.repo.VendorRepository", "SetVendorQboIdentity"),
-        ("entities.bill_credit.persistence.repo.BillCreditRepository", "SetBillCreditQboIdentity"),
+        (
+            "entities.vendor.persistence.repo.VendorRepository",
+            "SetVendorQboIdentity",
+            {"Active": None},
+        ),
+        (
+            "entities.bill_credit.persistence.repo.BillCreditRepository",
+            "SetBillCreditQboIdentity",
+            {},
+        ),
+        (
+            "entities.payment_term.persistence.repo.PaymentTermRepository",
+            "SetPaymentTermQboIdentity",
+            {"Active": None},
+        ),
+        (
+            "entities.sub_cost_code.persistence.repo.SubCostCodeRepository",
+            "SetSubCostCodeQboIdentity",
+            {"Active": None},
+        ),
     ],
 )
-def test_set_qbo_identity_calls_sproc(repo_path, sproc):
+def test_set_qbo_identity_calls_sproc(repo_path, sproc, extra_params):
     module_path, class_name = repo_path.rsplit(".", 1)
     mod = __import__(module_path, fromlist=[class_name])
     repo_cls = getattr(mod, class_name)
@@ -194,6 +212,7 @@ def test_set_qbo_identity_calls_sproc(repo_path, sproc):
         "Id": 42,
         "QboId": "qbo-1",
         "RealmId": "realm-1",
+        **extra_params,
     }
 
 
@@ -216,7 +235,9 @@ def test_vendor_create_mapping_dual_writes_identity():
         qbo_id="V-1",
         realm_id="realm-x",
     )
-    vendor_repo.set_qbo_identity.assert_called_once_with(id=10, qbo_id="V-1", realm_id="realm-x")
+    vendor_repo.set_qbo_identity.assert_called_once_with(
+        id=10, qbo_id="V-1", realm_id="realm-x", active=None
+    )
     mapping_repo.create.assert_called_once_with(vendor_id=10, qbo_vendor_id=20)
 
 
@@ -326,7 +347,9 @@ def test_sub_cost_code_create_mapping_dual_writes_identity():
         qbo_id="I-2",
         realm_id="realm-scc",
     )
-    repo.set_qbo_identity.assert_called_once_with(id=12, qbo_id="I-2", realm_id="realm-scc")
+    repo.set_qbo_identity.assert_called_once_with(
+        id=12, qbo_id="I-2", realm_id="realm-scc", active=None
+    )
     mapping_repo.create.assert_called_once_with(sub_cost_code_id=12, qbo_item_id=23)
 
 
@@ -364,7 +387,9 @@ def test_payment_term_create_mapping_dual_writes_identity():
         qbo_id="T-1",
         realm_id="realm-pt",
     )
-    repo.set_qbo_identity.assert_called_once_with(id=13, qbo_id="T-1", realm_id="realm-pt")
+    repo.set_qbo_identity.assert_called_once_with(
+        id=13, qbo_id="T-1", realm_id="realm-pt", active=None
+    )
     mapping_repo.create.assert_called_once_with(payment_term_id=13, qbo_term_id=24)
 
 

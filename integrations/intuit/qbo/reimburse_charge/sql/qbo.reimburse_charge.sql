@@ -4,20 +4,18 @@ GO
 -- qbo.ReimburseCharge — durable staging for QBO ReimburseCharge records (U-186).
 --
 -- QBO auto-creates a ReimburseCharge (RC) for every Bill/Purchase line marked
--- Billable with a CustomerRef. Measured 2026-08-16 (U-242): QBO never exposes a
--- reverse Bill/Purchase LinkedTxn (un-invoiced RCs: none; invoiced RCs: forward
--- Invoice pointer only). See docs/rc_source_linking_signal_2026_08_16.md.
--- We capture RCs on scheduler cadence and PRESERVE any stored source pointer
--- across re-pulls (defensive/forward-compatible).
+-- Billable with a CustomerRef. Captured on scheduler cadence for invoice-line
+-- linking (LinkedTxn matching against qbo.InvoiceLine.LinkedTxnId).
 --
--- Deterministic Tier-0 invoice-line linking then resolves:
---   qbo.InvoiceLine.LinkedTxnId  ->  qbo.ReimburseCharge (QboId)
---                                ->  source Bill/Purchase (SourceTxnId)
---                                ->  dbo Bill/Expense line item.
+-- SourceTxnType/SourceTxnId/SourceTxnLineId (a reverse Bill/Purchase pointer)
+-- were retired (U-280): measured 2026-08-16 (U-242) QBO never populates them at
+-- any lifecycle stage (100% NULL across all live rows, re-confirmed 2026-08-19);
+-- the one sproc that would have read them (a Tier-0 arm in
+-- ProposeInvoiceSourceLinks) was already removed as provably dead by U-244. See
+-- docs/rc_source_linking_signal_2026_08_16.md.
 --
--- KEYSPACE: QboId / SourceTxnId / SourceTxnLineId are QBO STRING ids
--- (qbo.*.Id BIGINT keyspace is disjoint — never conflate). Pull-only staging:
--- no delete / reconcile-delete sproc.
+-- KEYSPACE: QboId is a QBO STRING id (qbo.*.Id BIGINT keyspace is disjoint —
+-- never conflate). Pull-only staging: no delete / reconcile-delete sproc.
 -- =============================================================================
 
 GO
@@ -37,10 +35,7 @@ CREATE TABLE [qbo].[ReimburseCharge]
     [CustomerRefName] NVARCHAR(255) NULL,
     [TxnDate] NVARCHAR(50) NULL,
     [Amount] DECIMAL(18,2) NULL,
-    [HasBeenInvoiced] BIT NULL,
-    [SourceTxnType] NVARCHAR(50) NULL,
-    [SourceTxnId] NVARCHAR(50) NULL,
-    [SourceTxnLineId] NVARCHAR(50) NULL
+    [HasBeenInvoiced] BIT NULL
 );
 END
 GO
@@ -83,9 +78,20 @@ CREATE INDEX IX_QboReimburseCharge_CustomerRefValue ON [qbo].[ReimburseCharge] (
 END
 GO
 
-IF OBJECT_ID('qbo.ReimburseCharge', 'U') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_QboReimburseCharge_SourceTxnId' AND object_id = OBJECT_ID('qbo.ReimburseCharge'))
+-- U-280: retire the dead SourceTxn* identity columns (100% NULL, no live reader
+-- — see the file header). Index first (a column can't be dropped while an
+-- index depends on it), then the columns. Both guards are idempotent so a
+-- re-run against an already-migrated database (or a fresh CREATE TABLE above,
+-- which no longer declares these columns) is a no-op.
+IF OBJECT_ID('qbo.ReimburseCharge', 'U') IS NOT NULL AND EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_QboReimburseCharge_SourceTxnId' AND object_id = OBJECT_ID('qbo.ReimburseCharge'))
 BEGIN
-CREATE INDEX IX_QboReimburseCharge_SourceTxnId ON [qbo].[ReimburseCharge] ([SourceTxnId]);
+    DROP INDEX IX_QboReimburseCharge_SourceTxnId ON [qbo].[ReimburseCharge];
+END
+GO
+
+IF OBJECT_ID('qbo.ReimburseCharge', 'U') IS NOT NULL AND EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('qbo.ReimburseCharge') AND name = 'SourceTxnType')
+BEGIN
+    ALTER TABLE [qbo].[ReimburseCharge] DROP COLUMN [SourceTxnType], [SourceTxnId], [SourceTxnLineId];
 END
 GO
 
@@ -102,10 +108,7 @@ CREATE OR ALTER PROCEDURE CreateQboReimburseCharge
     @CustomerRefName NVARCHAR(255),
     @TxnDate NVARCHAR(50),
     @Amount DECIMAL(18,2),
-    @HasBeenInvoiced BIT,
-    @SourceTxnType NVARCHAR(50),
-    @SourceTxnId NVARCHAR(50),
-    @SourceTxnLineId NVARCHAR(50)
+    @HasBeenInvoiced BIT
 )
 AS
 BEGIN
@@ -117,8 +120,7 @@ BEGIN
 
     INSERT INTO [qbo].[ReimburseCharge] (
         [CreatedDatetime], [ModifiedDatetime], [QboId], [RealmId],
-        [CustomerRefValue], [CustomerRefName], [TxnDate], [Amount], [HasBeenInvoiced],
-        [SourceTxnType], [SourceTxnId], [SourceTxnLineId]
+        [CustomerRefValue], [CustomerRefName], [TxnDate], [Amount], [HasBeenInvoiced]
     )
     OUTPUT
         INSERTED.[Id],
@@ -132,14 +134,10 @@ BEGIN
         INSERTED.[CustomerRefName],
         INSERTED.[TxnDate],
         INSERTED.[Amount],
-        INSERTED.[HasBeenInvoiced],
-        INSERTED.[SourceTxnType],
-        INSERTED.[SourceTxnId],
-        INSERTED.[SourceTxnLineId]
+        INSERTED.[HasBeenInvoiced]
     VALUES (
         @Now, @Now, @QboId, @RealmId,
-        @CustomerRefValue, @CustomerRefName, @TxnDate, @Amount, @HasBeenInvoiced,
-        @SourceTxnType, @SourceTxnId, @SourceTxnLineId
+        @CustomerRefValue, @CustomerRefName, @TxnDate, @Amount, @HasBeenInvoiced
     );
 
     COMMIT TRANSACTION;
@@ -170,10 +168,7 @@ BEGIN
         [CustomerRefName],
         [TxnDate],
         [Amount],
-        [HasBeenInvoiced],
-        [SourceTxnType],
-        [SourceTxnId],
-        [SourceTxnLineId]
+        [HasBeenInvoiced]
     FROM [qbo].[ReimburseCharge]
     WHERE [QboId] = @QboId AND [RealmId] = @RealmId;
 
@@ -204,10 +199,7 @@ BEGIN
         [CustomerRefName],
         [TxnDate],
         [Amount],
-        [HasBeenInvoiced],
-        [SourceTxnType],
-        [SourceTxnId],
-        [SourceTxnLineId]
+        [HasBeenInvoiced]
     FROM [qbo].[ReimburseCharge]
     WHERE [RealmId] = @RealmId
     ORDER BY [TxnDate] DESC;
@@ -219,10 +211,6 @@ GO
 
 GO
 
--- SourceTxn* CASE-WHEN-preserve: incoming NULL must not null stored values
--- (defensive/forward-compatible — measured 2026-08-16 U-242 found no reverse
--- Bill/Purchase LinkedTxn from QBO; see docs/rc_source_linking_signal_2026_08_16.md).
--- (Same NULL-coalescing UPDATE idiom the other qbo.* staging sprocs use.)
 CREATE OR ALTER PROCEDURE UpdateQboReimburseChargeByQboId
 (
     @QboId NVARCHAR(50),
@@ -232,10 +220,7 @@ CREATE OR ALTER PROCEDURE UpdateQboReimburseChargeByQboId
     @CustomerRefName NVARCHAR(255),
     @TxnDate NVARCHAR(50),
     @Amount DECIMAL(18,2),
-    @HasBeenInvoiced BIT,
-    @SourceTxnType NVARCHAR(50),
-    @SourceTxnId NVARCHAR(50),
-    @SourceTxnLineId NVARCHAR(50)
+    @HasBeenInvoiced BIT
 )
 AS
 BEGIN
@@ -253,13 +238,7 @@ BEGIN
         [CustomerRefName] = CASE WHEN @CustomerRefName IS NULL THEN [CustomerRefName] ELSE @CustomerRefName END,
         [TxnDate] = CASE WHEN @TxnDate IS NULL THEN [TxnDate] ELSE @TxnDate END,
         [Amount] = CASE WHEN @Amount IS NULL THEN [Amount] ELSE @Amount END,
-        [HasBeenInvoiced] = CASE WHEN @HasBeenInvoiced IS NULL THEN [HasBeenInvoiced] ELSE @HasBeenInvoiced END,
-        -- Preserve a stored source pointer when the incoming re-pull carries NULL
-        -- (defensive — QBO does not currently populate these fields; see
-        -- docs/rc_source_linking_signal_2026_08_16.md).
-        [SourceTxnType] = CASE WHEN @SourceTxnType IS NULL THEN [SourceTxnType] ELSE @SourceTxnType END,
-        [SourceTxnId] = CASE WHEN @SourceTxnId IS NULL THEN [SourceTxnId] ELSE @SourceTxnId END,
-        [SourceTxnLineId] = CASE WHEN @SourceTxnLineId IS NULL THEN [SourceTxnLineId] ELSE @SourceTxnLineId END
+        [HasBeenInvoiced] = CASE WHEN @HasBeenInvoiced IS NULL THEN [HasBeenInvoiced] ELSE @HasBeenInvoiced END
     OUTPUT
         INSERTED.[Id],
         INSERTED.[PublicId],
@@ -272,10 +251,7 @@ BEGIN
         INSERTED.[CustomerRefName],
         INSERTED.[TxnDate],
         INSERTED.[Amount],
-        INSERTED.[HasBeenInvoiced],
-        INSERTED.[SourceTxnType],
-        INSERTED.[SourceTxnId],
-        INSERTED.[SourceTxnLineId]
+        INSERTED.[HasBeenInvoiced]
     WHERE [QboId] = @QboId AND [RowVersion] = @RowVersion;
 
     COMMIT TRANSACTION;

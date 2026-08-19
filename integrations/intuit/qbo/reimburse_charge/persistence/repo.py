@@ -23,9 +23,6 @@ class QboReimburseChargeRepository:
     Repository for QboReimburseCharge persistence operations.
 
     Pull-only staging: create + upsert-update + reads. No delete sproc.
-    SourceTxn* preserve on UPDATE is defensive/forward-compatible — measured
-    2026-08-16 (U-242) found no reverse Bill/Purchase LinkedTxn from QBO; see
-    docs/rc_source_linking_signal_2026_08_16.md.
     """
 
     def __init__(self):
@@ -55,9 +52,6 @@ class QboReimburseChargeRepository:
                 txn_date=getattr(row, "TxnDate", None),
                 amount=Decimal(str(getattr(row, "Amount"))) if getattr(row, "Amount", None) is not None else None,
                 has_been_invoiced=bool(has_been_invoiced) if has_been_invoiced is not None else None,
-                source_txn_type=getattr(row, "SourceTxnType", None),
-                source_txn_id=getattr(row, "SourceTxnId", None),
-                source_txn_line_id=getattr(row, "SourceTxnLineId", None),
             )
         except AttributeError as error:
             logger.error(f"Attribute error during qbo reimburse charge mapping: {error}")
@@ -76,9 +70,6 @@ class QboReimburseChargeRepository:
         txn_date: Optional[str],
         amount: Optional[Decimal],
         has_been_invoiced: Optional[bool],
-        source_txn_type: Optional[str],
-        source_txn_id: Optional[str],
-        source_txn_line_id: Optional[str],
     ) -> QboReimburseCharge:
         """
         Create a new QboReimburseCharge.
@@ -95,9 +86,6 @@ class QboReimburseChargeRepository:
                         "TxnDate": txn_date,
                         "Amount": float(amount) if amount is not None else None,
                         "HasBeenInvoiced": int(has_been_invoiced) if has_been_invoiced is not None else None,
-                        "SourceTxnType": source_txn_type,
-                        "SourceTxnId": source_txn_id,
-                        "SourceTxnLineId": source_txn_line_id,
                     }
                     logger.debug(f"Calling CreateQboReimburseCharge with QboId: {qbo_id}, RealmId: {realm_id}")
                     call_procedure(
@@ -177,16 +165,9 @@ class QboReimburseChargeRepository:
         txn_date: Optional[str],
         amount: Optional[Decimal],
         has_been_invoiced: Optional[bool],
-        source_txn_type: Optional[str],
-        source_txn_id: Optional[str],
-        source_txn_line_id: Optional[str],
     ) -> Optional[QboReimburseCharge]:
         """
         Update a QboReimburseCharge by QBO ID.
-
-        The sproc CASE-WHEN-preserves SourceTxn* when the passed value is NULL,
-        so a re-pull never nulls a stored pointer (defensive — QBO does not
-        currently populate these fields; see docs/rc_source_linking_signal_2026_08_16.md).
         """
         try:
             with get_connection() as conn:
@@ -201,9 +182,6 @@ class QboReimburseChargeRepository:
                         "TxnDate": txn_date,
                         "Amount": float(amount) if amount is not None else None,
                         "HasBeenInvoiced": int(has_been_invoiced) if has_been_invoiced is not None else None,
-                        "SourceTxnType": source_txn_type,
-                        "SourceTxnId": source_txn_id,
-                        "SourceTxnLineId": source_txn_line_id,
                     }
                     logger.debug(f"Calling UpdateQboReimburseChargeByQboId with QboId: {qbo_id}, RealmId: {realm_id}")
                     call_procedure(

@@ -271,6 +271,41 @@ this whole unit exists to make cheap). Full suite re-confirmed green after.
 
 ---
 
+## 11. U-280 resolved — `reimburse_charge` dead identity columns retired (2026-08-19)
+
+The narrow slice of §5/§8-item-8 — drop `SourceTxnType`/`SourceTxnId`/`SourceTxnLineId` — is done, independent of
+the broader keep-vs-retire call. Live re-verified immediately before building: **26,645/26,645 rows 100% NULL**
+on all three columns (up from the 26,582 measured for §5 — table keeps growing via the hourly pull, same result);
+repo-wide grep + manual read confirmed **zero live readers** anywhere outside this package's own internal
+preserve-on-repull merge loop, which existed only to defend columns QBO has never once populated. One
+near-miss ruled out: `invoice/connector/invoice/business/service.py::_build_reimburse_charge_lookup` has a
+same-named local `source_txn_id`, but it's sourced from a live QBO API call at invoice-push time, unrelated to
+this table.
+
+**Built:** dropped the 3 columns + their index (`ALTER TABLE`/`DROP INDEX`, guarded + idempotent, index-before-column
+ordering) and stripped the read/write/preserve-on-repull handling from the dataclass, parse module (the whole
+`merge_reimburse_charge` function goes away — nothing left to preserve), repo, and service. `CreateQboReimburseCharge`/
+`ReadQboReimburseChargeByQboIdAndRealmId`/`ReadQboReimburseChargesByRealmId`/`UpdateQboReimburseChargeByQboId` all
+shrink to the remaining 7 fields. Codex was confirmed out-of-credits this session (ladder followed: retried at
+`high`, then on `gpt-5.4`, both failed identically) — fell back to a Workflow-driven 4-lens hunt (SQL migration
+safety / Python signature consistency / dead-code-removal completeness / test adequacy) with adversarial
+verification; all 4 PASS, 2 non-blocking P3s confirmed real but pre-existing/out-of-scope. `/simplify` 4-lens:
+1 real altitude finding (the analysis script's `SOURCE_TXN_TYPES` constant was inlined instead of living in
+`fingerprint.py`, its documented sanctioned home) — fixed; reuse/simplification/efficiency clean, efficiency lens
+flagged a genuine positive effect (dropping the dead index removes real write-amplification on every future
+upsert). New `tests/test_reimburse_charge_service.py` covers `_upsert`'s create/update kwarg wiring against the
+repo's real signatures via `create_autospec` (a plain `Mock()` would silently swallow the exact signature-drift
+this test exists to catch) — mutation-proven RED→GREEN in an isolated worktree. `qbo.reimburse_charge.sql`'s
+README refreshed (a hunt finding — it still described the retired columns as live). base==live confirmed for
+3/4 touched sprocs exact match pre-edit; `UpdateQboReimburseChargeByQboId` carried comment-only prod drift
+(no param/logic difference, irrelevant since this unit rewrites that whole section). Full pytest green (2365).
+⛔ **SQL NOT applied** — deploy owed (index drop + 3-column drop + 4 sproc `CREATE OR ALTER`).
+
+**Still open, unresolved by this unit:** the broader §5 question — whether the whole 26K-row `qbo.ReimburseCharge`
+mirror is worth keeping now that its intended Tier-0 consumer is gone — remains its own future disposition call.
+
+---
+
 ## Appendix — infra tables, explicitly untouched
 
 Per the assignment's own instruction, no disposition proposed for `qbo.Auth`, `qbo.Client`, `qbo.Outbox`, `qbo.ReconciliationIssue`, `qbo.ApiUsage` — these are program infra, not staging, and survive regardless of Phase 4/5/6 outcome.

@@ -11,21 +11,18 @@ python scripts/run_sql.py integrations/intuit/qbo/reimburse_charge/sql/qbo.reimb
 ## Why this table exists
 
 QBO auto-creates a **ReimburseCharge (RC)** for every Bill/Purchase line marked
-Billable with a `CustomerRef`. **Measured 2026-08-16 (U-242): QBO never exposes
-a reverse Bill/Purchase `LinkedTxn`** — un-invoiced RCs carry no `LinkedTxn`;
-invoiced RCs carry a forward Invoice pointer only. See
-`docs/rc_source_linking_signal_2026_08_16.md` (supersedes the original KI-32
-assumption).
+Billable with a `CustomerRef`. This table captures RCs on scheduler cadence for
+invoice-line linking (matching `qbo.InvoiceLine.LinkedTxnId` against
+`qbo.ReimburseCharge.QboId`).
 
-This table captures RCs on scheduler cadence and **preserves any stored source
-pointer across re-pulls** (defensive/forward-compatible), so Tier-0 linking can
-resolve if/when a source signal becomes available:
-
-```
-qbo.InvoiceLine.LinkedTxnId  ->  qbo.ReimburseCharge.QboId
-                             ->  SourceTxnId (source Bill/Purchase QBO id)
-                             ->  qbo.Bill/qbo.Purchase -> line -> dbo line item
-```
+**Retired (U-280):** the table originally also carried `SourceTxnType`/
+`SourceTxnId`/`SourceTxnLineId` — a reverse Bill/Purchase pointer intended to
+feed a Tier-0 `ProposeInvoiceSourceLinks` linking arm. Measured 2026-08-16
+(U-242): QBO never exposes that reverse `LinkedTxn` at any lifecycle stage
+(100% NULL across all live rows, re-confirmed 2026-08-19); the Tier-0 arm that
+would have read it was already removed as provably dead by U-244. The columns
+and their preserve-on-repull handling were dropped as dead weight. See
+`docs/rc_source_linking_signal_2026_08_16.md`.
 
 ## Sprocs
 
@@ -36,15 +33,8 @@ qbo.InvoiceLine.LinkedTxnId  ->  qbo.ReimburseCharge.QboId
 | `ReadQboReimburseChargesByRealmId` | realm-wide read |
 | `UpdateQboReimburseChargeByQboId` | ROWVERSION-guarded upsert-update |
 
-`UpdateQboReimburseChargeByQboId` uses **CASE-WHEN-preserve** on
-`SourceTxnType` / `SourceTxnId` / `SourceTxnLineId` when re-pull carries NULL
-(defensive/forward-compatible — QBO does not currently populate these fields;
-see `docs/rc_source_linking_signal_2026_08_16.md`).
-
 **Pull-only staging:** no delete / reconcile-delete sproc.
 
 ## Keyspace
 
-`QboId`, `SourceTxnId`, `SourceTxnLineId` are QBO **string** ids, disjoint from
-the `qbo.*.Id` BIGINT keyspace. Tier-0 joins go QBO-string → QBO-string; a
-`qbo.Bill.Id` / `qbo.Purchase.Id` is never aliased as a dbo id.
+`QboId` is a QBO **string** id, disjoint from the `qbo.*.Id` BIGINT keyspace.

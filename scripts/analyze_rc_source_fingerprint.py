@@ -23,6 +23,7 @@ from typing import Any
 from integrations.intuit.qbo.auth.business.service import QboAuthService
 from integrations.intuit.qbo.invoice.external.client import QboInvoiceClient
 from integrations.intuit.qbo.reimburse_charge.business.fingerprint import (
+    SOURCE_TXN_TYPES,
     CandidateIndex,
     RcBaseLine,
     SourceCandidate,
@@ -32,7 +33,6 @@ from integrations.intuit.qbo.reimburse_charge.business.fingerprint import (
     parse_rc_base_lines,
     tier_match_indexed,
 )
-from integrations.intuit.qbo.reimburse_charge.business.parse import SOURCE_TXN_TYPES
 from shared.database import get_connection
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")

@@ -6,10 +6,7 @@ from typing import List, Optional
 
 # Local Imports
 from integrations.intuit.qbo.reimburse_charge.business.model import QboReimburseCharge
-from integrations.intuit.qbo.reimburse_charge.business.parse import (
-    merge_reimburse_charge,
-    parse_reimburse_charge,
-)
+from integrations.intuit.qbo.reimburse_charge.business.parse import parse_reimburse_charge
 from integrations.intuit.qbo.reimburse_charge.persistence.repo import QboReimburseChargeRepository
 from integrations.intuit.qbo.invoice.external.client import (
     QboInvoiceClient,
@@ -31,10 +28,8 @@ class QboReimburseChargeService:
     Service for QboReimburseCharge staging (U-186).
 
     Upsert-only capture of QBO ReimburseCharges: NO module / Excel / Box / QBO
-    fan-out. Its sole job is to keep qbo.ReimburseCharge current for invoice-line
-    linking and to PRESERVE any stored source pointer across re-pulls
-    (defensive/forward-compatible — QBO does not currently expose a reverse
-    Bill/Purchase LinkedTxn; see docs/rc_source_linking_signal_2026_08_16.md).
+    fan-out. Its sole job is to keep qbo.ReimburseCharge current for
+    invoice-line linking.
     """
 
     def __init__(self, repo: Optional[QboReimburseChargeRepository] = None):
@@ -121,38 +116,21 @@ class QboReimburseChargeService:
     def _upsert(self, parsed: dict, realm_id: str) -> QboReimburseCharge:
         """
         Create or update one staging record from a parsed RC dict.
-
-        On update, `merge_reimburse_charge` preserves a previously-stored
-        source pointer when the incoming parse carries NULL (defensive —
-        QBO does not currently populate these fields; see
-        docs/rc_source_linking_signal_2026_08_16.md), belt-and-suspenders
-        with the sproc's CASE-WHEN-preserve.
         """
         qbo_id = parsed["qbo_id"]
         existing = self.repo.read_by_qbo_id_and_realm_id(qbo_id=qbo_id, realm_id=realm_id)
 
         if existing:
-            merged = merge_reimburse_charge(
-                stored={
-                    "source_txn_type": existing.source_txn_type,
-                    "source_txn_id": existing.source_txn_id,
-                    "source_txn_line_id": existing.source_txn_line_id,
-                },
-                incoming=parsed,
-            )
             logger.debug(f"Updating existing QBO reimburse charge {qbo_id}")
             return self.repo.update_by_qbo_id(
                 qbo_id=qbo_id,
                 row_version=existing.row_version_bytes,
                 realm_id=realm_id,
-                customer_ref_value=merged["customer_ref_value"],
-                customer_ref_name=merged["customer_ref_name"],
-                txn_date=merged["txn_date"],
-                amount=merged["amount"],
-                has_been_invoiced=merged["has_been_invoiced"],
-                source_txn_type=merged["source_txn_type"],
-                source_txn_id=merged["source_txn_id"],
-                source_txn_line_id=merged["source_txn_line_id"],
+                customer_ref_value=parsed["customer_ref_value"],
+                customer_ref_name=parsed["customer_ref_name"],
+                txn_date=parsed["txn_date"],
+                amount=parsed["amount"],
+                has_been_invoiced=parsed["has_been_invoiced"],
             )
 
         logger.debug(f"Creating new QBO reimburse charge {qbo_id}")
@@ -164,9 +142,6 @@ class QboReimburseChargeService:
             txn_date=parsed["txn_date"],
             amount=parsed["amount"],
             has_been_invoiced=parsed["has_been_invoiced"],
-            source_txn_type=parsed["source_txn_type"],
-            source_txn_id=parsed["source_txn_id"],
-            source_txn_line_id=parsed["source_txn_line_id"],
         )
 
     def read_by_realm_id(self, realm_id: str) -> List[QboReimburseCharge]:

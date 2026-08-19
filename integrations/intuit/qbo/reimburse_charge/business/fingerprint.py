@@ -25,6 +25,12 @@ LineKind = Literal["base", "derivative", "skip"]
 
 _AMOUNT_TOLERANCE = Decimal("0.01")
 
+# A reverse Bill/Purchase LinkedTxn is the only usable source pointer on a
+# ReimburseCharge (an Invoice entry, if present, is the forward consumption
+# link, not the source). The one place this measurement unit's own callers
+# (scripts/analyze_rc_source_fingerprint.py) should import this rule from.
+SOURCE_TXN_TYPES = ("Bill", "Purchase")
+
 
 @dataclass(frozen=True)
 class RcBaseLine:

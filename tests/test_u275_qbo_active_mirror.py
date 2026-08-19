@@ -367,3 +367,27 @@ def test_steal_block_clears_qbo_active(sql_path, sproc, table):
     assert "[QboActive] = NULL" in steal_set, (
         f"{sproc}: steal-path UPDATE clears QboId/RealmId but leaves QboActive stale."
     )
+
+
+@pytest.mark.parametrize(
+    "sql_path,sproc",
+    [
+        ("entities/vendor/sql/dbo.vendor.sql", "SetVendorQboIdentity"),
+        ("entities/payment_term/sql/dbo.payment_term.sql", "SetPaymentTermQboIdentity"),
+        ("entities/sub_cost_code/sql/dbo.subcostcode.sql", "SetSubCostCodeQboIdentity"),
+    ],
+)
+def test_main_update_preserves_qbo_active_on_null(sql_path, sproc):
+    """The main upsert UPDATE must PRESERVE QboActive when @Active IS NULL. A caller
+    that omits @Active — the old container during the SQL-first deploy window, or any
+    partial identity update — must not wipe the live mirror to NULL. This CASE guard is
+    exactly what makes SQL-first safe; without a test, a /simplify pass could collapse it
+    to an unconditional `[QboActive] = @Active` undetected (U-275 Gate-2 finding — pytest
+    mocks the DB so it cannot execute the T-SQL; this pins the guard textually)."""
+    text = (REPO_ROOT / sql_path).read_text(encoding="utf-8")
+    body = _sproc_body(text, sproc)
+    normalized = re.sub(r"\s+", " ", body)
+    assert (
+        "[QboActive] = CASE WHEN @Active IS NOT NULL THEN @Active ELSE [QboActive] END"
+        in normalized
+    ), f"{sproc}: main UPDATE must NULL-preserve QboActive (CASE WHEN @Active IS NOT NULL ...)."

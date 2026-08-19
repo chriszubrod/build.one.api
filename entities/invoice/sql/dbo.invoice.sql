@@ -611,6 +611,10 @@ BEGIN
     INNER JOIN dbo.[BillLineItem] bli
         ON ABS(bli.[Amount] - lc.[QboAmount]) < 0.01
         AND COALESCE(bli.[Description], N'') = COALESCE(lc.[QboDescription], N'')
+        -- U-274 Gate-2 fix: restore the project scope the old CustomerRefValue-scoped
+        -- qbo tier carried (the re-home dropped it, exploding cross-project matches).
+        -- NULL-permissive: a source line with no project still matches.
+        AND (bli.[ProjectId] = @ProjectId OR bli.[ProjectId] IS NULL)
     INNER JOIN dbo.[Bill] b ON b.[Id] = bli.[BillId]
         AND TRY_CAST(b.[BillDate] AS DATE) = lc.[ServiceDate]
 
@@ -631,6 +635,10 @@ BEGIN
     INNER JOIN dbo.[ExpenseLineItem] eli
         ON ABS(eli.[Amount] - lc.[QboAmount]) < 0.01
         AND COALESCE(eli.[Description], N'') = COALESCE(lc.[QboDescription], N'')
+        -- U-274 Gate-2 fix: restore the project scope the old CustomerRefValue-scoped
+        -- qbo tier carried (the re-home dropped it, exploding cross-project matches).
+        -- NULL-permissive: a source line with no project still matches.
+        AND (eli.[ProjectId] = @ProjectId OR eli.[ProjectId] IS NULL)
     INNER JOIN dbo.[Expense] e ON e.[Id] = eli.[ExpenseId]
         AND TRY_CAST(e.[ExpenseDate] AS DATE) = lc.[ServiceDate]
 
@@ -656,6 +664,10 @@ BEGIN
     INNER JOIN dbo.[BillCreditLineItem] bcli
         ON ABS(ABS(bcli.[Amount]) - ABS(lc.[QboAmount])) < 0.01
         AND COALESCE(bcli.[Description], N'') = COALESCE(lc.[QboDescription], N'')
+        -- U-274 Gate-2 fix: restore the project scope the old CustomerRefValue-scoped
+        -- qbo tier carried (the re-home dropped it, exploding cross-project matches).
+        -- NULL-permissive: a source line with no project still matches.
+        AND (bcli.[ProjectId] = @ProjectId OR bcli.[ProjectId] IS NULL)
     INNER JOIN dbo.[BillCredit] bc ON bc.[Id] = bcli.[BillCreditId]
         AND TRY_CAST(bc.[CreditDate] AS DATE) = lc.[ServiceDate];
 END;

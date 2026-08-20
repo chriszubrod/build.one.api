@@ -94,8 +94,23 @@ class CustomerCustomerConnector:
                     local_side_mapping=by_customer,
                     qbo_side_mapping=by_qbo_customer,
                 )
-                # Fall through — do NOT write to `direct` while the two
-                # identity sources disagree about which Customer this is.
+                # HARD STOP — do NOT fall through to the legacy mapping-table path.
+                # That path would either update a DIFFERENT Customer and call
+                # set_qbo_identity (which SetCustomerQboIdentity's theft-clear UPDATE
+                # applies against ANY row carrying that (QboId, RealmId) pair, silently
+                # NULLing `direct`'s identity), or mint a DUPLICATE Customer via the
+                # CREATE path when no mapping exists for this QboCustomer. Never proceed
+                # past a confirmed conflict — a human resolves which side is correct; the
+                # recorded reconciliation issue is the durable follow-up (U-276 hotfix,
+                # 2026-08-20 — this fall-through identity-theft bug shipped in the pilot
+                # and was caught by U-278's review of the mirrored vendorcredit unit).
+                raise ValueError(
+                    f"CustomerCustomer identity conflict for QboCustomer "
+                    f"{qbo_customer.qbo_id} (id={qbo_customer.id}): dbo.Customer "
+                    f"{direct.id} already carries this identity but the mapping table "
+                    f"disagrees. Not auto-repointed; see the recorded reconciliation "
+                    f"issue. Skipping until a human resolves it."
+                )
             else:
                 logger.info(
                     f"Updating existing Customer {direct.id} from QboCustomer {qbo_customer.id} "

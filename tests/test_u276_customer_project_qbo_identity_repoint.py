@@ -223,13 +223,13 @@ def test_customer_raise_identity_mapping_conflict_issue_names_both_sides():
     assert "5" in kwargs["details"]   # the local-side conflicting QboCustomer
 
 
-def test_customer_fast_path_hit_updates_without_writing_on_conflict():
-    """Integration-level check: on a detected conflict, sync_from_qbo_customer
-    must NOT write to the dbo-identity-matched Customer (55) — the ordering
-    bug round 3 found (write first, detect after) would corrupt it. The
-    fallback path (exercised elsewhere) is free to do whatever it normally
-    does with a globally-unmapped QboCustomer; only the non-write on 55 is
-    this test's concern."""
+def test_customer_fast_path_hit_conflict_raises_and_never_mints_duplicate():
+    """On a detected conflict, sync_from_qbo_customer must RAISE (hard stop) — never
+    fall through to the legacy mapping-table path, which would mint a DUPLICATE Customer
+    (create) or set_qbo_identity on a DIFFERENT one (identity theft). The U-276 pilot
+    shipped that fall-through — this test's PRIOR form even asserted a duplicate id=77
+    was "free" to be minted — and U-278's review of the mirrored vendorcredit unit
+    caught it. Fixed in the U-276 hotfix (2026-08-20)."""
     connector, mapping_repo, customer_service, reconciliation_repo = _build_customer_connector()
     qbo_customer = _make_qbo_customer(qbo_id="C-99", realm_id="realm-1")
     direct_hit = SimpleNamespace(id=55, name="Acme", email="", phone="")
@@ -237,17 +237,16 @@ def test_customer_fast_path_hit_updates_without_writing_on_conflict():
     mapping_repo.read_by_customer_id.return_value = None
     conflicting = SimpleNamespace(id=2, customer_id=9, qbo_customer_id=qbo_customer.id)
     mapping_repo.read_by_qbo_customer_id.return_value = conflicting
-    # Safe terminal state for the legacy fallback this falls through to.
+    # If the fall-through bug were still present, these would let it mint id=77.
     customer_service.read_by_name.return_value = None
     customer_service.create.return_value = SimpleNamespace(id=77)
 
-    connector.sync_from_qbo_customer(qbo_customer)
+    with pytest.raises(ValueError):
+        connector.sync_from_qbo_customer(qbo_customer)
 
-    reconciliation_repo.create.assert_called_once()
-    # Customer 55 (the dbo-identity match) must never be written to.
-    for call in customer_service.repo.update_by_id.call_args_list:
-        written = call.args[0] if call.args else call.kwargs.get("customer")
-        assert getattr(written, "id", None) != 55
+    reconciliation_repo.create.assert_called_once()  # conflict recorded (durable follow-up)
+    customer_service.create.assert_not_called()  # NO duplicate Customer minted
+    customer_service.repo.update_by_id.assert_not_called()  # NO write to ANY Customer
 
 
 def test_customer_fast_path_hit_self_heals_missing_mapping():
@@ -454,10 +453,10 @@ def test_project_raise_identity_mapping_conflict_issue_names_both_sides():
     assert "5" in kwargs["details"]   # the local-side conflicting QboCustomer
 
 
-def test_project_fast_path_hit_updates_without_writing_on_conflict():
-    """Integration-level check mirroring the Customer one above: on a
-    detected conflict, sync_from_qbo_customer must NOT write to the
-    dbo-identity-matched Project (88)."""
+def test_project_fast_path_hit_conflict_raises_and_never_repoints_or_mints():
+    """Mirrors the Customer hotfix test: on a detected conflict, sync_from_qbo_customer
+    must RAISE — never fall through, which would set_qbo_identity on a DIFFERENT Project
+    (identity theft, e.g. Project 9 here) or mint a duplicate. U-276 hotfix (2026-08-20)."""
     connector, mapping_repo, project_service, reconciliation_repo = _build_project_connector()
     qbo_customer = _make_qbo_customer(qbo_id="P-1", realm_id="realm-1", is_job=True)
     direct_hit = SimpleNamespace(id=88, name="Proj X", description="", status="active", customer_id=None)
@@ -465,20 +464,17 @@ def test_project_fast_path_hit_updates_without_writing_on_conflict():
     mapping_repo.read_by_project_id.return_value = None
     conflicting = SimpleNamespace(id=2, project_id=9, qbo_customer_id=qbo_customer.id)
     mapping_repo.read_by_qbo_customer_id.return_value = conflicting
-    # Safe terminal state for the legacy fallback this falls through to (it
-    # finds `conflicting`'s own mapping and updates Project 9 through it —
-    # unrelated to Project 88, which is this test's actual concern).
+    # If the fall-through bug were still present, these would let it repoint Project 9.
     project_service.read_by_id.return_value = SimpleNamespace(
         id=9, name="Other Proj", description="", status="active", customer_id=None
     )
     project_service.repo.update_by_id.side_effect = lambda p: p
 
-    connector.sync_from_qbo_customer(qbo_customer)
+    with pytest.raises(ValueError):
+        connector.sync_from_qbo_customer(qbo_customer)
 
-    reconciliation_repo.create.assert_called_once()
-    for call in project_service.repo.update_by_id.call_args_list:
-        written = call.args[0] if call.args else call.kwargs.get("project")
-        assert getattr(written, "id", None) != 88
+    reconciliation_repo.create.assert_called_once()  # conflict recorded (durable follow-up)
+    project_service.repo.update_by_id.assert_not_called()  # NO write to ANY Project (no theft)
 
 
 def test_project_fast_path_hit_self_heals_missing_mapping():

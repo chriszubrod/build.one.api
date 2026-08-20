@@ -126,8 +126,23 @@ class CustomerProjectConnector:
                     local_side_mapping=by_project,
                     qbo_side_mapping=by_qbo_customer,
                 )
-                # Fall through — do NOT write to `direct` while the two
-                # identity sources disagree about which Project this is.
+                # HARD STOP — do NOT fall through to the legacy mapping-table path.
+                # That path would either update a DIFFERENT Project and call
+                # set_qbo_identity (which SetProjectQboIdentity's theft-clear UPDATE
+                # applies against ANY row carrying that (QboId, RealmId) pair, silently
+                # NULLing `direct`'s identity), or mint a DUPLICATE Project via the
+                # CREATE path when no mapping exists for this QboCustomer. Never proceed
+                # past a confirmed conflict — a human resolves which side is correct; the
+                # recorded reconciliation issue is the durable follow-up (U-276 hotfix,
+                # 2026-08-20 — this fall-through identity-theft bug shipped in the pilot
+                # and was caught by U-278's review of the mirrored vendorcredit unit).
+                raise ValueError(
+                    f"CustomerProject identity conflict for QboCustomer "
+                    f"{qbo_customer.qbo_id} (id={qbo_customer.id}): dbo.Project "
+                    f"{direct.id} already carries this identity but the mapping table "
+                    f"disagrees. Not auto-repointed; see the recorded reconciliation "
+                    f"issue. Skipping until a human resolves it."
+                )
             else:
                 logger.info(
                     f"Updating existing Project {direct.id} from QboCustomer {qbo_customer.id} "

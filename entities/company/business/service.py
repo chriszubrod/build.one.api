@@ -51,6 +51,13 @@ class CompanyService:
     def read_by_name(self, name: str) -> Optional[Company]:
         return self.repo.read_by_name(name)
 
+    def read_by_qbo_identity(self, qbo_id: str, realm_id: Optional[str] = None) -> Optional[Company]:
+        """
+        Read a company directly by its dbo-native QBO identity (U-277) — the
+        Phase-4 repoint seam, bypassing the qbo.CompanyInfo staging table.
+        """
+        return self.repo.read_by_qbo_identity(qbo_id, realm_id)
+
     def update_by_public_id(
         self,
         public_id: str,

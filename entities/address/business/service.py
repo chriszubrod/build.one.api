@@ -49,6 +49,13 @@ class AddressService:
         """
         return self.repo.read_by_street_one_and_city(street_one=street_one, city=city)
 
+    def read_by_qbo_identity(self, qbo_id: str, realm_id: Optional[str] = None) -> Optional[Address]:
+        """
+        Read an address directly by its dbo-native QBO identity (U-277) — the
+        Phase-4 repoint seam, bypassing the qbo.PhysicalAddress staging table.
+        """
+        return self.repo.read_by_qbo_identity(qbo_id, realm_id)
+
     def update_by_public_id(self, public_id: str, address) -> Optional[Address]:
         """
         Update an address by public ID.

@@ -629,6 +629,12 @@ def test_address_sync_does_not_overwrite_identity_on_shared_street_city_cannot_r
 
     qbo_repo.read_by_id.side_effect = read_qbo_by_id
 
+    # U-277 fast path: neither "42_bill" nor "42_ship" has ever been stamped on
+    # a dbo.Address yet in this scenario, so the direct dbo-identity lookup
+    # must miss for both syncs — exercising the pre-existing mapping-table /
+    # street-city path this test is actually about, not the new fast path.
+    address_service.read_by_qbo_identity.return_value = None
+
     # First sync: no mapping, create address + mapping via create_mapping.
     mapping_repo.read_by_qbo_physical_address_id.return_value = None
     mapping_repo.read_by_address_id.return_value = None

@@ -49,6 +49,8 @@ class AddressRepository:
                 state=row.State,
                 zip=row.Zip,
                 country=country,
+                qbo_id=getattr(row, "QboId", None),
+                realm_id=getattr(row, "RealmId", None),
             )
         except AttributeError as error:
             logger.error(f"Attribute error during address mapping: {error}")
@@ -121,6 +123,25 @@ class AddressRepository:
                 return self._from_db(row)
         except Exception as error:
             logger.error(f"Error during read address by ID: {error}")
+            raise map_database_error(error)
+
+    def read_by_qbo_identity(self, qbo_id: str, realm_id: Optional[str] = None) -> Optional[Address]:
+        """
+        Read an address directly by its dbo-native QBO identity (U-277), bypassing
+        the qbo.PhysicalAddress / qbo.PhysicalAddressAddress staging/mapping tables entirely.
+        """
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(
+                    cursor=cursor,
+                    name="ReadAddressByQboIdAndRealmId",
+                    params={"QboId": qbo_id, "RealmId": realm_id},
+                )
+                row = cursor.fetchone()
+                return self._from_db(row)
+        except Exception as error:
+            logger.error(f"Error during read address by QBO identity: {error}")
             raise map_database_error(error)
 
     def read_by_public_id(self, public_id: str) -> Optional[Address]:

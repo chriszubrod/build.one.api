@@ -42,6 +42,8 @@ class CompanyRepository:
                 organization_id=getattr(row, "OrganizationId", None),
                 created_by_user_id=getattr(row, "CreatedByUserId", None),
                 modified_by_user_id=getattr(row, "ModifiedByUserId", None),
+                qbo_id=getattr(row, "QboId", None),
+                realm_id=getattr(row, "RealmId", None),
             )
         except AttributeError as error:
             logger.error(f"Attribute error during company mapping: {error}")
@@ -110,6 +112,25 @@ class CompanyRepository:
                 return self._from_db(row)
         except Exception as error:
             logger.error(f"Error during read company by ID: {error}")
+            raise map_database_error(error)
+
+    def read_by_qbo_identity(self, qbo_id: str, realm_id: Optional[str] = None) -> Optional[Company]:
+        """
+        Read a company directly by its dbo-native QBO identity (U-277), bypassing
+        the qbo.CompanyInfo / qbo.CompanyInfoCompany staging/mapping tables entirely.
+        """
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(
+                    cursor=cursor,
+                    name="ReadCompanyByQboIdAndRealmId",
+                    params={"QboId": qbo_id, "RealmId": realm_id},
+                )
+                row = cursor.fetchone()
+                return self._from_db(row)
+        except Exception as error:
+            logger.error(f"Error during read company by QBO identity: {error}")
             raise map_database_error(error)
 
     def read_by_public_id(self, public_id: str) -> Optional[Company]:

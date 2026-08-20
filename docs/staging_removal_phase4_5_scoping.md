@@ -34,11 +34,11 @@
 | account | *(none — no dbo projection)* | 8 | **Yes** | `BillBillConnector._get_ap_account_ref` reads `qbo.Account.AccountType` on every live Bill push; no dbo home for "which GL account is AP" |
 | attachable | Attachment | 13 | No | Phase-4-ready. (Phase 5 retirement is a separate, deeper question — §6.) |
 | bill | Bill + BillLineItem | 23 | **Yes** | `ProposeInvoiceSourceLinks` (Invoice family) reads `qbo.BillLine.{CustomerRefValue,ItemRefValue,Amount,Description}` + `qbo.Bill.TxnDate` for cross-family source-link fingerprinting |
-| company_info | Company | 14 | No | Phase-4-ready. Sequence with `physical_address` (real coupling, see below). |
+| company_info | Company | 14 | No | Phase-4-ready. Sequence with `physical_address` (real coupling, see below). **Built (U-277, 2026-08-19, see §12).** |
 | customer | Customer + Project | 20 | No | Phase-4-ready. One cross-family read (`DisplayName` in Bill's/Invoice's push helpers) has a ready dbo substitute (`dbo.Project.Name`/`.QboId`) — no new schema needed. **Built (U-276, 2026-08-19, see §10).** |
 | invoice | Invoice + InvoiceLineItem | 23 | **Yes (narrower than scoped)** | `draw_financials.py` parses `qbo.InvoiceLine.ItemRefName` (Trend feature, workaround for corrupt `qbo.ItemSubCostCode`); `push.py`'s `ComputeInvoiceDrawMatrix` reads `qbo.Invoice.TotalAmt` + a `qbo.InvoiceLine` count as a hard invariant gate on every draw push. The 3rd reach the assignment flagged (audit.py/reconciliation.py ItemRefName) is resolved by the in-flight peer `U-272` work. |
 | item | CostCode + SubCostCode | 20 | **Yes** | `dbo.vw_SubCostCode` LEFT JOINs `qbo.Item.Active` (no dbo-native Active column); Bill's *live* push connector reads `qbo.Item.Name` for outbound `ItemRef.name` (Purchase's and Invoice's equivalent reads exist but are dormant/unreachable code paths) |
-| physical_address | Address | 14 | No | Phase-4-ready. Real blast radius is 3 producer families (company_info, customer, **and** vendor — the classify pass only found company_info), not 1. |
+| physical_address | Address | 14 | No | Phase-4-ready. Real blast radius is 3 producer families (company_info, customer, **and** vendor — the classify pass only found company_info), not 1. **Built (U-277, 2026-08-19, see §12) — all 3 producers repointed via one connector change, confirmed by call-site audit.** |
 | purchase | Expense + ExpenseLineItem | 26 | **Yes** | The U-005 expense-coding cockpit (`/expense-coding`, live web route) is *built on* `qbo.Purchase.PrivateNote`/`qbo.PurchaseLine.AccountRefName` — `dbo.ExpenseCodingItem` stores only derived output, never the source text. `ProposeInvoiceSourceLinks` also reaches in (no `DirectDbo` fallback tier exists for Purchase/Expense, unlike Bill's). |
 | reimburse_charge | *(none — QBO-synthetic, no dbo entity)* | 4 | No | Phase-4-ready in the sense that nothing blocks it — but "Phase 4" doesn't map cleanly (see §5). |
 | term | PaymentTerm | 14 | **Yes** | `dbo.payment_term.sql`'s own read sprocs LEFT JOIN `qbo.Term.Active` — shipped as a **deliberate** design decision (U-255, `89885a07`, 2026-08-17), not a stopgap. ⚠️ SQL committed but **not yet applied to prod** per `TODO.md`. |
@@ -303,6 +303,74 @@ README refreshed (a hunt finding — it still described the retired columns as l
 
 **Still open, unresolved by this unit:** the broader §5 question — whether the whole 26K-row `qbo.ReimburseCharge`
 mirror is worth keeping now that its intended Tier-0 consumer is gone — remains its own future disposition call.
+
+---
+
+## 12. U-277 resolved — `company_info` + `physical_address` Phase-4 repoint (2026-08-19)
+
+Built as scoped: both families repointed onto `dbo.Company`/`dbo.Address` native `QboId`/`RealmId` (U-238a/c),
+mirroring §10's pilot pattern exactly (`ReadXByQboIdAndRealmId` sproc, repo `read_by_qbo_identity()`,
+check-before-write mapping guard, conflict→defer-to-mapping). Cross-family-reader audit (§8 item 6's own mandate)
+confirmed `physical_address`'s 3 producers — company_info's own driver (`scripts/sync_qbo_company_info.py`),
+`customer`'s `CustomerProjectConnector` (Bill/ShipAddr), `vendor`'s `VendorVendorConnector` (BillAddr) — all call
+the **same** `PhysicalAddressAddressConnector.sync_from_qbo_to_address(qbo_physical_address_id)` method with an
+unchanged signature, so repointing its internals covers all 3 without touching any producer's own code and without
+booking a new deferred prerequisite (unlike §10's 4 pull-resolvers, which had to be booked onto their owning
+families' own units). No outbound push anywhere reads `dbo.Company.QboId`/`dbo.Address.QboId` — confirmed by audit
+— so §10 step 4 (push-side verify-before-trust) has no analog here.
+
+Codex confirmed out-of-credits this session (ladder followed: retried once at `high`/`gpt-5.4`, failed identically —
+same workspace-wide outage U-280 hit) — fell back to a Workflow-driven 5-lens adversarial hunt (QBO identity/mapping
+logic, SQL sproc correctness, concurrency/cross-family blast radius, test adequacy, money/RBAC/lifecycle patterns)
+with refute-by-default verification: 14 raw findings, 10 confirmed. **Fixed:** (1) P1 — the fast path's "never write
+to a conflicted row" guarantee was defeated one hop later by the legacy fallback's own by-name/by-street-city
+rediscovery re-finding the exact same row and overwriting it in Step 3 regardless of the mapping-repair skip; added
+a `protected_company_id`/`protected_address_id` guard immediately before each connector's Step-3 write, mirrored
+symmetrically to both connectors even though the hunt's own repro was Company-specific. (2) P1×2 — `dbo.company.sql`/
+`dbo.address.sql`'s base `CREATE TABLE` blocks never declared `QboId`/`RealmId` (only added out-of-band via
+238a/238c), so this diff's new column references in `ReadCompanyById`/`ReadAddressById`/the two new sprocs would
+abort a from-scratch build at `CREATE PROCEDURE` time (SQL error 207); added the same idempotent `ALTER TABLE ADD`
++ `UNIQUE INDEX` blocks §10's `dbo.customer.sql` already carries for the identical migration family — verified
+no-op-safe against live prod (columns AND unique indexes already exist there from 238a/238c). (3) P2 — fast-path
+`update_by_id()` result was never None-checked unlike the adjacent legacy path's own guard in the same method
+(ROWVERSION-race gap); added the matching guard to both connectors. (4) P2 — the "names both sides" conflict-message
+tests used bare-digit substring assertions trivially satisfied by the always-emitted first sentence; strengthened to
+phrase-level assertions. (5) P3 — service-layer passthrough tests never asserted the return value was propagated;
+fixed. All 5 fixes mutation-proven RED→GREEN in an isolated worktree. **Investigated, not confirmed:** the hunt's
+altitude lens flagged the already-shipped `CustomerProjectConnector` (§10/U-276) as sharing the same write-on-conflict
+exposure — traced directly and refuted: Project's legacy fallback structurally differs (its rediscovery-with-existing-mapping
+branch raises rather than falling through to a write). `VendorCreditBillCreditConnector` (U-278, concurrent/uncommitted
+this session) was flagged as unverified either way — not checked further, out of this unit's file scope while that
+session had it in flight. **Deferred, not fixed (documented, not blocking):** a P2 finding that the fast path's QboId
+lookup isn't collision-safe across the Customer/Vendor address namespaces sharing this connector (composite
+`f"{qbo_id}_bill"`-style keys can coincide across entity types) — the existing conflict guard prevents data
+corruption, but `SetAddressQboIdentity`'s identity-steal path only `logger.warning`s, no `ReconciliationIssue`; fixing
+observability would mean changing `Set*QboIdentity`'s return contract, a bigger change than this unit's scope,
+shared by every `Set*QboIdentity` caller codebase-wide — own follow-up unit. `/simplify` 4-lens: reuse lens caught 2
+new drift-type constants defined but not imported at their own call sites (fixed); a `state`/`state_` naming
+collision in the physical_address connector, from copy-pasting into a scope where `state` was already the
+Address.state field (renamed to `mapping_state` in both connectors for consistency); the now-5-way duplication of
+`_resolve_mapping_state`/`_raise_identity_mapping_conflict_issue` across company_info/physical_address/customer/
+project/vendorcredit flagged by 2 of 4 lenses as ripe for extraction into `integrations/intuit/qbo/base/` — deferred
+as its own follow-up (would touch 3 already-shipped/concurrent files well outside this diff); a proposed
+`_apply_qbo_fields` extraction for the 2–5 line field-assignment block duplicated once per connector was
+considered and skipped (too small to be worth the indirection). Full pytest green throughout (2396, up from 2365
+baseline after U-280); 31 new tests in `tests/test_u277_company_address_qbo_identity_repoint.py`. No SQL applied to
+prod — new sprocs + the idempotent ALTER TABLE/index guards verified via temp-named copies and read-only schema
+checks against real Company/Address rows, never touching live objects; base==live confirmed for both existing
+sprocs before editing.
+
+**Commit-hygiene note:** `integrations/intuit/qbo/base/drift_types.py` and `tests/test_qbo_identity_reference.py`
+are shared files this unit legitimately touches (2 new constants; 1 existing test fixed) that are ALSO
+mid-edit, uncommitted, in the same working tree by the concurrent U-278 (`vendorcredit`) session — both files show
+git `MM` status (U-278's edits already staged, this unit's edits layered unstaged on top). A plain pathspec-commit
+of these 2 paths would pull in U-278's uncommitted work ahead of its own review. Recommend sequencing: let U-278
+commit first, then this unit's diff on these 2 files reduces to just its own 2-constant/1-fixture addition for a
+clean pathspec-commit.
+
+**Still open, unresolved by this unit:** the deferred cross-namespace collision observability gap above; the
+5-way `_resolve_mapping_state` duplication (own follow-up, generalize once all in-flight repoints — U-277, U-278 —
+have landed, so it doesn't touch a moving target).
 
 ---
 

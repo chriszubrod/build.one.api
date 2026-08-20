@@ -6,13 +6,16 @@ from typing import Optional
 # Third-party Imports
 
 # Local Imports
+from integrations.intuit.qbo.base.drift_types import DRIFT_COMPANY_IDENTITY_CONFLICT
 from integrations.intuit.qbo.base.ids import coerce_id
+from integrations.intuit.qbo.base.reconciliation_recorder import record_mapping_issue
 from integrations.intuit.qbo.company_info.connector.business.model import CompanyInfoCompany
 from integrations.intuit.qbo.company_info.connector.persistence.repo import CompanyInfoCompanyRepository
 from integrations.intuit.qbo.company_info.business.service import QboCompanyInfoService
 from integrations.intuit.qbo.company_info.business.model import QboCompanyInfo as QboCompanyInfoModel
 from integrations.intuit.qbo.company_info.external.client import QboCompanyInfoClient
 from integrations.intuit.qbo.company_info.external.schemas import QboCompanyInfo as QboCompanyInfoExternalSchema
+from integrations.intuit.qbo.reconciliation.persistence.repo import ReconciliationIssueRepository
 from entities.company.business.service import CompanyService
 from entities.company.business.model import Company
 
@@ -30,11 +33,13 @@ class CompanyInfoCompanyConnector:
         mapping_repo: Optional[CompanyInfoCompanyRepository] = None,
         company_service: Optional[CompanyService] = None,
         qbo_company_info_service: Optional[QboCompanyInfoService] = None,
+        reconciliation_repo: Optional[ReconciliationIssueRepository] = None,
     ):
         """Initialize the CompanyInfoCompanyConnector."""
         self.mapping_repo = mapping_repo or CompanyInfoCompanyRepository()
         self.company_service = company_service or CompanyService()
         self.qbo_company_info_service = qbo_company_info_service or QboCompanyInfoService()
+        self.reconciliation_repo = reconciliation_repo or ReconciliationIssueRepository()
 
     def sync_from_qbo_to_company(self, qbo_company_info_id: int, realm_id: str) -> Company:
         """
@@ -63,7 +68,100 @@ class CompanyInfoCompanyConnector:
         # Company.Name maps to CompanyInfo.LegalName
         company_name = qbo_company_info.legal_name
         company_website = qbo_company_info.web_addr
-        
+
+        # U-277 (Phase-4): resolve identity directly against dbo.Company's
+        # native QboId/RealmId (U-238a) before falling back to the
+        # qbo.CompanyInfoCompany mapping-table hop below. Every Company synced
+        # even once already carries this identity (set_qbo_identity is called
+        # on both the update and create paths below), so this covers the
+        # steady-state case without touching qbo.CompanyInfo at all.
+        #
+        # Mirrors CustomerCustomerConnector's U-276 fast path exactly: the
+        # mapping-table state is checked BEFORE any write, not after — writing
+        # to the dbo-identity-matched Company first and detecting a conflict
+        # afterward would corrupt that Company's Name/Website in the case
+        # where the mapping table, not dbo identity, is actually still the
+        # correct side. On a detected conflict we record it and deliberately
+        # do NOT return here; falling through to the pre-existing
+        # mapping-table path below is the safe choice.
+        protected_company_id = None
+        direct = (
+            self.company_service.read_by_qbo_identity(
+                qbo_company_info.qbo_id, qbo_company_info.realm_id or realm_id
+            )
+            if qbo_company_info.qbo_id else None
+        )
+        if direct:
+            mapping_state, by_company, by_qbo_company_info = self._resolve_mapping_state(
+                company_id=coerce_id(direct.id), qbo_company_info=qbo_company_info
+            )
+            if mapping_state == "conflict":
+                self._raise_identity_mapping_conflict_issue(
+                    qbo_company_info=qbo_company_info,
+                    dbo_company_id=coerce_id(direct.id),
+                    local_side_mapping=by_company,
+                    qbo_side_mapping=by_qbo_company_info,
+                    realm_id=realm_id,
+                )
+                # Fall through — do NOT write to `direct` while the two
+                # identity sources disagree about which Company this is.
+                # `protected_company_id` guards Step 3 below: the legacy
+                # path's own by-name rediscovery can re-find this exact
+                # Company (company_name was derived from this same
+                # QboCompanyInfo) and would otherwise overwrite it anyway —
+                # the write-before-check bug this whole pattern exists to
+                # prevent, just reached one hop later (review-confirmed).
+                protected_company_id = coerce_id(direct.id)
+            else:
+                logger.info(
+                    f"Updating existing Company {direct.id} from QboCompanyInfo {qbo_company_info.id} "
+                    f"(direct dbo identity match)"
+                )
+                direct.name = company_name
+                direct.website = company_website
+                company = self.company_service.repo.update_by_id(direct)
+                if not company:
+                    # ROWVERSION race: a concurrent writer touched this exact
+                    # Company between the read_by_qbo_identity() lookup above
+                    # and this UPDATE, so it affected 0 rows. Mirrors the
+                    # adjacent legacy path's own guard (Step 3 below) instead
+                    # of leaving a bare None to blow up on the next attribute
+                    # access.
+                    logger.error(
+                        f"Failed to update Company {direct.id} via fast path - "
+                        f"update_by_id returned None (concurrent write race)"
+                    )
+                    raise ValueError("Failed to update Company")
+                if mapping_state == "missing":
+                    try:
+                        self.mapping_repo.create(
+                            company_id=coerce_id(company.id), qbo_company_info_id=qbo_company_info.id
+                        )
+                    except Exception as e:
+                        # A concurrent sync may have raced this exact QboCompanyInfo between
+                        # the "missing" check above and this create — no sp_getapplock
+                        # serializes create_mapping()'s call sites (same pre-existing gap as
+                        # U-276's Customer/Project family). Re-check rather than assume: if
+                        # it's now a real conflict, record it properly instead of a bare warning.
+                        logger.error(
+                            f"CompanyInfoCompany mapping create failed for Company "
+                            f"{company.id} after a 'missing' pre-check: {e}"
+                        )
+                        recheck_state, recheck_by_company, recheck_by_qbo_company_info = (
+                            self._resolve_mapping_state(
+                                company_id=coerce_id(company.id), qbo_company_info=qbo_company_info
+                            )
+                        )
+                        if recheck_state == "conflict":
+                            self._raise_identity_mapping_conflict_issue(
+                                qbo_company_info=qbo_company_info,
+                                dbo_company_id=coerce_id(company.id),
+                                local_side_mapping=recheck_by_company,
+                                qbo_side_mapping=recheck_by_qbo_company_info,
+                                realm_id=realm_id,
+                            )
+                return company
+
         # Step 1: Try to find Company via existing mapping
         mapping = self.mapping_repo.read_by_qbo_company_info_id(qbo_company_info_id)
         company = None
@@ -98,6 +196,18 @@ class CompanyInfoCompanyConnector:
                     needs_mapping_repair = True
         
         # Step 3: Update existing Company or create new one
+        if company and protected_company_id is not None and coerce_id(company.id) == protected_company_id:
+            # The legacy path (Step 1's mapping lookup or Step 2's by-name
+            # rediscovery) resolved back to the SAME Company the fast path
+            # just flagged as identity-conflicted above. Writing to it here
+            # would silently defeat that guard — return it untouched; the
+            # reconciliation issue already recorded is the actionable trail.
+            logger.warning(
+                f"Legacy fallback re-resolved Company {company.id} to the same row the fast-path "
+                f"conflict guard just protected — skipping write."
+            )
+            return company
+
         if company:
             qbo_modified = self._parse_datetime(qbo_company_info.modified_datetime)
             company_modified = self._parse_datetime(company.modified_datetime)
@@ -336,6 +446,69 @@ class CompanyInfoCompanyConnector:
                 )
         
         return qbo_company_info
+
+    def _resolve_mapping_state(self, *, company_id: int, qbo_company_info: QboCompanyInfoModel):
+        """
+        Read-only check of the CompanyInfoCompany mapping table against a
+        dbo-identity match, BEFORE any write happens (U-277 fast path).
+        Mirrors CustomerCustomerConnector._resolve_mapping_state exactly — see
+        that docstring for the full rationale. Checks BOTH directions since a
+        company_id-only check would miss a stale mapping still binding this
+        qbo_company_info_id to a DIFFERENT Company.
+
+        Returns (state, by_company, by_qbo_company_info) where state is one of
+        "consistent" / "missing" / "conflict".
+        """
+        by_company = self.mapping_repo.read_by_company_id(company_id)
+        if by_company and by_company.qbo_company_info_id == qbo_company_info.id:
+            return "consistent", by_company, by_company
+        by_qbo_company_info = self.mapping_repo.read_by_qbo_company_info_id(qbo_company_info.id)
+        if not by_company and not by_qbo_company_info:
+            return "missing", by_company, by_qbo_company_info
+        return "conflict", by_company, by_qbo_company_info
+
+    def _raise_identity_mapping_conflict_issue(
+        self,
+        *,
+        qbo_company_info: QboCompanyInfoModel,
+        dbo_company_id: int,
+        local_side_mapping: Optional[CompanyInfoCompany],
+        qbo_side_mapping: Optional[CompanyInfoCompany],
+        realm_id: str,
+    ) -> None:
+        """
+        Record a dbo-identity <-> mapping-table split found by
+        _resolve_mapping_state. Mirrors CustomerCustomerConnector's identically
+        named/shaped method — covers all three conflict shapes (qbo-side only,
+        local-side only, or both) in ONE issue, never silently dropping either
+        side's blocker.
+        """
+        parts = [
+            f"CompanyInfoCompany identity conflict. dbo.Company {dbo_company_id} carries native "
+            f"QBO identity for QboCompanyInfo {qbo_company_info.id} (QboId={qbo_company_info.qbo_id}, "
+            f"RealmId={qbo_company_info.realm_id})."
+        ]
+        if qbo_side_mapping:
+            parts.append(
+                f"qbo-side: the mapping table still binds that same QboCompanyInfo to a DIFFERENT "
+                f"Company {qbo_side_mapping.company_id} (mapping {qbo_side_mapping.id})."
+            )
+        if local_side_mapping:
+            parts.append(
+                f"local-side: Company {dbo_company_id}'s own mapping row (mapping "
+                f"{local_side_mapping.id}) still binds it to a DIFFERENT QboCompanyInfo "
+                f"{local_side_mapping.qbo_company_info_id}."
+            )
+        parts.append("Not auto-repointed — investigate which side is correct.")
+        record_mapping_issue(
+            self.reconciliation_repo,
+            drift_type="company_identity_conflict",
+            entity_type="Company",
+            entity_public_id=None,
+            qbo_id=str(qbo_company_info.qbo_id) if qbo_company_info.qbo_id else None,
+            realm_id=qbo_company_info.realm_id or realm_id or "",
+            details=" ".join(parts),
+        )
 
     def create_mapping(
         self,

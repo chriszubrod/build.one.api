@@ -13,6 +13,34 @@ CREATE TABLE [dbo].[Company]
 END
 GO
 
+-- Idempotent column add for existing environments (U-277). Live since
+-- migration 238a_qbo_identity_headers.sql (2026-08); declared here so a
+-- fresh environment built from just the base file matches prod — mirrors
+-- entities/customer/sql/dbo.customer.sql's identical block for the same
+-- migration family. (Pre-existing OrganizationId/CreatedByUserId/
+-- ModifiedByUserId gap is unrelated and stays governed by README.md's
+-- documented two-pass build order.)
+IF OBJECT_ID('dbo.Company', 'U') IS NOT NULL
+   AND NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('dbo.Company') AND name = 'QboId')
+BEGIN
+    ALTER TABLE [dbo].[Company] ADD [QboId] NVARCHAR(50) NULL;
+END
+GO
+
+IF OBJECT_ID('dbo.Company', 'U') IS NOT NULL
+   AND NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('dbo.Company') AND name = 'RealmId')
+BEGIN
+    ALTER TABLE [dbo].[Company] ADD [RealmId] NVARCHAR(50) NULL;
+END
+GO
+
+IF OBJECT_ID('dbo.Company', 'U') IS NOT NULL AND NOT EXISTS (
+    SELECT 1 FROM sys.indexes WHERE name = 'UQ_Company_QboId_RealmId' AND object_id = OBJECT_ID('dbo.Company')
+)
+BEGIN
+    CREATE UNIQUE INDEX UQ_Company_QboId_RealmId ON [dbo].[Company] ([QboId], [RealmId]) WHERE [QboId] IS NOT NULL;
+END
+GO
 
 CREATE OR ALTER PROCEDURE CreateCompany
 (
@@ -93,9 +121,48 @@ BEGIN
         [Website],
         [OrganizationId],
         [CreatedByUserId],
-        [ModifiedByUserId]
+        [ModifiedByUserId],
+        [QboId],
+        [RealmId]
     FROM dbo.[Company]
     WHERE [Id] = @Id;
+
+    COMMIT TRANSACTION;
+END;
+GO
+
+-- U-277 (Phase-4): direct dbo-native identity lookup, mirrors U-276's
+-- ReadCustomerByQboIdAndRealmId. Lets the CompanyInfo connector resolve
+-- "does a dbo.Company already exist for this external QBO id" WITHOUT
+-- hopping through the qbo.CompanyInfo / qbo.CompanyInfoCompany
+-- staging/mapping tables — every Company synced at least once already
+-- carries QboId/RealmId via SetCompanyQboIdentity. RealmId NULL-equality
+-- mirrors SetCompanyQboIdentity's own stolen-identity comparison.
+CREATE OR ALTER PROCEDURE ReadCompanyByQboIdAndRealmId
+(
+    @QboId NVARCHAR(50),
+    @RealmId NVARCHAR(50) = NULL
+)
+AS
+BEGIN
+    BEGIN TRANSACTION;
+
+    SELECT
+        [Id],
+        [PublicId],
+        [RowVersion],
+        CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
+        CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
+        [Name],
+        [Website],
+        [OrganizationId],
+        [CreatedByUserId],
+        [ModifiedByUserId],
+        [QboId],
+        [RealmId]
+    FROM dbo.[Company]
+    WHERE [QboId] = @QboId
+      AND (([RealmId] = @RealmId) OR ([RealmId] IS NULL AND @RealmId IS NULL));
 
     COMMIT TRANSACTION;
 END;

@@ -19,6 +19,33 @@ CREATE TABLE [dbo].[Address]
 END
 GO
 
+-- Idempotent column add for existing environments (U-277). Live since
+-- migration 238c_qbo_identity_reference.sql (2026-08); declared here so a
+-- fresh environment built from just the base file matches prod — mirrors
+-- entities/customer/sql/dbo.customer.sql's identical block for the same
+-- migration family.
+IF OBJECT_ID('dbo.Address', 'U') IS NOT NULL
+   AND NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('dbo.Address') AND name = 'QboId')
+BEGIN
+    ALTER TABLE [dbo].[Address] ADD [QboId] NVARCHAR(50) NULL;
+END
+GO
+
+IF OBJECT_ID('dbo.Address', 'U') IS NOT NULL
+   AND NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('dbo.Address') AND name = 'RealmId')
+BEGIN
+    ALTER TABLE [dbo].[Address] ADD [RealmId] NVARCHAR(50) NULL;
+END
+GO
+
+IF OBJECT_ID('dbo.Address', 'U') IS NOT NULL AND NOT EXISTS (
+    SELECT 1 FROM sys.indexes WHERE name = 'UQ_Address_QboId_RealmId' AND object_id = OBJECT_ID('dbo.Address')
+)
+BEGIN
+    CREATE UNIQUE INDEX UQ_Address_QboId_RealmId ON [dbo].[Address] ([QboId], [RealmId]) WHERE [QboId] IS NOT NULL;
+END
+GO
+
 
 GO
 
@@ -105,9 +132,49 @@ BEGIN
         [City],
         [State],
         [Zip],
-        [Country]
+        [Country],
+        [QboId],
+        [RealmId]
     FROM dbo.[Address]
     WHERE [Id] = @Id;
+
+    COMMIT TRANSACTION;
+END;
+GO
+
+-- U-277 (Phase-4): direct dbo-native identity lookup, mirrors U-276's
+-- ReadCustomerByQboIdAndRealmId. Lets the PhysicalAddress connector resolve
+-- "does a dbo.Address already exist for this external QBO id" WITHOUT
+-- hopping through the qbo.PhysicalAddress / qbo.PhysicalAddressAddress
+-- staging/mapping tables — every Address synced at least once already
+-- carries QboId/RealmId via SetAddressQboIdentity. RealmId NULL-equality
+-- mirrors SetAddressQboIdentity's own stolen-identity comparison.
+CREATE OR ALTER PROCEDURE ReadAddressByQboIdAndRealmId
+(
+    @QboId NVARCHAR(50),
+    @RealmId NVARCHAR(50) = NULL
+)
+AS
+BEGIN
+    BEGIN TRANSACTION;
+
+    SELECT
+        [Id],
+        [PublicId],
+        [RowVersion],
+        CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
+        CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
+        [StreetOne],
+        [StreetTwo],
+        [City],
+        [State],
+        [Zip],
+        [Country],
+        [QboId],
+        [RealmId]
+    FROM dbo.[Address]
+    WHERE [QboId] = @QboId
+      AND (([RealmId] = @RealmId) OR ([RealmId] IS NULL AND @RealmId IS NULL));
 
     COMMIT TRANSACTION;
 END;

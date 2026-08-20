@@ -46,6 +46,9 @@ class Attachment:
     # U-187: vendor invoice number parsed from this attachment's own extracted
     # text. Sync-proof — the QBO connector never writes dbo.Attachment (KI-42).
     vendor_invoice_number: Optional[str] = None
+    # U-279: dbo-native QBO identity (U-238c columns, read sproc added U-279).
+    qbo_id: Optional[str] = None
+    realm_id: Optional[str] = None
 
     @property
     def row_version_bytes(self) -> Optional[bytes]:

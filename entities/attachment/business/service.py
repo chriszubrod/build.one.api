@@ -174,6 +174,13 @@ class AttachmentService:
         """
         return self.repo.read_by_hash(file_hash)
 
+    def read_by_qbo_identity(self, qbo_id: str, realm_id: Optional[str] = None) -> Optional[Attachment]:
+        """
+        Read an attachment directly by its dbo-native QBO identity (U-279) —
+        the Phase-5 repoint seam, bypassing qbo.Attachable/qbo.AttachableAttachment.
+        """
+        return self.repo.read_by_qbo_identity(qbo_id, realm_id)
+
     def update_by_public_id(
         self,
         public_id: str,

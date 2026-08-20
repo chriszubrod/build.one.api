@@ -49,6 +49,11 @@ class AttachmentRepository:
             # U-187: sync-proof vendor invoice number (may be absent on rows read
             # by mutation-sproc OUTPUTs that don't SELECT it — getattr default).
             vendor_invoice_number = getattr(row, 'VendorInvoiceNumber', None)
+            # U-279: dbo-native QBO identity — only ReadAttachmentById/
+            # ByPublicId/ByQboIdAndRealmId select these; other Read*/mutation
+            # OUTPUTs don't, hence the getattr default.
+            qbo_id = getattr(row, 'QboId', None)
+            realm_id = getattr(row, 'RealmId', None)
 
             return Attachment(
                 id=row.Id,
@@ -83,6 +88,8 @@ class AttachmentRepository:
                 ai_extracted_fields=ai_extracted_fields,
                 categorized_datetime=categorized_datetime,
                 vendor_invoice_number=vendor_invoice_number,
+                qbo_id=qbo_id,
+                realm_id=realm_id,
             )
         except AttributeError as error:
             logger.error(f"Attribute error during attachment mapping: {error}")
@@ -546,6 +553,29 @@ class AttachmentRepository:
                     cursor.close()
         except Exception as error:
             logger.error(f"Error during confirm categorization: {error}")
+            raise map_database_error(error)
+
+    def read_by_qbo_identity(self, qbo_id: str, realm_id: Optional[str] = None) -> Optional[Attachment]:
+        """
+        Read an attachment directly by its dbo-native QBO identity (U-279),
+        bypassing the qbo.Attachable / qbo.AttachableAttachment staging/mapping
+        tables entirely.
+        """
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                try:
+                    call_procedure(
+                        cursor=cursor,
+                        name="ReadAttachmentByQboIdAndRealmId",
+                        params={"QboId": qbo_id, "RealmId": realm_id},
+                    )
+                    row = cursor.fetchone()
+                    return self._from_db(row)
+                finally:
+                    cursor.close()
+        except Exception as error:
+            logger.error(f"Error during read attachment by QBO identity: {error}")
             raise map_database_error(error)
 
     def set_qbo_identity(

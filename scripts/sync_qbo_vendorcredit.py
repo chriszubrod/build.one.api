@@ -97,14 +97,21 @@ def _link_attachments_to_bill_credit_line_items(
     }
 
     for qbo_attachable in qbo_attachables:
-        mapping = attachable_attachment_repo.read_by_qbo_attachable_id(qbo_attachable.id)
-        if not mapping:
-            logger.debug(f"No Attachment mapping found for QboAttachable {qbo_attachable.id}")
-            continue
-
-        attachment = attachment_service.read_by_id(mapping.attachment_id)
+        # U-279: resolve the Attachment via dbo.Attachment's native QboId/
+        # RealmId first, falling back to the qbo.AttachableAttachment mapping
+        # table for rows the fast path doesn't (yet) cover — read-only lookup,
+        # no write/identity-theft risk at this call site.
+        attachment = None
+        if qbo_attachable.qbo_id:
+            attachment = attachment_service.read_by_qbo_identity(qbo_attachable.qbo_id, qbo_attachable.realm_id)
+        if not attachment:
+            mapping = attachable_attachment_repo.read_by_qbo_attachable_id(qbo_attachable.id)
+            if not mapping:
+                logger.debug(f"No Attachment mapping found for QboAttachable {qbo_attachable.id}")
+                continue
+            attachment = attachment_service.read_by_id(mapping.attachment_id)
         if not attachment or not attachment.public_id:
-            logger.debug(f"Attachment {mapping.attachment_id} not found")
+            logger.debug(f"Attachment not found for QboAttachable {qbo_attachable.id}")
             continue
 
         # BillCreditLineItemAttachment is 1:1 — each line item holds at most one attachment.

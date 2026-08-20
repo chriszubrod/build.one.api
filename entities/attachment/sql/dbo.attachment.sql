@@ -187,7 +187,9 @@ BEGIN
         [AICategoryReasoning],
         [AIExtractedFields],
         CONVERT(VARCHAR(19), [CategorizedDatetime], 120) AS [CategorizedDatetime],
-        [VendorInvoiceNumber]
+        [VendorInvoiceNumber],
+        [QboId],
+        [RealmId]
     FROM dbo.[Attachment]
     WHERE [Id] = @Id;
 
@@ -240,7 +242,9 @@ BEGIN
         [AICategoryReasoning],
         [AIExtractedFields],
         CONVERT(VARCHAR(19), [CategorizedDatetime], 120) AS [CategorizedDatetime],
-        [VendorInvoiceNumber]
+        [VendorInvoiceNumber],
+        [QboId],
+        [RealmId]
     FROM dbo.[Attachment]
     WHERE [PublicId] = @PublicId;
 
@@ -608,5 +612,62 @@ BEGIN
             (@QboId IS NOT NULL AND ([QboId] IS NULL OR [QboId] <> @QboId))
          OR (@RealmId IS NOT NULL AND ([RealmId] IS NULL OR [RealmId] <> @RealmId))
       );
+END;
+GO
+
+-- U-279 (Phase-5 enablement): read-by-QboId lookup for dbo.Attachment's native
+-- QboId/RealmId (U-238c). RealmId NULL-equality mirrors SetAttachmentQboIdentity's
+-- own theft-detection comparison above.
+CREATE OR ALTER PROCEDURE ReadAttachmentByQboIdAndRealmId
+(
+    @QboId NVARCHAR(50),
+    @RealmId NVARCHAR(50) = NULL
+)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    BEGIN TRANSACTION;
+
+    SELECT
+        [Id],
+        [PublicId],
+        [RowVersion],
+        CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
+        CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
+        [Filename],
+        [OriginalFilename],
+        [FileExtension],
+        [ContentType],
+        [FileSize],
+        [FileHash],
+        [BlobUrl],
+        [Description],
+        [Category],
+        [Tags],
+        [IsArchived],
+        [Status],
+        [DownloadCount],
+        CONVERT(VARCHAR(19), [LastDownloadedDatetime], 120) AS [LastDownloadedDatetime],
+        CONVERT(VARCHAR(19), [ExpirationDate], 120) AS [ExpirationDate],
+        [StorageTier],
+        [ExtractionStatus],
+        [ExtractedTextBlobUrl],
+        [ExtractionError],
+        CONVERT(VARCHAR(19), [ExtractedDatetime], 120) AS [ExtractedDatetime],
+        [AICategory],
+        [AICategoryConfidence],
+        [AICategoryStatus],
+        [AICategoryReasoning],
+        [AIExtractedFields],
+        CONVERT(VARCHAR(19), [CategorizedDatetime], 120) AS [CategorizedDatetime],
+        [VendorInvoiceNumber],
+        [QboId],
+        [RealmId]
+    FROM dbo.[Attachment]
+    WHERE [QboId] = @QboId
+      AND (([RealmId] = @RealmId) OR ([RealmId] IS NULL AND @RealmId IS NULL));
+
+    COMMIT TRANSACTION;
 END;
 GO

@@ -141,7 +141,9 @@ BEGIN
         [CreditNumber],
         [TotalAmount],
         [Memo],
-        [IsDraft]
+        [IsDraft],
+        [QboId],
+        [RealmId]
     FROM dbo.[BillCredit]
     WHERE [Id] = @Id;
 
@@ -444,5 +446,45 @@ BEGIN
             (@QboId IS NOT NULL AND ([QboId] IS NULL OR [QboId] <> @QboId))
          OR (@RealmId IS NOT NULL AND ([RealmId] IS NULL OR [RealmId] <> @RealmId))
       );
+END;
+GO
+
+-- U-278 (Phase-4, header/reference repoint): direct dbo-native identity lookup,
+-- mirroring ReadCustomerByQboIdAndRealmId (U-276). Lets VendorCreditBillCreditConnector
+-- resolve "does a dbo.BillCredit already exist for this external QBO id" WITHOUT hopping
+-- through the qbo.VendorCredit / qbo.VendorCreditBillCredit staging/mapping tables — every
+-- BillCredit synced at least once already carries QboId/RealmId via SetBillCreditQboIdentity,
+-- so this is the steady-state fast path; the mapping-table lookup remains as a fallback for
+-- rows that predate identity stamping. RealmId NULL-equality mirrors SetBillCreditQboIdentity's
+-- own stolen-identity comparison. No RBAC threading — BillCredit has no row-level RBAC on
+-- direct-id reads (ReadBillCreditById/ReadBillCreditByPublicId are unscoped too).
+CREATE OR ALTER PROCEDURE ReadBillCreditByQboIdAndRealmId
+(
+    @QboId NVARCHAR(50),
+    @RealmId NVARCHAR(50) = NULL
+)
+AS
+BEGIN
+    BEGIN TRANSACTION;
+
+    SELECT
+        [Id],
+        [PublicId],
+        [RowVersion],
+        CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
+        CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
+        [VendorId],
+        CONVERT(VARCHAR(19), [CreditDate], 120) AS [CreditDate],
+        [CreditNumber],
+        [TotalAmount],
+        [Memo],
+        [IsDraft],
+        [QboId],
+        [RealmId]
+    FROM dbo.[BillCredit]
+    WHERE [QboId] = @QboId
+      AND (([RealmId] = @RealmId) OR ([RealmId] IS NULL AND @RealmId IS NULL));
+
+    COMMIT TRANSACTION;
 END;
 GO

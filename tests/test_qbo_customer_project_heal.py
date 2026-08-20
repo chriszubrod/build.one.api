@@ -508,8 +508,10 @@ def test_vendorcredit_get_project_public_id_uses_realm_scoped_lookup_when_realm_
     customer_project_repo = Mock()
     customer_project_repo.read_by_qbo_customer_id.return_value = mapping
 
+    # U-278: no prior dbo-native identity yet — force the legacy
+    # qbo.Customer -> qbo.CustomerProject fallback this test targets.
     connector = _build_vendor_credit_line_connector(
-        project_service=Mock(read_by_id=Mock(return_value=project)),
+        project_service=Mock(read_by_id=Mock(return_value=project), read_by_qbo_identity=Mock(return_value=None)),
     )
 
     with patch(QBO_CUSTOMER_REPO_PATH, return_value=qbo_customer_repo), patch(
@@ -534,8 +536,10 @@ def test_vendorcredit_get_project_public_id_falls_back_to_unscoped_lookup_withou
     customer_project_repo = Mock()
     customer_project_repo.read_by_qbo_customer_id.return_value = mapping
 
+    # U-278: no prior dbo-native identity yet — force the legacy
+    # qbo.Customer -> qbo.CustomerProject fallback this test targets.
     connector = _build_vendor_credit_line_connector(
-        project_service=Mock(read_by_id=Mock(return_value=project)),
+        project_service=Mock(read_by_id=Mock(return_value=project), read_by_qbo_identity=Mock(return_value=None)),
     )
 
     with patch(QBO_CUSTOMER_REPO_PATH, return_value=qbo_customer_repo), patch(

@@ -496,6 +496,9 @@ def _make_bill_credit_connector():
     mapping_repo.create.return_value = SimpleNamespace(id=1)
     bill_credit_service = Mock()
     bill_credit_service.repo = Mock()
+    # U-278: no prior dbo-native identity yet — these tests exercise the CREATE path,
+    # which is exactly what a real never-before-synced BillCredit would report.
+    bill_credit_service.read_by_qbo_identity.return_value = None
     connector = VendorCreditBillCreditConnector(
         mapping_repo=mapping_repo, bill_credit_service=bill_credit_service
     )

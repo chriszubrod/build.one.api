@@ -290,6 +290,11 @@ def _build_vc_connector(**overrides):
     )
     for key, value in overrides.items():
         setattr(connector, key, value)
+    # U-278: no prior dbo-native identity yet — these rollback/compensation tests
+    # exercise the CREATE and mapping-table UPDATE paths, not the fast path. Set on
+    # whichever bill_credit_service ended up assigned (default or override) so an
+    # overridden Mock doesn't skip this.
+    connector.bill_credit_service.read_by_qbo_identity.return_value = None
     connector._get_vendor_public_id = Mock(return_value="vendor-pub-id")
     return connector
 
@@ -400,6 +405,10 @@ def test_vendorcredit_get_project_public_id_db_error_propagates():
     qbo_customer_repo.read_by_qbo_id.side_effect = ValueError("db blip")
 
     connector = VendorCreditLineItemConnector()
+    # U-278: no prior dbo-native identity yet — force the legacy fallback this
+    # test targets; otherwise the real (unmocked) ProjectService would hit a
+    # live DB connection, which this pure-logic/no-live-DB suite must not do.
+    connector.project_service = Mock(read_by_qbo_identity=Mock(return_value=None))
 
     with patch(QBO_CUSTOMER_REPO_PATH, return_value=qbo_customer_repo), patch(
         CUSTOMER_PROJECT_REPO_PATH, return_value=Mock()
@@ -414,6 +423,7 @@ def test_vendorcredit_get_project_public_id_not_found_returns_none():
     qbo_customer_repo.read_by_qbo_id.return_value = None
 
     connector = VendorCreditLineItemConnector()
+    connector.project_service = Mock(read_by_qbo_identity=Mock(return_value=None))
 
     with patch(QBO_CUSTOMER_REPO_PATH, return_value=qbo_customer_repo), patch(
         CUSTOMER_PROJECT_REPO_PATH, return_value=Mock()

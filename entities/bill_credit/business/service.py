@@ -153,6 +153,17 @@ class BillCreditService:
         assert_can_access_bill_credit(bill_credit.id)
         return bill_credit
 
+    def read_by_qbo_identity(self, qbo_id: str, realm_id: Optional[str] = None) -> Optional[BillCredit]:
+        """
+        Read a bill credit directly by its dbo-native QBO identity (U-278) — the
+        Phase-4 repoint seam, bypassing the qbo.VendorCredit staging table.
+        """
+        bill_credit = self.repo.read_by_qbo_identity(qbo_id, realm_id)
+        if bill_credit is None:
+            return None
+        assert_can_access_bill_credit(bill_credit.id)
+        return bill_credit
+
     def update_by_public_id(
         self,
         public_id: str,

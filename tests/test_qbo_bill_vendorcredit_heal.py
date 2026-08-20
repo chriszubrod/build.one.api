@@ -255,9 +255,13 @@ def _make_vc_mapping(*, mapping_id=1, bill_credit_id=400):
 
 
 def _build_vc_connector():
+    bill_credit_service = Mock()
+    # U-278: no prior dbo-native identity yet — these heal tests exercise the
+    # mapping-table path (a mapping exists but its bound BillCredit read empty).
+    bill_credit_service.read_by_qbo_identity.return_value = None
     connector = VendorCreditBillCreditConnector(
         mapping_repo=Mock(),
-        bill_credit_service=Mock(),
+        bill_credit_service=bill_credit_service,
         bill_credit_line_item_service=Mock(),
         vendor_service=Mock(),
         reconciliation_repo=Mock(),

@@ -21,14 +21,51 @@ U-276 repointed the `customer` connector family's identity resolution off `qbo.C
 deferred the following to the families that own them, since they don't read `DisplayName` (out of the doc's
 originally-flagged scope) but DO need the same repoint before `qbo.Customer` can actually be dropped in Phase 6:
 
-- [ ] **4 pull-resolvers still hop `qbo.Customer → qbo.CustomerProject` for Project identity** instead of a direct
+- [x] **vendorcredit's pull-resolver** (→ U-278) — done 2026-08-19: `integrations/intuit/qbo/vendorcredit/connector/bill_credit_line_item/business/service.py`'s `_get_project_public_id` now tries `ProjectService.read_by_qbo_identity()` first, falling back to the legacy `qbo.Customer → qbo.CustomerProject` hop for any Project that predates identity stamping. Memoized per connector lifetime (mirrors `_sub_cost_code_cache`).
+- [ ] **3 pull-resolvers still hop `qbo.Customer → qbo.CustomerProject` for Project identity** instead of a direct
   `dbo.Project.QboId`/`RealmId` lookup: `integrations/intuit/qbo/bill/connector/bill_line_item/business/service.py`
   and `integrations/intuit/qbo/purchase/connector/expense_line_item/business/service.py`'s `_get_project_public_id`
-  (→ U-283 bill/purchase), `integrations/intuit/qbo/vendorcredit/connector/bill_credit_line_item/business/service.py`'s
-  equivalent (→ U-278 vendorcredit), and `integrations/intuit/qbo/invoice/connector/invoice/business/service.py`'s
+  (→ U-283 bill/purchase), and `integrations/intuit/qbo/invoice/connector/invoice/business/service.py`'s
   (→ U-284 invoice — this one also has an auto-heal path via `CustomerProjectConnector.heal_missing_mapping()`,
   re-verify that seam still makes sense once repointed). Mirror U-276's `ProjectRepository.read_by_qbo_identity()`
   seam — it already exists, no new plumbing needed on the Project side.
+
+## U-278 follow-ups (vendorcredit header/reference Phase-4 repoint) — flagged 2026-08-19
+
+U-278 repointed `VendorCreditBillCreditConnector`'s header identity resolution off `qbo.VendorCredit`/
+`qbo.VendorCreditBillCredit` onto `dbo.BillCredit`'s native `QboId`/`RealmId`, mirroring U-276's pattern.
+Line-level fingerprint staging is explicitly out of scope (see `docs/staging_removal_phase4_5_scoping.md` §2/§7/§8
+item 4) — own follow-on unit now that U-274 unblocked it. Two items surfaced building it:
+
+- [ ] **PRIORITY — U-276's already-shipped `CustomerCustomerConnector`/`CustomerProjectConnector` likely carry the
+  same identity-theft-on-conflict-fallthrough bug this unit's fix-loop found and fixed for BillCredit, and — unlike
+  BillCredit's fix, which was caught before any deploy — U-276's SQL AND Python code are BOTH already live in prod
+  (`ReadCustomerByQboIdAndRealmId`/`ReadProjectByQboIdAndRealmId` confirmed live via direct `sys.objects` query,
+  modify_date 2026-08-19 15:03).** The bug: on a detected identity `"conflict"` (dbo-identity match exists on one
+  row, but the `qbo.Customer{Customer,Project}` mapping table points at a DIFFERENT row), `sync_from_qbo_customer`
+  records a reconciliation issue then **falls through** to the legacy mapping-table path, which calls
+  `set_qbo_identity(qbo_id=..., realm_id=...)` on the CONFLICTING row — `Set{Customer,Project}QboIdentity`'s own
+  theft-detection `UPDATE ... WHERE [Id] <> @Id AND [QboId] = @QboId AND (RealmId match)` then silently NULLs the
+  dbo-identity-matched row's QboId/RealmId, corrupting exactly the row the conflict check just confirmed legitimately
+  holds that identity — in the same call that logged "Not auto-repointed — investigate which side is correct."
+  Confirmed reachable via direct code trace (`integrations/intuit/qbo/customer/connector/customer/business/service.py`
+  and `.../project/business/service.py`); independently flagged as PLAUSIBLE by a second reviewer during this unit's
+  round-2 re-review, who read the same code from a different angle. U-278's fix (raise `ValueError` immediately after
+  recording the conflict issue, never fall through) is a direct template — same shape needed in both files. This
+  needs its own Gate-1'd unit (SQL is live, so any Python-only fix ships hot — treat as P0-surface, verify a live
+  conflict scenario isn't already silently corrupting Customer/Project data before scoping the fix).
+- [ ] **The `_resolve_mapping_state`/`_raise_identity_mapping_conflict_issue`/`_apply_*_fields_and_sync` fast-path
+  trio is now hand-copied a 3rd time** (Customer, Project, BillCredit — U-276 built it twice, U-278 a third), with
+  ~7 more repoints confirmed queued (`docs/staging_removal_phase4_5_scoping.md` §8: company_info+physical_address,
+  attachable, account, term/vendor/item, bill/purchase, invoice). Flagged independently by 3 separate `/simplify`
+  review angles (reuse, simplification, altitude) during this unit's Pass-2 — the fragile invariant this trio exists
+  to protect is exactly what went wrong in the finding above, and hand-copying it again is how a fix like that goes
+  unnoticed 3x over. Right-depth fix: lift into a shared helper in `integrations/intuit/qbo/base/` (parameterized by
+  the mapping repo's by-local-id/by-external-id accessors + entity/drift-type strings) as its own Track-A-style
+  prerequisite before the next repoint unit, mirroring how `docs/staging_removal_phase4_5_scoping.md` §3 already
+  carves out shared blockers. Not done here — deliberately kept this unit tightly scoped per the standing Gate-1
+  discipline; the fix above (raise-on-conflict) should land in the shared helper too, once one exists, rather than
+  being hand-patched into 3 separate copies again.
 
 ## U-271 follow-ups (Trend spans all historical pay applications) — deferred from the two-pass review
 

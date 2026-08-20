@@ -101,6 +101,9 @@ def test_run_scoped_item_ref_cache_and_single_line_connector():
     bill_credit_service.read_by_id.side_effect = [bill_credit_a, bill_credit_b]
     bill_credit_service.update_by_public_id.side_effect = [bill_credit_a, bill_credit_b]
     bill_credit_service.repo = Mock()
+    # U-278: no prior dbo-native identity yet — this test exercises the mapping-table
+    # UPDATE path across two sequential syncs.
+    bill_credit_service.read_by_qbo_identity.return_value = None
 
     connector = VendorCreditBillCreditConnector(
         mapping_repo=mapping_repo,

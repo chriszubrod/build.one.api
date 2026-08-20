@@ -197,6 +197,9 @@ def _connector_with_fakes():
     bill_credit_line_item_service = MagicMock()
     vendor_service = MagicMock()
     reconciliation_repo = MagicMock()
+    # U-278: no prior dbo-native identity yet — these tests target the CREATE/UPDATE
+    # mapping-table paths, which is what a real never-before-synced BillCredit reports.
+    bill_credit_service.read_by_qbo_identity.return_value = None
     connector = VendorCreditBillCreditConnector(
         mapping_repo=mapping_repo,
         bill_credit_service=bill_credit_service,

@@ -40,6 +40,12 @@ class VendorCreditLineItemConnector:
         # retries next run, never partial/corrupt data; a stale id pointing at a repointed-but-
         # still-valid SubCostCode at worst misattributes one line's cost coding until the next pull.
         self._sub_cost_code_cache: dict = {}
+        # Run-scoped memo (U-278) — same shape/tradeoffs as _sub_cost_code_cache above,
+        # keyed by (qbo_customer_ref_value, realm_id). A mid-run repoint of the
+        # underlying Project (rare, permission-gated) can feed a stale public_id to a
+        # later line in the same run; that fails safe the same way (an FK/access check
+        # downstream turns it into a per-credit skip that retries next run).
+        self._project_public_id_cache: dict = {}
 
     def sync_from_qbo_line(
         self,
@@ -241,9 +247,37 @@ class VendorCreditLineItemConnector:
     # still diverge on heal (invoice only) and caching (invoice + purchase only).
     # Lift into one shared resolver when multi-realm lands — see TODO.md.
     def _get_project_public_id(self, qbo_customer_ref_value: str, realm_id: Optional[str] = None) -> Optional[str]:
-        """Resolve QBO customer ref to local project public_id (QboCustomer by qbo_id -> CustomerProject by qbo_customer_id)."""
+        """Resolve QBO customer ref to local project public_id, memoized for this
+        connector's lifetime (U-278) — same shape as `_get_sub_cost_code_id` below.
+        A VendorCredit's lines commonly repeat the same CustomerRef (one project,
+        several cost-coded lines); without this, each line paid its own
+        ReadProjectByQboIdAndRealmId round trip for an identical key."""
         if not qbo_customer_ref_value:
             return None
+        key = (qbo_customer_ref_value, realm_id)
+        if key in self._project_public_id_cache:
+            return self._project_public_id_cache[key]
+        result = self._resolve_project_public_id(qbo_customer_ref_value, realm_id)
+        self._project_public_id_cache[key] = result
+        return result
+
+    def _resolve_project_public_id(
+        self, qbo_customer_ref_value: str, realm_id: Optional[str] = None
+    ) -> Optional[str]:
+        """Uncached resolution.
+
+        U-278 (Phase-4 pull-resolver repoint, deferred from U-276 §10): tries the direct
+        dbo-native lookup first — `ProjectService.read_by_qbo_identity` (built by U-276)
+        matches `dbo.Project.QboId`/`.RealmId` against this CustomerRef value directly,
+        with no `qbo.Customer`/`qbo.CustomerProject` hop. Every Project synced even once
+        since U-276 already carries this identity. Falls back to the legacy
+        QboCustomer-by-qbo_id -> CustomerProject-by-qbo_customer_id mapping-table hop for
+        any Project that predates identity stamping — read-only, no write side (unlike
+        U-276's own connector, this resolver never creates or repoints anything).
+        """
+        direct = self.project_service.read_by_qbo_identity(qbo_customer_ref_value, realm_id)
+        if direct:
+            return direct.public_id
 
         from integrations.intuit.qbo.customer.connector.project.persistence.repo import CustomerProjectRepository
         from integrations.intuit.qbo.customer.persistence.repo import QboCustomerRepository

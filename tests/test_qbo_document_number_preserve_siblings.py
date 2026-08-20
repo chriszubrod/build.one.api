@@ -191,6 +191,9 @@ def _build_vc_connector():
     connector = VendorCreditBillCreditConnector()
     connector.mapping_repo = Mock()
     connector.bill_credit_service = Mock()
+    # U-278: no prior dbo-native identity yet — force the legacy mapping-table path
+    # these tests are actually exercising (the number-preserve UPDATE path).
+    connector.bill_credit_service.read_by_qbo_identity.return_value = None
     connector.bill_credit_line_item_service = Mock()
     connector.vendor_service = Mock()
     connector._get_vendor_public_id = Mock(return_value="vendor-pub-1")

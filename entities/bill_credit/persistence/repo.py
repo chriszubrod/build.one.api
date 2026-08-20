@@ -54,6 +54,8 @@ class BillCreditRepository:
                 total_amount=Decimal(str(getattr(row, "TotalAmount", None))) if getattr(row, "TotalAmount", None) is not None else None,
                 memo=getattr(row, "Memo", None),
                 is_draft=bool(getattr(row, "IsDraft", False)) if getattr(row, "IsDraft", None) is not None else None,
+                qbo_id=getattr(row, "QboId", None),
+                realm_id=getattr(row, "RealmId", None),
             )
         except AttributeError as error:
             logger.error(f"Attribute error during bill credit mapping: {error}")
@@ -316,6 +318,25 @@ class BillCreditRepository:
                 return self._from_db(row) if row else None
         except Exception as error:
             logger.error(f"Error during delete bill credit by ID: {error}")
+            raise map_database_error(error)
+
+    def read_by_qbo_identity(self, qbo_id: str, realm_id: Optional[str] = None) -> Optional[BillCredit]:
+        """
+        Read a bill credit directly by its dbo-native QBO identity (U-278), bypassing
+        the qbo.VendorCredit / qbo.VendorCreditBillCredit staging/mapping tables entirely.
+        """
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(
+                    cursor=cursor,
+                    name="ReadBillCreditByQboIdAndRealmId",
+                    params={"QboId": qbo_id, "RealmId": realm_id},
+                )
+                row = cursor.fetchone()
+                return self._from_db(row)
+        except Exception as error:
+            logger.error(f"Error during read bill credit by QBO identity: {error}")
             raise map_database_error(error)
 
     def set_qbo_identity(

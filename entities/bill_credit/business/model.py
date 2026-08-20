@@ -22,6 +22,8 @@ class BillCredit:
     total_amount: Optional[Decimal]
     memo: Optional[str]
     is_draft: Optional[bool]
+    qbo_id: Optional[str] = None
+    realm_id: Optional[str] = None
 
     @property
     def row_version_bytes(self) -> Optional[bytes]:

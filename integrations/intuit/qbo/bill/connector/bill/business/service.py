@@ -38,6 +38,7 @@ from integrations.intuit.qbo.base.pull_race import guard_lines_present
 from integrations.intuit.qbo.base.compensation import rollback_orphan_header
 from integrations.intuit.qbo.base.field_ownership import preserve_human_edited_ref, qbo_ref_or_placeholder
 from integrations.intuit.qbo.base.identity_consistency import verify_project_qbo_identity
+from integrations.intuit.qbo.base.identity_fastpath import run_identity_fastpath
 from integrations.intuit.qbo.base.ids import coerce_id
 from integrations.intuit.qbo.base.reconciliation_recorder import record_mapping_issue
 from integrations.intuit.qbo.reconciliation.persistence.repo import ReconciliationIssueRepository
@@ -127,9 +128,101 @@ class BillBillConnector:
             entity_label="QboBill", entity_id=qbo_bill.id, qbo_id=qbo_bill.qbo_id,
         )
 
+        def _apply_bill_fields(direct: Bill) -> Bill:
+            """
+            Write the QBO-derived fields onto an existing Bill, stamp identity, then
+            sync its line items. Shared by the fast path's apply_fields and the
+            legacy "mapping found" branch below so the QboBill->Bill field mapping
+            lives in exactly one place (no drift between the two update sites) —
+            mirrors PurchaseExpenseConnector's `_update_existing_expense`.
+
+            U-027 (rule of three): never clobber a human-corrected bill_number on
+            re-pull. Preserve the stored value unless it is empty/null or the
+            QBO-<id> placeholder (which still upgrades to a real doc_number). CREATE
+            path below is unchanged. See base.field_ownership.
+            """
+            effective_bill_number = preserve_human_edited_ref(
+                direct.bill_number, bill_number, qbo_bill.qbo_id
+            )
+            updated = self.bill_service.update_by_public_id(
+                direct.public_id,
+                vendor_public_id=vendor_public_id,
+                bill_date=bill_date,
+                due_date=due_date,
+                bill_number=effective_bill_number,
+                total_amount=total_amount,
+                memo=memo,
+                is_draft=False,
+                row_version=direct.row_version,
+            )
+            if updated is None:
+                # ROWVERSION race: a concurrent writer touched this exact Bill
+                # between the read and this UPDATE, so it affected 0 rows.
+                logger.error(
+                    f"Failed to update Bill {direct.id} from QboBill {qbo_bill.id} - "
+                    f"update_by_public_id returned None (concurrent write race)"
+                )
+                raise ValueError(f"Failed to update Bill {direct.id}")
+            bill_id = coerce_id(updated.id)
+            # Bill/Expense carry SyncToken as part of their identity (unlike
+            # Project/Company/BillCredit) — this re-stamp is NOT redundant even when
+            # QboId/RealmId are already correct-by-construction (the fast path only
+            # found `direct` because they already match): it refreshes SyncToken on
+            # every pull, which the legacy path also always did.
+            self.bill_service.repo.set_qbo_identity(
+                id=bill_id,
+                qbo_id=qbo_bill.qbo_id,
+                realm_id=qbo_bill.realm_id,
+                sync_token=getattr(qbo_bill, "sync_token", None),
+            )
+            self._sync_line_items(bill_id, qbo_bill_lines, qbo_bill.realm_id)
+            return updated
+
+        # U-283 (Phase-4): resolve identity directly against dbo.Bill's native
+        # QboId/RealmId (U-238a) before falling back to the qbo.BillBill
+        # mapping-table hop below. Every Bill synced even once already carries
+        # this identity (set_qbo_identity is called on both the update and
+        # create paths), so this covers the steady-state case without touching
+        # qbo.Bill at all. Mirrors CompanyInfoCompanyConnector's U-287 fast path
+        # exactly — conflict->RAISE is structural (base.identity_fastpath), never
+        # a fall-through to the legacy path below.
+        outcome = run_identity_fastpath(
+            qbo_id=qbo_bill.qbo_id,
+            realm_id=qbo_bill.realm_id,
+            external_id=qbo_bill.id,
+            entity_label="Bill",
+            external_label="QboBill",
+            mapping_label="BillBill",
+            read_direct_by_qbo_identity=self.bill_service.read_by_qbo_identity,
+            read_by_local_id=self.mapping_repo.read_by_bill_id,
+            read_by_external_id=self.mapping_repo.read_by_qbo_bill_id,
+            external_id_attr="qbo_bill_id",
+            record_conflict_issue=lambda entity, by_local, by_external: (
+                self._raise_identity_mapping_conflict_issue(
+                    qbo_bill=qbo_bill,
+                    dbo_bill_id=coerce_id(entity.id),
+                    local_side_mapping=by_local,
+                    qbo_side_mapping=by_external,
+                )
+            ),
+            conflict_message=lambda entity: (
+                f"BillBill identity conflict for QboBill {qbo_bill.qbo_id} "
+                f"(id={qbo_bill.id}): dbo.Bill {entity.id} already carries this "
+                f"identity but the mapping table disagrees. Not auto-repointed; "
+                f"see the recorded reconciliation issue. Skipping until a human "
+                f"resolves it."
+            ),
+            create_mapping=lambda local_id: self.mapping_repo.create(
+                bill_id=local_id, qbo_bill_id=qbo_bill.id
+            ),
+            apply_fields=_apply_bill_fields,
+        )
+        if outcome.hit:
+            return outcome.entity
+
         # Check for existing mapping
         mapping = self.mapping_repo.read_by_qbo_bill_id(qbo_bill.id)
-        
+
         if mapping:
             # Found existing mapping. Resolve the Bill to update. HEAL-don't-delete
             # (U-031, mirroring U-029 Purchase->Expense): a transient empty-read must
@@ -173,42 +266,7 @@ class BillBillConnector:
                         f"{qbo_bill.id}; preserving mapping, skipping."
                     )
 
-            # U-027 (rule of three): never clobber a human-corrected bill_number on
-            # re-pull. Preserve the stored value unless it is empty/null or the
-            # QBO-<id> placeholder (which still upgrades to a real doc_number). CREATE
-            # path below is unchanged. See base.field_ownership.
-            # ACCEPTED RESIDUAL: a preserved number diverges from the QBO-derived one, so
-            # IF the qbo.BillBill mapping is later lost while this Bill persists (abnormal —
-            # the connector only drops the mapping when the Bill is already gone), the
-            # lost-mapping CREATE path's (vendor, bill_number, date) dedup keys on the
-            # QBO number and won't match this renamed row → a duplicate could be created.
-            # Adopt-style recovery for Bill is a separate reviewed unit (see TODO.md).
-            effective_bill_number = preserve_human_edited_ref(
-                bill.bill_number, bill_number, qbo_bill.qbo_id
-            )
-
-            bill = self.bill_service.update_by_public_id(
-                bill.public_id,
-                vendor_public_id=vendor_public_id,
-                bill_date=bill_date,
-                due_date=due_date,
-                bill_number=effective_bill_number,
-                total_amount=total_amount,
-                memo=memo,
-                is_draft=False,
-                row_version=bill.row_version,
-            )
-            bill_id = coerce_id(bill.id)
-            self.bill_service.repo.set_qbo_identity(
-                id=bill_id,
-                qbo_id=qbo_bill.qbo_id,
-                realm_id=qbo_bill.realm_id,
-                sync_token=getattr(qbo_bill, "sync_token", None),
-            )
-
-            # Sync line items for existing bill
-            self._sync_line_items(bill.id, qbo_bill_lines, qbo_bill.realm_id)
-
+            bill = _apply_bill_fields(bill)
             return bill
 
         # Create new Bill
@@ -302,6 +360,47 @@ class BillBillConnector:
             qbo_id=str(qbo_bill.qbo_id) if qbo_bill.qbo_id else None,
             realm_id=qbo_bill.realm_id or "",
             details=details,
+        )
+
+    def _raise_identity_mapping_conflict_issue(
+        self,
+        *,
+        qbo_bill: QboBill,
+        dbo_bill_id: int,
+        local_side_mapping: Optional[BillBill],
+        qbo_side_mapping: Optional[BillBill],
+    ) -> None:
+        """
+        Record a dbo-identity <-> mapping-table split found by run_identity_fastpath's
+        resolve_mapping_state. Mirrors CompanyInfoCompanyConnector's identically named/
+        shaped method — covers all three conflict shapes (qbo-side only, local-side
+        only, or both) in ONE issue, never silently dropping either side's blocker.
+        """
+        parts = [
+            f"BillBill identity conflict. dbo.Bill {dbo_bill_id} carries native QBO "
+            f"identity for QboBill {qbo_bill.id} (QboId={qbo_bill.qbo_id}, "
+            f"RealmId={qbo_bill.realm_id})."
+        ]
+        if qbo_side_mapping:
+            parts.append(
+                f"qbo-side: the mapping table still binds that same QboBill to a "
+                f"DIFFERENT Bill {qbo_side_mapping.bill_id} (mapping {qbo_side_mapping.id})."
+            )
+        if local_side_mapping:
+            parts.append(
+                f"local-side: Bill {dbo_bill_id}'s own mapping row (mapping "
+                f"{local_side_mapping.id}) still binds it to a DIFFERENT QboBill "
+                f"{local_side_mapping.qbo_bill_id}."
+            )
+        parts.append("Not auto-repointed — investigate which side is correct.")
+        record_mapping_issue(
+            self.reconciliation_repo,
+            drift_type="bill_identity_conflict",
+            entity_type="Bill",
+            entity_public_id=None,
+            qbo_id=str(qbo_bill.qbo_id) if qbo_bill.qbo_id else None,
+            realm_id=qbo_bill.realm_id or "",
+            details=" ".join(parts),
         )
 
     def _get_vendor_public_id(self, qbo_vendor_ref_value: str) -> Optional[str]:

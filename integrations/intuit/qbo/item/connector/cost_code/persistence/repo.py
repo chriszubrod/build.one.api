@@ -81,30 +81,6 @@ class ItemCostCodeRepository:
             logger.error(f"Error during create item cost code: {error}")
             raise map_database_error(error)
 
-    def read_by_id(self, id: int) -> Optional[ItemCostCode]:
-        """
-        Read an ItemCostCode mapping record by ID.
-        """
-        try:
-            with get_connection() as conn:
-                cursor = conn.cursor()
-                try:
-                    call_procedure(
-                        cursor=cursor,
-                        name="ReadItemCostCodeById",
-                        params={"Id": id},
-                    )
-                    row = cursor.fetchone()
-                    return self._from_db(row)
-                finally:
-                    try:
-                        cursor.close()
-                    except Exception:
-                        pass
-        except Exception as error:
-            logger.error(f"Error during read item cost code by ID: {error}")
-            raise map_database_error(error)
-
     def read_by_cost_code_id(self, cost_code_id: int) -> Optional[ItemCostCode]:
         """
         Read an ItemCostCode mapping record by CostCode ID.

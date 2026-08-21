@@ -51,27 +51,9 @@ GO
 
 GO
 
-CREATE OR ALTER PROCEDURE ReadItemSubCostCodeById
-(
-    @Id BIGINT
-)
-AS
-BEGIN
-    BEGIN TRANSACTION;
-
-    SELECT
-        [Id],
-        [PublicId],
-        [RowVersion],
-        CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
-        CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
-        [SubCostCodeId],
-        [QboItemId]
-    FROM [qbo].[ItemSubCostCode]
-    WHERE [Id] = @Id;
-
-    COMMIT TRANSACTION;
-END;
+-- U-286 (2026-08-20): retired, zero callers repo-wide (ItemSubCostCodeRepository.read_by_id was
+-- never called; all call sites use read_by_sub_cost_code_id / read_by_qbo_item_id).
+DROP PROCEDURE IF EXISTS dbo.ReadItemSubCostCodeById;
 GO
 
 

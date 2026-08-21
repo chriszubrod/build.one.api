@@ -446,41 +446,8 @@ GO
 
 GO
 
-CREATE OR ALTER PROCEDURE DeleteQboAccountByQboId
-(
-    @QboId NVARCHAR(50)
-)
-AS
-BEGIN
-    BEGIN TRANSACTION;
-
-    DELETE FROM [qbo].[Account]
-    OUTPUT
-        DELETED.[Id],
-        DELETED.[PublicId],
-        DELETED.[RowVersion],
-        CONVERT(VARCHAR(19), DELETED.[CreatedDatetime], 120) AS [CreatedDatetime],
-        CONVERT(VARCHAR(19), DELETED.[ModifiedDatetime], 120) AS [ModifiedDatetime],
-        DELETED.[QboId],
-        DELETED.[SyncToken],
-        DELETED.[RealmId],
-        DELETED.[Name],
-        DELETED.[AcctNum],
-        DELETED.[Description],
-        DELETED.[Active],
-        DELETED.[Classification],
-        DELETED.[AccountType],
-        DELETED.[AccountSubType],
-        DELETED.[FullyQualifiedName],
-        DELETED.[SubAccount],
-        DELETED.[ParentRefValue],
-        DELETED.[ParentRefName],
-        DELETED.[CurrentBalance],
-        DELETED.[CurrentBalanceWithSubAccounts],
-        DELETED.[CurrencyRefValue],
-        DELETED.[CurrencyRefName]
-    WHERE [QboId] = @QboId;
-
-    COMMIT TRANSACTION;
-END;
+-- U-286 (2026-08-20): retired, zero callers repo-wide — account's own delete-reconcile path
+-- was retired U-218c (QBO cannot hard-delete Accounts; absent-from-response deactivation was
+-- a no-op that could mass-deactivate hidden inactive staging rows if ever armed).
+DROP PROCEDURE IF EXISTS dbo.DeleteQboAccountByQboId;
 GO

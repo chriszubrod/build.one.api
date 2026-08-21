@@ -217,77 +217,11 @@ GO
 
 GO
 
-CREATE OR ALTER PROCEDURE ReadQboAttachablesByEntityRef
-(
-    @EntityRefType NVARCHAR(50),
-    @EntityRefValue NVARCHAR(50),
-    @RealmId NVARCHAR(50)
-)
-AS
-BEGIN
-    BEGIN TRANSACTION;
-
-    SELECT
-        [Id],
-        [PublicId],
-        [RowVersion],
-        CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
-        CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
-        [QboId],
-        [SyncToken],
-        [RealmId],
-        [FileName],
-        [Note],
-        [Category],
-        [ContentType],
-        [Size],
-        [FileAccessUri],
-        [TempDownloadUri],
-        [EntityRefType],
-        [EntityRefValue]
-    FROM [qbo].[Attachable]
-    WHERE [EntityRefType] = @EntityRefType 
-      AND [EntityRefValue] = @EntityRefValue
-      AND [RealmId] = @RealmId;
-
-    COMMIT TRANSACTION;
-END;
+-- U-286 (2026-08-20): ReadQboAttachablesByEntityRef + ReadQboAttachablesByRealmId retired,
+-- zero callers repo-wide (no router/service/script ever called either wrapper method).
+DROP PROCEDURE IF EXISTS dbo.ReadQboAttachablesByEntityRef;
 GO
-
-
-GO
-
-CREATE OR ALTER PROCEDURE ReadQboAttachablesByRealmId
-(
-    @RealmId NVARCHAR(50)
-)
-AS
-BEGIN
-    BEGIN TRANSACTION;
-
-    SELECT
-        [Id],
-        [PublicId],
-        [RowVersion],
-        CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
-        CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
-        [QboId],
-        [SyncToken],
-        [RealmId],
-        [FileName],
-        [Note],
-        [Category],
-        [ContentType],
-        [Size],
-        [FileAccessUri],
-        [TempDownloadUri],
-        [EntityRefType],
-        [EntityRefValue]
-    FROM [qbo].[Attachable]
-    WHERE [RealmId] = @RealmId;
-
-    COMMIT TRANSACTION;
-END;
+DROP PROCEDURE IF EXISTS dbo.ReadQboAttachablesByRealmId;
 GO
 
 
@@ -357,35 +291,6 @@ GO
 
 GO
 
-CREATE OR ALTER PROCEDURE DeleteQboAttachableByQboId
-(
-    @QboId NVARCHAR(50)
-)
-AS
-BEGIN
-    BEGIN TRANSACTION;
-
-    DELETE FROM [qbo].[Attachable]
-    OUTPUT
-        DELETED.[Id],
-        DELETED.[PublicId],
-        DELETED.[RowVersion],
-        CONVERT(VARCHAR(19), DELETED.[CreatedDatetime], 120) AS [CreatedDatetime],
-        CONVERT(VARCHAR(19), DELETED.[ModifiedDatetime], 120) AS [ModifiedDatetime],
-        DELETED.[QboId],
-        DELETED.[SyncToken],
-        DELETED.[RealmId],
-        DELETED.[FileName],
-        DELETED.[Note],
-        DELETED.[Category],
-        DELETED.[ContentType],
-        DELETED.[Size],
-        DELETED.[FileAccessUri],
-        DELETED.[TempDownloadUri],
-        DELETED.[EntityRefType],
-        DELETED.[EntityRefValue]
-    WHERE [QboId] = @QboId;
-
-    COMMIT TRANSACTION;
-END;
+-- U-286 (2026-08-20): retired, zero callers repo-wide.
+DROP PROCEDURE IF EXISTS dbo.DeleteQboAttachableByQboId;
 GO

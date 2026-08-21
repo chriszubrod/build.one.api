@@ -343,16 +343,3 @@ class QboAttachableService:
         """
         return self.repo.read_by_qbo_id(qbo_id)
 
-    def read_by_entity_ref(
-        self, entity_ref_type: str, entity_ref_value: str, realm_id: str
-    ) -> List[QboAttachable]:
-        """
-        Read QboAttachables by entity reference.
-        """
-        return self.repo.read_by_entity_ref(entity_ref_type, entity_ref_value, realm_id)
-
-    def read_by_realm_id(self, realm_id: str) -> List[QboAttachable]:
-        """
-        Read all QboAttachables by realm ID.
-        """
-        return self.repo.read_by_realm_id(realm_id)

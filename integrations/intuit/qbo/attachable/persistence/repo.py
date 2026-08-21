@@ -1,7 +1,7 @@
 # Python Standard Library Imports
 import base64
 import logging
-from typing import List, Optional
+from typing import Optional
 
 # Third-party Imports
 import pyodbc
@@ -190,60 +190,6 @@ class QboAttachableRepository:
             logger.error(f"Error during read qbo attachable by QBO ID and realm ID: {error}")
             raise map_database_error(error)
 
-    def read_by_entity_ref(
-        self, entity_ref_type: str, entity_ref_value: str, realm_id: str
-    ) -> List[QboAttachable]:
-        """
-        Read QboAttachables by entity reference.
-        """
-        try:
-            with get_connection() as conn:
-                cursor = conn.cursor()
-                try:
-                    call_procedure(
-                        cursor=cursor,
-                        name="ReadQboAttachablesByEntityRef",
-                        params={
-                            "EntityRefType": entity_ref_type,
-                            "EntityRefValue": entity_ref_value,
-                            "RealmId": realm_id,
-                        },
-                    )
-                    rows = cursor.fetchall()
-                    return [self._from_db(row) for row in rows if row]
-                finally:
-                    try:
-                        cursor.close()
-                    except Exception:
-                        pass
-        except Exception as error:
-            logger.error(f"Error during read qbo attachables by entity ref: {error}")
-            raise map_database_error(error)
-
-    def read_by_realm_id(self, realm_id: str) -> List[QboAttachable]:
-        """
-        Read all QboAttachables by realm ID.
-        """
-        try:
-            with get_connection() as conn:
-                cursor = conn.cursor()
-                try:
-                    call_procedure(
-                        cursor=cursor,
-                        name="ReadQboAttachablesByRealmId",
-                        params={"RealmId": realm_id},
-                    )
-                    rows = cursor.fetchall()
-                    return [self._from_db(row) for row in rows if row]
-                finally:
-                    try:
-                        cursor.close()
-                    except Exception:
-                        pass
-        except Exception as error:
-            logger.error(f"Error during read qbo attachables by realm ID: {error}")
-            raise map_database_error(error)
-
     def update_by_qbo_id(
         self,
         qbo_id: str,
@@ -302,26 +248,3 @@ class QboAttachableRepository:
             logger.error(f"Error during update qbo attachable by QBO ID: {error}")
             raise map_database_error(error)
 
-    def delete_by_qbo_id(self, qbo_id: str) -> Optional[QboAttachable]:
-        """
-        Delete a QboAttachable by QBO ID.
-        """
-        try:
-            with get_connection() as conn:
-                cursor = conn.cursor()
-                try:
-                    call_procedure(
-                        cursor=cursor,
-                        name="DeleteQboAttachableByQboId",
-                        params={"QboId": qbo_id},
-                    )
-                    row = cursor.fetchone()
-                    return self._from_db(row) if row else None
-                finally:
-                    try:
-                        cursor.close()
-                    except Exception:
-                        pass
-        except Exception as error:
-            logger.error(f"Error during delete qbo attachable by QBO ID: {error}")
-            raise map_database_error(error)

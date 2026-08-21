@@ -25,82 +25,19 @@ END
 GO
 
 -- =============================================
--- Stored Procedure: CreateVendorCreditBillCredit
+-- U-286 (2026-08-20): CreateVendorCreditBillCredit / ReadVendorCreditBillCreditByQboVendorCreditId /
+-- ReadVendorCreditBillCreditByBillCreditId retired FROM THIS FILE ONLY. These 3 were declared here
+-- under the [qbo] schema — permanently unreachable, since shared/database.py::call_procedure always
+-- emits EXEC dbo.<name>. The live, actually-called bodies of the same 3 names are the implicit-dbo
+-- CREATE OR ALTER PROCEDUREs in integrations/intuit/qbo/vendorcredit/sql/qbo.vendorcredit.sql — those
+-- are untouched by this unit. tests/sproc_drift_ledger.py's "known-dup" entries for these 3 names are
+-- removed in the same unit (now single-sourced).
 -- =============================================
+DROP PROCEDURE IF EXISTS [qbo].[CreateVendorCreditBillCredit];
 GO
-
-CREATE OR ALTER PROCEDURE [qbo].[CreateVendorCreditBillCredit]
-    @QboVendorCreditId INT,
-    @BillCreditId INT
-AS
-BEGIN
-    SET NOCOUNT ON;
-    
-    INSERT INTO [qbo].[VendorCreditBillCredit] (
-        [QboVendorCreditId],
-        [BillCreditId]
-    )
-    OUTPUT 
-        inserted.[Id],
-        inserted.[PublicId],
-        inserted.[RowVersion],
-        inserted.[CreatedDatetime],
-        inserted.[ModifiedDatetime],
-        inserted.[QboVendorCreditId],
-        inserted.[BillCreditId]
-    VALUES (
-        @QboVendorCreditId,
-        @BillCreditId
-    )
-END
+DROP PROCEDURE IF EXISTS [qbo].[ReadVendorCreditBillCreditByQboVendorCreditId];
 GO
-
--- =============================================
--- Stored Procedure: ReadVendorCreditBillCreditByQboVendorCreditId
--- =============================================
-GO
-
-CREATE OR ALTER PROCEDURE [qbo].[ReadVendorCreditBillCreditByQboVendorCreditId]
-    @QboVendorCreditId INT
-AS
-BEGIN
-    SET NOCOUNT ON;
-    
-    SELECT 
-        [Id],
-        [PublicId],
-        [RowVersion],
-        [CreatedDatetime],
-        [ModifiedDatetime],
-        [QboVendorCreditId],
-        [BillCreditId]
-    FROM [qbo].[VendorCreditBillCredit]
-    WHERE [QboVendorCreditId] = @QboVendorCreditId
-END
-GO
-
--- =============================================
--- Stored Procedure: ReadVendorCreditBillCreditByBillCreditId
--- =============================================
-GO
-
-CREATE OR ALTER PROCEDURE [qbo].[ReadVendorCreditBillCreditByBillCreditId]
-    @BillCreditId INT
-AS
-BEGIN
-    SET NOCOUNT ON;
-    
-    SELECT 
-        [Id],
-        [PublicId],
-        [RowVersion],
-        [CreatedDatetime],
-        [ModifiedDatetime],
-        [QboVendorCreditId],
-        [BillCreditId]
-    FROM [qbo].[VendorCreditBillCredit]
-    WHERE [BillCreditId] = @BillCreditId
-END
+DROP PROCEDURE IF EXISTS [qbo].[ReadVendorCreditBillCreditByBillCreditId];
 GO
 
 -- =============================================

@@ -81,30 +81,6 @@ class AttachableAttachmentRepository:
             logger.error(f"Error during create attachable attachment: {error}")
             raise map_database_error(error)
 
-    def read_by_id(self, id: int) -> Optional[AttachableAttachment]:
-        """
-        Read an AttachableAttachment mapping record by ID.
-        """
-        try:
-            with get_connection() as conn:
-                cursor = conn.cursor()
-                try:
-                    call_procedure(
-                        cursor=cursor,
-                        name="ReadAttachableAttachmentById",
-                        params={"Id": id},
-                    )
-                    row = cursor.fetchone()
-                    return self._from_db(row)
-                finally:
-                    try:
-                        cursor.close()
-                    except Exception:
-                        pass
-        except Exception as error:
-            logger.error(f"Error during read attachable attachment by ID: {error}")
-            raise map_database_error(error)
-
     def read_by_attachment_id(self, attachment_id: int) -> Optional[AttachableAttachment]:
         """
         Read an AttachableAttachment mapping record by Attachment ID.

@@ -54,27 +54,9 @@ GO
 
 GO
 
-CREATE OR ALTER PROCEDURE ReadAttachableAttachmentById
-(
-    @Id BIGINT
-)
-AS
-BEGIN
-    BEGIN TRANSACTION;
-
-    SELECT
-        [Id],
-        [PublicId],
-        [RowVersion],
-        CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
-        CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
-        [AttachmentId],
-        [QboAttachableId]
-    FROM [qbo].[AttachableAttachment]
-    WHERE [Id] = @Id;
-
-    COMMIT TRANSACTION;
-END;
+-- U-286 (2026-08-20): retired, zero callers repo-wide (AttachableAttachmentRepository.read_by_id
+-- was never called; the connector resolves by attachment_id / qbo_attachable_id only).
+DROP PROCEDURE IF EXISTS dbo.ReadAttachableAttachmentById;
 GO
 
 

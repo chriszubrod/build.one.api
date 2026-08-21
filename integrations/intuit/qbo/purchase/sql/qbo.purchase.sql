@@ -840,41 +840,9 @@ BEGIN
 END;
 GO
 
--- Purchase lines with AccountRefName = 'NEED TO UPDATE' and no ExpenseLineItem link
-CREATE OR ALTER PROCEDURE ReadQboPurchaseLinesNeedingUpdate
-(
-    @RealmId NVARCHAR(50) = NULL,
-    @IncludeLinked BIT = 0,
-    @IncludeAll BIT = 0
-)
-AS
-BEGIN
-    BEGIN TRANSACTION;
-
-    SELECT
-        p.[Id] AS [QboPurchaseId],
-        p.[PublicId] AS [QboPurchasePublicId],
-        p.[DocNumber],
-        p.[TxnDate],
-        p.[EntityRefName],
-        p.[RealmId],
-        pl.[Id] AS [QboPurchaseLineId],
-        pl.[LineNum],
-        pl.[Description] AS [LineDescription],
-        pl.[Amount] AS [LineAmount],
-        pl.[AccountRefName],
-        e.[PublicId] AS [ExpensePublicId],
-        (SELECT COUNT(*) FROM [qbo].[Attachable] a WHERE a.[EntityRefValue] = p.[QboId] AND (a.[EntityRefType] LIKE N'Purchase%' OR a.[EntityRefType] LIKE N'PURCHASE%')) AS [AttachableCount]
-    FROM [qbo].[PurchaseLine] pl
-    INNER JOIN [qbo].[Purchase] p ON pl.[QboPurchaseId] = p.[Id]
-    LEFT JOIN [qbo].[PurchaseLineExpenseLineItem] pleli ON pl.[Id] = pleli.[QboPurchaseLineId]
-    LEFT JOIN [dbo].[ExpenseLineItem] eli ON pleli.[ExpenseLineItemId] = eli.[Id]
-    LEFT JOIN [dbo].[Expense] e ON eli.[ExpenseId] = e.[Id]
-    WHERE (@IncludeAll = 1 OR (pl.[AccountRefName] LIKE N'%NEED TO CATEGORIZE%' OR pl.[AccountRefName] LIKE N'%NEED TO UPDATE%' OR pl.[AccountRefName] IS NULL))
-      AND (@IncludeAll = 1 OR @IncludeLinked = 1 OR pleli.[Id] IS NULL)
-      AND (@RealmId IS NULL OR p.[RealmId] = @RealmId)
-    ORDER BY TRY_CONVERT(DATE, p.[TxnDate], 23) DESC, p.[DocNumber], pl.[LineNum];
-
-    COMMIT TRANSACTION;
-END;
+-- U-286 (2026-08-20): retired, zero callers repo-wide (QboPurchaseService.get_lines_needing_update
+-- had no callers). Dropped ahead of the qbo.Attachable column-drop (docs/staging_removal_phase4_5_
+-- scoping.md §6) since this body's correlated subquery was the last SQL reference to
+-- qbo.Attachable.EntityRefType/EntityRefValue outside that table's own file.
+DROP PROCEDURE IF EXISTS dbo.ReadQboPurchaseLinesNeedingUpdate;
 GO

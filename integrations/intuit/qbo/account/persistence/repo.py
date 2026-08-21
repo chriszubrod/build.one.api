@@ -327,26 +327,3 @@ class QboAccountRepository:
             logger.error(f"Error during update qbo account by QBO ID: {error}")
             raise map_database_error(error)
 
-    def delete_by_qbo_id(self, qbo_id: str) -> Optional[QboAccount]:
-        """
-        Delete a QboAccount by QBO ID.
-        """
-        try:
-            with get_connection() as conn:
-                cursor = conn.cursor()
-                try:
-                    call_procedure(
-                        cursor=cursor,
-                        name="DeleteQboAccountByQboId",
-                        params={"QboId": qbo_id},
-                    )
-                    row = cursor.fetchone()
-                    return self._from_db(row) if row else None
-                finally:
-                    try:
-                        cursor.close()
-                    except Exception:
-                        pass
-        except Exception as error:
-            logger.error(f"Error during delete qbo account by QBO ID: {error}")
-            raise map_database_error(error)

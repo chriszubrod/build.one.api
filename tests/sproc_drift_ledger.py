@@ -48,10 +48,6 @@ SPROC_DRIFT_LEDGER: dict[str, frozenset[str]] = {
         'entities/sub_cost_code/sql/dbo.subcostcode.sql',
         'scripts/migrations/gap2_reference_threading.sql',
     }),  # known-dup, home=entities/sub_cost_code/sql/dbo.subcostcode.sql
-    "CreateVendorCreditBillCredit": frozenset({
-        'integrations/intuit/qbo/vendorcredit/connector/bill_credit/sql/qbo.vendorcredit_bill_credit.sql',
-        'integrations/intuit/qbo/vendorcredit/sql/qbo.vendorcredit.sql',
-    }),  # known-dup, home=integrations/intuit/qbo/vendorcredit/connector/bill_credit/sql/qbo.vendorcredit_bill_credit.sql, integrations/intuit/qbo/vendorcredit/sql/qbo.vendorcredit.sql
     "CreateVendorCreditLineItemBillCreditLineItem": frozenset({
         'integrations/intuit/qbo/vendorcredit/connector/bill_credit_line_item/sql/qbo.vendorcredit_line_item_bill_credit_line_item.sql',
         'scripts/migrations/qbo_vendorcredit_mapping_sprocs_dbo.sql',
@@ -106,14 +102,6 @@ SPROC_DRIFT_LEDGER: dict[str, frozenset[str]] = {
         'integrations/intuit/qbo/vendorcredit/sql/qbo.vendorcredit.sql',
         'scripts/migrations/qbo_vendorcredit_upsert_inplace.sql',
     }),  # known-dup, home=integrations/intuit/qbo/vendorcredit/sql/qbo.vendorcredit.sql
-    "ReadVendorCreditBillCreditByBillCreditId": frozenset({
-        'integrations/intuit/qbo/vendorcredit/connector/bill_credit/sql/qbo.vendorcredit_bill_credit.sql',
-        'integrations/intuit/qbo/vendorcredit/sql/qbo.vendorcredit.sql',
-    }),  # known-dup, home=integrations/intuit/qbo/vendorcredit/connector/bill_credit/sql/qbo.vendorcredit_bill_credit.sql, integrations/intuit/qbo/vendorcredit/sql/qbo.vendorcredit.sql
-    "ReadVendorCreditBillCreditByQboVendorCreditId": frozenset({
-        'integrations/intuit/qbo/vendorcredit/connector/bill_credit/sql/qbo.vendorcredit_bill_credit.sql',
-        'integrations/intuit/qbo/vendorcredit/sql/qbo.vendorcredit.sql',
-    }),  # known-dup, home=integrations/intuit/qbo/vendorcredit/connector/bill_credit/sql/qbo.vendorcredit_bill_credit.sql, integrations/intuit/qbo/vendorcredit/sql/qbo.vendorcredit.sql
     "ReadVendorCreditLineItemBillCreditLineItemByBillCreditLineItemId": frozenset({
         'integrations/intuit/qbo/vendorcredit/connector/bill_credit_line_item/sql/qbo.vendorcredit_line_item_bill_credit_line_item.sql',
         'scripts/migrations/qbo_vendorcredit_mapping_sprocs_dbo.sql',

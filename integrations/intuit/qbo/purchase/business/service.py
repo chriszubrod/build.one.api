@@ -549,21 +549,6 @@ class QboPurchaseService:
         """
         return self.line_repo.read_by_qbo_purchase_id(qbo_purchase_id)
 
-    def get_lines_needing_update(
-        self,
-        realm_id: Optional[str] = None,
-        include_linked: bool = False,
-        include_all: bool = False,
-    ) -> List[dict]:
-        """
-        Get purchase lines. include_linked=True includes linked. include_all=True returns all lines.
-        """
-        return self.line_repo.read_lines_needing_update(
-            realm_id=realm_id,
-            include_linked=include_linked,
-            include_all=include_all,
-        )
-
     def get_expense_coding_queue(self, realm_id: Optional[str] = None) -> List[dict]:
         """
         Read the strict 58999 coding queue and idempotently seed missing

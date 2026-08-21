@@ -25,6 +25,7 @@ import pytest
 from integrations.intuit.qbo.invoice.connector.invoice.business.service import (
     InvoiceInvoiceConnector,
 )
+from conftest import stub_qbo_identity_fastpath_miss
 
 ILI_SERVICE = "entities.invoice_line_item.business.service.InvoiceLineItemService"
 
@@ -69,7 +70,9 @@ def _build_connector():
         project_service=Mock(),
         qbo_customer_repo=Mock(),
         customer_project_repo=Mock(),
+        reconciliation_repo=Mock(),
     )
+    stub_qbo_identity_fastpath_miss(connector.invoice_service)
     connector._get_project_public_id = Mock(return_value="proj-pub-1")
     connector._sync_line_items = Mock()  # isolate the number/adopt decision
     return connector

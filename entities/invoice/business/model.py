@@ -24,6 +24,8 @@ class Invoice:
     total_amount: Optional[Decimal]
     memo: Optional[str]
     is_draft: Optional[bool]
+    qbo_id: Optional[str] = None   # dbo-native QBO identity (U-238a); only ReadInvoiceById/ReadInvoiceByQboIdAndRealmId select it
+    realm_id: Optional[str] = None
 
     @property
     def row_version_bytes(self) -> Optional[bytes]:

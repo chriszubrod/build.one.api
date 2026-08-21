@@ -211,6 +211,18 @@ class InvoiceService:
         assert_can_access_project(invoice.project_id)
         return invoice
 
+    def read_by_qbo_identity(self, qbo_id: str, realm_id: Optional[str] = None) -> Optional[Invoice]:
+        """
+        Read an invoice directly by its dbo-native QBO identity (U-284) — the
+        Phase-4 repoint seam, bypassing the qbo.Invoice/qbo.InvoiceInvoice
+        staging/mapping tables. RBAC-scoped like every other Invoice read.
+        """
+        invoice = self.repo.read_by_qbo_identity(qbo_id, realm_id)
+        if invoice is None:
+            return None
+        assert_can_access_project(invoice.project_id)
+        return invoice
+
     def read_by_invoice_number(self, invoice_number: str) -> Optional[Invoice]:
         invoice = self.repo.read_by_invoice_number(invoice_number)
         if invoice is None:

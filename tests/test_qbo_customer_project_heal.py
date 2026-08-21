@@ -16,6 +16,7 @@ from integrations.intuit.qbo.purchase.connector.expense_line_item.business.servi
 from integrations.intuit.qbo.vendorcredit.connector.bill_credit_line_item.business.service import (
     VendorCreditLineItemConnector,
 )
+from conftest import stub_qbo_identity_fastpath_miss
 
 # The invoice connector imports CustomerProjectConnector lazily from its defining module,
 # so the heal auto-heal path is patched where the class is defined.
@@ -114,7 +115,9 @@ def _build_invoice_connector(**overrides):
         project_service=Mock(),
         qbo_customer_repo=Mock(),
         customer_project_repo=Mock(),
+        reconciliation_repo=Mock(),
     )
+    stub_qbo_identity_fastpath_miss(connector.invoice_service)
     for key, value in overrides.items():
         setattr(connector, key, value)
     return connector

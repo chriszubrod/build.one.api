@@ -240,7 +240,10 @@ def _make_invoice_connector():
     mapping_repo.create.return_value = SimpleNamespace(id=1)
     invoice_service = Mock()
     invoice_service.repo = Mock()
-    connector = InvoiceInvoiceConnector(mapping_repo=mapping_repo, invoice_service=invoice_service)
+    stub_qbo_identity_fastpath_miss(invoice_service)
+    connector = InvoiceInvoiceConnector(
+        mapping_repo=mapping_repo, invoice_service=invoice_service, reconciliation_repo=Mock()
+    )
     return connector, mapping_repo, invoice_service.repo
 
 

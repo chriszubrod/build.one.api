@@ -8,6 +8,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from integrations.intuit.qbo.base.identity_drift import LINE_ENTITY_SPECS, classify_qbo_identity_drift
+from conftest import stub_qbo_identity_fastpath_miss
 
 
 # ---------------------------------------------------------------------------
@@ -349,7 +350,9 @@ def test_invoice_sync_from_qbo_invoice_forwards_realm_id_to_line_connector():
         project_service=MagicMock(),
         qbo_customer_repo=MagicMock(),
         customer_project_repo=MagicMock(),
+        reconciliation_repo=MagicMock(),
     )
+    stub_qbo_identity_fastpath_miss(connector.invoice_service)
     connector.mapping_repo.read_by_qbo_invoice_id.return_value = mapping
     connector._get_project_public_id = MagicMock(return_value="proj-pub")
     connector.invoice_service.read_by_id.return_value = invoice
@@ -846,7 +849,9 @@ def _build_invoice_header_create_connector(created_invoice):
         project_service=project_service,
         qbo_customer_repo=MagicMock(),
         customer_project_repo=MagicMock(),
+        reconciliation_repo=MagicMock(),
     )
+    stub_qbo_identity_fastpath_miss(connector.invoice_service)
     connector._get_project_public_id = MagicMock(return_value="proj-pub-1")
     connector._find_adoptable_invoice_by_fingerprint = MagicMock(return_value=None)
     connector._sync_line_items = MagicMock()

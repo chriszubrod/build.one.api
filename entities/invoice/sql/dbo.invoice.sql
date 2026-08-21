@@ -45,6 +45,42 @@ CREATE INDEX IX_Invoice_PaymentTermId ON [dbo].[Invoice] ([PaymentTermId]);
 END
 GO
 
+-- Additive: QboId/RealmId/SyncToken (U-238a dbo-native identity) were added
+-- out-of-band before this base file was made canonical — the base CREATE TABLE
+-- above never declared them, which would abort a from-scratch build at
+-- SetInvoiceQboIdentity's (and now ReadInvoiceByQboIdAndRealmId's) CREATE
+-- PROCEDURE time (SQL error 207). Idempotent, no-op-safe against live —
+-- columns + the unique index already exist there. Same gap/fix as U-277's
+-- dbo.company.sql and U-283's dbo.bill.sql.
+IF OBJECT_ID('dbo.Invoice', 'U') IS NOT NULL
+   AND NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('dbo.Invoice') AND name = 'QboId')
+BEGIN
+    ALTER TABLE [dbo].[Invoice] ADD [QboId] NVARCHAR(50) NULL;
+END
+GO
+
+IF OBJECT_ID('dbo.Invoice', 'U') IS NOT NULL
+   AND NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('dbo.Invoice') AND name = 'RealmId')
+BEGIN
+    ALTER TABLE [dbo].[Invoice] ADD [RealmId] NVARCHAR(50) NULL;
+END
+GO
+
+IF OBJECT_ID('dbo.Invoice', 'U') IS NOT NULL
+   AND NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('dbo.Invoice') AND name = 'SyncToken')
+BEGIN
+    ALTER TABLE [dbo].[Invoice] ADD [SyncToken] NVARCHAR(50) NULL;
+END
+GO
+
+IF OBJECT_ID('dbo.Invoice', 'U') IS NOT NULL AND NOT EXISTS (
+    SELECT 1 FROM sys.indexes WHERE name = 'UQ_Invoice_QboId_RealmId' AND object_id = OBJECT_ID('dbo.Invoice')
+)
+BEGIN
+    CREATE UNIQUE INDEX UQ_Invoice_QboId_RealmId ON [dbo].[Invoice] ([QboId], [RealmId]) WHERE [QboId] IS NOT NULL;
+END
+GO
+
 -- Unique constraint to prevent duplicate InvoiceNumber for the same ProjectId
 IF NOT EXISTS (SELECT 1 FROM sys.objects WHERE name = 'UQ_Invoice_ProjectId_InvoiceNumber' AND parent_object_id = OBJECT_ID('dbo.Invoice'))
 BEGIN
@@ -132,6 +168,9 @@ AS
 BEGIN
     BEGIN TRANSACTION;
 
+    -- U-284: QboId/RealmId added so callers resolving an invoice's QBO
+    -- identity by dbo id (e.g. QboInvoiceService.cost_coded_lines_for_invoice)
+    -- don't need a separate round trip. Mirrors dbo.bill.sql's ReadBillById.
     SELECT
         [Id],
         [PublicId],
@@ -145,7 +184,9 @@ BEGIN
         [InvoiceNumber],
         [TotalAmount],
         [Memo],
-        [IsDraft]
+        [IsDraft],
+        [QboId],
+        [RealmId]
     FROM dbo.[Invoice]
     WHERE [Id] = @Id;
 
@@ -717,11 +758,37 @@ AS
 BEGIN
     SET NOCOUNT ON;
 
-    DECLARE @QboInvoiceId BIGINT;
+    -- U-284 (Phase-4): resolve the staging-side QboInvoice off dbo.Invoice's
+    -- native QboId/RealmId (U-238a) as the fast path, falling back to the
+    -- qbo.InvoiceInvoice mapping table on a miss — mirrors every Python-side
+    -- fast path in this program (identity_fastpath.py's hit=False contract):
+    -- a dbo-identity miss is NOT the same as "no mapping exists". A stale/
+    -- unbackfilled dbo.Invoice.QboId (e.g. SetInvoiceQboIdentity's theft-clear
+    -- UPDATE nulls the losing row's identity but never touches
+    -- qbo.InvoiceInvoice) must not be treated as "not synced" here, or this
+    -- invariant gate false-halts a legitimate draw push. qbo.Invoice/
+    -- qbo.InvoiceLine stay exactly as they were either way.
+    DECLARE @QboId NVARCHAR(50), @RealmId NVARCHAR(50), @QboInvoiceId BIGINT;
 
-    SELECT @QboInvoiceId = ii.[QboInvoiceId]
-    FROM qbo.[InvoiceInvoice] ii
-    WHERE ii.[InvoiceId] = @InvoiceId;
+    SELECT @QboId = i.[QboId], @RealmId = i.[RealmId]
+    FROM dbo.[Invoice] i
+    WHERE i.[Id] = @InvoiceId;
+
+    IF @QboId IS NOT NULL
+    BEGIN
+        SELECT TOP 1 @QboInvoiceId = qi.[Id]
+        FROM qbo.[Invoice] qi
+        WHERE qi.[QboId] = @QboId
+          AND ((qi.[RealmId] = @RealmId) OR (qi.[RealmId] IS NULL AND @RealmId IS NULL))
+        ORDER BY qi.[Id] DESC;
+    END
+
+    IF @QboInvoiceId IS NULL
+    BEGIN
+        SELECT @QboInvoiceId = ii.[QboInvoiceId]
+        FROM qbo.[InvoiceInvoice] ii
+        WHERE ii.[InvoiceId] = @InvoiceId;
+    END
 
     SELECT
         (SELECT COUNT(*)
@@ -750,6 +817,49 @@ BEGIN
          LEFT JOIN dbo.[BillCreditLineItem] c ON c.[Id] = ili.[BillCreditLineItemId]
          WHERE ili.[InvoiceId] = @InvoiceId
            AND COALESCE(b.[IsBilled], e.[IsBilled], c.[IsBilled], 0) = 1) AS [BilledSourceCount];
+END;
+GO
+
+-- U-284 (Phase-4): direct dbo-native identity lookup, mirrors dbo.bill.sql's
+-- ReadBillByQboIdAndRealmId / dbo.customer.sql's ReadCustomerByQboIdAndRealmId.
+-- Lets the Invoice connector resolve "does a dbo.Invoice already exist for
+-- this external QBO id" WITHOUT hopping through the qbo.InvoiceInvoice
+-- mapping table — every Invoice synced at least once already carries
+-- QboId/RealmId via SetInvoiceQboIdentity, so this is the steady-state fast
+-- path; the mapping-table lookup remains as a fallback for rows that predate
+-- identity stamping. Unlike Bill, Invoice has no per-row UserCanAccessInvoice
+-- UDF — RBAC is enforced at the service layer (assert_can_access_project),
+-- matching ReadInvoiceById/ReadInvoiceByPublicId's existing plain-SELECT shape.
+CREATE OR ALTER PROCEDURE ReadInvoiceByQboIdAndRealmId
+(
+    @QboId NVARCHAR(50),
+    @RealmId NVARCHAR(50) = NULL
+)
+AS
+BEGIN
+    BEGIN TRANSACTION;
+
+    SELECT
+        [Id],
+        [PublicId],
+        [RowVersion],
+        CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
+        CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
+        [ProjectId],
+        [PaymentTermId],
+        CONVERT(VARCHAR(19), [InvoiceDate], 120) AS [InvoiceDate],
+        CONVERT(VARCHAR(19), [DueDate], 120) AS [DueDate],
+        [InvoiceNumber],
+        [TotalAmount],
+        [Memo],
+        [IsDraft],
+        [QboId],
+        [RealmId]
+    FROM dbo.[Invoice]
+    WHERE [QboId] = @QboId
+      AND (([RealmId] = @RealmId) OR ([RealmId] IS NULL AND @RealmId IS NULL));
+
+    COMMIT TRANSACTION;
 END;
 GO
 

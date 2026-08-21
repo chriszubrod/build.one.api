@@ -61,6 +61,8 @@ class InvoiceRepository:
                 total_amount=Decimal(str(getattr(row, "TotalAmount", None))) if getattr(row, "TotalAmount", None) is not None else None,
                 memo=getattr(row, "Memo", None),
                 is_draft=bool(getattr(row, "IsDraft", False)) if getattr(row, "IsDraft", None) is not None else None,
+                qbo_id=getattr(row, "QboId", None),
+                realm_id=getattr(row, "RealmId", None),
             )
         except AttributeError as error:
             logger.error(f"Attribute error during invoice mapping: {error}")
@@ -763,6 +765,28 @@ class InvoiceRepository:
                 )
         except Exception as error:
             logger.error(f"Error during BackfillLinkedSourceProjectId: {error}")
+            raise map_database_error(error)
+
+    def read_by_qbo_identity(self, qbo_id: str, realm_id: Optional[str] = None) -> Optional[Invoice]:
+        """
+        Read an invoice directly by its dbo-native QBO identity (U-284), bypassing
+        the qbo.Invoice / qbo.InvoiceInvoice staging/mapping tables entirely.
+        """
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(
+                    cursor=cursor,
+                    name="ReadInvoiceByQboIdAndRealmId",
+                    params={
+                        "QboId": qbo_id,
+                        "RealmId": realm_id,
+                    },
+                )
+                row = cursor.fetchone()
+                return self._from_db(row)
+        except Exception as error:
+            logger.error(f"Error during read invoice by QBO identity: {error}")
             raise map_database_error(error)
 
     def set_qbo_identity(

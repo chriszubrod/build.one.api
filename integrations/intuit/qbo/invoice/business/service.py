@@ -473,15 +473,34 @@ class QboInvoiceService:
         lines and lines with no amount are skipped. Returns [] when the invoice has
         no QBO mapping or no lines (U-292 — the dbo-native seam draw_financials.py
         consumes in place of its former ItemRefName parser).
+
+        U-284: resolves the staging-side QboInvoice off dbo.Invoice's own native
+        QboId/RealmId (U-238a) as the fast path, falling back to the
+        qbo.InvoiceInvoice mapping table on a miss — mirrors every Python-side
+        fast path in this program (identity_fastpath.py's hit=False contract).
+        A dbo-identity miss (unbackfilled QboId, or a stale/theft-cleared
+        identity whose mapping row is still intact) is NOT the same as "never
+        synced to QBO"; treating it as such would silently drop cost-coded
+        lines from the Trend PDF for an invoice that's actually mapped fine.
+        qbo.Invoice/qbo.InvoiceLine stay exactly as they were either way.
         """
+        from entities.invoice.business.service import InvoiceService
         from integrations.intuit.qbo.invoice.connector.invoice.persistence.repo import (
             InvoiceInvoiceRepository,
         )
 
-        mapping = InvoiceInvoiceRepository().read_by_invoice_id(invoice_id)
-        if not mapping or not mapping.qbo_invoice_id:
-            return []
-        lines = self.line_repo.read_by_qbo_invoice_id(mapping.qbo_invoice_id)
+        invoice = InvoiceService().read_by_id(invoice_id)
+        qbo_invoice_id = None
+        if invoice and invoice.qbo_id:
+            qbo_invoice = self.repo.read_by_qbo_id_and_realm_id(invoice.qbo_id, invoice.realm_id)
+            if qbo_invoice:
+                qbo_invoice_id = qbo_invoice.id
+        if qbo_invoice_id is None:
+            mapping = InvoiceInvoiceRepository().read_by_invoice_id(invoice_id)
+            if not mapping or not mapping.qbo_invoice_id:
+                return []
+            qbo_invoice_id = mapping.qbo_invoice_id
+        lines = self.line_repo.read_by_qbo_invoice_id(qbo_invoice_id)
         if not lines:
             return []
 

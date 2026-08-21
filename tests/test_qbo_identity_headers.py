@@ -1,12 +1,16 @@
 """Pure-logic tests for U-238a dbo-native QBO identity on header entities."""
 from __future__ import annotations
 
+import sys
 from decimal import Decimal
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, Mock, patch
 
 import pytest
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from conftest import stub_qbo_identity_fastpath_miss
 from integrations.intuit.qbo.base.identity_drift import classify_qbo_identity_drift
 from integrations.intuit.qbo.bill.connector.bill.business.service import BillBillConnector
 from integrations.intuit.qbo.company_info.connector.business.service import CompanyInfoCompanyConnector
@@ -135,10 +139,8 @@ def _make_bill_connector():
     mapping_repo.create.return_value = SimpleNamespace(id=1)
     bill_service = Mock()
     bill_service.repo = Mock()
-    # U-283: force the dbo-native identity fast path to miss (a bare Mock() call
-    # otherwise auto-returns a truthy Mock, short-circuiting these tests into the
-    # fast path instead of the legacy create_mapping()/sync path they're testing).
-    bill_service.read_by_qbo_identity.return_value = None
+    # U-283: these tests exercise the legacy create_mapping()/sync path.
+    stub_qbo_identity_fastpath_miss(bill_service)
     connector = BillBillConnector(mapping_repo=mapping_repo, bill_service=bill_service)
     return connector, mapping_repo, bill_service.repo
 

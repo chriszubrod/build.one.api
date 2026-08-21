@@ -22,10 +22,15 @@ repoint sproc — this unit forbids SQL migrations):
 
 Mocks stand in for services + repos so no DB/QBO I/O runs; line syncing is stubbed.
 """
+import sys
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 import pytest
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from conftest import stub_qbo_identity_fastpath_miss
 
 
 # ===========================================================================
@@ -89,11 +94,8 @@ def _build_bill_connector():
     # the empty-read heal/skip decision.
     connector._get_vendor_public_id = Mock(return_value="vendor-pub-1")
     connector._sync_line_items = Mock()
-    # U-283: force the dbo-native identity fast path to miss (a bare Mock() call
-    # otherwise auto-returns a truthy Mock, which would short-circuit these tests
-    # into the fast path instead of exercising the legacy heal-don't-delete branch
-    # they're actually testing).
-    connector.bill_service.read_by_qbo_identity.return_value = None
+    # U-283: these tests exercise the legacy heal-don't-delete branch.
+    stub_qbo_identity_fastpath_miss(connector.bill_service)
     return connector
 
 

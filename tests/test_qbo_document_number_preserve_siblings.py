@@ -21,10 +21,15 @@ For every sibling we assert the four documented cases:
   (c) an empty/None stored value is SET from the QBO-derived value,
   (d) the CREATE path is UNCHANGED (always the QBO-derived value).
 """
+import sys
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 import pytest
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from conftest import stub_qbo_identity_fastpath_miss
 
 
 # ===========================================================================
@@ -81,10 +86,8 @@ def _build_bill_connector():
     )
     connector._get_vendor_public_id = Mock(return_value="vendor-pub-1")
     connector._sync_line_items = Mock()  # isolate the number decision
-    # U-283: force the dbo-native identity fast path to miss (a bare Mock() call
-    # otherwise auto-returns a truthy Mock, short-circuiting these tests into the
-    # fast path instead of the legacy number-preserve branch they're testing).
-    connector.bill_service.read_by_qbo_identity.return_value = None
+    # U-283: this test exercises the legacy number-preserve branch.
+    stub_qbo_identity_fastpath_miss(connector.bill_service)
     return connector
 
 

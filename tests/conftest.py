@@ -26,6 +26,18 @@ def iter_prod_python_sources(root: Path | None = None, *, skip_files: frozenset[
         yield path
 
 
+def stub_qbo_identity_fastpath_miss(entity_service_mock) -> None:
+    """Force a QBO connector's dbo-native identity fast path (base/identity_fastpath.py)
+    to miss, so a test built against the pre-fast-path legacy connector logic exercises
+    that legacy path unchanged.
+
+    A bare Mock() auto-returns a truthy Mock for any undefined attribute/method call,
+    including `.read_by_qbo_identity(...)` — which would otherwise silently divert such
+    a test into the new fast path instead of the branch it's actually testing.
+    """
+    entity_service_mock.read_by_qbo_identity.return_value = None
+
+
 def pytest_configure(config):
     """Fail fast with guidance if the interpreter is missing project deps.
 

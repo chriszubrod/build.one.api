@@ -416,3 +416,27 @@ def test_get_project_public_id_falls_back_when_direct_hit_fails_verification():
 
     assert result == "proj-pub-30"  # legacy hop's answer, NOT the unverified direct hit
     qbo_customer_repo.read_by_qbo_id_and_realm_id.assert_called_once_with("CUST-1", "realm-1")
+
+
+def test_get_project_public_id_caches_per_realm_and_customer_ref():
+    """A Bill's lines commonly share one job/customer_ref_value — the second
+    lookup for the same (realm_id, qbo_customer_ref_value) must be served from
+    cache, not re-resolved."""
+    connector, project_service, qbo_customer_repo, customer_project_repo = _build_bill_line_item_connector()
+    direct_project = SimpleNamespace(id=10, public_id="proj-pub-10", qbo_id="CUST-1", name="Acme")
+    project_service.read_by_qbo_identity.return_value = direct_project
+    customer_project_repo.read_by_project_id.return_value = None
+
+    first = connector._get_project_public_id("CUST-1", "realm-1")
+    second = connector._get_project_public_id("CUST-1", "realm-1")
+
+    assert first == second == "proj-pub-10"
+    project_service.read_by_qbo_identity.assert_called_once_with("CUST-1", "realm-1")
+
+    # A different realm is a different cache key — must resolve independently.
+    project_service.read_by_qbo_identity.return_value = SimpleNamespace(
+        id=20, public_id="proj-pub-20", qbo_id="CUST-1", name="Other"
+    )
+    third = connector._get_project_public_id("CUST-1", "realm-2")
+    assert third == "proj-pub-20"
+    assert project_service.read_by_qbo_identity.call_count == 2

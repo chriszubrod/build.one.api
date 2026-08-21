@@ -55,6 +55,12 @@ class BillLineItemConnector:
         self.qbo_customer_repo = qbo_customer_repo or QboCustomerRepository()
         self.customer_project_repo = customer_project_repo or CustomerProjectRepository()
         self.project_service = project_service or ProjectService()
+        # Per-instance cache: a Bill's lines commonly share one job/customer_ref_value —
+        # avoids re-resolving the identical (realm_id, qbo_customer_ref_value) pair once
+        # per line. A fresh BillLineItemConnector is instantiated per Bill (see
+        # BillBillConnector._sync_line_items), so this naturally scopes to one bill's
+        # line-item sync, mirroring PurchaseLineExpenseLineItemConnector's _project_cache.
+        self._project_cache: dict = {}
 
     def sync_from_qbo_bill_line(self, bill_id: int, qbo_bill_line: QboBillLine, realm_id: Optional[str] = None) -> BillLineItem:
         """
@@ -250,7 +256,25 @@ class BillLineItemConnector:
     # Lift into one shared resolver when multi-realm lands — see TODO.md.
     def _get_project_public_id(self, qbo_customer_ref_value: str, realm_id: Optional[str] = None) -> Optional[str]:
         """
-        Get the Project public_id from QBO customer reference value.
+        Get the Project public_id from QBO customer reference value, cached per
+        (realm_id, qbo_customer_ref_value) for this connector instance's lifetime
+        — a Bill's lines commonly share one job/customer_ref_value, and a fresh
+        connector is instantiated per Bill (BillBillConnector._sync_line_items).
+        """
+        if not qbo_customer_ref_value:
+            return None
+
+        cache_key = (realm_id, qbo_customer_ref_value)
+        if cache_key in self._project_cache:
+            return self._project_cache[cache_key]
+
+        result = self._resolve_project_public_id(qbo_customer_ref_value, realm_id)
+        self._project_cache[cache_key] = result
+        return result
+
+    def _resolve_project_public_id(self, qbo_customer_ref_value: str, realm_id: Optional[str] = None) -> Optional[str]:
+        """
+        Uncached resolution — see _get_project_public_id, which caches this.
 
         Args:
             qbo_customer_ref_value: QBO customer reference value (QBO Customer ID)
@@ -259,9 +283,6 @@ class BillLineItemConnector:
         Returns:
             str: Project public_id or None
         """
-        if not qbo_customer_ref_value:
-            return None
-
         # U-283 §10 prereq: try dbo.Project's native QboId/RealmId directly
         # first (mirrors U-276's push-side verify_project_qbo_identity pattern)
         # before falling back to the qbo.Customer -> qbo.CustomerProject hop

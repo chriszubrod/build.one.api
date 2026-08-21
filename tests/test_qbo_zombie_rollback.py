@@ -1,10 +1,14 @@
 """Pure-logic tests for QBO->dbo compensating rollback on line-sync failure."""
+import sys
 from decimal import Decimal
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 import pytest
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from conftest import stub_qbo_identity_fastpath_miss
 from integrations.intuit.qbo.base.compensation import rollback_orphan_header
 from integrations.intuit.qbo.bill.connector.bill.business.service import BillBillConnector
 from integrations.intuit.qbo.vendorcredit.connector.bill_credit.business.service import (
@@ -56,10 +60,8 @@ def _build_connector(**overrides):
     for key, value in overrides.items():
         setattr(connector, key, value)
     connector._get_vendor_public_id = Mock(return_value="vendor-pub-id")
-    # U-283: force the dbo-native identity fast path to miss (a bare Mock() call
-    # otherwise auto-returns a truthy Mock, short-circuiting these tests into the
-    # fast path instead of the legacy create/rollback path they're testing).
-    connector.bill_service.read_by_qbo_identity.return_value = None
+    # U-283: these tests exercise the legacy create/rollback path.
+    stub_qbo_identity_fastpath_miss(connector.bill_service)
     return connector
 
 

@@ -6,6 +6,10 @@ from typing import Optional
 # Third-party Imports
 
 # Local Imports
+from integrations.intuit.qbo.base.identity_fastpath import (
+    resolve_mapping_state,
+    run_identity_fastpath,
+)
 from integrations.intuit.qbo.base.ids import coerce_id
 from integrations.intuit.qbo.base.reconciliation_recorder import record_mapping_issue
 from integrations.intuit.qbo.physical_address.connector.business.model import PhysicalAddressAddress
@@ -84,89 +88,60 @@ class PhysicalAddressAddressConnector:
         #
         # Mirrors CustomerCustomerConnector's U-276 fast path exactly: the
         # mapping-table state is checked BEFORE any write, not after.
-        protected_address_id = None
-        direct = (
-            self.address_service.read_by_qbo_identity(
-                qbo_physical_address.qbo_id, qbo_physical_address.realm_id
-            )
-            if qbo_physical_address.qbo_id else None
-        )
-        if direct:
-            mapping_state, by_address, by_qbo_physical_address = self._resolve_mapping_state(
-                address_id=coerce_id(direct.id), qbo_physical_address=qbo_physical_address
-            )
-            if mapping_state == "conflict":
+        def _apply_address_fields(entity: Address) -> Address:
+            entity.street_one = street_one or ""
+            entity.street_two = street_two or ""
+            entity.city = city or ""
+            entity.state = state or ""
+            entity.zip = zip_code or ""
+            updated = self.address_service.repo.update_by_id(entity)
+            if not updated:
+                # ROWVERSION race: a concurrent writer touched this exact
+                # Address between the read_by_qbo_identity() lookup and this
+                # UPDATE, so it affected 0 rows. Mirrors the legacy path's own
+                # guard (Step 3 below) instead of leaving a bare None to blow
+                # up on the next attribute access.
+                logger.error(
+                    f"Failed to update Address {entity.id} via fast path - "
+                    f"update_by_id returned None (concurrent write race)"
+                )
+                raise ValueError("Failed to update Address")
+            return updated
+
+        outcome = run_identity_fastpath(
+            qbo_id=qbo_physical_address.qbo_id,
+            realm_id=qbo_physical_address.realm_id,
+            external_id=qbo_physical_address.id,
+            entity_label="Address",
+            external_label="QboPhysicalAddress",
+            mapping_label="PhysicalAddressAddress",
+            read_direct_by_qbo_identity=self.address_service.read_by_qbo_identity,
+            read_by_local_id=self.mapping_repo.read_by_address_id,
+            read_by_external_id=self.mapping_repo.read_by_qbo_physical_address_id,
+            external_id_attr="qbo_physical_address_id",
+            record_conflict_issue=lambda entity, by_local, by_external: (
                 self._raise_identity_mapping_conflict_issue(
                     qbo_physical_address=qbo_physical_address,
-                    dbo_address_id=coerce_id(direct.id),
-                    local_side_mapping=by_address,
-                    qbo_side_mapping=by_qbo_physical_address,
+                    dbo_address_id=coerce_id(entity.id),
+                    local_side_mapping=by_local,
+                    qbo_side_mapping=by_external,
                 )
-                # Fall through — do NOT write to `direct` while the two
-                # identity sources disagree about which Address this is.
-                # `protected_address_id` guards Step 3 below: the legacy
-                # path's own by-street/city rediscovery can re-find this
-                # exact Address (street_one/city were derived from this same
-                # QboPhysicalAddress) and would otherwise overwrite it
-                # anyway — the write-before-check bug this whole pattern
-                # exists to prevent, just reached one hop later
-                # (review-confirmed on the Company sibling; applied
-                # symmetrically here).
-                protected_address_id = coerce_id(direct.id)
-            else:
-                logger.info(
-                    f"Updating existing Address {direct.id} from QboPhysicalAddress "
-                    f"{qbo_physical_address_id} (direct dbo identity match)"
-                )
-                direct.street_one = street_one or ""
-                direct.street_two = street_two or ""
-                direct.city = city or ""
-                direct.state = state or ""
-                direct.zip = zip_code or ""
-                address = self.address_service.repo.update_by_id(direct)
-                if not address:
-                    # ROWVERSION race: a concurrent writer touched this exact
-                    # Address between the read_by_qbo_identity() lookup above
-                    # and this UPDATE, so it affected 0 rows. Mirrors the
-                    # adjacent legacy path's own guard (Step 3 below) instead
-                    # of leaving a bare None to blow up on the next attribute
-                    # access.
-                    logger.error(
-                        f"Failed to update Address {direct.id} via fast path - "
-                        f"update_by_id returned None (concurrent write race)"
-                    )
-                    raise ValueError("Failed to update Address")
-                if mapping_state == "missing":
-                    try:
-                        self.mapping_repo.create(
-                            address_id=coerce_id(address.id),
-                            qbo_physical_address_id=qbo_physical_address_id,
-                        )
-                    except Exception as e:
-                        # A concurrent sync may have raced this exact QboPhysicalAddress
-                        # between the "missing" check above and this create — no
-                        # sp_getapplock serializes create_mapping()'s call sites (same
-                        # pre-existing gap as U-276's Customer/Project family). Re-check
-                        # rather than assume: if it's now a real conflict, record it
-                        # properly instead of a bare warning.
-                        logger.error(
-                            f"PhysicalAddressAddress mapping create failed for Address "
-                            f"{address.id} after a 'missing' pre-check: {e}"
-                        )
-                        recheck_state, recheck_by_address, recheck_by_qbo_physical_address = (
-                            self._resolve_mapping_state(
-                                address_id=coerce_id(address.id),
-                                qbo_physical_address=qbo_physical_address,
-                            )
-                        )
-                        if recheck_state == "conflict":
-                            self._raise_identity_mapping_conflict_issue(
-                                qbo_physical_address=qbo_physical_address,
-                                dbo_address_id=coerce_id(address.id),
-                                local_side_mapping=recheck_by_address,
-                                qbo_side_mapping=recheck_by_qbo_physical_address,
-                            )
-                return address
+            ),
+            conflict_message=lambda entity: (
+                f"PhysicalAddressAddress identity conflict for QboPhysicalAddress "
+                f"{qbo_physical_address.qbo_id} (id={qbo_physical_address.id}): "
+                f"dbo.Address {entity.id} already carries this identity but the "
+                f"mapping table disagrees. Not auto-repointed; see the recorded "
+                f"reconciliation issue. Skipping until a human resolves it."
+            ),
+            create_mapping=lambda local_id: self.mapping_repo.create(
+                address_id=local_id,
+                qbo_physical_address_id=qbo_physical_address_id,
+            ),
+            apply_fields=_apply_address_fields,
+        )
+        if outcome.hit:
+            return outcome.entity
 
         # Step 1: Try to find Address via existing mapping
         mapping = self.mapping_repo.read_by_qbo_physical_address_id(qbo_physical_address_id)
@@ -202,19 +177,16 @@ class PhysicalAddressAddressConnector:
                     needs_mapping_repair = True
         
         # Step 3: Update existing Address or create new one
-        if address and protected_address_id is not None and coerce_id(address.id) == protected_address_id:
-            # The legacy path (Step 1's mapping lookup or Step 2's
-            # by-street/city rediscovery) resolved back to the SAME Address
-            # the fast path just flagged as identity-conflicted above.
-            # Writing to it here would silently defeat that guard — return
-            # it untouched; the reconciliation issue already recorded is the
-            # actionable trail.
-            logger.warning(
-                f"Legacy fallback re-resolved Address {address.id} to the same row the fast-path "
-                f"conflict guard just protected — skipping write."
-            )
-            return address
-
+        #
+        # U-287 retired the `protected_address_id` guard that used to sit here. It
+        # existed because the fast path above USED to fall through on a detected
+        # identity conflict, and the legacy path's by-street/city rediscovery could
+        # then re-find and overwrite the very row the conflict check had just
+        # protected. The fast path now hard-stops with a ValueError on conflict (never
+        # falls through), so the guard was unreachable — and it only ever covered the
+        # re-resolves-to-the-SAME-row case anyway, leaving open both the different-row
+        # identity theft (the trailing set_qbo_identity stamp below would fire on the
+        # wrong Address) and the duplicate-mint path. See base/identity_fastpath.py.
         if address:
             qbo_modified = self._parse_datetime(qbo_physical_address.modified_datetime)
             address_modified = self._parse_datetime(address.modified_datetime)
@@ -407,16 +379,22 @@ class PhysicalAddressAddressConnector:
         address_id-only check would miss a stale mapping still binding this
         qbo_physical_address_id to a DIFFERENT Address.
 
-        Returns (state, by_address, by_qbo_physical_address) where state is
-        one of "consistent" / "missing" / "conflict".
+        NOTE (U-287): no production caller — `sync_from_qbo_*` passes these same
+        accessors straight to `run_identity_fastpath`, which calls the shared
+        `resolve_mapping_state` itself. Retained as the per-family test seam for the
+        U-276/277/278/279 suites, which call this by name. Disposition booked in TODO.md.
+
+        Returns (state, by_address, by_qbo_physical_address) — see
+        base.identity_fastpath.resolve_mapping_state, which owns the algorithm
+        (U-287); this is the PhysicalAddressAddress binding of it.
         """
-        by_address = self.mapping_repo.read_by_address_id(address_id)
-        if by_address and by_address.qbo_physical_address_id == qbo_physical_address.id:
-            return "consistent", by_address, by_address
-        by_qbo_physical_address = self.mapping_repo.read_by_qbo_physical_address_id(qbo_physical_address.id)
-        if not by_address and not by_qbo_physical_address:
-            return "missing", by_address, by_qbo_physical_address
-        return "conflict", by_address, by_qbo_physical_address
+        return resolve_mapping_state(
+            local_id=address_id,
+            external_id=qbo_physical_address.id,
+            read_by_local_id=self.mapping_repo.read_by_address_id,
+            read_by_external_id=self.mapping_repo.read_by_qbo_physical_address_id,
+            external_id_attr="qbo_physical_address_id",
+        )
 
     def _raise_identity_mapping_conflict_issue(
         self,

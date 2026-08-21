@@ -126,12 +126,15 @@ def test_address_service_read_by_qbo_identity_is_a_thin_passthrough():
 #
 # Same testing shape as U-276's CustomerCustomerConnector section — the
 # mapping-conflict cases are unit-tested directly against
-# _resolve_mapping_state / _raise_identity_mapping_conflict_issue rather than
-# through the full sync_from_qbo_to_company(), because a detected conflict
-# falls through to the pre-existing (complex, multi-branch) legacy path
-# instead of returning early. What THIS file must prove: (a) the conflict is
-# correctly detected and recorded, (b) the dbo-identity-matched row is never
-# written to on that path.
+# _resolve_mapping_state / _raise_identity_mapping_conflict_issue, plus
+# end-to-end through sync_from_qbo_to_company() for the hard stop.
+#
+# U-287 UPDATE: a detected conflict no longer falls through to the pre-existing
+# legacy path — it RAISES, via the shared base/identity_fastpath.py helper. The
+# four conflict tests below were rewritten accordingly (they previously asserted
+# the fall-through). What THIS file must prove: (a) the conflict is correctly
+# detected and recorded, (b) the dbo-identity-matched row is never written to,
+# (c) no duplicate is minted and no identity is stolen downstream of it.
 
 
 def _build_company_connector():
@@ -224,9 +227,19 @@ def test_company_raise_identity_mapping_conflict_issue_names_both_sides():
     assert "DIFFERENT QboCompanyInfo 5" in kwargs["details"]  # local-side conflicting QboCompanyInfo
 
 
-def test_company_fast_path_hit_updates_without_writing_on_conflict():
-    """On a detected conflict, sync_from_qbo_to_company must NOT write to the
-    dbo-identity-matched Company (55)."""
+def test_company_fast_path_hit_conflict_raises_and_never_mints_duplicate():
+    """On a detected conflict, sync_from_qbo_to_company must RAISE (hard stop).
+
+    REWRITTEN BY U-287. U-277 shipped this family with conflict -> *fall-through*,
+    guarded only by a `protected_company_id` check covering the case where the legacy
+    path re-resolved to the SAME row; this test's prior form asserted that
+    fall-through. That left the two dangerous shapes open: the legacy path updating a
+    DIFFERENT Company and calling set_qbo_identity on it (SetCompanyQboIdentity's
+    theft-clear UPDATE then NULLs Company 55's identity), and the duplicate mint. It is
+    the same P0 the U-276 hotfix fixed for customer/project one day later; U-277 was
+    never brought onto that hotfix. The shared helper (base/identity_fastpath.py) now
+    makes the raise structural.
+    """
     connector, mapping_repo, company_service, reconciliation_repo = _build_company_connector()
     qbo_company_info = _make_qbo_company_info(qbo_id="CI-99", realm_id="realm-1")
     direct_hit = SimpleNamespace(id=55, name="Acme", website="")
@@ -234,48 +247,57 @@ def test_company_fast_path_hit_updates_without_writing_on_conflict():
     mapping_repo.read_by_company_id.return_value = None
     conflicting = SimpleNamespace(id=2, company_id=9, qbo_company_info_id=qbo_company_info.id)
     mapping_repo.read_by_qbo_company_info_id.return_value = conflicting
-    # Safe terminal state for the legacy fallback this falls through to: it
-    # resolves Company 9 via the pre-existing mapping and updates that (not
-    # Company 55, which is this test's actual concern).
+    # If the fall-through were still present, these would let it reach and write
+    # Company 9 (identity theft) or mint id=77.
     company_service.read_by_id.return_value = SimpleNamespace(
         id=9, name="Other Co", website="", modified_datetime="2026-01-01 00:00:00"
     )
+    company_service.read_by_name.return_value = None
+    company_service.create.return_value = SimpleNamespace(id=77)
     company_service.repo.update_by_id.side_effect = lambda c: c
 
     connector.qbo_company_info_service.repo.read_by_id.return_value = qbo_company_info
-    connector.sync_from_qbo_to_company(qbo_company_info.id, "realm-1")
+    with pytest.raises(ValueError):
+        connector.sync_from_qbo_to_company(qbo_company_info.id, "realm-1")
 
-    reconciliation_repo.create.assert_called_once()
-    for call in company_service.repo.update_by_id.call_args_list:
-        written = call.args[0] if call.args else call.kwargs.get("company")
-        assert getattr(written, "id", None) != 55
+    reconciliation_repo.create.assert_called_once()  # conflict recorded (durable follow-up)
+    company_service.create.assert_not_called()  # NO duplicate Company minted
+    company_service.repo.update_by_id.assert_not_called()  # NO write to ANY Company
+    company_service.repo.set_qbo_identity.assert_not_called()  # NO identity theft
 
 
-def test_company_fast_path_local_side_conflict_legacy_rediscovery_does_not_write():
+def test_company_fast_path_local_side_conflict_raises_before_legacy_rediscovery():
     """Local-side-only conflict shape: by_company (keyed on the fast-path-matched
     Company) points at a DIFFERENT qbo_company_info_id, so Step 1's own mapping
     lookup (keyed on THIS sync's qbo_company_info_id) misses and the legacy
-    fallback reaches Step 2's by-name search — which can re-find the exact same
-    Company (its name was derived from this same QboCompanyInfo). Must not
-    silently overwrite it there either."""
+    fallback would reach Step 2's by-name search.
+
+    REWRITTEN BY U-287 (see the sibling test above). Under U-277 this fell through and
+    relied on `protected_company_id` to spare Company 55 when by-name re-found it. But
+    when by-name MISSED — a renamed Company, or a changed QBO legal_name — the same
+    fall-through minted a duplicate and stole Company 55's identity. The hard stop
+    removes the whole class rather than the one shape the guard covered.
+    """
     connector, mapping_repo, company_service, reconciliation_repo = _build_company_connector()
     qbo_company_info = _make_qbo_company_info(qbo_id="CI-99", realm_id="realm-1", legal_name="Acme Co")
     direct_hit = SimpleNamespace(id=55, name="Acme Co", website="old.example.com")
     company_service.read_by_qbo_identity.return_value = direct_hit
     mapping_repo.read_by_company_id.return_value = SimpleNamespace(id=3, qbo_company_info_id=7)
     mapping_repo.read_by_qbo_company_info_id.return_value = None
-    company_service.read_by_name.return_value = direct_hit
+    # The by-name MISS is the dangerous variant the old guard did not cover.
+    company_service.read_by_name.return_value = None
+    company_service.create.return_value = SimpleNamespace(id=77)
     company_service.repo.update_by_id.side_effect = lambda c: c
 
     connector.qbo_company_info_service.repo.read_by_id.return_value = qbo_company_info
-    result = connector.sync_from_qbo_to_company(qbo_company_info.id, "realm-1")
+    with pytest.raises(ValueError):
+        connector.sync_from_qbo_to_company(qbo_company_info.id, "realm-1")
 
     reconciliation_repo.create.assert_called_once()
-    assert result.id == 55
-    assert result.website == "old.example.com"  # untouched, not overwritten with CI-99's data
-    for call in company_service.repo.update_by_id.call_args_list:
-        written = call.args[0] if call.args else call.kwargs.get("company")
-        assert getattr(written, "id", None) != 55
+    assert direct_hit.website == "old.example.com"  # untouched, never overwritten
+    company_service.create.assert_not_called()  # NO duplicate Company minted
+    company_service.repo.update_by_id.assert_not_called()  # NO write to ANY Company
+    company_service.repo.set_qbo_identity.assert_not_called()  # NO identity theft
 
 
 def test_company_fast_path_hit_self_heals_missing_mapping():
@@ -503,9 +525,17 @@ def test_address_raise_identity_mapping_conflict_issue_names_both_sides():
     assert "DIFFERENT QboPhysicalAddress 5" in kwargs["details"]  # local-side conflicting QboPhysicalAddress
 
 
-def test_address_fast_path_hit_updates_without_writing_on_conflict():
-    """On a detected conflict, sync_from_qbo_to_address must NOT write to the
-    dbo-identity-matched Address (55)."""
+def test_address_fast_path_hit_conflict_raises_and_never_steals_identity():
+    """Address twin of the Company hard-stop test. REWRITTEN BY U-287.
+
+    This family's fall-through was the most direct of the two: on a qbo-side conflict
+    the legacy path resolves Address 9 via the pre-existing mapping, updates it, and
+    then the trailing stamp block (`if not needs_mapping_repair and mapping is not
+    None and mapping.qbo_physical_address_id == ...`) calls set_qbo_identity on
+    Address 9 — and SetAddressQboIdentity's theft-clear UPDATE nulls QboId/RealmId on
+    ANY other row holding that pair, i.e. Address 55. Identity theft, reachable
+    without any by-street/city miss. The `protected_address_id` guard never covered it.
+    """
     connector, mapping_repo, address_service, reconciliation_repo = _build_address_connector()
     qbo_physical_address = _make_qbo_physical_address(qbo_id="PA-99", realm_id="realm-1")
     direct_hit = SimpleNamespace(id=55, street_one="", street_two="", city="", state="", zip="")
@@ -513,9 +543,8 @@ def test_address_fast_path_hit_updates_without_writing_on_conflict():
     mapping_repo.read_by_address_id.return_value = None
     conflicting = SimpleNamespace(id=2, address_id=9, qbo_physical_address_id=qbo_physical_address.id)
     mapping_repo.read_by_qbo_physical_address_id.return_value = conflicting
-    # Safe terminal state for the legacy fallback this falls through to: it
-    # resolves Address 9 via the pre-existing mapping and updates that (not
-    # Address 55, which is this test's actual concern).
+    # If the fall-through were still present, these would let it reach Address 9,
+    # write it, and stamp identity onto it — stealing it from Address 55.
     address_service.read_by_id.return_value = SimpleNamespace(
         id=9, street_one="", street_two="", city="", state="", zip="",
         modified_datetime="2026-01-01 00:00:00",
@@ -523,19 +552,23 @@ def test_address_fast_path_hit_updates_without_writing_on_conflict():
     address_service.repo.update_by_id.side_effect = lambda a: a
 
     connector.qbo_physical_address_service.repo.read_by_id.return_value = qbo_physical_address
-    connector.sync_from_qbo_to_address(qbo_physical_address.id)
+    with pytest.raises(ValueError):
+        connector.sync_from_qbo_to_address(qbo_physical_address.id)
 
     reconciliation_repo.create.assert_called_once()
-    for call in address_service.repo.update_by_id.call_args_list:
-        written = call.args[0] if call.args else call.kwargs.get("address")
-        assert getattr(written, "id", None) != 55
+    address_service.create.assert_not_called()  # NO duplicate Address minted
+    address_service.repo.update_by_id.assert_not_called()  # NO write to ANY Address
+    address_service.repo.set_qbo_identity.assert_not_called()  # NO identity theft
 
 
-def test_address_fast_path_local_side_conflict_legacy_rediscovery_does_not_write():
-    """Local-side-only conflict shape, Address twin of the Company test above:
-    the legacy fallback's own by-street/city rediscovery can re-find the exact
-    same Address (its street_one/city were derived from this same
-    QboPhysicalAddress) — must not silently overwrite it there either."""
+def test_address_fast_path_local_side_conflict_raises_before_legacy_rediscovery():
+    """Local-side-only conflict shape, Address twin. REWRITTEN BY U-287.
+
+    Under U-277 this fell through and relied on `protected_address_id` to spare
+    Address 55 when the by-street/city search re-found it. When that search MISSED
+    — a corrected street line, a changed city — the fall-through minted a duplicate
+    Address and stamped PA-99's identity onto it, stealing it from Address 55.
+    """
     connector, mapping_repo, address_service, reconciliation_repo = _build_address_connector()
     qbo_physical_address = _make_qbo_physical_address(
         qbo_id="PA-99", realm_id="realm-1", line1="123 Main", city="Austin"
@@ -546,18 +579,20 @@ def test_address_fast_path_local_side_conflict_legacy_rediscovery_does_not_write
     address_service.read_by_qbo_identity.return_value = direct_hit
     mapping_repo.read_by_address_id.return_value = SimpleNamespace(id=3, qbo_physical_address_id=7)
     mapping_repo.read_by_qbo_physical_address_id.return_value = None
-    address_service.read_by_street_one_and_city.return_value = direct_hit
+    # The by-street/city MISS is the dangerous variant the old guard did not cover.
+    address_service.read_by_street_one_and_city.return_value = None
+    address_service.create.return_value = SimpleNamespace(id=77)
     address_service.repo.update_by_id.side_effect = lambda a: a
 
     connector.qbo_physical_address_service.repo.read_by_id.return_value = qbo_physical_address
-    result = connector.sync_from_qbo_to_address(qbo_physical_address.id)
+    with pytest.raises(ValueError):
+        connector.sync_from_qbo_to_address(qbo_physical_address.id)
 
     reconciliation_repo.create.assert_called_once()
-    assert result.id == 55
-    assert result.state == "OLD"  # untouched, not overwritten with PA-99's data
-    for call in address_service.repo.update_by_id.call_args_list:
-        written = call.args[0] if call.args else call.kwargs.get("address")
-        assert getattr(written, "id", None) != 55
+    assert direct_hit.state == "OLD"  # untouched, never overwritten with PA-99's data
+    address_service.create.assert_not_called()  # NO duplicate Address minted
+    address_service.repo.update_by_id.assert_not_called()  # NO write to ANY Address
+    address_service.repo.set_qbo_identity.assert_not_called()  # NO identity theft
 
 
 def test_address_fast_path_hit_self_heals_missing_mapping():

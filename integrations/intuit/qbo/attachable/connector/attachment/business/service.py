@@ -14,6 +14,10 @@ from integrations.intuit.qbo.attachable.persistence.repo import QboAttachableRep
 from integrations.intuit.qbo.attachable.external.client import QboAttachableClient
 from integrations.intuit.qbo.auth.business.service import QboAuthService
 from integrations.intuit.qbo.base.errors import QboBudgetExceededError, QboWriteRefusedError
+from integrations.intuit.qbo.base.identity_fastpath import (
+    resolve_mapping_state,
+    run_identity_fastpath,
+)
 from integrations.intuit.qbo.base.ids import coerce_id
 from integrations.intuit.qbo.base.reconciliation_recorder import record_mapping_issue
 from integrations.intuit.qbo.reconciliation.persistence.repo import ReconciliationIssueRepository
@@ -79,71 +83,45 @@ class AttachableAttachmentConnector:
         # established: writing to the dbo-identity-matched Attachment first
         # and detecting a conflict afterward could corrupt state in the case
         # the mapping table, not dbo identity, is actually still correct.
-        if qbo_attachable.qbo_id:
-            direct = self.attachment_service.read_by_qbo_identity(qbo_attachable.qbo_id, realm_id)
-            if direct:
-                state, by_attachment, by_qbo_attachable = self._resolve_mapping_state(
-                    attachment_id=coerce_id(direct.id), qbo_attachable=qbo_attachable
+        # No `apply_fields`: unlike its five siblings, this connector uses the fast path
+        # for identity RESOLUTION only — the field work (blob verification, re-download,
+        # re-upload) happens in the shared block below, reached whether identity came
+        # from the fast path or the legacy mapping table. So the mapping row is created
+        # directly here (not via _create_mapping, which would also re-call
+        # set_qbo_identity — redundant, since identity is already correct on `direct`).
+        outcome = run_identity_fastpath(
+            qbo_id=qbo_attachable.qbo_id,
+            realm_id=realm_id,
+            external_id=qbo_attachable.id,
+            entity_label="Attachment",
+            external_label="QboAttachable",
+            mapping_label="AttachableAttachment",
+            read_direct_by_qbo_identity=self.attachment_service.read_by_qbo_identity,
+            read_by_local_id=self.mapping_repo.read_by_attachment_id,
+            read_by_external_id=self.mapping_repo.read_by_qbo_attachable_id,
+            external_id_attr="qbo_attachable_id",
+            record_conflict_issue=lambda entity, by_local, by_external: (
+                self._raise_identity_mapping_conflict_issue(
+                    qbo_attachable=qbo_attachable,
+                    dbo_attachment_id=coerce_id(entity.id),
+                    local_side_mapping=by_local,
+                    qbo_side_mapping=by_external,
+                    realm_id=realm_id,
                 )
-                if state == "conflict":
-                    self._raise_identity_mapping_conflict_issue(
-                        qbo_attachable=qbo_attachable,
-                        dbo_attachment_id=coerce_id(direct.id),
-                        local_side_mapping=by_attachment,
-                        qbo_side_mapping=by_qbo_attachable,
-                        realm_id=realm_id,
-                    )
-                    # HARD STOP — do NOT fall through to the legacy mapping-table
-                    # path. That path would either re-map a DIFFERENT Attachment
-                    # (whose set_qbo_identity call would silently NULL `direct`'s
-                    # identity via SetAttachmentQboIdentity's theft-clear UPDATE),
-                    # or re-download/re-create a duplicate Attachment for an
-                    # already-resolved QboAttachable. Never proceed past a
-                    # confirmed conflict — a human resolves which side is
-                    # correct; the recorded reconciliation issue is the durable
-                    # follow-up (mirrors the U-276 hotfix, 2026-08-20 — that
-                    # fall-through identity-theft bug is exactly what this
-                    # guards against; never re-introduce it here).
-                    raise ValueError(
-                        f"Attachment identity conflict for QboAttachable "
-                        f"{qbo_attachable.qbo_id} (id={qbo_attachable.id}): dbo.Attachment "
-                        f"{direct.id} already carries this identity but the mapping table "
-                        f"disagrees. Not auto-repointed; see the recorded reconciliation "
-                        f"issue. Skipping until a human resolves it."
-                    )
-                if state == "missing":
-                    # No mapping row on either side yet — dbo identity is
-                    # otherwise trustworthy (nothing to disagree with). Create
-                    # the mapping directly (not via _create_mapping, which
-                    # would also re-call set_qbo_identity — redundant, since
-                    # identity is already correct on `direct`).
-                    try:
-                        self.mapping_repo.create(
-                            attachment_id=coerce_id(direct.id), qbo_attachable_id=qbo_attachable.id
-                        )
-                    except Exception as e:
-                        # A concurrent sync may have raced this exact
-                        # QboAttachable between the "missing" check and this
-                        # create — re-check rather than assume (mirrors
-                        # CustomerCustomerConnector's identical recheck).
-                        logger.error(
-                            f"AttachableAttachment mapping create failed for Attachment "
-                            f"{direct.id} after a 'missing' pre-check: {e}"
-                        )
-                        recheck_state, recheck_by_attachment, recheck_by_qbo_attachable = (
-                            self._resolve_mapping_state(
-                                attachment_id=coerce_id(direct.id), qbo_attachable=qbo_attachable
-                            )
-                        )
-                        if recheck_state == "conflict":
-                            self._raise_identity_mapping_conflict_issue(
-                                qbo_attachable=qbo_attachable,
-                                dbo_attachment_id=coerce_id(direct.id),
-                                local_side_mapping=recheck_by_attachment,
-                                qbo_side_mapping=recheck_by_qbo_attachable,
-                                realm_id=realm_id,
-                            )
-                attachment = direct
+            ),
+            conflict_message=lambda entity: (
+                f"Attachment identity conflict for QboAttachable "
+                f"{qbo_attachable.qbo_id} (id={qbo_attachable.id}): dbo.Attachment "
+                f"{entity.id} already carries this identity but the mapping table "
+                f"disagrees. Not auto-repointed; see the recorded reconciliation "
+                f"issue. Skipping until a human resolves it."
+            ),
+            create_mapping=lambda local_id: self.mapping_repo.create(
+                attachment_id=local_id, qbo_attachable_id=qbo_attachable.id
+            ),
+        )
+        if outcome.hit:
+            attachment = outcome.entity
 
         if attachment is None:
             # Legacy path: resolve via the qbo.AttachableAttachment mapping table.
@@ -353,20 +331,23 @@ class AttachableAttachmentConnector:
         SetAttachmentQboIdentity's own theft-clear UPDATE does not clean up
         the mapping table).
 
-        Returns (state, by_attachment, by_qbo_attachable):
-          - "consistent": by_attachment exists and already points at this
-            exact qbo_attachable — nothing to write.
-          - "missing": no mapping row on either side — safe to create one.
-          - "conflict": a mapping row exists but disagrees with the
-            dbo-identity match — never auto-repoint, record and raise.
+        NOTE (U-287): no production caller — `sync_from_qbo_*` passes these same
+        accessors straight to `run_identity_fastpath`, which calls the shared
+        `resolve_mapping_state` itself. Retained as the per-family test seam for the
+        U-276/277/278/279 suites, which call this by name. Disposition booked in TODO.md.
+
+        Returns (state, by_attachment, by_qbo_attachable) — see
+        base.identity_fastpath.resolve_mapping_state, which owns the algorithm
+        and documents the "consistent"/"missing"/"conflict" semantics (U-287);
+        this is the AttachableAttachment binding of it.
         """
-        by_attachment = self.mapping_repo.read_by_attachment_id(attachment_id)
-        if by_attachment and by_attachment.qbo_attachable_id == qbo_attachable.id:
-            return "consistent", by_attachment, by_attachment
-        by_qbo_attachable = self.mapping_repo.read_by_qbo_attachable_id(qbo_attachable.id)
-        if not by_attachment and not by_qbo_attachable:
-            return "missing", by_attachment, by_qbo_attachable
-        return "conflict", by_attachment, by_qbo_attachable
+        return resolve_mapping_state(
+            local_id=attachment_id,
+            external_id=qbo_attachable.id,
+            read_by_local_id=self.mapping_repo.read_by_attachment_id,
+            read_by_external_id=self.mapping_repo.read_by_qbo_attachable_id,
+            external_id_attr="qbo_attachable_id",
+        )
 
     def _raise_identity_mapping_conflict_issue(
         self,

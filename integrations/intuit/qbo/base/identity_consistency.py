@@ -8,12 +8,20 @@ directly instead of hopping through the qbo.*Customer mapping table. dbo
 identity alone only guarantees dbo-internal uniqueness — Set*QboIdentity's
 own theft-detection UPDATE enforces that no two local rows share an external
 id at any moment — but it does NOT guarantee the mapping table has caught up
-to the latest holder. CustomerProjectConnector/CustomerCustomerConnector's
-own pull-side fast path treats a disagreement between the two as a
-"conflict" and falls back to the mapping table as authoritative (never
-guessing which side is right); an outbound push needs the same discipline,
-or a stale/"stolen" dbo identity can push a live financial document (Bill/
-Expense/Invoice) under the WRONG QBO customer's books.
+to the latest holder. The pull-side fast path (base/identity_fastpath.py)
+treats a disagreement between the two as a "conflict" and HARD-STOPS —
+recording a reconciliation issue and raising, never guessing which side is
+right and never proceeding on either. An outbound push needs the same
+discipline, or a stale/"stolen" dbo identity can push a live financial
+document (Bill/Expense/Invoice) under the WRONG QBO customer's books.
+
+NB (U-287): this module's original text said the pull side "falls back to the
+mapping table as authoritative". That WAS true when this was written, and it
+was the 2026-08-20 live-prod P0 — falling through let the legacy path
+set_qbo_identity on a different row (theft-clearing the conflicted row's
+identity) or mint a duplicate. Do not "restore symmetry" by softening the
+push side back toward a fall-back; the discipline being mirrored is the hard
+stop. Refusing to resolve (returning None here) is the push-side analogue.
 """
 import logging
 from typing import Optional

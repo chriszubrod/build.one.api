@@ -22,6 +22,10 @@ from integrations.intuit.qbo.base.pull_race import guard_lines_present
 from integrations.intuit.qbo.base.compensation import rollback_orphan_header
 from integrations.intuit.qbo.base.reconciliation_recorder import record_mapping_issue
 from integrations.intuit.qbo.base.field_ownership import preserve_human_edited_ref, qbo_ref_or_placeholder
+from integrations.intuit.qbo.base.identity_fastpath import (
+    resolve_mapping_state,
+    run_identity_fastpath,
+)
 from integrations.intuit.qbo.base.ids import coerce_id
 from integrations.intuit.qbo.reconciliation.persistence.repo import ReconciliationIssueRepository
 
@@ -108,95 +112,61 @@ class VendorCreditBillCreditConnector:
             # theft-detection UPDATE would then silently NULL `direct`'s identity, and a
             # local-side-only conflict could additionally mint a duplicate BillCredit via
             # Step 3 CREATE. See the raise below for the full rationale.
-            direct = (
-                self.bill_credit_service.read_by_qbo_identity(qbo_vc.qbo_id, qbo_vc.realm_id)
-                if qbo_vc.qbo_id else None
-            )
-            if direct:
-                state, by_bill_credit, by_qbo_vc = self._resolve_mapping_state(
-                    bill_credit_id=coerce_id(direct.id), qbo_vc=qbo_vc
+            def _on_update_empty(entity: BillCredit) -> None:
+                # `direct` read empty on write — BillCreditService
+                # .update_by_public_id re-reads and returns None rather than
+                # raising when the row is gone, unlike the repo-level
+                # update_by_id the legacy path below uses. Likely a
+                # concurrent delete between our read_by_qbo_identity fetch
+                # and this write. Nothing to map or stamp; let this tick skip
+                # and the next pull heal naturally (transient).
+                logger.warning(
+                    f"BillCredit {entity.id} read empty on write (direct-identity "
+                    f"fast path) for QboVendorCredit {qbo_vc.id} — likely a "
+                    f"concurrent delete; skipping this tick."
                 )
-                if state == "conflict":
+
+            outcome = run_identity_fastpath(
+                qbo_id=qbo_vc.qbo_id,
+                realm_id=qbo_vc.realm_id,
+                external_id=qbo_vc.id,
+                entity_label="BillCredit",
+                external_label="QboVendorCredit",
+                mapping_label="VendorCreditBillCredit",
+                read_direct_by_qbo_identity=self.bill_credit_service.read_by_qbo_identity,
+                read_by_local_id=self.mapping_repo.read_by_bill_credit_id,
+                read_by_external_id=self.mapping_repo.read_by_qbo_vendor_credit_id,
+                external_id_attr="qbo_vendor_credit_id",
+                record_conflict_issue=lambda entity, by_local, by_external: (
                     self._raise_identity_mapping_conflict_issue(
                         qbo_vc=qbo_vc,
-                        dbo_bill_credit_id=coerce_id(direct.id),
-                        local_side_mapping=by_bill_credit,
-                        qbo_side_mapping=by_qbo_vc,
+                        dbo_bill_credit_id=coerce_id(entity.id),
+                        local_side_mapping=by_local,
+                        qbo_side_mapping=by_external,
                     )
-                    # HARD STOP — do not fall through to the legacy mapping-table
-                    # path. That path would either (a) update a DIFFERENT
-                    # BillCredit and then call set_qbo_identity(qbo_id=qbo_vc.qbo_id,
-                    # ...) on it, which SetBillCreditQboIdentity's own
-                    # theft-detection UPDATE (dbo.bill_credit.sql) applies against
-                    # ANY row carrying that (QboId, RealmId) pair regardless of which
-                    # row this call targets — silently NULLing `direct`'s identity,
-                    # the exact corruption this check exists to prevent — or (b) mint
-                    # a duplicate BillCredit via Step 3 CREATE when `by_qbo_vc` is
-                    # None (local-side-only conflict), since `direct` already
-                    # represents this real-world transaction. Never proceed past a
-                    # confirmed conflict — a human must resolve which side is
-                    # correct first; the recorded reconciliation issue is the
-                    # durable follow-up, this raise is the safety stop.
-                    raise ValueError(
-                        f"VendorCreditBillCredit identity conflict for QboVendorCredit "
-                        f"{qbo_vc.qbo_id} (id={qbo_vc.id}): dbo.BillCredit {direct.id} "
-                        f"already carries this identity but the mapping table "
-                        f"disagrees. Not auto-repointed; see the recorded "
-                        f"reconciliation issue. Skipping until a human resolves it."
-                    )
-                logger.info(
-                    f"Updating existing BillCredit {direct.id} from QboVendorCredit "
-                    f"{qbo_vc.id} (direct dbo identity match)"
-                )
-                updated = self._apply_bill_credit_fields_and_sync(
-                    direct,
+                ),
+                conflict_message=lambda entity: (
+                    f"VendorCreditBillCredit identity conflict for QboVendorCredit "
+                    f"{qbo_vc.qbo_id} (id={qbo_vc.id}): dbo.BillCredit {entity.id} "
+                    f"already carries this identity but the mapping table "
+                    f"disagrees. Not auto-repointed; see the recorded "
+                    f"reconciliation issue. Skipping until a human resolves it."
+                ),
+                create_mapping=lambda local_id: self.mapping_repo.create(
+                    qbo_vendor_credit_id=qbo_vc.id,
+                    bill_credit_id=local_id,
+                ),
+                apply_fields=lambda entity: self._apply_bill_credit_fields_and_sync(
+                    entity,
                     qbo_vc=qbo_vc,
                     vendor_public_id=vendor_public_id,
                     credit_number=credit_number,
                     qbo_lines=qbo_lines,
-                )
-                if state == "missing" and updated is not None:
-                    try:
-                        self.mapping_repo.create(
-                            qbo_vendor_credit_id=qbo_vc.id,
-                            bill_credit_id=coerce_id(updated.id),
-                        )
-                    except Exception as e:
-                        # A concurrent sync may have raced this exact QboVendorCredit
-                        # between the "missing" check above and this create (mirrors
-                        # U-276 round-4) — no sp_getapplock serializes mapping create()
-                        # call sites. Re-check rather than assume: if it's now a real
-                        # conflict, record it properly instead of a bare warning.
-                        logger.error(
-                            f"VendorCreditBillCredit mapping create failed for "
-                            f"BillCredit {updated.id} after a 'missing' pre-check: {e}"
-                        )
-                        recheck_state, recheck_by_bc, recheck_by_qbo = (
-                            self._resolve_mapping_state(
-                                bill_credit_id=coerce_id(updated.id), qbo_vc=qbo_vc
-                            )
-                        )
-                        if recheck_state == "conflict":
-                            self._raise_identity_mapping_conflict_issue(
-                                qbo_vc=qbo_vc,
-                                dbo_bill_credit_id=coerce_id(updated.id),
-                                local_side_mapping=recheck_by_bc,
-                                qbo_side_mapping=recheck_by_qbo,
-                            )
-                elif state == "missing" and updated is None:
-                    # `direct` read empty on write — BillCreditService
-                    # .update_by_public_id re-reads and returns None rather than
-                    # raising when the row is gone, unlike the repo-level
-                    # update_by_id the legacy path below uses. Likely a
-                    # concurrent delete between our read_by_qbo_identity fetch
-                    # and this write. Nothing to map or stamp; let this tick skip
-                    # and the next pull heal naturally (transient).
-                    logger.warning(
-                        f"BillCredit {direct.id} read empty on write (direct-identity "
-                        f"fast path) for QboVendorCredit {qbo_vc.id} — likely a "
-                        f"concurrent delete; skipping this tick."
-                    )
-                return updated
+                ),
+                on_apply_returned_none=_on_update_empty,
+            )
+            if outcome.hit:
+                return outcome.entity
 
             # Step 2: Check for existing mapping
             existing_mapping = self.mapping_repo.read_by_qbo_vendor_credit_id(qbo_vc.id)
@@ -385,28 +355,23 @@ class VendorCreditBillCreditConnector:
         this same mapping table, so leaving it undetected can misroute LinkedTxn
         resolution to the wrong BillCredit.
 
-        Returns (state, by_bill_credit, by_qbo_vc) where state is one of:
-          "consistent" — a mapping row exists and agrees; caller writes freely.
-          "missing"    — no mapping row on either side; caller writes and creates one.
-          "conflict"   — the two sides disagree (one or both directions); caller must
-                         NOT write to the dbo-identity-matched row — record the conflict
-                         and fall through to the legacy mapping-table-based path
-                         instead, which still trusts the mapping table.
+        NOTE (U-287): no production caller — `sync_from_qbo_*` passes these same
+        accessors straight to `run_identity_fastpath`, which calls the shared
+        `resolve_mapping_state` itself. Retained as the per-family test seam for the
+        U-276/277/278/279 suites, which call this by name. Disposition booked in TODO.md.
 
-        Only reads read_by_qbo_vendor_credit_id when by_bill_credit doesn't already
-        settle it — QboVendorCreditId is unique on the mapping table, so a
-        by_bill_credit row whose qbo_vendor_credit_id matches IS the row
-        read_by_qbo_vendor_credit_id would return; fetching it again would be a wasted
-        round trip on the common (steady-state, consistent) path, which is exactly the
-        path this whole fast path exists to keep cheap.
+        Returns (state, by_bill_credit, by_qbo_vc) — see
+        base.identity_fastpath.resolve_mapping_state, which owns the algorithm and
+        documents the "consistent"/"missing"/"conflict" semantics (U-287); this is the
+        VendorCreditBillCredit binding of it.
         """
-        by_bill_credit = self.mapping_repo.read_by_bill_credit_id(bill_credit_id)
-        if by_bill_credit and by_bill_credit.qbo_vendor_credit_id == qbo_vc.id:
-            return "consistent", by_bill_credit, by_bill_credit
-        by_qbo_vc = self.mapping_repo.read_by_qbo_vendor_credit_id(qbo_vc.id)
-        if not by_bill_credit and not by_qbo_vc:
-            return "missing", by_bill_credit, by_qbo_vc
-        return "conflict", by_bill_credit, by_qbo_vc
+        return resolve_mapping_state(
+            local_id=bill_credit_id,
+            external_id=qbo_vc.id,
+            read_by_local_id=self.mapping_repo.read_by_bill_credit_id,
+            read_by_external_id=self.mapping_repo.read_by_qbo_vendor_credit_id,
+            external_id_attr="qbo_vendor_credit_id",
+        )
 
     def _raise_identity_mapping_conflict_issue(
         self,

@@ -370,7 +370,75 @@ clean pathspec-commit.
 
 **Still open, unresolved by this unit:** the deferred cross-namespace collision observability gap above; the
 5-way `_resolve_mapping_state` duplication (own follow-up, generalize once all in-flight repoints — U-277, U-278 —
-have landed, so it doesn't touch a moving target).
+have landed, so it doesn't touch a moving target). — _`_resolve_mapping_state` duplication RESOLVED by U-287, §13._
+
+---
+
+## 13. U-287 resolved — the fast-path pattern now has ONE home (2026-08-20)
+
+The duplication §10/§12 kept booking is closed. `integrations/intuit/qbo/base/identity_fastpath.py` is now the
+single implementation of the §10-step-3 recipe, and all six copies (customer/customer, customer/project,
+company_info, physical_address, vendorcredit/bill_credit, attachable/attachment) are deleted. Net −602/+446.
+
+**The interface** — two functions:
+- `resolve_mapping_state(*, local_id, external_id, read_by_local_id, read_by_external_id, external_id_attr)` —
+  pure; owns the both-directions algorithm and the deferred second read (§10's own `/simplify` optimisation).
+- `run_identity_fastpath(...) -> FastPathOutcome(hit, entity)` — owns the **control flow**: the falsy-`qbo_id`
+  short circuit, check-before-write ordering, the conflict hard stop, and the self-heal create-race re-check.
+
+Each family passes only what is genuinely family-specific, as callbacks: `apply_fields` (the field write),
+`create_mapping` (the mapping-row kwargs), `record_conflict_issue` (its own
+`_raise_identity_mapping_conflict_issue`, whose message names different downstream readers per family — kept
+per-connector on purpose), and `conflict_message`. `attachable` passes **no** `apply_fields`: it uses the helper
+for identity resolution only and continues to its shared blob-handling block, which is why the helper returns an
+outcome rather than assuming the caller returns.
+
+**Why this is the load-bearing change, not a tidy-up:** `conflict → RAISE` is now structural. There is no
+parameter to opt out, so a future repoint cannot reintroduce the fall-through by copying a stale template — which
+is exactly how the 2026-08-20 live-prod P0 happened (§10 shipped the fall-through; U-278's review of the mirrored
+vendorcredit unit caught it; the hotfix then had to patch two copies by hand).
+
+**It also closed that same P0 in two families the hotfix never reached.** `company_info` and `physical_address`
+(§12, shipped 2026-08-19 — one day BEFORE the hotfix) still fell through on conflict, mitigated only by the
+`protected_{company,address}_id` guard. That guard covers exactly one shape: the legacy path re-resolving to the
+SAME row. It left open (a) **different-row identity theft** — most directly in `physical_address`, where a
+qbo-side conflict falls through, updates the other Address, and the trailing `set_qbo_identity` stamp fires on it,
+and `SetAddressQboIdentity`'s theft-clear UPDATE then NULLs the original's identity; and (b) **duplicate mint +
+theft** in either family when the by-name / by-street-city rediscovery MISSES (a renamed row, a changed QBO
+legal_name). Both now raise; the guards were provably dead afterward and were deleted. Four of their tests
+asserted the fall-through and were deliberately rewritten to demand the raise — mirroring how the U-276 hotfix
+rewrote its own. Every caller of both connectors already isolates per-record (`try/except Exception` →
+`logger.error` or `outcome.record_projection_error`), so the raise skips one record, never a run.
+
+**Verification.** 2442 pytest green. The equivalence proof is that the **U-276 / U-278 / U-279 suites pass
+completely UNCHANGED** — only the 4 deliberate `company_info`/`physical_address` conflict tests moved. Mutation
+matrix **12/12 caught** in an isolated git worktree (hermetic, `__pycache__` cleared per run, green before and
+after): conflict-never-raises, conflict-never-recorded, conflict-branch-keyed-on-MISSING, missing-needs-only-one-
+side, any-by_local-counts-as-consistent, mapping-keyed-on-pre-apply-row, race-never-escalates, no-None-guard,
+write-then-check (the §10 round-3 ordering bug), conflict-swallowed-as-a-miss, plus the two regression mutants
+below. Codex was out of credits this session (ladder followed: retried at `high` on `gpt-5.4`, failed
+identically) — Pass 1 ran as a 5-lens Workflow hunt with refute-by-default verification: 9 raw findings,
+**7 refuted, 1 confirmed** (found independently by 2 lenses).
+
+**The confirmed finding, fixed:** `customer/customer` was the only family whose `apply_fields` could return
+`None` with no handler. Pre-U-287 that path crashed with `AttributeError` (no `None` guard, and the except
+handler's own f-string re-raised), which `record_projection_error` rule 3 sends to failure/**HOLD** — so the
+record self-healed next tick. The extraction's uniform `None` guard turned it into a silent `return None`, and
+`project_records` counts a `None` return as a projected **SUCCESS**, advancing the watermark past a Customer whose
+fields were never written and whose mapping row was never created. Fixed with an `on_apply_returned_none` that
+raises **`RuntimeError` — deliberately not `ValueError`**, because rule 2 classifies a plain `ValueError` as a
+permanent skip, which would advance the watermark too. (Both verifiers proposed `ValueError` "to match
+company_info/physical_address"; tracing the classifier showed that would not have restored the old behavior. The
+two U-277 families carry that same mis-classification as a **pre-existing** issue — booked in `TODO.md`, not
+fixed here.)
+
+**Still open:** the two `TODO.md` follow-ups — converging `company_info`/`physical_address` onto hold-not-skip for
+the ROWVERSION race, and deciding whether the six now-production-dead `_resolve_mapping_state` wrappers stay as
+tested seams or get deleted with their tests repointed at the shared function.
+
+**For the queued repoints (§8: account, term/vendor/item, bill/purchase, invoice):** call the helper. Do not
+re-copy the recipe. If a family does not fit the interface, extend the helper deliberately rather than forking it
+— forking is the failure mode this section exists to prevent.
 
 ---
 

@@ -9,6 +9,10 @@ from integrations.intuit.qbo.base.field_ownership import (
     preserve_human_edited_name,
     raise_if_inactive_unmapped,
 )
+from integrations.intuit.qbo.base.identity_fastpath import (
+    resolve_mapping_state,
+    run_identity_fastpath,
+)
 from integrations.intuit.qbo.base.ids import coerce_id
 from integrations.intuit.qbo.base.reconciliation_recorder import record_mapping_issue
 from integrations.intuit.qbo.customer.connector.customer.business.model import CustomerCustomer
@@ -75,80 +79,71 @@ class CustomerCustomerConnector:
         # conflict afterward would corrupt that Customer's Name/Email/Phone in
         # the case where the mapping table — not dbo identity — is actually
         # still the correct side (round-3 review finding). On a detected
-        # conflict we record it and deliberately do NOT return here; falling
-        # through to the pre-existing mapping-table path below is the safe
-        # choice, since that path — and CustomerProjectConnector's own
-        # parent-Customer lookup — still trusts the mapping table.
-        direct = (
-            self.customer_service.read_by_qbo_identity(qbo_customer.qbo_id, qbo_customer.realm_id)
-            if qbo_customer.qbo_id else None
-        )
-        if direct:
-            state, by_customer, by_qbo_customer = self._resolve_mapping_state(
-                customer_id=coerce_id(direct.id), qbo_customer=qbo_customer
+        # conflict the helper records the issue and RAISES — it never falls
+        # through to the mapping-table path below. See base/identity_fastpath.py
+        # (U-287): falling through was the 2026-08-20 live-prod P0, because that
+        # path would either set_qbo_identity on a DIFFERENT Customer (whose
+        # theft-clear UPDATE nulls this one's identity) or mint a duplicate.
+        def _apply_customer_fields(entity: Customer) -> Optional[Customer]:
+            entity.name = preserve_human_edited_name(entity.name, customer_name)
+            entity.email = customer_email
+            entity.phone = customer_phone
+            return self.customer_service.repo.update_by_id(entity)
+
+        def _on_update_empty(entity: Customer) -> None:
+            """
+            ROWVERSION race: UpdateCustomerById affected 0 rows, so there is no row to
+            map. This MUST fail loud — a silent `return None` reaches project_records,
+            which counts a None return as a projected SUCCESS and lets the watermark
+            advance past a Customer whose fields were never written and whose mapping
+            row was never created (base/sync_outcome.py::project_records).
+
+            RuntimeError, deliberately NOT ValueError: record_projection_error's rule 2
+            classifies a plain ValueError as a permanent SKIP (which still advances the
+            watermark); rule 3 sends everything else to failure/hold. A ROWVERSION race
+            is transient, so hold-and-retry is the correct classification — and it is
+            what this path did before U-287, when the missing `None` guard made it blow
+            up with an AttributeError here.
+            """
+            raise RuntimeError(
+                f"Failed to update Customer {entity.id} via fast path - update_by_id "
+                f"returned None (concurrent write race); holding for retry."
             )
-            if state == "conflict":
+
+        outcome = run_identity_fastpath(
+            qbo_id=qbo_customer.qbo_id,
+            realm_id=qbo_customer.realm_id,
+            external_id=qbo_customer.id,
+            entity_label="Customer",
+            external_label="QboCustomer",
+            mapping_label="CustomerCustomer",
+            read_direct_by_qbo_identity=self.customer_service.read_by_qbo_identity,
+            read_by_local_id=self.mapping_repo.read_by_customer_id,
+            read_by_external_id=self.mapping_repo.read_by_qbo_customer_id,
+            external_id_attr="qbo_customer_id",
+            record_conflict_issue=lambda entity, by_local, by_external: (
                 self._raise_identity_mapping_conflict_issue(
                     qbo_customer=qbo_customer,
-                    dbo_customer_id=coerce_id(direct.id),
-                    local_side_mapping=by_customer,
-                    qbo_side_mapping=by_qbo_customer,
+                    dbo_customer_id=coerce_id(entity.id),
+                    local_side_mapping=by_local,
+                    qbo_side_mapping=by_external,
                 )
-                # HARD STOP — do NOT fall through to the legacy mapping-table path.
-                # That path would either update a DIFFERENT Customer and call
-                # set_qbo_identity (which SetCustomerQboIdentity's theft-clear UPDATE
-                # applies against ANY row carrying that (QboId, RealmId) pair, silently
-                # NULLing `direct`'s identity), or mint a DUPLICATE Customer via the
-                # CREATE path when no mapping exists for this QboCustomer. Never proceed
-                # past a confirmed conflict — a human resolves which side is correct; the
-                # recorded reconciliation issue is the durable follow-up (U-276 hotfix,
-                # 2026-08-20 — this fall-through identity-theft bug shipped in the pilot
-                # and was caught by U-278's review of the mirrored vendorcredit unit).
-                raise ValueError(
-                    f"CustomerCustomer identity conflict for QboCustomer "
-                    f"{qbo_customer.qbo_id} (id={qbo_customer.id}): dbo.Customer "
-                    f"{direct.id} already carries this identity but the mapping table "
-                    f"disagrees. Not auto-repointed; see the recorded reconciliation "
-                    f"issue. Skipping until a human resolves it."
-                )
-            else:
-                logger.info(
-                    f"Updating existing Customer {direct.id} from QboCustomer {qbo_customer.id} "
-                    f"(direct dbo identity match)"
-                )
-                direct.name = preserve_human_edited_name(direct.name, customer_name)
-                direct.email = customer_email
-                direct.phone = customer_phone
-                customer = self.customer_service.repo.update_by_id(direct)
-                if state == "missing":
-                    try:
-                        self.mapping_repo.create(
-                            customer_id=coerce_id(customer.id), qbo_customer_id=qbo_customer.id
-                        )
-                    except Exception as e:
-                        # A concurrent sync may have raced this exact QboCustomer between
-                        # the "missing" check above and this create (round-4 review) — no
-                        # sp_getapplock serializes create_mapping()'s call sites (a known,
-                        # pre-existing gap tracked in TODO.md's U-238a follow-ups). Re-check
-                        # rather than assume: if it's now a real conflict, record it properly
-                        # instead of a bare warning; otherwise surface the raw failure loud.
-                        logger.error(
-                            f"CustomerCustomer mapping create failed for Customer "
-                            f"{customer.id} after a 'missing' pre-check: {e}"
-                        )
-                        recheck_state, recheck_by_customer, recheck_by_qbo_customer = (
-                            self._resolve_mapping_state(
-                                customer_id=coerce_id(customer.id), qbo_customer=qbo_customer
-                            )
-                        )
-                        if recheck_state == "conflict":
-                            self._raise_identity_mapping_conflict_issue(
-                                qbo_customer=qbo_customer,
-                                dbo_customer_id=coerce_id(customer.id),
-                                local_side_mapping=recheck_by_customer,
-                                qbo_side_mapping=recheck_by_qbo_customer,
-                            )
-                return customer
+            ),
+            conflict_message=lambda entity: (
+                f"CustomerCustomer identity conflict for QboCustomer "
+                f"{qbo_customer.qbo_id} (id={qbo_customer.id}): dbo.Customer "
+                f"{entity.id} already carries this identity but the mapping table "
+                f"disagrees. Not auto-repointed; see the recorded reconciliation "
+                f"issue. Skipping until a human resolves it."
+            ),
+            create_mapping=lambda local_id: self.mapping_repo.create(
+                customer_id=local_id, qbo_customer_id=qbo_customer.id
+            ),
+            apply_fields=_apply_customer_fields,
+            on_apply_returned_none=_on_update_empty,
+        )
+        if outcome.hit:
+            return outcome.entity
 
         # Check for existing mapping
         mapping = self.mapping_repo.read_by_qbo_customer_id(qbo_customer.id)
@@ -222,24 +217,22 @@ class CustomerCustomerConnector:
         here also feeds CustomerProjectConnector's parent-Customer lookup, so
         leaving it undetected can bind job Projects to the wrong Customer.
 
-        Returns (state, by_customer, by_qbo_customer) — see
-        CustomerProjectConnector._resolve_mapping_state for the state
-        semantics (this mirrors it exactly).
+        NOTE (U-287): no production caller — `sync_from_qbo_*` passes these same
+        accessors straight to `run_identity_fastpath`, which calls the shared
+        `resolve_mapping_state` itself. Retained as the per-family test seam for the
+        U-276/277/278/279 suites, which call this by name. Disposition booked in TODO.md.
 
-        Only reads read_by_qbo_customer_id when by_customer doesn't already
-        settle it — QboCustomerId is unique on the mapping table, so a
-        by_customer row whose qbo_customer_id matches IS the row
-        read_by_qbo_customer_id would return; fetching it again would be a
-        wasted round trip on the common (steady-state, consistent) path,
-        which is exactly the path this whole fast path exists to keep cheap.
+        Returns (state, by_customer, by_qbo_customer) — see
+        base.identity_fastpath.resolve_mapping_state, which owns the algorithm
+        (U-287); this is the CustomerCustomer binding of it.
         """
-        by_customer = self.mapping_repo.read_by_customer_id(customer_id)
-        if by_customer and by_customer.qbo_customer_id == qbo_customer.id:
-            return "consistent", by_customer, by_customer
-        by_qbo_customer = self.mapping_repo.read_by_qbo_customer_id(qbo_customer.id)
-        if not by_customer and not by_qbo_customer:
-            return "missing", by_customer, by_qbo_customer
-        return "conflict", by_customer, by_qbo_customer
+        return resolve_mapping_state(
+            local_id=customer_id,
+            external_id=qbo_customer.id,
+            read_by_local_id=self.mapping_repo.read_by_customer_id,
+            read_by_external_id=self.mapping_repo.read_by_qbo_customer_id,
+            external_id_attr="qbo_customer_id",
+        )
 
     def _raise_identity_mapping_conflict_issue(
         self,

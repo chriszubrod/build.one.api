@@ -9,6 +9,10 @@ from integrations.intuit.qbo.base.field_ownership import (
     preserve_human_edited_name,
     raise_if_inactive_unmapped,
 )
+from integrations.intuit.qbo.base.identity_fastpath import (
+    resolve_mapping_state,
+    run_identity_fastpath,
+)
 from integrations.intuit.qbo.base.ids import coerce_id
 from integrations.intuit.qbo.customer.connector.project.business.model import CustomerProject
 from integrations.intuit.qbo.customer.connector.project.persistence.repo import CustomerProjectRepository
@@ -106,85 +110,52 @@ class CustomerProjectConnector:
         # conflict afterward would corrupt that Project's Name/Description/
         # Addresses in the case where the mapping table — not dbo identity —
         # is actually still the correct source (round-3 review finding). On a
-        # detected conflict we record it and deliberately do NOT return here;
-        # falling through to the pre-existing mapping-table path below is the
-        # safe choice, since that path (and every other reader in this
-        # codebase — invoice/bill/purchase push+pull, the parent-Customer
-        # lookup above) still trusts the mapping table.
-        direct = (
-            self.project_service.read_by_qbo_identity(qbo_customer.qbo_id, qbo_customer.realm_id)
-            if qbo_customer.qbo_id else None
-        )
-        if direct:
-            state, by_project, by_qbo_customer = self._resolve_mapping_state(
-                project_id=coerce_id(direct.id), qbo_customer=qbo_customer
-            )
-            if state == "conflict":
+        # detected conflict the helper records the issue and RAISES — it never
+        # falls through to the mapping-table path below. See
+        # base/identity_fastpath.py (U-287): falling through was the 2026-08-20
+        # live-prod P0, because that path would either set_qbo_identity on a
+        # DIFFERENT Project (whose theft-clear UPDATE nulls this one's identity)
+        # or mint a duplicate.
+        outcome = run_identity_fastpath(
+            qbo_id=qbo_customer.qbo_id,
+            realm_id=qbo_customer.realm_id,
+            external_id=qbo_customer.id,
+            entity_label="Project",
+            external_label="QboCustomer",
+            mapping_label="CustomerProject",
+            read_direct_by_qbo_identity=self.project_service.read_by_qbo_identity,
+            read_by_local_id=self.mapping_repo.read_by_project_id,
+            read_by_external_id=self.mapping_repo.read_by_qbo_customer_id,
+            external_id_attr="qbo_customer_id",
+            record_conflict_issue=lambda entity, by_local, by_external: (
                 self._raise_identity_mapping_conflict_issue(
                     qbo_customer=qbo_customer,
-                    dbo_project_id=coerce_id(direct.id),
-                    local_side_mapping=by_project,
-                    qbo_side_mapping=by_qbo_customer,
+                    dbo_project_id=coerce_id(entity.id),
+                    local_side_mapping=by_local,
+                    qbo_side_mapping=by_external,
                 )
-                # HARD STOP — do NOT fall through to the legacy mapping-table path.
-                # That path would either update a DIFFERENT Project and call
-                # set_qbo_identity (which SetProjectQboIdentity's theft-clear UPDATE
-                # applies against ANY row carrying that (QboId, RealmId) pair, silently
-                # NULLing `direct`'s identity), or mint a DUPLICATE Project via the
-                # CREATE path when no mapping exists for this QboCustomer. Never proceed
-                # past a confirmed conflict — a human resolves which side is correct; the
-                # recorded reconciliation issue is the durable follow-up (U-276 hotfix,
-                # 2026-08-20 — this fall-through identity-theft bug shipped in the pilot
-                # and was caught by U-278's review of the mirrored vendorcredit unit).
-                raise ValueError(
-                    f"CustomerProject identity conflict for QboCustomer "
-                    f"{qbo_customer.qbo_id} (id={qbo_customer.id}): dbo.Project "
-                    f"{direct.id} already carries this identity but the mapping table "
-                    f"disagrees. Not auto-repointed; see the recorded reconciliation "
-                    f"issue. Skipping until a human resolves it."
-                )
-            else:
-                logger.info(
-                    f"Updating existing Project {direct.id} from QboCustomer {qbo_customer.id} "
-                    f"(direct dbo identity match)"
-                )
-                updated = self._apply_project_fields_and_sync(
-                    direct,
-                    qbo_customer=qbo_customer,
-                    name=project_name,
-                    description=project_description,
-                    status=project_status,
-                    customer_id=customer_id,
-                )
-                if state == "missing":
-                    try:
-                        self.mapping_repo.create(
-                            project_id=coerce_id(updated.id), qbo_customer_id=qbo_customer.id
-                        )
-                    except Exception as e:
-                        # A concurrent sync may have raced this exact QboCustomer between
-                        # the "missing" check above and this create (round-4 review) — no
-                        # sp_getapplock serializes create_mapping()'s call sites (a known,
-                        # pre-existing gap tracked in TODO.md's U-238a follow-ups). Re-check
-                        # rather than assume: if it's now a real conflict, record it properly
-                        # instead of a bare warning; otherwise surface the raw failure loud.
-                        logger.error(
-                            f"CustomerProject mapping create failed for Project "
-                            f"{updated.id} after a 'missing' pre-check: {e}"
-                        )
-                        recheck_state, recheck_by_project, recheck_by_qbo_customer = (
-                            self._resolve_mapping_state(
-                                project_id=coerce_id(updated.id), qbo_customer=qbo_customer
-                            )
-                        )
-                        if recheck_state == "conflict":
-                            self._raise_identity_mapping_conflict_issue(
-                                qbo_customer=qbo_customer,
-                                dbo_project_id=coerce_id(updated.id),
-                                local_side_mapping=recheck_by_project,
-                                qbo_side_mapping=recheck_by_qbo_customer,
-                            )
-                return updated
+            ),
+            conflict_message=lambda entity: (
+                f"CustomerProject identity conflict for QboCustomer "
+                f"{qbo_customer.qbo_id} (id={qbo_customer.id}): dbo.Project "
+                f"{entity.id} already carries this identity but the mapping table "
+                f"disagrees. Not auto-repointed; see the recorded reconciliation "
+                f"issue. Skipping until a human resolves it."
+            ),
+            create_mapping=lambda local_id: self.mapping_repo.create(
+                project_id=local_id, qbo_customer_id=qbo_customer.id
+            ),
+            apply_fields=lambda entity: self._apply_project_fields_and_sync(
+                entity,
+                qbo_customer=qbo_customer,
+                name=project_name,
+                description=project_description,
+                status=project_status,
+                customer_id=customer_id,
+            ),
+        )
+        if outcome.hit:
+            return outcome.entity
 
         # Check for existing mapping
         mapping = self.mapping_repo.read_by_qbo_customer_id(qbo_customer.id)
@@ -508,30 +479,23 @@ class CustomerProjectConnector:
         identity "theft" — see SetProjectQboIdentity's own theft-clear
         UPDATE, which does not clean up the mapping table).
 
-        Returns (state, by_project, by_qbo_customer) where state is one of:
-          "consistent" — a mapping row exists and agrees; caller writes freely.
-          "missing"    — no mapping row on either side; caller writes and
-                         creates one fresh.
-          "conflict"   — the two sides disagree (one or both directions);
-                         caller must NOT write to the dbo-identity-matched
-                         row — record the conflict and fall through to the
-                         legacy mapping-table-based path instead, which
-                         still trusts the mapping table.
+        NOTE (U-287): no production caller — `sync_from_qbo_*` passes these same
+        accessors straight to `run_identity_fastpath`, which calls the shared
+        `resolve_mapping_state` itself. Retained as the per-family test seam for the
+        U-276/277/278/279 suites, which call this by name. Disposition booked in TODO.md.
 
-        Only reads read_by_qbo_customer_id when by_project doesn't already
-        settle it — QboCustomerId is unique on the mapping table, so a
-        by_project row whose qbo_customer_id matches IS the row
-        read_by_qbo_customer_id would return; fetching it again would be a
-        wasted round trip on the common (steady-state, consistent) path,
-        which is exactly the path this whole fast path exists to keep cheap.
+        Returns (state, by_project, by_qbo_customer) — see
+        base.identity_fastpath.resolve_mapping_state, which owns the algorithm
+        and documents the "consistent"/"missing"/"conflict" semantics (U-287);
+        this is the CustomerProject binding of it.
         """
-        by_project = self.mapping_repo.read_by_project_id(project_id)
-        if by_project and by_project.qbo_customer_id == qbo_customer.id:
-            return "consistent", by_project, by_project
-        by_qbo_customer = self.mapping_repo.read_by_qbo_customer_id(qbo_customer.id)
-        if not by_project and not by_qbo_customer:
-            return "missing", by_project, by_qbo_customer
-        return "conflict", by_project, by_qbo_customer
+        return resolve_mapping_state(
+            local_id=project_id,
+            external_id=qbo_customer.id,
+            read_by_local_id=self.mapping_repo.read_by_project_id,
+            read_by_external_id=self.mapping_repo.read_by_qbo_customer_id,
+            external_id_attr="qbo_customer_id",
+        )
 
     def _raise_identity_mapping_conflict_issue(
         self,

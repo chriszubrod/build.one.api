@@ -54,8 +54,23 @@ item 4) — own follow-on unit now that U-274 unblocked it. Two items surfaced b
   recording the conflict issue, never fall through) is a direct template — same shape needed in both files. This
   needs its own Gate-1'd unit (SQL is live, so any Python-only fix ships hot — treat as P0-surface, verify a live
   conflict scenario isn't already silently corrupting Customer/Project data before scoping the fix).
-- [ ] **The `_resolve_mapping_state`/`_raise_identity_mapping_conflict_issue`/`_apply_*_fields_and_sync` fast-path
-  trio is now hand-copied a 3rd time** (Customer, Project, BillCredit — U-276 built it twice, U-278 a third), with
+- [x] **DONE — U-287 (2026-08-20). Shared helper `integrations/intuit/qbo/base/identity_fastpath.py` built; all 6
+  copies deleted.** `resolve_mapping_state()` (pure, owns the both-directions algorithm) + `run_identity_fastpath()`
+  (owns the control flow: check-before-write ordering, the conflict hard stop, the self-heal create-race re-check),
+  parameterized by each family's mapping-repo accessors, field-apply callback and message builders. Each connector
+  keeps a thin `_resolve_mapping_state` wrapper delegating to the shared function (preserves the 20+ existing tests
+  that call it directly) and its own `_raise_identity_mapping_conflict_issue` (the message names family-specific
+  downstream readers — deliberately NOT collapsed). **conflict → RAISE is structural in the helper: there is no
+  opt-out parameter, so the 2026-08-20 fall-through P0 cannot be reintroduced by a caller.** Net −602/+446 lines.
+  **Also closed a live P0 the hotfix had missed:** `company_info` + `physical_address` (U-277, shipped one day
+  BEFORE the hotfix) still fell through on conflict behind a `protected_*_id` guard that only covered the
+  re-resolves-to-the-same-row case — leaving the different-row identity theft (physical_address's trailing
+  `set_qbo_identity` stamp firing on the wrong Address) and the duplicate-mint path open. Both now raise; the dead
+  guards deleted; 4 of their tests deliberately rewritten to demand the raise. Verify: 2442 pytest green; the
+  U-276/278/279 suites pass UNCHANGED (the equivalence proof); mutation matrix 12/12 caught in an isolated worktree.
+- [ ] ~~The `_resolve_mapping_state`/`_raise_identity_mapping_conflict_issue`/`_apply_*_fields_and_sync` fast-path
+  trio is hand-copied~~ (superseded by U-287 above; original text kept for provenance)
+  — hand-copied a 3rd time (Customer, Project, BillCredit — U-276 built it twice, U-278 a third), with
   ~7 more repoints confirmed queued (`docs/staging_removal_phase4_5_scoping.md` §8: company_info+physical_address,
   attachable, account, term/vendor/item, bill/purchase, invoice). Flagged independently by 3 separate `/simplify`
   review angles (reuse, simplification, altitude) during this unit's Pass-2 — the fragile invariant this trio exists
@@ -66,6 +81,30 @@ item 4) — own follow-on unit now that U-274 unblocked it. Two items surfaced b
   carves out shared blockers. Not done here — deliberately kept this unit tightly scoped per the standing Gate-1
   discipline; the fix above (raise-on-conflict) should land in the shared helper too, once one exists, rather than
   being hand-patched into 3 separate copies again.
+
+## U-287 follow-ups (shared identity fast-path helper) — deferred from the two-pass review
+
+- [ ] **🟡 `company_info` + `physical_address` classify a transient ROWVERSION race as a PERMANENT skip
+  (pre-existing, U-277, NOT introduced by U-287).** Both fast paths raise a plain
+  `ValueError("Failed to update Company"/"Address")` when `update_by_id` returns 0 rows. But
+  `SyncOutcome.record_projection_error`'s **rule 2** classifies a plain `ValueError` as the connectors'
+  permanent-data-issue convention → **skip**, so the watermark ADVANCES past a record whose fields were never
+  written — and its own docstring names this the expensive direction ("a wrong skip loses the record until someone
+  edits it in QBO again"). A ROWVERSION race is transient; the correct classification is rule 3 → failure/HOLD.
+  U-287 hit the identical question on `customer/customer` and deliberately raised **`RuntimeError`** there
+  (see `_on_update_empty`, with the rationale inline) precisely so hold-and-retry is preserved. These two should
+  converge on the same choice. **Not done in U-287** — that unit already carried one deliberate behavior change
+  (conflict→raise) on these same two files; stacking a second, unrelated one would have muddied the equivalence
+  proof. Small unit, but it IS a watermark-semantics change: own Gate-1. NB the *hunt* that surfaced this
+  initially proposed "raise ValueError to match company_info/physical_address" — which would have been the wrong
+  fix for exactly this reason; check the classifier, don't pattern-match the siblings.
+- [ ] **Decide the disposition of the six now-production-dead `_resolve_mapping_state` wrappers.** After U-287 no
+  production call site invokes them — every connector goes through `run_identity_fastpath`, which calls the shared
+  `resolve_mapping_state` directly. They were kept deliberately: ~20 existing U-276/277/278/279 tests call them
+  by name, and keeping them let this unit prove equivalence with those suites UNCHANGED. Now that the helper has
+  its own direct coverage (`tests/test_u287_identity_fastpath_helper.py`), either (a) delete the wrappers and
+  repoint those tests at `resolve_mapping_state`, or (b) keep them as documented per-family seams. Judgment call,
+  not a defect — don't do it inside a unit that needs those suites as an equivalence baseline.
 
 ## U-271 follow-ups (Trend spans all historical pay applications) — deferred from the two-pass review
 

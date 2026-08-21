@@ -11,6 +11,7 @@ from integrations.intuit.qbo.account.external.client import QboAccountClient
 from integrations.intuit.qbo.account.external.schemas import QboAccount as QboAccountExternalSchema
 from integrations.intuit.qbo.base.pacing import pace_batch
 from integrations.intuit.qbo.base.sync_outcome import SyncOutcome
+from entities.company.business.service import CompanyService
 from shared.database import with_retry
 
 logger = logging.getLogger(__name__)
@@ -19,15 +20,40 @@ logger = logging.getLogger(__name__)
 MAX_RETRIES = 3  # Max retries for transient errors
 INITIAL_RETRY_DELAY = 2.0  # Initial retry delay (seconds)
 
+AP_ACCOUNT_TYPE = "Accounts Payable"
+
+
+def select_ap_account(accounts: List[QboAccount]) -> Optional[QboAccount]:
+    """
+    Pick "the" Accounts Payable account for a realm from its local qbo.Account
+    mirror — first AccountType match, in whatever order `accounts` is given
+    (callers pass `read_by_realm_id`'s result, which is `Name ASC`).
+
+    Shared (U-281) by the post-pull AP-account cache derivation below
+    (`QboAccountService._sync_ap_account_cache`) and
+    `BillBillConnector._get_ap_account_ref`'s live-scan fallback, so the two
+    can never silently diverge on which account "the" AP account is — this
+    used to be BillBillConnector's own inline loop before the repoint.
+    """
+    for account in accounts:
+        if account.account_type == AP_ACCOUNT_TYPE:
+            return account
+    return None
+
 
 class QboAccountService:
     """
     Service for QboAccount entity business operations.
     """
 
-    def __init__(self, repo: Optional[QboAccountRepository] = None):
+    def __init__(
+        self,
+        repo: Optional[QboAccountRepository] = None,
+        company_service: Optional[CompanyService] = None,
+    ):
         """Initialize the QboAccountService."""
         self.repo = repo or QboAccountRepository()
+        self.company_service = company_service or CompanyService()
 
     def sync_from_qbo(
         self,
@@ -103,7 +129,50 @@ class QboAccountService:
         # QBO cannot hard-delete Accounts, so absent-from-response deactivation was a no-op
         # that could mass-deactivate hidden inactive staging rows if ever armed.
 
+        self._sync_ap_account_cache(realm_id)
+
         return outcome
+
+    def _sync_ap_account_cache(self, realm_id: str) -> None:
+        """
+        Re-derive "the" Accounts Payable account for this realm (U-281) and
+        cache it on dbo.Company, so BillBillConnector._get_ap_account_ref no
+        longer has to scan qbo.Account on every live Bill push.
+
+        Re-queries the FULL local qbo.Account mirror rather than just the
+        `qbo_accounts` batch this call fetched — an incremental pull
+        (`last_updated_time` set) only returns rows that changed, so the AP
+        account itself may not be in this particular batch even though it's
+        already staged from an earlier pull. Re-deriving from the full
+        mirror every time keeps this correct regardless of pull shape.
+
+        Skips the write entirely when the derived value already matches
+        what's cached — the overwhelmingly common case on any pull that
+        didn't touch the AP account itself. `SetCompanyApAccount`'s UPDATE
+        bumps `dbo.Company.RowVersion` as an inherent side effect (any
+        SQL Server ROWVERSION column advances on any UPDATE to the row,
+        regardless of which columns changed), so a no-op write isn't free —
+        it's a needless RowVersion churn on a row other code paths hold
+        optimistic-concurrency tokens against.
+
+        Failure-isolated: a Company-side read/write problem must not fail
+        the account pull it rides on.
+        """
+        try:
+            accounts = self.repo.read_by_realm_id(realm_id)
+            ap_account = select_ap_account(accounts)
+            qbo_id = ap_account.qbo_id if ap_account else None
+            name = ap_account.name if ap_account else None
+
+            existing = self.company_service.read_by_realm_id(realm_id)
+            if existing and existing.ap_account_qbo_id == qbo_id and existing.ap_account_name == name:
+                return
+
+            self.company_service.set_ap_account(
+                realm_id=realm_id, ap_account_qbo_id=qbo_id, ap_account_name=name
+            )
+        except Exception as e:
+            logger.error(f"Failed to cache AP account for realm_id {realm_id}: {e}")
 
     def _upsert_account(self, qbo_account: QboAccountExternalSchema, realm_id: str) -> QboAccount:
         """

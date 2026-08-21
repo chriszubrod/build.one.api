@@ -25,6 +25,7 @@ from integrations.intuit.qbo.item.persistence.repo import QboItemRepository
 from integrations.intuit.qbo.customer.connector.project.persistence.repo import CustomerProjectRepository
 from integrations.intuit.qbo.customer.persistence.repo import QboCustomerRepository
 from integrations.intuit.qbo.account.persistence.repo import QboAccountRepository
+from integrations.intuit.qbo.account.business.service import select_ap_account
 from integrations.intuit.qbo.term.connector.payment_term.persistence.repo import TermPaymentTermRepository
 from integrations.intuit.qbo.term.persistence.repo import QboTermRepository
 from entities.bill.business.service import BillService
@@ -32,6 +33,7 @@ from entities.bill.business.model import Bill
 from entities.bill_line_item.business.service import BillLineItemService
 from entities.vendor.business.service import VendorService
 from entities.project.business.service import ProjectService
+from entities.company.business.service import CompanyService
 from integrations.intuit.qbo.base.pull_race import guard_lines_present
 from integrations.intuit.qbo.base.compensation import rollback_orphan_header
 from integrations.intuit.qbo.base.field_ownership import preserve_human_edited_ref, qbo_ref_or_placeholder
@@ -68,6 +70,7 @@ class BillBillConnector:
         term_payment_term_repo: Optional[TermPaymentTermRepository] = None,
         qbo_term_repo: Optional[QboTermRepository] = None,
         reconciliation_repo: Optional[ReconciliationIssueRepository] = None,
+        company_service: Optional[CompanyService] = None,
     ):
         """Initialize the BillBillConnector."""
         self.mapping_repo = mapping_repo or BillBillRepository()
@@ -87,6 +90,7 @@ class BillBillConnector:
         self.term_payment_term_repo = term_payment_term_repo or TermPaymentTermRepository()
         self.qbo_term_repo = qbo_term_repo or QboTermRepository()
         self.reconciliation_repo = reconciliation_repo or ReconciliationIssueRepository()
+        self.company_service = company_service or CompanyService()
 
     def sync_from_qbo_bill(self, qbo_bill: QboBill, qbo_bill_lines: List[QboBillLine]) -> Bill:
         """
@@ -872,19 +876,41 @@ class BillBillConnector:
     def _get_ap_account_ref(self, realm_id: str) -> Optional[QboReferenceType]:
         """
         Get the Accounts Payable account reference for a realm.
-        
+
+        Reads dbo.Company's cached AP-account fields FIRST (U-281) —
+        populated by QboAccountService's scheduled qbo.Account pull, which
+        re-derives "the Accounts-Payable-type account for this realm" after
+        every batch, so this no longer scans qbo.Account on every live Bill
+        push. Falls back to that same live scan when the Company row hasn't
+        been backfilled/pulled yet for this realm (old-container-safe during
+        the rollout window, same shape U-275 used for the QboActive mirror)
+        — a live Bill push must not break because the cache is merely empty,
+        OR because the cache read itself failed (a transient dbo.Company
+        error is unrelated to qbo.Account and must not newly break a push
+        that never touched dbo.Company before this repoint).
+
         Args:
             realm_id: QBO realm ID
-            
+
         Returns:
             QboReferenceType with AP account value and name, or None
         """
-        # Get all accounts for this realm and find the AP account
+        try:
+            company = self.company_service.read_by_realm_id(realm_id)
+        except Exception as e:
+            logger.warning(f"Failed to read cached AP account for realm_id {realm_id}: {e}")
+            company = None
+
+        if company and company.ap_account_qbo_id:
+            return QboReferenceType(value=company.ap_account_qbo_id, name=company.ap_account_name)
+
+        # Fallback: cache not yet populated for this realm — scan qbo.Account
+        # directly, exactly as this method did before the U-281 repoint.
         accounts = self.qbo_account_repo.read_by_realm_id(realm_id)
-        for account in accounts:
-            if account.account_type == "Accounts Payable":
-                return QboReferenceType(value=account.qbo_id, name=account.name)
-        
+        ap_account = select_ap_account(accounts)
+        if ap_account:
+            return QboReferenceType(value=ap_account.qbo_id, name=ap_account.name)
+
         logger.warning(f"No Accounts Payable account found for realm_id: {realm_id}")
         return None
 

@@ -264,6 +264,10 @@ def _build_cost_code_connector() -> ItemCostCodeConnector:
     )
     connector.mapping_repo.read_by_qbo_item_id.return_value = None
     connector.cost_code_service.read_by_number.return_value = None
+    # U-289: default the direct dbo-identity fast path to a miss so these tests keep
+    # exercising the mapping-table path they're testing (mirrors U-276/278/282's
+    # identical fix for their own connector-builder fixtures).
+    connector.cost_code_service.read_by_qbo_identity.return_value = None
     return connector
 
 
@@ -281,6 +285,8 @@ def _build_sub_cost_code_connector() -> ItemSubCostCodeConnector:
     connector.cost_code_mapping_repo.read_by_qbo_item_id.return_value = SimpleNamespace(
         cost_code_id=10
     )
+    # U-289: default the direct dbo-identity fast path to a miss (see cost_code above).
+    connector.sub_cost_code_service.read_by_qbo_identity.return_value = None
     return connector
 
 

@@ -18,6 +18,8 @@ class CostCode:
     number: Optional[str]
     name: Optional[str]
     description: Optional[str]
+    qbo_id: Optional[str] = None
+    realm_id: Optional[str] = None
 
     @property
     def row_version_bytes(self) -> Optional[bytes]:

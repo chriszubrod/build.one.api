@@ -9,11 +9,15 @@ Duplicate bodies that drift from the base file break net-zero with prod.
 
 The sprocs: `CreateCompany`, `ReadCompanies`, `ReadCompanyById`,
 `ReadCompanyByPublicId`, `ReadCompanyByName`, `UpdateCompanyById`,
-`DeleteCompanyById`.
+`DeleteCompanyById`, plus later additions `ReadCompanyByQboIdAndRealmId` +
+`SetCompanyQboIdentity` (U-277) and `ReadCompanyByRealmId` +
+`SetCompanyApAccount` (U-281 — the dbo-native AP-account cache
+`BillBillConnector._get_ap_account_ref` reads on every live Bill push,
+populated by `QboAccountService`'s scheduled `qbo.Account` pull).
 
-All seven sproc bodies in the base file were stale (pre–Phase 1 shape). They were
-reconciled verbatim from `migrations/002_phase1_attribution_sprocs.sql` under
-U-140 (2026-07-24).
+All seven original sproc bodies in the base file were stale (pre–Phase 1 shape).
+They were reconciled verbatim from `migrations/002_phase1_attribution_sprocs.sql`
+under U-140 (2026-07-24).
 
 ## ⚠️ Applying this file to prod
 

@@ -43,6 +43,8 @@ class CostCodeRepository:
                 number=row.Number,
                 name=row.Name,
                 description=row.Description,
+                qbo_id=getattr(row, "QboId", None),
+                realm_id=getattr(row, "RealmId", None),
             )
         except AttributeError as error:
             logger.error(f"Attribute error during from db: {error}")
@@ -255,5 +257,24 @@ class CostCodeRepository:
                     )
         except Exception as error:
             logger.error(f"Error during set cost code qbo identity: {error}")
+            raise map_database_error(error)
+
+    def read_by_qbo_identity(self, qbo_id: str, realm_id: Optional[str] = None) -> Optional[CostCode]:
+        """
+        Read a cost code directly by its dbo-native QBO identity (U-289), bypassing
+        the qbo.Item / qbo.ItemCostCode staging/mapping tables entirely.
+        """
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(
+                    cursor=cursor,
+                    name="ReadCostCodeByQboIdAndRealmId",
+                    params={"QboId": qbo_id, "RealmId": realm_id},
+                )
+                row = cursor.fetchone()
+                return self._from_db(row)
+        except Exception as error:
+            logger.error(f"Error during read cost code by QBO identity: {error}")
             raise map_database_error(error)
 

@@ -21,6 +21,8 @@ class SubCostCode:
     cost_code_id: Optional[int]
     aliases: Optional[str]
     qbo_active: Optional[bool] = None
+    qbo_id: Optional[str] = None
+    realm_id: Optional[str] = None
 
     @property
     def row_version_bytes(self) -> Optional[bytes]:

@@ -48,6 +48,13 @@ class CostCodeService:
         """
         return self.repo.read_by_number(number)
 
+    def read_by_qbo_identity(self, qbo_id: str, realm_id: Optional[str] = None) -> Optional[CostCode]:
+        """
+        Read a cost code directly by its dbo-native QBO identity (U-289) — the
+        Phase-4 repoint seam, bypassing the qbo.Item staging table.
+        """
+        return self.repo.read_by_qbo_identity(qbo_id, realm_id)
+
     def upsert(self, *, number: str, name: str, description: Optional[str] = None) -> CostCode:
         """
         Create or update a cost code by Number.

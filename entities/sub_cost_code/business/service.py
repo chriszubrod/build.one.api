@@ -54,6 +54,13 @@ class SubCostCodeService:
         """
         return self.repo.read_by_alias(alias=alias)
 
+    def read_by_qbo_identity(self, qbo_id: str, realm_id: Optional[str] = None) -> Optional[SubCostCode]:
+        """
+        Read a sub cost code directly by its dbo-native QBO identity (U-289) — the
+        Phase-4 repoint seam, bypassing the qbo.Item staging table.
+        """
+        return self.repo.read_by_qbo_identity(qbo_id, realm_id)
+
     def search_by_name(self, *, query: str, limit: int = 10) -> List[SubCostCode]:
         """
         Case-insensitive substring search against Name, Number, and Aliases.

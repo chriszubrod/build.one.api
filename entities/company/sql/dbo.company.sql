@@ -42,6 +42,28 @@ BEGIN
 END
 GO
 
+-- U-281 (Phase-4 prerequisite, account family): dbo-native home for the one
+-- live business fact BillBillConnector._get_ap_account_ref reads off
+-- qbo.Account on every Bill push — "which QBO account is Accounts Payable
+-- for this realm." Populated by QboAccountService.sync_from_qbo (the
+-- existing scheduled qbo.Account pull), re-derived from the full local
+-- qbo.Account mirror after every batch so it self-heals if QBO's AP account
+-- ever changes — no separate timer, no manual/env-var upkeep. Widths mirror
+-- qbo.Account's own [QboId]/[Name] columns.
+IF OBJECT_ID('dbo.Company', 'U') IS NOT NULL
+   AND NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('dbo.Company') AND name = 'APAccountQboId')
+BEGIN
+    ALTER TABLE [dbo].[Company] ADD [APAccountQboId] NVARCHAR(50) NULL;
+END
+GO
+
+IF OBJECT_ID('dbo.Company', 'U') IS NOT NULL
+   AND NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('dbo.Company') AND name = 'APAccountName')
+BEGIN
+    ALTER TABLE [dbo].[Company] ADD [APAccountName] NVARCHAR(100) NULL;
+END
+GO
+
 CREATE OR ALTER PROCEDURE CreateCompany
 (
     @Name NVARCHAR(50),
@@ -326,6 +348,25 @@ BEGIN
     SET
         [QboId] = CASE WHEN @QboId IS NOT NULL THEN @QboId ELSE [QboId] END,
         [RealmId] = CASE WHEN @RealmId IS NOT NULL THEN @RealmId ELSE [RealmId] END,
+        -- U-281: a genuine realm REASSIGNMENT (this row already carried a
+        -- different, non-NULL RealmId) invalidates the AP-account cache
+        -- stamped under the OLD realm — null it so _get_ap_account_ref
+        -- falls back to a live qbo.Account scan until the next scheduled
+        -- Account pull re-populates it correctly for the NEW realm. First-
+        -- time stamping (old RealmId NULL) is not a reassignment and must
+        -- leave these columns untouched (they're already NULL on a brand
+        -- new row regardless). [RealmId] on the right-hand side below reads
+        -- the PRE-update value — SQL Server evaluates every SET expression
+        -- in one UPDATE against the row's original image, not against
+        -- earlier assignments in the same SET list.
+        [APAccountQboId] = CASE
+            WHEN @RealmId IS NOT NULL AND [RealmId] IS NOT NULL AND [RealmId] <> @RealmId THEN NULL
+            ELSE [APAccountQboId]
+        END,
+        [APAccountName] = CASE
+            WHEN @RealmId IS NOT NULL AND [RealmId] IS NOT NULL AND [RealmId] <> @RealmId THEN NULL
+            ELSE [APAccountName]
+        END,
         [ModifiedDatetime] = SYSUTCDATETIME()
     OUTPUT
         INSERTED.[Id],
@@ -337,5 +378,71 @@ BEGIN
             (@QboId IS NOT NULL AND ([QboId] IS NULL OR [QboId] <> @QboId))
          OR (@RealmId IS NOT NULL AND ([RealmId] IS NULL OR [RealmId] <> @RealmId))
       );
+END;
+GO
+
+-- U-281: resolve a Company directly by QBO RealmId — the seam
+-- _get_ap_account_ref needs (it only has realm_id at the Bill-push call
+-- site, not a Company id/public_id). RealmId is unique per QBO-connected
+-- Company in practice (stamped only via SetCompanyQboIdentity, always
+-- alongside QboId), same assumption ReadCompanyByQboIdAndRealmId already
+-- relies on for its (QboId, RealmId) pair.
+CREATE OR ALTER PROCEDURE ReadCompanyByRealmId
+(
+    @RealmId NVARCHAR(50)
+)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    SELECT TOP (1)
+        [Id],
+        [PublicId],
+        [RowVersion],
+        CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
+        CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
+        [Name],
+        [Website],
+        [OrganizationId],
+        [CreatedByUserId],
+        [ModifiedByUserId],
+        [QboId],
+        [RealmId],
+        [APAccountQboId],
+        [APAccountName]
+    FROM dbo.[Company]
+    WHERE [RealmId] = @RealmId;
+END;
+GO
+
+-- U-281: stamp the cached AP-account fact for the Company matching a realm.
+-- Called once per qbo.Account pull (QboAccountService.sync_from_qbo), after
+-- re-deriving "first Accounts-Payable-type account, Name ASC" from the full
+-- local qbo.Account mirror — the exact selection _get_ap_account_ref used to
+-- compute live on every Bill push. A plain overwrite (no CASE-WHEN NULL
+-- guard): NULL here is the equally-valid "no Accounts Payable account
+-- exists for this realm" answer, and must be allowed to replace a stale
+-- non-NULL value, not be treated as "leave existing value alone."
+CREATE OR ALTER PROCEDURE SetCompanyApAccount
+(
+    @RealmId NVARCHAR(50),
+    @APAccountQboId NVARCHAR(50),
+    @APAccountName NVARCHAR(100)
+)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    UPDATE dbo.[Company]
+    SET
+        [APAccountQboId] = @APAccountQboId,
+        [APAccountName] = @APAccountName,
+        [ModifiedDatetime] = SYSUTCDATETIME()
+    OUTPUT
+        INSERTED.[Id],
+        INSERTED.[RealmId],
+        INSERTED.[APAccountQboId],
+        INSERTED.[APAccountName]
+    WHERE [RealmId] = @RealmId;
 END;
 GO

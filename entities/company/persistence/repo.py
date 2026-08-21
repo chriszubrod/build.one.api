@@ -44,6 +44,8 @@ class CompanyRepository:
                 modified_by_user_id=getattr(row, "ModifiedByUserId", None),
                 qbo_id=getattr(row, "QboId", None),
                 realm_id=getattr(row, "RealmId", None),
+                ap_account_qbo_id=getattr(row, "APAccountQboId", None),
+                ap_account_name=getattr(row, "APAccountName", None),
             )
         except AttributeError as error:
             logger.error(f"Attribute error during company mapping: {error}")
@@ -131,6 +133,26 @@ class CompanyRepository:
                 return self._from_db(row)
         except Exception as error:
             logger.error(f"Error during read company by QBO identity: {error}")
+            raise map_database_error(error)
+
+    def read_by_realm_id(self, realm_id: str) -> Optional[Company]:
+        """
+        Read a company directly by its dbo-native QBO RealmId (U-281) — the
+        seam BillBillConnector._get_ap_account_ref uses to resolve the cached
+        AP-account fact from a bare realm_id, with no Company id in hand.
+        """
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(
+                    cursor=cursor,
+                    name="ReadCompanyByRealmId",
+                    params={"RealmId": realm_id},
+                )
+                row = cursor.fetchone()
+                return self._from_db(row)
+        except Exception as error:
+            logger.error(f"Error during read company by realm ID: {error}")
             raise map_database_error(error)
 
     def read_by_public_id(self, public_id: str) -> Optional[Company]:
@@ -232,6 +254,46 @@ class CompanyRepository:
                 "Error stamping Company QBO identity (company_id=%s qbo_id=%s realm_id=%s): %s",
                 id,
                 qbo_id,
+                realm_id,
+                error,
+            )
+            raise map_database_error(error)
+
+    def set_ap_account(
+        self,
+        *,
+        realm_id: str,
+        ap_account_qbo_id: Optional[str],
+        ap_account_name: Optional[str],
+    ) -> None:
+        """
+        Stamp the cached AP-account fields (U-281) for the Company matching
+        realm_id. Narrow OUTPUT (Id/RealmId/APAccountQboId/APAccountName
+        only, mirrors set_qbo_identity's own narrow OUTPUT) — not a full
+        Company row, so this does not route through _from_db.
+        """
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(
+                    cursor=cursor,
+                    name="SetCompanyApAccount",
+                    params={
+                        "RealmId": realm_id,
+                        "APAccountQboId": ap_account_qbo_id,
+                        "APAccountName": ap_account_name,
+                    },
+                )
+                row = cursor.fetchone()
+                if row is None:
+                    logger.warning(
+                        "SetCompanyApAccount matched no Company row for realm_id=%s "
+                        "(AP account cache not updated)",
+                        realm_id,
+                    )
+        except Exception as error:
+            logger.error(
+                "Error stamping Company AP account (realm_id=%s): %s",
                 realm_id,
                 error,
             )

@@ -18,7 +18,7 @@ def test_account_sync_from_qbo_rejects_reconcile_deletes_param():
 
 
 def test_account_absent_from_qbo_response_not_deactivated():
-    svc = QboAccountService(repo=MagicMock())
+    svc = QboAccountService(repo=MagicMock(), company_service=MagicMock())
 
     local_still_active = MagicMock(
         qbo_id="99",
@@ -112,7 +112,7 @@ def test_account_absent_from_qbo_response_leaves_local_row_untouched_via_real_up
     )
     repo.create.return_value = created
 
-    svc = QboAccountService(repo=repo)
+    svc = QboAccountService(repo=repo, company_service=MagicMock())
     fetched = QboAccountSchema.model_validate(
         {
             "Id": "1",

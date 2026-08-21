@@ -58,6 +58,34 @@ class CompanyService:
         """
         return self.repo.read_by_qbo_identity(qbo_id, realm_id)
 
+    def read_by_realm_id(self, realm_id: str) -> Optional[Company]:
+        """
+        Read a company directly by its dbo-native QBO RealmId (U-281) — the
+        seam BillBillConnector._get_ap_account_ref uses to resolve the
+        cached AP-account fact.
+        """
+        return self.repo.read_by_realm_id(realm_id)
+
+    def set_ap_account(
+        self,
+        *,
+        realm_id: str,
+        ap_account_qbo_id: Optional[str],
+        ap_account_name: Optional[str],
+    ) -> None:
+        """
+        Cache "the" Accounts-Payable-type QBO account for the Company
+        matching this realm (U-281). Called by QboAccountService.sync_from_qbo
+        after every qbo.Account pull; a plain overwrite — None is itself a
+        valid, current answer (no Accounts Payable account exists in the
+        realm) and must be allowed to replace a stale cached value.
+        """
+        self.repo.set_ap_account(
+            realm_id=realm_id,
+            ap_account_qbo_id=ap_account_qbo_id,
+            ap_account_name=ap_account_name,
+        )
+
     def update_by_public_id(
         self,
         public_id: str,

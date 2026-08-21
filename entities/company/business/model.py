@@ -22,6 +22,8 @@ class Company:
     modified_by_user_id: Optional[int] = None
     qbo_id: Optional[str] = None
     realm_id: Optional[str] = None
+    ap_account_qbo_id: Optional[str] = None
+    ap_account_name: Optional[str] = None
 
     @property
     def row_version_bytes(self) -> Optional[bytes]:

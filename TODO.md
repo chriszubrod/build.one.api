@@ -2,6 +2,39 @@
 
 Carry-over items from sessions. Check off as done; prune anything stale.
 
+## U-281 follow-ups (account Phase-4 prerequisite, AP-account dbo-native cache) — deferred, not scope-creeped in (2026-08-20/21)
+
+Confirmed by a Codex-degraded, adversarially-verified fallback hunt (workspace-wide Codex outage this session — see the U-280/U-277/U-278/U-282/U-286/U-287 board rows for the same episode). Both are pre-existing architectural characteristics this unit's new write joins, not new categories of risk it invented — logged rather than patched as a bandaid inside a narrowly-scoped unit.
+
+- [ ] **`POST /api/v1/sync/qbo-accounts` (`integrations/intuit/qbo/account/api/router.py`) has zero serialization** — no app lock, no drain secret, unlike the admin-path `sync/qbo/{entity}` endpoint which wraps every call in `qbo_app_lock`. Two overlapping calls to it for the SAME realm can race `QboAccountService.sync_from_qbo`'s read-full-mirror-then-write shape; the new `SetCompanyApAccount` sproc (U-281) is a deliberate plain overwrite (NULL is a valid answer) with no RowVersion/OCC guard, so the run that reads earlier but writes later wins — last-writer-wins. Pre-existing exposure for the account upserts themselves too, not introduced by U-281's own write. Real-world probability is low (a company's AP account essentially never changes), but the endpoint's lack of locking is worth its own unit regardless of this one finding.
+- [ ] **`SetCompanyApAccount`'s UPDATE bumps `dbo.Company.RowVersion`** (a real SQL Server `ROWVERSION` column that auto-advances on ANY update to the row, not just the columns written) — every ~4h (`sync_qbo_account` timer cadence). An admin with the Edit Company form open (`PUT /update/company/{public_id}`, optimistic-concurrency via `WHERE RowVersion = @RowVersion`) could get an unexplained conflict-on-save if the timer lands mid-edit, with nothing in the UI connecting it to AP-account syncing. Same exposure class the pre-existing `SetCompanyQboIdentity` already carries (daily `sync_qbo_company_info` pull) — now also present on U-281's ~4-hourly cadence. Fixing it "properly" would mean moving cache-only fields off the ROWVERSION-tracked row entirely (a real schema change) — judged out of proportion to the actual risk (a rarely-edited admin-only screen, and the failure mode is a benign retry-prompt, not data loss) unless it starts showing up in practice.
+
+## U-289 follow-ups (item CostCode+SubCostCode Phase-4 repoint) — deferred (2026-08-20)
+
+U-289 repointed `ItemCostCodeConnector`/`ItemSubCostCodeConnector`'s own identity resolution off `qbo.Item`/
+`qbo.Item{CostCode,SubCostCode}` onto `dbo.{CostCode,SubCostCode}`'s native `QboId`/`RealmId`, via the shared
+`run_identity_fastpath()` helper (U-287). Confirmed by a Codex-degraded, adversarially-verified Claude Workflow
+5-lens hunt (workspace-wide Codex outage this session — see the U-278/U-280/U-282/U-286/U-287/U-281 board rows for
+the same episode); 7 raw findings confirmed, all either fixed or booked here:
+
+- [ ] **`ItemSubCostCodeConnector`'s parent-CostCode resolution has no fast-path/conflict protection** — unlike
+  its own SubCostCode identity resolution (which this unit hardened), the parent lookup (`qbo_item_repo.read_by_qbo_id`
+  → `cost_code_mapping_repo.read_by_qbo_item_id`, `sync_from_qbo_item` lines ~96-114) is pre-existing, unchanged code
+  that still hops the legacy `qbo.Item`/`qbo.ItemCostCode` mapping table with zero identity-conflict detection. If a
+  parent CostCode's dbo-native identity and its `ItemCostCode` mapping row drift apart — the exact "identity theft"
+  class this unit's own fast path exists to catch, and which caused a live-prod P0 on 2026-08-20 across other
+  families — a *direct* sync of that parent CostCode now correctly hard-stops, but a SubCostCode synced under it
+  will silently resolve `cost_code_id` from the stale/conflicting mapping row anyway, with no exception and no
+  recorded reconciliation issue. Fix: route the parent lookup through `CostCodeService.read_by_qbo_identity()` (or
+  through `ItemCostCodeConnector` itself) before trusting the mapping-table hop, mirroring this unit's own pattern.
+  Deliberately not fixed in U-289 itself — real scope expansion beyond "wire the fast path into each entity's own
+  `sync_from_qbo_item`", same class of deferral U-276 used for its 4 pull-resolvers.
+- [ ] **`dbo.costcode.sql`'s `CREATE TABLE` block has no idempotent `ALTER TABLE ADD [CreatedByUserId]`** (campaign-wide
+  pre-existing gap, not introduced by U-289 — already tracked below at "Base SQL files are not self-contained from
+  scratch"; `CreateCostCode`'s `@CreatedByUserId` param this unit added is base-file reconciliation to match what's
+  already live in prod via `gap2_created_by_user_id.sql`/`_finalize.sql`, mirroring `entities/company/sql/dbo.company.sql`'s
+  identical, explicitly-scoped-out precedent from U-277).
+
 ## Packet compression before SharePoint/Box upload — SCOPED, not built (2026-08-18)
 
 **Ask:** shrink the invoice draw packet before it's uploaded to SharePoint + Box (future packets). **Findings from probing the MR2-MAIN-09 packet (42,096,582 bytes, 143 pages):**

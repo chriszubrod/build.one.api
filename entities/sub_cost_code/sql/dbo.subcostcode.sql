@@ -58,6 +58,32 @@ BEGIN
 END
 GO
 
+-- Idempotent column add for existing environments. Live since migration
+-- 238c_qbo_identity_reference.sql; declared here so a fresh environment
+-- built from just the base file matches prod (U-289, mirrors U-277's fix
+-- for company/address).
+IF OBJECT_ID('dbo.SubCostCode', 'U') IS NOT NULL
+   AND NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('dbo.SubCostCode') AND name = 'QboId')
+BEGIN
+    ALTER TABLE [dbo].[SubCostCode] ADD [QboId] NVARCHAR(50) NULL;
+END
+GO
+
+IF OBJECT_ID('dbo.SubCostCode', 'U') IS NOT NULL
+   AND NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('dbo.SubCostCode') AND name = 'RealmId')
+BEGIN
+    ALTER TABLE [dbo].[SubCostCode] ADD [RealmId] NVARCHAR(50) NULL;
+END
+GO
+
+IF OBJECT_ID('dbo.SubCostCode', 'U') IS NOT NULL AND NOT EXISTS (
+    SELECT 1 FROM sys.indexes WHERE name = 'UQ_SubCostCode_QboId_RealmId' AND object_id = OBJECT_ID('dbo.SubCostCode')
+)
+BEGIN
+    CREATE UNIQUE INDEX UQ_SubCostCode_QboId_RealmId ON [dbo].[SubCostCode] ([QboId], [RealmId]) WHERE [QboId] IS NOT NULL;
+END
+GO
+
 
 -- ============================================================================
 -- SubCostCode — View (single source of truth for column formatting)
@@ -88,7 +114,9 @@ AS
         sc.[Description],
         sc.[CostCodeId],
         sc.[Aliases],
-        sc.[QboActive]
+        sc.[QboActive],
+        sc.[QboId],
+        sc.[RealmId]
     FROM dbo.[SubCostCode] sc;
 GO
 
@@ -463,5 +491,27 @@ BEGIN
          OR (@RealmId IS NOT NULL AND ([RealmId] IS NULL OR [RealmId] <> @RealmId))
          OR (@Active IS NOT NULL AND ([QboActive] IS NULL OR [QboActive] <> @Active))
       );
+END;
+GO
+
+-- U-289 (Phase-4 repoint): direct dbo-native identity lookup. Lets the item
+-- connector resolve "does a dbo.SubCostCode already exist for this external
+-- QBO item id" WITHOUT hopping through the qbo.ItemSubCostCode mapping
+-- table — every SubCostCode synced at least once already carries
+-- QboId/RealmId via SetSubCostCodeQboIdentity, so this is the steady-state
+-- fast path; the mapping-table lookup remains as a fallback for rows that
+-- predate identity stamping. RealmId NULL-equality mirrors
+-- SetSubCostCodeQboIdentity's own stolen-identity comparison.
+CREATE OR ALTER PROCEDURE ReadSubCostCodeByQboIdAndRealmId
+(
+    @QboId NVARCHAR(50),
+    @RealmId NVARCHAR(50) = NULL
+)
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SELECT * FROM dbo.[vw_SubCostCode]
+    WHERE [QboId] = @QboId
+      AND (([RealmId] = @RealmId) OR ([RealmId] IS NULL AND @RealmId IS NULL));
 END;
 GO

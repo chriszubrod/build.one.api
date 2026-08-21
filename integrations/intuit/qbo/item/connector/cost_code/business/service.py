@@ -10,6 +10,7 @@ from integrations.intuit.qbo.base.field_ownership import (
     raise_if_inactive_orphaned_mapping,
     raise_if_inactive_unmapped,
 )
+from integrations.intuit.qbo.base.identity_fastpath import run_identity_fastpath
 from integrations.intuit.qbo.base.ids import coerce_id
 from integrations.intuit.qbo.base.reconciliation_recorder import record_mapping_issue
 from integrations.intuit.qbo.item.connector.cost_code.business.model import ItemCostCode
@@ -65,10 +66,61 @@ class ItemCostCodeConnector:
         # Parse the name to get number and name
         number, name = qbo_item.parse_name()
         description = qbo_item.description
-        
+
+        # U-289 (Phase-4 repoint): resolve identity directly against
+        # dbo.CostCode's native QboId/RealmId (U-238c) before falling back to
+        # the qbo.ItemCostCode mapping-table hop below. Every CostCode synced
+        # even once already carries this identity (set_qbo_identity is called
+        # on both the create path and the existing-mapping update path
+        # below), so this covers the steady-state case without touching
+        # qbo.Item at all. Uses the shared base.identity_fastpath helper
+        # (U-287) — conflict is a structural hard stop, never a fall-through
+        # (that fall-through was the 2026-08-20 live-prod P0 across 6 other
+        # families). Mirrors VendorCreditBillCreditConnector (U-278) /
+        # TermPaymentTermConnector (U-282).
+        outcome = run_identity_fastpath(
+            qbo_id=qbo_item.qbo_id,
+            realm_id=qbo_item.realm_id,
+            external_id=qbo_item.id,
+            entity_label="CostCode",
+            external_label="QboItem",
+            mapping_label="ItemCostCode",
+            read_direct_by_qbo_identity=self.cost_code_service.read_by_qbo_identity,
+            read_by_local_id=self.mapping_repo.read_by_cost_code_id,
+            read_by_external_id=self.mapping_repo.read_by_qbo_item_id,
+            external_id_attr="qbo_item_id",
+            record_conflict_issue=lambda entity, by_local, by_external: (
+                self._raise_identity_mapping_conflict_issue(
+                    qbo_item=qbo_item,
+                    dbo_cost_code_id=coerce_id(entity.id),
+                    local_side_mapping=by_local,
+                    qbo_side_mapping=by_external,
+                )
+            ),
+            conflict_message=lambda entity: (
+                f"ItemCostCode identity conflict for QboItem {qbo_item.qbo_id} "
+                f"(id={qbo_item.id}): dbo.CostCode {entity.id} already carries "
+                f"this identity but the mapping table disagrees. Not "
+                f"auto-repointed; see the recorded reconciliation issue. "
+                f"Skipping until a human resolves it."
+            ),
+            create_mapping=lambda local_id: self.mapping_repo.create(
+                cost_code_id=local_id,
+                qbo_item_id=qbo_item.id,
+            ),
+            apply_fields=lambda entity: self._apply_cost_code_fields_and_sync(
+                entity,
+                number=number,
+                incoming_name=name,
+                description=description,
+            ),
+        )
+        if outcome.hit:
+            return outcome.entity
+
         # Check for existing mapping
         mapping = self.mapping_repo.read_by_qbo_item_id(qbo_item.id)
-        
+
         if mapping:
             cost_code = self.cost_code_service.read_by_id(str(mapping.cost_code_id))
             if cost_code:
@@ -257,6 +309,49 @@ class ItemCostCodeConnector:
             qbo_id=str(qbo_item.qbo_id) if qbo_item.qbo_id else None,
             realm_id=qbo_item.realm_id or "",
             details=details,
+        )
+
+    def _raise_identity_mapping_conflict_issue(
+        self,
+        *,
+        qbo_item: QboItem,
+        dbo_cost_code_id: int,
+        local_side_mapping: Optional[ItemCostCode],
+        qbo_side_mapping: Optional[ItemCostCode],
+    ) -> None:
+        """
+        Record a dbo-identity <-> mapping-table split found by run_identity_fastpath.
+        Covers all three shapes in ONE issue: qbo-side only, local-side only, or both
+        (the "two-row crossed" case) — never silently dropping either side's blocker.
+        Mirrors VendorCreditBillCreditConnector._raise_identity_mapping_conflict_issue
+        (U-278) / TermPaymentTermConnector (U-282).
+        """
+        parts = [
+            f"ItemCostCode identity conflict. dbo.CostCode {dbo_cost_code_id} "
+            f"carries native QBO identity for QboItem {qbo_item.id} "
+            f"(QboId={qbo_item.qbo_id}, RealmId={qbo_item.realm_id})."
+        ]
+        if qbo_side_mapping:
+            parts.append(
+                f"qbo-side: the mapping table still binds that same QboItem to a "
+                f"DIFFERENT CostCode {qbo_side_mapping.cost_code_id} (mapping "
+                f"{qbo_side_mapping.id})."
+            )
+        if local_side_mapping:
+            parts.append(
+                f"local-side: CostCode {dbo_cost_code_id}'s own mapping row (mapping "
+                f"{local_side_mapping.id}) still binds it to a DIFFERENT QboItem "
+                f"{local_side_mapping.qbo_item_id}."
+            )
+        parts.append("Not auto-repointed — investigate which side is correct.")
+        record_mapping_issue(
+            self.reconciliation_repo,
+            drift_type="cost_code_identity_conflict",
+            entity_type="CostCode",
+            entity_public_id=None,
+            qbo_id=str(qbo_item.qbo_id) if qbo_item.qbo_id else None,
+            realm_id=qbo_item.realm_id or "",
+            details=" ".join(parts),
         )
 
     def _raise_missing_cost_code_issue(

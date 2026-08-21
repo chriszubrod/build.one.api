@@ -25,6 +25,32 @@ BEGIN
 END
 GO
 
+-- Idempotent column add for existing environments. Live since migration
+-- 238c_qbo_identity_reference.sql; declared here so a fresh environment
+-- built from just the base file matches prod (U-289, mirrors U-277's fix
+-- for company/address).
+IF OBJECT_ID('dbo.CostCode', 'U') IS NOT NULL
+   AND NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('dbo.CostCode') AND name = 'QboId')
+BEGIN
+    ALTER TABLE [dbo].[CostCode] ADD [QboId] NVARCHAR(50) NULL;
+END
+GO
+
+IF OBJECT_ID('dbo.CostCode', 'U') IS NOT NULL
+   AND NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('dbo.CostCode') AND name = 'RealmId')
+BEGIN
+    ALTER TABLE [dbo].[CostCode] ADD [RealmId] NVARCHAR(50) NULL;
+END
+GO
+
+IF OBJECT_ID('dbo.CostCode', 'U') IS NOT NULL AND NOT EXISTS (
+    SELECT 1 FROM sys.indexes WHERE name = 'UQ_CostCode_QboId_RealmId' AND object_id = OBJECT_ID('dbo.CostCode')
+)
+BEGIN
+    CREATE UNIQUE INDEX UQ_CostCode_QboId_RealmId ON [dbo].[CostCode] ([QboId], [RealmId]) WHERE [QboId] IS NOT NULL;
+END
+GO
+
 
 -- ============================================================================
 -- CostCode — View (single source of truth for column formatting)
@@ -42,7 +68,9 @@ AS
         CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
         [Number],
         [Name],
-        [Description]
+        [Description],
+        [QboId],
+        [RealmId]
     FROM dbo.[CostCode];
 GO
 
@@ -55,7 +83,8 @@ CREATE OR ALTER PROCEDURE CreateCostCode
 (
     @Number NVARCHAR(50),
     @Name NVARCHAR(255),
-    @Description NVARCHAR(255) = NULL
+    @Description NVARCHAR(255) = NULL,
+    @CreatedByUserId BIGINT = NULL
 )
 AS
 BEGIN
@@ -64,8 +93,8 @@ BEGIN
 
     DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();
 
-    INSERT INTO dbo.[CostCode] ([CreatedDatetime], [ModifiedDatetime], [Number], [Name], [Description])
-    VALUES (@Now, @Now, @Number, @Name, @Description);
+    INSERT INTO dbo.[CostCode] ([CreatedDatetime], [ModifiedDatetime], [Number], [Name], [Description], [CreatedByUserId])
+    VALUES (@Now, @Now, @Number, @Name, @Description, COALESCE(@CreatedByUserId, 17));
 
     SELECT * FROM dbo.[vw_CostCode] WHERE [Id] = SCOPE_IDENTITY();
 
@@ -240,5 +269,27 @@ BEGIN
             (@QboId IS NOT NULL AND ([QboId] IS NULL OR [QboId] <> @QboId))
          OR (@RealmId IS NOT NULL AND ([RealmId] IS NULL OR [RealmId] <> @RealmId))
       );
+END;
+GO
+
+-- U-289 (Phase-4 repoint): direct dbo-native identity lookup. Lets the item
+-- connector resolve "does a dbo.CostCode already exist for this external QBO
+-- item id" WITHOUT hopping through the qbo.ItemCostCode mapping table —
+-- every CostCode synced at least once already carries QboId/RealmId via
+-- SetCostCodeQboIdentity, so this is the steady-state fast path; the
+-- mapping-table lookup remains as a fallback for rows that predate identity
+-- stamping. RealmId NULL-equality mirrors SetCostCodeQboIdentity's own
+-- stolen-identity comparison.
+CREATE OR ALTER PROCEDURE ReadCostCodeByQboIdAndRealmId
+(
+    @QboId NVARCHAR(50),
+    @RealmId NVARCHAR(50) = NULL
+)
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SELECT * FROM dbo.[vw_CostCode]
+    WHERE [QboId] = @QboId
+      AND (([RealmId] = @RealmId) OR ([RealmId] IS NULL AND @RealmId IS NULL));
 END;
 GO

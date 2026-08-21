@@ -263,6 +263,10 @@ def _build_sub_cost_code_connector():
     )
     connector.qbo_item_repo.read_by_qbo_id.return_value = Mock(id=99)
     connector.cost_code_mapping_repo.read_by_qbo_item_id.return_value = Mock(cost_code_id=10)
+    # U-289: default the direct dbo-identity fast path to a miss so these tests keep
+    # exercising the mapping-table path they're testing (mirrors U-276/278/282's
+    # identical fix for their own connector-builder fixtures).
+    connector.sub_cost_code_service.read_by_qbo_identity.return_value = None
     return connector
 
 

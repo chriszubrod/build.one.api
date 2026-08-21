@@ -130,6 +130,9 @@ def _build_vendor_connector():
         reconciliation_repo=Mock(),
     )
     connector._sync_addresses = Mock()
+    # U-290: default the direct dbo-identity fast path to a miss so these
+    # tests keep exercising the mapping-table (legacy) path they're testing.
+    connector.vendor_service.read_by_qbo_identity.return_value = None
     return connector
 
 

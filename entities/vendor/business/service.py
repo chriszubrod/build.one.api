@@ -120,6 +120,14 @@ class VendorService:
         """
         return self.repo.read_by_name(name)
 
+    def read_by_qbo_identity(self, qbo_id: str, realm_id: Optional[str] = None) -> Optional[Vendor]:
+        """
+        Read a vendor directly by its dbo-native QBO identity (U-290) — the
+        Phase-4 repoint seam, bypassing the qbo.Vendor staging table. Bare
+        passthrough: Vendor has no row-level RBAC (unlike Project/BillCredit).
+        """
+        return self.repo.read_by_qbo_identity(qbo_id, realm_id)
+
     def find_contract_labor_by_email(self, email: str) -> Optional[Vendor]:
         """Bind a sender's email back to the contract-labor Vendor row.
 

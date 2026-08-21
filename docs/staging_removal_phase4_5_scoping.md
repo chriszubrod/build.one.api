@@ -442,6 +442,79 @@ re-copy the recipe. If a family does not fit the interface, extend the helper de
 
 ---
 
+## 14. U-290 resolved — `vendor` family Phase-4 header/reference repoint (2026-08-20)
+
+Built as scoped: `VendorVendorConnector.sync_from_qbo_vendor` now resolves identity directly against
+`dbo.Vendor.QboId`/`.RealmId` (native since U-238a/c) via `run_identity_fastpath()` (U-287), falling back to the
+pre-existing `qbo.VendorVendor` mapping-table path unchanged on a miss. **Renumbered from the assignment's stale
+`U-289`** — that ID was claimed same-session by a concurrent `/em` session's `item` (CostCode/SubCostCode) repoint,
+which was already at Gate-1/Building when this unit's own Gate-1 Step 0 ran; same ID-collision class §0 and the
+`item` unit's own board row already hit. Gate-1 Step 0 re-verified live: `VendorVendorConnector` still resolved
+identity purely via `mapping_repo.read_by_qbo_vendor_id`, no dbo-native fast path existed — unit confirmed open.
+
+**Built**, mirroring §10's pilot pattern: new `ReadVendorByQboIdAndRealmId` sproc (NULL-permissive RealmId) +
+`VendorRepository`/`VendorService.read_by_qbo_identity()` (bare passthrough — Vendor has no row-level RBAC) + the
+connector's `run_identity_fastpath()` wiring, conflict→RAISE structural from day one (no hand-rolled copy, calls
+the shared helper directly, per §13's closing instruction). **Base-file gap found and fixed** (the same
+from-scratch-build trap §12/§13 found for their own entities): `dbo.vendor.sql`'s base `CREATE TABLE` never
+declared `QboId`/`RealmId`/the unique index, even though `SetVendorQboIdentity` (already in the file) silently
+depended on them — added the matching idempotent `ALTER TABLE ADD`/index guard block, confirmed no-op-safe against
+live prod (columns + `UQ_Vendor_QboId_RealmId` already exist there via `238c_qbo_identity_reference.sql`).
+
+**QboActive refresh deviates from §13's own precedent, deliberately.** U-282 (PaymentTerm) accepted a documented
+staleness tradeoff — its QboActive mirror can go stale after a Vendor's first fast-path hit if later deactivated in
+QBO, since only the legacy mapping-table path re-stamps Active. The concurrent `item`/`U-289` session fixed this
+same gap for its own SubCostCode family (refresh Active on every fast-path hit via a QboId/RealmId-omitted
+`set_qbo_identity` call, so only the Active `CASE WHEN` branch fires — no re-stamp, no theft-detection re-trigger).
+Vendor adopts SubCostCode's fix rather than PaymentTerm's tradeoff, since it's strictly more correct for the
+identical "family also carries an Active mirror" shape. **Follow-up, not fixed here:** this refresh block is now
+duplicated in 2 places (SubCostCode, Vendor) — a candidate for an optional refresh-callback on the shared helper
+once both repoints have landed; PaymentTerm's own staleness gap remains open too, its own separate follow-up.
+
+**Cross-family fan-out audit** (mandatory per the assignment, verified by direct grep+read, not doc-trust):
+confirms §2's claim exactly — Bill (`_get_vendor_public_id` pull, `_get_qbo_vendor_ref` push), Purchase/Expense
+(`_get_vendor_public_id` pull), VendorCredit (`_get_vendor_public_id` pull), and the expense-coding cockpit
+(`ExpenseCodingItemService._resolve_vendor_id`) all resolve vendor refs through `qbo.VendorVendor` and are
+explicitly deferred, untouched by this unit — the whole point of the tight scope. Two additional raw-SQL script
+consumers found, not named in §2 (`scripts/generate_payment_remittance.py`, `scripts/backfill_qbo_bills.py`) —
+unaffected by this unit either way (tables aren't dropped), noted for the eventual Phase-6 drop list.
+
+**Codex confirmed out-of-credits this unit** (ladder followed: `xhigh` then `high`/`gpt-5.4`, same workspace-wide
+outage prior units this session hit) — fell back to a Claude Workflow 5-lens hunt (identity-conflict-safety, SQL
+correctness, QboActive-refresh correctness, call-site blast-radius, test adequacy) with adversarial refute-by-default
+verification (10 agents, each finding independently re-checked against the live diff/code, not trusted on the raw
+report): 4 lenses PASS outright; the test-adequacy lens found 1 confirmed P1 (fast-path-hit tests reused the same
+Mock for both the identity-lookup result and the update result, so a dropped/broken `apply_fields` wiring on the
+steady-state path would ship with zero test failures anywhere) + 1 confirmed P2 (the `on_apply_returned_none`
+RuntimeError branch was untested) + 2 confirmed P3s (a misleading test comment; an asymmetric missing assertion) —
+all four fixed. The SQL-correctness lens independently confirmed the base-file no-op claim against
+`238c_qbo_identity_reference.sql` byte-for-byte and flagged one P3 cosmetic (`[RealmId]` unqualified in the new
+sproc's WHERE clause vs. every other `v.`-qualified reference) — fixed. Zero P0/P1 survived in the other four
+lenses. **Mutation-proven in an isolated worktree**, 3 targeted mutations on this unit's own highest-risk wiring
+(not re-proving the shared helper's own already-proven conflict-raise): breaking the QboActive-active threading,
+swapping the `create_mapping` mapping's `qbo_vendor_id` argument for the wrong field, and corrupting the
+`drift_type` string — all three confirmed RED, all three confirmed GREEN after revert.
+
+**Verify:** full pytest suite green for every vendor-touching test (`test_u290_vendor_qbo_identity_repoint.py` new,
++`test_qbo_vendor_vendor_heal.py`/`test_u219_qbo_reference_pulls.py`/`test_u275_qbo_active_mirror.py` fixture
+defaults fixed to keep exercising their legacy-path scope). A same-session full-suite run also shows 7 failures in
+`test_qbo_zombie_rollback.py`/`test_u283_bill_qbo_identity_repoint.py`/`test_qbo_reconciliation_recorder.py`,
+traced directly to concurrent `/em` sessions' in-flight, uncommitted work on `bill` (U-283) — zero Vendor
+references in any of those files, confirmed unrelated. base==live confirmed for all 10 pre-existing `dbo.vendor.sql`
+sprocs (normalized `OBJECT_DEFINITION` diff, `CREATE OR ALTER`→`CREATE`); new sproc verified via a temp-named copy
+(`_TEMP290`/`_TEMP290b`, the second after the `v.`-qualify fix) against real Vendor rows, then dropped both times.
+No `/docs` (web) refresh owed — backend integration-internals only, no API/feature-surface change.
+
+**Shared-file commit-hygiene note** (this session hit an unusually busy shared tree — 4 concurrent `/em` sessions:
+`item`/U-289, `account`/U-281, `bill`/U-283, and this unit): `integrations/intuit/qbo/base/drift_types.py`,
+`tests/test_u219_qbo_reference_pulls.py`, and `tests/test_u275_qbo_active_mirror.py` each carry a second,
+cleanly-separated hunk from the concurrent `item` session alongside this unit's own — confirmed via `git diff`
+that the hunks never touch the same lines. Commit for this unit uses `git add -p`/targeted patch application to
+stage only this unit's own hunks in those 3 files, leaving the `item` session's uncommitted work untouched and
+committable on its own later.
+
+---
+
 ## Appendix — infra tables, explicitly untouched
 
 Per the assignment's own instruction, no disposition proposed for `qbo.Auth`, `qbo.Client`, `qbo.Outbox`, `qbo.ReconciliationIssue`, `qbo.ApiUsage` — these are program infra, not staging, and survive regardless of Phase 4/5/6 outcome.

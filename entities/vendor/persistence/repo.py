@@ -53,6 +53,8 @@ class VendorRepository:
                 hourly_rate=getattr(row, "HourlyRate", None),
                 markup=getattr(row, "Markup", None),
                 qbo_active=getattr(row, "QboActive", None),
+                qbo_id=getattr(row, "QboId", None),
+                realm_id=getattr(row, "RealmId", None),
             )
         except AttributeError as error:
             logger.error(f"Attribute error during vendor mapping: {error}")
@@ -283,6 +285,25 @@ class VendorRepository:
                 return self._from_db(row)
         except Exception as error:
             logger.error(f"Error during soft delete vendor by public ID: {error}")
+            raise map_database_error(error)
+
+    def read_by_qbo_identity(self, qbo_id: str, realm_id: Optional[str] = None) -> Optional[Vendor]:
+        """
+        Read a vendor directly by its dbo-native QBO identity (U-290), bypassing
+        the qbo.Vendor / qbo.VendorVendor staging/mapping tables entirely.
+        """
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(
+                    cursor=cursor,
+                    name="ReadVendorByQboIdAndRealmId",
+                    params={"QboId": qbo_id, "RealmId": realm_id},
+                )
+                row = cursor.fetchone()
+                return self._from_db(row)
+        except Exception as error:
+            logger.error(f"Error during read vendor by QBO identity: {error}")
             raise map_database_error(error)
 
     def set_qbo_identity(

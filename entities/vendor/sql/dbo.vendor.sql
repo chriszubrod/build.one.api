@@ -84,6 +84,32 @@ BEGIN
 END
 GO
 
+-- Idempotent guard for QboId/RealmId (U-290): these columns and their unique index
+-- are already LIVE in prod via scripts/migrations/238c_qbo_identity_reference.sql
+-- (U-238c), but were never declared in this base file — the same from-scratch-build
+-- trap U-277/U-282 found for their own entities (SetVendorQboIdentity below already
+-- reads/writes these columns unconditionally, so a from-scratch build would fail at
+-- that CREATE PROCEDURE's first live call, not at build time itself, making the gap
+-- easy to miss until a real QBO pull hits it). No-op against prod, which already has
+-- both.
+IF COL_LENGTH('dbo.Vendor', 'QboId') IS NULL
+BEGIN
+    ALTER TABLE [dbo].[Vendor] ADD [QboId] NVARCHAR(50) NULL;
+END
+GO
+
+IF COL_LENGTH('dbo.Vendor', 'RealmId') IS NULL
+BEGIN
+    ALTER TABLE [dbo].[Vendor] ADD [RealmId] NVARCHAR(50) NULL;
+END
+GO
+
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'UQ_Vendor_QboId_RealmId' AND object_id = OBJECT_ID('dbo.Vendor'))
+BEGIN
+    CREATE UNIQUE INDEX [UQ_Vendor_QboId_RealmId] ON [dbo].[Vendor] ([QboId], [RealmId]) WHERE [QboId] IS NOT NULL;
+END
+GO
+
 -- FK constraint: VendorTypeId -> VendorType.Id
 IF NOT EXISTS (SELECT 1 FROM sys.foreign_keys WHERE name = 'FK_Vendor_VendorType')
 BEGIN
@@ -205,7 +231,9 @@ BEGIN
         v.[HourlyRate],
         v.[Markup],
         v.[TrackCompliance],
-        v.[QboActive]
+        v.[QboActive],
+        v.[QboId],
+        v.[RealmId]
     FROM dbo.[Vendor] v
     WHERE v.[Id] = @Id AND v.[IsDeleted] = 0;
 END;
@@ -591,6 +619,50 @@ BEGIN
       AND v.[IsDeleted]       = 0
       AND LOWER(c.[Email])    = LOWER(@SenderEmail)
     ORDER BY v.[Id];
+END;
+GO
+
+-- ─────────────────────────────────────────────────────────────────────
+-- ReadVendorByQboIdAndRealmId — dbo-native identity lookup (U-290, Phase-4
+-- repoint). Backs VendorService.read_by_qbo_identity() / the
+-- run_identity_fastpath() fast path in VendorVendorConnector, bypassing
+-- qbo.Vendor / qbo.VendorVendor entirely on a hit. RealmId comparison is
+-- NULL-permissive, mirroring SetVendorQboIdentity's own theft-detection
+-- comparison and every sibling Read{Entity}ByQboIdAndRealmId sproc
+-- (Customer/Project/Company/Address/BillCredit/Attachment/PaymentTerm).
+-- ─────────────────────────────────────────────────────────────────────
+
+CREATE OR ALTER PROCEDURE ReadVendorByQboIdAndRealmId
+(
+    @QboId NVARCHAR(50),
+    @RealmId NVARCHAR(50) = NULL
+)
+AS
+BEGIN
+    SELECT
+        v.[Id],
+        v.[PublicId],
+        v.[RowVersion],
+        CONVERT(VARCHAR(19), v.[CreatedDatetime], 120) AS [CreatedDatetime],
+        CONVERT(VARCHAR(19), v.[ModifiedDatetime], 120) AS [ModifiedDatetime],
+        v.[Name],
+        v.[Abbreviation],
+        v.[VendorTypeId],
+        v.[TaxpayerId],
+        v.[IsDraft],
+        v.[IsDeleted],
+        v.[IsContractLabor],
+        v.[Notes],
+        v.[HourlyRate],
+        v.[Markup],
+        v.[TrackCompliance],
+        v.[QboActive],
+        v.[QboId],
+        v.[RealmId]
+    FROM dbo.[Vendor] v
+    WHERE v.[QboId] = @QboId
+      AND ((v.[RealmId] = @RealmId) OR (v.[RealmId] IS NULL AND @RealmId IS NULL))
+      AND v.[IsDeleted] = 0;
 END;
 GO
 

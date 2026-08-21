@@ -81,27 +81,11 @@ def test_coded_draws_empty_project_returns_empty():
 
 
 # ─── U-271: all_draws_for_project (early/QBO-derived + dedup + merge) ──────────
-
-def test_norm_cc_number():
-    from entities.invoice.business.draw_financials import _norm_cc_number
-    assert _norm_cc_number("02.1") == "2.1"
-    assert _norm_cc_number("09") == "9"
-    assert _norm_cc_number("2") == "2"
-    assert _norm_cc_number(None) == ""
-    assert _norm_cc_number("") == ""
-
-
-def test_cc_number_from_itemref():
-    from entities.invoice.business.draw_financials import _cc_number_from_itemref
-    # Parent (left of ':') is the cost code; normalized.
-    assert _cc_number_from_itemref("02 Dumpsters:02.1 Dumpsters") == "2"
-    assert _cc_number_from_itemref("13 Framing:13.1 Lumber & Hardware") == "13"
-    assert _cc_number_from_itemref("09 Footers:09.0 Footers") == "9"
-    # No leading number / empty / None -> None (falls to the Uncoded bucket).
-    assert _cc_number_from_itemref("5% markup for Demo") is None
-    assert _cc_number_from_itemref(None) is None
-    assert _cc_number_from_itemref("") is None
-
+# U-292: the QBO-derivation source moved onto QboInvoiceService.cost_coded_lines_
+# for_invoice() (a dbo-native ID seam, tested on its own in
+# tests/test_qbo_invoice_cost_coded_lines.py). These tests fake that seam directly
+# — draw_financials.py's own responsibility is grouping/dedup/merge of whatever
+# (cost_code_number, cost_code_name, amount) triples it returns, not QBO resolution.
 
 def test_reissue_base_label():
     from entities.invoice.business.draw_financials import _reissue_base_label
@@ -111,42 +95,18 @@ def test_reissue_base_label():
     assert _reissue_base_label("HA-05") == "HA-05"
 
 
-class _FakeCC:
-    def __init__(self, number, name):
-        self.number = number
-        self.name = name
+def _patch_qbo_seam(monkeypatch, triples_by_invoice):
+    """Fake QboInvoiceService.cost_coded_lines_for_invoice — already-resolved
+    (cost_code_number, cost_code_name, amount) triples per LOCAL invoice id,
+    exactly the shape the real seam (dbo-native ID resolution) hands back."""
+    class _FakeQboInvoiceService:
+        def cost_coded_lines_for_invoice(self, invoice_id):
+            return triples_by_invoice.get(invoice_id, [])
 
-
-class _FakeMapping:
-    def __init__(self, qbo_invoice_id):
-        self.qbo_invoice_id = qbo_invoice_id
-
-
-class _FakeQboLine:
-    def __init__(self, item_ref_name, amount, detail_type="SalesItemLineDetail"):
-        self.item_ref_name = item_ref_name
-        self.amount = Decimal(str(amount)) if amount is not None else None
-        self.detail_type = detail_type
-
-
-def _patch_qbo(monkeypatch, cost_codes, mapping_by_invoice, lines_by_qbo):
-    class _CCS:
-        def read_all(self):
-            return cost_codes
-
-    class _IIR:
-        def read_by_invoice_id(self, invoice_id):
-            return mapping_by_invoice.get(invoice_id)
-
-    class _QLR:
-        def read_by_qbo_invoice_id(self, qbo_invoice_id):
-            return lines_by_qbo.get(qbo_invoice_id, [])
-
-    monkeypatch.setattr("entities.cost_code.business.service.CostCodeService", _CCS)
     monkeypatch.setattr(
-        "integrations.intuit.qbo.invoice.connector.invoice.persistence.repo.InvoiceInvoiceRepository", _IIR)
-    monkeypatch.setattr(
-        "integrations.intuit.qbo.invoice.persistence.repo.QboInvoiceLineRepository", _QLR)
+        "integrations.intuit.qbo.invoice.business.service.QboInvoiceService",
+        _FakeQboInvoiceService,
+    )
 
 
 def test_all_draws_includes_qbo_derived_early_draw_with_uncoded_bucket(monkeypatch):
@@ -161,23 +121,19 @@ def test_all_draws_includes_qbo_derived_early_draw_with_uncoded_bucket(monkeypat
         1: [{"source_type": "Manual", "billed_price": 100.0}],
         2: [{"source_type": "BillLineItem", "cost_code_number": "13", "cost_code_name": "Framing", "billed_price": 2000.0}],
     })
-    _patch_qbo(
-        monkeypatch,
-        cost_codes=[_FakeCC("2", "Dumpsters"), _FakeCC("13", "Framing")],
-        mapping_by_invoice={1: _FakeMapping(900)},   # inv 1 -> qbo staging 900
-        lines_by_qbo={900: [
-            _FakeQboLine("02 Dumpsters:02.1 Dumpsters", 715.00),
-            _FakeQboLine("13 Framing:13.1 Lumber", 285.00),
-            _FakeQboLine(None, 50.00),                        # no ItemRef -> Uncoded
-            _FakeQboLine("02 Dumpsters:02.1 Dumpsters", 1000.00, detail_type="SubTotalLineDetail"),  # ignored
-        ]},
-    )
+    _patch_qbo_seam(monkeypatch, {
+        1: [
+            ("2", "Dumpsters", Decimal("715.00")),
+            ("13", "Framing", Decimal("285.00")),
+            ("", "Uncoded", Decimal("50.00")),   # no resolvable item -> Uncoded (SubTotal line already excluded by the seam)
+        ],
+    })
     svc = DrawFinancialsService(invoice_service=_FakeInvoices(invoices), line_item_service=_FakeLineItems())
     draws = svc.all_draws_for_project(1, None)
 
     assert [d["label"] for d in draws] == ["MR2-MAIN-01", "MR2-MAIN-02"]
     early = draws[0]
-    # subtotal foots to item lines + uncoded (SubTotal line excluded): 715 + 285 + 50 = 1050
+    # subtotal foots to item lines + uncoded: 715 + 285 + 50 = 1050
     assert early["subtotal"] == Decimal("1050.00")
     assert early["total"] == Decimal("1050.00")
     assert early["builders_fee"] == Decimal("0")
@@ -200,12 +156,7 @@ def test_all_draws_drops_qbo_mirror_duplicate_of_coded_draw(monkeypatch):
         1: [{"source_type": "BillLineItem", "cost_code_number": "13", "cost_code_name": "Framing", "billed_price": 102729.54}],
         2: [{"source_type": "Manual", "billed_price": 1.0}],
     })
-    _patch_qbo(
-        monkeypatch,
-        cost_codes=[_FakeCC("13", "Framing")],
-        mapping_by_invoice={2: _FakeMapping(950)},
-        lines_by_qbo={950: [_FakeQboLine("13 Framing:13.1 Lumber", 102729.54)]},
-    )
+    _patch_qbo_seam(monkeypatch, {2: [("13", "Framing", Decimal("102729.54"))]})
     svc = DrawFinancialsService(invoice_service=_FakeInvoices(invoices), line_item_service=_FakeLineItems())
     draws = svc.all_draws_for_project(1, None)
     # The mirror (same date + cents-total as the coded draw) is dropped: one column only.
@@ -223,16 +174,10 @@ def test_all_draws_merges_reissue_variants_into_one_column(monkeypatch):
         1: [{"source_type": "Manual", "billed_price": 1.0}],
         2: [{"source_type": "Manual", "billed_price": 1.0}],
     })
-    _patch_qbo(
-        monkeypatch,
-        cost_codes=[_FakeCC("13", "Framing"), _FakeCC("25", "HVAC")],
-        mapping_by_invoice={1: _FakeMapping(35), 2: _FakeMapping(34)},
-        lines_by_qbo={
-            35: [_FakeQboLine("13 Framing:13.1 Lumber", 262459.51)],
-            34: [_FakeQboLine("13 Framing:13.1 Lumber", 100000.00),
-                 _FakeQboLine("25 HVAC:25.0 HVAC", 19944.51)],
-        },
-    )
+    _patch_qbo_seam(monkeypatch, {
+        1: [("13", "Framing", Decimal("262459.51"))],
+        2: [("13", "Framing", Decimal("100000.00")), ("25", "HVAC", Decimal("19944.51"))],
+    })
     svc = DrawFinancialsService(invoice_service=_FakeInvoices(invoices), line_item_service=_FakeLineItems())
     draws = svc.all_draws_for_project(1, None)
     # 04 + 04-2 collapse to ONE column labeled with the base, latest date wins.
@@ -257,13 +202,10 @@ def test_all_draws_does_not_merge_distinct_numeric_tails(monkeypatch):
         1: [{"source_type": "Manual", "billed_price": 1.0}],
         2: [{"source_type": "Manual", "billed_price": 1.0}],
     })
-    _patch_qbo(
-        monkeypatch,
-        cost_codes=[_FakeCC("13", "Framing")],
-        mapping_by_invoice={1: _FakeMapping(11), 2: _FakeMapping(12)},
-        lines_by_qbo={11: [_FakeQboLine("13 Framing:13.1 Lumber", 1000.00)],
-                      12: [_FakeQboLine("13 Framing:13.1 Lumber", 2000.00)]},
-    )
+    _patch_qbo_seam(monkeypatch, {
+        1: [("13", "Framing", Decimal("1000.00"))],
+        2: [("13", "Framing", Decimal("2000.00"))],
+    })
     svc = DrawFinancialsService(invoice_service=_FakeInvoices(invoices), line_item_service=_FakeLineItems())
     draws = svc.all_draws_for_project(1, None)
     assert [d["label"] for d in draws] == ["128-2024-05", "128-2024-06"]  # NOT merged
@@ -274,6 +216,45 @@ def test_all_draws_qbo_derivation_skips_invoice_with_no_mapping(monkeypatch):
 
     invoices = [_Inv(1, "MR2-MAIN-01", "2025-10-28")]  # all-Manual, but no QBO mapping
     _patch_enrich(monkeypatch, {1: [{"source_type": "Manual", "billed_price": 5.0}]})
-    _patch_qbo(monkeypatch, cost_codes=[], mapping_by_invoice={}, lines_by_qbo={})
+    _patch_qbo_seam(monkeypatch, {})
     svc = DrawFinancialsService(invoice_service=_FakeInvoices(invoices), line_item_service=_FakeLineItems())
     assert svc.all_draws_for_project(1, None) == []
+
+
+def test_all_draws_reuses_one_qbo_invoice_service_across_the_project(monkeypatch):
+    """The entire point of U-292's bulk-index redesign: a fresh QboInvoiceService
+    per manual invoice previously did a per-line DB round-trip burst that dropped
+    a real SQL connection generating a real project's draw matrix. draw_financials
+    must construct QboInvoiceService AT MOST ONCE per all_draws_for_project() call,
+    not once per manual invoice, so its internal cost-code index amortizes."""
+    from entities.invoice.business.draw_financials import DrawFinancialsService
+
+    construct_count = {"n": 0}
+
+    class _CountingFakeQboInvoiceService:
+        def __init__(self):
+            construct_count["n"] += 1
+
+        def cost_coded_lines_for_invoice(self, invoice_id):
+            return [("13", "Framing", Decimal("1.00"))]
+
+    monkeypatch.setattr(
+        "integrations.intuit.qbo.invoice.business.service.QboInvoiceService",
+        _CountingFakeQboInvoiceService,
+    )
+
+    invoices = [
+        _Inv(1, "MR2-MAIN-01", "2025-10-28", Decimal("1.00")),
+        _Inv(2, "MR2-MAIN-02", "2025-11-28", Decimal("1.00")),
+        _Inv(3, "MR2-MAIN-03", "2025-12-28", Decimal("1.00")),
+    ]
+    _patch_enrich(monkeypatch, {
+        1: [{"source_type": "Manual", "billed_price": 1.0}],
+        2: [{"source_type": "Manual", "billed_price": 1.0}],
+        3: [{"source_type": "Manual", "billed_price": 1.0}],
+    })
+    svc = DrawFinancialsService(invoice_service=_FakeInvoices(invoices), line_item_service=_FakeLineItems())
+    draws = svc.all_draws_for_project(1, None)
+
+    assert len(draws) == 3  # all 3 manual invoices resolved via the seam
+    assert construct_count["n"] == 1  # ONE QboInvoiceService for the whole project, not 3

@@ -1,7 +1,7 @@
 # Python Standard Library Imports
 import base64
 import logging
-from typing import Optional
+from typing import List, Optional
 
 # Third-party Imports
 import pyodbc
@@ -79,6 +79,30 @@ class ItemSubCostCodeRepository:
                         pass
         except Exception as error:
             logger.error(f"Error during create item sub cost code: {error}")
+            raise map_database_error(error)
+
+    def read_all(self) -> List[ItemSubCostCode]:
+        """
+        Read all ItemSubCostCode mapping records.
+        """
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                try:
+                    call_procedure(
+                        cursor=cursor,
+                        name="ReadItemSubCostCodes",
+                        params={},
+                    )
+                    rows = cursor.fetchall()
+                    return [self._from_db(row) for row in rows if row]
+                finally:
+                    try:
+                        cursor.close()
+                    except Exception:
+                        pass
+        except Exception as error:
+            logger.error(f"Error during read all item sub cost codes: {error}")
             raise map_database_error(error)
 
     def read_by_sub_cost_code_id(self, sub_cost_code_id: int) -> Optional[ItemSubCostCode]:

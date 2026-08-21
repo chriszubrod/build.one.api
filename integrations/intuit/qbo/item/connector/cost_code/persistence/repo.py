@@ -1,7 +1,7 @@
 # Python Standard Library Imports
 import base64
 import logging
-from typing import Optional
+from typing import List, Optional
 
 # Third-party Imports
 import pyodbc
@@ -79,6 +79,30 @@ class ItemCostCodeRepository:
                         pass
         except Exception as error:
             logger.error(f"Error during create item cost code: {error}")
+            raise map_database_error(error)
+
+    def read_all(self) -> List[ItemCostCode]:
+        """
+        Read all ItemCostCode mapping records.
+        """
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                try:
+                    call_procedure(
+                        cursor=cursor,
+                        name="ReadItemCostCodes",
+                        params={},
+                    )
+                    rows = cursor.fetchall()
+                    return [self._from_db(row) for row in rows if row]
+                finally:
+                    try:
+                        cursor.close()
+                    except Exception:
+                        pass
+        except Exception as error:
+            logger.error(f"Error during read all item cost codes: {error}")
             raise map_database_error(error)
 
     def read_by_cost_code_id(self, cost_code_id: int) -> Optional[ItemCostCode]:

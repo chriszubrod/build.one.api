@@ -59,6 +59,31 @@ GO
 
 GO
 
+-- U-292: bulk read so callers resolving many QboItemIds in one pass (e.g. the
+-- invoice draw-financials cost-code seam) can preload this small table (~78 rows)
+-- once instead of one round trip per item.
+CREATE OR ALTER PROCEDURE ReadItemCostCodes
+AS
+BEGIN
+    BEGIN TRANSACTION;
+
+    SELECT
+        [Id],
+        [PublicId],
+        [RowVersion],
+        CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
+        CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
+        [CostCodeId],
+        [QboItemId]
+    FROM [qbo].[ItemCostCode];
+
+    COMMIT TRANSACTION;
+END;
+GO
+
+
+GO
+
 CREATE OR ALTER PROCEDURE ReadItemCostCodeByCostCodeId
 (
     @CostCodeId BIGINT

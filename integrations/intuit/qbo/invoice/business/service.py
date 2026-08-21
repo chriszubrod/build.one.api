@@ -33,6 +33,9 @@ class QboInvoiceService:
         """Initialize the QboInvoiceService."""
         self.repo = repo or QboInvoiceRepository()
         self.line_repo = line_repo or QboInvoiceLineRepository()
+        # Lazily built by _ensure_cost_code_index() — see that method for why.
+        self._qbo_item_by_qbo_id: Optional[dict] = None
+        self._cost_code_by_qbo_item_id: Optional[dict] = None
 
     def sync_from_qbo(
         self,
@@ -459,3 +462,109 @@ class QboInvoiceService:
         Read all QboInvoiceLines for a QboInvoice.
         """
         return self.line_repo.read_by_qbo_invoice_id(qbo_invoice_id)
+
+    def cost_coded_lines_for_invoice(self, invoice_id: int) -> List[tuple]:
+        """
+        (cost_code_number, cost_code_name, amount) triples for a LOCAL dbo Invoice's
+        mapped QBO lines, resolved by ID (QboItem -> ItemSubCostCode -> SubCostCode ->
+        CostCode) — never by parsing the QBO Item's display name/hierarchy. A line
+        whose item has no resolvable cost code comes back as ("", "Uncoded", amount)
+        so callers can still foot a column to the invoice total. SubTotal restatement
+        lines and lines with no amount are skipped. Returns [] when the invoice has
+        no QBO mapping or no lines (U-292 — the dbo-native seam draw_financials.py
+        consumes in place of its former ItemRefName parser).
+        """
+        from integrations.intuit.qbo.invoice.connector.invoice.persistence.repo import (
+            InvoiceInvoiceRepository,
+        )
+
+        mapping = InvoiceInvoiceRepository().read_by_invoice_id(invoice_id)
+        if not mapping or not mapping.qbo_invoice_id:
+            return []
+        lines = self.line_repo.read_by_qbo_invoice_id(mapping.qbo_invoice_id)
+        if not lines:
+            return []
+
+        triples: List[tuple] = []
+        for line in lines:
+            if (line.detail_type or "") == "SubTotalLineDetail":
+                continue
+            if line.amount is None:
+                continue
+            cost_code = self._resolve_cost_code_for_qbo_item_ref(line.item_ref_value)
+            number, name = cost_code if cost_code else ("", "Uncoded")
+            triples.append((number, name, line.amount))
+        return triples
+
+    def _resolve_cost_code_for_qbo_item_ref(self, qbo_item_ref_value: Optional[str]):
+        """(cost_code_number, cost_code_name) for a QBO Item reference value, resolved
+        by ID rather than by parsing the item's display name/hierarchy — via the
+        in-memory index built once by _ensure_cost_code_index(). None when no live
+        QboItem or no resolvable cost code — caller falls back to the Uncoded bucket."""
+        if not qbo_item_ref_value:
+            return None
+        self._ensure_cost_code_index()
+        qbo_item_id = self._qbo_item_by_qbo_id.get(qbo_item_ref_value)
+        if qbo_item_id is None:
+            return None
+        return self._cost_code_by_qbo_item_id.get(qbo_item_id)
+
+    def _ensure_cost_code_index(self) -> None:
+        """Build the (qbo_item_id -> cost code) index from 5 small bulk reads, once
+        per instance. Both maps are assigned together at the end so a mid-build
+        exception (e.g. a transient connection drop) never leaves the instance
+        half-initialized — the guard below checks only _qbo_item_by_qbo_id, so a
+        partial assignment would otherwise look "done" on a hypothetical future
+        retry and crash the next lookup on the still-None second map.
+
+        Most invoice lines carry a SubCostCode-level Item (qbo.Item ->
+        qbo.ItemSubCostCode -> dbo.SubCostCode -> dbo.CostCode); some carry a
+        CostCode-level-only Item with no SubCostCode granularity (e.g. "Initial
+        Deposit"), mapped directly via qbo.ItemCostCode instead — indexed as a
+        fallback so that class isn't silently dropped to Uncoded (found by the
+        U-292 equivalence proof against real invoice lines). The fallback applies
+        whenever the SubCostCode-level mapping doesn't actually resolve (absent,
+        or pointing at a dangling/non-numeric row) — checked by resolved VALUE,
+        not by row presence, so a broken SubCostCode-level mapping can't shadow a
+        perfectly good CostCode-level one for the same item. A resolved CostCode
+        whose Number has no leading digit (the 2 QBO-admin pseudo-codes
+        'Hours'/'Sales' — not real job-cost categories) is indexed as unresolved,
+        matching the prior ItemRefName parser's behavior exactly (it only ever
+        recognized a numeric-prefixed cost code)."""
+        if self._qbo_item_by_qbo_id is not None:
+            return
+
+        from integrations.intuit.qbo.item.persistence.repo import QboItemRepository
+        from integrations.intuit.qbo.item.connector.sub_cost_code.persistence.repo import (
+            ItemSubCostCodeRepository,
+        )
+        from integrations.intuit.qbo.item.connector.cost_code.persistence.repo import (
+            ItemCostCodeRepository,
+        )
+        from entities.sub_cost_code.business.service import SubCostCodeService
+        from entities.cost_code.business.service import CostCodeService
+
+        def _numeric_result(cost_code):
+            if not cost_code or not (cost_code.number or "")[:1].isdigit():
+                return None
+            return (cost_code.number, cost_code.name)
+
+        qbo_item_by_qbo_id = {
+            item.qbo_id: item.id for item in QboItemRepository().read_all() if item.qbo_id
+        }
+        sub_cost_code_by_id = {scc.id: scc for scc in SubCostCodeService().read_all()}
+        cost_code_by_id = {cc.id: cc for cc in CostCodeService().read_all()}
+
+        index: dict = {}
+        for mapping in ItemSubCostCodeRepository().read_all():
+            sub_cost_code = sub_cost_code_by_id.get(mapping.sub_cost_code_id)
+            cost_code = cost_code_by_id.get(sub_cost_code.cost_code_id) if sub_cost_code else None
+            index[mapping.qbo_item_id] = _numeric_result(cost_code)
+        for mapping in ItemCostCodeRepository().read_all():
+            if index.get(mapping.qbo_item_id) is not None:
+                continue  # a RESOLVED SubCostCode-level mapping for the same item takes precedence
+            cost_code = cost_code_by_id.get(mapping.cost_code_id)
+            index[mapping.qbo_item_id] = _numeric_result(cost_code)
+
+        self._qbo_item_by_qbo_id = qbo_item_by_qbo_id
+        self._cost_code_by_qbo_item_id = index

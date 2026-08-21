@@ -14,9 +14,11 @@ was never entered on its coded invoice still reconciles.
 
 `all_draws_for_project` (U-271) additionally surfaces EARLY/historical draws whose
 cost codes live only in QBO — invoices migrated in as all-`Manual` lines (no local
-source FKs) whose QBO invoice lines still carry the cost-code Item hierarchy in
-`ItemRefName`. It is used by the Trend so every historical pay application is a
-column; G702/G703 keep consuming `coded_draws_for_project` (coded draws only).
+source FKs), rolled up via `QboInvoiceService.cost_coded_lines_for_invoice` (U-292),
+the dbo-native seam that resolves each QBO invoice line's cost code by ID (QboItem ->
+ItemSubCostCode -> SubCostCode -> CostCode) rather than parsing the QBO Item's display
+name. It is used by the Trend so every historical pay application is a column;
+G702/G703 keep consuming `coded_draws_for_project` (coded draws only).
 """
 
 from __future__ import annotations
@@ -58,37 +60,6 @@ def _group_into_categories(items) -> tuple:
     return categories, subtotal
 
 
-def _norm_cc_number(number) -> str:
-    """Normalize a cost-code number for cross-format matching: strip leading zeros per
-    dot segment. '02.1' -> '2.1', '09' -> '9', '' -> ''. Empty when unparseable."""
-    if number is None:
-        return ""
-    s = str(number).strip()
-    if not s:
-        return ""
-    return ".".join((p.lstrip("0") or "0") for p in s.split("."))
-
-
-def _cc_number_from_itemref(item_ref_name) -> Optional[str]:
-    """Cost code implied by a QBO Item-hierarchy name. The Item hierarchy is
-    ``Parent:Child`` and the PARENT (left of the first ':') is the cost code:
-    ``'02 Dumpsters:02.1 Dumpsters'`` -> normalized ``'2'``. Returns None when the
-    parent is not a ``'<number> <name>'`` cost-code item (a genuinely uncoded line ->
-    the 'Uncoded' bucket).
-
-    The number MUST be followed by whitespace so a non-cost-code line that merely
-    starts with digits — e.g. a split ``'5% markup for Demo'`` line — is NOT misread
-    as cost code 5. Parses the ItemRefName STRING rather than the `qbo.ItemSubCostCode`
-    mapping table, which is known-unreliable (it maps '02 Dumpsters' to CostCode 09) —
-    the name is self-describing and correct.
-    """
-    if not item_ref_name:
-        return None
-    parent = str(item_ref_name).split(":", 1)[0].strip()
-    match = re.match(r"^(\d+(?:\.\d+)?)\s", parent)
-    return _norm_cc_number(match.group(1)) if match else None
-
-
 def _reissue_base_label(label: str) -> str:
     """Base draw number shared by a re-issued draw and its original: a label ending in
     TWO ``-N`` segments collapses to the first ('MR2-MAIN-04-2' -> 'MR2-MAIN-04'). A
@@ -97,9 +68,10 @@ def _reissue_base_label(label: str) -> str:
 
 
 class DrawFinancialsService:
-    def __init__(self, invoice_service=None, line_item_service=None):
+    def __init__(self, invoice_service=None, line_item_service=None, qbo_invoice_service=None):
         self._invoice_service = invoice_service
         self._line_item_service = line_item_service
+        self._qbo_invoice_svc = qbo_invoice_service
 
     def _invoices(self):
         if self._invoice_service is None:
@@ -112,6 +84,17 @@ class DrawFinancialsService:
             from entities.invoice_line_item.business.service import InvoiceLineItemService
             self._line_item_service = InvoiceLineItemService()
         return self._line_item_service
+
+    def _qbo_invoice_service(self):
+        # Reused across every invoice in a coded_draws_for_project/all_draws_for_project
+        # call so QboInvoiceService's own internal cost-code cache amortizes across the
+        # whole project instead of resolving the same recurring QBO item from scratch
+        # per invoice (U-292 — the DB round-trip count that surfaced during equivalence
+        # testing against a real, many-invoice project).
+        if self._qbo_invoice_svc is None:
+            from integrations.intuit.qbo.invoice.business.service import QboInvoiceService
+            self._qbo_invoice_svc = QboInvoiceService()
+        return self._qbo_invoice_svc
 
     def _project_invoices(self, project_id: int):
         invoices = self._invoices().read_paginated(
@@ -189,7 +172,7 @@ class DrawFinancialsService:
 
         Superset of ``coded_draws_for_project``: a coded draw is taken as-is; an
         all-Manual (early/migrated) invoice is instead rolled up from its QBO invoice
-        lines (cost code parsed from ``ItemRefName``), UNLESS its (date, total) matches
+        lines via the dbo-native cost-code seam, UNLESS its (date, total) matches
         an already-selected coded draw — that is a QBO-pull mirror duplicate (e.g.
         MR2-MAIN-05-2 mirrors the coded MR2-MAIN-05) and is dropped. Finally, same-draw
         re-issues (MR2-MAIN-04 + MR2-MAIN-04-2) merge into one column.
@@ -199,11 +182,6 @@ class DrawFinancialsService:
         """
         if not project_id:
             return []
-        from entities.cost_code.business.service import CostCodeService
-
-        cc_by_norm = {
-            _norm_cc_number(cc.number): cc for cc in CostCodeService().read_all()
-        }
 
         # First pass takes every coded draw (and records its identity); manual/uncoded
         # invoices are held for the QBO-derived pass so a mirror can be tested against
@@ -227,7 +205,7 @@ class DrawFinancialsService:
             key = self._invoice_key(inv)
             if key in seen:
                 continue  # mirror of a coded (or earlier manual) draw — skip
-            derived = self._qbo_derived_draw(inv, cc_by_norm)
+            derived = self._qbo_derived_draw(inv)
             if derived is None:
                 continue
             seen.add(key)
@@ -246,40 +224,19 @@ class DrawFinancialsService:
             _as_decimal(invoice.total_amount).quantize(Decimal("0.01")),
         )
 
-    def _qbo_derived_draw(self, invoice, cc_by_norm) -> Optional[dict]:
-        """Roll up an all-Manual invoice from its QBO staging lines: each line's cost
-        code comes from ``ItemRefName`` (parent of the Item hierarchy) resolved to a
-        local CostCode; lines with no resolvable cost code (e.g. split markup lines,
-        which carry no Item) fall into a single 'Uncoded' row so the column foots to
-        the invoice total. Returns None when the invoice has no QBO mapping/lines.
+    def _qbo_derived_draw(self, invoice) -> Optional[dict]:
+        """Roll up an all-Manual invoice from its QBO-mapped lines via the dbo-native
+        cost-code seam (``QboInvoiceService.cost_coded_lines_for_invoice``, U-292) —
+        each line's cost code is resolved by ID (QboItem -> ItemSubCostCode ->
+        SubCostCode -> CostCode), not by parsing the QBO Item's display name; lines
+        with no resolvable cost code (e.g. split markup lines, which carry no Item)
+        fall into a single 'Uncoded' row so the column foots to the invoice total.
+        Returns None when the invoice has no QBO mapping/lines.
 
         The historical draw's billed total already embeds any fee, so ``builders_fee``
         is 0 and ``subtotal == total`` (== sum of the QBO lines == the invoice total).
         """
-        from integrations.intuit.qbo.invoice.connector.invoice.persistence.repo import (
-            InvoiceInvoiceRepository,
-        )
-        from integrations.intuit.qbo.invoice.persistence.repo import QboInvoiceLineRepository
-
-        mapping = InvoiceInvoiceRepository().read_by_invoice_id(invoice.id)
-        if not mapping or not mapping.qbo_invoice_id:
-            return None
-        lines = QboInvoiceLineRepository().read_by_qbo_invoice_id(mapping.qbo_invoice_id)
-        if not lines:
-            return None
-
-        items = []  # (cost_code_number, cost_code_name, amount)
-        for ln in lines:
-            if (ln.detail_type or "") == "SubTotalLineDetail":
-                # A QBO subtotal line restates preceding lines — never sum it.
-                continue
-            if ln.amount is None:
-                continue
-            norm = _cc_number_from_itemref(ln.item_ref_name)
-            cc = cc_by_norm.get(norm) if norm else None
-            number, name = (cc.number, cc.name) if cc else ("", "Uncoded")
-            items.append((number, name, ln.amount))
-
+        items = self._qbo_invoice_service().cost_coded_lines_for_invoice(invoice.id)
         if not items:
             return None
         categories, subtotal = _group_into_categories(items)

@@ -10,6 +10,7 @@ from integrations.intuit.qbo.base.field_ownership import (
     raise_if_inactive_unmapped,
 )
 from integrations.intuit.qbo.base.identity_fastpath import (
+    raise_concurrent_write_race,
     resolve_mapping_state,
     run_identity_fastpath,
 )
@@ -116,6 +117,11 @@ class CustomerProjectConnector:
         # live-prod P0, because that path would either set_qbo_identity on a
         # DIFFERENT Project (whose theft-clear UPDATE nulls this one's identity)
         # or mint a duplicate.
+        # _apply_project_fields_and_sync raises internally (via
+        # raise_concurrent_write_race, U-291) on a ROWVERSION-race/concurrent-delete
+        # update failure — one guard inside the shared helper protects every caller
+        # (this fast path, and both legacy branches below) rather than each call
+        # site needing its own.
         outcome = run_identity_fastpath(
             qbo_id=qbo_customer.qbo_id,
             realm_id=qbo_customer.realm_id,
@@ -172,6 +178,7 @@ class CustomerProjectConnector:
                     description=project_description,
                     status=project_status,
                     customer_id=customer_id,
+                    path_label="legacy mapping-table path",
                 )
                 self.project_service.repo.set_qbo_identity(
                     id=int(updated.id),
@@ -226,6 +233,7 @@ class CustomerProjectConnector:
                         description=project_description,
                         status=project_status,
                         customer_id=customer_id,
+                        path_label="healed repoint",
                     )
                 # No replacement Project resolvable — a transient empty-read must NOT mint a
                 # duplicate. Do NOT delete the mapping, do NOT create a Project. Record a
@@ -328,18 +336,26 @@ class CustomerProjectConnector:
         description: str,
         status: str,
         customer_id: Optional[int],
+        path_label: str = "fast path",
     ) -> Project:
         """
         Write the QboCustomer-derived fields onto an existing Project, persist it,
-        and sync its addresses. Shared by the normal existing-mapping update path
-        and the heal-in-place repoint path so the QboCustomer->Project field mapping
-        lives in exactly one place (no drift between the two update sites).
+        and sync its addresses. Shared by the direct dbo-identity fast path, the
+        normal existing-mapping update path, and the heal-in-place repoint path so
+        the QboCustomer->Project field mapping lives in exactly one place (no drift
+        between the update sites) AND every one of them gets the same ROWVERSION-
+        race guard for free (U-291) — a caller cannot forget to check for a None
+        `update_by_id` return, because there is nothing to check: this method
+        raises instead of returning it. `path_label` names which caller hit the
+        race, for the log trail.
         """
         project.name = preserve_human_edited_name(project.name, name)
         project.description = description
         project.status = status
         project.customer_id = customer_id
         updated = self.project_service.repo.update_by_id(project)
+        if updated is None:
+            raise_concurrent_write_race(entity_label="Project", entity_id=project.id, path_label=path_label)
         self._sync_addresses(qbo_customer, updated.id)
         return updated
 

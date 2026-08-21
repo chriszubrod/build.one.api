@@ -8,6 +8,7 @@ from typing import Optional
 # Local Imports
 from integrations.intuit.qbo.base.drift_types import DRIFT_COMPANY_IDENTITY_CONFLICT
 from integrations.intuit.qbo.base.identity_fastpath import (
+    raise_concurrent_write_race,
     resolve_mapping_state,
     run_identity_fastpath,
 )
@@ -106,7 +107,7 @@ class CompanyInfoCompanyConnector:
                     f"Failed to update Company {entity.id} via fast path - "
                     f"update_by_id returned None (concurrent write race)"
                 )
-                raise ValueError("Failed to update Company")
+                raise_concurrent_write_race(entity_label="Company", entity_id=entity.id)
             return updated
 
         outcome = run_identity_fastpath(
@@ -223,12 +224,18 @@ class CompanyInfoCompanyConnector:
             # Update Company
             company.name = company_name
             company.website = company_website
+            company_id_before_update = company.id
             company = self.company_service.repo.update_by_id(company)
             if company:
                 logger.info(f"Successfully updated Company {company.id}. New ModifiedDatetime: {company.modified_datetime}")
             else:
+                # Same ROWVERSION race as the fast path's guard above (U-291).
                 logger.error(f"Failed to update Company - update_by_id returned None")
-                raise ValueError("Failed to update Company")
+                raise_concurrent_write_race(
+                    entity_label="Company",
+                    entity_id=company_id_before_update,
+                    path_label="legacy mapping-table path",
+                )
         else:
             # No existing Company found - create new one
             logger.info(f"No existing Company found. Creating new Company from QboCompanyInfo {qbo_company_info_id}")

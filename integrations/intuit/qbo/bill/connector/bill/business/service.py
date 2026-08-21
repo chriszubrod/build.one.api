@@ -38,7 +38,10 @@ from integrations.intuit.qbo.base.pull_race import guard_lines_present
 from integrations.intuit.qbo.base.compensation import rollback_orphan_header
 from integrations.intuit.qbo.base.field_ownership import preserve_human_edited_ref, qbo_ref_or_placeholder
 from integrations.intuit.qbo.base.identity_consistency import verify_project_qbo_identity
-from integrations.intuit.qbo.base.identity_fastpath import run_identity_fastpath
+from integrations.intuit.qbo.base.identity_fastpath import (
+    raise_concurrent_write_race,
+    run_identity_fastpath,
+)
 from integrations.intuit.qbo.base.ids import coerce_id
 from integrations.intuit.qbo.base.reconciliation_recorder import record_mapping_issue
 from integrations.intuit.qbo.reconciliation.persistence.repo import ReconciliationIssueRepository
@@ -157,12 +160,14 @@ class BillBillConnector:
             )
             if updated is None:
                 # ROWVERSION race: a concurrent writer touched this exact Bill
-                # between the read and this UPDATE, so it affected 0 rows.
+                # between the read and this UPDATE, so it affected 0 rows. Shared
+                # by both the fast path and the legacy "mapping found" branch
+                # below (line ~269), so both are fixed by this one guard (U-291).
                 logger.error(
                     f"Failed to update Bill {direct.id} from QboBill {qbo_bill.id} - "
                     f"update_by_public_id returned None (concurrent write race)"
                 )
-                raise ValueError(f"Failed to update Bill {direct.id}")
+                raise_concurrent_write_race(entity_label="Bill", entity_id=direct.id)
             bill_id = coerce_id(updated.id)
             # Bill/Expense carry SyncToken as part of their identity (unlike
             # Project/Company/BillCredit) — this re-stamp is NOT redundant even when

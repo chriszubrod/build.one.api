@@ -233,11 +233,19 @@ def test_fast_path_conflict_local_side_only_raises_no_duplicate_create():
     mapping_repo.create.assert_not_called()
 
 
-def test_fast_path_missing_write_race_returns_none_without_crashing():
+def test_fast_path_missing_write_race_raises_runtime_error():
     """If `direct` is deleted between read_by_qbo_identity and the write
     (repo.update_by_id returns None), the 'missing'-mapping branch must not crash
     trying coerce_id(None.id) — nor crash again inside its own except-handler's log
-    statement, which referenced the same None. Mirrors U-278's identical test."""
+    statement, which referenced the same None.
+
+    U-291: this connector is now migrated onto the shared run_identity_fastpath()
+    helper (U-287) — the 7th/last hand-rolled copy. Before the migration this
+    branch only logged a warning and let the None flow through as a silent
+    success; the migrated connector's on_apply_returned_none callback must raise
+    RuntimeError instead. Renamed from
+    test_fast_path_missing_write_race_returns_none_without_crashing, which
+    pinned the pre-migration silent behavior by name."""
     connector, mapping_repo, payment_term_service, _ = _build_term_connector()
     qbo_term = _make_qbo_term(id=30, qbo_id="T-99", realm_id="realm-1")
     direct_hit = SimpleNamespace(id=55, name="Net 30")
@@ -246,10 +254,28 @@ def test_fast_path_missing_write_race_returns_none_without_crashing():
     mapping_repo.read_by_payment_term_id.return_value = None
     mapping_repo.read_by_qbo_term_id.return_value = None
 
-    result = connector.sync_from_qbo_term(qbo_term)
+    with pytest.raises(RuntimeError, match="concurrent write race"):
+        connector.sync_from_qbo_term(qbo_term)
 
-    assert result is None
     mapping_repo.create.assert_not_called()
+
+
+def test_legacy_path_update_returns_none_raises_runtime_error():
+    """The legacy "mapping found" branch calls the SAME shared
+    `_apply_payment_term_fields` helper the fast path uses. Before U-291 it only
+    conditionally guarded the set_qbo_identity stamp and unconditionally
+    `return updated` (None) as success either way."""
+    connector, mapping_repo, payment_term_service, _ = _build_term_connector()
+    qbo_term = _make_qbo_term(id=30, qbo_id="T-99", realm_id="realm-1")
+    payment_term_service.read_by_qbo_identity.return_value = None  # fast path misses
+    existing_mapping = SimpleNamespace(id=1, payment_term_id=55, qbo_term_id=qbo_term.id)
+    mapping_repo.read_by_qbo_term_id.return_value = existing_mapping
+    existing_payment_term = SimpleNamespace(id=55, name="Net 30")
+    payment_term_service.read_by_id.return_value = existing_payment_term
+    payment_term_service.repo.update_by_id.return_value = None  # race: row gone on write
+
+    with pytest.raises(RuntimeError, match="concurrent write race"):
+        connector.sync_from_qbo_term(qbo_term)
 
 
 def test_fast_path_hit_self_heals_missing_mapping():
@@ -292,13 +318,41 @@ def test_fast_path_self_heal_race_escalates_to_recorded_conflict():
     assert result is direct_hit
 
 
-def test_fast_path_self_heal_race_recheck_not_conflict_stays_silent():
-    """Mirror of the escalation test above for the OTHER two recheck outcomes: if the
-    create() failure's re-check resolves to 'missing' (still no mapping, a genuinely
-    transient DB error) or 'consistent' (a concurrent sync already created the correct
-    mapping), no reconciliation issue should be recorded — only a 'conflict' recheck
-    escalates. Either non-conflict outcome self-heals naturally: 'missing' retries via
-    the next pull's fast-path re-check, 'consistent' means nothing left to do."""
+def test_fast_path_self_heal_race_recheck_consistent_stays_silent():
+    """Mirror of the escalation test above for the CONSISTENT recheck outcome:
+    create()'s failure re-check resolving to 'consistent' means a concurrent
+    sync already created the correct mapping — genuinely benign, nothing to
+    record or raise. (The OTHER non-conflict outcome, 'missing' on recheck, is
+    NOT benign — see test_fast_path_self_heal_race_recheck_still_missing_holds,
+    U-291 P2.)"""
+    connector, mapping_repo, payment_term_service, reconciliation_repo = _build_term_connector()
+    qbo_term = _make_qbo_term(id=30, qbo_id="T-99", realm_id="realm-1")
+    direct_hit = SimpleNamespace(id=55, name="Net 30")
+    payment_term_service.read_by_qbo_identity.return_value = direct_hit
+    payment_term_service.repo.update_by_id.return_value = direct_hit
+    mapping_repo.read_by_payment_term_id.side_effect = [
+        None, SimpleNamespace(id=5, qbo_term_id=qbo_term.id)
+    ]
+    mapping_repo.read_by_qbo_term_id.side_effect = [None]
+    mapping_repo.create.side_effect = Exception("UNIQUE constraint violation")
+
+    result = connector.sync_from_qbo_term(qbo_term)
+
+    reconciliation_repo.create.assert_not_called()
+    assert result is direct_hit
+
+
+def test_fast_path_self_heal_race_recheck_still_missing_holds():
+    """U-291 P2: create()'s failure re-check STILL showing no mapping on either
+    side (not a self-resolved race -> consistent, not an escalated conflict) is
+    a genuine unresolved failure — transient DB/network, not a duplicate-key
+    race. The field write already landed, but silently treating this as full
+    success left zero durable trace and a permanently-unmapped PaymentTerm (this
+    record won't be re-pulled again until QBO sees another change to it, so
+    "next tick" never comes). Must raise so this holds for retry instead.
+    Replaces the 'missing' half of
+    test_fast_path_self_heal_race_recheck_not_conflict_stays_silent, which
+    pinned the pre-fix (buggy) silent-success behavior for this half."""
     connector, mapping_repo, payment_term_service, reconciliation_repo = _build_term_connector()
     qbo_term = _make_qbo_term(id=30, qbo_id="T-99", realm_id="realm-1")
     direct_hit = SimpleNamespace(id=55, name="Net 30")
@@ -308,10 +362,10 @@ def test_fast_path_self_heal_race_recheck_not_conflict_stays_silent():
     mapping_repo.read_by_qbo_term_id.side_effect = [None, None]  # still missing on recheck
     mapping_repo.create.side_effect = Exception("transient deadlock")
 
-    result = connector.sync_from_qbo_term(qbo_term)
+    with pytest.raises(RuntimeError, match="TermPaymentTerm"):
+        connector.sync_from_qbo_term(qbo_term)
 
     reconciliation_repo.create.assert_not_called()
-    assert result is direct_hit
 
 
 def test_fast_path_hit_consistent_skips_mapping_write_and_identity_restamp():
@@ -331,6 +385,30 @@ def test_fast_path_hit_consistent_skips_mapping_write_and_identity_restamp():
     # Identity is already correct by construction on the fast path — must not re-stamp
     # (the row was found BY that exact identity; re-stamping is a wasted round trip on
     # the steady-state path this feature exists to keep cheap — mirrors U-276/278).
+    payment_term_service.repo.set_qbo_identity.assert_not_called()
+
+
+def test_fast_path_hit_consistent_update_returns_none_raises_runtime_error():
+    """U-291: the far more common steady-state case for an already-mapped
+    PaymentTerm (mirrors the equivalent customer/vendor/project regression
+    tests) — on_apply_returned_none must fire here too, not just on the rarer
+    'missing' self-heal window test_fast_path_missing_write_race_raises_runtime
+    _error covers. Before this connector's migration onto the shared helper,
+    run_identity_fastpath only invoked the callback when state == MISSING, so a
+    race on the 'consistent' path fell through with NO callback and NO
+    exception at all."""
+    connector, mapping_repo, payment_term_service, _ = _build_term_connector()
+    qbo_term = _make_qbo_term(id=30, qbo_id="T-99", realm_id="realm-1")
+    direct_hit = SimpleNamespace(id=55, name="Net 30")
+    payment_term_service.read_by_qbo_identity.return_value = direct_hit
+    payment_term_service.repo.update_by_id.return_value = None  # race: row gone on write
+    mapping_repo.read_by_payment_term_id.return_value = SimpleNamespace(id=1, qbo_term_id=30)
+    mapping_repo.read_by_qbo_term_id.return_value = SimpleNamespace(id=1, payment_term_id=55)
+
+    with pytest.raises(RuntimeError, match="concurrent write race"):
+        connector.sync_from_qbo_term(qbo_term)
+
+    mapping_repo.create.assert_not_called()
     payment_term_service.repo.set_qbo_identity.assert_not_called()
 
 

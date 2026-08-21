@@ -307,14 +307,26 @@ def test_self_heal_race_that_resolves_benignly_records_nothing():
     assert outcome.hit is True
 
 
-def test_mapping_create_failure_is_swallowed_not_propagated():
-    """The field write already succeeded; a mapping-create hiccup must not turn a
-    successful sync into a raised error."""
+def test_mapping_create_failure_with_unresolved_recheck_holds():
+    """U-291 P2: a create_mapping() failure whose re-check STILL shows no mapping
+    on either side (not a self-resolved race -> CONSISTENT, not an escalated
+    conflict -> CONFLICT) is a genuine unresolved failure — transient DB/network,
+    not a duplicate-key race. The field write already landed, but silently
+    treating this as full success left zero durable trace, and this record won't
+    be re-pulled again until QBO sees another change to it, so "next tick" would
+    never actually come — a permanently-unmapped entity with zero durable trace.
+    Must raise so record_projection_error holds it for retry instead. Replaces
+    test_mapping_create_failure_is_swallowed_not_propagated, which pinned the
+    pre-fix (buggy) silent-success behavior by name."""
     kwargs, spy = _harness(direct=SimpleNamespace(id=55))
     kwargs["read_by_local_id"] = Mock(side_effect=[None, None])
     kwargs["read_by_external_id"] = Mock(side_effect=[None, None])
     spy.create_mapping.side_effect = Exception("transient")
-    assert run_identity_fastpath(**kwargs).hit is True
+
+    with pytest.raises(RuntimeError, match="WidgetWidget"):
+        run_identity_fastpath(**kwargs)
+
+    spy.record.assert_not_called()
 
 
 # --- run_identity_fastpath: apply returned None ---------------------------
@@ -345,15 +357,38 @@ def test_apply_returning_none_without_a_callback_is_safe():
     spy.create_mapping.assert_not_called()
 
 
-def test_apply_returning_none_on_consistent_never_notifies():
-    """on_apply_returned_none is a 'missing'-path concern only — the consistent
-    path has no mapping row to create, so there is nothing to tell the caller."""
-    kwargs, spy = _harness(direct=SimpleNamespace(id=55), by_local=_mapping(1, 42))
+def test_apply_returning_none_on_consistent_now_notifies():
+    """U-291: on_apply_returned_none must fire on ANY apply_fields-returns-None
+    outcome, not just the 'missing' path. A ROWVERSION race is at least as
+    likely — if anything more likely — on the far more common 'consistent'
+    steady-state resync of an already-mapped record than on the rarer first-
+    mapping self-heal window this callback used to be scoped to. Before this
+    fix, a None here fell through with no callback, no exception: a silent
+    success (customer/vendor/vendorcredit's "fixed" RuntimeError-raising
+    callbacks were dead code for exactly this, the common case). Replaces
+    test_apply_returning_none_on_consistent_never_notifies, which pinned that
+    gap as intentional by name."""
+    direct = SimpleNamespace(id=55)
+    kwargs, spy = _harness(direct=direct, by_local=_mapping(1, 42))
     kwargs["apply_fields"] = Mock(return_value=None)
     kwargs["on_apply_returned_none"] = spy.on_none
+
     outcome = run_identity_fastpath(**kwargs)
-    spy.on_none.assert_not_called()
-    assert outcome.entity is None
+
+    spy.on_none.assert_called_once_with(direct)
+    spy.create_mapping.assert_not_called()
+    assert outcome.hit is True and outcome.entity is None
+
+
+def test_apply_returning_none_on_consistent_without_a_callback_is_safe():
+    """Mirrors test_apply_returning_none_without_a_callback_is_safe for the
+    'consistent' state — a family with no on_apply_returned_none must not crash
+    here either, regardless of mapping state."""
+    kwargs, spy = _harness(direct=SimpleNamespace(id=55), by_local=_mapping(1, 42))
+    kwargs["apply_fields"] = Mock(return_value=None)
+    outcome = run_identity_fastpath(**kwargs)
+    assert outcome.hit is True and outcome.entity is None
+    spy.create_mapping.assert_not_called()
 
 
 # --- run_identity_fastpath: the resolution-only (attachable) shape ---------

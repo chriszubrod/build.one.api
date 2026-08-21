@@ -201,6 +201,30 @@ def test_vendor_fast_path_hit_missing_apply_returns_none_raises_runtime_error():
     mapping_repo.create.assert_not_called()
 
 
+def test_vendor_fast_path_hit_consistent_apply_returns_none_raises_runtime_error():
+    """U-291: on_apply_returned_none must fire on the 'consistent' steady-state
+    resync too, not just the rarer 'missing' self-heal window above. Before this
+    fix, `run_identity_fastpath` only invoked the callback when state == MISSING
+    — on a CONSISTENT hit (the common case for an already-mapped Vendor,
+    exercised here via an existing mapping row) a None return fell through
+    silently, with NO callback and NO exception, regardless of what this
+    connector's own callback would have raised. Same wiring-isolation approach
+    as the MISSING test above (mocking _apply_vendor_fields_and_sync directly)."""
+    connector, mapping_repo, vendor_service, _ = _build_vendor_connector()
+    qbo_vendor = _make_qbo_vendor(id=1, qbo_id="QBO-V-1", realm_id="r1")
+    direct_hit = Mock(id=55, name="Acme Supply")
+    vendor_service.read_by_qbo_identity.return_value = direct_hit
+    mapping_repo.read_by_vendor_id.return_value = Mock(qbo_vendor_id=1)
+    mapping_repo.read_by_qbo_vendor_id.return_value = Mock(vendor_id=55)
+    connector._apply_vendor_fields_and_sync = Mock(return_value=None)
+
+    with pytest.raises(RuntimeError, match="dbo-identity fast path"):
+        connector.sync_from_qbo_vendor(qbo_vendor)
+
+    mapping_repo.create.assert_not_called()
+    vendor_service.repo.set_qbo_identity.assert_not_called()
+
+
 def test_vendor_fast_path_conflict_qbo_side_raises_and_writes_nothing():
     """Falling through on a conflict would update the CONFLICTING Vendor and call
     set_qbo_identity on it — SetVendorQboIdentity's theft-detection UPDATE applies

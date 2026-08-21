@@ -131,13 +131,15 @@ item 4) — own follow-on unit now that U-274 unblocked it. Two items surfaced b
   proof. Small unit, but it IS a watermark-semantics change: own Gate-1. NB the *hunt* that surfaced this
   initially proposed "raise ValueError to match company_info/physical_address" — which would have been the wrong
   fix for exactly this reason; check the classifier, don't pattern-match the siblings.
-- [ ] **Decide the disposition of the six now-production-dead `_resolve_mapping_state` wrappers.** After U-287 no
+- [ ] **Decide the disposition of the seven now-production-dead `_resolve_mapping_state` wrappers.** After U-287 no
   production call site invokes them — every connector goes through `run_identity_fastpath`, which calls the shared
   `resolve_mapping_state` directly. They were kept deliberately: ~20 existing U-276/277/278/279 tests call them
   by name, and keeping them let this unit prove equivalence with those suites UNCHANGED. Now that the helper has
   its own direct coverage (`tests/test_u287_identity_fastpath_helper.py`), either (a) delete the wrappers and
   repoint those tests at `resolve_mapping_state`, or (b) keep them as documented per-family seams. Judgment call,
-  not a defect — don't do it inside a unit that needs those suites as an equivalence baseline.
+  not a defect — don't do it inside a unit that needs those suites as an equivalence baseline. (U-291, 2026-08-21:
+  `term`/PaymentTerm migrated onto the shared helper too — the 7th and last hand-rolled copy — so its own
+  `_resolve_mapping_state` wrapper joined the other six; same disposition question, same test-seam rationale.)
 
 ## U-271 follow-ups (Trend spans all historical pay applications) — deferred from the two-pass review
 

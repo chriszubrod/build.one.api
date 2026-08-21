@@ -306,6 +306,29 @@ def test_customer_fast_path_hit_consistent_skips_mapping_table_write():
     customer_service.create.assert_not_called()
 
 
+def test_customer_fast_path_hit_consistent_update_returns_none_raises_runtime_error():
+    """U-291: on_apply_returned_none must fire on the 'consistent' steady-state
+    resync too, not just the rarer 'missing' self-heal window
+    test_u287_identity_fastpath_helper.py's
+    test_customer_connector_update_race_holds_the_watermark already covers.
+    Before this fix, `run_identity_fastpath` only invoked the callback when
+    state == MISSING — on a CONSISTENT hit (the common case for an
+    already-mapped Customer, exercised here via an existing mapping row) a
+    ROWVERSION race fell through silently, with NO callback and NO exception."""
+    connector, mapping_repo, customer_service, _ = _build_customer_connector()
+    qbo_customer = _make_qbo_customer(qbo_id="C-99", realm_id="realm-1")
+    direct_hit = SimpleNamespace(id=55, name="Acme", email="", phone="")
+    customer_service.read_by_qbo_identity.return_value = direct_hit
+    customer_service.repo.update_by_id.return_value = None  # race: row gone on write
+    mapping_repo.read_by_customer_id.return_value = SimpleNamespace(id=1, qbo_customer_id=qbo_customer.id)
+    mapping_repo.read_by_qbo_customer_id.return_value = SimpleNamespace(id=1, customer_id=55)
+
+    with pytest.raises(RuntimeError, match="concurrent write race"):
+        connector.sync_from_qbo_customer(qbo_customer)
+
+    mapping_repo.create.assert_not_called()
+
+
 def test_customer_fast_path_miss_falls_back_to_mapping_table_path():
     """No qbo_id on the incoming record (or no dbo row carries it yet) -> the
     pre-existing mapping-table-based logic must still run, untouched."""
@@ -544,6 +567,99 @@ def test_project_fast_path_miss_falls_back_to_mapping_table_path():
     project_service.read_by_qbo_identity.assert_called_once_with("P-1", "realm-1")
     assert result is created
     project_service.create.assert_called_once()
+
+
+def test_project_fast_path_hit_missing_update_returns_none_raises_runtime_error():
+    """U-291: before this fix, ProjectConnector passed no on_apply_returned_none
+    at all — a ROWVERSION race on this branch accidentally held only because
+    `_apply_project_fields_and_sync` crashed with AttributeError on `.id`
+    access (record_projection_error's rule 3, correct by accident not design).
+    This is now an explicit, designed RuntimeError raise instead — and
+    `_apply_project_fields_and_sync`'s own None-guard means `_sync_addresses`
+    (this connector's proof apply_fields actually ran, see the vendor sibling's
+    equivalent comment) must NOT fire on a race."""
+    connector, mapping_repo, project_service, _ = _build_project_connector()
+    qbo_customer = _make_qbo_customer(qbo_id="P-1", realm_id="realm-1", is_job=True)
+    direct_hit = SimpleNamespace(id=88, name="Proj X", description="", status="active", customer_id=None)
+    project_service.read_by_qbo_identity.return_value = direct_hit
+    project_service.repo.update_by_id.return_value = None  # race: row gone on write
+    mapping_repo.read_by_project_id.return_value = None  # state == "missing"
+    mapping_repo.read_by_qbo_customer_id.return_value = None
+
+    with pytest.raises(RuntimeError, match="concurrent write race"):
+        connector.sync_from_qbo_customer(qbo_customer)
+
+    mapping_repo.create.assert_not_called()
+    connector._sync_addresses.assert_not_called()
+
+
+def test_project_fast_path_hit_consistent_update_returns_none_raises_runtime_error():
+    """U-291: the far more common steady-state case for an already-mapped
+    Project — before this fix, `run_identity_fastpath` only invoked
+    on_apply_returned_none when state == MISSING, so a race here (state ==
+    "consistent", exercised via an existing mapping row) fell through with NO
+    callback and NO exception at all, regardless of ProjectConnector having one
+    wired."""
+    connector, mapping_repo, project_service, _ = _build_project_connector()
+    qbo_customer = _make_qbo_customer(qbo_id="P-1", realm_id="realm-1", is_job=True)
+    direct_hit = SimpleNamespace(id=88, name="Proj X", description="", status="active", customer_id=None)
+    project_service.read_by_qbo_identity.return_value = direct_hit
+    project_service.repo.update_by_id.return_value = None  # race: row gone on write
+    mapping_repo.read_by_project_id.return_value = SimpleNamespace(id=2, qbo_customer_id=qbo_customer.id)
+    mapping_repo.read_by_qbo_customer_id.return_value = SimpleNamespace(id=2, project_id=88)
+
+    with pytest.raises(RuntimeError, match="concurrent write race"):
+        connector.sync_from_qbo_customer(qbo_customer)
+
+    mapping_repo.create.assert_not_called()
+    connector._sync_addresses.assert_not_called()
+
+
+def test_project_legacy_existing_mapping_update_returns_none_raises_runtime_error():
+    """The legacy "mapping found, Project resolved" branch calls the SAME
+    shared `_apply_project_fields_and_sync` helper the fast path uses. Before
+    U-291's None-guard on that helper, a None return crashed on `.id` access
+    one line later inside this branch (an accidental, not designed, hold) —
+    now an explicit raise."""
+    connector, mapping_repo, project_service, _ = _build_project_connector()
+    qbo_customer = _make_qbo_customer(qbo_id="P-1", realm_id="realm-1", is_job=True)
+    project_service.read_by_qbo_identity.return_value = None  # fast path misses
+    existing_mapping = SimpleNamespace(id=2, project_id=88, qbo_customer_id=qbo_customer.id)
+    mapping_repo.read_by_qbo_customer_id.return_value = existing_mapping
+    existing_project = SimpleNamespace(
+        id=88, name="Proj X", description="", status="active", customer_id=None
+    )
+    project_service.read_by_id.return_value = existing_project
+    project_service.repo.update_by_id.return_value = None  # race: row gone on write
+
+    with pytest.raises(RuntimeError, match="concurrent write race"):
+        connector.sync_from_qbo_customer(qbo_customer)
+
+    project_service.repo.set_qbo_identity.assert_not_called()
+
+
+def test_project_legacy_healed_repoint_update_returns_none_raises_runtime_error():
+    """The legacy "mapping exists but bound Project missing, healed by name
+    match" branch also calls the shared `_apply_project_fields_and_sync`
+    helper as its own RETURN statement — before U-291 this would have returned
+    None straight through to the caller as a silent success (project_records
+    counts a None return as a projected SUCCESS), not even the accidental
+    crash-to-hold the OTHER legacy branch got."""
+    connector, mapping_repo, project_service, _ = _build_project_connector()
+    qbo_customer = _make_qbo_customer(qbo_id="P-1", realm_id="realm-1", is_job=True, display_name="Proj X")
+    project_service.read_by_qbo_identity.return_value = None  # fast path misses
+    stale_mapping = SimpleNamespace(id=2, project_id=88, qbo_customer_id=qbo_customer.id)
+    mapping_repo.read_by_qbo_customer_id.return_value = stale_mapping
+    project_service.read_by_id.return_value = None  # bound Project missing
+    replacement = SimpleNamespace(
+        id=88, name="Proj X", description="", status="active", customer_id=None
+    )
+    project_service.read_by_name.return_value = replacement
+    mapping_repo.read_by_project_id.return_value = None  # replacement unbound
+    project_service.repo.update_by_id.return_value = None  # race: row gone on write
+
+    with pytest.raises(RuntimeError, match="concurrent write race"):
+        connector.sync_from_qbo_customer(qbo_customer)
 
 
 # --- Section 4: push-helper repoints (Bill / Purchase / Invoice) ---

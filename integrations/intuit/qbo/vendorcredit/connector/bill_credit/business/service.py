@@ -23,6 +23,7 @@ from integrations.intuit.qbo.base.compensation import rollback_orphan_header
 from integrations.intuit.qbo.base.reconciliation_recorder import record_mapping_issue
 from integrations.intuit.qbo.base.field_ownership import preserve_human_edited_ref, qbo_ref_or_placeholder
 from integrations.intuit.qbo.base.identity_fastpath import (
+    raise_concurrent_write_race,
     resolve_mapping_state,
     run_identity_fastpath,
 )
@@ -112,20 +113,15 @@ class VendorCreditBillCreditConnector:
             # theft-detection UPDATE would then silently NULL `direct`'s identity, and a
             # local-side-only conflict could additionally mint a duplicate BillCredit via
             # Step 3 CREATE. See the raise below for the full rationale.
-            def _on_update_empty(entity: BillCredit) -> None:
-                # `direct` read empty on write — BillCreditService
-                # .update_by_public_id re-reads and returns None rather than
-                # raising when the row is gone, unlike the repo-level
-                # update_by_id the legacy path below uses. Likely a
-                # concurrent delete between our read_by_qbo_identity fetch
-                # and this write. Nothing to map or stamp; let this tick skip
-                # and the next pull heal naturally (transient).
-                logger.warning(
-                    f"BillCredit {entity.id} read empty on write (direct-identity "
-                    f"fast path) for QboVendorCredit {qbo_vc.id} — likely a "
-                    f"concurrent delete; skipping this tick."
-                )
-
+            # _apply_bill_credit_fields_and_sync raises internally (via
+            # raise_concurrent_write_race, U-291) on a ROWVERSION-race/concurrent-delete
+            # update failure — one guard inside the shared helper protects every caller
+            # (this fast path, and the legacy branch below) rather than each call site
+            # needing its own. Replaces this connector's own pre-migration behavior,
+            # which only logged a warning and let the None flow through as a silent
+            # success (`FastPathOutcome(hit=True, entity=None)`, which the caller
+            # returned straight through to project_records — counted as a projected
+            # SUCCESS with the BillCredit never actually written).
             outcome = run_identity_fastpath(
                 qbo_id=qbo_vc.qbo_id,
                 realm_id=qbo_vc.realm_id,
@@ -163,7 +159,6 @@ class VendorCreditBillCreditConnector:
                     credit_number=credit_number,
                     qbo_lines=qbo_lines,
                 ),
-                on_apply_returned_none=_on_update_empty,
             )
             if outcome.hit:
                 return outcome.entity
@@ -226,13 +221,13 @@ class VendorCreditBillCreditConnector:
                     vendor_public_id=vendor_public_id,
                     credit_number=credit_number,
                     qbo_lines=qbo_lines,
+                    path_label="legacy mapping-table path",
                 )
-                if updated:
-                    self.bill_credit_service.repo.set_qbo_identity(
-                        id=coerce_id(updated.id),
-                        qbo_id=qbo_vc.qbo_id,
-                        realm_id=qbo_vc.realm_id,
-                    )
+                self.bill_credit_service.repo.set_qbo_identity(
+                    id=coerce_id(updated.id),
+                    qbo_id=qbo_vc.qbo_id,
+                    realm_id=qbo_vc.realm_id,
+                )
                 return updated
 
             # Step 3: Create new BillCredit
@@ -295,13 +290,18 @@ class VendorCreditBillCreditConnector:
         vendor_public_id: str,
         credit_number: str,
         qbo_lines: List[QboVendorCreditLine],
-    ) -> Optional[BillCredit]:
+        path_label: str = "fast path",
+    ) -> BillCredit:
         """
         Write the QboVendorCredit-derived fields onto an existing BillCredit, persist it,
         and sync its line items. Shared by the direct dbo-identity fast path (U-278) and
         the existing mapping-table update path so the QboVendorCredit -> BillCredit field
-        mapping lives in exactly one place (no drift between the two update sites) —
-        mirrors CustomerProjectConnector._apply_project_fields_and_sync (U-276).
+        mapping lives in exactly one place (no drift between the two update sites) AND
+        both get the same ROWVERSION-race guard for free (U-291): a None
+        `update_by_public_id` return is raised here, not returned, so a caller cannot
+        forget to check for it. `path_label` names which caller hit the race, for the
+        log trail. Mirrors CustomerProjectConnector._apply_project_fields_and_sync
+        (U-276).
 
         Deliberately does NOT stamp dbo-native identity — the fast-path caller's row
         already carries it by construction (that's how `read_by_qbo_identity` found it in
@@ -333,8 +333,11 @@ class VendorCreditBillCreditConnector:
             total_amount=to_decimal_or_none(qbo_vc.total_amt),
             memo=qbo_vc.private_note,
         )
-        if updated:
-            self._sync_line_items(updated.id, updated.public_id, qbo_lines, qbo_vc.realm_id)
+        if updated is None:
+            raise_concurrent_write_race(
+                entity_label="BillCredit", entity_id=bill_credit.id, path_label=path_label
+            )
+        self._sync_line_items(updated.id, updated.public_id, qbo_lines, qbo_vc.realm_id)
         return updated
 
     def _resolve_mapping_state(self, *, bill_credit_id: int, qbo_vc: QboVendorCredit):

@@ -291,10 +291,16 @@ def test_bill_fast_path_self_heal_race_escalates_to_recorded_conflict():
     assert result is updated
 
 
-def test_bill_fast_path_update_returns_none_raises_value_error():
+def test_bill_fast_path_update_returns_none_raises_runtime_error():
     """ROWVERSION race: a concurrent writer touched the fast-path-matched Bill
     between the read and this UPDATE, so update_by_public_id() affects 0 rows
-    and returns None. Must raise cleanly, not propagate a bare None onward."""
+    and returns None. Must raise cleanly, not propagate a bare None onward.
+
+    RuntimeError, deliberately NOT ValueError (U-291): a ROWVERSION race is
+    transient, not a permanent data problem — record_projection_error's rule 2
+    classifies a plain ValueError as a permanent SKIP, which would advance the
+    watermark past this record anyway. Was ValueError pre-U-291; renamed from
+    test_bill_fast_path_update_returns_none_raises_value_error."""
     connector, mapping_repo, bill_service, _ = _build_bill_connector()
     qbo_bill = _make_qbo_bill(qbo_id="BILL-99", realm_id="realm-1")
     direct_hit = SimpleNamespace(id=55, public_id="pub-55", bill_number="B-1", row_version="rv-55")
@@ -303,10 +309,30 @@ def test_bill_fast_path_update_returns_none_raises_value_error():
     mapping_repo.read_by_bill_id.return_value = SimpleNamespace(id=1, qbo_bill_id=qbo_bill.id)
     mapping_repo.read_by_qbo_bill_id.return_value = SimpleNamespace(id=1, bill_id=55)
 
-    with pytest.raises(ValueError, match="Failed to update Bill"):
+    with pytest.raises(RuntimeError, match="Failed to update Bill"):
         connector.sync_from_qbo_bill(qbo_bill, _ONE_LINE)
 
     bill_service.repo.set_qbo_identity.assert_not_called()
+
+
+def test_bill_legacy_path_update_returns_none_raises_runtime_error():
+    """The legacy "mapping found" branch (sync_from_qbo_bill's Step ~230) calls
+    the SAME shared `_apply_bill_fields` closure the fast path uses — one fix
+    covers both call sites by construction, but pin it explicitly since it's a
+    genuinely different code path (proves no duplicated/diverging update logic
+    reintroduces the gap, mirroring
+    test_bill_fast_path_miss_falls_back_to_legacy_mapping_table_path's setup)."""
+    connector, mapping_repo, bill_service, _ = _build_bill_connector()
+    qbo_bill = _make_qbo_bill(qbo_id="BILL-99", realm_id="realm-1")
+    bill_service.read_by_qbo_identity.return_value = None  # fast path misses
+    existing_mapping = SimpleNamespace(id=1, bill_id=55, qbo_bill_id=qbo_bill.id)
+    mapping_repo.read_by_qbo_bill_id.return_value = existing_mapping
+    existing_bill = SimpleNamespace(id=55, public_id="pub-55", bill_number="B-1", row_version="rv-55")
+    bill_service.read_by_id.return_value = existing_bill
+    bill_service.update_by_public_id.return_value = None
+
+    with pytest.raises(RuntimeError, match="Failed to update Bill"):
+        connector.sync_from_qbo_bill(qbo_bill, _ONE_LINE)
 
 
 def test_bill_fast_path_miss_falls_back_to_legacy_mapping_table_path():

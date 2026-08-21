@@ -99,6 +99,36 @@ def resolve_mapping_state(
     return CONFLICT, by_local, by_external
 
 
+def raise_concurrent_write_race(*, entity_label: str, entity_id, path_label: str = "fast path") -> None:
+    """
+    Raise the standard "apply_fields returned None" exception (U-291).
+
+    Always RuntimeError, deliberately NOT ValueError: a ROWVERSION race
+    (concurrent edit) or a concurrent delete between the identity read and the
+    write is transient, not a permanent data problem. `record_projection_error`'s
+    rule 2 classifies a plain ValueError as a permanent SKIP, which would
+    advance the watermark past this record anyway — the exact outcome this
+    raise exists to prevent. Rule 3 sends everything else (including
+    RuntimeError) to failure/hold, which is correct here.
+
+    `record_projection_error` classifies purely by exception type, not message
+    text, so the message itself carries no functional weight — this exists only
+    to give every family ONE call instead of a hand-copied raise, each with its
+    own near-identical rationale comment.
+
+    Call this from inside a family's shared apply-fields write helper (the
+    function passed as `apply_fields=` below, e.g. `_apply_bill_fields`), not
+    from a per-call-site guard — so every caller of that helper (fast path,
+    legacy mapping-table path, any self-heal/repoint path) gets the guard for
+    free and cannot forget to check for a None return. `path_label` names which
+    caller hit it, for the log trail; the ONE guard still lives in ONE place.
+    """
+    raise RuntimeError(
+        f"Failed to update {entity_label} {entity_id} via {path_label} - update "
+        f"returned None (concurrent write race); holding for retry."
+    )
+
+
 @dataclass(frozen=True)
 class FastPathOutcome:
     """
@@ -163,8 +193,13 @@ def run_identity_fastpath(
         apply_fields: `(direct) -> Optional[entity]` writing the QBO-derived fields.
             Omit for a caller that only wants identity resolution and does its own
             downstream work (attachable).
-        on_apply_returned_none: called with `direct` when `apply_fields` returned None
-            on the "missing" path — there is no row to map or stamp.
+        on_apply_returned_none: called with `direct` whenever `apply_fields` returns
+            None — a ROWVERSION race (concurrent edit) or a concurrent delete.
+            Fires regardless of mapping state (U-291): a race is at least as likely
+            on the "consistent" steady-state resync of an already-mapped record as
+            on the rarer "missing" self-heal window this used to be scoped to, and
+            in the "consistent" case there is no create_mapping step to fall back
+            on to catch it, so a caller that cares must raise from this callback.
 
     Returns:
         FastPathOutcome.
@@ -214,16 +249,25 @@ def run_identity_fastpath(
         )
         updated = apply_fields(direct)
 
-    if state == MISSING:
-        if updated is None:
-            # Nothing to map or stamp — the caller's update found the row gone.
-            # Callers that must not let this pass silently supply the callback and
-            # raise from it; see CustomerCustomerConnector._on_update_empty for why
-            # a silent return here can wrongly advance a watermark.
-            if on_apply_returned_none is not None:
-                on_apply_returned_none(direct)
-            return FastPathOutcome(hit=True, entity=None)
+    if updated is None:
+        # Nothing to map or stamp — the caller's update found the row gone (a
+        # ROWVERSION race or a concurrent delete). This check used to live inside
+        # `if state == MISSING`, so it only ever fired on the rare first-mapping
+        # self-heal window; on the far more common "consistent" steady-state
+        # resync of an already-mapped record — where a race is, if anything, MORE
+        # likely — a None here fell straight through to `return
+        # FastPathOutcome(hit=True, entity=None)` below with no callback, no
+        # exception, nothing (U-291). Checking here, before the state branch,
+        # makes the callback fire on every apply-returned-None outcome regardless
+        # of mapping state. Callers that must not let this pass silently supply
+        # the callback and raise from it — see CustomerCustomerConnector
+        # ._on_update_empty for why a silent return here can wrongly advance a
+        # watermark.
+        if on_apply_returned_none is not None:
+            on_apply_returned_none(direct)
+        return FastPathOutcome(hit=True, entity=None)
 
+    if state == MISSING:
         try:
             create_mapping(coerce_id(updated.id))
         except Exception as e:
@@ -241,5 +285,23 @@ def run_identity_fastpath(
             )
             if recheck_state == CONFLICT:
                 record_conflict_issue(updated, recheck_by_local, recheck_by_external)
+            elif recheck_state == MISSING:
+                # Not a race that resolved itself (recheck == CONSISTENT, a
+                # concurrent create already succeeded — genuinely benign, nothing
+                # to record) and not an escalated conflict (handled above). The
+                # create failed for its own reason (transient DB/network) and the
+                # mapping row still does not exist anywhere. The field write
+                # already landed, but treating that as full success would advance
+                # the watermark past a still-genuinely-unmapped entity with zero
+                # durable trace (U-291 P2) — this record won't be re-pulled again
+                # until QBO sees another change to it, so "next tick" would never
+                # come. Raise so record_projection_error holds it for retry
+                # instead: a redundant idempotent re-pull, not a lost record.
+                raise RuntimeError(
+                    f"{mapping_label} mapping create failed for {entity_label} "
+                    f"{updated.id} and the retry-check still shows no mapping on "
+                    f"either side (not a self-resolved race, not an escalated "
+                    f"conflict): {e}"
+                ) from e
 
     return FastPathOutcome(hit=True, entity=updated)

@@ -7,6 +7,7 @@ from typing import Optional
 
 # Local Imports
 from integrations.intuit.qbo.base.identity_fastpath import (
+    raise_concurrent_write_race,
     resolve_mapping_state,
     run_identity_fastpath,
 )
@@ -105,7 +106,7 @@ class PhysicalAddressAddressConnector:
                     f"Failed to update Address {entity.id} via fast path - "
                     f"update_by_id returned None (concurrent write race)"
                 )
-                raise ValueError("Failed to update Address")
+                raise_concurrent_write_race(entity_label="Address", entity_id=entity.id)
             return updated
 
         outcome = run_identity_fastpath(
@@ -229,12 +230,18 @@ class PhysicalAddressAddressConnector:
             address.city = city or ""
             address.state = state or ""
             address.zip = zip_code or ""
+            address_id_before_update = address.id
             address = self.address_service.repo.update_by_id(address)
             if address:
                 logger.info(f"Successfully updated Address {address.id}. New ModifiedDatetime: {address.modified_datetime}")
             else:
+                # Same ROWVERSION race as the fast path's guard above (U-291).
                 logger.error("Failed to update Address - update_by_id returned None")
-                raise ValueError("Failed to update Address")
+                raise_concurrent_write_race(
+                    entity_label="Address",
+                    entity_id=address_id_before_update,
+                    path_label="legacy mapping-table path",
+                )
         else:
             # No existing Address found - create new one
             logger.info(f"No existing Address found. Creating new Address from QboPhysicalAddress {qbo_physical_address_id}")

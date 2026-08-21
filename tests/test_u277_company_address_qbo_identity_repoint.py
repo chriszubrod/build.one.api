@@ -357,11 +357,17 @@ def test_company_fast_path_hit_consistent_skips_mapping_table_write():
     company_service.repo.set_qbo_identity.assert_not_called()
 
 
-def test_company_fast_path_update_returns_none_raises_value_error():
+def test_company_fast_path_update_returns_none_raises_runtime_error():
     """ROWVERSION race: a concurrent writer touched the fast-path-matched
     Company between the read and this UPDATE, so update_by_id() affects 0
     rows and returns None. Must raise cleanly (mirrors the adjacent legacy
-    path's own guard), not propagate a bare None into an .id access."""
+    path's own guard), not propagate a bare None into an .id access.
+
+    RuntimeError, deliberately NOT ValueError (U-291): a ROWVERSION race is
+    transient, not a permanent data problem — record_projection_error's rule 2
+    classifies a plain ValueError as a permanent SKIP, which would advance the
+    watermark past this record anyway. Was ValueError pre-U-291; renamed from
+    test_company_fast_path_update_returns_none_raises_value_error."""
     connector, mapping_repo, company_service, _ = _build_company_connector()
     qbo_company_info = _make_qbo_company_info(qbo_id="CI-99", realm_id="realm-1")
     direct_hit = SimpleNamespace(id=55, name="Acme", website="")
@@ -372,7 +378,27 @@ def test_company_fast_path_update_returns_none_raises_value_error():
 
     connector.qbo_company_info_service.repo.read_by_id.return_value = qbo_company_info
 
-    with pytest.raises(ValueError, match="Failed to update Company"):
+    with pytest.raises(RuntimeError, match="Failed to update Company"):
+        connector.sync_from_qbo_to_company(qbo_company_info.id, "realm-1")
+
+
+def test_company_legacy_path_update_returns_none_raises_runtime_error():
+    """The legacy (non-fast-path) update branch has its own INDEPENDENT copy of
+    the same ROWVERSION-race guard (a separate inline block, not a shared
+    closure with the fast path) — U-291 found and fixed both, not just the
+    fast-path copy the board's shorthand named."""
+    connector, mapping_repo, company_service, _ = _build_company_connector()
+    qbo_company_info = _make_qbo_company_info(qbo_id="CI-99", realm_id="realm-1")
+    company_service.read_by_qbo_identity.return_value = None  # fast path misses
+    mapping_repo.read_by_qbo_company_info_id.return_value = SimpleNamespace(id=1, company_id=55)
+    company_service.read_by_id.return_value = SimpleNamespace(
+        id=55, name="Acme", website="", modified_datetime=None
+    )
+    company_service.repo.update_by_id.return_value = None
+
+    connector.qbo_company_info_service.repo.read_by_id.return_value = qbo_company_info
+
+    with pytest.raises(RuntimeError, match="Failed to update Company"):
         connector.sync_from_qbo_to_company(qbo_company_info.id, "realm-1")
 
 
@@ -655,11 +681,17 @@ def test_address_fast_path_hit_consistent_skips_mapping_table_write():
     address_service.repo.set_qbo_identity.assert_not_called()
 
 
-def test_address_fast_path_update_returns_none_raises_value_error():
+def test_address_fast_path_update_returns_none_raises_runtime_error():
     """ROWVERSION race: a concurrent writer touched the fast-path-matched
     Address between the read and this UPDATE, so update_by_id() affects 0
     rows and returns None. Must raise cleanly (mirrors the adjacent legacy
-    path's own guard), not propagate a bare None into an .id access."""
+    path's own guard), not propagate a bare None into an .id access.
+
+    RuntimeError, deliberately NOT ValueError (U-291): a ROWVERSION race is
+    transient, not a permanent data problem — record_projection_error's rule 2
+    classifies a plain ValueError as a permanent SKIP, which would advance the
+    watermark past this record anyway. Was ValueError pre-U-291; renamed from
+    test_address_fast_path_update_returns_none_raises_value_error."""
     connector, mapping_repo, address_service, _ = _build_address_connector()
     qbo_physical_address = _make_qbo_physical_address(qbo_id="PA-99", realm_id="realm-1")
     direct_hit = SimpleNamespace(id=55, street_one="", street_two="", city="", state="", zip="")
@@ -672,7 +704,27 @@ def test_address_fast_path_update_returns_none_raises_value_error():
 
     connector.qbo_physical_address_service.repo.read_by_id.return_value = qbo_physical_address
 
-    with pytest.raises(ValueError, match="Failed to update Address"):
+    with pytest.raises(RuntimeError, match="Failed to update Address"):
+        connector.sync_from_qbo_to_address(qbo_physical_address.id)
+
+
+def test_address_legacy_path_update_returns_none_raises_runtime_error():
+    """The legacy (non-fast-path) update branch has its own INDEPENDENT copy of
+    the same ROWVERSION-race guard (a separate inline block, not a shared
+    closure with the fast path) — U-291 found and fixed both, not just the
+    fast-path copy the board's shorthand named."""
+    connector, mapping_repo, address_service, _ = _build_address_connector()
+    qbo_physical_address = _make_qbo_physical_address(qbo_id="PA-99", realm_id="realm-1")
+    address_service.read_by_qbo_identity.return_value = None  # fast path misses
+    mapping_repo.read_by_qbo_physical_address_id.return_value = SimpleNamespace(id=1, address_id=55)
+    address_service.read_by_id.return_value = SimpleNamespace(
+        id=55, street_one="", street_two="", city="", state="", zip="", modified_datetime=None
+    )
+    address_service.repo.update_by_id.return_value = None
+
+    connector.qbo_physical_address_service.repo.read_by_id.return_value = qbo_physical_address
+
+    with pytest.raises(RuntimeError, match="Failed to update Address"):
         connector.sync_from_qbo_to_address(qbo_physical_address.id)
 
 

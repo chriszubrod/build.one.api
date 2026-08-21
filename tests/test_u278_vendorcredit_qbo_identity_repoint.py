@@ -258,12 +258,20 @@ def test_fast_path_conflict_local_side_only_raises_no_duplicate_create():
     mapping_repo.create.assert_not_called()
 
 
-def test_fast_path_missing_write_race_returns_none_without_crashing():
-    """Codex-fallback review finding: if `direct` is deleted between
-    read_by_qbo_identity and the write (BillCreditService.update_by_public_id
-    re-reads internally and returns None rather than raising), the 'missing'-mapping
-    branch must not crash trying coerce_id(None.id) — nor crash AGAIN inside its own
-    except-handler's log statement, which referenced the same None."""
+def test_fast_path_missing_write_race_raises_runtime_error():
+    """If `direct` is deleted between read_by_qbo_identity and the write
+    (BillCreditService.update_by_public_id re-reads internally and returns None
+    rather than raising), the 'missing'-mapping branch must not crash trying
+    coerce_id(None.id) — nor crash AGAIN inside its own except-handler's log
+    statement, which referenced the same None.
+
+    U-291: must also not let the None flow through as a silent success. Before
+    this fix, _on_update_empty only logged a warning and returned — this
+    connector was the ONE family whose write-race callback didn't raise at all
+    (customer/vendor raised RuntimeError; company_info/physical_address/bill
+    raised ValueError). Renamed from
+    test_fast_path_missing_write_race_returns_none_without_crashing, which
+    pinned that silent (worst-of-all-three) behavior by name."""
     connector, mapping_repo, bill_credit_service, _ = _build_bill_credit_connector()
     qbo_vc = _make_qbo_vc(id=30, qbo_id="VC-99", realm_id="realm-1")
     direct_hit = SimpleNamespace(id=55, public_id="bc-pub-55", credit_number="VC-99", row_version="rv55")
@@ -273,10 +281,31 @@ def test_fast_path_missing_write_race_returns_none_without_crashing():
     mapping_repo.read_by_qbo_vendor_credit_id.return_value = None
 
     with patch(f"{VC_SERVICE}.guard_lines_present"):
-        result = connector.sync_from_qbo_vendor_credit(qbo_vc, [])
+        with pytest.raises(RuntimeError, match="concurrent write race"):
+            connector.sync_from_qbo_vendor_credit(qbo_vc, [])
 
-    assert result is None
     mapping_repo.create.assert_not_called()
+
+
+def test_legacy_path_update_returns_none_raises_runtime_error():
+    """The legacy "mapping found" branch calls the SAME shared
+    `_apply_bill_credit_fields_and_sync` helper the fast path uses. Before
+    U-291 it silently `return updated` (None) as success — worse than the fast
+    path's own pre-fix bug, since this branch didn't even log a warning."""
+    connector, mapping_repo, bill_credit_service, _ = _build_bill_credit_connector()
+    qbo_vc = _make_qbo_vc(id=30, qbo_id="VC-99", realm_id="realm-1")
+    bill_credit_service.read_by_qbo_identity.return_value = None  # fast path misses
+    existing_mapping = SimpleNamespace(id=1, bill_credit_id=55, qbo_vendor_credit_id=qbo_vc.id)
+    mapping_repo.read_by_qbo_vendor_credit_id.return_value = existing_mapping
+    existing_bill_credit = SimpleNamespace(
+        id=55, public_id="bc-pub-55", credit_number="VC-99", row_version="rv55"
+    )
+    bill_credit_service.read_by_id.return_value = existing_bill_credit
+    bill_credit_service.update_by_public_id.return_value = None  # race: row gone on write
+
+    with patch(f"{VC_SERVICE}.guard_lines_present"):
+        with pytest.raises(RuntimeError, match="concurrent write race"):
+            connector.sync_from_qbo_vendor_credit(qbo_vc, [])
 
 
 def test_fast_path_hit_self_heals_missing_mapping():

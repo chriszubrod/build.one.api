@@ -9,6 +9,10 @@ from integrations.intuit.qbo.base.field_ownership import (
     preserve_human_edited_name,
     raise_if_inactive_unmapped,
 )
+from integrations.intuit.qbo.base.identity_fastpath import (
+    raise_concurrent_write_race,
+    run_identity_fastpath,
+)
 from integrations.intuit.qbo.base.ids import coerce_id
 from integrations.intuit.qbo.base.reconciliation_recorder import record_mapping_issue
 from integrations.intuit.qbo.reconciliation.persistence.repo import ReconciliationIssueRepository
@@ -70,108 +74,56 @@ class TermPaymentTermConnector:
         # mapping-table hop below. Every PaymentTerm synced even once already carries this
         # identity (set_qbo_identity is called on both the create path and the legacy
         # update path below), so this covers the steady-state case without touching
-        # qbo.Term at all. Mirrors VendorCreditBillCreditConnector.sync_from_qbo_vendor_credit
-        # (U-278) exactly — including the hard-stop-on-conflict fix baked in from day one.
+        # qbo.Term at all.
         #
-        # U-287 (the shared integrations/intuit/qbo/base/identity_fastpath.py helper) is
-        # ACTIVELY BEING BUILT by a concurrent session in this same working tree as of this
-        # unit — confirmed present (uncommitted) with all 6 prior sibling connectors already
-        # repointed onto it. It has NOT shipped (no commit exists for it; `git log` has no
-        # U-287 entry) — per the standing project convention, a unit must not take a hard
-        # dependency on another session's uncommitted work (it could still change, fail its
-        # own Gate-2, or not land this session at all), so this hand-rolls its own copy
-        # rather than importing the unshipped module — the same call U-279 made under the
-        # identical circumstance earlier this session. FOLLOW-UP (book once U-287 ships):
-        # migrate this connector onto run_identity_fastpath(), which will then close the
-        # LAST of the 7 hand-rolled copies (the other 6 are already migrated, uncommitted).
-        #
-        # The mapping-table state is checked BEFORE any write, not after: writing to the
-        # dbo-identity-matched PaymentTerm first and detecting a conflict afterward would
-        # corrupt that PaymentTerm's data in the case where the mapping table — not dbo
-        # identity — is actually still the correct side (U-276 round-3 finding). On a
-        # detected conflict we record it and RAISE — never fall through to the legacy
-        # mapping-table path, which would call set_qbo_identity on a DIFFERENT row with the
-        # same (QboId, RealmId) `direct` already holds; SetPaymentTermQboIdentity's own
-        # theft-detection UPDATE would then silently NULL `direct`'s identity (the exact
-        # bug U-276's pilot shipped and had to be hotfixed live, 2026-08-20 — never
-        # re-copy it).
-        direct = (
-            self.payment_term_service.read_by_qbo_identity(qbo_term.qbo_id, qbo_term.realm_id)
-            if qbo_term.qbo_id else None
-        )
-        if direct:
-            state, by_payment_term, by_qbo_term = self._resolve_mapping_state(
-                payment_term_id=coerce_id(direct.id), qbo_term=qbo_term
-            )
-            if state == "conflict":
+        # U-291: migrated onto the shared `run_identity_fastpath()` helper (U-287, shipped
+        # `edcf1f31`) — this was the 7th/last hand-rolled copy, booked for this migration by
+        # U-282's own comment the moment U-287 shipped. conflict->RAISE is now structural
+        # (base/identity_fastpath.py), not something this connector hand-maintains. Note:
+        # deliberately does NOT refresh QboActive on a fast-path hit — PaymentTerm accepted
+        # a staleness tradeoff here (U-282), unlike Vendor/SubCostCode's "refresh every hit"
+        # pattern; that gap is its own separate open item, not touched by this migration.
+        # _apply_payment_term_fields raises internally (via raise_concurrent_write_race,
+        # U-291) on a ROWVERSION-race/concurrent-delete update failure — one guard inside
+        # the shared helper protects every caller (this fast path, and the legacy branch
+        # below) rather than each call site needing its own. Replaces this connector's own
+        # pre-migration behavior, which only logged a warning and let the None flow through
+        # as a silent success.
+        outcome = run_identity_fastpath(
+            qbo_id=qbo_term.qbo_id,
+            realm_id=qbo_term.realm_id,
+            external_id=qbo_term.id,
+            entity_label="PaymentTerm",
+            external_label="QboTerm",
+            mapping_label="TermPaymentTerm",
+            read_direct_by_qbo_identity=self.payment_term_service.read_by_qbo_identity,
+            read_by_local_id=self.mapping_repo.read_by_payment_term_id,
+            read_by_external_id=self.mapping_repo.read_by_qbo_term_id,
+            external_id_attr="qbo_term_id",
+            record_conflict_issue=lambda entity, by_local, by_external: (
                 self._raise_identity_mapping_conflict_issue(
                     qbo_term=qbo_term,
-                    dbo_payment_term_id=coerce_id(direct.id),
-                    local_side_mapping=by_payment_term,
-                    qbo_side_mapping=by_qbo_term,
+                    dbo_payment_term_id=coerce_id(entity.id),
+                    local_side_mapping=by_local,
+                    qbo_side_mapping=by_external,
                 )
-                # HARD STOP — do not fall through to the legacy mapping-table path. That
-                # path would either (a) update a DIFFERENT PaymentTerm and then call
-                # set_qbo_identity(qbo_id=qbo_term.qbo_id, ...) on it, which
-                # SetPaymentTermQboIdentity's own theft-detection UPDATE applies against
-                # ANY row carrying that (QboId, RealmId) pair regardless of which row this
-                # call targets — silently NULLing `direct`'s identity, the exact
-                # corruption this check exists to prevent — or (b) mint a duplicate
-                # PaymentTerm via the create path when `by_qbo_term` is None (local-side-
-                # only conflict), since `direct` already represents this real-world term.
-                # Never proceed past a confirmed conflict — a human must resolve which
-                # side is correct first; the recorded reconciliation issue is the durable
-                # follow-up, this raise is the safety stop.
-                raise ValueError(
-                    f"TermPaymentTerm identity conflict for QboTerm {qbo_term.qbo_id} "
-                    f"(id={qbo_term.id}): dbo.PaymentTerm {direct.id} already carries "
-                    f"this identity but the mapping table disagrees. Not auto-repointed; "
-                    f"see the recorded reconciliation issue. Skipping until a human "
-                    f"resolves it."
-                )
-            logger.info(
-                f"Updating existing PaymentTerm {direct.id} from QboTerm {qbo_term.id} "
-                f"(direct dbo identity match)"
-            )
-            updated = self._apply_payment_term_fields(
-                direct, qbo_term=qbo_term, term_name=term_name, description=description
-            )
-            if state == "missing" and updated is not None:
-                try:
-                    self.mapping_repo.create(
-                        payment_term_id=coerce_id(updated.id),
-                        qbo_term_id=qbo_term.id,
-                    )
-                except Exception as e:
-                    # A concurrent sync may have raced this exact QboTerm between the
-                    # "missing" check above and this create (mirrors U-276/278 round-4) —
-                    # no sp_getapplock serializes mapping create() call sites. Re-check
-                    # rather than assume: if it's now a real conflict, record it properly
-                    # instead of a bare warning.
-                    logger.error(
-                        f"TermPaymentTerm mapping create failed for PaymentTerm "
-                        f"{updated.id} after a 'missing' pre-check: {e}"
-                    )
-                    recheck_state, recheck_by_pt, recheck_by_qbo = self._resolve_mapping_state(
-                        payment_term_id=coerce_id(updated.id), qbo_term=qbo_term
-                    )
-                    if recheck_state == "conflict":
-                        self._raise_identity_mapping_conflict_issue(
-                            qbo_term=qbo_term,
-                            dbo_payment_term_id=coerce_id(updated.id),
-                            local_side_mapping=recheck_by_pt,
-                            qbo_side_mapping=recheck_by_qbo,
-                        )
-            elif state == "missing" and updated is None:
-                # `direct` read empty on write — a concurrent delete between our
-                # read_by_qbo_identity fetch and this write. Nothing to map or stamp;
-                # let this tick skip and the next pull heal naturally (transient).
-                logger.warning(
-                    f"PaymentTerm {direct.id} read empty on write (direct-identity fast "
-                    f"path) for QboTerm {qbo_term.id} — likely a concurrent delete; "
-                    f"skipping this tick."
-                )
-            return updated
+            ),
+            conflict_message=lambda entity: (
+                f"TermPaymentTerm identity conflict for QboTerm {qbo_term.qbo_id} "
+                f"(id={qbo_term.id}): dbo.PaymentTerm {entity.id} already carries "
+                f"this identity but the mapping table disagrees. Not auto-repointed; "
+                f"see the recorded reconciliation issue. Skipping until a human "
+                f"resolves it."
+            ),
+            create_mapping=lambda local_id: self.mapping_repo.create(
+                payment_term_id=local_id, qbo_term_id=qbo_term.id
+            ),
+            apply_fields=lambda entity: self._apply_payment_term_fields(
+                entity, qbo_term=qbo_term, term_name=term_name, description=description
+            ),
+        )
+        if outcome.hit:
+            return outcome.entity
 
         # Step 2: Check for existing mapping (legacy path — rows that predate identity
         # stamping, or a globally-unmapped QboTerm with no dbo-identity fast-path hit).
@@ -183,15 +135,15 @@ class TermPaymentTermConnector:
             if payment_term:
                 logger.info(f"Updating existing PaymentTerm {payment_term.id} from QboTerm {qbo_term.id}")
                 updated = self._apply_payment_term_fields(
-                    payment_term, qbo_term=qbo_term, term_name=term_name, description=description
+                    payment_term, qbo_term=qbo_term, term_name=term_name, description=description,
+                    path_label="legacy mapping-table path",
                 )
-                if updated:
-                    self.payment_term_service.repo.set_qbo_identity(
-                        id=coerce_id(updated.id),
-                        qbo_id=qbo_term.qbo_id,
-                        realm_id=qbo_term.realm_id,
-                        active=qbo_term.active,
-                    )
+                self.payment_term_service.repo.set_qbo_identity(
+                    id=coerce_id(updated.id),
+                    qbo_id=qbo_term.qbo_id,
+                    realm_id=qbo_term.realm_id,
+                    active=qbo_term.active,
+                )
                 return updated
             else:
                 # Mapping exists but PaymentTerm not found - recreate PaymentTerm
@@ -236,13 +188,16 @@ class TermPaymentTermConnector:
         qbo_term: QboTerm,
         term_name: str,
         description: Optional[str],
-    ) -> Optional[PaymentTerm]:
+        path_label: str = "fast path",
+    ) -> PaymentTerm:
         """
         Write the QboTerm-derived fields onto an existing PaymentTerm and persist it.
         Shared by the direct dbo-identity fast path (U-282) and the existing
         mapping-table update path so the QboTerm -> PaymentTerm field mapping lives in
-        exactly one place (no drift between the two update sites) — mirrors
-        VendorCreditBillCreditConnector._apply_bill_credit_fields_and_sync (U-278).
+        exactly one place (no drift between the two update sites) AND both get the
+        same ROWVERSION-race guard for free (U-291): a None `update_by_id` return is
+        raised here, not returned, so a caller cannot forget to check for it.
+        `path_label` names which caller hit the race, for the log trail.
 
         Deliberately does NOT stamp dbo-native identity or QboActive — the fast-path
         caller's row already carries it by construction (that's how `read_by_qbo_identity`
@@ -256,7 +211,12 @@ class TermPaymentTermConnector:
         payment_term.discount_percent = float(qbo_term.discount_percent) if qbo_term.discount_percent else None
         payment_term.discount_days = qbo_term.discount_days
         payment_term.due_days = qbo_term.due_days
-        return self.payment_term_service.repo.update_by_id(payment_term)
+        updated = self.payment_term_service.repo.update_by_id(payment_term)
+        if updated is None:
+            raise_concurrent_write_race(
+                entity_label="PaymentTerm", entity_id=payment_term.id, path_label=path_label
+            )
+        return updated
 
     def _resolve_mapping_state(self, *, payment_term_id: int, qbo_term: QboTerm):
         """
@@ -272,6 +232,14 @@ class TermPaymentTermConnector:
         qbo_term_id to a DIFFERENT PaymentTerm (left behind by an earlier identity
         "theft" — SetPaymentTermQboIdentity's own theft-clear UPDATE does not clean up
         the mapping table).
+
+        NOTE (U-291): no production caller — `sync_from_qbo_term` now passes these same
+        accessors straight to `run_identity_fastpath`, which calls the shared
+        `resolve_mapping_state` itself (this connector's own migration onto the shared
+        helper, the 7th and last hand-rolled copy). Retained as the per-family test seam
+        for this file's suite, which calls it by name — mirrors the disposition U-287
+        already gave the other 6 families' equivalent wrappers. Disposition booked in
+        TODO.md.
 
         Returns (state, by_payment_term, by_qbo_term) where state is one of:
           "consistent" — a mapping row exists and agrees; caller writes freely.

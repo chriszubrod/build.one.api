@@ -22,6 +22,7 @@ from integrations.intuit.qbo.base.pull_race import guard_lines_present
 from integrations.intuit.qbo.base.compensation import rollback_orphan_header
 from integrations.intuit.qbo.base.reconciliation_recorder import record_mapping_issue
 from integrations.intuit.qbo.base.field_ownership import preserve_human_edited_ref, qbo_ref_or_placeholder
+from integrations.intuit.qbo.base.identity_consistency import verify_vendor_qbo_identity
 from integrations.intuit.qbo.base.identity_fastpath import (
     raise_concurrent_write_race,
     resolve_mapping_state,
@@ -81,7 +82,7 @@ class VendorCreditBillCreditConnector:
 
         try:
             # Step 1: Resolve vendor
-            vendor_public_id = self._get_vendor_public_id(qbo_vc.vendor_ref_value)
+            vendor_public_id = self._get_vendor_public_id(qbo_vc.vendor_ref_value, qbo_vc.realm_id)
             if not vendor_public_id:
                 # Permanent data issue — raise (don't silently return None) so the
                 # caller classifies it as a skip that doesn't block the watermark,
@@ -493,20 +494,41 @@ class VendorCreditBillCreditConnector:
             details=details,
         )
 
-    def _get_vendor_public_id(self, qbo_vendor_ref_value: Optional[str]) -> Optional[str]:
+    # One of FIVE near-identical dbo-first/legacy-fallback vendor-ref resolvers
+    # (U-284v): this one, BillBillConnector._get_vendor_public_id (pull) +
+    # _get_qbo_vendor_ref (push), PurchaseExpenseConnector._get_vendor_public_id,
+    # ExpenseCodingItemService._resolve_vendor_id. Hand-copied deliberately,
+    # mirroring _get_project_public_id's own precedent — see TODO.md's
+    # U-005[reuse] entry before adding a 6th copy or consolidating.
+    def _get_vendor_public_id(self, qbo_vendor_ref_value: Optional[str], realm_id: Optional[str] = None) -> Optional[str]:
         """Resolve QBO vendor ref (QBO API string ID) to local Vendor public_id.
         Same two-step lookup as PurchaseExpenseConnector: QboVendor by qbo_id, then VendorVendor by QboVendor.Id.
         """
         if not qbo_vendor_ref_value:
             return None
-        
+
         try:
             from integrations.intuit.qbo.vendor.connector.vendor.persistence.repo import VendorVendorRepository
             from integrations.intuit.qbo.vendor.persistence.repo import QboVendorRepository
-            
+
             qbo_vendor_repo = QboVendorRepository()
             vendor_vendor_repo = VendorVendorRepository()
-            
+
+            # U-284v: try dbo.Vendor's native QboId/RealmId directly first
+            # (mirrors U-283/U-283b's _get_project_public_id pattern) before
+            # falling back to the qbo.QboVendor -> qbo.VendorVendor hop below.
+            # Read-only resolver — a disagreement just falls through to the
+            # legacy hop, no hard stop.
+            direct_vendor = self.vendor_service.read_by_qbo_identity(qbo_vendor_ref_value, realm_id)
+            if direct_vendor:
+                verified_qbo_id = verify_vendor_qbo_identity(
+                    direct_vendor,
+                    vendor_vendor_repo=vendor_vendor_repo,
+                    qbo_vendor_repo=qbo_vendor_repo,
+                )
+                if verified_qbo_id:
+                    return direct_vendor.public_id
+
             # Step 1: Find local QboVendor by QBO API vendor ID (string)
             qbo_vendor = qbo_vendor_repo.read_by_qbo_id(qbo_vendor_ref_value)
             if not qbo_vendor or not qbo_vendor.id:

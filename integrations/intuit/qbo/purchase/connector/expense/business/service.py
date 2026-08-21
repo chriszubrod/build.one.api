@@ -17,6 +17,7 @@ from entities.expense_line_item.business.service import ExpenseLineItemService
 from entities.vendor.business.service import VendorService
 from integrations.intuit.qbo.base.pull_race import guard_lines_present
 from integrations.intuit.qbo.base.compensation import rollback_orphan_header
+from integrations.intuit.qbo.base.identity_consistency import verify_vendor_qbo_identity
 from integrations.intuit.qbo.base.field_ownership import preserve_human_edited_ref, qbo_ref_or_placeholder
 from integrations.intuit.qbo.base.identity_fastpath import (
     raise_concurrent_write_race,
@@ -80,7 +81,7 @@ class PurchaseExpenseConnector:
         """
         # Find vendor mapping to get Vendor public_id
         # Purchase uses EntityRef instead of VendorRef
-        vendor_public_id = self._get_vendor_public_id(qbo_purchase.entity_ref_value)
+        vendor_public_id = self._get_vendor_public_id(qbo_purchase.entity_ref_value, qbo_purchase.realm_id)
         if not vendor_public_id:
             raise ValueError(f"No vendor mapping found for QBO entity ref: {qbo_purchase.entity_ref_value}")
         
@@ -375,44 +376,73 @@ class PurchaseExpenseConnector:
             details=details,
         )
 
-    def _get_vendor_public_id(self, qbo_entity_ref_value: str) -> Optional[str]:
+    # One of FIVE near-identical dbo-first/legacy-fallback vendor-ref resolvers
+    # (U-284v): this one, BillBillConnector._get_vendor_public_id (pull) +
+    # _get_qbo_vendor_ref (push), VendorCreditBillCreditConnector
+    # ._get_vendor_public_id, ExpenseCodingItemService._resolve_vendor_id.
+    # Hand-copied deliberately, mirroring _get_project_public_id's own
+    # precedent — see TODO.md's U-005[reuse] entry before adding a 6th copy
+    # or consolidating.
+    def _get_vendor_public_id(self, qbo_entity_ref_value: str, realm_id: Optional[str] = None) -> Optional[str]:
         """
         Get the Vendor public_id from QBO entity reference value.
-        
+
         Args:
             qbo_entity_ref_value: QBO entity reference value (QBO Vendor ID)
-        
+            realm_id: Optional QBO realm ID for realm-scoped direct lookup
+
         Returns:
             str: Vendor public_id or None
         """
         if not qbo_entity_ref_value:
             return None
 
-        if qbo_entity_ref_value in self._vendor_cache:
-            return self._vendor_cache[qbo_entity_ref_value]
+        # U-284v: keyed by (realm_id, ref_value), not ref_value alone — the
+        # direct dbo lookup below is realm-scoped, and QBO vendor ref values
+        # are only unique WITHIN a realm (small sequential integers), so a
+        # ref-value-only key could serve a different realm's cached vendor
+        # if this connector instance ever spanned realms.
+        cache_key = (realm_id, qbo_entity_ref_value)
+        if cache_key in self._vendor_cache:
+            return self._vendor_cache[cache_key]
+
+        # Try dbo.Vendor's native QboId/RealmId directly first (mirrors
+        # U-283/U-283b's _get_project_public_id pattern) before falling back to
+        # the qbo.QboVendor -> qbo.VendorVendor hop below. Read-only resolver —
+        # a disagreement just falls through to the legacy hop, no hard stop.
+        direct_vendor = self.vendor_service.read_by_qbo_identity(qbo_entity_ref_value, realm_id)
+        if direct_vendor:
+            verified_qbo_id = verify_vendor_qbo_identity(
+                direct_vendor,
+                vendor_vendor_repo=self.vendor_vendor_repo,
+                qbo_vendor_repo=self.qbo_vendor_repo,
+            )
+            if verified_qbo_id:
+                self._vendor_cache[cache_key] = direct_vendor.public_id
+                return direct_vendor.public_id
 
         # First find the QboVendor by qbo_id
         qbo_vendor = self.qbo_vendor_repo.read_by_qbo_id(qbo_entity_ref_value)
         if not qbo_vendor:
             logger.warning(f"QboVendor not found for qbo_id: {qbo_entity_ref_value}")
-            self._vendor_cache[qbo_entity_ref_value] = None
+            self._vendor_cache[cache_key] = None
             return None
 
         # Then find the VendorVendor mapping
         vendor_mapping = self.vendor_vendor_repo.read_by_qbo_vendor_id(qbo_vendor.id)
         if not vendor_mapping:
             logger.warning(f"VendorVendor mapping not found for QboVendor ID: {qbo_vendor.id}")
-            self._vendor_cache[qbo_entity_ref_value] = None
+            self._vendor_cache[cache_key] = None
             return None
 
         # Get the Vendor
         vendor = self.vendor_service.read_by_id(vendor_mapping.vendor_id)
         if not vendor:
             logger.warning(f"Vendor not found for ID: {vendor_mapping.vendor_id}")
-            self._vendor_cache[qbo_entity_ref_value] = None
+            self._vendor_cache[cache_key] = None
             return None
 
-        self._vendor_cache[qbo_entity_ref_value] = vendor.public_id
+        self._vendor_cache[cache_key] = vendor.public_id
         return vendor.public_id
 
     def _sync_line_items(self, expense_id: int, expense_public_id: str, qbo_purchase_lines: List[QboPurchaseLine], realm_id: Optional[str] = None) -> None:

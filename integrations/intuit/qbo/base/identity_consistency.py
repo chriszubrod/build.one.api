@@ -29,6 +29,44 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 
+def _verify_dbo_qbo_identity(
+    entity,
+    *,
+    entity_label: str,
+    mapping_label: str,
+    read_mapping_by_local_id,
+    read_external_by_mapped_id,
+    mapping_external_id_attr: str,
+) -> Optional[str]:
+    """
+    Shared engine behind `verify_project_qbo_identity` / `verify_vendor_qbo_identity`
+    (and any future family joining this pattern — see the module docstring
+    for the discipline this enforces). Pure orchestration: `entity_label` and
+    `mapping_label` only shape the log line; `read_mapping_by_local_id` and
+    `read_external_by_mapped_id` are the family's own bound repo methods
+    (e.g. `customer_project_repo.read_by_project_id`), and
+    `mapping_external_id_attr` names the mapping row's FK to the external
+    staging table (e.g. `"qbo_customer_id"`). Mirrors
+    `base/identity_fastpath.py`'s own callback-based generalization of the
+    sibling pull-side pattern — extend this one deliberately when a new
+    family needs it rather than hand-copying another wrapper's body.
+    """
+    if not entity or not entity.qbo_id:
+        return None
+    mapping = read_mapping_by_local_id(entity.id)
+    if not mapping:
+        return entity.qbo_id
+    mapped_external = read_external_by_mapped_id(getattr(mapping, mapping_external_id_attr))
+    if mapped_external and mapped_external.qbo_id and mapped_external.qbo_id != entity.qbo_id:
+        logger.error(
+            f"{entity_label} {entity.id}'s dbo QboId ({entity.qbo_id}) disagrees with its own "
+            f"{mapping_label} mapping's external QboId ({mapped_external.qbo_id}) — refusing to "
+            f"trust it."
+        )
+        return None
+    return entity.qbo_id
+
+
 def verify_project_qbo_identity(
     project,
     *,
@@ -44,17 +82,37 @@ def verify_project_qbo_identity(
     external customer to this Project — refuse rather than push under an
     unverified CustomerRef.
     """
-    if not project or not project.qbo_id:
-        return None
-    mapping = customer_project_repo.read_by_project_id(project.id)
-    if not mapping:
-        return project.qbo_id
-    mapped_qbo_customer = qbo_customer_repo.read_by_id(mapping.qbo_customer_id)
-    if mapped_qbo_customer and mapped_qbo_customer.qbo_id and mapped_qbo_customer.qbo_id != project.qbo_id:
-        logger.error(
-            f"Project {project.id}'s dbo QboId ({project.qbo_id}) disagrees with its own "
-            f"CustomerProject mapping's QboCustomer ({mapped_qbo_customer.qbo_id}) — refusing "
-            f"to push under a possibly-wrong CustomerRef."
-        )
-        return None
-    return project.qbo_id
+    return _verify_dbo_qbo_identity(
+        project,
+        entity_label="Project",
+        mapping_label="CustomerProject",
+        read_mapping_by_local_id=customer_project_repo.read_by_project_id,
+        read_external_by_mapped_id=qbo_customer_repo.read_by_id,
+        mapping_external_id_attr="qbo_customer_id",
+    )
+
+
+def verify_vendor_qbo_identity(
+    vendor,
+    *,
+    vendor_vendor_repo,
+    qbo_vendor_repo,
+) -> Optional[str]:
+    """
+    Return `vendor.qbo_id` if it's safe to trust (for an outbound push, or for
+    a pull-side reference resolution — see module docstring), else None.
+
+    Safe means: the Vendor has no VendorVendor mapping row yet (the ordinary
+    not-fully-migrated state — nothing to disagree with), OR its mapping
+    row's own QboVendor external id matches `vendor.qbo_id` exactly. A
+    mismatch means the mapping table still binds a DIFFERENT external vendor
+    to this Vendor — refuse rather than trust an unverified VendorRef.
+    """
+    return _verify_dbo_qbo_identity(
+        vendor,
+        entity_label="Vendor",
+        mapping_label="VendorVendor",
+        read_mapping_by_local_id=vendor_vendor_repo.read_by_vendor_id,
+        read_external_by_mapped_id=qbo_vendor_repo.read_by_id,
+        mapping_external_id_attr="qbo_vendor_id",
+    )

@@ -213,6 +213,12 @@ class ExpenseCodingItemService:
         self.mark_enqueued(public_id)
         return {"status": "enqueued", "enqueued": True}
 
+    # One of FIVE near-identical dbo-first/legacy-fallback vendor-ref resolvers
+    # (U-284v): this one, BillBillConnector._get_vendor_public_id (pull) +
+    # _get_qbo_vendor_ref (push), PurchaseExpenseConnector._get_vendor_public_id,
+    # VendorCreditBillCreditConnector._get_vendor_public_id. Hand-copied
+    # deliberately, mirroring _get_project_public_id's own precedent — see
+    # TODO.md's U-005[reuse] entry before adding a 6th copy or consolidating.
     def _resolve_vendor_id(
         self,
         vendor_qbo_id: Optional[str],
@@ -222,17 +228,37 @@ class ExpenseCodingItemService:
         if not vendor_qbo_id:
             return None
         try:
+            from entities.vendor.business.service import VendorService
             from integrations.intuit.qbo.vendor.persistence.repo import QboVendorRepository
             from integrations.intuit.qbo.vendor.connector.vendor.persistence.repo import VendorVendorRepository
+            from integrations.intuit.qbo.base.identity_consistency import verify_vendor_qbo_identity
 
+            vendor_service = VendorService()
             qbo_vendor_repo = QboVendorRepository()
+            vendor_vendor_repo = VendorVendorRepository()
+
+            # U-284v: try dbo.Vendor's native QboId/RealmId directly first
+            # (mirrors U-283/U-283b's _get_project_public_id pattern) before
+            # falling back to the qbo.QboVendor -> qbo.VendorVendor hop below.
+            # Read-only resolver — a disagreement just falls through to the
+            # legacy hop, no hard stop.
+            direct_vendor = vendor_service.read_by_qbo_identity(vendor_qbo_id, realm_id)
+            if direct_vendor:
+                verified_qbo_id = verify_vendor_qbo_identity(
+                    direct_vendor,
+                    vendor_vendor_repo=vendor_vendor_repo,
+                    qbo_vendor_repo=qbo_vendor_repo,
+                )
+                if verified_qbo_id:
+                    return direct_vendor.id
+
             if realm_id is not None:
                 qbo_vendor = qbo_vendor_repo.read_by_qbo_id_and_realm_id(vendor_qbo_id, realm_id)
             else:
                 qbo_vendor = qbo_vendor_repo.read_by_qbo_id(vendor_qbo_id)
             if not qbo_vendor:
                 return None
-            mapping = VendorVendorRepository().read_by_qbo_vendor_id(qbo_vendor.id)
+            mapping = vendor_vendor_repo.read_by_qbo_vendor_id(qbo_vendor.id)
             if not mapping:
                 return None
             return mapping.vendor_id

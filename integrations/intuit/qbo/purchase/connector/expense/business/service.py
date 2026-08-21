@@ -18,6 +18,10 @@ from entities.vendor.business.service import VendorService
 from integrations.intuit.qbo.base.pull_race import guard_lines_present
 from integrations.intuit.qbo.base.compensation import rollback_orphan_header
 from integrations.intuit.qbo.base.field_ownership import preserve_human_edited_ref, qbo_ref_or_placeholder
+from integrations.intuit.qbo.base.identity_fastpath import (
+    raise_concurrent_write_race,
+    run_identity_fastpath,
+)
 from integrations.intuit.qbo.base.ids import coerce_id
 from integrations.intuit.qbo.base.reconciliation_recorder import record_mapping_issue
 from integrations.intuit.qbo.reconciliation.persistence.repo import ReconciliationIssueRepository
@@ -93,6 +97,95 @@ class PurchaseExpenseConnector:
             entity_label="QboPurchase", entity_id=qbo_purchase.id, qbo_id=qbo_purchase.qbo_id,
         )
 
+        def _apply_expense_fields(direct: Expense) -> Expense:
+            """
+            Write the QBO-derived fields onto an existing Expense, stamp identity, then
+            sync its line items. Shared by the fast path's apply_fields and the legacy
+            "mapping found" branch below so the QboPurchase->Expense field mapping lives
+            in exactly one place (no drift between the two update sites) — mirrors
+            BillBillConnector's `_apply_bill_fields`.
+
+            KI-42 / U-024 (rule of three): never silently revert a human-corrected
+            reference_number on re-pull. The shared base helper keeps the stored value
+            unless it is empty/null or the QBO-<id> placeholder (which still upgrades to
+            a real doc_number when one appears). See base.field_ownership.
+            """
+            effective_ref = preserve_human_edited_ref(
+                direct.reference_number, reference_number, qbo_purchase.qbo_id
+            )
+            updated = self.expense_service.update_by_public_id(
+                direct.public_id,
+                row_version=direct.row_version,
+                vendor_public_id=vendor_public_id,
+                expense_date=expense_date,
+                reference_number=effective_ref,
+                total_amount=total_amount,
+                memo=memo,
+                is_draft=False,
+                is_credit=qbo_purchase.credit or False,
+            )
+            if updated is None:
+                # ROWVERSION race (U-291): a concurrent writer touched this exact
+                # Expense between the read and this UPDATE, so it affected 0 rows.
+                raise_concurrent_write_race(entity_label="Expense", entity_id=direct.id)
+            expense_id = coerce_id(updated.id)
+            # Expense (like Bill) carries SyncToken as part of its identity — this
+            # re-stamp is NOT redundant even on a CONSISTENT fast-path hit (dbo
+            # QboId/RealmId already matched): it refreshes SyncToken on every pull,
+            # which the legacy path also always did.
+            self.expense_service.repo.set_qbo_identity(
+                id=expense_id,
+                qbo_id=qbo_purchase.qbo_id,
+                realm_id=qbo_purchase.realm_id,
+                sync_token=getattr(qbo_purchase, "sync_token", None),
+            )
+            self._sync_line_items(expense_id, updated.public_id, qbo_purchase_lines, qbo_purchase.realm_id)
+            return updated
+
+        # U-283b (Phase-4): resolve identity directly against dbo.Expense's native
+        # QboId/RealmId (U-238a) before falling back to the qbo.PurchaseExpense
+        # mapping-table hop below. Every Expense synced even once already carries
+        # this identity (set_qbo_identity is called on both the update and create
+        # paths), so this covers the steady-state case without touching qbo.Purchase
+        # at all. Mirrors BillBillConnector's U-283 fast path exactly — conflict->RAISE
+        # is structural (base.identity_fastpath), never a fall-through to the legacy
+        # path below. qbo.Purchase/qbo.PurchaseLine remain a read-only audit mirror for
+        # the expense-coding cockpit's recode_purchase_line (below, untouched) — this
+        # repoint only takes identity resolution off that path, per Chris's 2026-08-20
+        # decision.
+        outcome = run_identity_fastpath(
+            qbo_id=qbo_purchase.qbo_id,
+            realm_id=qbo_purchase.realm_id,
+            external_id=qbo_purchase.id,
+            entity_label="Expense",
+            external_label="QboPurchase",
+            mapping_label="PurchaseExpense",
+            read_direct_by_qbo_identity=self.expense_service.read_by_qbo_identity,
+            read_by_local_id=self.mapping_repo.read_by_expense_id,
+            read_by_external_id=self.mapping_repo.read_by_qbo_purchase_id,
+            external_id_attr="qbo_purchase_id",
+            record_conflict_issue=lambda entity, by_local, by_external: (
+                self._raise_identity_mapping_conflict_issue(
+                    qbo_purchase=qbo_purchase,
+                    dbo_expense_id=coerce_id(entity.id),
+                    local_side_mapping=by_local,
+                    qbo_side_mapping=by_external,
+                )
+            ),
+            conflict_message=lambda entity: (
+                f"PurchaseExpense identity conflict for QboPurchase {qbo_purchase.qbo_id} "
+                f"(id={qbo_purchase.id}): dbo.Expense {entity.id} already carries this "
+                f"identity but the mapping table disagrees. Not auto-repointed; see the "
+                f"recorded reconciliation issue. Skipping until a human resolves it."
+            ),
+            create_mapping=lambda local_id: self.mapping_repo.create(
+                expense_id=local_id, qbo_purchase_id=qbo_purchase.id
+            ),
+            apply_fields=_apply_expense_fields,
+        )
+        if outcome.hit:
+            return outcome.entity
+
         # Check for existing mapping
         mapping = self.mapping_repo.read_by_qbo_purchase_id(qbo_purchase.id)
         
@@ -137,16 +230,7 @@ class PurchaseExpenseConnector:
                         f"reference_number '{reference_number}' + vendor resolves to it for "
                         f"QboPurchase {qbo_purchase.id}; preserving mapping, skipping."
                     )
-            return self._update_existing_expense(
-                target,
-                qbo_purchase=qbo_purchase,
-                vendor_public_id=vendor_public_id,
-                expense_date=expense_date,
-                reference_number=reference_number,
-                memo=memo,
-                total_amount=total_amount,
-                qbo_purchase_lines=qbo_purchase_lines,
-            )
+            return _apply_expense_fields(target)
 
         # Create new Expense
         logger.info(f"Creating new Expense from QboPurchase {qbo_purchase.id}: reference_number={reference_number}")
@@ -204,54 +288,47 @@ class PurchaseExpenseConnector:
 
         return expense
 
-    def _update_existing_expense(
+    def _raise_identity_mapping_conflict_issue(
         self,
-        expense: Expense,
         *,
         qbo_purchase: QboPurchase,
-        vendor_public_id: str,
-        expense_date,
-        reference_number,
-        memo,
-        total_amount,
-        qbo_purchase_lines: List[QboPurchaseLine],
-    ) -> Expense:
+        dbo_expense_id: int,
+        local_side_mapping: Optional[PurchaseExpense],
+        qbo_side_mapping: Optional[PurchaseExpense],
+    ) -> None:
         """
-        Write the QBO-derived fields onto an existing Expense, then sync its line items.
-
-        Shared by the normal existing-mapping update path and the U-029 heal-in-place
-        path so the QboPurchase->Expense field mapping and the reference_number
-        preserve/upgrade decision live in exactly one place (no drift between the two
-        update sites).
-
-        KI-42 / U-024 (rule of three): never silently revert a human-corrected
-        reference_number on re-pull. The shared base helper keeps the stored value
-        unless it is empty/null or the QBO-<id> placeholder (which still upgrades to a
-        real doc_number when one appears). See base.field_ownership.
+        Record a dbo-identity <-> mapping-table split found by run_identity_fastpath's
+        resolve_mapping_state. Mirrors BillBillConnector's identically named/shaped
+        method — covers all three conflict shapes (qbo-side only, local-side only, or
+        both) in ONE issue, never silently dropping either side's blocker.
         """
-        effective_ref = preserve_human_edited_ref(
-            expense.reference_number, reference_number, qbo_purchase.qbo_id
+        parts = [
+            f"PurchaseExpense identity conflict. dbo.Expense {dbo_expense_id} carries "
+            f"native QBO identity for QboPurchase {qbo_purchase.id} "
+            f"(QboId={qbo_purchase.qbo_id}, RealmId={qbo_purchase.realm_id})."
+        ]
+        if qbo_side_mapping:
+            parts.append(
+                f"qbo-side: the mapping table still binds that same QboPurchase to a "
+                f"DIFFERENT Expense {qbo_side_mapping.expense_id} (mapping "
+                f"{qbo_side_mapping.id})."
+            )
+        if local_side_mapping:
+            parts.append(
+                f"local-side: Expense {dbo_expense_id}'s own mapping row (mapping "
+                f"{local_side_mapping.id}) still binds it to a DIFFERENT QboPurchase "
+                f"{local_side_mapping.qbo_purchase_id}."
+            )
+        parts.append("Not auto-repointed — investigate which side is correct.")
+        record_mapping_issue(
+            self.reconciliation_repo,
+            drift_type="expense_identity_conflict",
+            entity_type="Expense",
+            entity_public_id=None,
+            qbo_id=str(qbo_purchase.qbo_id) if qbo_purchase.qbo_id else None,
+            realm_id=qbo_purchase.realm_id or "",
+            details=" ".join(parts),
         )
-        updated = self.expense_service.update_by_public_id(
-            expense.public_id,
-            row_version=expense.row_version,
-            vendor_public_id=vendor_public_id,
-            expense_date=expense_date,
-            reference_number=effective_ref,
-            total_amount=total_amount,
-            memo=memo,
-            is_draft=False,
-            is_credit=qbo_purchase.credit or False,
-        )
-        expense_id = coerce_id(updated.id)
-        self.expense_service.repo.set_qbo_identity(
-            id=expense_id,
-            qbo_id=qbo_purchase.qbo_id,
-            realm_id=qbo_purchase.realm_id,
-            sync_token=getattr(qbo_purchase, "sync_token", None),
-        )
-        self._sync_line_items(updated.id, updated.public_id, qbo_purchase_lines, qbo_purchase.realm_id)
-        return updated
 
     def _record_missing_expense_issue(
         self,

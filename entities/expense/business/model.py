@@ -26,6 +26,8 @@ class Expense:
     # FK back to dbo.EmailMessage when this expense was created from a receipt
     # email (receipt-intake pipeline). NULL for manual / QBO-pulled expenses.
     source_email_message_id: Optional[int] = None
+    qbo_id: Optional[str] = None   # dbo-native QBO identity (U-238a); only ReadExpenseById/ReadExpenseByQboIdAndRealmId select it
+    realm_id: Optional[str] = None
 
     @property
     def row_version_bytes(self) -> Optional[bytes]:

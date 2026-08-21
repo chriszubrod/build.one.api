@@ -58,6 +58,8 @@ class ExpenseRepository:
                 # getattr-guarded: read sprocs that don't yet project this
                 # column simply yield None (no AttributeError).
                 source_email_message_id=getattr(row, "SourceEmailMessageId", None),
+                qbo_id=getattr(row, "QboId", None),
+                realm_id=getattr(row, "RealmId", None),
             )
         except AttributeError as error:
             logger.error(f"Attribute error during expense mapping: {error}")
@@ -326,6 +328,38 @@ class ExpenseRepository:
                 return self._from_db(row) if row else None
         except Exception as error:
             logger.error(f"Error during delete expense by ID: {error}")
+            raise map_database_error(error)
+
+    def read_by_qbo_identity(
+        self,
+        qbo_id: str,
+        realm_id: Optional[str] = None,
+        *,
+        actor_user_id: Optional[int] = None,
+        actor_is_system_admin: Optional[bool] = None,
+    ) -> Optional[Expense]:
+        """
+        Read an expense directly by its dbo-native QBO identity (U-283b),
+        bypassing the qbo.Purchase / qbo.PurchaseExpense staging/mapping
+        tables entirely. RBAC-scoped like every other Expense read.
+        """
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(
+                    cursor=cursor,
+                    name="ReadExpenseByQboIdAndRealmId",
+                    params={
+                        "QboId": qbo_id,
+                        "RealmId": realm_id,
+                        "ActorUserId": actor_user_id,
+                        "ActorIsSystemAdmin": _bit(actor_is_system_admin),
+                    },
+                )
+                row = cursor.fetchone()
+                return self._from_db(row)
+        except Exception as error:
+            logger.error(f"Error during read expense by QBO identity: {error}")
             raise map_database_error(error)
 
     def set_qbo_identity(

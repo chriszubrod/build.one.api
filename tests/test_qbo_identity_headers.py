@@ -181,6 +181,8 @@ def _make_expense_connector():
     mapping_repo.create.return_value = SimpleNamespace(id=1)
     expense_service = Mock()
     expense_service.repo = Mock()
+    # U-283b: these tests exercise the legacy create_mapping()/sync path.
+    stub_qbo_identity_fastpath_miss(expense_service)
     connector = PurchaseExpenseConnector(mapping_repo=mapping_repo, expense_service=expense_service)
     return connector, mapping_repo, expense_service.repo
 

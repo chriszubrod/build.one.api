@@ -7,10 +7,15 @@ placeholder (which still upgrades to a real doc_number). The CREATE path is
 unchanged (always set from the QBO-derived value). Mocks stand in for the
 expense_service + repos so no DB/QBO I/O runs.
 """
+import sys
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 import pytest
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from conftest import stub_qbo_identity_fastpath_miss
 
 from integrations.intuit.qbo.purchase.connector.expense.business.service import (
     PurchaseExpenseConnector,
@@ -63,6 +68,8 @@ def _build_connector():
     # cares about the reference_number preserve/upgrade decision.
     connector._get_vendor_public_id = Mock(return_value="vendor-pub-1")
     connector._line_connector = Mock()  # empty line list => no-op anyway
+    # U-283b: these tests exercise the legacy reference_number preserve/upgrade path.
+    stub_qbo_identity_fastpath_miss(connector.expense_service)
     return connector
 
 

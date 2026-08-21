@@ -443,16 +443,16 @@ def test_purchase_get_project_public_id_uses_realm_scoped_lookup_when_realm_give
     customer_project_repo = Mock()
     customer_project_repo.read_by_qbo_customer_id.return_value = mapping
 
+    project_service = Mock()
+    project_service.read_by_id.return_value = project
+
     connector = _build_purchase_line_connector(
         qbo_customer_repo=qbo_customer_repo,
         customer_project_repo=customer_project_repo,
+        project_service=project_service,
     )
 
-    with patch(
-        "integrations.intuit.qbo.purchase.connector.expense_line_item.business.service.ProjectService"
-    ) as mock_project_svc:
-        mock_project_svc.return_value.read_by_id.return_value = project
-        result = connector._get_project_public_id("QBO-100", "realm-1")
+    result = connector._get_project_public_id("QBO-100", "realm-1")
 
     assert result == "proj-pub-200"
     qbo_customer_repo.read_by_qbo_id_and_realm_id.assert_called_once_with("QBO-100", "realm-1")
@@ -471,16 +471,16 @@ def test_purchase_get_project_public_id_falls_back_to_unscoped_lookup_without_re
     customer_project_repo = Mock()
     customer_project_repo.read_by_qbo_customer_id.return_value = mapping
 
+    project_service = Mock()
+    project_service.read_by_id.return_value = project
+
     connector = _build_purchase_line_connector(
         qbo_customer_repo=qbo_customer_repo,
         customer_project_repo=customer_project_repo,
+        project_service=project_service,
     )
 
-    with patch(
-        "integrations.intuit.qbo.purchase.connector.expense_line_item.business.service.ProjectService"
-    ) as mock_project_svc:
-        mock_project_svc.return_value.read_by_id.return_value = project
-        result = connector._get_project_public_id("QBO-100")
+    result = connector._get_project_public_id("QBO-100")
 
     assert result == "proj-pub-200"
     qbo_customer_repo.read_by_qbo_id.assert_called_once_with("QBO-100")

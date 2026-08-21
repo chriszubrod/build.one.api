@@ -137,7 +137,7 @@ class BillBillConnector:
             sync its line items. Shared by the fast path's apply_fields and the
             legacy "mapping found" branch below so the QboBill->Bill field mapping
             lives in exactly one place (no drift between the two update sites) —
-            mirrors PurchaseExpenseConnector's `_update_existing_expense`.
+            mirrors PurchaseExpenseConnector's `_apply_expense_fields`.
 
             U-027 (rule of three): never clobber a human-corrected bill_number on
             re-pull. Preserve the stored value unless it is empty/null or the

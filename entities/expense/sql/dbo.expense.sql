@@ -50,6 +50,42 @@ CREATE INDEX IX_Expense_ReferenceNumber ON [dbo].[Expense] ([ReferenceNumber]);
 END
 GO
 
+-- Additive: QboId/RealmId/SyncToken (U-238a dbo-native identity) were added
+-- out-of-band before this base file was made canonical — the base CREATE TABLE
+-- above never declared them, which would abort a from-scratch build at
+-- SetExpenseQboIdentity's (and now ReadExpenseByQboIdAndRealmId's) CREATE
+-- PROCEDURE time (SQL error 207). Idempotent, no-op-safe against live —
+-- columns + the unique index already exist there. Same gap/fix as U-277's
+-- dbo.company.sql and this unit's dbo.bill.sql.
+IF OBJECT_ID('dbo.Expense', 'U') IS NOT NULL
+   AND NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('dbo.Expense') AND name = 'QboId')
+BEGIN
+    ALTER TABLE [dbo].[Expense] ADD [QboId] NVARCHAR(50) NULL;
+END
+GO
+
+IF OBJECT_ID('dbo.Expense', 'U') IS NOT NULL
+   AND NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('dbo.Expense') AND name = 'RealmId')
+BEGIN
+    ALTER TABLE [dbo].[Expense] ADD [RealmId] NVARCHAR(50) NULL;
+END
+GO
+
+IF OBJECT_ID('dbo.Expense', 'U') IS NOT NULL
+   AND NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('dbo.Expense') AND name = 'SyncToken')
+BEGIN
+    ALTER TABLE [dbo].[Expense] ADD [SyncToken] NVARCHAR(50) NULL;
+END
+GO
+
+IF OBJECT_ID('dbo.Expense', 'U') IS NOT NULL AND NOT EXISTS (
+    SELECT 1 FROM sys.indexes WHERE name = 'UQ_Expense_QboId_RealmId' AND object_id = OBJECT_ID('dbo.Expense')
+)
+BEGIN
+    CREATE UNIQUE INDEX UQ_Expense_QboId_RealmId ON [dbo].[Expense] ([QboId], [RealmId]) WHERE [QboId] IS NOT NULL;
+END
+GO
+
 -- Unique constraint to prevent duplicate ReferenceNumber for the same VendorId
 IF NOT EXISTS (SELECT 1 FROM sys.objects WHERE name = 'UQ_Expense_VendorId_ReferenceNumber' AND parent_object_id = OBJECT_ID('dbo.Expense'))
 BEGIN
@@ -160,9 +196,55 @@ BEGIN
         [TotalAmount],
         [Memo],
         [IsDraft],
-        [IsCredit]
+        [IsCredit],
+        [QboId],
+        [RealmId]
     FROM dbo.[Expense]
     WHERE [Id] = @Id;
+
+    COMMIT TRANSACTION;
+END;
+GO
+
+-- U-283b (Phase-4): direct dbo-native identity lookup, mirrors dbo.bill.sql's
+-- ReadBillByQboIdAndRealmId (U-283) / dbo.customer.sql's / dbo.project.sql's.
+-- Lets the Purchase connector resolve "does a dbo.Expense already exist for
+-- this external QBO id" WITHOUT hopping through the qbo.PurchaseExpense
+-- mapping table — every Expense synced at least once already carries
+-- QboId/RealmId via SetExpenseQboIdentity, so this is the steady-state fast
+-- path; the mapping-table lookup remains as a fallback for rows that predate
+-- identity stamping. RBAC-scoped via the existing UserCanAccessExpense UDF,
+-- like every other Expense read.
+CREATE OR ALTER PROCEDURE ReadExpenseByQboIdAndRealmId
+(
+    @QboId NVARCHAR(50),
+    @RealmId NVARCHAR(50) = NULL,
+    @ActorUserId BIGINT = NULL,
+    @ActorIsSystemAdmin BIT = NULL
+)
+AS
+BEGIN
+    BEGIN TRANSACTION;
+
+    SELECT
+        e.[Id],
+        e.[PublicId],
+        e.[RowVersion],
+        CONVERT(VARCHAR(19), e.[CreatedDatetime], 120) AS [CreatedDatetime],
+        CONVERT(VARCHAR(19), e.[ModifiedDatetime], 120) AS [ModifiedDatetime],
+        e.[VendorId],
+        CONVERT(VARCHAR(19), e.[ExpenseDate], 120) AS [ExpenseDate],
+        e.[ReferenceNumber],
+        e.[TotalAmount],
+        e.[Memo],
+        e.[IsDraft],
+        e.[IsCredit],
+        e.[QboId],
+        e.[RealmId]
+    FROM dbo.[Expense] e
+    WHERE e.[QboId] = @QboId
+      AND ((e.[RealmId] = @RealmId) OR (e.[RealmId] IS NULL AND @RealmId IS NULL))
+      AND dbo.UserCanAccessExpense(@ActorUserId, @ActorIsSystemAdmin, e.[Id]) = 1;
 
     COMMIT TRANSACTION;
 END;

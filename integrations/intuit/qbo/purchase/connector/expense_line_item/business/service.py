@@ -17,6 +17,7 @@ from entities.expense_line_item.business.service import ExpenseLineItemService
 from entities.expense_line_item.business.model import ExpenseLineItem
 from entities.sub_cost_code.business.service import SubCostCodeService
 from entities.project.business.service import ProjectService
+from integrations.intuit.qbo.base.identity_consistency import verify_project_qbo_identity
 from integrations.intuit.qbo.base.identity_drift import stamp_line_identity_or_warn
 from integrations.intuit.qbo.base.ids import coerce_id
 
@@ -73,6 +74,7 @@ class PurchaseLineExpenseLineItemConnector:
         qbo_item_repo: Optional[QboItemRepository] = None,
         customer_project_repo: Optional[CustomerProjectRepository] = None,
         qbo_customer_repo: Optional[QboCustomerRepository] = None,
+        project_service: Optional[ProjectService] = None,
     ):
         """Initialize the PurchaseLineExpenseLineItemConnector."""
         self.mapping_repo = mapping_repo or PurchaseLineExpenseLineItemRepository()
@@ -85,6 +87,7 @@ class PurchaseLineExpenseLineItemConnector:
         self.qbo_item_repo = qbo_item_repo or QboItemRepository()
         self.customer_project_repo = customer_project_repo or CustomerProjectRepository()
         self.qbo_customer_repo = qbo_customer_repo or QboCustomerRepository()
+        self.project_service = project_service or ProjectService()
 
     def sync_from_qbo_purchase_line(self, expense_id: int, expense_public_id: str, qbo_line: QboPurchaseLine, realm_id: Optional[str] = None) -> ExpenseLineItem:
         """
@@ -326,6 +329,26 @@ class PurchaseLineExpenseLineItemConnector:
         if cache_key in self._project_cache:
             return self._project_cache[cache_key]
 
+        # U-283b / U-276 §10 prereq: try dbo.Project's native QboId/RealmId directly
+        # first (mirrors U-283's bill_line_item repoint / U-276's push-side
+        # verify_project_qbo_identity pattern) before falling back to the
+        # qbo.Customer -> qbo.CustomerProject hop below. Every Project synced at
+        # least once already carries this identity via SetProjectQboIdentity.
+        # Read-only resolver — a disagreement just falls through to the legacy hop
+        # rather than a hard stop (there is no write here to protect, unlike the
+        # header identity fast path).
+        direct_project = self.project_service.read_by_qbo_identity(qbo_customer_ref_value, realm_id)
+        if direct_project:
+            verified_qbo_id = verify_project_qbo_identity(
+                direct_project,
+                customer_project_repo=self.customer_project_repo,
+                qbo_customer_repo=self.qbo_customer_repo,
+            )
+            if verified_qbo_id:
+                logger.debug(f"Found Project {direct_project.id} via direct dbo QboId lookup")
+                self._project_cache[cache_key] = direct_project.public_id
+                return direct_project.public_id
+
         # First find the QboCustomer by qbo_id
         if realm_id:
             qbo_customer = self.qbo_customer_repo.read_by_qbo_id_and_realm_id(qbo_customer_ref_value, realm_id)
@@ -344,7 +367,7 @@ class PurchaseLineExpenseLineItemConnector:
             return None
 
         # Get the Project
-        project = ProjectService().read_by_id(customer_mapping.project_id)
+        project = self.project_service.read_by_id(customer_mapping.project_id)
         if not project:
             logger.debug(f"Project not found for ID: {customer_mapping.project_id}")
             self._project_cache[cache_key] = None

@@ -523,6 +523,19 @@ class BillService:
             actor_is_system_admin=current_is_system_admin.get(),
         )
 
+    def read_by_qbo_identity(self, qbo_id: str, realm_id: Optional[str] = None) -> Optional[Bill]:
+        """
+        Read a bill directly by its dbo-native QBO identity (U-283) — the
+        Phase-4 repoint seam, bypassing the qbo.Bill/qbo.BillBill
+        staging/mapping tables.
+        """
+        return self.repo.read_by_qbo_identity(
+            qbo_id,
+            realm_id,
+            actor_user_id=current_user_id.get(),
+            actor_is_system_admin=current_is_system_admin.get(),
+        )
+
     def read_paginated(
         self,
         *,

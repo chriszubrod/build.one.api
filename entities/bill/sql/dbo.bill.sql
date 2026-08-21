@@ -64,6 +64,41 @@ CREATE INDEX IX_Bill_PaymentTermId ON [dbo].[Bill] ([PaymentTermId]);
 END
 GO
 
+-- Additive: QboId/RealmId/SyncToken (U-238a dbo-native identity) were added
+-- out-of-band before this base file was made canonical — the base CREATE TABLE
+-- above never declared them, which would abort a from-scratch build at
+-- SetBillQboIdentity's (and now ReadBillByQboIdAndRealmId's) CREATE PROCEDURE
+-- time (SQL error 207). Idempotent, no-op-safe against live — columns + the
+-- unique index already exist there. Same gap/fix as U-277's dbo.company.sql.
+IF OBJECT_ID('dbo.Bill', 'U') IS NOT NULL
+   AND NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('dbo.Bill') AND name = 'QboId')
+BEGIN
+    ALTER TABLE [dbo].[Bill] ADD [QboId] NVARCHAR(50) NULL;
+END
+GO
+
+IF OBJECT_ID('dbo.Bill', 'U') IS NOT NULL
+   AND NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('dbo.Bill') AND name = 'RealmId')
+BEGIN
+    ALTER TABLE [dbo].[Bill] ADD [RealmId] NVARCHAR(50) NULL;
+END
+GO
+
+IF OBJECT_ID('dbo.Bill', 'U') IS NOT NULL
+   AND NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('dbo.Bill') AND name = 'SyncToken')
+BEGIN
+    ALTER TABLE [dbo].[Bill] ADD [SyncToken] NVARCHAR(50) NULL;
+END
+GO
+
+IF OBJECT_ID('dbo.Bill', 'U') IS NOT NULL AND NOT EXISTS (
+    SELECT 1 FROM sys.indexes WHERE name = 'UQ_Bill_QboId_RealmId' AND object_id = OBJECT_ID('dbo.Bill')
+)
+BEGIN
+    CREATE UNIQUE INDEX UQ_Bill_QboId_RealmId ON [dbo].[Bill] ([QboId], [RealmId]) WHERE [QboId] IS NOT NULL;
+END
+GO
+
 -- Unique filtered index on Vendor + BillNumber + BillDate — prevents duplicates
 -- Filtered to non-NULL VendorId and BillNumber so drafts without these fields are not constrained
 IF EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_Bill_VendorId_BillDate_BillNumber' AND object_id = OBJECT_ID('dbo.Bill'))
@@ -148,9 +183,58 @@ BEGIN
         [IsDraft],
         [IntakeSource],
         [IntakeSourceDetail],
-        [SourceEmailMessageId]
+        [SourceEmailMessageId],
+        [QboId],
+        [RealmId]
     FROM dbo.[Bill]
     WHERE [Id] = @Id;
+
+    COMMIT TRANSACTION;
+END;
+GO
+
+-- U-283 (Phase-4): direct dbo-native identity lookup, mirrors dbo.customer.sql's
+-- ReadCustomerByQboIdAndRealmId / dbo.project.sql's ReadProjectByQboIdAndRealmId.
+-- Lets the Bill connector resolve "does a dbo.Bill already exist for this
+-- external QBO id" WITHOUT hopping through the qbo.BillBill mapping table —
+-- every Bill synced at least once already carries QboId/RealmId via
+-- SetBillQboIdentity, so this is the steady-state fast path; the mapping-table
+-- lookup remains as a fallback for rows that predate identity stamping.
+-- RBAC-scoped via the existing UserCanAccessBill UDF, like every other Bill read.
+CREATE OR ALTER PROCEDURE ReadBillByQboIdAndRealmId
+(
+    @QboId NVARCHAR(50),
+    @RealmId NVARCHAR(50) = NULL,
+    @ActorUserId BIGINT = NULL,
+    @ActorIsSystemAdmin BIT = NULL
+)
+AS
+BEGIN
+    BEGIN TRANSACTION;
+
+    SELECT
+        b.[Id],
+        b.[PublicId],
+        b.[RowVersion],
+        CONVERT(VARCHAR(19), b.[CreatedDatetime], 120) AS [CreatedDatetime],
+        CONVERT(VARCHAR(19), b.[ModifiedDatetime], 120) AS [ModifiedDatetime],
+        b.[VendorId],
+        b.[PaymentTermId],
+        CONVERT(VARCHAR(19), b.[BillDate], 120) AS [BillDate],
+        CONVERT(VARCHAR(19), b.[DueDate], 120) AS [DueDate],
+        b.[BillNumber],
+        b.[TotalAmount],
+        b.[Memo],
+        b.[IsDraft],
+        b.[IntakeSource],
+        b.[IntakeSourceDetail],
+        b.[SourceEmailMessageId],
+        b.[QboId],
+        b.[RealmId]
+    FROM dbo.[Bill] b
+    WHERE b.[QboId] = @QboId
+      AND ((b.[RealmId] = @RealmId) OR (b.[RealmId] IS NULL AND @RealmId IS NULL))
+      AND dbo.UserCanAccessBill(@ActorUserId, @ActorIsSystemAdmin, b.[Id]) = 1;
 
     COMMIT TRANSACTION;
 END;

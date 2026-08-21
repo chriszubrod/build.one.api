@@ -56,6 +56,10 @@ def _build_connector(**overrides):
     for key, value in overrides.items():
         setattr(connector, key, value)
     connector._get_vendor_public_id = Mock(return_value="vendor-pub-id")
+    # U-283: force the dbo-native identity fast path to miss (a bare Mock() call
+    # otherwise auto-returns a truthy Mock, short-circuiting these tests into the
+    # fast path instead of the legacy create/rollback path they're testing).
+    connector.bill_service.read_by_qbo_identity.return_value = None
     return connector
 
 

@@ -89,6 +89,11 @@ def _build_bill_connector():
     # the empty-read heal/skip decision.
     connector._get_vendor_public_id = Mock(return_value="vendor-pub-1")
     connector._sync_line_items = Mock()
+    # U-283: force the dbo-native identity fast path to miss (a bare Mock() call
+    # otherwise auto-returns a truthy Mock, which would short-circuit these tests
+    # into the fast path instead of exercising the legacy heal-don't-delete branch
+    # they're actually testing).
+    connector.bill_service.read_by_qbo_identity.return_value = None
     return connector
 
 

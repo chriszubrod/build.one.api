@@ -65,6 +65,8 @@ class BillRepository:
                 intake_source=getattr(row, "IntakeSource", None),
                 intake_source_detail=getattr(row, "IntakeSourceDetail", None),
                 source_email_message_id=getattr(row, "SourceEmailMessageId", None),
+                qbo_id=getattr(row, "QboId", None),
+                realm_id=getattr(row, "RealmId", None),
             )
         except AttributeError as error:
             logger.error(f"Attribute error during bill mapping: {error}")
@@ -590,6 +592,38 @@ class BillRepository:
                 return json.loads(row.ResultJson)
         except Exception as error:
             logger.error(f"Error reading bill completion result: {error}")
+            raise map_database_error(error)
+
+    def read_by_qbo_identity(
+        self,
+        qbo_id: str,
+        realm_id: Optional[str] = None,
+        *,
+        actor_user_id: Optional[int] = None,
+        actor_is_system_admin: Optional[bool] = None,
+    ) -> Optional[Bill]:
+        """
+        Read a bill directly by its dbo-native QBO identity (U-283), bypassing
+        the qbo.Bill / qbo.BillBill staging/mapping tables entirely.
+        RBAC-scoped like every other Bill read.
+        """
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(
+                    cursor=cursor,
+                    name="ReadBillByQboIdAndRealmId",
+                    params={
+                        "QboId": qbo_id,
+                        "RealmId": realm_id,
+                        "ActorUserId": actor_user_id,
+                        "ActorIsSystemAdmin": _bit(actor_is_system_admin),
+                    },
+                )
+                row = cursor.fetchone()
+                return self._from_db(row)
+        except Exception as error:
+            logger.error(f"Error during read bill by QBO identity: {error}")
             raise map_database_error(error)
 
     def set_qbo_identity(

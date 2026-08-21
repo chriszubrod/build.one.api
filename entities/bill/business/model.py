@@ -27,6 +27,8 @@ class Bill:
     intake_source: Optional[str] = None        # "manual" | "agent" | "script" — set-once at create
     intake_source_detail: Optional[str] = None  # username / agent name / script name
     source_email_message_id: Optional[int] = None  # FK → EmailMessage; populated by CreateBill OUTPUT, None from existing Read sprocs
+    qbo_id: Optional[str] = None   # dbo-native QBO identity (U-238a); only ReadBillById/ReadBillByQboIdAndRealmId select it
+    realm_id: Optional[str] = None
 
     @property
     def row_version_bytes(self) -> Optional[bytes]:

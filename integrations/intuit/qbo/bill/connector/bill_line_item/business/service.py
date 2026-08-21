@@ -20,6 +20,7 @@ from entities.bill_line_item.business.model import BillLineItem
 from entities.bill.business.service import BillService
 from entities.project.business.service import ProjectService
 from integrations.intuit.qbo.base.identity_drift import stamp_line_identity_or_warn
+from integrations.intuit.qbo.base.identity_consistency import verify_project_qbo_identity
 from integrations.intuit.qbo.base.ids import coerce_id
 
 logger = logging.getLogger(__name__)
@@ -260,6 +261,24 @@ class BillLineItemConnector:
         """
         if not qbo_customer_ref_value:
             return None
+
+        # U-283 §10 prereq: try dbo.Project's native QboId/RealmId directly
+        # first (mirrors U-276's push-side verify_project_qbo_identity pattern)
+        # before falling back to the qbo.Customer -> qbo.CustomerProject hop
+        # below. Every Project synced at least once already carries this
+        # identity via SetProjectQboIdentity. Read-only resolver — a disagreement
+        # just falls through to the legacy hop rather than a hard stop (there is
+        # no write here to protect, unlike the header identity fast path).
+        direct_project = self.project_service.read_by_qbo_identity(qbo_customer_ref_value, realm_id)
+        if direct_project:
+            verified_qbo_id = verify_project_qbo_identity(
+                direct_project,
+                customer_project_repo=self.customer_project_repo,
+                qbo_customer_repo=self.qbo_customer_repo,
+            )
+            if verified_qbo_id:
+                logger.debug(f"Found Project {direct_project.id} via direct dbo QboId lookup")
+                return direct_project.public_id
 
         # Find the QboCustomer by its QboId
         if realm_id:

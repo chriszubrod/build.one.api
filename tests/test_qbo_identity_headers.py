@@ -135,6 +135,10 @@ def _make_bill_connector():
     mapping_repo.create.return_value = SimpleNamespace(id=1)
     bill_service = Mock()
     bill_service.repo = Mock()
+    # U-283: force the dbo-native identity fast path to miss (a bare Mock() call
+    # otherwise auto-returns a truthy Mock, short-circuiting these tests into the
+    # fast path instead of the legacy create_mapping()/sync path they're testing).
+    bill_service.read_by_qbo_identity.return_value = None
     connector = BillBillConnector(mapping_repo=mapping_repo, bill_service=bill_service)
     return connector, mapping_repo, bill_service.repo
 

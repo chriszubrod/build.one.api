@@ -73,6 +73,14 @@ class PaymentTermService:
         """
         return self.repo.read_by_name(name)
 
+    def read_by_qbo_identity(self, qbo_id: str, realm_id: Optional[str] = None) -> Optional[PaymentTerm]:
+        """
+        Read a payment term directly by its dbo-native QBO identity (U-282) — the
+        Phase-4 repoint seam, bypassing the qbo.Term staging table. PaymentTerm carries
+        no row-level RBAC (unlike BillCredit/Project), so no access assertion here.
+        """
+        return self.repo.read_by_qbo_identity(qbo_id, realm_id)
+
     def update_by_public_id(
         self,
         public_id: str,

@@ -285,8 +285,13 @@ def _build_payment_term_connector() -> TermPaymentTermConnector:
     connector = TermPaymentTermConnector(
         mapping_repo=Mock(),
         payment_term_service=Mock(),
+        reconciliation_repo=Mock(),
     )
     connector.mapping_repo.read_by_qbo_term_id.return_value = None
+    # U-282: default the direct dbo-identity fast path to a miss so these tests keep
+    # exercising the mapping-table path they're testing (mirrors U-276's identical fix
+    # for customer/project above).
+    connector.payment_term_service.read_by_qbo_identity.return_value = None
     return connector
 
 

@@ -46,6 +46,8 @@ class PaymentTermRepository:
                 discount_days=row.DiscountDays,
                 due_days=row.DueDays,
                 qbo_active=getattr(row, "QboActive", None),
+                qbo_id=getattr(row, "QboId", None),
+                realm_id=getattr(row, "RealmId", None),
             )
         except AttributeError as error:
             logger.error(f"Attribute error during payment term mapping: {error}")
@@ -206,6 +208,26 @@ class PaymentTermRepository:
                 return self._from_db(row) if row else None
         except Exception as error:
             logger.error(f"Error during delete payment term by ID: {error}")
+            raise map_database_error(error)
+
+    def read_by_qbo_identity(self, qbo_id: str, realm_id: Optional[str] = None) -> Optional[PaymentTerm]:
+        """
+        Read a payment term directly by its dbo-native QBO identity (U-282), bypassing the
+        qbo.Term / qbo.TermPaymentTerm staging/mapping tables entirely. Mirrors
+        BillCreditRepository.read_by_qbo_identity (U-278).
+        """
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(
+                    cursor=cursor,
+                    name="ReadPaymentTermByQboIdAndRealmId",
+                    params={"QboId": qbo_id, "RealmId": realm_id},
+                )
+                row = cursor.fetchone()
+                return self._from_db(row)
+        except Exception as error:
+            logger.error(f"Error during read payment term by QBO identity: {error}")
             raise map_database_error(error)
 
     def set_qbo_identity(

@@ -21,6 +21,8 @@ class PaymentTerm:
     discount_days: Optional[int]
     due_days: Optional[int]
     qbo_active: Optional[bool] = None
+    qbo_id: Optional[str] = None
+    realm_id: Optional[str] = None
 
     @property
     def row_version_bytes(self) -> Optional[bytes]:

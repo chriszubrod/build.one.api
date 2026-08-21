@@ -18,6 +18,35 @@ CREATE TABLE [dbo].[PaymentTerm]
 END
 GO
 
+-- Idempotent column add for existing environments (U-282). Live since migration
+-- 238c_qbo_identity_reference.sql (2026-06) but never declared in this base file —
+-- a fresh environment built from just the base file would fail at CREATE PROCEDURE
+-- time the moment a sproc references [QboId]/[RealmId] (SQL error 207), the same trap
+-- U-277 found and fixed for dbo.company.sql/dbo.address.sql. Declared here so a
+-- from-scratch build matches prod. No-op-safe against live prod (columns AND the
+-- unique index already exist there from 238c).
+IF OBJECT_ID('dbo.PaymentTerm', 'U') IS NOT NULL
+   AND NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('dbo.PaymentTerm') AND name = 'QboId')
+BEGIN
+    ALTER TABLE [dbo].[PaymentTerm] ADD [QboId] NVARCHAR(50) NULL;
+END
+GO
+
+IF OBJECT_ID('dbo.PaymentTerm', 'U') IS NOT NULL
+   AND NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('dbo.PaymentTerm') AND name = 'RealmId')
+BEGIN
+    ALTER TABLE [dbo].[PaymentTerm] ADD [RealmId] NVARCHAR(50) NULL;
+END
+GO
+
+IF OBJECT_ID('dbo.PaymentTerm', 'U') IS NOT NULL AND NOT EXISTS (
+    SELECT 1 FROM sys.indexes WHERE name = 'UQ_PaymentTerm_QboId_RealmId' AND object_id = OBJECT_ID('dbo.PaymentTerm')
+)
+BEGIN
+    CREATE UNIQUE INDEX UQ_PaymentTerm_QboId_RealmId ON [dbo].[PaymentTerm] ([QboId], [RealmId]) WHERE [QboId] IS NOT NULL;
+END
+GO
+
 -- Add QboActive column if it does not exist (U-275: dbo-native mirror of
 -- qbo.Term.Active, replacing the read-side LEFT JOIN). NULL = no QBO
 -- identity yet or not yet backfilled; populated at pull time via
@@ -109,7 +138,9 @@ BEGIN
         pt.[DiscountPercent],
         pt.[DiscountDays],
         pt.[DueDays],
-        pt.[QboActive]
+        pt.[QboActive],
+        pt.[QboId],
+        pt.[RealmId]
     FROM dbo.[PaymentTerm] pt
     WHERE pt.[Id] = @Id;
 
@@ -245,6 +276,47 @@ BEGIN
         DELETED.[DiscountDays],
         DELETED.[DueDays]
     WHERE [Id] = @Id;
+
+    COMMIT TRANSACTION;
+END;
+GO
+
+-- U-282 (Phase-4, term repoint): direct dbo-native identity lookup, mirroring
+-- ReadBillCreditByQboIdAndRealmId (U-278) / ReadCustomerByQboIdAndRealmId (U-276). Lets
+-- TermPaymentTermConnector resolve "does a dbo.PaymentTerm already exist for this
+-- external QBO id" WITHOUT hopping through the qbo.Term / qbo.TermPaymentTerm
+-- staging/mapping tables — every PaymentTerm synced at least once already carries
+-- QboId/RealmId via SetPaymentTermQboIdentity, so this is the steady-state fast path;
+-- the mapping-table lookup remains as a fallback for rows that predate identity
+-- stamping. RealmId NULL-equality mirrors SetPaymentTermQboIdentity's own
+-- stolen-identity comparison. No RBAC threading — PaymentTerm has no row-level RBAC on
+-- direct-id reads (ReadPaymentTermById/ReadPaymentTermByPublicId are unscoped too).
+CREATE OR ALTER PROCEDURE ReadPaymentTermByQboIdAndRealmId
+(
+    @QboId NVARCHAR(50),
+    @RealmId NVARCHAR(50) = NULL
+)
+AS
+BEGIN
+    BEGIN TRANSACTION;
+
+    SELECT
+        pt.[Id],
+        pt.[PublicId],
+        pt.[RowVersion],
+        CONVERT(VARCHAR(19), pt.[CreatedDatetime], 120) AS [CreatedDatetime],
+        CONVERT(VARCHAR(19), pt.[ModifiedDatetime], 120) AS [ModifiedDatetime],
+        pt.[Name],
+        pt.[Description],
+        pt.[DiscountPercent],
+        pt.[DiscountDays],
+        pt.[DueDays],
+        pt.[QboActive],
+        pt.[QboId],
+        pt.[RealmId]
+    FROM dbo.[PaymentTerm] pt
+    WHERE pt.[QboId] = @QboId
+      AND ((pt.[RealmId] = @RealmId) OR (pt.[RealmId] IS NULL AND @RealmId IS NULL));
 
     COMMIT TRANSACTION;
 END;

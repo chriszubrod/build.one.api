@@ -373,6 +373,12 @@ def _make_payment_term_connector():
     mapping_repo.create.return_value = SimpleNamespace(id=1)
     payment_term_service = Mock()
     payment_term_service.repo = Mock()
+    # U-282: default the direct dbo-identity fast path to a miss, matching the two
+    # sibling builders already patched in test_u219_qbo_reference_pulls.py /
+    # test_u275_qbo_active_mirror.py — this file's own tests only exercise
+    # create_mapping() directly (not sync_from_qbo_term), so it's a no-op today, but
+    # keeps the builder consistent if a future test here calls sync_from_qbo_term.
+    payment_term_service.read_by_qbo_identity.return_value = None
     connector = TermPaymentTermConnector(
         mapping_repo=mapping_repo, payment_term_service=payment_term_service
     )

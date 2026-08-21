@@ -198,7 +198,14 @@ def test_vendor_create_path_threads_active():
 # ------------------------------------------------------------------------- #
 
 def _build_payment_term_connector():
-    return TermPaymentTermConnector(mapping_repo=Mock(), payment_term_service=Mock())
+    connector = TermPaymentTermConnector(
+        mapping_repo=Mock(), payment_term_service=Mock(), reconciliation_repo=Mock()
+    )
+    # U-282: default the direct dbo-identity fast path to a miss so these tests keep
+    # exercising the mapping-table path they're testing (mirrors U-276's identical fix
+    # for customer/project).
+    connector.payment_term_service.read_by_qbo_identity.return_value = None
+    return connector
 
 
 def test_payment_term_update_path_threads_active():

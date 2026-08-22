@@ -35,9 +35,10 @@ from integrations.intuit.qbo.purchase.connector.expense.business.service import 
     sync_purchase_attachments_to_expense_line_items,
 )
 from integrations.intuit.qbo.attachable.business.service import QboAttachableService
-from integrations.intuit.qbo.purchase.persistence.repo import QboPurchaseRepository, QboPurchaseLineRepository
+from integrations.intuit.qbo.purchase.persistence.repo import QboPurchaseLineRepository
 from integrations.intuit.qbo.purchase.external.client import QboPurchaseClient
 from integrations.intuit.qbo.auth.business.service import QboAuthService
+from entities.expense.business.service import ExpenseService
 
 logger = logging.getLogger(__name__)
 
@@ -73,18 +74,24 @@ def _dry_run_preview(
 
     logger.info(f"[DRY RUN] QBO returned {len(qbo_purchases)} purchases")
 
-    # Check existing local QBO purchase records (read-only)
-    purchase_repo = QboPurchaseRepository()
-    existing = purchase_repo.read_by_realm_id(realm_id)
-    existing_qbo_ids = {p.qbo_id for p in existing}
+    # U-298: classify create-vs-update against dbo.Expense's own native QboId
+    # identity (U-283b) — what PurchaseExpenseConnector actually resolves by —
+    # instead of qbo.Purchase staging-row existence. qbo.Purchase stays a
+    # read-only audit mirror (Chris's 2026-08-20 decision) written on every
+    # pull regardless of whether the Expense side landed, so checking IT for
+    # this classification can read create/update backwards vs. what the
+    # connector will really do (e.g. a staging row surviving an Expense create
+    # that failed/rolled back on a prior tick).
+    expense_service = ExpenseService()
+    existing_expense_qbo_ids = expense_service.read_qbo_ids_by_realm_id(realm_id)
 
-    would_create = [p for p in qbo_purchases if p.id not in existing_qbo_ids]
-    would_update = [p for p in qbo_purchases if p.id in existing_qbo_ids]
+    would_create = [p for p in qbo_purchases if p.id not in existing_expense_qbo_ids]
+    would_update = [p for p in qbo_purchases if p.id in existing_expense_qbo_ids]
 
-    logger.info(f"[DRY RUN] QBO staging table (qbo.Purchase):")
+    logger.info(f"[DRY RUN] dbo.Expense (native identity):")
     logger.info(f"[DRY RUN]   {len(would_create)} would be CREATED")
     logger.info(f"[DRY RUN]   {len(would_update)} would be UPDATED")
-    logger.info(f"[DRY RUN] Existing local purchases: {len(existing)}")
+    logger.info(f"[DRY RUN] Existing local expenses (this realm): {len(existing_expense_qbo_ids)}")
     logger.info("[DRY RUN] No changes were made to the local database.")
 
     sample = [
@@ -96,11 +103,11 @@ def _dry_run_preview(
         "dry_run": True,
         "direction": "QBO → BuildOne only (read-only from QBO)",
         "qbo_records_found": len(qbo_purchases),
-        "qbo_staging": {
+        "expense_identity": {
             "would_create": len(would_create),
             "would_update": len(would_update),
         },
-        "local_purchases_existing": len(existing),
+        "local_expenses_existing": len(existing_expense_qbo_ids),
         "sample_new_records": sample,
     }
 

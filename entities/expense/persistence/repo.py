@@ -362,6 +362,35 @@ class ExpenseRepository:
             logger.error(f"Error during read expense by QBO identity: {error}")
             raise map_database_error(error)
 
+    def read_qbo_ids_by_realm_id(
+        self,
+        realm_id: str,
+        *,
+        actor_user_id: Optional[int] = None,
+        actor_is_system_admin: Optional[bool] = None,
+    ) -> set:
+        """
+        Bulk dbo-native identity read (U-298): the set of QboIds already stamped
+        on dbo.Expense for a realm. RBAC-scoped like every other Expense read.
+        """
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(
+                    cursor=cursor,
+                    name="ReadExpenseQboIdsByRealmId",
+                    params={
+                        "RealmId": realm_id,
+                        "ActorUserId": actor_user_id,
+                        "ActorIsSystemAdmin": _bit(actor_is_system_admin),
+                    },
+                )
+                rows = cursor.fetchall()
+                return {row.QboId for row in rows if row and row.QboId}
+        except Exception as error:
+            logger.error(f"Error during read expense qbo ids by realm ID: {error}")
+            raise map_database_error(error)
+
     def set_qbo_identity(
         self,
         *,

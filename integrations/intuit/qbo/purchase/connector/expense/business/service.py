@@ -20,7 +20,10 @@ from integrations.intuit.qbo.base.compensation import rollback_orphan_header
 from integrations.intuit.qbo.base.identity_consistency import verify_vendor_qbo_identity
 from integrations.intuit.qbo.base.field_ownership import preserve_human_edited_ref, qbo_ref_or_placeholder
 from integrations.intuit.qbo.base.identity_fastpath import (
+    CONFLICT,
+    CONSISTENT,
     raise_concurrent_write_race,
+    resolve_mapping_state,
     run_identity_fastpath,
 )
 from integrations.intuit.qbo.base.ids import coerce_id
@@ -143,47 +146,55 @@ class PurchaseExpenseConnector:
             self._sync_line_items(expense_id, updated.public_id, qbo_purchase_lines, qbo_purchase.realm_id)
             return updated
 
-        # U-283b (Phase-4): resolve identity directly against dbo.Expense's native
-        # QboId/RealmId (U-238a) before falling back to the qbo.PurchaseExpense
-        # mapping-table hop below. Every Expense synced even once already carries
-        # this identity (set_qbo_identity is called on both the update and create
-        # paths), so this covers the steady-state case without touching qbo.Purchase
-        # at all. Mirrors BillBillConnector's U-283 fast path exactly — conflict->RAISE
-        # is structural (base.identity_fastpath), never a fall-through to the legacy
-        # path below. qbo.Purchase/qbo.PurchaseLine remain a read-only audit mirror for
-        # the expense-coding cockpit's recode_purchase_line (below, untouched) — this
-        # repoint only takes identity resolution off that path, per Chris's 2026-08-20
-        # decision.
-        outcome = run_identity_fastpath(
-            qbo_id=qbo_purchase.qbo_id,
-            realm_id=qbo_purchase.realm_id,
-            external_id=qbo_purchase.id,
-            entity_label="Expense",
-            external_label="QboPurchase",
-            mapping_label="PurchaseExpense",
-            read_direct_by_qbo_identity=self.expense_service.read_by_qbo_identity,
-            read_by_local_id=self.mapping_repo.read_by_expense_id,
-            read_by_external_id=self.mapping_repo.read_by_qbo_purchase_id,
-            external_id_attr="qbo_purchase_id",
-            record_conflict_issue=lambda entity, by_local, by_external: (
-                self._raise_identity_mapping_conflict_issue(
-                    qbo_purchase=qbo_purchase,
-                    dbo_expense_id=coerce_id(entity.id),
-                    local_side_mapping=by_local,
-                    qbo_side_mapping=by_external,
-                )
-            ),
-            conflict_message=lambda entity: (
-                f"PurchaseExpense identity conflict for QboPurchase {qbo_purchase.qbo_id} "
-                f"(id={qbo_purchase.id}): dbo.Expense {entity.id} already carries this "
-                f"identity but the mapping table disagrees. Not auto-repointed; see the "
-                f"recorded reconciliation issue. Skipping until a human resolves it."
-            ),
-            create_mapping=lambda local_id: self.mapping_repo.create(
-                expense_id=local_id, qbo_purchase_id=qbo_purchase.id
-            ),
-            apply_fields=_apply_expense_fields,
-        )
+        def _resolve_identity_fastpath():
+            """
+            U-283b (Phase-4): resolve identity directly against dbo.Expense's native
+            QboId/RealmId (U-238a) before falling back to the qbo.PurchaseExpense
+            mapping-table hop below. Every Expense synced even once already carries
+            this identity (set_qbo_identity is called on both the update and create
+            paths), so this covers the steady-state case without touching qbo.Purchase
+            at all. Mirrors BillBillConnector's U-283 fast path exactly — conflict->RAISE
+            is structural (base.identity_fastpath), never a fall-through to the legacy
+            path below. qbo.Purchase/qbo.PurchaseLine remain a read-only audit mirror for
+            the expense-coding cockpit's recode_purchase_line (below, untouched) — this
+            repoint only takes identity resolution off that path, per Chris's 2026-08-20
+            decision.
+
+            Extracted to a closure (U-298) so it can be called a second time,
+            unchanged, as a create-time recheck below — see that call site for why.
+            """
+            return run_identity_fastpath(
+                qbo_id=qbo_purchase.qbo_id,
+                realm_id=qbo_purchase.realm_id,
+                external_id=qbo_purchase.id,
+                entity_label="Expense",
+                external_label="QboPurchase",
+                mapping_label="PurchaseExpense",
+                read_direct_by_qbo_identity=self.expense_service.read_by_qbo_identity,
+                read_by_local_id=self.mapping_repo.read_by_expense_id,
+                read_by_external_id=self.mapping_repo.read_by_qbo_purchase_id,
+                external_id_attr="qbo_purchase_id",
+                record_conflict_issue=lambda entity, by_local, by_external: (
+                    self._raise_identity_mapping_conflict_issue(
+                        qbo_purchase=qbo_purchase,
+                        dbo_expense_id=coerce_id(entity.id),
+                        local_side_mapping=by_local,
+                        qbo_side_mapping=by_external,
+                    )
+                ),
+                conflict_message=lambda entity: (
+                    f"PurchaseExpense identity conflict for QboPurchase {qbo_purchase.qbo_id} "
+                    f"(id={qbo_purchase.id}): dbo.Expense {entity.id} already carries this "
+                    f"identity but the mapping table disagrees. Not auto-repointed; see the "
+                    f"recorded reconciliation issue. Skipping until a human resolves it."
+                ),
+                create_mapping=lambda local_id: self.mapping_repo.create(
+                    expense_id=local_id, qbo_purchase_id=qbo_purchase.id
+                ),
+                apply_fields=_apply_expense_fields,
+            )
+
+        outcome = _resolve_identity_fastpath()
         if outcome.hit:
             return outcome.entity
 
@@ -233,6 +244,24 @@ class PurchaseExpenseConnector:
                     )
             return _apply_expense_fields(target)
 
+        # U-298 (Wave-1): re-run the SAME dbo-native fast path immediately before
+        # minting a brand-new Expense. Nothing serializes concurrent
+        # sync_from_qbo_purchase calls for the same QboPurchase (no sp_getapplock
+        # at this level — run_identity_fastpath's own create-mapping recheck above
+        # already documents this as a pre-existing, cross-family gap), so a second
+        # process racing this exact record between the check at the top of this
+        # method and this point would otherwise mint a genuine duplicate:
+        # SetExpenseQboIdentity's theft-clear UPDATE does not fail on a
+        # unique-index violation, it silently steals the (QboId, RealmId) pair
+        # onto whichever row stamps it LAST — leaving one Expense correctly
+        # identified and the other permanently orphaned (no QboId left to ever
+        # re-resolve it by). Recheck here folds into the race's winner (via the
+        # exact same self-heal / conflict handling as the top-of-function check)
+        # instead of creating the loser.
+        recheck = _resolve_identity_fastpath()
+        if recheck.hit:
+            return recheck.entity
+
         # Create new Expense
         logger.info(f"Creating new Expense from QboPurchase {qbo_purchase.id}: reference_number={reference_number}")
         expense = self.expense_service.create(
@@ -258,6 +287,47 @@ class PurchaseExpenseConnector:
             )
             logger.info(f"Created mapping: Expense {expense_id} <-> QboPurchase {qbo_purchase.id}")
         except Exception as e:
+            # U-298 (Gate-1 hunt finding, confirmed P1): a concurrent sync_from_qbo_purchase
+            # racing this SAME QboPurchase (no sp_getapplock serializes these — see the
+            # recheck comment above) can win between create_mapping's own set_qbo_identity
+            # stamp and its mapping_repo.create insert: the racer's identity-fastpath
+            # recheck sees this Expense's freshly-stamped identity, finds no mapping yet
+            # (MISSING), and self-heals by inserting the SAME (expense_id, qbo_purchase_id)
+            # pair directly via run_identity_fastpath's own guard-bypassing lambda — which
+            # is exactly what the insert above is now failing on (a benign unique-constraint
+            # collision, not a real failure). Blindly rolling back here would DELETE the
+            # racer's now-valid, already-mapped (and possibly already line-synced) Expense —
+            # a silent, unrecoverable loss of a legitimately-completed financial record with
+            # no FK to stop it (ExpenseService.delete_by_public_id's own mapping cleanup
+            # would happily remove the racer's mapping first, then the header). Re-check
+            # before rolling back, via the SAME resolve_mapping_state() identity_fastpath.py
+            # already uses for its own create-mapping race recheck (/simplify pass: this used
+            # to hand-roll a narrower copy of that check) — CONSISTENT means a racer already
+            # validly bound this exact pair (return its result, don't destroy it); CONFLICT
+            # means the mapping table disagrees with a DIFFERENT row (record the issue like
+            # every other conflict path in this file, then still roll back this genuine
+            # orphan); MISSING falls through unchanged (a real failure, not a resolved race).
+            recheck_state, recheck_by_local, recheck_by_external = resolve_mapping_state(
+                local_id=expense_id,
+                external_id=qbo_purchase.id,
+                read_by_local_id=self.mapping_repo.read_by_expense_id,
+                read_by_external_id=self.mapping_repo.read_by_qbo_purchase_id,
+                external_id_attr="qbo_purchase_id",
+            )
+            if recheck_state == CONSISTENT:
+                logger.warning(
+                    f"Expense {expense_id}'s own mapping create raced with a concurrent "
+                    f"sync of the SAME QboPurchase {qbo_purchase.id}, which won first; "
+                    f"returning its result instead of rolling back a valid Expense."
+                )
+                return self.expense_service.read_by_id(expense_id) or expense
+            if recheck_state == CONFLICT:
+                self._raise_identity_mapping_conflict_issue(
+                    qbo_purchase=qbo_purchase,
+                    dbo_expense_id=expense_id,
+                    local_side_mapping=recheck_by_local,
+                    qbo_side_mapping=recheck_by_external,
+                )
             try:
                 self.expense_service.delete_by_public_id(expense.public_id)
                 logger.warning(

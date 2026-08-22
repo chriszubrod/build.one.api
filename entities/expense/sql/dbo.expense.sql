@@ -250,6 +250,34 @@ BEGIN
 END;
 GO
 
+-- U-298 (Wave-1): bulk sibling of ReadExpenseByQboIdAndRealmId above — the set
+-- of QboIds already stamped on dbo.Expense for a realm. Lets
+-- scripts/sync_qbo_purchase.py's dry-run preview classify create-vs-update
+-- against the SAME identity the connector actually resolves by (one query),
+-- instead of qbo.Purchase staging-row existence, which can diverge from it
+-- (e.g. a staging row surviving an Expense create that failed/rolled back on
+-- a prior tick). RBAC-scoped via the existing UserCanAccessExpense UDF, like
+-- every other Expense read.
+CREATE OR ALTER PROCEDURE ReadExpenseQboIdsByRealmId
+(
+    @RealmId NVARCHAR(50),
+    @ActorUserId BIGINT = NULL,
+    @ActorIsSystemAdmin BIT = NULL
+)
+AS
+BEGIN
+    BEGIN TRANSACTION;
+
+    SELECT e.[QboId]
+    FROM dbo.[Expense] e
+    WHERE e.[RealmId] = @RealmId
+      AND e.[QboId] IS NOT NULL
+      AND dbo.UserCanAccessExpense(@ActorUserId, @ActorIsSystemAdmin, e.[Id]) = 1;
+
+    COMMIT TRANSACTION;
+END;
+GO
+
 GO
 
 CREATE OR ALTER PROCEDURE ReadExpenseByPublicId

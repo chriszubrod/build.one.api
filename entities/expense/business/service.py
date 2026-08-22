@@ -300,6 +300,19 @@ class ExpenseService:
             actor_is_system_admin=current_is_system_admin.get(),
         )
 
+    def read_qbo_ids_by_realm_id(self, realm_id: str) -> set:
+        """
+        Bulk dbo-native identity read (U-298): the set of QboIds already stamped
+        on dbo.Expense for a realm — lets a caller classify create-vs-update
+        against the same identity PurchaseExpenseConnector actually resolves by,
+        without a per-record round trip.
+        """
+        return self.repo.read_qbo_ids_by_realm_id(
+            realm_id,
+            actor_user_id=current_user_id.get(),
+            actor_is_system_admin=current_is_system_admin.get(),
+        )
+
     def read_paginated(
         self,
         *,

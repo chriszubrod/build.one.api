@@ -146,8 +146,48 @@ Bill's, Purchase's, and VendorCredit's fingerprint tiers now all match directly 
 (Amount/Description/ServiceDate, `DirectDbo=1`) — the same dbo-native shape Bill's own fallback tier already used
 since U-177. The three prior `qbo.*Line`-staged arms (each `CustomerRefValue`-scoped) and the 3-clause `NOT EXISTS`
 "staging-preferred" guard they fed are removed; nothing is left to defer to. Tier 0 (LinkedTxn exact-identity
-match) is untouched — it's QBO-string identity, not fingerprint matching, and needs family-level dbo-native line
-identity to re-home (U-283's territory).
+match) is untouched at the time of this note — it's QBO-string identity, not fingerprint matching.
+
+**Correction (U-301c, 2026-08-22):** the "family-level dbo-native line identity" framing above was wrong. Tier
+0c/0d never needed line identity at all — `LinkedTxnId` only ever names the *parent* Bill/Purchase transaction,
+never a specific line, so there's no per-line QBO id for a line-identity fastpath (U-293/U-293b) to resolve
+against. The actual (and much older) enabler was `dbo.Bill`/`dbo.Expense`'s own header `QboId`/`RealmId`
+(U-238a — the columns both tables' Tier-0 join depends on; the read-function units that later consumed them,
+U-283 for Bill and U-283b for Expense, are a separate citation, not this SQL's dependency) plus an amount
+fingerprint against that header's own dbo lines, gated on the line's own `QboId IS NOT NULL` (U-293/U-293b line
+identity — see the fix note below) — the same general shape as the Tier 1-3 fix above, just anchored on an exact
+`LinkedTxnId` header match instead of a header-level fingerprint. U-301c repointed both tiers onto that shape;
+`qbo.Bill`/`qbo.BillLine`/`qbo.BillLineItemBillLine` and `qbo.Purchase`/`qbo.PurchaseLine`/
+`qbo.PurchaseLineExpenseLineItem` are no longer read by this sproc at all. This same misattribution was also
+carried into `docs/staging_removal_phase6_readiness.md` (§0 point 5, the `### bill`/`### purchase` sections, and
+Wave 2) — corrected there too.
+
+**U-301c fix, same day (adversarial review caught this live on prod data):** the first repoint fingerprinted
+against *every* dbo line under the identified Bill/Expense, with no gate on whether that specific line had ever
+been individually synced to QBO. The old `qbo.BillLineItemBillLine`/`qbo.PurchaseLineExpenseLineItem` mapping
+tables are strictly 1:1, so the old join could only ever surface an individually-mapped line — verified live on
+Bill.Id=16897 (QboId `65749`): BillLineItem 21553 (individually mapped) and sibling 20210 (never mapped) share
+Amount 25676.76; the old join returns exactly 1 row, the un-gated new join returned 2, turning a clean match into
+a false "ambiguous". Fix: require `dbli.[QboId]`/`deli.[QboId] IS NOT NULL`, restoring the same "was this line
+actually synced" precision fully dbo-natively (no `qbo.*` reach). Mutation-proven: removing the guard reproduces
+the exact 2-row regression (`scripts/verify_propose_invoice_source_links_tier0.py`); a static text guard
+(`tests/test_propose_invoice_source_links_no_staging.py`) now runs in the standard pytest suite so an accidental
+revert of either the `qbo.*` staging read or this gate fails loudly.
+
+**Residual, accepted (not fixed — no dbo equivalent exists to fix it with):** dbo.BillLineItem/dbo.ExpenseLineItem
+carry no `LineNum` column, so `SourceLineNum` is `NULL` for Tier 0 (same as Tiers 1-3 always were). Two
+individually-mapped sibling lines sharing the same amount can still both match Tier 0 — the `QboId IS NOT NULL`
+gate narrows the population back to legitimately-synced lines, it doesn't disambiguate between two of them.
+`resolve_link_proposals`' one positional auto-apply tie-break (index-for-index pairing when an ambiguity group's
+line-count exactly equals its source-count) then falls back to `dbo.BillLineItem`/`dbo.ExpenseLineItem` `Id`
+order — an insertion-order proxy for true QBO line order, not a guarantee of it. Zero live rows exercise this
+today (no `LinkedTxnType='Bill'`/`'Purchase'` provenance rows exist), and it fails toward the safe outcome
+(`status="ambiguous"`) far more often than not (this exact shape is why the module docstring already documents
+same-fingerprint multi-line invoices as this file's dominant known ambiguity case) — but a future engineer
+capturing QBO's `LinkedTxn.TxnLineId` into `InvoiceLineItemSourceProvenance` (not currently ingested — see
+`integrations/intuit/qbo/invoice/business/service.py`'s pull path, which discards it — though the field exists in
+the schema and is already used on this connector's push side) would close this for real without touching Tier 0's
+shape again.
 
 **Accepted tradeoff, verified empirically against live prod data (80-invoice real sample, 2026-08-19):** the new
 tiers carry no `CustomerRefValue`/project narrowing.

@@ -570,22 +570,42 @@ BEGIN
         WHERE ili.[InvoiceId] = @InvoiceId
     )
     -- =========================================================================
-    -- Tier 0 — direct LinkedTxn -> staged Bill/Purchase (U-186, U-244).
-    -- Prefer this over the fingerprint tiers below: it is an exact QBO-id chain,
-    -- so resolve_link_proposals (min-tier) picks it first.
-    -- KEYSPACE: joins go QBO-string -> QBO-string (qb.QboId=lc.LinkedTxnId);
-    -- qb.Id / qp.Id (BIGINT) are NEVER aliased as dbo ids — the dbo line id
-    -- comes from the map table (map.BillLineItemId etc.).
+    -- Tier 0 — direct LinkedTxn -> dbo-native Bill/Expense header (U-186, U-244,
+    -- repointed off qbo.* staging by U-301c).
+    -- Prefer this over the fingerprint tiers below: the HEADER hop is an exact
+    -- QBO-id chain (LinkedTxnId -> Bill/Expense.QboId), so resolve_link_proposals
+    -- (min-tier) picks it first. The LINE hop is not exact — see the U-301c note
+    -- below for its amount-fingerprint precision limits.
     -- RC-mediated Tier-0 arms (LinkedTxn=ReimburseCharge -> rc.SourceTxnId) were
     -- removed as provably dead per U-242: qbo.ReimburseCharge.SourceTxnId is
     -- never populated by QBO at any lifecycle stage — see
     -- docs/rc_source_linking_signal_2026_08_16.md. Only direct Bill/Purchase
     -- LinkedTxn hops (0c/0d) remain.
-    -- U-274 scope note: Tier 0's qbo.Bill/BillLine + qbo.Purchase/PurchaseLine
-    -- reach is QBO-string IDENTITY matching (LinkedTxnId), not fingerprint
-    -- line-matching, and stays out of this unit's scope — it needs family-level
-    -- dbo-native line identity to re-home (U-283's territory), not just the
-    -- amount/description/date fingerprint this unit re-homes below.
+    -- U-301c: repointed off the qbo.Bill/BillLine/BillLineItemBillLine and
+    -- qbo.Purchase/PurchaseLine/PurchaseLineExpenseLineItem staging chains onto
+    -- dbo.Bill/dbo.Expense's own native QboId/RealmId (U-238a header identity —
+    -- NOT U-293/U-293b line identity, which cannot apply here: LinkedTxnId only
+    -- ever names the PARENT transaction, never a specific line, so there is no
+    -- per-line QBO id for a line-identity fastpath to resolve against; an
+    -- amount fingerprint against the identified header's own dbo lines is the
+    -- correct match, same as the old qbo.*Line amount-fingerprint join did).
+    -- SourceLineNum has no dbo equivalent (BillLineItem/ExpenseLineItem carry no
+    -- LineNum column) and is NULL here, same as the Tier 1-3 fingerprint tiers
+    -- below. DirectDbo stays 0 (unchanged) — it signals "exact LinkedTxn-id
+    -- match", the KI-35 precedence tier over the Tier 1-3 fingerprint fallback,
+    -- independent of which table backs the identity lookup.
+    -- Line-level gate: dbli.[QboId]/deli.[QboId] IS NOT NULL requires the
+    -- matched dbo line to have ITSELF been individually synced to QBO (fully
+    -- dbo-native via U-293/U-293b line identity) — restoring the precision the
+    -- old qbo.BillLineItemBillLine/PurchaseLineExpenseLineItem mapping tables
+    -- gated on (they're strictly 1:1, so only an individually-mapped line
+    -- could ever surface there). Without this gate, an unmapped sibling
+    -- sharing a mapped line's amount also matches, turning a clean single
+    -- candidate into a false "ambiguous" — live-verified regression + fix
+    -- rationale in docs/staging_removal_phase4_5_scoping.md's "U-301c fix"
+    -- note, mutation-proven in scripts/verify_propose_invoice_source_links_tier0.py.
+    -- Residual (accepted, same doc): amount-only fingerprinting means two
+    -- individually-mapped siblings sharing an amount can still both match.
     -- =========================================================================
 
     -- Tier 0c: InvoiceLine.LinkedTxn points straight at a Bill (no RC intermediary).
@@ -593,16 +613,15 @@ BEGIN
         lc.[InvoiceLineItemId],
         CAST(0 AS TINYINT) AS [Tier],
         N'BillLineItem' AS [SourceType],
-        map.[BillLineItemId] AS [SourceLineItemId],
+        dbli.[Id] AS [SourceLineItemId],
         dbli.[ProjectId] AS [SourceProjectId],
-        bl.[LineNum] AS [SourceLineNum],
+        CAST(NULL AS INT) AS [SourceLineNum],
         CAST(0 AS BIT) AS [DirectDbo]
     FROM LineCtx lc
-    INNER JOIN qbo.[Bill] qb ON qb.[QboId] = lc.[LinkedTxnId] AND qb.[RealmId] = @RealmId
-    INNER JOIN qbo.[BillLine] bl ON bl.[QboBillId] = qb.[Id]
-        AND ABS(bl.[Amount] - lc.[QboAmount]) < 0.01
-    INNER JOIN qbo.[BillLineItemBillLine] map ON map.[QboBillLineId] = bl.[Id]
-    INNER JOIN dbo.[BillLineItem] dbli ON dbli.[Id] = map.[BillLineItemId]
+    INNER JOIN dbo.[Bill] b ON b.[QboId] = lc.[LinkedTxnId] AND b.[RealmId] = @RealmId
+    INNER JOIN dbo.[BillLineItem] dbli ON dbli.[BillId] = b.[Id]
+        AND dbli.[QboId] IS NOT NULL
+        AND ABS(dbli.[Amount] - lc.[QboAmount]) < 0.01
     WHERE lc.[LinkedTxnType] = N'Bill'
 
     UNION ALL
@@ -612,16 +631,15 @@ BEGIN
         lc.[InvoiceLineItemId],
         CAST(0 AS TINYINT) AS [Tier],
         N'ExpenseLineItem' AS [SourceType],
-        map.[ExpenseLineItemId] AS [SourceLineItemId],
+        deli.[Id] AS [SourceLineItemId],
         deli.[ProjectId] AS [SourceProjectId],
-        pl.[LineNum] AS [SourceLineNum],
+        CAST(NULL AS INT) AS [SourceLineNum],
         CAST(0 AS BIT) AS [DirectDbo]
     FROM LineCtx lc
-    INNER JOIN qbo.[Purchase] qp ON qp.[QboId] = lc.[LinkedTxnId] AND qp.[RealmId] = @RealmId
-    INNER JOIN qbo.[PurchaseLine] pl ON pl.[QboPurchaseId] = qp.[Id]
-        AND ABS(pl.[Amount] - lc.[QboAmount]) < 0.01
-    INNER JOIN qbo.[PurchaseLineExpenseLineItem] map ON map.[QboPurchaseLineId] = pl.[Id]
-    INNER JOIN dbo.[ExpenseLineItem] deli ON deli.[Id] = map.[ExpenseLineItemId]
+    INNER JOIN dbo.[Expense] e ON e.[QboId] = lc.[LinkedTxnId] AND e.[RealmId] = @RealmId
+    INNER JOIN dbo.[ExpenseLineItem] deli ON deli.[ExpenseId] = e.[Id]
+        AND deli.[QboId] IS NOT NULL
+        AND ABS(deli.[Amount] - lc.[QboAmount]) < 0.01
     WHERE lc.[LinkedTxnType] = N'Purchase'
 
     UNION ALL

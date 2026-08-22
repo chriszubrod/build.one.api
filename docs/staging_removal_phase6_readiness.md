@@ -44,20 +44,25 @@ Reading all 13 reports together surfaces the same handful of structural gaps, in
    push side back toward a fall-back"). Retiring `qbo.CustomerProject`/`qbo.Customer`/`qbo.Vendor`/
    `qbo.VendorVendor` therefore isn't just "finish the remaining repoints" — it requires an explicit decision to
    relax or redesign that safety net, which is a risk call, not pure engineering.
-4. **Reconciliation and outbox-conflict code was never in scope for any repoint unit.** `integrations/intuit/
-   qbo/reconciliation/business/service.py`'s daily missing/voided detectors, and `integrations/intuit/qbo/
-   outbox/business/worker.py`'s conflict-refresh handlers, read `qbo.Bill`/`BillBill`, `qbo.Invoice`/
-   `InvoiceInvoice`, and `qbo.VendorCredit`/`VendorCreditBillCredit` directly and unconditionally — confirmed
-   actively firing (live `qbo.ReconciliationIssue` rows dated 2026-08-20/21). No unit, shipped or booked, touches
-   this layer for any family.
-5. **A live, deployed sproc still reaches directly into 3 families' staging tables for exact-identity matching.**
-   `ProposeInvoiceSourceLinks`' **Tier 0** (as opposed to the fingerprint Tiers 1-3, which U-274 closed) still
-   `INNER JOIN`s `qbo.[Bill]`/`qbo.[BillLine]`/`qbo.[BillLineItemBillLine]` (Tier 0c) and `qbo.[Purchase]`/
-   `qbo.[PurchaseLine]`/`qbo.[PurchaseLineExpenseLineItem]` (Tier 0d) — confirmed via live `OBJECT_DEFINITION`,
-   not the doc. It matches 0 rows today only because no `LinkedTxnType='Bill'` provenance row exists yet — it is
-   dormant-by-data, not dead code, and would fire the moment one does. (VendorCredit's equivalent Tier-3 reach —
-   the one the assignment's own brief flagged from §7 — **is** actually closed, by U-274/§9; the brief cited the
-   stale §7 section instead of the superseding §9. Confirmed by direct read of the live sproc body.)
+4. **Reconciliation and outbox-conflict code was never in scope for any repoint unit at the time this audit was
+   written.** `integrations/intuit/qbo/reconciliation/business/service.py`'s daily missing/voided detectors, and
+   `integrations/intuit/qbo/outbox/business/worker.py`'s conflict-refresh handlers, read `qbo.Bill`/`BillBill`,
+   `qbo.Invoice`/`InvoiceInvoice`, and `qbo.VendorCredit`/`VendorCreditBillCredit` directly and unconditionally —
+   confirmed actively firing (live `qbo.ReconciliationIssue` rows dated 2026-08-20/21). **Update (U-301,
+   2026-08-22):** this layer is now booked as **U-301a** (reconciliation detectors) and **U-301b** (outbox
+   refresh handlers) — see `## 2. Dependency ordering` below.
+5. ~~**A live, deployed sproc still reaches directly into 3 families' staging tables for exact-identity
+   matching.** `ProposeInvoiceSourceLinks`' **Tier 0** (as opposed to the fingerprint Tiers 1-3, which U-274
+   closed) still `INNER JOIN`s `qbo.[Bill]`/`qbo.[BillLine]`/`qbo.[BillLineItemBillLine]` (Tier 0c) and
+   `qbo.[Purchase]`/`qbo.[PurchaseLine]`/`qbo.[PurchaseLineExpenseLineItem]` (Tier 0d) — confirmed via live
+   `OBJECT_DEFINITION`, not the doc. It matches 0 rows today only because no `LinkedTxnType='Bill'` provenance row
+   exists yet — it is dormant-by-data, not dead code, and would fire the moment one does.~~ **Shipped as U-301c
+   (2026-08-22).** `ProposeInvoiceSourceLinks`' Tier 0c/0d now join `dbo.[Bill]`/`dbo.[BillLineItem]` and
+   `dbo.[Expense]`/`dbo.[ExpenseLineItem]` only — zero remaining references to any of the six `qbo.*` tables
+   named above (confirmed by direct read of the current sproc body; guarded going forward by
+   `tests/test_propose_invoice_source_links_no_staging.py`). (VendorCredit's equivalent Tier-3 reach — the one
+   the assignment's own brief flagged from §7 — **is** actually closed, by U-274/§9; the brief cited the stale §7
+   section instead of the superseding §9. Confirmed by direct read of the live sproc body.)
 6. **Some "deliberate, permanent design" claims from prior docs are themselves stale.** `dbo.payment_term.sql`'s
    `qbo.Term.Active` LEFT JOIN, described in the scoping doc as a considered permanent U-255 design, was in fact
    already superseded by **U-275** the very next day — confirmed by reading the live base file (no such JOIN
@@ -83,7 +88,7 @@ confirming SQL/deploy state, `decision` = blocked on a Chris product call.
 | bill | Bill | 20196 | mirror | none | unit | **NEW** — Tier 0c + reconciliation + outbox repoint |
 | bill | BillLine | 24531 | mirror | none | unit | same as Bill |
 | bill | BillBill | 19981 | junction | fallback | unit | **NEW** — reconciliation/outbox/delete-cleanup repoint |
-| bill | BillLineItemBillLine | 23553 | junction | fallback | unit | U-293-dw (in flight) + Tier 0c + reconciliation/outbox |
+| bill | BillLineItemBillLine | 23553 | junction | fallback | unit | U-293-dw (in flight) + reconciliation/outbox — Tier 0c repointed off it by U-301c |
 | company_info | CompanyInfo | 1 | mirror | none | unit | **NEW** — field-value read + router + CLI tools |
 | company_info | CompanyInfoCompany | 1 | junction | fallback | unit | **NEW** — structural conflict-check decision |
 | customer | Customer | 209 | mirror | fallback | unit | compound — see §1.5 |
@@ -101,7 +106,7 @@ confirming SQL/deploy state, `decision` = blocked on a Chris product call.
 | purchase | Purchase | 12336 | keep | none | **decision (permanent)** | KEPT — feeds `/expense-coding` cockpit |
 | purchase | PurchaseLine | 12896 | keep | none | **decision (permanent)** | KEPT — feeds `/expense-coding` cockpit |
 | purchase | PurchaseExpense | 11557 | junction | fallback | unit | **NEW** — CREATE path + 2 admin endpoints |
-| purchase | PurchaseLineExpenseLineItem | 12069 | junction | none | unit | U-293b + Tier 0d |
+| purchase | PurchaseLineExpenseLineItem | 12069 | junction | none | unit | U-293b — Tier 0d repointed off it by U-301c |
 | reimburse_charge | ReimburseCharge | 26650 | special | full | **decision** | pure keep-vs-retire call, code/schema clean |
 | term | Term | 6 | mirror | fallback | unit | **NEW** — sales-term-ref repoint (high frequency) |
 | term | TermPaymentTerm | 6 | junction | fallback | unit | same as Term |
@@ -159,16 +164,25 @@ U-283 (header) and U-293 (line, current HEAD) are both deployed. But:
 - **`ProposeInvoiceSourceLinks`' Tier 0c — confirmed live via `OBJECT_DEFINITION`, not doc — still `INNER JOIN`s
   `qbo.[Bill]`/`qbo.[BillLine]`/`qbo.[BillLineItemBillLine]` directly** for exact LinkedTxn matching. This
   contradicts the assignment's premise that U-274 closed all of Bill's cross-family reach — U-274 only closed
-  the *fingerprint* tiers; Tier 0 was explicitly left for "family-level dbo-native line identity" that nobody
-  has gone back to wire up. It matches 0 rows today only because no such provenance row exists yet.
+  the *fingerprint* tiers. It matches 0 rows today only because no such provenance row exists yet.
+  ~~Tier 0 was explicitly left for "family-level dbo-native line identity" that nobody has gone back to wire
+  up.~~ **Wrong causal attribution, corrected by U-301c (2026-08-22):** Tier 0c never needed line identity —
+  `LinkedTxnId` names the parent Bill, never a line, so no line-identity fastpath applies here. It needed (and
+  already had, since U-238a/U-283) `dbo.Bill`'s own header `QboId`/`RealmId` plus an amount fingerprint against
+  that Bill's own dbo lines. U-301c shipped this repoint; see below.
 - `BillBill`/`BillLineItemBillLine` are read+written unconditionally by 4-5 call sites outside the connector's
   own identity check: `BillService.delete_by_public_id`'s mapping cleanup, both reconciliation detectors, the
   outbox refresh handler, and (for the line table) `create_mapping` on every new line pulled.
 - **U-293-dw (the RealmId-NULL dual-write bug) has an uncommitted, undeployed fix in the working tree right
-  now** (see §4) — until it ships, dbo-native line identity cannot be trusted as sole source of truth.
+  now** (see §4) — until it ships, dbo-native *line* identity cannot be trusted as sole source of truth for
+  whatever eventually consumes `BillLineItem.QboId` directly. It was never a prerequisite for Tier 0c, which
+  never reads that column (header identity only).
 
-**Blocked on a new cross-family unit** repointing Tier 0c + the reconciliation detectors + the outbox handler +
-the delete-cleanup path off all 4 tables — plus shipping U-293-dw first.
+**U-301c (2026-08-22) shipped the Tier 0c repoint** — off `qbo.Bill`/`qbo.BillLine`/`qbo.BillLineItemBillLine`
+onto `dbo.Bill.QboId/RealmId` + `dbo.BillLineItem` amount fingerprint. `Bill`/`BillLine`/`BillBill`/
+`BillLineItemBillLine` remain blocked on the reconciliation detectors + outbox refresh handler + the
+delete-cleanup path (U-301a/U-301b territory) and, for `BillLineItemBillLine` specifically, U-293-dw's dual-write
+fix — Tier 0c is no longer one of the reasons.
 
 ### company_info — `qbo.CompanyInfo` (1), `qbo.CompanyInfoCompany` (1)
 
@@ -262,9 +276,12 @@ independent of any repoint status. `PurchaseExpense` (header junction) had its s
 repointed by U-283b, but the CREATE path, two live admin endpoints
 (`/cancel-expense-from-qbo-purchase`, `/ensure-expense-from-qbo-purchase`), and a dormant-but-wired push path all
 still read/write it directly — blocked on a new unit. `PurchaseLineExpenseLineItem` has zero line-identity
-repoint work (U-293b territory) **and** is independently confirmed still read by `ProposeInvoiceSourceLinks`'
-Tier 0d (contradicting a same-day claim that this reach had already closed — it hadn't; U-274's own comment says
-this was deliberately left for "U-283's territory," i.e. this exact gap).
+repoint work (U-293b territory) — that part stands — but the claim that it was **also** still read by
+`ProposeInvoiceSourceLinks`' Tier 0d for that reason is a **wrong causal attribution, corrected by U-301c
+(2026-08-22)**: Tier 0d never needed line identity — `LinkedTxnId` names the parent Purchase, never a line — it
+needed (and already had, since U-238a) `dbo.Expense`'s own header `QboId`/`RealmId` plus an amount fingerprint
+against that Expense's own dbo lines. U-301c shipped this repoint, off `qbo.Purchase`/`qbo.PurchaseLine`/
+`qbo.PurchaseLineExpenseLineItem` entirely; `PurchaseLineExpenseLineItem`'s remaining blocker is U-293b alone.
 
 ### reimburse_charge — `qbo.ReimburseCharge` (26650)
 
@@ -334,9 +351,10 @@ clears its own blockers) must always go children-before-parents in that order. O
 CompanyInfoCompany` has **no enforced FK** in either direction (confirmed via `sys.foreign_keys` — zero rows)
 despite carrying both `CompanyId` and `QboCompanyInfoId` under their own unique indexes — a real but
 DB-unenforced dependency; treat it the same as an FK for ordering purposes. Across families, the only hard
-cross-family dependency is the shared `ProposeInvoiceSourceLinks` sproc (Tier 0c/0d) and the reconciliation
-service — both are consumers that must be repointed before Bill's/Purchase's/VendorCredit's tables can drop,
-regardless of within-family readiness.
+cross-family dependency was the shared `ProposeInvoiceSourceLinks` sproc (Tier 0c/0d) and the reconciliation
+service/outbox handlers — all consumers that must be repointed before Bill's/Purchase's/VendorCredit's tables
+can drop, regardless of within-family readiness. **U-301c (2026-08-22) cleared the `ProposeInvoiceSourceLinks`
+half** of that dependency; the reconciliation-service/outbox half remains open (U-301a/U-301b).
 
 ---
 
@@ -367,8 +385,11 @@ vendorcredit — likely purchase too, not independently confirmed here):**
 - **NEW, cross-family** — repoint `qbo/reconciliation/business/service.py`'s per-family missing/voided
   detectors and `qbo/outbox/business/worker.py`'s conflict-refresh handlers onto dbo-native identity. One unit
   covering all affected families is more efficient than four near-identical ones.
-- **NEW** — repoint `ProposeInvoiceSourceLinks` Tier 0c/0d off `qbo.Bill*`/`qbo.Purchase*` onto dbo-native line
-  identity (blocked on Wave 3's line-identity work landing first for the relevant family).
+- ~~**NEW** — repoint `ProposeInvoiceSourceLinks` Tier 0c/0d off `qbo.Bill*`/`qbo.Purchase*` onto dbo-native line
+  identity (blocked on Wave 3's line-identity work landing first for the relevant family).~~ **Shipped as
+  U-301c (2026-08-22).** Wrong premise, corrected: Tier 0c/0d never needed Wave 3's line identity — they needed
+  the already-live U-238a/U-283 header identity plus an amount fingerprint against that header's own dbo lines.
+  Not a Wave-3 dependency at all; independent and buildable immediately, which is exactly what U-301c did.
 
 **Wave 3 — line-identity fan-out (booked, not dispatched):**
 - **U-293b** — Invoice/Expense/BillCredit line identity, mirroring Bill's U-293 pilot. Per this audit, finishing

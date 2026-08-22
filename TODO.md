@@ -2,6 +2,19 @@
 
 Carry-over items from sessions. Check off as done; prune anything stale.
 
+## U-301c follow-ups (ProposeInvoiceSourceLinks Tier 0c/0d repoint) — deferred, not scope-creeped in (2026-08-22)
+
+- [ ] **`entities/invoice/business/reconciliation.py`'s module docstring and `_filter_candidates_ki35`'s docstring
+  now mischaracterize `DirectDbo=0`.** They describe it as "qbo staging" / "a fingerprint match against a
+  qbo.BillLine/PurchaseLine row" — after U-301c, no tier in `ProposeInvoiceSourceLinks` reads any `qbo.*` table at
+  all (Tiers 1-3 were already dbo-native since U-274). `DirectDbo=0` now means "exact parent-identity match" vs.
+  `DirectDbo=1`'s "pure local fingerprint fallback," independent of any staging table. Out of this unit's strict
+  file scope (Python, not SQL) — a 2-line docstring wording fix, not a behavior change.
+- [ ] **Capture QBO's `LinkedTxn.TxnLineId` into `InvoiceLineItemSourceProvenance`** to give Tier 0c/0d a real
+  per-line identity instead of an amount fingerprint — would close the residual documented in
+  `docs/staging_removal_phase4_5_scoping.md`'s "Residual, accepted" note (U-301c section). Field already exists in
+  the schema and is populated push-side; the pull path currently discards it. Zero live urgency.
+
 ## U-303 follow-ups (CustomerProjectConnector name-match bind CustomerId write) — deferred, not scope-creeped in (2026-08-22)
 
 U-303 fixed one gap: the "no mapping, name-match bind" branch of `sync_from_qbo_customer`

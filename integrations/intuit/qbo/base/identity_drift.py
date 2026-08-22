@@ -105,11 +105,55 @@ def stamp_line_identity_or_warn(
     qbo_id: Optional[str],
     realm_id: Optional[str],
     context: str,
+    enforce_realm_pairing: bool = False,
 ) -> None:
     """Best-effort dbo line identity stamp (U-238b). By every call site the line
     item and its mapping are already committed, so a stamp failure must never
     abort or roll back otherwise-successful work — log and move on (the row is
-    a self-healing pending_backfill candidate for the next pull)."""
+    a self-healing pending_backfill candidate for the next pull).
+
+    U-293-dw: QboId and RealmId should be stamped as an atomic pair — a QBO
+    line id is only unique within its own parent transaction (not globally),
+    so QboId alone is not a complete identity. Two independent layers now
+    enforce this; they're deliberately NOT the same mechanism, and callers
+    should not assume the Python-layer one below is the only thing standing
+    between them and a partial stamp:
+
+    1. THIS function's `enforce_realm_pairing=True` (opt-in, default False)
+       skips the write entirely — never calls the repo at all — when qbo_id
+       is known but the realm_id THIS CALL passed is falsy. Default is False
+       because a Python-side skip here can't distinguish "this row has no
+       realm anywhere" from "this row already has one, this call just didn't
+       pass a fresh value" — a caller must only opt in once it also supplies
+       the existing row's own realm_id as a fallback (so an already
+       realm-complete row keeps self-healing its QboId on every touch);
+       flipping this on without that fallback would regress the pre-existing
+       unconditional every-touch self-heal for that caller's family. Only
+       BillLineItemConnector opts in today.
+    2. Independently, the underlying Set*LineItemQboIdentity sproc (ALL FOUR
+       — bill/invoice/expense/bill_credit line items) now carries its OWN
+       atomic-pair guard: it reads the row's existing RealmId itself before
+       deciding whether to write QboId, so it protects every caller
+       uniformly regardless of this function's `enforce_realm_pairing` flag
+       or how the row is reached — including scripts/backfill_qbo_identity_lines.py's
+       `_stamp_via_sproc`, which calls the sproc directly, bypassing this
+       function entirely. This is the layer that actually prevents a NEW
+       partial-stamp row for invoice/expense/bill_credit line items today.
+
+    So "the sibling families keep their pre-existing behavior" below refers
+    ONLY to layer 1 (this function still calls the repo unconditionally for
+    them, exactly as before U-293-dw) — it does NOT mean they're unprotected
+    against partial stamps; layer 2 covers that. Layer 1 is wired for the
+    other 3 families in U-293b, once each gets the matching Python-side
+    existing-realm-id fallback this needs to be safe to enable.
+    """
+    if enforce_realm_pairing and qbo_id is not None and not realm_id:
+        logger.warning(
+            f"{context} but refusing to stamp dbo identity: qbo_id={qbo_id!r} is known "
+            f"but realm_id is missing. Skipping rather than partial-stamping (QboId alone "
+            f"is not unique across parents) — leaving as a pending_backfill candidate."
+        )
+        return
     try:
         repo.set_qbo_identity(id=id, qbo_id=qbo_id, realm_id=realm_id)
     except Exception as stamp_err:

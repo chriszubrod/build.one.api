@@ -165,3 +165,78 @@ def test_sync_from_qbo_bill_line_update_path_dual_writes_identity():
         qbo_id="QBO-LINE-UPD",
         realm_id="realm-update",
     )
+
+
+# ---------------------------------------------------------------------------
+# U-293-dw: write-side dual-write gap (QboId stamped, RealmId left NULL)
+# ---------------------------------------------------------------------------
+#
+# Reproduces the live-prod shape found at U-293's Gate-2 (dbo.BillLineItem
+# Ids 24621/24668: QboId stamped, RealmId NULL) — a caller of
+# sync_from_qbo_bill_line that has qbo_line_id but not realm_id in hand. The
+# fix (stamp_line_identity_or_warn's atomic-pair guard) means such a call must
+# skip the stamp entirely rather than partial-stamp; a caller that already has
+# realm_id on the existing row must still succeed via the update path's own
+# fallback.
+
+
+def test_sync_from_qbo_bill_line_create_path_skips_stamp_when_realm_id_missing():
+    """Reproduces BillLineItem 24668: CREATE path called with no realm_id (the
+    connector-level default). Before the fix this stamped QboId with RealmId
+    left NULL; after the fix it must not stamp at all — the row stays a
+    pending_backfill candidate rather than landing in the half-identified
+    state found live in prod."""
+    connector, mapping_repo = _build_connector()
+    mapping_repo.create.return_value = SimpleNamespace(id=1)
+
+    result = connector.sync_from_qbo_bill_line(
+        100, _make_qbo_bill_line(line_id=1, qbo_line_id="QBO-LINE-NOREALM")
+    )
+
+    assert result.id == 200  # create still succeeds — only the identity stamp is skipped
+    connector.bill_line_item_service.repo.set_qbo_identity.assert_not_called()
+
+
+def test_sync_from_qbo_bill_line_update_path_skips_stamp_when_realm_unknown_both_ways():
+    """Reproduces BillLineItem 24621's shape at the UPDATE/self-heal path: this
+    call has no realm_id AND the existing row has never been stamped with one
+    either (dbo.BillLineItem.RealmId IS NULL) — the atomic-pair guard must
+    still block the stamp, not just on CREATE."""
+    connector, mapping_repo = _build_connector()
+    mapping = SimpleNamespace(id=10, bill_line_item_id=200)
+    line_item = SimpleNamespace(id=200, public_id="bli-pub-1", row_version="rv", realm_id=None)
+    mapping_repo.read_by_qbo_bill_line_id.return_value = mapping
+    connector.bill_line_item_service.read_by_id.return_value = line_item
+    connector.bill_line_item_service.update_by_public_id.return_value = line_item
+
+    connector.sync_from_qbo_bill_line(
+        100, _make_qbo_bill_line(line_id=1, qbo_line_id="QBO-LINE-NOREALM")
+    )
+
+    connector.bill_line_item_service.repo.set_qbo_identity.assert_not_called()
+
+
+def test_sync_from_qbo_bill_line_update_path_falls_back_to_existing_realm_id():
+    """A line that's already realm-complete must still self-heal its QboId on
+    every touch (e.g. QBO recycled the line id) even when THIS call's
+    realm_id is empty — the update path threads the row's own already-stamped
+    realm_id through as a fallback so the new atomic-pair guard doesn't wrongly
+    block a legitimate re-stamp on an already-good row."""
+    connector, mapping_repo = _build_connector()
+    mapping = SimpleNamespace(id=10, bill_line_item_id=200)
+    line_item = SimpleNamespace(
+        id=200, public_id="bli-pub-1", row_version="rv", realm_id="realm-existing"
+    )
+    mapping_repo.read_by_qbo_bill_line_id.return_value = mapping
+    connector.bill_line_item_service.read_by_id.return_value = line_item
+    connector.bill_line_item_service.update_by_public_id.return_value = line_item
+
+    connector.sync_from_qbo_bill_line(
+        100, _make_qbo_bill_line(line_id=1, qbo_line_id="QBO-LINE-RECYCLED")
+    )
+
+    connector.bill_line_item_service.repo.set_qbo_identity.assert_called_once_with(
+        id=200,
+        qbo_id="QBO-LINE-RECYCLED",
+        realm_id="realm-existing",
+    )

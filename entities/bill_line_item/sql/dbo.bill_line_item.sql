@@ -450,7 +450,18 @@ BEGIN
     SET NOCOUNT ON;
     DECLARE @Stolen BIT = 0;
 
-    IF @QboId IS NOT NULL
+    -- U-293-dw: QboId is only unique within its own parent transaction, so it
+    -- is not a complete identity without RealmId. Defense-in-depth alongside
+    -- the Python-layer guard in stamp_line_identity_or_warn — only ever set
+    -- QboId to a NEW value when RealmId will end up populated, either from
+    -- this call or from the row's own already-stamped value. A row with no
+    -- realm anywhere (this call or prior) stays fully unstamped rather than
+    -- landing in the QboId-set/RealmId-NULL half state found live in prod.
+    DECLARE @ExistingQboId NVARCHAR(50), @ExistingRealmId NVARCHAR(50);
+    SELECT @ExistingQboId = [QboId], @ExistingRealmId = [RealmId] FROM dbo.[BillLineItem] WHERE [Id] = @Id;
+    DECLARE @RealmComplete BIT = CASE WHEN @RealmId IS NOT NULL OR @ExistingRealmId IS NOT NULL THEN 1 ELSE 0 END;
+
+    IF @QboId IS NOT NULL AND @RealmComplete = 1
     BEGIN
         UPDATE sib SET sib.[QboId] = NULL, sib.[RealmId] = NULL, sib.[ModifiedDatetime] = SYSUTCDATETIME()
         FROM dbo.[BillLineItem] sib
@@ -463,16 +474,25 @@ BEGIN
 
     UPDATE dbo.[BillLineItem]
     SET
-        [QboId] = CASE WHEN @QboId IS NOT NULL THEN @QboId ELSE [QboId] END,
+        [QboId] = CASE WHEN @QboId IS NOT NULL AND @RealmComplete = 1 THEN @QboId ELSE [QboId] END,
         [RealmId] = CASE WHEN @RealmId IS NOT NULL THEN @RealmId ELSE [RealmId] END,
         [ModifiedDatetime] = SYSUTCDATETIME()
     WHERE [Id] = @Id
       AND (
-            (@QboId IS NOT NULL AND ([QboId] IS NULL OR [QboId] <> @QboId))
+            (@QboId IS NOT NULL AND @RealmComplete = 1 AND ([QboId] IS NULL OR [QboId] <> @QboId))
          OR (@RealmId IS NOT NULL AND ([RealmId] IS NULL OR [RealmId] <> @RealmId))
       );
 
-    SELECT @Id AS [Id], @QboId AS [QboId], @RealmId AS [RealmId], @Stolen AS [Stolen];
+    -- Reflect what's actually stored, not the raw input params — @RealmComplete
+    -- can skip the QboId write above, and echoing @QboId regardless would tell
+    -- a caller a stamp succeeded when it didn't (no current caller reads these
+    -- 2 columns from this result, only [Stolen] — but a future one shouldn't
+    -- be misled). Computed from the pre-read + the same CASE logic as the
+    -- UPDATE above rather than a second table read — the values are already
+    -- fully known at this point.
+    DECLARE @FinalQboId NVARCHAR(50) = CASE WHEN @QboId IS NOT NULL AND @RealmComplete = 1 THEN @QboId ELSE @ExistingQboId END;
+    DECLARE @FinalRealmId NVARCHAR(50) = CASE WHEN @RealmId IS NOT NULL THEN @RealmId ELSE @ExistingRealmId END;
+    SELECT @Id AS [Id], @FinalQboId AS [QboId], @FinalRealmId AS [RealmId], @Stolen AS [Stolen];
 END;
 GO
 

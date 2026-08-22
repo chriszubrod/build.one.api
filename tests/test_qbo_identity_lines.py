@@ -7,7 +7,11 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from integrations.intuit.qbo.base.identity_drift import LINE_ENTITY_SPECS, classify_qbo_identity_drift
+from integrations.intuit.qbo.base.identity_drift import (
+    LINE_ENTITY_SPECS,
+    classify_qbo_identity_drift,
+    stamp_line_identity_or_warn,
+)
 from conftest import stub_qbo_identity_fastpath_miss
 
 
@@ -115,6 +119,77 @@ def test_set_qbo_identity_stolen_logs_warning(repo_path, entity_label, caplog):
             repo.set_qbo_identity(id=7, qbo_id="line-stolen", realm_id="realm-x")
 
     assert any(entity_label in record.message and "stole QBO identity" in record.message for record in caplog.records)
+
+
+# ---------------------------------------------------------------------------
+# stamp_line_identity_or_warn — U-293-dw atomic-pair guard
+# ---------------------------------------------------------------------------
+#
+# A QBO line id is only unique within its own parent transaction (real
+# cross-parent collisions confirmed live — see run_line_identity_fastpath's
+# own docstring), so QboId alone is not a complete identity. Before this
+# guard, a caller with qbo_id but no realm_id would silently partial-stamp:
+# the underlying Set*LineItemQboIdentity sproc's preserve-on-NULL UPDATE sets
+# QboId (from the row's own known value) but leaves RealmId untouched — NULL
+# on a brand-new row. Confirmed live in prod: dbo.BillLineItem Ids 24621 and
+# 24668.
+#
+# `enforce_realm_pairing` is opt-in (default False): a Claude Workflow review
+# (Codex out-of-credits fallback) confirmed that applying the guard blanket to
+# all 4 line families would silently regress invoice/expense/bill_credit line
+# items' pre-existing unconditional every-touch self-heal, since only
+# BillLineItemConnector was given the compensating "fall back to the row's own
+# realm_id" fix. Only bill_line_item opts in until each sibling family gets
+# the same fallback wired (U-293b).
+
+
+def test_stamp_line_identity_or_warn_skips_when_enforced_and_realm_id_missing(caplog):
+    """Reproduces the exact live-prod shape: qbo_id known, realm_id missing,
+    caller opts in. Must not reach the repo at all — a partial stamp is worse
+    than no stamp."""
+    repo = MagicMock()
+    with caplog.at_level("WARNING"):
+        stamp_line_identity_or_warn(
+            repo, id=24621, qbo_id="2", realm_id=None, context="test", enforce_realm_pairing=True
+        )
+    repo.set_qbo_identity.assert_not_called()
+    assert any("refusing to stamp" in record.message for record in caplog.records)
+
+
+def test_stamp_line_identity_or_warn_skips_on_empty_string_realm_id_when_enforced():
+    """An empty-string realm_id is equally incomplete, not just None."""
+    repo = MagicMock()
+    stamp_line_identity_or_warn(
+        repo, id=1, qbo_id="1", realm_id="", context="test", enforce_realm_pairing=True
+    )
+    repo.set_qbo_identity.assert_not_called()
+
+
+def test_stamp_line_identity_or_warn_default_does_not_enforce_pairing():
+    """The default (enforce_realm_pairing=False) must behave exactly as
+    before this unit — this is what keeps invoice/expense/bill_credit line
+    items' pre-existing self-heal-on-every-touch behavior unregressed; those
+    3 families' call sites were not changed to opt in."""
+    repo = MagicMock()
+    stamp_line_identity_or_warn(repo, id=1, qbo_id="1", realm_id=None, context="test")
+    repo.set_qbo_identity.assert_called_once_with(id=1, qbo_id="1", realm_id=None)
+
+
+def test_stamp_line_identity_or_warn_stamps_when_both_present():
+    """The healthy, overwhelmingly common case must be unaffected."""
+    repo = MagicMock()
+    stamp_line_identity_or_warn(
+        repo, id=1, qbo_id="1", realm_id="realm-1", context="test", enforce_realm_pairing=True
+    )
+    repo.set_qbo_identity.assert_called_once_with(id=1, qbo_id="1", realm_id="realm-1")
+
+
+def test_stamp_line_identity_or_warn_allows_qbo_id_none_with_realm_id_none():
+    """qbo_id=None is a legitimate no-op/clear call, not the partial-stamp
+    hazard this guard targets — it must still reach the repo unchanged."""
+    repo = MagicMock()
+    stamp_line_identity_or_warn(repo, id=1, qbo_id=None, realm_id=None, context="test")
+    repo.set_qbo_identity.assert_called_once_with(id=1, qbo_id=None, realm_id=None)
 
 
 # ---------------------------------------------------------------------------

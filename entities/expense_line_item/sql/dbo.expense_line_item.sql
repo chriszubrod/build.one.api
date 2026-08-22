@@ -350,7 +350,16 @@ BEGIN
     SET NOCOUNT ON;
     DECLARE @Stolen BIT = 0;
 
-    IF @QboId IS NOT NULL
+    -- U-293-dw: QboId is only unique within its own parent transaction, so it
+    -- is not a complete identity without RealmId. Only ever set QboId to a
+    -- NEW value when RealmId will end up populated, either from this call or
+    -- from the row's own already-stamped value — mirrors
+    -- dbo.bill_line_item.sql's SetBillLineItemQboIdentity guard exactly.
+    DECLARE @ExistingQboId NVARCHAR(50), @ExistingRealmId NVARCHAR(50);
+    SELECT @ExistingQboId = [QboId], @ExistingRealmId = [RealmId] FROM dbo.[ExpenseLineItem] WHERE [Id] = @Id;
+    DECLARE @RealmComplete BIT = CASE WHEN @RealmId IS NOT NULL OR @ExistingRealmId IS NOT NULL THEN 1 ELSE 0 END;
+
+    IF @QboId IS NOT NULL AND @RealmComplete = 1
     BEGIN
         UPDATE sib SET sib.[QboId] = NULL, sib.[RealmId] = NULL, sib.[ModifiedDatetime] = SYSUTCDATETIME()
         FROM dbo.[ExpenseLineItem] sib
@@ -363,15 +372,17 @@ BEGIN
 
     UPDATE dbo.[ExpenseLineItem]
     SET
-        [QboId] = CASE WHEN @QboId IS NOT NULL THEN @QboId ELSE [QboId] END,
+        [QboId] = CASE WHEN @QboId IS NOT NULL AND @RealmComplete = 1 THEN @QboId ELSE [QboId] END,
         [RealmId] = CASE WHEN @RealmId IS NOT NULL THEN @RealmId ELSE [RealmId] END,
         [ModifiedDatetime] = SYSUTCDATETIME()
     WHERE [Id] = @Id
       AND (
-            (@QboId IS NOT NULL AND ([QboId] IS NULL OR [QboId] <> @QboId))
+            (@QboId IS NOT NULL AND @RealmComplete = 1 AND ([QboId] IS NULL OR [QboId] <> @QboId))
          OR (@RealmId IS NOT NULL AND ([RealmId] IS NULL OR [RealmId] <> @RealmId))
       );
 
-    SELECT @Id AS [Id], @QboId AS [QboId], @RealmId AS [RealmId], @Stolen AS [Stolen];
+    DECLARE @FinalQboId NVARCHAR(50) = CASE WHEN @QboId IS NOT NULL AND @RealmComplete = 1 THEN @QboId ELSE @ExistingQboId END;
+    DECLARE @FinalRealmId NVARCHAR(50) = CASE WHEN @RealmId IS NOT NULL THEN @RealmId ELSE @ExistingRealmId END;
+    SELECT @Id AS [Id], @FinalQboId AS [QboId], @FinalRealmId AS [RealmId], @Stolen AS [Stolen];
 END;
 GO

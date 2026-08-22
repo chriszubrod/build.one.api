@@ -152,17 +152,28 @@ class BillLineItemConnector:
             line below so on-call log triage never misattributes a legacy-path
             failure to the fast path or vice versa.
 
-            Identity IS still re-stamped here, unconditionally, mirroring the
+            Identity IS still re-stamped here on every touch, mirroring the
             legacy path's own prior stamp_line_identity_or_warn call exactly
             (U-293 Gate-2 live-data equivalence check found why it must be: a
             fast-path hit means dbo.QboId already matches, but RealmId is NOT
             guaranteed to — live prod carries rows with QboId stamped correctly
             and RealmId still NULL, e.g. from a partial historical stamp. The
             legacy path self-heals those on every touch because its own stamp
-            call is unconditional; a fast path that skipped this would find
+            call was unconditional; a fast path that skipped this would find
             such a row forever afterward and never correct it again — a silent
             regression an initial "nothing would ever change" assumption
-            missed.
+            missed).
+
+            U-293-dw: "unconditional" above is no longer literally true — the
+            stamp call passes enforce_realm_pairing=True, so it can skip the
+            write outright when neither this call's realm_id nor the row's
+            own already-stamped realm_id (the `realm_id or getattr(direct,
+            "realm_id", None)` fallback right below) resolves. That fallback
+            is exactly what keeps the self-heal-on-every-touch guarantee
+            described above intact for an already realm-complete row (the
+            overwhelming majority of touches) — it only actually skips for a
+            row that has never had a real realm anywhere, which is precisely
+            the state that must NOT be silently half-stamped.
             """
             updated = self.bill_line_item_service.update_by_public_id(
                 direct.public_id,
@@ -195,8 +206,15 @@ class BillLineItemConnector:
                 self.bill_line_item_service.repo,
                 id=int(updated.id),
                 qbo_id=qbo_bill_line.qbo_line_id,
-                realm_id=realm_id,
+                # U-293-dw: fall back to the row's own already-stamped realm_id
+                # when this call's realm_id is empty — an UPDATE touch on a
+                # line that's already realm-complete must still re-stamp QboId
+                # (e.g. QBO recycled the line id), not get skipped by the new
+                # atomic-pair guard in stamp_line_identity_or_warn just because
+                # this particular caller didn't have a fresh realm_id in hand.
+                realm_id=realm_id or getattr(direct, "realm_id", None),
                 context=f"Updated BillLineItem {updated.id} ({path_label})",
+                enforce_realm_pairing=True,
             )
             return updated
 
@@ -355,6 +373,7 @@ class BillLineItemConnector:
             qbo_id=qbo_bill_line.qbo_line_id,
             realm_id=realm_id,
             context=f"Created mapping for BillLineItem {line_item_id} for QboBillLine {qbo_bill_line.id}",
+            enforce_realm_pairing=True,
         )
 
         return line_item

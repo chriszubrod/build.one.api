@@ -270,6 +270,35 @@ def test_fast_path_hit_consistent_updates_and_restamps_identity():
     )
 
 
+def test_fast_path_hit_falls_back_to_existing_realm_id_when_call_realm_id_missing():
+    """U-293-dw: the atomic-pair guard + existing-realm fallback in
+    _apply_line_fields is exercised identically via the fast-path hit branch
+    (it's the same shared closure the legacy path uses) — this call passes no
+    realm_id, but the direct-hit row already carries one, so the restamp must
+    still fire using the row's own realm_id rather than being skipped."""
+    connector, mapping_repo, bill_line_item_service, _ = _build_connector()
+    qbo_bill_line = _make_qbo_bill_line(qbo_line_id="1")
+    direct_hit = SimpleNamespace(
+        id=55, public_id="pub-55", row_version="rv-55", qbo_id="1", realm_id="realm-existing"
+    )
+    bill_line_item_service.read_by_qbo_identity.return_value = direct_hit
+    updated = SimpleNamespace(id=55, public_id="pub-55")
+    bill_line_item_service.update_by_public_id.return_value = updated
+    mapping_repo.read_by_bill_line_item_id.return_value = SimpleNamespace(
+        id=1, qbo_bill_line_id=qbo_bill_line.id
+    )
+    mapping_repo.read_by_qbo_bill_line_id.return_value = SimpleNamespace(
+        id=1, bill_line_item_id=55
+    )
+
+    result = connector.sync_from_qbo_bill_line(19146, qbo_bill_line)
+
+    assert result is updated
+    bill_line_item_service.repo.set_qbo_identity.assert_called_once_with(
+        id=55, qbo_id="1", realm_id="realm-existing"
+    )
+
+
 def test_fast_path_hit_missing_falls_through_without_writing_or_minting():
     """MISSING (direct hit, no mapping on either side) must never self-heal for
     a line — see run_line_identity_fastpath's own contract test suite for why.

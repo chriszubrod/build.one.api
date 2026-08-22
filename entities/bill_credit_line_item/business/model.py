@@ -27,6 +27,8 @@ class BillCreditLineItem:
     is_billed: Optional[bool]
     billable_amount: Optional[Decimal]
     is_draft: Optional[bool]
+    qbo_id: Optional[str] = None
+    realm_id: Optional[str] = None
 
     @property
     def row_version_bytes(self) -> Optional[bytes]:

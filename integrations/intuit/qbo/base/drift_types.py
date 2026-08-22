@@ -51,6 +51,13 @@ DRIFT_BILL_IDENTITY_CONFLICT = "bill_identity_conflict"
 DRIFT_EXPENSE_IDENTITY_CONFLICT = "expense_identity_conflict"
 DRIFT_INVOICE_IDENTITY_CONFLICT = "invoice_identity_conflict"
 DRIFT_BILL_LINE_ITEM_IDENTITY_CONFLICT = "bill_line_item_identity_conflict"
+# The other 3 line families' full "<family>_line_item_identity_conflict" name
+# exceeds the live qbo.ReconciliationIssue.DriftType NVARCHAR(32) column width
+# (measured prod width, see _FIELD_LIMITS above) — Bill's own name only fits
+# because "bill" is short. Shortened per-family, not simply truncated.
+DRIFT_INVOICE_LINE_ITEM_IDENTITY_CONFLICT = "invoice_line_identity_conflict"
+DRIFT_EXPENSE_LINE_ITEM_IDENTITY_CONFLICT = "expense_line_identity_conflict"
+DRIFT_BILL_CREDIT_LINE_ITEM_IDENTITY_CONFLICT = "bc_line_item_identity_conflict"
 
 KNOWN_DRIFT_TYPES: FrozenSet[str] = frozenset({
     DRIFT_QBO_MISSING_LOCALLY, DRIFT_LOCAL_MISSING_QBO, DRIFT_STALE_SYNC_TOKEN,
@@ -71,5 +78,6 @@ KNOWN_DRIFT_TYPES: FrozenSet[str] = frozenset({
     DRIFT_VENDOR_IDENTITY_CONFLICT, DRIFT_COST_CODE_IDENTITY_CONFLICT,
     DRIFT_SUB_COST_CODE_IDENTITY_CONFLICT, DRIFT_BILL_IDENTITY_CONFLICT,
     DRIFT_EXPENSE_IDENTITY_CONFLICT, DRIFT_INVOICE_IDENTITY_CONFLICT,
-    DRIFT_BILL_LINE_ITEM_IDENTITY_CONFLICT,
+    DRIFT_BILL_LINE_ITEM_IDENTITY_CONFLICT, DRIFT_INVOICE_LINE_ITEM_IDENTITY_CONFLICT,
+    DRIFT_EXPENSE_LINE_ITEM_IDENTITY_CONFLICT, DRIFT_BILL_CREDIT_LINE_ITEM_IDENTITY_CONFLICT,
 })

@@ -108,6 +108,35 @@ BEGIN
 END
 GO
 
+-- U-238b added QboId/RealmId + UQ_InvoiceLineItem_InvoiceId_QboId live via
+-- scripts/migrations/238b_qbo_identity_lines.sql but never ported the DDL into
+-- this base file (the same from-scratch-build gap U-277/U-290/U-293 found and
+-- fixed for company/address/vendor/bill_line_item) — SetInvoiceLineItemQboIdentity
+-- below has silently depended on columns this file never declared. Closed here
+-- (U-293b), verbatim against the live migration so a from-scratch build matches
+-- prod exactly.
+IF OBJECT_ID('dbo.InvoiceLineItem', 'U') IS NOT NULL
+   AND NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('dbo.InvoiceLineItem') AND name = 'QboId')
+BEGIN
+    ALTER TABLE [dbo].[InvoiceLineItem] ADD [QboId] NVARCHAR(50) NULL;
+END
+GO
+
+IF OBJECT_ID('dbo.InvoiceLineItem', 'U') IS NOT NULL
+   AND NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('dbo.InvoiceLineItem') AND name = 'RealmId')
+BEGIN
+    ALTER TABLE [dbo].[InvoiceLineItem] ADD [RealmId] NVARCHAR(50) NULL;
+END
+GO
+
+IF OBJECT_ID('dbo.InvoiceLineItem', 'U') IS NOT NULL AND NOT EXISTS (
+    SELECT 1 FROM sys.indexes WHERE name = 'UQ_InvoiceLineItem_InvoiceId_QboId' AND object_id = OBJECT_ID('dbo.InvoiceLineItem')
+)
+BEGIN
+    CREATE UNIQUE INDEX UQ_InvoiceLineItem_InvoiceId_QboId ON [dbo].[InvoiceLineItem] ([InvoiceId], [QboId]) WHERE [QboId] IS NOT NULL;
+END
+GO
+
 CREATE OR ALTER PROCEDURE CreateInvoiceLineItem
 (
     @InvoiceId BIGINT,
@@ -501,6 +530,34 @@ BEGIN
     DECLARE @FinalQboId NVARCHAR(50) = CASE WHEN @QboId IS NOT NULL AND @RealmComplete = 1 THEN @QboId ELSE @ExistingQboId END;
     DECLARE @FinalRealmId NVARCHAR(50) = CASE WHEN @RealmId IS NOT NULL THEN @RealmId ELSE @ExistingRealmId END;
     SELECT @Id AS [Id], @FinalQboId AS [QboId], @FinalRealmId AS [RealmId], @Stolen AS [Stolen];
+END;
+GO
+
+-- U-293b: parent-scoped direct identity read for the line fast path, mirroring
+-- dbo.bill_line_item.sql's ReadBillLineItemByBillIdAndQboId. A QBO line id is
+-- unique only within its parent transaction (confirmed against live prod: real
+-- cross-parent QboId collisions exist for every line family), matching the live
+-- UQ_InvoiceLineItem_InvoiceId_QboId index this keys against — never look up a
+-- line by QboId alone.
+CREATE OR ALTER PROCEDURE ReadInvoiceLineItemByInvoiceIdAndQboId
+(
+    @InvoiceId BIGINT,
+    @QboId NVARCHAR(50)
+)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    SELECT
+        [Id], [PublicId], [RowVersion],
+        CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
+        CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
+        [InvoiceId], [SourceType],
+        [BillLineItemId], [ExpenseLineItemId], [BillCreditLineItemId], [EmployeeLaborLineItemId],
+        [SubCostCodeId], [Description], [Quantity], [Rate], [Amount], [Markup], [Price], [IsDraft],
+        [QboId], [RealmId]
+    FROM dbo.[InvoiceLineItem]
+    WHERE [InvoiceId] = @InvoiceId AND [QboId] = @QboId;
 END;
 GO
 

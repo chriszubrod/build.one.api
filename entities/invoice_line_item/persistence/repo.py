@@ -51,6 +51,8 @@ class InvoiceLineItemRepository:
                 markup=Decimal(str(getattr(row, "Markup", None))) if getattr(row, "Markup", None) is not None else None,
                 price=Decimal(str(getattr(row, "Price", None))) if getattr(row, "Price", None) is not None else None,
                 is_draft=bool(getattr(row, "IsDraft", False)) if getattr(row, "IsDraft", None) is not None else None,
+                qbo_id=getattr(row, "QboId", None),
+                realm_id=getattr(row, "RealmId", None),
             )
         except AttributeError as error:
             logger.error(f"Attribute error during invoice line item mapping: {error}")
@@ -153,6 +155,26 @@ class InvoiceLineItemRepository:
                 return [self._from_db(row) for row in rows if row]
         except Exception as error:
             logger.error(f"Error during read invoice line items by invoice ID: {error}")
+            raise map_database_error(error)
+
+    def read_by_qbo_identity(self, invoice_id: int, qbo_id: str) -> Optional[InvoiceLineItem]:
+        """
+        Read an invoice line item by its dbo-native QBO identity, scoped to its
+        parent Invoice (U-293b) — the line-level Phase-4 repoint seam, bypassing
+        the qbo.InvoiceLine/qbo.InvoiceLineItemInvoiceLine staging/mapping tables.
+
+        Parent-scoped, not global: a QBO line id is unique only within its
+        parent transaction, matching the live UQ_InvoiceLineItem_InvoiceId_QboId
+        index this queries against.
+        """
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(cursor=cursor, name="ReadInvoiceLineItemByInvoiceIdAndQboId", params={"InvoiceId": invoice_id, "QboId": qbo_id})
+                row = cursor.fetchone()
+                return self._from_db(row)
+        except Exception as error:
+            logger.error(f"Error during read invoice line item by QBO identity: {error}")
             raise map_database_error(error)
 
     def update_by_id(self, line_item: InvoiceLineItem) -> Optional[InvoiceLineItem]:

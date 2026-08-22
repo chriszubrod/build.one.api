@@ -109,6 +109,17 @@ class BillCreditLineItemService:
         assert_can_access_bill_credit(bill_credit_id)
         return self.repo.read_by_bill_credit_id(bill_credit_id)
 
+    def read_by_qbo_identity(self, bill_credit_id: int, qbo_id: str) -> Optional[BillCreditLineItem]:
+        """
+        Read a bill credit line item directly by its dbo-native QBO identity,
+        scoped to its parent BillCredit (U-293b) — the line-level Phase-4
+        repoint seam, bypassing the
+        qbo.VendorCreditLine/qbo.VendorCreditLineItemBillCreditLineItem
+        staging/mapping tables.
+        """
+        assert_can_access_bill_credit(bill_credit_id)
+        return self.repo.read_by_qbo_identity(bill_credit_id=bill_credit_id, qbo_id=qbo_id)
+
     def update_by_public_id(
         self,
         public_id: str,

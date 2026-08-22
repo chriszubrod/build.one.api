@@ -9,6 +9,7 @@ from integrations.intuit.qbo.vendorcredit.connector.bill_credit.business.service
 from integrations.intuit.qbo.vendorcredit.connector.bill_credit_line_item.business.service import (
     VendorCreditLineItemConnector,
 )
+from conftest import stub_qbo_identity_fastpath_miss
 
 VC_BILL_CREDIT_SERVICE = (
     "integrations.intuit.qbo.vendorcredit.connector.bill_credit.business.service"
@@ -65,6 +66,10 @@ def _build_line_connector_with_item_mocks():
     connector.bill_credit_line_item_service.create.return_value = SimpleNamespace(id=1)
     connector.bill_credit_line_item_service.repo = Mock()
     connector._get_project_public_id = Mock(return_value=None)
+    # This file exercises the item-ref cache via the legacy mapping-table path,
+    # not the U-293b dbo-native fast path — force a miss so a bare Mock's
+    # auto-truthy `.read_by_qbo_identity(...)` doesn't silently divert it.
+    stub_qbo_identity_fastpath_miss(connector.bill_credit_line_item_service)
     return connector
 
 

@@ -269,6 +269,7 @@ def test_invoice_line_connector_update_path_dual_writes_identity():
         mapping_repo=mapping_repo,
         invoice_line_item_service=invoice_line_item_service,
     )
+    stub_qbo_identity_fastpath_miss(invoice_line_item_service)
     qbo_line = SimpleNamespace(
         id=1,
         qbo_line_id="QBO-INV-LINE-UPD",
@@ -321,6 +322,7 @@ def test_vendor_credit_line_connector_create_path_dual_writes_identity():
     connector._get_project_public_id = MagicMock(return_value=None)
     connector._get_sub_cost_code_id = MagicMock(return_value=None)
     connector._match_unmapped_by_fingerprint = MagicMock(return_value=None)
+    stub_qbo_identity_fastpath_miss(bill_credit_line_item_service)
 
     qbo_line = SimpleNamespace(
         id=1,
@@ -364,6 +366,7 @@ def test_vendor_credit_line_connector_update_path_dual_writes_identity():
     connector.bill_credit_line_item_service = bill_credit_line_item_service
     connector._get_project_public_id = MagicMock(return_value=None)
     connector._get_sub_cost_code_id = MagicMock(return_value=None)
+    stub_qbo_identity_fastpath_miss(bill_credit_line_item_service)
 
     qbo_line = SimpleNamespace(
         id=1,
@@ -715,6 +718,7 @@ def test_sync_from_qbo_invoice_line_ignores_partial_cache_without_preload():
         line_mapping_cache={11: unrelated_mapping},
         caches_preloaded=False,
     )
+    stub_qbo_identity_fastpath_miss(invoice_line_item_service)
 
     qbo_line = SimpleNamespace(
         id=55,
@@ -761,6 +765,7 @@ def test_sync_from_qbo_invoice_line_compensating_delete_on_mapping_failure():
         line_item_cache={},
         line_mapping_cache={},
     )
+    stub_qbo_identity_fastpath_miss(invoice_line_item_service)
     connector._find_and_match_manual_by_fingerprint = MagicMock(return_value=None)
     connector.create_mapping = MagicMock(side_effect=ValueError("already mapped"))
 
@@ -802,6 +807,7 @@ def test_sync_from_qbo_invoice_line_compensating_delete_on_database_constraint_e
         line_item_cache={999: created_line},
         line_mapping_cache={},
     )
+    stub_qbo_identity_fastpath_miss(invoice_line_item_service)
     connector._find_and_match_manual_by_fingerprint = MagicMock(return_value=None)
     connector.create_mapping = MagicMock(
         side_effect=DatabaseConstraintError(UNIQUE_VIOLATION, "duplicate mapping")
@@ -843,6 +849,7 @@ def test_sync_from_qbo_invoice_line_compensating_delete_cleanup_failure_still_ra
         line_item_cache={999: created_line},
         line_mapping_cache={},
     )
+    stub_qbo_identity_fastpath_miss(invoice_line_item_service)
     connector._find_and_match_manual_by_fingerprint = MagicMock(return_value=None)
     connector.create_mapping = MagicMock(side_effect=ValueError("already mapped"))
 
@@ -884,6 +891,7 @@ def test_sync_from_qbo_invoice_line_adopt_failure_does_not_fall_through_to_creat
         line_item_cache={42: orphan},
         line_mapping_cache={},
     )
+    stub_qbo_identity_fastpath_miss(invoice_line_item_service)
     connector._find_and_match_manual_by_fingerprint = MagicMock(return_value=orphan)
     connector.create_mapping = MagicMock(side_effect=ValueError("already mapped"))
 

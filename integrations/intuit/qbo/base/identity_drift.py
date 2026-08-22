@@ -128,8 +128,9 @@ def stamp_line_identity_or_warn(
        the existing row's own realm_id as a fallback (so an already
        realm-complete row keeps self-healing its QboId on every touch);
        flipping this on without that fallback would regress the pre-existing
-       unconditional every-touch self-heal for that caller's family. Only
-       BillLineItemConnector opts in today.
+       unconditional every-touch self-heal for that caller's family. All four
+       line connectors (bill/invoice/expense/bill_credit) opt in as of
+       U-293b, each with its own matching existing-realm-id fallback.
     2. Independently, the underlying Set*LineItemQboIdentity sproc (ALL FOUR
        — bill/invoice/expense/bill_credit line items) now carries its OWN
        atomic-pair guard: it reads the row's existing RealmId itself before
@@ -140,12 +141,12 @@ def stamp_line_identity_or_warn(
        function entirely. This is the layer that actually prevents a NEW
        partial-stamp row for invoice/expense/bill_credit line items today.
 
-    So "the sibling families keep their pre-existing behavior" below refers
-    ONLY to layer 1 (this function still calls the repo unconditionally for
-    them, exactly as before U-293-dw) — it does NOT mean they're unprotected
-    against partial stamps; layer 2 covers that. Layer 1 is wired for the
-    other 3 families in U-293b, once each gets the matching Python-side
-    existing-realm-id fallback this needs to be safe to enable.
+    Historical note: between U-293-dw and U-293b, the sibling (non-Bill)
+    families called the repo unconditionally here (layer 1 not yet wired for
+    them) — they were never unprotected against partial stamps in that
+    window, since layer 2 already covered every caller. U-293b closed that
+    gap by wiring layer 1 for the other 3 families too, each with its own
+    existing-realm-id fallback.
     """
     if enforce_realm_pairing and qbo_id is not None and not realm_id:
         logger.warning(

@@ -51,6 +51,35 @@ CREATE INDEX IX_BillCreditLineItem_PublicId ON [dbo].[BillCreditLineItem] ([Publ
 END
 GO
 
+-- U-238b added QboId/RealmId + UQ_BillCreditLineItem_BillCreditId_QboId live via
+-- scripts/migrations/238b_qbo_identity_lines.sql but never ported the DDL into
+-- this base file (the same from-scratch-build gap U-277/U-290/U-293 found and
+-- fixed for company/address/vendor/bill_line_item) — SetBillCreditLineItemQboIdentity
+-- below has silently depended on columns this file never declared. Closed here
+-- (U-293b), verbatim against the live migration so a from-scratch build matches
+-- prod exactly.
+IF OBJECT_ID('dbo.BillCreditLineItem', 'U') IS NOT NULL
+   AND NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('dbo.BillCreditLineItem') AND name = 'QboId')
+BEGIN
+    ALTER TABLE [dbo].[BillCreditLineItem] ADD [QboId] NVARCHAR(50) NULL;
+END
+GO
+
+IF OBJECT_ID('dbo.BillCreditLineItem', 'U') IS NOT NULL
+   AND NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('dbo.BillCreditLineItem') AND name = 'RealmId')
+BEGIN
+    ALTER TABLE [dbo].[BillCreditLineItem] ADD [RealmId] NVARCHAR(50) NULL;
+END
+GO
+
+IF OBJECT_ID('dbo.BillCreditLineItem', 'U') IS NOT NULL AND NOT EXISTS (
+    SELECT 1 FROM sys.indexes WHERE name = 'UQ_BillCreditLineItem_BillCreditId_QboId' AND object_id = OBJECT_ID('dbo.BillCreditLineItem')
+)
+BEGIN
+    CREATE UNIQUE INDEX UQ_BillCreditLineItem_BillCreditId_QboId ON [dbo].[BillCreditLineItem] ([BillCreditId], [QboId]) WHERE [QboId] IS NOT NULL;
+END
+GO
+
 
 GO
 
@@ -402,5 +431,44 @@ BEGIN
     DECLARE @FinalQboId NVARCHAR(50) = CASE WHEN @QboId IS NOT NULL AND @RealmComplete = 1 THEN @QboId ELSE @ExistingQboId END;
     DECLARE @FinalRealmId NVARCHAR(50) = CASE WHEN @RealmId IS NOT NULL THEN @RealmId ELSE @ExistingRealmId END;
     SELECT @Id AS [Id], @FinalQboId AS [QboId], @FinalRealmId AS [RealmId], @Stolen AS [Stolen];
+END;
+GO
+
+-- U-293b: parent-scoped direct identity read for the line fast path, mirroring
+-- dbo.bill_line_item.sql's ReadBillLineItemByBillIdAndQboId. A QBO line id is
+-- unique only within its parent transaction (confirmed against live prod: real
+-- cross-parent QboId collisions exist for every line family), matching the live
+-- UQ_BillCreditLineItem_BillCreditId_QboId index this keys against — never look
+-- up a line by QboId alone.
+CREATE OR ALTER PROCEDURE ReadBillCreditLineItemByBillCreditIdAndQboId
+(
+    @BillCreditId BIGINT,
+    @QboId NVARCHAR(50)
+)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    SELECT
+        [Id],
+        [PublicId],
+        [RowVersion],
+        CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
+        CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
+        [BillCreditId],
+        [SubCostCodeId],
+        [ProjectId],
+        [Description],
+        [Quantity],
+        [UnitPrice],
+        [Amount],
+        [IsBillable],
+        [IsBilled],
+        [BillableAmount],
+        [IsDraft],
+        [QboId],
+        [RealmId]
+    FROM dbo.[BillCreditLineItem]
+    WHERE [BillCreditId] = @BillCreditId AND [QboId] = @QboId;
 END;
 GO

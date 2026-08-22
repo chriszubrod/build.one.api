@@ -52,6 +52,8 @@ class BillCreditLineItemRepository:
                 is_billed=bool(getattr(row, "IsBilled", False)) if getattr(row, "IsBilled", None) is not None else None,
                 billable_amount=Decimal(str(getattr(row, "BillableAmount", None))) if getattr(row, "BillableAmount", None) is not None else None,
                 is_draft=bool(getattr(row, "IsDraft", False)) if getattr(row, "IsDraft", None) is not None else None,
+                qbo_id=getattr(row, "QboId", None),
+                realm_id=getattr(row, "RealmId", None),
             )
         except AttributeError as error:
             logger.error(f"Attribute error during bill credit line item mapping: {error}")
@@ -179,6 +181,31 @@ class BillCreditLineItemRepository:
                 return [self._from_db(row) for row in rows if row]
         except Exception as error:
             logger.error(f"Error during read bill credit line items by bill credit ID: {error}")
+            raise map_database_error(error)
+
+    def read_by_qbo_identity(self, bill_credit_id: int, qbo_id: str) -> Optional[BillCreditLineItem]:
+        """
+        Read a bill credit line item by its dbo-native QBO identity, scoped to
+        its parent BillCredit (U-293b) — the line-level Phase-4 repoint seam,
+        bypassing the qbo.VendorCreditLine/qbo.VendorCreditLineItemBillCreditLineItem
+        staging/mapping tables.
+
+        Parent-scoped, not global: a QBO line id is unique only within its
+        parent transaction, matching the live
+        UQ_BillCreditLineItem_BillCreditId_QboId index this queries against.
+        """
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(
+                    cursor=cursor,
+                    name="ReadBillCreditLineItemByBillCreditIdAndQboId",
+                    params={"BillCreditId": bill_credit_id, "QboId": qbo_id},
+                )
+                row = cursor.fetchone()
+                return self._from_db(row)
+        except Exception as error:
+            logger.error(f"Error during read bill credit line item by QBO identity: {error}")
             raise map_database_error(error)
 
     def update_by_id(self, line_item: BillCreditLineItem) -> Optional[BillCreditLineItem]:

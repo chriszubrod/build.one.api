@@ -99,6 +99,16 @@ class InvoiceLineItemService:
         _assert_can_access_invoice(invoice_id)
         return self.repo.read_by_invoice_id(invoice_id=invoice_id)
 
+    def read_by_qbo_identity(self, invoice_id: int, qbo_id: str) -> Optional[InvoiceLineItem]:
+        """
+        Read an invoice line item directly by its dbo-native QBO identity,
+        scoped to its parent Invoice (U-293b) — the line-level Phase-4 repoint
+        seam, bypassing the qbo.InvoiceLine/qbo.InvoiceLineItemInvoiceLine
+        staging/mapping tables.
+        """
+        _assert_can_access_invoice(invoice_id)
+        return self.repo.read_by_qbo_identity(invoice_id=invoice_id, qbo_id=qbo_id)
+
     def update_by_public_id(
         self,
         public_id: str,

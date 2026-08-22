@@ -20,6 +20,7 @@ from integrations.intuit.qbo.purchase.connector.expense_line_item.business.servi
     preserve_stored_value,
 )
 from integrations.intuit.qbo.purchase.business.model import QboPurchaseLine
+from conftest import stub_qbo_identity_fastpath_miss
 
 
 # --------------------------------------------------------------------------- #
@@ -140,6 +141,11 @@ def _build_connector():
         customer_project_repo=Mock(),
         qbo_customer_repo=Mock(),
     )
+    # This file exercises the pre-existing default/preserve/fingerprint logic via
+    # the legacy mapping-table path, not the U-293b dbo-native fast path (that has
+    # its own dedicated test file) — force a miss so a bare Mock's auto-truthy
+    # `.read_by_qbo_identity(...)` doesn't silently divert these into the fast path.
+    stub_qbo_identity_fastpath_miss(expense_line_item_service)
     return connector, mapping_repo, expense_line_item_service
 
 

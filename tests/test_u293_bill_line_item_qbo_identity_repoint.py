@@ -477,3 +477,48 @@ def test_fast_path_direct_lookup_is_scoped_to_this_bill_not_a_bare_qbo_id():
     connector.sync_from_qbo_bill_line(19146, qbo_bill_line, realm_id="realm-1")
 
     bill_line_item_service.read_by_qbo_identity.assert_called_once_with(19146, "1")
+
+
+def test_create_path_and_update_path_both_pass_enforce_realm_pairing_true():
+    """U-293-dw debt #2 (booked out of U-293-dw's Gate-2, closed by U-293b):
+    Bill's own suite proved the SHARED stamp_line_identity_or_warn function's
+    enforce_realm_pairing behavior in isolation
+    (tests/test_qbo_identity_lines.py) but never asserted that BOTH of THIS
+    connector's own call sites (create-path, update-path) actually pass
+    enforce_realm_pairing=True — a call-site regression (e.g. a future edit
+    dropping the kwarg) would have gone undetected. Patches
+    stamp_line_identity_or_warn directly to inspect the real call kwargs at
+    both sites in one connector run (create then update, same connector
+    instance, two different QboBillLine ids)."""
+    from unittest.mock import patch as _patch
+
+    connector, mapping_repo, bill_line_item_service, _ = _build_connector()
+    bill_line_item_service.read_by_qbo_identity.return_value = None  # fast path misses both times
+    mapping_repo.read_by_bill_line_item_id.return_value = None
+
+    # Call 1: CREATE path.
+    mapping_repo.read_by_qbo_bill_line_id.return_value = None
+    bill_line_item_service.read_by_bill_id.return_value = []
+    created = SimpleNamespace(id=77, public_id="pub-77")
+    bill_line_item_service.create.return_value = created
+
+    # Call 2: legacy UPDATE path.
+    existing_mapping = SimpleNamespace(id=1, bill_line_item_id=77, qbo_bill_line_id=43)
+    existing_line = SimpleNamespace(id=77, public_id="pub-77", row_version="rv-77")
+    updated = SimpleNamespace(id=77, public_id="pub-77")
+
+    with _patch(
+        "integrations.intuit.qbo.bill.connector.bill_line_item.business.service.stamp_line_identity_or_warn"
+    ) as mock_stamp:
+        qbo_line_create = _make_qbo_bill_line(id=42, qbo_line_id="1")
+        connector.sync_from_qbo_bill_line(19146, qbo_line_create, realm_id="realm-1")
+
+        mapping_repo.read_by_qbo_bill_line_id.return_value = existing_mapping
+        bill_line_item_service.read_by_id.return_value = existing_line
+        bill_line_item_service.update_by_public_id.return_value = updated
+        qbo_line_update = _make_qbo_bill_line(id=43, qbo_line_id="2")
+        connector.sync_from_qbo_bill_line(19146, qbo_line_update, realm_id="realm-1")
+
+    assert mock_stamp.call_count == 2
+    for call in mock_stamp.call_args_list:
+        assert call.kwargs.get("enforce_realm_pairing") is True

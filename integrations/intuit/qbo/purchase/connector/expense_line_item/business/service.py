@@ -19,7 +19,13 @@ from entities.sub_cost_code.business.service import SubCostCodeService
 from entities.project.business.service import ProjectService
 from integrations.intuit.qbo.base.identity_consistency import verify_project_qbo_identity
 from integrations.intuit.qbo.base.identity_drift import stamp_line_identity_or_warn
+from integrations.intuit.qbo.base.identity_fastpath import (
+    raise_concurrent_write_race,
+    run_line_identity_fastpath,
+)
 from integrations.intuit.qbo.base.ids import coerce_id
+from integrations.intuit.qbo.base.reconciliation_recorder import record_mapping_issue
+from integrations.intuit.qbo.reconciliation.persistence.repo import ReconciliationIssueRepository
 
 logger = logging.getLogger(__name__)
 
@@ -75,6 +81,7 @@ class PurchaseLineExpenseLineItemConnector:
         customer_project_repo: Optional[CustomerProjectRepository] = None,
         qbo_customer_repo: Optional[QboCustomerRepository] = None,
         project_service: Optional[ProjectService] = None,
+        reconciliation_repo: Optional[ReconciliationIssueRepository] = None,
     ):
         """Initialize the PurchaseLineExpenseLineItemConnector."""
         self.mapping_repo = mapping_repo or PurchaseLineExpenseLineItemRepository()
@@ -88,6 +95,7 @@ class PurchaseLineExpenseLineItemConnector:
         self.customer_project_repo = customer_project_repo or CustomerProjectRepository()
         self.qbo_customer_repo = qbo_customer_repo or QboCustomerRepository()
         self.project_service = project_service or ProjectService()
+        self.reconciliation_repo = reconciliation_repo or ReconciliationIssueRepository()
 
     def sync_from_qbo_purchase_line(self, expense_id: int, expense_public_id: str, qbo_line: QboPurchaseLine, realm_id: Optional[str] = None) -> ExpenseLineItem:
         """
@@ -101,17 +109,17 @@ class PurchaseLineExpenseLineItemConnector:
         Returns:
             ExpenseLineItem: The synced ExpenseLineItem record
         """
-        
+
         # Resolve sub_cost_code from item reference
         sub_cost_code_id = None
         if qbo_line.item_ref_value:
             sub_cost_code_id = self._get_sub_cost_code_id(qbo_line.item_ref_value)
-        
+
         # Resolve project from customer reference
         project_public_id = None
         if qbo_line.customer_ref_value:
             project_public_id = self._get_project_public_id(qbo_line.customer_ref_value, realm_id)
-        
+
         # Determine billable status
         is_billable = None
         is_billed = None
@@ -125,7 +133,7 @@ class PurchaseLineExpenseLineItemConnector:
             elif qbo_line.billable_status == "NotBillable":
                 is_billable = False
                 is_billed = False
-        
+
         # Calculate markup (convert from percentage to decimal if needed)
         markup = None
         if qbo_line.markup_percent is not None:
@@ -151,8 +159,115 @@ class PurchaseLineExpenseLineItemConnector:
             else:
                 price = amount_val
 
-        # Check for existing mapping
-        mapping = self.mapping_repo.read_by_qbo_purchase_line_id(qbo_line.id)
+        def _apply_line_fields(direct: ExpenseLineItem, *, path_label: str) -> Optional[ExpenseLineItem]:
+            """
+            Write the QBO-derived fields onto an existing, matched ExpenseLineItem.
+            Shared by the fast path and the legacy "mapping found" branch (U-293b,
+            mirroring BillLineItemConnector's _apply_line_fields) — one update-logic
+            site, not two hand-copies that could drift. `direct` plays the role the
+            legacy path's own `line_item` used to: its CURRENT stored quantity/rate/
+            markup feed preserve_stored_value exactly as before.
+            """
+            update_qty = preserve_stored_value(default_qty, qbo_line.qty, direct.quantity)
+            update_rate = preserve_stored_value(default_rate, qbo_line.unit_price, direct.rate)
+            update_markup = preserve_stored_value(default_markup, qbo_line.markup_percent, direct.markup)
+
+            updated = self.expense_line_item_service.update_by_public_id(
+                direct.public_id,
+                row_version=direct.row_version,
+                sub_cost_code_id=sub_cost_code_id,
+                project_public_id=project_public_id,
+                description=qbo_line.description,
+                quantity=update_qty,
+                rate=update_rate,
+                amount=qbo_line.amount,
+                is_billable=is_billable,
+                is_billed=is_billed,
+                markup=update_markup,
+                price=price,
+                is_draft=False,
+            )
+            if updated is None:
+                # ROWVERSION race: a concurrent writer touched this exact
+                # ExpenseLineItem between the read and this UPDATE.
+                logger.error(
+                    f"Failed to update ExpenseLineItem {direct.id} from QboPurchaseLine "
+                    f"{qbo_line.id} - update_by_public_id returned None "
+                    f"(concurrent write race, {path_label})"
+                )
+                raise_concurrent_write_race(
+                    entity_label="ExpenseLineItem", entity_id=direct.id, path_label=path_label
+                )
+            stamp_line_identity_or_warn(
+                self.expense_line_item_service.repo,
+                id=int(updated.id),
+                qbo_id=qbo_line.qbo_line_id,
+                # U-293-dw fold-in: fall back to the row's own already-stamped
+                # realm_id when this call's realm_id is empty — an UPDATE touch
+                # on a line that's already realm-complete must still re-stamp
+                # QboId (e.g. QBO recycled the line id), not get skipped by
+                # stamp_line_identity_or_warn's atomic-pair guard just because
+                # this particular caller didn't have a fresh realm_id in hand.
+                realm_id=realm_id or getattr(direct, "realm_id", None),
+                context=f"Updated ExpenseLineItem {updated.id} ({path_label})",
+                enforce_realm_pairing=True,
+            )
+            return updated
+
+        # Memoized: qbo_line.id is fixed for this whole call, and both the fast
+        # path (via resolve_mapping_state, on a MISSING/CONFLICT classification)
+        # and the legacy path just below it (unconditionally, on a fast-path
+        # miss) ask this exact same question — mirrors BillLineItemConnector's
+        # identical memoization.
+        _qbo_purchase_line_mapping_cache = {}
+
+        def _read_by_qbo_purchase_line_id_cached(qbo_purchase_line_id):
+            if qbo_purchase_line_id not in _qbo_purchase_line_mapping_cache:
+                _qbo_purchase_line_mapping_cache[qbo_purchase_line_id] = (
+                    self.mapping_repo.read_by_qbo_purchase_line_id(qbo_purchase_line_id)
+                )
+            return _qbo_purchase_line_mapping_cache[qbo_purchase_line_id]
+
+        # U-293b: resolve identity directly against dbo.ExpenseLineItem's native
+        # QboId, scoped to this line's own parent Expense (U-238b), before
+        # falling back to the qbo.PurchaseLineExpenseLineItem mapping-table hop
+        # below. Mirrors BillLineItemConnector's U-293 pilot exactly.
+        # conflict->RAISE is structural (base.identity_fastpath.
+        # run_line_identity_fastpath), never a fall-through to the legacy path.
+        outcome = run_line_identity_fastpath(
+            parent_local_id=expense_id,
+            qbo_line_id=qbo_line.qbo_line_id,
+            external_id=qbo_line.id,
+            entity_label="ExpenseLineItem",
+            external_label="QboPurchaseLine",
+            read_direct_by_parent_and_qbo_line_id=self.expense_line_item_service.read_by_qbo_identity,
+            read_by_local_id=self.mapping_repo.read_by_expense_line_item_id,
+            read_by_external_id=_read_by_qbo_purchase_line_id_cached,
+            external_id_attr="qbo_purchase_line_id",
+            record_conflict_issue=lambda entity, by_local, by_external: (
+                self._raise_line_identity_mapping_conflict_issue(
+                    qbo_line=qbo_line,
+                    dbo_line_id=coerce_id(entity.id),
+                    local_side_mapping=by_local,
+                    qbo_side_mapping=by_external,
+                    realm_id=realm_id,
+                )
+            ),
+            conflict_message=lambda entity: (
+                f"PurchaseLineExpenseLineItem identity conflict for QboPurchaseLine "
+                f"{qbo_line.qbo_line_id} (id={qbo_line.id}) on Expense {expense_id}: "
+                f"dbo.ExpenseLineItem {entity.id} already carries this identity but "
+                f"the mapping table disagrees. Not auto-repointed; see the recorded "
+                f"reconciliation issue. Skipping until a human resolves it."
+            ),
+            apply_fields=lambda direct: _apply_line_fields(direct, path_label="line fast path"),
+        )
+        if outcome.hit:
+            return outcome.entity
+
+        # Check for existing mapping. Memoized above — if the fast path already
+        # asked this (MISSING/CONFLICT), this is a cache hit, not a second round trip.
+        mapping = _read_by_qbo_purchase_line_id_cached(qbo_line.id)
 
         if not mapping:
             # Shape B fallback (task #17): content-fingerprint match when QBO
@@ -185,46 +300,15 @@ class PurchaseLineExpenseLineItemConnector:
             line_item = self.expense_line_item_service.read_by_id(mapping.expense_line_item_id)
             if line_item:
                 logger.debug(f"Updating existing ExpenseLineItem {line_item.id} from QboPurchaseLine {qbo_line.id}")
-
-                # Defaults fill a hole, they never overwrite: a value QBO omitted but
-                # the user later set (coding-queue backfill) survives the re-pull.
-                update_qty = preserve_stored_value(default_qty, qbo_line.qty, line_item.quantity)
-                update_rate = preserve_stored_value(default_rate, qbo_line.unit_price, line_item.rate)
-                update_markup = preserve_stored_value(
-                    default_markup, qbo_line.markup_percent, line_item.markup
-                )
-
-                line_item = self.expense_line_item_service.update_by_public_id(
-                    line_item.public_id,
-                    row_version=line_item.row_version,
-                    sub_cost_code_id=sub_cost_code_id,
-                    project_public_id=project_public_id,
-                    description=qbo_line.description,
-                    quantity=update_qty,
-                    rate=update_rate,
-                    amount=qbo_line.amount,
-                    is_billable=is_billable,
-                    is_billed=is_billed,
-                    markup=update_markup,
-                    price=price,
-                    is_draft=False,
-                )
-                # U-238b: dbo line identity dual-write (create+update pairing for U-238c).
-                stamp_line_identity_or_warn(
-                    self.expense_line_item_service.repo,
-                    id=int(line_item.id),
-                    qbo_id=qbo_line.qbo_line_id,
-                    realm_id=realm_id,
-                    context=f"Updated ExpenseLineItem {line_item.id}",
-                )
-
-                return line_item
+                # U-293b: reuse the SAME _apply_line_fields closure the fast path
+                # uses (update + preserve-stored-value + identity re-stamp).
+                return _apply_line_fields(line_item, path_label="legacy mapping-table path")
             else:
                 # Mapping exists but ExpenseLineItem not found - recreate
                 logger.warning(f"Mapping exists but ExpenseLineItem {mapping.expense_line_item_id} not found. Creating new.")
                 self.mapping_repo.delete_by_id(mapping.id)
                 mapping = None
-        
+
         # Create new ExpenseLineItem
         logger.debug(f"Creating new ExpenseLineItem from QboPurchaseLine {qbo_line.id}")
         line_item = self.expense_line_item_service.create(
@@ -241,7 +325,7 @@ class PurchaseLineExpenseLineItemConnector:
             price=price,
             is_draft=False,
         )
-        
+
         # Create mapping — if this fails we must roll back the line item we just created,
         # otherwise the unmapped line item will be duplicated on every subsequent sync run.
         line_item_id = coerce_id(line_item.id)
@@ -269,17 +353,63 @@ class PurchaseLineExpenseLineItemConnector:
             qbo_id=qbo_line.qbo_line_id,
             realm_id=realm_id,
             context=f"Created mapping for ExpenseLineItem {line_item_id} for QboPurchaseLine {qbo_line.id}",
+            enforce_realm_pairing=True,
         )
 
         return line_item
 
+    def _raise_line_identity_mapping_conflict_issue(
+        self,
+        *,
+        qbo_line: QboPurchaseLine,
+        dbo_line_id: int,
+        local_side_mapping,
+        qbo_side_mapping,
+        realm_id: Optional[str] = None,
+    ) -> None:
+        """
+        Record a dbo-identity <-> mapping-table split found by
+        run_line_identity_fastpath's resolve_mapping_state. Mirrors
+        BillLineItemConnector._raise_line_identity_mapping_conflict_issue
+        exactly, scoped to the expense line level — covers all three conflict
+        shapes (qbo-side only, local-side only, or both) in ONE issue, never
+        silently dropping either side's blocker.
+        """
+        parts = [
+            f"PurchaseLineExpenseLineItem identity conflict. dbo.ExpenseLineItem "
+            f"{dbo_line_id} carries native QBO identity for QboPurchaseLine "
+            f"{qbo_line.id} (QboLineId={qbo_line.qbo_line_id})."
+        ]
+        if qbo_side_mapping:
+            parts.append(
+                f"qbo-side: the mapping table still binds that same QboPurchaseLine to a "
+                f"DIFFERENT ExpenseLineItem {qbo_side_mapping.expense_line_item_id} "
+                f"(mapping {qbo_side_mapping.id})."
+            )
+        if local_side_mapping:
+            parts.append(
+                f"local-side: ExpenseLineItem {dbo_line_id}'s own mapping row (mapping "
+                f"{local_side_mapping.id}) still binds it to a DIFFERENT QboPurchaseLine "
+                f"{local_side_mapping.qbo_purchase_line_id}."
+            )
+        parts.append("Not auto-repointed — investigate which side is correct.")
+        record_mapping_issue(
+            self.reconciliation_repo,
+            drift_type="expense_line_identity_conflict",
+            entity_type="ExpenseLineItem",
+            entity_public_id=None,
+            qbo_id=str(qbo_line.qbo_line_id) if qbo_line.qbo_line_id else None,
+            realm_id=realm_id or "",
+            details=" ".join(parts),
+        )
+
     def _get_sub_cost_code_id(self, qbo_item_ref_value: str) -> Optional[int]:
         """
         Get the SubCostCode ID from QBO item reference value.
-        
+
         Args:
             qbo_item_ref_value: QBO item reference value (QBO Item ID)
-        
+
         Returns:
             int: SubCostCode ID or None
         """
@@ -313,11 +443,11 @@ class PurchaseLineExpenseLineItemConnector:
     def _get_project_public_id(self, qbo_customer_ref_value: str, realm_id: Optional[str] = None) -> Optional[str]:
         """
         Get the Project public_id from QBO customer reference value.
-        
+
         Args:
             qbo_customer_ref_value: QBO customer reference value (QBO Customer ID)
             realm_id: Optional QBO realm ID for realm-scoped customer lookup
-        
+
         Returns:
             str: Project public_id or None
         """
@@ -379,14 +509,14 @@ class PurchaseLineExpenseLineItemConnector:
     def create_mapping(self, expense_line_item_id: int, qbo_purchase_line_id: int) -> PurchaseLineExpenseLineItem:
         """
         Create a mapping between ExpenseLineItem and QboPurchaseLine.
-        
+
         Args:
             expense_line_item_id: Database ID of ExpenseLineItem record
             qbo_purchase_line_id: Database ID of QboPurchaseLine record
-        
+
         Returns:
             PurchaseLineExpenseLineItem: The created mapping record
-        
+
         Raises:
             ValueError: If mapping already exists or validation fails
         """
@@ -396,13 +526,13 @@ class PurchaseLineExpenseLineItemConnector:
             raise ValueError(
                 f"ExpenseLineItem {expense_line_item_id} is already mapped to QboPurchaseLine {existing_by_line_item.qbo_purchase_line_id}"
             )
-        
+
         existing_by_qbo_line = self.mapping_repo.read_by_qbo_purchase_line_id(qbo_purchase_line_id)
         if existing_by_qbo_line:
             raise ValueError(
                 f"QboPurchaseLine {qbo_purchase_line_id} is already mapped to ExpenseLineItem {existing_by_qbo_line.expense_line_item_id}"
             )
-        
+
         # Create mapping
         return self.mapping_repo.create(expense_line_item_id=expense_line_item_id, qbo_purchase_line_id=qbo_purchase_line_id)
 

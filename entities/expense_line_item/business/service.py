@@ -96,6 +96,16 @@ class ExpenseLineItemService:
         assert_can_access_expense(expense_id)
         return self.repo.read_by_expense_id(expense_id=expense_id)
 
+    def read_by_qbo_identity(self, expense_id: int, qbo_id: str) -> Optional[ExpenseLineItem]:
+        """
+        Read an expense line item directly by its dbo-native QBO identity,
+        scoped to its parent Expense (U-293b) — the line-level Phase-4 repoint
+        seam, bypassing the qbo.PurchaseLine/qbo.PurchaseLineExpenseLineItem
+        staging/mapping tables.
+        """
+        assert_can_access_expense(expense_id)
+        return self.repo.read_by_qbo_identity(expense_id=expense_id, qbo_id=qbo_id)
+
     def update_by_public_id(
         self,
         public_id: str,

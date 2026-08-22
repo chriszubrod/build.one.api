@@ -22,6 +22,17 @@ set_qbo_identity on a different row (theft-clearing the conflicted row's
 identity) or mint a duplicate. Do not "restore symmetry" by softening the
 push side back toward a fall-back; the discipline being mirrored is the hard
 stop. Refusing to resolve (returning None here) is the push-side analogue.
+
+NB (U-284v/U-297): two of the three wrappers are now ALSO used pull-side, as the
+verify step of a dbo-first *reference resolver* (`BillLineItemConnector
+._get_project_public_id`, `CustomerProjectConnector._resolve_parent_customer_id`).
+There a None is advisory, not a veto: it means "don't trust the dbo-native
+shortcut", and the caller falls through to the legacy qbo.* hop it was trying to
+skip — it does NOT mean "stop". The hard stop above is the rule wherever there is
+a WRITE to protect (the push helpers, the header identity fast path); a read-only
+resolver has nothing to corrupt by taking the slower, already-trusted path. So do
+not "restore symmetry" in that direction either — the two disciplines differ
+because what is at stake differs.
 """
 import logging
 from typing import Optional
@@ -50,6 +61,17 @@ def _verify_dbo_qbo_identity(
     `base/identity_fastpath.py`'s own callback-based generalization of the
     sibling pull-side pattern — extend this one deliberately when a new
     family needs it rather than hand-copying another wrapper's body.
+
+    KNOWN RESIDUAL, true of EVERY binding (booked in TODO.md as U-297's H1,
+    which points here): this check is LOCAL-SIDE ONLY. It asks "does this dbo
+    row's own mapping agree?" and TRUSTS when the row has no mapping at all
+    (see the `if not mapping` branch below). It therefore cannot see the
+    opposite direction — the mapping table still binding this external id to a
+    DIFFERENT local row, which is what `identity_fastpath.resolve_mapping_state`
+    checks. Closing that here is self-defeating for a reference resolver:
+    reading the qbo-side requires the staging hop the resolver exists to skip,
+    so a both-directions verify would cost strictly more than the legacy path it
+    replaces. Each wrapper documents its own measured blind population.
     """
     if not entity or not entity.qbo_id:
         return None
@@ -115,4 +137,41 @@ def verify_vendor_qbo_identity(
         read_mapping_by_local_id=vendor_vendor_repo.read_by_vendor_id,
         read_external_by_mapped_id=qbo_vendor_repo.read_by_id,
         mapping_external_id_attr="qbo_vendor_id",
+    )
+
+
+def verify_customer_qbo_identity(
+    customer,
+    *,
+    customer_customer_repo,
+    qbo_customer_repo,
+) -> Optional[str]:
+    """
+    Return `customer.qbo_id` if it's safe to trust (for a pull-side reference
+    resolution — see module docstring), else None.
+
+    Safe means: the Customer has no CustomerCustomer mapping row yet (the
+    ordinary not-fully-migrated state — nothing to disagree with), OR its
+    mapping row's own QboCustomer external id matches `customer.qbo_id`
+    exactly. A mismatch means the mapping table still binds a DIFFERENT
+    external customer to this Customer — refuse rather than trust an
+    unverified parent CustomerRef.
+
+    Added by U-297 for `CustomerProjectConnector._resolve_parent_customer_id`: a
+    QBO job/sub-customer's ParentRef names its parent's QBO customer id, which
+    that connector resolves to a local `dbo.Customer.Id` and writes to
+    `dbo.Project.CustomerId`.
+
+    KNOWN RESIDUAL: the engine is LOCAL-SIDE ONLY — `_verify_dbo_qbo_identity`
+    owns that caveat for all three wrappers (TODO.md, U-297's H1). Customer's
+    blind population is measurably ZERO (0 stamped `dbo.Customer` rows lack a
+    `CustomerCustomer` row, live 2026-08-22); revisit if that stops being true.
+    """
+    return _verify_dbo_qbo_identity(
+        customer,
+        entity_label="Customer",
+        mapping_label="CustomerCustomer",
+        read_mapping_by_local_id=customer_customer_repo.read_by_customer_id,
+        read_external_by_mapped_id=qbo_customer_repo.read_by_id,
+        mapping_external_id_attr="qbo_customer_id",
     )

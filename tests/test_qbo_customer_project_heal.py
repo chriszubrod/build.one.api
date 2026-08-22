@@ -102,6 +102,10 @@ def _build_customer_project_connector():
         address_connector=Mock(),
         customer_mapping_repo=Mock(),
         reconciliation_repo=reconciliation_repo,
+        # U-297: never used here (every fixture sets parent_ref_value=None) —
+        # injected so a truthy-parent test can't default to live-DB collaborators.
+        customer_service=Mock(),
+        qbo_customer_repo=Mock(),
     )
     connector._sync_addresses = Mock()
     return connector, mapping_repo, project_service, reconciliation_repo
@@ -286,6 +290,10 @@ def test_get_project_public_id_auto_heals_missing_mapping():
         address_connector=Mock(),
         customer_mapping_repo=Mock(),
         reconciliation_repo=Mock(),
+        # U-297: never used here (every fixture sets parent_ref_value=None) —
+        # injected so a truthy-parent test can't default to live-DB collaborators.
+        customer_service=Mock(),
+        qbo_customer_repo=Mock(),
     )
     heal_connector._sync_addresses = Mock()
 
@@ -325,6 +333,10 @@ def test_get_project_public_id_returns_none_when_heal_cannot_resolve():
         address_connector=Mock(),
         customer_mapping_repo=Mock(),
         reconciliation_repo=Mock(),
+        # U-297: never used here (every fixture sets parent_ref_value=None) —
+        # injected so a truthy-parent test can't default to live-DB collaborators.
+        customer_service=Mock(),
+        qbo_customer_repo=Mock(),
     )
 
     qbo_customer_repo = Mock()

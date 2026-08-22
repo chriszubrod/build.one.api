@@ -294,6 +294,10 @@ def _make_project_connector():
         address_connector=Mock(),
         customer_mapping_repo=Mock(),
         reconciliation_repo=Mock(),
+        # U-297: never used here (every fixture sets parent_ref_value=None) —
+        # injected so a truthy-parent test can't default to live-DB collaborators.
+        customer_service=Mock(),
+        qbo_customer_repo=Mock(),
     )
     connector._sync_addresses = Mock()
     return connector, mapping_repo, project_service.repo

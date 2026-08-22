@@ -1667,3 +1667,80 @@ Quality-pass findings the Phase-A reviewers surfaced but that were deliberately 
 ## U-295 follow-up (test/prod DB isolation fix, 2026-08-22) — deferred, non-blocking
 
 - [ ] **P3 (reuse, found by Pass 2 `/simplify`): `test_u226_qbo_mapping_cleanup_on_delete.py` and `test_u243_mapping_cleanup_lock.py` still hand-roll their own local `_granted_lock`/`_denied_lock` `@contextmanager` copies** instead of importing the new shared `mock_qbo_app_lock_granted` in `tests/conftest.py` (added by U-295 so `test_u241` wouldn't become a third variant). Not retrofitted in U-295 itself — out of that diff's scope (touches 2 files unrelated to the actual leak being fixed) — but worth folding in as a small follow-up so there's one canonical "lock granted" stand-in instead of three. `test_u243` additionally needs a `mock_qbo_app_lock_denied` counterpart for its lock-failure-branch test; add that to conftest.py alongside the granted one when this is done.
+
+## U-297 follow-ups (customer-parent reference-resolver repoint, 2026-08-22) — deferred, non-blocking
+
+`CustomerProjectConnector`'s parent-Customer lookup was repointed off the `qbo.Customer` →
+`qbo.CustomerCustomer` two-hop onto `dbo.Customer`'s native `QboId`/`RealmId`, using the canonical
+dbo-first → verify → legacy-fallback shape. Live-prod equivalence proven clean (136/136 job
+sub-customers resolve identically, every direct hit through the strict `TRUST_AGREES` verify arm).
+These were surfaced during the unit and deliberately not built:
+
+- [ ] **P2 (H1 — the verify engine is LOCAL-SIDE ONLY; shared by all three wrappers).**
+  `base/identity_consistency.py::_verify_dbo_qbo_identity` asks only "does this dbo row's *own*
+  mapping row agree?" and **TRUSTS when the row has no mapping at all** (`:57-58`). It is therefore
+  structurally blind to the opposite direction — the mapping table still binding this external id to
+  a **different** local row, which is exactly what `identity_fastpath.resolve_mapping_state` exists
+  to catch (`:75-79`). Concretely, if a `dbo.Customer` ever carries a parent's QboId with no
+  `CustomerCustomer` row while `qbo.CustomerCustomer` still binds that QboCustomer to a *different*
+  `dbo.Customer`, the resolver would silently re-parent a Project on the next 4-hourly tick, with no
+  reconciliation issue recorded and no undo path (`UpdateProjectById`'s CASE WHEN guard means
+  `CustomerId` can be replaced but never cleared). **Why not fixed here:** closing it inside a
+  *reference resolver* is self-defeating — reading the qbo side requires the staging hop the
+  resolver exists to skip, so a both-directions verify costs strictly more than the legacy path it
+  replaces. **Measured population is zero** (live 2026-08-22: 0 stamped `dbo.Customer` rows lack a
+  `CustomerCustomer` row; 73/73 stamped; 0 half-stamped). Two candidate right-depth fixes if this
+  ever acquires a population: (a) make *this* resolver's verify strict — treat "no mapping row" as
+  REFUSE rather than TRUST, which costs nothing extra (same two reads) and would make every ledger
+  row equivalent, not just the populated ones — at the cost of diverging from the nine sibling
+  sites; or (b) give the shared engine an explicit `trust_unmapped: bool` so each family declares
+  its own posture in one place. Note the sibling `CustomerCustomerConnector`'s own conflict text
+  (`customer/connector/customer/business/service.py:258-263`) asserts the *pre-U-297* behavior
+  ("CustomerProjectConnector's parent-Customer lookup will keep resolving to Customer {qbo_side}")
+  — update that message whenever this is revisited.
+- [ ] **P3 (realm asymmetry, latent — single-realm prod only).** The repointed primary is
+  realm-EXACT (`ReadCustomerByQboIdAndRealmId`), while the legacy fallback it falls through to stays
+  realm-BLIND (`ReadQboCustomerByQboId` has no realm predicate). Deliberate — realm-scoping the
+  fallback would be a behavior change beyond this repoint, and would start *missing* parents whose
+  staging row carries a NULL/other realm. Inert today (prod is single-realm `9130353016965726`, 0
+  child/parent realm mismatches), but a second realm activates it immediately: the two paths key
+  differently and could resolve different parents. Revisit as part of whatever unit lands
+  multi-realm. Related: `SetCustomerQboIdentity` has **no** `@RealmComplete` atomic-pair guard (that
+  exists only on the four line-item sprocs), so a half-stamped `QboId`-without-`RealmId` row is
+  structurally possible and the fast path would never self-heal one.
+- [ ] **P3 (consolidation — now a SIXTH hand-copy).** `_resolve_parent_customer_id` is a deliberate
+  hand-copy of the same dbo-first/verify/legacy-fallback recipe as the four `_get_project_public_id`
+  resolvers and the five vendor-ref resolvers, per the precedent already booked in the
+  `[U-005][reuse]` entry above. It is the first one that returns a **local INT** written to a FK
+  rather than a `public_id` used as a lookup key. Fold it into the same consolidation sweep — the
+  breadcrumb comment above the method names its siblings so a future pass can find them all.
+- [ ] **P3 (unbooked reader).** `docs/staging_removal_phase4_5_scoping.md:239` inventories only the
+  four `_get_project_public_id` resolvers as readers of the `qbo.Customer` → `qbo.CustomerCustomer`
+  hop; this parent-Customer lookup was a fifth, unlisted one. The verify step still reads BOTH
+  staging tables on a direct hit, so U-297 does **not** by itself retire `qbo.Customer` for this
+  connector — the scoping doc's Phase-6 DROP preconditions should reflect that.
+- [ ] **P3 (Pass-2 deferrals, U-297).** Four behavior-preserving cleanups were identified and
+  deliberately NOT applied because each reaches outside this unit's file scope into files other
+  in-flight lanes are editing: (a) `tests/test_qbo_customer_project_heal.py:91-95` hand-rolls the
+  fast-path stub while already importing `stub_qbo_identity_fastpath_miss` at line 19 — swap it
+  (U-276-era code, untouched by this unit beyond constructor kwargs); (b) that same file lacks the
+  `sys.path.insert(0, tests/)` preamble its `from conftest import ...` needs, so it **errors at
+  collection when run standalone** and only passes in a full-suite run — pre-existing, reproduced at
+  HEAD; (c) `_make_qbo_customer` in this unit's test file is a third copy of the same QboCustomer
+  factory (`tests/test_u276_...:28-45`) — lift to `conftest.py` with the consolidation entry; (d) an
+  efficiency win worth its own unit — `_verify_dbo_qbo_identity` fetches a whole `qbo.Customer` row
+  purely to compare one string, because the mapping table carries only the staging PK. JOINing the
+  external `QboId` into `ReadCustomerCustomerByCustomerId` / `ReadCustomerProjectByProjectId` /
+  `ReadVendorVendorByVendorId` (+ the three dataclasses) collapses the verify from 2 reads to 1 and
+  this resolver's prod steady state from 213 reads to 142 (a 48% cut vs the legacy 272, up from the
+  22% U-297 achieves). Lands on the hotter Project/Vendor resolvers too — `_get_project_public_id`
+  runs per bill line. Needs a sproc + model change across three families, so: own unit.
+- [ ] **P3 (eager resolution, pre-existing shape).** `customer_id` is resolved at the top of
+  `sync_from_qbo_customer` but four reachable paths never read it — the name-match bind (which
+  creates the mapping, syncs addresses and returns WITHOUT writing CustomerId), and the three raise
+  paths (inactive-unmapped guard, missing-Project, duplicate-QboCustomer). The memo caps the waste at
+  once per distinct parent per run. Not changed here: deferring the call alters which DB reads happen
+  on the raise paths and reorders debug logging, i.e. it is not behavior-preserving. Separately worth
+  a correctness look in its own unit: **the name-match bind path never writes the resolved
+  CustomerId onto the Project it binds**, so the same QBO sub-customer lands with or without a parent
+  depending on which branch caught it.

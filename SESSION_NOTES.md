@@ -1,5 +1,61 @@
 # Session Notes
 
+## 🔨 U-297 — customer-parent reference-resolver repoint (2026-08-22, `/em`) — staged, not deployed
+
+Repointed `CustomerProjectConnector`'s **own parent-Customer lookup** (inside `sync_from_qbo_customer`)
+off the legacy `qbo.Customer → qbo.CustomerCustomer` two-hop and onto `dbo.Customer`'s native
+`QboId`/`RealmId` (U-238c), using the canonical reference-resolver shape: dbo-first → verify →
+legacy-fallback, mirroring `_get_project_public_id`. U-276 (the pilot) repointed this connector's
+*header* identity but left this parent hop on staging.
+
+### It is the only pull-side reader of the CustomerCustomer hop
+Worth remembering, because the first breadcrumb comment written for it got this wrong and Pass 2
+caught it: the four sibling `_get_project_public_id` resolvers hop through **`qbo.CustomerProject`**,
+and the five vendor-ref resolvers through **`qbo.VendorVendor`**. This lookup was the lone reader of
+`qbo.CustomerCustomer` on the pull side — and `docs/staging_removal_phase4_5_scoping.md:239`, which
+inventories only the four `_get_project_public_id` resolvers, never listed it. The verify step still
+reads `qbo.CustomerCustomer` on every direct hit, so **this repoint does not by itself retire either
+staging table here** — a Phase-6 DROP precondition that doc should reflect.
+
+### Equivalence was proven against live prod, not argued
+All **136** job/sub-customers resolve identically under both paths (bucket `BOTH_AGREE` 136/136), and
+every direct hit verified through the strict `TRUST_AGREES` arm — not one of the permissive ones. The
+supporting counts are why: `dbo.Customer` is 73/73 stamped with `QboId`, **0** half-stamped
+(QboId set / RealmId NULL), `qbo.CustomerCustomer` has exactly 73 rows, prod is single-realm, and **0**
+jobs are parented by another job. Re-run clean immediately before commit. The query buckets into
+BOTH_AGREE / BOTH_NULL / LEGACY_ONLY / DIRECT_ONLY / DISAGREE; anything but the first two is a stop.
+
+### The cache is load-bearing, not a nicety
+136 job customers resolve to only **71 distinct parents**. A verified direct hit costs 3 reads
+(direct + mapping + external) vs the legacy 2, so **uncached this unit would be a 50% round-trip
+regression** (408 vs 272); memoized per `(realm, parent_ref)` it is a ~22% improvement (213). Both
+production entry points build ONE connector for the whole batch, which is the memo's only
+precondition.
+
+### Codex leg degraded — workspace out of credits
+Same episode that hit U-277/U-278/U-280. Ladder worked (`gpt-5.5` xhigh → `gpt-5.5` high → `gpt-5.4`),
+all three refused identically. Pass 1 ran as a 6-lens Workflow hunt with per-finding adversarial
+refutation: 4 raw findings, **3 refuted, 1 confirmed**. The confirmed one was real and worth the run —
+every sync-level test stubbed the header fast path to a MISS, so the resolved parent was asserted only
+on the legacy branch, while **prod takes the fast path 100% of the time** (every Project carries
+dbo-native identity). Proven by mutation: forcing `customer_id=None` on the fast-path lambda left all
+21 tests green. Fixed with one test; that mutant now dies.
+
+### Test adequacy is mutation-proven, not assumed
+**15/15 mutations killed by their named test** — including verify-polarity inversion, dropping the
+verify call, realm-key removal, cache removal, and the fast-path carrier above. Two harness lessons:
+running the prover with `-x` produces false "SURVIVED" verdicts (pytest stops before reaching the
+named test), and `mapping_external_id_attr="qbo_customer_id"` is NOT a unique anchor in
+`identity_consistency.py` — the Project wrapper's binding is byte-identical.
+
+**Pass 2** applied 5 behavior-preserving fixes (two false comment claims, the shared local-side-only
+residual moved onto the engine it describes, a module-docstring paragraph distinguishing push
+hard-stop from read-only fall-through, dead `sys.path` scaffolding, and 36 lines of duplicated test
+prose). Deferrals booked in `TODO.md`.
+
+**Owed:** deploy (staged only — commit+push, do NOT deploy per assignment). `/docs` = confirmed no-op
+(internal resolver, no user-visible surface).
+
 ## 🚀 Deploy — 2026-08-17 #2: U-243 + U-242, and the RC cadence relaxed to hourly
 
 **API LIVE at `7d533d53`** — ACR run `ca9f` → `sha256:c0b9a2ab`, tagged `:latest` AND `:7d533d53` (both resolve to one digest). Built from a clean detached worktree. **Container-only: no SQL applied.** `integrations/intuit/qbo/reimburse_charge/sql/qbo.reimburse_charge.sql` appears in the range but changed **comments only** — verified `model.py` gained no fields and `repo.py` gained no `row.X` reads or sproc params, so there was no repeat of the U-240 pattern.

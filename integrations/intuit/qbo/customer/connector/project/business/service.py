@@ -296,6 +296,35 @@ class CustomerProjectConnector:
                 f"Binding existing local Project {existing_local.id} ({project_name}) "
                 f"to QboCustomer {qbo_customer.id} by name match"
             )
+            # U-303: this bind previously left CustomerId untouched, so the same
+            # sub-customer landed WITH a parent via the fast/create/update paths
+            # (all of which write it) but WITHOUT one here — branch-dependent
+            # parent assignment. Write it directly (not via
+            # _apply_project_fields_and_sync: that helper also overwrites
+            # Description/Status unconditionally, which would regress this
+            # branch's deliberate adoption of a pre-existing, possibly
+            # hand-authored local Project's other fields).
+            #
+            # MUST run BEFORE create_mapping() below, not after: create_mapping
+            # stamps dbo-native QboId/RealmId via set_qbo_identity FIRST thing it
+            # does, and SetProjectQboIdentity's second UPDATE unconditionally
+            # targets THIS row (reaching this branch already means the top-of-
+            # method run_identity_fastpath missed on this exact (qbo_id, realm_id),
+            # so existing_local can't already carry it — the sproc's WHERE guard
+            # is therefore always true here), bumping its RowVersion in the DB out
+            # from under the copy read moments ago. Writing CustomerId afterward
+            # would send that now-stale RowVersion into UpdateProjectById and
+            # spuriously raise_concurrent_write_race on every real call. Mirrors
+            # the "existing mapping" update path above (fields first, then
+            # set_qbo_identity) for exactly this reason.
+            if customer_id is not None:
+                existing_local.customer_id = customer_id
+                updated = self.project_service.repo.update_by_id(existing_local)
+                if updated is None:
+                    raise_concurrent_write_race(
+                        entity_label="Project", entity_id=existing_local.id, path_label="name-match bind"
+                    )
+                existing_local = updated
             self.create_mapping(
                 project_id=existing_local.id,
                 qbo_customer_id=qbo_customer.id,

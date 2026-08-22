@@ -2,6 +2,49 @@
 
 Carry-over items from sessions. Check off as done; prune anything stale.
 
+## U-303 follow-ups (CustomerProjectConnector name-match bind CustomerId write) — deferred, not scope-creeped in (2026-08-22)
+
+U-303 fixed one gap: the "no mapping, name-match bind" branch of `sync_from_qbo_customer`
+(`integrations/intuit/qbo/customer/connector/project/business/service.py`) now writes the resolved parent
+`CustomerId`, same as every other resolution branch. Discovered during that unit's Codex-degraded, adversarially-
+verified Claude Workflow hunt (workspace out of Codex credits this session — see the U-278/U-280/U-281/U-282/
+U-286/U-287/U-289 board rows for the same episode) but deliberately not folded in — different call site / broader
+blast radius than this unit's narrow scope:
+
+- [ ] **"Healed repoint" branch (lines ~238-251, unchanged by U-303) has the identical `set_qbo_identity`-before-
+  field-write ordering bug U-303's own first draft had — and it's still live.** When a `qbo.CustomerProject`
+  mapping exists but its bound Project reads empty, and a same-name local Project is found to repoint to, the code
+  calls `set_qbo_identity(id=replacement.id, ...)` (line 238) BEFORE `_apply_project_fields_and_sync(replacement,
+  ...)` (line 243), whose internal `update_by_id` reuses `replacement`'s RowVersion captured earlier at the
+  `read_by_name()` on line 210. Reaching this branch always means the top-of-method `run_identity_fastpath` missed
+  on this exact `(qbo_id, realm_id)` for every Project row, so `SetProjectQboIdentity`'s WHERE guard is
+  unconditionally true and its UPDATE always bumps `replacement`'s RowVersion first — the field-write then sends a
+  stale RowVersion and deterministically raises `raise_concurrent_write_race("healed repoint")` on every real
+  occurrence of this branch (the documented OHR2-CHAPEL missing-Project scenario). Self-limiting, not data-lossy:
+  the mapping repoint + identity stamp already committed before the raise, so the *next* sync of that QboCustomer
+  hits the dbo-identity fast path directly and succeeds — but that's up to a 4-hour delay
+  (`build.one.scheduler`'s `sync_qbo_customer` timer runs `0 10 */4 * * *`), plus a guaranteed spurious error-log
+  on every occurrence, and the Description/Status/address refresh this branch's comments promise ("HEAL in
+  place") don't actually land until that delayed retry. Masked by a false-positive test today:
+  `tests/test_qbo_customer_project_heal.py::test_heal_repoints_mapping_when_project_missing_but_name_match_unbound`
+  and `tests/test_u276_customer_project_qbo_identity_repoint.py`'s healed-repoint tests both stub
+  `update_by_id.side_effect = lambda p: p` / a bare `Mock()` `set_qbo_identity` with zero RowVersion modeling, so
+  neither can see the bug. Fix mirrors U-303's own: reorder to field-write-first / identity-stamp-second (matching
+  the "existing mapping" update path a few lines above, which already gets this order right), and port
+  `test_u303_customer_project_namematch_customerid.py`'s `_build_rowversion_realistic_connector` state-machine
+  fake onto the healed-repoint happy-path test so a reversion is actually caught. Confirmed independently by 4
+  separate agent traces across U-303's two review rounds (2 hunt lenses + 2 round-2 verifiers), not a single
+  unverified claim.
+- [ ] **`heal_missing_mapping()` (lines ~718-762, used by the invoice-pull connector to auto-heal a missing
+  mapping) has a broader version of the same class of gap U-303 fixed** — it binds an unmapped local Project by
+  name (`create_mapping` + `_sync_addresses`) but never calls `_apply_project_fields_and_sync` at all, so it
+  writes none of Name/Description/Status/CustomerId, not just CustomerId. It also never resolves a parent
+  Customer in the first place (`_get_parent_customer_id` isn't called here), unlike `sync_from_qbo_customer`.
+  Flagged at U-303's Gate-1 and deliberately deferred — different connector caller (invoice pull, not the
+  QboCustomer pull `sync_from_qbo_customer` itself), and fixing it well means first deciding whether it should
+  resolve+write CustomerId too or intentionally stay field-inert (it's a "just make the invoice resolvable"
+  heal, not a full sync) — a design call worth its own Gate-1, not a piggyback on this unit.
+
 ## U-298 follow-ups (PurchaseExpense CREATE-path dbo-native uniqueness recheck) — deferred, not scope-creeped in (2026-08-22)
 
 - [ ] **Invoice's create-path rollback tail has the identical unguarded hazard U-298 just fixed for Expense.** `integrations/intuit/qbo/invoice/connector/invoice/business/service.py`'s "Create new Invoice" tail calls its own `create_mapping()` and, on any exception, rolls back by deleting the just-created Invoice with no re-check — if a concurrent racer's identity-fastpath recheck already validly bound that exact (invoice_id, qbo_invoice_id) pair in the window between `create_mapping`'s identity stamp and its mapping insert (the same race U-298's adversarial hunt confirmed, adversarially-verified P1), the rollback would silently delete a legitimately-completed, already-synced financial record. Bill's equivalent tail differs (warns, never rolls back) so it doesn't carry this specific hazard. Fix mirrors U-298's: call `identity_fastpath.resolve_mapping_state` before rolling back — CONSISTENT returns the racer's result instead of destroying it, CONFLICT records the reconciliation issue, MISSING falls through to the existing rollback.

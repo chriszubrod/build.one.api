@@ -139,12 +139,18 @@ class QboAccountService:
         cache it on dbo.Company, so BillBillConnector._get_ap_account_ref no
         longer has to scan qbo.Account on every live Bill push.
 
-        Re-queries the FULL local qbo.Account mirror rather than just the
-        `qbo_accounts` batch this call fetched — an incremental pull
+        Re-derives from the realm's full set of AP-typed accounts rather than
+        just the `qbo_accounts` batch this call fetched — an incremental pull
         (`last_updated_time` set) only returns rows that changed, so the AP
         account itself may not be in this particular batch even though it's
-        already staged from an earlier pull. Re-deriving from the full
-        mirror every time keeps this correct regardless of pull shape.
+        already staged from an earlier pull. Re-deriving every time keeps
+        this correct regardless of pull shape. **U-296**: the query itself is
+        now server-side filtered to `AccountType='Accounts Payable'`
+        (`read_by_realm_id_and_account_type`) instead of fetching every
+        account in the realm's mirror and filtering in Python — same
+        `select_ap_account` selection semantics (first match, Name ASC),
+        provably identical result since the pre-filtered rows are the only
+        ones that function's loop would ever match anyway.
 
         Skips the write entirely when the derived value already matches
         what's cached — the overwhelmingly common case on any pull that
@@ -159,7 +165,7 @@ class QboAccountService:
         the account pull it rides on.
         """
         try:
-            accounts = self.repo.read_by_realm_id(realm_id)
+            accounts = self.repo.read_by_realm_id_and_account_type(realm_id, AP_ACCOUNT_TYPE)
             ap_account = select_ap_account(accounts)
             qbo_id = ap_account.qbo_id if ap_account else None
             name = ap_account.name if ap_account else None

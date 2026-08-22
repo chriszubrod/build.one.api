@@ -185,6 +185,33 @@ class QboAccountRepository:
             logger.error(f"Error during read qbo accounts by realm ID: {error}")
             raise map_database_error(error)
 
+    def read_by_realm_id_and_account_type(self, realm_id: str, account_type: str) -> List[QboAccount]:
+        """
+        Read QboAccounts by realm ID, filtered to one AccountType server-side
+        (U-296) — a narrower sibling of `read_by_realm_id` for callers (the
+        AP-account derivation) that only ever care about one type, instead of
+        fetching the full realm mirror and filtering in Python.
+        """
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                try:
+                    call_procedure(
+                        cursor=cursor,
+                        name="ReadQboAccountsByRealmIdAndAccountType",
+                        params={"RealmId": realm_id, "AccountType": account_type},
+                    )
+                    rows = cursor.fetchall()
+                    return [self._from_db(row) for row in rows if row]
+                finally:
+                    try:
+                        cursor.close()
+                    except Exception:
+                        pass
+        except Exception as error:
+            logger.error(f"Error during read qbo accounts by realm ID and account type: {error}")
+            raise map_database_error(error)
+
     def read_by_id(self, id: int) -> Optional[QboAccount]:
         """
         Read a QboAccount by database ID.

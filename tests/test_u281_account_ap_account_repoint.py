@@ -205,19 +205,23 @@ def _make_service_for_sync(repo=None, company_service=None):
     )
 
 
-def test_sync_ap_account_cache_derives_from_full_local_mirror_not_just_this_batch():
+def test_sync_ap_account_cache_derives_from_a_server_side_filtered_query():
     """An incremental pull's `qbo_accounts` may not include the AP account row
     at all (it wasn't the thing that changed) — the cache derivation must
-    re-query the full local qbo.Account mirror, not the fetched batch."""
+    re-query the realm's AP-typed accounts, not the fetched batch. **U-296**:
+    the query is now server-side filtered to AccountType (was: full local
+    qbo.Account mirror + a Python filter)."""
+    from integrations.intuit.qbo.account.business.service import AP_ACCOUNT_TYPE
+
     svc = _make_service_for_sync()
-    svc.repo.read_by_realm_id.return_value = [
+    svc.repo.read_by_realm_id_and_account_type.return_value = [
         _make_qbo_account(qbo_id="7", name="Accounts Payable (A/P)", account_type="Accounts Payable"),
     ]
     svc.company_service.read_by_realm_id.return_value = None  # nothing cached yet
 
     svc._sync_ap_account_cache("realm-1")
 
-    svc.repo.read_by_realm_id.assert_called_once_with("realm-1")
+    svc.repo.read_by_realm_id_and_account_type.assert_called_once_with("realm-1", AP_ACCOUNT_TYPE)
     svc.company_service.set_ap_account.assert_called_once_with(
         realm_id="realm-1", ap_account_qbo_id="7", ap_account_name="Accounts Payable (A/P)"
     )
@@ -225,9 +229,7 @@ def test_sync_ap_account_cache_derives_from_full_local_mirror_not_just_this_batc
 
 def test_sync_ap_account_cache_stamps_none_when_no_ap_account_exists():
     svc = _make_service_for_sync()
-    svc.repo.read_by_realm_id.return_value = [
-        _make_qbo_account(qbo_id="1", name="Bank Account", account_type="Bank"),
-    ]
+    svc.repo.read_by_realm_id_and_account_type.return_value = []  # server-side filter found no match
     svc.company_service.read_by_realm_id.return_value = SimpleNamespace(
         ap_account_qbo_id="7", ap_account_name="Accounts Payable (A/P)"  # currently cached differs
     )
@@ -244,7 +246,7 @@ def test_sync_ap_account_cache_skips_the_write_when_derived_value_already_matche
     ROWVERSION-tracked row advances it) -- skip it entirely on the overwhelmingly
     common case where nothing actually changed, per the /simplify efficiency pass."""
     svc = _make_service_for_sync()
-    svc.repo.read_by_realm_id.return_value = [
+    svc.repo.read_by_realm_id_and_account_type.return_value = [
         _make_qbo_account(qbo_id="7", name="Accounts Payable (A/P)", account_type="Accounts Payable"),
     ]
     svc.company_service.read_by_realm_id.return_value = SimpleNamespace(
@@ -258,7 +260,7 @@ def test_sync_ap_account_cache_skips_the_write_when_derived_value_already_matche
 
 def test_sync_ap_account_cache_is_failure_isolated_from_the_account_pull():
     svc = _make_service_for_sync()
-    svc.repo.read_by_realm_id.side_effect = Exception("boom")
+    svc.repo.read_by_realm_id_and_account_type.side_effect = Exception("boom")
 
     # Must not raise — a Company-side failure must never fail the account pull.
     svc._sync_ap_account_cache("realm-1")
@@ -271,7 +273,7 @@ def test_sync_ap_account_cache_is_failure_isolated_from_a_company_write_failure(
     problem, not just a qbo.Account read problem -- exercise that branch
     directly rather than relying on the read-failure test to stand in for it."""
     svc = _make_service_for_sync()
-    svc.repo.read_by_realm_id.return_value = [
+    svc.repo.read_by_realm_id_and_account_type.return_value = [
         _make_qbo_account(qbo_id="7", name="Accounts Payable (A/P)", account_type="Accounts Payable"),
     ]
     svc.company_service.read_by_realm_id.return_value = None  # nothing cached yet -- must write
@@ -289,7 +291,7 @@ def test_sync_from_qbo_calls_ap_account_cache_after_upsert_loop():
     from integrations.intuit.qbo.account.external.schemas import QboAccount as QboAccountSchema
 
     svc = _make_service_for_sync()
-    svc.repo.read_by_realm_id.return_value = []
+    svc.repo.read_by_realm_id_and_account_type.return_value = []
     fetched = QboAccountSchema.model_validate(
         {
             "Id": "1",
@@ -351,13 +353,18 @@ def test_get_ap_account_ref_cache_hit_never_scans_qbo_account():
 
     assert ref.value == "7"
     assert ref.name == "Accounts Payable (A/P)"
-    connector.qbo_account_repo.read_by_realm_id.assert_not_called()
+    connector.qbo_account_repo.read_by_realm_id_and_account_type.assert_not_called()
 
 
 def test_get_ap_account_ref_falls_back_when_no_company_row():
+    """**U-296**: fallback proved-safe, not removed — a realm with no Company
+    cache yet (no Account pull run) must still resolve the AP account for a
+    live Bill push. Now via the server-side-filtered query."""
+    from integrations.intuit.qbo.account.business.service import AP_ACCOUNT_TYPE
+
     connector = _make_connector()
     connector.company_service.read_by_realm_id.return_value = None
-    connector.qbo_account_repo.read_by_realm_id.return_value = [
+    connector.qbo_account_repo.read_by_realm_id_and_account_type.return_value = [
         _make_qbo_account(qbo_id="7", name="Accounts Payable (A/P)", account_type="Accounts Payable"),
     ]
 
@@ -365,7 +372,9 @@ def test_get_ap_account_ref_falls_back_when_no_company_row():
 
     assert ref.value == "7"
     assert ref.name == "Accounts Payable (A/P)"
-    connector.qbo_account_repo.read_by_realm_id.assert_called_once_with("realm-1")
+    connector.qbo_account_repo.read_by_realm_id_and_account_type.assert_called_once_with(
+        "realm-1", AP_ACCOUNT_TYPE
+    )
 
 
 def test_get_ap_account_ref_falls_back_when_company_row_has_no_cached_value():
@@ -375,14 +384,14 @@ def test_get_ap_account_ref_falls_back_when_company_row_has_no_cached_value():
     connector.company_service.read_by_realm_id.return_value = SimpleNamespace(
         ap_account_qbo_id=None, ap_account_name=None
     )
-    connector.qbo_account_repo.read_by_realm_id.return_value = [
+    connector.qbo_account_repo.read_by_realm_id_and_account_type.return_value = [
         _make_qbo_account(qbo_id="7", name="Accounts Payable (A/P)", account_type="Accounts Payable"),
     ]
 
     ref = connector._get_ap_account_ref("realm-1")
 
     assert ref.value == "7"
-    connector.qbo_account_repo.read_by_realm_id.assert_called_once_with("realm-1")
+    connector.qbo_account_repo.read_by_realm_id_and_account_type.assert_called_once()
 
 
 def test_get_ap_account_ref_falls_back_when_company_read_raises():
@@ -390,22 +399,20 @@ def test_get_ap_account_ref_falls_back_when_company_read_raises():
     newly break a live Bill push that never touched dbo.Company before U-281."""
     connector = _make_connector()
     connector.company_service.read_by_realm_id.side_effect = Exception("db boom")
-    connector.qbo_account_repo.read_by_realm_id.return_value = [
+    connector.qbo_account_repo.read_by_realm_id_and_account_type.return_value = [
         _make_qbo_account(qbo_id="7", name="Accounts Payable (A/P)", account_type="Accounts Payable"),
     ]
 
     ref = connector._get_ap_account_ref("realm-1")  # must not raise
 
     assert ref.value == "7"
-    connector.qbo_account_repo.read_by_realm_id.assert_called_once_with("realm-1")
+    connector.qbo_account_repo.read_by_realm_id_and_account_type.assert_called_once()
 
 
 def test_get_ap_account_ref_returns_none_and_warns_when_nothing_found_anywhere():
     connector = _make_connector()
     connector.company_service.read_by_realm_id.return_value = None
-    connector.qbo_account_repo.read_by_realm_id.return_value = [
-        _make_qbo_account(qbo_id="1", name="Bank Account", account_type="Bank"),
-    ]
+    connector.qbo_account_repo.read_by_realm_id_and_account_type.return_value = []
 
     with patch(
         "integrations.intuit.qbo.bill.connector.bill.business.service.logger"

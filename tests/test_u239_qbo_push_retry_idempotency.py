@@ -111,7 +111,7 @@ def test_sync_to_qbo_bill_retry_reuses_local_mirror_and_creates_mapping():
     connector.qbo_bill_line_repo.read_by_qbo_bill_id.return_value = [existing_local_line]
 
     prereqs = _patch_bill_sync_prereqs(connector, line_item)
-    with prereqs[0], prereqs[1], prereqs[2], prereqs[3], patch(
+    with prereqs[0], prereqs[1], prereqs[2], prereqs[3] as term_ref_mock, patch(
         "integrations.intuit.qbo.bill.connector.bill.business.service.QboBillClient"
     ) as client_cls, patch.object(connector, "_store_qbo_bill_line") as store_line_mock, patch(
         "integrations.intuit.qbo.bill.connector.bill_line_item.business.service.BillLineItemConnector"
@@ -119,6 +119,13 @@ def test_sync_to_qbo_bill_retry_reuses_local_mirror_and_creates_mapping():
         client_cls.return_value.__enter__.return_value.create_bill.return_value = created_bill
 
         result = connector.sync_to_qbo_bill(bill=bill, realm_id=REALM_ID)
+
+    # U-296: the real call-site wiring (bill.payment_term_id, realm_id) must
+    # reach _get_qbo_sales_term_ref exactly -- this is the only test in the
+    # suite that exercises sync_to_qbo_bill's actual call to it rather than
+    # calling the resolver directly, so it's the one place a swapped/wrong
+    # argument at the call site would be caught.
+    term_ref_mock.assert_called_once_with(bill.payment_term_id, REALM_ID)
 
     assert result is existing_local_bill
     connector.qbo_bill_repo.read_by_qbo_id_and_realm_id.assert_called_once_with(

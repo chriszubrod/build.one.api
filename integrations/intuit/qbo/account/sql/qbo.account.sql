@@ -236,6 +236,54 @@ GO
 
 GO
 
+-- U-296: narrower sibling of ReadQboAccountsByRealmId for callers that only
+-- care about one AccountType (the AP-account derivation) — lets the query
+-- say what it means instead of "fetch everything, filter in Python", and
+-- benefits from the existing IX_QboAccount_AccountType index.
+CREATE OR ALTER PROCEDURE ReadQboAccountsByRealmIdAndAccountType
+(
+    @RealmId NVARCHAR(50),
+    @AccountType NVARCHAR(100)
+)
+AS
+BEGIN
+    BEGIN TRANSACTION;
+
+    SELECT
+        [Id],
+        [PublicId],
+        [RowVersion],
+        CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
+        CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
+        [QboId],
+        [SyncToken],
+        [RealmId],
+        [Name],
+        [AcctNum],
+        [Description],
+        [Active],
+        [Classification],
+        [AccountType],
+        [AccountSubType],
+        [FullyQualifiedName],
+        [SubAccount],
+        [ParentRefValue],
+        [ParentRefName],
+        [CurrentBalance],
+        [CurrentBalanceWithSubAccounts],
+        [CurrencyRefValue],
+        [CurrencyRefName]
+    FROM [qbo].[Account]
+    WHERE [RealmId] = @RealmId AND [AccountType] = @AccountType
+    ORDER BY [Name] ASC;
+
+    COMMIT TRANSACTION;
+END;
+GO
+
+
+GO
+
 CREATE OR ALTER PROCEDURE ReadQboAccountById
 (
     @Id BIGINT

@@ -92,7 +92,7 @@ Two-pass investigation (folding in U-261 without re-deriving it — its findings
 **What actually depends on it beyond identity:**
 - Pull/push idempotency ledger (`qbo.AttachableAttachment`, live, both directions)
 - Three line-item-linking call sites (`sync_qbo_bill.py`, `sync_qbo_vendorcredit.py`, `purchase/connector/expense/business/service.py`) — all confirmed **live** via scheduler timers, including the VendorCredit path a stale 2026-08-07 audit finding had flagged dead (re-verified: it's fixed, currently wired)
-- The live Bill-completion push path (`entities/bill/business/service.py::_sync_attachments_to_qbo`, outbox-drain triggered) writes a *new* `qbo.Attachable` row on every successful upload — retirement needs a new landing spot for that write
+- The live Bill-completion push path (`entities/bill/business/service.py::_sync_attachments_to_qbo`, outbox-drain triggered) writes a *new* `qbo.Attachable` row on every successful upload — retirement needs a new landing spot for that write. **U-285 built that landing spot (2026-08-21) — see §15.** The PULL side below is unaffected and still stages `qbo.Attachable` for now.
 - A dead-but-real cross-package SQL reach: `qbo.purchase.sql`'s `ReadQboPurchaseLinesNeedingUpdate` joins `qbo.Attachable.EntityRefType/EntityRefValue` — the whole Python call chain down to it has zero live callers, but the sproc itself must be dropped/updated before the columns can go, or the migration won't apply
 - **Newly found:** `entities/invoice/intelligence/prompt.md` (the InvoiceAgent operational playbook) directly instructs manual `QboAttachableService`/`QboAttachableRepository` calls and a raw `qbo.AttachableAttachment` SQL lookup as a documented recovery step — a live, human/agent-facing dependency, not dead weight, that a retirement plan needs to update
 
@@ -512,6 +512,62 @@ cleanly-separated hunk from the concurrent `item` session alongside this unit's 
 that the hunks never touch the same lines. Commit for this unit uses `git add -p`/targeted patch application to
 stage only this unit's own hunks in those 3 files, leaving the `item` session's uncommitted work untouched and
 committable on its own later.
+
+---
+
+## 15. U-285 in progress — Phase 5 `qbo.Attachable`/`qbo.AttachableAttachment`, push side only (2026-08-21)
+
+Chris picked **phased retire, push first** (option (b) of a 2-option Gate-1 menu, not the §6 "3-option menu"
+this doc originally posed for the *full* retire — that menu is superseded by this narrower, sequenced approach).
+
+**Gate-1 map, re-verified against live prod** (not doc-trust): confirmed §6's claim that the push path
+(`AttachableAttachmentConnector.sync_attachment_to_qbo`, called from `entities/bill/business/service.py::
+_sync_attachments_to_qbo` on every Bill-to-QBO push) still creates a **new** `qbo.Attachable` row plus a
+`qbo.AttachableAttachment` mapping row on every successful upload — live and actively written (most recent
+row created the day of this unit). Live counts: `qbo.Attachable`=4,556 rows, `qbo.AttachableAttachment`=4,194
+rows (2 orphaned, dangling FK — pre-existing, no-CASCADE, not touched by this unit), `dbo.Attachment`=29,108
+rows (4,192 carrying `QboId`, 0 duplicate `(QboId,RealmId)` pairs — clean substrate). 362 `qbo.Attachable` rows
+were never linked to any Attachment (dead pull-side staging noise, unaffected either way).
+
+**Built:** the push path's fresh-upload branch now stamps `dbo.Attachment.QboId`/`RealmId` directly
+(`_stamp_pushed_identity`) instead of creating a `qbo.Attachable` row + calling `_create_mapping` — no new
+staging row, no new mapping row. The two pre-existing "already synced, skip" early-return checks (dbo-native
+fast path, legacy mapping-table fallback) are preserved unchanged for backward compatibility with rows the
+(untouched) pull side still writes, **plus a third fallthrough** added by this unit: when both legacy checks
+miss but `dbo.Attachment.QboId` is already set (the normal shape for anything pushed by this unit's own new
+code), trust it directly and skip re-uploading — without this, any retry (outbox re-drain after a mid-loop
+`QboBudgetExceededError`, or the same Attachment shared across two Bills) would have silently re-uploaded a
+duplicate to QBO and only discovered it afterward via the race-guard, mis-recorded as a "concurrent mapping
+race" instead of a deterministic re-push. (This was caught by the adversarial hunt below, not by initial
+review — see the confirmed-findings note.)
+
+**Explicitly deferred to a follow-up unit** (do not re-derive — already scoped): the **pull side**
+(`QboAttachableService`, `scripts/sync_qbo_bill.py`/`sync_qbo_vendorcredit.py`/`sync_qbo_purchase.py`,
+`scripts/backfill_qbo_bills.py`) still creates/updates `qbo.Attachable` rows on every pull — untouched,
+deliberately. The 3 read-only line-item-linking call sites (§6's list) still resolve dbo-native identity first,
+falling back to the mapping table on a miss (per U-279) — also untouched, and unaffected by this unit (the
+push-side change doesn't remove any row those call sites currently depend on; freshly-pushed and pulled
+attachments are non-overlapping populations). `entities/invoice/intelligence/prompt.md`'s manual recovery
+playbook (§6's "newly found" dependency) still documents a `qbo.Attachable`/`qbo.AttachableAttachment` recovery
+step that silently stops applying to attachments pushed via this unit's new code path (no staging row exists
+for it to find) — that file is foreign in-flight WIP from a concurrent session and was correctly left
+untouched; **owed as a follow-up for whoever owns that file**, not fixed here.
+
+**Hunt:** Codex confirmed out-of-credits (same workspace-wide outage this whole migration has hit) — fell back
+to a Claude Workflow 5-lens adversarial hunt (identity-conflict-safety, call-site-contract, test-adequacy,
+legacy-interaction, scope-hygiene) with 2-skeptic refute-by-default verification: 9 raw findings, 4 confirmed,
+5 refuted. **1 confirmed P1, fixed** (the idempotency-fallthrough gap above — mutation-proven RED→GREEN in an
+isolated worktree: reverting just the fallthrough branch reproduces the exact silent-re-upload the finding
+predicted). **3 confirmed P3s**: this doc's own stale §6 sentence (fixed, this section); the InvoiceAgent
+playbook dependency above (deferred, file off-limits this session); a test-coverage completeness gap on the
+happy-path test's return-object assertions (fixed — strengthened to cover sync_token/content_type/entity_ref_*/
+public_id/row_version). Full pytest suite green (2,647 including the new regression test). No SQL, no schema
+change, no `/docs` (web) refresh owed — backend integration-internals only.
+
+⛔ **Not yet shipped** — held at Gate-2 pending Chris's commit+push decision. No deploy owed (pure Python,
+no SQL). Pull-side repoint + the eventual `DROP TABLE` for both `qbo.Attachable`/`qbo.AttachableAttachment` is
+the follow-up unit, sequenced whenever the pull side's own soak/verification is ready — not blocked by
+anything in this unit.
 
 ---
 

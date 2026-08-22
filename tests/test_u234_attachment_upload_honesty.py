@@ -1,10 +1,10 @@
 """U-234 — durable ReconciliationIssue when attachment upload to QBO fails."""
+from types import SimpleNamespace
 from unittest.mock import MagicMock, Mock, patch
 
 import pytest
 
 from entities.attachment.business.model import Attachment
-from integrations.intuit.qbo.attachable.business.model import QboAttachable as LocalQboAttachable
 from integrations.intuit.qbo.attachable.connector.attachment.business.service import (
     AttachableAttachmentConnector,
 )
@@ -57,28 +57,6 @@ def _upload_response(qbo_id: str = "qbo-att-777") -> QboAttachableResponse:
     )
 
 
-def _local_qbo_attachable(qbo_id: str = "qbo-att-777") -> LocalQboAttachable:
-    return LocalQboAttachable(
-        id=501,
-        public_id=None,
-        row_version=None,
-        created_datetime=None,
-        modified_datetime=None,
-        qbo_id=qbo_id,
-        sync_token="0",
-        realm_id=REALM_ID,
-        file_name="invoice.pdf",
-        note=None,
-        category=None,
-        content_type="application/pdf",
-        size=1024,
-        file_access_uri=None,
-        temp_download_uri=None,
-        entity_ref_type=ENTITY_TYPE,
-        entity_ref_value=ENTITY_ID,
-    )
-
-
 def _connector(reconciliation_repo=None) -> AttachableAttachmentConnector:
     connector = AttachableAttachmentConnector(
         mapping_repo=Mock(),
@@ -89,6 +67,10 @@ def _connector(reconciliation_repo=None) -> AttachableAttachmentConnector:
     connector.mapping_repo.read_by_attachment_id.return_value = None
     connector.mapping_repo.read_by_qbo_attachable_id.return_value = None
     connector.auth_service.ensure_valid_token.return_value = MagicMock(access_token="tok")
+    # U-285: _stamp_pushed_identity re-reads the Attachment's current identity
+    # right before stamping. Default to "not yet claimed" so the happy-path
+    # tests proceed past the race guard; the race test overrides this.
+    connector.attachment_service.read_by_id.return_value = None
     return connector
 
 
@@ -144,18 +126,19 @@ def test_upload_failure_records_reconciliation_issue_and_reraises():
 
 
 def test_post_upload_local_failure_records_qbo_id_and_reraises():
+    """U-285: the post-commit-ambiguous local write is now set_qbo_identity
+    (there is no more qbo.Attachable row to fail creating) — an unexpected
+    failure there must still surface the same durable, non-swallowed
+    reconciliation issue and reraise."""
     connector = _connector()
     upload_resp = _upload_response("qbo-att-post-commit")
-    local_create_error = RuntimeError("local QboAttachable insert failed")
+    local_write_error = RuntimeError("set_qbo_identity failed")
+    connector.attachment_service.repo.set_qbo_identity.side_effect = local_write_error
     client_upload_patch, _client = _client_upload_patch(return_value=upload_resp)
 
     with _blob_download_patch(), client_upload_patch, patch(
-        "integrations.intuit.qbo.attachable.connector.attachment.business.service.QboAttachableRepository"
-    ) as repo_cls, patch(
         "integrations.intuit.qbo.attachable.connector.attachment.business.service.record_mapping_issue"
     ) as record_issue:
-        repo_cls.return_value.create.side_effect = local_create_error
-
         with pytest.raises(RuntimeError) as exc_info:
             connector.sync_attachment_to_qbo(
                 attachment=_attachment(),
@@ -164,7 +147,7 @@ def test_post_upload_local_failure_records_qbo_id_and_reraises():
                 entity_id=ENTITY_ID,
             )
 
-    assert exc_info.value is local_create_error
+    assert exc_info.value is local_write_error
     record_issue.assert_called_once()
     kwargs = record_issue.call_args.kwargs
     assert kwargs["qbo_id"] == "qbo-att-post-commit"
@@ -213,39 +196,12 @@ def test_write_refused_does_not_record_reconciliation_issue():
     connector.reconciliation_repo.create.assert_not_called()
 
 
-def test_happy_path_returns_local_attachable_without_recording_issue():
+def test_happy_path_stamps_dbo_identity_directly_no_staging_writes():
+    """U-285: a fresh push stamps dbo.Attachment.QboId/RealmId directly and
+    creates NEITHER a qbo.Attachable row NOR a qbo.AttachableAttachment
+    mapping row — the identity stamp is the sole bookkeeping write."""
     connector = _connector()
-    local_row = _local_qbo_attachable()
-    client_upload_patch, _client = _client_upload_patch()
-
-    with _blob_download_patch(), client_upload_patch, patch(
-        "integrations.intuit.qbo.attachable.connector.attachment.business.service.QboAttachableRepository"
-    ) as repo_cls, patch(
-        "integrations.intuit.qbo.attachable.connector.attachment.business.service.record_mapping_issue"
-    ) as record_issue:
-        repo_cls.return_value.create.return_value = local_row
-
-        result = connector.sync_attachment_to_qbo(
-            attachment=_attachment(),
-            realm_id=REALM_ID,
-            entity_type=ENTITY_TYPE,
-            entity_id=ENTITY_ID,
-        )
-
-    assert result is local_row
-    record_issue.assert_not_called()
-    connector.reconciliation_repo.create.assert_not_called()
-    connector.mapping_repo.create.assert_called_once()
-
-
-def test_mapping_race_records_orphaned_issue_and_returns_local_attachable():
-    connector = _connector()
-    local_row = _local_qbo_attachable("qbo-att-race")
-    upload_resp = _upload_response("qbo-att-race")
-    connector.mapping_repo.read_by_attachment_id.side_effect = [
-        None,
-        Mock(qbo_attachable_id=123),
-    ]
+    upload_resp = _upload_response("qbo-att-fresh")
     client_upload_patch, _client = _client_upload_patch(return_value=upload_resp)
 
     with _blob_download_patch(), client_upload_patch, patch(
@@ -253,8 +209,6 @@ def test_mapping_race_records_orphaned_issue_and_returns_local_attachable():
     ) as repo_cls, patch(
         "integrations.intuit.qbo.attachable.connector.attachment.business.service.record_mapping_issue"
     ) as record_issue:
-        repo_cls.return_value.create.return_value = local_row
-
         result = connector.sync_attachment_to_qbo(
             attachment=_attachment(),
             realm_id=REALM_ID,
@@ -262,7 +216,55 @@ def test_mapping_race_records_orphaned_issue_and_returns_local_attachable():
             entity_id=ENTITY_ID,
         )
 
-    assert result is local_row
+    # No local staging row, no mapping row — dbo.Attachment identity only.
+    repo_cls.return_value.create.assert_not_called()
+    connector.mapping_repo.create.assert_not_called()
+    record_issue.assert_not_called()
+    connector.reconciliation_repo.create.assert_not_called()
+
+    connector.attachment_service.repo.set_qbo_identity.assert_called_once_with(
+        id=99, qbo_id="qbo-att-fresh", realm_id=REALM_ID,
+    )
+
+    # Returned object carries the QBO-side data but is not a persisted row.
+    assert result.id is None
+    assert result.public_id is None
+    assert result.row_version is None
+    assert result.qbo_id == "qbo-att-fresh"
+    assert result.realm_id == REALM_ID
+    assert result.file_name == "invoice.pdf"
+    assert result.sync_token == "0"
+    assert result.content_type == "application/pdf"
+    assert result.entity_ref_type == ENTITY_TYPE
+    assert result.entity_ref_value == ENTITY_ID
+
+
+def test_mapping_race_records_orphaned_issue_and_returns_local_attachable():
+    """A concurrent push (two Bills sharing one physical Attachment, drained
+    at the same time) already stamped dbo.Attachment's identity between our
+    initial "not yet pushed" check and this upload completing. U-285:
+    _stamp_pushed_identity re-reads the CURRENT row right before stamping and
+    must detect this — recording a critical orphaned-upload issue instead of
+    silently overwriting the winner's identity."""
+    connector = _connector()
+    upload_resp = _upload_response("qbo-att-race")
+    # A concurrent push already claimed this Attachment's identity.
+    connector.attachment_service.read_by_id.return_value = SimpleNamespace(
+        qbo_id="qbo-att-race-winner", realm_id=REALM_ID,
+    )
+    client_upload_patch, _client = _client_upload_patch(return_value=upload_resp)
+
+    with _blob_download_patch(), client_upload_patch, patch(
+        "integrations.intuit.qbo.attachable.connector.attachment.business.service.record_mapping_issue"
+    ) as record_issue:
+        result = connector.sync_attachment_to_qbo(
+            attachment=_attachment(),
+            realm_id=REALM_ID,
+            entity_type=ENTITY_TYPE,
+            entity_id=ENTITY_ID,
+        )
+
+    assert result.qbo_id == "qbo-att-race"
     record_issue.assert_called_once()
     kwargs = record_issue.call_args.kwargs
     assert kwargs["drift_type"] == "attachment_mapping_orphaned"
@@ -272,6 +274,52 @@ def test_mapping_race_records_orphaned_issue_and_returns_local_attachable():
     assert "must NOT be re-uploaded" in kwargs["details"]
     assert "concurrent mapping race" in kwargs["details"]
     connector.mapping_repo.create.assert_not_called()
+    # The race guard must not overwrite the winner's identity.
+    connector.attachment_service.repo.set_qbo_identity.assert_not_called()
+
+
+def test_retry_after_already_pushed_skips_reupload_no_legacy_staging_row():
+    """U-285 regression: once an Attachment has been pushed via THIS unit's
+    own code path (dbo.Attachment.QboId/RealmId stamped directly — no
+    qbo.Attachable row, no qbo.AttachableAttachment mapping row), a retry
+    (e.g. an outbox re-drain after a mid-loop QboBudgetExceededError, or the
+    same Attachment shared across two Bills pushed at different times) must
+    skip re-uploading — not silently re-push a duplicate to QBO and only
+    discover it after the fact via a misdiagnosed 'concurrent mapping race'."""
+    connector = _connector()
+    attachment = _attachment()
+    attachment.qbo_id = "qbo-att-already-pushed"
+    attachment.realm_id = REALM_ID
+
+    # Neither legacy staging source corroborates it (the U-285 push path
+    # never created either row for this attachment).
+    client_upload_patch, client = _client_upload_patch(
+        return_value=_upload_response("qbo-att-would-be-duplicate")
+    )
+
+    with _blob_download_patch(), client_upload_patch, patch(
+        "integrations.intuit.qbo.attachable.connector.attachment.business.service.QboAttachableRepository"
+    ) as repo_cls, patch(
+        "integrations.intuit.qbo.attachable.connector.attachment.business.service.record_mapping_issue"
+    ) as record_issue:
+        repo_cls.return_value.read_by_qbo_id_and_realm_id.return_value = None
+
+        result = connector.sync_attachment_to_qbo(
+            attachment=attachment,
+            realm_id=REALM_ID,
+            entity_type=ENTITY_TYPE,
+            entity_id=ENTITY_ID,
+        )
+
+    # Must NOT re-upload a duplicate to QBO, and must NOT touch identity again.
+    client.upload_attachable.assert_not_called()
+    record_issue.assert_not_called()
+    connector.attachment_service.repo.set_qbo_identity.assert_not_called()
+    connector.mapping_repo.create.assert_not_called()
+
+    assert result.id is None
+    assert result.qbo_id == "qbo-att-already-pushed"
+    assert result.realm_id == REALM_ID
 
 
 def test_malformed_2xx_response_detail_surfaced_in_reconciliation_issue():

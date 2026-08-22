@@ -512,6 +512,105 @@ class AttachableAttachmentConnector:
         )
         return self.mapping_repo.create(attachment_id=attachment_id, qbo_attachable_id=qbo_attachable_id)
 
+    def _stamp_pushed_identity(self, *, attachment_id: int, qbo_id: str, realm_id: str) -> None:
+        """
+        Stamp dbo.Attachment's native QboId/RealmId directly after a
+        successful QBO Attachable upload (U-285 push-side retire — the
+        push path's sole bookkeeping write, replacing the old
+        qbo.Attachable-row-create + `_create_mapping` pair).
+
+        Race-guards the same case `_create_mapping`'s uniqueness pre-check
+        used to catch: two Bills sharing the same physical Attachment,
+        drained concurrently, can both pass the top-of-function "not yet
+        pushed" check before either finishes uploading to QBO. Re-reads the
+        Attachment's CURRENT identity right before stamping — if a
+        concurrent push already claimed it, raise so the caller records the
+        now-orphaned upload as a critical reconciliation issue instead of
+        silently overwriting the winning identity with this losing one.
+        """
+        current = self.attachment_service.read_by_id(attachment_id)
+        if current and current.qbo_id and (getattr(current, "realm_id", None) or "") == (realm_id or ""):
+            raise ValueError(
+                f"Attachment {attachment_id} is already mapped to QboAttachable {current.qbo_id}"
+            )
+        self.attachment_service.repo.set_qbo_identity(
+            id=attachment_id,
+            qbo_id=qbo_id,
+            realm_id=realm_id,
+        )
+
+    def _transient_attachable_from_response(
+        self,
+        *,
+        response,
+        realm_id: str,
+        entity_type: str,
+        entity_id: str,
+    ) -> QboAttachable:
+        """
+        Build an in-memory (never persisted) QboAttachable from the QBO
+        upload response, for callers that expect this method's historical
+        return type. U-285: the push path no longer creates a qbo.Attachable
+        row to back it, so `id`/`public_id`/`row_version`/timestamps are None.
+        """
+        return QboAttachable(
+            id=None,
+            public_id=None,
+            row_version=None,
+            created_datetime=None,
+            modified_datetime=None,
+            qbo_id=response.id,
+            sync_token=response.sync_token,
+            realm_id=realm_id,
+            file_name=response.file_name,
+            note=response.note,
+            category=response.category,
+            content_type=response.content_type,
+            size=response.size,
+            file_access_uri=response.file_access_uri,
+            temp_download_uri=response.temp_download_uri,
+            entity_ref_type=entity_type,
+            entity_ref_value=entity_id,
+        )
+
+    def _transient_attachable_from_dbo(
+        self,
+        attachment: Attachment,
+        realm_id: str,
+        *,
+        entity_type: Optional[str] = None,
+        entity_id: Optional[str] = None,
+    ) -> QboAttachable:
+        """
+        Build an in-memory (never persisted) QboAttachable from an Attachment
+        that dbo.Attachment already shows as pushed (U-285 push-path
+        idempotency fast path — no legacy qbo.Attachable/AttachableAttachment
+        row exists to read, so there is no QBO API response to build from
+        either; this call skips the QBO API entirely). `id`/`public_id`/
+        `row_version`/timestamps are None, matching
+        `_transient_attachable_from_response`'s contract for the fresh-push
+        case.
+        """
+        return QboAttachable(
+            id=None,
+            public_id=None,
+            row_version=None,
+            created_datetime=None,
+            modified_datetime=None,
+            qbo_id=attachment.qbo_id,
+            sync_token=None,
+            realm_id=realm_id,
+            file_name=attachment.original_filename or attachment.filename,
+            note=attachment.description,
+            category=attachment.category,
+            content_type=attachment.content_type,
+            size=attachment.file_size,
+            file_access_uri=None,
+            temp_download_uri=None,
+            entity_ref_type=entity_type,
+            entity_ref_value=entity_id,
+        )
+
     def _ensure_pdf_filename(self, file_name: str) -> str:
         """Ensure filename has .pdf extension (e.g. after image-to-PDF conversion)."""
         if not file_name:
@@ -540,22 +639,36 @@ class AttachableAttachmentConnector:
     ) -> QboAttachable:
         """
         Sync a local Attachment to QuickBooks Online.
-        
+
         This method:
-        1. Checks if a mapping already exists (skip if already synced)
+        1. Checks if this Attachment was already pushed — three checks, in
+           order: a qbo.Attachable staging row (legacy/pull-populated), a
+           qbo.AttachableAttachment mapping row (legacy), then (U-285)
+           dbo.Attachment's own QboId/RealmId alone, which is authoritative
+           for anything pushed via this method's own code path (see point 4)
         2. Downloads the file from Azure Blob Storage
         3. Uploads to QBO via the upload endpoint
-        4. Stores QboAttachable locally and creates mapping
-        
+        4. Stamps dbo.Attachment's native QboId/RealmId directly (U-285:
+           the push path no longer stages a qbo.Attachable row or a
+           qbo.AttachableAttachment mapping row — dbo.Attachment identity is
+           the sole record that this Attachment was pushed. The pull side
+           still populates qbo.Attachable for now; repointing it is a
+           follow-up unit, see docs/staging_removal_phase4_5_scoping.md §6/§15)
+
         Args:
             attachment: Local Attachment record to sync
             realm_id: QBO realm ID for API access
             entity_type: QBO entity type to link to (e.g., "Bill")
             entity_id: QBO entity ID to link to
-        
+
         Returns:
-            QboAttachable: The local QboAttachable record created
-            
+            QboAttachable: the QBO-side record. For an Attachment already
+            synced via a legacy staging/mapping row this is a real
+            qbo.Attachable row (unchanged). For a fresh push, or a retry of
+            an Attachment this method already pushed itself, it is a
+            transient (never persisted) QboAttachable — `id`/`public_id`/
+            `row_version`/timestamps are None since no local row backs it.
+
         Raises:
             ValueError: If upload fails or file cannot be downloaded
         """
@@ -569,17 +682,20 @@ class AttachableAttachmentConnector:
         # base/identity_consistency.py. But it's still corroborated against
         # the qbo.Attachable staging row below before being trusted for the
         # early return — a non-null qbo_id alone is not treated as sufficient.
-        if attachment.qbo_id and (getattr(attachment, "realm_id", None) or "") == (realm_id or ""):
+        already_dbo_pushed = bool(
+            attachment.qbo_id and (getattr(attachment, "realm_id", None) or "") == (realm_id or "")
+        )
+        if already_dbo_pushed:
             qbo_attachable_repo = QboAttachableRepository()
             existing_qbo_attachable = qbo_attachable_repo.read_by_qbo_id_and_realm_id(attachment.qbo_id, realm_id)
             if existing_qbo_attachable:
                 logger.info(f"Attachment {attachment_id} already carries QBO identity {attachment.qbo_id} — skipping re-upload")
                 return existing_qbo_attachable
             # dbo says pushed but no matching qbo.Attachable staging row — this
-            # is staging-cache lag (or the dual-write's original row was pruned),
-            # not a genuine two-source conflict like the pull-side case, so it
-            # falls through to the mapping-table check below as a safety net
-            # rather than raising.
+            # is staging-cache lag on a legacy-style push, or (the now-common
+            # case, U-285) simply that the push side no longer stages one at
+            # all. Fall through to the mapping-table check as a second
+            # corroborating source before trusting dbo identity alone.
 
         # Check if already mapped (legacy path)
         existing_mapping = self.mapping_repo.read_by_attachment_id(attachment_id)
@@ -587,7 +703,28 @@ class AttachableAttachmentConnector:
             logger.info(f"Attachment {attachment_id} is already mapped to QboAttachable {existing_mapping.qbo_attachable_id}")
             qbo_attachable_repo = QboAttachableRepository()
             return qbo_attachable_repo.read_by_id(existing_mapping.qbo_attachable_id)
-        
+
+        if already_dbo_pushed:
+            # U-285: neither legacy staging source corroborates it, but
+            # dbo.Attachment's own QboId/RealmId is authoritative for
+            # anything pushed via this unit's own code path
+            # (_stamp_pushed_identity no longer creates either staging row) —
+            # this is the expected, common case going forward, not an
+            # anomaly. Without this check, a retry (e.g. the outbox re-
+            # draining a row after a mid-loop QboBudgetExceededError, or the
+            # same Attachment shared across two Bills) would silently
+            # re-upload a duplicate to QBO and only detect it AFTER the
+            # wasteful re-upload, via _stamp_pushed_identity's own race
+            # guard below — mischaracterizing a deterministic re-push as a
+            # "concurrent mapping race".
+            logger.info(
+                f"Attachment {attachment_id} already carries QBO identity {attachment.qbo_id} "
+                f"(no legacy staging row — U-285 push-side) — skipping re-upload"
+            )
+            return self._transient_attachable_from_dbo(
+                attachment, realm_id, entity_type=entity_type, entity_id=entity_id,
+            )
+
         # Download file from Azure Blob Storage
         if not attachment.blob_url:
             raise ValueError(f"Attachment {attachment_id} has no blob_url")
@@ -624,37 +761,21 @@ class AttachableAttachmentConnector:
 
             logger.info(f"Created QBO Attachable {qbo_attachable_response.id} for {entity_type} {entity_id}")
 
-            # Store QboAttachable locally
-            qbo_attachable_repo = QboAttachableRepository()
-            local_qbo_attachable = qbo_attachable_repo.create(
-                qbo_id=qbo_attachable_response.id,
-                sync_token=qbo_attachable_response.sync_token,
-                realm_id=realm_id,
-                file_name=qbo_attachable_response.file_name,
-                note=qbo_attachable_response.note,
-                category=qbo_attachable_response.category,
-                content_type=qbo_attachable_response.content_type,
-                size=qbo_attachable_response.size,
-                file_access_uri=qbo_attachable_response.file_access_uri,
-                temp_download_uri=qbo_attachable_response.temp_download_uri,
-                entity_ref_type=entity_type,
-                entity_ref_value=entity_id,
-            )
-
-            logger.info(f"Stored local QboAttachable {local_qbo_attachable.id}")
-
-            # Create mapping
-            qbo_attachable_id = coerce_id(local_qbo_attachable.id)
+            # U-285 (Phase-5 push-side retire): stamp identity directly on
+            # dbo.Attachment — no qbo.Attachable staging row, no
+            # qbo.AttachableAttachment mapping row.
             try:
-                self._create_mapping(
+                self._stamp_pushed_identity(
                     attachment_id=attachment_id,
-                    qbo_attachable_id=qbo_attachable_id,
                     qbo_id=qbo_attachable_response.id,
                     realm_id=realm_id,
                 )
-                logger.info(f"Created mapping: Attachment {attachment_id} <-> QboAttachable {qbo_attachable_id}")
+                logger.info(
+                    f"Stamped QBO identity on Attachment {attachment_id} "
+                    f"<- QboAttachable {qbo_attachable_response.id}"
+                )
             except ValueError as e:
-                logger.warning(f"Could not create mapping: {e}")
+                logger.warning(f"Could not stamp identity: {e}")
                 record_mapping_issue(
                     self.reconciliation_repo,
                     drift_type="attachment_mapping_orphaned",
@@ -673,7 +794,12 @@ class AttachableAttachmentConnector:
                     ),
                 )
 
-            return local_qbo_attachable
+            return self._transient_attachable_from_response(
+                response=qbo_attachable_response,
+                realm_id=realm_id,
+                entity_type=entity_type,
+                entity_id=entity_id,
+            )
         except (QboBudgetExceededError, QboWriteRefusedError):
             raise
         except Exception as exc:

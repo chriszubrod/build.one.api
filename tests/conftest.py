@@ -1,14 +1,41 @@
 import pathlib
 import sys
 import types
+from contextlib import contextmanager
 from decimal import Decimal
 from pathlib import Path
 
+import pyodbc
 import pytest
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
+def _blocked_live_pyodbc_connect(*args, **kwargs):
+    """No-live-DB harness guard (U-295) — installed at conftest import time so it
+    also catches connections from a stray background thread/task a leaked test
+    might spawn. See the RuntimeError below for what to do instead."""
+    raise RuntimeError(
+        "BLOCKED: a test attempted a real pyodbc.connect() against the live prod "
+        "database. This harness is pure-logic / no-live-DB — mock "
+        "shared.database.get_connection (or the specific repo module's imported "
+        "get_connection) instead of letting a repo/connector default to a real "
+        "instance. See tests/conftest.py::_blocked_live_pyodbc_connect."
+    )
+
+
+pyodbc.connect = _blocked_live_pyodbc_connect
+
+
+@contextmanager
+def mock_qbo_app_lock_granted(*_args, **_kwargs):
+    """Shared `qbo_app_lock` stand-in yielding True (lock acquired) — the same
+    contract test_u226/test_u243 already established locally; import this instead
+    of hand-rolling another copy."""
+    yield True
+
 
 _SKIP_DIR_NAMES = frozenset({".venv", ".git", "__pycache__", "node_modules", ".pytest_cache"})
 

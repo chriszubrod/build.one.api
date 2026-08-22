@@ -4,10 +4,19 @@ from unittest.mock import Mock, patch
 
 import pytest
 
+from conftest import mock_qbo_app_lock_granted
 from entities.bill_line_item.business.service import BillLineItemService
 from entities.expense_line_item.business.service import ExpenseLineItemService
 from entities.invoice.business.service import InvoiceService
 from entities.invoice_line_item.business.service import InvoiceLineItemService
+
+
+@pytest.fixture(autouse=True)
+def _mock_qbo_app_lock():
+    """Mocks mapping_cleanup's real sp_getapplock lock so these delete tests never
+    open a live pyodbc connection (U-295)."""
+    with patch("integrations.intuit.qbo.base.mapping_cleanup.qbo_app_lock", mock_qbo_app_lock_granted):
+        yield
 
 
 # --- Invoice header ---

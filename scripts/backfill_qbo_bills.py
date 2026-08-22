@@ -28,11 +28,17 @@ Usage:
 import argparse
 import logging
 import sys
+from typing import Dict, Optional
 
 from scripts.sync_helper import assert_cli_system_admin
 from shared.database import get_connection, with_retry
+from integrations.intuit.qbo.auth.business.service import QboAuthService
 from integrations.intuit.qbo.base.errors import QboBudgetExceededError, QboWriteRefusedError
 from integrations.intuit.qbo.base.pull_race import read_lines_riding_out_race, header_has_amount
+from entities.vendor.business.service import VendorService
+from integrations.intuit.qbo.vendor.connector.vendor.persistence.repo import VendorVendorRepository
+from integrations.intuit.qbo.vendor.persistence.repo import QboVendorRepository
+from integrations.intuit.qbo.base.identity_consistency import verify_vendor_qbo_identity
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 logger = logging.getLogger("backfill_qbo_bills")
@@ -40,7 +46,75 @@ logger = logging.getLogger("backfill_qbo_bills")
 CREATABLE = "genuinely_missing_creatable"
 
 
-def select_unmapped(*, year=None, qbo_id=None):
+# U-299: dbo-first -> verify_vendor_qbo_identity -> legacy qbo.Vendor/
+# qbo.VendorVendor fallback (mirrors U-284v's cross-family resolvers —
+# BillBillConnector._get_vendor_public_id (pull) + _get_qbo_vendor_ref
+# (push), PurchaseExpenseConnector._get_vendor_public_id,
+# VendorCreditBillCreditConnector._get_vendor_public_id,
+# ExpenseCodingItemService._resolve_vendor_id, and this script's sibling
+# copy in generate_payment_remittance.py — see TODO.md's U-005[reuse]
+# breadcrumb). Hand-copied deliberately per that unit's precedent, not
+# extracted.
+def resolve_local_vendor_id(
+    qbo_vendor_id: str,
+    realm_id: Optional[str],
+    *,
+    vendor_service=None,
+    vendor_vendor_repo=None,
+    qbo_vendor_repo=None,
+) -> Optional[int]:
+    """Resolve a QBO vendor id -> local dbo.Vendor.Id, or None if unresolvable."""
+    vendor_service = vendor_service or VendorService()
+    vendor_vendor_repo = vendor_vendor_repo or VendorVendorRepository()
+    qbo_vendor_repo = qbo_vendor_repo or QboVendorRepository()
+
+    direct_vendor = vendor_service.read_by_qbo_identity(qbo_vendor_id, realm_id)
+    if direct_vendor:
+        verified_qbo_id = verify_vendor_qbo_identity(
+            direct_vendor,
+            vendor_vendor_repo=vendor_vendor_repo,
+            qbo_vendor_repo=qbo_vendor_repo,
+        )
+        if verified_qbo_id:
+            return direct_vendor.id
+
+    qbo_vendor = qbo_vendor_repo.read_by_qbo_id(qbo_vendor_id)
+    if not qbo_vendor:
+        return None
+    vendor_mapping = vendor_vendor_repo.read_by_qbo_vendor_id(qbo_vendor.id)
+    if not vendor_mapping:
+        return None
+    vendor = vendor_service.read_by_id(vendor_mapping.vendor_id)
+    if not vendor:
+        return None
+    return vendor.id
+
+
+def _classify_bucket(cur, mapped_vendor_id, doc_number, txn_date) -> str:
+    """Recompute a row's bucket after a dbo-native vendor resolution changes
+    MappedVendorId. Runs the SAME CASE expression select_unmapped()'s own SQL
+    uses (not a hand-ported Python re-implementation), so SQL Server's own
+    LTRIM/RTRIM/EXISTS decide the answer and the two can never drift — only
+    called with a non-None mapped_vendor_id (the 'unmapped_vendor' bucket
+    needs no recompute)."""
+    cur.execute(
+        """
+        SELECT CASE
+            WHEN ? IS NULL OR LTRIM(RTRIM(?)) = '' THEN 'null_docnumber'
+            WHEN EXISTS (
+                SELECT 1 FROM dbo.Bill b
+                WHERE b.VendorId = ? AND b.BillNumber = ?
+                  AND CAST(b.BillDate AS DATE) = TRY_CAST(LEFT(?, 10) AS DATE)
+            ) THEN 'already_exists_unlinked'
+            ELSE 'genuinely_missing_creatable'
+        END
+        """,
+        (doc_number, doc_number, mapped_vendor_id, doc_number, txn_date),
+    )
+    return cur.fetchone()[0]
+
+
+def select_unmapped(*, year=None, qbo_id=None, realm_id=None):
     """READ-ONLY: classify every unmapped qbo.Bill into a bucket. Returns list of dicts."""
     where = ["NOT EXISTS (SELECT 1 FROM qbo.BillBill bb WHERE bb.QboBillId = qb.Id)"]
     params = []
@@ -62,7 +136,7 @@ def select_unmapped(*, year=None, qbo_id=None):
         LEFT JOIN qbo.Vendor qv       ON qv.QboId = u.VendorRefValue
         LEFT JOIN qbo.VendorVendor vv ON vv.QboVendorId = qv.Id
     )
-    SELECT r.Id, r.QboId, r.VendorRefName, r.DocNumber, r.TxnDate, r.MappedVendorId,
+    SELECT r.Id, r.QboId, r.VendorRefValue, r.VendorRefName, r.DocNumber, r.TxnDate, r.MappedVendorId,
       CASE
         WHEN r.MappedVendorId IS NULL THEN 'unmapped_vendor'
         WHEN r.DocNumber IS NULL OR LTRIM(RTRIM(r.DocNumber)) = '' THEN 'null_docnumber'
@@ -80,7 +154,47 @@ def select_unmapped(*, year=None, qbo_id=None):
         cur = conn.cursor()
         cur.execute(sql, params)
         cols = [c[0] for c in cur.description]
-        return [dict(zip(cols, row)) for row in cur.fetchall()]
+        rows = [dict(zip(cols, row)) for row in cur.fetchall()]
+
+        # U-299: try dbo.Vendor's native QboId first for each row's vendor ref
+        # (verified against the legacy mapping before being trusted); the
+        # MappedVendorId/bucket the SQL above computed via the qbo.Vendor ->
+        # qbo.VendorVendor hop stays as the fallback on a miss/disagreement —
+        # only rows where the dbo-native answer actually differs (e.g. the
+        # legacy mapping was lost while dbo.Vendor.QboId still holds) get
+        # their bucket recomputed. Cached by ref value since many unmapped
+        # bills usually share few distinct vendors.
+        vendor_service = VendorService()
+        vendor_vendor_repo = VendorVendorRepository()
+        qbo_vendor_repo = QboVendorRepository()
+        resolved_cache: Dict[str, Optional[int]] = {}
+        for r in rows:
+            ref = r["VendorRefValue"]
+            if ref not in resolved_cache:
+                resolved_cache[ref] = resolve_local_vendor_id(
+                    ref, realm_id,
+                    vendor_service=vendor_service,
+                    vendor_vendor_repo=vendor_vendor_repo,
+                    qbo_vendor_repo=qbo_vendor_repo,
+                )
+            dbo_vendor_id = resolved_cache[ref]
+            if dbo_vendor_id is not None and dbo_vendor_id != r["MappedVendorId"]:
+                old_mapped_vendor_id, old_bucket = r["MappedVendorId"], r["bucket"]
+                r["MappedVendorId"] = dbo_vendor_id
+                r["bucket"] = _classify_bucket(cur, dbo_vendor_id, r["DocNumber"], r["TxnDate"])
+                if old_mapped_vendor_id is not None:
+                    # Not a NULL-fill (the ordinary "legacy mapping never
+                    # existed" case) — the dbo-native answer DISAGREES with
+                    # the legacy chain's. Log so an operator can audit which
+                    # rows the Phase-4 repoint actually changed.
+                    logger.warning(
+                        f"  qbo_id={r['QboId']}: vendor ref {ref!r} resolves to a DIFFERENT "
+                        f"vendor via dbo.Vendor.QboId ({dbo_vendor_id}) than via the legacy "
+                        f"qbo.Vendor/qbo.VendorVendor mapping ({old_mapped_vendor_id}) — using "
+                        f"the verified dbo-native result. bucket {old_bucket!r} -> {r['bucket']!r}"
+                    )
+
+        return rows
 
 
 def summarize(rows):
@@ -109,14 +223,15 @@ def print_dry_run(rows, limit, include_null):
     print("\nRe-run with --apply to project these. (dry-run made no changes.)")
 
 
-def apply_backfill(rows, limit, include_null):
+def apply_backfill(rows, limit, include_null, realm_id):
     """Project the selected creatable bills through the full pull pipeline."""
+    if not realm_id:
+        raise ValueError("No QBO authentication found. Connect QuickBooks first.")
     # Lazy imports — only when actually applying.
     from integrations.intuit.qbo.bill.business.service import QboBillService
     from integrations.intuit.qbo.bill.persistence.repo import QboBillRepository
     from integrations.intuit.qbo.bill.connector.bill.business.service import BillBillConnector
     from integrations.intuit.qbo.attachable.business.service import QboAttachableService
-    from integrations.intuit.qbo.auth.business.service import QboAuthService
     from entities.bill.business.service import BillService
     from entities.bill_line_item.business.service import BillLineItemService
     from scripts.sync_qbo_bill import _link_attachments_to_bill_line_items
@@ -137,9 +252,6 @@ def apply_backfill(rows, limit, include_null):
     bill_service = BillService()
     bill_line_item_service = BillLineItemService()
 
-    realm_id = QboAuthService().resolve_realm_id(
-        no_auth_message="No QBO authentication found. Connect QuickBooks first."
-    )
     print(f"\n=== APPLY: projecting {len(to_process)} bill(s) | realm={realm_id} ===")
 
     created, attach_synced, failed, skipped, deferred = 0, 0, 0, 0, 0
@@ -273,7 +385,21 @@ def main():
     args = ap.parse_args()
 
     assert_cli_system_admin()  # system intent for the per-row access guards
-    rows = select_unmapped(year=args.year, qbo_id=args.qbo_id)
+    # Stays SAFE BY DEFAULT / no-QBO-auth-required for a plain dry-run (the
+    # module's own contract, unaffected by the vendor-ref repoint below):
+    # realm_id=None is tolerated all the way through select_unmapped() (NULL-
+    # permissive per ReadVendorByQboIdAndRealmId) — apply_backfill() is the
+    # one place that HARD-requires a real realm_id (its full pull pipeline
+    # always needed a live QBO connection), and enforces that itself.
+    try:
+        realm_id = QboAuthService().resolve_realm_id(
+            no_auth_message="No QBO authentication found. Connect QuickBooks first."
+        )
+    except ValueError:
+        realm_id = None
+        print("WARNING: no QBO authentication found — vendor-ref resolution will rely on "
+              "the legacy qbo.Vendor/qbo.VendorVendor mapping only (no realm-scoped dbo lookup).")
+    rows = select_unmapped(year=args.year, qbo_id=args.qbo_id, realm_id=realm_id)
     if not rows:
         print("No unmapped qbo.Bill rows match the filter.")
         return
@@ -281,7 +407,7 @@ def main():
     if not args.apply:
         print_dry_run(rows, args.limit, args.include_null_docnumber)
     else:
-        apply_backfill(rows, args.limit, args.include_null_docnumber)
+        apply_backfill(rows, args.limit, args.include_null_docnumber, realm_id)
 
 
 if __name__ == "__main__":

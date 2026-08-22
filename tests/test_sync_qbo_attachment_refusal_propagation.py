@@ -237,7 +237,7 @@ def test_backfill_attachment_refusal_marks_bill_failed(capsys, error_factory):
         mock_bill_svc_cls.return_value = MagicMock()
         mock_bli_svc_cls.return_value.read_by_bill_id.return_value = []
 
-        apply_backfill([row], limit=None, include_null=False)
+        apply_backfill([row], limit=None, include_null=False, realm_id=REALM_ID)
 
     captured = capsys.readouterr().out
     assert "CREATED qbo_id=99999" in captured

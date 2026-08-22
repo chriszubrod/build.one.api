@@ -51,6 +51,10 @@ from integrations.intuit.qbo.auth.business.service import QboAuthService
 from integrations.intuit.qbo.base.client import QboHttpClient
 from integrations.box.base.client import BoxHttpClient
 from integrations.box.base.errors import BoxConflictError
+from entities.vendor.business.service import VendorService
+from integrations.intuit.qbo.vendor.connector.vendor.persistence.repo import VendorVendorRepository
+from integrations.intuit.qbo.vendor.persistence.repo import QboVendorRepository
+from integrations.intuit.qbo.base.identity_consistency import verify_vendor_qbo_identity
 
 # Box anchor: the '999 - Accounting' folder (stable id, found via the template probe).
 BOX_999_ACCOUNTING_ID = "388262075849"
@@ -75,7 +79,7 @@ def _money(value: Any) -> Decimal:
 
 
 def fetch_payment_batch(doc_number: str) -> Dict[str, Any]:
-    """Return {payer, payments:[{vendor, doc_number, txn_date, total, lines:[...]}]}."""
+    """Return {payer, payments:[{vendor, doc_number, txn_date, total, lines:[...]}], realm_id}."""
     assert_cli_system_admin()
     auths = QboAuthService().read_all()
     if not auths:
@@ -171,7 +175,7 @@ def fetch_payment_batch(doc_number: str) -> Dict[str, Any]:
             "total": _money(p.get("TotalAmt")),
             "lines": lines,
         })
-    return {"payer": payer, "payments": payments}
+    return {"payer": payer, "payments": payments, "realm_id": realm_id}
 
 
 # ---------------------------------------------------------------------------- #
@@ -399,27 +403,57 @@ def extract_pdf_text(data: bytes) -> str:
 # ---------------------------------------------------------------------------- #
 # Vendor email resolution + draft (MS Graph, into invoice@rogersbuild.com Drafts)
 # ---------------------------------------------------------------------------- #
-def local_vendor_and_contact_emails(qbo_vendor_id: str):
-    """Map a QBO vendor id -> (local Vendor.Id, [existing Contact emails])."""
-    from shared.database import get_connection
-    with get_connection() as conn:
-        cur = conn.cursor()
-        cur.execute(
-            """
-            SELECT v.Id, c.Email
-            FROM qbo.Vendor qv
-            JOIN qbo.VendorVendor vv ON vv.QboVendorId = qv.Id
-            JOIN dbo.Vendor v ON v.Id = vv.VendorId
-            LEFT JOIN dbo.Contact c ON c.VendorId = v.Id
-            WHERE qv.QboId = ?
-            """,
-            (qbo_vendor_id,),
+# U-299: dbo-first -> verify_vendor_qbo_identity -> legacy qbo.Vendor/
+# qbo.VendorVendor fallback (mirrors U-284v's cross-family resolvers —
+# BillBillConnector._get_vendor_public_id (pull) + _get_qbo_vendor_ref
+# (push), PurchaseExpenseConnector._get_vendor_public_id,
+# VendorCreditBillCreditConnector._get_vendor_public_id,
+# ExpenseCodingItemService._resolve_vendor_id, and this script's sibling
+# copy in backfill_qbo_bills.py — see TODO.md's U-005[reuse] breadcrumb).
+# Hand-copied deliberately per that unit's precedent, not extracted.
+def resolve_local_vendor_id(
+    qbo_vendor_id: str,
+    realm_id: Optional[str],
+    *,
+    vendor_service=None,
+    vendor_vendor_repo=None,
+    qbo_vendor_repo=None,
+) -> Optional[int]:
+    """Resolve a QBO vendor id -> local dbo.Vendor.Id, or None if unresolvable."""
+    vendor_service = vendor_service or VendorService()
+    vendor_vendor_repo = vendor_vendor_repo or VendorVendorRepository()
+    qbo_vendor_repo = qbo_vendor_repo or QboVendorRepository()
+
+    direct_vendor = vendor_service.read_by_qbo_identity(qbo_vendor_id, realm_id)
+    if direct_vendor:
+        verified_qbo_id = verify_vendor_qbo_identity(
+            direct_vendor,
+            vendor_vendor_repo=vendor_vendor_repo,
+            qbo_vendor_repo=qbo_vendor_repo,
         )
-        rows = cur.fetchall()
-    if not rows:
+        if verified_qbo_id:
+            return direct_vendor.id
+
+    qbo_vendor = qbo_vendor_repo.read_by_qbo_id(qbo_vendor_id)
+    if not qbo_vendor:
+        return None
+    vendor_mapping = vendor_vendor_repo.read_by_qbo_vendor_id(qbo_vendor.id)
+    if not vendor_mapping:
+        return None
+    vendor = vendor_service.read_by_id(vendor_mapping.vendor_id)
+    if not vendor:
+        return None
+    return vendor.id
+
+
+def local_vendor_and_contact_emails(qbo_vendor_id: str, realm_id: Optional[str] = None):
+    """Map a QBO vendor id -> (local Vendor.Id, [existing Contact emails])."""
+    local_id = resolve_local_vendor_id(qbo_vendor_id, realm_id)
+    if local_id is None:
         return None, []
-    local_id = rows[0][0]
-    emails = sorted({r[1].strip() for r in rows if r[1] and r[1].strip()})
+    from entities.contact.business.service import ContactService
+    contacts = ContactService().read_by_vendor_id(local_id)
+    emails = sorted({c.email.strip() for c in contacts if c.email and c.email.strip()})
     return local_id, emails
 
 
@@ -444,7 +478,8 @@ def _split_emails(raw: Optional[str]) -> List[str]:
     return [a.strip() for a in re.split(r"[,;]", raw or "") if a.strip()]
 
 
-def resolve_vendor_emails(payment: Dict[str, Any], overrides: Dict[str, List[str]]):
+def resolve_vendor_emails(payment: Dict[str, Any], overrides: Dict[str, List[str]],
+                          realm_id: Optional[str] = None):
     """Resolve recipient emails: --email override -> local Contact -> QBO PrimaryEmailAddr.
 
     Each source is split on commas/semicolons so a multi-address value becomes
@@ -452,7 +487,7 @@ def resolve_vendor_emails(payment: Dict[str, Any], overrides: Dict[str, List[str
     'a@x.com,b@y.com' address. Returns (emails, source, local_vendor_id, contact_emails).
     """
     vqid = payment["vendor_qbo_id"]
-    local_id, contact_emails = local_vendor_and_contact_emails(vqid)
+    local_id, contact_emails = local_vendor_and_contact_emails(vqid, realm_id)
     if overrides.get(vqid):
         return overrides[vqid], "override", local_id, contact_emails
     if contact_emails:
@@ -530,6 +565,7 @@ def main() -> None:
     batch = fetch_payment_batch(args.doc_number)
     payer = batch["payer"]
     payments = batch["payments"]
+    realm_id = batch["realm_id"]
     if vendor_filter:
         payments = [p for p in payments if p["vendor_qbo_id"] in vendor_filter]
     os.makedirs(args.out_dir, exist_ok=True)
@@ -555,7 +591,7 @@ def main() -> None:
         print(f"    -> {local_path}")
 
         if args.draft_emails:
-            emails, source, local_id, contact_emails = resolve_vendor_emails(p, overrides)
+            emails, source, local_id, contact_emails = resolve_vendor_emails(p, overrides, realm_id)
             if not emails:
                 needs_email.append(p)
                 print(f"    EMAIL: no address on file (QBO id {p['vendor_qbo_id']}, local vendor "

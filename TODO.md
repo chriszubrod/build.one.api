@@ -2,6 +2,11 @@
 
 Carry-over items from sessions. Check off as done; prune anything stale.
 
+## U-298 follow-ups (PurchaseExpense CREATE-path dbo-native uniqueness recheck) — deferred, not scope-creeped in (2026-08-22)
+
+- [ ] **Invoice's create-path rollback tail has the identical unguarded hazard U-298 just fixed for Expense.** `integrations/intuit/qbo/invoice/connector/invoice/business/service.py`'s "Create new Invoice" tail calls its own `create_mapping()` and, on any exception, rolls back by deleting the just-created Invoice with no re-check — if a concurrent racer's identity-fastpath recheck already validly bound that exact (invoice_id, qbo_invoice_id) pair in the window between `create_mapping`'s identity stamp and its mapping insert (the same race U-298's adversarial hunt confirmed, adversarially-verified P1), the rollback would silently delete a legitimately-completed, already-synced financial record. Bill's equivalent tail differs (warns, never rolls back) so it doesn't carry this specific hazard. Fix mirrors U-298's: call `identity_fastpath.resolve_mapping_state` before rolling back — CONSISTENT returns the racer's result instead of destroying it, CONFLICT records the reconciliation issue, MISSING falls through to the existing rollback.
+- [ ] **Consider generalizing the "recheck via resolve_mapping_state before a create-path rollback" pattern into `base/identity_fastpath.py`** as a small reusable helper (Purchase/Expense and, per the item above, eventually Invoice would both call it) rather than each connector's own tail hand-wiring the same three-way branch — lower priority than the Invoice fix itself; only worth doing once a second real caller exists.
+
 ## U-281 follow-ups (account Phase-4 prerequisite, AP-account dbo-native cache) — deferred, not scope-creeped in (2026-08-20/21)
 
 Confirmed by a Codex-degraded, adversarially-verified fallback hunt (workspace-wide Codex outage this session — see the U-280/U-277/U-278/U-282/U-286/U-287 board rows for the same episode). Both are pre-existing architectural characteristics this unit's new write joins, not new categories of risk it invented — logged rather than patched as a bandaid inside a narrowly-scoped unit.

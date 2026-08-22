@@ -58,6 +58,11 @@ def _build_connector():
     bill_service.read_by_id.return_value = SimpleNamespace(id=100, public_id="bill-pub-1")
 
     bill_line_item_service = Mock()
+    # U-293: the fast path is tried FIRST — these tests exercise the legacy
+    # 2-hop/create path, so the dbo-native direct lookup must explicitly miss
+    # (an unstubbed Mock() would return a truthy sentinel and divert every
+    # test below into the fast path instead of the legacy path they test).
+    bill_line_item_service.read_by_qbo_identity.return_value = None
     bill_line_item_service.read_by_bill_id.return_value = []  # no unmapped lines (Shape B miss)
     bill_line_item_service.create.return_value = SimpleNamespace(id=200, public_id="bli-pub-1")
     bill_line_item_service.repo = Mock()

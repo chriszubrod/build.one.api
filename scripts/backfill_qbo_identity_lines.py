@@ -44,6 +44,29 @@ def _stamp_via_sproc(
 ENTITY_SPECS = {spec.key: spec for spec in LINE_ENTITY_SPECS}
 
 
+def _pending_from_join(spec: LineEntitySpec) -> str:
+    """The FROM/JOIN/WHERE fragment defining a 'pending' (backfill-eligible)
+    row: a dbo line with a real mapping, whose staging line AND staging
+    header both still resolve, but whose dbo QboId is still NULL.
+
+    Single source of truth for `_count_sql`'s `pending` metric AND
+    `_batch_select_sql`'s own row selection (U-293 Gate-2 finding: they used
+    to diverge — `pending` only required the mapping row to exist, while
+    `_batch_select_sql` also required the staging line + staging header rows
+    to resolve, so a mapping row with a dangling staging-side reference was
+    counted as pending but could never actually be returned/stamped, silently
+    overstating the preview count). Sharing this fragment makes that class of
+    drift impossible by construction.
+    """
+    return f"""
+    FROM dbo.[{spec.label}] t
+    INNER JOIN qbo.[{spec.mapping_table}] m ON m.[{spec.dbo_fk_col}] = t.[Id]
+    INNER JOIN qbo.[{spec.staging_table}] s ON s.[Id] = m.[{spec.staging_fk_col}]
+    INNER JOIN qbo.[{spec.staging_header_table}] sh ON sh.[Id] = s.[{spec.staging_header_fk_col}]
+    WHERE t.[QboId] IS NULL
+    """
+
+
 def _count_sql(spec: LineEntitySpec) -> str:
     return f"""
     SELECT
@@ -53,6 +76,7 @@ def _count_sql(spec: LineEntitySpec) -> str:
          FROM dbo.[{spec.label}] t
          INNER JOIN qbo.[{spec.mapping_table}] m ON m.[{spec.dbo_fk_col}] = t.[Id]) AS eligible,
         (SELECT COUNT(*) FROM dbo.[{spec.label}] WHERE [QboId] IS NOT NULL) AS stamped,
+        (SELECT COUNT(*) {_pending_from_join(spec)}) AS pending,
         (SELECT COUNT(*)
          FROM qbo.[{spec.staging_table}] s
          WHERE NOT EXISTS (
@@ -72,11 +96,7 @@ def _batch_select_sql(spec: LineEntitySpec, *, limit: int) -> str:
         t.[Id],
         s.[QboLineId] AS QboId,
         sh.[RealmId] AS RealmId
-    FROM dbo.[{spec.label}] t
-    INNER JOIN qbo.[{spec.mapping_table}] m ON m.[{spec.dbo_fk_col}] = t.[Id]
-    INNER JOIN qbo.[{spec.staging_table}] s ON s.[Id] = m.[{spec.staging_fk_col}]
-    INNER JOIN qbo.[{spec.staging_header_table}] sh ON sh.[Id] = s.[{spec.staging_header_fk_col}]
-    WHERE t.[QboId] IS NULL
+    {_pending_from_join(spec)}
     ORDER BY t.[Id]
     """
 
@@ -122,7 +142,7 @@ def _print_counts(spec: LineEntitySpec, counts: dict, *, prefix: str) -> None:
     print(
         f"{prefix} {spec.label}: "
         f"mapping={counts['mapping_count']} staging={counts['staging_count']} "
-        f"eligible={counts['eligible']} stamped={counts['stamped']} "
+        f"eligible={counts['eligible']} stamped={counts['stamped']} pending={counts['pending']} "
         f"unmapped_staging={counts['unmapped_staging']} dangling={counts['dangling']}"
     )
 
@@ -184,7 +204,15 @@ def backfill_entity(
         pre = _fetch_counts(cur, spec)
         _print_counts(spec, pre, prefix="PRE ")
 
-        pending = max(0, pre["eligible"] - pre["stamped"])
+        # U-293: was `max(0, pre["eligible"] - pre["stamped"])` — a naive count
+        # difference that goes negative (clamped to 0, silently masking real
+        # pending rows) whenever "stamped but no mapping row" anomaly rows exist
+        # alongside genuine "mapped but never stamped" ones (both counted in
+        # `stamped`/`eligible` independently, so they don't cancel out
+        # arithmetically the way the subtraction assumed). `pending` is now a
+        # direct COUNT matching _batch_select_sql's own WHERE/JOIN criteria
+        # exactly, so the preview and the actual apply loop can never disagree.
+        pending = pre["pending"]
         would_apply = pending if limit is None else min(pending, limit)
         print(f"  -> {'WOULD stamp' if not apply else 'Stamping'} up to {would_apply} row(s)")
 

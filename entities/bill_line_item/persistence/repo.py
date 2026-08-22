@@ -54,6 +54,8 @@ class BillLineItemRepository:
                 markup=Decimal(str(getattr(row, "Markup", None))) if getattr(row, "Markup", None) is not None else None,
                 price=Decimal(str(getattr(row, "Price", None))) if getattr(row, "Price", None) is not None else None,
                 is_draft=bool(getattr(row, "IsDraft", True)) if getattr(row, "IsDraft", None) is not None else None,
+                qbo_id=getattr(row, "QboId", None),
+                realm_id=getattr(row, "RealmId", None),
             )
         except AttributeError as error:
             logger.error(f"Attribute error during bill line item mapping: {error}")
@@ -168,6 +170,30 @@ class BillLineItemRepository:
                 return [self._from_db(row) for row in rows if row]
         except Exception as error:
             logger.error(f"Error during read bill line items by bill ID: {error}")
+            raise map_database_error(error)
+
+    def read_by_qbo_identity(self, bill_id: int, qbo_id: str) -> Optional[BillLineItem]:
+        """
+        Read a bill line item by its dbo-native QBO identity, scoped to its
+        parent Bill (U-293) — the line-level Phase-4 repoint seam, bypassing
+        the qbo.BillLine/qbo.BillLineItemBillLine staging/mapping tables.
+
+        Parent-scoped, not global: a QBO line id is unique only within its
+        parent transaction, matching the live UQ_BillLineItem_BillId_QboId
+        index this queries against.
+        """
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(
+                    cursor=cursor,
+                    name="ReadBillLineItemByBillIdAndQboId",
+                    params={"BillId": bill_id, "QboId": qbo_id},
+                )
+                row = cursor.fetchone()
+                return self._from_db(row)
+        except Exception as error:
+            logger.error(f"Error during read bill line item by QBO identity: {error}")
             raise map_database_error(error)
 
     @retry_on_transient()

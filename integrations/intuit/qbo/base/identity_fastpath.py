@@ -305,3 +305,128 @@ def run_identity_fastpath(
                 ) from e
 
     return FastPathOutcome(hit=True, entity=updated)
+
+
+def run_line_identity_fastpath(
+    *,
+    parent_local_id: int,
+    qbo_line_id: Optional[str],
+    external_id: int,
+    entity_label: str,
+    external_label: str,
+    read_direct_by_parent_and_qbo_line_id: Callable[[int, str], Any],
+    read_by_local_id: Callable[[int], Any],
+    read_by_external_id: Callable[[int], Any],
+    external_id_attr: str,
+    record_conflict_issue: Callable[[Any, Any, Any], None],
+    conflict_message: Callable[[Any], str],
+    apply_fields: Optional[Callable[[Any], Any]] = None,
+    on_apply_returned_none: Optional[Callable[[Any], None]] = None,
+) -> FastPathOutcome:
+    """
+    Run the dbo-native identity fast path for a LINE-ITEM entity (U-293).
+
+    A line's QBO identity is parent-scoped, not globally unique: QBO line ids
+    are small per-transaction sequence numbers ("1", "2", "3", ...) reused
+    across every parent transaction — unlike header identity, where a QBO
+    transaction id IS globally unique. Every dbo line table's own live unique
+    index reflects this (`UQ_<Entity>LineItem_<Parent>Id_QboId` on
+    `(ParentId, QboId)`, not a bare `(QboId, RealmId)` like the header
+    tables) — confirmed against live prod for all 4 line families at U-293's
+    Gate-1: real duplicate QboId values ARE reused across different parents
+    in every family. So the direct-read key here is
+    `(parent_local_id, qbo_line_id)`, not `(qbo_id, realm_id)` —
+    `run_identity_fastpath` above cannot be reused as-is without repurposing
+    its parameters to secretly mean something else; this sibling function
+    keeps the two identity shapes honest instead of forking the header
+    helper's own contract (the failure mode U-287's closing instruction
+    warns against — this is a deliberate new shape, not a fork of an
+    existing one).
+
+    Note there is no `realm_id` parameter: unlike the header helper, realm
+    is not part of this function's direct-read key at all. A line's parent
+    already pins the realm (a parent header belongs to exactly one RealmId,
+    resolved by the caller before this ever runs), so a redundant RealmId
+    check here would be dead weight — matching the live
+    `(ParentId, QboId)` unique index, which likewise carries no RealmId
+    column. Callers still have `realm_id` in scope for their own
+    `apply_fields`/identity-stamp step; it just never reaches this function.
+
+    Once the parent is resolved, the conflict handling mirrors the header
+    fast path exactly — same hard-stop-on-conflict guarantee, same
+    `resolve_mapping_state` call (it doesn't care whether its key is
+    globally or parent-scoped, only about the mapping table's own
+    local-id/external-id relationship).
+
+    MISSING does NOT self-heal here, unlike `run_identity_fastpath` — this
+    is the one deliberate divergence from the header helper's control flow,
+    not an oversight. A header's QBO id is never reused once minted, so
+    "direct hit, no mapping either side" can only mean a genuinely new
+    pairing, safe to bind. A line's QBO id is a small per-parent sequence
+    number QBO actively RECYCLES: editing a bill's lines deletes the old
+    `qbo.<Line>` staging row and its mapping (see the line connector's own
+    stale-line cleanup), but nothing clears the now-orphaned dbo row's own
+    QboId stamp. If a later, genuinely different new line reuses that same
+    freed-up id, `read_direct_by_parent_and_qbo_line_id` returns that stale
+    orphan, the mapping table confirms nothing on either side (MISSING, not
+    CONFLICT — there is no mapping row to disagree), and blind self-heal
+    would silently overwrite the orphan's real content with the new line's
+    — a confirmed, adversarially-verified P1 (U-293 Gate-2, executable PoC).
+    So MISSING is treated as a plain miss (`hit=False`) here: nothing is
+    read further, nothing is written, no mapping is minted. The caller's
+    existing content-fingerprint fallback (every line connector already has
+    one — built for this exact "QBO renumbers a bill's lines on edit"
+    scenario) is what may safely re-adopt the orphan, because unlike this
+    function it can check the new line's CONTENT actually matches before
+    binding, not just its coincidentally-recycled id.
+    """
+    if not qbo_line_id:
+        return FastPathOutcome(hit=False)
+
+    direct = read_direct_by_parent_and_qbo_line_id(parent_local_id, qbo_line_id)
+    if not direct:
+        return FastPathOutcome(hit=False)
+
+    state, by_local, by_external = resolve_mapping_state(
+        local_id=coerce_id(direct.id),
+        external_id=external_id,
+        read_by_local_id=read_by_local_id,
+        read_by_external_id=read_by_external_id,
+        external_id_attr=external_id_attr,
+    )
+
+    if state == CONFLICT:
+        record_conflict_issue(direct, by_local, by_external)
+        # HARD STOP — same guarantee as run_identity_fastpath: never fall through
+        # to the legacy mapping-table path on a conflict. See that function's
+        # docstring for why (the 2026-08-20 header P0 this class of bug caused).
+        raise ValueError(conflict_message(direct))
+
+    if state == MISSING:
+        # See the docstring: a direct hit with no mapping on either side is
+        # ambiguous for a line (stale orphan vs. genuinely new pairing) in a
+        # way it never is for a header. Never self-heal it here — fall
+        # through so the caller's own content-fingerprint check decides.
+        return FastPathOutcome(hit=False)
+
+    # Only CONSISTENT reaches here: a real mapping row already confirms this
+    # direct hit, so it's safe to write.
+    if apply_fields is None:
+        updated = direct
+    else:
+        logger.info(
+            f"Updating existing {entity_label} {direct.id} from {external_label} "
+            f"{external_id} (direct parent-scoped dbo identity match)"
+        )
+        updated = apply_fields(direct)
+
+    if updated is None:
+        # ROWVERSION race or concurrent delete between the identity read and the
+        # write — see run_identity_fastpath's identical branch for the full
+        # rationale (U-291). Callers must raise RuntimeError (never ValueError)
+        # from on_apply_returned_none.
+        if on_apply_returned_none is not None:
+            on_apply_returned_none(direct)
+        return FastPathOutcome(hit=True, entity=None)
+
+    return FastPathOutcome(hit=True, entity=updated)

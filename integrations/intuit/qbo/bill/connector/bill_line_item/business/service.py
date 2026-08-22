@@ -21,7 +21,13 @@ from entities.bill.business.service import BillService
 from entities.project.business.service import ProjectService
 from integrations.intuit.qbo.base.identity_drift import stamp_line_identity_or_warn
 from integrations.intuit.qbo.base.identity_consistency import verify_project_qbo_identity
+from integrations.intuit.qbo.base.identity_fastpath import (
+    raise_concurrent_write_race,
+    run_line_identity_fastpath,
+)
 from integrations.intuit.qbo.base.ids import coerce_id
+from integrations.intuit.qbo.base.reconciliation_recorder import record_mapping_issue
+from integrations.intuit.qbo.reconciliation.persistence.repo import ReconciliationIssueRepository
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +49,7 @@ class BillLineItemConnector:
         qbo_customer_repo: Optional[QboCustomerRepository] = None,
         customer_project_repo: Optional[CustomerProjectRepository] = None,
         project_service: Optional[ProjectService] = None,
+        reconciliation_repo: Optional[ReconciliationIssueRepository] = None,
     ):
         """Initialize the BillLineItemConnector."""
         self.mapping_repo = mapping_repo or BillLineItemBillLineRepository()
@@ -55,6 +62,7 @@ class BillLineItemConnector:
         self.qbo_customer_repo = qbo_customer_repo or QboCustomerRepository()
         self.customer_project_repo = customer_project_repo or CustomerProjectRepository()
         self.project_service = project_service or ProjectService()
+        self.reconciliation_repo = reconciliation_repo or ReconciliationIssueRepository()
         # Per-instance cache: a Bill's lines commonly share one job/customer_ref_value —
         # avoids re-resolving the identical (realm_id, qbo_customer_ref_value) pair once
         # per line. A fresh BillLineItemConnector is instantiated per Bill (see
@@ -133,8 +141,130 @@ class BillLineItemConnector:
         if qbo_bill_line.customer_ref_value:
             project_public_id = self._get_project_public_id(qbo_bill_line.customer_ref_value, realm_id)
         
-        # Check for existing mapping by current qbo_bill_line.id.
-        mapping = self.mapping_repo.read_by_qbo_bill_line_id(qbo_bill_line.id)
+        def _apply_line_fields(direct: BillLineItem, *, path_label: str) -> Optional[BillLineItem]:
+            """
+            Write the QBO-derived fields onto an existing, matched BillLineItem.
+            Shared by two call sites (unlike the header's _apply_bill_fields,
+            which is shared by more) — the field list above is already computed
+            once and reused by every branch; this closure just applies it via
+            update_by_public_id. `path_label` names which call site is calling
+            (fast path vs legacy "mapping found"), threaded into every log
+            line below so on-call log triage never misattributes a legacy-path
+            failure to the fast path or vice versa.
+
+            Identity IS still re-stamped here, unconditionally, mirroring the
+            legacy path's own prior stamp_line_identity_or_warn call exactly
+            (U-293 Gate-2 live-data equivalence check found why it must be: a
+            fast-path hit means dbo.QboId already matches, but RealmId is NOT
+            guaranteed to — live prod carries rows with QboId stamped correctly
+            and RealmId still NULL, e.g. from a partial historical stamp. The
+            legacy path self-heals those on every touch because its own stamp
+            call is unconditional; a fast path that skipped this would find
+            such a row forever afterward and never correct it again — a silent
+            regression an initial "nothing would ever change" assumption
+            missed.
+            """
+            updated = self.bill_line_item_service.update_by_public_id(
+                direct.public_id,
+                bill_public_id=bill_public_id,
+                sub_cost_code_id=sub_cost_code_id,
+                project_public_id=project_public_id,
+                description=description,
+                quantity=qty,
+                rate=rate,
+                amount=amount,
+                is_billable=is_billable,
+                is_billed=is_billed,
+                markup=markup,
+                price=price,
+                is_draft=False,
+                row_version=direct.row_version,
+            )
+            if updated is None:
+                # ROWVERSION race: a concurrent writer touched this exact
+                # BillLineItem between the read and this UPDATE.
+                logger.error(
+                    f"Failed to update BillLineItem {direct.id} from QboBillLine "
+                    f"{qbo_bill_line.id} - update_by_public_id returned None "
+                    f"(concurrent write race, {path_label})"
+                )
+                raise_concurrent_write_race(
+                    entity_label="BillLineItem", entity_id=direct.id, path_label=path_label
+                )
+            stamp_line_identity_or_warn(
+                self.bill_line_item_service.repo,
+                id=int(updated.id),
+                qbo_id=qbo_bill_line.qbo_line_id,
+                realm_id=realm_id,
+                context=f"Updated BillLineItem {updated.id} ({path_label})",
+            )
+            return updated
+
+        # Memoized: qbo_bill_line.id is fixed for this whole call, and both the
+        # fast path (via resolve_mapping_state, on a MISSING/CONFLICT
+        # classification) and the legacy path just below it (unconditionally,
+        # on a fast-path miss) ask this exact same question — a MISSING
+        # classification proves resolve_mapping_state already got `None` back
+        # for it, so re-querying at the legacy path's own read_by_qbo_bill_line_id
+        # call would be a guaranteed-duplicate round trip on every "QBO
+        # recycled this line id" case, which the MISSING-never-self-heals fix
+        # above makes the ordinary path, not a rare one. Still lazy (only
+        # queried if resolve_mapping_state actually needs it), just not
+        # re-queried once already known.
+        _qbo_bill_line_mapping_cache = {}
+
+        def _read_by_qbo_bill_line_id_cached(qbo_bill_line_id):
+            if qbo_bill_line_id not in _qbo_bill_line_mapping_cache:
+                _qbo_bill_line_mapping_cache[qbo_bill_line_id] = (
+                    self.mapping_repo.read_by_qbo_bill_line_id(qbo_bill_line_id)
+                )
+            return _qbo_bill_line_mapping_cache[qbo_bill_line_id]
+
+        # U-293 (Phase-4, lines): resolve identity directly against
+        # dbo.BillLineItem's native QboId, scoped to this line's own parent Bill
+        # (U-238b), before falling back to the qbo.BillLineItemBillLine
+        # mapping-table hop below. A QBO line id is unique only WITHIN its
+        # parent transaction (confirmed against live prod: real duplicate
+        # QboId values ARE reused across different parents) — never a bare
+        # global QboId lookup, unlike the header fast path. conflict->RAISE is
+        # structural (base.identity_fastpath.run_line_identity_fastpath), never
+        # a fall-through to the legacy path below (U-287's closing lesson).
+        outcome = run_line_identity_fastpath(
+            parent_local_id=bill_id,
+            qbo_line_id=qbo_bill_line.qbo_line_id,
+            external_id=qbo_bill_line.id,
+            entity_label="BillLineItem",
+            external_label="QboBillLine",
+            read_direct_by_parent_and_qbo_line_id=self.bill_line_item_service.read_by_qbo_identity,
+            read_by_local_id=self.mapping_repo.read_by_bill_line_item_id,
+            read_by_external_id=_read_by_qbo_bill_line_id_cached,
+            external_id_attr="qbo_bill_line_id",
+            record_conflict_issue=lambda entity, by_local, by_external: (
+                self._raise_line_identity_mapping_conflict_issue(
+                    qbo_bill_line=qbo_bill_line,
+                    dbo_line_id=coerce_id(entity.id),
+                    local_side_mapping=by_local,
+                    qbo_side_mapping=by_external,
+                    realm_id=realm_id,
+                )
+            ),
+            conflict_message=lambda entity: (
+                f"BillLineItemBillLine identity conflict for QboBillLine "
+                f"{qbo_bill_line.qbo_line_id} (id={qbo_bill_line.id}) on Bill "
+                f"{bill_id}: dbo.BillLineItem {entity.id} already carries this "
+                f"identity but the mapping table disagrees. Not auto-repointed; "
+                f"see the recorded reconciliation issue. Skipping until a human "
+                f"resolves it."
+            ),
+            apply_fields=lambda direct: _apply_line_fields(direct, path_label="line fast path"),
+        )
+        if outcome.hit:
+            return outcome.entity
+
+        # Check for existing mapping by current qbo_bill_line.id. Memoized
+        # above — if the fast path already asked this (MISSING/CONFLICT), this
+        # is a cache hit, not a second round trip.
+        mapping = _read_by_qbo_bill_line_id_cached(qbo_bill_line.id)
 
         if not mapping:
             # Shape B fallback (task #17): when no direct mapping exists, look for
@@ -172,32 +302,11 @@ class BillLineItemConnector:
             line_item = self.bill_line_item_service.read_by_id(mapping.bill_line_item_id)
             if line_item:
                 logger.info(f"Updating existing BillLineItem {line_item.id} from QboBillLine {qbo_bill_line.id}")
-
-                line_item = self.bill_line_item_service.update_by_public_id(
-                    line_item.public_id,
-                    bill_public_id=bill_public_id,
-                    sub_cost_code_id=sub_cost_code_id,
-                    project_public_id=project_public_id,
-                    description=description,
-                    quantity=qty,
-                    rate=rate,
-                    amount=amount,
-                    is_billable=is_billable,
-                    is_billed=is_billed,
-                    markup=markup,
-                    price=price,
-                    is_draft=False,
-                    row_version=line_item.row_version,
-                )
-                # U-238b: dbo line identity dual-write (create+update pairing for U-238c).
-                stamp_line_identity_or_warn(
-                    self.bill_line_item_service.repo,
-                    id=int(line_item.id),
-                    qbo_id=qbo_bill_line.qbo_line_id,
-                    realm_id=realm_id,
-                    context=f"Updated BillLineItem {line_item.id}",
-                )
-                return line_item
+                # U-293: reuse the SAME _apply_line_fields closure the fast path
+                # uses (update + identity re-stamp), mirroring BillBillConnector's
+                # header-level _apply_bill_fields reuse — one update-logic site,
+                # not two hand-copies that could drift.
+                return _apply_line_fields(line_item, path_label="legacy mapping-table path")
             else:
                 # Mapping exists but BillLineItem not found - recreate
                 logger.warning(f"Mapping exists but BillLineItem {mapping.bill_line_item_id} not found. Creating new.")
@@ -249,6 +358,51 @@ class BillLineItemConnector:
         )
 
         return line_item
+
+    def _raise_line_identity_mapping_conflict_issue(
+        self,
+        *,
+        qbo_bill_line: QboBillLine,
+        dbo_line_id: int,
+        local_side_mapping,
+        qbo_side_mapping,
+        realm_id: Optional[str] = None,
+    ) -> None:
+        """
+        Record a dbo-identity <-> mapping-table split found by
+        run_line_identity_fastpath's resolve_mapping_state. Mirrors
+        BillBillConnector._raise_identity_mapping_conflict_issue exactly,
+        scoped to the line level — covers all three conflict shapes (qbo-side
+        only, local-side only, or both) in ONE issue, never silently dropping
+        either side's blocker.
+        """
+        parts = [
+            f"BillLineItemBillLine identity conflict. dbo.BillLineItem {dbo_line_id} "
+            f"carries native QBO identity for QboBillLine {qbo_bill_line.id} "
+            f"(QboLineId={qbo_bill_line.qbo_line_id})."
+        ]
+        if qbo_side_mapping:
+            parts.append(
+                f"qbo-side: the mapping table still binds that same QboBillLine to a "
+                f"DIFFERENT BillLineItem {qbo_side_mapping.bill_line_item_id} "
+                f"(mapping {qbo_side_mapping.id})."
+            )
+        if local_side_mapping:
+            parts.append(
+                f"local-side: BillLineItem {dbo_line_id}'s own mapping row (mapping "
+                f"{local_side_mapping.id}) still binds it to a DIFFERENT QboBillLine "
+                f"{local_side_mapping.qbo_bill_line_id}."
+            )
+        parts.append("Not auto-repointed — investigate which side is correct.")
+        record_mapping_issue(
+            self.reconciliation_repo,
+            drift_type="bill_line_item_identity_conflict",
+            entity_type="BillLineItem",
+            entity_public_id=None,
+            qbo_id=str(qbo_bill_line.qbo_line_id) if qbo_bill_line.qbo_line_id else None,
+            realm_id=realm_id or "",
+            details=" ".join(parts),
+        )
 
     # One of FOUR near-identical QBO customer-ref -> Project resolvers (invoice /
     # purchase / vendorcredit / bill). All four are realm-scoped as of U-060; they

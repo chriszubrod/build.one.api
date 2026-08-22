@@ -112,6 +112,16 @@ class BillLineItemService:
         assert_can_access_bill(bill_id)
         return self.repo.read_by_bill_id(bill_id=bill_id)
 
+    def read_by_qbo_identity(self, bill_id: int, qbo_id: str) -> Optional[BillLineItem]:
+        """
+        Read a bill line item directly by its dbo-native QBO identity,
+        scoped to its parent Bill (U-293) — the line-level Phase-4 repoint
+        seam, bypassing the qbo.BillLine/qbo.BillLineItemBillLine
+        staging/mapping tables.
+        """
+        assert_can_access_bill(bill_id)
+        return self.repo.read_by_qbo_identity(bill_id=bill_id, qbo_id=qbo_id)
+
     def get_box_links_by_bill_id(self, bill_id: int) -> dict[int, dict]:
         """
         Return per-line-item Box deep-link URLs for a bill, keyed by

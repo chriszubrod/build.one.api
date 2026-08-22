@@ -50,6 +50,34 @@ CREATE INDEX IX_BillLineItem_PublicId ON [dbo].[BillLineItem] ([PublicId]);
 END
 GO
 
+-- U-238b added QboId/RealmId + UQ_BillLineItem_BillId_QboId live via
+-- scripts/migrations/238b_qbo_identity_lines.sql but never ported the DDL into
+-- this base file (the same from-scratch-build gap U-277/U-290 found and fixed
+-- for company/address/vendor) — SetBillLineItemQboIdentity below has silently
+-- depended on columns this file never declared. Closed here (U-293), verbatim
+-- against the live migration so a from-scratch build matches prod exactly.
+IF OBJECT_ID('dbo.BillLineItem', 'U') IS NOT NULL
+   AND NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('dbo.BillLineItem') AND name = 'QboId')
+BEGIN
+    ALTER TABLE [dbo].[BillLineItem] ADD [QboId] NVARCHAR(50) NULL;
+END
+GO
+
+IF OBJECT_ID('dbo.BillLineItem', 'U') IS NOT NULL
+   AND NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('dbo.BillLineItem') AND name = 'RealmId')
+BEGIN
+    ALTER TABLE [dbo].[BillLineItem] ADD [RealmId] NVARCHAR(50) NULL;
+END
+GO
+
+IF OBJECT_ID('dbo.BillLineItem', 'U') IS NOT NULL AND NOT EXISTS (
+    SELECT 1 FROM sys.indexes WHERE name = 'UQ_BillLineItem_BillId_QboId' AND object_id = OBJECT_ID('dbo.BillLineItem')
+)
+BEGIN
+    CREATE UNIQUE INDEX UQ_BillLineItem_BillId_QboId ON [dbo].[BillLineItem] ([BillId], [QboId]) WHERE [QboId] IS NOT NULL;
+END
+GO
+
 
 
 CREATE OR ALTER PROCEDURE CreateBillLineItem
@@ -158,7 +186,9 @@ BEGIN
         [IsBilled],
         [Markup],
         [Price],
-        [IsDraft]
+        [IsDraft],
+        [QboId],
+        [RealmId]
     FROM dbo.[BillLineItem]
     WHERE [Id] = @Id;
 
@@ -443,5 +473,44 @@ BEGIN
       );
 
     SELECT @Id AS [Id], @QboId AS [QboId], @RealmId AS [RealmId], @Stolen AS [Stolen];
+END;
+GO
+
+-- U-293: parent-scoped direct identity read for the line fast path. A QBO line
+-- id is unique only within its parent transaction (confirmed against live prod:
+-- real cross-parent QboId collisions exist for every line family), matching the
+-- live UQ_BillLineItem_BillId_QboId index this keys against — never look up a
+-- line by QboId alone.
+CREATE OR ALTER PROCEDURE ReadBillLineItemByBillIdAndQboId
+(
+    @BillId BIGINT,
+    @QboId NVARCHAR(50)
+)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    SELECT
+        [Id],
+        [PublicId],
+        [RowVersion],
+        CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
+        CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
+        [BillId],
+        [SubCostCodeId],
+        [ProjectId],
+        [Description],
+        [Quantity],
+        [Rate],
+        [Amount],
+        [IsBillable],
+        [IsBilled],
+        [Markup],
+        [Price],
+        [IsDraft],
+        [QboId],
+        [RealmId]
+    FROM dbo.[BillLineItem]
+    WHERE [BillId] = @BillId AND [QboId] = @QboId;
 END;
 GO

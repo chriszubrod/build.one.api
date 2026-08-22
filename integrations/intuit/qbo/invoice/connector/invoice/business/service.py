@@ -21,7 +21,10 @@ from integrations.intuit.qbo.base.field_ownership import (
     qbo_ref_or_placeholder,
 )
 from integrations.intuit.qbo.base.identity_fastpath import (
+    CONFLICT,
+    CONSISTENT,
     raise_concurrent_write_race,
+    resolve_mapping_state,
     run_identity_fastpath,
 )
 from integrations.intuit.qbo.base.reconciliation_recorder import record_mapping_issue
@@ -396,6 +399,51 @@ class InvoiceInvoiceConnector:
             )
             logger.info(f"Created mapping: Invoice {invoice_id} <-> QboInvoice {qbo_invoice.id}")
         except (ValueError, DatabaseConstraintError) as e:
+            # U-302 (mirrors U-298's PurchaseExpenseConnector fix exactly): a concurrent
+            # sync_from_qbo_invoice racing this SAME QboInvoice (no sp_getapplock serializes
+            # these call sites) can win between create_mapping's own set_qbo_identity stamp
+            # and its mapping_repo.create insert: the racer's identity-fastpath recheck sees
+            # this Invoice's freshly-stamped identity, finds no mapping yet (MISSING), and
+            # self-heals by inserting the SAME (invoice_id, qbo_invoice_id) pair directly via
+            # run_identity_fastpath's own guard-bypassing lambda — which is exactly what the
+            # insert above is now failing on (a benign unique-constraint collision, not a real
+            # failure). Blindly rolling back here would DELETE the racer's now-valid,
+            # already-mapped (and possibly already line-synced) Invoice — a silent,
+            # unrecoverable loss of a legitimately-completed financial record. Re-check before
+            # rolling back, via the SAME resolve_mapping_state() identity_fastpath.py already
+            # uses for its own create-mapping race recheck — CONSISTENT means a racer already
+            # validly bound this exact pair (return its result, don't destroy it); CONFLICT
+            # means the mapping table disagrees with a DIFFERENT row (record the issue like
+            # every other conflict path in this file, then still roll back this genuine
+            # orphan); MISSING falls through unchanged (a real failure, not a resolved race).
+            recheck_state, recheck_by_local, recheck_by_external = resolve_mapping_state(
+                local_id=invoice_id,
+                external_id=qbo_invoice.id,
+                read_by_local_id=self.mapping_repo.read_by_invoice_id,
+                read_by_external_id=self.mapping_repo.read_by_qbo_invoice_id,
+                external_id_attr="qbo_invoice_id",
+            )
+            if recheck_state == CONSISTENT:
+                logger.warning(
+                    f"Invoice {invoice_id}'s own mapping create raced with a concurrent "
+                    f"sync of the SAME QboInvoice {qbo_invoice.id}, which won first; "
+                    f"returning its result instead of rolling back a valid Invoice."
+                )
+                racer_current = self.invoice_service.read_by_id(invoice_id)
+                if racer_current is not None and self._invoice_cache is not None:
+                    # Refresh the cache like every other mutating success path
+                    # in this file (_apply_invoice_fields, the "mapping found"
+                    # branch) — a stale entry here would misinform a later
+                    # in-batch cache read.
+                    self._invoice_cache[invoice_id] = racer_current
+                return racer_current or invoice
+            if recheck_state == CONFLICT:
+                self._raise_identity_mapping_conflict_issue(
+                    qbo_invoice=qbo_invoice,
+                    dbo_invoice_id=invoice_id,
+                    local_side_mapping=recheck_by_local,
+                    qbo_side_mapping=recheck_by_external,
+                )
             # Do NOT leave an orphan invoice with no mapping — that is exactly how the phantom -N
             # invoices accrued. Roll back the just-created (still line-less) header and re-raise so
             # the caller's watermark holds and the invoice retries cleanly next sync.

@@ -2,6 +2,19 @@
 
 Carry-over items from sessions. Check off as done; prune anything stale.
 
+## U-301b-deferred (Expense/Invoice outbox refresh repoint) — booked, not started (2026-08-22)
+
+- [ ] **Repoint `_refresh_expense`/`_refresh_invoice` in `integrations/intuit/qbo/outbox/business/worker.py`
+  the same way `_refresh_bill` was repointed (U-301b): dbo-native fast path via new
+  `verify_expense_qbo_identity`/`verify_invoice_qbo_identity` wrappers on `base/identity_consistency.py`'s
+  shared `_verify_dbo_qbo_identity` engine, hard-refuse (record + raise, `__context__` explicitly severed —
+  see `_record_bill_identity_conflict`'s comment for why `from None` alone doesn't do it) on a genuine
+  conflict, fall through to the legacy two-hop when dbo has no answer yet.** Deliberately deferred at U-301b's
+  Gate-1 (Chris's call, 2026-08-22): `sync_expense_to_qbo`/`sync_invoice_to_qbo` have **zero live outbox rows
+  ever** (Expense/Invoice pushes are disabled per this file's own conventions) vs. Bill's 918 live rows — no
+  live traffic to equivalence-prove a repoint against. Pick this up once/if those pushes are re-enabled and
+  carry real traffic. Mirrors the U-293-Bill-pilot → U-293b-fanout precedent.
+
 ## U-301c follow-ups (ProposeInvoiceSourceLinks Tier 0c/0d repoint) — deferred, not scope-creeped in (2026-08-22)
 
 - [ ] **`entities/invoice/business/reconciliation.py`'s module docstring and `_filter_candidates_ki35`'s docstring

@@ -572,6 +572,40 @@ class QboOutboxWorker:
             )
 
     def _refresh_bill(self, row: QboOutbox) -> None:
+        """
+        U-301b: tries dbo.Bill's own native QboId (U-238a) first via the
+        shared verify_bill_qbo_identity wrapper. When a BillBill mapping row
+        already exists, this costs the same two reads the legacy two-hop did
+        (verify makes the identical read_by_bill_id + read_by_id calls to
+        confirm agreement) — no round trip saved there, but no regression
+        either, and the two paths are provably equivalent (0/19979 live
+        disagreements, per scripts/verify_bill_outbox_refresh_repoint.py).
+        The real win is the case the legacy path handled as a silent no-op:
+        dbo.Bill.QboId set but NO BillBill mapping row yet (e.g. early in a
+        Bill's push lifecycle) — verify trusts it immediately (nothing to
+        disagree with), so this refresh now actually runs where it used to
+        skip refreshing entirely.
+
+        Falls through to the legacy two-hop lookup when the Bill has no
+        dbo-native QboId yet (ordinary not-fully-migrated state — nothing to
+        disagree with). On a GENUINE conflict (a BillBill mapping row exists
+        and its own resolved QBO identity disagrees with dbo.Bill.QboId),
+        refuses to guess: records a bill_identity_conflict ReconciliationIssue
+        and RAISES (never a silent return) — mirroring base/identity_fastpath.py's
+        own hard-stop discipline ("record + raise, ALWAYS ... never a
+        fall-through"). Silently returning here is not equivalent-but-safer:
+        BillBillConnector.sync_to_qbo_bill (the handler being retried) is
+        create-only and short-circuits to a no-op success the instant a
+        BillBill mapping exists — exactly the precondition a hard-refuse
+        requires — so a silent return here would let the retried push
+        complete as "done" with the underlying conflict never surfaced
+        anywhere but a single (possibly failed) ReconciliationIssue insert.
+        Raising forces _process_inner's outer exception handling to decide
+        the outcome explicitly instead. A GET refresh can't directly corrupt
+        QBO, but the local cache it feeds (via upsert_from_external) can —
+        that's the risk this hard-refuse exists to close (Chris's call,
+        2026-08-22).
+        """
         from integrations.intuit.qbo.bill.business.service import QboBillService
         from integrations.intuit.qbo.bill.connector.bill.persistence.repo import (
             BillBillRepository,
@@ -581,22 +615,42 @@ class QboOutboxWorker:
         )
         from integrations.intuit.qbo.bill.external.client import QboBillClient
         from integrations.intuit.qbo.bill.persistence.repo import QboBillRepository
+        from integrations.intuit.qbo.base.identity_consistency import verify_bill_qbo_identity
         from entities.bill.business.service import BillService
 
         bill = BillService().read_by_public_id(row.entity_public_id)
         if not bill:
             return
 
-        mapping = BillBillRepository().read_by_bill_id(int(bill.id))
-        if not mapping:
-            return
+        bill_bill_repo = BillBillRepository()
+        qbo_bill_repo = QboBillRepository()
 
-        local_qbo_bill = QboBillRepository().read_by_id(mapping.qbo_bill_id)
-        if not local_qbo_bill or not local_qbo_bill.qbo_id:
-            return
+        qbo_id_to_refresh = None
+        if bill.qbo_id:
+            verified = verify_bill_qbo_identity(
+                bill, bill_bill_repo=bill_bill_repo, qbo_bill_repo=qbo_bill_repo
+            )
+            if verified:
+                qbo_id_to_refresh = verified
+            else:
+                # bill.qbo_id was truthy but verify still returned None: the
+                # mapping row exists and genuinely disagrees (verify would have
+                # trusted a merely-absent mapping) — hard-refuse. Raises; see
+                # _record_bill_identity_conflict's docstring for why a plain
+                # return here would be wrong.
+                self._record_bill_identity_conflict(row, bill, bill_bill_repo, qbo_bill_repo)
+
+        if qbo_id_to_refresh is None:
+            mapping = bill_bill_repo.read_by_bill_id(int(bill.id))
+            if not mapping:
+                return
+            local_qbo_bill = qbo_bill_repo.read_by_id(mapping.qbo_bill_id)
+            if not local_qbo_bill or not local_qbo_bill.qbo_id:
+                return
+            qbo_id_to_refresh = local_qbo_bill.qbo_id
 
         with QboBillClient(realm_id=row.realm_id) as client:
-            fresh = client.get_bill(local_qbo_bill.qbo_id)
+            fresh = client.get_bill(qbo_id_to_refresh)
         refreshed_bill, refreshed_lines = QboBillService().upsert_from_external(
             fresh, row.realm_id
         )
@@ -604,6 +658,87 @@ class QboOutboxWorker:
             qbo_bill=refreshed_bill, qbo_bill_lines=refreshed_lines
         )
 
+    def _record_bill_identity_conflict(self, row: QboOutbox, bill, bill_bill_repo, qbo_bill_repo) -> None:
+        """Record the conflict and raise ValueError (never a silent return —
+        see _refresh_bill's docstring for why). The raise below explicitly
+        severs __context__ via a catch-and-reraise, NOT via `raise ... from
+        None` alone — see the comment at that line for why `from None` isn't
+        sufficient here.
+        """
+        from integrations.intuit.qbo.base.reconciliation_recorder import record_mapping_issue
+        from integrations.intuit.qbo.reconciliation.persistence.repo import (
+            ReconciliationIssueRepository,
+        )
+
+        # Re-reads the same mapping (and its resolved external row)
+        # verify_bill_qbo_identity already read internally to make this exact
+        # comparison — its Optional[str] return contract (shared by 3 other
+        # wrappers) discards that data, and widening it would ripple into
+        # every other caller. Two extra point-reads by stable PK, deliberately
+        # accepted over touching shared infrastructure for one caller's log text.
+        mapping = bill_bill_repo.read_by_bill_id(int(bill.id))
+        mapped_external = (
+            qbo_bill_repo.read_by_id(mapping.qbo_bill_id) if mapping else None
+        )
+        # NB: drift_type must be a string literal here, not a drift_types.py
+        # constant reference — tests/test_qbo_reconciliation_recorder.py's
+        # AST-based width guard statically resolves this argument and cannot
+        # follow an imported name (same convention BillBillConnector's own
+        # "bill_identity_conflict" call site already follows).
+        record_mapping_issue(
+            ReconciliationIssueRepository(),
+            drift_type="bill_identity_conflict",
+            entity_type="Bill",
+            entity_public_id=row.entity_public_id,
+            qbo_id=bill.qbo_id,
+            realm_id=row.realm_id or "",
+            details=(
+                f"Outbox refresh for Bill {bill.id} found a genuine identity conflict: "
+                f"dbo.Bill.QboId={bill.qbo_id!r} disagrees with BillBill mapping "
+                f"{mapping.id if mapping else '?'}'s resolved external QboId="
+                f"{getattr(mapped_external, 'qbo_id', None)!r}. Refusing to refresh with "
+                f"disputed identity — dead-lettering outbox row {row.public_id} immediately "
+                f"rather than risk corrupting the local Bill cache. Investigate which side "
+                f"is correct."
+            ),
+        )
+        # `from None` alone is NOT enough here, and setting .__context__ on
+        # the exception object before `raise` isn't either — `raise` itself
+        # re-derives __context__ from whatever exception is currently being
+        # handled at the moment it executes (confirmed by direct test), which
+        # is the QboSyncTokenMismatchError that got us into this method in the
+        # first place, several frames up in _process_inner. is_retryable_error
+        # (base/errors.py) walks __context__ explicitly regardless of `from
+        # None`'s __suppress_context__ flag (that flag only affects traceback
+        # PRINTING), so without truly severing it, that error's
+        # is_retryable=True leaks through and misclassifies this ValueError as
+        # retryable — scheduling backoff retries (each re-recording a
+        # duplicate ReconciliationIssue) instead of the immediate dead-letter
+        # this hard-refuse requires. The only way to make __context__ stick is
+        # to catch our own raise immediately and re-raise the SAME object —
+        # a bare `raise` re-propagates as-is without re-deriving __context__.
+        conflict_error = ValueError(
+            f"Bill {bill.id} identity conflict — dbo.Bill.QboId disagrees with its own "
+            f"BillBill mapping's resolved external QboId. See the recorded "
+            f"bill_identity_conflict ReconciliationIssue for detail."
+        )
+        try:
+            raise conflict_error
+        except ValueError:
+            conflict_error.__context__ = None
+            raise
+
+    # U-301b-deferred (Chris's Gate-1 call, 2026-08-22): _refresh_expense and
+    # _refresh_invoice below are deliberately left on the legacy qbo.Purchase/
+    # qbo.Invoice two-hop, unlike their sibling _refresh_bill above. Both
+    # families' equivalent outbox sync kinds (sync_expense_to_qbo,
+    # sync_invoice_to_qbo) have ZERO live rows ever (pushes are disabled per
+    # CLAUDE.md), so there is no live traffic to equivalence-prove a repoint
+    # against — unlike Bill's 918 live sync_bill_to_qbo rows. Repoint these two
+    # the same way (dbo-native fast path + verify_expense_qbo_identity /
+    # verify_invoice_qbo_identity wrappers on identity_consistency.py's shared
+    # engine) once/if their pushes are re-enabled and carry real traffic to
+    # verify against. Tracked in TODO.md under "U-301b-deferred".
     def _refresh_expense(self, row: QboOutbox) -> None:
         from integrations.intuit.qbo.purchase.business.service import QboPurchaseService
         from integrations.intuit.qbo.purchase.connector.expense.persistence.repo import (

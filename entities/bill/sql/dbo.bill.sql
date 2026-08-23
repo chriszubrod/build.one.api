@@ -245,6 +245,13 @@ GO
 
 
 -- Read Bill By Public Id Stored Procedures
+-- U-301b: additive [QboId]/[RealmId] columns — outbox/business/worker.py's
+-- _refresh_bill reads them off this sproc's caller (BillService.read_by_
+-- public_id) to try the dbo-native identity fast path before falling back
+-- to the legacy qbo.BillBill -> qbo.Bill two-hop. Bill._from_db (the shared
+-- row mapper) already reads these defensively via getattr(row, "QboId",
+-- None), so this is safe for every other caller regardless of column
+-- presence — mirrors ReadBillById's existing SELECT immediately above.
 CREATE OR ALTER PROCEDURE ReadBillByPublicId
 (
     @PublicId UNIQUEIDENTIFIER
@@ -269,7 +276,9 @@ BEGIN
         [IsDraft],
         [IntakeSource],
         [IntakeSourceDetail],
-        [SourceEmailMessageId]
+        [SourceEmailMessageId],
+        [QboId],
+        [RealmId]
     FROM dbo.[Bill]
     WHERE [PublicId] = @PublicId;
 

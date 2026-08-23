@@ -140,6 +140,39 @@ def verify_vendor_qbo_identity(
     )
 
 
+def verify_bill_qbo_identity(
+    bill,
+    *,
+    bill_bill_repo,
+    qbo_bill_repo,
+) -> Optional[str]:
+    """
+    Return `bill.qbo_id` if it's safe to trust for an outbox refresh mid-retry
+    (U-301b: `outbox/business/worker.py::_refresh_bill`), else None.
+
+    Safe means: the Bill has no BillBill mapping row yet (the ordinary
+    not-fully-migrated state — nothing to disagree with), OR its mapping
+    row's own QboBill external id matches `bill.qbo_id` exactly. A mismatch
+    means the mapping table still binds a DIFFERENT external bill to this
+    Bill — refuse rather than trust an unverified identity mid-retry.
+
+    Caller note: this collapses two different reasons into one `None` —
+    "bill.qbo_id is falsy" (nothing to check yet) and "mapping exists and
+    disagrees" (a genuine conflict). `_refresh_bill` distinguishes them by
+    checking `bill.qbo_id` truthiness itself *before* calling this, since the
+    two cases need different handling (fall through to the legacy qbo.BillBill
+    -> qbo.Bill lookup vs. hard-refuse and record a conflict issue).
+    """
+    return _verify_dbo_qbo_identity(
+        bill,
+        entity_label="Bill",
+        mapping_label="BillBill",
+        read_mapping_by_local_id=bill_bill_repo.read_by_bill_id,
+        read_external_by_mapped_id=qbo_bill_repo.read_by_id,
+        mapping_external_id_attr="qbo_bill_id",
+    )
+
+
 def verify_customer_qbo_identity(
     customer,
     *,

@@ -26,6 +26,8 @@ Covers:
      (update_by_public_id returning None -> RuntimeError via
      raise_concurrent_write_race, never a bare crash or a swallowed None).
 """
+import sys
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, Mock, patch
 
@@ -34,6 +36,12 @@ import pytest
 from integrations.intuit.qbo.invoice.connector.invoice.business.service import (
     InvoiceInvoiceConnector,
 )
+
+# Matches the sibling QBO connector test files' own convention (e.g.
+# test_u302_invoice_rollback_race.py) — makes the bare `from conftest import ...`
+# below resolve when this file is collected standalone.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from conftest import mock_qbo_app_lock_granted as _granted_lock  # U-304 lock grant
 
 
 def _make_qbo_invoice(**overrides):
@@ -160,6 +168,7 @@ def test_fast_path_consistent_hit_updates_and_restamps_without_mapping_write():
     connector._sync_line_items.assert_called_once()
 
 
+@patch("integrations.intuit.qbo.base.identity_fastpath.qbo_app_lock", _granted_lock)
 def test_fast_path_missing_self_heals_mapping_via_repo_create_directly():
     """MISSING state (dbo carries identity, no mapping row on either side) must
     self-heal by creating the mapping row directly via mapping_repo.create — NOT
@@ -233,6 +242,7 @@ def test_fast_path_miss_falls_back_to_legacy_mapping_path_unchanged():
     )
 
 
+@patch("integrations.intuit.qbo.base.identity_fastpath.qbo_app_lock", _granted_lock)
 def test_apply_invoice_fields_raises_runtime_error_on_rowversion_race():
     """A concurrent writer racing the UPDATE (update_by_public_id returns None)
     must raise RuntimeError via raise_concurrent_write_race — never a bare

@@ -46,6 +46,7 @@ from typing import Any, Callable, Optional, Tuple
 
 # Local Imports
 from integrations.intuit.qbo.base.ids import coerce_id
+from integrations.intuit.qbo.base.locking import qbo_app_lock
 
 logger = logging.getLogger(__name__)
 
@@ -97,6 +98,156 @@ def resolve_mapping_state(
     if not by_local and not by_external:
         return MISSING, by_local, by_external
     return CONFLICT, by_local, by_external
+
+
+def create_race_lock(mapping_label: str, external_id: int, timeout_ms: int = 15000):
+    """
+    The shared sp_getapplock critical section guarding the create/rollback race for a
+    single (mapping_label, external_id) pair (U-304).
+
+    Must be acquired by BOTH:
+      (a) run_identity_fastpath's MISSING-branch self-heal (apply_fields'
+          header UPDATE + the mapping-row insert that binds it) — opt in via
+          that function's `race_lock_mapping_label` param, and
+      (b) guard_create_mapping_rollback below (the connector's own explicit
+          create-header-then-map tail's failure/rollback path).
+
+    Same resource name -> sp_getapplock serializes the two: whichever acquires
+    first completes its ENTIRE decide-or-mutate step (write+bind, or recheck-
+    then-conditionally-delete) before the other can even read state. Without
+    this, a self-heal write/bind landing in the window between a rollback's
+    point-in-time recheck and its actual DELETE call could be destroyed by
+    that DELETE — a real, silent, unrecoverable loss of a legitimately-
+    completed record. This was U-298's and U-302's shared residual (both
+    connectors hand-copied a recheck-before-rollback that closed the common
+    case but left this narrower window open); closed here in one shared place
+    instead of a third hand-copy. The lock must cover self-heal's apply_fields
+    UPDATE too, not just its final insert — see run_identity_fastpath's
+    `race_lock_mapping_label` docstring for why locking only the insert still
+    leaves a real window open.
+
+    Keyed on `external_id` (the QBO-side staging row), not local_id: that is the
+    one thing every racer for the same QBO record shares — each racer mints its
+    own, different local header, so a local_id-keyed lock would not serialize
+    them against each other at all.
+
+    Deadlock note: never combined with mapping_cleanup.py's `qbo_mapping_delete:*`
+    lock in the same call stack (disjoint resource namespace, disjoint trigger —
+    pull-time create-race here vs. API-driven entity-delete there) and never
+    acquired while already holding one of its own — every call site in this
+    module does a single, non-nested acquire, so no lock-ordering cycle is
+    possible.
+    """
+    return qbo_app_lock(f"qbo_mapping_create:{mapping_label}:{external_id}", timeout_ms=timeout_ms)
+
+
+@dataclass(frozen=True)
+class RollbackGuardOutcome:
+    """
+    Result of guard_create_mapping_rollback.
+
+    `state` is one of CONSISTENT / CONFLICT / MISSING (see resolve_mapping_state).
+    `by_local` / `by_external` are that recheck's own mapping-row reads. `delete_exc`
+    carries the compensating delete's exception when it failed, or None when it
+    succeeded (or was never attempted). Callers use `delete_exc` to log their own
+    distinct success/failure message exactly as they did before this helper existed
+    — this dataclass deliberately does not swallow that detail into a single bool.
+    """
+
+    state: str
+    by_local: Any
+    by_external: Any
+    delete_exc: Optional[BaseException] = None
+
+    @property
+    def delete_succeeded(self) -> Optional[bool]:
+        """None when state is CONSISTENT (delete_header was never called — the
+        racer's row is valid, nothing to roll back); True/False otherwise,
+        derived from `delete_exc`. A property, not a stored field, so it can never
+        drift out of sync with `state`/`delete_exc` the way three hand-written
+        return statements could."""
+        if self.state == CONSISTENT:
+            return None
+        return self.delete_exc is None
+
+
+def guard_create_mapping_rollback(
+    *,
+    mapping_label: str,
+    external_id: int,
+    local_id: int,
+    read_by_local_id: Callable[[int], Any],
+    read_by_external_id: Callable[[int], Any],
+    external_id_attr: str,
+    record_conflict_issue: Callable[[Any, Any], None],
+    delete_header: Callable[[], None],
+    entity_label: str,
+    lock_timeout_ms: int = 15000,
+) -> RollbackGuardOutcome:
+    """
+    Call from a connector's `except` block immediately AFTER its own explicit
+    create_mapping() attempt has failed for a brand-new header (U-304).
+
+    Re-runs resolve_mapping_state UNDER create_race_lock (shared with the
+    self-heal mapping-insert create_race_lock also guards) so no racer can bind
+    to this header in the window between this recheck and delete_header() —
+    closing the point-in-time-snapshot gap U-298/U-302 each left behind (a later
+    racer landing in that window could still be destroyed by this function's own
+    delete).
+
+    Returns a RollbackGuardOutcome so each connector keeps its own distinct
+    exception wrapping / log message / severity on the final outcome exactly as
+    before this unit — this helper owns only the racy mechanics (the lock, the
+    recheck, and — when warranted — the delete + conflict-issue recording),
+    never the caller's final raise:
+      CONSISTENT — a racer already validly bound this exact pair. Caller should
+                   return the racer's current row; delete_header() was NOT called
+                   (delete_succeeded is None).
+      CONFLICT   — the mapping table disagrees with a DIFFERENT row.
+                   record_conflict_issue has been called AND delete_header has
+                   ALREADY been attempted (a genuine orphan on this row).
+      MISSING    — no self-resolve, no conflict. delete_header has ALREADY been
+                   attempted (a genuine orphan; the original failure was not a
+                   resolved race).
+
+    FAIL CLOSED on a lock-acquire timeout: raises RuntimeError WITHOUT ever
+    calling resolve_mapping_state or delete_header — never deletes under
+    uncertainty. The just-created header is left mapped-pending, not destroyed;
+    a future retry's identity fast path will discover and heal it. RuntimeError
+    (not ValueError) so record_projection_error's rule 3 holds this for retry
+    instead of treating it as a permanent skip — the same transient-vs-permanent
+    split raise_concurrent_write_race already relies on.
+    """
+    with create_race_lock(mapping_label, external_id, timeout_ms=lock_timeout_ms) as got_lock:
+        if not got_lock:
+            raise RuntimeError(
+                f"Could not acquire create/rollback lock for {entity_label} {local_id} "
+                f"({mapping_label} external_id={external_id}) within {lock_timeout_ms}ms "
+                f"- holding for retry without deleting."
+            )
+
+        state, by_local, by_external = resolve_mapping_state(
+            local_id=local_id,
+            external_id=external_id,
+            read_by_local_id=read_by_local_id,
+            read_by_external_id=read_by_external_id,
+            external_id_attr=external_id_attr,
+        )
+
+        if state == CONSISTENT:
+            return RollbackGuardOutcome(state=state, by_local=by_local, by_external=by_external)
+
+        if state == CONFLICT:
+            record_conflict_issue(by_local, by_external)
+
+        try:
+            delete_header()
+        except Exception as del_e:
+            return RollbackGuardOutcome(
+                state=state, by_local=by_local, by_external=by_external, delete_exc=del_e,
+            )
+
+        return RollbackGuardOutcome(state=state, by_local=by_local, by_external=by_external)
 
 
 def raise_concurrent_write_race(*, entity_label: str, entity_id, path_label: str = "fast path") -> None:
@@ -161,6 +312,7 @@ def run_identity_fastpath(
     create_mapping: Callable[[int], Any],
     apply_fields: Optional[Callable[[Any], Any]] = None,
     on_apply_returned_none: Optional[Callable[[Any], None]] = None,
+    race_lock_mapping_label: Optional[str] = None,
 ) -> FastPathOutcome:
     """
     Run the dbo-native identity fast path.
@@ -200,6 +352,26 @@ def run_identity_fastpath(
             on the rarer "missing" self-heal window this used to be scoped to, and
             in the "consistent" case there is no create_mapping step to fall back
             on to catch it, so a caller that cares must raise from this callback.
+        race_lock_mapping_label: opt-in (U-304). When set, a MISSING-state hit
+            (see below) runs `apply_fields` AND `create_mapping` INSIDE
+            `create_race_lock(race_lock_mapping_label, external_id)` — the same
+            lock a caller's `guard_create_mapping_rollback` acquires around its
+            own recheck-then-delete. Omit (default None) to keep today's
+            behavior EXACTLY (no lock at all) — every family besides the ones
+            that opt in is unaffected byte-for-byte. Why the whole apply_fields
+            call must be inside the lock, not just create_mapping: apply_fields
+            is what WRITES onto `direct` (the header a caller's rollback might
+            be about to delete) — locking only the later create_mapping call
+            still leaves a window where apply_fields's UPDATE could land on a
+            header a concurrent rollback is mid-delete-decision on. With the
+            lock covering both, whichever side (self-heal vs. rollback) gets it
+            first finishes its ENTIRE decide-or-mutate step before the other
+            can act: if rollback's delete lands first, apply_fields's own
+            UPDATE affects 0 rows and returns None (the ordinary "ROWVERSION
+            race / concurrent delete" path just below, already handled); if
+            self-heal's UPDATE lands first, the rollback's own re-check inside
+            guard_create_mapping_rollback sees the fresh mapping row (once
+            create_mapping commits) as CONSISTENT and does not delete.
 
     Returns:
         FastPathOutcome.
@@ -240,71 +412,100 @@ def run_identity_fastpath(
         # CREATE path. That exact fall-through was the live-prod P0 of 2026-08-20.
         raise ValueError(conflict_message(direct))
 
-    if apply_fields is None:
-        updated = direct
-    else:
-        logger.info(
-            f"Updating existing {entity_label} {direct.id} from {external_label} "
-            f"{external_id} (direct dbo identity match)"
-        )
-        updated = apply_fields(direct)
-
-    if updated is None:
-        # Nothing to map or stamp — the caller's update found the row gone (a
-        # ROWVERSION race or a concurrent delete). This check used to live inside
-        # `if state == MISSING`, so it only ever fired on the rare first-mapping
-        # self-heal window; on the far more common "consistent" steady-state
-        # resync of an already-mapped record — where a race is, if anything, MORE
-        # likely — a None here fell straight through to `return
-        # FastPathOutcome(hit=True, entity=None)` below with no callback, no
-        # exception, nothing (U-291). Checking here, before the state branch,
-        # makes the callback fire on every apply-returned-None outcome regardless
-        # of mapping state. Callers that must not let this pass silently supply
-        # the callback and raise from it — see CustomerCustomerConnector
-        # ._on_update_empty for why a silent return here can wrongly advance a
-        # watermark.
-        if on_apply_returned_none is not None:
-            on_apply_returned_none(direct)
-        return FastPathOutcome(hit=True, entity=None)
-
-    if state == MISSING:
-        try:
-            create_mapping(coerce_id(updated.id))
-        except Exception as e:
-            # A concurrent sync may have raced this exact staging row between the
-            # "missing" pre-check and this create — no sp_getapplock serializes
-            # these call sites (pre-existing gap, TODO.md's U-238a follow-ups).
-            # Re-check rather than assume: if it is now a real conflict, record it
-            # properly instead of leaving a bare warning (U-276 round-4 finding).
-            logger.error(
-                f"{mapping_label} mapping create failed for {entity_label} "
-                f"{updated.id} after a 'missing' pre-check: {e}"
+    def _apply_and_maybe_self_heal() -> FastPathOutcome:
+        """
+        Write the QBO-derived fields onto `direct`, then — only on a MISSING
+        state — self-heal the missing mapping row. Factored out so the
+        MISSING+race_lock_mapping_label case (below) can run this EXACT body
+        inside create_race_lock instead of a hand-copied duplicate that could
+        drift from the unlocked version every other caller still runs.
+        """
+        if apply_fields is None:
+            updated = direct
+        else:
+            logger.info(
+                f"Updating existing {entity_label} {direct.id} from {external_label} "
+                f"{external_id} (direct dbo identity match)"
             )
-            recheck_state, recheck_by_local, recheck_by_external = check_mapping(
-                coerce_id(updated.id)
-            )
-            if recheck_state == CONFLICT:
-                record_conflict_issue(updated, recheck_by_local, recheck_by_external)
-            elif recheck_state == MISSING:
-                # Not a race that resolved itself (recheck == CONSISTENT, a
-                # concurrent create already succeeded — genuinely benign, nothing
-                # to record) and not an escalated conflict (handled above). The
-                # create failed for its own reason (transient DB/network) and the
-                # mapping row still does not exist anywhere. The field write
-                # already landed, but treating that as full success would advance
-                # the watermark past a still-genuinely-unmapped entity with zero
-                # durable trace (U-291 P2) — this record won't be re-pulled again
-                # until QBO sees another change to it, so "next tick" would never
-                # come. Raise so record_projection_error holds it for retry
-                # instead: a redundant idempotent re-pull, not a lost record.
-                raise RuntimeError(
+            updated = apply_fields(direct)
+
+        if updated is None:
+            # Nothing to map or stamp — the caller's update found the row gone (a
+            # ROWVERSION race or a concurrent delete — including, for a
+            # lock-guarded MISSING self-heal, a concurrent rollback that won the
+            # lock first and deleted `direct` out from under this UPDATE; U-304
+            # relies on exactly this branch to make that outcome safe). This
+            # check used to live inside `if state == MISSING`, so it only ever
+            # fired on the rare first-mapping self-heal window; on the far more
+            # common "consistent" steady-state resync of an already-mapped
+            # record — where a race is, if anything, MORE likely — a None here
+            # fell straight through to `return FastPathOutcome(hit=True,
+            # entity=None)` below with no callback, no exception, nothing
+            # (U-291). Checking here, before the state branch, makes the
+            # callback fire on every apply-returned-None outcome regardless of
+            # mapping state. Callers that must not let this pass silently
+            # supply the callback and raise from it — see
+            # CustomerCustomerConnector._on_update_empty for why a silent
+            # return here can wrongly advance a watermark.
+            if on_apply_returned_none is not None:
+                on_apply_returned_none(direct)
+            return FastPathOutcome(hit=True, entity=None)
+
+        if state == MISSING:
+            try:
+                create_mapping(coerce_id(updated.id))
+            except Exception as e:
+                # A concurrent sync may have raced this exact staging row between
+                # the "missing" pre-check and this create. Without
+                # race_lock_mapping_label this is a pre-existing, un-serialized
+                # gap (TODO.md's U-238a follow-ups); with it, this create ran
+                # under create_race_lock and a genuine collision here means a
+                # DIFFERENT external_id's mapping (this lock is scoped per
+                # external_id) or a non-race DB error — either way, re-check
+                # rather than assume: if it is now a real conflict, record it
+                # properly instead of leaving a bare warning (U-276 round-4
+                # finding).
+                logger.error(
                     f"{mapping_label} mapping create failed for {entity_label} "
-                    f"{updated.id} and the retry-check still shows no mapping on "
-                    f"either side (not a self-resolved race, not an escalated "
-                    f"conflict): {e}"
-                ) from e
+                    f"{updated.id} after a 'missing' pre-check: {e}"
+                )
+                recheck_state, recheck_by_local, recheck_by_external = check_mapping(
+                    coerce_id(updated.id)
+                )
+                if recheck_state == CONFLICT:
+                    record_conflict_issue(updated, recheck_by_local, recheck_by_external)
+                elif recheck_state == MISSING:
+                    # Not a race that resolved itself (recheck == CONSISTENT, a
+                    # concurrent create already succeeded — genuinely benign, nothing
+                    # to record) and not an escalated conflict (handled above). The
+                    # create failed for its own reason (transient DB/network) and the
+                    # mapping row still does not exist anywhere. The field write
+                    # already landed, but treating that as full success would advance
+                    # the watermark past a still-genuinely-unmapped entity with zero
+                    # durable trace (U-291 P2) — this record won't be re-pulled again
+                    # until QBO sees another change to it, so "next tick" would never
+                    # come. Raise so record_projection_error holds it for retry
+                    # instead: a redundant idempotent re-pull, not a lost record.
+                    raise RuntimeError(
+                        f"{mapping_label} mapping create failed for {entity_label} "
+                        f"{updated.id} and the retry-check still shows no mapping on "
+                        f"either side (not a self-resolved race, not an escalated "
+                        f"conflict): {e}"
+                    ) from e
 
-    return FastPathOutcome(hit=True, entity=updated)
+        return FastPathOutcome(hit=True, entity=updated)
+
+    if state == MISSING and race_lock_mapping_label is not None:
+        with create_race_lock(race_lock_mapping_label, external_id) as got_lock:
+            if not got_lock:
+                raise RuntimeError(
+                    f"Could not acquire create/rollback lock for {entity_label} self-heal "
+                    f"(local_id={coerce_id(direct.id)}, {race_lock_mapping_label} "
+                    f"external_id={external_id}) - holding for retry without writing."
+                )
+            return _apply_and_maybe_self_heal()
+
+    return _apply_and_maybe_self_heal()
 
 
 def run_line_identity_fastpath(

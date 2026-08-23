@@ -12,7 +12,7 @@ from integrations.intuit.qbo.base.identity_drift import (
     classify_qbo_identity_drift,
     stamp_line_identity_or_warn,
 )
-from conftest import stub_qbo_identity_fastpath_miss
+from conftest import mock_qbo_app_lock_granted, stub_qbo_identity_fastpath_miss
 
 
 # ---------------------------------------------------------------------------
@@ -955,6 +955,7 @@ def _make_qbo_invoice_for_header_create():
     )
 
 
+@patch("integrations.intuit.qbo.base.identity_fastpath.qbo_app_lock", mock_qbo_app_lock_granted)
 def test_sync_from_qbo_invoice_compensating_delete_on_mapping_failure():
     created_invoice = SimpleNamespace(id=1057, public_id="inv-pub-1057")
     connector = _build_invoice_header_create_connector(created_invoice)
@@ -967,6 +968,7 @@ def test_sync_from_qbo_invoice_compensating_delete_on_mapping_failure():
     connector._sync_line_items.assert_not_called()
 
 
+@patch("integrations.intuit.qbo.base.identity_fastpath.qbo_app_lock", mock_qbo_app_lock_granted)
 def test_sync_from_qbo_invoice_compensating_delete_on_database_constraint_error():
     from shared.database import DatabaseConstraintError
     from shared.db_constraints import UNIQUE_VIOLATION

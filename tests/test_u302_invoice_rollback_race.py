@@ -1,19 +1,25 @@
 """Pure-logic tests for U-302 — InvoiceInvoiceConnector's create-path rollback tail
 gets the same dbo-native uniqueness recheck U-298 gave PurchaseExpenseConnector.
 
-Nothing serializes concurrent sync_from_qbo_invoice calls for the same QboInvoice
-(no sp_getapplock at this level). Before this fix, ANY create_mapping failure —
-including the benign case where a concurrent racer syncing the exact same
-QboInvoice won the mapping insert first — unconditionally deleted the just-created
-Invoice. That silently destroys the racer's now-valid, already-mapped (and possibly
-already line-synced) financial record with no FK to stop it.
+Before this fix, ANY create_mapping failure — including the benign case where a
+concurrent racer syncing the exact same QboInvoice won the mapping insert first —
+unconditionally deleted the just-created Invoice. That silently destroys the
+racer's now-valid, already-mapped (and possibly already line-synced) financial
+record with no FK to stop it. U-304 added a real sp_getapplock (`create_race_lock`,
+see test_u304_rollback_lock.py) spanning this recheck-and-conditional-rollback and
+the self-heal insert it races against, and broadened this file's except clause
+from `(ValueError, DatabaseConstraintError)` to `Exception` (U-302's booked P2 —
+matching PurchaseExpenseConnector's own `except Exception`). This module grants
+that lock unconditionally via conftest.py's `grant_qbo_app_lock` fixture (see
+`pytestmark` below) since these tests are pure-logic / no-live-DB and only
+exercise the resolve-state branching, not the serialization itself.
 
 Mocks stand in for invoice_service + mapping_repo; no DB/QBO I/O.
 """
 import sys
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 import pytest
 
@@ -29,6 +35,8 @@ from shared.db_constraints import UNIQUE_VIOLATION
 # suite (where an earlier-alphabetical file's own insert happens to cover it).
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from conftest import stub_qbo_identity_fastpath_miss
+
+pytestmark = pytest.mark.usefixtures("grant_qbo_app_lock")
 
 
 def _make_qbo_invoice(**overrides):

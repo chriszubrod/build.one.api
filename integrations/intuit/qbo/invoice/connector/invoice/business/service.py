@@ -21,16 +21,14 @@ from integrations.intuit.qbo.base.field_ownership import (
     qbo_ref_or_placeholder,
 )
 from integrations.intuit.qbo.base.identity_fastpath import (
-    CONFLICT,
     CONSISTENT,
+    guard_create_mapping_rollback,
     raise_concurrent_write_race,
-    resolve_mapping_state,
     run_identity_fastpath,
 )
 from integrations.intuit.qbo.base.reconciliation_recorder import record_mapping_issue
 from integrations.intuit.qbo.reconciliation.persistence.repo import ReconciliationIssueRepository
 from integrations.intuit.qbo.base.ids import coerce_id
-from shared.database import DatabaseConstraintError
 
 logger = logging.getLogger(__name__)
 
@@ -226,6 +224,7 @@ class InvoiceInvoiceConnector:
                 invoice_id=local_id, qbo_invoice_id=qbo_invoice.id
             ),
             apply_fields=_apply_invoice_fields,
+            race_lock_mapping_label="InvoiceInvoice",
         )
         if outcome.hit:
             return outcome.entity
@@ -398,32 +397,48 @@ class InvoiceInvoiceConnector:
                 sync_token=getattr(qbo_invoice, "sync_token", None),
             )
             logger.info(f"Created mapping: Invoice {invoice_id} <-> QboInvoice {qbo_invoice.id}")
-        except (ValueError, DatabaseConstraintError) as e:
+        except Exception as e:
             # U-302 (mirrors U-298's PurchaseExpenseConnector fix exactly): a concurrent
             # sync_from_qbo_invoice racing this SAME QboInvoice (no sp_getapplock serializes
-            # these call sites) can win between create_mapping's own set_qbo_identity stamp
-            # and its mapping_repo.create insert: the racer's identity-fastpath recheck sees
-            # this Invoice's freshly-stamped identity, finds no mapping yet (MISSING), and
-            # self-heals by inserting the SAME (invoice_id, qbo_invoice_id) pair directly via
-            # run_identity_fastpath's own guard-bypassing lambda — which is exactly what the
-            # insert above is now failing on (a benign unique-constraint collision, not a real
-            # failure). Blindly rolling back here would DELETE the racer's now-valid,
-            # already-mapped (and possibly already line-synced) Invoice — a silent,
-            # unrecoverable loss of a legitimately-completed financial record. Re-check before
-            # rolling back, via the SAME resolve_mapping_state() identity_fastpath.py already
-            # uses for its own create-mapping race recheck — CONSISTENT means a racer already
-            # validly bound this exact pair (return its result, don't destroy it); CONFLICT
-            # means the mapping table disagrees with a DIFFERENT row (record the issue like
-            # every other conflict path in this file, then still roll back this genuine
-            # orphan); MISSING falls through unchanged (a real failure, not a resolved race).
-            recheck_state, recheck_by_local, recheck_by_external = resolve_mapping_state(
-                local_id=invoice_id,
+            # the two EXPLICIT create_mapping() calls against each other) can win between
+            # create_mapping's own set_qbo_identity stamp and its mapping_repo.create insert:
+            # the racer's identity-fastpath recheck sees this Invoice's freshly-stamped
+            # identity, finds no mapping yet (MISSING), and self-heals via
+            # run_identity_fastpath's own MISSING branch (locked end-to-end by
+            # `race_lock_mapping_label="InvoiceInvoice"` passed above, U-304) — which is
+            # exactly what the insert above is now failing on (a benign unique-constraint
+            # collision, not a real failure). Blindly rolling back here would DELETE the
+            # racer's now-valid, already-mapped (and possibly already line-synced) Invoice —
+            # a silent, unrecoverable loss of a legitimately-completed financial record.
+            # guard_create_mapping_rollback (U-304) rechecks resolve_mapping_state UNDER
+            # create_race_lock — the SAME lock the self-heal above acquires around BOTH its
+            # field-write and its mapping insert — so no THIRD racer can bind to this
+            # Invoice in the window between that recheck and the delete below; the two
+            # hand-copied recheck-before-rollback bodies U-298 and U-302 each carried (a
+            # point-in-time snapshot with no re-verification immediately before the delete
+            # call) are now the same one lock-guarded helper.
+            #
+            # U-304 also broadens this except clause from (ValueError, DatabaseConstraintError)
+            # to Exception — mirrors PurchaseExpenseConnector's existing except Exception exactly
+            # (U-302's booked P2: a deadlock/timeout on the mapping insert previously raised
+            # something outside that narrower tuple and bypassed this whole guard).
+            outcome = guard_create_mapping_rollback(
+                mapping_label="InvoiceInvoice",
                 external_id=qbo_invoice.id,
+                local_id=invoice_id,
                 read_by_local_id=self.mapping_repo.read_by_invoice_id,
                 read_by_external_id=self.mapping_repo.read_by_qbo_invoice_id,
                 external_id_attr="qbo_invoice_id",
+                record_conflict_issue=lambda by_local, by_external: self._raise_identity_mapping_conflict_issue(
+                    qbo_invoice=qbo_invoice,
+                    dbo_invoice_id=invoice_id,
+                    local_side_mapping=by_local,
+                    qbo_side_mapping=by_external,
+                ),
+                delete_header=lambda: self.invoice_service.delete_by_public_id(invoice.public_id),
+                entity_label="Invoice",
             )
-            if recheck_state == CONSISTENT:
+            if outcome.state == CONSISTENT:
                 logger.warning(
                     f"Invoice {invoice_id}'s own mapping create raced with a concurrent "
                     f"sync of the SAME QboInvoice {qbo_invoice.id}, which won first; "
@@ -437,27 +452,19 @@ class InvoiceInvoiceConnector:
                     # in-batch cache read.
                     self._invoice_cache[invoice_id] = racer_current
                 return racer_current or invoice
-            if recheck_state == CONFLICT:
-                self._raise_identity_mapping_conflict_issue(
-                    qbo_invoice=qbo_invoice,
-                    dbo_invoice_id=invoice_id,
-                    local_side_mapping=recheck_by_local,
-                    qbo_side_mapping=recheck_by_external,
-                )
             # Do NOT leave an orphan invoice with no mapping — that is exactly how the phantom -N
-            # invoices accrued. Roll back the just-created (still line-less) header and re-raise so
-            # the caller's watermark holds and the invoice retries cleanly next sync.
+            # invoices accrued. The just-created (still line-less) header has already been rolled
+            # back (or a rollback attempted) inside guard_create_mapping_rollback; re-raise so the
+            # caller's watermark holds and the invoice retries cleanly next sync.
             logger.error(
                 f"create_mapping failed for new Invoice {invoice_id} <-> QboInvoice {qbo_invoice.id}: {e}; "
                 f"rolling back the orphan invoice"
             )
-            try:
-                self.invoice_service.delete_by_public_id(invoice.public_id)
-            except Exception as de:
+            if not outcome.delete_succeeded:
                 logger.critical(
                     f"  ORPHAN CLEANUP FAILED: Invoice {invoice_id} (public_id {invoice.public_id}) was "
-                    f"created with NO mapping and could NOT be rolled back ({de}) — REQUIRES MANUAL "
-                    f"CLEANUP (it is an adoptable/suffixable phantom on the next pull)."
+                    f"created with NO mapping and could NOT be rolled back ({outcome.delete_exc}) — "
+                    f"REQUIRES MANUAL CLEANUP (it is an adoptable/suffixable phantom on the next pull)."
                 )
             raise
 

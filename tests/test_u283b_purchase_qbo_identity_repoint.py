@@ -28,6 +28,8 @@ Covers:
      dbo.Project lookup tried first, legacy qbo.Customer->qbo.CustomerProject
      hop only on a miss or an unverified (conflicting) direct hit.
 """
+import sys
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, Mock, patch
 
@@ -36,6 +38,15 @@ import pytest
 from integrations.intuit.qbo.purchase.connector.expense.business.service import (
     PurchaseExpenseConnector,
 )
+
+# Matches the sibling QBO connector test files' own convention (e.g.
+# test_u302_invoice_rollback_race.py) — makes the bare `from conftest import ...`
+# below resolve when this file is collected standalone.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from conftest import mock_qbo_app_lock_granted as _granted_lock  # U-304 lock grant
+from conftest import stub_identity_check_trusts  # U-306 identity-check stub
+
+from integrations.intuit.qbo.base.identity_consistency import IdentityCheckResult
 
 LINE_CONNECTOR_PATH = (
     "integrations.intuit.qbo.purchase.connector.expense_line_item.business.service"
@@ -249,6 +260,7 @@ def test_expense_fast_path_hit_consistent_refreshes_synctoken_skips_mapping_writ
     connector._sync_line_items.assert_called_once()
 
 
+@patch("integrations.intuit.qbo.base.identity_fastpath.qbo_app_lock", _granted_lock)
 def test_expense_fast_path_hit_missing_self_heals_via_mapping_repo_not_connector_create_mapping():
     """On MISSING, the mapping row must be created via mapping_repo.create(...)
     directly (bypassing PurchaseExpenseConnector.create_mapping, which would
@@ -270,6 +282,7 @@ def test_expense_fast_path_hit_missing_self_heals_via_mapping_repo_not_connector
     assert expense_service.repo.set_qbo_identity.call_count == 1
 
 
+@patch("integrations.intuit.qbo.base.identity_fastpath.qbo_app_lock", _granted_lock)
 def test_expense_fast_path_self_heal_race_escalates_to_recorded_conflict():
     """A concurrent sync can turn 'missing' into 'conflict' between the
     pre-check and the create() call (no sp_getapplock serializes this — same
@@ -406,7 +419,7 @@ def test_get_project_public_id_prefers_direct_dbo_lookup():
     direct_project = SimpleNamespace(id=10, public_id="proj-pub-10", qbo_id="CUST-1", name="Acme")
     project_service.read_by_qbo_identity.return_value = direct_project
     # No CustomerProject mapping row yet -> verify_project_qbo_identity trusts it.
-    customer_project_repo.read_by_project_id.return_value = None
+    stub_identity_check_trusts(customer_project_repo)
 
     result = connector._get_project_public_id("CUST-1", "realm-1")
 
@@ -439,9 +452,9 @@ def test_get_project_public_id_falls_back_when_direct_hit_fails_verification():
     direct_project = SimpleNamespace(id=10, public_id="proj-pub-10", qbo_id="CUST-1", name="Acme")
     project_service.read_by_qbo_identity.return_value = direct_project
     # Local-side mapping disagrees: Project 10 maps to a DIFFERENT QboCustomer.
-    customer_project_repo.read_by_project_id.return_value = SimpleNamespace(qbo_customer_id=999)
-    conflicting_qbo_customer = SimpleNamespace(qbo_id="CUST-OTHER")
-    qbo_customer_repo.read_by_id.return_value = conflicting_qbo_customer
+    customer_project_repo.read_identity_check.return_value = IdentityCheckResult(
+        mapping_id=999, forward_external_qbo_id="CUST-OTHER", reverse_mapped_local_id=10
+    )
 
     # Legacy hop takes over from here.
     qbo_customer = SimpleNamespace(id=20)
@@ -462,7 +475,7 @@ def test_get_project_public_id_caches_per_realm_and_customer_ref():
     connector, project_service, qbo_customer_repo, customer_project_repo = _build_purchase_line_connector()
     direct_project = SimpleNamespace(id=10, public_id="proj-pub-10", qbo_id="CUST-1", name="Acme")
     project_service.read_by_qbo_identity.return_value = direct_project
-    customer_project_repo.read_by_project_id.return_value = None
+    stub_identity_check_trusts(customer_project_repo)
 
     first = connector._get_project_public_id("CUST-1", "realm-1")
     second = connector._get_project_public_id("CUST-1", "realm-1")

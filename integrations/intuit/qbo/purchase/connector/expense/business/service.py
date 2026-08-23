@@ -20,10 +20,9 @@ from integrations.intuit.qbo.base.compensation import rollback_orphan_header
 from integrations.intuit.qbo.base.identity_consistency import verify_vendor_qbo_identity
 from integrations.intuit.qbo.base.field_ownership import preserve_human_edited_ref, qbo_ref_or_placeholder
 from integrations.intuit.qbo.base.identity_fastpath import (
-    CONFLICT,
     CONSISTENT,
+    guard_create_mapping_rollback,
     raise_concurrent_write_race,
-    resolve_mapping_state,
     run_identity_fastpath,
 )
 from integrations.intuit.qbo.base.ids import coerce_id
@@ -192,6 +191,7 @@ class PurchaseExpenseConnector:
                     expense_id=local_id, qbo_purchase_id=qbo_purchase.id
                 ),
                 apply_fields=_apply_expense_fields,
+                race_lock_mapping_label="PurchaseExpense",
             )
 
         outcome = _resolve_identity_fastpath()
@@ -288,54 +288,54 @@ class PurchaseExpenseConnector:
             logger.info(f"Created mapping: Expense {expense_id} <-> QboPurchase {qbo_purchase.id}")
         except Exception as e:
             # U-298 (Gate-1 hunt finding, confirmed P1): a concurrent sync_from_qbo_purchase
-            # racing this SAME QboPurchase (no sp_getapplock serializes these — see the
-            # recheck comment above) can win between create_mapping's own set_qbo_identity
-            # stamp and its mapping_repo.create insert: the racer's identity-fastpath
-            # recheck sees this Expense's freshly-stamped identity, finds no mapping yet
-            # (MISSING), and self-heals by inserting the SAME (expense_id, qbo_purchase_id)
-            # pair directly via run_identity_fastpath's own guard-bypassing lambda — which
-            # is exactly what the insert above is now failing on (a benign unique-constraint
-            # collision, not a real failure). Blindly rolling back here would DELETE the
-            # racer's now-valid, already-mapped (and possibly already line-synced) Expense —
-            # a silent, unrecoverable loss of a legitimately-completed financial record with
-            # no FK to stop it (ExpenseService.delete_by_public_id's own mapping cleanup
-            # would happily remove the racer's mapping first, then the header). Re-check
-            # before rolling back, via the SAME resolve_mapping_state() identity_fastpath.py
-            # already uses for its own create-mapping race recheck (/simplify pass: this used
-            # to hand-roll a narrower copy of that check) — CONSISTENT means a racer already
-            # validly bound this exact pair (return its result, don't destroy it); CONFLICT
-            # means the mapping table disagrees with a DIFFERENT row (record the issue like
-            # every other conflict path in this file, then still roll back this genuine
-            # orphan); MISSING falls through unchanged (a real failure, not a resolved race).
-            recheck_state, recheck_by_local, recheck_by_external = resolve_mapping_state(
-                local_id=expense_id,
+            # racing this SAME QboPurchase (no sp_getapplock serializes the two EXPLICIT
+            # create_mapping() calls against each other) can win between create_mapping's
+            # own set_qbo_identity stamp and its mapping_repo.create insert: the racer's
+            # identity-fastpath recheck sees this Expense's freshly-stamped identity, finds
+            # no mapping yet (MISSING), and self-heals via run_identity_fastpath's own
+            # MISSING branch (locked end-to-end by `race_lock_mapping_label=
+            # "PurchaseExpense"` passed above, U-304) — which is exactly what the insert
+            # above is now failing on (a benign unique-constraint collision, not a real
+            # failure). Blindly rolling back here would DELETE the racer's now-valid,
+            # already-mapped (and possibly already line-synced) Expense — a silent,
+            # unrecoverable loss of a legitimately-completed financial record with no FK to
+            # stop it. guard_create_mapping_rollback (U-304) rechecks resolve_mapping_state
+            # UNDER create_race_lock — the SAME lock the self-heal above acquires around
+            # BOTH its field-write and its mapping insert — so no THIRD racer can bind to
+            # this Expense in the window between that recheck and the delete below; the two
+            # hand-copied recheck-before-rollback bodies U-298 and U-302 each carried (a
+            # point-in-time snapshot with no re-verification immediately before the delete
+            # call) are now the same one lock-guarded helper.
+            outcome = guard_create_mapping_rollback(
+                mapping_label="PurchaseExpense",
                 external_id=qbo_purchase.id,
+                local_id=expense_id,
                 read_by_local_id=self.mapping_repo.read_by_expense_id,
                 read_by_external_id=self.mapping_repo.read_by_qbo_purchase_id,
                 external_id_attr="qbo_purchase_id",
+                record_conflict_issue=lambda by_local, by_external: self._raise_identity_mapping_conflict_issue(
+                    qbo_purchase=qbo_purchase,
+                    dbo_expense_id=expense_id,
+                    local_side_mapping=by_local,
+                    qbo_side_mapping=by_external,
+                ),
+                delete_header=lambda: self.expense_service.delete_by_public_id(expense.public_id),
+                entity_label="Expense",
             )
-            if recheck_state == CONSISTENT:
+            if outcome.state == CONSISTENT:
                 logger.warning(
                     f"Expense {expense_id}'s own mapping create raced with a concurrent "
                     f"sync of the SAME QboPurchase {qbo_purchase.id}, which won first; "
                     f"returning its result instead of rolling back a valid Expense."
                 )
                 return self.expense_service.read_by_id(expense_id) or expense
-            if recheck_state == CONFLICT:
-                self._raise_identity_mapping_conflict_issue(
-                    qbo_purchase=qbo_purchase,
-                    dbo_expense_id=expense_id,
-                    local_side_mapping=recheck_by_local,
-                    qbo_side_mapping=recheck_by_external,
-                )
-            try:
-                self.expense_service.delete_by_public_id(expense.public_id)
+            if outcome.delete_succeeded:
                 logger.warning(
                     f"Rolled back orphan Expense {expense_id} after mapping failure "
                     f"for QboPurchase {qbo_purchase.id}"
                 )
-            except Exception as del_e:
-                logger.error(f"Could not delete orphan Expense {expense_id}: {del_e}")
+            else:
+                logger.error(f"Could not delete orphan Expense {expense_id}: {outcome.delete_exc}")
             raise ValueError(
                 f"Failed to create PurchaseExpense mapping for QboPurchase {qbo_purchase.id}: {e}"
             ) from e

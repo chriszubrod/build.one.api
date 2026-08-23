@@ -1,15 +1,18 @@
 """Pure-logic tests for U-298 (Wave-1) — PurchaseExpenseConnector's CREATE path
 gets a dbo-native uniqueness recheck immediately before minting a new Expense.
 
-Nothing serializes concurrent sync_from_qbo_purchase calls for the same
-QboPurchase (no sp_getapplock at this level). Without this recheck, a second
-process racing the exact same record between the top-of-function fast-path
-check (see test_u283b_purchase_qbo_identity_repoint.py) and the literal
-`expense_service.create(...)` call would mint a genuine duplicate Expense:
-SetExpenseQboIdentity's theft-clear UPDATE does not fail on a unique-index
-violation, it silently steals the (QboId, RealmId) pair onto whichever row
-stamps it LAST — leaving one Expense correctly identified and the other
-permanently orphaned (no QboId left to ever re-resolve it by).
+Without this recheck, a second process racing the exact same record between the
+top-of-function fast-path check (see test_u283b_purchase_qbo_identity_repoint.py)
+and the literal `expense_service.create(...)` call would mint a genuine duplicate
+Expense: SetExpenseQboIdentity's theft-clear UPDATE does not fail on a unique-index
+violation, it silently steals the (QboId, RealmId) pair onto whichever row stamps
+it LAST — leaving one Expense correctly identified and the other permanently
+orphaned (no QboId left to ever re-resolve it by). U-304 added a real
+sp_getapplock (`create_race_lock`, see test_u304_rollback_lock.py) spanning this
+recheck-and-conditional-rollback and the self-heal insert it races against — this
+module grants that lock unconditionally via conftest.py's `grant_qbo_app_lock`
+fixture (see `pytestmark` below) since these tests are pure-logic / no-live-DB
+and only exercise the resolve-state branching, not the serialization itself.
 
 These tests simulate the race by making `expense_service.read_by_qbo_identity`
 MISS on the first call (top-of-function) and HIT on the second (immediately
@@ -24,6 +27,8 @@ import pytest
 from integrations.intuit.qbo.purchase.connector.expense.business.service import (
     PurchaseExpenseConnector,
 )
+
+pytestmark = pytest.mark.usefixtures("grant_qbo_app_lock")
 
 LINE_CONNECTOR_PATH = (
     "integrations.intuit.qbo.purchase.connector.expense_line_item.business.service"

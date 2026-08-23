@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from types import SimpleNamespace
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -29,10 +30,19 @@ class FlatEntitySpec:
     staging_fk_col: str
     has_sync_token: bool
     sproc: str
+    # U-305: opt-in RBAC gate (the entity's own dbo.UserCanAccess<X> UDF name) for
+    # read_qbo_identity_rows_by_realm_id below. Optional + defaulted so all 13
+    # existing rows are unaffected — only entities that opt in (bill, bill_credit
+    # as of U-305) get the generic bulk-identity-read function; every other spec's
+    # construction and the 4 existing backfill/drift scripts are untouched.
+    access_udf: Optional[str] = None
 
 
 HEADER_ENTITY_SPECS: tuple[FlatEntitySpec, ...] = (
-    FlatEntitySpec("bill", "Bill", "BillBill", "Bill", "BillId", "QboBillId", True, "SetBillQboIdentity"),
+    FlatEntitySpec(
+        "bill", "Bill", "BillBill", "Bill", "BillId", "QboBillId", True, "SetBillQboIdentity",
+        access_udf="UserCanAccessBill",
+    ),
     FlatEntitySpec("expense", "Expense", "PurchaseExpense", "Purchase", "ExpenseId", "QboPurchaseId", True, "SetExpenseQboIdentity"),
     FlatEntitySpec("invoice", "Invoice", "InvoiceInvoice", "Invoice", "InvoiceId", "QboInvoiceId", True, "SetInvoiceQboIdentity"),
     FlatEntitySpec("project", "Project", "CustomerProject", "Customer", "ProjectId", "QboCustomerId", False, "SetProjectQboIdentity"),
@@ -48,7 +58,11 @@ REFERENCE_ENTITY_SPECS: tuple[FlatEntitySpec, ...] = (
     FlatEntitySpec("payment_term", "PaymentTerm", "TermPaymentTerm", "Term", "PaymentTermId", "QboTermId", False, "SetPaymentTermQboIdentity"),
     FlatEntitySpec("address", "Address", "PhysicalAddressAddress", "PhysicalAddress", "AddressId", "QboPhysicalAddressId", False, "SetAddressQboIdentity"),
     FlatEntitySpec("attachment", "Attachment", "AttachableAttachment", "Attachable", "AttachmentId", "QboAttachableId", False, "SetAttachmentQboIdentity"),
-    FlatEntitySpec("bill_credit", "BillCredit", "VendorCreditBillCredit", "VendorCredit", "BillCreditId", "QboVendorCreditId", False, "SetBillCreditQboIdentity"),
+    FlatEntitySpec(
+        "bill_credit", "BillCredit", "VendorCreditBillCredit", "VendorCredit", "BillCreditId",
+        "QboVendorCreditId", False, "SetBillCreditQboIdentity",
+        access_udf="UserCanAccessBillCredit",
+    ),
 )
 
 
@@ -165,6 +179,13 @@ def _norm(value: Optional[str]) -> str:
     return "" if value is None else str(value)
 
 
+def _bit(flag: Optional[bool]) -> Optional[int]:
+    """SQL Server BIT params take 0/1, not Python bool."""
+    if flag is None:
+        return None
+    return 1 if flag else 0
+
+
 def classify_qbo_identity_drift(
     *,
     dbo_qbo_id: Optional[str],
@@ -201,3 +222,63 @@ def classify_qbo_identity_drift(
         identity_match = identity_match and _norm(dbo_sync_token) == _norm(staging_sync_token)
 
     return "match" if identity_match else "drift"
+
+
+def read_qbo_identity_rows_by_realm_id(
+    spec: FlatEntitySpec,
+    realm_id: str,
+    *,
+    actor_user_id: Optional[int] = None,
+    actor_is_system_admin: Optional[bool] = None,
+) -> list:
+    """Registry-driven bulk dbo-native (Id, QboId) identity read for one
+    header/reference entity + realm (U-305).
+
+    Generic counterpart to U-301a's Expense-specific `ReadExpenseQboIdsByRealmId`
+    sproc: rather than hand-copying a matching SELECT sproc per entity (U-305's
+    Decision-1), this executes one parametrized query built from the entity's
+    own `FlatEntitySpec` row — `label` for the dbo table, `access_udf` for its
+    RBAC gate — so it is reusable by any registry entity that opts in (bill,
+    bill_credit as of U-305), not a Bill/BillCredit-specific pair. `label`/
+    `access_udf` are internal registry constants, never external input, so the
+    f-string interpolation below carries no injection risk — the same pattern
+    scripts/check_qbo_identity_drift_{headers,reference}.py already use for
+    `dbo.[{spec.label}]`.
+
+    RBAC-scoped exactly like a hand-written sproc would be: the WHERE clause
+    calls the entity's own `dbo.UserCanAccess<X>` UDF per row — the same
+    mechanism `ReadExpenseQboIdsByRealmId` uses. Requires `spec.access_udf` —
+    raises `ValueError` rather than silently returning an unscoped result for
+    a spec that hasn't opted in (a bulk identity read must never ship without
+    its RBAC gate wired).
+    """
+    if not spec.access_udf:
+        raise ValueError(
+            f"{spec.key}: read_qbo_identity_rows_by_realm_id requires "
+            f"FlatEntitySpec.access_udf to be set (no RBAC gate configured)"
+        )
+    from shared.database import get_connection, map_database_error
+
+    try:
+        with get_connection() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                f"""
+                SELECT [Id], [QboId]
+                FROM dbo.[{spec.label}]
+                WHERE [RealmId] = ?
+                  AND [QboId] IS NOT NULL
+                  AND dbo.{spec.access_udf}(?, ?, [Id]) = 1
+                """,
+                [realm_id, actor_user_id, _bit(actor_is_system_admin)],
+            )
+            return [
+                SimpleNamespace(id=row.Id, qbo_id=row.QboId)
+                for row in cur.fetchall()
+            ]
+    except Exception as error:
+        logger.error(
+            "Error during registry-driven bulk QBO identity read (entity=%s realm_id=%s): %s",
+            spec.key, realm_id, error,
+        )
+        raise map_database_error(error)

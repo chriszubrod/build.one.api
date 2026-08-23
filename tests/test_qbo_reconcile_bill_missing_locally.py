@@ -35,22 +35,6 @@ class _FakeBillClient:
         return self._bills
 
 
-class _FakeQboBillRepo:
-    def __init__(self, *, by_qbo_id=None):
-        self._by_qbo_id = by_qbo_id
-
-    def read_by_qbo_id(self, qbo_id):
-        return self._by_qbo_id
-
-
-class _FakeBillBillRepository:
-    def __init__(self, mapping=None):
-        self._mapping = mapping
-
-    def read_by_qbo_bill_id(self, local_id):
-        return self._mapping
-
-
 class _FakeQboBillService:
     def __init__(self):
         self.calls = []
@@ -78,11 +62,14 @@ def _patch_bill_stack(
     monkeypatch,
     *,
     client,
-    qbo_repo,
-    mapping_repo,
+    identity_rows=None,
     bill_service=None,
     connector=None,
 ):
+    """U-305: identity_rows stands in for identity_drift.py's registry-driven
+    read_qbo_identity_rows_by_realm_id — the (Id, QboId) rows dbo.Bill already
+    carries for the realm, replacing the old qbo.Bill/qbo.BillBill
+    staging+mapping fakes (_FakeQboBillRepo / _FakeBillBillRepository)."""
     svc = bill_service or _FakeQboBillService()
     conn = connector or _FakeBillBillConnector()
     monkeypatch.setattr(
@@ -90,12 +77,8 @@ def _patch_bill_stack(
         lambda realm_id: client,
     )
     monkeypatch.setattr(
-        "integrations.intuit.qbo.bill.persistence.repo.QboBillRepository",
-        lambda: qbo_repo,
-    )
-    monkeypatch.setattr(
-        "integrations.intuit.qbo.bill.connector.bill.persistence.repo.BillBillRepository",
-        lambda: mapping_repo,
+        "integrations.intuit.qbo.base.identity_drift.read_qbo_identity_rows_by_realm_id",
+        lambda spec, realm_id, **kwargs: list(identity_rows or []),
     )
     monkeypatch.setattr(
         "integrations.intuit.qbo.bill.business.service.QboBillService",
@@ -116,8 +99,7 @@ def test_bill_missing_locally_autofix_on_routes_through_upsert_from_external(mon
     bill_svc, connector = _patch_bill_stack(
         monkeypatch,
         client=client,
-        qbo_repo=_FakeQboBillRepo(by_qbo_id=None),
-        mapping_repo=_FakeBillBillRepository(mapping=None),
+        identity_rows=[],
     )
 
     result = svc._reconcile_bill_qbo_missing_locally(realm_id="realm-1", run_id="run-1")
@@ -152,8 +134,7 @@ def test_bill_missing_locally_autofix_on_skips_unmapped_vendor_without_crash_or_
     _patch_bill_stack(
         monkeypatch,
         client=client,
-        qbo_repo=_FakeQboBillRepo(by_qbo_id=None),
-        mapping_repo=_FakeBillBillRepository(mapping=None),
+        identity_rows=[],
         connector=connector,
     )
 
@@ -172,8 +153,7 @@ def test_bill_missing_locally_autofix_off_counts_only_no_side_effects(monkeypatc
     bill_svc, connector = _patch_bill_stack(
         monkeypatch,
         client=client,
-        qbo_repo=_FakeQboBillRepo(by_qbo_id=None),
-        mapping_repo=_FakeBillBillRepository(mapping=None),
+        identity_rows=[],
     )
 
     result = svc._reconcile_bill_qbo_missing_locally(realm_id="realm-1", run_id="run-1")
@@ -192,3 +172,52 @@ def test_bill_missing_locally_autofix_off_counts_only_no_side_effects(monkeypatc
     ]
     assert len(summary) == 1
     assert "QBO_RECONCILE_BILL_AUTOFIX=false" in (summary[0].get("details") or "")
+
+
+def test_bill_missing_locally_skips_dbo_mapped(monkeypatch):
+    """U-305: a QBO bill already carrying a dbo.Bill.QboId is never counted
+    missing, without any qbo.Bill/qbo.BillBill round trip."""
+    monkeypatch.delenv("QBO_RECONCILE_BILL_AUTOFIX", raising=False)
+    svc, repo = _fake_issue_service()
+    qbo_bill = SimpleNamespace(id="B-MAPPED")
+    client = _FakeBillClient(bills=[qbo_bill])
+    bill_svc, connector = _patch_bill_stack(
+        monkeypatch,
+        client=client,
+        identity_rows=[SimpleNamespace(id=1, qbo_id="B-MAPPED")],
+    )
+
+    result = svc._reconcile_bill_qbo_missing_locally(realm_id="realm-1", run_id="run-1")
+
+    assert result["auto_fixed"] == 0
+    assert result["missing"] == 0
+    assert len(bill_svc.calls) == 0
+    missing_issues = [i for i in repo.issues if i["drift_type"] == DRIFT_QBO_MISSING_LOCALLY]
+    assert len(missing_issues) == 0
+
+
+def test_bill_missing_locally_identity_read_failure_is_isolated(monkeypatch):
+    """U-305: a failure fetching dbo.Bill's bulk identity set degrades this
+    ONE detector (flagged=1, errors=1) instead of propagating and taking down
+    the whole reconcile_bills run — same isolation guarantee the per-record
+    try/except gave before the repoint."""
+    svc, repo = _fake_issue_service()
+    qbo_bill = SimpleNamespace(id="B-3")
+    client = _FakeBillClient(bills=[qbo_bill])
+
+    def _raise_identity_read(spec, realm_id, **kwargs):
+        raise RuntimeError("db unavailable")
+
+    monkeypatch.setattr(
+        "integrations.intuit.qbo.bill.external.client.QboBillClient",
+        lambda realm_id: client,
+    )
+    monkeypatch.setattr(
+        "integrations.intuit.qbo.base.identity_drift.read_qbo_identity_rows_by_realm_id",
+        _raise_identity_read,
+    )
+
+    result = svc._reconcile_bill_qbo_missing_locally(realm_id="realm-1", run_id="run-1")
+
+    assert result == {"auto_fixed": 0, "missing": 0, "skipped_unmapped": 0, "flagged": 1, "errors": 1}
+    assert repo.issues == []

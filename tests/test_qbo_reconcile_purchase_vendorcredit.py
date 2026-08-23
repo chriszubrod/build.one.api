@@ -158,26 +158,6 @@ class _FakeVendorCreditClient:
         return SimpleNamespace(id=vendor_credit_id)
 
 
-class _FakeQboVendorCreditRepo:
-    def __init__(self, *, by_qbo_id=None, by_realm=None):
-        self._by_qbo_id = by_qbo_id
-        self._by_realm = by_realm or []
-
-    def read_by_qbo_id_and_realm_id(self, qbo_id, realm_id):
-        return self._by_qbo_id
-
-    def read_by_realm_id(self, realm_id):
-        return self._by_realm
-
-
-class _FakeVendorCreditMappingRepo:
-    def __init__(self, mapping=None):
-        self._mapping = mapping
-
-    def read_by_qbo_vendor_credit_id(self, local_id):
-        return self._mapping
-
-
 class _FakeVendorCreditService:
     def __init__(self):
         self.calls = []
@@ -196,19 +176,20 @@ class _FakeVendorCreditConnector:
         self.calls.append((qbo_vc, qbo_lines))
 
 
-def _patch_vendor_credit_stack(monkeypatch, *, client, qbo_repo, mapping_repo,
+def _patch_vendor_credit_stack(monkeypatch, *, client, identity_rows=None,
                                vc_service=None, connector=None):
+    """U-305: identity_rows stands in for identity_drift.py's registry-driven
+    read_qbo_identity_rows_by_realm_id — the (Id, QboId) rows dbo.BillCredit
+    already carries for the realm, replacing the old qbo.VendorCredit/
+    qbo.VendorCreditBillCredit staging+mapping fakes (_FakeQboVendorCreditRepo /
+    _FakeVendorCreditMappingRepo)."""
     monkeypatch.setattr(
         "integrations.intuit.qbo.vendorcredit.external.client.QboVendorCreditClient",
         lambda realm_id: client,
     )
     monkeypatch.setattr(
-        "integrations.intuit.qbo.vendorcredit.persistence.repo.QboVendorCreditRepository",
-        lambda: qbo_repo,
-    )
-    monkeypatch.setattr(
-        "integrations.intuit.qbo.vendorcredit.connector.bill_credit.persistence.repo.VendorCreditBillCreditMappingRepository",
-        lambda: mapping_repo,
+        "integrations.intuit.qbo.base.identity_drift.read_qbo_identity_rows_by_realm_id",
+        lambda spec, realm_id, **kwargs: list(identity_rows or []),
     )
     svc = vc_service or _FakeVendorCreditService()
     conn = connector or _FakeVendorCreditConnector()
@@ -354,8 +335,7 @@ def test_vendor_credit_missing_locally_autofix_on(monkeypatch):
     vc_svc, connector = _patch_vendor_credit_stack(
         monkeypatch,
         client=client,
-        qbo_repo=_FakeQboVendorCreditRepo(by_qbo_id=None),
-        mapping_repo=_FakeVendorCreditMappingRepo(mapping=None),
+        identity_rows=[],
     )
 
     result = svc.reconcile_vendor_credits(realm_id="realm-1")
@@ -375,8 +355,7 @@ def test_vendor_credit_missing_locally_autofix_off(monkeypatch):
     vc_svc, connector = _patch_vendor_credit_stack(
         monkeypatch,
         client=client,
-        qbo_repo=_FakeQboVendorCreditRepo(by_qbo_id=None),
-        mapping_repo=_FakeVendorCreditMappingRepo(mapping=None),
+        identity_rows=[],
     )
 
     result = svc.reconcile_vendor_credits(realm_id="realm-1")
@@ -393,16 +372,36 @@ def test_vendor_credit_missing_locally_autofix_off(monkeypatch):
     assert len(summary) == 1
 
 
+def test_vendor_credit_missing_locally_skips_dbo_mapped(monkeypatch):
+    """U-305: a QBO vendor credit already carrying a dbo.BillCredit.QboId is
+    never counted missing, without any qbo.VendorCredit/
+    qbo.VendorCreditBillCredit round trip."""
+    monkeypatch.delenv("QBO_RECONCILE_VENDORCREDIT_AUTOFIX", raising=False)
+    svc, repo = _fake_issue_service()
+    qbo_vc = SimpleNamespace(id="VC-MAPPED", line=[])
+    client = _FakeVendorCreditClient(vendor_credits=[qbo_vc])
+    vc_svc, connector = _patch_vendor_credit_stack(
+        monkeypatch,
+        client=client,
+        identity_rows=[SimpleNamespace(id=1, qbo_id="VC-MAPPED")],
+    )
+
+    result = svc.reconcile_vendor_credits(realm_id="realm-1")
+
+    assert result["auto_fixed"] == 0
+    assert len(vc_svc.calls) == 0
+    missing_issues = [i for i in repo.issues if i["drift_type"] == DRIFT_QBO_MISSING_LOCALLY]
+    assert len(missing_issues) == 0
+
+
 def test_vendor_credit_voided_flagged(monkeypatch):
     svc, repo = _fake_issue_service()
-    local = SimpleNamespace(id=20, qbo_id="VC-VOID")
-    mapping = SimpleNamespace(bill_credit_id=66)
+    local = SimpleNamespace(id=66, qbo_id="VC-VOID")
     client = _FakeVendorCreditClient(ids=[], get_raises=QboNotFoundError("not found"))
     _patch_vendor_credit_stack(
         monkeypatch,
         client=client,
-        qbo_repo=_FakeQboVendorCreditRepo(by_realm=[local]),
-        mapping_repo=_FakeVendorCreditMappingRepo(mapping=mapping),
+        identity_rows=[local],
     )
 
     result = svc.reconcile_vendor_credits(realm_id="realm-1")
@@ -418,8 +417,7 @@ def test_vendor_credit_voided_flagged(monkeypatch):
 
 def test_vendor_credit_detector_failure_isolation(monkeypatch):
     svc, repo = _fake_issue_service()
-    local = SimpleNamespace(id=20, qbo_id="VC-ISO")
-    mapping = SimpleNamespace(bill_credit_id=88)
+    local = SimpleNamespace(id=88, qbo_id="VC-ISO")
     client = _FakeVendorCreditClient(
         vendor_credits=[],
         ids=[],
@@ -429,8 +427,7 @@ def test_vendor_credit_detector_failure_isolation(monkeypatch):
     _patch_vendor_credit_stack(
         monkeypatch,
         client=client,
-        qbo_repo=_FakeQboVendorCreditRepo(by_realm=[local]),
-        mapping_repo=_FakeVendorCreditMappingRepo(mapping=mapping),
+        identity_rows=[local],
     )
 
     result = svc.reconcile_vendor_credits(realm_id="realm-1")
@@ -440,3 +437,29 @@ def test_vendor_credit_detector_failure_isolation(monkeypatch):
     assert result["flagged"] >= 1
     void_issues = [i for i in repo.issues if i["drift_type"] == DRIFT_QBO_VOIDED]
     assert len(void_issues) >= 1
+
+
+def test_vendor_credit_missing_locally_identity_read_failure_is_isolated(monkeypatch):
+    """U-305: a failure fetching dbo.BillCredit's bulk identity set degrades
+    this ONE detector (flagged=1, errors=1) instead of propagating and taking
+    down the whole reconcile_vendor_credits run."""
+    svc, repo = _fake_issue_service()
+    qbo_vc = SimpleNamespace(id="VC-3", line=[])
+    client = _FakeVendorCreditClient(vendor_credits=[qbo_vc])
+
+    def _raise_identity_read(spec, realm_id, **kwargs):
+        raise RuntimeError("db unavailable")
+
+    monkeypatch.setattr(
+        "integrations.intuit.qbo.vendorcredit.external.client.QboVendorCreditClient",
+        lambda realm_id: client,
+    )
+    monkeypatch.setattr(
+        "integrations.intuit.qbo.base.identity_drift.read_qbo_identity_rows_by_realm_id",
+        _raise_identity_read,
+    )
+
+    result = svc._reconcile_vendor_credit_qbo_missing_locally(realm_id="realm-1", run_id="run-1")
+
+    assert result == {"auto_fixed": 0, "missing": 0, "skipped_unmapped": 0, "flagged": 1, "errors": 1}
+    assert repo.issues == []

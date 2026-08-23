@@ -5,7 +5,7 @@ import uuid
 from typing import Optional
 
 # Local Imports
-from shared.authz.context import system_authz
+from shared.authz.context import current_is_system_admin, current_user_id, system_authz
 from integrations.intuit.qbo.base.drift_types import (
     DRIFT_DUPLICATE_MAPPING,
     DRIFT_FIELD_MISMATCH,
@@ -85,6 +85,10 @@ class ReconciliationService:
         # single scalar) for defensive correctness if a future caller ever
         # reconciles more than one realm on one instance.
         self._expense_identity_rows_cache: dict = {}
+        # U-305: same idiom for dbo.Bill's and dbo.BillCredit's (Id, QboId)
+        # identity rows (Bill/VendorCredit fan-out of U-301a's Expense pilot).
+        self._bill_identity_rows_cache: dict = {}
+        self._vendor_credit_identity_rows_cache: dict = {}
 
     # ------------------------------------------------------------------ #
     # Public reconcile entry points (one per entity type)
@@ -100,60 +104,70 @@ class ReconciliationService:
           # TODO (future): local_missing_qbo, stale_sync_token, duplicate_mapping,
           #                field_mismatch
 
+        U-305: wrapped in system_authz() — both detectors now resolve identity
+        via RBAC-gated dbo.Bill bulk reads (identity_drift.py's registry-driven
+        read_qbo_identity_rows_by_realm_id), unlike the unguarded qbo.* staging
+        reads they replaced. Both real callers (shared/api/admin.py's
+        drain-secret route, shared/scheduler.py's dormant fallback) already
+        establish system-admin context before calling this, so this is
+        belt-and-suspenders — same pattern reconcile_purchases adopted in
+        U-301a.
+
         Returns a summary dict suitable for structured logging.
         """
-        run_id = str(uuid.uuid4())
-        logger.info(
-            "qbo.reconcile.run.started",
-            extra={
-                "event_name": "qbo.reconcile.run.started",
-                "operation_name": "qbo.reconcile.bill",
-                "entity_type": "Bill",
-                "realm_id": realm_id,
-                "reconcile_run_id": run_id,
-            },
-        )
-
-        counts = dict.fromkeys(RECONCILE_COUNT_KEYS, 0)
-
-        # Detector 1: QBO-missing-locally
-        try:
-            d1 = self._reconcile_bill_qbo_missing_locally(
-                realm_id=realm_id, run_id=run_id
+        with system_authz():
+            run_id = str(uuid.uuid4())
+            logger.info(
+                "qbo.reconcile.run.started",
+                extra={
+                    "event_name": "qbo.reconcile.run.started",
+                    "operation_name": "qbo.reconcile.bill",
+                    "entity_type": "Bill",
+                    "realm_id": realm_id,
+                    "reconcile_run_id": run_id,
+                },
             )
-            for key in RECONCILE_COUNT_KEYS:
-                counts[key] += d1.get(key, 0)
-        except Exception:
-            logger.exception("qbo.reconcile.detector.failed",
-                             extra={"detector": "bill_qbo_missing_locally",
-                                    "reconcile_run_id": run_id})
-            counts["errors"] += 1
 
-        # Detector 2: QBO-voided detection (task #21)
-        try:
-            d2 = self._reconcile_bill_qbo_voided(
-                realm_id=realm_id, run_id=run_id
+            counts = dict.fromkeys(RECONCILE_COUNT_KEYS, 0)
+
+            # Detector 1: QBO-missing-locally
+            try:
+                d1 = self._reconcile_bill_qbo_missing_locally(
+                    realm_id=realm_id, run_id=run_id
+                )
+                for key in RECONCILE_COUNT_KEYS:
+                    counts[key] += d1.get(key, 0)
+            except Exception:
+                logger.exception("qbo.reconcile.detector.failed",
+                                 extra={"detector": "bill_qbo_missing_locally",
+                                        "reconcile_run_id": run_id})
+                counts["errors"] += 1
+
+            # Detector 2: QBO-voided detection (task #21)
+            try:
+                d2 = self._reconcile_bill_qbo_voided(
+                    realm_id=realm_id, run_id=run_id
+                )
+                for key in RECONCILE_COUNT_KEYS:
+                    counts[key] += d2.get(key, 0)
+            except Exception:
+                logger.exception("qbo.reconcile.detector.failed",
+                                 extra={"detector": "bill_qbo_voided",
+                                        "reconcile_run_id": run_id})
+                counts["errors"] += 1
+
+            logger.info(
+                "qbo.reconcile.run.completed",
+                extra={
+                    "event_name": "qbo.reconcile.run.completed",
+                    "operation_name": "qbo.reconcile.bill",
+                    "entity_type": "Bill",
+                    "realm_id": realm_id,
+                    "reconcile_run_id": run_id,
+                    **counts,
+                },
             )
-            for key in RECONCILE_COUNT_KEYS:
-                counts[key] += d2.get(key, 0)
-        except Exception:
-            logger.exception("qbo.reconcile.detector.failed",
-                             extra={"detector": "bill_qbo_voided",
-                                    "reconcile_run_id": run_id})
-            counts["errors"] += 1
-
-        logger.info(
-            "qbo.reconcile.run.completed",
-            extra={
-                "event_name": "qbo.reconcile.run.completed",
-                "operation_name": "qbo.reconcile.bill",
-                "entity_type": "Bill",
-                "realm_id": realm_id,
-                "reconcile_run_id": run_id,
-                **counts,
-            },
-        )
-        return {"run_id": run_id, **counts}
+            return {"run_id": run_id, **counts}
 
     def reconcile_purchases(self, realm_id: str) -> dict:
         """
@@ -231,57 +245,63 @@ class ReconciliationService:
         Detectors run in this order:
           1. qbo_missing_locally — auto-fix (pull)
           2. qbo_voided — flag local BillCredits whose QBO counterpart no longer exists
+
+        U-305: wrapped in system_authz() — same rationale as reconcile_bills
+        above (both detectors now resolve identity via RBAC-gated dbo.BillCredit
+        bulk reads, belt-and-suspenders against a future caller omitting
+        system-admin context).
         """
-        run_id = str(uuid.uuid4())
-        logger.info(
-            "qbo.reconcile.run.started",
-            extra={
-                "event_name": "qbo.reconcile.run.started",
-                "operation_name": "qbo.reconcile.vendor_credit",
-                "entity_type": "VendorCredit",
-                "realm_id": realm_id,
-                "reconcile_run_id": run_id,
-            },
-        )
-
-        counts = dict.fromkeys(RECONCILE_COUNT_KEYS, 0)
-
-        try:
-            d1 = self._reconcile_vendor_credit_qbo_missing_locally(
-                realm_id=realm_id, run_id=run_id
+        with system_authz():
+            run_id = str(uuid.uuid4())
+            logger.info(
+                "qbo.reconcile.run.started",
+                extra={
+                    "event_name": "qbo.reconcile.run.started",
+                    "operation_name": "qbo.reconcile.vendor_credit",
+                    "entity_type": "VendorCredit",
+                    "realm_id": realm_id,
+                    "reconcile_run_id": run_id,
+                },
             )
-            for key in RECONCILE_COUNT_KEYS:
-                counts[key] += d1.get(key, 0)
-        except Exception:
-            logger.exception("qbo.reconcile.detector.failed",
-                             extra={"detector": "vendor_credit_qbo_missing_locally",
-                                    "reconcile_run_id": run_id})
-            counts["errors"] += 1
 
-        try:
-            d2 = self._reconcile_vendor_credit_qbo_voided(
-                realm_id=realm_id, run_id=run_id
+            counts = dict.fromkeys(RECONCILE_COUNT_KEYS, 0)
+
+            try:
+                d1 = self._reconcile_vendor_credit_qbo_missing_locally(
+                    realm_id=realm_id, run_id=run_id
+                )
+                for key in RECONCILE_COUNT_KEYS:
+                    counts[key] += d1.get(key, 0)
+            except Exception:
+                logger.exception("qbo.reconcile.detector.failed",
+                                 extra={"detector": "vendor_credit_qbo_missing_locally",
+                                        "reconcile_run_id": run_id})
+                counts["errors"] += 1
+
+            try:
+                d2 = self._reconcile_vendor_credit_qbo_voided(
+                    realm_id=realm_id, run_id=run_id
+                )
+                for key in RECONCILE_COUNT_KEYS:
+                    counts[key] += d2.get(key, 0)
+            except Exception:
+                logger.exception("qbo.reconcile.detector.failed",
+                                 extra={"detector": "vendor_credit_qbo_voided",
+                                        "reconcile_run_id": run_id})
+                counts["errors"] += 1
+
+            logger.info(
+                "qbo.reconcile.run.completed",
+                extra={
+                    "event_name": "qbo.reconcile.run.completed",
+                    "operation_name": "qbo.reconcile.vendor_credit",
+                    "entity_type": "VendorCredit",
+                    "realm_id": realm_id,
+                    "reconcile_run_id": run_id,
+                    **counts,
+                },
             )
-            for key in RECONCILE_COUNT_KEYS:
-                counts[key] += d2.get(key, 0)
-        except Exception:
-            logger.exception("qbo.reconcile.detector.failed",
-                             extra={"detector": "vendor_credit_qbo_voided",
-                                    "reconcile_run_id": run_id})
-            counts["errors"] += 1
-
-        logger.info(
-            "qbo.reconcile.run.completed",
-            extra={
-                "event_name": "qbo.reconcile.run.completed",
-                "operation_name": "qbo.reconcile.vendor_credit",
-                "entity_type": "VendorCredit",
-                "realm_id": realm_id,
-                "reconcile_run_id": run_id,
-                **counts,
-            },
-        )
-        return {"run_id": run_id, **counts}
+            return {"run_id": run_id, **counts}
 
     def reconcile_invoice_draws(self, realm_id: str) -> dict:
         """
@@ -416,6 +436,13 @@ class ReconciliationService:
         pull it into the local cache via the existing sync_from_qbo flow
         and record an auto-fix issue. This catches records the delta-sync
         watermark may have skipped (e.g., during a deploy).
+
+        U-305: "already synced" is resolved via dbo.Bill's own native QboId
+        (U-238a), loaded once per run (shared with the voided detector via
+        _bill_identity_rows, mirroring _unresolved_void_keys's per-run
+        memoization) instead of a per-record qbo.Bill + qbo.BillBill
+        staging/mapping round trip — Bill/VendorCredit fan-out of U-301a's
+        Expense pilot.
         """
         # Lazy imports to avoid pulling the QBO stack at module load.
         from integrations.intuit.qbo.bill.external.client import QboBillClient
@@ -423,10 +450,6 @@ class ReconciliationService:
         from integrations.intuit.qbo.bill.connector.bill.business.service import (
             BillBillConnector,
         )
-        from integrations.intuit.qbo.bill.connector.bill.persistence.repo import (
-            BillBillRepository,
-        )
-        from integrations.intuit.qbo.bill.persistence.repo import QboBillRepository
 
         # Auto-backfill gate. When off (default) we only COUNT the unprojected
         # backlog and emit a single low-severity summary — so a large backlog can't
@@ -435,8 +458,6 @@ class ReconciliationService:
         # a controlled backfill.
         autofix_enabled = os.getenv("QBO_RECONCILE_BILL_AUTOFIX", "false").strip().lower() == "true"
 
-        mapping_repo = BillBillRepository()
-        qbo_bill_repo = QboBillRepository()
         qbo_bill_service = QboBillService()
         connector = BillBillConnector()
 
@@ -448,6 +469,25 @@ class ReconciliationService:
         with QboBillClient(realm_id=realm_id) as client:
             qbo_bills = client.query_all_bills()
 
+        # U-305: this bulk read replaces what used to be a per-record identity
+        # lookup inside the loop's own try/except below — a failure here can no
+        # longer be isolated to one bill (there is nothing left to check
+        # per-record against), so it is caught explicitly and attributed loudly
+        # instead of falling through to the generic per-detector catch-all in
+        # reconcile_bills, which would otherwise mask exactly what failed.
+        try:
+            dbo_qbo_ids = {row.qbo_id for row in self._bill_identity_rows(realm_id)}
+        except Exception:
+            logger.exception(
+                "qbo.reconcile.bill_qbo_missing_locally.identity_read_failed",
+                extra={
+                    "event_name": "qbo.reconcile.bill_qbo_missing_locally.identity_read_failed",
+                    "realm_id": realm_id,
+                    "reconcile_run_id": run_id,
+                },
+            )
+            return {"auto_fixed": 0, "missing": 0, "skipped_unmapped": 0, "flagged": 1, "errors": 1}
+
         logger.info(
             f"Reconciliation fetched {len(qbo_bills)} bills from QBO for realm {realm_id} "
             f"(autofix_enabled={autofix_enabled})"
@@ -455,13 +495,8 @@ class ReconciliationService:
 
         for qbo_bill in qbo_bills:
             try:
-                # Is the QboBill already in our local cache with a Bill mapping?
-                local_qbo_bill = qbo_bill_repo.read_by_qbo_id(qbo_bill.id)
-                if local_qbo_bill:
-                    mapping = mapping_repo.read_by_qbo_bill_id(local_qbo_bill.id)
-                    if mapping:
-                        # Fully synced — nothing to do.
-                        continue
+                if qbo_bill.id in dbo_qbo_ids:
+                    continue
 
                 # Missing locally (or staged but unmapped).
                 missing += 1
@@ -594,6 +629,63 @@ class ReconciliationService:
         self._expense_identity_rows_cache[realm_id] = rows
         return rows
 
+    def _identity_rows_for(self, *, cache: dict, specs, key: str, realm_id: str) -> list:
+        """Shared body for _bill_identity_rows / _vendor_credit_identity_rows
+        below (U-305) — both differ only in which registry (HEADER_ENTITY_SPECS
+        vs REFERENCE_ENTITY_SPECS), spec key, and per-run cache dict they pass.
+        Cached for the life of this ReconciliationService instance so each
+        family's two detectors (missing-locally, voided) share one fetch
+        instead of independently re-fetching the same realm-scoped set.
+        Raises on failure — callers decide how to handle it (the
+        missing-locally detectors return a degraded result; the voided
+        detectors have no local guard, same as the pre-U-305 equivalents).
+
+        Sourced from identity_drift.py's registry-driven bulk read
+        (Decision-1, U-305) rather than two hand-copied entity-specific
+        sprocs — one generic function backs both families.
+        """
+        if realm_id in cache:
+            return cache[realm_id]
+        from integrations.intuit.qbo.base.identity_drift import read_qbo_identity_rows_by_realm_id
+
+        spec = next(s for s in specs if s.key == key)
+        rows = read_qbo_identity_rows_by_realm_id(
+            spec,
+            realm_id,
+            actor_user_id=current_user_id.get(),
+            actor_is_system_admin=current_is_system_admin.get(),
+        )
+        cache[realm_id] = rows
+        return rows
+
+    def _bill_identity_rows(self, realm_id: str) -> list:
+        """dbo.Bill's (Id, QboId) identity rows for a realm (U-305) — see
+        _identity_rows_for. Bill/VendorCredit fan-out of U-301a's Expense
+        pilot; reconcile_bills's two detectors share this one fetch.
+        """
+        from integrations.intuit.qbo.base.identity_drift import HEADER_ENTITY_SPECS
+
+        return self._identity_rows_for(
+            cache=self._bill_identity_rows_cache,
+            specs=HEADER_ENTITY_SPECS,
+            key="bill",
+            realm_id=realm_id,
+        )
+
+    def _vendor_credit_identity_rows(self, realm_id: str) -> list:
+        """dbo.BillCredit's (Id, QboId) identity rows for a realm (U-305) —
+        see _identity_rows_for. Mirrors _bill_identity_rows above;
+        reconcile_vendor_credits's two detectors share this one fetch.
+        """
+        from integrations.intuit.qbo.base.identity_drift import REFERENCE_ENTITY_SPECS
+
+        return self._identity_rows_for(
+            cache=self._vendor_credit_identity_rows_cache,
+            specs=REFERENCE_ENTITY_SPECS,
+            key="bill_credit",
+            realm_id=realm_id,
+        )
+
     def _reconcile_bill_qbo_voided(self, realm_id: str, run_id: str) -> dict:
         """
         Detect QBO Bills that have been deleted/voided on the QBO side but
@@ -612,28 +704,30 @@ class ReconciliationService:
         We do NOT auto-delete the local record: that decision is semantic
         (should invoices referencing the bill be recomputed? did a user delete
         in error?) and deserves human judgment.
+
+        U-305: local_rows is now dbo.Bill's own (Id, QboId) identity rows
+        (U-238a) instead of qbo.Bill staging rows, and lookup_mapping is
+        trivial (the row itself) — a dbo.Bill row only appears here because
+        it already carries a QboId, so "is this mapped" is true by
+        construction, with no separate qbo.BillBill mapping-table read
+        needed. Shares the missing-locally detector's cached read
+        (_bill_identity_rows) rather than re-fetching the same realm-scoped
+        set independently.
         """
         from integrations.intuit.qbo.base.delete_reconcile import (
             detect_void_absent_candidates,
         )
         from integrations.intuit.qbo.base.ids import normalize_qbo_id
         from integrations.intuit.qbo.bill.external.client import QboBillClient
-        from integrations.intuit.qbo.bill.connector.bill.persistence.repo import (
-            BillBillRepository,
-        )
-        from integrations.intuit.qbo.bill.persistence.repo import QboBillRepository
 
-        mapping_repo = BillBillRepository()
-        qbo_bill_repo = QboBillRepository()
-
-        all_qbo_bills = qbo_bill_repo.read_by_realm_id(realm_id)
+        all_dbo_bills = self._bill_identity_rows(realm_id)
 
         # Nothing mapped locally means there is no diff to compute, so skip the
         # id fetch entirely — saving API calls is the whole point of this detector.
         # Deliberate delta: on an empty local set the old path would still fetch and
         # surface an id-fetch failure as errors=1. There is nothing to flag either
         # way, so a no-op run reports clean rather than burning ~20 calls to fail.
-        if not all_qbo_bills:
+        if not all_dbo_bills:
             return {"auto_fixed": 0, "flagged": 0, "flagged_deduped": 0, "errors": 0}
 
         flagged = 0
@@ -642,14 +736,14 @@ class ReconciliationService:
 
         with QboBillClient(realm_id=realm_id) as client:
             diff = detect_void_absent_candidates(
-                local_rows=all_qbo_bills,
+                local_rows=all_dbo_bills,
                 realm_id=realm_id,
                 reconcile_run_id=run_id,
                 log_prefix="qbo.reconcile.bill_qbo_voided",
                 fetch_live_ids=client.query_all_bill_ids,
                 confirm_get=client.get_bill,
                 extract_qbo_id=lambda row: normalize_qbo_id(row.qbo_id),
-                lookup_mapping=lambda row: mapping_repo.read_by_qbo_bill_id(row.id),
+                lookup_mapping=lambda row: row,
             )
 
             if diff.aborted and diff.abort_reason == "ceiling_exceeded":
@@ -675,9 +769,8 @@ class ReconciliationService:
             errors += diff.errors
 
             for candidate in diff.confirmed_voids:
-                local_qbo_bill = candidate.local_row
+                local = candidate.local_row
                 qbo_id = candidate.qbo_id
-                mapping = candidate.mapping
                 flagged += 1
                 key = (realm_id, "Bill", qbo_id)
                 # fetched lazily on the first confirmed 404 — a run with no voids pays no
@@ -705,8 +798,7 @@ class ReconciliationService:
                     realm_id=realm_id,
                     details=(
                         f"QBO Bill {qbo_id} is mapped locally "
-                        f"(local QboBill id={local_qbo_bill.id}, mapped to "
-                        f"Bill id={mapping.bill_id}) but returns 404 from QBO. "
+                        f"(Bill id={local.id}) but returns 404 from QBO. "
                         f"Likely voided or deleted on the QBO side. Review "
                         f"before taking action — downstream invoices may "
                         f"reference this bill."
@@ -974,21 +1066,21 @@ class ReconciliationService:
         Full-scan QBO for all VendorCredits. For any QBO VendorCredit not mapped locally,
         pull it into the local cache via the existing sync_from_qbo flow
         and record an auto-fix issue.
+
+        U-305: "already synced" is resolved via dbo.BillCredit's own native
+        QboId (U-238a), loaded once per run (shared with the voided detector
+        via _vendor_credit_identity_rows, mirroring _unresolved_void_keys's
+        per-run memoization) instead of a per-record qbo.VendorCredit +
+        qbo.VendorCreditBillCredit staging/mapping round trip.
         """
         from integrations.intuit.qbo.vendorcredit.external.client import QboVendorCreditClient
         from integrations.intuit.qbo.vendorcredit.business.service import QboVendorCreditService
         from integrations.intuit.qbo.vendorcredit.connector.bill_credit.business.service import (
             VendorCreditBillCreditConnector,
         )
-        from integrations.intuit.qbo.vendorcredit.connector.bill_credit.persistence.repo import (
-            VendorCreditBillCreditMappingRepository,
-        )
-        from integrations.intuit.qbo.vendorcredit.persistence.repo import QboVendorCreditRepository
 
         autofix_enabled = os.getenv("QBO_RECONCILE_VENDORCREDIT_AUTOFIX", "false").strip().lower() == "true"
 
-        mapping_repo = VendorCreditBillCreditMappingRepository()
-        qbo_vc_repo = QboVendorCreditRepository()
         qbo_vc_service = QboVendorCreditService()
         connector = VendorCreditBillCreditConnector()
 
@@ -1000,6 +1092,25 @@ class ReconciliationService:
         with QboVendorCreditClient(realm_id=realm_id) as client:
             qbo_vcs = client.query_all_vendor_credits()
 
+        # U-305: this bulk read replaces what used to be a per-record identity
+        # lookup inside the loop's own try/except below — a failure here can no
+        # longer be isolated to one vendor credit (there is nothing left to check
+        # per-record against), so it is caught explicitly and attributed loudly
+        # instead of falling through to the generic per-detector catch-all in
+        # reconcile_vendor_credits, which would otherwise mask exactly what failed.
+        try:
+            dbo_qbo_ids = {row.qbo_id for row in self._vendor_credit_identity_rows(realm_id)}
+        except Exception:
+            logger.exception(
+                "qbo.reconcile.vendor_credit_qbo_missing_locally.identity_read_failed",
+                extra={
+                    "event_name": "qbo.reconcile.vendor_credit_qbo_missing_locally.identity_read_failed",
+                    "realm_id": realm_id,
+                    "reconcile_run_id": run_id,
+                },
+            )
+            return {"auto_fixed": 0, "missing": 0, "skipped_unmapped": 0, "flagged": 1, "errors": 1}
+
         logger.info(
             f"Reconciliation fetched {len(qbo_vcs)} vendor credits from QBO for realm {realm_id} "
             f"(autofix_enabled={autofix_enabled})"
@@ -1007,11 +1118,8 @@ class ReconciliationService:
 
         for vc in qbo_vcs:
             try:
-                local = qbo_vc_repo.read_by_qbo_id_and_realm_id(vc.id, realm_id)
-                if local:
-                    mapping = mapping_repo.read_by_qbo_vendor_credit_id(local.id)
-                    if mapping:
-                        continue
+                if vc.id in dbo_qbo_ids:
+                    continue
 
                 missing += 1
                 if not autofix_enabled:
@@ -1096,28 +1204,30 @@ class ReconciliationService:
         — it flags nothing and records one summary issue, because a candidate
         set that large is far more likely to be a bad id fetch than a real mass
         deletion.
+
+        U-305: local_rows is now dbo.BillCredit's own (Id, QboId) identity
+        rows (U-238a) instead of qbo.VendorCredit staging rows, and
+        lookup_mapping is trivial (the row itself) — a dbo.BillCredit row
+        only appears here because it already carries a QboId, so "is this
+        mapped" is true by construction, with no separate
+        qbo.VendorCreditBillCredit mapping-table read needed. Shares the
+        missing-locally detector's cached read (_vendor_credit_identity_rows)
+        rather than re-fetching the same realm-scoped set independently.
         """
         from integrations.intuit.qbo.base.delete_reconcile import (
             detect_void_absent_candidates,
         )
         from integrations.intuit.qbo.base.ids import normalize_qbo_id
         from integrations.intuit.qbo.vendorcredit.external.client import QboVendorCreditClient
-        from integrations.intuit.qbo.vendorcredit.connector.bill_credit.persistence.repo import (
-            VendorCreditBillCreditMappingRepository,
-        )
-        from integrations.intuit.qbo.vendorcredit.persistence.repo import QboVendorCreditRepository
 
-        mapping_repo = VendorCreditBillCreditMappingRepository()
-        qbo_vc_repo = QboVendorCreditRepository()
-
-        all_qbo_vcs = qbo_vc_repo.read_by_realm_id(realm_id)
+        all_dbo_bill_credits = self._vendor_credit_identity_rows(realm_id)
 
         # Nothing mapped locally means there is no diff to compute, so skip the
         # id fetch entirely — saving API calls is the whole point of this detector.
         # Deliberate delta: on an empty local set the old path would still fetch and
         # surface an id-fetch failure as errors=1. There is nothing to flag either
         # way, so a no-op run reports clean rather than burning ~20 calls to fail.
-        if not all_qbo_vcs:
+        if not all_dbo_bill_credits:
             return {"auto_fixed": 0, "flagged": 0, "flagged_deduped": 0, "errors": 0}
 
         flagged = 0
@@ -1126,14 +1236,14 @@ class ReconciliationService:
 
         with QboVendorCreditClient(realm_id=realm_id) as client:
             diff = detect_void_absent_candidates(
-                local_rows=all_qbo_vcs,
+                local_rows=all_dbo_bill_credits,
                 realm_id=realm_id,
                 reconcile_run_id=run_id,
                 log_prefix="qbo.reconcile.vendor_credit_qbo_voided",
                 fetch_live_ids=client.query_all_vendor_credit_ids,
                 confirm_get=client.get_vendor_credit,
                 extract_qbo_id=lambda row: normalize_qbo_id(row.qbo_id),
-                lookup_mapping=lambda row: mapping_repo.read_by_qbo_vendor_credit_id(row.id),
+                lookup_mapping=lambda row: row,
             )
 
             if diff.aborted and diff.abort_reason == "ceiling_exceeded":
@@ -1161,7 +1271,6 @@ class ReconciliationService:
             for candidate in diff.confirmed_voids:
                 local = candidate.local_row
                 qbo_id = candidate.qbo_id
-                mapping = candidate.mapping
                 flagged += 1
                 key = (realm_id, "BillCredit", qbo_id)
                 # fetched lazily on the first confirmed 404 — a run with no voids pays no
@@ -1189,8 +1298,7 @@ class ReconciliationService:
                     realm_id=realm_id,
                     details=(
                         f"QBO VendorCredit {qbo_id} is mapped locally "
-                        f"(local QboVendorCredit id={local.id}, mapped to "
-                        f"BillCredit id={mapping.bill_credit_id}) but returns 404 from QBO. "
+                        f"(BillCredit id={local.id}) but returns 404 from QBO. "
                         f"Likely voided or deleted on the QBO side. Review "
                         f"before taking action — downstream invoices may "
                         f"reference this bill credit."

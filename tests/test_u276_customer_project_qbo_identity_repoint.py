@@ -12,11 +12,16 @@ Covers:
   4. The Bill / Purchase / Invoice `_get_qbo_customer_ref` push helpers now read
      dbo.Project.Name/.QboId directly instead of qbo.Customer.DisplayName.
 """
+import sys
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, Mock, patch
 
 import pytest
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from conftest import stub_identity_check_trusts
+from integrations.intuit.qbo.base.identity_consistency import IdentityCheckResult
 from integrations.intuit.qbo.customer.connector.customer.business.service import (
     CustomerCustomerConnector,
 )
@@ -681,7 +686,9 @@ def test_verify_project_qbo_identity_trusts_when_no_mapping_yet():
 
     project = SimpleNamespace(id=42, qbo_id="QBO-P-42")
     customer_project_repo = Mock()
-    customer_project_repo.read_by_project_id.return_value = None  # not migrated yet — nothing to disagree with
+    # not migrated yet, and the mapping table doesn't bind this QboId to any
+    # OTHER Project either (U-306's reverse check) — nothing to disagree with.
+    stub_identity_check_trusts(customer_project_repo)
     qbo_customer_repo = Mock()
 
     result = verify_project_qbo_identity(
@@ -689,7 +696,7 @@ def test_verify_project_qbo_identity_trusts_when_no_mapping_yet():
     )
 
     assert result == "QBO-P-42"
-    qbo_customer_repo.read_by_id.assert_not_called()
+    assert qbo_customer_repo.method_calls == []  # U-306: folded into the one JOIN'd read, never touched
 
 
 def test_verify_project_qbo_identity_trusts_when_mapping_agrees():
@@ -697,9 +704,10 @@ def test_verify_project_qbo_identity_trusts_when_mapping_agrees():
 
     project = SimpleNamespace(id=42, qbo_id="QBO-P-42")
     customer_project_repo = Mock()
-    customer_project_repo.read_by_project_id.return_value = SimpleNamespace(qbo_customer_id=10)
+    customer_project_repo.read_identity_check.return_value = IdentityCheckResult(
+        mapping_id=1, forward_external_qbo_id="QBO-P-42", reverse_mapped_local_id=42
+    )
     qbo_customer_repo = Mock()
-    qbo_customer_repo.read_by_id.return_value = SimpleNamespace(qbo_id="QBO-P-42")
 
     result = verify_project_qbo_identity(
         project, customer_project_repo=customer_project_repo, qbo_customer_repo=qbo_customer_repo
@@ -716,9 +724,30 @@ def test_verify_project_qbo_identity_refuses_when_mapping_disagrees():
 
     project = SimpleNamespace(id=42, qbo_id="QBO-P-42")
     customer_project_repo = Mock()
-    customer_project_repo.read_by_project_id.return_value = SimpleNamespace(qbo_customer_id=10)
+    customer_project_repo.read_identity_check.return_value = IdentityCheckResult(
+        mapping_id=1, forward_external_qbo_id="QBO-P-OTHER", reverse_mapped_local_id=42
+    )
     qbo_customer_repo = Mock()
-    qbo_customer_repo.read_by_id.return_value = SimpleNamespace(qbo_id="QBO-P-OTHER")
+
+    result = verify_project_qbo_identity(
+        project, customer_project_repo=customer_project_repo, qbo_customer_repo=qbo_customer_repo
+    )
+
+    assert result is None
+
+
+def test_verify_project_qbo_identity_refuses_when_unmapped_but_reverse_bound_elsewhere():
+    """U-297's H1, closed by U-306: no CustomerProject mapping of its own, but
+    the mapping table already binds this exact QboId to a DIFFERENT Project —
+    must refuse, not blindly trust (the pre-U-306 behavior)."""
+    from integrations.intuit.qbo.base.identity_consistency import verify_project_qbo_identity
+
+    project = SimpleNamespace(id=42, qbo_id="QBO-P-42")
+    customer_project_repo = Mock()
+    customer_project_repo.read_identity_check.return_value = IdentityCheckResult(
+        mapping_id=None, forward_external_qbo_id=None, reverse_mapped_local_id=999
+    )
+    qbo_customer_repo = Mock()
 
     result = verify_project_qbo_identity(
         project, customer_project_repo=customer_project_repo, qbo_customer_repo=qbo_customer_repo
@@ -750,7 +779,7 @@ def test_bill_get_qbo_customer_ref_reads_project_directly():
     connector.project_service.read_by_id.return_value = SimpleNamespace(
         id=42, name="TB3 - 917 Tyne Blvd", qbo_id="QBO-P-42"
     )
-    connector.customer_project_repo.read_by_project_id.return_value = None  # nothing to disagree with
+    stub_identity_check_trusts(connector.customer_project_repo)  # nothing to disagree with
 
     ref = connector._get_qbo_customer_ref(42)
 
@@ -788,8 +817,9 @@ def test_bill_get_qbo_customer_ref_none_when_mapping_disagrees():
         term_payment_term_repo=Mock(), qbo_term_repo=Mock(),
     )
     connector.project_service.read_by_id.return_value = SimpleNamespace(id=42, name="Proj", qbo_id="QBO-P-42")
-    connector.customer_project_repo.read_by_project_id.return_value = SimpleNamespace(qbo_customer_id=10)
-    connector.qbo_customer_repo.read_by_id.return_value = SimpleNamespace(qbo_id="QBO-P-OTHER")
+    connector.customer_project_repo.read_identity_check.return_value = IdentityCheckResult(
+        mapping_id=1, forward_external_qbo_id="QBO-P-OTHER", reverse_mapped_local_id=42
+    )
 
     assert connector._get_qbo_customer_ref(42) is None
 
@@ -810,7 +840,7 @@ def test_purchase_get_qbo_customer_ref_reads_project_directly():
         id=7, name="OL-14 - Overton Lea", qbo_id="QBO-P-7"
     )
     fake_customer_project_repo = Mock()
-    fake_customer_project_repo.read_by_project_id.return_value = None
+    stub_identity_check_trusts(fake_customer_project_repo)
 
     with patch(
         "entities.project.business.service.ProjectService", return_value=fake_project_service
@@ -837,7 +867,7 @@ def test_invoice_get_qbo_customer_ref_reads_project_directly():
     connector.project_service.read_by_id.return_value = SimpleNamespace(
         id=9, name="HA - 206 Haverford Ave", qbo_id="QBO-P-9"
     )
-    connector.customer_project_repo.read_by_project_id.return_value = None
+    stub_identity_check_trusts(connector.customer_project_repo)
 
     ref = connector._get_qbo_customer_ref(9)
 

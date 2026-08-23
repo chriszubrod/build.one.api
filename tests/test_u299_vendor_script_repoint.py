@@ -35,6 +35,7 @@ apply_backfill() itself (self-defending, as it was pre-diff) so main()'s fallbac
 uniformly soft instead of a `if args.apply: raise` special case.
 """
 import sys
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import ANY, MagicMock, Mock, patch
 
@@ -42,6 +43,10 @@ import pytest
 
 import scripts.backfill_qbo_bills as backfill_mod
 import scripts.generate_payment_remittance as remit_mod
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from conftest import stub_identity_check_trusts
+from integrations.intuit.qbo.base.identity_consistency import IdentityCheckResult
 
 RESOLVER_MODULES = [remit_mod, backfill_mod]
 RESOLVER_IDS = ["generate_payment_remittance", "backfill_qbo_bills"]
@@ -61,7 +66,7 @@ class TestResolveLocalVendorId:
         vendor_service, vendor_vendor_repo, qbo_vendor_repo = _mocks()
         direct_vendor = SimpleNamespace(id=10, qbo_id="QV-1")
         vendor_service.read_by_qbo_identity.return_value = direct_vendor
-        vendor_vendor_repo.read_by_vendor_id.return_value = None  # no mapping yet -> trusted
+        stub_identity_check_trusts(vendor_vendor_repo)  # no mapping yet -> trusted
 
         result = mod.resolve_local_vendor_id(
             "QV-1", "realm-1",
@@ -77,8 +82,9 @@ class TestResolveLocalVendorId:
         vendor_service, vendor_vendor_repo, qbo_vendor_repo = _mocks()
         direct_vendor = SimpleNamespace(id=10, qbo_id="QV-1")
         vendor_service.read_by_qbo_identity.return_value = direct_vendor
-        vendor_vendor_repo.read_by_vendor_id.return_value = SimpleNamespace(qbo_vendor_id=50)
-        qbo_vendor_repo.read_by_id.return_value = SimpleNamespace(qbo_id="QV-1")  # agrees
+        vendor_vendor_repo.read_identity_check.return_value = IdentityCheckResult(
+            mapping_id=50, forward_external_qbo_id="QV-1", reverse_mapped_local_id=10
+        )  # agrees
 
         result = mod.resolve_local_vendor_id(
             "QV-1", "realm-1",
@@ -94,9 +100,10 @@ class TestResolveLocalVendorId:
         direct_vendor = SimpleNamespace(id=10, qbo_id="QV-1")
         vendor_service.read_by_qbo_identity.return_value = direct_vendor
         vendor_service.read_by_id.return_value = SimpleNamespace(id=77)
-        vendor_vendor_repo.read_by_vendor_id.return_value = SimpleNamespace(qbo_vendor_id=50)
+        vendor_vendor_repo.read_identity_check.return_value = IdentityCheckResult(
+            mapping_id=50, forward_external_qbo_id="QV-OTHER", reverse_mapped_local_id=10
+        )  # disagrees
         vendor_vendor_repo.read_by_qbo_vendor_id.return_value = SimpleNamespace(vendor_id=77)
-        qbo_vendor_repo.read_by_id.return_value = SimpleNamespace(qbo_id="QV-OTHER")  # disagrees
         qbo_vendor_repo.read_by_qbo_id.return_value = SimpleNamespace(id=99)
 
         result = mod.resolve_local_vendor_id(

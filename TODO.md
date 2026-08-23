@@ -2,6 +2,20 @@
 
 Carry-over items from sessions. Check off as done; prune anything stale.
 
+## U-305 follow-ups (Bill/VendorCredit reconciliation dbo-native repoint) — deferred, not scope-creeped in (2026-08-23)
+
+- [ ] **DBA cleanup: dangling `qbo.BillBill` mapping row (`Id=16790`) points to `BillId=16808`, which does not
+  exist in `dbo.Bill`.** Discovered via U-305's live equivalence check (`scripts/verify_bill_vendorcredit_qbo_reconcile_repoint.py`)
+  comparing the old qbo.Bill+qbo.BillBill-driven "already synced" population against the new dbo.Bill.QboId one —
+  QBO Bill id `65042` (`qbo.Bill.Id=17204`) is the only remaining divergence, allowlisted in that script as a
+  documented pre-existing exception (not a regression: the OLD reconciliation logic already silently treated this
+  dangling mapping as "fully synced" too — a mapping-repo lookup returning a row is truthy regardless of whether
+  the mapped id resolves to anything, so it was never actually checked pre-repoint either). Not fixable by
+  `scripts/backfill_qbo_identity_headers.py` (no dbo.Bill row to stamp — the row itself is gone/never existed).
+  Needs a DBA decision: was Bill 16808 really deleted (if so, delete the orphaned `qbo.BillBill` row so the QBO
+  Bill can re-sync cleanly), or is this a data-entry mistake in the mapping table needing a different repoint
+  target. Zero urgency (1 record, has been silently unchecked by any reconciliation path indefinitely).
+
 ## U-301b-deferred (Expense/Invoice outbox refresh repoint) — booked, not started (2026-08-22)
 
 - [ ] **Repoint `_refresh_expense`/`_refresh_invoice` in `integrations/intuit/qbo/outbox/business/worker.py`
@@ -73,8 +87,8 @@ blast radius than this unit's narrow scope:
 
 ## U-298 follow-ups (PurchaseExpense CREATE-path dbo-native uniqueness recheck) — deferred, not scope-creeped in (2026-08-22)
 
-- [ ] **Invoice's create-path rollback tail has the identical unguarded hazard U-298 just fixed for Expense.** `integrations/intuit/qbo/invoice/connector/invoice/business/service.py`'s "Create new Invoice" tail calls its own `create_mapping()` and, on any exception, rolls back by deleting the just-created Invoice with no re-check — if a concurrent racer's identity-fastpath recheck already validly bound that exact (invoice_id, qbo_invoice_id) pair in the window between `create_mapping`'s identity stamp and its mapping insert (the same race U-298's adversarial hunt confirmed, adversarially-verified P1), the rollback would silently delete a legitimately-completed, already-synced financial record. Bill's equivalent tail differs (warns, never rolls back) so it doesn't carry this specific hazard. Fix mirrors U-298's: call `identity_fastpath.resolve_mapping_state` before rolling back — CONSISTENT returns the racer's result instead of destroying it, CONFLICT records the reconciliation issue, MISSING falls through to the existing rollback.
-- [ ] **Consider generalizing the "recheck via resolve_mapping_state before a create-path rollback" pattern into `base/identity_fastpath.py`** as a small reusable helper (Purchase/Expense and, per the item above, eventually Invoice would both call it) rather than each connector's own tail hand-wiring the same three-way branch — lower priority than the Invoice fix itself; only worth doing once a second real caller exists.
+- [x] **Invoice's create-path rollback tail has the identical unguarded hazard U-298 just fixed for Expense.** Fixed by U-302 (`InvoiceInvoiceConnector.sync_from_qbo_invoice`'s create-path recheck-before-rollback, mirroring U-298 exactly).
+- [x] **Consider generalizing the "recheck via resolve_mapping_state before a create-path rollback" pattern into `base/identity_fastpath.py`** as a small reusable helper. Done by U-304 (`guard_create_mapping_rollback` + `create_race_lock`) — also closed the residual point-in-time gap between U-298/U-302's hand-copied recheck and the actual delete call, by serializing the recheck-then-delete against `run_identity_fastpath`'s own self-heal insert via a shared sp_getapplock (opt-in `race_lock_mapping_label`, Purchase/Invoice only — audited: no other `run_identity_fastpath` caller carries this destructive-rollback shape).
 
 ## U-281 follow-ups (account Phase-4 prerequisite, AP-account dbo-native cache) — deferred, not scope-creeped in (2026-08-20/21)
 
@@ -1737,6 +1751,20 @@ Quality-pass findings the Phase-A reviewers surfaced but that were deliberately 
 
 - [ ] **P3 (reuse, found by Pass 2 `/simplify`): `test_u226_qbo_mapping_cleanup_on_delete.py` and `test_u243_mapping_cleanup_lock.py` still hand-roll their own local `_granted_lock`/`_denied_lock` `@contextmanager` copies** instead of importing the new shared `mock_qbo_app_lock_granted` in `tests/conftest.py` (added by U-295 so `test_u241` wouldn't become a third variant). Not retrofitted in U-295 itself — out of that diff's scope (touches 2 files unrelated to the actual leak being fixed) — but worth folding in as a small follow-up so there's one canonical "lock granted" stand-in instead of three. `test_u243` additionally needs a `mock_qbo_app_lock_denied` counterpart for its lock-failure-branch test; add that to conftest.py alongside the granted one when this is done.
 
+## U-306 follow-up (verify-engine H1 + sproc-JOIN efficiency, 2026-08-23) — deferred, non-blocking
+
+- [ ] **P2 (stale mock shape, found live during U-306, deliberately NOT fixed — concurrent-session
+  file ownership).** `tests/test_u283b_purchase_qbo_identity_repoint.py`'s `test_get_project_public_id_prefers_direct_dbo_lookup`
+  and `test_get_project_public_id_caches_per_realm_and_customer_ref` still mock
+  `customer_project_repo.read_by_project_id` / `qbo_customer_repo.read_by_id` — the 2-read shape
+  U-306 replaced with `customer_project_repo.read_identity_check`. Confirmed failing/false-green in
+  isolation (Codex round-1 review independently caught the same two tests). Not fixed here because
+  this file was under active concurrent edit (a large in-flight diff touching
+  `base/identity_fastpath.py` + `integrations/intuit/qbo/reconciliation/business/service.py`) for
+  the whole duration of this unit — editing it risked colliding with that session's WIP. Fix the same
+  way the other 6 test files in U-306's diff were fixed: `stub_identity_check_trusts(customer_project_repo)`
+  (`tests/conftest.py`) for the "no mapping yet" case.
+
 ## U-297 follow-ups (customer-parent reference-resolver repoint, 2026-08-22) — deferred, non-blocking
 
 `CustomerProjectConnector`'s parent-Customer lookup was repointed off the `qbo.Customer` →
@@ -1745,7 +1773,12 @@ dbo-first → verify → legacy-fallback shape. Live-prod equivalence proven cle
 sub-customers resolve identically, every direct hit through the strict `TRUST_AGREES` verify arm).
 These were surfaced during the unit and deliberately not built:
 
-- [ ] **P2 (H1 — the verify engine is LOCAL-SIDE ONLY; shared by all three wrappers).**
+- [x] **P2 (H1 — the verify engine is LOCAL-SIDE ONLY; shared by all three wrappers). CLOSED by U-306
+  (2026-08-23).** Neither candidate fix below was taken as-is — U-306's JOIN'd-read redesign (the
+  efficiency item at the bottom of this list) made a real reverse-direction check free instead of
+  "strictly more than the legacy path," so the engine now checks it directly rather than choosing
+  between REFUSE-on-unmapped (a) or a `trust_unmapped` posture flag (b). See
+  `base/identity_consistency.py::_verify_dbo_qbo_identity`'s docstring + `IdentityCheckResult`.
   `base/identity_consistency.py::_verify_dbo_qbo_identity` asks only "does this dbo row's *own*
   mapping row agree?" and **TRUSTS when the row has no mapping at all** (`:57-58`). It is therefore
   structurally blind to the opposite direction — the mapping table still binding this external id to
@@ -1796,14 +1829,22 @@ These were surfaced during the unit and deliberately not built:
   `sys.path.insert(0, tests/)` preamble its `from conftest import ...` needs, so it **errors at
   collection when run standalone** and only passes in a full-suite run — pre-existing, reproduced at
   HEAD; (c) `_make_qbo_customer` in this unit's test file is a third copy of the same QboCustomer
-  factory (`tests/test_u276_...:28-45`) — lift to `conftest.py` with the consolidation entry; (d) an
-  efficiency win worth its own unit — `_verify_dbo_qbo_identity` fetches a whole `qbo.Customer` row
-  purely to compare one string, because the mapping table carries only the staging PK. JOINing the
-  external `QboId` into `ReadCustomerCustomerByCustomerId` / `ReadCustomerProjectByProjectId` /
-  `ReadVendorVendorByVendorId` (+ the three dataclasses) collapses the verify from 2 reads to 1 and
-  this resolver's prod steady state from 213 reads to 142 (a 48% cut vs the legacy 272, up from the
-  22% U-297 achieves). Lands on the hotter Project/Vendor resolvers too — `_get_project_public_id`
-  runs per bill line. Needs a sproc + model change across three families, so: own unit.
+  factory (`tests/test_u276_...:28-45`) — lift to `conftest.py` with the consolidation entry; (d)
+  **CLOSED by U-306 (2026-08-23)** — the efficiency win described here (2 reads → 1 JOIN'd read,
+  213 → 142 prod steady-state reads for this resolver) shipped via
+  `base/sql/identity_consistency_reads.sql` + `read_identity_check` on all 4 mapping repos, and also
+  closed the H1 item above for free once the read was redesigned.
+- [ ] **P3 (U-306 follow-up — drop the now-dead `qbo_{customer,vendor,bill}_repo` verify-wrapper
+  params).** `verify_project_qbo_identity` / `verify_vendor_qbo_identity` / `verify_bill_qbo_identity`
+  / `verify_customer_qbo_identity` (`base/identity_consistency.py:158,189,220,267`) each still accept
+  a `qbo_*_repo` kwarg that U-306's JOIN'd-read redesign made entirely unused — kept only so the ~6
+  existing production call sites' kwargs didn't need to change (zero blast radius was this unit's
+  explicit Gate-1 constraint). Once the staging-removal program (U-294 Phase-6 map) has retired
+  enough of those call sites that updating the rest is cheap, drop the dead params from all 4
+  wrapper signatures and their callers' kwargs (and the now-redundant `qbo_vendor_repo`/
+  `qbo_bill_repo`/`qbo_customer_repo` construction at each call site, if nothing else there needs
+  it). `tests/test_u306_identity_verify_engine.py::test_verify_never_touches_the_now_unused_qbo_repo`
+  is the regression test proving they're genuinely dead today.
 - [ ] **P3 (eager resolution, pre-existing shape).** `customer_id` is resolved at the top of
   `sync_from_qbo_customer` but four reachable paths never read it — the name-match bind (which
   creates the mapping, syncs addresses and returns WITHOUT writing CustomerId), and the three raise

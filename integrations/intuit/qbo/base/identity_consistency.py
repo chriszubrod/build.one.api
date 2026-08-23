@@ -33,11 +33,44 @@ a WRITE to protect (the push helpers, the header identity fast path); a read-onl
 resolver has nothing to corrupt by taking the slower, already-trusted path. So do
 not "restore symmetry" in that direction either — the two disciplines differ
 because what is at stake differs.
+
+NB (U-306): the verify engine used to run 2 reads per call (mapping-by-local-id,
+then a second round trip for the mapped external row) and, when a family had no
+mapping row at all, TRUSTED the dbo-stamped QboId unconditionally — LOCAL-SIDE
+ONLY, blind to the mapping table already binding that same external id to a
+DIFFERENT local row (booked as U-297's H1). Both are now closed by one change:
+each family's `read_identity_check` callable is a single JOIN'd sproc
+(`integrations/intuit/qbo/base/sql/identity_consistency_reads.sql`) that
+returns the forward comparison AND the reverse-direction lookup in one round
+trip — see `_verify_dbo_qbo_identity`'s docstring for the resulting logic. The
+JOIN'd read makes the reverse check free (it already touches the staging
+table), which is what makes closing H1 no longer "self-defeating" the way a
+second round trip would have been.
 """
 import logging
-from typing import Optional
+from dataclasses import dataclass
+from typing import Callable, Optional
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class IdentityCheckResult:
+    """
+    Result of a family's single JOIN'd identity-check read (U-306).
+
+    `mapping_id` is None when this entity has no mapping row of its own yet —
+    the ordinary not-fully-migrated-yet state. `forward_external_qbo_id` is
+    the QboId the mapping row's own FK points at; only meaningful when
+    `mapping_id` is set. `reverse_mapped_local_id` is the local id the mapping
+    table binds the entity's `qbo_id` to, independent of whether the entity
+    itself has a mapping row — it is what lets a forward-absent read still be
+    verified instead of blindly trusted.
+    """
+
+    mapping_id: Optional[int]
+    forward_external_qbo_id: Optional[str]
+    reverse_mapped_local_id: Optional[int]
 
 
 def _verify_dbo_qbo_identity(
@@ -45,47 +78,69 @@ def _verify_dbo_qbo_identity(
     *,
     entity_label: str,
     mapping_label: str,
-    read_mapping_by_local_id,
-    read_external_by_mapped_id,
-    mapping_external_id_attr: str,
+    read_identity_check: Callable[..., IdentityCheckResult],
 ) -> Optional[str]:
     """
     Shared engine behind `verify_project_qbo_identity` / `verify_vendor_qbo_identity`
     (and any future family joining this pattern — see the module docstring
     for the discipline this enforces). Pure orchestration: `entity_label` and
-    `mapping_label` only shape the log line; `read_mapping_by_local_id` and
-    `read_external_by_mapped_id` are the family's own bound repo methods
-    (e.g. `customer_project_repo.read_by_project_id`), and
-    `mapping_external_id_attr` names the mapping row's FK to the external
-    staging table (e.g. `"qbo_customer_id"`). Mirrors
+    `mapping_label` only shape the log lines; `read_identity_check` is the
+    family's own bound repo method (e.g.
+    `customer_project_repo.read_identity_check`), called as
+    `read_identity_check(local_id=entity.id, qbo_id=entity.qbo_id)` and
+    returning one `IdentityCheckResult` from a single JOIN'd sproc — see
+    `base/sql/identity_consistency_reads.sql`. Mirrors
     `base/identity_fastpath.py`'s own callback-based generalization of the
     sibling pull-side pattern — extend this one deliberately when a new
     family needs it rather than hand-copying another wrapper's body.
 
-    KNOWN RESIDUAL, true of EVERY binding (booked in TODO.md as U-297's H1,
-    which points here): this check is LOCAL-SIDE ONLY. It asks "does this dbo
-    row's own mapping agree?" and TRUSTS when the row has no mapping at all
-    (see the `if not mapping` branch below). It therefore cannot see the
-    opposite direction — the mapping table still binding this external id to a
-    DIFFERENT local row, which is what `identity_fastpath.resolve_mapping_state`
-    checks. Closing that here is self-defeating for a reference resolver:
-    reading the qbo-side requires the staging hop the resolver exists to skip,
-    so a both-directions verify would cost strictly more than the legacy path it
-    replaces. Each wrapper documents its own measured blind population.
+    Two independent checks, both answered by the one read, EITHER of which
+    refuses:
+
+    1. **Forward — this entity's own mapping row, if it has one** (`mapping_id`
+       set): refuse if its external QboId disagrees with the dbo-stamped one.
+       A disagreement means the mapping table still binds a DIFFERENT
+       external id to this exact row.
+    2. **Reverse — does the mapping table bind this entity's QboId to a
+       DIFFERENT local row** (`reverse_mapped_local_id`), regardless of
+       whether this entity has a forward mapping of its own — U-297's H1.
+       That reverse binding is exactly what `identity_fastpath
+       .resolve_mapping_state` checks on the pull side; before U-306 this
+       engine could not see it without a second round trip, which made
+       closing it here self-defeating for a reference resolver. The JOIN'd
+       read makes the check free. Checking it unconditionally (not only when
+       `mapping_id` is absent) matters when the qbo.* staging table itself
+       holds more than one row for the same QboId (only possible when
+       `RealmId` differs/is NULL, per the filtered UNIQUE(QboId, RealmId)
+       index) — a forward mapping can agree with ONE of those staging rows
+       while a DIFFERENT one is mapped elsewhere; codex round-2 review caught
+       that the original nested-branch version skipped this check whenever a
+       forward mapping already agreed. The reverse arm's own SQL already
+       returns this entity's own local id (not a conflict) in the ordinary
+       agreeing-and-unique case, so this check is a no-op there — the common
+       (0-population) case stays unaffected.
     """
     if not entity or not entity.qbo_id:
         return None
-    mapping = read_mapping_by_local_id(entity.id)
-    if not mapping:
-        return entity.qbo_id
-    mapped_external = read_external_by_mapped_id(getattr(mapping, mapping_external_id_attr))
-    if mapped_external and mapped_external.qbo_id and mapped_external.qbo_id != entity.qbo_id:
+
+    check = read_identity_check(local_id=entity.id, qbo_id=entity.qbo_id)
+
+    if check.mapping_id is not None and check.forward_external_qbo_id and check.forward_external_qbo_id != entity.qbo_id:
         logger.error(
             f"{entity_label} {entity.id}'s dbo QboId ({entity.qbo_id}) disagrees with its own "
-            f"{mapping_label} mapping's external QboId ({mapped_external.qbo_id}) — refusing to "
+            f"{mapping_label} mapping's external QboId ({check.forward_external_qbo_id}) — refusing to "
             f"trust it."
         )
         return None
+
+    if check.reverse_mapped_local_id is not None and check.reverse_mapped_local_id != entity.id:
+        logger.error(
+            f"{entity_label} {entity.id}'s dbo QboId ({entity.qbo_id}) is already bound by the "
+            f"{mapping_label} mapping table to a DIFFERENT {entity_label} ({check.reverse_mapped_local_id}) — "
+            f"refusing to trust it."
+        )
+        return None
+
     return entity.qbo_id
 
 
@@ -102,15 +157,19 @@ def verify_project_qbo_identity(
     OR its mapping row's own QboCustomer external id matches `project.qbo_id`
     exactly. A mismatch means the mapping table still binds a DIFFERENT
     external customer to this Project — refuse rather than push under an
-    unverified CustomerRef.
+    unverified CustomerRef. When there is no mapping row of its own, also
+    refuses if the mapping table already binds `project.qbo_id` to a
+    DIFFERENT Project (U-297's H1, closed by U-306's JOIN'd read).
+
+    `qbo_customer_repo` is accepted but unused — U-306 folded its job into
+    `customer_project_repo.read_identity_check`'s single JOIN'd sproc. Kept
+    in the signature so every existing caller's kwargs keep working unchanged.
     """
     return _verify_dbo_qbo_identity(
         project,
         entity_label="Project",
         mapping_label="CustomerProject",
-        read_mapping_by_local_id=customer_project_repo.read_by_project_id,
-        read_external_by_mapped_id=qbo_customer_repo.read_by_id,
-        mapping_external_id_attr="qbo_customer_id",
+        read_identity_check=customer_project_repo.read_identity_check,
     )
 
 
@@ -128,15 +187,20 @@ def verify_vendor_qbo_identity(
     not-fully-migrated state — nothing to disagree with), OR its mapping
     row's own QboVendor external id matches `vendor.qbo_id` exactly. A
     mismatch means the mapping table still binds a DIFFERENT external vendor
-    to this Vendor — refuse rather than trust an unverified VendorRef.
+    to this Vendor — refuse rather than trust an unverified VendorRef. When
+    there is no mapping row of its own, also refuses if the mapping table
+    already binds `vendor.qbo_id` to a DIFFERENT Vendor (U-297's H1, closed
+    by U-306's JOIN'd read).
+
+    `qbo_vendor_repo` is accepted but unused — U-306 folded its job into
+    `vendor_vendor_repo.read_identity_check`'s single JOIN'd sproc. Kept
+    in the signature so every existing caller's kwargs keep working unchanged.
     """
     return _verify_dbo_qbo_identity(
         vendor,
         entity_label="Vendor",
         mapping_label="VendorVendor",
-        read_mapping_by_local_id=vendor_vendor_repo.read_by_vendor_id,
-        read_external_by_mapped_id=qbo_vendor_repo.read_by_id,
-        mapping_external_id_attr="qbo_vendor_id",
+        read_identity_check=vendor_vendor_repo.read_identity_check,
     )
 
 
@@ -154,7 +218,14 @@ def verify_bill_qbo_identity(
     not-fully-migrated state — nothing to disagree with), OR its mapping
     row's own QboBill external id matches `bill.qbo_id` exactly. A mismatch
     means the mapping table still binds a DIFFERENT external bill to this
-    Bill — refuse rather than trust an unverified identity mid-retry.
+    Bill — refuse rather than trust an unverified identity mid-retry. When
+    there is no mapping row of its own, also refuses if the mapping table
+    already binds `bill.qbo_id` to a DIFFERENT Bill (U-297's H1, closed by
+    U-306's JOIN'd read).
+
+    `qbo_bill_repo` is accepted but unused — U-306 folded its job into
+    `bill_bill_repo.read_identity_check`'s single JOIN'd sproc. Kept in the
+    signature so every existing caller's kwargs keep working unchanged.
 
     Caller note: this collapses two different reasons into one `None` —
     "bill.qbo_id is falsy" (nothing to check yet) and "mapping exists and
@@ -167,9 +238,7 @@ def verify_bill_qbo_identity(
         bill,
         entity_label="Bill",
         mapping_label="BillBill",
-        read_mapping_by_local_id=bill_bill_repo.read_by_bill_id,
-        read_external_by_mapped_id=qbo_bill_repo.read_by_id,
-        mapping_external_id_attr="qbo_bill_id",
+        read_identity_check=bill_bill_repo.read_identity_check,
     )
 
 
@@ -195,16 +264,19 @@ def verify_customer_qbo_identity(
     that connector resolves to a local `dbo.Customer.Id` and writes to
     `dbo.Project.CustomerId`.
 
-    KNOWN RESIDUAL: the engine is LOCAL-SIDE ONLY — `_verify_dbo_qbo_identity`
-    owns that caveat for all three wrappers (TODO.md, U-297's H1). Customer's
-    blind population is measurably ZERO (0 stamped `dbo.Customer` rows lack a
-    `CustomerCustomer` row, live 2026-08-22); revisit if that stops being true.
+    When there is no mapping row of its own, also refuses if the mapping
+    table already binds `customer.qbo_id` to a DIFFERENT Customer (U-297's
+    H1, closed by U-306's JOIN'd read — was measurably zero-population at
+    U-297 (2026-08-22): 0 stamped `dbo.Customer` rows lacked a
+    `CustomerCustomer` row; revisit if that population count moves).
+
+    `qbo_customer_repo` is accepted but unused — U-306 folded its job into
+    `customer_customer_repo.read_identity_check`'s single JOIN'd sproc. Kept
+    in the signature so every existing caller's kwargs keep working unchanged.
     """
     return _verify_dbo_qbo_identity(
         customer,
         entity_label="Customer",
         mapping_label="CustomerCustomer",
-        read_mapping_by_local_id=customer_customer_repo.read_by_customer_id,
-        read_external_by_mapped_id=qbo_customer_repo.read_by_id,
-        mapping_external_id_attr="qbo_customer_id",
+        read_identity_check=customer_customer_repo.read_identity_check,
     )

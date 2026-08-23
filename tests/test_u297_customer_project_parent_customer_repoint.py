@@ -24,7 +24,10 @@ Covers:
 from types import SimpleNamespace
 from unittest.mock import Mock
 
-from integrations.intuit.qbo.base.identity_consistency import verify_customer_qbo_identity
+from integrations.intuit.qbo.base.identity_consistency import (
+    IdentityCheckResult,
+    verify_customer_qbo_identity,
+)
 from integrations.intuit.qbo.customer.connector.project.business.service import (
     CustomerProjectConnector,
 )
@@ -33,18 +36,21 @@ from integrations.intuit.qbo.customer.connector.project.business.service import 
 # --- Section 1: the verify_customer_qbo_identity wrapper ---
 
 
-def _verify_repos(*, mapping=None, external=None):
-    """Bind the two repos the wrapper needs, with EXPLICIT return values.
+def _verify_repos(*, mapping_id=None, forward_external_qbo_id=None, reverse_mapped_local_id=None):
+    """Bind the two repos the wrapper needs, with an EXPLICIT `IdentityCheckResult`.
 
-    Never leave these as bare Mocks: a Mock's `read_by_customer_id(...)` returns a
-    truthy Mock whose `.qbo_customer_id` is itself a Mock, and
-    `read_by_id(...).qbo_id` is a Mock too — so the engine's `!=` comparison
-    would pass or fail by accident rather than by the case under test.
+    Never leave `read_identity_check` as a bare Mock: its default return is a
+    truthy Mock whose `.mapping_id`/`.forward_external_qbo_id` are themselves
+    Mocks, so the engine's `is not None` / `!=` comparisons would pass or fail
+    by accident rather than by the case under test.
     """
     customer_customer_repo = Mock()
-    customer_customer_repo.read_by_customer_id.return_value = mapping
+    customer_customer_repo.read_identity_check.return_value = IdentityCheckResult(
+        mapping_id=mapping_id,
+        forward_external_qbo_id=forward_external_qbo_id,
+        reverse_mapped_local_id=reverse_mapped_local_id,
+    )
     qbo_customer_repo = Mock()
-    qbo_customer_repo.read_by_id.return_value = external
     return customer_customer_repo, qbo_customer_repo
 
 
@@ -60,13 +66,14 @@ def test_verify_returns_none_for_missing_entity_or_qbo_id():
             is None
         )
     # Short-circuits before touching either repo.
-    mapping_repo.read_by_customer_id.assert_not_called()
-    qbo_repo.read_by_id.assert_not_called()
+    mapping_repo.read_identity_check.assert_not_called()
+    assert qbo_repo.method_calls == []
 
 
 def test_verify_trusts_when_customer_has_no_mapping_row():
-    """No CustomerCustomer row = nothing to disagree with = TRUST (engine line 57-58)."""
-    mapping_repo, qbo_repo = _verify_repos(mapping=None)
+    """No CustomerCustomer row AND no reverse conflict = nothing to disagree
+    with = TRUST."""
+    mapping_repo, qbo_repo = _verify_repos()
     customer = SimpleNamespace(id=55, qbo_id="P-1")
 
     result = verify_customer_qbo_identity(
@@ -74,13 +81,12 @@ def test_verify_trusts_when_customer_has_no_mapping_row():
     )
 
     assert result == "P-1"
-    qbo_repo.read_by_id.assert_not_called()
+    assert qbo_repo.method_calls == []  # U-306: folded into the one JOIN'd read, never touched
 
 
 def test_verify_trusts_when_mapping_agrees():
     mapping_repo, qbo_repo = _verify_repos(
-        mapping=SimpleNamespace(id=1, qbo_customer_id=9),
-        external=SimpleNamespace(id=9, qbo_id="P-1"),
+        mapping_id=1, forward_external_qbo_id="P-1", reverse_mapped_local_id=55,
     )
     customer = SimpleNamespace(id=55, qbo_id="P-1")
 
@@ -89,16 +95,26 @@ def test_verify_trusts_when_mapping_agrees():
     )
 
     assert result == "P-1"
-    # Resolved the external row through the mapping's OWN FK, not the customer id.
-    qbo_repo.read_by_id.assert_called_once_with(9)
 
 
 def test_verify_refuses_when_mapping_binds_a_different_external_customer():
     """The whole point: dbo says P-1, the mapping table still says P-2 -> refuse."""
     mapping_repo, qbo_repo = _verify_repos(
-        mapping=SimpleNamespace(id=1, qbo_customer_id=9),
-        external=SimpleNamespace(id=9, qbo_id="P-2"),
+        mapping_id=1, forward_external_qbo_id="P-2", reverse_mapped_local_id=55,
     )
+    customer = SimpleNamespace(id=55, qbo_id="P-1")
+
+    result = verify_customer_qbo_identity(
+        customer, customer_customer_repo=mapping_repo, qbo_customer_repo=qbo_repo
+    )
+
+    assert result is None
+
+
+def test_verify_refuses_when_unmapped_but_reverse_bound_to_a_different_customer():
+    """U-297's H1, closed by U-306: no CustomerCustomer mapping of its own, but
+    the mapping table already binds this exact QboId to a DIFFERENT Customer."""
+    mapping_repo, qbo_repo = _verify_repos(mapping_id=None, reverse_mapped_local_id=999)
     customer = SimpleNamespace(id=55, qbo_id="P-1")
 
     result = verify_customer_qbo_identity(
@@ -111,8 +127,7 @@ def test_verify_refuses_when_mapping_binds_a_different_external_customer():
 def test_verify_binds_the_customer_familys_accessors():
     """Guards against a copy/paste of the Project or Vendor wrapper's bindings."""
     mapping_repo, qbo_repo = _verify_repos(
-        mapping=SimpleNamespace(id=1, qbo_customer_id=9),
-        external=SimpleNamespace(id=9, qbo_id="P-1"),
+        mapping_id=1, forward_external_qbo_id="P-1", reverse_mapped_local_id=55,
     )
     customer = SimpleNamespace(id=55, qbo_id="P-1")
 
@@ -120,10 +135,9 @@ def test_verify_binds_the_customer_familys_accessors():
         customer, customer_customer_repo=mapping_repo, qbo_customer_repo=qbo_repo
     )
 
-    # read_by_customer_id (not read_by_project_id / read_by_vendor_id), keyed on
-    # the LOCAL id, and the external id read through the `qbo_customer_id` attr.
-    mapping_repo.read_by_customer_id.assert_called_once_with(55)
-    qbo_repo.read_by_id.assert_called_once_with(9)
+    # read_identity_check (not a Project/Vendor-shaped wrapper), keyed on the
+    # LOCAL id and this entity's own qbo_id.
+    mapping_repo.read_identity_check.assert_called_once_with(local_id=55, qbo_id="P-1")
 
 
 # --- Section 2: the _get_parent_customer_id / _resolve_parent_customer_id resolver ---
@@ -133,7 +147,13 @@ def _build_connector(*, direct=None, staging=None, parent_mapping=None, own_mapp
     """A connector whose parent-lookup dependencies are all explicitly pinned.
 
     `direct`         -> customer_service.read_by_qbo_identity (the dbo fast path)
-    `own_mapping`    -> customer_mapping_repo.read_by_customer_id (the verify step)
+    `own_mapping`    -> the verify step's forward mapping (U-306: folded into
+                        customer_mapping_repo.read_identity_check's
+                        IdentityCheckResult, agreeing with `direct`'s own
+                        qbo_id by default — pass a `own_mapping.qbo_customer_id`
+                        that doesn't matter here since only `.id` is read; a
+                        test that needs a DISAGREEING verify overrides
+                        `read_identity_check.return_value` directly afterward)
     `staging`        -> qbo_customer_repo.read_by_qbo_id (legacy hop 1)
     `parent_mapping` -> customer_mapping_repo.read_by_qbo_customer_id (legacy hop 2)
     """
@@ -142,14 +162,16 @@ def _build_connector(*, direct=None, staging=None, parent_mapping=None, own_mapp
 
     qbo_customer_repo = Mock()
     qbo_customer_repo.read_by_qbo_id.return_value = staging
-    # The verify step resolves the mapped external row by its FK.
-    qbo_customer_repo.read_by_id.return_value = SimpleNamespace(
-        id=9, qbo_id=getattr(direct, "qbo_id", None)
-    )
 
     customer_mapping_repo = Mock()
-    customer_mapping_repo.read_by_customer_id.return_value = own_mapping
     customer_mapping_repo.read_by_qbo_customer_id.return_value = parent_mapping
+    # The verify step's single JOIN'd read: agrees with `direct`'s own qbo_id
+    # by default when a forward mapping exists (own_mapping is not None).
+    customer_mapping_repo.read_identity_check.return_value = IdentityCheckResult(
+        mapping_id=(own_mapping.id if own_mapping else None),
+        forward_external_qbo_id=(getattr(direct, "qbo_id", None) if own_mapping else None),
+        reverse_mapped_local_id=None,
+    )
 
     return CustomerProjectConnector(
         mapping_repo=Mock(),
@@ -186,10 +208,12 @@ def test_resolver_direct_hit_with_an_agreeing_mapping_is_the_prod_steady_state()
     The test above uses `own_mapping=None` — the verify's permissive
     "nothing to disagree with" arm, whose LIVE population is zero (0 stamped
     dbo.Customer rows lack a CustomerCustomer row). All 136 prod job/sub-customers
-    go through this stricter arm instead: direct + mapping + external = 3 reads,
-    and the 2-read legacy hop must stay unpaid. 71 distinct parents x 3 = 213 vs
-    the legacy 136 x 2 = 272. A 4th read here (71 x 4 = 284) would silently turn
-    this unit into a net loss.
+    go through this stricter arm instead: direct + one JOIN'd identity-check
+    read (U-306) = 2 reads, and the 2-read legacy hop must stay unpaid. 71
+    distinct parents x 2 = 142 vs the legacy 136 x 2 = 272 (U-306 improves on
+    this unit's own original 71 x 3 = 213 by collapsing the verify step's old
+    2 reads into 1). A 3rd read here (71 x 3 = 213) would silently turn this
+    unit's efficiency claim back into the pre-U-306 number.
     """
     connector = _build_connector(
         direct=SimpleNamespace(id=42, qbo_id="P-1"),
@@ -200,10 +224,9 @@ def test_resolver_direct_hit_with_an_agreeing_mapping_is_the_prod_steady_state()
 
     assert connector._get_parent_customer_id("P-1", "realm-1") == 42
 
-    # Exactly three reads, one per step.
+    # Exactly two reads, one per step.
     assert connector.customer_service.read_by_qbo_identity.call_count == 1
-    assert connector.customer_mapping_repo.read_by_customer_id.call_count == 1
-    assert connector.qbo_customer_repo.read_by_id.call_count == 1
+    assert connector.customer_mapping_repo.read_identity_check.call_count == 1
     # And the legacy two-hop stays unpaid.
     connector.qbo_customer_repo.read_by_qbo_id.assert_not_called()
     connector.customer_mapping_repo.read_by_qbo_customer_id.assert_not_called()
@@ -231,7 +254,9 @@ def test_resolver_verify_failure_falls_back_and_does_not_return_the_direct_hit()
         parent_mapping=SimpleNamespace(id=1, customer_id=999),
     )
     # The mapped external row disagrees with the dbo row's own QboId.
-    connector.qbo_customer_repo.read_by_id.return_value = SimpleNamespace(id=9, qbo_id="P-2")
+    connector.customer_mapping_repo.read_identity_check.return_value = IdentityCheckResult(
+        mapping_id=1, forward_external_qbo_id="P-2", reverse_mapped_local_id=42
+    )
 
     result = connector._get_parent_customer_id("P-1", "realm-1")
 
@@ -242,6 +267,27 @@ def test_resolver_verify_failure_falls_back_and_does_not_return_the_direct_hit()
 def test_resolver_returns_none_when_both_paths_miss():
     connector = _build_connector(direct=None, staging=None)
     assert connector._get_parent_customer_id("P-1", "realm-1") is None
+
+
+def test_resolver_verify_h1_refusal_falls_back_and_does_not_return_the_direct_hit():
+    """U-297's H1, closed by U-306: a direct hit with NO CustomerCustomer
+    mapping of its own, but whose QboId the mapping table already binds to a
+    DIFFERENT dbo.Customer — must be refused exactly like an own-mapping
+    disagreement, not trusted just because this row's own mapping is absent."""
+    connector = _build_connector(
+        direct=SimpleNamespace(id=42, qbo_id="P-1"),
+        own_mapping=None,  # no mapping of its own
+        staging=SimpleNamespace(id=9),
+        parent_mapping=SimpleNamespace(id=1, customer_id=999),
+    )
+    connector.customer_mapping_repo.read_identity_check.return_value = IdentityCheckResult(
+        mapping_id=None, forward_external_qbo_id=None, reverse_mapped_local_id=777
+    )
+
+    result = connector._get_parent_customer_id("P-1", "realm-1")
+
+    assert result == 999  # legacy hop's answer
+    assert result != 42  # NOT the unverified direct hit
 
 
 def test_resolver_short_circuits_on_empty_parent_ref_without_any_read():

@@ -12,6 +12,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from integrations.intuit.qbo.base.identity_consistency import IdentityCheckResult
 from integrations.intuit.qbo.outbox.business.worker import QboOutboxWorker
 
 
@@ -32,11 +33,28 @@ class _FakeBillService:
 
 
 class _FakeBillBillRepo:
-    def __init__(self, *, mapping=None):
+    def __init__(self, *, mapping=None, qbo_bill_by_id=None):
         self._mapping = mapping
+        self._qbo_bill_by_id = qbo_bill_by_id or {}
 
     def read_by_bill_id(self, bill_id):
         return self._mapping
+
+    def read_identity_check(self, *, local_id, qbo_id):
+        """U-306's single JOIN'd read, reproduced here from this fake's own
+        `_mapping` + `_qbo_bill_by_id` state — mirrors what the real sproc's
+        forward JOIN would compute. No reverse-direction fixture exists in
+        this file's cases (H1 is covered at the engine level in
+        tests/test_u306_identity_verify_engine.py), so that arm is always
+        None here."""
+        if self._mapping is None:
+            return IdentityCheckResult(mapping_id=None, forward_external_qbo_id=None, reverse_mapped_local_id=None)
+        external = self._qbo_bill_by_id.get(self._mapping.qbo_bill_id)
+        return IdentityCheckResult(
+            mapping_id=self._mapping.id,
+            forward_external_qbo_id=(external.qbo_id if external else None),
+            reverse_mapped_local_id=None,
+        )
 
 
 class _FakeQboBillRepo:
@@ -94,7 +112,7 @@ def _patch_bill_refresh_stack(
     )
     monkeypatch.setattr(
         "integrations.intuit.qbo.bill.connector.bill.persistence.repo.BillBillRepository",
-        lambda: _FakeBillBillRepo(mapping=bill_bill_mapping),
+        lambda: _FakeBillBillRepo(mapping=bill_bill_mapping, qbo_bill_by_id=qbo_bill_by_id or {}),
     )
     monkeypatch.setattr(
         "integrations.intuit.qbo.bill.persistence.repo.QboBillRepository",

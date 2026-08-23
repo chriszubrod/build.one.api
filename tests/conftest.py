@@ -4,6 +4,7 @@ import types
 from contextlib import contextmanager
 from decimal import Decimal
 from pathlib import Path
+from unittest.mock import patch
 
 import pyodbc
 import pytest
@@ -37,6 +38,21 @@ def mock_qbo_app_lock_granted(*_args, **_kwargs):
     yield True
 
 
+@pytest.fixture
+def grant_qbo_app_lock():
+    """U-304: patches identity_fastpath.py's `qbo_app_lock` import to always
+    grant the lock, for pure-logic tests exercising the create-race lock
+    (self-heal insert + rollback-guard recheck+delete) that only care about the
+    resolve-state branching, not real sp_getapplock serialization. Opt in per
+    module via `pytestmark = pytest.mark.usefixtures("grant_qbo_app_lock")` —
+    NOT autouse here, since most of the suite has no reason to touch this lock."""
+    with patch(
+        "integrations.intuit.qbo.base.identity_fastpath.qbo_app_lock",
+        mock_qbo_app_lock_granted,
+    ):
+        yield
+
+
 _SKIP_DIR_NAMES = frozenset({".venv", ".git", "__pycache__", "node_modules", ".pytest_cache"})
 
 
@@ -63,6 +79,25 @@ def stub_qbo_identity_fastpath_miss(entity_service_mock) -> None:
     a test into the new fast path instead of the branch it's actually testing.
     """
     entity_service_mock.read_by_qbo_identity.return_value = None
+
+
+def stub_identity_check_trusts(mapping_repo_mock) -> None:
+    """Stub a family's `read_identity_check` (U-306, base/identity_consistency.py)
+    to the ordinary not-fully-migrated-yet state — no mapping row of its own, and
+    the mapping table doesn't bind this QboId to any OTHER local row either — so
+    `verify_*_qbo_identity` trusts the dbo-stamped QboId. Import this instead of
+    hand-rolling another `IdentityCheckResult(None, None, None)` literal.
+
+    A bare Mock() auto-returns a truthy Mock for `.read_identity_check(...)`,
+    whose `.mapping_id` is itself a truthy Mock — which would otherwise divert
+    the engine into its "mapping exists" branch instead of the no-mapping
+    branch most callers of this helper actually want to exercise.
+    """
+    from integrations.intuit.qbo.base.identity_consistency import IdentityCheckResult
+
+    mapping_repo_mock.read_identity_check.return_value = IdentityCheckResult(
+        mapping_id=None, forward_external_qbo_id=None, reverse_mapped_local_id=None
+    )
 
 
 def pytest_configure(config):

@@ -7,6 +7,7 @@ from typing import Optional
 import pyodbc
 
 # Local Imports
+from integrations.intuit.qbo.base.identity_consistency import IdentityCheckResult
 from integrations.intuit.qbo.bill.connector.bill.business.model import BillBill
 from shared.database import (
     call_procedure,
@@ -148,6 +149,38 @@ class BillBillRepository:
                         pass
         except Exception as error:
             logger.error(f"Error during read bill bill by bill ID: {error}")
+            raise map_database_error(error)
+
+    def read_identity_check(self, *, local_id: int, qbo_id: str) -> IdentityCheckResult:
+        """
+        Single JOIN'd read backing `verify_bill_qbo_identity` (U-306):
+        replaces the old `read_by_bill_id` + `qbo_bill_repo.read_by_id`
+        2-read path with one round trip, and additionally resolves whether
+        the mapping table already binds `qbo_id` to a DIFFERENT BillId
+        (the reverse check that closes U-297's H1).
+        """
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                try:
+                    call_procedure(
+                        cursor=cursor,
+                        name="ReadBillBillIdentityCheckByBillId",
+                        params={"BillId": local_id, "QboId": qbo_id},
+                    )
+                    row = cursor.fetchone()
+                    return IdentityCheckResult(
+                        mapping_id=getattr(row, "MappingId", None),
+                        forward_external_qbo_id=getattr(row, "ForwardExternalQboId", None),
+                        reverse_mapped_local_id=getattr(row, "ReverseMappedLocalId", None),
+                    )
+                finally:
+                    try:
+                        cursor.close()
+                    except Exception:
+                        pass
+        except Exception as error:
+            logger.error(f"Error during read bill bill identity check: {error}")
             raise map_database_error(error)
 
     def read_by_qbo_bill_id(self, qbo_bill_id: int) -> Optional[BillBill]:

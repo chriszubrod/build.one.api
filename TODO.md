@@ -1854,3 +1854,24 @@ These were surfaced during the unit and deliberately not built:
   a correctness look in its own unit: **the name-match bind path never writes the resolved
   CustomerId onto the Project it binds**, so the same QBO sub-customer lands with or without a parent
   depending on which branch caught it.
+
+## U-300a follow-up (dbo-only identity fast path, 2026-08-23) — deferred, non-blocking
+
+- [ ] **[reuse/altitude] The "apply_fields-or-signal-race" prefix is now duplicated in THREE places**,
+  not two: `run_identity_fastpath`'s `_apply_and_maybe_self_heal` (`base/identity_fastpath.py`,
+  the `apply_fields` call + None-check + `on_apply_returned_none`/`FastPathOutcome` block),
+  `run_line_identity_fastpath`'s inline tail (same file, pre-existing, unrelated to U-300a), and
+  U-300a's new `run_identity_fastpath_dbo_only`'s `_apply` closure. All three do the identical
+  3-step shape (call `apply_fields` if present else passthrough → `None`-check → fire
+  `on_apply_returned_none` and return `FastPathOutcome(hit=True, entity=None)`), differing only in
+  the log-message text and whether the row is closed-over or a parameter — confirmed independently
+  by 3 of 4 `/simplify` reviewers on U-300a's diff. **Not fixed in U-300a**: doing so means editing
+  `run_identity_fastpath` itself, which U-300a's Gate-1 proposal explicitly promised Chris would stay
+  byte-for-byte untouched (the whole point being zero risk to the 6 production families still calling
+  it) — a refactor of shared P0-surface QBO-identity code deserves its own Gate-1/Codex pass scoped to
+  that change, not a rider on this unit. Right-depth fix (per the altitude reviewer): extract just the
+  shared prefix into one small helper, e.g. `_apply_fields_or_signal_race(row, apply_fields,
+  on_apply_returned_none, log_message) -> Any` (returns the updated row or `None`), leaving each of
+  the three call sites' differing tails (self-heal/mapping-create, line's direct return, dbo-only's
+  direct return) untouched — do NOT merge the three outer functions themselves, they are genuinely
+  different algorithms.

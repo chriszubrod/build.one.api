@@ -37,6 +37,17 @@ Only the genuinely family-specific bits, passed in as callbacks:
   * the mapping-row `create(...)` kwargs.
 The control flow — check-before-write ordering, conflict hard-stop, and the self-heal
 create-race re-check — lives here and only here.
+
+A dbo-only sibling (U-300a)
+----------------------------
+`run_identity_fastpath` above assumes every family still has a mapping table to
+cross-check against. `run_identity_fastpath_dbo_only` (below, near the bottom of this
+module) is for a family that has RETIRED its second store (the Wave-5 "trust dbo
+alone" decision — attachable/`dbo.Attachment` is the pilot) and therefore has no
+mapping table left to detect drift against — see that function's own docstring for why
+this is a new function rather than a mode flag here. Everything above this point is
+unaffected: no family still on a mapping table changes behavior until it separately
+migrates.
 """
 
 # Python Standard Library Imports
@@ -506,6 +517,152 @@ def run_identity_fastpath(
             return _apply_and_maybe_self_heal()
 
     return _apply_and_maybe_self_heal()
+
+
+def run_identity_fastpath_dbo_only(
+    *,
+    qbo_id: Optional[str],
+    realm_id: Optional[str],
+    entity_label: str,
+    external_label: str,
+    lock_resource_label: str,
+    read_direct_by_qbo_identity: Callable[[Optional[str], Optional[str]], Any],
+    resolve_candidate: Callable[[], Any],
+    stamp_identity: Callable[[Any], Any],
+    apply_fields: Optional[Callable[[Any], Any]] = None,
+    on_apply_returned_none: Optional[Callable[[Any], None]] = None,
+    lock_timeout_ms: int = 15000,
+) -> FastPathOutcome:
+    """
+    Run the dbo-native identity fast path for a family with NO mapping table
+    (U-300a — the Wave-5 "trust dbo alone" pilot, `attachable`/`dbo.Attachment`
+    first). See the module docstring's "A dbo-only sibling" section for how
+    this relates to `run_identity_fastpath` above.
+
+    Why this is a separate function, not a mode flag on `run_identity_fastpath`
+    ------------------------------------------------------------------------
+    `run_identity_fastpath`'s CONSISTENT/MISSING/CONFLICT machinery exists to
+    catch DRIFT between dbo-native identity and an independently-writable
+    mapping table — that class of bug is exactly what caused the 2026-08-20
+    live-prod P0 documented above. Once a family's mapping table is retired,
+    there is no second store left to drift from: `dbo.<Entity>`'s own
+    filtered unique index (e.g. `UQ_Attachment_QboId_RealmId` —
+    `(QboId, RealmId) WHERE QboId IS NOT NULL`) plus `Set<Entity>
+    QboIdentity`'s theft-clear UPDATE already guarantee, at the database
+    engine level, that at most one row holds a given identity at any instant.
+    A direct hit against that index needs no cross-check — it unambiguously
+    IS the current single holder. Threading a `dbo_only=True` branch through
+    the existing function would blur two genuinely different algorithms
+    (compare-against-a-second-store vs. nothing-left-to-compare-against)
+    into one body; this sibling keeps them honest instead — the same
+    reasoning `run_line_identity_fastpath` gives for staying separate from
+    the header helper it sits beside.
+
+    The one residual risk, and how this closes it
+    -----------------------------------------------
+    A MISS here means no dbo row currently holds this identity — safe to
+    mint one, EXCEPT that two concurrent syncs of the same external object
+    can both observe MISS and both try to become the holder. The unique
+    index + theft-clear resolve that race correctly (exactly one winner) but
+    SILENTLY: the loser's own `Set<Entity>QboIdentity` call fires its own
+    theft-clear branch against itself, orphaning whichever row it just
+    created with no error and no reconciliation record. So a MISS runs the
+    caller's candidate-resolution + stamp INSIDE a dedicated app lock, with
+    one re-read of `read_direct_by_qbo_identity` under that lock first — a
+    racer who already won is discovered here and adopted, instead of a
+    second row being minted and immediately orphaned.
+
+    Deliberately a NEW lock namespace (`qbo_dbo_identity_create:...`), not a
+    reuse of `create_race_lock`'s `qbo_mapping_create:...` prefix: that lock
+    is keyed on the STAGING row's PK for a fundamentally different critical
+    section (U-304's create-vs-rollback race over a mapping row). This one
+    is keyed on the entity's own `(qbo_id, realm_id)` — the only stable key
+    every racer for the same external identity shares once there is no
+    mapping-table PK left to key on instead. Disjoint prefix, disjoint
+    trigger, never acquired nested — same deadlock-avoidance shape
+    `create_race_lock` documents for itself.
+
+    What the caller still owns
+    ---------------------------
+    `resolve_candidate` — find-or-create the local row to bind (hash-dedup,
+    a brand-new row, whatever the family's own CREATE path already does);
+    called ONLY on a genuine (lock-confirmed) miss. `stamp_identity` — call
+    the family's own `Set<Entity>QboIdentity` (or equivalent) on that
+    candidate and return the refreshed row; also called only on a genuine
+    miss. Neither runs on a hit (direct or race-discovered) — an existing
+    holder is never re-stamped or re-created.
+
+    A race-resolved hit logs at INFO rather than raising or recording a
+    `ReconciliationIssue`: it is dbo-only mode's NORMAL outcome for this
+    scenario (correct and safe by construction), not a data-integrity event
+    the way `run_identity_fastpath`'s CONFLICT is — worth watching in
+    telemetry if it fires far more than expected, not worth escalating.
+
+    Args mirror `run_identity_fastpath` where the concept is shared
+    (`qbo_id`/`realm_id`/`entity_label`/`external_label`/`apply_fields`/
+    `on_apply_returned_none`); see that function's docstring for those.
+    `lock_resource_label` names this family's lock namespace (e.g.
+    "Attachment") — analogous to `mapping_label` there, but there is no
+    mapping table to log against, only the reconciliation-free race branch.
+
+    Returns:
+        FastPathOutcome. `hit=False` ONLY when `qbo_id` is falsy — unlike
+        `run_identity_fastpath`, a dbo-only caller has no separate legacy
+        mapping-table path to fall back to, so every other outcome (direct
+        hit, race-resolved hit, or a genuine miss resolved via
+        `resolve_candidate`/`stamp_identity`) reports `hit=True`.
+
+    Raises:
+        RuntimeError: on a lock-acquire timeout — FAILS CLOSED, never
+            proceeds to create-or-stamp under uncertainty (mirrors
+            `guard_create_mapping_rollback`'s own fail-closed contract).
+            Never raised for a detected race — that path is handled, not an
+            error (see above).
+    """
+    if not qbo_id:
+        return FastPathOutcome(hit=False)
+
+    def _apply(row: Any) -> FastPathOutcome:
+        if apply_fields is None:
+            updated = row
+        else:
+            logger.info(
+                f"Updating existing {entity_label} {row.id} from {external_label} "
+                f"(direct dbo-only identity match)"
+            )
+            updated = apply_fields(row)
+        if updated is None:
+            if on_apply_returned_none is not None:
+                on_apply_returned_none(row)
+            return FastPathOutcome(hit=True, entity=None)
+        return FastPathOutcome(hit=True, entity=updated)
+
+    direct = read_direct_by_qbo_identity(qbo_id, realm_id)
+    if direct:
+        return _apply(direct)
+
+    lock_resource = f"qbo_dbo_identity_create:{lock_resource_label}:{qbo_id}:{realm_id or ''}"
+    with qbo_app_lock(lock_resource, timeout_ms=lock_timeout_ms) as got_lock:
+        if not got_lock:
+            raise RuntimeError(
+                f"Could not acquire dbo-only identity create lock for {entity_label} "
+                f"({external_label} qbo_id={qbo_id}, realm_id={realm_id}) within "
+                f"{lock_timeout_ms}ms - holding for retry without creating."
+            )
+
+        direct_under_lock = read_direct_by_qbo_identity(qbo_id, realm_id)
+        if direct_under_lock:
+            logger.info(
+                f"{entity_label} identity race resolved: another sync already bound "
+                f"{external_label} qbo_id={qbo_id} realm_id={realm_id} to "
+                f"{entity_label} {direct_under_lock.id} - adopting it instead of "
+                f"minting a second row."
+            )
+            return _apply(direct_under_lock)
+
+        candidate = resolve_candidate()
+        stamped = stamp_identity(candidate)
+        return FastPathOutcome(hit=True, entity=stamped)
 
 
 def run_line_identity_fastpath(

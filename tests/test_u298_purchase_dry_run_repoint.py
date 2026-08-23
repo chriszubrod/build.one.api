@@ -27,9 +27,9 @@ def test_expense_repo_read_qbo_ids_by_realm_id_calls_sproc():
     repo = ExpenseRepository()
     cursor = MagicMock()
     cursor.fetchall.return_value = [
-        SimpleNamespace(QboId="PURCH-1"),
-        SimpleNamespace(QboId="PURCH-2"),
-        SimpleNamespace(QboId=None),  # defensive: sproc filters QboId IS NOT NULL, guard anyway
+        SimpleNamespace(Id=1, QboId="PURCH-1"),
+        SimpleNamespace(Id=2, QboId="PURCH-2"),
+        SimpleNamespace(Id=3, QboId=None),  # defensive: sproc filters QboId IS NOT NULL, guard anyway
     ]
 
     with patch("entities.expense.persistence.repo.get_connection") as mock_conn_ctx, patch(

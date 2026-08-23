@@ -5,6 +5,7 @@ import uuid
 from typing import Optional
 
 # Local Imports
+from shared.authz.context import system_authz
 from integrations.intuit.qbo.base.drift_types import (
     DRIFT_DUPLICATE_MAPPING,
     DRIFT_FIELD_MISMATCH,
@@ -77,6 +78,13 @@ class ReconciliationService:
         # long-lived or a singleton, invalidate this cache per run — otherwise it
         # goes stale against issues resolved in SQL mid-life.
         self._void_key_cache = None
+        # U-301a: same per-run memoization idiom as _void_key_cache, for
+        # dbo.Expense's (Id, QboId) identity rows — reconcile_purchases's two
+        # detectors both need this realm-scoped read; without caching it here
+        # each would fetch it independently. Keyed by realm_id (not just a
+        # single scalar) for defensive correctness if a future caller ever
+        # reconciles more than one realm on one instance.
+        self._expense_identity_rows_cache: dict = {}
 
     # ------------------------------------------------------------------ #
     # Public reconcile entry points (one per entity type)
@@ -154,57 +162,67 @@ class ReconciliationService:
         Detectors run in this order:
           1. qbo_missing_locally — auto-fix (pull)
           2. qbo_voided — flag local Expenses whose QBO counterpart no longer exists
+
+        U-301a: wrapped in system_authz() — both detectors now resolve identity
+        via RBAC-gated dbo.Expense bulk reads (ExpenseService), unlike the
+        unguarded qbo.* staging reads they replaced. Both real callers
+        (shared/api/admin.py's drain-secret route, shared/scheduler.py's
+        dormant fallback) already establish system-admin context before
+        calling this, so this is belt-and-suspenders — same self-declaration
+        pattern the outbox workers use (shared/authz/context.py::system_authz)
+        against a future entry point that forgets to.
         """
-        run_id = str(uuid.uuid4())
-        logger.info(
-            "qbo.reconcile.run.started",
-            extra={
-                "event_name": "qbo.reconcile.run.started",
-                "operation_name": "qbo.reconcile.purchase",
-                "entity_type": "Purchase",
-                "realm_id": realm_id,
-                "reconcile_run_id": run_id,
-            },
-        )
-
-        counts = dict.fromkeys(RECONCILE_COUNT_KEYS, 0)
-
-        try:
-            d1 = self._reconcile_purchase_qbo_missing_locally(
-                realm_id=realm_id, run_id=run_id
+        with system_authz():
+            run_id = str(uuid.uuid4())
+            logger.info(
+                "qbo.reconcile.run.started",
+                extra={
+                    "event_name": "qbo.reconcile.run.started",
+                    "operation_name": "qbo.reconcile.purchase",
+                    "entity_type": "Purchase",
+                    "realm_id": realm_id,
+                    "reconcile_run_id": run_id,
+                },
             )
-            for key in RECONCILE_COUNT_KEYS:
-                counts[key] += d1.get(key, 0)
-        except Exception:
-            logger.exception("qbo.reconcile.detector.failed",
-                             extra={"detector": "purchase_qbo_missing_locally",
-                                    "reconcile_run_id": run_id})
-            counts["errors"] += 1
 
-        try:
-            d2 = self._reconcile_purchase_qbo_voided(
-                realm_id=realm_id, run_id=run_id
+            counts = dict.fromkeys(RECONCILE_COUNT_KEYS, 0)
+
+            try:
+                d1 = self._reconcile_purchase_qbo_missing_locally(
+                    realm_id=realm_id, run_id=run_id
+                )
+                for key in RECONCILE_COUNT_KEYS:
+                    counts[key] += d1.get(key, 0)
+            except Exception:
+                logger.exception("qbo.reconcile.detector.failed",
+                                 extra={"detector": "purchase_qbo_missing_locally",
+                                        "reconcile_run_id": run_id})
+                counts["errors"] += 1
+
+            try:
+                d2 = self._reconcile_purchase_qbo_voided(
+                    realm_id=realm_id, run_id=run_id
+                )
+                for key in RECONCILE_COUNT_KEYS:
+                    counts[key] += d2.get(key, 0)
+            except Exception:
+                logger.exception("qbo.reconcile.detector.failed",
+                                 extra={"detector": "purchase_qbo_voided",
+                                        "reconcile_run_id": run_id})
+                counts["errors"] += 1
+
+            logger.info(
+                "qbo.reconcile.run.completed",
+                extra={
+                    "event_name": "qbo.reconcile.run.completed",
+                    "operation_name": "qbo.reconcile.purchase",
+                    "entity_type": "Purchase",
+                    "realm_id": realm_id,
+                    "reconcile_run_id": run_id,
+                    **counts,
+                },
             )
-            for key in RECONCILE_COUNT_KEYS:
-                counts[key] += d2.get(key, 0)
-        except Exception:
-            logger.exception("qbo.reconcile.detector.failed",
-                             extra={"detector": "purchase_qbo_voided",
-                                    "reconcile_run_id": run_id})
-            counts["errors"] += 1
-
-        logger.info(
-            "qbo.reconcile.run.completed",
-            extra={
-                "event_name": "qbo.reconcile.run.completed",
-                "operation_name": "qbo.reconcile.purchase",
-                "entity_type": "Purchase",
-                "realm_id": realm_id,
-                "reconcile_run_id": run_id,
-                **counts,
-            },
-        )
-        return {"run_id": run_id, **counts}
+            return {"run_id": run_id, **counts}
 
     def reconcile_vendor_credits(self, realm_id: str) -> dict:
         """
@@ -558,6 +576,24 @@ class ReconciliationService:
             self._void_key_cache = set()
         return self._void_key_cache
 
+    def _expense_identity_rows(self, realm_id: str) -> list:
+        """dbo.Expense's (Id, QboId) identity rows for a realm (U-301a), cached
+        for the life of this ReconciliationService instance — see
+        _expense_identity_rows_cache. reconcile_purchases's two detectors both
+        need this same realm-scoped read; without this, each would fetch it
+        independently. Raises on failure — callers decide how to handle it
+        (the missing-locally detector returns a degraded result; the voided
+        detector already had no local guard around its equivalent bulk read
+        pre-U-301a and is unaffected).
+        """
+        if realm_id in self._expense_identity_rows_cache:
+            return self._expense_identity_rows_cache[realm_id]
+        from entities.expense.business.service import ExpenseService
+
+        rows = ExpenseService().read_qbo_identity_rows_by_realm_id(realm_id)
+        self._expense_identity_rows_cache[realm_id] = rows
+        return rows
+
     def _reconcile_bill_qbo_voided(self, realm_id: str, run_id: str) -> dict:
         """
         Detect QBO Bills that have been deleted/voided on the QBO side but
@@ -686,21 +722,22 @@ class ReconciliationService:
         Full-scan QBO for all Purchases. For any QBO Purchase not mapped locally,
         pull it into the local cache via the existing sync_from_qbo flow
         and record an auto-fix issue.
+
+        U-301a: "already synced" is resolved via dbo.Expense's own native QboId
+        (U-238a), loaded once per run (shared with the voided detector via
+        _expense_identity_rows, mirroring _unresolved_void_keys's per-run
+        memoization) instead of a per-record qbo.Purchase + qbo.PurchaseExpense
+        staging/mapping round trip — same identity PurchaseExpenseConnector's
+        fast path already resolves by.
         """
         from integrations.intuit.qbo.purchase.external.client import QboPurchaseClient
         from integrations.intuit.qbo.purchase.business.service import QboPurchaseService
         from integrations.intuit.qbo.purchase.connector.expense.business.service import (
             PurchaseExpenseConnector,
         )
-        from integrations.intuit.qbo.purchase.connector.expense.persistence.repo import (
-            PurchaseExpenseRepository,
-        )
-        from integrations.intuit.qbo.purchase.persistence.repo import QboPurchaseRepository
 
         autofix_enabled = os.getenv("QBO_RECONCILE_PURCHASE_AUTOFIX", "false").strip().lower() == "true"
 
-        mapping_repo = PurchaseExpenseRepository()
-        qbo_purchase_repo = QboPurchaseRepository()
         qbo_purchase_service = QboPurchaseService()
         connector = PurchaseExpenseConnector()
 
@@ -712,6 +749,25 @@ class ReconciliationService:
         with QboPurchaseClient(realm_id=realm_id) as client:
             qbo_purchases = client.query_all_purchases()
 
+        # U-301a: this bulk read replaces what used to be a per-record identity
+        # lookup inside the loop's own try/except below — a failure here can no
+        # longer be isolated to one purchase (there is nothing left to check
+        # per-record against), so it is caught explicitly and attributed loudly
+        # instead of falling through to the generic per-detector catch-all in
+        # reconcile_purchases, which would otherwise mask exactly what failed.
+        try:
+            dbo_qbo_ids = {row.qbo_id for row in self._expense_identity_rows(realm_id)}
+        except Exception:
+            logger.exception(
+                "qbo.reconcile.purchase_qbo_missing_locally.identity_read_failed",
+                extra={
+                    "event_name": "qbo.reconcile.purchase_qbo_missing_locally.identity_read_failed",
+                    "realm_id": realm_id,
+                    "reconcile_run_id": run_id,
+                },
+            )
+            return {"auto_fixed": 0, "missing": 0, "skipped_unmapped": 0, "flagged": 1, "errors": 1}
+
         logger.info(
             f"Reconciliation fetched {len(qbo_purchases)} purchases from QBO for realm {realm_id} "
             f"(autofix_enabled={autofix_enabled})"
@@ -719,11 +775,8 @@ class ReconciliationService:
 
         for qbo_purchase in qbo_purchases:
             try:
-                local = qbo_purchase_repo.read_by_qbo_id(qbo_purchase.id)
-                if local:
-                    mapping = mapping_repo.read_by_qbo_purchase_id(local.id)
-                    if mapping:
-                        continue
+                if qbo_purchase.id in dbo_qbo_ids:
+                    continue
 
                 missing += 1
                 if not autofix_enabled:
@@ -812,28 +865,29 @@ class ReconciliationService:
         — it flags nothing and records one summary issue, because a candidate
         set that large is far more likely to be a bad id fetch than a real mass
         deletion.
+
+        U-301a: local_rows is now dbo.Expense's own (Id, QboId) identity rows
+        (U-238a) instead of qbo.Purchase staging rows, and lookup_mapping is
+        trivial (the row itself) — a dbo.Expense row only appears here because
+        it already carries a QboId, so "is this mapped" is true by construction,
+        with no separate qbo.PurchaseExpense mapping-table read needed. Shares
+        the missing-locally detector's cached read (_expense_identity_rows)
+        rather than re-fetching the same realm-scoped set independently.
         """
         from integrations.intuit.qbo.base.delete_reconcile import (
             detect_void_absent_candidates,
         )
         from integrations.intuit.qbo.base.ids import normalize_qbo_id
         from integrations.intuit.qbo.purchase.external.client import QboPurchaseClient
-        from integrations.intuit.qbo.purchase.connector.expense.persistence.repo import (
-            PurchaseExpenseRepository,
-        )
-        from integrations.intuit.qbo.purchase.persistence.repo import QboPurchaseRepository
 
-        mapping_repo = PurchaseExpenseRepository()
-        qbo_purchase_repo = QboPurchaseRepository()
-
-        all_qbo_purchases = qbo_purchase_repo.read_by_realm_id(realm_id)
+        all_dbo_expenses = self._expense_identity_rows(realm_id)
 
         # Nothing mapped locally means there is no diff to compute, so skip the
         # id fetch entirely — saving API calls is the whole point of this detector.
         # Deliberate delta: on an empty local set the old path would still fetch and
         # surface an id-fetch failure as errors=1. There is nothing to flag either
         # way, so a no-op run reports clean rather than burning ~20 calls to fail.
-        if not all_qbo_purchases:
+        if not all_dbo_expenses:
             return {"auto_fixed": 0, "flagged": 0, "flagged_deduped": 0, "errors": 0}
 
         flagged = 0
@@ -842,14 +896,14 @@ class ReconciliationService:
 
         with QboPurchaseClient(realm_id=realm_id) as client:
             diff = detect_void_absent_candidates(
-                local_rows=all_qbo_purchases,
+                local_rows=all_dbo_expenses,
                 realm_id=realm_id,
                 reconcile_run_id=run_id,
                 log_prefix="qbo.reconcile.purchase_qbo_voided",
                 fetch_live_ids=client.query_all_purchase_ids,
                 confirm_get=client.get_purchase,
                 extract_qbo_id=lambda row: normalize_qbo_id(row.qbo_id),
-                lookup_mapping=lambda row: mapping_repo.read_by_qbo_purchase_id(row.id),
+                lookup_mapping=lambda row: row,
             )
 
             if diff.aborted and diff.abort_reason == "ceiling_exceeded":
@@ -877,7 +931,6 @@ class ReconciliationService:
             for candidate in diff.confirmed_voids:
                 local = candidate.local_row
                 qbo_id = candidate.qbo_id
-                mapping = candidate.mapping
                 flagged += 1
                 key = (realm_id, "Expense", qbo_id)
                 # fetched lazily on the first confirmed 404 — a run with no voids pays no
@@ -905,8 +958,7 @@ class ReconciliationService:
                     realm_id=realm_id,
                     details=(
                         f"QBO Purchase {qbo_id} is mapped locally "
-                        f"(local QboPurchase id={local.id}, mapped to "
-                        f"Expense id={mapping.expense_id}) but returns 404 from QBO. "
+                        f"(Expense id={local.id}) but returns 404 from QBO. "
                         f"Likely voided or deleted on the QBO side. Review "
                         f"before taking action — downstream invoices may "
                         f"reference this expense."

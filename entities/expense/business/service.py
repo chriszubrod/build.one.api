@@ -313,6 +313,19 @@ class ExpenseService:
             actor_is_system_admin=current_is_system_admin.get(),
         )
 
+    def read_qbo_identity_rows_by_realm_id(self, realm_id: str) -> list:
+        """
+        Bulk dbo-native identity read (U-301a): every (Id, QboId) pair already
+        stamped on dbo.Expense for a realm. Feeds the reconciliation service's
+        missing-locally and voided detectors, replacing their per-record
+        qbo.Purchase/qbo.PurchaseExpense staging+mapping reads.
+        """
+        return self.repo.read_qbo_identity_rows_by_realm_id(
+            realm_id,
+            actor_user_id=current_user_id.get(),
+            actor_is_system_admin=current_is_system_admin.get(),
+        )
+
     def read_paginated(
         self,
         *,

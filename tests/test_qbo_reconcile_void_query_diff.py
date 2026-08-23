@@ -200,37 +200,31 @@ class _FakePurchaseVoidClient:
         return SimpleNamespace(id=purchase_id)
 
 
-class _FakeQboPurchaseRepo:
-    def __init__(self, *, by_realm=None):
-        self._by_realm = by_realm or []
+class _FakeExpenseIdentityService:
+    """U-301a: Purchase's void detector now sources local_rows from
+    dbo.Expense's own (Id, QboId) identity (ExpenseService), not
+    qbo.Purchase/qbo.PurchaseExpense staging+mapping — every row here is
+    inherently "mapped" (it only exists because it carries a QboId), so
+    there is no separate mapping-repo concept left to fake."""
 
-    def read_by_qbo_id(self, qbo_id):
-        return None
+    def __init__(self, *, identity_rows=None):
+        self._rows = list(identity_rows or [])
 
-    def read_by_realm_id(self, realm_id):
-        return self._by_realm
+    def read_qbo_ids_by_realm_id(self, realm_id):
+        return {row.qbo_id for row in self._rows}
 
-
-class _FakePurchaseMappingRepo:
-    def __init__(self, mapping=None):
-        self._mapping = mapping
-
-    def read_by_qbo_purchase_id(self, local_id):
-        return self._mapping
+    def read_qbo_identity_rows_by_realm_id(self, realm_id):
+        return self._rows
 
 
-def _patch_purchase_void_stack(monkeypatch, *, client, qbo_repo, mapping_repo):
+def _patch_purchase_void_stack(monkeypatch, *, client, identity_rows):
     monkeypatch.setattr(
         "integrations.intuit.qbo.purchase.external.client.QboPurchaseClient",
         lambda realm_id: _attach_realm(client, realm_id),
     )
     monkeypatch.setattr(
-        "integrations.intuit.qbo.purchase.persistence.repo.QboPurchaseRepository",
-        lambda: qbo_repo,
-    )
-    monkeypatch.setattr(
-        "integrations.intuit.qbo.purchase.connector.expense.persistence.repo.PurchaseExpenseRepository",
-        lambda: mapping_repo,
+        "entities.expense.business.service.ExpenseService",
+        lambda: _FakeExpenseIdentityService(identity_rows=identity_rows),
     )
     monkeypatch.setattr(
         "integrations.intuit.qbo.purchase.business.service.QboPurchaseService",
@@ -782,16 +776,10 @@ def test_purchase_void_diff_flags_only_absent_ids(monkeypatch):
         ids=["PA", "PB"],
         get_raises=QboNotFoundError("gone"),
     )
-
-    class _PurchaseMappingById:
-        def read_by_qbo_purchase_id(self, local_id):
-            return SimpleNamespace(expense_id=200 + local_id)
-
     _patch_purchase_void_stack(
         monkeypatch,
         client=client,
-        qbo_repo=_FakeQboPurchaseRepo(by_realm=[local_a, local_b, local_c]),
-        mapping_repo=_PurchaseMappingById(),
+        identity_rows=[local_a, local_b, local_c],
     )
 
     result = svc.reconcile_purchases(realm_id="realm-1")
@@ -817,8 +805,7 @@ def test_purchase_void_diff_id_fetch_error_flags_nothing(monkeypatch, ids_raises
     _patch_purchase_void_stack(
         monkeypatch,
         client=client,
-        qbo_repo=_FakeQboPurchaseRepo(by_realm=[local]),
-        mapping_repo=_FakePurchaseMappingRepo(mapping=SimpleNamespace(expense_id=55)),
+        identity_rows=[local],
     )
 
     result = svc.reconcile_purchases(realm_id="realm-1")
@@ -828,6 +815,61 @@ def test_purchase_void_diff_id_fetch_error_flags_nothing(monkeypatch, ids_raises
     void_issues = [i for i in repo.issues if i["drift_type"] == DRIFT_QBO_VOIDED]
     assert len(void_issues) == 0
     assert client.get_calls == []
+
+
+# U-301a: Purchase's own dedup-cache loop (service.py's `key = (realm_id, "Expense",
+# qbo_id)` / `if key in void_keys: ... else: void_keys.add(key)`) is a hand-copied
+# per-family loop, NOT the shared detect_void_absent_candidates engine — removing
+# "purchase" from _VOID_DETECTOR_CASES (below) means Bill/VendorCredit's continued
+# instances no longer exercise Purchase's own copy of it at all. These three tests
+# restore that coverage directly (mirroring test_void_issue_deduped_when_unresolved_issue_exists
+# / test_void_issue_written_when_no_existing_issue / test_dedupe_is_idempotent_within_one_run).
+def test_purchase_void_issue_deduped_when_unresolved_issue_exists(monkeypatch):
+    realm_id = "realm-1"
+    qbo_id = "GONE-404"
+    svc, repo = _fake_issue_service(seeded_issues=[(realm_id, "Expense", qbo_id, "open")])
+    local = SimpleNamespace(id=1, qbo_id=qbo_id)
+    client = _FakePurchaseVoidClient(ids=[], get_raises=QboNotFoundError("gone"))
+    _patch_purchase_void_stack(monkeypatch, client=client, identity_rows=[local])
+
+    result = svc.reconcile_purchases(realm_id=realm_id)
+
+    assert result["flagged"] == 1
+    assert result["flagged_deduped"] == 1
+    assert len(_void_issues_for_qbo_id(repo, qbo_id)) == 0
+
+
+def test_purchase_void_issue_written_when_no_existing_issue(monkeypatch):
+    realm_id = "realm-1"
+    qbo_id = "GONE-404"
+    svc, repo = _fake_issue_service()
+    local = SimpleNamespace(id=1, qbo_id=qbo_id)
+    client = _FakePurchaseVoidClient(ids=[], get_raises=QboNotFoundError("gone"))
+    _patch_purchase_void_stack(monkeypatch, client=client, identity_rows=[local])
+
+    result = svc.reconcile_purchases(realm_id=realm_id)
+
+    assert result["flagged"] == 1
+    assert result["flagged_deduped"] == 0
+    void_issues = _void_issues_for_qbo_id(repo, qbo_id)
+    assert len(void_issues) == 1
+    assert void_issues[0]["entity_type"] == "Expense"
+
+
+def test_purchase_dedupe_is_idempotent_within_one_run(monkeypatch):
+    realm_id = "realm-1"
+    qbo_id = "SHARED-404"
+    local_a = SimpleNamespace(id=1, qbo_id=qbo_id)
+    local_b = SimpleNamespace(id=2, qbo_id=qbo_id)
+    svc, repo = _fake_issue_service()
+    client = _FakePurchaseVoidClient(ids=[], get_raises=QboNotFoundError("gone"))
+    _patch_purchase_void_stack(monkeypatch, client=client, identity_rows=[local_a, local_b])
+
+    result = svc.reconcile_purchases(realm_id=realm_id)
+
+    assert result["flagged"] == 2
+    assert result["flagged_deduped"] == 1
+    assert len(_void_issues_for_qbo_id(repo, qbo_id)) == 1
 
 
 # ------------------------------------------------------------------ #
@@ -960,18 +1002,29 @@ def test_vendor_credit_full_record_pager_stops_on_short_page():
     assert len(http_client.query_strings) == 2
 
 
+# U-301a: "purchase" removed from this list. Its local_rows source is now
+# dbo.Expense's own identity (ExpenseService), structurally different from
+# bill/vendor_credit's still-qbo.*-staging-backed qbo_repo+mapping_repo shape
+# these generic cases assume — forcing it back into this abstraction would be
+# a special case bandaid, not a real fit. detect_void_absent_candidates itself
+# is untouched, so bill/vendor_credit continue to prove its shared control
+# flow identically; purchase's own family-specific behavior — including its
+# own copy of the dedup-cache loop, NOT shared code, so bill/vendor_credit's
+# continued instances don't exercise it — is covered by the dedicated tests
+# above in THIS file (test_purchase_void_diff_*,
+# test_purchase_void_issue_deduped_when_unresolved_issue_exists,
+# test_purchase_void_issue_written_when_no_existing_issue,
+# test_purchase_dedupe_is_idempotent_within_one_run) and
+# test_key_fetch_is_once_per_run_across_detectors below, plus
+# tests/test_qbo_reconcile_purchase_vendorcredit.py's missing-locally tests.
+# Re-add it here once bill/vendor_credit's own fan-out repoint (booked
+# follow-up to this pilot) lands and the shape is uniform again.
 _VOID_DETECTOR_CASES = [
     pytest.param(
         "bill",
         "Bill",
         "reconcile_bills",
         id="bill",
-    ),
-    pytest.param(
-        "purchase",
-        "Expense",
-        "reconcile_purchases",
-        id="purchase",
     ),
     pytest.param(
         "vendor_credit",
@@ -998,13 +1051,6 @@ def _patch_void_detector(monkeypatch, detector, *, client, qbo_repo, mapping_rep
             qbo_repo=qbo_repo,
             mapping_repo=mapping_repo,
         )
-    elif detector == "purchase":
-        _patch_purchase_void_stack(
-            monkeypatch,
-            client=client,
-            qbo_repo=qbo_repo,
-            mapping_repo=mapping_repo,
-        )
     else:
         _patch_vendor_credit_void_stack(
             monkeypatch,
@@ -1021,11 +1067,6 @@ def _make_void_client(detector, *, ids=None, get_raises=None, get_raises_by_id=N
             get_raises=get_raises,
             get_raises_by_id=get_raises_by_id or {},
         )
-    if detector == "purchase":
-        return _FakePurchaseVoidClient(
-            ids=ids if ids is not None else [],
-            get_raises=get_raises,
-        )
     return _FakeVendorCreditVoidClient(
         ids=ids if ids is not None else [],
         get_raises=get_raises,
@@ -1035,8 +1076,6 @@ def _make_void_client(detector, *, ids=None, get_raises=None, get_raises_by_id=N
 def _make_void_qbo_repo(detector, locals_list):
     if detector == "bill":
         return _FakeQboBillRepo(by_realm=locals_list)
-    if detector == "purchase":
-        return _FakeQboPurchaseRepo(by_realm=locals_list)
     return _FakeQboVendorCreditRepo(by_realm=locals_list)
 
 
@@ -1046,15 +1085,6 @@ def _make_void_mapping_repo(detector, mappings_by_local_id=None, mapping=None):
             mappings_by_local_id=mappings_by_local_id or {},
             mapping=mapping,
         )
-    if detector == "purchase":
-        if mappings_by_local_id:
-
-            class _PurchaseMappingById:
-                def read_by_qbo_purchase_id(self, local_id):
-                    return mappings_by_local_id[local_id]
-
-            return _PurchaseMappingById()
-        return _FakePurchaseMappingRepo(mapping=mapping)
 
     if mappings_by_local_id:
 
@@ -1077,8 +1107,6 @@ def _standard_void_locals(detector, qbo_id, *, local_id=1):
 def _standard_void_mapping(detector, local_id):
     if detector == "bill":
         return SimpleNamespace(bill_id=100 + local_id)
-    if detector == "purchase":
-        return SimpleNamespace(expense_id=200 + local_id)
     return SimpleNamespace(bill_credit_id=300 + local_id)
 
 
@@ -1462,16 +1490,10 @@ def test_key_fetch_is_once_per_run_across_detectors(monkeypatch):
         ids=[],
         get_raises=QboNotFoundError("gone"),
     )
-
-    class _PurchaseMappingById:
-        def read_by_qbo_purchase_id(self, local_id):
-            return SimpleNamespace(expense_id=200 + local_id)
-
     _patch_purchase_void_stack(
         monkeypatch,
         client=purchase_client,
-        qbo_repo=_FakeQboPurchaseRepo(by_realm=[purchase_local]),
-        mapping_repo=_PurchaseMappingById(),
+        identity_rows=[purchase_local],
     )
 
     svc.reconcile_bills(realm_id=realm_id)

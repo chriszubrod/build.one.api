@@ -258,6 +258,11 @@ GO
 -- (e.g. a staging row surviving an Expense create that failed/rolled back on
 -- a prior tick). RBAC-scoped via the existing UserCanAccessExpense UDF, like
 -- every other Expense read.
+-- U-301a: additive [Id] column — the reconciliation void detector needs the
+-- dbo.Expense.Id alongside QboId (its issue-detail message references the
+-- local row directly, and detect_void_absent_candidates's local_rows contract
+-- needs a real object per row, not a bare string). Existing callers reading
+-- by column name (ExpenseRepository.read_qbo_ids_by_realm_id) are unaffected.
 CREATE OR ALTER PROCEDURE ReadExpenseQboIdsByRealmId
 (
     @RealmId NVARCHAR(50),
@@ -268,7 +273,7 @@ AS
 BEGIN
     BEGIN TRANSACTION;
 
-    SELECT e.[QboId]
+    SELECT e.[Id], e.[QboId]
     FROM dbo.[Expense] e
     WHERE e.[RealmId] = @RealmId
       AND e.[QboId] IS NOT NULL

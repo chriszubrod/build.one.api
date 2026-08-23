@@ -1,6 +1,7 @@
 # Python Standard Library Imports
 import base64
 import logging
+from types import SimpleNamespace
 from typing import Optional
 from decimal import Decimal
 
@@ -362,16 +363,20 @@ class ExpenseRepository:
             logger.error(f"Error during read expense by QBO identity: {error}")
             raise map_database_error(error)
 
-    def read_qbo_ids_by_realm_id(
+    def read_qbo_identity_rows_by_realm_id(
         self,
         realm_id: str,
         *,
         actor_user_id: Optional[int] = None,
         actor_is_system_admin: Optional[bool] = None,
-    ) -> set:
+    ) -> list:
         """
-        Bulk dbo-native identity read (U-298): the set of QboIds already stamped
-        on dbo.Expense for a realm. RBAC-scoped like every other Expense read.
+        Bulk dbo-native identity read (U-298, [Id] added U-301a): every
+        (Id, QboId) pair already stamped on dbo.Expense for a realm, as
+        SimpleNamespace(id=..., qbo_id=...) rows. RBAC-scoped like every
+        other Expense read. Feeds both read_qbo_ids_by_realm_id (bare set,
+        below) and the reconciliation void detector's local_rows contract,
+        which needs a real per-row identity, not just a set membership test.
         """
         try:
             with get_connection() as conn:
@@ -386,10 +391,34 @@ class ExpenseRepository:
                     },
                 )
                 rows = cursor.fetchall()
-                return {row.QboId for row in rows if row and row.QboId}
+                return [
+                    SimpleNamespace(id=row.Id, qbo_id=row.QboId)
+                    for row in rows
+                    if row and row.QboId
+                ]
         except Exception as error:
-            logger.error(f"Error during read expense qbo ids by realm ID: {error}")
+            logger.error(f"Error during read expense qbo identity rows by realm ID: {error}")
             raise map_database_error(error)
+
+    def read_qbo_ids_by_realm_id(
+        self,
+        realm_id: str,
+        *,
+        actor_user_id: Optional[int] = None,
+        actor_is_system_admin: Optional[bool] = None,
+    ) -> set:
+        """
+        Bulk dbo-native identity read (U-298): the set of QboIds already stamped
+        on dbo.Expense for a realm. RBAC-scoped like every other Expense read.
+        """
+        return {
+            row.qbo_id
+            for row in self.read_qbo_identity_rows_by_realm_id(
+                realm_id,
+                actor_user_id=actor_user_id,
+                actor_is_system_admin=actor_is_system_admin,
+            )
+        }
 
     def set_qbo_identity(
         self,

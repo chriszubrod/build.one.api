@@ -61,24 +61,22 @@ class _FakePurchaseClient:
         return SimpleNamespace(id=purchase_id)
 
 
-class _FakeQboPurchaseRepo:
-    def __init__(self, *, by_qbo_id=None, by_realm=None):
-        self._by_qbo_id = by_qbo_id
-        self._by_realm = by_realm or []
+class _FakeExpenseIdentityService:
+    """U-301a: stands in for ExpenseService's two bulk dbo-native identity
+    reads, replacing the old qbo.Purchase/qbo.PurchaseExpense staging+mapping
+    fakes. `rows` is the (Id, QboId) identity set for the realm — both
+    read_qbo_ids_by_realm_id (missing-locally) and
+    read_qbo_identity_rows_by_realm_id (voided) derive from the same list,
+    exactly like the real ExpenseService/ExpenseRepository pair."""
 
-    def read_by_qbo_id(self, qbo_id):
-        return self._by_qbo_id
+    def __init__(self, *, rows=None):
+        self._rows = list(rows or [])
 
-    def read_by_realm_id(self, realm_id):
-        return self._by_realm
+    def read_qbo_ids_by_realm_id(self, realm_id):
+        return {row.qbo_id for row in self._rows}
 
-
-class _FakePurchaseMappingRepo:
-    def __init__(self, mapping=None):
-        self._mapping = mapping
-
-    def read_by_qbo_purchase_id(self, local_id):
-        return self._mapping
+    def read_qbo_identity_rows_by_realm_id(self, realm_id):
+        return self._rows
 
 
 class _FakePurchaseService:
@@ -99,19 +97,15 @@ class _FakePurchaseConnector:
         self.calls.append((qbo_purchase, qbo_purchase_lines))
 
 
-def _patch_purchase_stack(monkeypatch, *, client, qbo_repo, mapping_repo,
+def _patch_purchase_stack(monkeypatch, *, client, expense_identity_service,
                           purchase_service=None, connector=None):
     monkeypatch.setattr(
         "integrations.intuit.qbo.purchase.external.client.QboPurchaseClient",
         lambda realm_id: client,
     )
     monkeypatch.setattr(
-        "integrations.intuit.qbo.purchase.persistence.repo.QboPurchaseRepository",
-        lambda: qbo_repo,
-    )
-    monkeypatch.setattr(
-        "integrations.intuit.qbo.purchase.connector.expense.persistence.repo.PurchaseExpenseRepository",
-        lambda: mapping_repo,
+        "entities.expense.business.service.ExpenseService",
+        lambda: expense_identity_service,
     )
     svc = purchase_service or _FakePurchaseService()
     conn = connector or _FakePurchaseConnector()
@@ -242,8 +236,7 @@ def test_purchase_missing_locally_autofix_on(monkeypatch):
     purchase_svc, connector = _patch_purchase_stack(
         monkeypatch,
         client=client,
-        qbo_repo=_FakeQboPurchaseRepo(by_qbo_id=None),
-        mapping_repo=_FakePurchaseMappingRepo(mapping=None),
+        expense_identity_service=_FakeExpenseIdentityService(rows=[]),
     )
 
     result = svc.reconcile_purchases(realm_id="realm-1")
@@ -263,8 +256,7 @@ def test_purchase_missing_locally_autofix_off(monkeypatch):
     purchase_svc, connector = _patch_purchase_stack(
         monkeypatch,
         client=client,
-        qbo_repo=_FakeQboPurchaseRepo(by_qbo_id=None),
-        mapping_repo=_FakePurchaseMappingRepo(mapping=None),
+        expense_identity_service=_FakeExpenseIdentityService(rows=[]),
     )
 
     result = svc.reconcile_purchases(realm_id="realm-1")
@@ -281,16 +273,37 @@ def test_purchase_missing_locally_autofix_off(monkeypatch):
     assert len(summary) == 1
 
 
+def test_purchase_missing_locally_skips_dbo_mapped(monkeypatch):
+    """U-301a: a QBO purchase already carrying a dbo.Expense.QboId is never
+    counted missing, without any qbo.Purchase/qbo.PurchaseExpense round trip."""
+    monkeypatch.delenv("QBO_RECONCILE_PURCHASE_AUTOFIX", raising=False)
+    svc, repo = _fake_issue_service()
+    qbo_purchase = SimpleNamespace(id="P-MAPPED")
+    client = _FakePurchaseClient(purchases=[qbo_purchase])
+    purchase_svc, connector = _patch_purchase_stack(
+        monkeypatch,
+        client=client,
+        expense_identity_service=_FakeExpenseIdentityService(
+            rows=[SimpleNamespace(id=1, qbo_id="P-MAPPED")]
+        ),
+    )
+
+    result = svc.reconcile_purchases(realm_id="realm-1")
+
+    assert result["auto_fixed"] == 0
+    assert len(purchase_svc.calls) == 0
+    missing_issues = [i for i in repo.issues if i["drift_type"] == DRIFT_QBO_MISSING_LOCALLY]
+    assert len(missing_issues) == 0
+
+
 def test_purchase_voided_flagged(monkeypatch):
     svc, repo = _fake_issue_service()
-    local = SimpleNamespace(id=10, qbo_id="P-VOID")
-    mapping = SimpleNamespace(expense_id=55)
+    local = SimpleNamespace(id=55, qbo_id="P-VOID")
     client = _FakePurchaseClient(ids=[], get_raises=QboNotFoundError("not found"))
     _patch_purchase_stack(
         monkeypatch,
         client=client,
-        qbo_repo=_FakeQboPurchaseRepo(by_realm=[local]),
-        mapping_repo=_FakePurchaseMappingRepo(mapping=mapping),
+        expense_identity_service=_FakeExpenseIdentityService(rows=[local]),
     )
 
     result = svc.reconcile_purchases(realm_id="realm-1")
@@ -306,8 +319,7 @@ def test_purchase_voided_flagged(monkeypatch):
 
 def test_purchase_detector_failure_isolation(monkeypatch):
     svc, repo = _fake_issue_service()
-    local = SimpleNamespace(id=10, qbo_id="P-ISO")
-    mapping = SimpleNamespace(expense_id=77)
+    local = SimpleNamespace(id=77, qbo_id="P-ISO")
     client = _FakePurchaseClient(
         purchases=[],
         ids=[],
@@ -317,8 +329,7 @@ def test_purchase_detector_failure_isolation(monkeypatch):
     _patch_purchase_stack(
         monkeypatch,
         client=client,
-        qbo_repo=_FakeQboPurchaseRepo(by_realm=[local]),
-        mapping_repo=_FakePurchaseMappingRepo(mapping=mapping),
+        expense_identity_service=_FakeExpenseIdentityService(rows=[local]),
     )
 
     result = svc.reconcile_purchases(realm_id="realm-1")

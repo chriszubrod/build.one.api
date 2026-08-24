@@ -35,6 +35,8 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS_DIR = REPO_ROOT / "scripts"
 if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from conftest import mock_qbo_app_lock_granted  # noqa: E402
 
 ACTIVE_PREDICATE = "Active IN (true, false)"
 
@@ -176,32 +178,84 @@ def _make_qbo_term(**overrides: Any) -> QboTerm:
     return QboTerm(**defaults)
 
 
+# U-313: the vendor family is dbo-only -- no mapping table, so the create/
+# adopt path runs inside `run_identity_fastpath_dbo_only`'s own app lock plus
+# `_stamp_vendor_identity`'s per-candidate lock. Both resolve to a live
+# sp_getapplock, which this pure-logic suite cannot reach, so the VENDOR row
+# of the shared parametrizations below runs its sync inside granted-lock
+# patches -- mirrors the customer builder's identical U-310 fix below.
+FASTPATH_LOCK_TARGET = "integrations.intuit.qbo.base.identity_fastpath.qbo_app_lock"
+VENDOR_STAMP_LOCK_TARGET = (
+    "integrations.intuit.qbo.vendor.connector.vendor.business.service.qbo_app_lock"
+)
+
+
 def _build_vendor_connector() -> VendorVendorConnector:
     connector = VendorVendorConnector(
-        mapping_repo=Mock(),
         vendor_service=Mock(),
         vendor_address_service=Mock(),
         address_connector=Mock(),
         reconciliation_repo=Mock(),
     )
-    connector.mapping_repo.read_by_qbo_vendor_id.return_value = None
     connector.vendor_service.read_by_name.return_value = None
     connector._sync_addresses = Mock()
-    # U-290: default the direct dbo-identity fast path to a miss so these
-    # tests keep exercising the mapping-table (legacy) path they're testing.
+    # U-290/U-313: default the direct dbo-identity fast path to a miss so
+    # these tests keep exercising the create/adopt path they're testing.
     connector.vendor_service.read_by_qbo_identity.return_value = None
+    # `_stamp_vendor_identity` re-reads the candidate under its own lock and
+    # returns the re-read row; a bare Mock would return a truthy stand-in whose
+    # `.qbo_id` trips the theft guard. Resolve to whatever `create()`
+    # produced, so a create-path test still gets its own created row back.
+    connector.vendor_service.read_by_id.side_effect = (
+        lambda _id: connector.vendor_service.create.return_value
+    )
+
+    real_sync = connector.sync_from_qbo_vendor
+
+    def _sync_under_granted_locks(qbo_vendor):
+        with patch(FASTPATH_LOCK_TARGET, mock_qbo_app_lock_granted), patch(
+            VENDOR_STAMP_LOCK_TARGET, mock_qbo_app_lock_granted
+        ):
+            return real_sync(qbo_vendor)
+
+    connector.sync_from_qbo_vendor = _sync_under_granted_locks
     return connector
+
+
+CUST_STAMP_LOCK_TARGET = (
+    "integrations.intuit.qbo.customer.connector.customer.business.service.qbo_app_lock"
+)
 
 
 def _build_customer_connector() -> CustomerCustomerConnector:
     connector = CustomerCustomerConnector(
-        mapping_repo=Mock(),
         customer_service=Mock(),
+        reconciliation_repo=Mock(),
     )
-    connector.mapping_repo.read_by_qbo_customer_id.return_value = None
-    # U-276: default the direct dbo-identity fast path to a miss so these
-    # tests keep exercising the mapping-table path they're testing.
+    # U-276/U-310: default the direct dbo-identity fast path to a miss so these
+    # tests keep exercising the create path they're testing.
     connector.customer_service.read_by_qbo_identity.return_value = None
+    # Post-U-310 the adopt step is a NAME match against dbo.Customer (the
+    # mapping-table lookup this replaced was pinned to None the same way) --
+    # mirrors the vendor sibling's `read_by_name` stub above.
+    connector.customer_service.read_by_name.return_value = None
+    # `_stamp_customer_identity` re-reads the candidate under its own lock and
+    # returns the re-read row; a bare Mock would return a truthy stand-in whose
+    # `.qbo_id` trips the theft guard. Resolve to whatever `create()` produced,
+    # so a create-path test still gets its own created row back.
+    connector.customer_service.read_by_id.side_effect = (
+        lambda _id: connector.customer_service.create.return_value
+    )
+
+    real_sync = connector.sync_from_qbo_customer
+
+    def _sync_under_granted_locks(qbo_customer):
+        with patch(FASTPATH_LOCK_TARGET, mock_qbo_app_lock_granted), patch(
+            CUST_STAMP_LOCK_TARGET, mock_qbo_app_lock_granted
+        ):
+            return real_sync(qbo_customer)
+
+    connector.sync_from_qbo_customer = _sync_under_granted_locks
     return connector
 
 
@@ -522,9 +576,12 @@ def test_inactive_unmapped_record_is_not_adopted_onto_a_live_local_row(
     # genuine ADOPT-AND-BIND path without the guard. A bare Mock returns a truthy
     # object here, which would divert vendor/project into their "already bound to a
     # different QBO record" branch and prove something weaker than we mean to.
-    for reverse in ("read_by_vendor_id", "read_by_project_id"):
-        if hasattr(connector.mapping_repo, reverse):
-            getattr(connector.mapping_repo, reverse).return_value = None
+    # Vendor (U-313) has no `mapping_repo` at all anymore -- `hasattr(connector, ...)`
+    # gates the attribute access itself, not just the method lookup on it.
+    if hasattr(connector, "mapping_repo"):
+        for reverse in ("read_by_vendor_id", "read_by_project_id"):
+            if hasattr(connector.mapping_repo, reverse):
+                getattr(connector.mapping_repo, reverse).return_value = None
 
     model = model_builder(active=False, **model_kwargs)
     with pytest.raises(ValueError, match="inactive in QBO and has no local"):
@@ -718,10 +775,13 @@ def _qbo_name_field(model_builder, incoming_name: str) -> dict[str, str]:
 
 
 def _setup_customer_mapped(connector: CustomerCustomerConnector, local_name: str) -> str:
-    mapping = SimpleNamespace(id=1, customer_id=10)
-    customer = SimpleNamespace(id=10, name=local_name, email="", phone="")
-    connector.mapping_repo.read_by_qbo_customer_id.return_value = mapping
-    connector.customer_service.read_by_id.return_value = customer
+    """U-310: 'already mapped' for the customer family is now a direct
+    dbo-identity HIT (`read_by_qbo_identity`), not a qbo.CustomerCustomer
+    mapping row -- the mapping table is gone. Same property under test: an
+    already-bound record still updates, and the name-preservation rule applies
+    on that update path."""
+    customer = SimpleNamespace(id=10, qbo_id="QBO-C-1", realm_id="r1", name=local_name, email="", phone="")
+    connector.customer_service.read_by_qbo_identity.return_value = customer
     connector.customer_service.repo.update_by_id.side_effect = lambda c: c
     return local_name
 

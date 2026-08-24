@@ -9,7 +9,7 @@ from integrations.intuit.qbo.base.field_ownership import (
     preserve_human_edited_name,
     raise_if_inactive_unmapped,
 )
-from integrations.intuit.qbo.base.identity_consistency import verify_customer_qbo_identity
+from integrations.intuit.qbo.base.identity_consistency import verify_identity_dbo_only
 from integrations.intuit.qbo.base.identity_fastpath import (
     raise_concurrent_write_race,
     resolve_mapping_state,
@@ -62,11 +62,17 @@ class CustomerProjectConnector:
         self.address_connector = address_connector or PhysicalAddressAddressConnector()
         self.customer_mapping_repo = customer_mapping_repo or CustomerCustomerRepository()
         self.reconciliation_repo = reconciliation_repo or ReconciliationIssueRepository()
-        # U-297: both feed _resolve_parent_customer_id. qbo_customer_repo was
-        # previously constructed INLINE inside sync_from_qbo_customer, which left
-        # no seam to intercept it — injecting it matches the canonical DI shape
-        # (BillLineItemConnector) and is what makes the new resolver testable
-        # without reaching live pyodbc.
+        # U-297: both USED to feed _resolve_parent_customer_id (qbo_customer_repo
+        # was previously constructed INLINE inside sync_from_qbo_customer, which
+        # left no seam to intercept it — injecting it matched the canonical DI
+        # shape of BillLineItemConnector and made that resolver testable without
+        # reaching live pyodbc).
+        # U-310: they no longer do — _resolve_parent_customer_id is dbo-only and
+        # reads neither. customer_mapping_repo/qbo_customer_repo are kept here
+        # for constructor back-compat only (existing callers/tests still pass
+        # them for this connector's OTHER, not-yet-repointed methods).
+        # TODO(U-311/U-313): drop both params once this connector's own pull
+        # path is repointed and qbo.CustomerCustomer is dropped.
         self.customer_service = customer_service or CustomerService()
         self.qbo_customer_repo = qbo_customer_repo or QboCustomerRepository()
         # Per-instance memo for the parent-Customer resolution. ONE connector
@@ -370,21 +376,21 @@ class CustomerProjectConnector:
 
         return project
 
-    # The ONLY QBO parent-customer-ref -> dbo.Customer resolver (U-297), and the
-    # only pull-side reader of the qbo.Customer -> qbo.CustomerCustomer hop —
-    # the four `_get_project_public_id` resolvers (bill_line_item / purchase's
+    # The ONLY QBO parent-customer-ref -> dbo.Customer resolver (U-297) — the
+    # four `_get_project_public_id` resolvers (bill_line_item / purchase's
     # expense_line_item / vendorcredit's bill_credit_line_item / invoice) hop
     # through qbo.CustomerProject instead, and the five vendor-ref resolvers
-    # (U-284v) through qbo.VendorVendor. Same dbo-first / verify /
-    # legacy-fallback shape as all nine, but returns a LOCAL INT rather than a
-    # public_id — like ExpenseCodingItemService._resolve_vendor_id — because its
-    # result is WRITTEN to dbo.Project.CustomerId by
-    # _apply_project_fields_and_sync, not just used as a lookup key.
+    # (U-284v) through qbo.VendorVendor. Same dbo-first / verify shape as all
+    # nine, but returns a LOCAL INT rather than a public_id — like
+    # ExpenseCodingItemService._resolve_vendor_id — because its result is
+    # WRITTEN to dbo.Project.CustomerId by _apply_project_fields_and_sync, not
+    # just used as a lookup key.
     # Hand-copied deliberately, mirroring _get_project_public_id's own precedent;
     # see TODO.md's U-005[reuse] entry before adding a copy or consolidating.
-    # NB a direct hit still reads qbo.CustomerCustomer (and, only when a mapping
-    # row exists, qbo.Customer) via the verify step, so this repoint does NOT by
-    # itself retire either staging table for this connector.
+    # U-310: this resolver is now fully dbo-only — it reads NEITHER
+    # qbo.CustomerCustomer nor qbo.Customer (the verify step is Option A's
+    # `verify_identity_dbo_only`, and the legacy two-hop fallback is deleted).
+    # The sibling nine still carry their own hops; those are U-311/U-312's.
     def _get_parent_customer_id(
         self, parent_ref_value: Optional[str], realm_id: Optional[str] = None
     ) -> Optional[int]:
@@ -421,34 +427,34 @@ class CustomerProjectConnector:
         Returns:
             int: local dbo.Customer.Id, or None.
         """
-        # U-297: try dbo.Customer's native QboId/RealmId directly first (U-238c
-        # stamped every row) before falling back to the qbo.Customer ->
-        # qbo.CustomerCustomer hop below. Read-only resolver — a verify
-        # disagreement just falls through to the legacy hop rather than a hard
-        # stop, matching the four sibling `_get_project_public_id` resolvers:
-        # there is no write HERE to protect, unlike the header identity fast
-        # path, whose conflict branch must raise.
+        # U-297: try dbo.Customer's native QboId/RealmId directly (U-238c
+        # stamped every row). U-310 (Option A, `docs/design/wave5.md` §2):
+        # the verify step is now `verify_identity_dbo_only` — a plain re-read
+        # of dbo.Customer by the resolved row's OWN (qbo_id, realm_id),
+        # trusted only when it still resolves back to the same local id — and
+        # reads NO `qbo.*` mapping table at all.
+        #
+        # There is no legacy two-hop fallback left: the old
+        # `qbo.Customer` -> `qbo.CustomerCustomer` hop was this resolver's
+        # only other data source, and Wave 5 retires that mapping table. So a
+        # miss or a refused verify now returns None outright. Per §2's
+        # "consequence worth flagging": this resolver used to be ADVISORY (a
+        # verify disagreement degraded gracefully to the slower legacy hop);
+        # once the mapping table's data source is gone it becomes
+        # hard-stop-equivalent BY CONSTRUCTION, not by choice. Measured as a
+        # no-op today (0 dbo<->mapping disagreements live, §1), but a future
+        # disagreement that used to degrade now resolves the parent to None —
+        # the Project simply syncs without a CustomerId rather than binding to
+        # an unverified parent, which is the safe side of that trade.
         direct_customer = self.customer_service.read_by_qbo_identity(parent_ref_value, realm_id)
         if direct_customer:
-            verified_qbo_id = verify_customer_qbo_identity(
+            verified_qbo_id = verify_identity_dbo_only(
                 direct_customer,
-                customer_customer_repo=self.customer_mapping_repo,
-                qbo_customer_repo=self.qbo_customer_repo,
+                read_direct_by_qbo_identity=self.customer_service.read_by_qbo_identity,
             )
             if verified_qbo_id:
                 logger.debug(f"Found Customer {direct_customer.id} via direct dbo QboId lookup")
                 return direct_customer.id
-
-        # Legacy two-hop, behavior-unchanged. Deliberately stays realm-UNSCOPED
-        # (`read_by_qbo_id`, no realm predicate): realm-scoping it here would be a
-        # behavior change beyond this repoint, and would start MISSING parents
-        # whose staging row carries a NULL/other realm.
-        parent_qbo_customer = self.qbo_customer_repo.read_by_qbo_id(parent_ref_value)
-        if parent_qbo_customer:
-            parent_mapping = self.customer_mapping_repo.read_by_qbo_customer_id(parent_qbo_customer.id)
-            if parent_mapping:
-                logger.debug(f"Found parent Customer {parent_mapping.customer_id} for Project")
-                return parent_mapping.customer_id
         return None
 
     def _apply_project_fields_and_sync(

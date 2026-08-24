@@ -423,15 +423,21 @@ def test_customer_connector_update_race_holds_the_watermark():
 
     The raise must NOT be a plain ValueError: rule 2 classifies that as a permanent
     SKIP, which advances the watermark too — the very outcome being fixed.
+
+    U-310 repointed this connector onto `run_identity_fastpath_dbo_only`, so the
+    mapping table is gone and the race now reproduces on the dbo-only HIT branch
+    (a direct identity match whose `update_by_id` affects 0 rows). The regression
+    being guarded is unchanged: `_on_update_empty` must still fire and still
+    raise RuntimeError, not ValueError, and nothing may be minted or stamped on
+    the way out.
     """
     from integrations.intuit.qbo.customer.connector.customer.business.service import (
         CustomerCustomerConnector,
     )
 
-    mapping_repo, customer_service = Mock(), Mock()
+    customer_service = Mock()
     customer_service.repo = Mock()
     connector = CustomerCustomerConnector(
-        mapping_repo=mapping_repo,
         customer_service=customer_service,
         reconciliation_repo=Mock(),
     )
@@ -440,18 +446,21 @@ def test_customer_connector_update_race_holds_the_watermark():
         display_name="Acme", company_name=None, primary_email_addr=None,
         primary_phone=None, mobile=None, active=True,
     )
+    # Direct dbo-identity HIT: the row exists and carries this identity...
     customer_service.read_by_qbo_identity.return_value = SimpleNamespace(
         id=55, name="Acme", email="", phone=""
     )
-    customer_service.repo.update_by_id.return_value = None  # ROWVERSION race
-    mapping_repo.read_by_customer_id.return_value = None    # state == "missing"
-    mapping_repo.read_by_qbo_customer_id.return_value = None
+    customer_service.repo.update_by_id.return_value = None  # ...but the write races
 
-    with pytest.raises(RuntimeError):
+    with pytest.raises(RuntimeError) as excinfo:
         connector.sync_from_qbo_customer(qbo_customer)
 
     # A plain ValueError here would be classified as a permanent skip.
-    mapping_repo.create.assert_not_called()
+    assert not isinstance(excinfo.value, ValueError)
+    # Nothing minted and nothing stamped — the dbo-only equivalent of the
+    # pre-U-310 "no mapping row was written" assertion.
+    customer_service.create.assert_not_called()
+    customer_service.repo.set_qbo_identity.assert_not_called()
 
 
 def test_apply_fields_omitted_still_self_heals_and_still_hard_stops():

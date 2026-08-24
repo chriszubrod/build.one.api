@@ -2,6 +2,28 @@
 
 Carry-over items from sessions. Check off as done; prune anything stale.
 
+## U-310 follow-ups (Customer Wave-5 dbo-only repoint) — deferred, not scope-creeped in (2026-08-24)
+
+- [ ] **`ReadCustomerByName` doesn't SELECT `[QboId]`/`[RealmId]`** (`entities/customer/sql/dbo.customer.sql`)
+  — unlike CostCode's `vw_CostCode` (which `ReadCostCodeByNumber` reads from and which DOES project identity),
+  so `CustomerCustomerConnector._resolve_customer_candidate`'s own duplicate-QboId guard is provably dead
+  against a real DB read; only `_stamp_customer_identity`'s `read_by_id`-based re-read (which does carry those
+  columns) ever actually fires in production (Codex round-1 P2, fixed by also guarding at the stamp site — see
+  `_check_no_conflicting_identity`). Fix, if picked up: add `[QboId]`, `[RealmId]` to `ReadCustomerByName`'s
+  SELECT list (mechanical, matches `ReadCustomerById`'s shape) — a SQL change, needs its own DBA-reviewed unit,
+  not bundled into this Python-only repoint.
+- [ ] **`run_identity_fastpath_dbo_only` (`integrations/intuit/qbo/base/identity_fastpath.py`) has no
+  structural hook for a `stamp_identity`-returned-`None` ROWVERSION race**, unlike its HIT-branch
+  `on_apply_returned_none` (which the primitive itself auto-invokes). U-310's `_stamp_customer_identity` had to
+  hand-roll this check inline (Codex round-1 P2). **Confirmed via `/simplify`'s altitude lens that the shipped
+  precedent, `ItemCostCodeConnector._stamp_cost_code_identity` (U-307c, `integrations/intuit/qbo/item/connector/cost_code/business/service.py`),
+  has this exact gap UNGUARDED** — its adopt-write's `update_by_id(current)` return value is discarded, so a
+  ROWVERSION race there would silently stamp QBO identity onto a CostCode whose Name/Description were never
+  actually written. Worth a shared `on_stamp_returned_none`-style hook on the primitive (mirroring
+  `on_apply_returned_none`) so future adopters (Vendor, etc.) get this for free instead of each hand-copying
+  the guard a 4th time — and CostCode's own gap should get the same guard once someone's back in that file. Both
+  changes touch `integrations/intuit/qbo/base/` / a sibling connector, out of this unit's strict 2-file scope.
+
 ## U-312 finding beyond the assignment's ask — deferred, not scope-creeped in (2026-08-24)
 
 - [ ] **`ReadProjects`/`ReadProjectByPublicId`/`ReadProjectByName` don't SELECT `[QboId]`/`[RealmId]`** (`entities/project/sql/dbo.project.sql`)

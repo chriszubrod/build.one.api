@@ -8,11 +8,9 @@ import pytest
 
 from entities.address.business.model import Address
 from integrations.intuit.qbo.base.identity_drift import REFERENCE_ENTITY_SPECS, classify_qbo_identity_drift
-from integrations.intuit.qbo.customer.connector.customer.business.service import CustomerCustomerConnector
 from integrations.intuit.qbo.physical_address.business.model import QboPhysicalAddress
 from integrations.intuit.qbo.physical_address.connector.business.service import PhysicalAddressAddressConnector
 from integrations.intuit.qbo.term.connector.payment_term.business.service import TermPaymentTermConnector
-from integrations.intuit.qbo.vendor.connector.vendor.business.service import VendorVendorConnector
 from integrations.intuit.qbo.vendorcredit.connector.bill_credit.business.service import VendorCreditBillCreditConnector
 from scripts.backfill_qbo_identity_reference import (
     main as backfill_main,
@@ -213,78 +211,16 @@ def test_set_qbo_identity_calls_sproc(repo_path, sproc, extra_params):
     }
 
 
-def _make_vendor_connector():
-    mapping_repo = Mock()
-    mapping_repo.read_by_vendor_id.return_value = None
-    mapping_repo.read_by_qbo_vendor_id.return_value = None
-    mapping_repo.create.return_value = SimpleNamespace(id=1)
-    vendor_service = Mock()
-    vendor_service.repo = Mock()
-    connector = VendorVendorConnector(mapping_repo=mapping_repo, vendor_service=vendor_service)
-    return connector, mapping_repo, vendor_service.repo
-
-
-def test_vendor_create_mapping_dual_writes_identity():
-    connector, mapping_repo, vendor_repo = _make_vendor_connector()
-    connector.create_mapping(
-        vendor_id=10,
-        qbo_vendor_id=20,
-        qbo_id="V-1",
-        realm_id="realm-x",
-    )
-    vendor_repo.set_qbo_identity.assert_called_once_with(
-        id=10, qbo_id="V-1", realm_id="realm-x", active=None
-    )
-    mapping_repo.create.assert_called_once_with(vendor_id=10, qbo_vendor_id=20)
-
-
-def test_vendor_create_mapping_identity_failure_propagates():
-    connector, mapping_repo, vendor_repo = _make_vendor_connector()
-    vendor_repo.set_qbo_identity.side_effect = RuntimeError("stamp failed")
-    with pytest.raises(RuntimeError, match="stamp failed"):
-        connector.create_mapping(
-            vendor_id=10,
-            qbo_vendor_id=20,
-            qbo_id="V-1",
-            realm_id="realm-x",
-        )
-    mapping_repo.create.assert_not_called()
-
-
-def _make_customer_connector():
-    mapping_repo = Mock()
-    mapping_repo.read_by_customer_id.return_value = None
-    mapping_repo.read_by_qbo_customer_id.return_value = None
-    mapping_repo.create.return_value = SimpleNamespace(id=1)
-    customer_service = Mock()
-    customer_service.repo = Mock()
-    connector = CustomerCustomerConnector(mapping_repo=mapping_repo, customer_service=customer_service)
-    return connector, mapping_repo, customer_service.repo
-
-
-def test_customer_create_mapping_dual_writes_identity():
-    connector, mapping_repo, customer_repo = _make_customer_connector()
-    connector.create_mapping(
-        customer_id=5,
-        qbo_customer_id=6,
-        qbo_id="C-1",
-        realm_id="realm-y",
-    )
-    customer_repo.set_qbo_identity.assert_called_once_with(id=5, qbo_id="C-1", realm_id="realm-y")
-    mapping_repo.create.assert_called_once_with(customer_id=5, qbo_customer_id=6)
-
-
-def test_customer_create_mapping_identity_failure_propagates():
-    connector, mapping_repo, customer_repo = _make_customer_connector()
-    customer_repo.set_qbo_identity.side_effect = RuntimeError("stamp failed")
-    with pytest.raises(RuntimeError, match="stamp failed"):
-        connector.create_mapping(
-            customer_id=5,
-            qbo_customer_id=6,
-            qbo_id="C-1",
-            realm_id="realm-y",
-        )
-    mapping_repo.create.assert_not_called()
+# U-310/U-313: the Customer AND Vendor families' `create_mapping` dual-writes
+# are GONE -- CustomerCustomerConnector/VendorVendorConnector no longer touch
+# qbo.CustomerCustomer/qbo.VendorVendor at all (each stamps its dbo-native
+# identity inside its own `_stamp_*_identity` under the candidate's own app
+# lock instead). Their replacement contract -- "the identity stamp happens,
+# and a failure to stamp never leaves a half-bound row" -- is covered in
+# tests/test_u276_customer_project_qbo_identity_repoint.py's Section 2 and
+# tests/test_u290_vendor_qbo_identity_repoint.py's Section 2, which is where
+# each family's dbo-only tests now live. PaymentTerm below still has its
+# mapping table (not in Wave 5).
 
 
 def _make_payment_term_connector():

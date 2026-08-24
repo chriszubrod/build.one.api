@@ -6,21 +6,29 @@ Covers:
   1. CustomerRepository.read_by_qbo_identity / ProjectRepository.read_by_qbo_identity
      (sproc call shape).
   2. ProjectService.read_by_qbo_identity threads RBAC actor scope like its siblings.
-  3. CustomerCustomerConnector / CustomerProjectConnector's new direct-identity fast
-     path: hit updates without the mapping-table hop + self-heals a missing mapping
-     row; miss falls through to the pre-existing mapping-table path unchanged.
-  4. The Bill / Purchase / Invoice `_get_qbo_customer_ref` push helpers now read
+  3. CustomerCustomerConnector's identity resolution -- as of U-310 this is the
+     DBO-ONLY fast path (`run_identity_fastpath_dbo_only`): no qbo.CustomerCustomer
+     read or write of any kind, so there is no mapping-table fallback, no
+     self-heal, and no mapping-vs-dbo conflict state left to test. A hit updates
+     fields and writes nothing else; a genuine miss adopts by NAME or creates,
+     then stamps identity under the candidate's own lock. See Section 2's header.
+  4. CustomerProjectConnector's direct-identity fast path -- still the U-276
+     mapping-table shape (hit updates without the mapping hop + self-heals a
+     missing mapping row; miss falls through to the pre-existing mapping-table
+     path unchanged). Project's own dbo-only repoint is U-311, not U-310.
+  5. The Bill / Purchase / Invoice `_get_qbo_customer_ref` push helpers now read
      dbo.Project.Name/.QboId directly instead of qbo.Customer.DisplayName.
 """
 import sys
+from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import MagicMock, Mock, patch
+from unittest.mock import MagicMock, Mock, call, patch
 
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from conftest import stub_identity_check_trusts
+from conftest import mock_qbo_app_lock_granted, stub_identity_check_trusts
 from integrations.intuit.qbo.base.identity_consistency import IdentityCheckResult
 from integrations.intuit.qbo.customer.connector.customer.business.service import (
     CustomerCustomerConnector,
@@ -125,248 +133,628 @@ def test_customer_service_read_by_qbo_identity_is_a_thin_passthrough():
     repo.read_by_qbo_identity.assert_called_once_with("C-1", "realm-1")
 
 
-# --- Section 2: CustomerCustomerConnector fast path ---
+# --- Section 2: CustomerCustomerConnector dbo-only fast path (U-310) ---
 #
-# The mapping-conflict cases are unit-tested directly against
-# _resolve_mapping_state / _raise_identity_mapping_conflict_issue rather than
-# through the full sync_from_qbo_customer(), because a detected conflict now
-# falls through to the pre-existing (complex, multi-branch) legacy path
-# instead of returning early (round-3 review finding: checking-then-mutating
-# was itself the bug, so the fast path must not write on conflict — and what
-# the legacy fallback then does with a globally-unmapped QboCustomer is
-# already covered by test_qbo_customer_project_heal.py / test_u219, not this
-# file's concern). What THIS file must prove: (a) the conflict is correctly
-# detected and recorded, (b) the dbo-identity-matched row is never written to
-# on that path.
+# U-310 retired `qbo.CustomerCustomer` from this connector entirely (Wave-5
+# "trust dbo alone", `docs/design/wave5.md` §2/§4): there is no mapping table
+# left to read, write, self-heal, or conflict against, so the pre-U-310
+# _resolve_mapping_state / _raise_identity_mapping_conflict_issue /
+# create_mapping tests this section used to hold are gone with the machinery
+# they covered. What THIS section must now prove is the dbo-only contract,
+# mirroring `test_u289_item_qbo_identity_repoint.py`'s ItemCostCodeConnector
+# section one-for-one (Customer is the same "parent, business-key-adoptable"
+# shape as CostCode, with `name` as the business key where CostCode uses
+# `number`): a direct or race-discovered hit updates fields and writes nothing
+# else; a genuine miss (re-confirmed under the create lock) adopts an existing
+# unmapped Customer by NAME (RAW name overwrite, U-219) or creates fresh, then
+# stamps identity under the candidate's OWN lock; a name-matched row already
+# carrying a DIFFERENT identity raises + records a `customer_identity_conflict`
+# issue instead of being silently re-pointed (Decision 2's duplicate-QboId
+# guard -- the one genuinely new, correctness-critical piece of this repoint).
+
+
+CUST_CONNECTOR_MODULE = (
+    "integrations.intuit.qbo.customer.connector.customer.business.service"
+)
+FASTPATH_LOCK_TARGET = "integrations.intuit.qbo.base.identity_fastpath.qbo_app_lock"
+# _stamp_customer_identity acquires its OWN app lock directly (not through
+# run_identity_fastpath_dbo_only's create lock) -- a separate import in the
+# connector module, so it needs its own patch target.
+CUST_STAMP_LOCK_TARGET = f"{CUST_CONNECTOR_MODULE}.qbo_app_lock"
+
+
+def _make_customer(**overrides):
+    defaults = dict(
+        id=55, public_id="cust-pub-55", qbo_id=None, realm_id=None,
+        name="Acme", email="", phone="",
+    )
+    defaults.update(overrides)
+    return SimpleNamespace(**defaults)
+
+
+def _denied_lock(*_args, **_kwargs):
+    @contextmanager
+    def _cm(*_a, **_k):
+        yield False
+
+    return _cm()
+
+
+def _recording_lock_factory(recorded):
+    def _recording_lock(resource_name, timeout_ms=15000):
+        recorded.append(resource_name)
+
+        @contextmanager
+        def _cm():
+            yield True
+
+        return _cm()
+
+    return _recording_lock
 
 
 def _build_customer_connector():
-    mapping_repo = Mock()
     customer_service = Mock()
     customer_service.repo = Mock()
     reconciliation_repo = Mock()
     connector = CustomerCustomerConnector(
-        mapping_repo=mapping_repo,
         customer_service=customer_service,
         reconciliation_repo=reconciliation_repo,
     )
-    return connector, mapping_repo, customer_service, reconciliation_repo
+    return connector, customer_service, reconciliation_repo
 
 
-def test_customer_resolve_mapping_state_consistent():
-    connector, mapping_repo, _, _ = _build_customer_connector()
-    qbo_customer = _make_qbo_customer(id=4)
-    mapping_repo.read_by_customer_id.return_value = SimpleNamespace(id=1, qbo_customer_id=4)
-    mapping_repo.read_by_qbo_customer_id.return_value = SimpleNamespace(id=1, customer_id=55)
-
-    state, _, _ = connector._resolve_mapping_state(customer_id=55, qbo_customer=qbo_customer)
-
-    assert state == "consistent"
-
-
-def test_customer_resolve_mapping_state_missing():
-    connector, mapping_repo, _, _ = _build_customer_connector()
-    qbo_customer = _make_qbo_customer(id=4)
-    mapping_repo.read_by_customer_id.return_value = None
-    mapping_repo.read_by_qbo_customer_id.return_value = None
-
-    state, _, _ = connector._resolve_mapping_state(customer_id=55, qbo_customer=qbo_customer)
-
-    assert state == "missing"
-
-
-def test_customer_resolve_mapping_state_qbo_side_conflict():
-    connector, mapping_repo, _, _ = _build_customer_connector()
-    qbo_customer = _make_qbo_customer(id=4)
-    mapping_repo.read_by_customer_id.return_value = None
-    mapping_repo.read_by_qbo_customer_id.return_value = SimpleNamespace(id=2, customer_id=9)
-
-    state, by_customer, by_qbo_customer = connector._resolve_mapping_state(
-        customer_id=55, qbo_customer=qbo_customer
-    )
-
-    assert state == "conflict"
-    assert by_customer is None
-    assert by_qbo_customer.customer_id == 9
-
-
-def test_customer_resolve_mapping_state_local_side_conflict():
-    connector, mapping_repo, _, _ = _build_customer_connector()
-    qbo_customer = _make_qbo_customer(id=4)
-    mapping_repo.read_by_customer_id.return_value = SimpleNamespace(id=3, qbo_customer_id=5)
-    mapping_repo.read_by_qbo_customer_id.return_value = None
-
-    state, by_customer, by_qbo_customer = connector._resolve_mapping_state(
-        customer_id=55, qbo_customer=qbo_customer
-    )
-
-    assert state == "conflict"
-    assert by_customer.qbo_customer_id == 5
-    assert by_qbo_customer is None
-
-
-def test_customer_raise_identity_mapping_conflict_issue_names_both_sides():
-    """Codex-confirmed P1 (round 1) + P1/P3 (round 2/3): the recorded issue
-    must name the dbo-identity-matched Customer AND whichever conflicting
-    mapping(s) exist — never silently dropping one side, and never reusing a
-    differently-shaped helper whose message wouldn't mention the right rows."""
-    connector, _, _, reconciliation_repo = _build_customer_connector()
-    qbo_customer = _make_qbo_customer(id=4, qbo_id="C-99", realm_id="realm-1")
-    qbo_side = SimpleNamespace(id=2, customer_id=9, qbo_customer_id=4)
-    local_side = SimpleNamespace(id=3, customer_id=55, qbo_customer_id=5)
-
-    connector._raise_identity_mapping_conflict_issue(
-        qbo_customer=qbo_customer, dbo_customer_id=55,
-        local_side_mapping=local_side, qbo_side_mapping=qbo_side,
-    )
-
-    reconciliation_repo.create.assert_called_once()
-    kwargs = reconciliation_repo.create.call_args.kwargs
-    assert kwargs["drift_type"] == "customer_identity_conflict"
-    assert "55" in kwargs["details"]  # the dbo-identity-matched Customer
-    assert "9" in kwargs["details"]   # the qbo-side conflicting Customer
-    assert "5" in kwargs["details"]   # the local-side conflicting QboCustomer
-
-
-def test_customer_fast_path_hit_conflict_raises_and_never_mints_duplicate():
-    """On a detected conflict, sync_from_qbo_customer must RAISE (hard stop) — never
-    fall through to the legacy mapping-table path, which would mint a DUPLICATE Customer
-    (create) or set_qbo_identity on a DIFFERENT one (identity theft). The U-276 pilot
-    shipped that fall-through — this test's PRIOR form even asserted a duplicate id=77
-    was "free" to be minted — and U-278's review of the mirrored vendorcredit unit
-    caught it. Fixed in the U-276 hotfix (2026-08-20)."""
-    connector, mapping_repo, customer_service, reconciliation_repo = _build_customer_connector()
-    qbo_customer = _make_qbo_customer(qbo_id="C-99", realm_id="realm-1")
-    direct_hit = SimpleNamespace(id=55, name="Acme", email="", phone="")
-    customer_service.read_by_qbo_identity.return_value = direct_hit
-    mapping_repo.read_by_customer_id.return_value = None
-    conflicting = SimpleNamespace(id=2, customer_id=9, qbo_customer_id=qbo_customer.id)
-    mapping_repo.read_by_qbo_customer_id.return_value = conflicting
-    # If the fall-through bug were still present, these would let it mint id=77.
-    customer_service.read_by_name.return_value = None
-    customer_service.create.return_value = SimpleNamespace(id=77)
-
-    with pytest.raises(ValueError):
-        connector.sync_from_qbo_customer(qbo_customer)
-
-    reconciliation_repo.create.assert_called_once()  # conflict recorded (durable follow-up)
-    customer_service.create.assert_not_called()  # NO duplicate Customer minted
-    customer_service.repo.update_by_id.assert_not_called()  # NO write to ANY Customer
-
-
-def test_customer_fast_path_hit_self_heals_missing_mapping():
-    connector, mapping_repo, customer_service, _ = _build_customer_connector()
-    qbo_customer = _make_qbo_customer(qbo_id="C-99", realm_id="realm-1")
-    direct_hit = SimpleNamespace(id=55, name="Acme", email="", phone="")
-    customer_service.read_by_qbo_identity.return_value = direct_hit
-    customer_service.repo.update_by_id.side_effect = lambda c: c
-    mapping_repo.read_by_customer_id.return_value = None  # mapping missing on this side...
-    mapping_repo.read_by_qbo_customer_id.return_value = None  # ...and no conflicting mapping either
-
-    connector.sync_from_qbo_customer(qbo_customer)
-
-    mapping_repo.create.assert_called_once_with(customer_id=55, qbo_customer_id=qbo_customer.id)
-
-
-def test_customer_fast_path_self_heal_race_escalates_to_recorded_conflict():
-    """Codex round-4 P2: a concurrent sync can turn 'missing' into 'conflict'
-    between the pre-check and the create() call (no sp_getapplock serializes
-    this — a known, pre-existing gap, see TODO.md). The create() failure must
-    not just be a bare warning — re-check and record a real conflict issue
-    when that's what actually happened."""
-    connector, mapping_repo, customer_service, reconciliation_repo = _build_customer_connector()
-    qbo_customer = _make_qbo_customer(qbo_id="C-99", realm_id="realm-1")
-    direct_hit = SimpleNamespace(id=55, name="Acme", email="", phone="")
-    customer_service.read_by_qbo_identity.return_value = direct_hit
-    customer_service.repo.update_by_id.side_effect = lambda c: c
-    # Pre-check (inside _resolve_mapping_state, called once before the write)
-    # sees "missing"; the create() call itself fails (the race); a SECOND
-    # _resolve_mapping_state call (the re-check) now sees a real conflict.
-    mapping_repo.read_by_customer_id.side_effect = [None, None]
-    mapping_repo.read_by_qbo_customer_id.side_effect = [
-        None, SimpleNamespace(id=9, customer_id=3, qbo_customer_id=qbo_customer.id)
-    ]
-    mapping_repo.create.side_effect = Exception("UNIQUE constraint violation")
-
-    connector.sync_from_qbo_customer(qbo_customer)
-
-    reconciliation_repo.create.assert_called_once()
-    kwargs = reconciliation_repo.create.call_args.kwargs
-    assert kwargs["drift_type"] == "customer_identity_conflict"
-
-
-def test_customer_fast_path_hit_consistent_skips_mapping_table_write():
-    connector, mapping_repo, customer_service, _ = _build_customer_connector()
+def test_customer_direct_hit_updates_fields_no_create_or_stamp():
+    connector, customer_service, _ = _build_customer_connector()
     qbo_customer = _make_qbo_customer(qbo_id="C-99", realm_id="realm-1", display_name="Acme")
-    direct_hit = SimpleNamespace(id=55, name="", email="", phone="")
+    direct_hit = _make_customer(id=55, qbo_id="C-99", realm_id="realm-1")
     customer_service.read_by_qbo_identity.return_value = direct_hit
-    customer_service.repo.update_by_id.side_effect = lambda c: c
-    mapping_repo.read_by_customer_id.return_value = SimpleNamespace(id=1, qbo_customer_id=qbo_customer.id)
-    mapping_repo.read_by_qbo_customer_id.return_value = SimpleNamespace(id=1, customer_id=55)
+    updated = _make_customer(id=55, qbo_id="C-99", realm_id="realm-1")
+    customer_service.repo.update_by_id.return_value = updated
 
     result = connector.sync_from_qbo_customer(qbo_customer)
 
-    assert result.name == "Acme"
-    mapping_repo.create.assert_not_called()
+    assert result is updated
+    customer_service.repo.update_by_id.assert_called_once()
+    customer_service.create.assert_not_called()
+    customer_service.repo.set_qbo_identity.assert_not_called()
+    customer_service.read_by_name.assert_not_called()
+
+
+def test_customer_direct_hit_preserves_non_blank_local_name_and_takes_qbo_contact_fields():
+    connector, customer_service, _ = _build_customer_connector()
+    qbo_customer = _make_qbo_customer(
+        display_name="Acme (deleted)", primary_email_addr="a@x.com", primary_phone="555-1000",
+    )
+    direct_hit = _make_customer(name="Curated Local Name", email="stale@x.com", phone="old")
+    customer_service.read_by_qbo_identity.return_value = direct_hit
+    customer_service.repo.update_by_id.side_effect = lambda c: c
+
+    result = connector.sync_from_qbo_customer(qbo_customer)
+
+    assert result.name == "Curated Local Name"  # preserve_human_edited_name
+    assert result.email == "a@x.com"  # QBO-owned, always overwritten
+    assert result.phone == "555-1000"
+
+
+def test_customer_genuine_miss_creates_new_and_stamps_identity():
+    connector, customer_service, _ = _build_customer_connector()
+    qbo_customer = _make_qbo_customer(
+        qbo_id="C-99", realm_id="realm-1", display_name="Acme",
+        primary_email_addr="a@x.com", primary_phone="555-1000",
+    )
+    customer_service.read_by_qbo_identity.return_value = None
+    customer_service.read_by_name.return_value = None
+    created = _make_customer(id=300, qbo_id=None, realm_id=None)
+    customer_service.create.return_value = created
+    stamped = _make_customer(id=300, qbo_id="C-99", realm_id="realm-1")
+    customer_service.read_by_id.side_effect = [created, stamped]
+
+    with patch(FASTPATH_LOCK_TARGET, mock_qbo_app_lock_granted), patch(
+        CUST_STAMP_LOCK_TARGET, mock_qbo_app_lock_granted
+    ):
+        result = connector.sync_from_qbo_customer(qbo_customer)
+
+    assert result is stamped
+    customer_service.create.assert_called_once_with(
+        name="Acme", email="a@x.com", phone="555-1000"
+    )
+    customer_service.repo.set_qbo_identity.assert_called_once_with(
+        id=300, qbo_id="C-99", realm_id="realm-1"
+    )
+
+
+def test_customer_genuine_miss_adopts_existing_unmapped_by_name_raw_name():
+    """U-219: adopt-by-name is a RAW name overwrite, bypassing preserve_human_edited_name."""
+    connector, customer_service, _ = _build_customer_connector()
+    qbo_customer = _make_qbo_customer(qbo_id="C-99", realm_id="realm-1", display_name="Acme")
+    customer_service.read_by_qbo_identity.return_value = None
+    existing = _make_customer(id=150, qbo_id=None, name="Old Curated Name")
+    customer_service.read_by_name.return_value = existing
+    customer_service.repo.update_by_id.side_effect = lambda c: c
+    stamped = _make_customer(id=150, qbo_id="C-99", realm_id="realm-1", name="Acme")
+    customer_service.read_by_id.side_effect = [existing, stamped]
+
+    with patch(FASTPATH_LOCK_TARGET, mock_qbo_app_lock_granted), patch(
+        CUST_STAMP_LOCK_TARGET, mock_qbo_app_lock_granted
+    ):
+        result = connector.sync_from_qbo_customer(qbo_customer)
+
+    assert result is stamped
+    assert existing.name == "Acme"  # raw overwrite, not preserved
+    customer_service.create.assert_not_called()
+    customer_service.repo.set_qbo_identity.assert_called_once_with(
+        id=150, qbo_id="C-99", realm_id="realm-1"
+    )
+
+
+def test_customer_blank_incoming_name_skips_the_adopt_lookup_and_creates():
+    """Customer-specific vs. CostCode's always-present `number`: a QboCustomer
+    with neither DisplayName nor CompanyName yields an empty business key.
+    `read_by_name("")` would match whatever a blank-name lookup happens to
+    return, so the adopt step must be skipped entirely, not fed an empty key."""
+    connector, customer_service, _ = _build_customer_connector()
+    qbo_customer = _make_qbo_customer(
+        qbo_id="C-99", realm_id="realm-1", display_name=None, company_name=None,
+    )
+    customer_service.read_by_qbo_identity.return_value = None
+    created = _make_customer(id=300, name="")
+    customer_service.create.return_value = created
+    customer_service.read_by_id.side_effect = [created, created]
+
+    with patch(FASTPATH_LOCK_TARGET, mock_qbo_app_lock_granted), patch(
+        CUST_STAMP_LOCK_TARGET, mock_qbo_app_lock_granted
+    ):
+        connector.sync_from_qbo_customer(qbo_customer)
+
+    customer_service.read_by_name.assert_not_called()
+    customer_service.create.assert_called_once_with(name="", email="", phone="")
+
+
+def test_customer_resolve_candidate_does_not_mutate_or_persist_the_adopted_row():
+    """U-307c's Codex round-2 P1, inherited: resolve_candidate must be PURE for
+    the adopt-by-name case -- no field write, no update_by_id call. The field
+    write happens only in _stamp_customer_identity, atomically with the identity
+    stamp under the candidate's own lock, or two concurrent QboCustomers
+    name-matching the same row could each mutate it before either acquires that
+    lock. Direct unit test on resolve_candidate itself (not the full
+    sync_from_qbo_customer integration) so a regression that moves the write
+    back here is caught even if the integration-level assertions happen to
+    still read correctly."""
+    connector, customer_service, _ = _build_customer_connector()
+    qbo_customer = _make_qbo_customer(qbo_id="C-99", realm_id="realm-1", display_name="Acme")
+    existing = _make_customer(
+        id=150, qbo_id=None, realm_id=None,
+        name="Untouched Name", email="old@x.com", phone="555-old",
+    )
+    customer_service.read_by_name.return_value = existing
+
+    candidate = connector._resolve_customer_candidate(
+        qbo_customer, name="Acme", email="a@x.com", phone="555-1000",
+    )
+
+    assert candidate is existing
+    assert existing.name == "Untouched Name"
+    assert existing.email == "old@x.com"
+    assert existing.phone == "555-old"
+    customer_service.repo.update_by_id.assert_not_called()
+
+
+def test_customer_duplicate_qbo_id_guard_raises_and_records_issue():
+    """Decision 2 (the one genuinely new, correctness-critical piece of this
+    repoint): a name-matched Customer already carrying a DIFFERENT QboId must
+    NOT be returned as the candidate -- stamp_identity's theft-clear would
+    silently re-point it. Must raise + record a customer_identity_conflict
+    issue instead, mirroring the mapping-table-era contract this replaces.
+    Mutation target: deleting this guard makes the row get silently re-bound."""
+    connector, customer_service, reconciliation_repo = _build_customer_connector()
+    qbo_customer = _make_qbo_customer(qbo_id="C-99", realm_id="realm-1", display_name="Acme")
+    customer_service.read_by_qbo_identity.return_value = None
+    existing = _make_customer(id=150, qbo_id="C-OTHER", realm_id="realm-1")
+    customer_service.read_by_name.return_value = existing
+
+    with patch(FASTPATH_LOCK_TARGET, mock_qbo_app_lock_granted):
+        with pytest.raises(ValueError, match="already carries a DIFFERENT identity"):
+            connector.sync_from_qbo_customer(qbo_customer)
+
+    customer_service.repo.update_by_id.assert_not_called()
+    customer_service.repo.set_qbo_identity.assert_not_called()
+    reconciliation_repo.create.assert_called_once()
+    assert reconciliation_repo.create.call_args.kwargs["drift_type"] == "customer_identity_conflict"
+
+
+def test_customer_duplicate_guard_catches_same_qbo_id_different_realm():
+    """QBO ids are only unique WITHIN a realm, so a QboId-only check would let a
+    same-QboId-different-realm row through and overwrite its name/email/phone
+    before _stamp_customer_identity's own (qbo_id AND realm_id) check ever runs.
+    Must raise from resolve_candidate BEFORE any field mutation, matching
+    _stamp_customer_identity's exact comparison."""
+    connector, customer_service, reconciliation_repo = _build_customer_connector()
+    qbo_customer = _make_qbo_customer(qbo_id="C-99", realm_id="realm-1", display_name="Acme")
+    customer_service.read_by_qbo_identity.return_value = None
+    existing = _make_customer(id=150, qbo_id="C-99", realm_id="realm-OTHER", name="Untouched")
+    customer_service.read_by_name.return_value = existing
+
+    with patch(FASTPATH_LOCK_TARGET, mock_qbo_app_lock_granted):
+        with pytest.raises(ValueError, match="already carries a DIFFERENT identity"):
+            connector.sync_from_qbo_customer(qbo_customer)
+
+    assert existing.name == "Untouched"  # never mutated before the raise
+    customer_service.repo.update_by_id.assert_not_called()
+    customer_service.repo.set_qbo_identity.assert_not_called()
+    reconciliation_repo.create.assert_called_once()
+
+
+def test_customer_resolve_candidate_allows_reresolve_to_same_qbo_id():
+    """A benign re-resolve (existing.qbo_id already equals the incoming qbo_id)
+    must proceed normally -- the guard only blocks a DIFFERENT identity."""
+    connector, customer_service, _ = _build_customer_connector()
+    qbo_customer = _make_qbo_customer(qbo_id="C-99", realm_id="realm-1", display_name="Acme")
+    customer_service.read_by_qbo_identity.return_value = None
+    existing = _make_customer(id=150, qbo_id="C-99", realm_id="realm-1")
+    customer_service.read_by_name.return_value = existing
+    customer_service.repo.update_by_id.side_effect = lambda c: c
+    stamped = _make_customer(id=150, qbo_id="C-99", realm_id="realm-1")
+    customer_service.read_by_id.side_effect = [existing, stamped]
+
+    with patch(FASTPATH_LOCK_TARGET, mock_qbo_app_lock_granted), patch(
+        CUST_STAMP_LOCK_TARGET, mock_qbo_app_lock_granted
+    ):
+        result = connector.sync_from_qbo_customer(qbo_customer)
+
+    assert result is stamped
+
+
+def test_customer_inactive_unmapped_raises_without_creating():
+    connector, customer_service, _ = _build_customer_connector()
+    qbo_customer = _make_qbo_customer(active=False, qbo_id="C-99")
+    customer_service.read_by_qbo_identity.return_value = None
+
+    with patch(FASTPATH_LOCK_TARGET, mock_qbo_app_lock_granted):
+        with pytest.raises(ValueError, match="inactive in QBO and has no local"):
+            connector.sync_from_qbo_customer(qbo_customer)
+
+    customer_service.read_by_name.assert_not_called()
     customer_service.create.assert_not_called()
 
 
-def test_customer_fast_path_hit_consistent_update_returns_none_raises_runtime_error():
-    """U-291: on_apply_returned_none must fire on the 'consistent' steady-state
-    resync too, not just the rarer 'missing' self-heal window
-    test_u287_identity_fastpath_helper.py's
-    test_customer_connector_update_race_holds_the_watermark already covers.
-    Before this fix, `run_identity_fastpath` only invoked the callback when
-    state == MISSING — on a CONSISTENT hit (the common case for an
-    already-mapped Customer, exercised here via an existing mapping row) a
-    ROWVERSION race fell through silently, with NO callback and NO exception."""
-    connector, mapping_repo, customer_service, _ = _build_customer_connector()
+def test_customer_race_discovered_hit_adopts_racer_without_create():
+    connector, customer_service, _ = _build_customer_connector()
     qbo_customer = _make_qbo_customer(qbo_id="C-99", realm_id="realm-1")
-    direct_hit = SimpleNamespace(id=55, name="Acme", email="", phone="")
-    customer_service.read_by_qbo_identity.return_value = direct_hit
+    racer_row = _make_customer(id=400, qbo_id="C-99", realm_id="realm-1")
+    customer_service.read_by_qbo_identity.side_effect = [None, racer_row]
+    customer_service.repo.update_by_id.side_effect = lambda c: c
+
+    with patch(FASTPATH_LOCK_TARGET, mock_qbo_app_lock_granted):
+        result = connector.sync_from_qbo_customer(qbo_customer)
+
+    assert result is racer_row
+    customer_service.create.assert_not_called()
+    customer_service.repo.set_qbo_identity.assert_not_called()
+    assert customer_service.read_by_qbo_identity.call_args_list == [
+        call("C-99", "realm-1"),
+        call("C-99", "realm-1"),
+    ]
+
+
+def test_customer_update_returning_none_raises_runtime_error_not_value_error():
+    """U-287/U-291, carried through the repoint: a ROWVERSION race on the HIT
+    branch (update_by_id affected 0 rows) must raise RuntimeError, NOT
+    ValueError -- record_projection_error classifies a plain ValueError as a
+    permanent SKIP that advances the watermark past a Customer whose fields
+    were never written. RuntimeError holds it for retry."""
+    connector, customer_service, _ = _build_customer_connector()
+    qbo_customer = _make_qbo_customer(qbo_id="C-99", realm_id="realm-1")
+    customer_service.read_by_qbo_identity.return_value = _make_customer(id=55)
     customer_service.repo.update_by_id.return_value = None  # race: row gone on write
-    mapping_repo.read_by_customer_id.return_value = SimpleNamespace(id=1, qbo_customer_id=qbo_customer.id)
-    mapping_repo.read_by_qbo_customer_id.return_value = SimpleNamespace(id=1, customer_id=55)
 
     with pytest.raises(RuntimeError, match="concurrent write race"):
         connector.sync_from_qbo_customer(qbo_customer)
 
-    mapping_repo.create.assert_not_called()
+    customer_service.create.assert_not_called()
+    customer_service.repo.set_qbo_identity.assert_not_called()
 
 
-def test_customer_fast_path_miss_falls_back_to_mapping_table_path():
-    """No qbo_id on the incoming record (or no dbo row carries it yet) -> the
-    pre-existing mapping-table-based logic must still run, untouched."""
-    connector, mapping_repo, customer_service, _ = _build_customer_connector()
-    qbo_customer = _make_qbo_customer(qbo_id="C-99", realm_id="realm-1")
-    customer_service.read_by_qbo_identity.return_value = None
-    mapping_repo.read_by_qbo_customer_id.return_value = None
-    customer_service.read_by_name = Mock(return_value=None)
-    created = SimpleNamespace(id=77)
-    customer_service.create.return_value = created
-    mapping_repo.read_by_customer_id.return_value = None
-    mapping_repo.read_by_qbo_customer_id.return_value = None
-
-    result = connector.sync_from_qbo_customer(qbo_customer)
-
-    customer_service.read_by_qbo_identity.assert_called_once_with("C-99", "realm-1")
-    assert result is created
-    customer_service.create.assert_called_once()
-
-
-def test_customer_fast_path_skipped_entirely_when_no_qbo_id():
-    """A record with no external qbo_id can't possibly have a dbo-native identity
-    match — the fast-path lookup should not even be attempted."""
-    connector, mapping_repo, customer_service, _ = _build_customer_connector()
+def test_customer_no_qbo_id_raises():
+    connector, customer_service, _ = _build_customer_connector()
     qbo_customer = _make_qbo_customer(qbo_id=None)
-    mapping_repo.read_by_qbo_customer_id.return_value = None
-    customer_service.read_by_name = Mock(return_value=None)
-    customer_service.create.return_value = SimpleNamespace(id=1)
-    mapping_repo.read_by_customer_id.return_value = None
 
-    connector.sync_from_qbo_customer(qbo_customer)
+    with pytest.raises(RuntimeError, match="dbo-only identity fast path"):
+        connector.sync_from_qbo_customer(qbo_customer)
 
     customer_service.read_by_qbo_identity.assert_not_called()
+
+
+def test_customer_job_customer_still_refused_before_any_identity_read():
+    """Job=true belongs to CustomerProjectConnector, not this one -- the guard
+    must fire before the fast path touches dbo.Customer at all."""
+    connector, customer_service, _ = _build_customer_connector()
+    qbo_customer = _make_qbo_customer(qbo_id="C-99", is_job=True)
+
+    with pytest.raises(ValueError, match="Job=true"):
+        connector.sync_from_qbo_customer(qbo_customer)
+
+    customer_service.read_by_qbo_identity.assert_not_called()
+    customer_service.create.assert_not_called()
+
+
+def test_customer_lock_resource_key_matches_dbo_only_namespace():
+    connector, customer_service, _ = _build_customer_connector()
+    qbo_customer = _make_qbo_customer(qbo_id="C-99", realm_id="realm-1")
+    customer_service.read_by_qbo_identity.return_value = None
+    customer_service.read_by_name.return_value = None
+    customer_service.create.return_value = _make_customer(id=300)
+    customer_service.read_by_id.return_value = _make_customer(
+        id=300, qbo_id="C-99", realm_id="realm-1"
+    )
+    recorded = []
+
+    with patch(FASTPATH_LOCK_TARGET, side_effect=_recording_lock_factory(recorded)), patch(
+        CUST_STAMP_LOCK_TARGET, mock_qbo_app_lock_granted
+    ):
+        connector.sync_from_qbo_customer(qbo_customer)
+
+    assert recorded == ["qbo_dbo_identity_create:Customer:C-99:realm-1"]
+
+
+def test_customer_stamp_identity_refuses_to_overwrite_different_existing_identity():
+    connector, customer_service, _ = _build_customer_connector()
+    candidate = _make_customer(id=150)
+    customer_service.read_by_id.return_value = _make_customer(
+        id=150, qbo_id="C-OTHER", realm_id="realm-1"
+    )
+    qbo_customer = _make_qbo_customer(qbo_id="C-99", realm_id="realm-1")
+
+    with patch(CUST_STAMP_LOCK_TARGET, mock_qbo_app_lock_granted):
+        with pytest.raises(ValueError, match=r"already carries a DIFFERENT identity \(QboId=C-OTHER"):
+            connector._stamp_customer_identity(
+                candidate, qbo_customer, name="X", email="x@x.com", phone="555",
+            )
+
+    customer_service.repo.set_qbo_identity.assert_not_called()
+    customer_service.repo.update_by_id.assert_not_called()  # never mutated before the raise
+
+
+def test_customer_stamp_identity_records_duplicate_issue_even_when_resolve_candidate_missed_it():
+    """Codex round-1 P2: `ReadCustomerByName` does not project QboId/RealmId
+    (entities/customer/sql/dbo.customer.sql), so `_resolve_customer_candidate`'s
+    own duplicate-QboId guard never actually sees a populated qbo_id against a
+    REAL DB read -- only `read_by_id` (this method's own re-read) reliably
+    carries it. This is the guard that actually protects production; it must
+    record the same `customer_identity_conflict` reconciliation issue the
+    resolve_candidate-side guard does, not just raise silently. Mutation
+    target: deleting the `_raise_duplicate_qbo_customer_issue` call here drops
+    the conflict record for every real-world hit of this guard."""
+    connector, customer_service, reconciliation_repo = _build_customer_connector()
+    candidate = _make_customer(id=150)
+    customer_service.read_by_id.return_value = _make_customer(
+        id=150, qbo_id="C-OTHER", realm_id="realm-1"
+    )
+    qbo_customer = _make_qbo_customer(qbo_id="C-99", realm_id="realm-1")
+
+    with patch(CUST_STAMP_LOCK_TARGET, mock_qbo_app_lock_granted):
+        with pytest.raises(ValueError, match=r"already carries a DIFFERENT identity \(QboId=C-OTHER"):
+            connector._stamp_customer_identity(
+                candidate, qbo_customer, name="X", email="x@x.com", phone="555",
+            )
+
+    reconciliation_repo.create.assert_called_once()
+    kwargs = reconciliation_repo.create.call_args.kwargs
+    assert kwargs["drift_type"] == "customer_identity_conflict"
+    assert "C-OTHER" in kwargs["details"]
+
+
+def test_customer_stamp_identity_duplicate_issue_wording_is_realm_aware_on_same_qbo_id():
+    """Codex round-1 P3: a same-QboId-different-realm collision must not be
+    described as a DIFFERENT QboId in the recorded issue -- misleading for
+    whoever reads the reconciliation queue."""
+    connector, customer_service, reconciliation_repo = _build_customer_connector()
+    candidate = _make_customer(id=150)
+    customer_service.read_by_id.return_value = _make_customer(
+        id=150, qbo_id="C-99", realm_id="realm-OTHER"
+    )
+    qbo_customer = _make_qbo_customer(qbo_id="C-99", realm_id="realm-1")
+
+    with patch(CUST_STAMP_LOCK_TARGET, mock_qbo_app_lock_granted):
+        with pytest.raises(ValueError):
+            connector._stamp_customer_identity(
+                candidate, qbo_customer, name="X", email="x@x.com", phone="555",
+            )
+
+    details = reconciliation_repo.create.call_args.kwargs["details"]
+    assert "SAME QboId" in details
+    assert "DIFFERENT RealmId" in details
+    assert "DIFFERENT QboId" not in details
+
+
+def test_customer_stamp_identity_update_returning_none_raises_runtime_error():
+    """Codex round-1 P2: a ROWVERSION race between the pre-stamp read and the
+    field-write update_by_id call must not silently proceed to stamp identity
+    on a row whose write never took -- same discipline as `_on_update_empty`
+    (U-287). Mutation target: dropping the `updated is None` check makes this
+    fall through to set_qbo_identity with stale fields left on the row."""
+    connector, customer_service, _ = _build_customer_connector()
+    candidate = _make_customer(id=150)
+    customer_service.read_by_id.return_value = _make_customer(
+        id=150, qbo_id=None, realm_id=None, name="Old Name",
+    )
+    customer_service.repo.update_by_id.return_value = None  # race: row gone on write
+    qbo_customer = _make_qbo_customer(qbo_id="C-99", realm_id="realm-1")
+
+    with patch(CUST_STAMP_LOCK_TARGET, mock_qbo_app_lock_granted):
+        with pytest.raises(RuntimeError, match="concurrent write race"):
+            connector._stamp_customer_identity(
+                candidate, qbo_customer, name="New Name", email="new@x.com", phone="555",
+            )
+
+    customer_service.repo.set_qbo_identity.assert_not_called()
+
+
+def test_customer_stamp_identity_applies_field_write_atomically_with_stamp():
+    """The field write happens INSIDE this method, under the candidate lock, not
+    in resolve_candidate -- confirms it's actually applied."""
+    connector, customer_service, _ = _build_customer_connector()
+    candidate = _make_customer(id=150)
+    unmapped = _make_customer(
+        id=150, qbo_id=None, realm_id=None, name="Old Name", email="old@x.com", phone="old",
+    )
+    customer_service.read_by_id.return_value = unmapped
+    customer_service.repo.update_by_id.side_effect = lambda c: c
+    qbo_customer = _make_qbo_customer(qbo_id="C-99", realm_id="realm-1")
+
+    with patch(CUST_STAMP_LOCK_TARGET, mock_qbo_app_lock_granted):
+        connector._stamp_customer_identity(
+            candidate, qbo_customer, name="New Name", email="new@x.com", phone="555-new",
+        )
+
+    assert unmapped.name == "New Name"
+    assert unmapped.email == "new@x.com"
+    assert unmapped.phone == "555-new"
+    customer_service.repo.update_by_id.assert_called_once_with(unmapped)
+    customer_service.repo.set_qbo_identity.assert_called_once_with(
+        id=150, qbo_id="C-99", realm_id="realm-1"
+    )
+
+
+def test_two_racers_name_matching_the_same_customer_serialize_and_the_loser_never_mutates_fields():
+    """The side-channel-candidate race, reproduced with REAL threads (not
+    sequential calls dressed up as a race): two genuinely concurrent
+    QboCustomers with DIFFERENT qbo_ids (so no contention on
+    run_identity_fastpath_dbo_only's own qbo_id-keyed create lock) that both
+    name-match the SAME unmapped local Customer. A real threading.Lock stands
+    in for sp_getapplock's cross-connection mutual exclusion.
+
+    Proves two things directly, not just the final outcome: (1) mutual
+    exclusion actually held during the read-guard-write-stamp sequence (an
+    occupancy probe, not an inference from who "won"), and (2) the LOSER's
+    incoming field values never landed on the row -- only the winner's did,
+    matching whichever qbo_id the row ended up stamped with. Mutation target:
+    this is exactly what breaks if the field write is moved back into
+    resolve_candidate (outside this lock) or the lock is removed/keyed wrong."""
+    import threading
+    import time
+
+    connector, customer_service, _ = _build_customer_connector()
+
+    state_lock = threading.Lock()
+    state = {"qbo_id": None, "realm_id": None, "name": None, "email": None}
+
+    occupancy = {"current": 0, "max": 0}
+
+    def _enter_critical_section():
+        occupancy["current"] += 1
+        occupancy["max"] = max(occupancy["max"], occupancy["current"])
+
+    def _exit_critical_section():
+        occupancy["current"] -= 1
+
+    def _read_by_id(_id):
+        with state_lock:
+            return _make_customer(
+                id=150, qbo_id=state["qbo_id"], realm_id=state["realm_id"],
+                name=state["name"], email=state["email"],
+            )
+
+    def _update_by_id(row):
+        with state_lock:
+            state["name"] = row.name
+            state["email"] = row.email
+        return row
+
+    def _set_qbo_identity(*, id, qbo_id, realm_id):
+        _enter_critical_section()
+        try:
+            time.sleep(0.05)  # widen the window so a non-excluded racer would reliably overlap
+            with state_lock:
+                state["qbo_id"] = qbo_id
+                state["realm_id"] = realm_id
+        finally:
+            _exit_critical_section()
+
+    customer_service.read_by_id.side_effect = _read_by_id
+    customer_service.repo.update_by_id.side_effect = _update_by_id
+    customer_service.repo.set_qbo_identity.side_effect = _set_qbo_identity
+
+    real_lock = threading.Lock()
+    requested_resources = set()
+    resources_seen_lock = threading.Lock()
+
+    @contextmanager
+    def _real_lock(resource_name, timeout_ms=15000):
+        with resources_seen_lock:
+            requested_resources.add(resource_name)
+        acquired = real_lock.acquire(timeout=timeout_ms / 1000)
+        try:
+            yield acquired
+        finally:
+            if acquired:
+                real_lock.release()
+
+    outcomes = {}
+
+    def _racer(qbo_id):
+        candidate = _make_customer(id=150)
+        qbo_customer = _make_qbo_customer(qbo_id=qbo_id, realm_id="realm-1")
+        try:
+            outcomes[qbo_id] = ("won", connector._stamp_customer_identity(
+                candidate, qbo_customer,
+                name=f"Name-from-{qbo_id}", email=f"{qbo_id}@x.com", phone="555",
+            ))
+        except ValueError as e:
+            outcomes[qbo_id] = ("lost", e)
+
+    with patch(CUST_STAMP_LOCK_TARGET, side_effect=_real_lock):
+        t1 = threading.Thread(target=_racer, args=("C-X",))
+        t2 = threading.Thread(target=_racer, args=("C-Y",))
+        t1.start()
+        t2.start()
+        t1.join(timeout=5)
+        t2.join(timeout=5)
+
+    assert not t1.is_alive() and not t2.is_alive(), "a racer thread hung — lock likely deadlocked"
+    assert requested_resources == {"qbo_dbo_identity_stamp:Customer:150"}
+    assert occupancy["max"] == 1, (
+        f"both racers were inside the critical section concurrently (max_occupants="
+        f"{occupancy['max']}) — the lock did not actually exclude them"
+    )
+    kinds = sorted(kind for kind, _ in outcomes.values())
+    assert kinds == ["lost", "won"], f"expected exactly one winner and one loser, got {outcomes}"
+    winner_qbo_id = next(q for q, (kind, _) in outcomes.items() if kind == "won")
+    # The final name/email must match the WINNER's incoming values -- the
+    # loser's field write must never have landed, even transiently.
+    assert state["name"] == f"Name-from-{winner_qbo_id}"
+    assert state["email"] == f"{winner_qbo_id}@x.com"
+    assert state["qbo_id"] == winner_qbo_id
+
+
+def test_customer_stamp_identity_lock_key_scoped_to_candidate():
+    connector, customer_service, _ = _build_customer_connector()
+    candidate = _make_customer(id=150)
+    customer_service.read_by_id.return_value = _make_customer(id=150, qbo_id=None, realm_id=None)
+    qbo_customer = _make_qbo_customer(qbo_id="C-99", realm_id="realm-1")
+    recorded = []
+
+    with patch(CUST_STAMP_LOCK_TARGET, side_effect=_recording_lock_factory(recorded)):
+        connector._stamp_customer_identity(
+            candidate, qbo_customer, name="X", email="x@x.com", phone="555",
+        )
+
+    assert recorded == ["qbo_dbo_identity_stamp:Customer:150"]
+
+
+def test_customer_stamp_identity_fails_closed_on_lock_timeout():
+    connector, customer_service, _ = _build_customer_connector()
+    candidate = _make_customer(id=150)
+    qbo_customer = _make_qbo_customer(qbo_id="C-99", realm_id="realm-1")
+
+    with patch(CUST_STAMP_LOCK_TARGET, side_effect=_denied_lock):
+        with pytest.raises(RuntimeError, match="Could not acquire identity-stamp lock"):
+            connector._stamp_customer_identity(
+                candidate, qbo_customer, name="X", email="x@x.com", phone="555",
+            )
+
+    customer_service.read_by_id.assert_not_called()
+    customer_service.repo.set_qbo_identity.assert_not_called()
 
 
 # --- Section 3: CustomerProjectConnector fast path ---

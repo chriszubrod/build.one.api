@@ -46,10 +46,20 @@ trip — see `_verify_dbo_qbo_identity`'s docstring for the resulting logic. The
 JOIN'd read makes the reverse check free (it already touches the staging
 table), which is what makes closing H1 no longer "self-defeating" the way a
 second round trip would have been.
+
+NB (U-309): the four `verify_*_qbo_identity` wrappers above all read a family's
+qbo.* mapping table — the right check while that table is still an
+independently-writable second store this module exists to guard against
+drifting from (see the top of this docstring). A family that has RETIRED its
+mapping table (Wave 5's "trust dbo alone" plan, memory
+`project_qbo_trust_dbo_identity_alone`, `docs/design/wave5.md`) has no second
+store left to read, so it needs a structurally different check —
+`verify_identity_dbo_only` below. See that function's own docstring for its
+contract, why it needs no lock, and its current wiring status.
 """
 import logging
 from dataclasses import dataclass
-from typing import Callable, Optional
+from typing import Any, Callable, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -280,3 +290,62 @@ def verify_customer_qbo_identity(
         mapping_label="CustomerCustomer",
         read_identity_check=customer_customer_repo.read_identity_check,
     )
+
+
+def verify_identity_dbo_only(
+    entity,
+    *,
+    read_direct_by_qbo_identity: Callable[[Optional[str], Optional[str]], Any],
+) -> Optional[str]:
+    """
+    Verify an already-resolved dbo-native QBO identity for a family that has
+    NO qbo.* mapping table left to cross-check against (U-309 — the Wave-5
+    "trust dbo alone" verify-side counterpart to
+    `base/identity_fastpath.py::run_identity_fastpath_dbo_only`).
+
+    Read `dbo.<Entity>` fresh by `(entity.qbo_id, entity.realm_id)` and return
+    `entity.qbo_id` iff the fresh read's `.id` still equals `entity.id`, else
+    `None`. This is exactly `run_identity_fastpath_dbo_only`'s unlocked direct
+    read (`direct = read_direct_by_qbo_identity(...)`), extracted and given an
+    id-match comparison so it answers a VERIFY question — "is this entity I
+    already resolved still the current holder of its own identity?" — instead
+    of that function's CREATE question, "who currently holds this identity,
+    if anyone?"
+
+    No lock. `run_identity_fastpath_dbo_only` takes one because a MISS there
+    can lead to two concurrent callers both deciding to MINT a new row for the
+    same identity — a real critical section to serialize. This function never
+    mints anything, so there is no critical section to protect: the one race
+    it could hit (the identity gets reassigned to a different row between the
+    caller's original read and this verify call) is caught by the `.id`
+    comparison itself, not by serializing around it — there's nothing to
+    serialize, only a fact to re-check, exactly as `docs/design/wave5.md` §2
+    lays out for Option A.
+
+    `read_direct_by_qbo_identity` is the family's own direct-by-identity
+    read (e.g. `<entity>_service.read_by_qbo_identity`), called as
+    `read_direct_by_qbo_identity(entity.qbo_id, entity.realm_id)` — the same
+    callable shape and parameter name `run_identity_fastpath_dbo_only`
+    accepts, so a family that already has one wired for its create path can
+    hand it straight to this one too.
+
+    UNWIRED as of U-309 — no connector calls this yet. U-310/U-311/U-312 wire
+    it into the 12 verify/reference-resolver call sites `docs/design/wave5.md`
+    §4 enumerates (Customer/Project/Vendor), each replacing that family's
+    `qbo.*`-mapping-table-reading `verify_*_qbo_identity` wrapper above once
+    the family's own mapping table is retired.
+    """
+    if not entity or not entity.qbo_id:
+        return None
+
+    direct = read_direct_by_qbo_identity(entity.qbo_id, entity.realm_id)
+    if direct is not None and direct.id == entity.id:
+        return entity.qbo_id
+
+    logger.error(
+        f"{type(entity).__name__} {getattr(entity, 'id', None)}'s dbo QboId "
+        f"({entity.qbo_id}) no longer resolves back to it on a fresh "
+        f"dbo-only read (found local id: {getattr(direct, 'id', None)}) — "
+        f"refusing to trust it."
+    )
+    return None

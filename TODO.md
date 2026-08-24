@@ -2,6 +2,21 @@
 
 Carry-over items from sessions. Check off as done; prune anything stale.
 
+## U-312 finding beyond the assignment's ask — deferred, not scope-creeped in (2026-08-24)
+
+- [ ] **`ReadProjects`/`ReadProjectByPublicId`/`ReadProjectByName` don't SELECT `[QboId]`/`[RealmId]`** (`entities/project/sql/dbo.project.sql`)
+  — only `ReadProjectById` does. Same recurring class as the U-050/U-052 `[Notes]` omission (a column added to
+  the base `CREATE TABLE` after a sproc was written never got backfilled into that sproc's SELECT list).
+  Found live via U-312's equivalence script when `ProjectService.read_all()`-sourced rows came back with
+  `qbo_id=None` for 100% of projects while `ProjectService.read_by_id()` correctly returned it for the same
+  rows. **Not live-broken today** — every current caller of `read_all`/`ReadProjects` uses it for name/id
+  enumeration only, never reads `.qbo_id` off the result (U-312's own `sync_qbo_invoice.py::_resolve_project_to_customer_ref`
+  was about to become the first, caught before ship, worked around in-file by re-fetching the matched project
+  via `read_by_id` instead — see that function's comment). Fix, if picked up: add `[QboId]`, `[RealmId]` to
+  all 3 sprocs' SELECT lists (mechanical, matches `ReadProjectById`'s shape) + a regression test asserting
+  `read_all()`/`read_by_public_id()`/`read_by_name()` surface a project's QboId when set — a SQL change, needs
+  its own DBA-reviewed unit (base-file edit + prod apply), not bundled into a read-side Python repoint.
+
 ## U-305 follow-ups (Bill/VendorCredit reconciliation dbo-native repoint) — deferred, not scope-creeped in (2026-08-23)
 
 - [ ] **DBA cleanup: dangling `qbo.BillBill` mapping row (`Id=16790`) points to `BillId=16808`, which does not

@@ -15,12 +15,10 @@ from entities.invoice.business.reconciliation import (
 )
 from entities.invoice.business.service import InvoiceService
 from entities.invoice.persistence.repo import InvoiceRepository
+from entities.project.business.model import Project
 from entities.project.business.service import ProjectService
 from integrations.box.excel.persistence.repo import BoxProjectWorkbookRepository
 from integrations.box.folder.persistence.repo import BoxProjectFolderRepository
-from integrations.intuit.qbo.customer.connector.project.persistence.repo import (
-    CustomerProjectRepository,
-)
 from integrations.intuit.qbo.customer.persistence.repo import QboCustomerRepository
 from integrations.sync.persistence.repo import SyncRepository, _parse_sync_last_sync
 
@@ -221,7 +219,7 @@ def assemble_audit_report(sections: dict) -> dict:
             {
                 "class": "missing_qbo_mapping",
                 "severity": "halt",
-                "message": "Project has no qbo.CustomerProject mapping",
+                "message": "Project has no QBO identity (QboId)",
             }
         )
 
@@ -325,7 +323,6 @@ class InvoiceDrawAuditService:
         invoice_repo: Optional[InvoiceRepository] = None,
         reconciliation_service: Optional[InvoiceReconciliationService] = None,
         project_service: Optional[ProjectService] = None,
-        customer_project_repo: Optional[CustomerProjectRepository] = None,
         qbo_customer_repo: Optional[QboCustomerRepository] = None,
         sync_repo: Optional[SyncRepository] = None,
         box_workbook_repo: Optional[BoxProjectWorkbookRepository] = None,
@@ -338,7 +335,6 @@ class InvoiceDrawAuditService:
             invoice_service=self.invoice_service,
         )
         self.project_service = project_service or ProjectService()
-        self.customer_project_repo = customer_project_repo or CustomerProjectRepository()
         self.qbo_customer_repo = qbo_customer_repo or QboCustomerRepository()
         self.sync_repo = sync_repo or SyncRepository()
         self.box_workbook_repo = box_workbook_repo or BoxProjectWorkbookRepository()
@@ -353,7 +349,7 @@ class InvoiceDrawAuditService:
         if invoice.project_id is not None:
             project = self.project_service.read_by_id(invoice.project_id)
 
-        qbo_mapping = self._read_qbo_mapping(invoice.project_id)
+        qbo_mapping = self._read_qbo_mapping(project)
         duplicate_projects = self._read_duplicate_projects(invoice.project_id)
         box_mappings = self._read_box_mappings(invoice.project_id)
         staging = self._read_staging_freshness()
@@ -414,20 +410,17 @@ class InvoiceDrawAuditService:
             "worksheet_reconcile": dict(_WORKSHEET_RECONCILE_STUB),
         }
 
-    def _read_qbo_mapping(self, project_id: Optional[int]) -> dict:
-        if project_id is None:
+    def _read_qbo_mapping(self, project: Optional[Project]) -> dict:
+        """Present iff dbo.Project.QboId is stamped — direct dbo-native check,
+        no qbo.CustomerProject mapping-table hop (Wave-5 U-312)."""
+        if project is None or project.qbo_id is None:
             return {"present": False, "mapping": None, "customer": None}
-        mapping = self.customer_project_repo.read_by_project_id(project_id)
-        if not mapping:
-            return {"present": False, "mapping": None, "customer": None}
-        customer = self.qbo_customer_repo.read_by_id(mapping.qbo_customer_id)
+        customer = self.qbo_customer_repo.read_by_qbo_id_and_realm_id(
+            project.qbo_id, project.realm_id
+        )
         return {
             "present": True,
-            "mapping": {
-                "id": mapping.id,
-                "project_id": mapping.project_id,
-                "qbo_customer_id": mapping.qbo_customer_id,
-            },
+            "mapping": {"project_id": project.id},
             "customer": (
                 {
                     "qbo_id": customer.qbo_id,

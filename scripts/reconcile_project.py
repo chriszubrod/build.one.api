@@ -48,6 +48,7 @@ from entities.bill_line_item.persistence.repo import BillLineItemRepository
 from entities.expense.business.service import ExpenseService
 from entities.expense.persistence.repo import ExpenseRepository
 from entities.expense_line_item.persistence.repo import ExpenseLineItemRepository
+from entities.project.business.service import ProjectService
 from entities.vendor.persistence.repo import VendorRepository
 from integrations.intuit.qbo.auth.business.service import QboAuthService
 from scripts.sync_helper import assert_cli_system_admin
@@ -60,8 +61,6 @@ from integrations.intuit.qbo.bill.persistence.repo import QboBillRepository, Qbo
 from integrations.intuit.qbo.base.cost_code_resolver import resolve_dbo_sub_cost_code
 from integrations.intuit.qbo.base.ids import coerce_id
 from entities.bill_line_item.persistence.repo import BillLineItemRepository
-from integrations.intuit.qbo.customer.connector.project.persistence.repo import CustomerProjectRepository
-from integrations.intuit.qbo.customer.persistence.repo import QboCustomerRepository
 from integrations.intuit.qbo.purchase.connector.expense.business.service import PurchaseExpenseConnector
 from integrations.intuit.qbo.purchase.connector.expense.persistence.repo import PurchaseExpenseRepository
 from integrations.intuit.qbo.purchase.persistence.repo import QboPurchaseRepository, QboPurchaseLineRepository
@@ -180,17 +179,14 @@ def _get_realm_id(auth_service: QboAuthService) -> Optional[str]:
 
 def _get_project_qbo_customer_ref(
     project_id: int,
-    customer_project_repo: CustomerProjectRepository,
-    qbo_customer_repo: QboCustomerRepository,
+    project_service: ProjectService,
 ) -> Optional[str]:
-    """Return QboCustomer.qbo_id for a project, or None if not mapped."""
-    customer_project = customer_project_repo.read_by_project_id(project_id)
-    if not customer_project:
+    """Return the project's QBO Customer ref (dbo.Project.QboId), or None if unmapped.
+    Direct dbo-native read — no qbo.CustomerProject mapping-table hop (Wave-5 U-312)."""
+    project = project_service.read_by_id(project_id)
+    if not project:
         return None
-    qbo_customer = qbo_customer_repo.read_by_id(customer_project.qbo_customer_id)
-    if not qbo_customer:
-        return None
-    return qbo_customer.qbo_id
+    return project.qbo_id
 
 
 # ── Data loaders ─────────────────────────────────────────────────
@@ -953,8 +949,7 @@ def process_project(
     purchase_expense_repo: PurchaseExpenseRepository,
     bill_bill_connector: BillBillConnector,
     purchase_expense_connector: PurchaseExpenseConnector,
-    customer_project_repo: CustomerProjectRepository,
-    qbo_customer_repo: QboCustomerRepository,
+    project_service: ProjectService,
     auth_service: QboAuthService,
     bill_service: BillService,
     expense_service: ExpenseService,
@@ -1022,9 +1017,7 @@ def process_project(
 
     # ── Get QBO context ──────────────────────────────────────────
     realm_id = _get_realm_id(auth_service)
-    qbo_customer_ref = _get_project_qbo_customer_ref(
-        project_id, customer_project_repo, qbo_customer_repo
-    )
+    qbo_customer_ref = _get_project_qbo_customer_ref(project_id, project_service)
 
     # ── Read Excel worksheet ─────────────────────────────────────
     print(f"  Reading worksheet '{worksheet_name}'...")
@@ -1215,8 +1208,7 @@ def main():
     qbo_purchase_repo = QboPurchaseRepository()
     qbo_purchase_line_repo = QboPurchaseLineRepository()
     purchase_expense_repo = PurchaseExpenseRepository()
-    customer_project_repo = CustomerProjectRepository()
-    qbo_customer_repo = QboCustomerRepository()
+    project_service = ProjectService()
     auth_service = QboAuthService()
     excel_mapping_repo = DriveItemProjectExcelRepository()
     driveitem_repo = MsDriveItemRepository()
@@ -1287,8 +1279,7 @@ def main():
             purchase_expense_repo=purchase_expense_repo,
             bill_bill_connector=bill_bill_connector,
             purchase_expense_connector=purchase_expense_connector,
-            customer_project_repo=customer_project_repo,
-            qbo_customer_repo=qbo_customer_repo,
+            project_service=project_service,
             auth_service=auth_service,
             bill_service=bill_service,
             expense_service=expense_service,

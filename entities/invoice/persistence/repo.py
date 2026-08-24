@@ -405,6 +405,10 @@ class InvoiceRepository:
 
         Inline read SQL with dynamic IN-list (no sproc/TVP), same convention as
         entities.invoice.business.enrichment.enrich_line_items — intentional; do not convert.
+
+        QboMappings reads dbo.Project.QboId directly (no qbo.CustomerProject
+        mapping-table hop — Wave-5 U-312); a project holds at most one QBO
+        identity, so this is 0/1, not a count.
         """
         sql = """
             SELECT
@@ -412,11 +416,7 @@ class InvoiceRepository:
                 p2.[Name],
                 p2.[Abbreviation],
                 CONVERT(VARCHAR(19), p2.[CreatedDatetime], 120) AS [CreatedDatetime],
-                (
-                    SELECT COUNT(*)
-                    FROM qbo.[CustomerProject] cp
-                    WHERE cp.[ProjectId] = p2.[Id]
-                ) AS [QboMappings]
+                CASE WHEN p2.[QboId] IS NOT NULL THEN 1 ELSE 0 END AS [QboMappings]
             FROM dbo.[Project] p1
             INNER JOIN dbo.[Project] p2
                 ON p2.[Name] = p1.[Name]

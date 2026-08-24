@@ -33,8 +33,6 @@ from integrations.intuit.qbo.invoice.persistence.repo import QboInvoiceRepositor
 from integrations.intuit.qbo.invoice.connector.invoice.business.service import InvoiceInvoiceConnector
 from integrations.intuit.qbo.invoice.connector.invoice.persistence.repo import InvoiceInvoiceRepository
 from integrations.intuit.qbo.auth.business.service import QboAuthService
-from integrations.intuit.qbo.customer.persistence.repo import QboCustomerRepository
-from integrations.intuit.qbo.customer.connector.project.persistence.repo import CustomerProjectRepository
 from entities.project.business.service import ProjectService
 
 logger = logging.getLogger(__name__)
@@ -53,43 +51,40 @@ INITIAL_RETRY_DELAY = 2.0  # Initial retry delay (seconds)
 def _resolve_project_to_customer_ref(project_name: str) -> str:
     """
     Resolve a project name to its QBO Customer ID.
-    
-    Looks up: Project -> CustomerProject mapping -> QboCustomer -> qbo_id
-    
+
+    Looks up: Project -> dbo.Project.QboId directly (no qbo.CustomerProject
+    mapping-table hop — Wave-5 U-312).
+
     Args:
         project_name: Project name (or partial name) to search for
-    
+
     Returns:
         str: QBO Customer ID
-    
+
     Raises:
-        ValueError: If project or mapping not found
+        ValueError: If project or QBO identity not found
     """
     project_service = ProjectService()
     all_projects = project_service.read_all()
-    
+
     matches = [p for p in all_projects if project_name.lower() in (p.name or "").lower()]
     if not matches:
         raise ValueError(f"No project found matching '{project_name}'")
     if len(matches) > 1:
         names = [p.name for p in matches]
         raise ValueError(f"Multiple projects match '{project_name}': {names}")
-    
-    project = matches[0]
-    logger.info(f"Found project: {project.name} (id={project.id})")
-    
-    customer_project_repo = CustomerProjectRepository()
-    mapping = customer_project_repo.read_by_project_id(project.id)
-    if not mapping:
-        raise ValueError(f"No CustomerProject mapping found for project '{project.name}' (id={project.id})")
-    
-    qbo_customer_repo = QboCustomerRepository()
-    qbo_customer = qbo_customer_repo.read_by_id(mapping.qbo_customer_id)
-    if not qbo_customer or not qbo_customer.qbo_id:
-        raise ValueError(f"QboCustomer not found for id={mapping.qbo_customer_id}")
-    
-    logger.info(f"Resolved project '{project.name}' to QBO Customer {qbo_customer.qbo_id} ({qbo_customer.display_name})")
-    return qbo_customer.qbo_id
+
+    matched = matches[0]
+    logger.info(f"Found project: {matched.name} (id={matched.id})")
+
+    # ReadProjects (read_all's sproc) doesn't select QboId/RealmId (base-file
+    # gap, TODO.md) — re-fetch by id via ReadProjectById, which does.
+    project = project_service.read_by_id(matched.id)
+    if not project or not project.qbo_id:
+        raise ValueError(f"No QBO identity (QboId) found for project '{matched.name}' (id={matched.id})")
+
+    logger.info(f"Resolved project '{project.name}' to QBO Customer {project.qbo_id}")
+    return project.qbo_id
 
 
 def _dry_run_preview(

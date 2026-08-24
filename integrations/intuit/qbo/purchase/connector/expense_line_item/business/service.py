@@ -9,20 +9,21 @@ from decimal import Decimal
 from integrations.intuit.qbo.purchase.connector.expense_line_item.business.model import PurchaseLineExpenseLineItem
 from integrations.intuit.qbo.purchase.connector.expense_line_item.persistence.repo import PurchaseLineExpenseLineItemRepository
 from integrations.intuit.qbo.purchase.business.model import QboPurchaseLine
-from integrations.intuit.qbo.item.connector.sub_cost_code.persistence.repo import ItemSubCostCodeRepository
 from integrations.intuit.qbo.item.persistence.repo import QboItemRepository
+from integrations.intuit.qbo.item.connector.sub_cost_code.persistence.repo import ItemSubCostCodeRepository
 from integrations.intuit.qbo.customer.connector.project.persistence.repo import CustomerProjectRepository
 from integrations.intuit.qbo.customer.persistence.repo import QboCustomerRepository
 from entities.expense_line_item.business.service import ExpenseLineItemService
 from entities.expense_line_item.business.model import ExpenseLineItem
-from entities.sub_cost_code.business.service import SubCostCodeService
 from entities.project.business.service import ProjectService
+from entities.sub_cost_code.business.service import SubCostCodeService
 from integrations.intuit.qbo.base.identity_consistency import verify_project_qbo_identity
 from integrations.intuit.qbo.base.identity_drift import stamp_line_identity_or_warn
 from integrations.intuit.qbo.base.identity_fastpath import (
     raise_concurrent_write_race,
     run_line_identity_fastpath,
 )
+from integrations.intuit.qbo.base.cost_code_resolver import resolve_dbo_sub_cost_code
 from integrations.intuit.qbo.base.ids import coerce_id
 from integrations.intuit.qbo.base.reconciliation_recorder import record_mapping_issue
 from integrations.intuit.qbo.reconciliation.persistence.repo import ReconciliationIssueRepository
@@ -76,8 +77,9 @@ class PurchaseLineExpenseLineItemConnector:
         self,
         mapping_repo: Optional[PurchaseLineExpenseLineItemRepository] = None,
         expense_line_item_service: Optional[ExpenseLineItemService] = None,
-        item_sub_cost_code_repo: Optional[ItemSubCostCodeRepository] = None,
         qbo_item_repo: Optional[QboItemRepository] = None,
+        item_sub_cost_code_repo: Optional[ItemSubCostCodeRepository] = None,
+        sub_cost_code_service: Optional[SubCostCodeService] = None,
         customer_project_repo: Optional[CustomerProjectRepository] = None,
         qbo_customer_repo: Optional[QboCustomerRepository] = None,
         project_service: Optional[ProjectService] = None,
@@ -86,12 +88,15 @@ class PurchaseLineExpenseLineItemConnector:
         """Initialize the PurchaseLineExpenseLineItemConnector."""
         self.mapping_repo = mapping_repo or PurchaseLineExpenseLineItemRepository()
         self.expense_line_item_service = expense_line_item_service or ExpenseLineItemService()
-        self.item_sub_cost_code_repo = item_sub_cost_code_repo or ItemSubCostCodeRepository()
+        # Cost-code resolution deps (U-307a) -- only ever passed to
+        # cost_code_resolver.resolve_dbo_sub_cost_code, never used directly here.
+        self.qbo_item_repo = qbo_item_repo
+        self.item_sub_cost_code_repo = item_sub_cost_code_repo
+        self.sub_cost_code_service = sub_cost_code_service
         # Per-sync caches: the same QBO item / customer ref appears on many lines.
-        # Caching avoids 2 DB queries per line for each repeated value.
-        self._sub_cost_code_cache: dict = {}  # qbo_item_ref_value -> sub_cost_code_id | None
+        # Caching avoids a repeat resolution per repeated value.
+        self._sub_cost_code_cache: dict = {}  # (realm_id, qbo_item_ref_value) -> sub_cost_code_id | None
         self._project_cache: dict = {}        # (realm_id, qbo_customer_ref_value) -> project_public_id | None
-        self.qbo_item_repo = qbo_item_repo or QboItemRepository()
         self.customer_project_repo = customer_project_repo or CustomerProjectRepository()
         self.qbo_customer_repo = qbo_customer_repo or QboCustomerRepository()
         self.project_service = project_service or ProjectService()
@@ -113,7 +118,7 @@ class PurchaseLineExpenseLineItemConnector:
         # Resolve sub_cost_code from item reference
         sub_cost_code_id = None
         if qbo_line.item_ref_value:
-            sub_cost_code_id = self._get_sub_cost_code_id(qbo_line.item_ref_value)
+            sub_cost_code_id = self._get_sub_cost_code_id(qbo_line.item_ref_value, realm_id)
 
         # Resolve project from customer reference
         project_public_id = None
@@ -403,12 +408,15 @@ class PurchaseLineExpenseLineItemConnector:
             details=" ".join(parts),
         )
 
-    def _get_sub_cost_code_id(self, qbo_item_ref_value: str) -> Optional[int]:
+    def _get_sub_cost_code_id(self, qbo_item_ref_value: str, realm_id: Optional[str] = None) -> Optional[int]:
         """
-        Get the SubCostCode ID from QBO item reference value.
+        Get the SubCostCode ID from a QBO item reference value (U-307a: dbo-native
+        SubCostCode.QboId first, legacy qbo.Item -> qbo.ItemSubCostCode hop on a
+        miss — see cost_code_resolver.py), memoized for this connector's lifetime.
 
         Args:
             qbo_item_ref_value: QBO item reference value (QBO Item ID)
+            realm_id: QBO realm, for the dbo-native lookup
 
         Returns:
             int: SubCostCode ID or None
@@ -416,25 +424,24 @@ class PurchaseLineExpenseLineItemConnector:
         if not qbo_item_ref_value:
             return None
 
-        if qbo_item_ref_value in self._sub_cost_code_cache:
-            return self._sub_cost_code_cache[qbo_item_ref_value]
+        cache_key = (realm_id, qbo_item_ref_value)
+        if cache_key in self._sub_cost_code_cache:
+            return self._sub_cost_code_cache[cache_key]
 
-        # First find the QboItem by qbo_id
-        qbo_item = self.qbo_item_repo.read_by_qbo_id(qbo_item_ref_value)
-        if not qbo_item:
-            logger.warning(f"QboItem not found for qbo_id: {qbo_item_ref_value} — ExpenseLineItem will have no SubCostCode (billing gap)")
-            self._sub_cost_code_cache[qbo_item_ref_value] = None
+        sub_cost_code = resolve_dbo_sub_cost_code(
+            qbo_item_ref_value,
+            realm_id,
+            sub_cost_code_service=self.sub_cost_code_service,
+            qbo_item_repo=self.qbo_item_repo,
+            item_sub_cost_code_repo=self.item_sub_cost_code_repo,
+        )
+        if not sub_cost_code:
+            logger.warning(f"No SubCostCode resolved for QBO Item ref '{qbo_item_ref_value}' — ExpenseLineItem will have no SubCostCode (billing gap)")
+            self._sub_cost_code_cache[cache_key] = None
             return None
 
-        # Then find the ItemSubCostCode mapping
-        item_mapping = self.item_sub_cost_code_repo.read_by_qbo_item_id(qbo_item.id)
-        if not item_mapping:
-            logger.warning(f"ItemSubCostCode mapping not found for QboItem ID: {qbo_item.id} (QBO Item '{qbo_item_ref_value}') — ExpenseLineItem will have no SubCostCode (billing gap)")
-            self._sub_cost_code_cache[qbo_item_ref_value] = None
-            return None
-
-        self._sub_cost_code_cache[qbo_item_ref_value] = item_mapping.sub_cost_code_id
-        return item_mapping.sub_cost_code_id
+        self._sub_cost_code_cache[cache_key] = sub_cost_code.id
+        return sub_cost_code.id
 
     # One of FOUR near-identical QBO customer-ref -> Project resolvers (invoice /
     # purchase / vendorcredit / bill). All four are realm-scoped as of U-060; they

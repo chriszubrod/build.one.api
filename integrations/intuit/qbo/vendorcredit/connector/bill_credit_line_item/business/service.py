@@ -19,6 +19,7 @@ from integrations.intuit.qbo.base.identity_fastpath import (
 )
 from integrations.intuit.qbo.base.ids import coerce_id
 from integrations.intuit.qbo.base.reconciliation_recorder import record_mapping_issue
+from integrations.intuit.qbo.base.cost_code_resolver import resolve_dbo_sub_cost_code
 from integrations.intuit.qbo.item.connector.sub_cost_code.persistence.repo import ItemSubCostCodeRepository
 from integrations.intuit.qbo.item.persistence.repo import QboItemRepository
 from integrations.intuit.qbo.reconciliation.persistence.repo import ReconciliationIssueRepository
@@ -83,7 +84,7 @@ class VendorCreditLineItemConnector:
         # Resolve sub_cost_code from ItemRef
         sub_cost_code_id = None
         if qbo_line.item_ref_value:
-            sub_cost_code_id = self._get_sub_cost_code_id(qbo_line.item_ref_value)
+            sub_cost_code_id = self._get_sub_cost_code_id(qbo_line.item_ref_value, realm_id)
 
         # Determine billable and billed status from QBO BillableStatus.
         # Leave both None when QBO omits the status so the in-place UPDATE
@@ -431,30 +432,32 @@ class VendorCreditLineItemConnector:
         project = self.project_service.read_by_id(id=str(mapping.project_id))
         return project.public_id if project else None
 
-    def _get_sub_cost_code_id(self, qbo_item_ref_value: str) -> Optional[int]:
-        """Resolve QBO item ref to local sub_cost_code_id, memoized for this connector's lifetime."""
+    def _get_sub_cost_code_id(self, qbo_item_ref_value: str, realm_id: Optional[str] = None) -> Optional[int]:
+        """Resolve QBO item ref to local sub_cost_code_id, memoized for this connector's
+        lifetime. U-307a: dbo-native SubCostCode.QboId first, legacy qbo.Item ->
+        qbo.ItemSubCostCode hop on a miss — see cost_code_resolver.py."""
         if not qbo_item_ref_value:
             return None
-        if qbo_item_ref_value in self._sub_cost_code_cache:
-            return self._sub_cost_code_cache[qbo_item_ref_value]
-        result = self._resolve_sub_cost_code_id(qbo_item_ref_value)
-        self._sub_cost_code_cache[qbo_item_ref_value] = result
+        cache_key = (realm_id, qbo_item_ref_value)
+        if cache_key in self._sub_cost_code_cache:
+            return self._sub_cost_code_cache[cache_key]
+        result = self._resolve_sub_cost_code_id(qbo_item_ref_value, realm_id)
+        self._sub_cost_code_cache[cache_key] = result
         return result
 
-    def _resolve_sub_cost_code_id(self, qbo_item_ref_value: str) -> Optional[int]:
-        """Uncached resolution: QboItem by qbo_id -> ItemSubCostCode by qbo_item_id -> SubCostCode existence check."""
-        qbo_item = self.qbo_item_repo.read_by_qbo_id(qbo_item_ref_value)
-        if not qbo_item:
-            return None
-        mapping = self.item_scc_repo.read_by_qbo_item_id(qbo_item.id)
-        if not mapping:
-            return None
-        sub_cost_code = self.sub_cost_code_service.read_by_id(str(mapping.sub_cost_code_id))
+    def _resolve_sub_cost_code_id(self, qbo_item_ref_value: str, realm_id: Optional[str] = None) -> Optional[int]:
+        """Uncached resolution via the shared cost-code resolver."""
+        sub_cost_code = resolve_dbo_sub_cost_code(
+            qbo_item_ref_value,
+            realm_id,
+            sub_cost_code_service=self.sub_cost_code_service,
+            qbo_item_repo=self.qbo_item_repo,
+            item_sub_cost_code_repo=self.item_scc_repo,
+        )
         if not sub_cost_code:
             logger.warning(
-                f"QBO Item '{qbo_item_ref_value}' maps to SubCostCode "
-                f"{mapping.sub_cost_code_id} which no longer reads — BillCreditLineItem will "
-                f"have no SubCostCode (billing gap)"
+                f"No SubCostCode resolved for QBO Item ref '{qbo_item_ref_value}' — "
+                f"BillCreditLineItem will have no SubCostCode (billing gap)"
             )
             return None
-        return mapping.sub_cost_code_id
+        return sub_cost_code.id

@@ -59,6 +59,12 @@ def _build_line_connector_with_item_mocks():
     connector = VendorCreditLineItemConnector()
     connector.qbo_item_repo = Mock()
     connector.item_scc_repo = Mock()
+    # U-307a: the dbo-native primary lookup (SubCostCode.QboId) must explicitly miss
+    # so resolution falls through to the legacy qbo.Item -> qbo.ItemSubCostCode hop
+    # this file exercises — an unstubbed Mock()'s auto-truthy `.read_by_qbo_identity`
+    # would otherwise short-circuit before qbo_item_repo/item_scc_repo are ever touched.
+    connector.sub_cost_code_service = Mock()
+    connector.sub_cost_code_service.read_by_qbo_identity.return_value = None
     connector.mapping_repo = Mock()
     connector.mapping_repo.read_by_qbo_line_id.return_value = None
     connector.bill_credit_line_item_service = Mock()
@@ -89,7 +95,6 @@ def test_run_scoped_item_ref_cache_and_single_line_connector():
     line_connector = _build_line_connector_with_item_mocks()
     line_connector.qbo_item_repo.read_by_qbo_id.side_effect = lambda qbo_id: qbo_items.get(qbo_id)
     line_connector.item_scc_repo.read_by_qbo_item_id.side_effect = lambda qid: scc_mappings.get(qid)
-    line_connector.sub_cost_code_service = Mock()
     line_connector.sub_cost_code_service.read_by_id.return_value = SimpleNamespace(id=1)
 
     existing_mapping = SimpleNamespace(bill_credit_id=10, id=1)

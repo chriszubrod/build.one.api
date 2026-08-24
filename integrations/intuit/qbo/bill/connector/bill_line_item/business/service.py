@@ -19,12 +19,14 @@ from entities.bill_line_item.business.service import BillLineItemService
 from entities.bill_line_item.business.model import BillLineItem
 from entities.bill.business.service import BillService
 from entities.project.business.service import ProjectService
+from entities.sub_cost_code.business.service import SubCostCodeService
 from integrations.intuit.qbo.base.identity_drift import stamp_line_identity_or_warn
 from integrations.intuit.qbo.base.identity_consistency import verify_project_qbo_identity
 from integrations.intuit.qbo.base.identity_fastpath import (
     raise_concurrent_write_race,
     run_line_identity_fastpath,
 )
+from integrations.intuit.qbo.base.cost_code_resolver import resolve_dbo_sub_cost_code
 from integrations.intuit.qbo.base.ids import coerce_id
 from integrations.intuit.qbo.base.reconciliation_recorder import record_mapping_issue
 from integrations.intuit.qbo.reconciliation.persistence.repo import ReconciliationIssueRepository
@@ -43,9 +45,10 @@ class BillLineItemConnector:
         bill_line_item_service: Optional[BillLineItemService] = None,
         bill_service: Optional[BillService] = None,
         bill_bill_repo: Optional[BillBillRepository] = None,
-        qbo_item_repo: Optional[QboItemRepository] = None,
         qbo_bill_line_repo: Optional[QboBillLineRepository] = None,
+        qbo_item_repo: Optional[QboItemRepository] = None,
         item_sub_cost_code_repo: Optional[ItemSubCostCodeRepository] = None,
+        sub_cost_code_service: Optional[SubCostCodeService] = None,
         qbo_customer_repo: Optional[QboCustomerRepository] = None,
         customer_project_repo: Optional[CustomerProjectRepository] = None,
         project_service: Optional[ProjectService] = None,
@@ -56,9 +59,14 @@ class BillLineItemConnector:
         self.bill_line_item_service = bill_line_item_service or BillLineItemService()
         self.bill_service = bill_service or BillService()
         self.bill_bill_repo = bill_bill_repo or BillBillRepository()
-        self.qbo_item_repo = qbo_item_repo or QboItemRepository()
         self.qbo_bill_line_repo = qbo_bill_line_repo or QboBillLineRepository()
-        self.item_sub_cost_code_repo = item_sub_cost_code_repo or ItemSubCostCodeRepository()
+        # Cost-code resolution deps (U-307a) -- only ever passed to
+        # cost_code_resolver.resolve_dbo_sub_cost_code, never used directly here.
+        # Kept as constructor params (not defaulted inline at the call site) so
+        # tests can inject fakes exactly as they did before this repoint.
+        self.qbo_item_repo = qbo_item_repo
+        self.item_sub_cost_code_repo = item_sub_cost_code_repo
+        self.sub_cost_code_service = sub_cost_code_service
         self.qbo_customer_repo = qbo_customer_repo or QboCustomerRepository()
         self.customer_project_repo = customer_project_repo or CustomerProjectRepository()
         self.project_service = project_service or ProjectService()
@@ -120,21 +128,22 @@ class BillLineItemConnector:
             is_billable = qbo_bill_line.billable_status in ("Billable", "HasBeenBilled")
             is_billed = qbo_bill_line.billable_status == "HasBeenBilled"
         
-        # Look up SubCostCode from QBO Item reference
-        sub_cost_code_id = None
+        # Look up SubCostCode from QBO Item reference (U-307a: dbo-native
+        # SubCostCode.QboId first, legacy qbo.Item -> qbo.ItemSubCostCode hop
+        # on a miss — see cost_code_resolver.py).
+        sub_cost_code = resolve_dbo_sub_cost_code(
+            qbo_bill_line.item_ref_value,
+            realm_id,
+            sub_cost_code_service=self.sub_cost_code_service,
+            qbo_item_repo=self.qbo_item_repo,
+            item_sub_cost_code_repo=self.item_sub_cost_code_repo,
+        )
+        sub_cost_code_id = sub_cost_code.id if sub_cost_code else None
         if qbo_bill_line.item_ref_value:
-            # Find the QboItem by its QboId
-            qbo_item = self.qbo_item_repo.read_by_qbo_id(qbo_bill_line.item_ref_value)
-            if qbo_item:
-                # Look up the SubCostCode mapping for this QboItem
-                item_sub_cost_code = self.item_sub_cost_code_repo.read_by_qbo_item_id(qbo_item.id)
-                if item_sub_cost_code:
-                    sub_cost_code_id = item_sub_cost_code.sub_cost_code_id
-                    logger.debug(f"Found SubCostCode {sub_cost_code_id} for QboItem {qbo_item.id}")
-                else:
-                    logger.debug(f"No SubCostCode mapping found for QboItem {qbo_item.id}")
+            if sub_cost_code_id:
+                logger.debug(f"Found SubCostCode {sub_cost_code_id} for QboItem ref {qbo_bill_line.item_ref_value}")
             else:
-                logger.debug(f"QboItem with QboId {qbo_bill_line.item_ref_value} not found in local database")
+                logger.debug(f"No SubCostCode resolved for QboItem ref {qbo_bill_line.item_ref_value}")
         
         # Look up Project from QBO Customer reference (customer_ref can be a job/sub-customer which maps to Project)
         project_public_id = None

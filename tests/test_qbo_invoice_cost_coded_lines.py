@@ -1,11 +1,19 @@
-"""U-292 — QboInvoiceService.cost_coded_lines_for_invoice, the dbo-native cost-code
-seam draw_financials.py consumes in place of its former ItemRefName string parser.
-Resolution: a one-time in-memory index (5 small bulk reads — QboItem/SubCostCode/
-CostCode/ItemSubCostCode/ItemCostCode) built lazily per QboInvoiceService instance,
-keyed by QboItem id, never by parsing a display name. Bulk (not point-query) so a
-project with many invoices resolves each recurring QBO item once, not per line —
-a real many-invoice project hit connection drops under a naive per-line-query shape
-during this unit's own equivalence testing against live data."""
+"""U-292 / U-307a — QboInvoiceService.cost_coded_lines_for_invoice, the dbo-native
+cost-code seam draw_financials.py consumes in place of its former ItemRefName string
+parser.
+
+U-307a repointed the resolution mechanism itself onto the shared
+cost_code_resolver.py: dbo.SubCostCode.QboId / dbo.CostCode.QboId (U-289, 100% live
+parity) are now tried FIRST, falling back to the legacy qbo.Item -> qbo.ItemSubCostCode
+/ qbo.ItemCostCode staging hop only on a dbo-native miss. Every test below models the
+pre-backfill/miss case (dbo-native identity lookups return None) so it exercises the
+same legacy-hop value-based tiebreak U-292 originally proved — the fixture wiring
+changed from bulk `read_all()` index-building to point-queries, but the business
+behavior (and every `triples ==` assertion) is unchanged. Dedicated tests at the bottom
+cover the NEW dbo-native primary path directly.
+
+Resolution is always by ID -- QboItem -> ItemSubCostCode -> SubCostCode -> CostCode (or
+the dbo-native equivalent) -- never by parsing an Item's display name."""
 
 from decimal import Decimal
 
@@ -52,16 +60,20 @@ class _FakeItemCostCode:
 
 
 class _FakeSubCostCode:
-    def __init__(self, id, cost_code_id):
+    def __init__(self, id, cost_code_id, qbo_id=None, realm_id=None):
         self.id = id
         self.cost_code_id = cost_code_id
+        self.qbo_id = qbo_id
+        self.realm_id = realm_id
 
 
 class _FakeCostCode:
-    def __init__(self, id, number, name):
+    def __init__(self, id, number, name, qbo_id=None, realm_id=None):
         self.id = id
         self.number = number
         self.name = name
+        self.qbo_id = qbo_id
+        self.realm_id = realm_id
 
 
 class _FakeLineRepo:
@@ -76,8 +88,9 @@ def _service(monkeypatch, *, invoice_qbo_id="83-INV", qbo_invoice_id=900,
              legacy_mapping_qbo_invoice_id="_unset",
              lines_by_qbo_invoice_id,
              qbo_items=(), item_sub_cost_codes=(), item_cost_codes=(),
-             sub_cost_codes=(), cost_codes=()):
-    """Wire the seam's full bulk-read dependency chain and return a QboInvoiceService
+             sub_cost_codes=(), cost_codes=(),
+             direct_sub_cost_code=None, direct_cost_code=None):
+    """Wire the seam's full resolution dependency chain and return a QboInvoiceService
     with its line_repo injected (mirroring how draw_financials.py's caller only ever
     controls the invoice/line data, never the QBO reference tables).
 
@@ -89,6 +102,13 @@ def _service(monkeypatch, *, invoice_qbo_id="83-INV", qbo_invoice_id=900,
     legacy_mapping_qbo_invoice_id models that fallback's result (the sentinel
     "_unset" means "no legacy mapping row exists at all", distinct from a
     mapping row that itself carries a NULL qbo_invoice_id).
+
+    U-307a: `direct_sub_cost_code` / `direct_cost_code` model a dbo-native
+    identity HIT (SubCostCode.QboId / CostCode.QboId already stamped for this
+    line's item ref) — the fast tier. Omitted (None, the default) models a
+    dbo-native MISS, forcing every test through the legacy
+    qbo.Item -> qbo.ItemSubCostCode/qbo.ItemCostCode hop this file was
+    originally written to prove (U-292's value-based tiebreak).
     """
     from integrations.intuit.qbo.invoice.business.service import QboInvoiceService
 
@@ -113,42 +133,77 @@ def _service(monkeypatch, *, invoice_qbo_id="83-INV", qbo_invoice_id=900,
         _FakeInvoiceInvoiceRepository,
     )
 
-    class _QIR:
-        def read_all(self):
-            return list(qbo_items)
+    # --- Legacy qbo.Item staging hop -- point-query fakes, by qbo_id/qbo_item_id ---
 
-    class _ISCR:
-        def read_all(self):
-            return list(item_sub_cost_codes)
+    class _QboItemRepoFake:
+        def __init__(self):
+            self._by_qbo_id = {item.qbo_id: item for item in qbo_items}
 
-    class _ICCR:
-        def read_all(self):
-            return list(item_cost_codes)
+        def read_by_qbo_id(self, qbo_id):
+            return self._by_qbo_id.get(qbo_id)
 
-    class _SCCS:
-        def read_all(self):
-            return list(sub_cost_codes)
+    class _ItemSubCostCodeRepoFake:
+        def __init__(self):
+            self._by_qbo_item_id = {m.qbo_item_id: m for m in item_sub_cost_codes}
 
-    class _CCS:
-        def read_all(self):
-            return list(cost_codes)
+        def read_by_qbo_item_id(self, qbo_item_id):
+            return self._by_qbo_item_id.get(qbo_item_id)
+
+    class _ItemCostCodeRepoFake:
+        def __init__(self):
+            self._by_qbo_item_id = {m.qbo_item_id: m for m in item_cost_codes}
+
+        def read_by_qbo_item_id(self, qbo_item_id):
+            return self._by_qbo_item_id.get(qbo_item_id)
+
+    # --- dbo-native identity + by-id fakes ---
+    # Shared (not per-instance) call log — a fresh service instance is constructed
+    # per resolution inside cost_code_resolver.py, so a per-instance log would
+    # reset every call; tests read `sub_cost_code_identity_calls` off the closure
+    # via the returned QboInvoiceService's `_test_scc_identity_calls` attribute.
+    sub_cost_code_identity_calls = []
+
+    class _SubCostCodeServiceFake:
+        def __init__(self):
+            self._by_id = {scc.id: scc for scc in sub_cost_codes}
+
+        def read_by_qbo_identity(self, qbo_id, realm_id=None):
+            sub_cost_code_identity_calls.append((qbo_id, realm_id))
+            return direct_sub_cost_code
+
+        def read_by_id(self, id):
+            return self._by_id.get(id)
+
+    class _CostCodeServiceFake:
+        def __init__(self):
+            self._by_id = {cc.id: cc for cc in cost_codes}
+
+        def read_by_qbo_identity(self, qbo_id, realm_id=None):
+            return direct_cost_code
+
+        def read_by_id(self, id):
+            return self._by_id.get(id)
 
     monkeypatch.setattr(
         "entities.invoice.business.service.InvoiceService", _FakeInvoiceService)
     monkeypatch.setattr(
-        "integrations.intuit.qbo.item.persistence.repo.QboItemRepository", _QIR)
+        "integrations.intuit.qbo.item.persistence.repo.QboItemRepository", _QboItemRepoFake)
     monkeypatch.setattr(
-        "integrations.intuit.qbo.item.connector.sub_cost_code.persistence.repo.ItemSubCostCodeRepository", _ISCR)
+        "integrations.intuit.qbo.item.connector.sub_cost_code.persistence.repo.ItemSubCostCodeRepository",
+        _ItemSubCostCodeRepoFake)
     monkeypatch.setattr(
-        "integrations.intuit.qbo.item.connector.cost_code.persistence.repo.ItemCostCodeRepository", _ICCR)
+        "integrations.intuit.qbo.item.connector.cost_code.persistence.repo.ItemCostCodeRepository",
+        _ItemCostCodeRepoFake)
     monkeypatch.setattr(
-        "entities.sub_cost_code.business.service.SubCostCodeService", _SCCS)
+        "entities.sub_cost_code.business.service.SubCostCodeService", _SubCostCodeServiceFake)
     monkeypatch.setattr(
-        "entities.cost_code.business.service.CostCodeService", _CCS)
+        "entities.cost_code.business.service.CostCodeService", _CostCodeServiceFake)
 
-    return QboInvoiceService(
+    svc = QboInvoiceService(
         repo=_FakeQboInvoiceRepo(), line_repo=_FakeLineRepo(lines_by_qbo_invoice_id)
     )
+    svc._test_scc_identity_calls = sub_cost_code_identity_calls
+    return svc
 
 
 def test_resolves_cost_code_by_id_not_by_name(monkeypatch):
@@ -376,31 +431,102 @@ def test_mapped_invoice_with_no_lines_returns_empty(monkeypatch):
     assert svc.cost_coded_lines_for_invoice(invoice_id=1) == []
 
 
-def test_index_built_once_per_instance(monkeypatch):
-    """The bulk index is built lazily on first resolution and reused for every
-    subsequent line/invoice on the same QboInvoiceService instance — the whole
-    point of the bulk-read redesign (was N point-queries per line before)."""
-    calls = {"qbo_items": 0}
-
-    class _CountingQIR:
-        def read_all(self):
-            calls["qbo_items"] += 1
-            return [_FakeQboItem(id=10, qbo_id="83")]
-
+def test_resolution_memoized_once_per_distinct_item_per_instance(monkeypatch):
+    """U-307a: the per-instance resolution cache is built lazily and reused for
+    every subsequent line/invoice on the same QboInvoiceService instance sharing
+    the same (realm_id, item_ref) — the same amortization guarantee the original
+    U-292 bulk index gave, now via point-query memoization instead of a
+    bulk-read-once index."""
     svc = _service(
         monkeypatch,
         lines_by_qbo_invoice_id={900: [
             _FakeQboLine("83", 1.00), _FakeQboLine("83", 2.00), _FakeQboLine("83", 3.00),
         ]},
+        qbo_items=[_FakeQboItem(id=10, qbo_id="83")],
         item_sub_cost_codes=[_FakeItemSubCostCode(qbo_item_id=10, sub_cost_code_id=7)],
         sub_cost_codes=[_FakeSubCostCode(id=7, cost_code_id=3)],
         cost_codes=[_FakeCostCode(id=3, number="02", name="Dumpsters")],
     )
-    # re-patch AFTER _service() so the counting fake is the one actually used
-    monkeypatch.setattr(
-        "integrations.intuit.qbo.item.persistence.repo.QboItemRepository", _CountingQIR)
     triples = svc.cost_coded_lines_for_invoice(invoice_id=1)
     assert triples == [("02", "Dumpsters", Decimal("1.00")),
                         ("02", "Dumpsters", Decimal("2.00")),
                         ("02", "Dumpsters", Decimal("3.00"))]
-    assert calls["qbo_items"] == 1
+    # Codex U-307a round-2 review: len(cache) == 1 alone doesn't prove memoization
+    # avoided redundant resolution — a regression that re-resolves every line but
+    # overwrites the same cache key each time would still leave len == 1. Assert
+    # the underlying dbo-native identity lookup itself was only called once.
+    assert svc._test_scc_identity_calls == [("83", "realm-1")]
+    resolved = svc._resolve_cost_code_for_qbo_item_ref("83", "realm-1")
+    assert resolved == ("02", "Dumpsters")
+    # And confirms the direct re-call above served from cache too (no 2nd call).
+    assert svc._test_scc_identity_calls == [("83", "realm-1")]
+
+
+# ---------------------------------------------------------------------------
+# U-307a — dbo-native PRIMARY path (dbo.SubCostCode.QboId / dbo.CostCode.QboId
+# already stamped). These are the new tier; every test above models a miss.
+# ---------------------------------------------------------------------------
+
+def test_dbo_native_sub_cost_code_hit_skips_legacy_hop_entirely(monkeypatch):
+    """A stamped dbo.SubCostCode.QboId resolves without ever touching qbo.Item /
+    qbo.ItemSubCostCode -- no qbo_items/item_sub_cost_codes fixture data at all."""
+    svc = _service(
+        monkeypatch,
+        lines_by_qbo_invoice_id={900: [_FakeQboLine("83", 715.00)]},
+        direct_sub_cost_code=_FakeSubCostCode(id=7, cost_code_id=3, qbo_id="83", realm_id="realm-1"),
+        cost_codes=[_FakeCostCode(id=3, number="02", name="Dumpsters")],
+    )
+    triples = svc.cost_coded_lines_for_invoice(invoice_id=1)
+    assert triples == [("02", "Dumpsters", Decimal("715.00"))]
+
+
+def test_dbo_native_cost_code_level_hit_skips_legacy_hop(monkeypatch):
+    """A stamped dbo.CostCode.QboId (Item with no SubCostCode granularity) resolves
+    without touching qbo.Item / qbo.ItemCostCode."""
+    svc = _service(
+        monkeypatch,
+        lines_by_qbo_invoice_id={900: [_FakeQboLine("4", 5000.00)]},
+        direct_cost_code=_FakeCostCode(id=44, number="00", name="Initial & Suspense", qbo_id="4"),
+    )
+    triples = svc.cost_coded_lines_for_invoice(invoice_id=1)
+    assert triples == [("00", "Initial & Suspense", Decimal("5000.00"))]
+
+
+def test_dbo_native_non_numeric_still_falls_to_legacy_cost_code_fallback(monkeypatch):
+    """The value-based tiebreak applies to a dbo-native SubCostCode-level hit too:
+    if its resolved CostCode is a non-numeric pseudo-code, the resolver still tries
+    the (here legacy) CostCode-level fallback and SUCCEEDS with a distinct, valid
+    numeric CostCode — proving the non-numeric primary result doesn't shadow a
+    usable fallback (Codex U-307a review finding: the prior version of this test
+    left the fallback CostCode out of the fixture, so both branches failed for
+    unrelated reasons and it never actually exercised a successful fallback)."""
+    svc = _service(
+        monkeypatch,
+        lines_by_qbo_invoice_id={900: [_FakeQboLine("83", 25.00)]},
+        direct_sub_cost_code=_FakeSubCostCode(id=7, cost_code_id=3, qbo_id="83", realm_id="realm-1"),
+        cost_codes=[
+            _FakeCostCode(id=3, number="Hours", name="Hours"),
+            _FakeCostCode(id=44, number="02", name="Dumpsters"),
+        ],
+        qbo_items=[_FakeQboItem(id=10, qbo_id="83")],
+        item_cost_codes=[_FakeItemCostCode(qbo_item_id=10, cost_code_id=44)],
+    )
+    triples = svc.cost_coded_lines_for_invoice(invoice_id=1)
+    assert triples == [("02", "Dumpsters", Decimal("25.00"))]
+
+
+def test_dbo_native_lookup_receives_invoice_realm_id(monkeypatch):
+    """realm_id threads from the invoice's own dbo.Invoice.RealmId (default
+    "realm-1" in _FakeInvoice) into the dbo-native identity lookup — U-307a added
+    this; the legacy hop stayed realm-blind, matching every hand-copied chain it
+    replaces."""
+    svc = _service(
+        monkeypatch,
+        lines_by_qbo_invoice_id={900: [_FakeQboLine("83", 715.00)]},
+        qbo_items=[_FakeQboItem(id=10, qbo_id="83")],
+        item_sub_cost_codes=[_FakeItemSubCostCode(qbo_item_id=10, sub_cost_code_id=7)],
+        sub_cost_codes=[_FakeSubCostCode(id=7, cost_code_id=3)],
+        cost_codes=[_FakeCostCode(id=3, number="02", name="Dumpsters")],
+    )
+    svc.cost_coded_lines_for_invoice(invoice_id=1)
+    assert svc._test_scc_identity_calls == [("83", "realm-1")]

@@ -1899,21 +1899,25 @@ These were surfaced during the unit and deliberately not built:
 
 ## U-300b follow-ups (attachable pull dbo-only repoint, 2026-08-24) — deferred, non-blocking
 
-- [ ] **🟡 [correctness, needs its own Gate-1 — escalate to Chris] The 3 live line-item-linking call sites
-  still read `qbo_attachable.id` as a mapping-table fallback key, which U-300b makes always `None`.**
-  `scripts/sync_qbo_bill.py:156`, `scripts/sync_qbo_vendorcredit.py:108`, and
-  `integrations/intuit/qbo/purchase/connector/expense/business/service.py:1172` each try
-  `attachment_service.read_by_qbo_identity(qbo_attachable.qbo_id, ...)` FIRST and only fall back to
-  `attachable_attachment_repo.read_by_qbo_attachable_id(qbo_attachable.id)` on a miss — U-300b's pull path
-  always stamps dbo-native identity, so this fallback should never actually fire against anything synced
-  going forward. Confirmed low-severity today (Codex round-1 review): `read_by_qbo_attachable_id(None)`
-  degrades gracefully (SQL NULL comparison → no rows → `continue`, no crash), not a data-loss or
-  crash risk — but it is latent dead code with an unhandled `None` waiting for the day the direct read
-  transiently misses (DB hiccup) and the fallback silently no-ops instead of erroring loudly. **Not fixed
-  in U-300b**: all 3 files are OUTSIDE this unit's approved Gate-1 file scope (`integrations/intuit/qbo/
-  attachable/{business,connector/attachment/business}/service.py` + tests only). Right-depth fix: gate
-  each fallback on `qbo_attachable.id is not None` (one-line guard × 3 call sites) plus a direct-miss
-  regression test per site — small, mechanical, own Gate-1.
+- [x] **SHIPPED (U-315, 2026-08-24) — The 3 live line-item-linking call sites' dead `qbo_attachable.id`
+  mapping-table fallback.** Gate-1 re-confirmed (not just assumed) that the fallback is unconditionally
+  unreachable, not merely usually-None — `_upsert_attachable` never reads a real DB-backed
+  `qbo.Attachable.id` back into any of the lists these 3 sites consume, across all 4 real callers
+  (including `backfill_qbo_bills.py`). Removed all 3 branches outright (stronger than the guard originally
+  proposed here, since a guard would have left permanently-unreachable code dressed up as a safety net) +
+  regression tests proving each site's function source no longer contains the removed symbols. Codex xhigh
+  PASS, `/simplify` 4-lens clean.
+- [ ] **[altitude, deferred by U-315's `/simplify` pass — outside that unit's file scope] Removing the 3
+  call sites above orphans `AttachableAttachmentRepository.read_by_qbo_attachable_id`
+  (`integrations/intuit/qbo/attachable/connector/attachment/persistence/repo.py:108`) and its sole
+  remaining wrapper `AttachableAttachmentConnector.get_mapping_by_qbo_attachable_id`
+  (`integrations/intuit/qbo/attachable/connector/attachment/business/service.py:557-561`) — U-315 was the
+  last live caller of either. Do NOT drop `AttachableAttachmentRepository` or `read_by_attachment_id`
+  wholesale: that sibling method is still live via the push-side `sync_attachment_to_qbo`'s legacy
+  corroboration check (`integrations/intuit/qbo/attachable/connector/attachment/business/service.py:631`),
+  and the `qbo.AttachableAttachment` table itself is still read there too. Right-depth fix: delete just the
+  now-100%-dead `read_by_qbo_attachable_id` + `get_mapping_by_qbo_attachable_id` pair, confirm no other
+  caller via grep first — small, mechanical, own unit (touches files outside U-315's reviewed diff).
 - [ ] **[reuse, deferred — touches `business/model.py`, outside this unit's file scope] `QboAttachableService
   ._upsert_attachable`'s transient-`QboAttachable` construction is a 3rd near-identical copy** of
   `AttachableAttachmentConnector._transient_attachable_from_response`/`_transient_attachable_from_dbo`

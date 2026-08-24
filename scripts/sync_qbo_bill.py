@@ -36,7 +36,6 @@ from integrations.intuit.qbo.bill.connector.bill.persistence.repo import BillBil
 from integrations.intuit.qbo.bill.persistence.repo import QboBillRepository, QboBillLineRepository
 from integrations.intuit.qbo.auth.business.service import QboAuthService
 from integrations.intuit.qbo.attachable.business.service import QboAttachableService
-from integrations.intuit.qbo.attachable.connector.attachment.persistence.repo import AttachableAttachmentRepository
 from integrations.intuit.qbo.bill.connector.bill_line_item.persistence.repo import BillLineItemBillLineRepository
 from entities.bill.business.service import BillService
 from entities.bill_line_item.business.service import BillLineItemService
@@ -123,8 +122,7 @@ def _link_attachments_to_bill_line_items(
     bill_line_item_service = BillLineItemService()
     attachment_service = AttachmentService()
     bill_line_item_attachment_service = BillLineItemAttachmentService()
-    attachable_attachment_repo = AttachableAttachmentRepository()
-    
+
     # Get all BillLineItems for this Bill
     bill_line_items = bill_line_item_service.read_by_bill_id(bill_id=bill_id)
     if not bill_line_items:
@@ -145,21 +143,15 @@ def _link_attachments_to_bill_line_items(
 
     # For each attachment, link to each line item
     for qbo_attachable in qbo_attachables:
-        # U-279: resolve the Attachment via dbo.Attachment's native QboId/
-        # RealmId first, falling back to the qbo.AttachableAttachment mapping
-        # table for rows the fast path doesn't (yet) cover — read-only lookup,
-        # no write/identity-theft risk at this call site.
+        # U-300b (pull-side repoint) made the local dbo.Attachment.QboId identity
+        # the sole source of truth for every attachable this loop ever sees — the
+        # qbo.AttachableAttachment mapping-table fallback U-279 added here is
+        # confirmed dead (U-315) and was removed; see TODO.md "U-300b follow-ups".
         attachment = None
         if qbo_attachable.qbo_id:
             attachment = attachment_service.read_by_qbo_identity(qbo_attachable.qbo_id, qbo_attachable.realm_id)
-        if not attachment:
-            mapping = attachable_attachment_repo.read_by_qbo_attachable_id(qbo_attachable.id)
-            if not mapping:
-                logger.debug(f"No Attachment mapping found for QboAttachable {qbo_attachable.id}")
-                continue
-            attachment = attachment_service.read_by_id(mapping.attachment_id)
         if not attachment or not attachment.public_id:
-            logger.debug(f"Attachment not found for QboAttachable {qbo_attachable.id}")
+            logger.debug(f"Attachment not found for QboAttachable qbo_id={qbo_attachable.qbo_id}")
             continue
 
         # BillLineItemAttachment is 1:1 — each line item holds at most one attachment.

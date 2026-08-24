@@ -21,12 +21,15 @@ Covers:
      (U-285, untouched by U-300b): a dbo-native qbo_id (matching realm) skips the
      mapping-table hop and re-upload.
   4. The three live line-item-linking call sites (sync_qbo_bill.py,
-     sync_qbo_vendorcredit.py, purchase/connector/expense/business/service.py,
-     untouched by U-300b) try the dbo-native lookup first, falling back to the
-     qbo.AttachableAttachment mapping table on a miss — read-only, no
-     write/identity-theft risk, and unaffected since every attachment synced by
-     the new pull path always hits on the first (dbo-native) check.
+     sync_qbo_vendorcredit.py, purchase/connector/expense/business/service.py)
+     try the dbo-native lookup only. U-315 removed the qbo.AttachableAttachment
+     mapping-table fallback U-279 had added here — confirmed dead post-U-300b:
+     the transient pull-side QboAttachable is never DB-backed, so `.id` is
+     always None for every attachable these sites ever see, and the fallback
+     lookup it fed could never return a row. A direct-identity miss now just
+     skips the attachable.
 """
+import inspect
 from types import SimpleNamespace
 from unittest.mock import MagicMock, Mock, call, patch
 
@@ -746,9 +749,7 @@ def test_bill_link_attachments_direct_hit_skips_mapping_lookup():
     bill_line_item = SimpleNamespace(id=1, public_id="bli-pub-1")
     with patch(f"{SYNC_BILL_MODULE}.BillLineItemService") as MockBLI, patch(
         f"{SYNC_BILL_MODULE}.AttachmentService"
-    ) as MockAttSvc, patch(f"{SYNC_BILL_MODULE}.BillLineItemAttachmentService") as MockBLIAttSvc, patch(
-        f"{SYNC_BILL_MODULE}.AttachableAttachmentRepository"
-    ) as MockMappingRepo:
+    ) as MockAttSvc, patch(f"{SYNC_BILL_MODULE}.BillLineItemAttachmentService") as MockBLIAttSvc:
         MockBLI.return_value.read_by_bill_id.return_value = [bill_line_item]
         MockBLIAttSvc.return_value.read_by_bill_line_item_ids.return_value = []
         attachment = SimpleNamespace(id=55, public_id="att-pub-55")
@@ -759,34 +760,34 @@ def test_bill_link_attachments_direct_hit_skips_mapping_lookup():
 
     assert links == 1
     MockAttSvc.return_value.read_by_qbo_identity.assert_called_once_with("QBO-ATT-99", "realm-1")
-    MockMappingRepo.return_value.read_by_qbo_attachable_id.assert_not_called()
     MockBLIAttSvc.return_value.create.assert_called_once_with(
         bill_line_item_public_id="bli-pub-1", attachment_public_id="att-pub-55"
     )
 
 
-def test_bill_link_attachments_direct_miss_falls_back_to_mapping_table():
+def test_bill_link_attachments_direct_miss_skips_cleanly_no_mapping_table_fallback():
+    """U-315: the qbo.AttachableAttachment mapping-table fallback is gone — confirmed
+    dead post-U-300b (qbo_attachable.id is always None for anything this loop ever
+    sees). A direct-identity miss must just skip, with no further lookup attempted."""
     from scripts.sync_qbo_bill import _link_attachments_to_bill_line_items
+
+    assert "AttachableAttachmentRepository" not in inspect.getsource(_link_attachments_to_bill_line_items)
+    assert "read_by_qbo_attachable_id" not in inspect.getsource(_link_attachments_to_bill_line_items)
 
     bill_line_item = SimpleNamespace(id=1, public_id="bli-pub-1")
     with patch(f"{SYNC_BILL_MODULE}.BillLineItemService") as MockBLI, patch(
         f"{SYNC_BILL_MODULE}.AttachmentService"
-    ) as MockAttSvc, patch(f"{SYNC_BILL_MODULE}.BillLineItemAttachmentService") as MockBLIAttSvc, patch(
-        f"{SYNC_BILL_MODULE}.AttachableAttachmentRepository"
-    ) as MockMappingRepo:
+    ) as MockAttSvc, patch(f"{SYNC_BILL_MODULE}.BillLineItemAttachmentService") as MockBLIAttSvc:
         MockBLI.return_value.read_by_bill_id.return_value = [bill_line_item]
         MockBLIAttSvc.return_value.read_by_bill_line_item_ids.return_value = []
         MockAttSvc.return_value.read_by_qbo_identity.return_value = None
-        MockMappingRepo.return_value.read_by_qbo_attachable_id.return_value = SimpleNamespace(attachment_id=55)
-        attachment = SimpleNamespace(id=55, public_id="att-pub-55")
-        MockAttSvc.return_value.read_by_id.return_value = attachment
 
         qbo_attachable = _make_qbo_attachable(id=30, qbo_id="QBO-ATT-99", realm_id="realm-1")
         links = _link_attachments_to_bill_line_items(bill_id=42, qbo_attachables=[qbo_attachable])
 
-    assert links == 1
-    MockMappingRepo.return_value.read_by_qbo_attachable_id.assert_called_once_with(30)
-    MockAttSvc.return_value.read_by_id.assert_called_once_with(55)
+    assert links == 0
+    MockAttSvc.return_value.read_by_id.assert_not_called()
+    MockBLIAttSvc.return_value.create.assert_not_called()
 
 
 def test_vendorcredit_link_attachments_direct_hit_skips_mapping_lookup():
@@ -795,9 +796,7 @@ def test_vendorcredit_link_attachments_direct_hit_skips_mapping_lookup():
     line_item = SimpleNamespace(id=1, public_id="bcli-pub-1")
     with patch(f"{SYNC_VC_MODULE}.BillCreditLineItemService") as MockBCLI, patch(
         f"{SYNC_VC_MODULE}.AttachmentService"
-    ) as MockAttSvc, patch(f"{SYNC_VC_MODULE}.BillCreditLineItemAttachmentService") as MockBCLIAttSvc, patch(
-        f"{SYNC_VC_MODULE}.AttachableAttachmentRepository"
-    ) as MockMappingRepo:
+    ) as MockAttSvc, patch(f"{SYNC_VC_MODULE}.BillCreditLineItemAttachmentService") as MockBCLIAttSvc:
         MockBCLI.return_value.read_by_bill_credit_id.return_value = [line_item]
         MockBCLIAttSvc.return_value.read_by_bill_credit_line_item_ids.return_value = []
         attachment = SimpleNamespace(id=55, public_id="att-pub-55")
@@ -810,33 +809,31 @@ def test_vendorcredit_link_attachments_direct_hit_skips_mapping_lookup():
 
     assert links == 1
     MockAttSvc.return_value.read_by_qbo_identity.assert_called_once_with("QBO-ATT-99", "realm-1")
-    MockMappingRepo.return_value.read_by_qbo_attachable_id.assert_not_called()
 
 
-def test_vendorcredit_link_attachments_direct_miss_falls_back_to_mapping_table():
+def test_vendorcredit_link_attachments_direct_miss_skips_cleanly_no_mapping_table_fallback():
+    """U-315: fallback removed — see test_bill_link_attachments_direct_miss_skips_cleanly_no_mapping_table_fallback."""
     from scripts.sync_qbo_vendorcredit import _link_attachments_to_bill_credit_line_items
+
+    assert "AttachableAttachmentRepository" not in inspect.getsource(_link_attachments_to_bill_credit_line_items)
+    assert "read_by_qbo_attachable_id" not in inspect.getsource(_link_attachments_to_bill_credit_line_items)
 
     line_item = SimpleNamespace(id=1, public_id="bcli-pub-1")
     with patch(f"{SYNC_VC_MODULE}.BillCreditLineItemService") as MockBCLI, patch(
         f"{SYNC_VC_MODULE}.AttachmentService"
-    ) as MockAttSvc, patch(f"{SYNC_VC_MODULE}.BillCreditLineItemAttachmentService") as MockBCLIAttSvc, patch(
-        f"{SYNC_VC_MODULE}.AttachableAttachmentRepository"
-    ) as MockMappingRepo:
+    ) as MockAttSvc, patch(f"{SYNC_VC_MODULE}.BillCreditLineItemAttachmentService") as MockBCLIAttSvc:
         MockBCLI.return_value.read_by_bill_credit_id.return_value = [line_item]
         MockBCLIAttSvc.return_value.read_by_bill_credit_line_item_ids.return_value = []
         MockAttSvc.return_value.read_by_qbo_identity.return_value = None
-        MockMappingRepo.return_value.read_by_qbo_attachable_id.return_value = SimpleNamespace(attachment_id=55)
-        attachment = SimpleNamespace(id=55, public_id="att-pub-55")
-        MockAttSvc.return_value.read_by_id.return_value = attachment
 
         qbo_attachable = _make_qbo_attachable(id=30, qbo_id="QBO-ATT-99", realm_id="realm-1")
         links = _link_attachments_to_bill_credit_line_items(
             bill_credit_id=42, qbo_attachables=[qbo_attachable]
         )
 
-    assert links == 1
-    MockMappingRepo.return_value.read_by_qbo_attachable_id.assert_called_once_with(30)
-    MockAttSvc.return_value.read_by_id.assert_called_once_with(55)
+    assert links == 0
+    MockAttSvc.return_value.read_by_id.assert_not_called()
+    MockBCLIAttSvc.return_value.create.assert_not_called()
 
 
 def test_purchase_expense_link_attachments_direct_hit_skips_mapping_lookup():
@@ -846,8 +843,6 @@ def test_purchase_expense_link_attachments_direct_hit_skips_mapping_lookup():
 
     line_item = SimpleNamespace(id=1, public_id="eli-pub-1")
     with patch(
-        "integrations.intuit.qbo.attachable.connector.attachment.persistence.repo.AttachableAttachmentRepository"
-    ) as MockMappingRepo, patch(
         "entities.attachment.business.service.AttachmentService"
     ) as MockAttSvc, patch(
         "entities.expense_line_item.business.service.ExpenseLineItemService"
@@ -866,18 +861,19 @@ def test_purchase_expense_link_attachments_direct_hit_skips_mapping_lookup():
 
     assert links == 1
     MockAttSvc.return_value.read_by_qbo_identity.assert_called_once_with("QBO-ATT-99", "realm-1")
-    MockMappingRepo.return_value.read_by_qbo_attachable_id.assert_not_called()
 
 
-def test_purchase_expense_link_attachments_direct_miss_falls_back_to_mapping_table():
+def test_purchase_expense_link_attachments_direct_miss_skips_cleanly_no_mapping_table_fallback():
+    """U-315: fallback removed — see test_bill_link_attachments_direct_miss_skips_cleanly_no_mapping_table_fallback."""
     from integrations.intuit.qbo.purchase.connector.expense.business.service import (
         sync_purchase_attachments_to_expense_line_items,
     )
 
+    assert "AttachableAttachmentRepository" not in inspect.getsource(sync_purchase_attachments_to_expense_line_items)
+    assert "read_by_qbo_attachable_id" not in inspect.getsource(sync_purchase_attachments_to_expense_line_items)
+
     line_item = SimpleNamespace(id=1, public_id="eli-pub-1")
     with patch(
-        "integrations.intuit.qbo.attachable.connector.attachment.persistence.repo.AttachableAttachmentRepository"
-    ) as MockMappingRepo, patch(
         "entities.attachment.business.service.AttachmentService"
     ) as MockAttSvc, patch(
         "entities.expense_line_item.business.service.ExpenseLineItemService"
@@ -887,15 +883,12 @@ def test_purchase_expense_link_attachments_direct_miss_falls_back_to_mapping_tab
         MockELI.return_value.read_by_expense_id.return_value = [line_item]
         MockELIAttSvc.return_value.read_by_expense_line_item_ids.return_value = []
         MockAttSvc.return_value.read_by_qbo_identity.return_value = None
-        MockMappingRepo.return_value.read_by_qbo_attachable_id.return_value = SimpleNamespace(attachment_id=55)
-        attachment = SimpleNamespace(id=55, public_id="att-pub-55")
-        MockAttSvc.return_value.read_by_id.return_value = attachment
 
         qbo_attachable = _make_qbo_attachable(id=30, qbo_id="QBO-ATT-99", realm_id="realm-1")
         links = sync_purchase_attachments_to_expense_line_items(
             expense_id=42, qbo_attachables=[qbo_attachable]
         )
 
-    assert links == 1
-    MockMappingRepo.return_value.read_by_qbo_attachable_id.assert_called_once_with(30)
-    MockAttSvc.return_value.read_by_id.assert_called_once_with(55)
+    assert links == 0
+    MockAttSvc.return_value.read_by_id.assert_not_called()
+    MockELIAttSvc.return_value.create.assert_not_called()

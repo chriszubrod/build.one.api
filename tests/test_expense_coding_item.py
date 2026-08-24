@@ -223,11 +223,9 @@ def _setup_confirm_gate_mocks(monkeypatch, *, writes_allowed: bool, recode_write
         lambda: recode_writes_enabled,
     )
 
-    mock_item_repo = MagicMock()
-    mock_item_repo.read_by_sub_cost_code_id.return_value = SimpleNamespace(id=1)
     monkeypatch.setattr(
-        "integrations.intuit.qbo.item.connector.sub_cost_code.persistence.repo.ItemSubCostCodeRepository",
-        lambda: mock_item_repo,
+        "integrations.intuit.qbo.base.cost_code_resolver.resolve_qbo_item_ref",
+        lambda sub_cost_code_id, realm_id=None: SimpleNamespace(value="ITEM-X", name="Item X"),
     )
 
     mock_purchase_repo = MagicMock()

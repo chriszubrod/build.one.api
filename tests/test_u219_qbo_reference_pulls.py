@@ -16,9 +16,6 @@ from integrations.intuit.qbo.customer.business.model import QboCustomer
 from integrations.intuit.qbo.customer.connector.customer.business.service import CustomerCustomerConnector
 from integrations.intuit.qbo.customer.connector.project.business.service import CustomerProjectConnector
 from integrations.intuit.qbo.customer.external.client import QboCustomerClient
-from integrations.intuit.qbo.item.business.model import QboItem
-from integrations.intuit.qbo.item.connector.cost_code.business.service import ItemCostCodeConnector
-from integrations.intuit.qbo.item.connector.sub_cost_code.business.service import ItemSubCostCodeConnector
 from integrations.intuit.qbo.item.external.client import QboItemClient
 from integrations.intuit.qbo.term.business.model import QboTerm
 from integrations.intuit.qbo.term.connector.payment_term.business.service import TermPaymentTermConnector
@@ -155,37 +152,6 @@ def _make_qbo_customer(**overrides: Any) -> QboCustomer:
     return QboCustomer(**defaults)
 
 
-def _make_qbo_item(**overrides: Any) -> QboItem:
-    defaults = dict(
-        id=1,
-        public_id=None,
-        row_version=None,
-        created_datetime=None,
-        modified_datetime=None,
-        qbo_id="QBO-I-1",
-        sync_token=None,
-        realm_id="r1",
-        name="01 Permits",
-        description=None,
-        active=None,
-        type=None,
-        parent_ref_value=None,
-        parent_ref_name=None,
-        level=None,
-        fully_qualified_name=None,
-        sku=None,
-        unit_price=None,
-        purchase_cost=None,
-        taxable=None,
-        income_account_ref_value=None,
-        income_account_ref_name=None,
-        expense_account_ref_value=None,
-        expense_account_ref_name=None,
-    )
-    defaults.update(overrides)
-    return QboItem(**defaults)
-
-
 def _make_qbo_term(**overrides: Any) -> QboTerm:
     defaults = dict(
         id=1,
@@ -261,39 +227,6 @@ def _build_project_connector() -> CustomerProjectConnector:
     return connector
 
 
-def _build_cost_code_connector() -> ItemCostCodeConnector:
-    connector = ItemCostCodeConnector(
-        mapping_repo=Mock(),
-        cost_code_service=Mock(),
-    )
-    connector.mapping_repo.read_by_qbo_item_id.return_value = None
-    connector.cost_code_service.read_by_number.return_value = None
-    # U-289: default the direct dbo-identity fast path to a miss so these tests keep
-    # exercising the mapping-table path they're testing (mirrors U-276/278/282's
-    # identical fix for their own connector-builder fixtures).
-    connector.cost_code_service.read_by_qbo_identity.return_value = None
-    return connector
-
-
-def _build_sub_cost_code_connector() -> ItemSubCostCodeConnector:
-    connector = ItemSubCostCodeConnector(
-        mapping_repo=Mock(),
-        sub_cost_code_service=Mock(),
-        cost_code_mapping_repo=Mock(),
-        qbo_item_repo=Mock(),
-    )
-    connector.mapping_repo.read_by_qbo_item_id.return_value = None
-    connector.sub_cost_code_service.repo = Mock()
-    connector.sub_cost_code_service.repo.read_by_cost_code_id.return_value = []
-    connector.qbo_item_repo.read_by_qbo_id.return_value = SimpleNamespace(id=99)
-    connector.cost_code_mapping_repo.read_by_qbo_item_id.return_value = SimpleNamespace(
-        cost_code_id=10
-    )
-    # U-289: default the direct dbo-identity fast path to a miss (see cost_code above).
-    connector.sub_cost_code_service.read_by_qbo_identity.return_value = None
-    return connector
-
-
 def _build_payment_term_connector() -> TermPaymentTermConnector:
     connector = TermPaymentTermConnector(
         mapping_repo=Mock(),
@@ -330,18 +263,6 @@ def _build_payment_term_connector() -> TermPaymentTermConnector:
             {"job": True},
         ),
         (
-            _build_cost_code_connector,
-            "sync_from_qbo_item",
-            _make_qbo_item,
-            {"parent_ref_value": None},
-        ),
-        (
-            _build_sub_cost_code_connector,
-            "sync_from_qbo_item",
-            _make_qbo_item,
-            {"parent_ref_value": "parent-qbo-id"},
-        ),
-        (
             _build_payment_term_connector,
             "sync_from_qbo_term",
             _make_qbo_term,
@@ -352,8 +273,6 @@ def _build_payment_term_connector() -> TermPaymentTermConnector:
         "vendor",
         "customer",
         "project",
-        "cost_code",
-        "sub_cost_code",
         "payment_term",
     ],
 )
@@ -376,22 +295,12 @@ def test_inactive_reference_record_raises_on_create_path(
         (_build_vendor_connector, "sync_from_qbo_vendor", _make_qbo_vendor, {}, "vendor_service"),
         (_build_customer_connector, "sync_from_qbo_customer", _make_qbo_customer, {"job": False}, "customer_service"),
         (_build_project_connector, "sync_from_qbo_customer", _make_qbo_customer, {"job": True}, "project_service"),
-        (_build_cost_code_connector, "sync_from_qbo_item", _make_qbo_item, {"parent_ref_value": None}, "cost_code_service"),
-        (
-            _build_sub_cost_code_connector,
-            "sync_from_qbo_item",
-            _make_qbo_item,
-            {"parent_ref_value": "parent-qbo-id"},
-            "sub_cost_code_service",
-        ),
         (_build_payment_term_connector, "sync_from_qbo_term", _make_qbo_term, {}, "payment_term_service"),
     ],
     ids=[
         "vendor",
         "customer",
         "project",
-        "cost_code",
-        "sub_cost_code",
         "payment_term",
     ],
 )
@@ -581,12 +490,8 @@ def test_scheduler_isolated_restores_prior_context_in_callers_context(monkeypatc
          "vendor_service", "read_by_name"),
         (_build_project_connector, "sync_from_qbo_customer", _make_qbo_customer, {"job": True},
          "project_service", "read_by_name"),
-        (_build_cost_code_connector, "sync_from_qbo_item", _make_qbo_item, {"parent_ref_value": None},
-         "cost_code_service", "read_by_number"),
-        (_build_sub_cost_code_connector, "sync_from_qbo_item", _make_qbo_item,
-         {"parent_ref_value": "parent-qbo-id"}, "sub_cost_code_service", "read_by_cost_code_id"),
     ],
-    ids=["vendor", "project", "cost_code", "sub_cost_code"],
+    ids=["vendor", "project"],
 )
 def test_inactive_unmapped_record_is_not_adopted_onto_a_live_local_row(
     connector_builder,
@@ -598,13 +503,13 @@ def test_inactive_unmapped_record_is_not_adopted_onto_a_live_local_row(
 ):
     """Regression for the Codex P1: the guard must cover ADOPT, not just CREATE.
 
-    These four connectors resolve an unmapped QBO record against an existing local
-    row before creating one. The item connectors match on the parsed NUMBER, which
-    survives QBO's " (deleted)" rename — so an inactive item like "01 Permits (deleted)"
-    would match the live local CostCode "01", overwrite its name/description with the
-    dead record's, and bind the mapping to it. Guarding only the create branch left
-    that path wide open, and the original tests missed it because their builders pin
-    the adopt lookup to None.
+    These two connectors resolve an unmapped QBO record against an existing local
+    row before creating one. Guarding only the create branch left that path wide
+    open, and the original tests missed it because their builders pin the adopt
+    lookup to None. (The item connectors' equivalent adopt-by-number guard, whose
+    NUMBER match survives QBO's " (deleted)" rename the same way, is covered by
+    their own dbo-only tests in test_u289_item_qbo_identity_repoint.py — U-307c
+    replaced their mapping-table adopt path entirely.)
     """
     connector = connector_builder()
     live_row = SimpleNamespace(id=42, name="Live Local Row", description="keep me", number="01")
@@ -735,20 +640,6 @@ def test_vendorcredit_attachment_kill_switch_is_one_way(monkeypatch):
             lambda c: _setup_project_mapped(c, "My Project"),
         ),
         (
-            _build_cost_code_connector,
-            "sync_from_qbo_item",
-            _make_qbo_item,
-            {"parent_ref_value": None, "name": "01 Permits (deleted)"},
-            lambda c: _setup_cost_code_mapped(c, "Permits"),
-        ),
-        (
-            _build_sub_cost_code_connector,
-            "sync_from_qbo_item",
-            _make_qbo_item,
-            {"parent_ref_value": "parent-qbo-id", "name": "01.1 Sub Item (deleted)"},
-            lambda c: _setup_sub_cost_code_mapped(c, "Sub Item"),
-        ),
-        (
             _build_payment_term_connector,
             "sync_from_qbo_term",
             _make_qbo_term,
@@ -756,7 +647,7 @@ def test_vendorcredit_attachment_kill_switch_is_one_way(monkeypatch):
             lambda c: _setup_payment_term_mapped(c, "Net 30"),
         ),
     ],
-    ids=["customer", "project", "cost_code", "sub_cost_code", "payment_term"],
+    ids=["customer", "project", "payment_term"],
 )
 def test_mapped_path_preserves_non_blank_local_name_when_qbo_renamed_deleted(
     connector_builder,
@@ -793,22 +684,6 @@ def test_mapped_path_preserves_non_blank_local_name_when_qbo_renamed_deleted(
             "Fresh Project (deleted)",
         ),
         (
-            _build_cost_code_connector,
-            "sync_from_qbo_item",
-            _make_qbo_item,
-            {"parent_ref_value": None},
-            lambda c: _setup_cost_code_mapped(c, ""),
-            "02 Fresh Item (deleted)",
-        ),
-        (
-            _build_sub_cost_code_connector,
-            "sync_from_qbo_item",
-            _make_qbo_item,
-            {"parent_ref_value": "parent-qbo-id"},
-            lambda c: _setup_sub_cost_code_mapped(c, ""),
-            "02.1 Fresh Sub (deleted)",
-        ),
-        (
             _build_payment_term_connector,
             "sync_from_qbo_term",
             _make_qbo_term,
@@ -817,7 +692,7 @@ def test_mapped_path_preserves_non_blank_local_name_when_qbo_renamed_deleted(
             "Net 45 (deleted)",
         ),
     ],
-    ids=["customer", "project", "cost_code", "sub_cost_code", "payment_term"],
+    ids=["customer", "project", "payment_term"],
 )
 def test_mapped_path_fills_blank_local_name_from_qbo_deleted_name(
     connector_builder,
@@ -832,17 +707,12 @@ def test_mapped_path_fills_blank_local_name_from_qbo_deleted_name(
     setup_mapped(connector)
     model = model_builder(**{**model_kwargs, **_qbo_name_field(model_builder, incoming_name)})
     result = getattr(connector, sync_method)(model)
-    if model_builder is _make_qbo_item and " " in incoming_name:
-        expected = incoming_name.split(" ", 1)[1]
-    else:
-        expected = incoming_name
+    expected = incoming_name
     assert result.name == expected
 
 
 def _qbo_name_field(model_builder, incoming_name: str) -> dict[str, str]:
     if model_builder is _make_qbo_term:
-        return {"name": incoming_name}
-    if model_builder is _make_qbo_item:
         return {"name": incoming_name}
     return {"display_name": incoming_name}
 
@@ -864,26 +734,6 @@ def _setup_project_mapped(connector: CustomerProjectConnector, local_name: str) 
     connector.mapping_repo.read_by_qbo_customer_id.return_value = mapping
     connector.project_service.read_by_id.return_value = project
     connector.project_service.repo.update_by_id.side_effect = lambda p: p
-    return local_name
-
-
-def _setup_cost_code_mapped(connector: ItemCostCodeConnector, local_name: str) -> str:
-    mapping = SimpleNamespace(id=1, cost_code_id=10)
-    cost_code = SimpleNamespace(id=10, number="01", name=local_name, description="")
-    connector.mapping_repo.read_by_qbo_item_id.return_value = mapping
-    connector.cost_code_service.read_by_id.return_value = cost_code
-    connector.cost_code_service.repo.update_by_id.side_effect = lambda c: c
-    return local_name
-
-
-def _setup_sub_cost_code_mapped(connector: ItemSubCostCodeConnector, local_name: str) -> str:
-    mapping = SimpleNamespace(id=1, sub_cost_code_id=10)
-    sub_cost_code = SimpleNamespace(
-        id=10, number="01.1", name=local_name, description="", cost_code_id=10
-    )
-    connector.mapping_repo.read_by_qbo_item_id.return_value = mapping
-    connector.sub_cost_code_service.read_by_id.return_value = sub_cost_code
-    connector.sub_cost_code_service.repo.update_by_id.side_effect = lambda s: s
     return local_name
 
 

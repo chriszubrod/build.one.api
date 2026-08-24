@@ -41,7 +41,11 @@ def _make_service(**overrides):
         "project_service": MagicMock(),
         "sub_cost_code_service": MagicMock(),
         "suggestion_repo": MagicMock(),
-        "item_sub_cost_code_repo": MagicMock(),
+        # U-307c: resolves dbo-natively (dbo.SubCostCode.QboId IS NOT NULL)
+        # instead of an ItemSubCostCode mapping-table read; default "mapped"
+        # (a real writable QBO item ref), individual tests override to None
+        # for the "unmapped" contract.
+        "resolve_qbo_item_ref": MagicMock(return_value=SimpleNamespace(value="ITEM-X", name="Item X")),
         "coding_item_service": MagicMock(),
         "qbo_purchase_service": MagicMock(),
     }
@@ -62,13 +66,9 @@ def test_suggest_for_item_full_project_and_scc():
         }
     ]
 
-    item_sub_cost_code_repo = MagicMock()
-    item_sub_cost_code_repo.read_by_sub_cost_code_id.return_value = SimpleNamespace(id=1)
-
     service = _make_service(
         project_service=project_service,
         sub_cost_code_service=sub_cost_code_service,
-        item_sub_cost_code_repo=item_sub_cost_code_repo,
     )
 
     result = service.suggest_for_item(
@@ -88,6 +88,32 @@ def test_suggest_for_item_full_project_and_scc():
     assert result["confidence"] == Decimal("0.92")
 
 
+def test_suggest_for_item_threads_realm_id_to_resolver():
+    """U-307c: resolve_qbo_item_ref needs realm_id to guard against a
+    cross-realm/incompletely-stamped SubCostCode -- must not be dropped."""
+    project_service = MagicMock()
+    project_service.read_by_abbreviation.return_value = SimpleNamespace(id=10, name="HE12")
+
+    sub_cost_code_service = MagicMock()
+    sub_cost_code_service.find_for_reply.return_value = [
+        {"sub_cost_code": {"id": 20, "number": "2.01", "name": "Dumpster"}, "confidence": 0.92}
+    ]
+
+    resolver = MagicMock(return_value=SimpleNamespace(value="ITEM-X", name="Item X"))
+    service = _make_service(
+        project_service=project_service,
+        sub_cost_code_service=sub_cost_code_service,
+        resolve_qbo_item_ref=resolver,
+    )
+
+    service.suggest_for_item(
+        SimpleNamespace(private_note="Chris Zubrod - HE12 - Dumpster - 2.01", vendor_id=99),
+        realm_id="realm-42",
+    )
+
+    resolver.assert_called_once_with(20, "realm-42")
+
+
 def test_suggest_for_item_partial_vendor_history_only():
     project_service = MagicMock()
     project_service.read_by_abbreviation.return_value = None
@@ -102,13 +128,9 @@ def test_suggest_for_item_partial_vendor_history_only():
         "total_count": 10,
     }
 
-    item_sub_cost_code_repo = MagicMock()
-    item_sub_cost_code_repo.read_by_sub_cost_code_id.return_value = SimpleNamespace(id=1)
-
     service = _make_service(
         project_service=project_service,
         suggestion_repo=suggestion_repo,
-        item_sub_cost_code_repo=item_sub_cost_code_repo,
     )
 
     result = service.suggest_for_item(
@@ -158,13 +180,10 @@ def test_suggest_for_item_drops_unmapped_sub_cost_code():
         }
     ]
 
-    item_sub_cost_code_repo = MagicMock()
-    item_sub_cost_code_repo.read_by_sub_cost_code_id.return_value = None
-
     service = _make_service(
         project_service=project_service,
         sub_cost_code_service=sub_cost_code_service,
-        item_sub_cost_code_repo=item_sub_cost_code_repo,
+        resolve_qbo_item_ref=MagicMock(return_value=None),
     )
 
     result = service.suggest_for_item(
@@ -187,12 +206,8 @@ def test_vendor_history_confidence_ratio():
         "total_count": 9,
     }
 
-    item_sub_cost_code_repo = MagicMock()
-    item_sub_cost_code_repo.read_by_sub_cost_code_id.return_value = SimpleNamespace(id=1)
-
     service = _make_service(
         suggestion_repo=suggestion_repo,
-        item_sub_cost_code_repo=item_sub_cost_code_repo,
     )
 
     result = service.suggest_for_item(

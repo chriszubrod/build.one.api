@@ -1,24 +1,31 @@
 """Pure-logic regression tests for U-275: dbo-native QboActive mirror.
 
-Every sync_from_qbo_* branch (update / heal / create) on the Vendor, PaymentTerm,
-and SubCostCode connectors must thread the QBO record's `active` flag through to
+Every sync_from_qbo_* branch on the Vendor, PaymentTerm, and SubCostCode
+connectors must thread the QBO record's `active` flag through to
 `repo.set_qbo_identity(..., active=...)` so the pull path actually populates the
 new mirror column, not just tolerates the new kwarg. A regression here silently
 freezes QboActive at NULL forever (falls back to a stale-forever mirror) while
 still passing every pre-existing test, since none of them asserted on `active`
 before this unit.
+
+SubCostCode's branches were rewritten for U-307c (dbo-only identity resolution,
+`run_identity_fastpath_dbo_only` — see test_u289_item_qbo_identity_repoint.py
+for the full fast-path suite): "update" is now the direct-hit branch, "heal" no
+longer exists (nothing left to heal with no mapping table), and "create" covers
+both the genuine-miss create and adopt-by-number paths via `resolve_candidate`/
+`stamp_identity`.
 """
 from __future__ import annotations
 
 import re
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 import pytest
 
 from integrations.intuit.qbo.item.business.model import QboItem
-from integrations.intuit.qbo.item.connector.sub_cost_code.business.model import ItemSubCostCode
 from integrations.intuit.qbo.item.connector.sub_cost_code.business.service import ItemSubCostCodeConnector
 from integrations.intuit.qbo.term.business.model import QboTerm
 from integrations.intuit.qbo.term.connector.payment_term.business.model import TermPaymentTerm
@@ -253,80 +260,72 @@ def test_payment_term_create_path_threads_active():
 # SubCostCode
 # ------------------------------------------------------------------------- #
 
+SCC_FASTPATH_LOCK_TARGET = "integrations.intuit.qbo.base.identity_fastpath.qbo_app_lock"
+SCC_STAMP_LOCK_TARGET = (
+    "integrations.intuit.qbo.item.connector.sub_cost_code.business.service.qbo_app_lock"
+)
+
+
+def _granted_lock(*_a, **_k):
+    @contextmanager
+    def _cm(*_a2, **_k2):
+        yield True
+
+    return _cm()
+
+
 def _build_sub_cost_code_connector():
+    sub_cost_code_service = Mock()
+    sub_cost_code_service.repo = Mock()
+    cost_code_service = Mock()
     connector = ItemSubCostCodeConnector(
-        mapping_repo=Mock(),
-        sub_cost_code_service=Mock(),
-        cost_code_mapping_repo=Mock(),
-        qbo_item_repo=Mock(),
+        sub_cost_code_service=sub_cost_code_service,
+        cost_code_service=cost_code_service,
         reconciliation_repo=Mock(),
     )
-    connector.qbo_item_repo.read_by_qbo_id.return_value = Mock(id=99)
-    connector.cost_code_mapping_repo.read_by_qbo_item_id.return_value = Mock(cost_code_id=10)
-    # U-289: default the direct dbo-identity fast path to a miss so these tests keep
-    # exercising the mapping-table path they're testing (mirrors U-276/278/282's
-    # identical fix for their own connector-builder fixtures).
-    connector.sub_cost_code_service.read_by_qbo_identity.return_value = None
+    cost_code_service.read_by_qbo_identity.return_value = Mock(id=10)
     return connector
 
 
-def test_sub_cost_code_update_path_threads_active():
+def test_sub_cost_code_direct_hit_path_threads_active():
+    """U-307c: the direct-hit branch (was "update") -- QboActive is refreshed
+    via the outer wrapper's QboId/RealmId-omitted set_qbo_identity call."""
     connector = _build_sub_cost_code_connector()
     qbo_item = _make_qbo_item(active=False)
-    mapping = ItemSubCostCode(
-        id=1, public_id="m1", row_version=None, created_datetime=None,
-        modified_datetime=None, sub_cost_code_id=100, qbo_item_id=1,
-    )
     sub_cost_code = Mock(id=100, name="Permits", number="01", description="desc", cost_code_id=10)
-    connector.mapping_repo.read_by_qbo_item_id.return_value = mapping
-    connector.sub_cost_code_service.read_by_id.return_value = sub_cost_code
+    connector.sub_cost_code_service.read_by_qbo_identity.return_value = sub_cost_code
     connector.sub_cost_code_service.repo.update_by_id.side_effect = lambda e: e
 
     connector.sync_from_qbo_item(qbo_item)
 
     connector.sub_cost_code_service.repo.set_qbo_identity.assert_called_once_with(
-        id=100, qbo_id="QBO-I-1", realm_id="r1", active=False,
+        id=100, qbo_id=None, realm_id=None, active=False,
     )
 
 
-def test_sub_cost_code_heal_path_threads_active():
+def test_sub_cost_code_genuine_miss_create_path_threads_active():
+    """U-307c: the create branch (was "create") -- stamped once inside
+    `_stamp_sub_cost_code_identity` (real qbo_id/realm_id + active), then
+    again by the outer QboActive-refresh wrapper (harmless redundant re-set)."""
     connector = _build_sub_cost_code_connector()
     qbo_item = _make_qbo_item(active=True)
-    mapping = ItemSubCostCode(
-        id=1, public_id="m1", row_version=None, created_datetime=None,
-        modified_datetime=None, sub_cost_code_id=999, qbo_item_id=1,
-    )
-    replacement = Mock(id=200, name="Permits", number="01", description="desc", cost_code_id=10)
-    connector.mapping_repo.read_by_qbo_item_id.return_value = mapping
-    connector.sub_cost_code_service.read_by_id.return_value = None
-    connector.sub_cost_code_service.repo.read_by_cost_code_id.return_value = [replacement]
-    connector.mapping_repo.read_by_sub_cost_code_id.return_value = None
-    connector.sub_cost_code_service.repo.update_by_id.side_effect = lambda e: e
-
-    connector.sync_from_qbo_item(qbo_item)
-
-    connector.sub_cost_code_service.repo.set_qbo_identity.assert_called_once_with(
-        id=200, qbo_id="QBO-I-1", realm_id="r1", active=True,
-    )
-
-
-def test_sub_cost_code_create_path_threads_active():
-    connector = _build_sub_cost_code_connector()
-    qbo_item = _make_qbo_item(active=True)
-    created = Mock(id=300, name="Permits")
-    connector.mapping_repo.read_by_qbo_item_id.return_value = None
+    connector.sub_cost_code_service.read_by_qbo_identity.return_value = None
     connector.sub_cost_code_service.repo.read_by_cost_code_id.return_value = []
+    created = Mock(id=300, name="Permits", qbo_id=None, realm_id=None)
     connector.sub_cost_code_service.create.return_value = created
-    connector.mapping_repo.read_by_sub_cost_code_id.return_value = None
-    connector.mapping_repo.create.return_value = ItemSubCostCode(
-        id=2, public_id="m2", row_version=None, created_datetime=None,
-        modified_datetime=None, sub_cost_code_id=300, qbo_item_id=1,
+    stamped = Mock(id=300, qbo_id="QBO-I-1", realm_id="r1")
+    connector.sub_cost_code_service.read_by_id.side_effect = [created, stamped, stamped]
+
+    with patch(SCC_FASTPATH_LOCK_TARGET, side_effect=_granted_lock), patch(
+        SCC_STAMP_LOCK_TARGET, side_effect=_granted_lock
+    ):
+        connector.sync_from_qbo_item(qbo_item)
+
+    assert connector.sub_cost_code_service.repo.set_qbo_identity.call_args_list[0] == (
+        (), dict(id=300, qbo_id="QBO-I-1", realm_id="r1", active=True)
     )
-
-    connector.sync_from_qbo_item(qbo_item)
-
-    connector.sub_cost_code_service.repo.set_qbo_identity.assert_called_once_with(
-        id=300, qbo_id="QBO-I-1", realm_id="r1", active=True,
+    assert connector.sub_cost_code_service.repo.set_qbo_identity.call_args_list[-1] == (
+        (), dict(id=300, qbo_id=None, realm_id=None, active=True)
     )
 
 

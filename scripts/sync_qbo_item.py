@@ -28,12 +28,7 @@ from integrations.intuit.qbo.item.business.service import QboItemService
 from integrations.intuit.qbo.item.business.model import QboItem
 from integrations.intuit.qbo.item.connector.cost_code.business.service import ItemCostCodeConnector
 from integrations.intuit.qbo.item.connector.sub_cost_code.business.service import ItemSubCostCodeConnector
-from integrations.intuit.qbo.item.connector.cost_code.persistence.repo import ItemCostCodeRepository
-from integrations.intuit.qbo.item.connector.sub_cost_code.persistence.repo import ItemSubCostCodeRepository
-from integrations.intuit.qbo.item.persistence.repo import QboItemRepository
 from integrations.intuit.qbo.auth.business.service import QboAuthService
-from entities.cost_code.business.service import CostCodeService
-from entities.sub_cost_code.business.service import SubCostCodeService
 
 logger = logging.getLogger(__name__)
 
@@ -144,10 +139,10 @@ def sync_qbo_to_local(
             )
             cost_codes_synced += 1
             outcome.record_projected()
-            logger.info(f"Synced QboItem {item.id} to CostCode {cost_code.id}")
+            logger.info(f"Synced QboItem {item.qbo_id} to CostCode {cost_code.id}")
         except Exception as e:
             outcome.record_projection_error(
-                item.id, e, label="QboItem->CostCode", logger=logger
+                item.qbo_id, e, label="QboItem->CostCode", logger=logger
             )
         
         # Add delay between batches to keep connection alive
@@ -167,10 +162,10 @@ def sync_qbo_to_local(
             )
             sub_cost_codes_synced += 1
             outcome.record_projected()
-            logger.info(f"Synced QboItem {item.id} to SubCostCode {sub_cost_code.id}")
+            logger.info(f"Synced QboItem {item.qbo_id} to SubCostCode {sub_cost_code.id}")
         except Exception as e:
             outcome.record_projection_error(
-                item.id, e, label="QboItem->SubCostCode", logger=logger
+                item.qbo_id, e, label="QboItem->SubCostCode", logger=logger
             )
         
         # Add delay between batches to keep connection alive
@@ -184,238 +179,22 @@ def sync_qbo_to_local(
     }, outcome
 
 
-def sync_local_to_qbo(
-    realm_id: str,
-    last_sync_time: Optional[str],
-    qbo_item_service: QboItemService,
-    cost_code_service: CostCodeService,
-    sub_cost_code_service: SubCostCodeService,
-    cost_code_mapping_repo: ItemCostCodeRepository,
-    sub_cost_code_mapping_repo: ItemSubCostCodeRepository,
-    qbo_item_repo: QboItemRepository,
-) -> dict:
-    """
-    Sync locally modified CostCodes/SubCostCodes back to QBO.
-    
-    This is the reverse sync: local changes -> QBO Items.
-    
-    Args:
-        realm_id: QBO realm ID
-        last_sync_time: Last sync timestamp to detect local modifications
-        Various service/repo instances
-    
-    Returns:
-        dict: Sync results
-    """
-    logger.info("Checking for local CostCode/SubCostCode modifications to sync to QBO")
-    
-    cost_codes_pushed = 0
-    sub_cost_codes_pushed = 0
-    
-    last_sync_dt = _parse_datetime(last_sync_time) if last_sync_time else None
-    
-    # Check CostCodes modified since last sync
-    all_cost_codes = with_retry(
-        cost_code_service.read_all,
-        max_retries=MAX_RETRIES,
-        initial_delay=INITIAL_RETRY_DELAY,
-    )
-    for i, cost_code in enumerate(all_cost_codes):
-        cost_code_modified = _parse_datetime(cost_code.modified_datetime)
-        
-        # Skip if not modified since last sync
-        if last_sync_dt and cost_code_modified and cost_code_modified <= last_sync_dt:
-            continue
-        
-        # Find mapping to QboItem
-        cost_code_id = int(cost_code.id) if isinstance(cost_code.id, str) else cost_code.id
-        try:
-            mapping = with_retry(
-                cost_code_mapping_repo.read_by_cost_code_id,
-                cost_code_id,
-                max_retries=MAX_RETRIES,
-                initial_delay=INITIAL_RETRY_DELAY,
-            )
-        except Exception as e:
-            logger.error(f"Failed to read mapping for CostCode {cost_code.id}: {e}")
-            continue
-        
-        if not mapping:
-            logger.debug(f"CostCode {cost_code.id} has no QboItem mapping - skipping reverse sync")
-            continue
-        
-        # Get the QboItem
-        try:
-            qbo_item = with_retry(
-                qbo_item_repo.read_by_id,
-                mapping.qbo_item_id,
-                max_retries=MAX_RETRIES,
-                initial_delay=INITIAL_RETRY_DELAY,
-            )
-        except Exception as e:
-            logger.error(f"Failed to read QboItem {mapping.qbo_item_id}: {e}")
-            continue
-            
-        if not qbo_item:
-            logger.warning(f"QboItem {mapping.qbo_item_id} not found for CostCode {cost_code.id}")
-            continue
-        
-        # Compare modification times
-        qbo_item_modified = _parse_datetime(qbo_item.modified_datetime)
-        
-        if cost_code_modified and qbo_item_modified and cost_code_modified > qbo_item_modified:
-            # CostCode is newer - need to update QboItem
-            logger.info(f"CostCode {cost_code.id} is newer than QboItem {qbo_item.id}. Updating QboItem.")
-            
-            # Build new name from number and name (space-separated format)
-            new_name = f"{cost_code.number} {cost_code.name}" if cost_code.number != cost_code.name else cost_code.name
-            
-            try:
-                # Update local QboItem record
-                qbo_item_repo.update_by_qbo_id(
-                    qbo_id=qbo_item.qbo_id,
-                    row_version=qbo_item.row_version_bytes,
-                    sync_token=qbo_item.sync_token,
-                    realm_id=qbo_item.realm_id,
-                    name=new_name,
-                    description=cost_code.description,
-                    active=qbo_item.active,
-                    type=qbo_item.type,
-                    parent_ref_value=qbo_item.parent_ref_value,
-                    parent_ref_name=qbo_item.parent_ref_name,
-                    level=qbo_item.level,
-                    fully_qualified_name=qbo_item.fully_qualified_name,
-                    sku=qbo_item.sku,
-                    unit_price=qbo_item.unit_price,
-                    purchase_cost=qbo_item.purchase_cost,
-                    taxable=qbo_item.taxable,
-                    income_account_ref_value=qbo_item.income_account_ref_value,
-                    income_account_ref_name=qbo_item.income_account_ref_name,
-                    expense_account_ref_value=qbo_item.expense_account_ref_value,
-                    expense_account_ref_name=qbo_item.expense_account_ref_name,
-                )
-                cost_codes_pushed += 1
-                logger.info(f"Updated QboItem {qbo_item.id} from CostCode {cost_code.id}")
-                
-                # Note: Pushing to QBO API would require Item update API call
-                # QBO Item API supports updates via POST, but we're only updating local for now
-                # TODO: Add QBO API push when needed
-                
-            except Exception as e:
-                logger.error(f"Failed to update QboItem {qbo_item.id} from CostCode {cost_code.id}: {e}")
-    
-    # Check SubCostCodes modified since last sync
-    all_sub_cost_codes = with_retry(
-        sub_cost_code_service.read_all,
-        max_retries=MAX_RETRIES,
-        initial_delay=INITIAL_RETRY_DELAY,
-    )
-    for i, sub_cost_code in enumerate(all_sub_cost_codes):
-        sub_cost_code_modified = _parse_datetime(sub_cost_code.modified_datetime)
-        
-        # Skip if not modified since last sync
-        if last_sync_dt and sub_cost_code_modified and sub_cost_code_modified <= last_sync_dt:
-            continue
-        
-        # Find mapping to QboItem
-        sub_cost_code_id = int(sub_cost_code.id) if isinstance(sub_cost_code.id, str) else sub_cost_code.id
-        try:
-            mapping = with_retry(
-                sub_cost_code_mapping_repo.read_by_sub_cost_code_id,
-                sub_cost_code_id,
-                max_retries=MAX_RETRIES,
-                initial_delay=INITIAL_RETRY_DELAY,
-            )
-        except Exception as e:
-            logger.error(f"Failed to read mapping for SubCostCode {sub_cost_code.id}: {e}")
-            continue
-        
-        if not mapping:
-            logger.debug(f"SubCostCode {sub_cost_code.id} has no QboItem mapping - skipping reverse sync")
-            continue
-        
-        # Get the QboItem
-        try:
-            qbo_item = with_retry(
-                qbo_item_repo.read_by_id,
-                mapping.qbo_item_id,
-                max_retries=MAX_RETRIES,
-                initial_delay=INITIAL_RETRY_DELAY,
-            )
-        except Exception as e:
-            logger.error(f"Failed to read QboItem {mapping.qbo_item_id}: {e}")
-            continue
-            
-        if not qbo_item:
-            logger.warning(f"QboItem {mapping.qbo_item_id} not found for SubCostCode {sub_cost_code.id}")
-            continue
-        
-        # Compare modification times
-        qbo_item_modified = _parse_datetime(qbo_item.modified_datetime)
-        
-        if sub_cost_code_modified and qbo_item_modified and sub_cost_code_modified > qbo_item_modified:
-            # SubCostCode is newer - need to update QboItem
-            logger.info(f"SubCostCode {sub_cost_code.id} is newer than QboItem {qbo_item.id}. Updating QboItem.")
-            
-            # Build new name from number and name (space-separated format)
-            new_name = f"{sub_cost_code.number} {sub_cost_code.name}" if sub_cost_code.number != sub_cost_code.name else sub_cost_code.name
-            
-            try:
-                # Update local QboItem record
-                qbo_item_repo.update_by_qbo_id(
-                    qbo_id=qbo_item.qbo_id,
-                    row_version=qbo_item.row_version_bytes,
-                    sync_token=qbo_item.sync_token,
-                    realm_id=qbo_item.realm_id,
-                    name=new_name,
-                    description=sub_cost_code.description,
-                    active=qbo_item.active,
-                    type=qbo_item.type,
-                    parent_ref_value=qbo_item.parent_ref_value,
-                    parent_ref_name=qbo_item.parent_ref_name,
-                    level=qbo_item.level,
-                    fully_qualified_name=qbo_item.fully_qualified_name,
-                    sku=qbo_item.sku,
-                    unit_price=qbo_item.unit_price,
-                    purchase_cost=qbo_item.purchase_cost,
-                    taxable=qbo_item.taxable,
-                    income_account_ref_value=qbo_item.income_account_ref_value,
-                    income_account_ref_name=qbo_item.income_account_ref_name,
-                    expense_account_ref_value=qbo_item.expense_account_ref_value,
-                    expense_account_ref_name=qbo_item.expense_account_ref_name,
-                )
-                sub_cost_codes_pushed += 1
-                logger.info(f"Updated QboItem {qbo_item.id} from SubCostCode {sub_cost_code.id}")
-                
-            except Exception as e:
-                logger.error(f"Failed to update QboItem {qbo_item.id} from SubCostCode {sub_cost_code.id}: {e}")
-    
-    return {
-        "cost_codes_pushed": cost_codes_pushed,
-        "sub_cost_codes_pushed": sub_cost_codes_pushed,
-    }
-
-
 def sync_qbo_item() -> dict:
     """
     One-way sync for QBO Items -> CostCode/SubCostCode modules (QBO -> Local only).
 
     1. QBO -> Local: Fetch items modified since last sync, store locally, sync to CostCode/SubCostCode
 
-    Note: Local -> QBO push is disabled in the batch sync process.
-    The sync_local_to_qbo function is preserved for one-time pushes
-    when a record is marked Complete.
+    Note: Local -> QBO push is disabled (one-way intake only). The prior
+    reverse-sync helper (`sync_local_to_qbo`) was confirmed dead code (no
+    caller ever invoked it -- this entrypoint always hardcoded its result to
+    zero) and was deleted (U-307c).
     """
     try:
         sync_service = SyncService()
         qbo_item_service = QboItemService()
-        qbo_item_repo = QboItemRepository()
-        cost_code_service = CostCodeService()
-        sub_cost_code_service = SubCostCodeService()
         cost_code_connector = ItemCostCodeConnector()
         sub_cost_code_connector = ItemSubCostCodeConnector()
-        cost_code_mapping_repo = ItemCostCodeRepository()
-        sub_cost_code_mapping_repo = ItemSubCostCodeRepository()
         auth_service = QboAuthService()
         
         # Get realm ID

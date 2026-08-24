@@ -10,7 +10,9 @@ from entities.expense_coding_item.business.service import ExpenseCodingItemServi
 from entities.expense_coding_item.persistence.repo import ExpenseCodingItemRepository
 from entities.project.business.service import ProjectService
 from entities.sub_cost_code.business.service import SubCostCodeService
-from integrations.intuit.qbo.item.connector.sub_cost_code.persistence.repo import ItemSubCostCodeRepository
+from integrations.intuit.qbo.base.cost_code_resolver import (
+    resolve_qbo_item_ref as _default_resolve_qbo_item_ref,
+)
 from integrations.intuit.qbo.purchase.business.service import QboPurchaseService
 
 logger = logging.getLogger(__name__)
@@ -28,17 +30,20 @@ class ExpenseCodingSuggestionService:
         sub_cost_code_service: Optional[SubCostCodeService] = None,
         coding_item_service: Optional[ExpenseCodingItemService] = None,
         suggestion_repo: Optional[ExpenseCodingItemRepository] = None,
-        item_sub_cost_code_repo: Optional[ItemSubCostCodeRepository] = None,
+        resolve_qbo_item_ref=None,
         qbo_purchase_service: Optional[QboPurchaseService] = None,
     ):
         self.project_service = project_service or ProjectService()
         self.sub_cost_code_service = sub_cost_code_service or SubCostCodeService()
         self.coding_item_service = coding_item_service or ExpenseCodingItemService()
         self.suggestion_repo = suggestion_repo or ExpenseCodingItemRepository()
-        self.item_sub_cost_code_repo = item_sub_cost_code_repo or ItemSubCostCodeRepository()
+        # U-307c: resolves "SubCostCode has a writable QBO item" dbo-natively
+        # (dbo.SubCostCode.QboId IS NOT NULL) instead of an ItemSubCostCode
+        # mapping-table read -- injectable so tests don't need a live resolver.
+        self.resolve_qbo_item_ref = resolve_qbo_item_ref or _default_resolve_qbo_item_ref
         self.qbo_purchase_service = qbo_purchase_service or QboPurchaseService()
 
-    def suggest_for_item(self, item: Any) -> dict:
+    def suggest_for_item(self, item: Any, realm_id: Optional[str] = None) -> dict:
         """Suggest project / sub-cost-code / description for one queue item."""
         memo_text = _item_attr(item, "private_note") or _item_attr(item, "memo_text")
         vendor_id = _item_attr(item, "vendor_id")
@@ -92,8 +97,8 @@ class ExpenseCodingSuggestionService:
                 scc_source = "vendor_history"
 
         if sub_cost_code_id is not None:
-            mapping = self.item_sub_cost_code_repo.read_by_sub_cost_code_id(sub_cost_code_id)
-            if mapping is None:
+            qbo_item_ref = self.resolve_qbo_item_ref(sub_cost_code_id, realm_id)
+            if qbo_item_ref is None:
                 sub_cost_code_id = None
                 scc_confidence = None
                 scc_reason = None
@@ -169,7 +174,7 @@ class ExpenseCodingSuggestionService:
                 vendor_id=row.get("vendor_id"),
                 sync_token=row.get("sync_token"),
             )
-            result = self.suggest_for_item(item)
+            result = self.suggest_for_item(item, realm_id=realm_id)
 
             if result["status"] == "suggested":
                 self.coding_item_service.record_suggestion(

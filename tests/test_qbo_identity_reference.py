@@ -9,8 +9,6 @@ import pytest
 from entities.address.business.model import Address
 from integrations.intuit.qbo.base.identity_drift import REFERENCE_ENTITY_SPECS, classify_qbo_identity_drift
 from integrations.intuit.qbo.customer.connector.customer.business.service import CustomerCustomerConnector
-from integrations.intuit.qbo.item.connector.cost_code.business.service import ItemCostCodeConnector
-from integrations.intuit.qbo.item.connector.sub_cost_code.business.service import ItemSubCostCodeConnector
 from integrations.intuit.qbo.physical_address.business.model import QboPhysicalAddress
 from integrations.intuit.qbo.physical_address.connector.business.service import PhysicalAddressAddressConnector
 from integrations.intuit.qbo.term.connector.payment_term.business.service import TermPaymentTermConnector
@@ -285,82 +283,6 @@ def test_customer_create_mapping_identity_failure_propagates():
             qbo_customer_id=6,
             qbo_id="C-1",
             realm_id="realm-y",
-        )
-    mapping_repo.create.assert_not_called()
-
-
-def _make_cost_code_connector():
-    mapping_repo = Mock()
-    mapping_repo.read_by_cost_code_id.return_value = None
-    mapping_repo.read_by_qbo_item_id.return_value = None
-    mapping_repo.create.return_value = SimpleNamespace(id=1)
-    cost_code_service = Mock()
-    cost_code_service.repo = Mock()
-    connector = ItemCostCodeConnector(mapping_repo=mapping_repo, cost_code_service=cost_code_service)
-    return connector, mapping_repo, cost_code_service.repo
-
-
-def test_cost_code_create_mapping_dual_writes_identity():
-    connector, mapping_repo, repo = _make_cost_code_connector()
-    connector.create_mapping(
-        cost_code_id=11,
-        qbo_item_id=22,
-        qbo_id="I-1",
-        realm_id="realm-cc",
-    )
-    repo.set_qbo_identity.assert_called_once_with(id=11, qbo_id="I-1", realm_id="realm-cc")
-    mapping_repo.create.assert_called_once_with(cost_code_id=11, qbo_item_id=22)
-
-
-def test_cost_code_create_mapping_identity_failure_propagates():
-    connector, mapping_repo, repo = _make_cost_code_connector()
-    repo.set_qbo_identity.side_effect = RuntimeError("stamp failed")
-    with pytest.raises(RuntimeError, match="stamp failed"):
-        connector.create_mapping(
-            cost_code_id=11,
-            qbo_item_id=22,
-            qbo_id="I-1",
-            realm_id="realm-cc",
-        )
-    mapping_repo.create.assert_not_called()
-
-
-def _make_sub_cost_code_connector():
-    mapping_repo = Mock()
-    mapping_repo.read_by_sub_cost_code_id.return_value = None
-    mapping_repo.read_by_qbo_item_id.return_value = None
-    mapping_repo.create.return_value = SimpleNamespace(id=1)
-    sub_cost_code_service = Mock()
-    sub_cost_code_service.repo = Mock()
-    connector = ItemSubCostCodeConnector(
-        mapping_repo=mapping_repo, sub_cost_code_service=sub_cost_code_service
-    )
-    return connector, mapping_repo, sub_cost_code_service.repo
-
-
-def test_sub_cost_code_create_mapping_dual_writes_identity():
-    connector, mapping_repo, repo = _make_sub_cost_code_connector()
-    connector.create_mapping(
-        sub_cost_code_id=12,
-        qbo_item_id=23,
-        qbo_id="I-2",
-        realm_id="realm-scc",
-    )
-    repo.set_qbo_identity.assert_called_once_with(
-        id=12, qbo_id="I-2", realm_id="realm-scc", active=None
-    )
-    mapping_repo.create.assert_called_once_with(sub_cost_code_id=12, qbo_item_id=23)
-
-
-def test_sub_cost_code_create_mapping_identity_failure_propagates():
-    connector, mapping_repo, repo = _make_sub_cost_code_connector()
-    repo.set_qbo_identity.side_effect = RuntimeError("stamp failed")
-    with pytest.raises(RuntimeError, match="stamp failed"):
-        connector.create_mapping(
-            sub_cost_code_id=12,
-            qbo_item_id=23,
-            qbo_id="I-2",
-            realm_id="realm-scc",
         )
     mapping_repo.create.assert_not_called()
 

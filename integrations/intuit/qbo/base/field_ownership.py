@@ -215,9 +215,6 @@ def raise_if_inactive_unmapped(
        cannot hijack a live row).
 
     2. Mapped happy path — do NOT call here; inactive mapped records still update.
-
-    For the heal branch (mapping exists but bound entity reads empty), use
-    `raise_if_inactive_orphaned_mapping` instead.
     """
     _raise_if_inactive(
         active,
@@ -227,30 +224,6 @@ def raise_if_inactive_unmapped(
             f"{qbo_label} {qbo_id} is inactive in QBO and has no local "
             f"{target} mapping; skipping (deactivated records are never bound "
             f"to a local row)."
-        ),
-    )
-
-
-def raise_if_inactive_orphaned_mapping(
-    active: Optional[bool],
-    *,
-    qbo_label: str,
-    qbo_id,
-    target: str,
-) -> None:
-    """Heal-branch guard: refuse repoint/heal for an inactive QBO record with an orphaned mapping.
-
-    CALL AFTER the mapping lookup AND AFTER the bound-entity read (mapping exists but
-    local row is missing), BEFORE any re-resolve by number.
-    """
-    _raise_if_inactive(
-        active,
-        qbo_label=qbo_label,
-        qbo_id=qbo_id,
-        message=(
-            f"{qbo_label} {qbo_id} is inactive in QBO; local {target} mapping "
-            f"exists but its bound row is missing and cannot be safely repointed "
-            f"for a deactivated record; skipping."
         ),
     )
 

@@ -829,6 +829,29 @@ def test_commit_holding_outcome_past_bound_resolves_real_qbo_id_for_projection_f
     assert recorded[0]["qbo_id"] == "QB-resolved-42"
 
 
+def test_commit_holding_outcome_past_bound_item_projection_failure_uses_id_directly():
+    """U-307c Codex P2 fix: item's projection_failed_ids already carry the real
+    QBO id (no qbo.Item staging PK exists to resolve from) — must be recorded
+    at face value, NOT run through _resolve_staging_qbo_id (which would always
+    miss for item since its registry row carries no staging_repo, silently
+    losing a QboId the caller already had in hand)."""
+    past_bound_hold = PAST_BOUND_HOLD
+    fake = FakeSyncService([_make_sync(hold_started_datetime=past_bound_hold, entity="item")])
+    run = _opened_run(fake, entity="item")
+    outcome = SyncOutcome.for_service_pull()
+    outcome.record_projection_failure("QBO-I-42")  # already the real qbo_id, not a staging PK
+
+    with _patch_bound_forced_advance_deps() as recorded, patch(
+        "integrations.intuit.qbo.base.watermark._resolve_staging_qbo_id"
+    ) as mock_resolve:
+        run.commit(outcome)
+
+    mock_resolve.assert_not_called()
+    assert len(recorded) == 1
+    assert recorded[0]["qbo_id"] == "QBO-I-42"
+    assert "internal staging id" not in recorded[0]["details"]
+
+
 def test_commit_holding_outcome_past_bound_with_end_date_writes_end_of_day_stamp():
     """Bound-exceeded must respect end_date exactly like the clean-success path does."""
     past_bound_hold = PAST_BOUND_HOLD
@@ -908,6 +931,14 @@ def test_held_duration_none_when_anchor_unparseable():
 def test_resolve_staging_qbo_id_none_for_entity_with_no_staging_repo():
     """reimburse_charge has no read_by_id on its staging repo — must miss cleanly, not raise."""
     assert _resolve_staging_qbo_id("reimburse_charge", 42) is None
+
+
+def test_resolve_staging_qbo_id_none_for_item_dbo_only_repoint():
+    """U-307c: qbo.Item is transient (never persisted) — item's registry entry
+    carries no staging_repo (same shape as reimburse_charge), so a projection
+    failure's id (now the real qbo_id passed directly by the sync script, not
+    a staging PK) resolves to no *additional* lookup rather than a wrong one."""
+    assert _resolve_staging_qbo_id("item", "QBO-I-99") is None
 
 
 def test_resolve_staging_qbo_id_resolves_via_the_entity_staging_repo(monkeypatch):

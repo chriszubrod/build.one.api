@@ -168,10 +168,10 @@ class ExpenseCodingItemService:
                 "reason": "project and sub_cost_code required",
             }
 
-        from integrations.intuit.qbo.item.connector.sub_cost_code.persistence.repo import ItemSubCostCodeRepository
+        from integrations.intuit.qbo.base.cost_code_resolver import resolve_qbo_item_ref
 
-        item_mapping = ItemSubCostCodeRepository().read_by_sub_cost_code_id(sub_cost_code_id)
-        if item_mapping is None:
+        qbo_item_ref = resolve_qbo_item_ref(sub_cost_code_id, realm_id=item.realm_id)
+        if qbo_item_ref is None:
             return {
                 "status": "mapping_missing",
                 "reason": "SubCostCode has no QBO Item mapping",

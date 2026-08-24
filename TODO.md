@@ -1941,3 +1941,40 @@ These were surfaced during the unit and deliberately not built:
   issue` and `_create_mapping` — the whole mapping-table cross-check concept doesn't exist for a dbo-only
   family (no second store left to drift from). The other 6 families (still mapping-table-based) are
   unaffected; their own disposition question is unchanged, still open.
+
+## U-307c follow-ups (item connector dbo-only repoint, 2026-08-24) — deferred, non-blocking
+
+- [ ] **[altitude, deferred — touches `base/identity_fastpath.py` + the already-shipped U-300b Attachable
+  connector, outside this unit's file scope] `_stamp_{cost,sub_cost}_code_identity`'s per-candidate-row app
+  lock (`qbo_dbo_identity_stamp:<Entity>:<id>` — theft-guard re-read, conditional field write,
+  `set_qbo_identity`) is now a 3rd hand-copy of `AttachableAttachmentConnector._stamp_pulled_identity`
+  (U-300b).** That method's own docstring already flagged this as the "next adopter" case: *"worth folding
+  into the shared helper once a second family needs it, rather than each hand-rolling this lock again."*
+  U-307c is that second (and, with CostCode+SubCostCode both, third) family, cites the TODO in both its own
+  docstrings, and hand-rolled it anyway — flagged independently by 3 of `/simplify`'s 4 lenses (reuse,
+  simplification, altitude). Not fixed here: Gate-1's own Decision 1 explicitly scoped this repoint to
+  reusing `run_identity_fastpath_dbo_only` "as-is, no primitive change needed," and actually extracting the
+  shared lock helper would require touching `AttachableAttachmentConnector` (a different, already-shipped
+  unit's file, outside this diff). Right-depth fix: a shared `stamp_dbo_identity_with_lock(...)` helper in
+  `base/identity_fastpath.py` (entity label, `read_by_id`/`update_by_id`/`set_qbo_identity` callables, a
+  small `apply_fields(current)` closure) that all three (Attachment, CostCode, SubCostCode) call — own unit,
+  needs its own Gate-1 (touches 3 already-shipped connectors + the shared primitive + their test suites).
+- [ ] **[altitude, deferred — cross-cutting, touches 9+ other `scripts/sync_qbo_*.py` files outside this
+  unit's scope] `watermark.py`'s new `projection_ids_are_qbo_ids` flag on `_QboSyncEntityMeta` is a
+  per-entity special case around a contract violation, not the contract's fix.** `SyncOutcome.record_
+  projection_error`'s first param is literally named `qbo_id`, and the shared `project_records` loop already
+  calls it correctly (`record.qbo_id`) — the actual bug is that most hand-rolled `sync_qbo_*.py` projection
+  loops (bill, purchase, vendorcredit, invoice, vendor, customer, account, term, company_info) pass the
+  internal staging PK instead, which is why `_resolve_staging_qbo_id` needed to exist as a PK→qbo_id
+  translator in the first place. `item` (this unit) is the first family to pass the *correct* thing
+  (`item.qbo_id`); the flag models that as a special case rather than recognizing it as the fix. Flagged by
+  `/simplify`'s altitude lens. Not fixed here: normalizing all 9 other scripts is well outside this diff.
+  Right-depth fix: thread real `qbo_id` through every `sync_qbo_*.py` projection loop (each already has the
+  staging row in scope at the call site — same shape as this unit's own `sync_qbo_item.py` fix), then delete
+  `_resolve_staging_qbo_id`/`staging_repo`/`projection_ids_are_qbo_ids` entirely once no family needs PK
+  resolution anymore. Own unit; touches 9 files + their tests, needs its own Gate-1.
+- [x] **DONE — `field_ownership.py`'s `raise_if_inactive_orphaned_mapping` (the heal-branch deactivation
+  guard) deleted**, along with its dedicated unit test. Confirmed zero remaining callers anywhere in the
+  codebase (grepped `integrations/`, `entities/`, `scripts/`) once this unit's item-connector heal branches
+  — its only two ever call sites — were removed; no other family's heal branch used this shared helper.
+  Flagged by `/simplify`'s altitude lens.

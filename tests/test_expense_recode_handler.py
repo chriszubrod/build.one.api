@@ -61,10 +61,9 @@ def test_confirm_mapping_missing_no_confirmation_or_enqueue(
     svc.record_confirmation = MagicMock()
 
     with patch(
-        "integrations.intuit.qbo.item.connector.sub_cost_code.persistence.repo.ItemSubCostCodeRepository"
-    ) as mock_item_repo_cls:
-        mock_item_repo_cls.return_value.read_by_sub_cost_code_id.return_value = None
-
+        "integrations.intuit.qbo.base.cost_code_resolver.resolve_qbo_item_ref",
+        return_value=None,
+    ):
         result = svc.confirm(
             public_id=PUBLIC_ID,
             project_id=202,

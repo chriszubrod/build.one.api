@@ -108,18 +108,24 @@ class QboItemService:
 
     def _upsert_item(self, qbo_item: QboItemExternalSchema, realm_id: str) -> QboItem:
         """
-        Create or update a QboItem record.
-        
+        Build an in-memory (never persisted) QboItem from a single QBO pull
+        response (U-307c: the pull path no longer stages a `qbo.Item` row --
+        identity resolution happens dbo-only in ItemCostCodeConnector/
+        ItemSubCostCodeConnector via `run_identity_fastpath_dbo_only`,
+        mirroring U-300b's pull-side `QboAttachableService._upsert_attachable`).
+        `id`/`public_id`/`row_version`/timestamps are None since no local row
+        backs it.
+
         Args:
             qbo_item: QBO Item from external API
             realm_id: QBO realm ID
-        
+
         Returns:
-            QboItem: The created or updated record
+            QboItem: the transient record
         """
-        # Check if item already exists
-        existing = self.repo.read_by_qbo_id_and_realm_id(qbo_id=qbo_item.id, realm_id=realm_id)
-        
+        if not qbo_item.id:
+            raise ValueError("QBO Item must have an ID")
+
         # Extract reference values
         parent_ref_value = qbo_item.parent_ref.value if qbo_item.parent_ref else None
         parent_ref_name = qbo_item.parent_ref.name if qbo_item.parent_ref else None
@@ -127,56 +133,33 @@ class QboItemService:
         income_account_ref_name = qbo_item.income_account_ref.name if qbo_item.income_account_ref else None
         expense_account_ref_value = qbo_item.expense_account_ref.value if qbo_item.expense_account_ref else None
         expense_account_ref_name = qbo_item.expense_account_ref.name if qbo_item.expense_account_ref else None
-        
-        if existing:
-            # Update existing record
-            logger.debug(f"Updating existing QBO item {qbo_item.id}")
-            return self.repo.update_by_qbo_id(
-                qbo_id=qbo_item.id,
-                row_version=existing.row_version_bytes,
-                sync_token=qbo_item.sync_token,
-                realm_id=realm_id,
-                name=qbo_item.name,
-                description=qbo_item.description,
-                active=qbo_item.active,
-                type=qbo_item.type,
-                parent_ref_value=parent_ref_value,
-                parent_ref_name=parent_ref_name,
-                level=qbo_item.level,
-                fully_qualified_name=qbo_item.fully_qualified_name,
-                sku=qbo_item.sku,
-                unit_price=qbo_item.unit_price,
-                purchase_cost=qbo_item.purchase_cost,
-                taxable=qbo_item.taxable,
-                income_account_ref_value=income_account_ref_value,
-                income_account_ref_name=income_account_ref_name,
-                expense_account_ref_value=expense_account_ref_value,
-                expense_account_ref_name=expense_account_ref_name,
-            )
-        else:
-            # Create new record
-            logger.debug(f"Creating new QBO item {qbo_item.id}")
-            return self.repo.create(
-                qbo_id=qbo_item.id,
-                sync_token=qbo_item.sync_token,
-                realm_id=realm_id,
-                name=qbo_item.name,
-                description=qbo_item.description,
-                active=qbo_item.active,
-                type=qbo_item.type,
-                parent_ref_value=parent_ref_value,
-                parent_ref_name=parent_ref_name,
-                level=qbo_item.level,
-                fully_qualified_name=qbo_item.fully_qualified_name,
-                sku=qbo_item.sku,
-                unit_price=qbo_item.unit_price,
-                purchase_cost=qbo_item.purchase_cost,
-                taxable=qbo_item.taxable,
-                income_account_ref_value=income_account_ref_value,
-                income_account_ref_name=income_account_ref_name,
-                expense_account_ref_value=expense_account_ref_value,
-                expense_account_ref_name=expense_account_ref_name,
-            )
+
+        return QboItem(
+            id=None,
+            public_id=None,
+            row_version=None,
+            created_datetime=None,
+            modified_datetime=None,
+            qbo_id=qbo_item.id,
+            sync_token=qbo_item.sync_token,
+            realm_id=realm_id,
+            name=qbo_item.name,
+            description=qbo_item.description,
+            active=qbo_item.active,
+            type=qbo_item.type,
+            parent_ref_value=parent_ref_value,
+            parent_ref_name=parent_ref_name,
+            level=qbo_item.level,
+            fully_qualified_name=qbo_item.fully_qualified_name,
+            sku=qbo_item.sku,
+            unit_price=qbo_item.unit_price,
+            purchase_cost=qbo_item.purchase_cost,
+            taxable=qbo_item.taxable,
+            income_account_ref_value=income_account_ref_value,
+            income_account_ref_name=income_account_ref_name,
+            expense_account_ref_value=expense_account_ref_value,
+            expense_account_ref_name=expense_account_ref_name,
+        )
 
     def _sync_to_cost_codes(self, parent_items: List[QboItem], outcome: SyncOutcome) -> None:
         """

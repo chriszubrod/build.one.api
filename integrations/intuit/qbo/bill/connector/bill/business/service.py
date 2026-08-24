@@ -48,7 +48,9 @@ from integrations.intuit.qbo.base.identity_fastpath import (
 )
 from integrations.intuit.qbo.base.ids import coerce_id
 from integrations.intuit.qbo.base.reconciliation_recorder import record_mapping_issue
+from integrations.intuit.qbo.base.cost_code_resolver import resolve_qbo_item_ref
 from integrations.intuit.qbo.reconciliation.persistence.repo import ReconciliationIssueRepository
+from entities.sub_cost_code.business.service import SubCostCodeService
 from shared.database import DatabaseConstraintError
 
 logger = logging.getLogger(__name__)
@@ -80,6 +82,7 @@ class BillBillConnector:
         reconciliation_repo: Optional[ReconciliationIssueRepository] = None,
         company_service: Optional[CompanyService] = None,
         payment_term_service: Optional[PaymentTermService] = None,
+        sub_cost_code_service: Optional[SubCostCodeService] = None,
     ):
         """Initialize the BillBillConnector."""
         self.mapping_repo = mapping_repo or BillBillRepository()
@@ -101,6 +104,10 @@ class BillBillConnector:
         self.reconciliation_repo = reconciliation_repo or ReconciliationIssueRepository()
         self.company_service = company_service or CompanyService()
         self.payment_term_service = payment_term_service or PaymentTermService()
+        # U-307b: only ever passed to cost_code_resolver.resolve_qbo_item_ref, never
+        # used directly here. Kept as an injectable constructor param (not defaulted
+        # inline) so tests can inject a fake exactly as they did before this repoint.
+        self.sub_cost_code_service = sub_cost_code_service
 
     def sync_from_qbo_bill(self, qbo_bill: QboBill, qbo_bill_lines: List[QboBillLine]) -> Bill:
         """
@@ -617,7 +624,7 @@ class BillBillConnector:
             raise ValueError("Bill has no line items. QBO requires at least one line item.")
 
         for idx, line_item in enumerate(bill_line_items, start=1):
-            qbo_line = self._build_qbo_line(line_item, idx)
+            qbo_line = self._build_qbo_line(line_item, idx, realm_id)
             qbo_lines.append(qbo_line)
             line_num_to_line_item_id[idx] = line_item.id
         
@@ -829,7 +836,7 @@ class BillBillConnector:
         qbo_lines = []
         seq = 0
         for line_item in bill_line_items:
-            qbo_line = self._build_qbo_line(line_item, seq + 1)
+            qbo_line = self._build_qbo_line(line_item, seq + 1, realm_id)
             if qbo_line:
                 seq += 1
                 qbo_lines.append(qbo_line)
@@ -972,34 +979,33 @@ class BillBillConnector:
 
         return QboReferenceType(value=qbo_vendor.qbo_id, name=vendor_name)
 
-    def _get_qbo_item_ref(self, sub_cost_code_id: int) -> Optional[QboReferenceType]:
+    def _get_qbo_item_ref(self, sub_cost_code_id: int, realm_id: Optional[str] = None) -> Optional[QboReferenceType]:
         """
         Get QBO ItemRef from local sub_cost_code_id.
-        
+
+        U-307b: dbo-native SubCostCode.QboId direct via
+        cost_code_resolver.resolve_qbo_item_ref -- no qbo.Item hop, realm-verified
+        (see that module for the resolution/realm-matching contract) -- mirrors
+        `_get_qbo_vendor_ref`/`_get_qbo_sales_term_ref`'s existing outbound-push
+        identity verification.
+
         Args:
             sub_cost_code_id: Local SubCostCode database ID
-            
+            realm_id: QBO realm ID this push targets
+
         Returns:
             QboReferenceType with QBO item value and name, or None
         """
-        if not sub_cost_code_id:
-            logger.debug("_get_qbo_item_ref called with None sub_cost_code_id")
+        item_ref = resolve_qbo_item_ref(
+            sub_cost_code_id,
+            realm_id,
+            sub_cost_code_service=self.sub_cost_code_service,
+        )
+        if item_ref is None:
+            logger.warning(f"No QBO Item mapping resolved for sub_cost_code_id: {sub_cost_code_id}")
             return None
-        
-        # Find ItemSubCostCode mapping
-        logger.debug(f"Looking up ItemSubCostCode mapping for sub_cost_code_id: {sub_cost_code_id}")
-        item_mapping = self.item_sub_cost_code_repo.read_by_sub_cost_code_id(sub_cost_code_id)
-        if not item_mapping:
-            logger.warning(f"ItemSubCostCode mapping not found for sub_cost_code_id: {sub_cost_code_id}")
-            return None
-        
-        # Get QboItem
-        qbo_item = self.qbo_item_repo.read_by_id(item_mapping.qbo_item_id)
-        if not qbo_item or not qbo_item.qbo_id:
-            logger.debug(f"QboItem not found for qbo_item_id: {item_mapping.qbo_item_id}")
-            return None
-        
-        return QboReferenceType(value=qbo_item.qbo_id, name=qbo_item.name)
+
+        return QboReferenceType(value=item_ref.value, name=item_ref.name)
 
     def _get_qbo_customer_ref(self, project_id: int) -> Optional[QboReferenceType]:
         """
@@ -1142,23 +1148,24 @@ class BillBillConnector:
 
         return QboReferenceType(value=qbo_term.qbo_id, name=qbo_term.name)
 
-    def _build_qbo_line(self, line_item, line_num: int) -> Optional[QboBillLineSchema]:
+    def _build_qbo_line(self, line_item, line_num: int, realm_id: Optional[str] = None) -> Optional[QboBillLineSchema]:
         """
         Build a QBO Bill line from a local BillLineItem.
-        
+
         Args:
             line_item: BillLineItem record
             line_num: Line number
-            
+            realm_id: QBO realm ID this push targets
+
         Returns:
             QboBillLineSchema or None
         """
         logger.debug(f"Building QBO line for BillLineItem {line_item.id}: sub_cost_code_id={line_item.sub_cost_code_id}, project_id={line_item.project_id}")
-        
+
         # Get QBO references — all line items must have valid mappings
         item_ref = None
         if line_item.sub_cost_code_id:
-            item_ref = self._get_qbo_item_ref(line_item.sub_cost_code_id)
+            item_ref = self._get_qbo_item_ref(line_item.sub_cost_code_id, realm_id)
             if not item_ref:
                 raise ValueError(
                     f"BillLineItem {line_item.id}: no QBO Item mapping for sub_cost_code_id={line_item.sub_cost_code_id}. "

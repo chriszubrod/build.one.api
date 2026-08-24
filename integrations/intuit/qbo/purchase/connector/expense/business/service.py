@@ -27,7 +27,9 @@ from integrations.intuit.qbo.base.identity_fastpath import (
 )
 from integrations.intuit.qbo.base.ids import coerce_id
 from integrations.intuit.qbo.base.reconciliation_recorder import record_mapping_issue
+from integrations.intuit.qbo.base.cost_code_resolver import resolve_qbo_item_ref
 from integrations.intuit.qbo.reconciliation.persistence.repo import ReconciliationIssueRepository
+from entities.sub_cost_code.business.service import SubCostCodeService
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +49,7 @@ class PurchaseExpenseConnector:
         qbo_purchase_repo: Optional[QboPurchaseRepository] = None,
         qbo_purchase_line_repo: Optional[QboPurchaseLineRepository] = None,
         reconciliation_repo: Optional[ReconciliationIssueRepository] = None,
+        sub_cost_code_service: Optional[SubCostCodeService] = None,
     ):
         """Initialize the PurchaseExpenseConnector."""
         self.mapping_repo = mapping_repo or PurchaseExpenseRepository()
@@ -57,6 +60,10 @@ class PurchaseExpenseConnector:
         self.qbo_purchase_repo = qbo_purchase_repo or QboPurchaseRepository()
         self.qbo_purchase_line_repo = qbo_purchase_line_repo or QboPurchaseLineRepository()
         self.reconciliation_repo = reconciliation_repo or ReconciliationIssueRepository()
+        # U-307b: only ever passed to cost_code_resolver.resolve_qbo_item_ref, never
+        # used directly here. Kept as an injectable constructor param (not defaulted
+        # inline) so tests can inject a fake exactly as they did before this repoint.
+        self.sub_cost_code_service = sub_cost_code_service
         # Per-sync cache: avoids 3 DB round-trips per purchase when multiple purchases
         # share the same QBO vendor (the common case).
         self._vendor_cache: dict = {}
@@ -642,7 +649,7 @@ class PurchaseExpenseConnector:
         skipped_lines = []
         line_num_to_expense_line_item_id: Dict[int, int] = {}
         for idx, line_item in enumerate(expense_line_items, start=1):
-            qbo_line = self._build_qbo_line(line_item, idx)
+            qbo_line = self._build_qbo_line(line_item, idx, realm_id)
             if qbo_line:
                 qbo_lines.append(qbo_line)
                 line_num_to_expense_line_item_id[idx] = int(line_item.id)
@@ -736,15 +743,16 @@ class PurchaseExpenseConnector:
 
         return updated_local
 
-    def _build_qbo_line(self, line_item, line_num: int):
+    def _build_qbo_line(self, line_item, line_num: int, realm_id: Optional[str] = None):
         """
         Build a QBO Purchase line from a local ExpenseLineItem.
         Converts to ItemBasedExpenseLineDetail with ItemRef and CustomerRef.
-        
+
         Args:
             line_item: ExpenseLineItem record
             line_num: Line number
-            
+            realm_id: QBO realm ID this push targets
+
         Returns:
             QboPurchaseLine or None if no Item mapping exists
         """
@@ -754,9 +762,9 @@ class PurchaseExpenseConnector:
             QboItemBasedExpenseLineDetail,
         )
         from decimal import Decimal
-        
+
         # Get QBO ItemRef from SubCostCode
-        item_ref = self._get_qbo_item_ref(line_item.sub_cost_code_id)
+        item_ref = self._get_qbo_item_ref(line_item.sub_cost_code_id, realm_id)
         if not item_ref:
             logger.warning(f"No QBO Item mapping for sub_cost_code_id={line_item.sub_cost_code_id}, skipping line {line_item.id}")
             return None
@@ -844,7 +852,7 @@ class PurchaseExpenseConnector:
             # run). Idempotent success only when it carries OUR intended item;
             # any other coding is a foreign edit -> fail closed to re-review.
             if not self._raw_line_is_categorize_placeholder(target):
-                existing_ref = self._get_qbo_item_ref(sub_cost_code_id)
+                existing_ref = self._get_qbo_item_ref(sub_cost_code_id, realm_id)
                 if (
                     target.get("DetailType") == "ItemBasedExpenseLineDetail"
                     and existing_ref is not None
@@ -867,7 +875,7 @@ class PurchaseExpenseConnector:
                     actual_sync_token=live_sync_token,
                 )
 
-            item_ref = self._get_qbo_item_ref(sub_cost_code_id)
+            item_ref = self._get_qbo_item_ref(sub_cost_code_id, realm_id)
             if item_ref is None:
                 raise PurchaseRecodeMappingError(sub_cost_code_id=sub_cost_code_id)
 
@@ -928,40 +936,33 @@ class PurchaseExpenseConnector:
             return False
         return "need to categorize" in name.lower()
 
-    def _get_qbo_item_ref(self, sub_cost_code_id: int):
+    def _get_qbo_item_ref(self, sub_cost_code_id: int, realm_id: Optional[str] = None):
         """
         Get QBO ItemRef from local sub_cost_code_id.
-        
+
+        U-307b: dbo-native SubCostCode.QboId direct via
+        cost_code_resolver.resolve_qbo_item_ref -- no qbo.Item hop, realm-verified
+        (see that module for the resolution/realm-matching contract).
+
         Args:
             sub_cost_code_id: Local SubCostCode database ID
-            
+            realm_id: QBO realm ID this push targets
+
         Returns:
             QboReferenceType with QBO item value and name, or None
         """
         from integrations.intuit.qbo.purchase.external.schemas import QboReferenceType
-        from integrations.intuit.qbo.item.connector.sub_cost_code.persistence.repo import ItemSubCostCodeRepository
-        from integrations.intuit.qbo.item.persistence.repo import QboItemRepository
-        
-        if not sub_cost_code_id:
-            logger.debug("_get_qbo_item_ref called with None sub_cost_code_id")
+
+        item_ref = resolve_qbo_item_ref(
+            sub_cost_code_id,
+            realm_id,
+            sub_cost_code_service=self.sub_cost_code_service,
+        )
+        if item_ref is None:
+            logger.warning(f"No QBO Item mapping resolved for sub_cost_code_id: {sub_cost_code_id}")
             return None
-        
-        item_sub_cost_code_repo = ItemSubCostCodeRepository()
-        qbo_item_repo = QboItemRepository()
-        
-        # Find ItemSubCostCode mapping
-        item_mapping = item_sub_cost_code_repo.read_by_sub_cost_code_id(sub_cost_code_id)
-        if not item_mapping:
-            logger.warning(f"ItemSubCostCode mapping not found for sub_cost_code_id: {sub_cost_code_id}")
-            return None
-        
-        # Get QboItem
-        qbo_item = qbo_item_repo.read_by_id(item_mapping.qbo_item_id)
-        if not qbo_item or not qbo_item.qbo_id:
-            logger.debug(f"QboItem not found for qbo_item_id: {item_mapping.qbo_item_id}")
-            return None
-        
-        return QboReferenceType(value=qbo_item.qbo_id, name=qbo_item.name)
+
+        return QboReferenceType(value=item_ref.value, name=item_ref.name)
 
     def _get_qbo_customer_ref(self, project_id: int):
         """

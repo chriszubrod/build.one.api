@@ -27,8 +27,10 @@ from integrations.intuit.qbo.base.identity_fastpath import (
     run_identity_fastpath,
 )
 from integrations.intuit.qbo.base.reconciliation_recorder import record_mapping_issue
+from integrations.intuit.qbo.base.cost_code_resolver import resolve_qbo_item_ref
 from integrations.intuit.qbo.reconciliation.persistence.repo import ReconciliationIssueRepository
 from integrations.intuit.qbo.base.ids import coerce_id
+from entities.sub_cost_code.business.service import SubCostCodeService
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +49,7 @@ class InvoiceInvoiceConnector:
         qbo_customer_repo: Optional[QboCustomerRepository] = None,
         customer_project_repo: Optional[CustomerProjectRepository] = None,
         reconciliation_repo: Optional[ReconciliationIssueRepository] = None,
+        sub_cost_code_service: Optional[SubCostCodeService] = None,
     ):
         """Initialize the InvoiceInvoiceConnector."""
         self.mapping_repo = mapping_repo or InvoiceInvoiceRepository()
@@ -56,6 +59,10 @@ class InvoiceInvoiceConnector:
         self.qbo_customer_repo = qbo_customer_repo or QboCustomerRepository()
         self.customer_project_repo = customer_project_repo or CustomerProjectRepository()
         self.reconciliation_repo = reconciliation_repo or ReconciliationIssueRepository()
+        # U-307b: only ever passed to cost_code_resolver.resolve_qbo_item_ref, never
+        # used directly here. Kept as an injectable constructor param (not defaulted
+        # inline) so tests can inject a fake exactly as they did before this repoint.
+        self.sub_cost_code_service = sub_cost_code_service
 
         # In-memory caches to avoid repeated DB lookups across invoice syncs
         self._project_cache: dict = {}          # {(realm_id, qbo_customer_ref_value): project_public_id}
@@ -867,7 +874,7 @@ class InvoiceInvoiceConnector:
         skipped_lines = []
         invoice_linked_txn_rc_ids = []  # ReimburseCharge IDs for invoice-level LinkedTxn
         for line_item in invoice_line_items:
-            qbo_line = self._build_qbo_invoice_line(line_item, reimburse_charge_lookup)
+            qbo_line = self._build_qbo_invoice_line(line_item, reimburse_charge_lookup, realm_id)
             if qbo_line:
                 linked = qbo_line.linked_txn[0] if qbo_line.linked_txn else None
                 logger.info(
@@ -1184,7 +1191,7 @@ class InvoiceInvoiceConnector:
 
         return lookup
 
-    def _build_qbo_invoice_line(self, line_item, reimburse_charge_lookup: dict = None):
+    def _build_qbo_invoice_line(self, line_item, reimburse_charge_lookup: dict = None, realm_id: Optional[str] = None):
         """
         Build a QBO SalesItemLine from a local InvoiceLineItem.
 
@@ -1203,7 +1210,7 @@ class InvoiceInvoiceConnector:
             return None
 
         # Resolve ItemRef — required by QBO for SalesItemLine
-        item_ref = self._get_qbo_item_ref_for_line(line_item)
+        item_ref = self._get_qbo_item_ref_for_line(line_item, realm_id)
         if not item_ref:
             logger.warning(
                 f"InvoiceLineItem {line_item.id} (source_type={line_item.source_type}) "
@@ -1234,7 +1241,7 @@ class InvoiceInvoiceConnector:
         # Resolve LinkedTxn — link to the QBO ReimburseCharge so QBO recognises the
         # line as covering that billable transaction (flips HasBeenInvoiced on the
         # ReimburseCharge and removes it from "Suggested Transactions").
-        linked_txn = self._resolve_linked_txn_for_line(line_item, reimburse_charge_lookup)
+        linked_txn = self._resolve_linked_txn_for_line(line_item, reimburse_charge_lookup, realm_id)
 
         return QboInvoiceLineSchema(
             description=line_item.description,
@@ -1244,7 +1251,7 @@ class InvoiceInvoiceConnector:
             linked_txn=[linked_txn] if linked_txn else None,
         )
 
-    def _get_qbo_item_ref_for_line(self, line_item):
+    def _get_qbo_item_ref_for_line(self, line_item, realm_id: Optional[str] = None):
         """
         Resolve the QBO ItemRef for a line item by walking:
           Manual           → InvoiceLineItem.sub_cost_code_id
@@ -1252,10 +1259,10 @@ class InvoiceInvoiceConnector:
           ExpenseLineItem  → ExpenseLineItem.sub_cost_code_id
           BillCreditLineItem → BillCreditLineItem.sub_cost_code_id
 
-        Then: sub_cost_code_id → ItemSubCostCode → QboItem.qbo_id
+        Then (U-307b): sub_cost_code_id -> dbo-native SubCostCode.QboId direct via
+        cost_code_resolver.resolve_qbo_item_ref -- no qbo.Item hop, realm-verified
+        (see that module for the resolution/realm-matching contract).
         """
-        from integrations.intuit.qbo.item.connector.sub_cost_code.persistence.repo import ItemSubCostCodeRepository
-        from integrations.intuit.qbo.item.persistence.repo import QboItemRepository
         from integrations.intuit.qbo.invoice.external.schemas import QboReferenceType
 
         sub_cost_code_id = None
@@ -1281,17 +1288,17 @@ class InvoiceInvoiceConnector:
         if not sub_cost_code_id:
             return None
 
-        mapping = ItemSubCostCodeRepository().read_by_sub_cost_code_id(sub_cost_code_id)
-        if not mapping:
+        item_ref = resolve_qbo_item_ref(
+            sub_cost_code_id,
+            realm_id,
+            sub_cost_code_service=self.sub_cost_code_service,
+        )
+        if item_ref is None:
             return None
 
-        qbo_item = QboItemRepository().read_by_id(mapping.qbo_item_id)
-        if not qbo_item or not qbo_item.qbo_id:
-            return None
+        return QboReferenceType(value=item_ref.value, name=item_ref.name)
 
-        return QboReferenceType(value=qbo_item.qbo_id, name=qbo_item.name)
-
-    def _resolve_linked_txn_for_line(self, line_item, reimburse_charge_lookup: dict = None):
+    def _resolve_linked_txn_for_line(self, line_item, reimburse_charge_lookup: dict = None, realm_id: Optional[str] = None):
         """
         Resolve the QBO LinkedTxn for a source-backed line item.
 
@@ -1316,7 +1323,7 @@ class InvoiceInvoiceConnector:
             # QBO correctly stores the LinkedTxn in the invoice for both Bill and Expense lines.
             # Bill line BillableStatus is updated separately via _mark_source_bills_as_billed().
             if reimburse_charge_lookup:
-                item_ref = self._get_qbo_item_ref_for_line(line_item)
+                item_ref = self._get_qbo_item_ref_for_line(line_item, realm_id)
                 amount = line_item.price if line_item.price is not None else line_item.amount
                 if item_ref and amount is not None:
                     key = (str(item_ref.value), str(round(float(amount), 2)))

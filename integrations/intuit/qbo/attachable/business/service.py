@@ -244,7 +244,12 @@ class QboAttachableService:
         qbo_att: QboAttachableExternalSchema,
     ) -> QboAttachable:
         """
-        Upsert a single attachable to local database.
+        Build an in-memory (never persisted) QboAttachable from a single QBO pull
+        response (U-300b: the pull path no longer stages a `qbo.Attachable` row —
+        identity resolution happens dbo-only in AttachableAttachmentConnector via
+        `run_identity_fastpath_dbo_only`, mirroring U-285's push-side
+        `_transient_attachable_from_response`). `id`/`public_id`/`row_version`/
+        timestamps are None since no local row backs it.
         """
         if not qbo_att.id:
             raise ValueError("QBO Attachable must have an ID")
@@ -257,42 +262,25 @@ class QboAttachableService:
             entity_ref_type = first_ref.entity_ref_type
             entity_ref_value = first_ref.entity_ref_value
 
-        # Check if exists
-        existing = self.repo.read_by_qbo_id_and_realm_id(qbo_att.id, realm_id)
-
-        if existing:
-            # Update existing
-            return self.repo.update_by_qbo_id(
-                qbo_id=qbo_att.id,
-                row_version=existing.row_version_bytes,
-                sync_token=qbo_att.sync_token,
-                realm_id=realm_id,
-                file_name=qbo_att.file_name,
-                note=qbo_att.note,
-                category=qbo_att.category,
-                content_type=qbo_att.content_type,
-                size=qbo_att.size,
-                file_access_uri=qbo_att.file_access_uri,
-                temp_download_uri=qbo_att.temp_download_uri,
-                entity_ref_type=entity_ref_type,
-                entity_ref_value=entity_ref_value,
-            )
-        else:
-            # Create new
-            return self.repo.create(
-                qbo_id=qbo_att.id,
-                sync_token=qbo_att.sync_token,
-                realm_id=realm_id,
-                file_name=qbo_att.file_name,
-                note=qbo_att.note,
-                category=qbo_att.category,
-                content_type=qbo_att.content_type,
-                size=qbo_att.size,
-                file_access_uri=qbo_att.file_access_uri,
-                temp_download_uri=qbo_att.temp_download_uri,
-                entity_ref_type=entity_ref_type,
-                entity_ref_value=entity_ref_value,
-            )
+        return QboAttachable(
+            id=None,
+            public_id=None,
+            row_version=None,
+            created_datetime=None,
+            modified_datetime=None,
+            qbo_id=qbo_att.id,
+            sync_token=qbo_att.sync_token,
+            realm_id=realm_id,
+            file_name=qbo_att.file_name,
+            note=qbo_att.note,
+            category=qbo_att.category,
+            content_type=qbo_att.content_type,
+            size=qbo_att.size,
+            file_access_uri=qbo_att.file_access_uri,
+            temp_download_uri=qbo_att.temp_download_uri,
+            entity_ref_type=entity_ref_type,
+            entity_ref_value=entity_ref_value,
+        )
 
     def _sync_to_attachments(self, attachables: List[QboAttachable], realm_id: str) -> List[QboAttachable]:
         """
@@ -322,12 +310,15 @@ class QboAttachableService:
         for att in attachables:
             try:
                 attachment = connector.sync_from_qbo_attachable(att, realm_id)
-                logger.info(f"Synced QboAttachable {att.id} to Attachment {attachment.id}")
+                # U-300b: att.id is always None (transient, never persisted) —
+                # att.qbo_id is the only identifier that still distinguishes
+                # one attachable from another in these logs.
+                logger.info(f"Synced QboAttachable qbo_id={att.qbo_id} to Attachment {attachment.id}")
                 healthy.append(att)
             except (QboBudgetExceededError, QboWriteRefusedError):
                 raise
             except Exception as e:
-                logger.error(f"Failed to sync QboAttachable {att.id} to Attachment: {e}")
+                logger.error(f"Failed to sync QboAttachable qbo_id={att.qbo_id} to Attachment: {e}")
 
         return healthy
 

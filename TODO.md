@@ -1875,3 +1875,65 @@ These were surfaced during the unit and deliberately not built:
   the three call sites' differing tails (self-heal/mapping-create, line's direct return, dbo-only's
   direct return) untouched — do NOT merge the three outer functions themselves, they are genuinely
   different algorithms.
+
+## U-307a follow-up (cost-code resolver repoint, 2026-08-24) — deferred, non-blocking
+
+- [ ] **[altitude] `qbo_item_repo`/`item_sub_cost_code_repo`/`sub_cost_code_service` are now pure
+  passthrough plumbing on 3 connector constructors** (`bill/connector/bill_line_item/business/service.py`,
+  `purchase/connector/expense_line_item/business/service.py`) — confirmed via grep, never read directly,
+  only forwarded into `cost_code_resolver.resolve_dbo_sub_cost_code`. `vendorcredit/connector/
+  bill_credit_line_item/business/service.py` carries the same 3 deps but eager-constructed with no
+  constructor injection point at all (pre-existing style there) — the diff leaves the 3 connectors
+  inconsistent in how this plumbing is exposed. Flagged by `/simplify`'s altitude reviewer: a future
+  change to the resolver's own dependency set requires touching 3 unrelated constructors again — the
+  coupling the shared module was built to eliminate. **Not fixed in U-307a**: doing so cleanly means
+  making `cost_code_resolver.py`'s `SubCostCodeService`/`CostCodeService` imports lazy (matching its own
+  legacy-hop functions' existing style) so tests can monkeypatch at the origin path instead of via
+  constructor injection, THEN dropping the 3 params from all three connectors — but several **pre-existing**
+  test files outside this diff (`test_qbo_customer_project_heal.py`, `test_qbo_purchase_line_defaults.py`,
+  `test_u283b_purchase_qbo_identity_repoint.py`, `test_u293b_expense_line_item_qbo_identity_repoint.py`)
+  still pass `qbo_item_repo=Mock()`/`item_sub_cost_code_repo=Mock()` as constructor kwargs and would break
+  with a TypeError if the params were dropped — widening the blast radius well outside this unit's reviewed
+  diff. Right-depth fix: the lazy-import + drop-the-3-params change, done as its own small unit that also
+  touches those 4 test files.
+
+## U-300b follow-ups (attachable pull dbo-only repoint, 2026-08-24) — deferred, non-blocking
+
+- [ ] **🟡 [correctness, needs its own Gate-1 — escalate to Chris] The 3 live line-item-linking call sites
+  still read `qbo_attachable.id` as a mapping-table fallback key, which U-300b makes always `None`.**
+  `scripts/sync_qbo_bill.py:156`, `scripts/sync_qbo_vendorcredit.py:108`, and
+  `integrations/intuit/qbo/purchase/connector/expense/business/service.py:1172` each try
+  `attachment_service.read_by_qbo_identity(qbo_attachable.qbo_id, ...)` FIRST and only fall back to
+  `attachable_attachment_repo.read_by_qbo_attachable_id(qbo_attachable.id)` on a miss — U-300b's pull path
+  always stamps dbo-native identity, so this fallback should never actually fire against anything synced
+  going forward. Confirmed low-severity today (Codex round-1 review): `read_by_qbo_attachable_id(None)`
+  degrades gracefully (SQL NULL comparison → no rows → `continue`, no crash), not a data-loss or
+  crash risk — but it is latent dead code with an unhandled `None` waiting for the day the direct read
+  transiently misses (DB hiccup) and the fallback silently no-ops instead of erroring loudly. **Not fixed
+  in U-300b**: all 3 files are OUTSIDE this unit's approved Gate-1 file scope (`integrations/intuit/qbo/
+  attachable/{business,connector/attachment/business}/service.py` + tests only). Right-depth fix: gate
+  each fallback on `qbo_attachable.id is not None` (one-line guard × 3 call sites) plus a direct-miss
+  regression test per site — small, mechanical, own Gate-1.
+- [ ] **[reuse, deferred — touches `business/model.py`, outside this unit's file scope] `QboAttachableService
+  ._upsert_attachable`'s transient-`QboAttachable` construction is a 3rd near-identical copy** of
+  `AttachableAttachmentConnector._transient_attachable_from_response`/`_transient_attachable_from_dbo`
+  (same file, U-285) — same 5 always-`None` fields, same 11 mapped fields, differing only in the source
+  object. Flagged by `/simplify`'s reuse reviewer. Right-depth fix: a `QboAttachable.transient(...)`
+  classmethod/factory on the dataclass itself (`integrations/intuit/qbo/attachable/business/model.py`)
+  that all three call sites delegate to — deliberately not built here since it reaches outside the two
+  service.py files this unit's Gate-1 approved.
+- [ ] **[altitude, deferred — behavior change, out of a quality-only pass] `_stamp_pulled_identity`'s
+  theft-guard loss (a losing racer) is not recorded as a `ReconciliationIssue`, unlike the push-side
+  `_stamp_pushed_identity`'s identical race, which the caller (`sync_attachment_to_qbo`) catches and
+  records as `severity="critical"`.** Flagged by `/simplify`'s altitude reviewer. The pre-U-300b pull-side
+  never recorded this class of collision either (the old `_create_mapping`'s 1:1 guard just raised a bare
+  `ValueError`, no reconciliation write) — so this is not a regression, but the asymmetry with the
+  push-side convention this same file already establishes is worth closing. Not fixed here: adding a new
+  `record_mapping_issue` write is a behavior change (`/simplify` is quality-only, never changes behavior)
+  and the race this guards against is now genuinely rare (closed by `_stamp_pulled_identity`'s own app
+  lock) — small follow-up unit if the visibility is wanted.
+- [x] **DONE — the "disposition of the 7 dead `_resolve_mapping_state` wrappers" question (U-287
+  follow-up) resolved for the `attachment` family: deleted**, along with `_raise_identity_mapping_conflict_
+  issue` and `_create_mapping` — the whole mapping-table cross-check concept doesn't exist for a dbo-only
+  family (no second store left to drift from). The other 6 families (still mapping-table-based) are
+  unaffected; their own disposition question is unchanged, still open.

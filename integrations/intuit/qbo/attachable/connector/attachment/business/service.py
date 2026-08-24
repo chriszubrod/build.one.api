@@ -14,11 +14,9 @@ from integrations.intuit.qbo.attachable.persistence.repo import QboAttachableRep
 from integrations.intuit.qbo.attachable.external.client import QboAttachableClient
 from integrations.intuit.qbo.auth.business.service import QboAuthService
 from integrations.intuit.qbo.base.errors import QboBudgetExceededError, QboWriteRefusedError
-from integrations.intuit.qbo.base.identity_fastpath import (
-    resolve_mapping_state,
-    run_identity_fastpath,
-)
+from integrations.intuit.qbo.base.identity_fastpath import run_identity_fastpath_dbo_only
 from integrations.intuit.qbo.base.ids import coerce_id
+from integrations.intuit.qbo.base.locking import qbo_app_lock
 from integrations.intuit.qbo.base.reconciliation_recorder import record_mapping_issue
 from integrations.intuit.qbo.reconciliation.persistence.repo import ReconciliationIssueRepository
 from entities.attachment.business.service import AttachmentService
@@ -56,171 +54,172 @@ class AttachableAttachmentConnector:
         Sync data from QboAttachable to Attachment module.
 
         This method:
-        1. Resolves identity — dbo-native QboId/RealmId fast path first
-           (U-279), falling back to the qbo.AttachableAttachment mapping
-           table
+        1. Resolves identity dbo-only (U-300b) via
+           `run_identity_fastpath_dbo_only` against dbo.Attachment's native
+           QboId/RealmId (U-238c) -- no `qbo.AttachableAttachment` mapping-
+           table hop left to fall back to (Sec.15 of
+           docs/staging_removal_phase4_5_scoping.md: every valid mapping row
+           already has a matching dbo stamp, so the legacy fallback this
+           unit removes was already dead in practice)
         2. Downloads the file from QBO if needed
         3. Uploads to Azure Blob Storage
         4. Creates or updates the Attachment accordingly
 
         Args:
-            qbo_attachable: QboAttachable record from local database
+            qbo_attachable: transient (never persisted) QboAttachable built
+                by QboAttachableService._upsert_attachable from the QBO pull
+                response
             realm_id: QBO realm ID for API access
 
         Returns:
             Attachment: The synced Attachment record
         """
-        attachment = None
-
-        # U-279 fast path: resolve identity directly against dbo.Attachment's
-        # native QboId/RealmId (U-238c) before falling back to the
-        # qbo.AttachableAttachment mapping-table hop below. Mirrors the
-        # Customer/Project/Company/Address/VendorCredit Phase-4 pilot pattern
-        # (U-276/277/278) — see docs/staging_removal_phase4_5_scoping.md §6/§10.
-        #
-        # The mapping-table state is checked BEFORE any write, not after —
-        # the same check-before-write discipline U-276's round-3 review
-        # established: writing to the dbo-identity-matched Attachment first
-        # and detecting a conflict afterward could corrupt state in the case
-        # the mapping table, not dbo identity, is actually still correct.
-        # No `apply_fields`: unlike its five siblings, this connector uses the fast path
-        # for identity RESOLUTION only — the field work (blob verification, re-download,
-        # re-upload) happens in the shared block below, reached whether identity came
-        # from the fast path or the legacy mapping table. So the mapping row is created
-        # directly here (not via _create_mapping, which would also re-call
-        # set_qbo_identity — redundant, since identity is already correct on `direct`).
-        outcome = run_identity_fastpath(
+        outcome = run_identity_fastpath_dbo_only(
             qbo_id=qbo_attachable.qbo_id,
             realm_id=realm_id,
-            external_id=qbo_attachable.id,
             entity_label="Attachment",
             external_label="QboAttachable",
-            mapping_label="AttachableAttachment",
+            lock_resource_label="Attachment",
             read_direct_by_qbo_identity=self.attachment_service.read_by_qbo_identity,
-            read_by_local_id=self.mapping_repo.read_by_attachment_id,
-            read_by_external_id=self.mapping_repo.read_by_qbo_attachable_id,
-            external_id_attr="qbo_attachable_id",
-            record_conflict_issue=lambda entity, by_local, by_external: (
-                self._raise_identity_mapping_conflict_issue(
-                    qbo_attachable=qbo_attachable,
-                    dbo_attachment_id=coerce_id(entity.id),
-                    local_side_mapping=by_local,
-                    qbo_side_mapping=by_external,
-                    realm_id=realm_id,
-                )
-            ),
-            conflict_message=lambda entity: (
-                f"Attachment identity conflict for QboAttachable "
-                f"{qbo_attachable.qbo_id} (id={qbo_attachable.id}): dbo.Attachment "
-                f"{entity.id} already carries this identity but the mapping table "
-                f"disagrees. Not auto-repointed; see the recorded reconciliation "
-                f"issue. Skipping until a human resolves it."
-            ),
-            create_mapping=lambda local_id: self.mapping_repo.create(
-                attachment_id=local_id, qbo_attachable_id=qbo_attachable.id
+            apply_fields=lambda row: self._verify_or_heal_pulled_blob(row, qbo_attachable, realm_id),
+            resolve_candidate=lambda: self._resolve_pulled_attachment_candidate(qbo_attachable, realm_id),
+            stamp_identity=lambda candidate: self._stamp_pulled_identity(
+                attachment_id=coerce_id(candidate.id),
+                qbo_id=qbo_attachable.qbo_id,
+                realm_id=realm_id,
             ),
         )
-        if outcome.hit:
-            attachment = outcome.entity
+        if outcome.entity is None:
+            # Only reachable via a concurrent-delete/ROWVERSION race inside
+            # _verify_or_heal_pulled_blob's update_by_public_id call, or a
+            # falsy qbo_id (guarded upstream by QboAttachableService._upsert_
+            # attachable's own ValueError) -- either way there is nothing
+            # sync-able to return; the caller's per-attachable try/except
+            # skips it and re-attempts on the next pull.
+            raise RuntimeError(
+                f"Failed to resolve Attachment for QboAttachable {qbo_attachable.id} "
+                f"(qbo_id={qbo_attachable.qbo_id}) via the dbo-only identity fast path"
+            )
+        return outcome.entity
 
-        if attachment is None:
-            # Legacy path: resolve via the qbo.AttachableAttachment mapping table.
-            mapping = self.mapping_repo.read_by_qbo_attachable_id(qbo_attachable.id)
-            if mapping:
-                attachment = self.attachment_service.read_by_id(mapping.attachment_id)
-                if not attachment:
-                    # Mapping exists but Attachment not found - recreate
-                    logger.warning(f"Mapping exists but Attachment {mapping.attachment_id} not found. Creating new.")
-                    self.mapping_repo.delete_by_id(mapping.id)
-
-        if attachment:
-            # Verify the blob still exists in Azure storage with a lightweight
-            # HEAD probe (exists()) rather than downloading the whole file.
-            blob_ok = True
-            if attachment.blob_url:
-                try:
-                    blob_ok = AzureBlobStorage().exists(attachment.blob_url)
-                except Exception:
-                    # Couldn't determine existence (auth/network) — treat as
-                    # missing so we re-download (heals) rather than trusting it.
-                    blob_ok = False
-                if not blob_ok:
-                    logger.warning(
-                        f"Attachment {attachment.id} blob missing at {attachment.blob_url} — "
-                        f"re-downloading from QBO for QboAttachable {qbo_attachable.id}"
-                    )
-            else:
+    def _verify_or_heal_pulled_blob(
+        self,
+        attachment: Attachment,
+        qbo_attachable: QboAttachable,
+        realm_id: str,
+    ) -> Optional[Attachment]:
+        """
+        `apply_fields` for the dbo-only fast path's HIT branch (a direct or
+        race-discovered dbo.Attachment already holds this identity, U-300b):
+        verify its blob is still present and heal (re-download + re-upload)
+        if it went missing. The identity-mismatch corrective re-stamp the
+        pre-U-300b version of this block also performed is dropped -- a hit
+        under `run_identity_fastpath_dbo_only` is, by construction, already
+        the exact (qbo_id, realm_id) pair (`read_by_qbo_identity` matches on
+        both columns), so that branch could never fire.
+        """
+        blob_ok = True
+        if attachment.blob_url:
+            try:
+                blob_ok = AzureBlobStorage().exists(attachment.blob_url)
+            except Exception:
+                # Couldn't determine existence (auth/network) — treat as
+                # missing so we re-download (heals) rather than trusting it.
                 blob_ok = False
-
-            if blob_ok:
-                logger.info(f"Found existing Attachment {attachment.id} for QboAttachable {qbo_attachable.id}")
-                existing_qbo_id = getattr(attachment, "qbo_id", None)
-                existing_realm_id = getattr(attachment, "realm_id", None)
-                if not (
-                    (existing_qbo_id or "") == (qbo_attachable.qbo_id or "")
-                    and (existing_realm_id or "") == (realm_id or "")
-                ):
-                    self.attachment_service.repo.set_qbo_identity(
-                        id=coerce_id(attachment.id),
-                        qbo_id=qbo_attachable.qbo_id,
-                        realm_id=realm_id,
-                    )
-                return attachment
-
-            # Blob is missing — re-download from QBO and re-upload
-            file_content = self._download_from_qbo(qbo_attachable, realm_id)
-            if file_content:
-                content_type = qbo_attachable.content_type or "application/octet-stream"
-                file_name = qbo_attachable.file_name or f"attachment_{qbo_attachable.qbo_id}"
-                file_content, content_type, file_extension = ensure_pdf(file_content, content_type, file_name)
-                if file_extension == ".pdf":
-                    file_name = self._ensure_pdf_filename(file_name)
-                    file_content = compact_pdf(file_content)
-                blob_url = self._upload_to_blob(
-                    file_content=file_content,
-                    file_name=file_name,
-                    content_type=content_type,
+            if not blob_ok:
+                logger.warning(
+                    f"Attachment {attachment.id} blob missing at {attachment.blob_url} — "
+                    f"re-downloading from QBO for QboAttachable {qbo_attachable.id}"
                 )
-                # Update the existing Attachment record with the new blob URL
-                self.attachment_service.update_by_public_id(
-                    public_id=attachment.public_id,
-                    row_version=attachment.row_version,
-                    blob_url=blob_url,
-                    file_size=len(file_content),
-                    content_type=content_type,
-                    file_extension=file_extension,
-                )
-                logger.info(f"Re-uploaded blob for Attachment {attachment.id} → {blob_url}")
-                # Fresh bytes landed — queue text extraction (U-187). Deferred
-                # to the sweep; DI never runs inline in the realm pull.
-                self._mark_pending_extraction(attachment.id)
-                # Re-read to get updated record
-                refreshed = self.attachment_service.read_by_id(attachment.id)
-                if refreshed:
-                    self.attachment_service.repo.set_qbo_identity(
-                        id=coerce_id(refreshed.id),
-                        qbo_id=qbo_attachable.qbo_id,
-                        realm_id=realm_id,
-                    )
-                return refreshed
-            else:
-                # Blob is gone AND re-download failed — do NOT return a record that
-                # points at a missing blob (it would get linked to line items and
-                # fail later in packets/exports). Raise so this attachable is skipped
-                # this run and re-attempted on the next sync (attachments are
-                # best-effort: the parent entity still projects).
-                logger.error(f"Could not re-download file from QBO for Attachment {attachment.id}")
-                raise RuntimeError(
-                    f"Attachment {attachment.id} blob missing and re-download from QBO "
-                    f"failed for QboAttachable {qbo_attachable.id}"
-                )
+        else:
+            blob_ok = False
 
-        # Download file from QBO
+        if blob_ok:
+            logger.info(f"Found existing Attachment {attachment.id} for QboAttachable {qbo_attachable.id}")
+            return attachment
+
+        # Blob is missing — re-download from QBO and re-upload
         file_content = self._download_from_qbo(qbo_attachable, realm_id)
-        
+        if not file_content:
+            # Blob is gone AND re-download failed — do NOT return a record that
+            # points at a missing blob (it would get linked to line items and
+            # fail later in packets/exports). Raise so this attachable is skipped
+            # this run and re-attempted on the next sync (attachments are
+            # best-effort: the parent entity still projects).
+            logger.error(f"Could not re-download file from QBO for Attachment {attachment.id}")
+            raise RuntimeError(
+                f"Attachment {attachment.id} blob missing and re-download from QBO "
+                f"failed for QboAttachable {qbo_attachable.id}"
+            )
+
+        content_type = qbo_attachable.content_type or "application/octet-stream"
+        file_name = qbo_attachable.file_name or f"attachment_{qbo_attachable.qbo_id}"
+        file_content, content_type, file_extension = ensure_pdf(file_content, content_type, file_name)
+        if file_extension == ".pdf":
+            file_name = self._ensure_pdf_filename(file_name)
+            file_content = compact_pdf(file_content)
+        return self._upload_and_heal_blob(
+            attachment=attachment,
+            file_content=file_content,
+            file_name=file_name,
+            content_type=content_type,
+            file_extension=file_extension,
+        )
+
+    def _upload_and_heal_blob(
+        self,
+        *,
+        attachment: Attachment,
+        file_content: bytes,
+        file_name: str,
+        content_type: str,
+        file_extension: str,
+    ) -> Optional[Attachment]:
+        """
+        Shared blob-heal tail for both the HIT path (`_verify_or_heal_pulled_
+        blob`, already-downloaded fresh bytes) and the hash-dedupe branch of
+        the MISS path (`_resolve_pulled_attachment_candidate`, bytes already
+        downloaded earlier in that same call): upload, point the Attachment's
+        blob_url at it, mark pending extraction, return the refreshed row.
+        """
+        blob_url = self._upload_to_blob(
+            file_content=file_content,
+            file_name=file_name,
+            content_type=content_type,
+        )
+        self.attachment_service.update_by_public_id(
+            public_id=attachment.public_id,
+            row_version=attachment.row_version,
+            blob_url=blob_url,
+            file_size=len(file_content),
+            content_type=content_type,
+            file_extension=file_extension,
+        )
+        logger.info(f"Re-uploaded blob for Attachment {attachment.id} → {blob_url}")
+        # Fresh bytes landed — queue text extraction (U-187). Deferred
+        # to the sweep; DI never runs inline in the realm pull.
+        self._mark_pending_extraction(attachment.id)
+        return self.attachment_service.read_by_id(attachment.id)
+
+    def _resolve_pulled_attachment_candidate(
+        self,
+        qbo_attachable: QboAttachable,
+        realm_id: str,
+    ) -> Attachment:
+        """
+        `resolve_candidate` for the dbo-only fast path's MISS branch (U-300b):
+        called only under `run_identity_fastpath_dbo_only`'s create lock, once
+        a genuine miss is confirmed (no dbo.Attachment currently holds this
+        identity, including the re-read under lock). Finds-or-creates the
+        local Attachment to bind — hash-dedupe against existing content first,
+        else download + upload + create fresh. Returns the row for
+        `stamp_identity` to bind; never itself calls set_qbo_identity or
+        writes a `qbo.AttachableAttachment` mapping row.
+        """
+        file_content = self._download_from_qbo(qbo_attachable, realm_id)
         if not file_content:
             raise ValueError(f"Failed to download file for QboAttachable {qbo_attachable.id}")
-        
+
         # Ensure PDF: convert images to PDF
         content_type = qbo_attachable.content_type or "application/octet-stream"
         file_name = qbo_attachable.file_name or f"attachment_{qbo_attachable.qbo_id}"
@@ -231,8 +230,15 @@ class AttachableAttachmentConnector:
 
         # Calculate file hash
         file_hash = self.attachment_service.calculate_hash(file_content)
-        
-        # Check for duplicate by hash
+
+        # Check for duplicate by hash. NOTE: ReadAttachmentByHash's projection does
+        # NOT select QboId/RealmId (only ReadAttachmentById/ByPublicId/
+        # ByQboIdAndRealmId do — see AttachmentRepository._from_db's own comment),
+        # so `existing_by_hash.qbo_id` is unconditionally None here regardless of
+        # the row's real identity — an unreliable read, not a guard. The real
+        # identity-theft guard lives in _stamp_pulled_identity's pre-stamp re-read
+        # (via read_by_id, which DOES carry QboId/RealmId), the shared choke point
+        # both this path and the fresh-create path funnel through.
         existing_by_hash = self.attachment_service.read_by_hash(file_hash)
         if existing_by_hash:
             logger.info(f"Found existing Attachment by hash for QboAttachable {qbo_attachable.id}")
@@ -251,38 +257,22 @@ class AttachableAttachmentConnector:
                     f"Hash-matched Attachment {existing_by_hash.id} blob missing at "
                     f"{existing_by_hash.blob_url} — re-uploading from the downloaded content"
                 )
-                blob_url = self._upload_to_blob(
+                existing_by_hash = self._upload_and_heal_blob(
+                    attachment=existing_by_hash,
                     file_content=file_content,
                     file_name=file_name,
                     content_type=content_type,
-                )
-                self.attachment_service.update_by_public_id(
-                    public_id=existing_by_hash.public_id,
-                    row_version=existing_by_hash.row_version,
-                    blob_url=blob_url,
-                    file_size=len(file_content),
-                    content_type=content_type,
                     file_extension=file_extension,
                 )
-                existing_by_hash = self.attachment_service.read_by_id(existing_by_hash.id)
-                # Re-uploaded fresh bytes for a healed blob — queue extraction (U-187).
-                self._mark_pending_extraction(existing_by_hash.id)
-            # Create mapping to existing attachment
-            self._create_mapping(
-                attachment_id=existing_by_hash.id,
-                qbo_attachable_id=qbo_attachable.id,
-                qbo_id=qbo_attachable.qbo_id,
-                realm_id=realm_id,
-            )
             return existing_by_hash
-        
+
         # Upload to Azure Blob Storage (use converted content/type/filename)
         blob_url = self._upload_to_blob(
             file_content=file_content,
             file_name=file_name,
             content_type=content_type,
         )
-        
+
         # Create Attachment record
         logger.info(f"Creating new Attachment from QboAttachable {qbo_attachable.id}")
         attachment = self.attachment_service.create(
@@ -301,15 +291,6 @@ class AttachableAttachmentConnector:
             expiration_date=None,
             storage_tier="Hot",
         )
-        
-        # Create mapping
-        self._create_mapping(
-            attachment_id=attachment.id,
-            qbo_attachable_id=qbo_attachable.id,
-            qbo_id=qbo_attachable.qbo_id,
-            realm_id=realm_id,
-        )
-        logger.info(f"Created mapping: Attachment {attachment.id} <-> QboAttachable {qbo_attachable.id}")
 
         # New source document — queue text extraction (U-187). Marked 'pending'
         # only; DI is deferred to the /admin/attachment/extract/tick sweep so this
@@ -318,79 +299,59 @@ class AttachableAttachmentConnector:
 
         return attachment
 
-    def _resolve_mapping_state(self, *, attachment_id: int, qbo_attachable: QboAttachable):
+    def _stamp_pulled_identity(self, *, attachment_id: int, qbo_id: str, realm_id: str) -> Attachment:
         """
-        Read-only check of the AttachableAttachment mapping table against a
-        dbo-identity match, BEFORE any write happens (U-279 fast path).
-        Mirrors CustomerCustomerConnector._resolve_mapping_state exactly
-        (U-276/278) — see that method's docstring for the full rationale.
+        `stamp_identity` for the dbo-only fast path's MISS branch (U-300b).
+        Wraps `AttachmentRepository.set_qbo_identity` (returns None) into a
+        refreshed-row-returning call, per Codex's U-300a review.
 
-        Checks BOTH directions — an attachment_id-only check would miss a
-        stale mapping still binding this qbo_attachable_id to a DIFFERENT
-        Attachment (left behind by an earlier identity "theft" —
-        SetAttachmentQboIdentity's own theft-clear UPDATE does not clean up
-        the mapping table).
+        Re-reads via `read_by_id` (reliably projects QboId/RealmId, unlike
+        `ReadAttachmentByHash`) immediately before stamping and refuses to
+        overwrite a DIFFERENT existing identity — the real theft-guard for a
+        hash-deduped candidate, since `_resolve_pulled_attachment_candidate`'s
+        own `read_by_hash` result can never carry a trustworthy QboId.
 
-        NOTE (U-287): no production caller — `sync_from_qbo_*` passes these same
-        accessors straight to `run_identity_fastpath`, which calls the shared
-        `resolve_mapping_state` itself. Retained as the per-family test seam for the
-        U-276/277/278/279 suites, which call this by name. Disposition booked in TODO.md.
+        Runs under its own app lock keyed on the CANDIDATE's attachment_id —
+        NOT `run_identity_fastpath_dbo_only`'s own create lock, which is keyed
+        on the qbo_id/realm_id being resolved. Two concurrent pulls for two
+        DIFFERENT QboAttachables that hash-dedupe onto the SAME Attachment
+        acquire two DIFFERENT qbo_id-keyed locks upstream (no contention
+        there), so without this second, row-keyed lock the second racer's
+        pre-check could read stale state and silently steal the identity.
+        Disjoint namespace from `qbo_dbo_identity_create:*` and
+        `qbo_mapping_create:*` (U-304's unrelated staging-PK race).
 
-        Returns (state, by_attachment, by_qbo_attachable) — see
-        base.identity_fastpath.resolve_mapping_state, which owns the algorithm
-        and documents the "consistent"/"missing"/"conflict" semantics (U-287);
-        this is the AttachableAttachment binding of it.
+        TODO(shared primitive): any future `run_identity_fastpath_dbo_only`
+        adopter whose `resolve_candidate` can bind an existing row via a
+        side-channel key (hash-dedupe, or similar) will hit this exact same
+        race — worth folding into the shared helper once a second family
+        needs it, rather than each hand-rolling this lock again.
+
+        Deadlock note: only ever invoked from `run_identity_fastpath_dbo_
+        only`'s MISS branch, always while its `qbo_dbo_identity_create:*`
+        lock is held — so this lock is always acquired nested inside it, in
+        that one fixed order, from the single call site in
+        `sync_from_qbo_attachable`. Consistent one-directional nesting rules
+        out a lock-ordering cycle.
         """
-        return resolve_mapping_state(
-            local_id=attachment_id,
-            external_id=qbo_attachable.id,
-            read_by_local_id=self.mapping_repo.read_by_attachment_id,
-            read_by_external_id=self.mapping_repo.read_by_qbo_attachable_id,
-            external_id_attr="qbo_attachable_id",
-        )
-
-    def _raise_identity_mapping_conflict_issue(
-        self,
-        *,
-        qbo_attachable: QboAttachable,
-        dbo_attachment_id: int,
-        local_side_mapping: Optional[AttachableAttachment],
-        qbo_side_mapping: Optional[AttachableAttachment],
-        realm_id: str,
-    ) -> None:
-        """
-        Record a dbo-identity <-> mapping-table split found by
-        _resolve_mapping_state. Mirrors CustomerCustomerConnector's
-        identically named/shaped method — covers all three conflict shapes
-        (qbo-side only, local-side only, or both) in ONE issue, never
-        silently dropping either side's blocker.
-        """
-        parts = [
-            f"Attachment identity conflict. dbo.Attachment {dbo_attachment_id} carries native "
-            f"QBO identity for QboAttachable {qbo_attachable.id} (QboId={qbo_attachable.qbo_id}, "
-            f"RealmId={realm_id})."
-        ]
-        if qbo_side_mapping:
-            parts.append(
-                f"qbo-side: the mapping table still binds that same QboAttachable to a DIFFERENT "
-                f"Attachment {qbo_side_mapping.attachment_id} (mapping {qbo_side_mapping.id})."
-            )
-        if local_side_mapping:
-            parts.append(
-                f"local-side: Attachment {dbo_attachment_id}'s own mapping row (mapping "
-                f"{local_side_mapping.id}) still binds it to a DIFFERENT QboAttachable "
-                f"{local_side_mapping.qbo_attachable_id}."
-            )
-        parts.append("Not auto-repointed — investigate which side is correct.")
-        record_mapping_issue(
-            self.reconciliation_repo,
-            drift_type="attachment_identity_conflict",
-            entity_type="Attachment",
-            entity_public_id=None,
-            qbo_id=str(qbo_attachable.qbo_id) if qbo_attachable.qbo_id else None,
-            realm_id=realm_id or "",
-            details=" ".join(parts),
-        )
+        lock_resource = f"qbo_dbo_identity_stamp:Attachment:{attachment_id}"
+        with qbo_app_lock(lock_resource) as got_lock:
+            if not got_lock:
+                raise RuntimeError(
+                    f"Could not acquire identity-stamp lock for Attachment {attachment_id} "
+                    f"(qbo_id={qbo_id}, realm_id={realm_id}) — holding for retry without stamping."
+                )
+            current = self.attachment_service.read_by_id(attachment_id)
+            if current and current.qbo_id and not (
+                current.qbo_id == qbo_id and (getattr(current, "realm_id", None) or "") == (realm_id or "")
+            ):
+                raise ValueError(
+                    f"Attachment {attachment_id} already carries QBO identity {current.qbo_id} "
+                    f"(realm {getattr(current, 'realm_id', None)}) — refusing to overwrite it with "
+                    f"qbo_id={qbo_id} realm_id={realm_id}"
+                )
+            self.attachment_service.repo.set_qbo_identity(id=attachment_id, qbo_id=qbo_id, realm_id=realm_id)
+            return self.attachment_service.read_by_id(attachment_id)
 
     def _mark_pending_extraction(self, attachment_id: int) -> None:
         """Flag a synced Attachment for text extraction (U-187). Failure-isolated:
@@ -480,37 +441,6 @@ class AttachableAttachmentConnector:
         
         logger.debug(f"Uploaded file to blob: {blob_url}")
         return blob_url
-
-    def _create_mapping(
-        self,
-        attachment_id: int,
-        qbo_attachable_id: int,
-        *,
-        qbo_id: Optional[str],
-        realm_id: Optional[str],
-    ) -> AttachableAttachment:
-        """
-        Create a mapping between Attachment and QboAttachable.
-        """
-        # Validate 1:1 constraints
-        existing_by_attachment = self.mapping_repo.read_by_attachment_id(attachment_id)
-        if existing_by_attachment:
-            raise ValueError(
-                f"Attachment {attachment_id} is already mapped to QboAttachable {existing_by_attachment.qbo_attachable_id}"
-            )
-        
-        existing_by_qbo = self.mapping_repo.read_by_qbo_attachable_id(qbo_attachable_id)
-        if existing_by_qbo:
-            raise ValueError(
-                f"QboAttachable {qbo_attachable_id} is already mapped to Attachment {existing_by_qbo.attachment_id}"
-            )
-        
-        self.attachment_service.repo.set_qbo_identity(
-            id=attachment_id,
-            qbo_id=qbo_id,
-            realm_id=realm_id,
-        )
-        return self.mapping_repo.create(attachment_id=attachment_id, qbo_attachable_id=qbo_attachable_id)
 
     def _stamp_pushed_identity(self, *, attachment_id: int, qbo_id: str, realm_id: str) -> None:
         """

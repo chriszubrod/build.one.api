@@ -7,7 +7,6 @@ from unittest.mock import MagicMock, Mock, patch
 import pytest
 
 from entities.address.business.model import Address
-from integrations.intuit.qbo.attachable.connector.attachment.business.service import AttachableAttachmentConnector
 from integrations.intuit.qbo.base.identity_drift import REFERENCE_ENTITY_SPECS, classify_qbo_identity_drift
 from integrations.intuit.qbo.customer.connector.customer.business.service import CustomerCustomerConnector
 from integrations.intuit.qbo.item.connector.cost_code.business.service import ItemCostCodeConnector
@@ -454,44 +453,6 @@ def test_address_create_mapping_identity_failure_propagates():
             qbo_physical_address_id=25,
             qbo_id="A-1",
             realm_id="realm-addr",
-        )
-    mapping_repo.create.assert_not_called()
-
-
-def _make_attachment_connector():
-    mapping_repo = Mock()
-    mapping_repo.read_by_attachment_id.return_value = None
-    mapping_repo.read_by_qbo_attachable_id.return_value = None
-    mapping_repo.create.return_value = SimpleNamespace(id=1)
-    attachment_service = Mock()
-    attachment_service.repo = Mock()
-    connector = AttachableAttachmentConnector(
-        mapping_repo=mapping_repo, attachment_service=attachment_service
-    )
-    return connector, mapping_repo, attachment_service.repo
-
-
-def test_attachment_create_mapping_dual_writes_identity():
-    connector, mapping_repo, repo = _make_attachment_connector()
-    connector._create_mapping(
-        attachment_id=15,
-        qbo_attachable_id=26,
-        qbo_id="AT-1",
-        realm_id="realm-att",
-    )
-    repo.set_qbo_identity.assert_called_once_with(id=15, qbo_id="AT-1", realm_id="realm-att")
-    mapping_repo.create.assert_called_once_with(attachment_id=15, qbo_attachable_id=26)
-
-
-def test_attachment_create_mapping_identity_failure_propagates():
-    connector, mapping_repo, repo = _make_attachment_connector()
-    repo.set_qbo_identity.side_effect = RuntimeError("stamp failed")
-    with pytest.raises(RuntimeError, match="stamp failed"):
-        connector._create_mapping(
-            attachment_id=15,
-            qbo_attachable_id=26,
-            qbo_id="AT-1",
-            realm_id="realm-att",
         )
     mapping_repo.create.assert_not_called()
 

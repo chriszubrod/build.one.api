@@ -666,6 +666,38 @@ BEGIN
 END;
 GO
 
+-- ─────────────────────────────────────────────────────────────────────
+-- ReadDeletedVendorByQboIdAndRealmId — U-313 P1 guard: does a SOFT-DELETED
+-- Vendor already hold this exact QBO identity? ReadVendorByQboIdAndRealmId
+-- above filters IsDeleted = 0, so a soft-deleted holder reads as a "miss" to
+-- the dbo-only fast path -- without this check, VendorVendorConnector's
+-- create/adopt miss-branch would silently mint a DUPLICATE active Vendor,
+-- and SetVendorQboIdentity's theft-clear (below, no IsDeleted filter of its
+-- own) would then silently strip the deleted row's QboId. Mirrors the
+-- pre-U-313 mapping-table architecture's own "heal-don't-delete" discipline
+-- (never silently duplicate on an identity a deleted row still holds;
+-- preserve + raise instead for a human to resolve). Minimal projection --
+-- only what the reconciliation-issue message needs.
+-- ─────────────────────────────────────────────────────────────────────
+
+CREATE OR ALTER PROCEDURE ReadDeletedVendorByQboIdAndRealmId
+(
+    @QboId NVARCHAR(50),
+    @RealmId NVARCHAR(50) = NULL
+)
+AS
+BEGIN
+    SELECT
+        v.[Id],
+        v.[PublicId],
+        v.[Name]
+    FROM dbo.[Vendor] v
+    WHERE v.[QboId] = @QboId
+      AND ((v.[RealmId] = @RealmId) OR (v.[RealmId] IS NULL AND @RealmId IS NULL))
+      AND v.[IsDeleted] = 1;
+END;
+GO
+
 CREATE OR ALTER PROCEDURE SetVendorQboIdentity
 (
     @Id BIGINT,

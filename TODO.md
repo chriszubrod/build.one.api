@@ -39,6 +39,42 @@ Carry-over items from sessions. Check off as done; prune anything stale.
   `read_all()`/`read_by_public_id()`/`read_by_name()` surface a project's QboId when set — a SQL change, needs
   its own DBA-reviewed unit (base-file edit + prod apply), not bundled into a read-side Python repoint.
 
+## U-313 follow-ups (Vendor Wave-5 dbo-only repoint) — deferred, not scope-creeped in (2026-08-24)
+
+- [ ] **`ReadVendorByName` doesn't SELECT `[QboId]`/`[RealmId]`** (`entities/vendor/sql/dbo.vendor.sql`) — the
+  same gap U-310 found and TODO'd for Customer's `ReadCustomerByName` (see above), now confirmed for Vendor too
+  (`/simplify` reuse+simplification lenses, 2026-08-24): `VendorVendorConnector._resolve_vendor_candidate`'s own
+  duplicate-QboId guard (folded into the shared `_check_no_conflicting_vendor_identity`, mirroring
+  `CustomerCustomerConnector._check_no_conflicting_identity`) is provably dead against a real DB read; only
+  `_stamp_vendor_identity`'s `read_by_id`-based re-read (which DOES carry those columns, per `ReadVendorById`'s
+  SELECT list) ever actually fires in production. Fix, if picked up: add `[QboId]`, `[RealmId]` to
+  `ReadVendorByName`'s SELECT list (mechanical, matches `ReadVendorById`'s shape) — a SQL change, needs its own
+  DBA-reviewed unit, not bundled into this Python-only repoint. If/when U-310's identical `ReadCustomerByName`
+  fix is picked up, do both together (same root cause, same fix shape).
+- [ ] **P1 soft-delete-holds-identity guard is family-local, not on the shared primitive** (`/simplify` altitude
+  lens, 2026-08-24). `VendorVendorConnector._resolve_vendor_candidate` now checks `read_deleted_by_qbo_identity`
+  before create/adopt (a Vendor soft-deleted locally while still active in QBO must not be silently
+  duplicate-created — `SetVendorQboIdentity`'s theft-clear has no `IsDeleted` filter of its own). Confirmed via
+  `/simplify`: Vendor is currently the ONLY family on `run_identity_fastpath_dbo_only` whose entity supports
+  soft-delete at all (Customer/CostCode/SubCostCode/Attachment all lack an `IsDeleted` column), so there was
+  nothing to generalize onto today — family-local was the right call for this unit. Worth a shared
+  `resolve_candidate`-adjacent hook on the primitive (mirroring the `on_stamp_returned_none` idea above) once a
+  SECOND soft-delete-bearing family migrates onto `run_identity_fastpath_dbo_only` (Bill/Expense/VendorCredit all
+  have `IsDeleted` and are plausible future Wave-6+ candidates) — so it inherits this for free instead of
+  re-discovering it via another Codex P1 pass. Touches `integrations/intuit/qbo/base/identity_fastpath.py`,
+  design-gated per `feedback_two_phase_dispatch_design_gated` — its own no-code design unit first.
+- [ ] **`BillBillConnector`/`PurchaseExpenseConnector` carry now-dead `vendor_vendor_repo`/`qbo_vendor_repo`
+  constructor params** (`integrations/intuit/qbo/bill/connector/bill/business/service.py`,
+  `integrations/intuit/qbo/purchase/connector/expense/business/service.py`) — U-313 repointed both files' vendor-
+  ref resolvers (`_get_vendor_public_id`/`_get_qbo_vendor_ref`) off `qbo.VendorVendor` entirely, leaving these two
+  constructor-injected repos genuinely unused in both files. **Deliberately kept, not removed**: ~10 test files
+  outside this unit's scope (`test_u276_customer_project_qbo_identity_repoint.py`, `test_u307b_push_item_ref_repoint.py`,
+  `test_qbo_bill_vendorcredit_heal.py`, `test_qbo_zombie_rollback.py`, others) still pass
+  `vendor_vendor_repo=`/`qbo_vendor_repo=` into these two constructors — removing the params now would break all
+  of them for a unit whose real scope is the Vendor mapping table, not a constructor diet on two shared connector
+  classes. Mirrors the identical, already-accepted precedent below (U-306 follow-up, same deferred-cleanup
+  reasoning). Pick up alongside that one, or once Bill/Purchase's own next real touch happens anyway.
+
 ## U-305 follow-ups (Bill/VendorCredit reconciliation dbo-native repoint) — deferred, not scope-creeped in (2026-08-23)
 
 - [ ] **DBA cleanup: dangling `qbo.BillBill` mapping row (`Id=16790`) points to `BillId=16808`, which does not

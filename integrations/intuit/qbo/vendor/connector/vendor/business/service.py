@@ -5,8 +5,6 @@ from typing import Optional
 # Third-party Imports
 
 # Local Imports
-from integrations.intuit.qbo.vendor.connector.vendor.business.model import VendorVendor
-from integrations.intuit.qbo.vendor.connector.vendor.persistence.repo import VendorVendorRepository
 from integrations.intuit.qbo.vendor.business.model import QboVendor
 from integrations.intuit.qbo.physical_address.connector.business.service import PhysicalAddressAddressConnector
 from integrations.intuit.qbo.reconciliation.persistence.repo import ReconciliationIssueRepository
@@ -14,21 +12,21 @@ from integrations.intuit.qbo.base.field_ownership import (
     preserve_human_edited_name,
     raise_if_inactive_unmapped,
 )
-from integrations.intuit.qbo.base.identity_fastpath import run_identity_fastpath
+from integrations.intuit.qbo.base.identity_fastpath import (
+    raise_concurrent_write_race,
+    run_identity_fastpath_dbo_only,
+)
 from integrations.intuit.qbo.base.ids import coerce_id
+from integrations.intuit.qbo.base.locking import qbo_app_lock
 from integrations.intuit.qbo.base.reconciliation_recorder import record_mapping_issue
 from entities.vendor.business.service import VendorService
 from entities.vendor.business.model import Vendor
 from entities.vendor_address.business.service import VendorAddressService
-from shared.database import DatabaseConstraintError
-from shared.db_constraints import UNIQUE
 
 logger = logging.getLogger(__name__)
 
 # Address type ID for billing (typically ID 1)
 ADDRESS_TYPE_BILLING = 1
-
-_PREFETCH_UNSET = object()
 
 
 def _qbo_vendor_ref(qbo_vendor: QboVendor) -> tuple[Optional[str], str]:
@@ -42,18 +40,27 @@ def _qbo_vendor_ref(qbo_vendor: QboVendor) -> tuple[Optional[str], str]:
 class VendorVendorConnector:
     """
     Connector service for synchronization between QboVendor and Vendor modules.
+
+    U-313: dbo-only identity resolution via `run_identity_fastpath_dbo_only` --
+    no `qbo.VendorVendor` mapping-table read/write of any kind (mirrors
+    U-300b's `AttachableAttachmentConnector` / U-307c's `ItemCostCodeConnector`
+    / U-310's `CustomerCustomerConnector`, per Wave 5's "trust dbo alone" plan,
+    `docs/design/wave5.md`). `dbo.Vendor.QboId`/`RealmId` (U-238a/U-290) is the
+    sole identity store; dbo.Vendor's own filtered unique index + `SetVendorQboIdentity`'s
+    theft-clear UPDATE guarantee at most one row holds a given identity at any
+    instant, so a direct hit needs no cross-check and the old heal/adopt/dedup
+    branch structure (driven by a second, independently-writable mapping
+    table) no longer has anything to drift from.
     """
 
     def __init__(
         self,
-        mapping_repo: Optional[VendorVendorRepository] = None,
         vendor_service: Optional[VendorService] = None,
         vendor_address_service: Optional[VendorAddressService] = None,
         address_connector: Optional[PhysicalAddressAddressConnector] = None,
         reconciliation_repo: Optional[ReconciliationIssueRepository] = None,
     ):
         """Initialize the VendorVendorConnector."""
-        self.mapping_repo = mapping_repo or VendorVendorRepository()
         self.vendor_service = vendor_service or VendorService()
         self.vendor_address_service = vendor_address_service or VendorAddressService()
         self.address_connector = address_connector or PhysicalAddressAddressConnector()
@@ -61,253 +68,51 @@ class VendorVendorConnector:
 
     def sync_from_qbo_vendor(self, qbo_vendor: QboVendor) -> Vendor:
         """
-        Sync data from QboVendor to Vendor module.
-        
-        This method:
-        1. Checks if a mapping exists
-        2. Creates or updates the Vendor accordingly
-        
+        Sync data from QboVendor to Vendor module, via the dbo-only identity
+        fast path (U-313).
+
         Args:
             qbo_vendor: QboVendor record
-        
+
         Returns:
             Vendor: The synced Vendor record
         """
         # Normalize once: VendorService.create strips the name and dedups on the stripped
         # value, so an unstripped lookup here would miss the adopt branch and then collide
-        # inside create() — detaching the QboVendor permanently. Empty/whitespace-only
+        # inside create() -- detaching the QboVendor permanently. Empty/whitespace-only
         # collapses to None so the `if vendor_name` guards below skip the lookups.
         vendor_name = (qbo_vendor.display_name or "").strip() or None
 
-        # U-290 (Phase-4, header/reference repoint): resolve identity directly against
-        # dbo.Vendor's native QboId/RealmId (U-238a/238c) before falling back to the
-        # qbo.VendorVendor mapping-table hop below. Every Vendor synced even once
-        # already carries this identity (set_qbo_identity is called on both the create
-        # path and the legacy update path below), so this covers the steady-state case
-        # without touching qbo.Vendor at all. Mirrors
-        # VendorCreditBillCreditConnector.sync_from_qbo_vendor_credit (U-278) exactly,
-        # via the shared run_identity_fastpath() helper (U-287) — conflict->RAISE is
-        # structural there, not something this connector can opt out of.
-        #
-        # The mapping-table state is checked BEFORE any write, not after: writing to
-        # the dbo-identity-matched Vendor first and detecting a conflict afterward
-        # would corrupt that Vendor's data in the case where the mapping table — not
-        # dbo identity — is actually still the correct side (U-276 round-3 finding).
-        def _on_apply_returned_none(direct: Vendor) -> None:
-            # _apply_vendor_fields_and_sync uses the repo-level update_by_id, which
-            # RAISERRORs (not returns None) on a RowVersion mismatch or missing row, so
-            # this should be unreachable in practice. Raising RuntimeError rather than
-            # letting a None silently count as success mirrors the U-287 fix for
-            # CustomerCustomerConnector — a plain ValueError here would classify as a
-            # permanent skip and advance the watermark past an unmapped Vendor; a
-            # RuntimeError does not.
-            raise RuntimeError(
-                f"Vendor {direct.id} update returned None during the QboVendor "
-                f"{qbo_vendor.id} dbo-identity fast path (missing-mapping branch) — "
-                f"treating as a failure, not a silent success."
-            )
-
-        fastpath_outcome = run_identity_fastpath(
+        outcome = run_identity_fastpath_dbo_only(
             qbo_id=qbo_vendor.qbo_id,
             realm_id=qbo_vendor.realm_id,
-            external_id=qbo_vendor.id,
             entity_label="Vendor",
             external_label="QboVendor",
-            mapping_label="VendorVendor",
+            lock_resource_label="Vendor",
             read_direct_by_qbo_identity=self.vendor_service.read_by_qbo_identity,
-            read_by_local_id=self.mapping_repo.read_by_vendor_id,
-            read_by_external_id=self.mapping_repo.read_by_qbo_vendor_id,
-            external_id_attr="qbo_vendor_id",
-            record_conflict_issue=lambda entity, by_local, by_external: (
-                self._raise_identity_mapping_conflict_issue(
-                    qbo_vendor=qbo_vendor,
-                    dbo_vendor_id=coerce_id(entity.id),
-                    local_side_mapping=by_local,
-                    qbo_side_mapping=by_external,
-                )
-            ),
-            conflict_message=lambda entity: (
-                f"VendorVendor identity conflict for QboVendor {qbo_vendor.qbo_id} "
-                f"(id={qbo_vendor.id}): dbo.Vendor {entity.id} already carries this "
-                f"identity but the mapping table disagrees. Not auto-repointed; see "
-                f"the recorded reconciliation issue. Skipping until a human resolves it."
-            ),
-            create_mapping=lambda local_id: self.mapping_repo.create(
-                vendor_id=local_id, qbo_vendor_id=qbo_vendor.id,
-            ),
             apply_fields=lambda entity: self._apply_vendor_fields_and_sync(
                 entity, qbo_vendor=qbo_vendor, incoming_name=vendor_name,
             ),
-            on_apply_returned_none=_on_apply_returned_none,
+            on_apply_returned_none=lambda entity: raise_concurrent_write_race(
+                entity_label="Vendor", entity_id=entity.id, path_label="fast path",
+            ),
+            resolve_candidate=lambda: self._resolve_vendor_candidate(
+                qbo_vendor, vendor_name=vendor_name,
+            ),
+            stamp_identity=lambda candidate: self._stamp_vendor_identity(
+                candidate, qbo_vendor,
+            ),
         )
-        if fastpath_outcome.hit:
-            if fastpath_outcome.entity is not None:
-                # QboActive is a dbo-native mirror (U-275) that must stay current every
-                # sync tick even when identity itself hasn't changed (a vendor can be
-                # deactivated in QBO without its QboId/RealmId moving). Mirrors the same
-                # fix ItemSubCostCodeConnector (U-289, concurrent this session) applied for
-                # its own QboActive mirror — a strictly more correct pattern than U-282
-                # (PaymentTerm)'s accepted staleness tradeoff documented above, adopted here
-                # instead since Vendor shares the same "family with an Active mirror"
-                # shape. QboId/RealmId are passed as None so the sproc's own CASE WHEN
-                # guards leave them untouched (no redundant re-stamp, no theft-detection
-                # re-trigger); only QboActive's CASE WHEN branch fires, and only when it
-                # actually changed.
-                self.vendor_service.repo.set_qbo_identity(
-                    id=coerce_id(fastpath_outcome.entity.id),
-                    qbo_id=None,
-                    realm_id=None,
-                    active=qbo_vendor.active,
-                )
-            return fastpath_outcome.entity
-
-        mapping = self.mapping_repo.read_by_qbo_vendor_id(qbo_vendor.id)
-
-        if mapping:
-            vendor = self.vendor_service.read_by_id(mapping.vendor_id)
-            if vendor:
-                logger.info(f"Updating existing Vendor {vendor.id} from QboVendor {qbo_vendor.id}")
-                updated = self._apply_vendor_fields_and_sync(
-                    vendor, qbo_vendor=qbo_vendor, incoming_name=vendor_name
-                )
-                self.vendor_service.repo.set_qbo_identity(
-                    id=coerce_id(updated.id),
-                    qbo_id=qbo_vendor.qbo_id,
-                    realm_id=qbo_vendor.realm_id,
-                    active=qbo_vendor.active,
-                )
-                return updated
-
-            # HEAL — mapping exists but the bound Vendor reads empty.
-            # NEVER delete the mapping and NEVER fall through to create (audit P1-08).
-            # dbo.ReadVendorById filters IsDeleted = 0, so a locally soft-deleted vendor lands
-            # here DETERMINISTICALLY, not just on a transient read.
-            replacement = self.vendor_service.read_by_name(vendor_name) if vendor_name else None
-            if replacement:
-                replacement_id = coerce_id(replacement.id)
-                existing_map = self.mapping_repo.read_by_vendor_id(replacement_id)
-                if existing_map and existing_map.qbo_vendor_id != qbo_vendor.id:
-                    # Name-matched vendor is already bound to a DIFFERENT QboVendor — a genuine
-                    # QBO-side duplicate vendor. Repointing would break the 1:1 mapping.
-                    self._raise_duplicate_qbo_vendor_issue(
-                        qbo_vendor=qbo_vendor,
-                        local_vendor=replacement,
-                        existing_mapping=existing_map,
-                    )
-                    raise ValueError(
-                        f"VendorVendor mapping {mapping.id} points at missing Vendor "
-                        f"{mapping.vendor_id}; name match Vendor {replacement_id} is already "
-                        f"bound to QboVendor {existing_map.qbo_vendor_id}."
-                    )
-                if mapping.vendor_id != replacement_id:
-                    # Repoint IN PLACE via update_by_id — no delete, no window.
-                    old_vendor_id = mapping.vendor_id
-                    mapping.vendor_id = replacement_id
-                    self.mapping_repo.update_by_id(mapping)
-                    logger.info(
-                        f"Healed VendorVendor mapping {mapping.id}: repointed QboVendor "
-                        f"{qbo_vendor.id} from missing Vendor {old_vendor_id} to Vendor "
-                        f"{replacement_id} ({vendor_name})"
-                    )
-                self.vendor_service.repo.set_qbo_identity(
-                    id=replacement_id,
-                    qbo_id=qbo_vendor.qbo_id,
-                    realm_id=qbo_vendor.realm_id,
-                    active=qbo_vendor.active,
-                )
-                return self._apply_vendor_fields_and_sync(
-                    replacement, qbo_vendor=qbo_vendor, incoming_name=vendor_name
-                )
-
-            # No replacement resolvable — record and RAISE, mutating nothing. Mapping is preserved
-            # (QboVendor<->Vendor binding intact; no duplicate minted). sync_qbo_vendor advances the
-            # watermark unconditionally (hold booked U-217), so this is a permanent skip until QBO
-            # touches the vendor again or a full re-sync. The ReconciliationIssue row is the durable
-            # follow-up — recovery is restore the soft-deleted Vendor or repoint the mapping by hand.
-            self._raise_missing_vendor_issue(qbo_vendor=qbo_vendor, mapping=mapping)
-            raise ValueError(
-                f"VendorVendor mapping {mapping.id} points at missing Vendor "
-                f"{mapping.vendor_id} and no local Vendor named \"{vendor_name}\" could be "
-                f"resolved for QboVendor {qbo_vendor.id}; preserving mapping, skipping."
+        if outcome.entity is None:
+            # Only reachable via a concurrent-delete/ROWVERSION race inside
+            # _apply_vendor_fields_and_sync's update_by_id call, or a falsy
+            # qbo_id -- either way there is nothing sync-able to return; the
+            # caller's per-vendor handler skips it and re-attempts next pull.
+            raise RuntimeError(
+                f"Failed to resolve Vendor for QboVendor {qbo_vendor.id} "
+                f"(qbo_id={qbo_vendor.qbo_id}) via the dbo-only identity fast path"
             )
-
-        # Deactivation guard (U-219): after the mapping lookup, before the adopt-by-name bind.
-        raise_if_inactive_unmapped(
-            qbo_vendor.active, qbo_label="QboVendor", qbo_id=qbo_vendor.id, target="Vendor"
-        )
-        if not vendor_name:
-            self._raise_blank_display_name_issue(qbo_vendor=qbo_vendor)
-            raise ValueError(
-                f"QboVendor {qbo_vendor.id} has a blank DisplayName and no local mapping; "
-                f"cannot create or adopt a Vendor without a name."
-            )
-        # No mapping. Adopt an existing unmapped local Vendor by exact name BEFORE creating —
-        # VendorService.create refuses a duplicate name, so without this a name collision detaches
-        # the QBO vendor permanently (audit P1-08's second half).
-        existing_local = self.vendor_service.read_by_name(vendor_name)
-        if existing_local:
-            existing_local_id = coerce_id(existing_local.id)
-            existing_map_for_local = self.mapping_repo.read_by_vendor_id(existing_local_id)
-            if existing_map_for_local:
-                self._raise_duplicate_qbo_vendor_issue(
-                    qbo_vendor=qbo_vendor,
-                    local_vendor=existing_local,
-                    existing_mapping=existing_map_for_local,
-                )
-                raise ValueError(
-                    f"QboVendor {qbo_vendor.id} name-matches local Vendor {existing_local_id} "
-                    f"which is already bound to QboVendor {existing_map_for_local.qbo_vendor_id}."
-                )
-            logger.info(
-                f"Binding existing local Vendor {existing_local_id} ({vendor_name}) "
-                f"to QboVendor {qbo_vendor.id} by name match"
-            )
-            self.create_mapping(
-                vendor_id=existing_local_id,
-                qbo_vendor_id=qbo_vendor.id,
-                qbo_id=qbo_vendor.qbo_id,
-                realm_id=qbo_vendor.realm_id,
-                active=qbo_vendor.active,
-                prefetched_by_vendor=None,
-                prefetched_by_qbo_vendor=None,
-            )
-            self._sync_addresses(qbo_vendor, existing_local_id)
-            return existing_local
-
-        # Create a new Vendor + mapping.
-        logger.info(f"Creating new Vendor from QboVendor {qbo_vendor.id}: name={vendor_name}")
-        vendor = self.vendor_service.create(
-            name=vendor_name,
-            abbreviation=None,
-            is_draft=False,
-            prefetched_by_name=None,
-        )
-        vendor_id = coerce_id(vendor.id)
-        try:
-            self.create_mapping(
-                vendor_id=vendor_id,
-                qbo_vendor_id=qbo_vendor.id,
-                qbo_id=qbo_vendor.qbo_id,
-                realm_id=qbo_vendor.realm_id,
-                active=qbo_vendor.active,
-                prefetched_by_vendor=None,
-                prefetched_by_qbo_vendor=None,
-            )
-            logger.info(f"Created mapping: Vendor {vendor_id} <-> QboVendor {qbo_vendor.id}")
-        except ValueError as e:
-            # Do NOT swallow (audit P1-08). Surface it so the caller's per-item handler logs + skips.
-            # The orphaned Vendor can be adopted by the name-match branch on a later pull that includes
-            # this vendor — after unconditional watermark advance that means the next QBO-side touch or
-            # a full re-sync, not necessarily the next scheduler tick.
-            logger.error(
-                f"Mapping creation failed after Vendor {vendor_id} create "
-                f"(QboVendor {qbo_vendor.id}): {e}. Orphaned Vendor may be adopted on a later pull "
-                f"that includes this vendor (QBO-side touch or full re-sync), not necessarily the "
-                f"next scheduler tick."
-            )
-            raise
-        self._sync_addresses(qbo_vendor, vendor_id)
-        return vendor
+        return outcome.entity
 
     def _apply_vendor_fields_and_sync(
         self,
@@ -315,23 +120,23 @@ class VendorVendorConnector:
         *,
         qbo_vendor: QboVendor,
         incoming_name: Optional[str],
-    ) -> Vendor:
+    ) -> Optional[Vendor]:
         """
-        Write the QboVendor-derived name onto an existing Vendor when appropriate,
-        persist it, and sync addresses. Shared by the normal existing-mapping update path,
-        the heal-in-place repoint path, and the U-290 dbo-identity fast path, so the
-        QboVendor->Vendor field mapping lives in exactly one place (no drift between the
-        update sites).
+        `apply_fields` for the dbo-only fast path's HIT branch (direct or
+        race-resolved, U-313): write the QboVendor-derived name onto an
+        existing dbo-identity-matched Vendor, refresh the dbo-native
+        QboActive mirror (U-275 -- every hit, even when identity itself
+        hasn't changed, since a vendor can be deactivated in QBO without its
+        QboId/RealmId moving), and sync addresses.
 
-        Deliberately does NOT stamp dbo-native identity when called from the fast path —
-        that caller's row already carries correct identity by construction (that's how
-        `read_by_qbo_identity` found it); re-stamping QboId/RealmId would be a wasted round
-        trip on the steady-state path this feature exists to keep cheap. QboActive is
-        handled separately: `sync_from_qbo_vendor` refreshes it itself right after this
-        method returns on a fast-path hit (a QboId/RealmId-omitted `set_qbo_identity` call,
-        so only the Active CASE WHEN branch fires) — not from inside this shared method,
-        since the legacy callers below already stamp identity (including Active)
-        themselves and doing it here too would double-write on those paths.
+        QboId/RealmId are NOT re-stamped here -- this row's identity is
+        already correct by construction (that's how `read_direct_by_qbo_identity`
+        found it); the Active-only `set_qbo_identity` call below passes
+        QboId/RealmId=None so the sproc's own CASE WHEN guards leave them
+        untouched (no redundant re-stamp, no theft-detection re-trigger).
+        The MISS branch (`_stamp_vendor_identity`) stamps the real identity
+        including Active itself, so it does not call this method a second
+        time for that.
         """
         resolved_name = preserve_human_edited_name(vendor.name, incoming_name)
         # Nothing to fill an empty name FROM when QBO supplied no DisplayName; [Name] is NOT NULL
@@ -345,7 +150,7 @@ class VendorVendorConnector:
             )
         else:
             # Name is this connector's ONLY mapped dbo.Vendor field, so once the curated
-            # name is preserved the UPDATE is a pure no-op — writing it anyway would churn
+            # name is preserved the UPDATE is a pure no-op -- writing it anyway would churn
             # ModifiedDatetime on every vendor on every 4-hour pull.
             if vendor.name and vendor.name.strip():
                 logger.debug(
@@ -358,58 +163,183 @@ class VendorVendorConnector:
                     f"(stored and QBO DisplayName both blank/whitespace-only)"
                 )
         vendor_id = coerce_id(vendor.id)
+        self.vendor_service.repo.set_qbo_identity(
+            id=vendor_id, qbo_id=None, realm_id=None, active=qbo_vendor.active,
+        )
         self._sync_addresses(qbo_vendor, vendor_id)
         return vendor
 
-    def _raise_identity_mapping_conflict_issue(
-        self,
-        *,
-        qbo_vendor: QboVendor,
-        dbo_vendor_id: int,
-        local_side_mapping: Optional[VendorVendor],
-        qbo_side_mapping: Optional[VendorVendor],
+    def _resolve_vendor_candidate(
+        self, qbo_vendor: QboVendor, *, vendor_name: Optional[str],
+    ) -> Vendor:
+        """
+        `resolve_candidate` for the dbo-only fast path's MISS branch (U-313):
+        called only under `run_identity_fastpath_dbo_only`'s create lock, once
+        a genuine miss is confirmed (no dbo.Vendor currently holds this
+        identity, including the re-read under lock). Adopts an existing
+        Vendor by exact NAME match first -- a Vendor created locally before
+        ever syncing, or a prior sync whose identity was lost, should be
+        bound rather than duplicated -- the dbo-only equivalent of
+        `CustomerCustomerConnector._resolve_customer_candidate`'s (U-310)
+        name-match adopt step, using Vendor's own pre-existing adopt-by-name
+        business logic. Falls through to a fresh create only when no name
+        match exists.
+        """
+        # P1 guard (Codex, U-313 review): read_by_qbo_identity filters
+        # IsDeleted=0, so a Vendor soft-deleted locally while still active in
+        # QBO reads as a plain "miss" here -- without this check, the create/
+        # adopt path below would mint a DUPLICATE active Vendor, and
+        # _stamp_vendor_identity's SetVendorQboIdentity theft-clear (which has
+        # no IsDeleted filter of its own) would then silently strip the
+        # deleted row's QboId. Mirrors the pre-U-313 mapping-table
+        # architecture's own "heal-don't-delete" discipline (never silently
+        # duplicate on an identity a deleted row still holds; preserve +
+        # raise instead, for a human to restore the Vendor or resolve in
+        # QBO). Checked before the inactive/blank-name guards below since it
+        # answers a more fundamental question ("does this identity already
+        # belong to something") independent of either.
+        if qbo_vendor.qbo_id:
+            deleted_holder = self.vendor_service.read_deleted_by_qbo_identity(
+                qbo_vendor.qbo_id, qbo_vendor.realm_id,
+            )
+            if deleted_holder is not None:
+                self._raise_deleted_vendor_holds_identity_issue(
+                    qbo_vendor=qbo_vendor, deleted_vendor=deleted_holder,
+                )
+                raise ValueError(
+                    f"QboVendor {qbo_vendor.id} (QboId={qbo_vendor.qbo_id}, "
+                    f"RealmId={qbo_vendor.realm_id}) identity is already held by soft-deleted "
+                    f"Vendor {deleted_holder.id} ({deleted_holder.name}); not creating a "
+                    f"duplicate. Restore the Vendor or resolve in QBO."
+                )
+
+        raise_if_inactive_unmapped(
+            qbo_vendor.active, qbo_label="QboVendor", qbo_id=qbo_vendor.id, target="Vendor",
+        )
+        if not vendor_name:
+            self._raise_blank_display_name_issue(qbo_vendor=qbo_vendor)
+            raise ValueError(
+                f"QboVendor {qbo_vendor.id} has a blank DisplayName and no dbo-native "
+                f"identity match; cannot create or adopt a Vendor without a name."
+            )
+
+        existing = self.vendor_service.read_by_name(vendor_name)
+        if existing is None:
+            logger.info(f"Creating new Vendor from QboVendor {qbo_vendor.id}: name={vendor_name}")
+            return self.vendor_service.create(
+                name=vendor_name, abbreviation=None, is_draft=False, prefetched_by_name=None,
+            )
+
+        # The name-matched row must be re-checked for an existing, DIFFERENT
+        # (QboId, RealmId) before being returned as the candidate -- the
+        # dbo-only equivalent of the old mapping-table duplicate check.
+        # Shared with `_stamp_vendor_identity`'s own pre-stamp re-read via
+        # `_check_no_conflicting_vendor_identity`, so the two guards can't
+        # drift out of sync with each other. Mirrors
+        # `CustomerCustomerConnector._resolve_customer_candidate`'s Decision-2
+        # guard (U-310, itself mirroring `ItemCostCodeConnector`'s, U-307c).
+        self._check_no_conflicting_vendor_identity(existing, qbo_vendor)
+
+        logger.info(
+            f"Binding existing local Vendor {existing.id} ({vendor_name}) to QboVendor "
+            f"{qbo_vendor.id} by name match"
+        )
+        # Identity stamp + address sync deliberately deferred to
+        # `_stamp_vendor_identity`, which applies them atomically under the
+        # candidate's own lock (mirrors CustomerCustomerConnector's Codex
+        # round-2 fix, U-310, itself mirroring ItemCostCodeConnector's, U-307c).
+        return existing
+
+    def _stamp_vendor_identity(self, candidate: Vendor, qbo_vendor: QboVendor) -> Optional[Vendor]:
+        """
+        `stamp_identity` for the dbo-only fast path's MISS branch (U-313).
+
+        Runs under its own app lock keyed on the CANDIDATE's vendor_id --
+        NOT `run_identity_fastpath_dbo_only`'s own create lock, which is keyed
+        on the qbo_id/realm_id being resolved. `_resolve_vendor_candidate`
+        binds by NAME (a side-channel business key), so two different
+        QboVendors (different qbo_ids -- no contention on the qbo_id-keyed
+        lock upstream) could name-match onto the SAME local Vendor
+        concurrently. Re-reads immediately before stamping and refuses to
+        overwrite a DIFFERENT existing identity. Mirrors
+        `AttachableAttachmentConnector._stamp_pulled_identity` (U-300b) /
+        `ItemCostCodeConnector._stamp_cost_code_identity` (U-307c) /
+        `CustomerCustomerConnector._stamp_customer_identity` (U-310) -- same
+        side-channel-candidate race, same fix.
+
+        Unlike Customer, Vendor has no other QBO-derived fields to (re-)apply
+        here -- name is this family's only mapped field, and by construction
+        it already matches exactly on the adopt path (`read_by_name` found an
+        exact string match) or was just set correctly by `.create()` on the
+        genuine-new path, so there is nothing to write beyond the identity
+        stamp itself (including Active, U-275) and the address sync.
+        """
+        candidate_id = coerce_id(candidate.id)
+        lock_resource = f"qbo_dbo_identity_stamp:Vendor:{candidate_id}"
+        with qbo_app_lock(lock_resource) as got_lock:
+            if not got_lock:
+                raise RuntimeError(
+                    f"Could not acquire identity-stamp lock for Vendor {candidate_id} "
+                    f"(qbo_id={qbo_vendor.qbo_id}, realm_id={qbo_vendor.realm_id}) — holding "
+                    f"for retry without stamping."
+                )
+            current = self.vendor_service.read_by_id(candidate_id)
+            if current is None:
+                return None
+            self._check_no_conflicting_vendor_identity(current, qbo_vendor)
+            self.vendor_service.repo.set_qbo_identity(
+                id=candidate_id,
+                qbo_id=qbo_vendor.qbo_id,
+                realm_id=qbo_vendor.realm_id,
+                active=qbo_vendor.active,
+            )
+            self._sync_addresses(qbo_vendor, candidate_id)
+            return self.vendor_service.read_by_id(candidate_id)
+
+    def _check_no_conflicting_vendor_identity(
+        self, local_vendor: Vendor, qbo_vendor: QboVendor,
     ) -> None:
         """
-        Record a dbo-identity <-> mapping-table split found by run_identity_fastpath's
-        pre-write check (U-290). Distinct from `_raise_missing_vendor_issue` (a
-        bound-row-read-empty detection) — this is a post-hoc drift between two already-
-        established identity sources, most plausibly left behind by an identity "theft"
-        event (SetVendorQboIdentity's theft-clear UPDATE clears the losing row's
-        QboId/RealmId but does not touch the mapping table). Covers all three shapes in
-        ONE issue: qbo-side only, local-side only, or both (the "two-row crossed" case) —
-        never silently dropping either side's blocker. Mirrors
-        VendorCreditBillCreditConnector._raise_identity_mapping_conflict_issue (U-278).
+        Shared guard for `_resolve_vendor_candidate`'s name-matched candidate
+        and `_stamp_vendor_identity`'s pre-stamp re-read (U-313, /simplify
+        reuse pass) -- ONE implementation instead of two hand-kept-in-sync
+        copies, since `_stamp_vendor_identity`'s SetVendorQboIdentity theft-
+        clear only protects the INCOMING (qbo_id, realm_id) pair's
+        uniqueness, not `local_vendor`'s PRIOR identity; it would not stop a
+        silent re-point on its own. Mirrors
+        `CustomerCustomerConnector._check_no_conflicting_identity` (U-310).
+
+        No-op when `local_vendor` has no QBO identity yet, or already carries
+        this EXACT (qbo_id, realm_id) pair (a benign re-resolve). Otherwise
+        records a `duplicate_qbo_vendor` reconciliation issue and raises.
+        Checking QboId alone would miss a same-QboId-different-realm
+        collision (QBO ids are only unique WITHIN a realm) -- both fields
+        must match.
+
+        NB: `ReadVendorByName` does not project QboId/RealmId
+        (entities/vendor/sql/dbo.vendor.sql), so `_resolve_vendor_candidate`'s
+        own call to this guard never actually observes a populated qbo_id
+        against a REAL DB read -- it only fires when a test mocks
+        `read_by_name` to return one directly (mirrors U-310's identical,
+        Codex-round-1-caught gap for Customer -- see TODO.md).
+        `_stamp_vendor_identity`'s call, backed by `read_by_id` (which DOES
+        project QboId/RealmId), is the one that actually protects production
+        -- not a redundant double-check.
         """
-        parts = [
-            f"VendorVendor identity conflict. dbo.Vendor {dbo_vendor_id} carries native "
-            f"QBO identity for QboVendor {qbo_vendor.id} (QboId={qbo_vendor.qbo_id}, "
-            f"RealmId={qbo_vendor.realm_id})."
-        ]
-        if qbo_side_mapping:
-            parts.append(
-                f"qbo-side: the mapping table still binds that same QboVendor to a "
-                f"DIFFERENT Vendor {qbo_side_mapping.vendor_id} (mapping "
-                f"{qbo_side_mapping.id}) — Bill/Purchase/VendorCredit pull, Bill's "
-                f"outbound push, and the expense-coding cockpit all resolve vendor refs "
-                f"through this mapping table and will keep resolving to Vendor "
-                f"{qbo_side_mapping.vendor_id}, not {dbo_vendor_id}, until repointed."
-            )
-        if local_side_mapping:
-            parts.append(
-                f"local-side: Vendor {dbo_vendor_id}'s own mapping row (mapping "
-                f"{local_side_mapping.id}) still binds it to a DIFFERENT QboVendor "
-                f"{local_side_mapping.qbo_vendor_id}."
-            )
-        parts.append("Not auto-repointed — investigate which side is correct.")
-        qbo_id, realm_id = _qbo_vendor_ref(qbo_vendor)
-        record_mapping_issue(
-            self.reconciliation_repo,
-            drift_type="vendor_identity_conflict",
-            entity_type="Vendor",
-            entity_public_id=None,
-            qbo_id=qbo_id,
-            realm_id=realm_id,
-            details=" ".join(parts),
+        existing_qbo_id = getattr(local_vendor, "qbo_id", None)
+        if not existing_qbo_id or (
+            existing_qbo_id == qbo_vendor.qbo_id
+            and (getattr(local_vendor, "realm_id", None) or "") == (qbo_vendor.realm_id or "")
+        ):
+            return
+        self._raise_duplicate_qbo_vendor_issue(
+            qbo_vendor=qbo_vendor, local_vendor=local_vendor, existing_qbo_id=existing_qbo_id,
+        )
+        raise ValueError(
+            f"Vendor {local_vendor.id} already carries a DIFFERENT identity "
+            f"(QboId={existing_qbo_id}, RealmId={getattr(local_vendor, 'realm_id', None)}) than "
+            f"incoming QboVendor {qbo_vendor.qbo_id} (realm_id={qbo_vendor.realm_id}) -- "
+            f"refusing to overwrite it."
         )
 
     def _raise_duplicate_qbo_vendor_issue(
@@ -417,21 +347,25 @@ class VendorVendorConnector:
         *,
         qbo_vendor: QboVendor,
         local_vendor: Vendor,
-        existing_mapping: VendorVendor,
+        existing_qbo_id: str,
     ) -> None:
         """
-        Record a duplicate-vendor detection on qbo.ReconciliationIssue.
+        Record a name-match-vs-different-existing-identity duplicate (U-313).
 
-        Triggered when a fresh QboVendor pull finds an existing local Vendor by exact
-        name match but that Vendor is already bound to a different QboVendor. Treated as
-        critical because every subsequent sync will re-detect it until resolved upstream
-        in QBO.
+        Reuses the pre-existing `duplicate_qbo_vendor` DriftType (this
+        family's own conflict category, previously emitted by the old
+        mapping-table-based duplicate check this replaces) rather than
+        registering a new one -- semantically the same class of problem (an
+        incoming QBO vendor's identity conflicting with what a local Vendor
+        already carries), and keeps this unit's file scope to the connector
+        file. Mirrors `CustomerCustomerConnector._raise_duplicate_qbo_customer_issue`
+        (U-310).
         """
         details = (
             f"Duplicate QBO vendor detected. QboVendor {qbo_vendor.id} "
             f"(QboId={qbo_vendor.qbo_id}, DisplayName='{qbo_vendor.display_name}') "
-            f"name-matches local Vendor {local_vendor.id} which is already bound to "
-            f"QboVendor {existing_mapping.qbo_vendor_id}. Resolve by merging or "
+            f"name-matches local Vendor {local_vendor.id} which already carries a "
+            f"DIFFERENT identity (QboId={existing_qbo_id}). Resolve by merging or "
             f"renaming one of the QBO vendors."
         )
         qbo_id, realm_id = _qbo_vendor_ref(qbo_vendor)
@@ -445,19 +379,53 @@ class VendorVendorConnector:
             details=details,
         )
 
+    def _raise_deleted_vendor_holds_identity_issue(
+        self, *, qbo_vendor: QboVendor, deleted_vendor,
+    ) -> None:
+        """
+        Record a soft-deleted-row-still-holds-this-identity detection on
+        qbo.ReconciliationIssue (U-313 P1 guard). Triggered when a fresh
+        QboVendor pull finds no ACTIVE dbo.Vendor match but a SOFT-DELETED
+        one still carries the exact same (QboId, RealmId) -- preserving the
+        pre-U-313 mapping-table architecture's "heal-don't-delete" discipline
+        instead of silently minting a duplicate active Vendor. Critical
+        because the row will re-fail every sync until a human restores the
+        Vendor or resolves it in QBO.
+        """
+        details = (
+            f"QboVendor {qbo_vendor.id} (QboId={qbo_vendor.qbo_id}, RealmId="
+            f"{qbo_vendor.realm_id}, DisplayName='{qbo_vendor.display_name}') identity is "
+            f"already held by soft-deleted Vendor {deleted_vendor.id} "
+            f"({deleted_vendor.name}). Not creating a duplicate. Restore the Vendor or "
+            f"resolve in QBO."
+        )
+        qbo_id, realm_id = _qbo_vendor_ref(qbo_vendor)
+        record_mapping_issue(
+            self.reconciliation_repo,
+            drift_type="deleted_vendor_holds_identity",
+            entity_type="Vendor",
+            entity_public_id=(
+                str(deleted_vendor.public_id) if getattr(deleted_vendor, "public_id", None) else None
+            ),
+            qbo_id=qbo_id,
+            realm_id=realm_id,
+            details=details,
+        )
+
     def _raise_blank_display_name_issue(self, *, qbo_vendor: QboVendor) -> None:
         """
         Record a blank-DisplayName detection on qbo.ReconciliationIssue.
 
-        Triggered when a fresh QboVendor pull has no local mapping and QBO supplied
-        a blank or whitespace-only DisplayName, so the connector cannot create or
-        adopt a local Vendor. Treated as critical because the row will re-fail every
-        sync until a DisplayName is set in QBO.
+        Triggered when a fresh QboVendor pull has no dbo-native identity match
+        and QBO supplied a blank or whitespace-only DisplayName, so the
+        connector cannot create or adopt a local Vendor. Treated as critical
+        because the row will re-fail every sync until a DisplayName is set in
+        QBO.
         """
         details = (
             f"Blank QBO vendor DisplayName. QboVendor {qbo_vendor.id} "
             f"(QboId={qbo_vendor.qbo_id}) has a blank or whitespace-only DisplayName "
-            f"and no local VendorVendor mapping; cannot create or adopt a Vendor without "
+            f"and no dbo-native identity match; cannot create or adopt a Vendor without "
             f"a name. Resolve by setting a DisplayName in QBO."
         )
         qbo_id, realm_id = _qbo_vendor_ref(qbo_vendor)
@@ -471,38 +439,10 @@ class VendorVendorConnector:
             details=details,
         )
 
-    def _raise_missing_vendor_issue(self, *, qbo_vendor: QboVendor, mapping: VendorVendor) -> None:
-        """
-        Record an orphaned-mapping detection on qbo.ReconciliationIssue.
-
-        Triggered when a VendorVendor mapping exists but its bound Vendor is missing AND
-        no local Vendor can be resolved by name to repoint it to. We deliberately do NOT
-        delete the mapping or create a Vendor here; the row is left intact for a human to
-        resolve / the next tick to heal.
-        """
-        details = (
-            f"Orphaned VendorVendor mapping. Mapping {mapping.id} (QboVendor "
-            f"{qbo_vendor.id}, QboId={qbo_vendor.qbo_id}, DisplayName="
-            f"'{qbo_vendor.display_name}') points at Vendor {mapping.vendor_id} which no "
-            f"longer reads, and no local Vendor name-matches to repoint it. Mapping preserved; "
-            f"no Vendor created. A soft-deleted vendor is the deterministic cause — restore "
-            f"it or repoint the mapping by hand."
-        )
-        qbo_id, realm_id = _qbo_vendor_ref(qbo_vendor)
-        record_mapping_issue(
-            self.reconciliation_repo,
-            drift_type="orphaned_vendor_vendor_mapping",
-            entity_type="Vendor",
-            entity_public_id=None,
-            qbo_id=qbo_id,
-            realm_id=realm_id,
-            details=details,
-        )
-
     def _sync_addresses(self, qbo_vendor: QboVendor, vendor_id: int) -> None:
         """
         Sync billing address from QboVendor to VendorAddress/Address.
-        
+
         Args:
             qbo_vendor: QboVendor with bill_addr_id
             vendor_id: Database ID of the Vendor
@@ -521,7 +461,7 @@ class VendorVendorConnector:
         """
         Ensure a VendorAddress record exists linking Vendor to Address.
         Creates if not exists, updates if exists with different address.
-        
+
         Args:
             vendor_id: Database ID of the Vendor
             address_id: Database ID of the Address
@@ -535,7 +475,7 @@ class VendorVendorConnector:
             if va_address_type_id == address_type_id:
                 existing = va
                 break
-        
+
         if existing:
             existing_address_id = coerce_id(existing.address_id)
             if existing_address_id != address_id:
@@ -551,92 +491,3 @@ class VendorVendorConnector:
                 address_type_id=str(address_type_id)
             )
             logger.debug(f"Created VendorAddress for Vendor {vendor_id}, Address {address_id}, Type {address_type_id}")
-
-    def create_mapping(
-        self,
-        vendor_id: int,
-        qbo_vendor_id: int,
-        *,
-        qbo_id: Optional[str],
-        realm_id: Optional[str],
-        active: Optional[bool] = None,
-        prefetched_by_vendor=_PREFETCH_UNSET,
-        prefetched_by_qbo_vendor=_PREFETCH_UNSET,
-    ) -> VendorVendor:
-        """
-        Create a mapping between Vendor and QboVendor.
-        
-        Args:
-            vendor_id: Database ID of Vendor record
-            qbo_vendor_id: Database ID of QboVendor record
-        
-        Returns:
-            VendorVendor: The created mapping record
-        
-        Raises:
-            ValueError: If mapping already exists or validation fails
-        """
-        # Validate 1:1 constraints
-        if prefetched_by_vendor is _PREFETCH_UNSET:
-            existing_by_vendor = self.mapping_repo.read_by_vendor_id(vendor_id)
-        else:
-            existing_by_vendor = prefetched_by_vendor
-        if existing_by_vendor:
-            raise ValueError(
-                f"Vendor {vendor_id} is already mapped to QboVendor {existing_by_vendor.qbo_vendor_id}"
-            )
-
-        if prefetched_by_qbo_vendor is _PREFETCH_UNSET:
-            existing_by_qbo_vendor = self.mapping_repo.read_by_qbo_vendor_id(qbo_vendor_id)
-        else:
-            existing_by_qbo_vendor = prefetched_by_qbo_vendor
-        if existing_by_qbo_vendor:
-            raise ValueError(
-                f"QboVendor {qbo_vendor_id} is already mapped to Vendor {existing_by_qbo_vendor.vendor_id}"
-            )
-        
-        # Stamp dbo-native identity FIRST — if this fails, nothing else has been
-        # created yet, so the caller's existing rollback fully cleans up with no
-        # orphaned mapping row.
-        self.vendor_service.repo.set_qbo_identity(
-            id=vendor_id,
-            qbo_id=qbo_id,
-            realm_id=realm_id,
-            active=active,
-        )
-        try:
-            return self.mapping_repo.create(vendor_id=vendor_id, qbo_vendor_id=qbo_vendor_id)
-        except DatabaseConstraintError as e:
-            if e.violation.kind != UNIQUE:
-                raise
-            if (
-                prefetched_by_vendor is not _PREFETCH_UNSET
-                and "UQ_VendorVendor_VendorId" in e.original
-            ):
-                existing_by_vendor = self.mapping_repo.read_by_vendor_id(vendor_id)
-                raise ValueError(
-                    f"Vendor {vendor_id} is already mapped to QboVendor "
-                    f"{existing_by_vendor.qbo_vendor_id}"
-                ) from e
-            if (
-                prefetched_by_qbo_vendor is not _PREFETCH_UNSET
-                and "UQ_VendorVendor_QboVendorId" in e.original
-            ):
-                existing_by_qbo_vendor = self.mapping_repo.read_by_qbo_vendor_id(qbo_vendor_id)
-                raise ValueError(
-                    f"QboVendor {qbo_vendor_id} is already mapped to Vendor "
-                    f"{existing_by_qbo_vendor.vendor_id}"
-                ) from e
-            raise
-
-    def get_mapping_by_vendor_id(self, vendor_id: int) -> Optional[VendorVendor]:
-        """
-        Get mapping by Vendor ID.
-        """
-        return self.mapping_repo.read_by_vendor_id(vendor_id)
-
-    def get_mapping_by_qbo_vendor_id(self, qbo_vendor_id: int) -> Optional[VendorVendor]:
-        """
-        Get mapping by QboVendor ID.
-        """
-        return self.mapping_repo.read_by_qbo_vendor_id(qbo_vendor_id)

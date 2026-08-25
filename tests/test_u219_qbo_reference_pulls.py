@@ -202,6 +202,8 @@ def _build_vendor_connector() -> VendorVendorConnector:
     # U-290/U-313: default the direct dbo-identity fast path to a miss so
     # these tests keep exercising the create/adopt path they're testing.
     connector.vendor_service.read_by_qbo_identity.return_value = None
+    # U-313 P1 guard: default to "no soft-deleted row holds this identity".
+    connector.vendor_service.read_deleted_by_qbo_identity.return_value = None
     # `_stamp_vendor_identity` re-reads the candidate under its own lock and
     # returns the re-read row; a bare Mock would return a truthy stand-in whose
     # `.qbo_id` trips the theft guard. Resolve to whatever `create()`

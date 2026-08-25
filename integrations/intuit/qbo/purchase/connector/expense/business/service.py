@@ -17,7 +17,7 @@ from entities.expense_line_item.business.service import ExpenseLineItemService
 from entities.vendor.business.service import VendorService
 from integrations.intuit.qbo.base.pull_race import guard_lines_present
 from integrations.intuit.qbo.base.compensation import rollback_orphan_header
-from integrations.intuit.qbo.base.identity_consistency import verify_vendor_qbo_identity
+from integrations.intuit.qbo.base.identity_consistency import verify_identity_dbo_only
 from integrations.intuit.qbo.base.field_ownership import preserve_human_edited_ref, qbo_ref_or_placeholder
 from integrations.intuit.qbo.base.identity_fastpath import (
     CONSISTENT,
@@ -55,6 +55,13 @@ class PurchaseExpenseConnector:
         self.mapping_repo = mapping_repo or PurchaseExpenseRepository()
         self.expense_service = expense_service or ExpenseService()
         self.vendor_service = vendor_service or VendorService()
+        # U-313: no longer read anywhere in this file (_get_vendor_public_id
+        # moved fully dbo-only, no qbo.VendorVendor hop left). Kept as
+        # injectable constructor params, not removed, so the ~10 existing
+        # test call sites across other units that still pass
+        # vendor_vendor_repo=/qbo_vendor_repo= don't need to change for a
+        # unit whose real scope is the Vendor mapping table, not this
+        # connector's constructor — see TODO.md's U-313 follow-ups.
         self.vendor_vendor_repo = vendor_vendor_repo or VendorVendorRepository()
         self.qbo_vendor_repo = qbo_vendor_repo or QboVendorRepository()
         self.qbo_purchase_repo = qbo_purchase_repo or QboPurchaseRepository()
@@ -483,44 +490,22 @@ class PurchaseExpenseConnector:
         if cache_key in self._vendor_cache:
             return self._vendor_cache[cache_key]
 
-        # Try dbo.Vendor's native QboId/RealmId directly first (mirrors
-        # U-283/U-283b's _get_project_public_id pattern) before falling back to
-        # the qbo.QboVendor -> qbo.VendorVendor hop below. Read-only resolver —
-        # a disagreement just falls through to the legacy hop, no hard stop.
+        # U-313: dbo.Vendor's native QboId/RealmId is the SOLE identity store
+        # for Vendor (Wave 5 "trust dbo alone" — qbo.VendorVendor no longer
+        # has a writer, see docs/design/wave5.md). No legacy hop left to fall
+        # back to on a miss (removed; it had no data source left either).
         direct_vendor = self.vendor_service.read_by_qbo_identity(qbo_entity_ref_value, realm_id)
         if direct_vendor:
-            verified_qbo_id = verify_vendor_qbo_identity(
+            verified_qbo_id = verify_identity_dbo_only(
                 direct_vendor,
-                vendor_vendor_repo=self.vendor_vendor_repo,
-                qbo_vendor_repo=self.qbo_vendor_repo,
+                read_direct_by_qbo_identity=self.vendor_service.read_by_qbo_identity,
             )
             if verified_qbo_id:
                 self._vendor_cache[cache_key] = direct_vendor.public_id
                 return direct_vendor.public_id
 
-        # First find the QboVendor by qbo_id
-        qbo_vendor = self.qbo_vendor_repo.read_by_qbo_id(qbo_entity_ref_value)
-        if not qbo_vendor:
-            logger.warning(f"QboVendor not found for qbo_id: {qbo_entity_ref_value}")
-            self._vendor_cache[cache_key] = None
-            return None
-
-        # Then find the VendorVendor mapping
-        vendor_mapping = self.vendor_vendor_repo.read_by_qbo_vendor_id(qbo_vendor.id)
-        if not vendor_mapping:
-            logger.warning(f"VendorVendor mapping not found for QboVendor ID: {qbo_vendor.id}")
-            self._vendor_cache[cache_key] = None
-            return None
-
-        # Get the Vendor
-        vendor = self.vendor_service.read_by_id(vendor_mapping.vendor_id)
-        if not vendor:
-            logger.warning(f"Vendor not found for ID: {vendor_mapping.vendor_id}")
-            self._vendor_cache[cache_key] = None
-            return None
-
-        self._vendor_cache[cache_key] = vendor.public_id
-        return vendor.public_id
+        self._vendor_cache[cache_key] = None
+        return None
 
     def _sync_line_items(self, expense_id: int, expense_public_id: str, qbo_purchase_lines: List[QboPurchaseLine], realm_id: Optional[str] = None) -> None:
         """

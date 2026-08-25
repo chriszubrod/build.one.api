@@ -2,6 +2,7 @@
 import base64
 import logging
 from decimal import Decimal
+from types import SimpleNamespace
 from typing import Optional
 
 # Third-party Imports
@@ -304,6 +305,31 @@ class VendorRepository:
                 return self._from_db(row)
         except Exception as error:
             logger.error(f"Error during read vendor by QBO identity: {error}")
+            raise map_database_error(error)
+
+    def read_deleted_by_qbo_identity(self, qbo_id: str, realm_id: Optional[str] = None):
+        """
+        U-313 P1 guard: does a SOFT-DELETED Vendor already hold this exact QBO
+        identity? `read_by_qbo_identity` above filters IsDeleted = 0, so a
+        soft-deleted holder reads as a "miss" -- this is the deliberate
+        including-deleted counterpart, used only to refuse a silent duplicate
+        create/adopt (see VendorVendorConnector._resolve_vendor_candidate).
+        Minimal projection (id/public_id/name only) -- not a full Vendor.
+        """
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(
+                    cursor=cursor,
+                    name="ReadDeletedVendorByQboIdAndRealmId",
+                    params={"QboId": qbo_id, "RealmId": realm_id},
+                )
+                row = cursor.fetchone()
+                if row is None:
+                    return None
+                return SimpleNamespace(id=row.Id, public_id=row.PublicId, name=row.Name)
+        except Exception as error:
+            logger.error(f"Error during read deleted vendor by QBO identity: {error}")
             raise map_database_error(error)
 
     def set_qbo_identity(

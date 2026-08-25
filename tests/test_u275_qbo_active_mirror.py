@@ -31,8 +31,18 @@ from integrations.intuit.qbo.term.business.model import QboTerm
 from integrations.intuit.qbo.term.connector.payment_term.business.model import TermPaymentTerm
 from integrations.intuit.qbo.term.connector.payment_term.business.service import TermPaymentTermConnector
 from integrations.intuit.qbo.vendor.business.model import QboVendor
-from integrations.intuit.qbo.vendor.connector.vendor.business.model import VendorVendor
 from integrations.intuit.qbo.vendor.connector.vendor.business.service import VendorVendorConnector
+
+
+def _granted_lock(*_args, **_kwargs):
+    """Shared granted-context-manager stand-in for `qbo_app_lock`, used by
+    both the Vendor and SubCostCode sections below (only the per-entity
+    lock-target strings legitimately differ between them)."""
+    @contextmanager
+    def _cm(*_a, **_k):
+        yield True
+
+    return _cm()
 
 
 def _make_qbo_vendor(**overrides: Any) -> QboVendor:
@@ -128,75 +138,60 @@ def _make_qbo_item(**overrides: Any) -> QboItem:
 # Vendor
 # ------------------------------------------------------------------------- #
 
+VENDOR_FASTPATH_LOCK_TARGET = "integrations.intuit.qbo.base.identity_fastpath.qbo_app_lock"
+VENDOR_STAMP_LOCK_TARGET = (
+    "integrations.intuit.qbo.vendor.connector.vendor.business.service.qbo_app_lock"
+)
+
+
 def _build_vendor_connector():
     connector = VendorVendorConnector(
-        mapping_repo=Mock(),
         vendor_service=Mock(),
         vendor_address_service=Mock(),
         address_connector=Mock(),
         reconciliation_repo=Mock(),
     )
     connector._sync_addresses = Mock()
-    # U-290: default the direct dbo-identity fast path to a miss so these
-    # tests keep exercising the mapping-table (legacy) path they're testing.
-    connector.vendor_service.read_by_qbo_identity.return_value = None
+    # U-313 P1 guard: default to "no soft-deleted row holds this identity".
+    connector.vendor_service.read_deleted_by_qbo_identity.return_value = None
     return connector
 
 
-def test_vendor_update_path_threads_active():
+def test_vendor_direct_hit_path_threads_active():
+    """U-313: the direct-hit branch (was "update") -- QboActive is refreshed
+    inside `_apply_vendor_fields_and_sync`'s own set_qbo_identity call, every
+    hit, even when identity itself hasn't changed."""
     connector = _build_vendor_connector()
     qbo_vendor = _make_qbo_vendor(active=False)
-    mapping = VendorVendor(
-        id=10, public_id="m1", row_version=None, created_datetime=None,
-        modified_datetime=None, vendor_id=100, qbo_vendor_id=1,
-    )
     vendor = Mock(id=100, name="Acme Supply")
-    connector.mapping_repo.read_by_qbo_vendor_id.return_value = mapping
-    connector.vendor_service.read_by_id.return_value = vendor
+    connector.vendor_service.read_by_qbo_identity.return_value = vendor
     connector.vendor_service.repo.update_by_id.side_effect = lambda v: v
 
     connector.sync_from_qbo_vendor(qbo_vendor)
 
     connector.vendor_service.repo.set_qbo_identity.assert_called_once_with(
-        id=100, qbo_id="QBO-V-1", realm_id="r1", active=False,
+        id=100, qbo_id=None, realm_id=None, active=False,
     )
 
 
-def test_vendor_heal_path_threads_active():
-    connector = _build_vendor_connector()
-    qbo_vendor = _make_qbo_vendor(active=True)
-    mapping = VendorVendor(
-        id=10, public_id="m1", row_version=None, created_datetime=None,
-        modified_datetime=None, vendor_id=999, qbo_vendor_id=1,
-    )
-    replacement = Mock(id=200, name="Acme Supply", public_id="v-pub-200")
-    connector.mapping_repo.read_by_qbo_vendor_id.return_value = mapping
-    connector.vendor_service.read_by_id.return_value = None
-    connector.vendor_service.read_by_name.return_value = replacement
-    connector.mapping_repo.read_by_vendor_id.return_value = None
-    connector.vendor_service.repo.update_by_id.side_effect = lambda v: v
-
-    connector.sync_from_qbo_vendor(qbo_vendor)
-
-    connector.vendor_service.repo.set_qbo_identity.assert_called_once_with(
-        id=200, qbo_id="QBO-V-1", realm_id="r1", active=True,
-    )
-
-
-def test_vendor_create_path_threads_active():
+def test_vendor_genuine_miss_create_path_threads_active():
+    """U-313: the create branch (was "create"/"heal") -- stamped once inside
+    `_stamp_vendor_identity` with the real qbo_id/realm_id AND active, no
+    redundant second call (unlike SubCostCode's outer-wrapper shape above --
+    Vendor folds the Active refresh into the single stamp instead)."""
     connector = _build_vendor_connector()
     qbo_vendor = _make_qbo_vendor(active=True, display_name="Brand New Vendor")
-    created = Mock(id=300, name="Brand New Vendor")
-    connector.mapping_repo.read_by_qbo_vendor_id.return_value = None
+    connector.vendor_service.read_by_qbo_identity.return_value = None
     connector.vendor_service.read_by_name.return_value = None
+    created = Mock(id=300, name="Brand New Vendor", qbo_id=None, realm_id=None)
     connector.vendor_service.create.return_value = created
-    connector.mapping_repo.read_by_vendor_id.return_value = None
-    connector.mapping_repo.create.return_value = VendorVendor(
-        id=1, public_id="m2", row_version=None, created_datetime=None,
-        modified_datetime=None, vendor_id=300, qbo_vendor_id=1,
-    )
+    stamped = Mock(id=300, qbo_id="QBO-V-1", realm_id="r1")
+    connector.vendor_service.read_by_id.side_effect = [created, stamped]
 
-    connector.sync_from_qbo_vendor(qbo_vendor)
+    with patch(VENDOR_FASTPATH_LOCK_TARGET, side_effect=_granted_lock), patch(
+        VENDOR_STAMP_LOCK_TARGET, side_effect=_granted_lock
+    ):
+        connector.sync_from_qbo_vendor(qbo_vendor)
 
     connector.vendor_service.repo.set_qbo_identity.assert_called_once_with(
         id=300, qbo_id="QBO-V-1", realm_id="r1", active=True,
@@ -264,14 +259,6 @@ SCC_FASTPATH_LOCK_TARGET = "integrations.intuit.qbo.base.identity_fastpath.qbo_a
 SCC_STAMP_LOCK_TARGET = (
     "integrations.intuit.qbo.item.connector.sub_cost_code.business.service.qbo_app_lock"
 )
-
-
-def _granted_lock(*_a, **_k):
-    @contextmanager
-    def _cm(*_a2, **_k2):
-        yield True
-
-    return _cm()
 
 
 def _build_sub_cost_code_connector():

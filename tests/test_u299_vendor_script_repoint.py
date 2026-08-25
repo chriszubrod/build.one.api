@@ -1,9 +1,12 @@
-"""Pure-logic tests for U-299: repoint the last two raw-SQL vendor-ref
-consumers (scripts/generate_payment_remittance.py, scripts/backfill_qbo_bills.py)
-off qbo.Vendor/qbo.VendorVendor onto dbo.Vendor's native QboId, mirroring
-U-284v's cross-family resolver pattern (see tests/test_u284v_vendor_fanout_repoint.py) —
-dbo-first lookup, verified via the shared identity_consistency.py::verify_vendor_qbo_identity,
-falling back to the legacy qbo.Vendor -> qbo.VendorVendor 2-hop on a miss/disagreement.
+"""Pure-logic tests for U-299/U-313: the last two raw-SQL vendor-ref
+consumers (scripts/generate_payment_remittance.py, scripts/backfill_qbo_bills.py),
+repointed by U-299 off qbo.Vendor/qbo.VendorVendor onto dbo.Vendor's native
+QboId (dbo-first, verified via identity_consistency.py::verify_vendor_qbo_identity,
+falling back to the legacy 2-hop on a miss/disagreement), then moved fully
+dbo-only by U-313 (Wave 5's "trust dbo alone" plan, `docs/design/wave5.md`) —
+`verify_identity_dbo_only`, no legacy fallback left (it had no data source
+left either once `qbo.VendorVendor` stopped being written). Mirrors
+tests/test_u284v_vendor_fanout_repoint.py's own U-313 update.
 `resolve_local_vendor_id()` is hand-copied into both scripts (not extracted), per that
 unit's precedent, so it is tested identically against both modules below.
 
@@ -45,16 +48,9 @@ import scripts.backfill_qbo_bills as backfill_mod
 import scripts.generate_payment_remittance as remit_mod
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from conftest import stub_identity_check_trusts
-from integrations.intuit.qbo.base.identity_consistency import IdentityCheckResult
 
 RESOLVER_MODULES = [remit_mod, backfill_mod]
 RESOLVER_IDS = ["generate_payment_remittance", "backfill_qbo_bills"]
-
-
-def _mocks():
-    """Fresh (vendor_service, vendor_vendor_repo, qbo_vendor_repo) mocks."""
-    return Mock(), Mock(), Mock()
 
 
 # --- Section 1: resolve_local_vendor_id (hand-copied in both scripts) ---
@@ -62,123 +58,51 @@ def _mocks():
 
 @pytest.mark.parametrize("mod", RESOLVER_MODULES, ids=RESOLVER_IDS)
 class TestResolveLocalVendorId:
-    def test_prefers_direct_dbo_lookup_no_mapping_yet(self, mod):
-        vendor_service, vendor_vendor_repo, qbo_vendor_repo = _mocks()
-        direct_vendor = SimpleNamespace(id=10, qbo_id="QV-1")
-        vendor_service.read_by_qbo_identity.return_value = direct_vendor
-        stub_identity_check_trusts(vendor_vendor_repo)  # no mapping yet -> trusted
+    def test_verified_direct_hit(self, mod):
+        vendor_service = Mock()
+        direct_vendor = SimpleNamespace(id=10, qbo_id="QV-1", realm_id="realm-1")
+        vendor_service.read_by_qbo_identity.return_value = direct_vendor  # same row both calls
 
-        result = mod.resolve_local_vendor_id(
-            "QV-1", "realm-1",
-            vendor_service=vendor_service, vendor_vendor_repo=vendor_vendor_repo,
-            qbo_vendor_repo=qbo_vendor_repo,
-        )
+        result = mod.resolve_local_vendor_id("QV-1", "realm-1", vendor_service=vendor_service)
 
         assert result == 10
-        vendor_service.read_by_qbo_identity.assert_called_once_with("QV-1", "realm-1")
-        qbo_vendor_repo.read_by_qbo_id.assert_not_called()
+        assert vendor_service.read_by_qbo_identity.call_count == 2
+        vendor_service.read_by_qbo_identity.assert_called_with("QV-1", "realm-1")
 
-    def test_direct_hit_with_agreeing_mapping_is_trusted(self, mod):
-        vendor_service, vendor_vendor_repo, qbo_vendor_repo = _mocks()
-        direct_vendor = SimpleNamespace(id=10, qbo_id="QV-1")
-        vendor_service.read_by_qbo_identity.return_value = direct_vendor
-        vendor_vendor_repo.read_identity_check.return_value = IdentityCheckResult(
-            mapping_id=50, forward_external_qbo_id="QV-1", reverse_mapped_local_id=10
-        )  # agrees
-
-        result = mod.resolve_local_vendor_id(
-            "QV-1", "realm-1",
-            vendor_service=vendor_service, vendor_vendor_repo=vendor_vendor_repo,
-            qbo_vendor_repo=qbo_vendor_repo,
-        )
-
-        assert result == 10
-        qbo_vendor_repo.read_by_qbo_id.assert_not_called()  # legacy hop never needed
-
-    def test_disagreeing_mapping_falls_back_to_legacy(self, mod):
-        vendor_service, vendor_vendor_repo, qbo_vendor_repo = _mocks()
-        direct_vendor = SimpleNamespace(id=10, qbo_id="QV-1")
-        vendor_service.read_by_qbo_identity.return_value = direct_vendor
-        vendor_service.read_by_id.return_value = SimpleNamespace(id=77)
-        vendor_vendor_repo.read_identity_check.return_value = IdentityCheckResult(
-            mapping_id=50, forward_external_qbo_id="QV-OTHER", reverse_mapped_local_id=10
-        )  # disagrees
-        vendor_vendor_repo.read_by_qbo_vendor_id.return_value = SimpleNamespace(vendor_id=77)
-        qbo_vendor_repo.read_by_qbo_id.return_value = SimpleNamespace(id=99)
-
-        result = mod.resolve_local_vendor_id(
-            "QV-1", "realm-1",
-            vendor_service=vendor_service, vendor_vendor_repo=vendor_vendor_repo,
-            qbo_vendor_repo=qbo_vendor_repo,
-        )
-
-        assert result == 77
-        qbo_vendor_repo.read_by_qbo_id.assert_called_once_with("QV-1")
-        vendor_vendor_repo.read_by_qbo_vendor_id.assert_called_once_with(99)
-        vendor_service.read_by_id.assert_called_once_with(77)
-
-    def test_dbo_miss_falls_back_to_legacy(self, mod):
-        vendor_service, vendor_vendor_repo, qbo_vendor_repo = _mocks()
+    def test_dbo_miss_returns_none(self, mod):
+        vendor_service = Mock()
         vendor_service.read_by_qbo_identity.return_value = None
-        vendor_service.read_by_id.return_value = SimpleNamespace(id=77)
-        qbo_vendor_repo.read_by_qbo_id.return_value = SimpleNamespace(id=99)
-        vendor_vendor_repo.read_by_qbo_vendor_id.return_value = SimpleNamespace(vendor_id=77)
 
-        result = mod.resolve_local_vendor_id(
-            "QV-1", "realm-1",
-            vendor_service=vendor_service, vendor_vendor_repo=vendor_vendor_repo,
-            qbo_vendor_repo=qbo_vendor_repo,
-        )
-
-        assert result == 77
-
-    def test_legacy_qbo_vendor_missing_returns_none(self, mod):
-        vendor_service, vendor_vendor_repo, qbo_vendor_repo = _mocks()
-        vendor_service.read_by_qbo_identity.return_value = None
-        qbo_vendor_repo.read_by_qbo_id.return_value = None
-
-        result = mod.resolve_local_vendor_id(
-            "QV-1", "realm-1",
-            vendor_service=vendor_service, vendor_vendor_repo=vendor_vendor_repo,
-            qbo_vendor_repo=qbo_vendor_repo,
-        )
+        result = mod.resolve_local_vendor_id("QV-1", "realm-1", vendor_service=vendor_service)
 
         assert result is None
-        vendor_vendor_repo.read_by_qbo_vendor_id.assert_not_called()
+        assert vendor_service.read_by_qbo_identity.call_count == 1  # verify never reached
 
-    def test_legacy_mapping_missing_returns_none(self, mod):
-        vendor_service, vendor_vendor_repo, qbo_vendor_repo = _mocks()
-        vendor_service.read_by_qbo_identity.return_value = None
-        vendor_vendor_repo.read_by_qbo_vendor_id.return_value = None
-        qbo_vendor_repo.read_by_qbo_id.return_value = SimpleNamespace(id=99)
+    def test_stolen_identity_refuses_and_returns_none(self, mod):
+        """Regression (mirrors test_u284v's own U-313 sibling): a fresh
+        re-read that no longer resolves back to the same row must be
+        refused, not trusted — there is no legacy mapping-table hop left to
+        fall back to."""
+        vendor_service = Mock()
+        direct_vendor = SimpleNamespace(id=10, qbo_id="QV-1", realm_id="realm-1")
+        stolen = SimpleNamespace(id=99, qbo_id="QV-1", realm_id="realm-1")
+        vendor_service.read_by_qbo_identity.side_effect = [direct_vendor, stolen]
 
-        result = mod.resolve_local_vendor_id(
-            "QV-1", "realm-1",
-            vendor_service=vendor_service, vendor_vendor_repo=vendor_vendor_repo,
-            qbo_vendor_repo=qbo_vendor_repo,
-        )
+        result = mod.resolve_local_vendor_id("QV-1", "realm-1", vendor_service=vendor_service)
 
         assert result is None
 
-    def test_legacy_mapping_points_at_deleted_vendor_returns_none(self, mod):
-        """Regression (Workflow hunt P2): a stale VendorVendor mapping whose
-        Vendor row was since soft-deleted must NOT be trusted -- mirrors
-        every U-284v sibling resolver's own vendor_service.read_by_id(...)
-        existence check, which this hand-copy originally omitted."""
-        vendor_service, vendor_vendor_repo, qbo_vendor_repo = _mocks()
+    def test_dbo_miss_on_empty_ref_returns_none(self, mod):
+        """`resolve_local_vendor_id` has no explicit falsy short-circuit of its
+        own (unlike the connector-level resolvers) — an empty ref value just
+        flows straight into `read_by_qbo_identity`, which resolves nothing."""
+        vendor_service = Mock()
         vendor_service.read_by_qbo_identity.return_value = None
-        vendor_service.read_by_id.return_value = None  # vendor row gone (soft-deleted)
-        vendor_vendor_repo.read_by_qbo_vendor_id.return_value = SimpleNamespace(vendor_id=77)
-        qbo_vendor_repo.read_by_qbo_id.return_value = SimpleNamespace(id=99)
 
-        result = mod.resolve_local_vendor_id(
-            "QV-1", "realm-1",
-            vendor_service=vendor_service, vendor_vendor_repo=vendor_vendor_repo,
-            qbo_vendor_repo=qbo_vendor_repo,
-        )
+        result = mod.resolve_local_vendor_id("", "realm-1", vendor_service=vendor_service)
 
         assert result is None
-        vendor_service.read_by_id.assert_called_once_with(77)
+        vendor_service.read_by_qbo_identity.assert_called_once_with("", "realm-1")
 
 
 # --- Section 2: generate_payment_remittance.py::local_vendor_and_contact_emails ---
@@ -297,6 +221,29 @@ class TestSelectUnmappedVendorRepoint:
             rows = backfill_mod.select_unmapped(realm_id="realm-1")
 
         assert rows[0]["bucket"] == "unmapped_vendor"
+        mock_classify.assert_not_called()
+
+    def test_dbo_miss_with_nonnull_legacy_mapped_vendor_id_preserves_it(self):
+        """Codex P2 (U-313 review): a dbo-first miss (resolve_local_vendor_id
+        returns None -- no legacy fallback left inside it as of U-313) must
+        leave an ALREADY non-null MappedVendorId/bucket exactly as this
+        script's own raw SQL join computed it, not blank it out or corrupt
+        it. This SQL join (a separate, out-of-scope mechanism -- see the
+        module docstring) is this script's own legacy-hop bucketing logic,
+        unaffected by U-313's Python-side resolver change; this test pins
+        that the override logic here (untouched by this diff) still composes
+        correctly with the resolver's new no-fallback contract."""
+        cur = _cursor_for([_row(Id=1, VendorRefValue="V1", MappedVendorId=77,
+                                bucket="already_exists_unlinked")])
+
+        with patch("scripts.backfill_qbo_bills.get_connection") as mock_conn_ctx, \
+             patch.object(backfill_mod, "resolve_local_vendor_id", return_value=None), \
+             patch.object(backfill_mod, "_classify_bucket") as mock_classify:
+            mock_conn_ctx.return_value.__enter__.return_value.cursor.return_value = cur
+            rows = backfill_mod.select_unmapped(realm_id="realm-1")
+
+        assert rows[0]["MappedVendorId"] == 77
+        assert rows[0]["bucket"] == "already_exists_unlinked"
         mock_classify.assert_not_called()
 
     def test_disagreement_logs_warning(self):

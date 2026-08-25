@@ -22,7 +22,7 @@ from integrations.intuit.qbo.base.pull_race import guard_lines_present
 from integrations.intuit.qbo.base.compensation import rollback_orphan_header
 from integrations.intuit.qbo.base.reconciliation_recorder import record_mapping_issue
 from integrations.intuit.qbo.base.field_ownership import preserve_human_edited_ref, qbo_ref_or_placeholder
-from integrations.intuit.qbo.base.identity_consistency import verify_vendor_qbo_identity
+from integrations.intuit.qbo.base.identity_consistency import verify_identity_dbo_only
 from integrations.intuit.qbo.base.identity_fastpath import (
     raise_concurrent_write_race,
     resolve_mapping_state,
@@ -502,51 +502,26 @@ class VendorCreditBillCreditConnector:
     # U-005[reuse] entry before adding a 6th copy or consolidating.
     def _get_vendor_public_id(self, qbo_vendor_ref_value: Optional[str], realm_id: Optional[str] = None) -> Optional[str]:
         """Resolve QBO vendor ref (QBO API string ID) to local Vendor public_id.
-        Same two-step lookup as PurchaseExpenseConnector: QboVendor by qbo_id, then VendorVendor by QboVendor.Id.
+
+        U-313: dbo.Vendor's native QboId/RealmId is the SOLE identity store
+        for Vendor (Wave 5 "trust dbo alone" — qbo.VendorVendor no longer has
+        a writer, see docs/design/wave5.md). No legacy hop left to fall back
+        to on a miss (removed; it had no data source left either).
         """
         if not qbo_vendor_ref_value:
             return None
 
         try:
-            from integrations.intuit.qbo.vendor.connector.vendor.persistence.repo import VendorVendorRepository
-            from integrations.intuit.qbo.vendor.persistence.repo import QboVendorRepository
-
-            qbo_vendor_repo = QboVendorRepository()
-            vendor_vendor_repo = VendorVendorRepository()
-
-            # U-284v: try dbo.Vendor's native QboId/RealmId directly first
-            # (mirrors U-283/U-283b's _get_project_public_id pattern) before
-            # falling back to the qbo.QboVendor -> qbo.VendorVendor hop below.
-            # Read-only resolver — a disagreement just falls through to the
-            # legacy hop, no hard stop.
             direct_vendor = self.vendor_service.read_by_qbo_identity(qbo_vendor_ref_value, realm_id)
             if direct_vendor:
-                verified_qbo_id = verify_vendor_qbo_identity(
+                verified_qbo_id = verify_identity_dbo_only(
                     direct_vendor,
-                    vendor_vendor_repo=vendor_vendor_repo,
-                    qbo_vendor_repo=qbo_vendor_repo,
+                    read_direct_by_qbo_identity=self.vendor_service.read_by_qbo_identity,
                 )
                 if verified_qbo_id:
                     return direct_vendor.public_id
 
-            # Step 1: Find local QboVendor by QBO API vendor ID (string)
-            qbo_vendor = qbo_vendor_repo.read_by_qbo_id(qbo_vendor_ref_value)
-            if not qbo_vendor or not qbo_vendor.id:
-                logger.warning(f"QboVendor not found for qbo_id: {qbo_vendor_ref_value}")
-                return None
-            
-            # Step 2: Find VendorVendor mapping by local QboVendor.Id (integer)
-            mapping = vendor_vendor_repo.read_by_qbo_vendor_id(qbo_vendor.id)
-            if not mapping or not mapping.vendor_id:
-                logger.warning(f"VendorVendor mapping not found for QboVendor ID: {qbo_vendor.id}")
-                return None
-            
-            vendor = self.vendor_service.read_by_id(id=mapping.vendor_id)
-            if not vendor:
-                logger.warning(f"Vendor not found for ID: {mapping.vendor_id}")
-                return None
-            
-            return vendor.public_id
+            return None
         except Exception as e:
             logger.warning(f"Error resolving vendor ref {qbo_vendor_ref_value}: {e}")
             return None

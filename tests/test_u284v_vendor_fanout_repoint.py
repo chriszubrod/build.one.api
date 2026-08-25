@@ -1,272 +1,142 @@
-"""Pure-logic tests for U-284v: close the qbo.VendorVendor mapping-table
-fan-out deferred by U-290 (see docs/staging_removal_phase4_5_scoping.md §2/§14
-— NOT the doc's literal §3b, which is a separate, broader Bill-push
-reference-helper consolidation covering item/customer/account/term too).
-
-U-290 repointed the `vendor` family's OWN header identity onto dbo.Vendor's
-native QboId/RealmId but explicitly left every CROSS-FAMILY vendor-reference
-resolver reading the qbo.QboVendor -> qbo.VendorVendor mapping hop:
+"""Pure-logic tests for the cross-family Vendor-reference resolvers first
+repointed dbo-first by U-284v, then moved fully dbo-only (no `qbo.VendorVendor`
+mapping-table read of any kind) by U-313 (Wave 5's "trust dbo alone" plan,
+`docs/design/wave5.md`):
   - Bill pull  (BillBillConnector._get_vendor_public_id)
   - Bill push  (BillBillConnector._get_qbo_vendor_ref)
   - Purchase/Expense pull (PurchaseExpenseConnector._get_vendor_public_id)
   - VendorCredit pull (VendorCreditBillCreditConnector._get_vendor_public_id)
   - Expense-coding cockpit (ExpenseCodingItemService._resolve_vendor_id)
 
-This unit repoints all five to try dbo.Vendor's native QboId/RealmId first,
-mirroring U-283/U-283b's `_get_project_public_id` pattern (direct dbo lookup,
-verified against the mapping table before being trusted, falling back to the
-unchanged legacy 2-hop on a miss or disagreement) rather than
-base/identity_fastpath.py's run_identity_fastpath() — that helper answers a
-different question ("is THIS entity's own identity already mapped"), not
-"resolve a DIFFERENT entity (Vendor) that THIS entity references."
-
-The pull resolvers are read-only: a disagreement just falls through to the
-legacy hop, no hard stop (nothing is written here to protect). The Bill PUSH
-resolver is the one write-adjacent case — repointed with the same
-verify-before-trust discipline `identity_consistency.py::verify_project_qbo_identity`
-already established for Project, via the new `verify_vendor_qbo_identity`
-added alongside it — a stale/"stolen" dbo QboId must never misroute a live
-Bill to the wrong QBO vendor (mirrors U-276 round-4's push-side finding).
+Each now: direct dbo.Vendor.QboId/RealmId lookup, re-verified fresh via
+`identity_consistency.py::verify_identity_dbo_only` — a plain unlocked
+SECOND call to the same `read_by_qbo_identity(qbo_id, realm_id)` accessor
+(or, for the Bill push side, the initial fetch is `read_by_id` and the
+re-verify is `read_by_qbo_identity` — different accessors, since push starts
+from a local vendor_id not a QBO ref), comparing the fresh read's `.id`
+against the originally-resolved row's `.id`. A miss or a failed verify
+returns None outright — there is no legacy `qbo.QboVendor` ->
+`qbo.VendorVendor` 2-hop left to fall back to; it had no data source left
+either once the mapping table stopped being written (Vendor's own pull
+connector, `VendorVendorConnector`, moved to the dbo-only create primitive in
+the same unit — see test_u290_vendor_qbo_identity_repoint.py). `verify_vendor_
+qbo_identity` (the mapping-table-based wrapper these call sites used to call)
+is untouched and still directly tested in test_u306_identity_verify_engine.py
+— it simply has no callers left in this codebase after U-310/U-311/U-313.
 """
-import sys
-from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
-import pytest
-
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-from conftest import stub_identity_check_trusts
-from integrations.intuit.qbo.base.identity_consistency import (
-    IdentityCheckResult,
-    verify_vendor_qbo_identity,
-)
-
-# Shared "local-side mapping disagrees" fixture for Vendor 10 -- every
-# disagreement case in this file maps Vendor 10 to the same DIFFERENT
-# QboVendor, so one constant replaces five byte-identical literals.
-_DISAGREEING_VENDOR_MAPPING = IdentityCheckResult(
-    mapping_id=999, forward_external_qbo_id="QV-OTHER", reverse_mapped_local_id=10
-)
-
-
-# --- Section 1: verify_vendor_qbo_identity (shared helper) ---
-
-
-def test_verify_vendor_qbo_identity_no_qbo_id_returns_none():
-    vendor = SimpleNamespace(id=1, qbo_id=None)
-    assert verify_vendor_qbo_identity(
-        vendor, vendor_vendor_repo=Mock(), qbo_vendor_repo=Mock()
-    ) is None
-
-
-def test_verify_vendor_qbo_identity_no_mapping_trusts_dbo_value():
-    vendor = SimpleNamespace(id=1, qbo_id="QV-1")
-    vendor_vendor_repo = Mock()
-    stub_identity_check_trusts(vendor_vendor_repo)
-
-    result = verify_vendor_qbo_identity(
-        vendor, vendor_vendor_repo=vendor_vendor_repo, qbo_vendor_repo=Mock()
-    )
-
-    assert result == "QV-1"
-
-
-def test_verify_vendor_qbo_identity_agreeing_mapping_trusts_dbo_value():
-    vendor = SimpleNamespace(id=1, qbo_id="QV-1")
-    vendor_vendor_repo = Mock()
-    vendor_vendor_repo.read_identity_check.return_value = IdentityCheckResult(
-        mapping_id=50, forward_external_qbo_id="QV-1", reverse_mapped_local_id=1
-    )
-    qbo_vendor_repo = Mock()
-
-    result = verify_vendor_qbo_identity(
-        vendor, vendor_vendor_repo=vendor_vendor_repo, qbo_vendor_repo=qbo_vendor_repo
-    )
-
-    assert result == "QV-1"
-    vendor_vendor_repo.read_identity_check.assert_called_once_with(local_id=1, qbo_id="QV-1")
-    assert qbo_vendor_repo.method_calls == []  # U-306: folded into the one JOIN'd read, never touched
-
-
-def test_verify_vendor_qbo_identity_disagreeing_mapping_refuses():
-    vendor = SimpleNamespace(id=1, qbo_id="QV-1")
-    vendor_vendor_repo = Mock()
-    vendor_vendor_repo.read_identity_check.return_value = IdentityCheckResult(
-        mapping_id=50, forward_external_qbo_id="QV-OTHER", reverse_mapped_local_id=1
-    )
-    qbo_vendor_repo = Mock()
-
-    result = verify_vendor_qbo_identity(
-        vendor, vendor_vendor_repo=vendor_vendor_repo, qbo_vendor_repo=qbo_vendor_repo
-    )
-
-    assert result is None
-
-
-def test_verify_vendor_qbo_identity_refuses_when_unmapped_but_reverse_bound_elsewhere():
-    """U-297's H1, closed by U-306: no VendorVendor mapping of its own, but the
-    mapping table already binds this exact QboId to a DIFFERENT Vendor."""
-    vendor = SimpleNamespace(id=1, qbo_id="QV-1")
-    vendor_vendor_repo = Mock()
-    vendor_vendor_repo.read_identity_check.return_value = IdentityCheckResult(
-        mapping_id=None, forward_external_qbo_id=None, reverse_mapped_local_id=999
-    )
-
-    result = verify_vendor_qbo_identity(
-        vendor, vendor_vendor_repo=vendor_vendor_repo, qbo_vendor_repo=Mock()
-    )
-
-    assert result is None
-
-
-# --- Section 2: BillBillConnector._get_vendor_public_id (pull) ---
+# --- Section 1: BillBillConnector._get_vendor_public_id (pull) ---
 
 
 def _build_bill_connector():
     from integrations.intuit.qbo.bill.connector.bill.business.service import BillBillConnector
 
     vendor_service = Mock()
-    vendor_vendor_repo = Mock()
-    qbo_vendor_repo = Mock()
-    connector = BillBillConnector(
-        vendor_service=vendor_service,
-        vendor_vendor_repo=vendor_vendor_repo,
-        qbo_vendor_repo=qbo_vendor_repo,
-    )
-    return connector, vendor_service, vendor_vendor_repo, qbo_vendor_repo
+    connector = BillBillConnector(vendor_service=vendor_service)
+    return connector, vendor_service
 
 
-def test_bill_get_vendor_public_id_prefers_direct_dbo_lookup():
-    connector, vendor_service, vendor_vendor_repo, qbo_vendor_repo = _build_bill_connector()
-    direct_vendor = SimpleNamespace(id=10, public_id="vendor-pub-10", qbo_id="QV-1")
-    vendor_service.read_by_qbo_identity.return_value = direct_vendor
-    stub_identity_check_trusts(vendor_vendor_repo)  # no mapping yet -> trusted
+def test_bill_get_vendor_public_id_verified_direct_hit():
+    connector, vendor_service = _build_bill_connector()
+    direct_vendor = SimpleNamespace(id=10, public_id="vendor-pub-10", qbo_id="QV-1", realm_id="realm-1")
+    vendor_service.read_by_qbo_identity.return_value = direct_vendor  # same row both calls
 
     result = connector._get_vendor_public_id("QV-1", "realm-1")
 
     assert result == "vendor-pub-10"
-    vendor_service.read_by_qbo_identity.assert_called_once_with("QV-1", "realm-1")
-    qbo_vendor_repo.read_by_qbo_id.assert_not_called()
+    assert vendor_service.read_by_qbo_identity.call_count == 2
+    vendor_service.read_by_qbo_identity.assert_called_with("QV-1", "realm-1")
 
 
-def test_bill_get_vendor_public_id_falls_back_when_direct_lookup_misses():
-    connector, vendor_service, vendor_vendor_repo, qbo_vendor_repo = _build_bill_connector()
+def test_bill_get_vendor_public_id_dbo_miss_returns_none():
+    connector, vendor_service = _build_bill_connector()
     vendor_service.read_by_qbo_identity.return_value = None
-    qbo_vendor_repo.read_by_qbo_id.return_value = SimpleNamespace(id=20)
-    vendor_vendor_repo.read_by_qbo_vendor_id.return_value = SimpleNamespace(vendor_id=30)
-    vendor_service.read_by_id.return_value = SimpleNamespace(id=30, public_id="vendor-pub-30")
 
     result = connector._get_vendor_public_id("QV-2", "realm-1")
 
-    assert result == "vendor-pub-30"
-    qbo_vendor_repo.read_by_qbo_id.assert_called_once_with("QV-2")
+    assert result is None
+    assert vendor_service.read_by_qbo_identity.call_count == 1  # verify never reached
 
 
-def test_bill_get_vendor_public_id_falls_back_when_direct_hit_fails_verification():
-    connector, vendor_service, vendor_vendor_repo, qbo_vendor_repo = _build_bill_connector()
-    direct_vendor = SimpleNamespace(id=10, public_id="vendor-pub-10", qbo_id="QV-1")
-    vendor_service.read_by_qbo_identity.return_value = direct_vendor
-    # Local-side mapping disagrees: Vendor 10 maps to a DIFFERENT QboVendor.
-    vendor_vendor_repo.read_identity_check.return_value = _DISAGREEING_VENDOR_MAPPING
-
-    # Legacy hop takes over from here.
-    qbo_vendor_repo.read_by_qbo_id.return_value = SimpleNamespace(id=20)
-    vendor_vendor_repo.read_by_qbo_vendor_id.return_value = SimpleNamespace(vendor_id=30)
-    vendor_service.read_by_id.return_value = SimpleNamespace(id=30, public_id="vendor-pub-30")
+def test_bill_get_vendor_public_id_stolen_identity_refuses_and_returns_none():
+    """The dbo QboId no longer resolves back to the same row on a fresh
+    read (identity reassigned between the caller's original read and this
+    verify call) — must refuse, not trust the stale hit."""
+    connector, vendor_service = _build_bill_connector()
+    direct_vendor = SimpleNamespace(id=10, public_id="vendor-pub-10", qbo_id="QV-1", realm_id="realm-1")
+    stolen = SimpleNamespace(id=99, qbo_id="QV-1", realm_id="realm-1")  # a DIFFERENT row now
+    vendor_service.read_by_qbo_identity.side_effect = [direct_vendor, stolen]
 
     result = connector._get_vendor_public_id("QV-1", "realm-1")
 
-    assert result == "vendor-pub-30"  # legacy hop's answer, NOT the unverified direct hit
-    qbo_vendor_repo.read_by_qbo_id.assert_called_once_with("QV-1")
+    assert result is None
 
 
 def test_bill_get_vendor_public_id_no_ref_value_short_circuits():
-    connector, vendor_service, _, _ = _build_bill_connector()
+    connector, vendor_service = _build_bill_connector()
     assert connector._get_vendor_public_id("") is None
     vendor_service.read_by_qbo_identity.assert_not_called()
 
 
-# --- Section 3: BillBillConnector._get_qbo_vendor_ref (push) ---
+# --- Section 2: BillBillConnector._get_qbo_vendor_ref (push) ---
 
 
-def test_bill_get_qbo_vendor_ref_prefers_verified_direct_dbo_value():
-    connector, vendor_service, vendor_vendor_repo, qbo_vendor_repo = _build_bill_connector()
-    vendor_service.read_by_id.return_value = SimpleNamespace(id=10, qbo_id="QV-1", name="Acme")
-    stub_identity_check_trusts(vendor_vendor_repo)  # no mapping yet -> trusted
+def test_bill_get_qbo_vendor_ref_verified_direct_value():
+    connector, vendor_service = _build_bill_connector()
+    vendor = SimpleNamespace(id=10, qbo_id="QV-1", name="Acme", realm_id="realm-1")
+    vendor_service.read_by_id.return_value = vendor
+    vendor_service.read_by_qbo_identity.return_value = SimpleNamespace(id=10, qbo_id="QV-1", realm_id="realm-1")
 
     ref = connector._get_qbo_vendor_ref(10)
 
     assert ref.value == "QV-1"
     assert ref.name == "Acme"
-    qbo_vendor_repo.read_by_id.assert_not_called()
-
-
-def test_bill_get_qbo_vendor_ref_falls_back_when_no_local_vendor():
-    connector, vendor_service, vendor_vendor_repo, qbo_vendor_repo = _build_bill_connector()
-    vendor_service.read_by_id.return_value = None
-    vendor_vendor_repo.read_by_vendor_id.return_value = SimpleNamespace(qbo_vendor_id=50)
-    qbo_vendor_repo.read_by_id.return_value = SimpleNamespace(qbo_id="QV-LEGACY")
-
-    ref = connector._get_qbo_vendor_ref(10)
-
-    assert ref.value == "QV-LEGACY"
-    assert ref.name is None  # vendor_service.read_by_id returned None both times
-
-
-def test_bill_get_qbo_vendor_ref_refuses_unverified_dbo_value_and_uses_mapping_table():
-    """A stale/"stolen" dbo QboId must never misroute a live Bill push to the
-    wrong QBO vendor — must defer to the mapping table, not trust dbo blindly."""
-    connector, vendor_service, vendor_vendor_repo, qbo_vendor_repo = _build_bill_connector()
-    vendor = SimpleNamespace(id=10, qbo_id="QV-1", name="Acme")
-    vendor_service.read_by_id.return_value = vendor
-    # Local-side mapping disagrees -- verify's OWN check, via the single JOIN'd
-    # read (U-306). The legacy hop below still makes its OWN separate
-    # read_by_vendor_id/read_by_id calls (unrelated to verify post-U-306), so
-    # each keeps exactly ONE return value now, not a 2-item side_effect list.
-    vendor_vendor_repo.read_identity_check.return_value = _DISAGREEING_VENDOR_MAPPING
-    vendor_vendor_repo.read_by_vendor_id.return_value = SimpleNamespace(qbo_vendor_id=50)  # legacy hop's own lookup
-    qbo_vendor_repo.read_by_id.return_value = SimpleNamespace(qbo_id="QV-MAPPED")  # legacy hop's QboVendor
-
-    ref = connector._get_qbo_vendor_ref(10)
-
-    assert ref.value == "QV-MAPPED"  # the mapping table's answer, NOT the unverified dbo value
-    assert ref.name == "Acme"
-    # vendor_service.read_by_id was only called once — the legacy path reuses it, no re-fetch.
     vendor_service.read_by_id.assert_called_once_with(10)
-    # The legacy hop's own lookup runs exactly once now that verify no longer
-    # shares this method (was a 2-item side_effect list pre-U-306).
-    vendor_vendor_repo.read_by_vendor_id.assert_called_once_with(10)
-    qbo_vendor_repo.read_by_id.assert_called_once_with(50)
+    vendor_service.read_by_qbo_identity.assert_called_once_with("QV-1", "realm-1")
 
 
-def test_bill_get_qbo_vendor_ref_not_yet_synced_vendor_falls_back_to_mapping_table():
+def test_bill_get_qbo_vendor_ref_no_local_vendor_returns_none():
+    connector, vendor_service = _build_bill_connector()
+    vendor_service.read_by_id.return_value = None
+
+    assert connector._get_qbo_vendor_ref(10) is None
+    vendor_service.read_by_qbo_identity.assert_not_called()
+
+
+def test_bill_get_qbo_vendor_ref_refuses_stolen_identity():
+    """A stale/"stolen" dbo QboId must never misroute a live Bill push to the
+    wrong QBO vendor — refuse rather than trust it, with no mapping table
+    left to defer to."""
+    connector, vendor_service = _build_bill_connector()
+    vendor = SimpleNamespace(id=10, qbo_id="QV-1", name="Acme", realm_id="realm-1")
+    vendor_service.read_by_id.return_value = vendor
+    vendor_service.read_by_qbo_identity.return_value = SimpleNamespace(id=99, qbo_id="QV-1", realm_id="realm-1")
+
+    assert connector._get_qbo_vendor_ref(10) is None
+
+
+def test_bill_get_qbo_vendor_ref_not_yet_synced_vendor_returns_none():
     """The ordinary not-yet-pushed-to-QBO state: a real Vendor row exists but
-    carries no qbo_id yet. Distinct from both "vendor is None" (no name to
-    propagate) and "qbo_id disagrees" (verify makes 2 mapping-repo calls) —
-    verify_vendor_qbo_identity short-circuits on the missing qbo_id BEFORE
-    touching the mapping repo at all, so the legacy hop's call is the only
-    one, and vendor_name must still come from the real vendor."""
-    connector, vendor_service, vendor_vendor_repo, qbo_vendor_repo = _build_bill_connector()
+    carries no qbo_id yet — verify_identity_dbo_only short-circuits on the
+    missing qbo_id, no legacy hop to fall back to."""
+    connector, vendor_service = _build_bill_connector()
     vendor = SimpleNamespace(id=10, qbo_id=None, name="Acme")
     vendor_service.read_by_id.return_value = vendor
-    vendor_vendor_repo.read_by_vendor_id.return_value = SimpleNamespace(qbo_vendor_id=50)
-    qbo_vendor_repo.read_by_id.return_value = SimpleNamespace(qbo_id="QV-LEGACY")
 
-    ref = connector._get_qbo_vendor_ref(10)
-
-    assert ref.value == "QV-LEGACY"
-    assert ref.name == "Acme"  # real vendor's name, NOT None
-    vendor_vendor_repo.read_by_vendor_id.assert_called_once_with(10)  # verify never touched it
+    assert connector._get_qbo_vendor_ref(10) is None
+    vendor_service.read_by_id.assert_called_once_with(10)
+    vendor_service.read_by_qbo_identity.assert_not_called()
 
 
 def test_bill_get_qbo_vendor_ref_no_vendor_id_short_circuits():
-    connector, vendor_service, _, _ = _build_bill_connector()
+    connector, vendor_service = _build_bill_connector()
     assert connector._get_qbo_vendor_ref(0) is None
     vendor_service.read_by_id.assert_not_called()
 
 
-# --- Section 4: PurchaseExpenseConnector._get_vendor_public_id (pull, cached) ---
+# --- Section 3: PurchaseExpenseConnector._get_vendor_public_id (pull, cached) ---
 
 
 def _build_purchase_connector():
@@ -275,91 +145,72 @@ def _build_purchase_connector():
     )
 
     vendor_service = Mock()
-    vendor_vendor_repo = Mock()
-    qbo_vendor_repo = Mock()
-    connector = PurchaseExpenseConnector(
-        vendor_service=vendor_service,
-        vendor_vendor_repo=vendor_vendor_repo,
-        qbo_vendor_repo=qbo_vendor_repo,
-    )
-    return connector, vendor_service, vendor_vendor_repo, qbo_vendor_repo
+    connector = PurchaseExpenseConnector(vendor_service=vendor_service)
+    return connector, vendor_service
 
 
-def test_purchase_get_vendor_public_id_prefers_direct_dbo_lookup_and_caches():
-    connector, vendor_service, vendor_vendor_repo, qbo_vendor_repo = _build_purchase_connector()
-    direct_vendor = SimpleNamespace(id=10, public_id="vendor-pub-10", qbo_id="QV-1")
+def test_purchase_get_vendor_public_id_verified_direct_hit_caches():
+    connector, vendor_service = _build_purchase_connector()
+    direct_vendor = SimpleNamespace(id=10, public_id="vendor-pub-10", qbo_id="QV-1", realm_id="realm-1")
     vendor_service.read_by_qbo_identity.return_value = direct_vendor
-    stub_identity_check_trusts(vendor_vendor_repo)
 
     first = connector._get_vendor_public_id("QV-1", "realm-1")
     second = connector._get_vendor_public_id("QV-1", "realm-1")
 
     assert first == second == "vendor-pub-10"
-    vendor_service.read_by_qbo_identity.assert_called_once_with("QV-1", "realm-1")
-    qbo_vendor_repo.read_by_qbo_id.assert_not_called()
+    assert vendor_service.read_by_qbo_identity.call_count == 2  # cached: 1 resolve + 1 verify, no 2nd resolve
 
 
 def test_purchase_get_vendor_public_id_cache_keyed_by_realm_too():
     """QBO vendor ref values are only unique WITHIN a realm — a cache keyed
     on ref_value alone could serve realm A's cached vendor to realm B."""
-    connector, vendor_service, vendor_vendor_repo, _ = _build_purchase_connector()
-    stub_identity_check_trusts(vendor_vendor_repo)
-    vendor_service.read_by_qbo_identity.return_value = SimpleNamespace(
-        id=10, public_id="vendor-pub-10", qbo_id="QV-1"
-    )
+    connector, vendor_service = _build_purchase_connector()
 
+    vendor_service.read_by_qbo_identity.return_value = SimpleNamespace(
+        id=10, public_id="vendor-pub-10", qbo_id="QV-1", realm_id="realm-1"
+    )
     first = connector._get_vendor_public_id("QV-1", "realm-1")
     assert first == "vendor-pub-10"
-    assert vendor_service.read_by_qbo_identity.call_count == 1
+    assert vendor_service.read_by_qbo_identity.call_count == 2
 
     vendor_service.read_by_qbo_identity.return_value = SimpleNamespace(
-        id=20, public_id="vendor-pub-20", qbo_id="QV-1"
+        id=20, public_id="vendor-pub-20", qbo_id="QV-1", realm_id="realm-2"
     )
     second = connector._get_vendor_public_id("QV-1", "realm-2")
 
     assert second == "vendor-pub-20"
-    assert vendor_service.read_by_qbo_identity.call_count == 2
+    assert vendor_service.read_by_qbo_identity.call_count == 4
 
 
-def test_purchase_get_vendor_public_id_falls_back_when_direct_lookup_misses():
-    connector, vendor_service, vendor_vendor_repo, qbo_vendor_repo = _build_purchase_connector()
+def test_purchase_get_vendor_public_id_dbo_miss_caches_none():
+    connector, vendor_service = _build_purchase_connector()
     vendor_service.read_by_qbo_identity.return_value = None
-    qbo_vendor_repo.read_by_qbo_id.return_value = SimpleNamespace(id=20)
-    vendor_vendor_repo.read_by_qbo_vendor_id.return_value = SimpleNamespace(vendor_id=30)
-    vendor_service.read_by_id.return_value = SimpleNamespace(id=30, public_id="vendor-pub-30")
 
     result = connector._get_vendor_public_id("QV-2", "realm-1")
 
-    assert result == "vendor-pub-30"
+    assert result is None
+    assert connector._vendor_cache[("realm-1", "QV-2")] is None
 
 
-def test_purchase_get_vendor_public_id_falls_back_when_direct_hit_fails_verification():
-    connector, vendor_service, vendor_vendor_repo, qbo_vendor_repo = _build_purchase_connector()
-    direct_vendor = SimpleNamespace(id=10, public_id="vendor-pub-10", qbo_id="QV-1")
-    vendor_service.read_by_qbo_identity.return_value = direct_vendor
-    # Local-side mapping disagrees: Vendor 10 maps to a DIFFERENT QboVendor.
-    vendor_vendor_repo.read_identity_check.return_value = _DISAGREEING_VENDOR_MAPPING
-
-    # Legacy hop takes over from here.
-    qbo_vendor_repo.read_by_qbo_id.return_value = SimpleNamespace(id=20)
-    vendor_vendor_repo.read_by_qbo_vendor_id.return_value = SimpleNamespace(vendor_id=30)
-    vendor_service.read_by_id.return_value = SimpleNamespace(id=30, public_id="vendor-pub-30")
+def test_purchase_get_vendor_public_id_stolen_identity_caches_none():
+    connector, vendor_service = _build_purchase_connector()
+    direct_vendor = SimpleNamespace(id=10, public_id="vendor-pub-10", qbo_id="QV-1", realm_id="realm-1")
+    stolen = SimpleNamespace(id=99, qbo_id="QV-1", realm_id="realm-1")
+    vendor_service.read_by_qbo_identity.side_effect = [direct_vendor, stolen]
 
     result = connector._get_vendor_public_id("QV-1", "realm-1")
 
-    assert result == "vendor-pub-30"  # legacy hop's answer, NOT the unverified direct hit
-    qbo_vendor_repo.read_by_qbo_id.assert_called_once_with("QV-1")
-    # Not cached under the "verified" branch — the eventual legacy-success cache write covers it.
-    assert connector._vendor_cache.get(("realm-1", "QV-1")) == "vendor-pub-30"
+    assert result is None
+    assert connector._vendor_cache[("realm-1", "QV-1")] is None
 
 
 def test_purchase_get_vendor_public_id_no_ref_value_short_circuits():
-    connector, vendor_service, _, _ = _build_purchase_connector()
+    connector, vendor_service = _build_purchase_connector()
     assert connector._get_vendor_public_id("") is None
     vendor_service.read_by_qbo_identity.assert_not_called()
 
 
-# --- Section 5: VendorCreditBillCreditConnector._get_vendor_public_id (pull) ---
+# --- Section 4: VendorCreditBillCreditConnector._get_vendor_public_id (pull) ---
 
 
 def _build_vendorcredit_connector():
@@ -372,54 +223,31 @@ def _build_vendorcredit_connector():
     return connector, vendor_service
 
 
-VV_REPO_PATH = "integrations.intuit.qbo.vendor.connector.vendor.persistence.repo.VendorVendorRepository"
-QV_REPO_PATH = "integrations.intuit.qbo.vendor.persistence.repo.QboVendorRepository"
-
-
-def test_vendorcredit_get_vendor_public_id_prefers_direct_dbo_lookup():
+def test_vendorcredit_get_vendor_public_id_verified_direct_hit():
     connector, vendor_service = _build_vendorcredit_connector()
-    direct_vendor = SimpleNamespace(id=10, public_id="vendor-pub-10", qbo_id="QV-1")
+    direct_vendor = SimpleNamespace(id=10, public_id="vendor-pub-10", qbo_id="QV-1", realm_id="realm-1")
     vendor_service.read_by_qbo_identity.return_value = direct_vendor
 
-    with patch(VV_REPO_PATH) as MockVVRepo, patch(QV_REPO_PATH):
-        stub_identity_check_trusts(MockVVRepo.return_value)
-
-        result = connector._get_vendor_public_id("QV-1", "realm-1")
+    result = connector._get_vendor_public_id("QV-1", "realm-1")
 
     assert result == "vendor-pub-10"
-    vendor_service.read_by_qbo_identity.assert_called_once_with("QV-1", "realm-1")
+    assert vendor_service.read_by_qbo_identity.call_count == 2
 
 
-def test_vendorcredit_get_vendor_public_id_falls_back_when_direct_lookup_misses():
+def test_vendorcredit_get_vendor_public_id_dbo_miss_returns_none():
     connector, vendor_service = _build_vendorcredit_connector()
     vendor_service.read_by_qbo_identity.return_value = None
-    vendor_service.read_by_id.return_value = SimpleNamespace(id=30, public_id="vendor-pub-30")
 
-    with patch(VV_REPO_PATH) as MockVVRepo, patch(QV_REPO_PATH) as MockQVRepo:
-        MockQVRepo.return_value.read_by_qbo_id.return_value = SimpleNamespace(id=20)
-        MockVVRepo.return_value.read_by_qbo_vendor_id.return_value = SimpleNamespace(vendor_id=30)
-
-        result = connector._get_vendor_public_id("QV-2", "realm-1")
-
-    assert result == "vendor-pub-30"
+    assert connector._get_vendor_public_id("QV-2", "realm-1") is None
 
 
-def test_vendorcredit_get_vendor_public_id_falls_back_when_direct_hit_fails_verification():
+def test_vendorcredit_get_vendor_public_id_stolen_identity_returns_none():
     connector, vendor_service = _build_vendorcredit_connector()
-    direct_vendor = SimpleNamespace(id=10, public_id="vendor-pub-10", qbo_id="QV-1")
-    vendor_service.read_by_qbo_identity.return_value = direct_vendor
-    vendor_service.read_by_id.return_value = SimpleNamespace(id=30, public_id="vendor-pub-30")
+    direct_vendor = SimpleNamespace(id=10, public_id="vendor-pub-10", qbo_id="QV-1", realm_id="realm-1")
+    stolen = SimpleNamespace(id=99, qbo_id="QV-1", realm_id="realm-1")
+    vendor_service.read_by_qbo_identity.side_effect = [direct_vendor, stolen]
 
-    with patch(VV_REPO_PATH) as MockVVRepo, patch(QV_REPO_PATH) as MockQVRepo:
-        # verify_vendor_qbo_identity's own check: local-side mapping disagrees.
-        # Legacy hop's lookups take over after that.
-        MockVVRepo.return_value.read_identity_check.return_value = _DISAGREEING_VENDOR_MAPPING
-        MockQVRepo.return_value.read_by_qbo_id.return_value = SimpleNamespace(id=20)
-        MockVVRepo.return_value.read_by_qbo_vendor_id.return_value = SimpleNamespace(vendor_id=30)
-
-        result = connector._get_vendor_public_id("QV-1", "realm-1")
-
-    assert result == "vendor-pub-30"  # legacy hop's answer, NOT the unverified direct hit
+    assert connector._get_vendor_public_id("QV-1", "realm-1") is None
 
 
 def test_vendorcredit_get_vendor_public_id_no_ref_value_short_circuits():
@@ -428,7 +256,16 @@ def test_vendorcredit_get_vendor_public_id_no_ref_value_short_circuits():
     vendor_service.read_by_qbo_identity.assert_not_called()
 
 
-# --- Section 6: ExpenseCodingItemService._resolve_vendor_id (pull) ---
+def test_vendorcredit_get_vendor_public_id_swallows_errors_and_returns_none():
+    """Pre-existing contract on this connector's resolver: this one is wrapped
+    in its own broad try/except (unlike Bill's), preserved unchanged."""
+    connector, vendor_service = _build_vendorcredit_connector()
+    vendor_service.read_by_qbo_identity.side_effect = RuntimeError("boom")
+
+    assert connector._get_vendor_public_id("QV-1", "realm-1") is None
+
+
+# --- Section 5: ExpenseCodingItemService._resolve_vendor_id (pull) ---
 
 
 VENDOR_SERVICE_PATH = "entities.vendor.business.service.VendorService"
@@ -440,55 +277,41 @@ def _build_expense_coding_service():
     return ExpenseCodingItemService()
 
 
-def test_expense_coding_resolve_vendor_id_prefers_direct_dbo_lookup():
+def test_expense_coding_resolve_vendor_id_verified_direct_hit():
     service = _build_expense_coding_service()
-    direct_vendor = SimpleNamespace(id=10, qbo_id="QV-1")
+    direct_vendor = SimpleNamespace(id=10, qbo_id="QV-1", realm_id="realm-1")
 
-    with patch(VENDOR_SERVICE_PATH) as MockVendorService, \
-         patch(VV_REPO_PATH) as MockVVRepo, \
-         patch(QV_REPO_PATH):
+    with patch(VENDOR_SERVICE_PATH) as MockVendorService:
         MockVendorService.return_value.read_by_qbo_identity.return_value = direct_vendor
-        stub_identity_check_trusts(MockVVRepo.return_value)
 
         result = service._resolve_vendor_id("QV-1", realm_id="realm-1")
 
     assert result == 10
-    MockVendorService.return_value.read_by_qbo_identity.assert_called_once_with("QV-1", "realm-1")
+    assert MockVendorService.return_value.read_by_qbo_identity.call_count == 2
 
 
-def test_expense_coding_resolve_vendor_id_falls_back_when_direct_lookup_misses():
+def test_expense_coding_resolve_vendor_id_dbo_miss_returns_none():
     service = _build_expense_coding_service()
 
-    with patch(VENDOR_SERVICE_PATH) as MockVendorService, \
-         patch(VV_REPO_PATH) as MockVVRepo, \
-         patch(QV_REPO_PATH) as MockQVRepo:
+    with patch(VENDOR_SERVICE_PATH) as MockVendorService:
         MockVendorService.return_value.read_by_qbo_identity.return_value = None
-        MockQVRepo.return_value.read_by_qbo_id_and_realm_id.return_value = SimpleNamespace(id=20)
-        MockVVRepo.return_value.read_by_qbo_vendor_id.return_value = SimpleNamespace(vendor_id=30)
 
         result = service._resolve_vendor_id("QV-2", realm_id="realm-1")
 
-    assert result == 30
+    assert result is None
 
 
-def test_expense_coding_resolve_vendor_id_falls_back_when_direct_hit_fails_verification():
+def test_expense_coding_resolve_vendor_id_stolen_identity_returns_none():
     service = _build_expense_coding_service()
-    direct_vendor = SimpleNamespace(id=10, qbo_id="QV-1")
+    direct_vendor = SimpleNamespace(id=10, qbo_id="QV-1", realm_id="realm-1")
+    stolen = SimpleNamespace(id=99, qbo_id="QV-1", realm_id="realm-1")
 
-    with patch(VENDOR_SERVICE_PATH) as MockVendorService, \
-         patch(VV_REPO_PATH) as MockVVRepo, \
-         patch(QV_REPO_PATH) as MockQVRepo:
-        MockVendorService.return_value.read_by_qbo_identity.return_value = direct_vendor
-        # Local-side mapping disagrees.
-        MockVVRepo.return_value.read_identity_check.return_value = _DISAGREEING_VENDOR_MAPPING
-
-        # Legacy hop takes over from here.
-        MockQVRepo.return_value.read_by_qbo_id_and_realm_id.return_value = SimpleNamespace(id=20)
-        MockVVRepo.return_value.read_by_qbo_vendor_id.return_value = SimpleNamespace(vendor_id=30)
+    with patch(VENDOR_SERVICE_PATH) as MockVendorService:
+        MockVendorService.return_value.read_by_qbo_identity.side_effect = [direct_vendor, stolen]
 
         result = service._resolve_vendor_id("QV-1", realm_id="realm-1")
 
-    assert result == 30  # legacy hop's answer, NOT the unverified direct hit's id (10)
+    assert result is None
 
 
 def test_expense_coding_resolve_vendor_id_no_qbo_id_short_circuits():
@@ -511,14 +334,12 @@ def test_expense_coding_resolve_vendor_id_swallows_errors_and_returns_none():
 
 
 def test_expense_coding_resolve_vendor_id_swallows_errors_from_new_direct_lookup_code():
-    """Same contract as above, but the failure originates inside THIS unit's
-    own new code (read_by_qbo_identity), not the pre-existing VendorService()
-    construction step — proves the broad try/except covers the new call too,
-    not just the surrounding scaffolding."""
+    """Same contract as above, but the failure originates inside the direct
+    lookup itself, not the surrounding VendorService() construction step —
+    proves the broad try/except covers verify_identity_dbo_only's call too."""
     service = _build_expense_coding_service()
 
-    with patch(VENDOR_SERVICE_PATH) as MockVendorService, \
-         patch(VV_REPO_PATH), patch(QV_REPO_PATH):
+    with patch(VENDOR_SERVICE_PATH) as MockVendorService:
         MockVendorService.return_value.read_by_qbo_identity.side_effect = RuntimeError("boom")
 
         result = service._resolve_vendor_id("QV-1", realm_id="realm-1")

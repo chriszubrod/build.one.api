@@ -39,8 +39,8 @@ from integrations.intuit.qbo.base.pull_race import guard_lines_present
 from integrations.intuit.qbo.base.compensation import rollback_orphan_header
 from integrations.intuit.qbo.base.field_ownership import preserve_human_edited_ref, qbo_ref_or_placeholder
 from integrations.intuit.qbo.base.identity_consistency import (
+    verify_identity_dbo_only,
     verify_project_qbo_identity,
-    verify_vendor_qbo_identity,
 )
 from integrations.intuit.qbo.base.identity_fastpath import (
     raise_concurrent_write_race,
@@ -88,6 +88,13 @@ class BillBillConnector:
         self.mapping_repo = mapping_repo or BillBillRepository()
         self.bill_service = bill_service or BillService()
         self.vendor_service = vendor_service or VendorService()
+        # U-313: no longer read anywhere in this file (_get_vendor_public_id/
+        # _get_qbo_vendor_ref both moved fully dbo-only, no qbo.VendorVendor
+        # hop left). Kept as injectable constructor params, not removed, so
+        # the ~10 existing test call sites across other units that still
+        # pass vendor_vendor_repo=/qbo_vendor_repo= don't need to change for
+        # a unit whose real scope is the Vendor mapping table, not this
+        # connector's constructor — see TODO.md's U-313 follow-ups.
         self.vendor_vendor_repo = vendor_vendor_repo or VendorVendorRepository()
         self.qbo_vendor_repo = qbo_vendor_repo or QboVendorRepository()
         self.qbo_bill_repo = qbo_bill_repo or QboBillRepository()
@@ -442,40 +449,22 @@ class BillBillConnector:
         if not qbo_vendor_ref_value:
             return None
 
-        # U-284v: try dbo.Vendor's native QboId/RealmId directly first (mirrors
-        # U-283/U-283b's _get_project_public_id pattern) before falling back to
-        # the qbo.QboVendor -> qbo.VendorVendor hop below. Read-only resolver —
-        # a disagreement just falls through to the legacy hop, no hard stop
-        # (nothing is written here to protect).
+        # U-313: dbo.Vendor's native QboId/RealmId is now the SOLE identity
+        # store for Vendor (Wave 5 "trust dbo alone" — qbo.VendorVendor no
+        # longer has a writer, see docs/design/wave5.md). A miss here means
+        # no Vendor was ever synced under this identity — there is no legacy
+        # hop left to fall back to (removed; it had no data source left
+        # either, per the same reasoning).
         direct_vendor = self.vendor_service.read_by_qbo_identity(qbo_vendor_ref_value, realm_id)
         if direct_vendor:
-            verified_qbo_id = verify_vendor_qbo_identity(
+            verified_qbo_id = verify_identity_dbo_only(
                 direct_vendor,
-                vendor_vendor_repo=self.vendor_vendor_repo,
-                qbo_vendor_repo=self.qbo_vendor_repo,
+                read_direct_by_qbo_identity=self.vendor_service.read_by_qbo_identity,
             )
             if verified_qbo_id:
                 return direct_vendor.public_id
 
-        # First find the QboVendor by qbo_id
-        qbo_vendor = self.qbo_vendor_repo.read_by_qbo_id(qbo_vendor_ref_value)
-        if not qbo_vendor:
-            logger.warning(f"QboVendor not found for qbo_id: {qbo_vendor_ref_value}")
-            return None
-        
-        # Then find the VendorVendor mapping
-        vendor_mapping = self.vendor_vendor_repo.read_by_qbo_vendor_id(qbo_vendor.id)
-        if not vendor_mapping:
-            logger.warning(f"VendorVendor mapping not found for QboVendor ID: {qbo_vendor.id}")
-            return None
-        
-        # Get the Vendor
-        vendor = self.vendor_service.read_by_id(vendor_mapping.vendor_id)
-        if not vendor:
-            logger.warning(f"Vendor not found for ID: {vendor_mapping.vendor_id}")
-            return None
-        
-        return vendor.public_id
+        return None
 
     def _sync_line_items(self, bill_id: int, qbo_bill_lines: List[QboBillLine], realm_id: Optional[str] = None) -> None:
         """
@@ -937,47 +926,27 @@ class BillBillConnector:
         if not vendor_id:
             return None
 
-        # U-284v: fetched once and reused by both branches below (the direct
-        # attempt needs it for verification + name; the legacy hop's own
-        # name lookup used to fetch it a second time, only after both of its
-        # own lookups succeeded — sharing this one fetch instead means a
-        # vendor with no VendorVendor mapping yet now costs one extra Vendor
-        # read on the legacy hop's two failure branches, which previously
-        # made zero calls to it. Deliberate tradeoff: the direct-hit case
-        # this repoint exists to speed up is the common one going forward.
         vendor = self.vendor_service.read_by_id(vendor_id)
-
-        # Try dbo.Vendor's native QboId/Name directly first, verified against
-        # the qbo.VendorVendor mapping before trusting it for an outbound
-        # push — a stale/"stolen" dbo QboId must never misroute a live Bill
-        # to the wrong QBO vendor (mirrors U-276 round-4's push-side finding
-        # for Project; see identity_consistency.py).
-        if vendor:
-            verified_qbo_id = verify_vendor_qbo_identity(
-                vendor,
-                vendor_vendor_repo=self.vendor_vendor_repo,
-                qbo_vendor_repo=self.qbo_vendor_repo,
-            )
-            if verified_qbo_id:
-                return QboReferenceType(value=verified_qbo_id, name=vendor.name)
-
-        # Legacy mapping-table hop (miss or unverified dbo identity) — the
-        # hop's own two lookups are unchanged; only the preceding vendor
-        # fetch above is new (see comment there).
-        vendor_mapping = self.vendor_vendor_repo.read_by_vendor_id(vendor_id)
-        if not vendor_mapping:
-            logger.warning(f"VendorVendor mapping not found for vendor_id: {vendor_id}")
+        if not vendor:
+            logger.warning(f"Vendor not found for id: {vendor_id}")
             return None
 
-        # Get QboVendor
-        qbo_vendor = self.qbo_vendor_repo.read_by_id(vendor_mapping.qbo_vendor_id)
-        if not qbo_vendor or not qbo_vendor.qbo_id:
-            logger.warning(f"QboVendor not found for qbo_vendor_id: {vendor_mapping.qbo_vendor_id}")
-            return None
+        # U-313: dbo.Vendor's native QboId is the SOLE identity store for
+        # Vendor (Wave 5 "trust dbo alone" — qbo.VendorVendor no longer has a
+        # writer, see docs/design/wave5.md). Still re-verified against a
+        # fresh dbo-only read before trusting it for an outbound push — a
+        # stale/"stolen" dbo QboId must never misroute a live Bill to the
+        # wrong QBO vendor (mirrors U-276 round-4's push-side finding for
+        # Project; see identity_consistency.py). No legacy hop left to fall
+        # back to on a miss (removed; it had no data source left either).
+        verified_qbo_id = verify_identity_dbo_only(
+            vendor, read_direct_by_qbo_identity=self.vendor_service.read_by_qbo_identity,
+        )
+        if verified_qbo_id:
+            return QboReferenceType(value=verified_qbo_id, name=vendor.name)
 
-        vendor_name = vendor.name if vendor else None
-
-        return QboReferenceType(value=qbo_vendor.qbo_id, name=vendor_name)
+        logger.warning(f"No verified QBO identity for Vendor {vendor_id}")
+        return None
 
     def _get_qbo_item_ref(self, sub_cost_code_id: int, realm_id: Optional[str] = None) -> Optional[QboReferenceType]:
         """

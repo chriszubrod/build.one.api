@@ -52,9 +52,7 @@ from integrations.intuit.qbo.base.client import QboHttpClient
 from integrations.box.base.client import BoxHttpClient
 from integrations.box.base.errors import BoxConflictError
 from entities.vendor.business.service import VendorService
-from integrations.intuit.qbo.vendor.connector.vendor.persistence.repo import VendorVendorRepository
-from integrations.intuit.qbo.vendor.persistence.repo import QboVendorRepository
-from integrations.intuit.qbo.base.identity_consistency import verify_vendor_qbo_identity
+from integrations.intuit.qbo.base.identity_consistency import verify_identity_dbo_only
 
 # Box anchor: the '999 - Accounting' folder (stable id, found via the template probe).
 BOX_999_ACCOUNTING_ID = "388262075849"
@@ -403,8 +401,8 @@ def extract_pdf_text(data: bytes) -> str:
 # ---------------------------------------------------------------------------- #
 # Vendor email resolution + draft (MS Graph, into invoice@rogersbuild.com Drafts)
 # ---------------------------------------------------------------------------- #
-# U-299: dbo-first -> verify_vendor_qbo_identity -> legacy qbo.Vendor/
-# qbo.VendorVendor fallback (mirrors U-284v's cross-family resolvers —
+# U-313: dbo-first -> verify_identity_dbo_only, no legacy fallback left
+# (mirrors U-284v's cross-family resolvers, now all repointed the same way —
 # BillBillConnector._get_vendor_public_id (pull) + _get_qbo_vendor_ref
 # (push), PurchaseExpenseConnector._get_vendor_public_id,
 # VendorCreditBillCreditConnector._get_vendor_public_id,
@@ -416,34 +414,20 @@ def resolve_local_vendor_id(
     realm_id: Optional[str],
     *,
     vendor_service=None,
-    vendor_vendor_repo=None,
-    qbo_vendor_repo=None,
 ) -> Optional[int]:
     """Resolve a QBO vendor id -> local dbo.Vendor.Id, or None if unresolvable."""
     vendor_service = vendor_service or VendorService()
-    vendor_vendor_repo = vendor_vendor_repo or VendorVendorRepository()
-    qbo_vendor_repo = qbo_vendor_repo or QboVendorRepository()
 
     direct_vendor = vendor_service.read_by_qbo_identity(qbo_vendor_id, realm_id)
     if direct_vendor:
-        verified_qbo_id = verify_vendor_qbo_identity(
+        verified_qbo_id = verify_identity_dbo_only(
             direct_vendor,
-            vendor_vendor_repo=vendor_vendor_repo,
-            qbo_vendor_repo=qbo_vendor_repo,
+            read_direct_by_qbo_identity=vendor_service.read_by_qbo_identity,
         )
         if verified_qbo_id:
             return direct_vendor.id
 
-    qbo_vendor = qbo_vendor_repo.read_by_qbo_id(qbo_vendor_id)
-    if not qbo_vendor:
-        return None
-    vendor_mapping = vendor_vendor_repo.read_by_qbo_vendor_id(qbo_vendor.id)
-    if not vendor_mapping:
-        return None
-    vendor = vendor_service.read_by_id(vendor_mapping.vendor_id)
-    if not vendor:
-        return None
-    return vendor.id
+    return None
 
 
 def local_vendor_and_contact_emails(qbo_vendor_id: str, realm_id: Optional[str] = None):

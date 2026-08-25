@@ -128,6 +128,10 @@ class VendorService:
         """
         return self.repo.read_by_qbo_identity(qbo_id, realm_id)
 
+    def read_deleted_by_qbo_identity(self, qbo_id: str, realm_id: Optional[str] = None):
+        """U-313 P1 guard passthrough — see VendorRepository.read_deleted_by_qbo_identity."""
+        return self.repo.read_deleted_by_qbo_identity(qbo_id, realm_id)
+
     def find_contract_labor_by_email(self, email: str) -> Optional[Vendor]:
         """Bind a sender's email back to the contract-labor Vendor row.
 

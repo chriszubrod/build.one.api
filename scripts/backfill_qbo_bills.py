@@ -36,9 +36,7 @@ from integrations.intuit.qbo.auth.business.service import QboAuthService
 from integrations.intuit.qbo.base.errors import QboBudgetExceededError, QboWriteRefusedError
 from integrations.intuit.qbo.base.pull_race import read_lines_riding_out_race, header_has_amount
 from entities.vendor.business.service import VendorService
-from integrations.intuit.qbo.vendor.connector.vendor.persistence.repo import VendorVendorRepository
-from integrations.intuit.qbo.vendor.persistence.repo import QboVendorRepository
-from integrations.intuit.qbo.base.identity_consistency import verify_vendor_qbo_identity
+from integrations.intuit.qbo.base.identity_consistency import verify_identity_dbo_only
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 logger = logging.getLogger("backfill_qbo_bills")
@@ -46,8 +44,8 @@ logger = logging.getLogger("backfill_qbo_bills")
 CREATABLE = "genuinely_missing_creatable"
 
 
-# U-299: dbo-first -> verify_vendor_qbo_identity -> legacy qbo.Vendor/
-# qbo.VendorVendor fallback (mirrors U-284v's cross-family resolvers —
+# U-313: dbo-first -> verify_identity_dbo_only, no legacy fallback left
+# (mirrors U-284v's cross-family resolvers, now all repointed the same way —
 # BillBillConnector._get_vendor_public_id (pull) + _get_qbo_vendor_ref
 # (push), PurchaseExpenseConnector._get_vendor_public_id,
 # VendorCreditBillCreditConnector._get_vendor_public_id,
@@ -60,34 +58,20 @@ def resolve_local_vendor_id(
     realm_id: Optional[str],
     *,
     vendor_service=None,
-    vendor_vendor_repo=None,
-    qbo_vendor_repo=None,
 ) -> Optional[int]:
     """Resolve a QBO vendor id -> local dbo.Vendor.Id, or None if unresolvable."""
     vendor_service = vendor_service or VendorService()
-    vendor_vendor_repo = vendor_vendor_repo or VendorVendorRepository()
-    qbo_vendor_repo = qbo_vendor_repo or QboVendorRepository()
 
     direct_vendor = vendor_service.read_by_qbo_identity(qbo_vendor_id, realm_id)
     if direct_vendor:
-        verified_qbo_id = verify_vendor_qbo_identity(
+        verified_qbo_id = verify_identity_dbo_only(
             direct_vendor,
-            vendor_vendor_repo=vendor_vendor_repo,
-            qbo_vendor_repo=qbo_vendor_repo,
+            read_direct_by_qbo_identity=vendor_service.read_by_qbo_identity,
         )
         if verified_qbo_id:
             return direct_vendor.id
 
-    qbo_vendor = qbo_vendor_repo.read_by_qbo_id(qbo_vendor_id)
-    if not qbo_vendor:
-        return None
-    vendor_mapping = vendor_vendor_repo.read_by_qbo_vendor_id(qbo_vendor.id)
-    if not vendor_mapping:
-        return None
-    vendor = vendor_service.read_by_id(vendor_mapping.vendor_id)
-    if not vendor:
-        return None
-    return vendor.id
+    return None
 
 
 def _classify_bucket(cur, mapped_vendor_id, doc_number, txn_date) -> str:
@@ -156,17 +140,15 @@ def select_unmapped(*, year=None, qbo_id=None, realm_id=None):
         cols = [c[0] for c in cur.description]
         rows = [dict(zip(cols, row)) for row in cur.fetchall()]
 
-        # U-299: try dbo.Vendor's native QboId first for each row's vendor ref
-        # (verified against the legacy mapping before being trusted); the
-        # MappedVendorId/bucket the SQL above computed via the qbo.Vendor ->
-        # qbo.VendorVendor hop stays as the fallback on a miss/disagreement —
-        # only rows where the dbo-native answer actually differs (e.g. the
-        # legacy mapping was lost while dbo.Vendor.QboId still holds) get
-        # their bucket recomputed. Cached by ref value since many unmapped
-        # bills usually share few distinct vendors.
+        # U-313: try dbo.Vendor's native QboId (dbo-only, re-verified fresh —
+        # no legacy qbo.Vendor -> qbo.VendorVendor fallback left, see
+        # resolve_local_vendor_id) for each row's vendor ref; the
+        # MappedVendorId/bucket the raw SQL above computed via its own
+        # qbo.Vendor -> qbo.VendorVendor join stays as-is on a dbo miss —
+        # only rows where the dbo-native answer actually differs get their
+        # bucket recomputed. Cached by ref value since many unmapped bills
+        # usually share few distinct vendors.
         vendor_service = VendorService()
-        vendor_vendor_repo = VendorVendorRepository()
-        qbo_vendor_repo = QboVendorRepository()
         resolved_cache: Dict[str, Optional[int]] = {}
         for r in rows:
             ref = r["VendorRefValue"]
@@ -174,8 +156,6 @@ def select_unmapped(*, year=None, qbo_id=None, realm_id=None):
                 resolved_cache[ref] = resolve_local_vendor_id(
                     ref, realm_id,
                     vendor_service=vendor_service,
-                    vendor_vendor_repo=vendor_vendor_repo,
-                    qbo_vendor_repo=qbo_vendor_repo,
                 )
             dbo_vendor_id = resolved_cache[ref]
             if dbo_vendor_id is not None and dbo_vendor_id != r["MappedVendorId"]:

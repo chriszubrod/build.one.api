@@ -531,10 +531,12 @@ def test_vendor_direct_hit_apply_returns_none_raises_runtime_error():
     silently advance the watermark past a Vendor whose fields were never
     written. UpdateVendorById's RAISERROR-on-not-found/RowVersion-mismatch
     design means `repo.update_by_id` can't actually return None without an
-    exception already having fired, so — mirroring the pre-U-313 test this
-    replaces — this isolates the `on_apply_returned_none` WIRING itself by
-    mocking `_apply_vendor_fields_and_sync` directly, rather than trying to
-    drive a real None out of that unreachable production path."""
+    exception already having fired, so this isolates the scenario by mocking
+    `_apply_vendor_fields_and_sync` directly, rather than trying to drive a
+    real None out of that unreachable production path. As of U-316 the raise
+    comes from `run_identity_fastpath_dbo_only`'s own unconditional
+    apply-path guard, not a per-family `on_apply_returned_none` wiring
+    (removed here as dead now that the primitive raises unconditionally)."""
     connector, vendor_service, _ = _build_vendor_connector()
     qbo_vendor = _make_qbo_vendor(qbo_id="QBO-V-1", realm_id="r1", display_name="Renamed")
     direct_hit = _make_vendor(id=55, name="Old Name")

@@ -12,10 +12,7 @@ from integrations.intuit.qbo.base.field_ownership import (
     preserve_human_edited_name,
     raise_if_inactive_unmapped,
 )
-from integrations.intuit.qbo.base.identity_fastpath import (
-    raise_concurrent_write_race,
-    run_identity_fastpath_dbo_only,
-)
+from integrations.intuit.qbo.base.identity_fastpath import run_identity_fastpath_dbo_only
 from integrations.intuit.qbo.base.ids import coerce_id
 from integrations.intuit.qbo.base.locking import qbo_app_lock
 from integrations.intuit.qbo.base.reconciliation_recorder import record_mapping_issue
@@ -93,9 +90,6 @@ class VendorVendorConnector:
             apply_fields=lambda entity: self._apply_vendor_fields_and_sync(
                 entity, qbo_vendor=qbo_vendor, incoming_name=vendor_name,
             ),
-            on_apply_returned_none=lambda entity: raise_concurrent_write_race(
-                entity_label="Vendor", entity_id=entity.id, path_label="fast path",
-            ),
             resolve_candidate=lambda: self._resolve_vendor_candidate(
                 qbo_vendor, vendor_name=vendor_name,
             ),
@@ -104,10 +98,10 @@ class VendorVendorConnector:
             ),
         )
         if outcome.entity is None:
-            # Only reachable via a concurrent-delete/ROWVERSION race inside
-            # _apply_vendor_fields_and_sync's update_by_id call, or a falsy
-            # qbo_id -- either way there is nothing sync-able to return; the
-            # caller's per-vendor handler skips it and re-attempts next pull.
+            # U-316: no longer race-reachable (see run_identity_fastpath_
+            # dbo_only's Raises docstring) — kept as a backstop for a falsy
+            # qbo_vendor.qbo_id, which nothing upstream guards against yet
+            # (TODO.md follow-up).
             raise RuntimeError(
                 f"Failed to resolve Vendor for QboVendor {qbo_vendor.id} "
                 f"(qbo_id={qbo_vendor.qbo_id}) via the dbo-only identity fast path"

@@ -135,9 +135,6 @@ class CustomerProjectConnector:
                 status=project_status,
                 customer_id=customer_id,
             ),
-            on_apply_returned_none=lambda entity: raise_concurrent_write_race(
-                entity_label="Project", entity_id=entity.id, path_label="fast path",
-            ),
             resolve_candidate=lambda: self._resolve_project_candidate(
                 qbo_customer,
                 name=project_name,
@@ -150,10 +147,10 @@ class CustomerProjectConnector:
             ),
         )
         if outcome.entity is None:
-            # Only reachable via a concurrent-delete/ROWVERSION race inside
-            # _apply_project_fields_and_sync's update_by_id call, or a falsy
-            # qbo_id -- either way there is nothing sync-able to return; the
-            # caller's per-item handler skips it and re-attempts next pull.
+            # U-316: no longer race-reachable (see run_identity_fastpath_
+            # dbo_only's Raises docstring) — kept as a backstop for a falsy
+            # qbo_customer.qbo_id, which nothing upstream guards against yet
+            # (TODO.md follow-up).
             raise RuntimeError(
                 f"Failed to resolve Project for QboCustomer {qbo_customer.id} "
                 f"(qbo_id={qbo_customer.qbo_id}) via the dbo-only identity fast path"
@@ -466,18 +463,18 @@ class CustomerProjectConnector:
         description: str,
         status: str,
         customer_id: Optional[int],
-        path_label: str = "fast path",
-    ) -> Project:
+    ) -> Optional[Project]:
         """
         Write the QboCustomer-derived fields onto an existing Project, persist it,
-        and sync its addresses. Shared by the direct dbo-identity fast path, the
-        normal existing-mapping update path, and the heal-in-place repoint path so
-        the QboCustomer->Project field mapping lives in exactly one place (no drift
-        between the update sites) AND every one of them gets the same ROWVERSION-
-        race guard for free (U-291) — a caller cannot forget to check for a None
-        `update_by_id` return, because there is nothing to check: this method
-        raises instead of returning it. `path_label` names which caller hit the
-        race, for the log trail.
+        and sync its addresses. This is the `apply_fields` callback for the
+        dbo-identity fast path (`sync_from_qbo_customer` above).
+
+        Returns `None` on a ROWVERSION-race/concurrent-delete `update_by_id`
+        miss instead of raising directly (U-316) — `run_identity_fastpath_
+        dbo_only`'s own `_apply()` now raises `raise_concurrent_write_race`
+        unconditionally whenever `apply_fields` returns `None`, so this
+        method staying silent on a miss (rather than raising twice) is what
+        keeps that single raise as the ONE place the guarantee lives.
         """
         project.name = preserve_human_edited_name(project.name, name)
         project.description = description
@@ -485,7 +482,7 @@ class CustomerProjectConnector:
         project.customer_id = customer_id
         updated = self.project_service.repo.update_by_id(project)
         if updated is None:
-            raise_concurrent_write_race(entity_label="Project", entity_id=project.id, path_label=path_label)
+            return None
         self._sync_addresses(qbo_customer, updated.id)
         return updated
 

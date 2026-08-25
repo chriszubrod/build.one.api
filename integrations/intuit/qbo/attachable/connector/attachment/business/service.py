@@ -90,12 +90,13 @@ class AttachableAttachmentConnector:
             ),
         )
         if outcome.entity is None:
-            # Only reachable via a concurrent-delete/ROWVERSION race inside
-            # _verify_or_heal_pulled_blob's update_by_public_id call, or a
-            # falsy qbo_id (guarded upstream by QboAttachableService._upsert_
-            # attachable's own ValueError) -- either way there is nothing
-            # sync-able to return; the caller's per-attachable try/except
-            # skips it and re-attempts on the next pull.
+            # U-316: no longer race-reachable (see run_identity_fastpath_
+            # dbo_only's Raises docstring) — kept as a backstop for a
+            # directly-invoked falsy qbo_attachable.qbo_id (this public
+            # method has no guard of its own; pinned by
+            # test_no_qbo_id_raises_without_ever_downloading). The
+            # production pull path already guards this upstream via
+            # QboAttachableService._upsert_attachable.
             raise RuntimeError(
                 f"Failed to resolve Attachment for QboAttachable {qbo_attachable.id} "
                 f"(qbo_id={qbo_attachable.qbo_id}) via the dbo-only identity fast path"

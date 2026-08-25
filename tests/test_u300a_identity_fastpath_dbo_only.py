@@ -102,22 +102,29 @@ def test_direct_hit_with_apply_fields_omitted_resolves_without_writing():
     spy.resolve_candidate.assert_not_called()
 
 
-def test_direct_hit_apply_returning_none_notifies_and_writes_nothing_else():
+def test_direct_hit_apply_returning_none_notifies_then_raises():
+    """U-316: the callback still fires (kept per Decision 2), but the raise is
+    now unconditional -- a caller can no longer under-implement on_apply_
+    returned_none (log-but-forget-to-raise) and get a silent entity=None back."""
     direct = SimpleNamespace(id=55)
     kwargs, _ = _harness(direct=direct)
     on_none = Mock()
     kwargs["apply_fields"] = Mock(return_value=None)
     kwargs["on_apply_returned_none"] = on_none
-    outcome = run_identity_fastpath_dbo_only(**kwargs)
-    assert outcome.hit is True and outcome.entity is None
+    with pytest.raises(RuntimeError, match="concurrent write race"):
+        run_identity_fastpath_dbo_only(**kwargs)
     on_none.assert_called_once_with(direct)
 
 
-def test_direct_hit_apply_returning_none_without_a_callback_is_safe():
+def test_direct_hit_apply_returning_none_without_a_callback_now_raises():
+    """U-316 mutation-proven case: apply_fields -> None with NO
+    on_apply_returned_none wired used to return FastPathOutcome(hit=True,
+    entity=None) silently -- it now raises unconditionally, so a caller
+    can no longer omit protection by omitting the callback param."""
     kwargs, _ = _harness(direct=SimpleNamespace(id=55))
     kwargs["apply_fields"] = Mock(return_value=None)
-    outcome = run_identity_fastpath_dbo_only(**kwargs)
-    assert outcome.hit is True and outcome.entity is None
+    with pytest.raises(RuntimeError, match="concurrent write race"):
+        run_identity_fastpath_dbo_only(**kwargs)
 
 
 # --- miss: fail-closed on lock timeout --------------------------------------
@@ -171,16 +178,38 @@ def test_racer_discovered_under_lock_is_adopted_not_duplicated():
 
 @patch(LOCK_PATCH_TARGET, _granted_lock)
 def test_racer_discovered_under_lock_with_apply_returning_none():
+    """U-316: same unconditional-raise contract applies to the race-resolved
+    hit branch, not just the outer direct-hit branch -- both flow through
+    the same `_apply()` closure."""
     racer_row = SimpleNamespace(id=90)
     kwargs, spy = _harness(direct=None)
     spy.read_direct.side_effect = [None, racer_row]
     on_none = Mock()
     kwargs["apply_fields"] = Mock(return_value=None)
     kwargs["on_apply_returned_none"] = on_none
-    outcome = run_identity_fastpath_dbo_only(**kwargs)
-    assert outcome.hit is True and outcome.entity is None
+    with pytest.raises(RuntimeError, match="concurrent write race"):
+        run_identity_fastpath_dbo_only(**kwargs)
     on_none.assert_called_once_with(racer_row)
     spy.resolve_candidate.assert_not_called()
+
+
+# --- miss: stamp_identity returning None (U-316) ----------------------------
+
+
+@patch(LOCK_PATCH_TARGET, _granted_lock)
+def test_genuine_miss_stamp_identity_returning_none_raises():
+    """U-316 mutation-proven case: before this fix, `stamped = stamp_identity(
+    candidate); return FastPathOutcome(hit=True, entity=stamped)` never
+    checked `stamped` at all -- a concurrent-delete between resolve_candidate
+    and the stamp lock would silently propagate entity=None to the caller.
+    Now it raises, symmetric to the apply-path guard above."""
+    kwargs, spy = _harness(direct=None)
+    spy.stamp_identity.side_effect = None
+    spy.stamp_identity.return_value = None
+    with pytest.raises(RuntimeError, match="concurrent write race"):
+        run_identity_fastpath_dbo_only(**kwargs)
+    spy.resolve_candidate.assert_called_once_with()
+    spy.stamp_identity.assert_called_once_with(spy.resolve_candidate.return_value)
 
 
 # --- lock resource key: disjoint from create_race_lock's namespace ---------

@@ -89,10 +89,12 @@ class ItemCostCodeConnector:
             ),
         )
         if outcome.entity is None:
-            # Only reachable via a concurrent-delete/ROWVERSION race inside
-            # _apply_cost_code_fields_and_sync's update_by_id call, or a falsy
-            # qbo_id -- either way there is nothing sync-able to return; the
-            # caller's per-item handler skips it and re-attempts next pull.
+            # U-316: no longer race-reachable (see run_identity_fastpath_
+            # dbo_only's Raises docstring) — kept as a backstop for a
+            # directly-invoked falsy qbo_item.qbo_id (this public method has
+            # no guard of its own; pinned by test_cost_code_no_qbo_id_raises).
+            # The production pull path already guards this upstream via
+            # QboItemService._upsert_item.
             raise RuntimeError(
                 f"Failed to resolve CostCode for QboItem qbo_id={qbo_item.qbo_id} "
                 f"via the dbo-only identity fast path"

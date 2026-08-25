@@ -610,14 +610,23 @@ def run_identity_fastpath_dbo_only(
         `run_identity_fastpath`, a dbo-only caller has no separate legacy
         mapping-table path to fall back to, so every other outcome (direct
         hit, race-resolved hit, or a genuine miss resolved via
-        `resolve_candidate`/`stamp_identity`) reports `hit=True`.
+        `resolve_candidate`/`stamp_identity`) reports `hit=True`. As of
+        U-316, `hit=True` NEVER carries `entity=None` — an `apply_fields`
+        or `stamp_identity` call that returns `None` (a ROWVERSION race or
+        a concurrent delete) raises instead of being handed back to the
+        caller as a silent miss; see Raises below.
 
     Raises:
         RuntimeError: on a lock-acquire timeout — FAILS CLOSED, never
             proceeds to create-or-stamp under uncertainty (mirrors
             `guard_create_mapping_rollback`'s own fail-closed contract).
-            Never raised for a detected race — that path is handled, not an
-            error (see above).
+            Not raised for a race-resolved hit (a racer discovered under the
+            lock) — that path is handled, not an error (see above). Also
+            raised, via `raise_concurrent_write_race` (U-316), when
+            `apply_fields` or `stamp_identity` returns `None` — the caller's
+            `on_apply_returned_none` (if wired) fires first, then this raise
+            is unconditional; a caller can no longer silently receive
+            `entity=None` by omitting or under-implementing that callback.
     """
     if not qbo_id:
         return FastPathOutcome(hit=False)
@@ -634,7 +643,9 @@ def run_identity_fastpath_dbo_only(
         if updated is None:
             if on_apply_returned_none is not None:
                 on_apply_returned_none(row)
-            return FastPathOutcome(hit=True, entity=None)
+            raise_concurrent_write_race(
+                entity_label=entity_label, entity_id=row.id, path_label="dbo-only fast path",
+            )
         return FastPathOutcome(hit=True, entity=updated)
 
     direct = read_direct_by_qbo_identity(qbo_id, realm_id)
@@ -662,6 +673,10 @@ def run_identity_fastpath_dbo_only(
 
         candidate = resolve_candidate()
         stamped = stamp_identity(candidate)
+        if stamped is None:
+            raise_concurrent_write_race(
+                entity_label=entity_label, entity_id=candidate.id, path_label="dbo-only fast path (stamp)",
+            )
         return FastPathOutcome(hit=True, entity=stamped)
 
 

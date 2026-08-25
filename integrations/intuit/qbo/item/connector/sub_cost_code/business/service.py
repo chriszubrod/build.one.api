@@ -140,6 +140,12 @@ class ItemSubCostCodeConnector:
             ),
         )
         if outcome.entity is None:
+            # U-316: no longer race-reachable (see run_identity_fastpath_
+            # dbo_only's Raises docstring) — kept as a backstop for a
+            # directly-invoked falsy qbo_item.qbo_id (this public method has
+            # no guard of its own; pinned by test_sub_cost_code_no_qbo_id_
+            # raises). The production pull path already guards this
+            # upstream via QboItemService._upsert_item.
             raise RuntimeError(
                 f"Failed to resolve SubCostCode for QboItem qbo_id={qbo_item.qbo_id} "
                 f"via the dbo-only identity fast path"

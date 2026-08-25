@@ -2,6 +2,30 @@
 
 Carry-over items from sessions. Check off as done; prune anything stale.
 
+## U-316 follow-up (dbo-only identity fast path ROWVERSION hardening) — deferred, not scope-creeped in (2026-08-25)
+
+- [ ] **Vendor/Customer/Project QBO pull staging lacks an explicit falsy-id guard that Item/Attachable already
+  have.** `_upsert_vendor` (`integrations/intuit/qbo/vendor/business/service.py`) and `_upsert_customer`
+  (`integrations/intuit/qbo/customer/business/service.py`) pass their staged object's id straight through to
+  `run_identity_fastpath_dbo_only` with no truthiness check, unlike `QboItemService._upsert_item`
+  (`integrations/intuit/qbo/item/business/service.py:126-127`, `if not qbo_item.id: raise ValueError(...)`) and
+  `QboAttachableService._upsert_attachable` (`integrations/intuit/qbo/attachable/business/service.py:254-255`,
+  same shape) — both isolated by a try/except so a falsy-id record never reaches its connector. Because of this
+  gap, U-316 (`docs/design/u316.md`) could NOT prove the caller-side `if outcome.entity is None: raise
+  RuntimeError(...)` guard in `VendorVendorConnector.sync_from_qbo_vendor` /
+  `CustomerCustomerConnector.sync_from_qbo_customer` / `CustomerProjectConnector.sync_from_qbo_customer`
+  (`integrations/intuit/qbo/{vendor/connector/vendor,customer/connector/customer,customer/connector/project}/business/service.py`)
+  is dead code — it was kept, not deleted, unlike the equivalent guard in `ItemCostCodeConnector`/
+  `ItemSubCostCodeConnector`/`AttachableAttachmentConnector`, which IS provably reachable only via each
+  connector's own tested falsy-`qbo_id` defensive contract (`test_cost_code_no_qbo_id_raises`,
+  `test_sub_cost_code_no_qbo_id_raises`, `test_no_qbo_id_raises_without_ever_downloading`), never via a live
+  production race path. Closing this gap — adding the same upstream `if not id: raise ValueError(...)` guard to
+  `_upsert_vendor`/`_upsert_customer` — would make the equivalent "provably dead" claim hold for these 3
+  families too, letting a future unit finish the uniform caller-side deletion U-316's design doc originally
+  intended. Out of scope for U-316 per two-phase design-gated discipline: this would change the pull's
+  error-vs-skip contract on a genuinely-missing QBO Id, which deserves its own consideration, not a drive-by
+  add alongside a concurrency-primitive hardening unit.
+
 ## U-310 follow-ups (Customer Wave-5 dbo-only repoint) — deferred, not scope-creeped in (2026-08-24)
 
 - [ ] **`ReadCustomerByName` doesn't SELECT `[QboId]`/`[RealmId]`** (`entities/customer/sql/dbo.customer.sql`)

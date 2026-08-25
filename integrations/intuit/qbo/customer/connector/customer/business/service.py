@@ -81,9 +81,6 @@ class CustomerCustomerConnector:
             apply_fields=lambda entity: self._apply_customer_fields_and_sync(
                 entity, name=customer_name, email=customer_email, phone=customer_phone,
             ),
-            on_apply_returned_none=lambda entity: raise_concurrent_write_race(
-                entity_label="Customer", entity_id=entity.id, path_label="fast path",
-            ),
             resolve_candidate=lambda: self._resolve_customer_candidate(
                 qbo_customer, name=customer_name, email=customer_email, phone=customer_phone,
             ),
@@ -92,10 +89,10 @@ class CustomerCustomerConnector:
             ),
         )
         if outcome.entity is None:
-            # Only reachable via a concurrent-delete/ROWVERSION race inside
-            # _apply_customer_fields_and_sync's update_by_id call, or a falsy
-            # qbo_id -- either way there is nothing sync-able to return; the
-            # caller's per-customer handler skips it and re-attempts next pull.
+            # U-316: no longer race-reachable (see run_identity_fastpath_
+            # dbo_only's Raises docstring) — kept as a backstop for a falsy
+            # qbo_customer.qbo_id, which nothing upstream guards against yet
+            # (TODO.md follow-up).
             raise RuntimeError(
                 f"Failed to resolve Customer for QboCustomer {qbo_customer.id} "
                 f"(qbo_id={qbo_customer.qbo_id}) via the dbo-only identity fast path"

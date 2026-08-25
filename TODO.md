@@ -2051,3 +2051,19 @@ These were surfaced during the unit and deliberately not built:
   codebase (grepped `integrations/`, `entities/`, `scripts/`) once this unit's item-connector heal branches
   — its only two ever call sites — were removed; no other family's heal branch used this shared helper.
   Flagged by `/simplify`'s altitude lens.
+
+## U-311 follow-ups (Project family Wave-5 dbo-only repoint, 2026-08-24) — deferred, non-blocking
+
+- [ ] **[reuse, deferred — touches 6-7 already-shipped call sites across `bill`, `bill_line_item`,
+  `purchase/expense`, `purchase/expense_line_item`, `vendorcredit/bill_credit_line_item`, `invoice`,
+  outside this unit's own edits] The "dbo-first-read then `verify_identity_dbo_only`" idiom is copy-pasted
+  near-verbatim at 4 pull-side sites and 3 push-side sites, with the surrounding docstring paragraph
+  duplicated word-for-word in 2+ of them.** Flagged by `/simplify`'s reuse and simplification lenses. The
+  duplication pre-dates this unit's own edits (each site independently replaced its own legacy-hop tail with
+  `return None`, rather than being introduced fresh here) — this unit was a natural point to notice it, not
+  to fix it. Right-depth fix: two small shared helpers in `base/identity_consistency.py` — one for the
+  pull-side shape (`resolve_verified_project_public_id(project_service, qbo_customer_ref_value, realm_id)`,
+  collapsing the 4 pull-side call sites to one-liners) and one for the push-side shape
+  (`verify_project_ref_or_none(project_service, project)`, collapsing the 3 push-side call sites) — would
+  also fold the duplicated docstring paragraph into one place. Own unit; touches 6-7 already-shipped files +
+  their tests, needs its own Gate-1 (not U-311's scope, which was Project-family-only).

@@ -21,7 +21,7 @@ from entities.bill.business.service import BillService
 from entities.project.business.service import ProjectService
 from entities.sub_cost_code.business.service import SubCostCodeService
 from integrations.intuit.qbo.base.identity_drift import stamp_line_identity_or_warn
-from integrations.intuit.qbo.base.identity_consistency import verify_project_qbo_identity
+from integrations.intuit.qbo.base.identity_consistency import verify_identity_dbo_only
 from integrations.intuit.qbo.base.identity_fastpath import (
     raise_concurrent_write_race,
     run_line_identity_fastpath,
@@ -67,6 +67,15 @@ class BillLineItemConnector:
         self.qbo_item_repo = qbo_item_repo
         self.item_sub_cost_code_repo = item_sub_cost_code_repo
         self.sub_cost_code_service = sub_cost_code_service
+        # U-311: qbo_customer_repo/customer_project_repo are now DEAD -- the
+        # legacy qbo.Customer -> qbo.CustomerProject hop that used them was
+        # deleted from _resolve_project_public_id below (Wave 5 Option A).
+        # Kept as accepted-but-unused constructor params rather than removed:
+        # a broad set of unrelated tests construct this connector defensively
+        # passing every kwarg (mirrors U-313's own deliberate deferral of the
+        # identical class of dead-DI-param cleanup for Bill/Purchase's
+        # vendor_vendor_repo/qbo_vendor_repo -- see TODO.md). Removal is a
+        # Pass-2/simplify candidate, not this unit's job.
         self.qbo_customer_repo = qbo_customer_repo or QboCustomerRepository()
         self.customer_project_repo = customer_project_repo or CustomerProjectRepository()
         self.project_service = project_service or ProjectService()
@@ -466,43 +475,36 @@ class BillLineItemConnector:
             str: Project public_id or None
         """
         # U-283 §10 prereq: try dbo.Project's native QboId/RealmId directly
-        # first (mirrors U-276's push-side verify_project_qbo_identity pattern)
-        # before falling back to the qbo.Customer -> qbo.CustomerProject hop
-        # below. Every Project synced at least once already carries this
-        # identity via SetProjectQboIdentity. Read-only resolver — a disagreement
-        # just falls through to the legacy hop rather than a hard stop (there is
-        # no write here to protect, unlike the header identity fast path).
+        # first (mirrors U-276's push-side verify pattern). Every Project
+        # synced at least once already carries this identity via
+        # SetProjectQboIdentity. Read-only resolver — a miss/refusal returns
+        # None outright (no write here to protect, unlike the header identity
+        # fast path).
+        #
+        # U-311 (Wave-5 Option A): the verify step is now
+        # `verify_identity_dbo_only` — a plain re-read of dbo.Project by the
+        # resolved row's OWN (qbo_id, realm_id), trusted only when it still
+        # resolves back to the same local id — and reads NO `qbo.*` mapping
+        # table at all. There is no legacy hop left: the old
+        # `qbo.Customer` -> `qbo.CustomerProject` hop was this resolver's only
+        # other data source, and Wave 5 retires that mapping table. Per
+        # `docs/design/wave5.md` §2's "consequence worth flagging": this
+        # resolver used to be ADVISORY (a verify disagreement degraded
+        # gracefully to the slower legacy hop); once the mapping table's data
+        # source is gone it becomes hard-stop-equivalent BY CONSTRUCTION, not
+        # by choice. Measured as a no-op today (0 dbo<->mapping disagreements
+        # live), but a future disagreement that used to degrade now resolves
+        # to None — the line simply syncs without a Project binding rather
+        # than binding to an unverified parent, the safe side of that trade.
         direct_project = self.project_service.read_by_qbo_identity(qbo_customer_ref_value, realm_id)
         if direct_project:
-            verified_qbo_id = verify_project_qbo_identity(
+            verified_qbo_id = verify_identity_dbo_only(
                 direct_project,
-                customer_project_repo=self.customer_project_repo,
-                qbo_customer_repo=self.qbo_customer_repo,
+                read_direct_by_qbo_identity=self.project_service.read_by_qbo_identity,
             )
             if verified_qbo_id:
                 logger.debug(f"Found Project {direct_project.id} via direct dbo QboId lookup")
                 return direct_project.public_id
-
-        # Find the QboCustomer by its QboId
-        if realm_id:
-            qbo_customer = self.qbo_customer_repo.read_by_qbo_id_and_realm_id(qbo_customer_ref_value, realm_id)
-        else:
-            qbo_customer = self.qbo_customer_repo.read_by_qbo_id(qbo_customer_ref_value)
-        if qbo_customer:
-            # Look up the Project mapping for this QboCustomer
-            customer_project = self.customer_project_repo.read_by_qbo_customer_id(qbo_customer.id)
-            if customer_project:
-                # Get the Project to retrieve its public_id
-                project = self.project_service.read_by_id(customer_project.project_id)
-                if project:
-                    logger.debug(f"Found Project {project.id} for QboCustomer {qbo_customer.id}")
-                    return project.public_id
-                else:
-                    logger.debug(f"Project {customer_project.project_id} not found in database")
-            else:
-                logger.debug(f"No Project mapping found for QboCustomer {qbo_customer.id}")
-        else:
-            logger.debug(f"QboCustomer with QboId {qbo_customer_ref_value} not found in local database")
         return None
 
     # ------------------------------------------------------------------ #

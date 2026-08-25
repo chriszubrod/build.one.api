@@ -38,10 +38,7 @@ from entities.payment_term.business.service import PaymentTermService
 from integrations.intuit.qbo.base.pull_race import guard_lines_present
 from integrations.intuit.qbo.base.compensation import rollback_orphan_header
 from integrations.intuit.qbo.base.field_ownership import preserve_human_edited_ref, qbo_ref_or_placeholder
-from integrations.intuit.qbo.base.identity_consistency import (
-    verify_identity_dbo_only,
-    verify_project_qbo_identity,
-)
+from integrations.intuit.qbo.base.identity_consistency import verify_identity_dbo_only
 from integrations.intuit.qbo.base.identity_fastpath import (
     raise_concurrent_write_race,
     run_identity_fastpath,
@@ -984,9 +981,11 @@ class BillBillConnector:
         since U-238a) instead of hopping qbo.CustomerProject -> qbo.Customer
         for DisplayName. Returns None if the Project has never been QBO-synced
         (no QboId stamped) — same "not mapped, don't push" contract as before.
-        The dbo identity is verified against the mapping table before being
-        trusted (round-4 review) — dbo-internal uniqueness alone doesn't
-        guarantee the mapping table has caught up to the latest holder.
+        U-311 (Wave-5 Option A): the dbo identity is verified via
+        `verify_identity_dbo_only` (a plain re-read of dbo.Project by its own
+        (qbo_id, realm_id), trusted only when it still resolves back to this
+        same row) — dbo-internal uniqueness alone doesn't guarantee the row
+        wasn't reassigned between the read above and this call.
 
         Args:
             project_id: Local Project database ID
@@ -1002,10 +1001,9 @@ class BillBillConnector:
             logger.debug(f"Project {project_id} has no QBO identity (QboId) stamped")
             return None
 
-        verified_qbo_id = verify_project_qbo_identity(
+        verified_qbo_id = verify_identity_dbo_only(
             project,
-            customer_project_repo=self.customer_project_repo,
-            qbo_customer_repo=self.qbo_customer_repo,
+            read_direct_by_qbo_identity=self.project_service.read_by_qbo_identity,
         )
         if not verified_qbo_id:
             return None
@@ -1159,7 +1157,8 @@ class BillBillConnector:
                 # above so the push dead-letters via the outbox instead of shipping a not-billable bill.
                 raise ValueError(
                     f"BillLineItem {line_item.id}: billable line on project_id={line_item.project_id} "
-                    f"has no QBO CustomerRef mapping. Map the Project to a qbo.CustomerProject row before syncing."
+                    f"has no QBO CustomerRef mapping. Ensure the Project has a QBO identity stamped "
+                    f"(dbo.Project.QboId/RealmId, e.g. by syncing it from QBO) before syncing this bill."
                 )
             else:
                 # Billable but no project to bill against — nothing to map; keep NotBillable.

@@ -957,9 +957,11 @@ class PurchaseExpenseConnector:
         since U-238a) instead of hopping qbo.CustomerProject -> qbo.Customer
         for DisplayName. Returns None if the Project has never been QBO-synced
         (no QboId stamped) — same "not mapped, don't push" contract as before.
-        The dbo identity is verified against the mapping table before being
-        trusted (round-4 review) — dbo-internal uniqueness alone doesn't
-        guarantee the mapping table has caught up to the latest holder.
+        U-311 (Wave-5 Option A): the dbo identity is verified via
+        `verify_identity_dbo_only` (a plain re-read of dbo.Project by its own
+        (qbo_id, realm_id), trusted only when it still resolves back to this
+        same row) — dbo-internal uniqueness alone doesn't guarantee the row
+        wasn't reassigned between the read above and this call.
 
         Args:
             project_id: Local Project database ID
@@ -969,9 +971,6 @@ class PurchaseExpenseConnector:
         """
         from integrations.intuit.qbo.purchase.external.schemas import QboReferenceType
         from entities.project.business.service import ProjectService
-        from integrations.intuit.qbo.customer.connector.project.persistence.repo import CustomerProjectRepository
-        from integrations.intuit.qbo.customer.persistence.repo import QboCustomerRepository
-        from integrations.intuit.qbo.base.identity_consistency import verify_project_qbo_identity
 
         if not project_id:
             return None
@@ -982,10 +981,9 @@ class PurchaseExpenseConnector:
             logger.debug(f"Project {project_id} has no QBO identity (QboId) stamped")
             return None
 
-        verified_qbo_id = verify_project_qbo_identity(
+        verified_qbo_id = verify_identity_dbo_only(
             project,
-            customer_project_repo=CustomerProjectRepository(),
-            qbo_customer_repo=QboCustomerRepository(),
+            read_direct_by_qbo_identity=project_service.read_by_qbo_identity,
         )
         if not verified_qbo_id:
             return None

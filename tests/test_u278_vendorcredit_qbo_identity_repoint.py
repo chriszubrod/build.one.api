@@ -423,9 +423,6 @@ def test_legacy_path_still_stamps_identity_after_apply():
 # --- Section 3: VendorCreditLineItemConnector._get_project_public_id repoint ---
 
 QBO_CUSTOMER_REPO_PATH = "integrations.intuit.qbo.customer.persistence.repo.QboCustomerRepository"
-CUSTOMER_PROJECT_REPO_PATH = (
-    "integrations.intuit.qbo.customer.connector.project.persistence.repo.CustomerProjectRepository"
-)
 
 
 def _build_line_connector():
@@ -439,39 +436,54 @@ def _build_line_connector():
 
 
 def test_line_get_project_public_id_direct_hit_skips_legacy_lookup():
+    """U-311 (Wave-5, scope expansion — this resolver was missed by
+    `docs/design/wave5.md` §4's own consumer sweep): a direct hit is now
+    verified via `verify_identity_dbo_only` — a second call to the SAME
+    `read_by_qbo_identity` (keyed on the resolved row's own qbo_id/realm_id),
+    not a qbo.CustomerProject mapping-table read. This resolver previously
+    trusted a direct hit unconditionally (unlike its 3 near-identical
+    siblings, which all verified) — closing that gap is a side effect of
+    retiring the legacy hop below."""
     connector = _build_line_connector()
-    project = SimpleNamespace(id=42, public_id="proj-pub-42")
+    project = SimpleNamespace(id=42, public_id="proj-pub-42", qbo_id="QBO-100", realm_id="realm-1")
     connector.project_service.read_by_qbo_identity.return_value = project
 
     with patch(QBO_CUSTOMER_REPO_PATH) as mock_qbo_customer_repo_cls:
         result = connector._get_project_public_id("QBO-100", "realm-1")
 
     assert result == "proj-pub-42"
-    connector.project_service.read_by_qbo_identity.assert_called_once_with("QBO-100", "realm-1")
+    assert connector.project_service.read_by_qbo_identity.call_count == 2
+    connector.project_service.read_by_qbo_identity.assert_any_call("QBO-100", "realm-1")
     mock_qbo_customer_repo_cls.assert_not_called()
 
 
-def test_line_get_project_public_id_direct_miss_falls_back_to_legacy():
+def test_line_get_project_public_id_returns_none_when_direct_miss():
+    """U-311: no legacy hop left — a miss on the direct dbo lookup returns
+    None outright."""
     connector = _build_line_connector()
     connector.project_service.read_by_qbo_identity.return_value = None
-    project = SimpleNamespace(id=42, public_id="proj-pub-42")
-    connector.project_service.read_by_id.return_value = project
 
-    qbo_customer = SimpleNamespace(id=4)
-    qbo_customer_repo = Mock()
-    qbo_customer_repo.read_by_qbo_id_and_realm_id.return_value = qbo_customer
-
-    customer_project_repo = Mock()
-    customer_project_repo.read_by_qbo_customer_id.return_value = SimpleNamespace(project_id=42)
-
-    with patch(QBO_CUSTOMER_REPO_PATH, return_value=qbo_customer_repo), patch(
-        CUSTOMER_PROJECT_REPO_PATH, return_value=customer_project_repo
-    ):
+    with patch(QBO_CUSTOMER_REPO_PATH) as mock_qbo_customer_repo_cls:
         result = connector._get_project_public_id("QBO-100", "realm-1")
 
-    connector.project_service.read_by_qbo_identity.assert_called_once_with("QBO-100", "realm-1")
-    assert result == "proj-pub-42"
-    qbo_customer_repo.read_by_qbo_id_and_realm_id.assert_called_once_with("QBO-100", "realm-1")
+    assert result is None
+    mock_qbo_customer_repo_cls.assert_not_called()
+
+
+def test_line_get_project_public_id_returns_none_when_verification_fails():
+    """The direct dbo.Project hit exists, but a fresh re-read by its OWN
+    (qbo_id, realm_id) no longer resolves back to the SAME row (a stale/
+    "stolen" identity) — must not trust it; U-311 has no legacy hop left to
+    fall back to, so this returns None."""
+    connector = _build_line_connector()
+    project = SimpleNamespace(id=42, public_id="proj-pub-42", qbo_id="QBO-100", realm_id="realm-1")
+    stolen_by = SimpleNamespace(id=99, public_id="proj-pub-99", qbo_id="QBO-100", realm_id="realm-1")
+    connector.project_service.read_by_qbo_identity.side_effect = [project, stolen_by]
+
+    result = connector._get_project_public_id("QBO-100", "realm-1")
+
+    assert result is None
+    assert connector.project_service.read_by_qbo_identity.call_count == 2
 
 
 def test_line_get_project_public_id_no_customer_ref_value_short_circuits():
@@ -486,14 +498,16 @@ def test_line_get_project_public_id_memoizes_per_connector_lifetime():
     (efficiency finding from code review, mirrors the existing
     _sub_cost_code_cache pattern in this same class)."""
     connector = _build_line_connector()
-    project = SimpleNamespace(id=42, public_id="proj-pub-42")
+    project = SimpleNamespace(id=42, public_id="proj-pub-42", qbo_id="QBO-100", realm_id="realm-1")
     connector.project_service.read_by_qbo_identity.return_value = project
 
     first = connector._get_project_public_id("QBO-100", "realm-1")
     second = connector._get_project_public_id("QBO-100", "realm-1")
 
     assert first == second == "proj-pub-42"
-    connector.project_service.read_by_qbo_identity.assert_called_once_with("QBO-100", "realm-1")
+    # 2 reads (initial lookup + verify) for the first call; the second call
+    # is served entirely from cache, no further reads.
+    assert connector.project_service.read_by_qbo_identity.call_count == 2
 
 
 def test_line_get_project_public_id_cache_keyed_by_realm_too():
@@ -501,13 +515,13 @@ def test_line_get_project_public_id_cache_keyed_by_realm_too():
     entry — multi-realm is a real (if currently narrow) case this connector already
     threads through realm_id everywhere else."""
     connector = _build_line_connector()
-    project_a = SimpleNamespace(id=1, public_id="proj-pub-a")
-    project_b = SimpleNamespace(id=2, public_id="proj-pub-b")
-    connector.project_service.read_by_qbo_identity.side_effect = [project_a, project_b]
+    project_a = SimpleNamespace(id=1, public_id="proj-pub-a", qbo_id="QBO-100", realm_id="realm-1")
+    project_b = SimpleNamespace(id=2, public_id="proj-pub-b", qbo_id="QBO-100", realm_id="realm-2")
+    connector.project_service.read_by_qbo_identity.side_effect = [project_a, project_a, project_b, project_b]
 
     result_a = connector._get_project_public_id("QBO-100", "realm-1")
     result_b = connector._get_project_public_id("QBO-100", "realm-2")
 
     assert result_a == "proj-pub-a"
     assert result_b == "proj-pub-b"
-    assert connector.project_service.read_by_qbo_identity.call_count == 2
+    assert connector.project_service.read_by_qbo_identity.call_count == 4

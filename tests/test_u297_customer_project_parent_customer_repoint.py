@@ -32,8 +32,9 @@ Covers:
      `_apply_project_fields_and_sync` (update paths) and `project_service.create`
      (create path), and that an unresolvable parent passes None through.
 """
+from contextlib import ExitStack, contextmanager
 from types import SimpleNamespace
-from unittest.mock import Mock, call
+from unittest.mock import Mock, call, patch
 
 from integrations.intuit.qbo.base.identity_consistency import (
     IdentityCheckResult,
@@ -42,6 +43,26 @@ from integrations.intuit.qbo.base.identity_consistency import (
 from integrations.intuit.qbo.customer.connector.project.business.service import (
     CustomerProjectConnector,
 )
+from conftest import mock_qbo_app_lock_granted
+
+# U-311: sync_from_qbo_customer now routes every branch through
+# run_identity_fastpath_dbo_only, which takes a create-lock on a genuine miss,
+# and _stamp_project_identity takes its own separate stamp-lock -- both must
+# be granted for Section 3's tests to reach the name-match/create branches
+# they target (Section 1/2, on `_get_parent_customer_id` directly, need none
+# of this -- that resolver takes no lock at all).
+FASTPATH_LOCK_TARGET = "integrations.intuit.qbo.base.identity_fastpath.qbo_app_lock"
+PROJECT_STAMP_LOCK_TARGET = (
+    "integrations.intuit.qbo.customer.connector.project.business.service.qbo_app_lock"
+)
+
+
+@contextmanager
+def _locks_granted():
+    with ExitStack() as stack:
+        stack.enter_context(patch(FASTPATH_LOCK_TARGET, mock_qbo_app_lock_granted))
+        stack.enter_context(patch(PROJECT_STAMP_LOCK_TARGET, mock_qbo_app_lock_granted))
+        yield
 
 
 # --- Section 1: the verify_customer_qbo_identity wrapper ---
@@ -408,25 +429,30 @@ def _make_qbo_customer(**overrides):
 
 
 def _sync_connector(*, direct=None, existing_project=None):
+    """A connector wired to land `sync_from_qbo_customer` on the dbo-only
+    name-match-adopt/create MISS branch (U-311), with `direct` controlling
+    how the unrelated PARENT-CUSTOMER resolver (U-310) answers.
+
+    `existing_project` -> `project_service.read_by_name`: given, the miss
+    branch adopts it by name; `None`, it creates fresh. `_stamp_project_identity`
+    re-reads via `project_service.read_by_id` -- wired here to mirror whichever
+    branch the candidate came from: the adopted `existing_project`, or whatever
+    `project_service.create` returns (looked up dynamically, since a test may
+    set `create.return_value` AFTER calling this helper).
+    """
     connector = _build_connector(direct=direct)
     connector._sync_addresses = Mock()
-    # Force the header identity fast path to a miss so these tests land on the
-    # mapping-table branches (conftest.stub_qbo_identity_fastpath_miss's rule).
-    # NB Project's OWN identity path is still the mapping-table shape — U-310
-    # repointed only the PARENT-CUSTOMER lookup; U-311 owns the rest.
+    # Force Project's OWN identity fast path to a miss so these tests land on
+    # the name-match/create branches (U-311 -- Project's own pull is now ALSO
+    # dbo-only, mirroring the parent-customer resolver U-310 already repointed).
     connector.project_service.read_by_qbo_identity.return_value = None
-    connector.project_service.read_by_name.return_value = None
-    connector.mapping_repo.read_by_qbo_customer_id.return_value = None
-    # Pin BOTH 1:1 guards in create_mapping — a bare Mock returns a truthy row
-    # here and the create path raises "already mapped".
-    connector.mapping_repo.read_by_project_id.return_value = None
-    connector.mapping_repo.create.return_value = SimpleNamespace(id=1)
+    connector.project_service.read_by_name.return_value = existing_project
     connector.project_service.repo.update_by_id.side_effect = lambda p: p
-    if existing_project is not None:
-        connector.mapping_repo.read_by_qbo_customer_id.return_value = SimpleNamespace(
-            id=1, project_id=existing_project.id
-        )
-        connector.project_service.read_by_id.return_value = existing_project
+
+    def _read_by_id(_id):
+        return existing_project if existing_project is not None else connector.project_service.create.return_value
+
+    connector.project_service.read_by_id.side_effect = _read_by_id
     return connector
 
 
@@ -465,7 +491,8 @@ def test_sync_writes_the_resolved_parent_onto_an_existing_project():
     )
     connector = _sync_connector(direct=_parent(), existing_project=project)
 
-    result = connector.sync_from_qbo_customer(_make_qbo_customer())
+    with _locks_granted():
+        result = connector.sync_from_qbo_customer(_make_qbo_customer())
 
     assert result.customer_id == 42
 
@@ -474,7 +501,8 @@ def test_sync_passes_the_resolved_parent_to_project_create():
     connector = _sync_connector(direct=_parent())
     connector.project_service.create.return_value = SimpleNamespace(id=77, public_id="p-77")
 
-    connector.sync_from_qbo_customer(_make_qbo_customer())
+    with _locks_granted():
+        connector.sync_from_qbo_customer(_make_qbo_customer())
 
     assert connector.project_service.create.call_args.kwargs["customer_id"] == 42
 
@@ -487,7 +515,8 @@ def test_sync_passes_none_when_the_parent_cannot_be_resolved():
     connector = _sync_connector(direct=None)
     connector.project_service.create.return_value = SimpleNamespace(id=77, public_id="p-77")
 
-    connector.sync_from_qbo_customer(_make_qbo_customer())
+    with _locks_granted():
+        connector.sync_from_qbo_customer(_make_qbo_customer())
 
     assert connector.project_service.create.call_args.kwargs["customer_id"] is None
 
@@ -498,7 +527,8 @@ def test_sync_with_no_parent_ref_never_attempts_a_parent_lookup():
     connector = _sync_connector(direct=_parent())
     connector.project_service.create.return_value = SimpleNamespace(id=77, public_id="p-77")
 
-    connector.sync_from_qbo_customer(_make_qbo_customer(parent_ref_value=None))
+    with _locks_granted():
+        connector.sync_from_qbo_customer(_make_qbo_customer(parent_ref_value=None))
 
     assert connector.project_service.create.call_args.kwargs["customer_id"] is None
     connector.customer_service.read_by_qbo_identity.assert_not_called()
@@ -510,8 +540,9 @@ def test_sync_resolves_the_parent_once_across_sibling_sub_units():
     connector = _sync_connector(direct=_parent())
     connector.project_service.create.return_value = SimpleNamespace(id=77, public_id="p-77")
 
-    connector.sync_from_qbo_customer(_make_qbo_customer(id=4, display_name="Sub A"))
-    connector.sync_from_qbo_customer(_make_qbo_customer(id=5, display_name="Sub B"))
+    with _locks_granted():
+        connector.sync_from_qbo_customer(_make_qbo_customer(id=4, display_name="Sub A"))
+        connector.sync_from_qbo_customer(_make_qbo_customer(id=5, display_name="Sub B"))
 
     # One resolution only: direct + verify, then the memo answers the sibling.
     assert connector.customer_service.read_by_qbo_identity.call_count == 2

@@ -406,31 +406,32 @@ class VendorCreditLineItemConnector:
         dbo-native lookup first — `ProjectService.read_by_qbo_identity` (built by U-276)
         matches `dbo.Project.QboId`/`.RealmId` against this CustomerRef value directly,
         with no `qbo.Customer`/`qbo.CustomerProject` hop. Every Project synced even once
-        since U-276 already carries this identity. Falls back to the legacy
-        QboCustomer-by-qbo_id -> CustomerProject-by-qbo_customer_id mapping-table hop for
-        any Project that predates identity stamping — read-only, no write side (unlike
-        U-276's own connector, this resolver never creates or repoints anything).
+        since U-276 already carries this identity.
+
+        U-311 (Wave-5, scope expansion — this resolver was missed by
+        `docs/design/wave5.md` §4's own consumer sweep; found + fixed in-unit): a direct
+        hit is now verified via `verify_identity_dbo_only` before being trusted — this
+        resolver previously trusted a direct hit UNCONDITIONALLY, unlike its 3 near-
+        identical siblings (bill/bill_line_item/expense_line_item), which all verify —
+        closing that pre-existing gap as a natural side effect of retiring the legacy
+        hop below (the mapping table this verify step reads was already live; only the
+        *check* against it was missing here). The legacy QboCustomer-by-qbo_id ->
+        CustomerProject-by-qbo_customer_id mapping-table hop is deleted outright — Wave 5
+        retires that table, so there is no fallback data source left; per
+        `docs/design/wave5.md` §2's "consequence worth flagging," a miss/refusal now
+        resolves to None (line syncs without a Project binding) rather than degrading to
+        the legacy hop, measured as a no-op today (0 dbo<->mapping disagreements live).
         """
+        from integrations.intuit.qbo.base.identity_consistency import verify_identity_dbo_only
+
         direct = self.project_service.read_by_qbo_identity(qbo_customer_ref_value, realm_id)
         if direct:
-            return direct.public_id
-
-        from integrations.intuit.qbo.customer.connector.project.persistence.repo import CustomerProjectRepository
-        from integrations.intuit.qbo.customer.persistence.repo import QboCustomerRepository
-
-        qbo_customer_repo = QboCustomerRepository()
-        customer_project_repo = CustomerProjectRepository()
-        if realm_id:
-            qbo_customer = qbo_customer_repo.read_by_qbo_id_and_realm_id(qbo_customer_ref_value, realm_id)
-        else:
-            qbo_customer = qbo_customer_repo.read_by_qbo_id(qbo_customer_ref_value)
-        if not qbo_customer:
-            return None
-        mapping = customer_project_repo.read_by_qbo_customer_id(qbo_customer.id)
-        if not mapping or not mapping.project_id:
-            return None
-        project = self.project_service.read_by_id(id=str(mapping.project_id))
-        return project.public_id if project else None
+            verified_qbo_id = verify_identity_dbo_only(
+                direct, read_direct_by_qbo_identity=self.project_service.read_by_qbo_identity,
+            )
+            if verified_qbo_id:
+                return direct.public_id
+        return None
 
     def _get_sub_cost_code_id(self, qbo_item_ref_value: str, realm_id: Optional[str] = None) -> Optional[int]:
         """Resolve QBO item ref to local sub_cost_code_id, memoized for this connector's

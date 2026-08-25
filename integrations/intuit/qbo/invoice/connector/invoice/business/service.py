@@ -16,6 +16,7 @@ from entities.invoice.business.service import InvoiceService
 from entities.invoice.business.model import Invoice
 from entities.project.business.service import ProjectService
 from integrations.intuit.qbo.base.cache_lookup import cached_or_read
+from integrations.intuit.qbo.base.identity_consistency import verify_identity_dbo_only
 from integrations.intuit.qbo.base.field_ownership import (
     preserve_human_edited_ref,
     qbo_ref_or_placeholder,
@@ -118,10 +119,14 @@ class InvoiceInvoiceConnector:
         Returns:
             Invoice: The synced Invoice record
         """
-        # Find project mapping from QBO CustomerRef
+        # Find project mapping from QBO CustomerRef. U-311: covers a dbo-direct
+        # miss, a failed dbo-only identity verification, and a failed
+        # heal-by-name — not just "no mapping row" any more (Codex xhigh P3).
         project_public_id = self._get_project_public_id(qbo_invoice.customer_ref_value, qbo_invoice.realm_id)
         if not project_public_id:
-            raise ValueError(f"No project mapping found for QBO customer ref: {qbo_invoice.customer_ref_value}")
+            raise ValueError(
+                f"No project mapping found for QBO customer ref: {qbo_invoice.customer_ref_value}"
+            )
         
         # Map QBO Invoice fields to Invoice module fields
         invoice_number = qbo_ref_or_placeholder(qbo_invoice.doc_number, qbo_invoice.qbo_id)
@@ -654,6 +659,27 @@ class InvoiceInvoiceConnector:
         Get the Project public_id from QBO customer reference value.
         Results are cached to avoid repeated DB lookups for the same customer.
 
+        U-311 (Wave-5, scope expansion — this resolver was missed by
+        `docs/design/wave5.md` §4's own consumer sweep; found + fixed in-unit,
+        same class of gap Codex caught for U-312's `duplicate_project` column):
+        tries dbo.Project's native QboId/RealmId directly first via
+        `verify_identity_dbo_only` before falling back to the QboCustomer ->
+        heal-by-name path below. `qbo.Customer` (the raw staging mirror, NOT
+        one of Wave 5's 3 retiring junction tables — see wave5.md's own scope
+        note) stays as the lookup key for the heal fallback; only the
+        `qbo.CustomerProject` mapping-table hop is removed.
+
+        A direct hit that FAILS verification (the identity was reassigned
+        between the read and this call) returns None outright, same as the
+        other 6 repointed sites — it must NOT fall through to the heal-by-name
+        path below (Codex xhigh P1, U-311): heal-by-name is keyed purely on
+        QboCustomer.DisplayName, independent of the failed verify, so falling
+        through could silently bind the invoice line to a DIFFERENT Project
+        than the one verify just refused to trust, and `heal_missing_mapping`
+        can itself create/stamp a mapping — exactly the kind of action a
+        refused verify exists to prevent. The heal fallback is reserved for a
+        genuine MISS (no direct hit at all).
+
         Args:
             qbo_customer_ref_value: QBO customer reference value (QBO Customer ID)
             realm_id: Optional QBO realm ID for realm-scoped customer lookup
@@ -670,7 +696,27 @@ class InvoiceInvoiceConnector:
         if cache_key in self._project_cache:
             return self._project_cache[cache_key]
 
-        # Find the QboCustomer by qbo_id
+        direct_project = self.project_service.read_by_qbo_identity(qbo_customer_ref_value, realm_id)
+        if direct_project:
+            verified_qbo_id = verify_identity_dbo_only(
+                direct_project,
+                read_direct_by_qbo_identity=self.project_service.read_by_qbo_identity,
+            )
+            if verified_qbo_id:
+                logger.debug(f"Found Project {direct_project.id} via direct dbo QboId lookup")
+                self._project_cache[cache_key] = direct_project.public_id
+                return direct_project.public_id
+            logger.warning(
+                f"Project {direct_project.id} failed dbo-only identity verification for "
+                f"QboCustomer ref {qbo_customer_ref_value} — refusing to trust it or fall "
+                f"through to heal-by-name."
+            )
+            self._project_cache[cache_key] = None
+            return None
+
+        # Genuine miss (no direct hit at all). Find the QboCustomer staging row
+        # by qbo_id (qbo.Customer — not retiring) so the heal-by-name fallback
+        # below has a QboCustomer to bind from.
         if realm_id:
             qbo_customer = self.qbo_customer_repo.read_by_qbo_id_and_realm_id(qbo_customer_ref_value, realm_id)
         else:
@@ -680,34 +726,22 @@ class InvoiceInvoiceConnector:
             self._project_cache[cache_key] = None
             return None
 
-        # Find the CustomerProject mapping
-        customer_mapping = self.customer_project_repo.read_by_qbo_customer_id(qbo_customer.id)
-        if not customer_mapping:
-            # Auto-heal the missing mapping by binding an existing local Project by name
-            # (never creating one). Closes the no-invoice window where a (possibly transient)
-            # missing CustomerProject mapping fails the entire invoice pull. If it genuinely
-            # cannot resolve a local Project, fall through to return None so the caller still
-            # raises (fail loud — never silently skip the project binding).
-            from integrations.intuit.qbo.customer.connector.project.business.service import (
-                CustomerProjectConnector,
-            )
-            healed_project = CustomerProjectConnector().heal_missing_mapping(qbo_customer)
-            if healed_project:
-                self._project_cache[cache_key] = healed_project.public_id
-                return healed_project.public_id
-            logger.warning(f'CustomerProject mapping not found (and unhealable) for QboCustomer ID: {qbo_customer.id}')
-            self._project_cache[cache_key] = None
-            return None
-
-        # Get the Project
-        project = self.project_service.read_by_id(customer_mapping.project_id)
-        if not project:
-            logger.warning(f"Project not found for ID: {customer_mapping.project_id}")
-            self._project_cache[cache_key] = None
-            return None
-
-        self._project_cache[cache_key] = project.public_id
-        return project.public_id
+        # Auto-heal by binding an existing local Project by name (never
+        # creating one). Closes the no-invoice window where a (possibly
+        # transient) not-yet-dbo-stamped Project fails the entire invoice
+        # pull. If it genuinely cannot resolve a local Project, fall through
+        # to return None so the caller still raises (fail loud — never
+        # silently skip the project binding).
+        from integrations.intuit.qbo.customer.connector.project.business.service import (
+            CustomerProjectConnector,
+        )
+        healed_project = CustomerProjectConnector().heal_missing_mapping(qbo_customer)
+        if healed_project:
+            self._project_cache[cache_key] = healed_project.public_id
+            return healed_project.public_id
+        logger.warning(f'Project not resolvable (dbo miss, and unhealable by name) for QboCustomer ID: {qbo_customer.id}')
+        self._project_cache[cache_key] = None
+        return None
 
     def _sync_line_items(
         self,
@@ -1120,13 +1154,14 @@ class InvoiceInvoiceConnector:
         U-276 (Phase-4 pilot): reads dbo.Project.Name/.QboId directly (native
         since U-238a) instead of hopping qbo.CustomerProject -> qbo.Customer
         for DisplayName. Returns None if the Project has never been QBO-synced
-        (no QboId stamped) — same "can't resolve" contract as before. The dbo
-        identity is verified against the mapping table before being trusted
-        (round-4 review) — dbo-internal uniqueness alone doesn't guarantee the
-        mapping table has caught up to the latest holder.
+        (no QboId stamped) — same "can't resolve" contract as before. U-311
+        (Wave-5 Option A): the dbo identity is verified via
+        `verify_identity_dbo_only` (a plain re-read of dbo.Project by its own
+        (qbo_id, realm_id), trusted only when it still resolves back to this
+        same row) — dbo-internal uniqueness alone doesn't guarantee the row
+        wasn't reassigned between the read above and this call.
         """
         from integrations.intuit.qbo.invoice.external.schemas import QboReferenceType
-        from integrations.intuit.qbo.base.identity_consistency import verify_project_qbo_identity
 
         if not project_id:
             return None
@@ -1136,10 +1171,9 @@ class InvoiceInvoiceConnector:
             logger.warning(f"Project {project_id} has no QBO identity (QboId) stamped")
             return None
 
-        verified_qbo_id = verify_project_qbo_identity(
+        verified_qbo_id = verify_identity_dbo_only(
             project,
-            customer_project_repo=self.customer_project_repo,
-            qbo_customer_repo=self.qbo_customer_repo,
+            read_direct_by_qbo_identity=self.project_service.read_by_qbo_identity,
         )
         if not verified_qbo_id:
             return None

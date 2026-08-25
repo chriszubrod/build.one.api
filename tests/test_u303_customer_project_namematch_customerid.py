@@ -17,15 +17,33 @@ its result directly rather than re-driving the dbo-identity / legacy two-hop
 machinery, isolating the one thing U-303 changes: what the name-match branch
 does with that resolved value.
 """
+from contextlib import ExitStack, contextmanager
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 import pytest
 
 from integrations.intuit.qbo.customer.connector.project.business.service import (
     CustomerProjectConnector,
 )
-from conftest import stub_qbo_identity_fastpath_miss
+from conftest import mock_qbo_app_lock_granted, stub_qbo_identity_fastpath_miss
+
+# U-311: sync_from_qbo_customer now routes every branch through
+# run_identity_fastpath_dbo_only, which takes a create-lock on a genuine miss,
+# and _stamp_project_identity takes its own separate stamp-lock -- both must
+# be granted for these tests to reach the name-match-bind code they target.
+FASTPATH_LOCK_TARGET = "integrations.intuit.qbo.base.identity_fastpath.qbo_app_lock"
+PROJECT_STAMP_LOCK_TARGET = (
+    "integrations.intuit.qbo.customer.connector.project.business.service.qbo_app_lock"
+)
+
+
+@contextmanager
+def _locks_granted():
+    with ExitStack() as stack:
+        stack.enter_context(patch(FASTPATH_LOCK_TARGET, mock_qbo_app_lock_granted))
+        stack.enter_context(patch(PROJECT_STAMP_LOCK_TARGET, mock_qbo_app_lock_granted))
+        yield
 
 
 def _make_qbo_customer(**overrides):
@@ -66,7 +84,21 @@ def _echo_as_fresh_object(project):
 def _build_connector_for_name_match_bind(*, existing_local, resolved_customer_id=42):
     """A connector pinned to land on the no-mapping/name-match bind branch:
     dbo-identity fast path misses, no qbo.CustomerProject mapping exists yet,
-    and `existing_local` name-matches an unmapped local Project."""
+    and `existing_local` name-matches an unmapped local Project.
+
+    U-311: `_stamp_project_identity` re-reads via `project_service.read_by_id`
+    TWICE -- once as `current` (the row it may mutate+write), once more at
+    the very end (the real repo's re-read-after-write contract, mirroring
+    `_stamp_customer_identity`). The first call must return `existing_local`
+    itself (so mutating `current.customer_id` actually lands on the object
+    these tests hold a reference to); the second call returns a FRESH object
+    (via `_echo_as_fresh_object`) only if an actual write happened -- exactly
+    mirroring what a real DB round-trip would produce, and letting
+    `test_name_match_bind_writes_the_resolved_parent`'s object-identity
+    assertion and `test_name_match_bind_skips_the_write_when_parent_unresolvable`'s
+    `is existing_local` assertion both hold for the write and no-write cases
+    respectively.
+    """
     mapping_repo = Mock()
     mapping_repo.read_by_qbo_customer_id.return_value = None  # no existing mapping
     mapping_repo.read_by_project_id.return_value = None  # existing_local is unmapped
@@ -75,7 +107,24 @@ def _build_connector_for_name_match_bind(*, existing_local, resolved_customer_id
     project_service = Mock()
     stub_qbo_identity_fastpath_miss(project_service)
     project_service.read_by_name.return_value = existing_local
-    project_service.repo.update_by_id.side_effect = _echo_as_fresh_object
+
+    write_happened = {"flag": False}
+
+    def _update_by_id(project):
+        write_happened["flag"] = True
+        return _echo_as_fresh_object(project)
+
+    project_service.repo.update_by_id.side_effect = _update_by_id
+
+    read_by_id_calls = {"n": 0}
+
+    def _read_by_id(_id):
+        read_by_id_calls["n"] += 1
+        if read_by_id_calls["n"] == 1 or not write_happened["flag"]:
+            return existing_local
+        return _echo_as_fresh_object(existing_local)
+
+    project_service.read_by_id.side_effect = _read_by_id
 
     connector = CustomerProjectConnector(
         mapping_repo=mapping_repo,
@@ -138,6 +187,7 @@ def _build_rowversion_realistic_connector(*, existing_local, resolved_customer_i
     project_service = Mock()
     stub_qbo_identity_fastpath_miss(project_service)
     project_service.read_by_name.return_value = existing_local
+    project_service.read_by_id.return_value = existing_local
     project_service.repo.set_qbo_identity.side_effect = _set_qbo_identity
     project_service.repo.update_by_id.side_effect = _update_by_id
 
@@ -166,12 +216,13 @@ def test_name_match_bind_writes_the_resolved_parent():
     existing_local = _make_project()
     connector = _build_connector_for_name_match_bind(existing_local=existing_local, resolved_customer_id=42)
 
-    result = connector.sync_from_qbo_customer(_make_qbo_customer())
+    with _locks_granted():
+        result = connector.sync_from_qbo_customer(_make_qbo_customer())
 
-    # NOT `is existing_local`: update_by_id returns a fresh object (real repo
-    # contract, see _echo_as_fresh_object) — this asserts the connector
-    # reassigns `existing_local = updated` rather than silently keeping using
-    # the pre-write object.
+    # NOT `is existing_local`: the post-stamp re-read returns a fresh object
+    # (real repo contract, see _echo_as_fresh_object) — this asserts the
+    # connector actually returns that fresh state rather than silently
+    # keeping the pre-write object.
     assert result is not existing_local
     assert result.customer_id == 42
     connector.project_service.repo.update_by_id.assert_called_once_with(existing_local)
@@ -182,12 +233,14 @@ def test_name_match_bind_survives_create_mappings_identity_stamp_rowversion_bump
     not by the author): see `_build_rowversion_realistic_connector`'s docstring.
     The fix must write CustomerId using a RowVersion that is still valid at the
     moment `update_by_id` actually runs — i.e. it must not be sent stale by a
-    RowVersion-bumping write (`create_mapping`'s `set_qbo_identity` stamp)
-    that already landed first."""
+    RowVersion-bumping write (`_stamp_project_identity`'s own `set_qbo_identity`
+    stamp) that already landed first. U-311 carries this ordering forward:
+    the CustomerId write still happens BEFORE set_qbo_identity."""
     existing_local = _make_project()
     connector = _build_rowversion_realistic_connector(existing_local=existing_local, resolved_customer_id=42)
 
-    result = connector.sync_from_qbo_customer(_make_qbo_customer())
+    with _locks_granted():
+        result = connector.sync_from_qbo_customer(_make_qbo_customer())
 
     assert result.customer_id == 42
     connector.project_service.repo.set_qbo_identity.assert_called_once()
@@ -201,21 +254,23 @@ def test_name_match_bind_writes_even_when_already_equal_to_the_resolved_value():
     existing_local = _make_project(customer_id=42)
     connector = _build_connector_for_name_match_bind(existing_local=existing_local, resolved_customer_id=42)
 
-    connector.sync_from_qbo_customer(_make_qbo_customer())
+    with _locks_granted():
+        connector.sync_from_qbo_customer(_make_qbo_customer())
 
     connector.project_service.repo.update_by_id.assert_called_once()
 
 
 def test_name_match_bind_preserves_description_and_status():
-    """UpdateProjectById's CASE-WHEN NULL guard covers ONLY CustomerId — Name/
-    Description/Status are unconditional overwrites. `_apply_project_fields_and_sync`
-    would apply the QBO-derived Description/Status unconditionally, which is why
-    this branch must NOT reuse it: it deliberately ADOPTS a pre-existing local
-    Project without touching its other, possibly hand-authored, fields."""
+    """`_stamp_project_identity` writes ONLY CustomerId — Name/Description/
+    Status are deliberately left untouched. `_apply_project_fields_and_sync`
+    would apply the QBO-derived Description/Status unconditionally, which is
+    why this branch must NOT reuse it: it deliberately ADOPTS a pre-existing
+    local Project without touching its other, possibly hand-authored, fields."""
     existing_local = _make_project(description="hand-written notes", status="on_hold")
     connector = _build_connector_for_name_match_bind(existing_local=existing_local, resolved_customer_id=42)
 
-    result = connector.sync_from_qbo_customer(_make_qbo_customer())
+    with _locks_granted():
+        result = connector.sync_from_qbo_customer(_make_qbo_customer())
 
     assert result.description == "hand-written notes"
     assert result.status == "on_hold"
@@ -226,7 +281,8 @@ def test_name_match_bind_skips_the_write_when_parent_unresolvable():
     existing_local = _make_project()
     connector = _build_connector_for_name_match_bind(existing_local=existing_local, resolved_customer_id=None)
 
-    result = connector.sync_from_qbo_customer(_make_qbo_customer())
+    with _locks_granted():
+        result = connector.sync_from_qbo_customer(_make_qbo_customer())
 
     assert result is existing_local
     assert result.customer_id is None
@@ -234,29 +290,31 @@ def test_name_match_bind_skips_the_write_when_parent_unresolvable():
 
 
 def test_name_match_bind_raises_concurrent_write_race_on_rowversion_conflict():
-    """Mirrors the fast/legacy-update paths' U-291 guard: a None return from
-    update_by_id means a concurrent edit/delete raced this bind and must raise
-    loud, not silently return the pre-write (stale) Project."""
+    """Mirrors the fast-path's U-291 guard: a None return from update_by_id
+    means a concurrent edit/delete raced this bind and must raise loud, not
+    silently return the pre-write (stale) Project."""
     existing_local = _make_project()
     connector = _build_connector_for_name_match_bind(existing_local=existing_local, resolved_customer_id=42)
     connector.project_service.repo.update_by_id.side_effect = None
     connector.project_service.repo.update_by_id.return_value = None
 
-    with pytest.raises(RuntimeError, match="concurrent write race"):
-        connector.sync_from_qbo_customer(_make_qbo_customer())
+    with _locks_granted():
+        with pytest.raises(RuntimeError, match="concurrent write race"):
+            connector.sync_from_qbo_customer(_make_qbo_customer())
 
 
-def test_name_match_bind_still_creates_mapping_and_syncs_addresses():
-    """Non-regression baseline: the pre-existing mapping-creation + address-sync
-    behavior must survive unchanged alongside the new CustomerId write."""
+def test_name_match_bind_still_syncs_addresses():
+    """Non-regression baseline: address-sync must survive unchanged alongside
+    the CustomerId write. U-311: there is no more mapping row to create on
+    this path (Wave-5 Option B retired qbo.CustomerProject from this
+    connector's own pull entirely) — the pre-existing `mapping_repo.create`
+    assertion this test used to carry is gone with that machinery."""
     existing_local = _make_project()
     connector = _build_connector_for_name_match_bind(existing_local=existing_local, resolved_customer_id=42)
 
-    connector.sync_from_qbo_customer(_make_qbo_customer())
+    with _locks_granted():
+        connector.sync_from_qbo_customer(_make_qbo_customer())
 
-    connector.mapping_repo.create.assert_called_once_with(
-        project_id=existing_local.id, qbo_customer_id=4
-    )
     connector._sync_addresses.assert_called_once()
     assert connector._sync_addresses.call_args.args[1] == existing_local.id
 
@@ -282,17 +340,18 @@ def test_equivalence_same_parent_regardless_of_which_branch_binds_it():
     fast_connector._get_parent_customer_id = Mock(return_value=resolved_parent_id)
     fast_connector.project_service.read_by_qbo_identity.return_value = fast_path_project
     fast_connector.project_service.repo.update_by_id.side_effect = lambda p: p
-    # Mapping table agrees with the dbo-identity hit -> resolve_mapping_state CONSISTENT.
-    fast_connector.mapping_repo.read_by_project_id.return_value = SimpleNamespace(
-        id=1, project_id=10, qbo_customer_id=4
-    )
 
     name_match_project = _make_project(id=88)
     name_match_connector = _build_connector_for_name_match_bind(
         existing_local=name_match_project, resolved_customer_id=resolved_parent_id
     )
 
+    # The dbo-identity HIT branch returns before ever taking a lock (U-311 --
+    # run_identity_fastpath_dbo_only only locks on a genuine MISS), so
+    # fast_connector's call needs no lock patching; name_match_connector's
+    # does (it's a genuine miss -> name-match-adopt).
     fast_result = fast_connector.sync_from_qbo_customer(_make_qbo_customer(id=4))
-    name_match_result = name_match_connector.sync_from_qbo_customer(_make_qbo_customer(id=5))
+    with _locks_granted():
+        name_match_result = name_match_connector.sync_from_qbo_customer(_make_qbo_customer(id=5))
 
     assert fast_result.customer_id == name_match_result.customer_id == resolved_parent_id

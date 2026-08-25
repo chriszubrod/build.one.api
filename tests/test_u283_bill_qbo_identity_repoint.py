@@ -24,9 +24,11 @@ Covers:
      issue, never writes to the conflicted Bill), miss (falls back to the
      pre-existing mapping-table path unchanged, reusing the same
      `_apply_bill_fields` closure).
-  3. BillLineItemConnector._get_project_public_id: direct dbo.Project lookup
-     tried first, legacy qbo.Customer->qbo.CustomerProject hop only on a miss
-     or an unverified (conflicting) direct hit.
+  3. BillLineItemConnector._get_project_public_id: direct dbo.Project lookup,
+     verified via `verify_identity_dbo_only` (U-311, Wave-5 Option A) — a
+     second dbo-only re-read by the resolved row's own identity, no
+     `qbo.CustomerProject` mapping-table read left at all. A miss or a failed
+     verification now returns None outright (no legacy hop to fall back to).
 """
 import sys
 from pathlib import Path
@@ -36,8 +38,6 @@ from unittest.mock import MagicMock, Mock, patch
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from conftest import stub_identity_check_trusts
-from integrations.intuit.qbo.base.identity_consistency import IdentityCheckResult
 from integrations.intuit.qbo.bill.connector.bill.business.service import BillBillConnector
 
 
@@ -396,57 +396,53 @@ def _build_bill_line_item_connector():
 
 
 def test_get_project_public_id_prefers_direct_dbo_lookup():
+    """U-311 (Wave-5 Option A): the verify step is now `verify_identity_dbo_only`
+    — a second call to the SAME `read_by_qbo_identity` (keyed on the resolved
+    row's own qbo_id/realm_id), not a qbo.CustomerProject mapping-table read.
+    A trusted hit costs exactly 2 dbo reads; there is no `qbo.*` fallback left."""
     connector, project_service, qbo_customer_repo, customer_project_repo = _build_bill_line_item_connector()
-    direct_project = SimpleNamespace(id=10, public_id="proj-pub-10", qbo_id="CUST-1", name="Acme")
+    direct_project = SimpleNamespace(id=10, public_id="proj-pub-10", qbo_id="CUST-1", realm_id="realm-1", name="Acme")
     project_service.read_by_qbo_identity.return_value = direct_project
-    # No CustomerProject mapping row yet -> verify_project_qbo_identity trusts it.
-    stub_identity_check_trusts(customer_project_repo)
 
     result = connector._get_project_public_id("CUST-1", "realm-1")
 
     assert result == "proj-pub-10"
-    project_service.read_by_qbo_identity.assert_called_once_with("CUST-1", "realm-1")
+    assert project_service.read_by_qbo_identity.call_count == 2
+    project_service.read_by_qbo_identity.assert_any_call("CUST-1", "realm-1")
     qbo_customer_repo.read_by_qbo_id_and_realm_id.assert_not_called()
     qbo_customer_repo.read_by_qbo_id.assert_not_called()
+    customer_project_repo.read_by_qbo_customer_id.assert_not_called()
 
 
-def test_get_project_public_id_falls_back_when_direct_lookup_misses():
+def test_get_project_public_id_returns_none_when_direct_lookup_misses():
+    """U-311: no legacy hop left — a miss on the direct dbo lookup returns
+    None outright."""
     connector, project_service, qbo_customer_repo, customer_project_repo = _build_bill_line_item_connector()
     project_service.read_by_qbo_identity.return_value = None
-    qbo_customer = SimpleNamespace(id=20)
-    qbo_customer_repo.read_by_qbo_id_and_realm_id.return_value = qbo_customer
-    customer_project_repo.read_by_qbo_customer_id.return_value = SimpleNamespace(project_id=30)
-    project_service.read_by_id.return_value = SimpleNamespace(id=30, public_id="proj-pub-30")
 
     result = connector._get_project_public_id("CUST-2", "realm-1")
 
-    assert result == "proj-pub-30"
-    qbo_customer_repo.read_by_qbo_id_and_realm_id.assert_called_once_with("CUST-2", "realm-1")
+    assert result is None
+    qbo_customer_repo.read_by_qbo_id_and_realm_id.assert_not_called()
+    customer_project_repo.read_by_qbo_customer_id.assert_not_called()
 
 
-def test_get_project_public_id_falls_back_when_direct_hit_fails_verification():
-    """The direct dbo.Project hit exists, but its OWN CustomerProject mapping
-    disagrees (a stale/"stolen" identity) — must not trust it blindly; falls
-    back to the legacy hop rather than misattributing the line to the wrong
-    project."""
+def test_get_project_public_id_returns_none_when_verification_fails():
+    """The direct dbo.Project hit exists, but a fresh re-read by its OWN
+    (qbo_id, realm_id) no longer resolves back to the SAME row (a stale/
+    "stolen" identity) — must not trust it; U-311 has no legacy hop left to
+    fall back to, so this now returns None rather than misattributing the
+    line to the wrong project."""
     connector, project_service, qbo_customer_repo, customer_project_repo = _build_bill_line_item_connector()
-    direct_project = SimpleNamespace(id=10, public_id="proj-pub-10", qbo_id="CUST-1", name="Acme")
-    project_service.read_by_qbo_identity.return_value = direct_project
-    # Local-side mapping disagrees: Project 10 maps to a DIFFERENT QboCustomer.
-    customer_project_repo.read_identity_check.return_value = IdentityCheckResult(
-        mapping_id=999, forward_external_qbo_id="CUST-OTHER", reverse_mapped_local_id=10
-    )
-
-    # Legacy hop takes over from here.
-    qbo_customer = SimpleNamespace(id=20)
-    qbo_customer_repo.read_by_qbo_id_and_realm_id.return_value = qbo_customer
-    customer_project_repo.read_by_qbo_customer_id.return_value = SimpleNamespace(project_id=30)
-    project_service.read_by_id.return_value = SimpleNamespace(id=30, public_id="proj-pub-30")
+    direct_project = SimpleNamespace(id=10, public_id="proj-pub-10", qbo_id="CUST-1", realm_id="realm-1", name="Acme")
+    stolen_by = SimpleNamespace(id=99, public_id="proj-pub-99", qbo_id="CUST-1", realm_id="realm-1", name="Other")
+    project_service.read_by_qbo_identity.side_effect = [direct_project, stolen_by]
 
     result = connector._get_project_public_id("CUST-1", "realm-1")
 
-    assert result == "proj-pub-30"  # legacy hop's answer, NOT the unverified direct hit
-    qbo_customer_repo.read_by_qbo_id_and_realm_id.assert_called_once_with("CUST-1", "realm-1")
+    assert result is None
+    assert project_service.read_by_qbo_identity.call_count == 2
+    qbo_customer_repo.read_by_qbo_id_and_realm_id.assert_not_called()
 
 
 def test_get_project_public_id_caches_per_realm_and_customer_ref():
@@ -454,20 +450,21 @@ def test_get_project_public_id_caches_per_realm_and_customer_ref():
     lookup for the same (realm_id, qbo_customer_ref_value) must be served from
     cache, not re-resolved."""
     connector, project_service, qbo_customer_repo, customer_project_repo = _build_bill_line_item_connector()
-    direct_project = SimpleNamespace(id=10, public_id="proj-pub-10", qbo_id="CUST-1", name="Acme")
+    direct_project = SimpleNamespace(id=10, public_id="proj-pub-10", qbo_id="CUST-1", realm_id="realm-1", name="Acme")
     project_service.read_by_qbo_identity.return_value = direct_project
-    stub_identity_check_trusts(customer_project_repo)
 
     first = connector._get_project_public_id("CUST-1", "realm-1")
     second = connector._get_project_public_id("CUST-1", "realm-1")
 
     assert first == second == "proj-pub-10"
-    project_service.read_by_qbo_identity.assert_called_once_with("CUST-1", "realm-1")
+    # 2 reads (initial lookup + verify) for the first call; the second call
+    # is served entirely from cache, no further reads.
+    assert project_service.read_by_qbo_identity.call_count == 2
 
     # A different realm is a different cache key — must resolve independently.
     project_service.read_by_qbo_identity.return_value = SimpleNamespace(
-        id=20, public_id="proj-pub-20", qbo_id="CUST-1", name="Other"
+        id=20, public_id="proj-pub-20", qbo_id="CUST-1", realm_id="realm-2", name="Other"
     )
     third = connector._get_project_public_id("CUST-1", "realm-2")
     assert third == "proj-pub-20"
-    assert project_service.read_by_qbo_identity.call_count == 2
+    assert project_service.read_by_qbo_identity.call_count == 4

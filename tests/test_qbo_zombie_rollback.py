@@ -405,22 +405,13 @@ CUSTOMER_PROJECT_REPO_PATH = (
 )
 
 
-def test_vendorcredit_get_project_public_id_db_error_propagates():
-    """A DB error inside the customer-ref resolver must propagate."""
-    qbo_customer_repo = Mock()
-    qbo_customer_repo.read_by_qbo_id.side_effect = ValueError("db blip")
-
-    connector = VendorCreditLineItemConnector()
-    # U-278: no prior dbo-native identity yet — force the legacy fallback this
-    # test targets; otherwise the real (unmocked) ProjectService would hit a
-    # live DB connection, which this pure-logic/no-live-DB suite must not do.
-    connector.project_service = Mock(read_by_qbo_identity=Mock(return_value=None))
-
-    with patch(QBO_CUSTOMER_REPO_PATH, return_value=qbo_customer_repo), patch(
-        CUSTOMER_PROJECT_REPO_PATH, return_value=Mock()
-    ):
-        with pytest.raises(ValueError, match="db blip"):
-            connector._get_project_public_id("QBO-100")
+# test_vendorcredit_get_project_public_id_db_error_propagates removed U-311
+# -- it exercised the legacy qbo.Customer -> qbo.CustomerProject fallback
+# hop, which Wave-5 Option A deleted from _resolve_project_public_id
+# entirely (there's no longer any code path where a QboCustomerRepository
+# error could propagate from this resolver -- a dbo.Project miss/refusal
+# just returns None). See tests/test_u278_vendorcredit_qbo_identity_repoint.py
+# for this resolver's post-repoint coverage.
 
 
 def test_vendorcredit_get_project_public_id_not_found_returns_none():

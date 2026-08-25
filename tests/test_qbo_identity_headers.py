@@ -315,35 +315,12 @@ def test_project_create_mapping_dual_writes_identity():
     project_repo.set_qbo_identity.assert_called_once_with(id=3, qbo_id="C-1", realm_id="realm-p")
 
 
-def test_project_repoint_heal_stamps_identity():
-    connector, mapping_repo, project_repo = _make_project_connector()
-    qbo_customer = SimpleNamespace(
-        id=4,
-        qbo_id="C-99",
-        realm_id="realm-heal",
-        display_name="Proj",
-        company_name=None,
-        is_job=True,
-        active=True,
-        notes="",
-        parent_ref_value=None,
-        bill_addr_id=None,
-        ship_addr_id=None,
-    )
-    mapping = SimpleNamespace(id=50, project_id=100, qbo_customer_id=4)
-    replacement = SimpleNamespace(id=200, public_id="p200", name="Proj")
-    mapping_repo.read_by_qbo_customer_id.return_value = mapping
-    connector.project_service.read_by_id = Mock(return_value=None)
-    connector.project_service.read_by_name = Mock(return_value=replacement)
-    mapping_repo.read_by_project_id.return_value = None
-    connector._apply_project_fields_and_sync = Mock(return_value=replacement)
-
-    connector.sync_from_qbo_customer(qbo_customer)
-
-    mapping_repo.update_by_id.assert_called_once()
-    project_repo.set_qbo_identity.assert_called_once_with(
-        id=200, qbo_id="C-99", realm_id="realm-heal"
-    )
+# test_project_repoint_heal_stamps_identity removed U-311 -- it tested
+# sync_from_qbo_customer's OLD "mapping exists but Project missing, heal by
+# name" branch, which Wave-5 Option B retired entirely (no mapping table left
+# to go stale). The dbo-only equivalent (name-match adopt via
+# _resolve_project_candidate + _stamp_project_identity) is tested in
+# tests/test_u276_customer_project_qbo_identity_repoint.py.
 
 
 def test_project_create_mapping_identity_failure_propagates():
@@ -359,33 +336,11 @@ def test_project_create_mapping_identity_failure_propagates():
     mapping_repo.create.assert_not_called()
 
 
-def test_project_ordinary_update_path_stamps_identity():
-    connector, _, project_repo = _make_project_connector()
-    project = SimpleNamespace(id=100, public_id="p100", name="Proj")
-    qbo_customer = SimpleNamespace(
-        id=4,
-        qbo_id="C-99",
-        realm_id="realm-heal",
-        display_name="Proj",
-        company_name=None,
-        is_job=True,
-        active=True,
-        notes="",
-        parent_ref_value=None,
-        bill_addr_id=None,
-        ship_addr_id=None,
-    )
-    mapping = SimpleNamespace(id=50, project_id=100, qbo_customer_id=4)
-    connector.mapping_repo.read_by_qbo_customer_id.return_value = mapping
-    connector.project_service.read_by_id = Mock(return_value=project)
-    updated = SimpleNamespace(id=100, public_id="p100", name="Proj")
-    connector._apply_project_fields_and_sync = Mock(return_value=updated)
-
-    connector.sync_from_qbo_customer(qbo_customer)
-
-    project_repo.set_qbo_identity.assert_called_once_with(
-        id=100, qbo_id="C-99", realm_id="realm-heal"
-    )
+# test_project_ordinary_update_path_stamps_identity removed U-311 -- it
+# tested sync_from_qbo_customer's OLD "existing mapping -> update Project"
+# branch, retired the same way (see the note above
+# test_project_create_mapping_identity_failure_propagates). The dbo-only fast
+# path's HIT-branch identity refresh is covered in test_u276.
 
 
 def _make_company_connector():

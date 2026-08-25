@@ -1,5 +1,7 @@
 """Pure-logic tests for CustomerProject heal-don't-delete mapping fixes (U-022)
-and QBO customer-ref realm-scoping on line-item project resolvers (U-060)."""
+and InvoiceInvoiceConnector's project-resolver heal-by-name fallback (U-311).
+See each connector's own dedicated repoint suite (test_u276/u278/u283/u283b)
+for the dbo-only fast-path/verify coverage this file used to duplicate."""
 from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -9,13 +11,6 @@ import pytest
 from integrations.intuit.qbo.customer.connector.project.business.model import CustomerProject
 from integrations.intuit.qbo.customer.connector.project.business.service import CustomerProjectConnector
 from integrations.intuit.qbo.invoice.connector.invoice.business.service import InvoiceInvoiceConnector
-from integrations.intuit.qbo.bill.connector.bill_line_item.business.service import BillLineItemConnector
-from integrations.intuit.qbo.purchase.connector.expense_line_item.business.service import (
-    PurchaseLineExpenseLineItemConnector,
-)
-from integrations.intuit.qbo.vendorcredit.connector.bill_credit_line_item.business.service import (
-    VendorCreditLineItemConnector,
-)
 from conftest import stub_qbo_identity_fastpath_miss
 
 # The invoice connector imports CustomerProjectConnector lazily from its defining module,
@@ -122,149 +117,26 @@ def _build_invoice_connector(**overrides):
         reconciliation_repo=Mock(),
     )
     stub_qbo_identity_fastpath_miss(connector.invoice_service)
+    # U-311: _get_project_public_id now tries dbo.Project's native identity
+    # directly before the qbo.Customer -> heal-by-name fallback these PART-2
+    # tests exercise. Default it to a miss so those assertions are unaffected.
+    connector.project_service.read_by_qbo_identity.return_value = None
     for key, value in overrides.items():
         setattr(connector, key, value)
     return connector
 
 
-def _build_purchase_line_connector(**overrides):
-    connector = PurchaseLineExpenseLineItemConnector(
-        mapping_repo=Mock(),
-        expense_line_item_service=Mock(),
-        item_sub_cost_code_repo=Mock(),
-        qbo_item_repo=Mock(),
-        customer_project_repo=Mock(),
-        qbo_customer_repo=Mock(),
-    )
-    for key, value in overrides.items():
-        setattr(connector, key, value)
-    return connector
-
-
-def _build_vendor_credit_line_connector(**overrides):
-    connector = VendorCreditLineItemConnector()
-    for key, value in overrides.items():
-        setattr(connector, key, value)
-    return connector
-
-
-def _build_bill_line_connector(**overrides):
-    connector = BillLineItemConnector(
-        qbo_customer_repo=Mock(),
-        customer_project_repo=Mock(),
-        project_service=Mock(),
-    )
-    for key, value in overrides.items():
-        setattr(connector, key, value)
-    return connector
-
-
-# --- PART 1: CustomerProjectConnector.sync_from_qbo_customer ---
-
-
-def test_heal_repoints_mapping_when_project_missing_but_name_match_unbound():
-    """(a) Missing project + name match (unbound) repoints mapping in place."""
-    connector, mapping_repo, project_service, _ = _build_customer_project_connector()
-    qbo_customer = _make_qbo_customer()
-    mapping = _make_mapping(project_id=999)
-    replacement = _make_project(project_id=200)
-
-    mapping_repo.read_by_qbo_customer_id.return_value = mapping
-    project_service.read_by_id.return_value = None
-    project_service.read_by_name.return_value = replacement
-    mapping_repo.read_by_project_id.return_value = None
-    project_service.repo.update_by_id.side_effect = lambda p: p
-
-    result = connector.sync_from_qbo_customer(qbo_customer)
-
-    assert result is replacement
-    assert mapping.project_id == 200
-    mapping_repo.update_by_id.assert_called_once_with(mapping)
-    mapping_repo.delete_by_id.assert_not_called()
-    project_service.create.assert_not_called()
-
-
-def test_heal_raises_and_records_issue_when_project_missing_and_name_miss():
-    """(b) Missing project + no name match raises ValueError and records orphaned mapping."""
-    connector, mapping_repo, project_service, reconciliation_repo = _build_customer_project_connector()
-    qbo_customer = _make_qbo_customer()
-    mapping = _make_mapping(project_id=999)
-
-    mapping_repo.read_by_qbo_customer_id.return_value = mapping
-    project_service.read_by_id.return_value = None
-    project_service.read_by_name.return_value = None
-
-    with pytest.raises(ValueError, match="preserving mapping, skipping"):
-        connector.sync_from_qbo_customer(qbo_customer)
-
-    reconciliation_repo.create.assert_called_once()
-    call_kwargs = reconciliation_repo.create.call_args.kwargs
-    assert call_kwargs["drift_type"] == "orphaned_cust_project_mapping"
-    mapping_repo.delete_by_id.assert_not_called()
-    project_service.create.assert_not_called()
-
-
-def test_happy_path_mapping_exists_project_found_updates_normally():
-    """(c) Existing mapping + project found follows normal update path."""
-    connector, mapping_repo, project_service, reconciliation_repo = _build_customer_project_connector()
-    qbo_customer = _make_qbo_customer()
-    mapping = _make_mapping(project_id=200)
-    project = _make_project(project_id=200)
-
-    mapping_repo.read_by_qbo_customer_id.return_value = mapping
-    project_service.read_by_id.return_value = project
-    project_service.repo.update_by_id.side_effect = lambda p: p
-
-    result = connector.sync_from_qbo_customer(qbo_customer)
-
-    assert result is project
-    reconciliation_repo.create.assert_not_called()
-    mapping_repo.delete_by_id.assert_not_called()
-    mapping_repo.update_by_id.assert_not_called()
-    project_service.create.assert_not_called()
-
-
-def test_heal_duplicate_qbo_customer_when_replacement_bound_to_other():
-    """(d) Name match finds Project bound to a different QboCustomer — record duplicate, no mutate."""
-    connector, mapping_repo, project_service, reconciliation_repo = _build_customer_project_connector()
-    qbo_customer = _make_qbo_customer(customer_id=1)
-    mapping = _make_mapping(project_id=999, qbo_customer_id=1)
-    replacement = _make_project(project_id=200)
-    other_mapping = _make_mapping(mapping_id=20, project_id=200, qbo_customer_id=99)
-
-    mapping_repo.read_by_qbo_customer_id.return_value = mapping
-    project_service.read_by_id.return_value = None
-    project_service.read_by_name.return_value = replacement
-    mapping_repo.read_by_project_id.return_value = other_mapping
-
-    with pytest.raises(ValueError, match="already bound to QboCustomer"):
-        connector.sync_from_qbo_customer(qbo_customer)
-
-    reconciliation_repo.create.assert_called_once()
-    call_kwargs = reconciliation_repo.create.call_args.kwargs
-    assert call_kwargs["drift_type"] == "duplicate_qbo_customer"
-    mapping_repo.update_by_id.assert_not_called()
-    mapping_repo.delete_by_id.assert_not_called()
-    project_service.create.assert_not_called()
-
-
-def test_create_path_raises_duplicate_when_local_name_already_mapped():
-    """No mapping — name-matched local Project already bound to another QboCustomer."""
-    connector, mapping_repo, project_service, reconciliation_repo = _build_customer_project_connector()
-    qbo_customer = _make_qbo_customer(customer_id=2)
-    existing = _make_project(project_id=500, name="Dup Name")
-    existing_map = _make_mapping(mapping_id=30, project_id=500, qbo_customer_id=99)
-
-    mapping_repo.read_by_qbo_customer_id.return_value = None
-    project_service.read_by_name.return_value = existing
-    mapping_repo.read_by_project_id.return_value = existing_map
-
-    with pytest.raises(ValueError, match="already bound to QboCustomer"):
-        connector.sync_from_qbo_customer(qbo_customer)
-
-    project_service.create.assert_not_called()
-    reconciliation_repo.create.assert_called_once()
-    assert reconciliation_repo.create.call_args.kwargs["drift_type"] == "duplicate_qbo_customer"
+# PART 1 (CustomerProjectConnector.sync_from_qbo_customer's OLD mapping-table
+# heal/update/duplicate branches) removed U-311 -- Wave-5 Option B retired
+# qbo.CustomerProject as this connector's own pull data source, so none of
+# that branch structure exists any more (there's no second store left to go
+# stale, per docs/design/wave5.md §2). The dbo-only equivalents (fast-path
+# hit, name-match adopt + duplicate-QboId guard, identity stamp) are tested
+# in tests/test_u276_customer_project_qbo_identity_repoint.py, mirroring
+# where U-310 put CustomerCustomerConnector's own analogous coverage.
+# `_build_customer_project_connector` is kept -- still used by PART 2 below
+# and by test_heal_missing_mapping_rejects_non_job_customer (heal_missing_mapping
+# itself is unchanged; it still reads/writes qbo.CustomerProject).
 
 
 # --- PART 2: InvoiceInvoiceConnector._get_project_public_id ---
@@ -282,6 +154,12 @@ def test_get_project_public_id_auto_heals_missing_mapping():
 
     project_service = Mock()
     project_service.read_by_name.return_value = healed_project
+    # U-311 round-3 fix: heal_missing_mapping re-reads via read_by_id (the
+    # sproc that actually projects QboId/RealmId) before its duplicate-identity
+    # guard. Default to the same (identity-free) row so this "genuinely
+    # unmapped" fixture doesn't spuriously trip that guard against an
+    # auto-truthy bare Mock.
+    project_service.read_by_id.return_value = healed_project
 
     heal_connector = CustomerProjectConnector(
         mapping_repo=mapping_repo,
@@ -357,6 +235,33 @@ def test_get_project_public_id_returns_none_when_heal_cannot_resolve():
     mapping_repo.create.assert_not_called()
 
 
+def test_get_project_public_id_returns_none_when_verification_fails_never_falls_through_to_heal():
+    """Codex xhigh P1 (U-311): a direct dbo hit that FAILS `verify_identity_dbo_only`
+    (the identity was reassigned between the read and this call) must return
+    None outright — NEVER fall through to the heal-by-name path below, which
+    is keyed purely on QboCustomer.DisplayName and could silently bind the
+    invoice line to a DIFFERENT Project than the one verify just refused to
+    trust (and `heal_missing_mapping` can itself mint/stamp a mapping — the
+    same class of action a refused verify exists to prevent). Mirrors the
+    bill/purchase/vendorcredit sibling resolvers' identical guard."""
+    qbo_customer = _make_qbo_customer()
+    direct_project = SimpleNamespace(id=10, public_id="proj-pub-10", qbo_id="QBO-100", realm_id="realm-1")
+    stolen_by = SimpleNamespace(id=99, public_id="proj-pub-99", qbo_id="QBO-100", realm_id="realm-1")
+
+    qbo_customer_repo = Mock()
+    qbo_customer_repo.read_by_qbo_id.return_value = qbo_customer
+
+    invoice_connector = _build_invoice_connector(qbo_customer_repo=qbo_customer_repo)
+    invoice_connector.project_service.read_by_qbo_identity.side_effect = [direct_project, stolen_by]
+
+    with patch(HEAL_CONNECTOR_PATH) as mock_connector_cls:
+        result = invoice_connector._get_project_public_id("QBO-100")
+
+    assert result is None
+    qbo_customer_repo.read_by_qbo_id.assert_not_called()
+    mock_connector_cls.assert_not_called()
+
+
 def test_sync_from_qbo_invoice_raises_when_project_public_id_unresolvable():
     """(b-ii) sync_from_qbo_invoice fails loud when project binding cannot be resolved."""
     invoice_connector = _build_invoice_connector()
@@ -394,6 +299,42 @@ def test_heal_missing_mapping_rejects_non_job_customer():
     assert result is None
     mapping_repo.create.assert_not_called()
     project_service.read_by_name.assert_not_called()
+
+
+def test_heal_missing_mapping_refuses_when_name_matched_project_carries_different_identity():
+    """Codex xhigh round-2 P1 (U-311), corrected round-3: dbo-only pulls no
+    longer create a qbo.CustomerProject mapping row, so the mapping-table
+    check below this guard can no longer be trusted as a proxy for "already
+    carries a different identity" — a Project synced via the new dbo-only
+    path has NO mapping row regardless of its dbo QboId. Without this guard,
+    heal_missing_mapping would fall through to create_mapping (which
+    unconditionally re-stamps SetProjectQboIdentity), silently stealing the
+    name-matched Project's existing, DIFFERENT identity.
+
+    ReadProjectByName does NOT project QboId/RealmId at all (same class of
+    gap as U-310's ReadCustomerByName finding) — `read_by_name`'s result here
+    deliberately carries NO qbo_id attribute, matching the real sproc's
+    projection, so this test fails if the guard naively trusts that result
+    instead of the separate read_by_id re-read that actually carries identity."""
+    connector, mapping_repo, project_service, reconciliation_repo = _build_customer_project_connector()
+    qbo_customer = _make_qbo_customer(qbo_id="QBO-100", realm_id="realm-1")
+    name_matched = _make_project()  # no qbo_id attr — mirrors ReadProjectByName's real projection
+    already_identified = _make_project()
+    already_identified.qbo_id = "QBO-OTHER"
+    already_identified.realm_id = "realm-1"
+    project_service.read_by_name.return_value = name_matched
+    project_service.read_by_id.return_value = already_identified
+
+    result = connector.heal_missing_mapping(qbo_customer)
+
+    assert result is None
+    mapping_repo.create.assert_not_called()
+    project_service.repo.set_qbo_identity.assert_not_called()
+    project_service.read_by_id.assert_called_once_with(name_matched.id)
+    reconciliation_repo.create.assert_called_once()
+    assert reconciliation_repo.create.call_args.kwargs["drift_type"] == "project_identity_conflict"
+    # never touched the mapping-table check that would otherwise mask this
+    mapping_repo.read_by_project_id.assert_not_called()
 
 
 def test_get_project_public_id_uses_realm_scoped_lookup_when_realm_given():
@@ -442,186 +383,13 @@ def test_get_project_public_id_realm_miss_returns_none_without_heal():
     mock_connector_cls.assert_not_called()
 
 
-# --- PART 4: PurchaseLineExpenseLineItemConnector._get_project_public_id ---
-
-
-def test_purchase_get_project_public_id_uses_realm_scoped_lookup_when_realm_given():
-    """Realm-scoped customer lookup when realm_id is provided."""
-    qbo_customer = _make_qbo_customer()
-    project = _make_project(public_id="proj-pub-200")
-    mapping = _make_mapping(project_id=project.id)
-
-    qbo_customer_repo = Mock()
-    qbo_customer_repo.read_by_qbo_id_and_realm_id.return_value = qbo_customer
-    qbo_customer_repo.read_by_qbo_id.return_value = qbo_customer
-
-    customer_project_repo = Mock()
-    customer_project_repo.read_by_qbo_customer_id.return_value = mapping
-
-    project_service = Mock()
-    project_service.read_by_id.return_value = project
-
-    connector = _build_purchase_line_connector(
-        qbo_customer_repo=qbo_customer_repo,
-        customer_project_repo=customer_project_repo,
-        project_service=project_service,
-    )
-
-    result = connector._get_project_public_id("QBO-100", "realm-1")
-
-    assert result == "proj-pub-200"
-    qbo_customer_repo.read_by_qbo_id_and_realm_id.assert_called_once_with("QBO-100", "realm-1")
-    qbo_customer_repo.read_by_qbo_id.assert_not_called()
-
-
-def test_purchase_get_project_public_id_falls_back_to_unscoped_lookup_without_realm():
-    """No realm_id falls back to read_by_qbo_id for back-compat."""
-    qbo_customer = _make_qbo_customer()
-    project = _make_project(public_id="proj-pub-200")
-    mapping = _make_mapping(project_id=project.id)
-
-    qbo_customer_repo = Mock()
-    qbo_customer_repo.read_by_qbo_id.return_value = qbo_customer
-
-    customer_project_repo = Mock()
-    customer_project_repo.read_by_qbo_customer_id.return_value = mapping
-
-    project_service = Mock()
-    project_service.read_by_id.return_value = project
-
-    connector = _build_purchase_line_connector(
-        qbo_customer_repo=qbo_customer_repo,
-        customer_project_repo=customer_project_repo,
-        project_service=project_service,
-    )
-
-    result = connector._get_project_public_id("QBO-100")
-
-    assert result == "proj-pub-200"
-    qbo_customer_repo.read_by_qbo_id.assert_called_once_with("QBO-100")
-    qbo_customer_repo.read_by_qbo_id_and_realm_id.assert_not_called()
-
-
-# --- PART 5: VendorCreditLineItemConnector._get_project_public_id ---
-
-QBO_CUSTOMER_REPO_PATH = "integrations.intuit.qbo.customer.persistence.repo.QboCustomerRepository"
-CUSTOMER_PROJECT_REPO_PATH = (
-    "integrations.intuit.qbo.customer.connector.project.persistence.repo.CustomerProjectRepository"
-)
-
-
-def test_vendorcredit_get_project_public_id_uses_realm_scoped_lookup_when_realm_given():
-    """Realm-scoped customer lookup when realm_id is provided."""
-    qbo_customer = _make_qbo_customer()
-    project = _make_project(public_id="proj-pub-200")
-    mapping = SimpleNamespace(project_id=project.id)
-
-    qbo_customer_repo = Mock()
-    qbo_customer_repo.read_by_qbo_id_and_realm_id.return_value = qbo_customer
-    qbo_customer_repo.read_by_qbo_id.return_value = qbo_customer
-
-    customer_project_repo = Mock()
-    customer_project_repo.read_by_qbo_customer_id.return_value = mapping
-
-    # U-278: no prior dbo-native identity yet — force the legacy
-    # qbo.Customer -> qbo.CustomerProject fallback this test targets.
-    connector = _build_vendor_credit_line_connector(
-        project_service=Mock(read_by_id=Mock(return_value=project), read_by_qbo_identity=Mock(return_value=None)),
-    )
-
-    with patch(QBO_CUSTOMER_REPO_PATH, return_value=qbo_customer_repo), patch(
-        CUSTOMER_PROJECT_REPO_PATH, return_value=customer_project_repo
-    ):
-        result = connector._get_project_public_id("QBO-100", "realm-1")
-
-    assert result == "proj-pub-200"
-    qbo_customer_repo.read_by_qbo_id_and_realm_id.assert_called_once_with("QBO-100", "realm-1")
-    qbo_customer_repo.read_by_qbo_id.assert_not_called()
-
-
-def test_vendorcredit_get_project_public_id_falls_back_to_unscoped_lookup_without_realm():
-    """No realm_id falls back to read_by_qbo_id for back-compat."""
-    qbo_customer = _make_qbo_customer()
-    project = _make_project(public_id="proj-pub-200")
-    mapping = SimpleNamespace(project_id=project.id)
-
-    qbo_customer_repo = Mock()
-    qbo_customer_repo.read_by_qbo_id.return_value = qbo_customer
-
-    customer_project_repo = Mock()
-    customer_project_repo.read_by_qbo_customer_id.return_value = mapping
-
-    # U-278: no prior dbo-native identity yet — force the legacy
-    # qbo.Customer -> qbo.CustomerProject fallback this test targets.
-    connector = _build_vendor_credit_line_connector(
-        project_service=Mock(read_by_id=Mock(return_value=project), read_by_qbo_identity=Mock(return_value=None)),
-    )
-
-    with patch(QBO_CUSTOMER_REPO_PATH, return_value=qbo_customer_repo), patch(
-        CUSTOMER_PROJECT_REPO_PATH, return_value=customer_project_repo
-    ):
-        result = connector._get_project_public_id("QBO-100")
-
-    assert result == "proj-pub-200"
-    qbo_customer_repo.read_by_qbo_id.assert_called_once_with("QBO-100")
-    qbo_customer_repo.read_by_qbo_id_and_realm_id.assert_not_called()
-
-
-# --- PART 6: BillLineItemConnector._get_project_public_id ---
-
-
-def test_bill_get_project_public_id_uses_realm_scoped_lookup_when_realm_given():
-    """Realm-scoped customer lookup when realm_id is provided."""
-    qbo_customer = _make_qbo_customer()
-    project = _make_project(public_id="proj-pub-200")
-    mapping = _make_mapping(project_id=project.id)
-
-    qbo_customer_repo = Mock()
-    qbo_customer_repo.read_by_qbo_id_and_realm_id.return_value = qbo_customer
-    qbo_customer_repo.read_by_qbo_id.return_value = qbo_customer
-
-    customer_project_repo = Mock()
-    customer_project_repo.read_by_qbo_customer_id.return_value = mapping
-
-    project_service = Mock()
-    project_service.read_by_id.return_value = project
-
-    connector = _build_bill_line_connector(
-        qbo_customer_repo=qbo_customer_repo,
-        customer_project_repo=customer_project_repo,
-        project_service=project_service,
-    )
-
-    result = connector._get_project_public_id("QBO-100", "realm-1")
-
-    assert result == "proj-pub-200"
-    qbo_customer_repo.read_by_qbo_id_and_realm_id.assert_called_once_with("QBO-100", "realm-1")
-    qbo_customer_repo.read_by_qbo_id.assert_not_called()
-
-
-def test_bill_get_project_public_id_falls_back_to_unscoped_lookup_without_realm():
-    """No realm_id falls back to read_by_qbo_id for back-compat."""
-    qbo_customer = _make_qbo_customer()
-    project = _make_project(public_id="proj-pub-200")
-    mapping = _make_mapping(project_id=project.id)
-
-    qbo_customer_repo = Mock()
-    qbo_customer_repo.read_by_qbo_id.return_value = qbo_customer
-
-    customer_project_repo = Mock()
-    customer_project_repo.read_by_qbo_customer_id.return_value = mapping
-
-    project_service = Mock()
-    project_service.read_by_id.return_value = project
-
-    connector = _build_bill_line_connector(
-        qbo_customer_repo=qbo_customer_repo,
-        customer_project_repo=customer_project_repo,
-        project_service=project_service,
-    )
-
-    result = connector._get_project_public_id("QBO-100")
-
-    assert result == "proj-pub-200"
-    qbo_customer_repo.read_by_qbo_id.assert_called_once_with("QBO-100")
-    qbo_customer_repo.read_by_qbo_id_and_realm_id.assert_not_called()
+# PARTs 4-6 (PurchaseLineExpenseLineItemConnector / VendorCreditLineItemConnector /
+# BillLineItemConnector's realm-scoped LEGACY qbo.Customer -> qbo.CustomerProject
+# hop) removed U-311 -- that hop is deleted from all three resolvers (Wave-5
+# Option A retires qbo.CustomerProject as their fallback data source). The
+# realm-scoped DIRECT dbo lookup that remains is covered in
+# tests/test_u283_bill_qbo_identity_repoint.py,
+# tests/test_u283b_purchase_qbo_identity_repoint.py, and
+# tests/test_u278_vendorcredit_qbo_identity_repoint.py — the dedicated per-
+# connector suites this coverage belongs in, mirroring where U-310/U-313 put
+# their own family's post-repoint resolver tests.

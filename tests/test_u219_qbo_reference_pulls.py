@@ -261,6 +261,11 @@ def _build_customer_connector() -> CustomerCustomerConnector:
     return connector
 
 
+PROJECT_STAMP_LOCK_TARGET = (
+    "integrations.intuit.qbo.customer.connector.project.business.service.qbo_app_lock"
+)
+
+
 def _build_project_connector() -> CustomerProjectConnector:
     connector = CustomerProjectConnector(
         mapping_repo=Mock(),
@@ -274,12 +279,29 @@ def _build_project_connector() -> CustomerProjectConnector:
         customer_service=Mock(),
         qbo_customer_repo=Mock(),
     )
-    connector.mapping_repo.read_by_qbo_customer_id.return_value = None
     connector.project_service.read_by_name.return_value = None
-    # U-276: default the direct dbo-identity fast path to a miss so these
-    # tests keep exercising the mapping-table path they're testing.
+    # U-276/U-311: default the direct dbo-identity fast path to a miss so
+    # these tests keep exercising the create/adopt path they're testing.
     connector.project_service.read_by_qbo_identity.return_value = None
+    # `_stamp_project_identity` re-reads the candidate under its own lock and
+    # returns the re-read row; a bare Mock would return a truthy stand-in whose
+    # `.qbo_id` trips the theft guard. Resolve to whatever `create()` produced,
+    # so a create-path test still gets its own created row back (mirrors the
+    # vendor/customer siblings above).
+    connector.project_service.read_by_id.side_effect = (
+        lambda _id: connector.project_service.create.return_value
+    )
     connector._sync_addresses = Mock()
+
+    real_sync = connector.sync_from_qbo_customer
+
+    def _sync_under_granted_locks(qbo_customer):
+        with patch(FASTPATH_LOCK_TARGET, mock_qbo_app_lock_granted), patch(
+            PROJECT_STAMP_LOCK_TARGET, mock_qbo_app_lock_granted
+        ):
+            return real_sync(qbo_customer)
+
+    connector.sync_from_qbo_customer = _sync_under_granted_locks
     return connector
 
 
@@ -789,12 +811,15 @@ def _setup_customer_mapped(connector: CustomerCustomerConnector, local_name: str
 
 
 def _setup_project_mapped(connector: CustomerProjectConnector, local_name: str) -> str:
-    mapping = SimpleNamespace(id=1, project_id=10)
+    """U-311: 'already mapped' for the project family is now a direct
+    dbo-identity HIT (`read_by_qbo_identity`), not a qbo.CustomerProject
+    mapping row -- the mapping table is gone. Same property under test: an
+    already-bound record still updates, and the name-preservation rule applies
+    on that update path (mirrors `_setup_customer_mapped`'s U-310 shape)."""
     project = SimpleNamespace(
-        id=10, name=local_name, description="", status="active", customer_id=None
+        id=10, qbo_id="QBO-P-1", realm_id="r1", name=local_name, description="", status="active", customer_id=None,
     )
-    connector.mapping_repo.read_by_qbo_customer_id.return_value = mapping
-    connector.project_service.read_by_id.return_value = project
+    connector.project_service.read_by_qbo_identity.return_value = project
     connector.project_service.repo.update_by_id.side_effect = lambda p: p
     return local_name
 

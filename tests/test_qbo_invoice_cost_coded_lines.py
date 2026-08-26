@@ -2,18 +2,19 @@
 cost-code seam draw_financials.py consumes in place of its former ItemRefName string
 parser.
 
-U-307a repointed the resolution mechanism itself onto the shared
-cost_code_resolver.py: dbo.SubCostCode.QboId / dbo.CostCode.QboId (U-289, 100% live
-parity) are now tried FIRST, falling back to the legacy qbo.Item -> qbo.ItemSubCostCode
-/ qbo.ItemCostCode staging hop only on a dbo-native miss. Every test below models the
-pre-backfill/miss case (dbo-native identity lookups return None) so it exercises the
-same legacy-hop value-based tiebreak U-292 originally proved — the fixture wiring
-changed from bulk `read_all()` index-building to point-queries, but the business
-behavior (and every `triples ==` assertion) is unchanged. Dedicated tests at the bottom
-cover the NEW dbo-native primary path directly.
+U-307a repointed the resolution mechanism onto the shared cost_code_resolver.py
+(dbo.SubCostCode.QboId / dbo.CostCode.QboId, U-289, 100% live parity). U-307d then
+RETIRED the legacy qbo.Item -> qbo.ItemSubCostCode/qbo.ItemCostCode staging-hop
+fallback entirely — resolution is now dbo-native only. Tests that model a successful
+resolution pass `direct_sub_cost_code` / `direct_cost_code` (a dbo-native identity hit);
+the value-based (numeric) two-tier tiebreak U-292 originally proved is exercised via
+those dbo-native hits. The legacy-hop-specific tests (and the qbo.Item* mapping-table
+precedence rules) were removed with the fallback. `_service` still accepts the legacy
+qbo_items/item_sub_cost_codes/item_cost_codes params, now inert (the resolver no longer
+reads those tables), for the miss/Uncoded tests that only need a dbo-native miss.
 
-Resolution is always by ID -- QboItem -> ItemSubCostCode -> SubCostCode -> CostCode (or
-the dbo-native equivalent) -- never by parsing an Item's display name."""
+Resolution is always by ID -- dbo.SubCostCode.QboId / dbo.CostCode.QboId -- never by
+parsing an Item's display name."""
 
 from decimal import Decimal
 
@@ -211,9 +212,7 @@ def test_resolves_cost_code_by_id_not_by_name(monkeypatch):
     svc = _service(
         monkeypatch,
         lines_by_qbo_invoice_id={900: [_FakeQboLine("83", 715.00)]},
-        qbo_items=[_FakeQboItem(id=10, qbo_id="83")],
-        item_sub_cost_codes=[_FakeItemSubCostCode(qbo_item_id=10, sub_cost_code_id=7)],
-        sub_cost_codes=[_FakeSubCostCode(id=7, cost_code_id=3)],
+        direct_sub_cost_code=_FakeSubCostCode(id=7, cost_code_id=3, qbo_id="83", realm_id="realm-1"),
         cost_codes=[_FakeCostCode(id=3, number="02", name="Dumpsters")],
     )
     triples = svc.cost_coded_lines_for_invoice(invoice_id=1)
@@ -228,82 +227,41 @@ def test_subtotal_and_none_amount_lines_are_skipped(monkeypatch):
             _FakeQboLine("83", 1000.00, detail_type="SubTotalLineDetail"),
             _FakeQboLine("83", None),
         ]},
-        qbo_items=[_FakeQboItem(id=10, qbo_id="83")],
-        item_sub_cost_codes=[_FakeItemSubCostCode(qbo_item_id=10, sub_cost_code_id=7)],
-        sub_cost_codes=[_FakeSubCostCode(id=7, cost_code_id=3)],
+        direct_sub_cost_code=_FakeSubCostCode(id=7, cost_code_id=3, qbo_id="83", realm_id="realm-1"),
         cost_codes=[_FakeCostCode(id=3, number="02", name="Dumpsters")],
     )
     triples = svc.cost_coded_lines_for_invoice(invoice_id=1)
     assert triples == [("02", "Dumpsters", Decimal("715.00"))]
 
 
-def test_cost_code_level_item_resolves_via_item_cost_code_fallback(monkeypatch):
-    """An Item with no SubCostCode granularity (e.g. 'Initial Deposit') maps directly
-    at the CostCode level via qbo.ItemCostCode, not qbo.ItemSubCostCode."""
-    svc = _service(
-        monkeypatch,
-        lines_by_qbo_invoice_id={900: [_FakeQboLine("4", 5000.00)]},
-        # id / cost_code_id / CostCode.id deliberately DISTINCT (1 / 44 / 77) so a
-        # regression that swaps the ItemCostCode lookup key (mapping.qbo_item_id
-        # instead of mapping.cost_code_id — the same wrong-ID-space bug class this
-        # unit's seam exists to prevent) can't hide behind coincidentally-equal ids.
-        qbo_items=[_FakeQboItem(id=1, qbo_id="4")],
-        item_sub_cost_codes=[],  # no SubCostCode-level mapping for item 1
-        item_cost_codes=[_FakeItemCostCode(qbo_item_id=1, cost_code_id=44)],
-        cost_codes=[_FakeCostCode(id=44, number="00", name="Initial & Suspense")],
-    )
-    triples = svc.cost_coded_lines_for_invoice(invoice_id=1)
-    assert triples == [("00", "Initial & Suspense", Decimal("5000.00"))]
+# U-307d retired 3 legacy-qbo.Item-hop tests here (cost_code_level_item_resolves_via_
+# item_cost_code_fallback, dangling_sub_cost_code_still_falls_back_to_valid_item_cost_code,
+# sub_cost_code_mapping_takes_precedence_over_item_cost_code): they exercised the deleted
+# qbo.Item -> qbo.ItemSubCostCode/qbo.ItemCostCode staging hop and its row-existence
+# precedence rules. The dbo-native tier's CostCode-level resolution and the
+# value-based (numeric) tiebreak are covered by the dbo-native tests at the bottom of
+# this file.
 
 
 def test_non_numeric_cost_code_falls_to_uncoded(monkeypatch):
     """QBO-admin pseudo-codes ('Hours'/'Sales') never counted as coded under the
     prior ItemRefName parser (it required a leading digit) — the seam must not
-    start counting them now just because it can resolve them by ID."""
+    start counting them now just because it can resolve them by ID. Terminal case:
+    BOTH dbo-native tiers RESOLVE (SubCostCode-level -> 'Hours', CostCode-level
+    fallback -> 'Sales'), but the value-based _numeric_result filter rejects both
+    non-numeric codes -> Uncoded — distinct from a plain nothing-resolved miss."""
     svc = _service(
         monkeypatch,
-        lines_by_qbo_invoice_id={900: [_FakeQboLine("2", 100.00)]},
-        qbo_items=[_FakeQboItem(id=1, qbo_id="2")],
-        item_cost_codes=[_FakeItemCostCode(qbo_item_id=1, cost_code_id=44)],
-        cost_codes=[_FakeCostCode(id=44, number="Sales", name="Sales")],
-    )
-    triples = svc.cost_coded_lines_for_invoice(invoice_id=1)
-    assert triples == [("", "Uncoded", Decimal("100.00"))]
-
-
-def test_dangling_sub_cost_code_still_falls_back_to_valid_item_cost_code(monkeypatch):
-    """A dangling SubCostCode-level mapping must not shadow a perfectly resolvable
-    CostCode-level one for the SAME item — precedence is decided by whether the
-    SubCostCode-level entry actually RESOLVES, not by whether the row exists."""
-    svc = _service(
-        monkeypatch,
-        lines_by_qbo_invoice_id={900: [_FakeQboLine("83", 25.00)]},
-        qbo_items=[_FakeQboItem(id=10, qbo_id="83")],
-        item_sub_cost_codes=[_FakeItemSubCostCode(qbo_item_id=10, sub_cost_code_id=999)],  # dangling
-        item_cost_codes=[_FakeItemCostCode(qbo_item_id=10, cost_code_id=3)],  # valid fallback, same item
-        cost_codes=[_FakeCostCode(id=3, number="02", name="Dumpsters")],
-    )
-    triples = svc.cost_coded_lines_for_invoice(invoice_id=1)
-    assert triples == [("02", "Dumpsters", Decimal("25.00"))]
-
-
-def test_sub_cost_code_mapping_takes_precedence_over_item_cost_code(monkeypatch):
-    """If (in principle) both mapping tables somehow named the same item, the
-    finer-grained SubCostCode-level mapping wins."""
-    svc = _service(
-        monkeypatch,
-        lines_by_qbo_invoice_id={900: [_FakeQboLine("83", 10.00)]},
-        qbo_items=[_FakeQboItem(id=10, qbo_id="83")],
-        item_sub_cost_codes=[_FakeItemSubCostCode(qbo_item_id=10, sub_cost_code_id=7)],
-        item_cost_codes=[_FakeItemCostCode(qbo_item_id=10, cost_code_id=99)],
-        sub_cost_codes=[_FakeSubCostCode(id=7, cost_code_id=3)],
+        lines_by_qbo_invoice_id={900: [_FakeQboLine("83", 100.00)]},
+        direct_sub_cost_code=_FakeSubCostCode(id=7, cost_code_id=3, qbo_id="83", realm_id="realm-1"),
+        direct_cost_code=_FakeCostCode(id=9, number="Sales", name="Sales", qbo_id="83"),
         cost_codes=[
-            _FakeCostCode(id=3, number="02", name="Dumpsters"),
-            _FakeCostCode(id=99, number="99", name="Bad Debt"),
+            _FakeCostCode(id=3, number="Hours", name="Hours"),
+            _FakeCostCode(id=9, number="Sales", name="Sales"),
         ],
     )
     triples = svc.cost_coded_lines_for_invoice(invoice_id=1)
-    assert triples == [("02", "Dumpsters", Decimal("10.00"))]
+    assert triples == [("", "Uncoded", Decimal("100.00"))]
 
 
 def test_no_item_ref_value_falls_to_uncoded(monkeypatch):
@@ -386,9 +344,7 @@ def test_unbackfilled_invoice_falls_back_to_legacy_mapping(monkeypatch):
         invoice_qbo_id=None,
         legacy_mapping_qbo_invoice_id=900,
         lines_by_qbo_invoice_id={900: [_FakeQboLine("83", 715.00)]},
-        qbo_items=[_FakeQboItem(id=10, qbo_id="83")],
-        item_sub_cost_codes=[_FakeItemSubCostCode(qbo_item_id=10, sub_cost_code_id=7)],
-        sub_cost_codes=[_FakeSubCostCode(id=7, cost_code_id=3)],
+        direct_sub_cost_code=_FakeSubCostCode(id=7, cost_code_id=3, qbo_id="83", realm_id="realm-1"),
         cost_codes=[_FakeCostCode(id=3, number="02", name="Dumpsters")],
     )
     triples = svc.cost_coded_lines_for_invoice(invoice_id=1)
@@ -405,9 +361,7 @@ def test_stale_dbo_identity_falls_back_to_legacy_mapping(monkeypatch):
         qbo_invoice_id=None,
         legacy_mapping_qbo_invoice_id=900,
         lines_by_qbo_invoice_id={900: [_FakeQboLine("83", 715.00)]},
-        qbo_items=[_FakeQboItem(id=10, qbo_id="83")],
-        item_sub_cost_codes=[_FakeItemSubCostCode(qbo_item_id=10, sub_cost_code_id=7)],
-        sub_cost_codes=[_FakeSubCostCode(id=7, cost_code_id=3)],
+        direct_sub_cost_code=_FakeSubCostCode(id=7, cost_code_id=3, qbo_id="83", realm_id="realm-1"),
         cost_codes=[_FakeCostCode(id=3, number="02", name="Dumpsters")],
     )
     triples = svc.cost_coded_lines_for_invoice(invoice_id=1)
@@ -442,9 +396,7 @@ def test_resolution_memoized_once_per_distinct_item_per_instance(monkeypatch):
         lines_by_qbo_invoice_id={900: [
             _FakeQboLine("83", 1.00), _FakeQboLine("83", 2.00), _FakeQboLine("83", 3.00),
         ]},
-        qbo_items=[_FakeQboItem(id=10, qbo_id="83")],
-        item_sub_cost_codes=[_FakeItemSubCostCode(qbo_item_id=10, sub_cost_code_id=7)],
-        sub_cost_codes=[_FakeSubCostCode(id=7, cost_code_id=3)],
+        direct_sub_cost_code=_FakeSubCostCode(id=7, cost_code_id=3, qbo_id="83", realm_id="realm-1"),
         cost_codes=[_FakeCostCode(id=3, number="02", name="Dumpsters")],
     )
     triples = svc.cost_coded_lines_for_invoice(invoice_id=1)
@@ -492,24 +444,21 @@ def test_dbo_native_cost_code_level_hit_skips_legacy_hop(monkeypatch):
     assert triples == [("00", "Initial & Suspense", Decimal("5000.00"))]
 
 
-def test_dbo_native_non_numeric_still_falls_to_legacy_cost_code_fallback(monkeypatch):
+def test_dbo_native_non_numeric_still_falls_to_cost_code_level_fallback(monkeypatch):
     """The value-based tiebreak applies to a dbo-native SubCostCode-level hit too:
     if its resolved CostCode is a non-numeric pseudo-code, the resolver still tries
-    the (here legacy) CostCode-level fallback and SUCCEEDS with a distinct, valid
-    numeric CostCode — proving the non-numeric primary result doesn't shadow a
-    usable fallback (Codex U-307a review finding: the prior version of this test
-    left the fallback CostCode out of the fixture, so both branches failed for
-    unrelated reasons and it never actually exercised a successful fallback)."""
+    the CostCode-level dbo-native fallback (resolve_dbo_cost_code_direct) and
+    SUCCEEDS with a distinct, valid numeric CostCode — proving the non-numeric
+    primary result doesn't shadow a usable fallback."""
     svc = _service(
         monkeypatch,
         lines_by_qbo_invoice_id={900: [_FakeQboLine("83", 25.00)]},
         direct_sub_cost_code=_FakeSubCostCode(id=7, cost_code_id=3, qbo_id="83", realm_id="realm-1"),
+        direct_cost_code=_FakeCostCode(id=44, number="02", name="Dumpsters", qbo_id="83"),
         cost_codes=[
             _FakeCostCode(id=3, number="Hours", name="Hours"),
             _FakeCostCode(id=44, number="02", name="Dumpsters"),
         ],
-        qbo_items=[_FakeQboItem(id=10, qbo_id="83")],
-        item_cost_codes=[_FakeItemCostCode(qbo_item_id=10, cost_code_id=44)],
     )
     triples = svc.cost_coded_lines_for_invoice(invoice_id=1)
     assert triples == [("02", "Dumpsters", Decimal("25.00"))]

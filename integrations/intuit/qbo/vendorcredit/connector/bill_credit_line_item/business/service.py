@@ -20,8 +20,6 @@ from integrations.intuit.qbo.base.identity_fastpath import (
 from integrations.intuit.qbo.base.ids import coerce_id
 from integrations.intuit.qbo.base.reconciliation_recorder import record_mapping_issue
 from integrations.intuit.qbo.base.cost_code_resolver import resolve_dbo_sub_cost_code
-from integrations.intuit.qbo.item.connector.sub_cost_code.persistence.repo import ItemSubCostCodeRepository
-from integrations.intuit.qbo.item.persistence.repo import QboItemRepository
 from integrations.intuit.qbo.reconciliation.persistence.repo import ReconciliationIssueRepository
 
 logger = logging.getLogger(__name__)
@@ -35,8 +33,6 @@ class VendorCreditLineItemConnector:
         self.project_service = ProjectService()
         self.sub_cost_code_service = SubCostCodeService()
         self.mapping_repo = VendorCreditLineItemBillCreditLineItemMappingRepository()
-        self.qbo_item_repo = QboItemRepository()
-        self.item_scc_repo = ItemSubCostCodeRepository()
         self.reconciliation_repo = reconciliation_repo or ReconciliationIssueRepository()
         # Run-scoped memo (U-229) — same shape as the sibling PurchaseLineExpenseLineItemConnector's
         # _sub_cost_code_cache (purchase/connector/expense_line_item/business/service.py), which
@@ -435,8 +431,8 @@ class VendorCreditLineItemConnector:
 
     def _get_sub_cost_code_id(self, qbo_item_ref_value: str, realm_id: Optional[str] = None) -> Optional[int]:
         """Resolve QBO item ref to local sub_cost_code_id, memoized for this connector's
-        lifetime. U-307a: dbo-native SubCostCode.QboId first, legacy qbo.Item ->
-        qbo.ItemSubCostCode hop on a miss — see cost_code_resolver.py."""
+        lifetime. dbo-native SubCostCode.QboId (U-307a; U-307d retired the legacy
+        qbo.Item -> qbo.ItemSubCostCode hop) — see cost_code_resolver.py."""
         if not qbo_item_ref_value:
             return None
         cache_key = (realm_id, qbo_item_ref_value)
@@ -452,8 +448,6 @@ class VendorCreditLineItemConnector:
             qbo_item_ref_value,
             realm_id,
             sub_cost_code_service=self.sub_cost_code_service,
-            qbo_item_repo=self.qbo_item_repo,
-            item_sub_cost_code_repo=self.item_scc_repo,
         )
         if not sub_cost_code:
             logger.warning(

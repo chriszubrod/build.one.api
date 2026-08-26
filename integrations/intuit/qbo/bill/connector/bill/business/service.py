@@ -20,8 +20,6 @@ from integrations.intuit.qbo.bill.external.schemas import (
 )
 from integrations.intuit.qbo.vendor.connector.vendor.persistence.repo import VendorVendorRepository
 from integrations.intuit.qbo.vendor.persistence.repo import QboVendorRepository
-from integrations.intuit.qbo.item.connector.sub_cost_code.persistence.repo import ItemSubCostCodeRepository
-from integrations.intuit.qbo.item.persistence.repo import QboItemRepository
 from integrations.intuit.qbo.customer.connector.project.persistence.repo import CustomerProjectRepository
 from integrations.intuit.qbo.customer.persistence.repo import QboCustomerRepository
 from integrations.intuit.qbo.account.persistence.repo import QboAccountRepository
@@ -68,8 +66,6 @@ class BillBillConnector:
         qbo_bill_repo: Optional[QboBillRepository] = None,
         qbo_bill_line_repo: Optional[QboBillLineRepository] = None,
         bill_line_item_service: Optional[BillLineItemService] = None,
-        item_sub_cost_code_repo: Optional[ItemSubCostCodeRepository] = None,
-        qbo_item_repo: Optional[QboItemRepository] = None,
         customer_project_repo: Optional[CustomerProjectRepository] = None,
         qbo_customer_repo: Optional[QboCustomerRepository] = None,
         project_service: Optional[ProjectService] = None,
@@ -97,8 +93,6 @@ class BillBillConnector:
         self.qbo_bill_repo = qbo_bill_repo or QboBillRepository()
         self.qbo_bill_line_repo = qbo_bill_line_repo or QboBillLineRepository()
         self.bill_line_item_service = bill_line_item_service or BillLineItemService()
-        self.item_sub_cost_code_repo = item_sub_cost_code_repo or ItemSubCostCodeRepository()
-        self.qbo_item_repo = qbo_item_repo or QboItemRepository()
         self.customer_project_repo = customer_project_repo or CustomerProjectRepository()
         self.qbo_customer_repo = qbo_customer_repo or QboCustomerRepository()
         self.project_service = project_service or ProjectService()

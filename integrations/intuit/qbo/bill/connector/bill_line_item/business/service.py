@@ -11,8 +11,6 @@ from integrations.intuit.qbo.bill.connector.bill_line_item.persistence.repo impo
 from integrations.intuit.qbo.bill.business.model import QboBillLine
 from integrations.intuit.qbo.bill.connector.bill.persistence.repo import BillBillRepository
 from integrations.intuit.qbo.bill.persistence.repo import QboBillLineRepository
-from integrations.intuit.qbo.item.persistence.repo import QboItemRepository
-from integrations.intuit.qbo.item.connector.sub_cost_code.persistence.repo import ItemSubCostCodeRepository
 from integrations.intuit.qbo.customer.persistence.repo import QboCustomerRepository
 from integrations.intuit.qbo.customer.connector.project.persistence.repo import CustomerProjectRepository
 from entities.bill_line_item.business.service import BillLineItemService
@@ -46,8 +44,6 @@ class BillLineItemConnector:
         bill_service: Optional[BillService] = None,
         bill_bill_repo: Optional[BillBillRepository] = None,
         qbo_bill_line_repo: Optional[QboBillLineRepository] = None,
-        qbo_item_repo: Optional[QboItemRepository] = None,
-        item_sub_cost_code_repo: Optional[ItemSubCostCodeRepository] = None,
         sub_cost_code_service: Optional[SubCostCodeService] = None,
         qbo_customer_repo: Optional[QboCustomerRepository] = None,
         customer_project_repo: Optional[CustomerProjectRepository] = None,
@@ -60,12 +56,9 @@ class BillLineItemConnector:
         self.bill_service = bill_service or BillService()
         self.bill_bill_repo = bill_bill_repo or BillBillRepository()
         self.qbo_bill_line_repo = qbo_bill_line_repo or QboBillLineRepository()
-        # Cost-code resolution deps (U-307a) -- only ever passed to
-        # cost_code_resolver.resolve_dbo_sub_cost_code, never used directly here.
-        # Kept as constructor params (not defaulted inline at the call site) so
-        # tests can inject fakes exactly as they did before this repoint.
-        self.qbo_item_repo = qbo_item_repo
-        self.item_sub_cost_code_repo = item_sub_cost_code_repo
+        # Cost-code resolution dep (U-307a; U-307d retired the legacy qbo.Item*
+        # fallback repos) -- only passed to cost_code_resolver.resolve_dbo_sub_cost_code,
+        # never used directly here.
         self.sub_cost_code_service = sub_cost_code_service
         # U-311: qbo_customer_repo/customer_project_repo are now DEAD -- the
         # legacy qbo.Customer -> qbo.CustomerProject hop that used them was
@@ -138,14 +131,12 @@ class BillLineItemConnector:
             is_billed = qbo_bill_line.billable_status == "HasBeenBilled"
         
         # Look up SubCostCode from QBO Item reference (U-307a: dbo-native
-        # SubCostCode.QboId first, legacy qbo.Item -> qbo.ItemSubCostCode hop
-        # on a miss — see cost_code_resolver.py).
+        # dbo-native SubCostCode.QboId (U-307d retired the legacy qbo.Item ->
+        # qbo.ItemSubCostCode fallback — see cost_code_resolver.py).
         sub_cost_code = resolve_dbo_sub_cost_code(
             qbo_bill_line.item_ref_value,
             realm_id,
             sub_cost_code_service=self.sub_cost_code_service,
-            qbo_item_repo=self.qbo_item_repo,
-            item_sub_cost_code_repo=self.item_sub_cost_code_repo,
         )
         sub_cost_code_id = sub_cost_code.id if sub_cost_code else None
         if qbo_bill_line.item_ref_value:

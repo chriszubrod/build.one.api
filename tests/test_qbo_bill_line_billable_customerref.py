@@ -18,8 +18,6 @@ def _build_connector():
         qbo_bill_repo=Mock(),
         qbo_bill_line_repo=Mock(),
         bill_line_item_service=Mock(),
-        item_sub_cost_code_repo=Mock(),
-        qbo_item_repo=Mock(),
         customer_project_repo=Mock(),
         qbo_customer_repo=Mock(),
         qbo_account_repo=Mock(),

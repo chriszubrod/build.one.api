@@ -46,8 +46,6 @@ def _make_bill_connector(**overrides):
         qbo_bill_repo=MagicMock(),
         qbo_bill_line_repo=MagicMock(),
         bill_line_item_service=MagicMock(),
-        item_sub_cost_code_repo=MagicMock(),
-        qbo_item_repo=MagicMock(),
         reconciliation_repo=MagicMock(),
         company_service=MagicMock(),
         payment_term_service=MagicMock(),
@@ -66,8 +64,8 @@ def test_bill_item_ref_resolves_via_dbo_native_sub_cost_code_no_legacy_touch():
     assert ref.value == "9"
     assert ref.name == "Concrete"
     connector.sub_cost_code_service.read_by_id.assert_called_once_with(7)
-    connector.item_sub_cost_code_repo.read_by_sub_cost_code_id.assert_not_called()
-    connector.qbo_item_repo.read_by_id.assert_not_called()
+    # U-307d: BillBillConnector no longer holds legacy qbo.Item* repos at all —
+    # the reverse resolver's freedom from the legacy hop is now structural.
 
 
 def test_bill_item_ref_none_on_falsy_sub_cost_code_id():
@@ -98,7 +96,6 @@ def test_bill_item_ref_none_cases_with_no_legacy_fallback(sub_cost_code):
     connector.sub_cost_code_service.read_by_id.return_value = sub_cost_code
 
     assert connector._get_qbo_item_ref(7, REALM_ID) is None
-    connector.item_sub_cost_code_repo.read_by_sub_cost_code_id.assert_not_called()
 
 
 def test_bill_build_qbo_line_threads_realm_id_to_item_ref_resolution():

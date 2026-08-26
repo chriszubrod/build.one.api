@@ -48,27 +48,11 @@ class _FakeCostCodeService:
         return self._by_id.get(id)
 
 
-class _FakeQboItemRepo:
-    def __init__(self, *, by_qbo_id=None, raises=None):
-        self._by_qbo_id = by_qbo_id or {}
-        self._raises = raises
-        self.calls = []
-
-    def read_by_qbo_id(self, qbo_id):
-        self.calls.append(qbo_id)
-        if self._raises:
-            raise self._raises
-        return self._by_qbo_id.get(qbo_id)
-
-
-class _FakeMappingRepo:
-    def __init__(self, *, by_qbo_item_id=None):
-        self._by_qbo_item_id = by_qbo_item_id or {}
-        self.calls = []
-
-    def read_by_qbo_item_id(self, qbo_item_id):
-        self.calls.append(qbo_item_id)
-        return self._by_qbo_item_id.get(qbo_item_id)
+# U-307d retired the legacy qbo.Item -> qbo.Item*CostCode staging-hop fallback and the
+# _FakeQboItemRepo / _FakeMappingRepo fakes that drove it. The forward resolvers are now
+# dbo-native only; the fallback-tier tests (dbo miss -> legacy hop, dangling mapping,
+# legacy-hop error propagation, and the "skips legacy hop" call-count assertions) were
+# removed. dbo-native hit and dbo-native miss coverage is retained below.
 
 
 # ---------------------------------------------------------------------------
@@ -81,104 +65,43 @@ def test_forward_sub_cost_code_no_ref_returns_none_without_touching_deps():
     assert scc_service.identity_calls == []
 
 
-def test_forward_sub_cost_code_dbo_native_hit_skips_legacy_hop():
+def test_forward_sub_cost_code_dbo_native_hit():
     scc = SimpleNamespace(id=7, cost_code_id=3, qbo_id="83", realm_id="realm-1")
     scc_service = _FakeSubCostCodeService(by_qbo_identity={("83", "realm-1"): scc})
-    qbo_item_repo = _FakeQboItemRepo()
 
-    result = resolve_dbo_sub_cost_code(
-        "83", "realm-1",
-        sub_cost_code_service=scc_service,
-        qbo_item_repo=qbo_item_repo,
-    )
+    result = resolve_dbo_sub_cost_code("83", "realm-1", sub_cost_code_service=scc_service)
 
     assert result is scc
-    assert qbo_item_repo.calls == []  # legacy hop never touched
-
-
-def test_forward_sub_cost_code_dbo_native_miss_falls_back_to_legacy_hop():
-    scc_service = _FakeSubCostCodeService(by_id={7: SimpleNamespace(id=7, cost_code_id=3)})
-    qbo_item_repo = _FakeQboItemRepo(by_qbo_id={"83": SimpleNamespace(id=10)})
-    mapping_repo = _FakeMappingRepo(by_qbo_item_id={10: SimpleNamespace(sub_cost_code_id=7)})
-
-    result = resolve_dbo_sub_cost_code(
-        "83", "realm-1",
-        sub_cost_code_service=scc_service,
-        qbo_item_repo=qbo_item_repo,
-        item_sub_cost_code_repo=mapping_repo,
-    )
-
-    assert result.id == 7
     assert scc_service.identity_calls == [("83", "realm-1")]
-    assert qbo_item_repo.calls == ["83"]
 
 
-def test_forward_sub_cost_code_legacy_hop_unresolvable_qbo_item_returns_none():
-    scc_service = _FakeSubCostCodeService()
-    qbo_item_repo = _FakeQboItemRepo(by_qbo_id={})
+def test_forward_sub_cost_code_dbo_native_miss_returns_none():
+    scc_service = _FakeSubCostCodeService()  # no dbo-native match
 
-    assert resolve_dbo_sub_cost_code(
-        "missing", None, sub_cost_code_service=scc_service, qbo_item_repo=qbo_item_repo,
-    ) is None
+    result = resolve_dbo_sub_cost_code("missing", "realm-1", sub_cost_code_service=scc_service)
 
-
-def test_forward_sub_cost_code_legacy_hop_dangling_mapping_target_returns_none():
-    """Mapping row exists but the SubCostCode it points to no longer reads — never
-    raises, degrades to None (Codex U-307a review: this is a deliberate, flagged
-    behavior refinement for bill/purchase, matching bill_credit_line_item's and
-    invoice's pre-existing degrade-gracefully contract)."""
-    scc_service = _FakeSubCostCodeService(by_id={})  # 999 not present -> dangling
-    qbo_item_repo = _FakeQboItemRepo(by_qbo_id={"83": SimpleNamespace(id=10)})
-    mapping_repo = _FakeMappingRepo(by_qbo_item_id={10: SimpleNamespace(sub_cost_code_id=999)})
-
-    assert resolve_dbo_sub_cost_code(
-        "83", None,
-        sub_cost_code_service=scc_service,
-        qbo_item_repo=qbo_item_repo,
-        item_sub_cost_code_repo=mapping_repo,
-    ) is None
-
-
-def test_forward_sub_cost_code_legacy_hop_error_propagates():
-    scc_service = _FakeSubCostCodeService()
-    qbo_item_repo = _FakeQboItemRepo(raises=ValueError("db blip"))
-
-    with pytest.raises(ValueError, match="db blip"):
-        resolve_dbo_sub_cost_code(
-            "83", None, sub_cost_code_service=scc_service, qbo_item_repo=qbo_item_repo,
-        )
+    assert result is None
+    assert scc_service.identity_calls == [("missing", "realm-1")]
 
 
 # ---------------------------------------------------------------------------
 # resolve_dbo_cost_code_direct
 # ---------------------------------------------------------------------------
 
-def test_forward_cost_code_direct_dbo_native_hit_skips_legacy_hop():
+def test_forward_cost_code_direct_dbo_native_hit():
     cc = SimpleNamespace(id=44, number="00", name="Initial & Suspense", qbo_id="4")
     cc_service = _FakeCostCodeService(by_qbo_identity={("4", "realm-1"): cc})
-    qbo_item_repo = _FakeQboItemRepo()
 
-    result = resolve_dbo_cost_code_direct(
-        "4", "realm-1", cost_code_service=cc_service, qbo_item_repo=qbo_item_repo,
-    )
+    result = resolve_dbo_cost_code_direct("4", "realm-1", cost_code_service=cc_service)
 
     assert result is cc
-    assert qbo_item_repo.calls == []
+    assert cc_service.identity_calls == [("4", "realm-1")]
 
 
-def test_forward_cost_code_direct_dbo_native_miss_falls_back_to_legacy_hop():
-    cc_service = _FakeCostCodeService(by_id={44: SimpleNamespace(id=44, number="00")})
-    qbo_item_repo = _FakeQboItemRepo(by_qbo_id={"4": SimpleNamespace(id=1)})
-    mapping_repo = _FakeMappingRepo(by_qbo_item_id={1: SimpleNamespace(cost_code_id=44)})
+def test_forward_cost_code_direct_dbo_native_miss_returns_none():
+    cc_service = _FakeCostCodeService()  # no dbo-native match
 
-    result = resolve_dbo_cost_code_direct(
-        "4", None,
-        cost_code_service=cc_service,
-        qbo_item_repo=qbo_item_repo,
-        item_cost_code_repo=mapping_repo,
-    )
-
-    assert result.id == 44
+    assert resolve_dbo_cost_code_direct("4", "realm-1", cost_code_service=cc_service) is None
 
 
 def test_forward_cost_code_direct_no_ref_returns_none():

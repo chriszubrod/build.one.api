@@ -9,8 +9,6 @@ from decimal import Decimal
 from integrations.intuit.qbo.purchase.connector.expense_line_item.business.model import PurchaseLineExpenseLineItem
 from integrations.intuit.qbo.purchase.connector.expense_line_item.persistence.repo import PurchaseLineExpenseLineItemRepository
 from integrations.intuit.qbo.purchase.business.model import QboPurchaseLine
-from integrations.intuit.qbo.item.persistence.repo import QboItemRepository
-from integrations.intuit.qbo.item.connector.sub_cost_code.persistence.repo import ItemSubCostCodeRepository
 from integrations.intuit.qbo.customer.connector.project.persistence.repo import CustomerProjectRepository
 from integrations.intuit.qbo.customer.persistence.repo import QboCustomerRepository
 from entities.expense_line_item.business.service import ExpenseLineItemService
@@ -77,8 +75,6 @@ class PurchaseLineExpenseLineItemConnector:
         self,
         mapping_repo: Optional[PurchaseLineExpenseLineItemRepository] = None,
         expense_line_item_service: Optional[ExpenseLineItemService] = None,
-        qbo_item_repo: Optional[QboItemRepository] = None,
-        item_sub_cost_code_repo: Optional[ItemSubCostCodeRepository] = None,
         sub_cost_code_service: Optional[SubCostCodeService] = None,
         customer_project_repo: Optional[CustomerProjectRepository] = None,
         qbo_customer_repo: Optional[QboCustomerRepository] = None,
@@ -88,10 +84,8 @@ class PurchaseLineExpenseLineItemConnector:
         """Initialize the PurchaseLineExpenseLineItemConnector."""
         self.mapping_repo = mapping_repo or PurchaseLineExpenseLineItemRepository()
         self.expense_line_item_service = expense_line_item_service or ExpenseLineItemService()
-        # Cost-code resolution deps (U-307a) -- only ever passed to
-        # cost_code_resolver.resolve_dbo_sub_cost_code, never used directly here.
-        self.qbo_item_repo = qbo_item_repo
-        self.item_sub_cost_code_repo = item_sub_cost_code_repo
+        # Cost-code resolution dep (U-307a; U-307d retired the legacy qbo.Item*
+        # fallback repos) -- only passed to cost_code_resolver.resolve_dbo_sub_cost_code.
         self.sub_cost_code_service = sub_cost_code_service
         # Per-sync caches: the same QBO item / customer ref appears on many lines.
         # Caching avoids a repeat resolution per repeated value.
@@ -438,8 +432,6 @@ class PurchaseLineExpenseLineItemConnector:
             qbo_item_ref_value,
             realm_id,
             sub_cost_code_service=self.sub_cost_code_service,
-            qbo_item_repo=self.qbo_item_repo,
-            item_sub_cost_code_repo=self.item_sub_cost_code_repo,
         )
         if not sub_cost_code:
             logger.warning(f"No SubCostCode resolved for QBO Item ref '{qbo_item_ref_value}' — ExpenseLineItem will have no SubCostCode (billing gap)")

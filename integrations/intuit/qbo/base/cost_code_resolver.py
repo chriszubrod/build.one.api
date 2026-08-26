@@ -12,14 +12,13 @@ one place, not ~14 hand-copied chains. Resolution is always by ID; never by pars
 Item's display name/hierarchy.
 
 Forward (QBO Item ref -> dbo): ``resolve_dbo_sub_cost_code`` / ``resolve_dbo_cost_code_direct``.
-Each tries its dbo-native column first, falling back to the legacy
-``qbo.Item -> qbo.ItemSubCostCode``/``qbo.ItemCostCode`` staging hop on a miss -- the
-same "dbo-native first, legacy hop on miss" shape as every other reference-resolver in
-this program (project ref / vendor ref, U-283b / U-284v), so a QBO Item created between
-its QboId stamp and the dbo backfill still resolves. Neither function raises on a
-dangling/unresolvable link at any hop -- both degrade to ``None`` so a caller falls back
-to its own "no SubCostCode" / "Uncoded" handling, exactly as the staging-chain callers
-did before this repoint.
+Each resolves off its dbo-native column only (``SubCostCode.QboId`` / ``CostCode.QboId``).
+The legacy ``qbo.Item -> qbo.ItemSubCostCode``/``qbo.ItemCostCode`` staging-hop fallback
+was retired in U-307d once dbo-native's 100% live parity plus a 0%-hit-rate on the
+fallback (proven answer-identical over every live row) made it dead weight ahead of
+dropping the ``qbo.Item*`` tables -- see docs/design/u307d.md. Neither function raises on
+a dangling/unresolvable link -- both degrade to ``None`` so a caller falls back to its
+own "no SubCostCode" / "Uncoded" handling, exactly as before.
 
 The two forward functions are independent (SubCostCode-level vs. CostCode-level-only,
 for a QBO Item with no SubCostCode granularity, e.g. "Initial Deposit"). A caller that
@@ -34,10 +33,10 @@ Gate-1 decision to build both directions together, resolving straight off
 ``dbo.SubCostCode.QboId`` with no ``qbo.Item`` hop. Not yet called by any consumer --
 U-307b repoints the 3 push consumers onto it as its own unit.
 
-Every dependency (the dbo-native services, the legacy-hop repos) is an optional
-constructor-style parameter defaulting to a real instance -- matching every connector
-in this codebase's DI convention -- so callers (and their tests) can inject fakes
-without this module ever reaching for a real DB connection on its own. A caller that
+Each dbo-native service dependency is an optional constructor-style parameter defaulting
+to a real instance -- matching every connector in this codebase's DI convention -- so
+callers (and their tests) can inject fakes without this module ever reaching for a real
+DB connection on its own. A caller that
 processes many lines sharing a QBO Item reference is responsible for its own result
 caching (e.g. ``QboInvoiceService`` amortizes across an entire project's draw rollup);
 this module does no caching of its own.
@@ -73,31 +72,16 @@ def resolve_dbo_sub_cost_code(
     realm_id: Optional[str] = None,
     *,
     sub_cost_code_service: Optional[SubCostCodeService] = None,
-    qbo_item_repo=None,
-    item_sub_cost_code_repo=None,
 ) -> Optional[SubCostCode]:
     """SubCostCode-level resolution for a QBO Item reference (e.g.
-    ``QboBillLine.item_ref_value``). dbo-native first (``SubCostCode.QboId``); legacy
-    ``qbo.Item -> qbo.ItemSubCostCode`` hop on a miss. ``None`` -- never raises -- on no
-    ref, no match, or a dangling link at any hop.
-
-    ``qbo_item_repo`` / ``item_sub_cost_code_repo`` only back the legacy-hop fallback --
-    a caller with no interest in injecting them (the overwhelming majority, since the
-    dbo-native path is the one at 100% live parity) can omit both."""
+    ``QboBillLine.item_ref_value``), off ``dbo.SubCostCode.QboId``. ``None`` -- never
+    raises -- on no ref or no match. The legacy ``qbo.Item -> qbo.ItemSubCostCode``
+    staging-hop fallback was retired in U-307d (see module docstring)."""
     if not qbo_item_ref_value:
         return None
 
     scc_service = sub_cost_code_service or SubCostCodeService()
-    direct = scc_service.read_by_qbo_identity(qbo_item_ref_value, realm_id)
-    if direct is not None:
-        return direct
-
-    return _legacy_resolve_sub_cost_code(
-        qbo_item_ref_value,
-        sub_cost_code_service=scc_service,
-        qbo_item_repo=qbo_item_repo,
-        item_sub_cost_code_repo=item_sub_cost_code_repo,
-    )
+    return scc_service.read_by_qbo_identity(qbo_item_ref_value, realm_id)
 
 
 def resolve_dbo_cost_code_direct(
@@ -105,28 +89,17 @@ def resolve_dbo_cost_code_direct(
     realm_id: Optional[str] = None,
     *,
     cost_code_service: Optional[CostCodeService] = None,
-    qbo_item_repo=None,
-    item_cost_code_repo=None,
 ) -> Optional[CostCode]:
     """CostCode-LEVEL-ONLY resolution, for a QBO Item with no SubCostCode granularity
-    mapped straight to a CostCode. dbo-native first (``CostCode.QboId``); legacy
-    ``qbo.Item -> qbo.ItemCostCode`` hop on a miss. ``None`` -- never raises -- on no
-    ref, no match, or a dangling link at any hop. Independent of
-    ``resolve_dbo_sub_cost_code`` -- see module docstring for why."""
+    mapped straight to a CostCode, off ``dbo.CostCode.QboId``. ``None`` -- never raises --
+    on no ref or no match. Independent of ``resolve_dbo_sub_cost_code`` -- see module
+    docstring. The legacy ``qbo.Item -> qbo.ItemCostCode`` staging-hop fallback was
+    retired in U-307d."""
     if not qbo_item_ref_value:
         return None
 
     cc_service = cost_code_service or CostCodeService()
-    direct = cc_service.read_by_qbo_identity(qbo_item_ref_value, realm_id)
-    if direct is not None:
-        return direct
-
-    return _legacy_resolve_cost_code(
-        qbo_item_ref_value,
-        cost_code_service=cc_service,
-        qbo_item_repo=qbo_item_repo,
-        item_cost_code_repo=item_cost_code_repo,
-    )
+    return cc_service.read_by_qbo_identity(qbo_item_ref_value, realm_id)
 
 
 def resolve_qbo_item_ref(
@@ -154,52 +127,3 @@ def resolve_qbo_item_ref(
         return None
 
     return QboItemRef(value=sub_cost_code.qbo_id, name=sub_cost_code.name)
-
-
-# ---------------------------------------------------------------------------
-# Legacy qbo.Item staging hop -- fallback only, reached on a dbo-native miss.
-# Deliberately realm-blind, matching every hand-copied chain this replaces
-# (none of them threaded realm_id through QboItemRepository.read_by_qbo_id) --
-# preserving that exactly keeps this a pure repoint, not a behavior change.
-# ---------------------------------------------------------------------------
-
-def _legacy_resolve_sub_cost_code(
-    qbo_item_ref_value: str,
-    *,
-    sub_cost_code_service: SubCostCodeService,
-    qbo_item_repo=None,
-    item_sub_cost_code_repo=None,
-) -> Optional[SubCostCode]:
-    from integrations.intuit.qbo.item.persistence.repo import QboItemRepository
-    from integrations.intuit.qbo.item.connector.sub_cost_code.persistence.repo import (
-        ItemSubCostCodeRepository,
-    )
-
-    qbo_item = (qbo_item_repo or QboItemRepository()).read_by_qbo_id(qbo_item_ref_value)
-    if not qbo_item:
-        return None
-    mapping = (item_sub_cost_code_repo or ItemSubCostCodeRepository()).read_by_qbo_item_id(qbo_item.id)
-    if not mapping:
-        return None
-    return sub_cost_code_service.read_by_id(mapping.sub_cost_code_id)
-
-
-def _legacy_resolve_cost_code(
-    qbo_item_ref_value: str,
-    *,
-    cost_code_service: CostCodeService,
-    qbo_item_repo=None,
-    item_cost_code_repo=None,
-) -> Optional[CostCode]:
-    from integrations.intuit.qbo.item.persistence.repo import QboItemRepository
-    from integrations.intuit.qbo.item.connector.cost_code.persistence.repo import (
-        ItemCostCodeRepository,
-    )
-
-    qbo_item = (qbo_item_repo or QboItemRepository()).read_by_qbo_id(qbo_item_ref_value)
-    if not qbo_item:
-        return None
-    mapping = (item_cost_code_repo or ItemCostCodeRepository()).read_by_qbo_item_id(qbo_item.id)
-    if not mapping:
-        return None
-    return cost_code_service.read_by_id(mapping.cost_code_id)

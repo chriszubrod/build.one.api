@@ -49,8 +49,6 @@ def _build_connector(**overrides):
         qbo_bill_repo=Mock(),
         qbo_bill_line_repo=Mock(),
         bill_line_item_service=Mock(),
-        item_sub_cost_code_repo=Mock(),
-        qbo_item_repo=Mock(),
         customer_project_repo=Mock(),
         qbo_customer_repo=Mock(),
         qbo_account_repo=Mock(),
@@ -429,62 +427,26 @@ def test_vendorcredit_get_project_public_id_not_found_returns_none():
 
 
 def test_vendorcredit_get_sub_cost_code_id_db_error_propagates():
-    """A DB error inside the item-ref resolver must propagate."""
+    """A DB error inside the dbo-native item-ref resolver must propagate."""
     connector = VendorCreditLineItemConnector()
-    # U-307a: dbo-native primary lookup must explicitly miss so resolution falls
-    # through to the legacy qbo.Item -> qbo.ItemSubCostCode hop this test exercises
-    # — an unstubbed Mock()'s auto-truthy `.read_by_qbo_identity` would otherwise
-    # short-circuit before qbo_item_repo is ever touched.
     connector.sub_cost_code_service = Mock()
-    stub_qbo_identity_fastpath_miss(connector.sub_cost_code_service)
-    connector.qbo_item_repo = Mock()
-    connector.qbo_item_repo.read_by_qbo_id.side_effect = ValueError("db blip")
-    connector.item_scc_repo = Mock()
+    connector.sub_cost_code_service.read_by_qbo_identity.side_effect = ValueError("db blip")
 
     with pytest.raises(ValueError, match="db blip"):
         connector._get_sub_cost_code_id("ITEM-1")
 
 
 def test_vendorcredit_get_sub_cost_code_id_not_found_returns_none():
-    """Genuine not-found in item-ref resolver returns None."""
+    """A genuine dbo-native miss in the item-ref resolver returns None."""
     connector = VendorCreditLineItemConnector()
     connector.sub_cost_code_service = Mock()
-    stub_qbo_identity_fastpath_miss(connector.sub_cost_code_service)
-    connector.qbo_item_repo = Mock()
-    connector.qbo_item_repo.read_by_qbo_id.return_value = None
-    connector.item_scc_repo = Mock()
+    connector.sub_cost_code_service.read_by_qbo_identity.return_value = None
 
     assert connector._get_sub_cost_code_id("ITEM-1") is None
 
 
-def test_vendorcredit_get_sub_cost_code_id_dangling_mapping_returns_none():
-    """Dangling ItemSubCostCode mapping (missing SubCostCode row) returns None."""
-    qbo_item = SimpleNamespace(id=50)
-
-    connector = VendorCreditLineItemConnector()
-    connector.sub_cost_code_service = Mock()
-    stub_qbo_identity_fastpath_miss(connector.sub_cost_code_service)
-    connector.sub_cost_code_service.read_by_id.return_value = None
-    connector.qbo_item_repo = Mock()
-    connector.qbo_item_repo.read_by_qbo_id.return_value = qbo_item
-    connector.item_scc_repo = Mock()
-    connector.item_scc_repo.read_by_qbo_item_id.return_value = SimpleNamespace(sub_cost_code_id=999)
-
-    assert connector._get_sub_cost_code_id("ITEM-1") is None
-
-
-def test_vendorcredit_get_sub_cost_code_id_sub_cost_code_read_db_error_propagates():
-    """A DB error verifying SubCostCode existence must propagate."""
-    qbo_item = SimpleNamespace(id=50)
-
-    connector = VendorCreditLineItemConnector()
-    connector.sub_cost_code_service = Mock()
-    stub_qbo_identity_fastpath_miss(connector.sub_cost_code_service)
-    connector.sub_cost_code_service.read_by_id.side_effect = ValueError("db blip")
-    connector.qbo_item_repo = Mock()
-    connector.qbo_item_repo.read_by_qbo_id.return_value = qbo_item
-    connector.item_scc_repo = Mock()
-    connector.item_scc_repo.read_by_qbo_item_id.return_value = SimpleNamespace(sub_cost_code_id=999)
-
-    with pytest.raises(ValueError, match="db blip"):
-        connector._get_sub_cost_code_id("ITEM-1")
+# U-307d retired 2 tests here that exercised the legacy qbo.Item -> qbo.ItemSubCostCode
+# hop (dangling-mapping-returns-None, and a second DB-error propagation from the
+# SubCostCode read_by_id existence check the legacy hop performed). The hop is gone —
+# resolution is a single dbo-native read_by_qbo_identity — so those scenarios are
+# unreachable; the dbo-native miss + dbo-native DB-error tests above cover it.

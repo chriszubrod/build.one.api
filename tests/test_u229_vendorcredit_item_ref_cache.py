@@ -53,18 +53,13 @@ def _make_bill_credit(*, bill_credit_id, public_id):
 
 
 def _build_line_connector_with_item_mocks():
-    """Real line connector with mocked item-ref resolution repos (injected directly,
-    not via @patch, so it's robust to where QboItemRepository/ItemSubCostCodeRepository
-    happen to be imported)."""
+    """Real line connector with a mocked dbo-native SubCostCode resolver injected
+    directly. U-307d: item-ref resolution is dbo-native only — SubCostCode.QboId via
+    sub_cost_code_service.read_by_qbo_identity; the legacy qbo.Item -> qbo.ItemSubCostCode
+    hop (and its qbo_item_repo/item_scc_repo) is gone, so the run-scoped cache is now
+    exercised over that single dbo-native lookup."""
     connector = VendorCreditLineItemConnector()
-    connector.qbo_item_repo = Mock()
-    connector.item_scc_repo = Mock()
-    # U-307a: the dbo-native primary lookup (SubCostCode.QboId) must explicitly miss
-    # so resolution falls through to the legacy qbo.Item -> qbo.ItemSubCostCode hop
-    # this file exercises — an unstubbed Mock()'s auto-truthy `.read_by_qbo_identity`
-    # would otherwise short-circuit before qbo_item_repo/item_scc_repo are ever touched.
     connector.sub_cost_code_service = Mock()
-    connector.sub_cost_code_service.read_by_qbo_identity.return_value = None
     connector.mapping_repo = Mock()
     connector.mapping_repo.read_by_qbo_line_id.return_value = None
     connector.bill_credit_line_item_service = Mock()
@@ -72,30 +67,24 @@ def _build_line_connector_with_item_mocks():
     connector.bill_credit_line_item_service.create.return_value = SimpleNamespace(id=1)
     connector.bill_credit_line_item_service.repo = Mock()
     connector._get_project_public_id = Mock(return_value=None)
-    # This file exercises the item-ref cache via the legacy mapping-table path,
-    # not the U-293b dbo-native fast path — force a miss so a bare Mock's
-    # auto-truthy `.read_by_qbo_identity(...)` doesn't silently divert it.
+    # Keep the line-mapping write path on the mapping-table branch (not the U-293b
+    # dbo-native fast path) so this file stays focused on the item-ref cache.
     stub_qbo_identity_fastpath_miss(connector.bill_credit_line_item_service)
     return connector
 
 
 def test_run_scoped_item_ref_cache_and_single_line_connector():
     """One line connector instance; item-ref repos queried once per distinct ref across credits."""
-    qbo_items = {
-        "ITEM-A": SimpleNamespace(id=101),
-        "ITEM-B": SimpleNamespace(id=102),
-        "ITEM-C": SimpleNamespace(id=103),
-    }
-    scc_mappings = {
-        101: SimpleNamespace(sub_cost_code_id=1001),
-        102: SimpleNamespace(sub_cost_code_id=1002),
-        103: SimpleNamespace(sub_cost_code_id=1003),
+    scc_by_ref = {
+        "ITEM-A": SimpleNamespace(id=1001),
+        "ITEM-B": SimpleNamespace(id=1002),
+        "ITEM-C": SimpleNamespace(id=1003),
     }
 
     line_connector = _build_line_connector_with_item_mocks()
-    line_connector.qbo_item_repo.read_by_qbo_id.side_effect = lambda qbo_id: qbo_items.get(qbo_id)
-    line_connector.item_scc_repo.read_by_qbo_item_id.side_effect = lambda qid: scc_mappings.get(qid)
-    line_connector.sub_cost_code_service.read_by_id.return_value = SimpleNamespace(id=1)
+    line_connector.sub_cost_code_service.read_by_qbo_identity.side_effect = (
+        lambda ref, realm=None: scc_by_ref.get(ref)
+    )
 
     existing_mapping = SimpleNamespace(bill_credit_id=10, id=1)
     bill_credit_a = _make_bill_credit(bill_credit_id=10, public_id="bc-pub-10")
@@ -145,20 +134,20 @@ def test_run_scoped_item_ref_cache_and_single_line_connector():
     assert connector.line_item_connector is line_connector
 
     distinct_item_refs = {"ITEM-A", "ITEM-B", "ITEM-C"}
-    assert line_connector.qbo_item_repo.read_by_qbo_id.call_count == len(distinct_item_refs)
-    assert line_connector.item_scc_repo.read_by_qbo_item_id.call_count == len(distinct_item_refs)
+    read_by_qbo_identity = line_connector.sub_cost_code_service.read_by_qbo_identity
+    assert read_by_qbo_identity.call_count == len(distinct_item_refs)
     assert {
-        c.args[0] for c in line_connector.qbo_item_repo.read_by_qbo_id.call_args_list
+        c.args[0] for c in read_by_qbo_identity.call_args_list
     } == distinct_item_refs
 
 
 def test_cached_miss_item_ref_memoized():
     """Unresolvable item refs are cached — resolver not re-queried on subsequent lines."""
     connector = _build_line_connector_with_item_mocks()
-    connector.qbo_item_repo.read_by_qbo_id.return_value = None
+    connector.sub_cost_code_service.read_by_qbo_identity.return_value = None
 
     connector._get_sub_cost_code_id("MISSING-ITEM")
     connector._get_sub_cost_code_id("MISSING-ITEM")
 
-    connector.qbo_item_repo.read_by_qbo_id.assert_called_once_with("MISSING-ITEM")
-    connector.item_scc_repo.read_by_qbo_item_id.assert_not_called()
+    # Second call served from the run-scoped cache — resolver queried once.
+    connector.sub_cost_code_service.read_by_qbo_identity.assert_called_once_with("MISSING-ITEM", None)

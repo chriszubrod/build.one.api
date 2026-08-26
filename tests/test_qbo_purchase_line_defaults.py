@@ -136,8 +136,6 @@ def _build_connector():
     connector = PurchaseLineExpenseLineItemConnector(
         mapping_repo=mapping_repo,
         expense_line_item_service=expense_line_item_service,
-        item_sub_cost_code_repo=Mock(),
-        qbo_item_repo=Mock(),
         customer_project_repo=Mock(),
         qbo_customer_repo=Mock(),
     )

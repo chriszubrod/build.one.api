@@ -530,11 +530,10 @@ class QboInvoiceService:
         rather than reverting to a point-query-per-line. None when no live QboItem
         or no resolvable cost code -- caller falls back to the Uncoded bucket.
 
-        Most invoice lines carry a SubCostCode-level Item (dbo.SubCostCode.QboId,
-        legacy qbo.Item -> qbo.ItemSubCostCode fallback); some carry a
-        CostCode-level-only Item with no SubCostCode granularity (e.g. "Initial
-        Deposit"), mapped directly via dbo.CostCode.QboId / legacy qbo.ItemCostCode
-        instead -- tried as a fallback so that class isn't silently dropped to
+        Most invoice lines carry a SubCostCode-level Item (dbo.SubCostCode.QboId);
+        some carry a CostCode-level-only Item with no SubCostCode granularity (e.g.
+        "Initial Deposit"), mapped directly via dbo.CostCode.QboId instead -- tried
+        as a fallback so that class isn't silently dropped to
         Uncoded (found by U-292's original equivalence proof against real invoice
         lines). The fallback applies whenever the SubCostCode-level resolution
         doesn't actually resolve to a usable numeric cost code (absent, or
@@ -556,13 +555,6 @@ class QboInvoiceService:
             resolve_dbo_sub_cost_code,
             resolve_dbo_cost_code_direct,
         )
-        from integrations.intuit.qbo.item.persistence.repo import QboItemRepository
-        from integrations.intuit.qbo.item.connector.sub_cost_code.persistence.repo import (
-            ItemSubCostCodeRepository,
-        )
-        from integrations.intuit.qbo.item.connector.cost_code.persistence.repo import (
-            ItemCostCodeRepository,
-        )
         from entities.sub_cost_code.business.service import SubCostCodeService
         from entities.cost_code.business.service import CostCodeService
 
@@ -571,31 +563,15 @@ class QboInvoiceService:
                 return None
             return (cost_code.number, cost_code.name)
 
-        class _MemoizedQboItemRepo:
-            """Wraps QboItemRepository so the two legacy-hop fallbacks below (one per
-            resolve_dbo_* call) share one qbo.Item lookup instead of each fetching the
-            same qbo_item_ref_value over the wire — reached only when BOTH dbo-native
-            tiers miss for the same item (a CostCode-level-only item with an
-            unstamped identity, or a non-numeric SubCostCode-level hit needing the
-            CostCode-level fallback too)."""
-            def __init__(self):
-                self._repo = QboItemRepository()
-                self._cache = {}
-
-            def read_by_qbo_id(self, qbo_id):
-                if qbo_id not in self._cache:
-                    self._cache[qbo_id] = self._repo.read_by_qbo_id(qbo_id)
-                return self._cache[qbo_id]
-
+        # U-307d: dbo-native only — the legacy qbo.Item -> qbo.Item*CostCode staging
+        # hop (and the _MemoizedQboItemRepo that shared its qbo.Item lookup across the
+        # two fallbacks) was retired; both resolvers now read dbo.{Sub,}CostCode.QboId.
         sub_cost_code_service = SubCostCodeService()
         cost_code_service = CostCodeService()
-        qbo_item_repo = _MemoizedQboItemRepo()
 
         sub_cost_code = resolve_dbo_sub_cost_code(
             qbo_item_ref_value, realm_id,
             sub_cost_code_service=sub_cost_code_service,
-            qbo_item_repo=qbo_item_repo,
-            item_sub_cost_code_repo=ItemSubCostCodeRepository(),
         )
         cost_code = cost_code_service.read_by_id(sub_cost_code.cost_code_id) if sub_cost_code else None
         result = _numeric_result(cost_code)
@@ -604,8 +580,6 @@ class QboInvoiceService:
             fallback_cost_code = resolve_dbo_cost_code_direct(
                 qbo_item_ref_value, realm_id,
                 cost_code_service=cost_code_service,
-                qbo_item_repo=qbo_item_repo,
-                item_cost_code_repo=ItemCostCodeRepository(),
             )
             result = _numeric_result(fallback_cost_code)
 

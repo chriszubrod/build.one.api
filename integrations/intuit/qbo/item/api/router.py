@@ -26,30 +26,8 @@ def sync_qbo_items_router(body: QboItemSync, current_user: dict = Depends(requir
     )
     return list_response([item.to_dict() for item in result.synced])
 
-
-@router.get("/get/qbo-items")
-def get_qbo_items_router(current_user: dict = Depends(require_module_api(Modules.QBO_SYNC))):
-    """
-    Read all QBO items.
-    """
-    items = service.read_all()
-    return list_response([item.to_dict() for item in items])
-
-
-@router.get("/get/qbo-items/realm/{realm_id}")
-def get_qbo_items_by_realm_id_router(realm_id: str, current_user: dict = Depends(require_module_api(Modules.QBO_SYNC))):
-    """
-    Read all QBO items by realm ID.
-    """
-    items = service.read_by_realm_id(realm_id=realm_id)
-    return list_response([item.to_dict() for item in items])
-
-
-@router.get("/get/qbo-item/{qbo_id}")
-def get_qbo_item_by_qbo_id_router(qbo_id: str, current_user: dict = Depends(require_module_api(Modules.QBO_SYNC))):
-    """
-    Read a QBO item by QBO ID.
-    """
-    item = service.read_by_qbo_id(qbo_id=qbo_id)
-    return item.to_dict() if item else None
+# U-307d: the 3 admin GET routes (/get/qbo-items, /get/qbo-items/realm/{realm_id},
+# /get/qbo-item/{qbo_id}) were removed — they read qbo.Item directly (zero web callers)
+# and would 500 once U-307d drops the table. POST /sync/qbo-items (the live pull) stays;
+# it drives the dbo-native ItemCostCode/ItemSubCostCode connectors, no qbo.Item read.
 

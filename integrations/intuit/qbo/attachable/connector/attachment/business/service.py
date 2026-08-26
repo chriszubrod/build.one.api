@@ -10,7 +10,6 @@ from typing import Optional
 from integrations.intuit.qbo.attachable.connector.attachment.business.model import AttachableAttachment
 from integrations.intuit.qbo.attachable.connector.attachment.persistence.repo import AttachableAttachmentRepository
 from integrations.intuit.qbo.attachable.business.model import QboAttachable
-from integrations.intuit.qbo.attachable.persistence.repo import QboAttachableRepository
 from integrations.intuit.qbo.attachable.external.client import QboAttachableClient
 from integrations.intuit.qbo.auth.business.service import QboAuthService
 from integrations.intuit.qbo.base.errors import QboBudgetExceededError, QboWriteRefusedError
@@ -572,11 +571,10 @@ class AttachableAttachmentConnector:
         Sync a local Attachment to QuickBooks Online.
 
         This method:
-        1. Checks if this Attachment was already pushed — three checks, in
-           order: a qbo.Attachable staging row (legacy/pull-populated), a
-           qbo.AttachableAttachment mapping row (legacy), then (U-285)
-           dbo.Attachment's own QboId/RealmId alone, which is authoritative
-           for anything pushed via this method's own code path (see point 4)
+        1. Checks if this Attachment was already pushed via dbo.Attachment's
+           own QboId/RealmId alone (U-285 stopped the push from writing the
+           legacy qbo.Attachable / qbo.AttachableAttachment tables; U-300c-prereq
+           removed the now-inert reads of them — see point 4)
         2. Downloads the file from Azure Blob Storage
         3. Uploads to QBO via the upload endpoint
         4. Stamps dbo.Attachment's native QboId/RealmId directly (U-285:
@@ -593,64 +591,37 @@ class AttachableAttachmentConnector:
             entity_id: QBO entity ID to link to
 
         Returns:
-            QboAttachable: the QBO-side record. For an Attachment already
-            synced via a legacy staging/mapping row this is a real
-            qbo.Attachable row (unchanged). For a fresh push, or a retry of
-            an Attachment this method already pushed itself, it is a
-            transient (never persisted) QboAttachable — `id`/`public_id`/
-            `row_version`/timestamps are None since no local row backs it.
+            QboAttachable: the QBO-side record. For a fresh push, or a retry of
+            an Attachment this method already pushed itself (dbo.Attachment
+            already carries QboId/RealmId), it is a transient (never persisted)
+            QboAttachable — `id`/`public_id`/`row_version`/timestamps are None
+            since no local row backs it.
 
         Raises:
             ValueError: If upload fails or file cannot be downloaded
         """
         attachment_id = coerce_id(attachment.id)
 
-        # U-279 fast path: dbo-native QboId is a strong signal of "already
-        # pushed" — SetAttachmentQboIdentity's theft-clear UPDATE guarantees
-        # at most one row holds a given (QboId, RealmId) pair at a time, so
-        # there's no "which business entity does this belong to" ambiguity
-        # the way there is for the CustomerRef push case in
-        # base/identity_consistency.py. But it's still corroborated against
-        # the qbo.Attachable staging row below before being trusted for the
-        # early return — a non-null qbo_id alone is not treated as sufficient.
+        # U-300c-prereq: dbo.Attachment's own QboId/RealmId is the SOLE
+        # identity store for the push path. The legacy qbo.Attachable /
+        # qbo.AttachableAttachment corroboration reads that used to gate this
+        # early return were removed once (a) U-285 stopped the push from
+        # writing either table and (b) a live check proved 0 legacy mapping
+        # rows whose dbo.Attachment.QboId is NULL — i.e. the only branch where
+        # a legacy read could change behavior (a mapping hit while dbo identity
+        # is absent) is unreachable in practice. See docs/design/u300c.md
+        # §3.1.2. SetAttachmentQboIdentity's theft-clear UPDATE guarantees at
+        # most one row holds a given (QboId, RealmId) pair, so a non-null
+        # qbo_id with a matching realm is a sufficient "already pushed" signal
+        # on its own; _stamp_pushed_identity's own race guard covers the push
+        # path below.
         already_dbo_pushed = bool(
             attachment.qbo_id and (getattr(attachment, "realm_id", None) or "") == (realm_id or "")
         )
         if already_dbo_pushed:
-            qbo_attachable_repo = QboAttachableRepository()
-            existing_qbo_attachable = qbo_attachable_repo.read_by_qbo_id_and_realm_id(attachment.qbo_id, realm_id)
-            if existing_qbo_attachable:
-                logger.info(f"Attachment {attachment_id} already carries QBO identity {attachment.qbo_id} — skipping re-upload")
-                return existing_qbo_attachable
-            # dbo says pushed but no matching qbo.Attachable staging row — this
-            # is staging-cache lag on a legacy-style push, or (the now-common
-            # case, U-285) simply that the push side no longer stages one at
-            # all. Fall through to the mapping-table check as a second
-            # corroborating source before trusting dbo identity alone.
-
-        # Check if already mapped (legacy path)
-        existing_mapping = self.mapping_repo.read_by_attachment_id(attachment_id)
-        if existing_mapping:
-            logger.info(f"Attachment {attachment_id} is already mapped to QboAttachable {existing_mapping.qbo_attachable_id}")
-            qbo_attachable_repo = QboAttachableRepository()
-            return qbo_attachable_repo.read_by_id(existing_mapping.qbo_attachable_id)
-
-        if already_dbo_pushed:
-            # U-285: neither legacy staging source corroborates it, but
-            # dbo.Attachment's own QboId/RealmId is authoritative for
-            # anything pushed via this unit's own code path
-            # (_stamp_pushed_identity no longer creates either staging row) —
-            # this is the expected, common case going forward, not an
-            # anomaly. Without this check, a retry (e.g. the outbox re-
-            # draining a row after a mid-loop QboBudgetExceededError, or the
-            # same Attachment shared across two Bills) would silently
-            # re-upload a duplicate to QBO and only detect it AFTER the
-            # wasteful re-upload, via _stamp_pushed_identity's own race
-            # guard below — mischaracterizing a deterministic re-push as a
-            # "concurrent mapping race".
             logger.info(
                 f"Attachment {attachment_id} already carries QBO identity {attachment.qbo_id} "
-                f"(no legacy staging row — U-285 push-side) — skipping re-upload"
+                f"— skipping re-upload (dbo-native identity, U-300c-prereq)"
             )
             return self._transient_attachable_from_dbo(
                 attachment, realm_id, entity_type=entity_type, entity_id=entity_id,

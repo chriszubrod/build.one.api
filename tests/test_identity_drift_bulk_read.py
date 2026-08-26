@@ -39,7 +39,8 @@ def test_other_registry_entities_are_unaffected_by_the_new_field():
         s.key for s in (*HEADER_ENTITY_SPECS, *REFERENCE_ENTITY_SPECS)
         if s.key not in ("bill", "bill_credit")
     }
-    assert len(untouched_keys) == 11
+    # 10 after U-300c-prereq removed the "attachment" reference-spec row (was 11).
+    assert len(untouched_keys) == 10
     for s in (*HEADER_ENTITY_SPECS, *REFERENCE_ENTITY_SPECS):
         if s.key not in ("bill", "bill_credit"):
             assert s.access_udf is None

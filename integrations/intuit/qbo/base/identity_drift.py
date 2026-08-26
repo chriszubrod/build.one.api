@@ -57,7 +57,10 @@ REFERENCE_ENTITY_SPECS: tuple[FlatEntitySpec, ...] = (
     FlatEntitySpec("sub_cost_code", "SubCostCode", "ItemSubCostCode", "Item", "SubCostCodeId", "QboItemId", False, "SetSubCostCodeQboIdentity"),
     FlatEntitySpec("payment_term", "PaymentTerm", "TermPaymentTerm", "Term", "PaymentTermId", "QboTermId", False, "SetPaymentTermQboIdentity"),
     FlatEntitySpec("address", "Address", "PhysicalAddressAddress", "PhysicalAddress", "AddressId", "QboPhysicalAddressId", False, "SetAddressQboIdentity"),
-    FlatEntitySpec("attachment", "Attachment", "AttachableAttachment", "Attachable", "AttachmentId", "QboAttachableId", False, "SetAttachmentQboIdentity"),
+    # U-300c-prereq: the "attachment" reference-drift spec row was removed — the attachable
+    # push/pull both went dbo-native (U-285/U-300b/U-300c-prereq), so a LEFT JOIN through
+    # qbo.AttachableAttachment/qbo.Attachable now flags every dbo-stamped attachment as a
+    # false orphan_dbo_value, and the join errors outright once U-300c drops the tables.
     FlatEntitySpec(
         "bill_credit", "BillCredit", "VendorCreditBillCredit", "VendorCredit", "BillCreditId",
         "QboVendorCreditId", False, "SetBillCreditQboIdentity",

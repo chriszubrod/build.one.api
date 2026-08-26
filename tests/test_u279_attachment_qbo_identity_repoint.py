@@ -656,83 +656,59 @@ def test_no_qbo_id_raises_without_ever_downloading():
 # --- Section 3: sync_attachment_to_qbo (push side) fast path ---
 
 
-def test_push_fast_path_dbo_qbo_id_skips_mapping_lookup_and_reupload():
+def test_push_fast_path_dbo_qbo_id_returns_transient_no_legacy_reads():
+    """U-300c-prereq: dbo.Attachment's own (QboId, RealmId) is the SOLE
+    'already pushed' signal. When it is present and the realm matches, the push
+    returns a transient QboAttachable (id=None, qbo_id echoed) and performs NO
+    qbo.Attachable / qbo.AttachableAttachment read — both legacy tables are
+    being retired. (Mutation guard: neutering this early return sends the method
+    into the upload path and this assertion fails.)"""
     connector, mapping_repo, attachment_service, _ = _build_connector()
-    attachment = _make_direct_attachment(id=55, qbo_id="QBO-ATT-99", realm_id="realm-1")
+    # _transient_attachable_from_dbo reads these display fields off the Attachment.
+    attachment = _make_direct_attachment(
+        id=55, qbo_id="QBO-ATT-99", realm_id="realm-1",
+        original_filename="att55.pdf", filename="att55.pdf", description=None,
+        category="qbo_import", content_type="application/pdf", file_size=123,
+    )
 
-    existing_qbo_attachable = SimpleNamespace(id=30, qbo_id="QBO-ATT-99")
-    with patch(f"{ATT_CONNECTOR_MODULE}.QboAttachableRepository") as MockQboAttRepo:
-        MockQboAttRepo.return_value.read_by_qbo_id_and_realm_id.return_value = existing_qbo_attachable
-        result = connector.sync_attachment_to_qbo(
-            attachment=attachment, realm_id="realm-1", entity_type="Bill", entity_id="qbo-bill-1"
-        )
+    result = connector.sync_attachment_to_qbo(
+        attachment=attachment, realm_id="realm-1", entity_type="Bill", entity_id="qbo-bill-1"
+    )
 
-    assert result is existing_qbo_attachable
+    assert result.id is None  # transient, never persisted
+    assert result.qbo_id == "QBO-ATT-99"
+    assert result.realm_id == "realm-1"
     mapping_repo.read_by_attachment_id.assert_not_called()
-    MockQboAttRepo.return_value.read_by_qbo_id_and_realm_id.assert_called_once_with("QBO-ATT-99", "realm-1")
 
 
-def test_push_fast_path_staging_row_missing_falls_back_to_mapping_table_as_safety_net():
-    """dbo says pushed (qbo_id + realm match) but the qbo.Attachable staging row
-    that should corroborate it is missing (staging-cache lag, not a genuine
-    two-source conflict) — must fall through to the legacy mapping-table check
-    as a safety net, not blindly trust the unsubstantiated qbo_id."""
-    connector, mapping_repo, attachment_service, _ = _build_connector()
-    attachment = _make_direct_attachment(id=55, qbo_id="QBO-ATT-99", realm_id="realm-1")
-    existing_mapping = SimpleNamespace(id=1, qbo_attachable_id=30)
-    mapping_repo.read_by_attachment_id.return_value = existing_mapping
-    existing_qbo_attachable = SimpleNamespace(id=30)
-
-    with patch(f"{ATT_CONNECTOR_MODULE}.QboAttachableRepository") as MockQboAttRepo:
-        MockQboAttRepo.return_value.read_by_qbo_id_and_realm_id.return_value = None  # staging row missing
-        MockQboAttRepo.return_value.read_by_id.return_value = existing_qbo_attachable
-        result = connector.sync_attachment_to_qbo(
-            attachment=attachment, realm_id="realm-1", entity_type="Bill", entity_id="qbo-bill-1"
-        )
-
-    assert result is existing_qbo_attachable
-    MockQboAttRepo.return_value.read_by_qbo_id_and_realm_id.assert_called_once_with("QBO-ATT-99", "realm-1")
-    mapping_repo.read_by_attachment_id.assert_called_once_with(55)
-
-
-def test_push_fast_path_realm_mismatch_falls_back_to_mapping_table():
+def test_push_realm_mismatch_is_not_already_pushed_falls_through_to_upload():
     """A dbo qbo_id stamped under a DIFFERENT realm must not short-circuit the
-    push for THIS realm — fall back to the legacy mapping-table check. Route the
-    fallback through the mapping-found early-return so the rest of the (unrelated)
-    upload path is never reached."""
+    push for THIS realm — already_dbo_pushed is False, so the method proceeds to
+    the upload path (proven here by the no-blob_url guard it hits first) rather
+    than taking the transient fast path. No legacy mapping-table lookup."""
     connector, mapping_repo, attachment_service, _ = _build_connector()
-    attachment = _make_direct_attachment(id=55, qbo_id="QBO-ATT-99", realm_id="realm-OTHER")
-    existing_mapping = SimpleNamespace(id=1, qbo_attachable_id=30)
-    mapping_repo.read_by_attachment_id.return_value = existing_mapping
-    existing_qbo_attachable = SimpleNamespace(id=30)
+    attachment = _make_direct_attachment(id=55, qbo_id="QBO-ATT-99", realm_id="realm-OTHER", blob_url=None)
 
-    with patch(f"{ATT_CONNECTOR_MODULE}.QboAttachableRepository") as MockQboAttRepo:
-        MockQboAttRepo.return_value.read_by_id.return_value = existing_qbo_attachable
-        result = connector.sync_attachment_to_qbo(
+    with pytest.raises(ValueError, match="no blob_url"):
+        connector.sync_attachment_to_qbo(
             attachment=attachment, realm_id="realm-1", entity_type="Bill", entity_id="qbo-bill-1"
         )
-
-    assert result is existing_qbo_attachable
-    MockQboAttRepo.return_value.read_by_qbo_id_and_realm_id.assert_not_called()
-    mapping_repo.read_by_attachment_id.assert_called_once_with(55)
+    mapping_repo.read_by_attachment_id.assert_not_called()
 
 
-def test_push_no_dbo_qbo_id_falls_back_to_mapping_table():
+def test_push_no_dbo_qbo_id_falls_through_to_upload():
+    """No dbo identity → not already-pushed → proceeds to the upload path with
+    no legacy mapping-table lookup (U-300c-prereq removed that fallback; a live
+    check proved 0 mapping rows whose dbo.Attachment.QboId is NULL, so the old
+    mapping-hit-while-dbo-absent branch was unreachable in prod)."""
     connector, mapping_repo, attachment_service, _ = _build_connector()
-    attachment = _make_direct_attachment(id=55, qbo_id=None, realm_id=None)
-    existing_mapping = SimpleNamespace(id=1, qbo_attachable_id=30)
-    mapping_repo.read_by_attachment_id.return_value = existing_mapping
-    existing_qbo_attachable = SimpleNamespace(id=30)
+    attachment = _make_direct_attachment(id=55, qbo_id=None, realm_id=None, blob_url=None)
 
-    with patch(f"{ATT_CONNECTOR_MODULE}.QboAttachableRepository") as MockQboAttRepo:
-        MockQboAttRepo.return_value.read_by_id.return_value = existing_qbo_attachable
-        result = connector.sync_attachment_to_qbo(
+    with pytest.raises(ValueError, match="no blob_url"):
+        connector.sync_attachment_to_qbo(
             attachment=attachment, realm_id="realm-1", entity_type="Bill", entity_id="qbo-bill-1"
         )
-
-    assert result is existing_qbo_attachable
-    mapping_repo.read_by_attachment_id.assert_called_once_with(55)
-    MockQboAttRepo.return_value.read_by_id.assert_called_once_with(30)
+    mapping_repo.read_by_attachment_id.assert_not_called()
 
 
 # --- Section 4: the three live line-item-linking call sites ---

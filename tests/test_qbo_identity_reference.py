@@ -99,15 +99,8 @@ EXPECTED_REFERENCE_SPECS = {
         "has_sync_token": False,
         "sproc": "SetAddressQboIdentity",
     },
-    "attachment": {
-        "label": "Attachment",
-        "mapping_table": "AttachableAttachment",
-        "staging_table": "Attachable",
-        "dbo_fk_col": "AttachmentId",
-        "staging_fk_col": "QboAttachableId",
-        "has_sync_token": False,
-        "sproc": "SetAttachmentQboIdentity",
-    },
+    # "attachment" reference-spec row removed in U-300c-prereq (attachable went
+    # fully dbo-native; see integrations/intuit/qbo/base/identity_drift.py).
     "bill_credit": {
         "label": "BillCredit",
         "mapping_table": "VendorCreditBillCredit",

@@ -205,8 +205,6 @@ def test_happy_path_stamps_dbo_identity_directly_no_staging_writes():
     client_upload_patch, _client = _client_upload_patch(return_value=upload_resp)
 
     with _blob_download_patch(), client_upload_patch, patch(
-        "integrations.intuit.qbo.attachable.connector.attachment.business.service.QboAttachableRepository"
-    ) as repo_cls, patch(
         "integrations.intuit.qbo.attachable.connector.attachment.business.service.record_mapping_issue"
     ) as record_issue:
         result = connector.sync_attachment_to_qbo(
@@ -217,7 +215,6 @@ def test_happy_path_stamps_dbo_identity_directly_no_staging_writes():
         )
 
     # No local staging row, no mapping row — dbo.Attachment identity only.
-    repo_cls.return_value.create.assert_not_called()
     connector.mapping_repo.create.assert_not_called()
     record_issue.assert_not_called()
     connector.reconciliation_repo.create.assert_not_called()
@@ -298,12 +295,8 @@ def test_retry_after_already_pushed_skips_reupload_no_legacy_staging_row():
     )
 
     with _blob_download_patch(), client_upload_patch, patch(
-        "integrations.intuit.qbo.attachable.connector.attachment.business.service.QboAttachableRepository"
-    ) as repo_cls, patch(
         "integrations.intuit.qbo.attachable.connector.attachment.business.service.record_mapping_issue"
     ) as record_issue:
-        repo_cls.return_value.read_by_qbo_id_and_realm_id.return_value = None
-
         result = connector.sync_attachment_to_qbo(
             attachment=attachment,
             realm_id=REALM_ID,

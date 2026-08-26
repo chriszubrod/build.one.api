@@ -160,6 +160,10 @@ def test_get_project_public_id_auto_heals_missing_mapping():
     # unmapped" fixture doesn't spuriously trip that guard against an
     # auto-truthy bare Mock.
     project_service.read_by_id.return_value = healed_project
+    # U-314-prereq anti-theft guard re-reads read_by_qbo_identity under the
+    # QboCustomer's realm before binding; None = no other Project holds it, so
+    # this genuinely-unmapped fixture binds cleanly.
+    project_service.read_by_qbo_identity.return_value = None
 
     heal_connector = CustomerProjectConnector(
         mapping_repo=mapping_repo,
@@ -190,10 +194,64 @@ def test_get_project_public_id_auto_heals_missing_mapping():
         result = invoice_connector._get_project_public_id("QBO-100")
 
     assert result == "healed-pub-id"
-    mapping_repo.create.assert_called_once_with(
-        project_id=healed_project.id,
-        qbo_customer_id=qbo_customer.id,
+    # U-314-prereq: heal binds by stamping dbo.Project.QboId/RealmId, NOT by
+    # writing a qbo.CustomerProject mapping row (retired).
+    mapping_repo.create.assert_not_called()
+    project_service.repo.set_qbo_identity.assert_called_once_with(
+        id=healed_project.id,
+        qbo_id=qbo_customer.qbo_id,
+        realm_id=qbo_customer.realm_id,
     )
+
+
+def test_heal_refuses_to_steal_identity_held_by_another_project():
+    """U-314-prereq anti-theft guard: when a DIFFERENT Project already holds the
+    QboCustomer's (qbo_id, realm), heal must NOT bind the name-matched Project —
+    that would steal the identity via SetProjectQboIdentity's theft-clear. Records a
+    duplicate_qbo_customer issue and returns None. Reachable when the invoice realm
+    is falsy (here _get_project_public_id is called with no realm), so the dbo-miss
+    precondition checked a different realm than the one being stamped."""
+    qbo_customer = _make_qbo_customer()  # qbo_id="QBO-100", realm_id="realm-1"
+    name_matched = _make_project(project_id=71, public_id="name-matched-pub")
+    other_holder = _make_project(project_id=99, public_id="holder-pub")
+
+    mapping_repo = Mock()
+    reconciliation_repo = Mock()
+
+    project_service = Mock()
+    project_service.read_by_name.return_value = name_matched
+    project_service.read_by_id.return_value = name_matched  # identity-free -> no 718 conflict
+    project_service.read_by_qbo_identity.return_value = other_holder  # a DIFFERENT project holds it
+
+    heal_connector = CustomerProjectConnector(
+        mapping_repo=mapping_repo,
+        project_service=project_service,
+        project_address_service=Mock(),
+        address_connector=Mock(),
+        customer_mapping_repo=Mock(),
+        reconciliation_repo=reconciliation_repo,
+        customer_service=Mock(),
+        qbo_customer_repo=Mock(),
+    )
+    heal_connector._sync_addresses = Mock()
+
+    qbo_customer_repo = Mock()
+    qbo_customer_repo.read_by_qbo_id.return_value = qbo_customer
+    customer_project_repo = Mock()
+    customer_project_repo.read_by_qbo_customer_id.return_value = None
+
+    invoice_connector = _build_invoice_connector(
+        qbo_customer_repo=qbo_customer_repo,
+        customer_project_repo=customer_project_repo,
+    )
+
+    with patch(HEAL_CONNECTOR_PATH, return_value=heal_connector):
+        result = invoice_connector._get_project_public_id("QBO-100")
+
+    assert result is None
+    project_service.repo.set_qbo_identity.assert_not_called()  # did NOT steal
+    mapping_repo.create.assert_not_called()
+    reconciliation_repo.create.assert_called_once()  # collision recorded
 
 
 def test_get_project_public_id_returns_none_when_heal_cannot_resolve():

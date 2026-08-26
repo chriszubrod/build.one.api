@@ -303,7 +303,10 @@ def _make_project_connector():
     return connector, mapping_repo, project_service.repo
 
 
-def test_project_create_mapping_dual_writes_identity():
+def test_project_create_mapping_stamps_dbo_identity_only():
+    """U-314-prereq: create_mapping stamps dbo.Project.QboId/RealmId ONLY — it no
+    longer writes a qbo.CustomerProject mapping row (that table is being retired in
+    U-314). dbo.Project identity is the sole store."""
     connector, mapping_repo, project_repo = _make_project_connector()
     connector.create_mapping(
         project_id=3,
@@ -311,8 +314,8 @@ def test_project_create_mapping_dual_writes_identity():
         qbo_id="C-1",
         realm_id="realm-p",
     )
-    mapping_repo.create.assert_called_once_with(project_id=3, qbo_customer_id=4)
     project_repo.set_qbo_identity.assert_called_once_with(id=3, qbo_id="C-1", realm_id="realm-p")
+    mapping_repo.create.assert_not_called()
 
 
 # test_project_repoint_heal_stamps_identity removed U-311 -- it tested

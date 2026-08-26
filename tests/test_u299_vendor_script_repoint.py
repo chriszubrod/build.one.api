@@ -193,22 +193,27 @@ class TestSelectUnmappedVendorRepoint:
         mock_resolve.assert_called_once()
         assert mock_resolve.call_args.args[:2] == ("V1", "realm-1")
 
-    def test_agreeing_resolution_skips_recompute_and_caches_by_ref(self):
+    def test_caches_resolution_by_ref(self):
+        """U-314-prereq: the CTE no longer computes a legacy MappedVendorId (it
+        starts NULL now that the qbo.Vendor -> qbo.VendorVendor join is gone), so
+        resolve_local_vendor_id is the SOLE resolver and is cached by ref — two
+        bills sharing a VendorRefValue resolve it once. (_classify_bucket stays
+        per-row: the bucket depends on each bill's own DocNumber/TxnDate.)"""
         rows_in = [
-            _row(Id=1, VendorRefValue="V1", MappedVendorId=55, bucket="already_exists_unlinked"),
-            _row(Id=2, VendorRefValue="V1", MappedVendorId=55, bucket="already_exists_unlinked"),
+            _row(Id=1, VendorRefValue="V1", MappedVendorId=None, bucket="unmapped_vendor"),
+            _row(Id=2, VendorRefValue="V1", MappedVendorId=None, bucket="unmapped_vendor"),
         ]
         cur = _cursor_for(rows_in)
+        cur.fetchone.return_value = (backfill_mod.CREATABLE,)
 
         with patch("scripts.backfill_qbo_bills.get_connection") as mock_conn_ctx, \
-             patch.object(backfill_mod, "resolve_local_vendor_id", return_value=55) as mock_resolve, \
-             patch.object(backfill_mod, "_classify_bucket") as mock_classify:
+             patch.object(backfill_mod, "resolve_local_vendor_id", return_value=55) as mock_resolve:
             mock_conn_ctx.return_value.__enter__.return_value.cursor.return_value = cur
             rows = backfill_mod.select_unmapped(realm_id="realm-1")
 
         assert mock_resolve.call_count == 1  # cached across both rows sharing VendorRefValue
-        mock_classify.assert_not_called()
-        assert all(r["bucket"] == "already_exists_unlinked" for r in rows)
+        assert all(r["MappedVendorId"] == 55 for r in rows)
+        assert all(r["bucket"] == backfill_mod.CREATABLE for r in rows)
 
     def test_both_miss_stays_unmapped_vendor_no_recompute(self):
         cur = _cursor_for([_row(Id=1, VendorRefValue="V1", MappedVendorId=None,
@@ -223,61 +228,17 @@ class TestSelectUnmappedVendorRepoint:
         assert rows[0]["bucket"] == "unmapped_vendor"
         mock_classify.assert_not_called()
 
-    def test_dbo_miss_with_nonnull_legacy_mapped_vendor_id_preserves_it(self):
-        """Codex P2 (U-313 review): a dbo-first miss (resolve_local_vendor_id
-        returns None -- no legacy fallback left inside it as of U-313) must
-        leave an ALREADY non-null MappedVendorId/bucket exactly as this
-        script's own raw SQL join computed it, not blank it out or corrupt
-        it. This SQL join (a separate, out-of-scope mechanism -- see the
-        module docstring) is this script's own legacy-hop bucketing logic,
-        unaffected by U-313's Python-side resolver change; this test pins
-        that the override logic here (untouched by this diff) still composes
-        correctly with the resolver's new no-fallback contract."""
-        cur = _cursor_for([_row(Id=1, VendorRefValue="V1", MappedVendorId=77,
-                                bucket="already_exists_unlinked")])
-
-        with patch("scripts.backfill_qbo_bills.get_connection") as mock_conn_ctx, \
-             patch.object(backfill_mod, "resolve_local_vendor_id", return_value=None), \
-             patch.object(backfill_mod, "_classify_bucket") as mock_classify:
-            mock_conn_ctx.return_value.__enter__.return_value.cursor.return_value = cur
-            rows = backfill_mod.select_unmapped(realm_id="realm-1")
-
-        assert rows[0]["MappedVendorId"] == 77
-        assert rows[0]["bucket"] == "already_exists_unlinked"
-        mock_classify.assert_not_called()
-
-    def test_disagreement_logs_warning(self):
-        """Regression (Workflow hunt P2): overriding a NON-null MappedVendorId
-        (a real disagreement, not an ordinary NULL-fill) must be observable."""
-        cur = _cursor_for([_row(Id=1, QboId="1001", VendorRefValue="V1", MappedVendorId=77,
-                                bucket="already_exists_unlinked")])
-        cur.fetchone.return_value = (backfill_mod.CREATABLE,)  # dbo-resolved vendor 55 no longer matches
-
-        with patch("scripts.backfill_qbo_bills.get_connection") as mock_conn_ctx, \
-             patch.object(backfill_mod, "resolve_local_vendor_id", return_value=55), \
-             patch.object(backfill_mod, "logger") as mock_logger:
-            mock_conn_ctx.return_value.__enter__.return_value.cursor.return_value = cur
-            rows = backfill_mod.select_unmapped(realm_id="realm-1")
-
-        assert rows[0]["MappedVendorId"] == 55
-        mock_logger.warning.assert_called_once()
-        msg = mock_logger.warning.call_args.args[0]
-        assert "77" in msg and "55" in msg
-
-    def test_null_fill_does_not_log_warning(self):
-        """Filling a NULL (the ordinary not-yet-mapped case) is not a
-        disagreement -- must not be logged as one."""
-        cur = _cursor_for([_row(Id=1, VendorRefValue="V1", MappedVendorId=None,
-                                bucket="unmapped_vendor")])
-        cur.fetchone.return_value = (backfill_mod.CREATABLE,)
-
-        with patch("scripts.backfill_qbo_bills.get_connection") as mock_conn_ctx, \
-             patch.object(backfill_mod, "resolve_local_vendor_id", return_value=55), \
-             patch.object(backfill_mod, "logger") as mock_logger:
-            mock_conn_ctx.return_value.__enter__.return_value.cursor.return_value = cur
-            backfill_mod.select_unmapped(realm_id="realm-1")
-
-        mock_logger.warning.assert_not_called()
+    # U-314-prereq retired 3 tests here that pinned the legacy qbo.Vendor ->
+    # qbo.VendorVendor join's interaction with the resolver override:
+    #   - test_dbo_miss_with_nonnull_legacy_mapped_vendor_id_preserves_it
+    #   - test_disagreement_logs_warning
+    #   - test_null_fill_does_not_log_warning
+    # The CTE no longer produces a non-NULL MappedVendorId (the join is gone), so
+    # resolve_local_vendor_id is the sole resolver and there is no legacy value to
+    # agree/disagree with or preserve — those scenarios are unreachable. The
+    # remaining tests (flip-on-resolve, both-miss, cache-by-ref) cover the new
+    # dbo-only loop; the dry-run equivalence (legacy-join vs dbo-native = 0
+    # disagreements over 20240 live bills) covers the CTE change itself.
 
 
 # --- Section 4: backfill_qbo_bills.py::_classify_bucket (isolated) ---

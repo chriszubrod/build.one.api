@@ -115,10 +115,14 @@ def select_unmapped(*, year=None, qbo_id=None, realm_id=None):
         WHERE {' AND '.join(where)}
     ),
     resolved AS (
-        SELECT u.*, vv.VendorId AS MappedVendorId
+        -- U-314-prereq: the legacy qbo.Vendor -> qbo.VendorVendor join is retired
+        -- (those mapping tables are being dropped in U-314). MappedVendorId starts
+        -- NULL and is resolved SOLELY by resolve_local_vendor_id (dbo.Vendor.QboId,
+        -- realm-scoped) in the per-row loop below — which U-313 already made the
+        -- authoritative override on any disagreement, so dropping the join here just
+        -- makes it the only source instead of a fallback.
+        SELECT u.*, CAST(NULL AS BIGINT) AS MappedVendorId
         FROM unmapped u
-        LEFT JOIN qbo.Vendor qv       ON qv.QboId = u.VendorRefValue
-        LEFT JOIN qbo.VendorVendor vv ON vv.QboVendorId = qv.Id
     )
     SELECT r.Id, r.QboId, r.VendorRefValue, r.VendorRefName, r.DocNumber, r.TxnDate, r.MappedVendorId,
       CASE
@@ -140,14 +144,18 @@ def select_unmapped(*, year=None, qbo_id=None, realm_id=None):
         cols = [c[0] for c in cur.description]
         rows = [dict(zip(cols, row)) for row in cur.fetchall()]
 
-        # U-313: try dbo.Vendor's native QboId (dbo-only, re-verified fresh —
-        # no legacy qbo.Vendor -> qbo.VendorVendor fallback left, see
-        # resolve_local_vendor_id) for each row's vendor ref; the
-        # MappedVendorId/bucket the raw SQL above computed via its own
-        # qbo.Vendor -> qbo.VendorVendor join stays as-is on a dbo miss —
-        # only rows where the dbo-native answer actually differs get their
-        # bucket recomputed. Cached by ref value since many unmapped bills
-        # usually share few distinct vendors.
+        # U-313/U-314-prereq: resolve each row's vendor ref via dbo.Vendor's native
+        # QboId (dbo-only, re-verified fresh through resolve_local_vendor_id). The
+        # raw SQL above no longer computes a legacy MappedVendorId — the
+        # qbo.Vendor -> qbo.VendorVendor join was removed (those tables are being
+        # dropped in U-314) — so this loop is now the SOLE resolver: MappedVendorId
+        # starts NULL, this sets it (and recomputes the bucket) for every ref
+        # dbo-native resolves, and a ref it cannot resolve stays NULL ->
+        # 'unmapped_vendor'. U-313 already made dbo-native the authoritative
+        # override on any disagreement, and dbo.Vendor.QboId is at full parity with
+        # the retired mapping chain (1195/1195), so removing the join changes no
+        # bill's resolution. Cached by ref value since many unmapped bills usually
+        # share few distinct vendors.
         vendor_service = VendorService()
         resolved_cache: Dict[str, Optional[int]] = {}
         for r in rows:
@@ -158,21 +166,9 @@ def select_unmapped(*, year=None, qbo_id=None, realm_id=None):
                     vendor_service=vendor_service,
                 )
             dbo_vendor_id = resolved_cache[ref]
-            if dbo_vendor_id is not None and dbo_vendor_id != r["MappedVendorId"]:
-                old_mapped_vendor_id, old_bucket = r["MappedVendorId"], r["bucket"]
+            if dbo_vendor_id is not None:
                 r["MappedVendorId"] = dbo_vendor_id
                 r["bucket"] = _classify_bucket(cur, dbo_vendor_id, r["DocNumber"], r["TxnDate"])
-                if old_mapped_vendor_id is not None:
-                    # Not a NULL-fill (the ordinary "legacy mapping never
-                    # existed" case) — the dbo-native answer DISAGREES with
-                    # the legacy chain's. Log so an operator can audit which
-                    # rows the Phase-4 repoint actually changed.
-                    logger.warning(
-                        f"  qbo_id={r['QboId']}: vendor ref {ref!r} resolves to a DIFFERENT "
-                        f"vendor via dbo.Vendor.QboId ({dbo_vendor_id}) than via the legacy "
-                        f"qbo.Vendor/qbo.VendorVendor mapping ({old_mapped_vendor_id}) — using "
-                        f"the verified dbo-native result. bucket {old_bucket!r} -> {r['bucket']!r}"
-                    )
 
         return rows
 

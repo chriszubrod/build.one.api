@@ -57,11 +57,11 @@ class CustomerProjectConnector:
         qbo_customer_repo: Optional[QboCustomerRepository] = None,
     ):
         """Initialize the CustomerProjectConnector."""
-        # U-311: mapping_repo stays — heal_missing_mapping/create_mapping/the
-        # get_mapping_by_* accessors below still read+write qbo.CustomerProject
-        # (that table isn't dropping in this unit; U-314 is the guarded drop,
-        # gated on soak). Only sync_from_qbo_customer's OWN pull no longer
-        # touches it (dbo-only fast path, below).
+        # U-314-prereq: mapping_repo is retained but the LIVE paths no longer touch
+        # qbo.CustomerProject — heal_missing_mapping/create_mapping now read+write
+        # dbo.Project.QboId only. Only the dead get_mapping_by_*/_resolve_mapping_state
+        # accessors still reference mapping_repo; the U-314 guarded DROP removes them
+        # along with the table (kept here so the DROP unit has one inventory to clear).
         self.mapping_repo = mapping_repo or CustomerProjectRepository()
         self.project_service = project_service or ProjectService()
         self.project_address_service = project_address_service or ProjectAddressService()
@@ -621,43 +621,29 @@ class CustomerProjectConnector:
         *,
         qbo_id: Optional[str],
         realm_id: Optional[str],
-    ) -> CustomerProject:
+    ) -> None:
         """
-        Create a mapping between Project and QboCustomer.
-        
-        Args:
-            project_id: Database ID of Project record
-            qbo_customer_id: Database ID of QboCustomer record
-        
-        Returns:
-            CustomerProject: The created mapping record
-        
-        Raises:
-            ValueError: If mapping already exists or validation fails
+        Bind a Project to its QBO identity by stamping dbo.Project.QboId/RealmId.
+
+        U-314-prereq: dbo.Project.QboId/RealmId is the SOLE identity store — this
+        no longer reads or writes a qbo.CustomerProject mapping row (that table is
+        being retired; U-314 drops it). `qbo_customer_id` stays in the signature
+        for the caller's symmetry but is no longer persisted.
+
+        The sole caller is `heal_missing_mapping`, which has already (a) confirmed
+        via `_conflicting_project_identity` that this Project does not carry a
+        DIFFERENT qbo identity, and (b) been reached only on a genuine dbo-miss
+        (`InvoiceInvoiceConnector._get_project_public_id` does a
+        `read_by_qbo_identity` first and only falls through to heal on a miss), so
+        no OTHER Project holds `qbo_id` and `SetProjectQboIdentity`'s theft-clear
+        has nothing to steal. The former mapping-table 1:1 validations are thus
+        redundant and were removed with the mapping write.
         """
-        # Validate 1:1 constraints
-        existing_by_project = self.mapping_repo.read_by_project_id(project_id)
-        if existing_by_project:
-            raise ValueError(
-                f"Project {project_id} is already mapped to QboCustomer {existing_by_project.qbo_customer_id}"
-            )
-        
-        existing_by_qbo_customer = self.mapping_repo.read_by_qbo_customer_id(qbo_customer_id)
-        if existing_by_qbo_customer:
-            raise ValueError(
-                f"QboCustomer {qbo_customer_id} is already mapped to Project {existing_by_qbo_customer.project_id}"
-            )
-        
-        # Stamp dbo-native identity FIRST — if this fails, nothing else has been
-        # created yet, so the caller's existing rollback (delete the just-created
-        # entity) fully cleans up with no orphaned mapping row.
         self.project_service.repo.set_qbo_identity(
             id=project_id,
             qbo_id=qbo_id,
             realm_id=realm_id,
         )
-        mapping = self.mapping_repo.create(project_id=project_id, qbo_customer_id=qbo_customer_id)
-        return mapping
 
     def get_mapping_by_project_id(self, project_id: int) -> Optional[CustomerProject]:
         """
@@ -721,17 +707,38 @@ class CustomerProjectConnector:
                 qbo_customer=qbo_customer, local_project=existing_local_with_identity, existing_qbo_id=existing_qbo_id,
             )
             return None
-        existing_mapping_for_local = self.mapping_repo.read_by_project_id(existing_local.id)
-        if existing_mapping_for_local:
-            if existing_mapping_for_local.qbo_customer_id == qbo_customer.id:
-                return existing_local  # already correctly mapped
-            # Bound to a DIFFERENT QboCustomer — genuine duplicate; do NOT rebind.
-            self._raise_duplicate_qbo_customer_issue(
-                qbo_customer=qbo_customer,
-                local_project=existing_local,
-                existing_mapping=existing_mapping_for_local,
+        # U-314-prereq: the legacy qbo.CustomerProject duplicate check is retired —
+        # dbo.Project.QboId is the sole identity store. `_conflicting_project_identity`
+        # above already refuses to rebind existing_local if IT carries a DIFFERENT
+        # identity. This dbo-native guard replaces the removed mapping-table
+        # "qbo_customer already mapped to another Project" check: refuse to bind if a
+        # DIFFERENT Project already holds this (qbo_id, realm). heal normally reaches
+        # here only on a dbo-miss for the INVOICE's realm, but the identity is stamped
+        # under the QboCustomer's OWN realm — which can differ if the invoice realm was
+        # falsy — and SetProjectQboIdentity's theft-clear would then silently STEAL the
+        # identity from that other Project. Re-check under the realm actually stamped.
+        existing_holder = self.project_service.read_by_qbo_identity(
+            qbo_customer.qbo_id, qbo_customer.realm_id
+        )
+        if existing_holder is not None and coerce_id(existing_holder.id) != coerce_id(existing_local.id):
+            record_mapping_issue(
+                self.reconciliation_repo,
+                drift_type="duplicate_qbo_customer",
+                entity_type="Project",
+                entity_public_id=str(existing_local.public_id) if existing_local.public_id else None,
+                qbo_id=str(qbo_customer.qbo_id) if qbo_customer.qbo_id else None,
+                realm_id=qbo_customer.realm_id or "",
+                details=(
+                    f"Refusing to bind QboCustomer {qbo_customer.id} "
+                    f"(QboId={qbo_customer.qbo_id}, DisplayName='{qbo_customer.display_name}') "
+                    f"to name-matched Project {existing_local.id}: Project {existing_holder.id} "
+                    f"already holds that dbo identity (realm {qbo_customer.realm_id!r}). Binding "
+                    f"would steal it via the identity theft-clear. Resolve the QBO sub-customer "
+                    f"name collision upstream."
+                ),
             )
             return None
+        # Bind by stamping dbo identity directly (no qbo.CustomerProject row).
         self.create_mapping(
             project_id=existing_local.id,
             qbo_customer_id=qbo_customer.id,

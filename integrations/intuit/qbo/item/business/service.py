@@ -6,7 +6,6 @@ from typing import List, Optional
 
 # Local Imports
 from integrations.intuit.qbo.item.business.model import QboItem
-from integrations.intuit.qbo.item.persistence.repo import QboItemRepository
 from integrations.intuit.qbo.item.external.client import QboItemClient
 from integrations.intuit.qbo.item.external.schemas import QboItem as QboItemExternalSchema
 from integrations.intuit.qbo.base.pacing import pace_batch
@@ -26,10 +25,6 @@ class QboItemService:
     """
     Service for QboItem entity business operations.
     """
-
-    def __init__(self, repo: Optional[QboItemRepository] = None):
-        """Initialize the QboItemService."""
-        self.repo = repo or QboItemRepository()
 
     def sync_from_qbo(
         self,
@@ -200,28 +195,4 @@ class QboItemService:
             project_one=connector.sync_from_qbo_item,
             logger=logger,
         )
-
-    def read_all(self) -> List[QboItem]:
-        """
-        Read all QboItems.
-        """
-        return self.repo.read_all()
-
-    def read_by_realm_id(self, realm_id: str) -> List[QboItem]:
-        """
-        Read all QboItems by realm ID.
-        """
-        return self.repo.read_by_realm_id(realm_id)
-
-    def read_by_qbo_id(self, qbo_id: str) -> Optional[QboItem]:
-        """
-        Read a QboItem by QBO ID.
-        """
-        return self.repo.read_by_qbo_id(qbo_id)
-
-    def read_by_id(self, id: int) -> Optional[QboItem]:
-        """
-        Read a QboItem by database ID.
-        """
-        return self.repo.read_by_id(id)
 

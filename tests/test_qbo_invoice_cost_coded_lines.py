@@ -3,15 +3,16 @@ cost-code seam draw_financials.py consumes in place of its former ItemRefName st
 parser.
 
 U-307a repointed the resolution mechanism onto the shared cost_code_resolver.py
-(dbo.SubCostCode.QboId / dbo.CostCode.QboId, U-289, 100% live parity). U-307d then
-RETIRED the legacy qbo.Item -> qbo.ItemSubCostCode/qbo.ItemCostCode staging-hop
+(dbo.SubCostCode.QboId / dbo.CostCode.QboId, U-289, 100% live parity). U-307d-prereq
+then RETIRED the legacy qbo.Item -> qbo.ItemSubCostCode/qbo.ItemCostCode staging-hop
 fallback entirely — resolution is now dbo-native only. Tests that model a successful
 resolution pass `direct_sub_cost_code` / `direct_cost_code` (a dbo-native identity hit);
 the value-based (numeric) two-tier tiebreak U-292 originally proved is exercised via
 those dbo-native hits. The legacy-hop-specific tests (and the qbo.Item* mapping-table
-precedence rules) were removed with the fallback. `_service` still accepts the legacy
-qbo_items/item_sub_cost_codes/item_cost_codes params, now inert (the resolver no longer
-reads those tables), for the miss/Uncoded tests that only need a dbo-native miss.
+precedence rules) were removed with the fallback; U-307d then dropped the `qbo.Item*`
+tables themselves plus `_service`'s now-fully-inert `qbo_items`/`item_sub_cost_codes`/
+`item_cost_codes` passthrough params — a dbo-native miss just means Uncoded, no
+staging-table shape left to model.
 
 Resolution is always by ID -- dbo.SubCostCode.QboId / dbo.CostCode.QboId -- never by
 parsing an Item's display name."""
@@ -42,24 +43,6 @@ class _FakeQboLine:
         self.detail_type = detail_type
 
 
-class _FakeQboItem:
-    def __init__(self, id, qbo_id):
-        self.id = id
-        self.qbo_id = qbo_id
-
-
-class _FakeItemSubCostCode:
-    def __init__(self, qbo_item_id, sub_cost_code_id):
-        self.qbo_item_id = qbo_item_id
-        self.sub_cost_code_id = sub_cost_code_id
-
-
-class _FakeItemCostCode:
-    def __init__(self, qbo_item_id, cost_code_id):
-        self.qbo_item_id = qbo_item_id
-        self.cost_code_id = cost_code_id
-
-
 class _FakeSubCostCode:
     def __init__(self, id, cost_code_id, qbo_id=None, realm_id=None):
         self.id = id
@@ -88,7 +71,6 @@ class _FakeLineRepo:
 def _service(monkeypatch, *, invoice_qbo_id="83-INV", qbo_invoice_id=900,
              legacy_mapping_qbo_invoice_id="_unset",
              lines_by_qbo_invoice_id,
-             qbo_items=(), item_sub_cost_codes=(), item_cost_codes=(),
              sub_cost_codes=(), cost_codes=(),
              direct_sub_cost_code=None, direct_cost_code=None):
     """Wire the seam's full resolution dependency chain and return a QboInvoiceService
@@ -107,9 +89,8 @@ def _service(monkeypatch, *, invoice_qbo_id="83-INV", qbo_invoice_id=900,
     U-307a: `direct_sub_cost_code` / `direct_cost_code` model a dbo-native
     identity HIT (SubCostCode.QboId / CostCode.QboId already stamped for this
     line's item ref) — the fast tier. Omitted (None, the default) models a
-    dbo-native MISS, forcing every test through the legacy
-    qbo.Item -> qbo.ItemSubCostCode/qbo.ItemCostCode hop this file was
-    originally written to prove (U-292's value-based tiebreak).
+    dbo-native MISS -- since U-307d retired the legacy qbo.Item staging hop,
+    a miss now resolves straight to Uncoded (no fallback tier left to try).
     """
     from integrations.intuit.qbo.invoice.business.service import QboInvoiceService
 
@@ -133,29 +114,6 @@ def _service(monkeypatch, *, invoice_qbo_id="83-INV", qbo_invoice_id=900,
         "integrations.intuit.qbo.invoice.connector.invoice.persistence.repo.InvoiceInvoiceRepository",
         _FakeInvoiceInvoiceRepository,
     )
-
-    # --- Legacy qbo.Item staging hop -- point-query fakes, by qbo_id/qbo_item_id ---
-
-    class _QboItemRepoFake:
-        def __init__(self):
-            self._by_qbo_id = {item.qbo_id: item for item in qbo_items}
-
-        def read_by_qbo_id(self, qbo_id):
-            return self._by_qbo_id.get(qbo_id)
-
-    class _ItemSubCostCodeRepoFake:
-        def __init__(self):
-            self._by_qbo_item_id = {m.qbo_item_id: m for m in item_sub_cost_codes}
-
-        def read_by_qbo_item_id(self, qbo_item_id):
-            return self._by_qbo_item_id.get(qbo_item_id)
-
-    class _ItemCostCodeRepoFake:
-        def __init__(self):
-            self._by_qbo_item_id = {m.qbo_item_id: m for m in item_cost_codes}
-
-        def read_by_qbo_item_id(self, qbo_item_id):
-            return self._by_qbo_item_id.get(qbo_item_id)
 
     # --- dbo-native identity + by-id fakes ---
     # Shared (not per-instance) call log — a fresh service instance is constructed
@@ -187,14 +145,6 @@ def _service(monkeypatch, *, invoice_qbo_id="83-INV", qbo_invoice_id=900,
 
     monkeypatch.setattr(
         "entities.invoice.business.service.InvoiceService", _FakeInvoiceService)
-    monkeypatch.setattr(
-        "integrations.intuit.qbo.item.persistence.repo.QboItemRepository", _QboItemRepoFake)
-    monkeypatch.setattr(
-        "integrations.intuit.qbo.item.connector.sub_cost_code.persistence.repo.ItemSubCostCodeRepository",
-        _ItemSubCostCodeRepoFake)
-    monkeypatch.setattr(
-        "integrations.intuit.qbo.item.connector.cost_code.persistence.repo.ItemCostCodeRepository",
-        _ItemCostCodeRepoFake)
     monkeypatch.setattr(
         "entities.sub_cost_code.business.service.SubCostCodeService", _SubCostCodeServiceFake)
     monkeypatch.setattr(
@@ -282,40 +232,13 @@ def test_unresolvable_qbo_item_falls_to_uncoded(monkeypatch):
     assert triples == [("", "Uncoded", Decimal("25.00"))]
 
 
-def test_missing_item_sub_cost_code_mapping_falls_to_uncoded(monkeypatch):
-    svc = _service(
-        monkeypatch,
-        lines_by_qbo_invoice_id={900: [_FakeQboLine("83", 25.00)]},
-        qbo_items=[_FakeQboItem(id=10, qbo_id="83")],
-        # no ItemSubCostCode and no ItemCostCode mapping for item 10
-    )
-    triples = svc.cost_coded_lines_for_invoice(invoice_id=1)
-    assert triples == [("", "Uncoded", Decimal("25.00"))]
-
-
-def test_dangling_sub_cost_code_falls_to_uncoded(monkeypatch):
-    """Mapping row exists but its SubCostCode has since been deleted — defensive,
-    never raise, always degrade to Uncoded so a draw still foots."""
-    svc = _service(
-        monkeypatch,
-        lines_by_qbo_invoice_id={900: [_FakeQboLine("83", 25.00)]},
-        qbo_items=[_FakeQboItem(id=10, qbo_id="83")],
-        item_sub_cost_codes=[_FakeItemSubCostCode(qbo_item_id=10, sub_cost_code_id=999)],  # dangling
-    )
-    triples = svc.cost_coded_lines_for_invoice(invoice_id=1)
-    assert triples == [("", "Uncoded", Decimal("25.00"))]
-
-
-def test_dangling_cost_code_falls_to_uncoded(monkeypatch):
-    svc = _service(
-        monkeypatch,
-        lines_by_qbo_invoice_id={900: [_FakeQboLine("83", 25.00)]},
-        qbo_items=[_FakeQboItem(id=10, qbo_id="83")],
-        item_sub_cost_codes=[_FakeItemSubCostCode(qbo_item_id=10, sub_cost_code_id=7)],
-        sub_cost_codes=[_FakeSubCostCode(id=7, cost_code_id=999)],  # dangling
-    )
-    triples = svc.cost_coded_lines_for_invoice(invoice_id=1)
-    assert triples == [("", "Uncoded", Decimal("25.00"))]
+# U-307d retired 3 more legacy-qbo.Item-hop tests here
+# (test_missing_item_sub_cost_code_mapping_falls_to_uncoded,
+# test_dangling_sub_cost_code_falls_to_uncoded, test_dangling_cost_code_falls_to_uncoded):
+# each modeled a distinct qbo.Item*/mapping-table shape (no mapping / dangling
+# SubCostCode / dangling CostCode) that only mattered to the legacy hop -- with
+# it gone, all 3 collapsed to the exact same dbo-native-miss-with-no-hit
+# scenario already covered by test_unresolvable_qbo_item_falls_to_uncoded.
 
 
 def test_unsynced_invoice_with_no_legacy_mapping_returns_empty(monkeypatch):
@@ -421,7 +344,7 @@ def test_resolution_memoized_once_per_distinct_item_per_instance(monkeypatch):
 
 def test_dbo_native_sub_cost_code_hit_skips_legacy_hop_entirely(monkeypatch):
     """A stamped dbo.SubCostCode.QboId resolves without ever touching qbo.Item /
-    qbo.ItemSubCostCode -- no qbo_items/item_sub_cost_codes fixture data at all."""
+    qbo.ItemSubCostCode -- no legacy staging-table fixture data at all."""
     svc = _service(
         monkeypatch,
         lines_by_qbo_invoice_id={900: [_FakeQboLine("83", 715.00)]},
@@ -472,10 +395,6 @@ def test_dbo_native_lookup_receives_invoice_realm_id(monkeypatch):
     svc = _service(
         monkeypatch,
         lines_by_qbo_invoice_id={900: [_FakeQboLine("83", 715.00)]},
-        qbo_items=[_FakeQboItem(id=10, qbo_id="83")],
-        item_sub_cost_codes=[_FakeItemSubCostCode(qbo_item_id=10, sub_cost_code_id=7)],
-        sub_cost_codes=[_FakeSubCostCode(id=7, cost_code_id=3)],
-        cost_codes=[_FakeCostCode(id=3, number="02", name="Dumpsters")],
     )
     svc.cost_coded_lines_for_invoice(invoice_id=1)
     assert svc._test_scc_identity_calls == [("83", "realm-1")]

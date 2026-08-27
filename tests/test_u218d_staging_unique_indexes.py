@@ -9,13 +9,17 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
-# Eight tables that gained U-218d filtered unique indexes in base SQL files.
+# Seven tables that gained U-218d filtered unique indexes in base SQL files.
 U218D_STAGING_BASE_FILES: dict[str, Path] = {
     "Bill": REPO_ROOT / "integrations/intuit/qbo/bill/sql/qbo.bill.sql",
     "Purchase": REPO_ROOT / "integrations/intuit/qbo/purchase/sql/qbo.purchase.sql",
     "Vendor": REPO_ROOT / "integrations/intuit/qbo/vendor/sql/qbo.vendor.sql",
     "Customer": REPO_ROOT / "integrations/intuit/qbo/customer/sql/qbo.customer.sql",
-    "Item": REPO_ROOT / "integrations/intuit/qbo/item/sql/qbo.item.sql",
+    # "Item" removed by U-307d: qbo.item.sql was deleted outright (guarded DROP
+    # staged, not yet applied) rather than edited, per docs/design/u307d.md §5
+    # (leaving the base file in place risks a routine "re-apply all base files"
+    # operation resurrecting the dropped table) -- same precedent as Attachable
+    # (U-300c) below.
     "Account": REPO_ROOT / "integrations/intuit/qbo/account/sql/qbo.account.sql",
     "Term": REPO_ROOT / "integrations/intuit/qbo/term/sql/qbo.term.sql",
     "ReimburseCharge": REPO_ROOT
@@ -65,7 +69,7 @@ def _parse_any_unique_qbo_realm_indexes(sql_text: str) -> list[str]:
 
 def test_u218d_discovery_non_vacuous() -> None:
     """Fail loudly if the file map is empty or paths are missing."""
-    assert len(U218D_STAGING_BASE_FILES) == 8, "expected exactly 8 U-218d staging base files"
+    assert len(U218D_STAGING_BASE_FILES) == 7, "expected exactly 7 U-218d staging base files"
     missing = [name for name, path in U218D_STAGING_BASE_FILES.items() if not path.is_file()]
     assert not missing, f"U-218d base SQL files not found: {missing}"
 
@@ -98,19 +102,20 @@ def test_preexisting_staging_unique_indexes_still_declared(
     )
 
 
-def test_ten_staging_unique_indexes_total() -> None:
-    """Eight new U-218d indexes plus two pre-existing ones = 10 guarded declarations
-    (was 11/3 pre-U-300c; Attachable's own base file was deleted outright, not
-    just its index guard removed — see PREEXISTING_UNIQUE_INDEX_FILES above)."""
+def test_nine_staging_unique_indexes_total() -> None:
+    """Seven new U-218d indexes plus two pre-existing ones = 9 guarded declarations
+    (was 10/2 pre-U-307d; Item's own base file was deleted outright, not just
+    its index guard removed — same precedent as Attachable's own U-300c removal
+    in PREEXISTING_UNIQUE_INDEX_FILES above)."""
     all_paths = list(U218D_STAGING_BASE_FILES.values()) + [
         spec[0] for spec in PREEXISTING_UNIQUE_INDEX_FILES.values()
     ]
-    assert len(all_paths) == 10
+    assert len(all_paths) == 9
     found_filtered = 0
     found_preexisting = 0
     for path in U218D_STAGING_BASE_FILES.values():
         found_filtered += len(_parse_filtered_unique_indexes(path.read_text(encoding="utf-8")))
     for path, _ in PREEXISTING_UNIQUE_INDEX_FILES.values():
         found_preexisting += len(_parse_any_unique_qbo_realm_indexes(path.read_text(encoding="utf-8")))
-    assert found_filtered == 8, f"expected 8 filtered unique indexes, found {found_filtered}"
+    assert found_filtered == 7, f"expected 7 filtered unique indexes, found {found_filtered}"
     assert found_preexisting == 2, f"expected 2 pre-existing unique indexes, found {found_preexisting}"

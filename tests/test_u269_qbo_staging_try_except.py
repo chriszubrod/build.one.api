@@ -23,7 +23,7 @@ def _client_cm(records):
 
 
 def test_item_staging_loop_isolates_one_bad_record_and_continues():
-    service = QboItemService(repo=MagicMock())
+    service = QboItemService()
     qbo_items = [
         SimpleNamespace(id="i-1", parent_ref=None),
         SimpleNamespace(id="i-2", parent_ref=None),

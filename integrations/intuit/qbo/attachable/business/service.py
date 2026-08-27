@@ -9,7 +9,6 @@ from integrations.intuit.qbo.attachable.business.model import QboAttachable
 from integrations.intuit.qbo.attachable.external.client import QboAttachableClient
 from integrations.intuit.qbo.base.errors import QboBudgetExceededError, QboWriteRefusedError
 from integrations.intuit.qbo.attachable.external.schemas import QboAttachable as QboAttachableExternalSchema
-from integrations.intuit.qbo.attachable.persistence.repo import QboAttachableRepository
 from integrations.intuit.qbo.auth.business.service import QboAuthService
 
 logger = logging.getLogger(__name__)
@@ -22,11 +21,9 @@ class QboAttachableService:
 
     def __init__(
         self,
-        repo: Optional[QboAttachableRepository] = None,
         auth_service: Optional[QboAuthService] = None,
     ):
         """Initialize the QboAttachableService."""
-        self.repo = repo or QboAttachableRepository()
         self.auth_service = auth_service or QboAuthService()
         # Per-instance snapshot of the full realm attachable list, populated lazily on the first
         # per-entity lookup and reused across the sync run (the service is created once per run).
@@ -321,16 +318,3 @@ class QboAttachableService:
                 logger.error(f"Failed to sync QboAttachable qbo_id={att.qbo_id} to Attachment: {e}")
 
         return healthy
-
-    def read_by_id(self, id: int) -> Optional[QboAttachable]:
-        """
-        Read a QboAttachable by database ID.
-        """
-        return self.repo.read_by_id(id)
-
-    def read_by_qbo_id(self, qbo_id: str) -> Optional[QboAttachable]:
-        """
-        Read a QboAttachable by QBO ID.
-        """
-        return self.repo.read_by_qbo_id(qbo_id)
-

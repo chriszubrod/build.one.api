@@ -35,10 +35,10 @@ PREEXISTING_UNIQUE_INDEX_FILES: dict[str, tuple[Path, str]] = {
         REPO_ROOT / "integrations/intuit/qbo/invoice/sql/qbo.invoice.sql",
         "UQ_QboInvoice_QboId_RealmId",
     ),
-    "Attachable": (
-        REPO_ROOT / "integrations/intuit/qbo/attachable/sql/qbo.attachable.sql",
-        "UX_QboAttachable_QboId_RealmId",
-    ),
+    # "Attachable" removed by U-300c: qbo.attachable.sql was deleted outright
+    # (guarded DROP staged, not yet applied) rather than edited, per
+    # docs/design/u300c.md §4 (leaving the base file in place risks a routine
+    # "re-apply all base files" operation resurrecting the dropped table).
 }
 
 _FILTERED_UNIQUE_RE = re.compile(
@@ -98,12 +98,14 @@ def test_preexisting_staging_unique_indexes_still_declared(
     )
 
 
-def test_eleven_staging_unique_indexes_total() -> None:
-    """Eight new U-218d indexes plus three pre-existing ones = 11 guarded declarations."""
+def test_ten_staging_unique_indexes_total() -> None:
+    """Eight new U-218d indexes plus two pre-existing ones = 10 guarded declarations
+    (was 11/3 pre-U-300c; Attachable's own base file was deleted outright, not
+    just its index guard removed — see PREEXISTING_UNIQUE_INDEX_FILES above)."""
     all_paths = list(U218D_STAGING_BASE_FILES.values()) + [
         spec[0] for spec in PREEXISTING_UNIQUE_INDEX_FILES.values()
     ]
-    assert len(all_paths) == 11
+    assert len(all_paths) == 10
     found_filtered = 0
     found_preexisting = 0
     for path in U218D_STAGING_BASE_FILES.values():
@@ -111,4 +113,4 @@ def test_eleven_staging_unique_indexes_total() -> None:
     for path, _ in PREEXISTING_UNIQUE_INDEX_FILES.values():
         found_preexisting += len(_parse_any_unique_qbo_realm_indexes(path.read_text(encoding="utf-8")))
     assert found_filtered == 8, f"expected 8 filtered unique indexes, found {found_filtered}"
-    assert found_preexisting == 3, f"expected 3 pre-existing unique indexes, found {found_preexisting}"
+    assert found_preexisting == 2, f"expected 2 pre-existing unique indexes, found {found_preexisting}"

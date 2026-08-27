@@ -163,17 +163,15 @@ def test_attachment_service_read_by_qbo_identity_is_bare_passthrough():
 
 
 def _build_connector():
-    mapping_repo = Mock()
     attachment_service = Mock()
     attachment_service.repo = Mock()
     reconciliation_repo = Mock()
     connector = AttachableAttachmentConnector(
-        mapping_repo=mapping_repo,
         attachment_service=attachment_service,
         auth_service=Mock(),
         reconciliation_repo=reconciliation_repo,
     )
-    return connector, mapping_repo, attachment_service, reconciliation_repo
+    return connector, attachment_service, reconciliation_repo
 
 
 LOCK_PATCH_TARGET = "integrations.intuit.qbo.base.identity_fastpath.qbo_app_lock"
@@ -215,7 +213,7 @@ def test_direct_hit_healthy_blob_returns_unchanged_no_writes():
     """A direct dbo hit with a healthy blob must not touch set_qbo_identity,
     the mapping table, or the create path at all — U-300b's whole point is
     that a hit needs no cross-check."""
-    connector, mapping_repo, attachment_service, _ = _build_connector()
+    connector, attachment_service, _ = _build_connector()
     qbo_attachable = _make_qbo_attachable(id=30, qbo_id="QBO-ATT-99", realm_id="realm-1")
     direct_hit = _make_direct_attachment(id=55, qbo_id="QBO-ATT-99", realm_id="realm-1")
     attachment_service.read_by_qbo_identity.return_value = direct_hit
@@ -227,13 +225,10 @@ def test_direct_hit_healthy_blob_returns_unchanged_no_writes():
     assert result is direct_hit
     attachment_service.repo.set_qbo_identity.assert_not_called()
     attachment_service.create.assert_not_called()
-    mapping_repo.create.assert_not_called()
-    mapping_repo.read_by_attachment_id.assert_not_called()
-    mapping_repo.read_by_qbo_attachable_id.assert_not_called()
 
 
 def test_direct_hit_missing_blob_heals_by_redownload_and_reupload():
-    connector, _, attachment_service, _ = _build_connector()
+    connector, attachment_service, _ = _build_connector()
     qbo_attachable = _make_qbo_attachable(id=30, qbo_id="QBO-ATT-99", realm_id="realm-1")
     direct_hit = _make_direct_attachment(id=55, qbo_id="QBO-ATT-99", realm_id="realm-1")
     attachment_service.read_by_qbo_identity.return_value = direct_hit
@@ -255,7 +250,7 @@ def test_direct_hit_missing_blob_heals_by_redownload_and_reupload():
 
 
 def test_direct_hit_missing_blob_and_redownload_failure_raises():
-    connector, _, attachment_service, _ = _build_connector()
+    connector, attachment_service, _ = _build_connector()
     qbo_attachable = _make_qbo_attachable(id=30, qbo_id="QBO-ATT-99", realm_id="realm-1")
     direct_hit = _make_direct_attachment(id=55, qbo_id="QBO-ATT-99", realm_id="realm-1")
     attachment_service.read_by_qbo_identity.return_value = direct_hit
@@ -273,7 +268,7 @@ def test_genuine_miss_creates_new_attachment_and_stamps_identity():
     the create lock) and no hash match: downloads, uploads, creates, then
     stamps dbo identity via the wrapped stamp_identity — never touches
     qbo.Attachable or qbo.AttachableAttachment."""
-    connector, mapping_repo, attachment_service, _ = _build_connector()
+    connector, attachment_service, _ = _build_connector()
     qbo_attachable = _make_qbo_attachable(id=30, qbo_id="QBO-ATT-99", realm_id="realm-1")
     attachment_service.read_by_qbo_identity.return_value = None
     attachment_service.read_by_hash.return_value = None
@@ -297,11 +292,10 @@ def test_genuine_miss_creates_new_attachment_and_stamps_identity():
     attachment_service.repo.set_qbo_identity.assert_called_once_with(
         id=77, qbo_id="QBO-ATT-99", realm_id="realm-1"
     )
-    mapping_repo.create.assert_not_called()
 
 
 def test_genuine_miss_hash_dedupe_reuses_unmapped_attachment_and_stamps():
-    connector, mapping_repo, attachment_service, _ = _build_connector()
+    connector, attachment_service, _ = _build_connector()
     qbo_attachable = _make_qbo_attachable(id=30, qbo_id="QBO-ATT-99", realm_id="realm-1")
     attachment_service.read_by_qbo_identity.return_value = None
     # ReadAttachmentByHash's real projection never carries QboId/RealmId (see
@@ -330,7 +324,6 @@ def test_genuine_miss_hash_dedupe_reuses_unmapped_attachment_and_stamps():
         id=88, qbo_id="QBO-ATT-99", realm_id="realm-1"
     )
     assert attachment_service.read_by_id.call_args_list == [call(88), call(88)]
-    mapping_repo.create.assert_not_called()
 
 
 def test_genuine_miss_hash_dedupe_already_bound_raises_instead_of_stealing():
@@ -342,7 +335,7 @@ def test_genuine_miss_hash_dedupe_already_bound_raises_instead_of_stealing():
     _stamp_pulled_identity's read_by_id pre-check (which DOES carry them) that
     must catch this. Mutation target: deleting that pre-check makes this
     silently steal the identity instead of raising."""
-    connector, mapping_repo, attachment_service, _ = _build_connector()
+    connector, attachment_service, _ = _build_connector()
     qbo_attachable = _make_qbo_attachable(id=30, qbo_id="QBO-ATT-99", realm_id="realm-1")
     attachment_service.read_by_qbo_identity.return_value = None
     # read_by_hash returns qbo_id=None (its real, incomplete projection) even
@@ -371,14 +364,13 @@ def test_genuine_miss_hash_dedupe_already_bound_raises_instead_of_stealing():
 
     attachment_service.repo.set_qbo_identity.assert_not_called()
     attachment_service.create.assert_not_called()
-    mapping_repo.create.assert_not_called()
 
 
 def test_lock_resource_key_matches_dbo_only_namespace():
     """Wiring-level check that this connector's lock_resource_label="Attachment"
     produces the exact resource-key shape run_identity_fastpath_dbo_only
     documents (disjoint from create_race_lock's qbo_mapping_create:* prefix)."""
-    connector, _, attachment_service, _ = _build_connector()
+    connector, attachment_service, _ = _build_connector()
     qbo_attachable = _make_qbo_attachable(id=30, qbo_id="QBO-ATT-99", realm_id="realm-1")
     attachment_service.read_by_qbo_identity.return_value = None
     attachment_service.read_by_hash.return_value = None
@@ -404,7 +396,7 @@ def test_race_discovered_under_lock_adopts_racer_without_touching_create_path():
     and its re-read under the lock. The connector must ADOPT that row (via
     the same blob-verify apply_fields path as a direct hit) and never invoke
     its own create-path helpers (_download_from_qbo/create/set_qbo_identity)."""
-    connector, mapping_repo, attachment_service, _ = _build_connector()
+    connector, attachment_service, _ = _build_connector()
     qbo_attachable = _make_qbo_attachable(id=30, qbo_id="QBO-ATT-99", realm_id="realm-1")
     racer_row = _make_direct_attachment(id=90, qbo_id="QBO-ATT-99", realm_id="realm-1")
     attachment_service.read_by_qbo_identity.side_effect = [None, racer_row]
@@ -419,7 +411,6 @@ def test_race_discovered_under_lock_adopts_racer_without_touching_create_path():
     mock_download.assert_not_called()
     attachment_service.create.assert_not_called()
     attachment_service.repo.set_qbo_identity.assert_not_called()
-    mapping_repo.create.assert_not_called()
     assert attachment_service.read_by_qbo_identity.call_args_list == [
         call("QBO-ATT-99", "realm-1"),
         call("QBO-ATT-99", "realm-1"),
@@ -431,7 +422,7 @@ def test_stamp_pulled_identity_wraps_none_return_with_refreshed_row():
     review flagged this) — _stamp_pulled_identity must wrap it into the
     refreshed row run_identity_fastpath_dbo_only expects back. Reads twice:
     the pre-stamp theft-guard check, then the post-stamp refresh."""
-    connector, _, attachment_service, _ = _build_connector()
+    connector, attachment_service, _ = _build_connector()
     attachment_service.repo.set_qbo_identity.return_value = None
     unmapped = _make_direct_attachment(id=77, qbo_id=None, realm_id=None)
     refreshed = _make_direct_attachment(id=77, qbo_id="QBO-ATT-99", realm_id="realm-1")
@@ -453,7 +444,7 @@ def test_stamp_pulled_identity_refuses_to_overwrite_a_different_existing_identit
     DIFFERENT qbo_id already on the row must raise, never call
     set_qbo_identity. An exact-match pre-existing identity (the coincidental
     already-correct case) is allowed through, not raised."""
-    connector, _, attachment_service, _ = _build_connector()
+    connector, attachment_service, _ = _build_connector()
     attachment_service.read_by_id.return_value = _make_direct_attachment(
         id=77, qbo_id="QBO-ATT-OTHER", realm_id="realm-1"
     )
@@ -466,7 +457,7 @@ def test_stamp_pulled_identity_refuses_to_overwrite_a_different_existing_identit
 
 
 def test_stamp_pulled_identity_allows_exact_match_through():
-    connector, _, attachment_service, _ = _build_connector()
+    connector, attachment_service, _ = _build_connector()
     same = _make_direct_attachment(id=77, qbo_id="QBO-ATT-99", realm_id="realm-1")
     attachment_service.read_by_id.side_effect = [same, same]
 
@@ -488,7 +479,7 @@ def test_stamp_pulled_identity_lock_key_is_scoped_to_the_candidate_row():
     Attachment acquire two DIFFERENT qbo_id-keyed locks upstream, so without
     this second lock keyed on the shared candidate row they'd never
     contend)."""
-    connector, _, attachment_service, _ = _build_connector()
+    connector, attachment_service, _ = _build_connector()
     attachment_service.read_by_id.return_value = _make_direct_attachment(
         id=77, qbo_id=None, realm_id=None
     )
@@ -501,7 +492,7 @@ def test_stamp_pulled_identity_lock_key_is_scoped_to_the_candidate_row():
 
 
 def test_stamp_pulled_identity_fails_closed_on_lock_timeout():
-    connector, _, attachment_service, _ = _build_connector()
+    connector, attachment_service, _ = _build_connector()
 
     from contextlib import contextmanager
 
@@ -541,7 +532,7 @@ def test_two_racers_hash_deduping_onto_the_same_row_serialize_and_the_loser_rais
     import time
     from contextlib import contextmanager
 
-    connector, _, attachment_service, _ = _build_connector()
+    connector, attachment_service, _ = _build_connector()
 
     # A tiny in-memory identity store standing in for dbo.Attachment's row,
     # shared across both racer threads exactly like a real concurrent DB
@@ -641,7 +632,7 @@ def test_no_qbo_id_raises_without_ever_downloading():
     there is no legacy staging-PK fallback left in this design (U-300b), so
     this must raise rather than silently create an unmapped, unstamped
     Attachment the way the pre-U-300b legacy path did."""
-    connector, mapping_repo, attachment_service, _ = _build_connector()
+    connector, attachment_service, _ = _build_connector()
     qbo_attachable = _make_qbo_attachable(id=30, qbo_id=None)
 
     with patch.object(connector, "_download_from_qbo") as mock_download:
@@ -650,7 +641,6 @@ def test_no_qbo_id_raises_without_ever_downloading():
 
     attachment_service.read_by_qbo_identity.assert_not_called()
     mock_download.assert_not_called()
-    mapping_repo.create.assert_not_called()
 
 
 # --- Section 3: sync_attachment_to_qbo (push side) fast path ---
@@ -663,7 +653,7 @@ def test_push_fast_path_dbo_qbo_id_returns_transient_no_legacy_reads():
     qbo.Attachable / qbo.AttachableAttachment read — both legacy tables are
     being retired. (Mutation guard: neutering this early return sends the method
     into the upload path and this assertion fails.)"""
-    connector, mapping_repo, attachment_service, _ = _build_connector()
+    connector, attachment_service, _ = _build_connector()
     # _transient_attachable_from_dbo reads these display fields off the Attachment.
     attachment = _make_direct_attachment(
         id=55, qbo_id="QBO-ATT-99", realm_id="realm-1",
@@ -678,7 +668,6 @@ def test_push_fast_path_dbo_qbo_id_returns_transient_no_legacy_reads():
     assert result.id is None  # transient, never persisted
     assert result.qbo_id == "QBO-ATT-99"
     assert result.realm_id == "realm-1"
-    mapping_repo.read_by_attachment_id.assert_not_called()
 
 
 def test_push_realm_mismatch_is_not_already_pushed_falls_through_to_upload():
@@ -686,14 +675,13 @@ def test_push_realm_mismatch_is_not_already_pushed_falls_through_to_upload():
     push for THIS realm — already_dbo_pushed is False, so the method proceeds to
     the upload path (proven here by the no-blob_url guard it hits first) rather
     than taking the transient fast path. No legacy mapping-table lookup."""
-    connector, mapping_repo, attachment_service, _ = _build_connector()
+    connector, attachment_service, _ = _build_connector()
     attachment = _make_direct_attachment(id=55, qbo_id="QBO-ATT-99", realm_id="realm-OTHER", blob_url=None)
 
     with pytest.raises(ValueError, match="no blob_url"):
         connector.sync_attachment_to_qbo(
             attachment=attachment, realm_id="realm-1", entity_type="Bill", entity_id="qbo-bill-1"
         )
-    mapping_repo.read_by_attachment_id.assert_not_called()
 
 
 def test_push_no_dbo_qbo_id_falls_through_to_upload():
@@ -701,14 +689,13 @@ def test_push_no_dbo_qbo_id_falls_through_to_upload():
     no legacy mapping-table lookup (U-300c-prereq removed that fallback; a live
     check proved 0 mapping rows whose dbo.Attachment.QboId is NULL, so the old
     mapping-hit-while-dbo-absent branch was unreachable in prod)."""
-    connector, mapping_repo, attachment_service, _ = _build_connector()
+    connector, attachment_service, _ = _build_connector()
     attachment = _make_direct_attachment(id=55, qbo_id=None, realm_id=None, blob_url=None)
 
     with pytest.raises(ValueError, match="no blob_url"):
         connector.sync_attachment_to_qbo(
             attachment=attachment, realm_id="realm-1", entity_type="Bill", entity_id="qbo-bill-1"
         )
-    mapping_repo.read_by_attachment_id.assert_not_called()
 
 
 # --- Section 4: the three live line-item-linking call sites ---

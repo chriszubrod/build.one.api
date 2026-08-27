@@ -162,7 +162,7 @@ def test_download_from_qbo_budget_exceeded_propagates():
 def test_sync_to_attachments_budget_exceeded_propagates():
     """Fix 2: _sync_to_attachments must not swallow budget refusal as partial healthy list."""
     error = _budget_error()
-    service = QboAttachableService(repo=MagicMock(), auth_service=MagicMock())
+    service = QboAttachableService(auth_service=MagicMock())
     attachable = _make_qbo_attachable()
 
     with patch(
@@ -175,7 +175,7 @@ def test_sync_to_attachments_budget_exceeded_propagates():
 
 def test_sync_to_attachments_write_refused_propagates():
     error = _write_refused_error()
-    service = QboAttachableService(repo=MagicMock(), auth_service=MagicMock())
+    service = QboAttachableService(auth_service=MagicMock())
     attachable = _make_qbo_attachable()
 
     with patch(

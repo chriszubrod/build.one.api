@@ -7,8 +7,6 @@ from typing import Optional
 # Third-party Imports
 
 # Local Imports
-from integrations.intuit.qbo.attachable.connector.attachment.business.model import AttachableAttachment
-from integrations.intuit.qbo.attachable.connector.attachment.persistence.repo import AttachableAttachmentRepository
 from integrations.intuit.qbo.attachable.business.model import QboAttachable
 from integrations.intuit.qbo.attachable.external.client import QboAttachableClient
 from integrations.intuit.qbo.auth.business.service import QboAuthService
@@ -33,13 +31,11 @@ class AttachableAttachmentConnector:
 
     def __init__(
         self,
-        mapping_repo: Optional[AttachableAttachmentRepository] = None,
         attachment_service: Optional[AttachmentService] = None,
         auth_service: Optional[QboAuthService] = None,
         reconciliation_repo: Optional[ReconciliationIssueRepository] = None,
     ):
         """Initialize the AttachableAttachmentConnector."""
-        self.mapping_repo = mapping_repo or AttachableAttachmentRepository()
         self.attachment_service = attachment_service or AttachmentService()
         self.auth_service = auth_service or QboAuthService()
         self.reconciliation_repo = reconciliation_repo or ReconciliationIssueRepository()
@@ -547,18 +543,6 @@ class AttachableAttachmentConnector:
             return "attachment.pdf"
         base, ext = os.path.splitext(file_name)
         return f"{base}.pdf" if base else "attachment.pdf"
-
-    def get_mapping_by_attachment_id(self, attachment_id: int) -> Optional[AttachableAttachment]:
-        """
-        Get mapping by Attachment ID.
-        """
-        return self.mapping_repo.read_by_attachment_id(attachment_id)
-
-    def get_mapping_by_qbo_attachable_id(self, qbo_attachable_id: int) -> Optional[AttachableAttachment]:
-        """
-        Get mapping by QboAttachable ID.
-        """
-        return self.mapping_repo.read_by_qbo_attachable_id(qbo_attachable_id)
 
     def sync_attachment_to_qbo(
         self,

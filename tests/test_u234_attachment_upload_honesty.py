@@ -59,13 +59,10 @@ def _upload_response(qbo_id: str = "qbo-att-777") -> QboAttachableResponse:
 
 def _connector(reconciliation_repo=None) -> AttachableAttachmentConnector:
     connector = AttachableAttachmentConnector(
-        mapping_repo=Mock(),
         attachment_service=Mock(),
         auth_service=Mock(),
         reconciliation_repo=reconciliation_repo or Mock(),
     )
-    connector.mapping_repo.read_by_attachment_id.return_value = None
-    connector.mapping_repo.read_by_qbo_attachable_id.return_value = None
     connector.auth_service.ensure_valid_token.return_value = MagicMock(access_token="tok")
     # U-285: _stamp_pushed_identity re-reads the Attachment's current identity
     # right before stamping. Default to "not yet claimed" so the happy-path
@@ -215,7 +212,6 @@ def test_happy_path_stamps_dbo_identity_directly_no_staging_writes():
         )
 
     # No local staging row, no mapping row — dbo.Attachment identity only.
-    connector.mapping_repo.create.assert_not_called()
     record_issue.assert_not_called()
     connector.reconciliation_repo.create.assert_not_called()
 
@@ -270,7 +266,6 @@ def test_mapping_race_records_orphaned_issue_and_returns_local_attachable():
     assert kwargs["severity"] == "critical"
     assert "must NOT be re-uploaded" in kwargs["details"]
     assert "concurrent mapping race" in kwargs["details"]
-    connector.mapping_repo.create.assert_not_called()
     # The race guard must not overwrite the winner's identity.
     connector.attachment_service.repo.set_qbo_identity.assert_not_called()
 
@@ -308,7 +303,6 @@ def test_retry_after_already_pushed_skips_reupload_no_legacy_staging_row():
     client.upload_attachable.assert_not_called()
     record_issue.assert_not_called()
     connector.attachment_service.repo.set_qbo_identity.assert_not_called()
-    connector.mapping_repo.create.assert_not_called()
 
     assert result.id is None
     assert result.qbo_id == "qbo-att-already-pushed"

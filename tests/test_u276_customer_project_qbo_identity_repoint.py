@@ -33,8 +33,7 @@ from unittest.mock import MagicMock, Mock, call, patch
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from conftest import mock_qbo_app_lock_granted, stub_identity_check_trusts
-from integrations.intuit.qbo.base.identity_consistency import IdentityCheckResult
+from conftest import mock_qbo_app_lock_granted
 from integrations.intuit.qbo.customer.connector.customer.business.service import (
     CustomerCustomerConnector,
 )
@@ -1349,95 +1348,14 @@ def test_project_stamp_identity_fails_closed_on_lock_timeout():
 #
 # Round-4 review: dbo.Project.QboId alone isn't enough to trust for an
 # outbound push (dbo-internal uniqueness ≠ still-being-the-current-holder).
-# `verify_project_qbo_identity()` (the qbo.CustomerProject mapping-table-
-# reading engine) is retained below purely as a still-tested, no-longer-wired
-# primitive -- see its own module docstring in identity_consistency.py. U-311
-# (Wave-5 Option A) repointed all 3 push helpers onto `verify_identity_dbo_only`
-# instead: a plain re-read of dbo.Project by the resolved row's own (qbo_id,
-# realm_id), no mapping-table read at all. The push-helper tests below confirm
-# each one wires THAT primitive in and respects the result.
-
-
-def test_verify_project_qbo_identity_trusts_when_no_mapping_yet():
-    from integrations.intuit.qbo.base.identity_consistency import verify_project_qbo_identity
-
-    project = SimpleNamespace(id=42, qbo_id="QBO-P-42")
-    customer_project_repo = Mock()
-    # not migrated yet, and the mapping table doesn't bind this QboId to any
-    # OTHER Project either (U-306's reverse check) — nothing to disagree with.
-    stub_identity_check_trusts(customer_project_repo)
-    qbo_customer_repo = Mock()
-
-    result = verify_project_qbo_identity(
-        project, customer_project_repo=customer_project_repo, qbo_customer_repo=qbo_customer_repo
-    )
-
-    assert result == "QBO-P-42"
-    assert qbo_customer_repo.method_calls == []  # U-306: folded into the one JOIN'd read, never touched
-
-
-def test_verify_project_qbo_identity_trusts_when_mapping_agrees():
-    from integrations.intuit.qbo.base.identity_consistency import verify_project_qbo_identity
-
-    project = SimpleNamespace(id=42, qbo_id="QBO-P-42")
-    customer_project_repo = Mock()
-    customer_project_repo.read_identity_check.return_value = IdentityCheckResult(
-        mapping_id=1, forward_external_qbo_id="QBO-P-42", reverse_mapped_local_id=42
-    )
-    qbo_customer_repo = Mock()
-
-    result = verify_project_qbo_identity(
-        project, customer_project_repo=customer_project_repo, qbo_customer_repo=qbo_customer_repo
-    )
-
-    assert result == "QBO-P-42"
-
-
-def test_verify_project_qbo_identity_refuses_when_mapping_disagrees():
-    """Codex round-4 P1: a stale/'stolen' dbo QboId must NOT be trusted for an
-    outbound push when the mapping table still binds a DIFFERENT external
-    customer to this Project — that's the financial-misrouting risk."""
-    from integrations.intuit.qbo.base.identity_consistency import verify_project_qbo_identity
-
-    project = SimpleNamespace(id=42, qbo_id="QBO-P-42")
-    customer_project_repo = Mock()
-    customer_project_repo.read_identity_check.return_value = IdentityCheckResult(
-        mapping_id=1, forward_external_qbo_id="QBO-P-OTHER", reverse_mapped_local_id=42
-    )
-    qbo_customer_repo = Mock()
-
-    result = verify_project_qbo_identity(
-        project, customer_project_repo=customer_project_repo, qbo_customer_repo=qbo_customer_repo
-    )
-
-    assert result is None
-
-
-def test_verify_project_qbo_identity_refuses_when_unmapped_but_reverse_bound_elsewhere():
-    """U-297's H1, closed by U-306: no CustomerProject mapping of its own, but
-    the mapping table already binds this exact QboId to a DIFFERENT Project —
-    must refuse, not blindly trust (the pre-U-306 behavior)."""
-    from integrations.intuit.qbo.base.identity_consistency import verify_project_qbo_identity
-
-    project = SimpleNamespace(id=42, qbo_id="QBO-P-42")
-    customer_project_repo = Mock()
-    customer_project_repo.read_identity_check.return_value = IdentityCheckResult(
-        mapping_id=None, forward_external_qbo_id=None, reverse_mapped_local_id=999
-    )
-    qbo_customer_repo = Mock()
-
-    result = verify_project_qbo_identity(
-        project, customer_project_repo=customer_project_repo, qbo_customer_repo=qbo_customer_repo
-    )
-
-    assert result is None
-
-
-def test_verify_project_qbo_identity_none_when_no_qbo_id():
-    from integrations.intuit.qbo.base.identity_consistency import verify_project_qbo_identity
-
-    project = SimpleNamespace(id=42, qbo_id=None)
-    assert verify_project_qbo_identity(project, customer_project_repo=Mock(), qbo_customer_repo=Mock()) is None
+# U-311 (Wave-5 Option A) repointed all 3 push helpers onto
+# `verify_identity_dbo_only`: a plain re-read of dbo.Project by the resolved
+# row's own (qbo_id, realm_id), no mapping-table read at all. The push-helper
+# tests below confirm each one wires THAT primitive in and respects the
+# result. (The mapping-table-reading `verify_project_qbo_identity()` this
+# section used to also keep test coverage on, purely as a still-tested,
+# no-longer-wired primitive, is gone — U-314 dropped qbo.CustomerProject and
+# deleted it outright.)
 
 
 def test_bill_get_qbo_customer_ref_reads_project_directly():

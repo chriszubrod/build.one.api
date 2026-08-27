@@ -8,7 +8,6 @@ from unittest.mock import Mock, patch
 
 import pytest
 
-from integrations.intuit.qbo.customer.connector.project.business.model import CustomerProject
 from integrations.intuit.qbo.customer.connector.project.business.service import CustomerProjectConnector
 from integrations.intuit.qbo.invoice.connector.invoice.business.service import InvoiceInvoiceConnector
 from conftest import stub_qbo_identity_fastpath_miss
@@ -49,18 +48,6 @@ def _make_qbo_customer(
     )
 
 
-def _make_mapping(*, mapping_id=10, project_id=100, qbo_customer_id=1):
-    return CustomerProject(
-        id=mapping_id,
-        public_id="map-pub-10",
-        row_version=None,
-        created_datetime=None,
-        modified_datetime=None,
-        project_id=project_id,
-        qbo_customer_id=qbo_customer_id,
-    )
-
-
 def _make_project(
     *,
     project_id=200,
@@ -81,7 +68,6 @@ def _make_project(
 
 
 def _build_customer_project_connector():
-    mapping_repo = Mock()
     project_service = Mock()
     project_service.repo = Mock()
     # U-276: the connector tries a direct dbo-identity lookup before the
@@ -91,11 +77,9 @@ def _build_customer_project_connector():
     project_service.read_by_qbo_identity.return_value = None
     reconciliation_repo = Mock()
     connector = CustomerProjectConnector(
-        mapping_repo=mapping_repo,
         project_service=project_service,
         project_address_service=Mock(),
         address_connector=Mock(),
-        customer_mapping_repo=Mock(),
         reconciliation_repo=reconciliation_repo,
         # U-297: never used here (every fixture sets parent_ref_value=None) —
         # injected so a truthy-parent test can't default to live-DB collaborators.
@@ -103,7 +87,7 @@ def _build_customer_project_connector():
         qbo_customer_repo=Mock(),
     )
     connector._sync_addresses = Mock()
-    return connector, mapping_repo, project_service, reconciliation_repo
+    return connector, project_service, reconciliation_repo
 
 
 def _build_invoice_connector(**overrides):
@@ -134,9 +118,10 @@ def _build_invoice_connector(**overrides):
 # hit, name-match adopt + duplicate-QboId guard, identity stamp) are tested
 # in tests/test_u276_customer_project_qbo_identity_repoint.py, mirroring
 # where U-310 put CustomerCustomerConnector's own analogous coverage.
-# `_build_customer_project_connector` is kept -- still used by PART 2 below
-# and by test_heal_missing_mapping_rejects_non_job_customer (heal_missing_mapping
-# itself is unchanged; it still reads/writes qbo.CustomerProject).
+# `_build_customer_project_connector` is kept -- still used by PART 3 below.
+# heal_missing_mapping itself no longer reads/writes qbo.CustomerProject
+# either (U-314-prereq repointed it onto dbo.Project.QboId; U-314 dropped the
+# table + the mapping_repo constructor param entirely).
 
 
 # --- PART 2: InvoiceInvoiceConnector._get_project_public_id ---
@@ -146,11 +131,6 @@ def test_get_project_public_id_auto_heals_missing_mapping():
     """(a) Missing CustomerProject mapping auto-heals via name match and returns public_id."""
     qbo_customer = _make_qbo_customer()
     healed_project = _make_project(public_id="healed-pub-id")
-
-    mapping_repo = Mock()
-    mapping_repo.read_by_project_id.return_value = None
-    mapping_repo.read_by_qbo_customer_id.return_value = None
-    mapping_repo.create.return_value = _make_mapping(project_id=healed_project.id)
 
     project_service = Mock()
     project_service.read_by_name.return_value = healed_project
@@ -166,11 +146,9 @@ def test_get_project_public_id_auto_heals_missing_mapping():
     project_service.read_by_qbo_identity.return_value = None
 
     heal_connector = CustomerProjectConnector(
-        mapping_repo=mapping_repo,
         project_service=project_service,
         project_address_service=Mock(),
         address_connector=Mock(),
-        customer_mapping_repo=Mock(),
         reconciliation_repo=Mock(),
         # U-297: never used here (every fixture sets parent_ref_value=None) —
         # injected so a truthy-parent test can't default to live-DB collaborators.
@@ -195,8 +173,7 @@ def test_get_project_public_id_auto_heals_missing_mapping():
 
     assert result == "healed-pub-id"
     # U-314-prereq: heal binds by stamping dbo.Project.QboId/RealmId, NOT by
-    # writing a qbo.CustomerProject mapping row (retired).
-    mapping_repo.create.assert_not_called()
+    # writing a qbo.CustomerProject mapping row (table dropped entirely, U-314).
     project_service.repo.set_qbo_identity.assert_called_once_with(
         id=healed_project.id,
         qbo_id=qbo_customer.qbo_id,
@@ -215,7 +192,6 @@ def test_heal_refuses_to_steal_identity_held_by_another_project():
     name_matched = _make_project(project_id=71, public_id="name-matched-pub")
     other_holder = _make_project(project_id=99, public_id="holder-pub")
 
-    mapping_repo = Mock()
     reconciliation_repo = Mock()
 
     project_service = Mock()
@@ -224,11 +200,9 @@ def test_heal_refuses_to_steal_identity_held_by_another_project():
     project_service.read_by_qbo_identity.return_value = other_holder  # a DIFFERENT project holds it
 
     heal_connector = CustomerProjectConnector(
-        mapping_repo=mapping_repo,
         project_service=project_service,
         project_address_service=Mock(),
         address_connector=Mock(),
-        customer_mapping_repo=Mock(),
         reconciliation_repo=reconciliation_repo,
         customer_service=Mock(),
         qbo_customer_repo=Mock(),
@@ -250,7 +224,6 @@ def test_heal_refuses_to_steal_identity_held_by_another_project():
 
     assert result is None
     project_service.repo.set_qbo_identity.assert_not_called()  # did NOT steal
-    mapping_repo.create.assert_not_called()
     reconciliation_repo.create.assert_called_once()  # collision recorded
 
 
@@ -258,16 +231,13 @@ def test_get_project_public_id_returns_none_when_heal_cannot_resolve():
     """(b-i) _get_project_public_id returns None when heal cannot resolve a local Project."""
     qbo_customer = _make_qbo_customer()
 
-    mapping_repo = Mock()
     project_service = Mock()
     project_service.read_by_name.return_value = None
 
     heal_connector = CustomerProjectConnector(
-        mapping_repo=mapping_repo,
         project_service=project_service,
         project_address_service=Mock(),
         address_connector=Mock(),
-        customer_mapping_repo=Mock(),
         reconciliation_repo=Mock(),
         # U-297: never used here (every fixture sets parent_ref_value=None) —
         # injected so a truthy-parent test can't default to live-DB collaborators.
@@ -290,7 +260,6 @@ def test_get_project_public_id_returns_none_when_heal_cannot_resolve():
         result = invoice_connector._get_project_public_id("QBO-100")
 
     assert result is None
-    mapping_repo.create.assert_not_called()
 
 
 def test_get_project_public_id_returns_none_when_verification_fails_never_falls_through_to_heal():
@@ -346,7 +315,7 @@ def test_sync_from_qbo_invoice_raises_when_project_public_id_unresolvable():
 
 def test_heal_missing_mapping_rejects_non_job_customer():
     """Non-job (top-level) QboCustomer must not be name-bound to a Project."""
-    connector, mapping_repo, project_service, _ = _build_customer_project_connector()
+    connector, project_service, _ = _build_customer_project_connector()
     qbo_customer = _make_qbo_customer(is_job=False)
     matching_project = _make_project()
 
@@ -355,7 +324,6 @@ def test_heal_missing_mapping_rejects_non_job_customer():
     result = connector.heal_missing_mapping(qbo_customer)
 
     assert result is None
-    mapping_repo.create.assert_not_called()
     project_service.read_by_name.assert_not_called()
 
 
@@ -374,7 +342,7 @@ def test_heal_missing_mapping_refuses_when_name_matched_project_carries_differen
     deliberately carries NO qbo_id attribute, matching the real sproc's
     projection, so this test fails if the guard naively trusts that result
     instead of the separate read_by_id re-read that actually carries identity."""
-    connector, mapping_repo, project_service, reconciliation_repo = _build_customer_project_connector()
+    connector, project_service, reconciliation_repo = _build_customer_project_connector()
     qbo_customer = _make_qbo_customer(qbo_id="QBO-100", realm_id="realm-1")
     name_matched = _make_project()  # no qbo_id attr — mirrors ReadProjectByName's real projection
     already_identified = _make_project()
@@ -386,13 +354,10 @@ def test_heal_missing_mapping_refuses_when_name_matched_project_carries_differen
     result = connector.heal_missing_mapping(qbo_customer)
 
     assert result is None
-    mapping_repo.create.assert_not_called()
     project_service.repo.set_qbo_identity.assert_not_called()
     project_service.read_by_id.assert_called_once_with(name_matched.id)
     reconciliation_repo.create.assert_called_once()
     assert reconciliation_repo.create.call_args.kwargs["drift_type"] == "project_identity_conflict"
-    # never touched the mapping-table check that would otherwise mask this
-    mapping_repo.read_by_project_id.assert_not_called()
 
 
 def test_get_project_public_id_uses_realm_scoped_lookup_when_realm_given():

@@ -398,9 +398,6 @@ def test_vendorcredit_sync_line_items_aggregates_failures():
 
 
 QBO_CUSTOMER_REPO_PATH = "integrations.intuit.qbo.customer.persistence.repo.QboCustomerRepository"
-CUSTOMER_PROJECT_REPO_PATH = (
-    "integrations.intuit.qbo.customer.connector.project.persistence.repo.CustomerProjectRepository"
-)
 
 
 # test_vendorcredit_get_project_public_id_db_error_propagates removed U-311
@@ -420,9 +417,7 @@ def test_vendorcredit_get_project_public_id_not_found_returns_none():
     connector = VendorCreditLineItemConnector()
     connector.project_service = Mock(read_by_qbo_identity=Mock(return_value=None))
 
-    with patch(QBO_CUSTOMER_REPO_PATH, return_value=qbo_customer_repo), patch(
-        CUSTOMER_PROJECT_REPO_PATH, return_value=Mock()
-    ):
+    with patch(QBO_CUSTOMER_REPO_PATH, return_value=qbo_customer_repo):
         assert connector._get_project_public_id("QBO-100") is None
 
 

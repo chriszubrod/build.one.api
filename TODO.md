@@ -87,17 +87,19 @@ Carry-over items from sessions. Check off as done; prune anything stale.
   have `IsDeleted` and are plausible future Wave-6+ candidates) — so it inherits this for free instead of
   re-discovering it via another Codex P1 pass. Touches `integrations/intuit/qbo/base/identity_fastpath.py`,
   design-gated per `feedback_two_phase_dispatch_design_gated` — its own no-code design unit first.
-- [ ] **`BillBillConnector`/`PurchaseExpenseConnector` carry now-dead `vendor_vendor_repo`/`qbo_vendor_repo`
-  constructor params** (`integrations/intuit/qbo/bill/connector/bill/business/service.py`,
-  `integrations/intuit/qbo/purchase/connector/expense/business/service.py`) — U-313 repointed both files' vendor-
-  ref resolvers (`_get_vendor_public_id`/`_get_qbo_vendor_ref`) off `qbo.VendorVendor` entirely, leaving these two
-  constructor-injected repos genuinely unused in both files. **Deliberately kept, not removed**: ~10 test files
-  outside this unit's scope (`test_u276_customer_project_qbo_identity_repoint.py`, `test_u307b_push_item_ref_repoint.py`,
-  `test_qbo_bill_vendorcredit_heal.py`, `test_qbo_zombie_rollback.py`, others) still pass
-  `vendor_vendor_repo=`/`qbo_vendor_repo=` into these two constructors — removing the params now would break all
-  of them for a unit whose real scope is the Vendor mapping table, not a constructor diet on two shared connector
-  classes. Mirrors the identical, already-accepted precedent below (U-306 follow-up, same deferred-cleanup
-  reasoning). Pick up alongside that one, or once Bill/Purchase's own next real touch happens anyway.
+- [x] **PARTIALLY DONE (U-314, 2026-08-26)**: `vendor_vendor_repo` (`BillBillConnector`,
+  `PurchaseExpenseConnector`) and `customer_project_repo` (`BillBillConnector`, `BillLineItemConnector`,
+  `PurchaseLineExpenseLineItemConnector`, `InvoiceInvoiceConnector`) — U-314 dropped `qbo.VendorVendor`/
+  `qbo.CustomerProject` entirely, deleting `VendorVendorRepository`/`CustomerProjectRepository` outright, so
+  these params can no longer default-construct their old repo classes. **Neutered, not removed**: each is now
+  an untyped, unconstructed constructor param (`self.x = x` instead of `self.x = x or XRepo()`) — the ~10/~15
+  existing test call sites across unrelated units that still pass `vendor_vendor_repo=`/`customer_project_repo=`
+  Mocks needed no changes. **Still open, unrelated class**: `qbo_vendor_repo` (`QboVendorRepository`, the
+  `qbo.Vendor` staging repo — a DIFFERENT table, untouched by U-314) and `qbo_customer_repo`
+  (`QboCustomerRepository`, `qbo.Customer` staging) remain genuinely dead-but-typed constructor params in these
+  same connectors, deferred for the identical reason (same ~10-15 test files still pass them). Pick up alongside
+  the identical, already-accepted precedent below (U-306 follow-up), or once these connectors' next real touch
+  happens anyway.
 
 ## U-305 follow-ups (Bill/VendorCredit reconciliation dbo-native repoint) — deferred, not scope-creeped in (2026-08-23)
 

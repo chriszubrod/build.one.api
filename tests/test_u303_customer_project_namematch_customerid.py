@@ -99,11 +99,6 @@ def _build_connector_for_name_match_bind(*, existing_local, resolved_customer_id
     `is existing_local` assertion both hold for the write and no-write cases
     respectively.
     """
-    mapping_repo = Mock()
-    mapping_repo.read_by_qbo_customer_id.return_value = None  # no existing mapping
-    mapping_repo.read_by_project_id.return_value = None  # existing_local is unmapped
-    mapping_repo.create.return_value = SimpleNamespace(id=1)
-
     project_service = Mock()
     stub_qbo_identity_fastpath_miss(project_service)
     project_service.read_by_name.return_value = existing_local
@@ -127,11 +122,9 @@ def _build_connector_for_name_match_bind(*, existing_local, resolved_customer_id
     project_service.read_by_id.side_effect = _read_by_id
 
     connector = CustomerProjectConnector(
-        mapping_repo=mapping_repo,
         project_service=project_service,
         project_address_service=Mock(),
         address_connector=Mock(),
-        customer_mapping_repo=Mock(),
         reconciliation_repo=Mock(),
         customer_service=Mock(),
         qbo_customer_repo=Mock(),
@@ -163,11 +156,6 @@ def _build_rowversion_realistic_connector(*, existing_local, resolved_customer_i
     server_row_version = {"value": 1}
     existing_local.row_version = 1
 
-    mapping_repo = Mock()
-    mapping_repo.read_by_qbo_customer_id.return_value = None
-    mapping_repo.read_by_project_id.return_value = None
-    mapping_repo.create.return_value = SimpleNamespace(id=1)
-
     def _set_qbo_identity(*, id, qbo_id, realm_id):
         server_row_version["value"] += 1
 
@@ -192,11 +180,9 @@ def _build_rowversion_realistic_connector(*, existing_local, resolved_customer_i
     project_service.repo.update_by_id.side_effect = _update_by_id
 
     connector = CustomerProjectConnector(
-        mapping_repo=mapping_repo,
         project_service=project_service,
         project_address_service=Mock(),
         address_connector=Mock(),
-        customer_mapping_repo=Mock(),
         reconciliation_repo=Mock(),
         customer_service=Mock(),
         qbo_customer_repo=Mock(),
@@ -327,11 +313,9 @@ def test_equivalence_same_parent_regardless_of_which_branch_binds_it():
 
     fast_path_project = _make_project(id=10)
     fast_connector = CustomerProjectConnector(
-        mapping_repo=Mock(),
         project_service=Mock(),
         project_address_service=Mock(),
         address_connector=Mock(),
-        customer_mapping_repo=Mock(),
         reconciliation_repo=Mock(),
         customer_service=Mock(),
         qbo_customer_repo=Mock(),

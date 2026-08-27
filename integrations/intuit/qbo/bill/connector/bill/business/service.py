@@ -18,9 +18,7 @@ from integrations.intuit.qbo.bill.external.schemas import (
     QboItemBasedExpenseLineDetail,
     QboAccountBasedExpenseLineDetail,
 )
-from integrations.intuit.qbo.vendor.connector.vendor.persistence.repo import VendorVendorRepository
 from integrations.intuit.qbo.vendor.persistence.repo import QboVendorRepository
-from integrations.intuit.qbo.customer.connector.project.persistence.repo import CustomerProjectRepository
 from integrations.intuit.qbo.customer.persistence.repo import QboCustomerRepository
 from integrations.intuit.qbo.account.persistence.repo import QboAccountRepository
 from integrations.intuit.qbo.account.business.service import AP_ACCOUNT_TYPE, select_ap_account
@@ -61,12 +59,12 @@ class BillBillConnector:
         mapping_repo: Optional[BillBillRepository] = None,
         bill_service: Optional[BillService] = None,
         vendor_service: Optional[VendorService] = None,
-        vendor_vendor_repo: Optional[VendorVendorRepository] = None,
+        vendor_vendor_repo=None,
         qbo_vendor_repo: Optional[QboVendorRepository] = None,
         qbo_bill_repo: Optional[QboBillRepository] = None,
         qbo_bill_line_repo: Optional[QboBillLineRepository] = None,
         bill_line_item_service: Optional[BillLineItemService] = None,
-        customer_project_repo: Optional[CustomerProjectRepository] = None,
+        customer_project_repo=None,
         qbo_customer_repo: Optional[QboCustomerRepository] = None,
         project_service: Optional[ProjectService] = None,
         qbo_account_repo: Optional[QboAccountRepository] = None,
@@ -83,17 +81,28 @@ class BillBillConnector:
         self.vendor_service = vendor_service or VendorService()
         # U-313: no longer read anywhere in this file (_get_vendor_public_id/
         # _get_qbo_vendor_ref both moved fully dbo-only, no qbo.VendorVendor
-        # hop left). Kept as injectable constructor params, not removed, so
-        # the ~10 existing test call sites across other units that still
-        # pass vendor_vendor_repo=/qbo_vendor_repo= don't need to change for
-        # a unit whose real scope is the Vendor mapping table, not this
-        # connector's constructor — see TODO.md's U-313 follow-ups.
-        self.vendor_vendor_repo = vendor_vendor_repo or VendorVendorRepository()
+        # hop left). U-314 dropped qbo.VendorVendor entirely, so this can no
+        # longer default-construct its old repo class — kept as an untyped,
+        # unconstructed constructor param so the ~10 existing test call sites
+        # across other units that still pass vendor_vendor_repo=/
+        # qbo_vendor_repo= don't need to change for a unit whose real scope
+        # is the Vendor mapping table, not this connector's constructor —
+        # see TODO.md's U-313 follow-ups.
+        self.vendor_vendor_repo = vendor_vendor_repo
         self.qbo_vendor_repo = qbo_vendor_repo or QboVendorRepository()
         self.qbo_bill_repo = qbo_bill_repo or QboBillRepository()
         self.qbo_bill_line_repo = qbo_bill_line_repo or QboBillLineRepository()
         self.bill_line_item_service = bill_line_item_service or BillLineItemService()
-        self.customer_project_repo = customer_project_repo or CustomerProjectRepository()
+        # U-311: no longer read anywhere in this file (the legacy qbo.Customer
+        # -> qbo.CustomerProject hop was deleted from this connector's own
+        # project-ref resolution). U-314 dropped qbo.CustomerProject entirely,
+        # so this can no longer default-construct its old repo class — kept
+        # as an untyped, unconstructed constructor param so the ~15 existing
+        # test call sites across other units that still pass
+        # customer_project_repo=/qbo_customer_repo= don't need to change for
+        # a unit whose real scope is the Project mapping table, not this
+        # connector's constructor.
+        self.customer_project_repo = customer_project_repo
         self.qbo_customer_repo = qbo_customer_repo or QboCustomerRepository()
         self.project_service = project_service or ProjectService()
         self.qbo_account_repo = qbo_account_repo or QboAccountRepository()

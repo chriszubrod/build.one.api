@@ -27,8 +27,6 @@ from integrations.sync.business.service import SyncService
 from integrations.intuit.qbo.vendor.business.service import QboVendorService
 from integrations.intuit.qbo.vendor.business.model import QboVendor
 from integrations.intuit.qbo.vendor.connector.vendor.business.service import VendorVendorConnector
-from integrations.intuit.qbo.vendor.connector.vendor.persistence.repo import VendorVendorRepository
-from integrations.intuit.qbo.vendor.persistence.repo import QboVendorRepository
 from integrations.intuit.qbo.auth.business.service import QboAuthService
 
 logger = logging.getLogger(__name__)
@@ -104,64 +102,21 @@ def sync_qbo_to_local(
     }, outcome
 
 
-def sync_local_to_qbo(
-    realm_id: str,
-    last_sync_time: Optional[str],
-    qbo_vendor_service: QboVendorService,
-    vendor_mapping_repo: VendorVendorRepository,
-    qbo_vendor_repo: QboVendorRepository,
-) -> dict:
-    """
-    Sync locally modified Vendors back to QBO.
-    
-    This is the reverse sync: local changes -> QBO Vendors.
-    
-    Note: Currently, Vendor module modifications are not tracked,
-    so this function is a placeholder for future implementation.
-    
-    Args:
-        realm_id: QBO realm ID
-        last_sync_time: Last sync timestamp to detect local modifications
-        Various service/repo instances
-    
-    Returns:
-        dict: Sync results
-    """
-    logger.info("Checking for local Vendor modifications to sync to QBO")
-    
-    vendors_pushed = 0
-    
-    # TODO: Implement reverse sync when Vendor module modification tracking is available
-    # This would involve:
-    # 1. Reading all Vendors modified since last_sync_time
-    # 2. Finding their QboVendor mappings
-    # 3. Comparing modification times
-    # 4. Updating QboVendor records if local is newer
-    # 5. Optionally pushing to QBO API
-    
-    logger.info("Reverse sync not yet implemented - Vendor module modification tracking not available")
-    
-    return {
-        "vendors_pushed": vendors_pushed,
-    }
-
-
 def sync_qbo_vendor() -> dict:
     """
     One-way sync for QBO Vendors -> Vendor module (QBO -> Local only).
 
     1. QBO -> Local: Fetch vendors modified since last sync, store locally, sync to Vendor
 
-    Note: Local -> QBO push is disabled in the batch sync process.
-    The sync_local_to_qbo function is preserved for one-time pushes
-    when a record is marked Complete.
+    Note: Local -> QBO push is disabled (one-way intake only). The prior
+    reverse-sync helper (`sync_local_to_qbo`) was confirmed dead code (no
+    caller ever invoked it -- this entrypoint always hardcoded its result to
+    zero) and was deleted (U-314, mirrors U-307c's identical Item-sync cleanup).
     """
     try:
         sync_service = SyncService()
         qbo_vendor_service = QboVendorService()
-        qbo_vendor_repo = QboVendorRepository()
         vendor_connector = VendorVendorConnector()
-        vendor_mapping_repo = VendorVendorRepository()
         auth_service = QboAuthService()
         
         # Get realm ID
@@ -190,9 +145,7 @@ def sync_qbo_vendor() -> dict:
             vendor_connector=vendor_connector,
         )
         
-        # Step 2: Local -> QBO push disabled in batch sync (one-way intake only).
-        # The sync_local_to_qbo function is preserved for one-time pushes
-        # when a record is marked Complete.
+        # Step 2: Local -> QBO push disabled (one-way intake only).
         local_to_qbo_result = {"vendors_pushed": 0}
         
         end_time = datetime.now(timezone.utc)

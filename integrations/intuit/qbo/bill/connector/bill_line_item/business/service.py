@@ -12,7 +12,6 @@ from integrations.intuit.qbo.bill.business.model import QboBillLine
 from integrations.intuit.qbo.bill.connector.bill.persistence.repo import BillBillRepository
 from integrations.intuit.qbo.bill.persistence.repo import QboBillLineRepository
 from integrations.intuit.qbo.customer.persistence.repo import QboCustomerRepository
-from integrations.intuit.qbo.customer.connector.project.persistence.repo import CustomerProjectRepository
 from entities.bill_line_item.business.service import BillLineItemService
 from entities.bill_line_item.business.model import BillLineItem
 from entities.bill.business.service import BillService
@@ -46,7 +45,7 @@ class BillLineItemConnector:
         qbo_bill_line_repo: Optional[QboBillLineRepository] = None,
         sub_cost_code_service: Optional[SubCostCodeService] = None,
         qbo_customer_repo: Optional[QboCustomerRepository] = None,
-        customer_project_repo: Optional[CustomerProjectRepository] = None,
+        customer_project_repo=None,
         project_service: Optional[ProjectService] = None,
         reconciliation_repo: Optional[ReconciliationIssueRepository] = None,
     ):
@@ -63,14 +62,17 @@ class BillLineItemConnector:
         # U-311: qbo_customer_repo/customer_project_repo are now DEAD -- the
         # legacy qbo.Customer -> qbo.CustomerProject hop that used them was
         # deleted from _resolve_project_public_id below (Wave 5 Option A).
-        # Kept as accepted-but-unused constructor params rather than removed:
-        # a broad set of unrelated tests construct this connector defensively
+        # U-314 dropped qbo.CustomerProject entirely, so customer_project_repo
+        # can no longer default-construct its old repo class -- kept as an
+        # untyped, unconstructed constructor param rather than removed: a
+        # broad set of unrelated tests construct this connector defensively
         # passing every kwarg (mirrors U-313's own deliberate deferral of the
         # identical class of dead-DI-param cleanup for Bill/Purchase's
-        # vendor_vendor_repo/qbo_vendor_repo -- see TODO.md). Removal is a
-        # Pass-2/simplify candidate, not this unit's job.
+        # vendor_vendor_repo/qbo_vendor_repo -- see TODO.md). qbo_customer_repo's
+        # own class (QboCustomerRepository) is untouched by this drop and
+        # stays a live Pass-2/simplify candidate.
         self.qbo_customer_repo = qbo_customer_repo or QboCustomerRepository()
-        self.customer_project_repo = customer_project_repo or CustomerProjectRepository()
+        self.customer_project_repo = customer_project_repo
         self.project_service = project_service or ProjectService()
         self.reconciliation_repo = reconciliation_repo or ReconciliationIssueRepository()
         # Per-instance cache: a Bill's lines commonly share one job/customer_ref_value —

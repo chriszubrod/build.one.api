@@ -9,7 +9,6 @@ from decimal import Decimal
 from integrations.intuit.qbo.purchase.connector.expense_line_item.business.model import PurchaseLineExpenseLineItem
 from integrations.intuit.qbo.purchase.connector.expense_line_item.persistence.repo import PurchaseLineExpenseLineItemRepository
 from integrations.intuit.qbo.purchase.business.model import QboPurchaseLine
-from integrations.intuit.qbo.customer.connector.project.persistence.repo import CustomerProjectRepository
 from integrations.intuit.qbo.customer.persistence.repo import QboCustomerRepository
 from entities.expense_line_item.business.service import ExpenseLineItemService
 from entities.expense_line_item.business.model import ExpenseLineItem
@@ -76,7 +75,7 @@ class PurchaseLineExpenseLineItemConnector:
         mapping_repo: Optional[PurchaseLineExpenseLineItemRepository] = None,
         expense_line_item_service: Optional[ExpenseLineItemService] = None,
         sub_cost_code_service: Optional[SubCostCodeService] = None,
-        customer_project_repo: Optional[CustomerProjectRepository] = None,
+        customer_project_repo=None,
         qbo_customer_repo: Optional[QboCustomerRepository] = None,
         project_service: Optional[ProjectService] = None,
         reconciliation_repo: Optional[ReconciliationIssueRepository] = None,
@@ -93,11 +92,14 @@ class PurchaseLineExpenseLineItemConnector:
         self._project_cache: dict = {}        # (realm_id, qbo_customer_ref_value) -> project_public_id | None
         # U-311: customer_project_repo/qbo_customer_repo are now DEAD -- the
         # legacy qbo.Customer -> qbo.CustomerProject hop that used them was
-        # deleted from _get_project_public_id below (Wave 5 Option A). Kept as
-        # accepted-but-unused constructor params rather than removed (mirrors
-        # U-313's own deliberate deferral of the identical class of
-        # dead-DI-param cleanup) -- removal is a Pass-2/simplify candidate.
-        self.customer_project_repo = customer_project_repo or CustomerProjectRepository()
+        # deleted from _get_project_public_id below (Wave 5 Option A). U-314
+        # dropped qbo.CustomerProject entirely, so customer_project_repo can
+        # no longer default-construct its old repo class -- kept as an
+        # untyped, unconstructed constructor param rather than removed
+        # (mirrors U-313's own deliberate deferral of the identical class of
+        # dead-DI-param cleanup). qbo_customer_repo's own class is untouched
+        # by this drop and stays a live Pass-2/simplify candidate.
+        self.customer_project_repo = customer_project_repo
         self.qbo_customer_repo = qbo_customer_repo or QboCustomerRepository()
         self.project_service = project_service or ProjectService()
         self.reconciliation_repo = reconciliation_repo or ReconciliationIssueRepository()

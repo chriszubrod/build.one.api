@@ -11,13 +11,14 @@
 -- identity_consistency.py's module docstring no longer applies once the read
 -- itself is redesigned.
 --
--- Every mapping table here (CustomerProject/VendorVendor/BillBill/
--- CustomerCustomer) shares the same 1:1 shape: (LocalId UNIQUE, QboXId
--- UNIQUE) -> the staging table's (Id PK, QboId). The forward arm (`fwd` /
--- `fwd_ext`) is provably single-row: `fwd` is keyed by the mapping table's
--- own UNIQUE LocalId constraint, `fwd_ext` by the staging table's PK.
+-- U-314 dropped the CustomerProject/VendorVendor/CustomerCustomer sibling
+-- sprocs this file used to carry alongside Bill's (Wave-5 "trust dbo alone" --
+-- those 3 families retired their qbo.* mapping tables entirely). Only Bill's
+-- remains; the shape below (forward + reverse OUTER APPLY) is preserved as
+-- the template for any future family that still needs a mapping-table cross-
+-- check.
 --
--- The reverse arm CANNOT assume the same — QboId is only unique paired WITH
+-- The reverse arm CANNOT assume single-row — QboId is only unique paired WITH
 -- RealmId (`UQ_Qbo*_QboId_RealmId`, filtered to non-null pairs), so a
 -- `QboId`-only match against the staging table could in principle return
 -- more than one candidate row (a plain `LEFT JOIN` + `TOP (1)` here would
@@ -36,72 +37,6 @@
 -- the shared cross-family verify engine, not any one family's CRUD surface —
 -- same precedent as shared/sql/dbo.access_udfs.sql for the UserCanAccess*
 -- UDF family.
-
-GO
-
-CREATE OR ALTER PROCEDURE ReadCustomerProjectIdentityCheckByProjectId
-(
-    @ProjectId BIGINT,
-    @QboId NVARCHAR(50)
-)
-AS
-BEGIN
-    BEGIN TRANSACTION;
-
-    SELECT
-        [fwd].[Id]        AS [MappingId],
-        [fwd_ext].[QboId] AS [ForwardExternalQboId],
-        [rev].[ReverseMappedLocalId]
-    FROM (SELECT 1 AS [Dummy]) AS [Anchor]
-    LEFT JOIN [qbo].[CustomerProject] AS [fwd]
-        ON [fwd].[ProjectId] = @ProjectId
-    LEFT JOIN [qbo].[Customer] AS [fwd_ext]
-        ON [fwd_ext].[Id] = [fwd].[QboCustomerId]
-    OUTER APPLY (
-        SELECT TOP (1) [rm].[ProjectId] AS [ReverseMappedLocalId]
-        FROM [qbo].[Customer] AS [re]
-        JOIN [qbo].[CustomerProject] AS [rm] ON [rm].[QboCustomerId] = [re].[Id]
-        WHERE [re].[QboId] = @QboId
-        ORDER BY CASE WHEN [rm].[ProjectId] <> @ProjectId THEN 0 ELSE 1 END, [rm].[Id]
-    ) AS [rev];
-
-    COMMIT TRANSACTION;
-END;
-GO
-
-
-GO
-
-CREATE OR ALTER PROCEDURE ReadVendorVendorIdentityCheckByVendorId
-(
-    @VendorId BIGINT,
-    @QboId NVARCHAR(50)
-)
-AS
-BEGIN
-    BEGIN TRANSACTION;
-
-    SELECT
-        [fwd].[Id]        AS [MappingId],
-        [fwd_ext].[QboId] AS [ForwardExternalQboId],
-        [rev].[ReverseMappedLocalId]
-    FROM (SELECT 1 AS [Dummy]) AS [Anchor]
-    LEFT JOIN [qbo].[VendorVendor] AS [fwd]
-        ON [fwd].[VendorId] = @VendorId
-    LEFT JOIN [qbo].[Vendor] AS [fwd_ext]
-        ON [fwd_ext].[Id] = [fwd].[QboVendorId]
-    OUTER APPLY (
-        SELECT TOP (1) [rm].[VendorId] AS [ReverseMappedLocalId]
-        FROM [qbo].[Vendor] AS [re]
-        JOIN [qbo].[VendorVendor] AS [rm] ON [rm].[QboVendorId] = [re].[Id]
-        WHERE [re].[QboId] = @QboId
-        ORDER BY CASE WHEN [rm].[VendorId] <> @VendorId THEN 0 ELSE 1 END, [rm].[Id]
-    ) AS [rev];
-
-    COMMIT TRANSACTION;
-END;
-GO
-
 
 GO
 
@@ -129,39 +64,6 @@ BEGIN
         JOIN [qbo].[BillBill] AS [rm] ON [rm].[QboBillId] = [re].[Id]
         WHERE [re].[QboId] = @QboId
         ORDER BY CASE WHEN [rm].[BillId] <> @BillId THEN 0 ELSE 1 END, [rm].[Id]
-    ) AS [rev];
-
-    COMMIT TRANSACTION;
-END;
-GO
-
-
-GO
-
-CREATE OR ALTER PROCEDURE ReadCustomerCustomerIdentityCheckByCustomerId
-(
-    @CustomerId BIGINT,
-    @QboId NVARCHAR(50)
-)
-AS
-BEGIN
-    BEGIN TRANSACTION;
-
-    SELECT
-        [fwd].[Id]        AS [MappingId],
-        [fwd_ext].[QboId] AS [ForwardExternalQboId],
-        [rev].[ReverseMappedLocalId]
-    FROM (SELECT 1 AS [Dummy]) AS [Anchor]
-    LEFT JOIN [qbo].[CustomerCustomer] AS [fwd]
-        ON [fwd].[CustomerId] = @CustomerId
-    LEFT JOIN [qbo].[Customer] AS [fwd_ext]
-        ON [fwd_ext].[Id] = [fwd].[QboCustomerId]
-    OUTER APPLY (
-        SELECT TOP (1) [rm].[CustomerId] AS [ReverseMappedLocalId]
-        FROM [qbo].[Customer] AS [re]
-        JOIN [qbo].[CustomerCustomer] AS [rm] ON [rm].[QboCustomerId] = [re].[Id]
-        WHERE [re].[QboId] = @QboId
-        ORDER BY CASE WHEN [rm].[CustomerId] <> @CustomerId THEN 0 ELSE 1 END, [rm].[Id]
     ) AS [rev];
 
     COMMIT TRANSACTION;

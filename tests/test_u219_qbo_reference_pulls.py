@@ -268,9 +268,7 @@ PROJECT_STAMP_LOCK_TARGET = (
 
 def _build_project_connector() -> CustomerProjectConnector:
     connector = CustomerProjectConnector(
-        mapping_repo=Mock(),
         project_service=Mock(),
-        customer_mapping_repo=Mock(),
         project_address_service=Mock(),
         address_connector=Mock(),
         reconciliation_repo=Mock(),

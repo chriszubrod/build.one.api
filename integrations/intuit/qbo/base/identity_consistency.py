@@ -23,16 +23,18 @@ identity) or mint a duplicate. Do not "restore symmetry" by softening the
 push side back toward a fall-back; the discipline being mirrored is the hard
 stop. Refusing to resolve (returning None here) is the push-side analogue.
 
-NB (U-284v/U-297): two of the three wrappers are now ALSO used pull-side, as the
-verify step of a dbo-first *reference resolver* (`BillLineItemConnector
-._get_project_public_id`, `CustomerProjectConnector._resolve_parent_customer_id`).
-There a None is advisory, not a veto: it means "don't trust the dbo-native
-shortcut", and the caller falls through to the legacy qbo.* hop it was trying to
-skip — it does NOT mean "stop". The hard stop above is the rule wherever there is
-a WRITE to protect (the push helpers, the header identity fast path); a read-only
-resolver has nothing to corrupt by taking the slower, already-trusted path. So do
-not "restore symmetry" in that direction either — the two disciplines differ
-because what is at stake differs.
+NB (U-284v/U-297): two of the three wrappers were also used pull-side at the
+time, as the verify step of a dbo-first *reference resolver*
+(`BillLineItemConnector._get_project_public_id`,
+`CustomerProjectConnector._resolve_parent_customer_id`). There a None was
+advisory, not a veto: it meant "don't trust the dbo-native shortcut", and the
+caller fell through to the legacy qbo.* hop it was trying to skip — it did NOT
+mean "stop". The hard stop above is the rule wherever there is a WRITE to
+protect (the push helpers, the header identity fast path); a read-only
+resolver has nothing to corrupt by taking the slower, already-trusted path.
+(U-310/U-311 later repointed both cited call sites onto `verify_identity_dbo_only`
+below instead, once their families retired the legacy hop entirely — see NB
+(U-309).)
 
 NB (U-306): the verify engine used to run 2 reads per call (mapping-by-local-id,
 then a second round trip for the mapped external row) and, when a family had no
@@ -47,8 +49,8 @@ JOIN'd read makes the reverse check free (it already touches the staging
 table), which is what makes closing H1 no longer "self-defeating" the way a
 second round trip would have been.
 
-NB (U-309): the four `verify_*_qbo_identity` wrappers above all read a family's
-qbo.* mapping table — the right check while that table is still an
+NB (U-309): the `verify_*_qbo_identity` wrappers above read a family's qbo.*
+mapping table — the right check while that table is still an
 independently-writable second store this module exists to guard against
 drifting from (see the top of this docstring). A family that has RETIRED its
 mapping table (Wave 5's "trust dbo alone" plan, memory
@@ -56,6 +58,13 @@ mapping table (Wave 5's "trust dbo alone" plan, memory
 store left to read, so it needs a structurally different check —
 `verify_identity_dbo_only` below. See that function's own docstring for its
 contract, why it needs no lock, and its current wiring status.
+
+NB (U-314): this NB's own prediction played out — `verify_project_qbo_identity`,
+`verify_vendor_qbo_identity`, and `verify_customer_qbo_identity` are deleted
+(their families' `qbo.CustomerProject`/`VendorVendor`/`CustomerCustomer`
+mapping tables dropped in the same unit). Only `verify_bill_qbo_identity`
+remains as a concrete wrapper over `_verify_dbo_qbo_identity`; extend that
+shared engine directly if a future family needs this shape again.
 """
 import logging
 from dataclasses import dataclass
@@ -91,12 +100,13 @@ def _verify_dbo_qbo_identity(
     read_identity_check: Callable[..., IdentityCheckResult],
 ) -> Optional[str]:
     """
-    Shared engine behind `verify_project_qbo_identity` / `verify_vendor_qbo_identity`
-    (and any future family joining this pattern — see the module docstring
-    for the discipline this enforces). Pure orchestration: `entity_label` and
-    `mapping_label` only shape the log lines; `read_identity_check` is the
-    family's own bound repo method (e.g.
-    `customer_project_repo.read_identity_check`), called as
+    Shared engine behind `verify_bill_qbo_identity` (and any future family
+    joining this pattern — see the module docstring for the discipline this
+    enforces; U-314 deleted the Project/Vendor/Customer wrappers that used to
+    sit alongside it, once those families retired their mapping tables).
+    Pure orchestration: `entity_label` and `mapping_label` only shape the log
+    lines; `read_identity_check` is the family's own bound repo method (e.g.
+    `bill_bill_repo.read_identity_check`), called as
     `read_identity_check(local_id=entity.id, qbo_id=entity.qbo_id)` and
     returning one `IdentityCheckResult` from a single JOIN'd sproc — see
     `base/sql/identity_consistency_reads.sql`. Mirrors
@@ -154,66 +164,6 @@ def _verify_dbo_qbo_identity(
     return entity.qbo_id
 
 
-def verify_project_qbo_identity(
-    project,
-    *,
-    customer_project_repo,
-    qbo_customer_repo,
-) -> Optional[str]:
-    """
-    Return `project.qbo_id` if it's safe to trust for an outbound push, else
-    None. Safe means: the Project has no CustomerProject mapping row yet
-    (the ordinary not-fully-migrated-yet state — nothing to disagree with),
-    OR its mapping row's own QboCustomer external id matches `project.qbo_id`
-    exactly. A mismatch means the mapping table still binds a DIFFERENT
-    external customer to this Project — refuse rather than push under an
-    unverified CustomerRef. When there is no mapping row of its own, also
-    refuses if the mapping table already binds `project.qbo_id` to a
-    DIFFERENT Project (U-297's H1, closed by U-306's JOIN'd read).
-
-    `qbo_customer_repo` is accepted but unused — U-306 folded its job into
-    `customer_project_repo.read_identity_check`'s single JOIN'd sproc. Kept
-    in the signature so every existing caller's kwargs keep working unchanged.
-    """
-    return _verify_dbo_qbo_identity(
-        project,
-        entity_label="Project",
-        mapping_label="CustomerProject",
-        read_identity_check=customer_project_repo.read_identity_check,
-    )
-
-
-def verify_vendor_qbo_identity(
-    vendor,
-    *,
-    vendor_vendor_repo,
-    qbo_vendor_repo,
-) -> Optional[str]:
-    """
-    Return `vendor.qbo_id` if it's safe to trust (for an outbound push, or for
-    a pull-side reference resolution — see module docstring), else None.
-
-    Safe means: the Vendor has no VendorVendor mapping row yet (the ordinary
-    not-fully-migrated state — nothing to disagree with), OR its mapping
-    row's own QboVendor external id matches `vendor.qbo_id` exactly. A
-    mismatch means the mapping table still binds a DIFFERENT external vendor
-    to this Vendor — refuse rather than trust an unverified VendorRef. When
-    there is no mapping row of its own, also refuses if the mapping table
-    already binds `vendor.qbo_id` to a DIFFERENT Vendor (U-297's H1, closed
-    by U-306's JOIN'd read).
-
-    `qbo_vendor_repo` is accepted but unused — U-306 folded its job into
-    `vendor_vendor_repo.read_identity_check`'s single JOIN'd sproc. Kept
-    in the signature so every existing caller's kwargs keep working unchanged.
-    """
-    return _verify_dbo_qbo_identity(
-        vendor,
-        entity_label="Vendor",
-        mapping_label="VendorVendor",
-        read_identity_check=vendor_vendor_repo.read_identity_check,
-    )
-
-
 def verify_bill_qbo_identity(
     bill,
     *,
@@ -249,46 +199,6 @@ def verify_bill_qbo_identity(
         entity_label="Bill",
         mapping_label="BillBill",
         read_identity_check=bill_bill_repo.read_identity_check,
-    )
-
-
-def verify_customer_qbo_identity(
-    customer,
-    *,
-    customer_customer_repo,
-    qbo_customer_repo,
-) -> Optional[str]:
-    """
-    Return `customer.qbo_id` if it's safe to trust (for a pull-side reference
-    resolution — see module docstring), else None.
-
-    Safe means: the Customer has no CustomerCustomer mapping row yet (the
-    ordinary not-fully-migrated state — nothing to disagree with), OR its
-    mapping row's own QboCustomer external id matches `customer.qbo_id`
-    exactly. A mismatch means the mapping table still binds a DIFFERENT
-    external customer to this Customer — refuse rather than trust an
-    unverified parent CustomerRef.
-
-    Added by U-297 for `CustomerProjectConnector._resolve_parent_customer_id`: a
-    QBO job/sub-customer's ParentRef names its parent's QBO customer id, which
-    that connector resolves to a local `dbo.Customer.Id` and writes to
-    `dbo.Project.CustomerId`.
-
-    When there is no mapping row of its own, also refuses if the mapping
-    table already binds `customer.qbo_id` to a DIFFERENT Customer (U-297's
-    H1, closed by U-306's JOIN'd read — was measurably zero-population at
-    U-297 (2026-08-22): 0 stamped `dbo.Customer` rows lacked a
-    `CustomerCustomer` row; revisit if that population count moves).
-
-    `qbo_customer_repo` is accepted but unused — U-306 folded its job into
-    `customer_customer_repo.read_identity_check`'s single JOIN'd sproc. Kept
-    in the signature so every existing caller's kwargs keep working unchanged.
-    """
-    return _verify_dbo_qbo_identity(
-        customer,
-        entity_label="Customer",
-        mapping_label="CustomerCustomer",
-        read_identity_check=customer_customer_repo.read_identity_check,
     )
 
 
@@ -329,11 +239,13 @@ def verify_identity_dbo_only(
     accepts, so a family that already has one wired for its create path can
     hand it straight to this one too.
 
-    UNWIRED as of U-309 — no connector calls this yet. U-310/U-311/U-312 wire
-    it into the 12 verify/reference-resolver call sites `docs/design/wave5.md`
-    §4 enumerates (Customer/Project/Vendor), each replacing that family's
-    `qbo.*`-mapping-table-reading `verify_*_qbo_identity` wrapper above once
-    the family's own mapping table is retired.
+    WIRED since U-310/U-311/U-312, into the 12 verify/reference-resolver call
+    sites `docs/design/wave5.md` §4 enumerates (Customer/Project/Vendor),
+    each replacing that family's `qbo.*`-mapping-table-reading
+    `verify_*_qbo_identity` wrapper once the family's own mapping table was
+    retired (those three wrappers are gone as of U-314 — see the module
+    docstring's NB (U-314); only `verify_bill_qbo_identity` above remains,
+    for the one family — Bill — that hasn't retired its mapping table).
     """
     if not entity or not entity.qbo_id:
         return None

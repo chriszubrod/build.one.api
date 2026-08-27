@@ -9,7 +9,6 @@ from integrations.intuit.qbo.purchase.connector.expense.business.model import Pu
 from integrations.intuit.qbo.purchase.connector.expense.persistence.repo import PurchaseExpenseRepository
 from integrations.intuit.qbo.purchase.business.model import QboPurchase, QboPurchaseLine
 from integrations.intuit.qbo.purchase.persistence.repo import QboPurchaseRepository, QboPurchaseLineRepository
-from integrations.intuit.qbo.vendor.connector.vendor.persistence.repo import VendorVendorRepository
 from integrations.intuit.qbo.vendor.persistence.repo import QboVendorRepository
 from entities.expense.business.service import ExpenseService
 from entities.expense.business.model import Expense
@@ -44,7 +43,7 @@ class PurchaseExpenseConnector:
         mapping_repo: Optional[PurchaseExpenseRepository] = None,
         expense_service: Optional[ExpenseService] = None,
         vendor_service: Optional[VendorService] = None,
-        vendor_vendor_repo: Optional[VendorVendorRepository] = None,
+        vendor_vendor_repo=None,
         qbo_vendor_repo: Optional[QboVendorRepository] = None,
         qbo_purchase_repo: Optional[QboPurchaseRepository] = None,
         qbo_purchase_line_repo: Optional[QboPurchaseLineRepository] = None,
@@ -56,13 +55,15 @@ class PurchaseExpenseConnector:
         self.expense_service = expense_service or ExpenseService()
         self.vendor_service = vendor_service or VendorService()
         # U-313: no longer read anywhere in this file (_get_vendor_public_id
-        # moved fully dbo-only, no qbo.VendorVendor hop left). Kept as
-        # injectable constructor params, not removed, so the ~10 existing
-        # test call sites across other units that still pass
+        # moved fully dbo-only, no qbo.VendorVendor hop left). U-314 dropped
+        # qbo.VendorVendor entirely, so vendor_vendor_repo can no longer
+        # default-construct its old repo class -- kept as an untyped,
+        # unconstructed constructor param rather than removed, so the ~10
+        # existing test call sites across other units that still pass
         # vendor_vendor_repo=/qbo_vendor_repo= don't need to change for a
         # unit whose real scope is the Vendor mapping table, not this
         # connector's constructor — see TODO.md's U-313 follow-ups.
-        self.vendor_vendor_repo = vendor_vendor_repo or VendorVendorRepository()
+        self.vendor_vendor_repo = vendor_vendor_repo
         self.qbo_vendor_repo = qbo_vendor_repo or QboVendorRepository()
         self.qbo_purchase_repo = qbo_purchase_repo or QboPurchaseRepository()
         self.qbo_purchase_line_repo = qbo_purchase_line_repo or QboPurchaseLineRepository()

@@ -12,14 +12,10 @@ from integrations.intuit.qbo.base.field_ownership import (
 from integrations.intuit.qbo.base.identity_consistency import verify_identity_dbo_only
 from integrations.intuit.qbo.base.identity_fastpath import (
     raise_concurrent_write_race,
-    resolve_mapping_state,
     run_identity_fastpath_dbo_only,
 )
 from integrations.intuit.qbo.base.ids import coerce_id
 from integrations.intuit.qbo.base.locking import qbo_app_lock
-from integrations.intuit.qbo.customer.connector.project.business.model import CustomerProject
-from integrations.intuit.qbo.customer.connector.project.persistence.repo import CustomerProjectRepository
-from integrations.intuit.qbo.customer.connector.customer.persistence.repo import CustomerCustomerRepository
 from integrations.intuit.qbo.customer.business.model import QboCustomer
 from integrations.intuit.qbo.customer.persistence.repo import QboCustomerRepository
 from integrations.intuit.qbo.physical_address.connector.business.service import PhysicalAddressAddressConnector
@@ -47,36 +43,29 @@ class CustomerProjectConnector:
 
     def __init__(
         self,
-        mapping_repo: Optional[CustomerProjectRepository] = None,
         project_service: Optional[ProjectService] = None,
         project_address_service: Optional[ProjectAddressService] = None,
         address_connector: Optional[PhysicalAddressAddressConnector] = None,
-        customer_mapping_repo: Optional[CustomerCustomerRepository] = None,
         reconciliation_repo: Optional[ReconciliationIssueRepository] = None,
         customer_service: Optional[CustomerService] = None,
         qbo_customer_repo: Optional[QboCustomerRepository] = None,
     ):
         """Initialize the CustomerProjectConnector."""
-        # U-314-prereq: mapping_repo is retained but the LIVE paths no longer touch
-        # qbo.CustomerProject — heal_missing_mapping/create_mapping now read+write
-        # dbo.Project.QboId only. Only the dead get_mapping_by_*/_resolve_mapping_state
-        # accessors still reference mapping_repo; the U-314 guarded DROP removes them
-        # along with the table (kept here so the DROP unit has one inventory to clear).
-        self.mapping_repo = mapping_repo or CustomerProjectRepository()
         self.project_service = project_service or ProjectService()
         self.project_address_service = project_address_service or ProjectAddressService()
         self.address_connector = address_connector or PhysicalAddressAddressConnector()
         self.reconciliation_repo = reconciliation_repo or ReconciliationIssueRepository()
         # U-297: previously fed _resolve_parent_customer_id; U-310 repointed
-        # that resolver onto Option A (dbo-only verify), so customer_mapping_repo/
-        # qbo_customer_repo are now DEAD there too. U-311 (this unit) also
-        # repoints this connector's OWN pull onto Option B, so neither is used
-        # anywhere in this class any more. Kept as accepted-but-unused
-        # constructor params rather than removed -- a broad set of unrelated
-        # tests construct this connector defensively passing every kwarg
-        # (mirrors U-313's own deliberate deferral of the identical class of
-        # dead-DI-param cleanup). Removal is a Pass-2/simplify candidate.
-        self.customer_mapping_repo = customer_mapping_repo or CustomerCustomerRepository()
+        # that resolver onto Option A (dbo-only verify), so qbo_customer_repo
+        # is DEAD there too (U-311 also repointed this connector's OWN pull
+        # onto Option B, so it's not used anywhere in this class any more).
+        # Its own class (QboCustomerRepository, the qbo.Customer staging repo)
+        # is untouched by U-314's drop and stays a live Pass-2/simplify
+        # candidate for a future dead-DI-param pass. (The sibling
+        # customer_mapping_repo param -- CustomerCustomerRepository, dropped
+        # by U-314 -- was removed outright rather than neutered: unlike
+        # vendor_vendor_repo/customer_project_repo on other connectors, its
+        # only 5 test call sites are all in this unit's own touched files.)
         self.customer_service = customer_service or CustomerService()
         self.qbo_customer_repo = qbo_customer_repo or QboCustomerRepository()
         # Per-instance memo for the parent-Customer resolution. ONE connector
@@ -342,12 +331,12 @@ class CustomerProjectConnector:
     ) -> None:
         """
         Record a name-match-vs-different-existing-identity duplicate (U-311).
-        Distinct from `_raise_duplicate_qbo_customer_issue` below, which
-        covers `heal_missing_mapping`'s own mapping-table-based duplicate
-        check (that method still reads/writes qbo.CustomerProject and stays
-        alive for InvoiceInvoiceConnector's fallback until its own
-        repoint/retire). Mirrors `_raise_duplicate_qbo_customer_issue` (U-310,
-        `CustomerCustomerConnector`) exactly.
+        Mirrors `CustomerCustomerConnector._raise_duplicate_qbo_customer_issue`
+        (U-310) exactly. (`heal_missing_mapping`'s own duplicate check used to
+        be a separate mapping-table-based `_raise_duplicate_qbo_customer_issue`
+        on this class -- U-314-prereq repointed it onto the dbo-native
+        `duplicate_qbo_customer` recording inline in `heal_missing_mapping`
+        below, and U-314 deleted the now-dead mapping-table version.)
         """
         existing_realm_id = getattr(local_project, "realm_id", None)
         if existing_qbo_id == qbo_customer.qbo_id:
@@ -486,38 +475,6 @@ class CustomerProjectConnector:
         self._sync_addresses(qbo_customer, updated.id)
         return updated
 
-    def _raise_duplicate_qbo_customer_issue(
-        self,
-        *,
-        qbo_customer: QboCustomer,
-        local_project: Project,
-        existing_mapping: CustomerProject,
-    ) -> None:
-        """
-        Record a duplicate-sub-customer detection on qbo.ReconciliationIssue.
-
-        Triggered when a fresh QboCustomer pull finds an existing local Project
-        by exact name match but that Project is already bound to a different
-        QboCustomer. Treated as critical because every subsequent sync will
-        re-detect it until resolved upstream in QBO.
-        """
-        details = (
-            f"Duplicate QBO sub-customer detected. QboCustomer {qbo_customer.id} "
-            f"(QboId={qbo_customer.qbo_id}, DisplayName='{qbo_customer.display_name}') "
-            f"name-matches local Project {local_project.id} which is already bound to "
-            f"QboCustomer {existing_mapping.qbo_customer_id}. Resolve by merging or "
-            f"renaming one of the QBO sub-customers."
-        )
-        record_mapping_issue(
-            self.reconciliation_repo,
-            drift_type="duplicate_qbo_customer",
-            entity_type="Project",
-            entity_public_id=str(local_project.public_id) if local_project.public_id else None,
-            qbo_id=str(qbo_customer.qbo_id) if qbo_customer.qbo_id else None,
-            realm_id=qbo_customer.realm_id or "",
-            details=details,
-        )
-
     def _sync_addresses(self, qbo_customer: QboCustomer, project_id: int) -> None:
         """
         Sync billing and shipping addresses from QboCustomer to ProjectAddress/Address.
@@ -579,41 +536,6 @@ class CustomerProjectConnector:
             )
             logger.debug(f"Created ProjectAddress for Project {project_id}, Address {address_id}, Type {address_type_id}")
 
-    def _resolve_mapping_state(self, *, project_id: int, qbo_customer: QboCustomer):
-        """
-        Read-only check of the CustomerProject mapping table against a
-        dbo-identity match, BEFORE any write happens (U-276 fast path). Must
-        run before `_apply_project_fields_and_sync` — writing to the
-        dbo-identity-matched Project first and detecting a conflict afterward
-        would corrupt that Project's data in the case where the mapping
-        table, not dbo identity, is actually still the correct side
-        (round-3 review finding).
-
-        Checks BOTH directions like create_mapping's own 1:1 guards — a
-        project_id-only check would miss a stale mapping still binding this
-        qbo_customer_id to a DIFFERENT Project (left behind by an earlier
-        identity "theft" — see SetProjectQboIdentity's own theft-clear
-        UPDATE, which does not clean up the mapping table).
-
-        NOTE (U-287, updated U-311): no production caller — `sync_from_qbo_customer`
-        moved to the dbo-only fast path (`run_identity_fastpath_dbo_only`), which has
-        no mapping-table-vs-dbo conflict concept at all. Retained as the per-family
-        test seam for the U-276/277/278/279 suites, which call this by name.
-        Disposition booked in TODO.md.
-
-        Returns (state, by_project, by_qbo_customer) — see
-        base.identity_fastpath.resolve_mapping_state, which owns the algorithm
-        and documents the "consistent"/"missing"/"conflict" semantics (U-287);
-        this is the CustomerProject binding of it.
-        """
-        return resolve_mapping_state(
-            local_id=project_id,
-            external_id=qbo_customer.id,
-            read_by_local_id=self.mapping_repo.read_by_project_id,
-            read_by_external_id=self.mapping_repo.read_by_qbo_customer_id,
-            external_id_attr="qbo_customer_id",
-        )
-
     def create_mapping(
         self,
         project_id: int,
@@ -644,18 +566,6 @@ class CustomerProjectConnector:
             qbo_id=qbo_id,
             realm_id=realm_id,
         )
-
-    def get_mapping_by_project_id(self, project_id: int) -> Optional[CustomerProject]:
-        """
-        Get mapping by Project ID.
-        """
-        return self.mapping_repo.read_by_project_id(project_id)
-
-    def get_mapping_by_qbo_customer_id(self, qbo_customer_id: int) -> Optional[CustomerProject]:
-        """
-        Get mapping by QboCustomer ID.
-        """
-        return self.mapping_repo.read_by_qbo_customer_id(qbo_customer_id)
 
     def heal_missing_mapping(self, qbo_customer) -> Optional[Project]:
         '''

@@ -11,7 +11,6 @@ from integrations.intuit.qbo.invoice.connector.invoice.persistence.repo import I
 from integrations.intuit.qbo.invoice.connector.invoice_line_item.persistence.repo import InvoiceLineItemInvoiceLineRepository
 from integrations.intuit.qbo.invoice.business.model import QboInvoice, QboInvoiceLine
 from integrations.intuit.qbo.customer.persistence.repo import QboCustomerRepository
-from integrations.intuit.qbo.customer.connector.project.persistence.repo import CustomerProjectRepository
 from entities.invoice.business.service import InvoiceService
 from entities.invoice.business.model import Invoice
 from entities.project.business.service import ProjectService
@@ -48,7 +47,7 @@ class InvoiceInvoiceConnector:
         invoice_service: Optional[InvoiceService] = None,
         project_service: Optional[ProjectService] = None,
         qbo_customer_repo: Optional[QboCustomerRepository] = None,
-        customer_project_repo: Optional[CustomerProjectRepository] = None,
+        customer_project_repo=None,
         reconciliation_repo: Optional[ReconciliationIssueRepository] = None,
         sub_cost_code_service: Optional[SubCostCodeService] = None,
     ):
@@ -58,7 +57,12 @@ class InvoiceInvoiceConnector:
         self.invoice_service = invoice_service or InvoiceService()
         self.project_service = project_service or ProjectService()
         self.qbo_customer_repo = qbo_customer_repo or QboCustomerRepository()
-        self.customer_project_repo = customer_project_repo or CustomerProjectRepository()
+        # U-314 dropped qbo.CustomerProject entirely -- _get_project_public_id
+        # below already binds via a fresh CustomerProjectConnector() instance,
+        # never self.customer_project_repo, so this was already dead. Kept as
+        # an untyped, unconstructed constructor param so existing test kwargs
+        # don't need touching.
+        self.customer_project_repo = customer_project_repo
         self.reconciliation_repo = reconciliation_repo or ReconciliationIssueRepository()
         # U-307b: only ever passed to cost_code_resolver.resolve_qbo_item_ref, never
         # used directly here. Kept as an injectable constructor param (not defaulted

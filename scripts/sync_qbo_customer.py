@@ -28,9 +28,6 @@ from integrations.intuit.qbo.customer.business.service import QboCustomerService
 from integrations.intuit.qbo.customer.business.model import QboCustomer
 from integrations.intuit.qbo.customer.connector.customer.business.service import CustomerCustomerConnector
 from integrations.intuit.qbo.customer.connector.project.business.service import CustomerProjectConnector
-from integrations.intuit.qbo.customer.connector.customer.persistence.repo import CustomerCustomerRepository
-from integrations.intuit.qbo.customer.connector.project.persistence.repo import CustomerProjectRepository
-from integrations.intuit.qbo.customer.persistence.repo import QboCustomerRepository
 from integrations.intuit.qbo.auth.business.service import QboAuthService
 
 logger = logging.getLogger(__name__)
@@ -139,69 +136,22 @@ def sync_qbo_to_local(
     }, outcome
 
 
-def sync_local_to_qbo(
-    realm_id: str,
-    last_sync_time: Optional[str],
-    qbo_customer_service: QboCustomerService,
-    customer_mapping_repo: CustomerCustomerRepository,
-    project_mapping_repo: CustomerProjectRepository,
-    qbo_customer_repo: QboCustomerRepository,
-) -> dict:
-    """
-    Sync locally modified Customers/Projects back to QBO.
-    
-    This is the reverse sync: local changes -> QBO Customers.
-    
-    Note: Currently, Customer and Project modules are not implemented,
-    so this function is a placeholder for future implementation.
-    
-    Args:
-        realm_id: QBO realm ID
-        last_sync_time: Last sync timestamp to detect local modifications
-        Various service/repo instances
-    
-    Returns:
-        dict: Sync results
-    """
-    logger.info("Checking for local Customer/Project modifications to sync to QBO")
-    
-    customers_pushed = 0
-    projects_pushed = 0
-    
-    # TODO: Implement reverse sync when Customer and Project modules are available
-    # This would involve:
-    # 1. Reading all Customers/Projects modified since last_sync_time
-    # 2. Finding their QboCustomer mappings
-    # 3. Comparing modification times
-    # 4. Updating QboCustomer records if local is newer
-    # 5. Optionally pushing to QBO API
-    
-    logger.info("Reverse sync not yet implemented - Customer/Project modules not available")
-    
-    return {
-        "customers_pushed": customers_pushed,
-        "projects_pushed": projects_pushed,
-    }
-
-
 def sync_qbo_customer() -> dict:
     """
     One-way sync for QBO Customers -> Customer/Project modules (QBO -> Local only).
 
     1. QBO -> Local: Fetch customers modified since last sync, store locally, sync to Customer/Project
 
-    Note: Local -> QBO push is disabled in the batch sync process.
-    The sync_local_to_qbo function is preserved for one-time pushes
-    when a record is marked Complete.
+    Note: Local -> QBO push is disabled (one-way intake only). The prior
+    reverse-sync helper (`sync_local_to_qbo`) was confirmed dead code (no
+    caller ever invoked it -- this entrypoint always hardcoded its result to
+    zero) and was deleted (U-314, mirrors U-307c's identical Item-sync cleanup).
     """
     try:
         sync_service = SyncService()
         qbo_customer_service = QboCustomerService()
-        qbo_customer_repo = QboCustomerRepository()
         customer_connector = CustomerCustomerConnector()
         project_connector = CustomerProjectConnector()
-        customer_mapping_repo = CustomerCustomerRepository()
-        project_mapping_repo = CustomerProjectRepository()
         auth_service = QboAuthService()
         
         # Get realm ID
@@ -231,9 +181,7 @@ def sync_qbo_customer() -> dict:
             project_connector=project_connector,
         )
         
-        # Step 2: Local -> QBO push disabled in batch sync (one-way intake only).
-        # The sync_local_to_qbo function is preserved for one-time pushes
-        # when a record is marked Complete.
+        # Step 2: Local -> QBO push disabled (one-way intake only).
         local_to_qbo_result = {"customers_pushed": 0, "projects_pushed": 0}
         
         end_time = datetime.now(timezone.utc)

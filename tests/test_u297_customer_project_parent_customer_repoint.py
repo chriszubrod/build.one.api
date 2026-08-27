@@ -11,13 +11,7 @@ in the suite set `parent_ref_value=None`, so the connector's parent-lookup lines
 never executed.
 
 Covers:
-  1. The shared `verify_customer_qbo_identity` wrapper
-     (`base/identity_consistency.py`) — the third binding of the
-     `_verify_dbo_qbo_identity` engine, alongside Project and Vendor. STILL
-     LIVE and still tested here: Project's and Vendor's own reference resolvers
-     use this mapping-table-reading engine until U-311/U-312 repoint them.
-     `CustomerProjectConnector` itself no longer calls it (see 2).
-  2. `CustomerProjectConnector._get_parent_customer_id` /
+  1. `CustomerProjectConnector._get_parent_customer_id` /
      `_resolve_parent_customer_id` post-U-310: a direct dbo hit is confirmed by
      `verify_identity_dbo_only` (a SECOND `read_by_qbo_identity`, keyed on the
      resolved row's own identity, compared by `.id`) and reads no `qbo.*` table
@@ -27,19 +21,21 @@ Covers:
      flagging": an advisory call site becomes hard-stop-equivalent by
      construction). Empty ref short-circuits; the result is memoized per
      (realm, ref), misses included.
-  3. Integration through `sync_from_qbo_customer` with a TRUTHY
+  2. Integration through `sync_from_qbo_customer` with a TRUTHY
      `parent_ref_value` — that the resolved id actually reaches
      `_apply_project_fields_and_sync` (update paths) and `project_service.create`
      (create path), and that an unresolvable parent passes None through.
+
+(U-297's own Section 1 -- the shared `verify_customer_qbo_identity` wrapper --
+was deleted here: U-314 dropped `qbo.CustomerCustomer` entirely and deleted
+that wrapper along with it, once the last two mapping-table-reading families
+(Project's own reference resolvers) had already repointed onto `verify_
+identity_dbo_only` in U-310/U-311.)
 """
 from contextlib import ExitStack, contextmanager
 from types import SimpleNamespace
 from unittest.mock import Mock, call, patch
 
-from integrations.intuit.qbo.base.identity_consistency import (
-    IdentityCheckResult,
-    verify_customer_qbo_identity,
-)
 from integrations.intuit.qbo.customer.connector.project.business.service import (
     CustomerProjectConnector,
 )
@@ -65,114 +61,7 @@ def _locks_granted():
         yield
 
 
-# --- Section 1: the verify_customer_qbo_identity wrapper ---
-
-
-def _verify_repos(*, mapping_id=None, forward_external_qbo_id=None, reverse_mapped_local_id=None):
-    """Bind the two repos the wrapper needs, with an EXPLICIT `IdentityCheckResult`.
-
-    Never leave `read_identity_check` as a bare Mock: its default return is a
-    truthy Mock whose `.mapping_id`/`.forward_external_qbo_id` are themselves
-    Mocks, so the engine's `is not None` / `!=` comparisons would pass or fail
-    by accident rather than by the case under test.
-    """
-    customer_customer_repo = Mock()
-    customer_customer_repo.read_identity_check.return_value = IdentityCheckResult(
-        mapping_id=mapping_id,
-        forward_external_qbo_id=forward_external_qbo_id,
-        reverse_mapped_local_id=reverse_mapped_local_id,
-    )
-    qbo_customer_repo = Mock()
-    return customer_customer_repo, qbo_customer_repo
-
-
-def test_verify_returns_none_for_missing_entity_or_qbo_id():
-    """No entity, or an entity with no dbo-native QboId, is never trustworthy."""
-    mapping_repo, qbo_repo = _verify_repos()
-
-    for entity in (None, SimpleNamespace(id=7, qbo_id=None), SimpleNamespace(id=7, qbo_id="")):
-        assert (
-            verify_customer_qbo_identity(
-                entity, customer_customer_repo=mapping_repo, qbo_customer_repo=qbo_repo
-            )
-            is None
-        )
-    # Short-circuits before touching either repo.
-    mapping_repo.read_identity_check.assert_not_called()
-    assert qbo_repo.method_calls == []
-
-
-def test_verify_trusts_when_customer_has_no_mapping_row():
-    """No CustomerCustomer row AND no reverse conflict = nothing to disagree
-    with = TRUST."""
-    mapping_repo, qbo_repo = _verify_repos()
-    customer = SimpleNamespace(id=55, qbo_id="P-1")
-
-    result = verify_customer_qbo_identity(
-        customer, customer_customer_repo=mapping_repo, qbo_customer_repo=qbo_repo
-    )
-
-    assert result == "P-1"
-    assert qbo_repo.method_calls == []  # U-306: folded into the one JOIN'd read, never touched
-
-
-def test_verify_trusts_when_mapping_agrees():
-    mapping_repo, qbo_repo = _verify_repos(
-        mapping_id=1, forward_external_qbo_id="P-1", reverse_mapped_local_id=55,
-    )
-    customer = SimpleNamespace(id=55, qbo_id="P-1")
-
-    result = verify_customer_qbo_identity(
-        customer, customer_customer_repo=mapping_repo, qbo_customer_repo=qbo_repo
-    )
-
-    assert result == "P-1"
-
-
-def test_verify_refuses_when_mapping_binds_a_different_external_customer():
-    """The whole point: dbo says P-1, the mapping table still says P-2 -> refuse."""
-    mapping_repo, qbo_repo = _verify_repos(
-        mapping_id=1, forward_external_qbo_id="P-2", reverse_mapped_local_id=55,
-    )
-    customer = SimpleNamespace(id=55, qbo_id="P-1")
-
-    result = verify_customer_qbo_identity(
-        customer, customer_customer_repo=mapping_repo, qbo_customer_repo=qbo_repo
-    )
-
-    assert result is None
-
-
-def test_verify_refuses_when_unmapped_but_reverse_bound_to_a_different_customer():
-    """U-297's H1, closed by U-306: no CustomerCustomer mapping of its own, but
-    the mapping table already binds this exact QboId to a DIFFERENT Customer."""
-    mapping_repo, qbo_repo = _verify_repos(mapping_id=None, reverse_mapped_local_id=999)
-    customer = SimpleNamespace(id=55, qbo_id="P-1")
-
-    result = verify_customer_qbo_identity(
-        customer, customer_customer_repo=mapping_repo, qbo_customer_repo=qbo_repo
-    )
-
-    assert result is None
-
-
-def test_verify_binds_the_customer_familys_accessors():
-    """Guards against a copy/paste of the Project or Vendor wrapper's bindings."""
-    mapping_repo, qbo_repo = _verify_repos(
-        mapping_id=1, forward_external_qbo_id="P-1", reverse_mapped_local_id=55,
-    )
-    customer = SimpleNamespace(id=55, qbo_id="P-1")
-
-    verify_customer_qbo_identity(
-        customer, customer_customer_repo=mapping_repo, qbo_customer_repo=qbo_repo
-    )
-
-    # read_identity_check (not a Project/Vendor-shaped wrapper), keyed on the
-    # LOCAL id and this entity's own qbo_id.
-    mapping_repo.read_identity_check.assert_called_once_with(local_id=55, qbo_id="P-1")
-
-
-# --- Section 2: the _get_parent_customer_id / _resolve_parent_customer_id resolver ---
+# --- Section 1: the _get_parent_customer_id / _resolve_parent_customer_id resolver ---
 #
 # U-310 repointed this resolver onto Option A (`verify_identity_dbo_only`) and
 # DELETED the legacy `qbo.Customer` -> `qbo.CustomerCustomer` two-hop that used
@@ -203,19 +92,20 @@ def _build_connector(*, direct=None):
     `read_by_qbo_identity.side_effect` directly afterward — the same idiom the
     pre-U-310 form of this file used to override `read_identity_check`.
 
-    `customer_mapping_repo` / `qbo_customer_repo` are still injected because
-    the connector still accepts them (constructor back-compat, U-310), and
-    pinning them as Mocks keeps the "never read any more" assertions honest.
+    `qbo_customer_repo` is still injected because the connector still accepts
+    it (constructor back-compat, U-310), and pinning it as a Mock keeps the
+    "never read any more" assertions honest. (`customer_mapping_repo` was
+    the sibling dead param for this same never-read-any-more state -- U-314
+    dropped its backing table/class and removed the param outright, so
+    there's nothing left to inject or assert against.)
     """
     customer_service = Mock()
     customer_service.read_by_qbo_identity.return_value = direct
 
     return CustomerProjectConnector(
-        mapping_repo=Mock(),
         project_service=Mock(),
         project_address_service=Mock(),
         address_connector=Mock(),
-        customer_mapping_repo=Mock(),
         reconciliation_repo=Mock(),
         customer_service=customer_service,
         qbo_customer_repo=Mock(),
@@ -234,10 +124,10 @@ def test_resolver_direct_hit_returns_dbo_id_and_reads_no_mapping_table():
     result = connector._get_parent_customer_id("P-1", "realm-1")
 
     assert result == 42
-    # U-310: neither staging nor the mapping table is touched at all any more.
+    # U-310: staging is not touched at all any more (the mapping table itself
+    # is gone -- U-314 dropped qbo.CustomerCustomer -- so there's nothing left
+    # to assert wasn't read).
     connector.qbo_customer_repo.read_by_qbo_id.assert_not_called()
-    connector.customer_mapping_repo.read_by_qbo_customer_id.assert_not_called()
-    connector.customer_mapping_repo.read_identity_check.assert_not_called()
 
 
 def test_resolver_direct_hit_is_the_prod_steady_state_at_two_dbo_reads():
@@ -255,7 +145,6 @@ def test_resolver_direct_hit_is_the_prod_steady_state_at_two_dbo_reads():
 
     assert connector.customer_service.read_by_qbo_identity.call_count == 2
     assert connector.qbo_customer_repo.method_calls == []
-    assert connector.customer_mapping_repo.method_calls == []
 
 
 def test_resolver_direct_miss_returns_none_with_no_legacy_hop_left():
@@ -266,7 +155,6 @@ def test_resolver_direct_miss_returns_none_with_no_legacy_hop_left():
 
     assert connector._get_parent_customer_id("P-1", "realm-1") is None
     connector.qbo_customer_repo.read_by_qbo_id.assert_not_called()
-    connector.customer_mapping_repo.read_by_qbo_customer_id.assert_not_called()
     # A miss short-circuits before the verify step — nothing to verify.
     assert connector.customer_service.read_by_qbo_identity.call_count == 1
 
@@ -404,7 +292,7 @@ def test_resolver_cache_is_keyed_by_realm_too():
     assert connector.customer_service.read_by_qbo_identity.call_count == 4
 
 
-# --- Section 3: integration through sync_from_qbo_customer (truthy parent_ref_value) ---
+# --- Section 2: integration through sync_from_qbo_customer (truthy parent_ref_value) ---
 
 
 def _make_qbo_customer(**overrides):
@@ -461,7 +349,7 @@ def test_sync_writes_the_resolved_parent_on_the_dbo_identity_fast_path():
 
     Every Project that has synced even once carries dbo.Project.QboId/RealmId, so
     all 136 live job/sub-customers resolve through `run_identity_fastpath`, NOT
-    the legacy mapping-table branch the other Section-3 tests exercise. The fast
+    the legacy mapping-table branch the other Section-2 tests exercise. The fast
     path hands `customer_id` through its own `apply_fields` lambda — a separate
     call site from the legacy branch's — so without this test a change that
     stopped writing the parent on the fast path would leave the whole suite
@@ -471,13 +359,8 @@ def test_sync_writes_the_resolved_parent_on_the_dbo_identity_fast_path():
         id=10, name="Sub Unit A", description="", status="active", customer_id=None
     )
     connector = _sync_connector(direct=_parent())
-    # Header identity resolves directly -> fast path HITS ...
+    # Header identity resolves directly -> fast path HITS.
     connector.project_service.read_by_qbo_identity.return_value = project
-    # ... and the mapping table agrees, so resolve_mapping_state is CONSISTENT
-    # (qbo_customer_id must equal the QboCustomer's id, 4).
-    connector.mapping_repo.read_by_project_id.return_value = SimpleNamespace(
-        id=1, project_id=10, qbo_customer_id=4
-    )
 
     result = connector.sync_from_qbo_customer(_make_qbo_customer())
 

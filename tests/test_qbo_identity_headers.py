@@ -277,10 +277,6 @@ def test_invoice_create_mapping_identity_failure_propagates():
 
 
 def _make_project_connector():
-    mapping_repo = Mock()
-    mapping_repo.read_by_project_id.return_value = None
-    mapping_repo.read_by_qbo_customer_id.return_value = None
-    mapping_repo.create.return_value = SimpleNamespace(id=1)
     project_service = Mock()
     project_service.repo = Mock()
     # U-276: the connector tries a direct dbo-identity lookup before the
@@ -288,11 +284,9 @@ def _make_project_connector():
     # existing fallback-path assertions are unaffected.
     project_service.read_by_qbo_identity.return_value = None
     connector = CustomerProjectConnector(
-        mapping_repo=mapping_repo,
         project_service=project_service,
         project_address_service=Mock(),
         address_connector=Mock(),
-        customer_mapping_repo=Mock(),
         reconciliation_repo=Mock(),
         # U-297: never used here (every fixture sets parent_ref_value=None) —
         # injected so a truthy-parent test can't default to live-DB collaborators.
@@ -300,14 +294,15 @@ def _make_project_connector():
         qbo_customer_repo=Mock(),
     )
     connector._sync_addresses = Mock()
-    return connector, mapping_repo, project_service.repo
+    return connector, project_service.repo
 
 
 def test_project_create_mapping_stamps_dbo_identity_only():
-    """U-314-prereq: create_mapping stamps dbo.Project.QboId/RealmId ONLY — it no
-    longer writes a qbo.CustomerProject mapping row (that table is being retired in
-    U-314). dbo.Project identity is the sole store."""
-    connector, mapping_repo, project_repo = _make_project_connector()
+    """U-314: create_mapping stamps dbo.Project.QboId/RealmId ONLY — it no
+    longer writes a qbo.CustomerProject mapping row (that table + its Python
+    repo are dropped/deleted entirely in this unit). dbo.Project identity is
+    the sole store."""
+    connector, project_repo = _make_project_connector()
     connector.create_mapping(
         project_id=3,
         qbo_customer_id=4,
@@ -315,7 +310,6 @@ def test_project_create_mapping_stamps_dbo_identity_only():
         realm_id="realm-p",
     )
     project_repo.set_qbo_identity.assert_called_once_with(id=3, qbo_id="C-1", realm_id="realm-p")
-    mapping_repo.create.assert_not_called()
 
 
 # test_project_repoint_heal_stamps_identity removed U-311 -- it tested
@@ -327,7 +321,7 @@ def test_project_create_mapping_stamps_dbo_identity_only():
 
 
 def test_project_create_mapping_identity_failure_propagates():
-    connector, mapping_repo, project_repo = _make_project_connector()
+    connector, project_repo = _make_project_connector()
     project_repo.set_qbo_identity.side_effect = RuntimeError("stamp failed")
     with pytest.raises(RuntimeError, match="stamp failed"):
         connector.create_mapping(
@@ -336,7 +330,6 @@ def test_project_create_mapping_identity_failure_propagates():
             qbo_id="C-1",
             realm_id="realm-p",
         )
-    mapping_repo.create.assert_not_called()
 
 
 # test_project_ordinary_update_path_stamps_identity removed U-311 -- it

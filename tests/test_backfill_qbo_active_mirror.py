@@ -61,7 +61,7 @@ def test_apply_with_zero_pending_skips_update(mock_get_connection):
     ctx, cursor, conn = _connection_with_pending_sequence([0, 0])
     mock_get_connection.return_value = ctx
 
-    ok = backfill_entity(SPECS_BY_KEY["sub_cost_code"], apply=True)
+    ok = backfill_entity(SPECS_BY_KEY["payment_term"], apply=True)
 
     assert ok is True
     executed = [call.args[0].upper() for call in cursor.execute.call_args_list]
@@ -99,8 +99,10 @@ def test_main_returns_zero_when_all_entities_pass(mock_backfill, mock_admin):
     assert mock_backfill.call_count == len(SPECS_BY_KEY)
 
 
-def test_specs_filtered_to_exactly_the_three_active_mirror_entities():
-    """SPECS_BY_KEY is REFERENCE_ENTITY_SPECS filtered by key — guards the filter itself,
-    not the entity topology (that's covered by
-    test_qbo_identity_reference.py::test_reference_entity_specs_topology)."""
-    assert set(SPECS_BY_KEY.keys()) == {"vendor", "payment_term", "sub_cost_code"}
+def test_specs_are_exactly_vendor_and_payment_term():
+    """U-325: SPECS_BY_KEY is now built from a standalone ActiveMirrorSpec list, not a
+    filter over REFERENCE_ENTITY_SPECS — sub_cost_code was retired (its QBO-side source,
+    qbo.Item, is dropped by U-307d), and vendor/payment_term are decoupled from the
+    drift-check registry entirely so a future edit to REFERENCE_ENTITY_SPECS can't
+    silently narrow this script's coverage again."""
+    assert set(SPECS_BY_KEY.keys()) == {"vendor", "payment_term"}

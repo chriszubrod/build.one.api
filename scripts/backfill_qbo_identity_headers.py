@@ -1,6 +1,6 @@
 """
-Backfill dbo-native QBO identity columns on five header entities from existing
-qbo.* mapping + staging tables (U-238a).
+Backfill dbo-native QBO identity columns on the header entities (see
+HEADER_ENTITY_SPECS) from existing qbo.* mapping + staging tables (U-238a).
 
 SAFE BY DEFAULT: dry-run unless --apply is passed. Dry-run is READ-ONLY (SELECTs
 only) and reports pre/post-flight counts. --apply stamps identity via the
@@ -164,7 +164,7 @@ def main() -> None:
     ap = argparse.ArgumentParser(description="Backfill dbo QBO identity columns (dry-run by default).")
     ap.add_argument(
         "--entity",
-        choices=["bill", "expense", "invoice", "project", "company", "all"],
+        choices=list(ENTITY_SPECS.keys()) + ["all"],
         default="all",
     )
     ap.add_argument("--apply", action="store_true", help="Write stamps via Set*QboIdentity sprocs.")

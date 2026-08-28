@@ -91,7 +91,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="Detect dbo vs qbo identity drift (read-only).")
     ap.add_argument(
         "--entity",
-        choices=["bill", "expense", "invoice", "project", "company", "all"],
+        choices=[*(spec.key for spec in ENTITY_SPECS), "all"],
         default="all",
     )
     args = ap.parse_args()

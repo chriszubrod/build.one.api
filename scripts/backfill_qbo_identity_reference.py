@@ -1,6 +1,6 @@
 """
-Backfill dbo-native QBO identity columns on eight reference entities from existing
-qbo.* mapping + staging tables (U-238c).
+Backfill dbo-native QBO identity columns on the reference entities (see
+REFERENCE_ENTITY_SPECS) from existing qbo.* mapping + staging tables (U-238c).
 
 SAFE BY DEFAULT: dry-run unless --apply is passed. Dry-run is READ-ONLY (SELECTs
 only) and reports pre/post-flight counts plus row-level verification. --apply
@@ -9,7 +9,7 @@ qbo.* tables except Address Stage 0 (qbo.PhysicalAddress.RealmId backfill).
 
 Usage:
   PYTHONPATH=. python scripts/backfill_qbo_identity_reference.py
-  PYTHONPATH=. python scripts/backfill_qbo_identity_reference.py --entity vendor
+  PYTHONPATH=. python scripts/backfill_qbo_identity_reference.py --entity payment_term
   PYTHONPATH=. python scripts/backfill_qbo_identity_reference.py --apply --limit 100
 """
 from __future__ import annotations
@@ -404,11 +404,10 @@ def main() -> int:
         )
         all_ok = all_ok and entity_ok
 
-    run_fanout = args.entity == "all" or args.entity in {
-        "customer",
-        "cost_code",
-        "sub_cost_code",
-    }
+    # U-325: customer/cost_code/sub_cost_code (the only per-entity keys that used to
+    # trigger this alongside "all") were removed from REFERENCE_ENTITY_SPECS, so they're
+    # no longer valid --entity choices — argparse rejects them before main() ever runs.
+    run_fanout = args.entity == "all"
     fanout_ok = True
     if run_fanout:
         fanout_ok = _run_fanout_checks()

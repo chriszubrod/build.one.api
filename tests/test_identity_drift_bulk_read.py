@@ -34,13 +34,14 @@ def test_bill_and_bill_credit_specs_carry_their_access_udf():
 
 def test_other_registry_entities_are_unaffected_by_the_new_field():
     """Additive-only (Decision-1): every spec besides bill/bill_credit still
-    defaults access_udf to None — no behavior change to the other 11."""
+    defaults access_udf to None — no behavior change to the other 5."""
     untouched_keys = {
         s.key for s in (*HEADER_ENTITY_SPECS, *REFERENCE_ENTITY_SPECS)
         if s.key not in ("bill", "bill_credit")
     }
-    # 10 after U-300c-prereq removed the "attachment" reference-spec row (was 11).
-    assert len(untouched_keys) == 10
+    # 5 after U-325 removed project/vendor/customer/cost_code/sub_cost_code from the
+    # drift registry (was 10 after U-300c-prereq removed "attachment"; was 11 before that).
+    assert len(untouched_keys) == 5
     for s in (*HEADER_ENTITY_SPECS, *REFERENCE_ENTITY_SPECS):
         if s.key not in ("bill", "bill_credit"):
             assert s.access_udf is None

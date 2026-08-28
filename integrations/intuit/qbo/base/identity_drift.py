@@ -15,7 +15,9 @@ logger = logging.getLogger(__name__)
 class FlatEntitySpec:
     """One row of the flat dbo<->qbo mapping<->qbo staging topology (no line-parent hop).
 
-    Single source of truth for 13 entities across 4 backfill/drift scripts:
+    Single source of truth (currently 7 entities: 4 header + 3 reference — see
+    HEADER_ENTITY_SPECS / REFERENCE_ENTITY_SPECS below, row count trimmed over time as
+    families go dbo-native, most recently U-325) across 4 backfill/drift scripts:
     scripts/backfill_qbo_identity_headers.py, scripts/check_qbo_identity_drift_headers.py,
     scripts/backfill_qbo_identity_reference.py, and scripts/check_qbo_identity_drift_reference.py
     (U-238a transaction headers + U-238c reference entities). `dbo_table` was dropped as a
@@ -31,8 +33,8 @@ class FlatEntitySpec:
     has_sync_token: bool
     sproc: str
     # U-305: opt-in RBAC gate (the entity's own dbo.UserCanAccess<X> UDF name) for
-    # read_qbo_identity_rows_by_realm_id below. Optional + defaulted so all 13
-    # existing rows are unaffected — only entities that opt in (bill, bill_credit
+    # read_qbo_identity_rows_by_realm_id below. Optional + defaulted so every other
+    # existing row is unaffected — only entities that opt in (bill, bill_credit
     # as of U-305) get the generic bulk-identity-read function; every other spec's
     # construction and the 4 existing backfill/drift scripts are untouched.
     access_udf: Optional[str] = None
@@ -45,16 +47,20 @@ HEADER_ENTITY_SPECS: tuple[FlatEntitySpec, ...] = (
     ),
     FlatEntitySpec("expense", "Expense", "PurchaseExpense", "Purchase", "ExpenseId", "QboPurchaseId", True, "SetExpenseQboIdentity"),
     FlatEntitySpec("invoice", "Invoice", "InvoiceInvoice", "Invoice", "InvoiceId", "QboInvoiceId", True, "SetInvoiceQboIdentity"),
-    FlatEntitySpec("project", "Project", "CustomerProject", "Customer", "ProjectId", "QboCustomerId", False, "SetProjectQboIdentity"),
+    # U-325: the "project" row was removed — this family is now dbo-native only (U-314),
+    # and qbo.CustomerProject is staged for DROP. A LEFT JOIN through that table would
+    # flag every dbo-stamped row as a false orphan_dbo_value and error outright once
+    # the table is dropped.
     FlatEntitySpec("company", "Company", "CompanyInfoCompany", "CompanyInfo", "CompanyId", "QboCompanyInfoId", False, "SetCompanyQboIdentity"),
 )
 
 
 REFERENCE_ENTITY_SPECS: tuple[FlatEntitySpec, ...] = (
-    FlatEntitySpec("vendor", "Vendor", "VendorVendor", "Vendor", "VendorId", "QboVendorId", False, "SetVendorQboIdentity"),
-    FlatEntitySpec("customer", "Customer", "CustomerCustomer", "Customer", "CustomerId", "QboCustomerId", False, "SetCustomerQboIdentity"),
-    FlatEntitySpec("cost_code", "CostCode", "ItemCostCode", "Item", "CostCodeId", "QboItemId", False, "SetCostCodeQboIdentity"),
-    FlatEntitySpec("sub_cost_code", "SubCostCode", "ItemSubCostCode", "Item", "SubCostCodeId", "QboItemId", False, "SetSubCostCodeQboIdentity"),
+    # U-325: the "vendor"/"customer"/"cost_code"/"sub_cost_code" rows were removed —
+    # these families are now dbo-native only (U-314, U-307d), and qbo.VendorVendor /
+    # qbo.CustomerCustomer / qbo.ItemCostCode / qbo.ItemSubCostCode are staged for DROP.
+    # A LEFT JOIN through those tables would flag every dbo-stamped row as a false
+    # orphan_dbo_value and error outright once the tables are dropped.
     FlatEntitySpec("payment_term", "PaymentTerm", "TermPaymentTerm", "Term", "PaymentTermId", "QboTermId", False, "SetPaymentTermQboIdentity"),
     FlatEntitySpec("address", "Address", "PhysicalAddressAddress", "PhysicalAddress", "AddressId", "QboPhysicalAddressId", False, "SetAddressQboIdentity"),
     # U-300c-prereq: the "attachment" reference-drift spec row was removed — the attachable

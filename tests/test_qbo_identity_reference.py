@@ -45,42 +45,6 @@ def test_classify_qbo_identity_drift_reference_fields(
 
 
 EXPECTED_REFERENCE_SPECS = {
-    "vendor": {
-        "label": "Vendor",
-        "mapping_table": "VendorVendor",
-        "staging_table": "Vendor",
-        "dbo_fk_col": "VendorId",
-        "staging_fk_col": "QboVendorId",
-        "has_sync_token": False,
-        "sproc": "SetVendorQboIdentity",
-    },
-    "customer": {
-        "label": "Customer",
-        "mapping_table": "CustomerCustomer",
-        "staging_table": "Customer",
-        "dbo_fk_col": "CustomerId",
-        "staging_fk_col": "QboCustomerId",
-        "has_sync_token": False,
-        "sproc": "SetCustomerQboIdentity",
-    },
-    "cost_code": {
-        "label": "CostCode",
-        "mapping_table": "ItemCostCode",
-        "staging_table": "Item",
-        "dbo_fk_col": "CostCodeId",
-        "staging_fk_col": "QboItemId",
-        "has_sync_token": False,
-        "sproc": "SetCostCodeQboIdentity",
-    },
-    "sub_cost_code": {
-        "label": "SubCostCode",
-        "mapping_table": "ItemSubCostCode",
-        "staging_table": "Item",
-        "dbo_fk_col": "SubCostCodeId",
-        "staging_fk_col": "QboItemId",
-        "has_sync_token": False,
-        "sproc": "SetSubCostCodeQboIdentity",
-    },
     "payment_term": {
         "label": "PaymentTerm",
         "mapping_table": "TermPaymentTerm",
@@ -484,7 +448,7 @@ def test_address_sync_does_not_overwrite_identity_on_shared_street_city_cannot_r
 @patch("scripts.backfill_qbo_identity_reference.assert_cli_system_admin")
 @patch("scripts.backfill_qbo_identity_reference.backfill_entity", return_value=False)
 def test_backfill_main_returns_nonzero_on_entity_verification_failure(mock_backfill, mock_admin):
-    with patch("sys.argv", ["backfill_qbo_identity_reference.py", "--entity", "vendor"]):
+    with patch("sys.argv", ["backfill_qbo_identity_reference.py", "--entity", "payment_term"]):
         assert backfill_main() == 1
     mock_backfill.assert_called_once()
 

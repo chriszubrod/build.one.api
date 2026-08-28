@@ -124,7 +124,7 @@ def sync_qbo_company_info() -> dict:
                 logger.info(f"Successfully synced to Company module. Company ID: {company.id}")
             except Exception as e:
                 outcome.record_projection_error(
-                    company_info.id, e, label="QboCompanyInfo->Company", logger=logger
+                    company_info.qbo_id, e, label="QboCompanyInfo->Company", logger=logger
                 )
         else:
             logger.warning("CompanyInfo sync completed but no ID found. Skipping Company module sync.")

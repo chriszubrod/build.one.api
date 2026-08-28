@@ -34,10 +34,8 @@ from integrations.intuit.qbo.base.sync_outcome import SyncOutcome
 from integrations.intuit.qbo.base import watermark as watermark_module
 from integrations.intuit.qbo.base.watermark import (
     WatermarkRun,
-    _QboSyncEntityMeta,
     _held_duration,
     _normalize_watermark_value,
-    _resolve_staging_qbo_id,
     _watermark_hold_bound_seconds,
     _watermark_overlap_seconds,
 )
@@ -727,7 +725,7 @@ def test_force_advance_with_future_end_date_also_clamps():
 
 
 @contextlib.contextmanager
-def _patch_bound_forced_advance_deps(*, realm_id="realm-1", resolved_qbo_id=None):
+def _patch_bound_forced_advance_deps(*, realm_id="realm-1"):
     """
     Patch _record_bound_forced_advance's lazy-imported dependencies at their origin modules
     (function-local `from X import Y` re-resolves via sys.modules[X].Y at call time, so
@@ -745,12 +743,6 @@ def _patch_bound_forced_advance_deps(*, realm_id="realm-1", resolved_qbo_id=None
         stack.enter_context(patch("integrations.intuit.qbo.auth.business.service.QboAuthService", mock_auth_service))
         stack.enter_context(patch("integrations.intuit.qbo.reconciliation.persistence.repo.ReconciliationIssueRepository", Mock()))
         stack.enter_context(patch("integrations.intuit.qbo.base.reconciliation_recorder.record_mapping_issue", side_effect=_fake_record_mapping_issue))
-        stack.enter_context(
-            patch(
-                "integrations.intuit.qbo.base.watermark._resolve_staging_qbo_id",
-                return_value=resolved_qbo_id,
-            )
-        )
         yield recorded
 
 
@@ -764,18 +756,17 @@ def test_commit_holding_outcome_past_bound_force_advances_and_records_issues():
     fake = FakeSyncService([_make_sync(hold_started_datetime=past_bound_hold)])
     run = _opened_run(fake)
     outcome = SyncOutcome.for_service_pull()
-    outcome.record_projection_failure("42")   # internal staging PK
+    outcome.record_projection_failure("42")   # real QBO id (recorded at face value)
     outcome.record_staging_failure("QB-99")   # real QBO id
 
-    with _patch_bound_forced_advance_deps(resolved_qbo_id=None) as recorded:
+    with _patch_bound_forced_advance_deps() as recorded:
         result = run.commit(outcome)
 
     assert len(fake.updates) == 1
     assert result.last_sync_datetime == run.watermark_value
     assert len(recorded) == 2  # one critical issue per blocking id (1 staging + 1 projection)
     by_qbo_id = {kwargs["qbo_id"] for kwargs in recorded}
-    assert "QB-99" in by_qbo_id            # staging_failed_ids recorded at face value
-    assert None in by_qbo_id               # projection_failed_ids: resolver mocked to miss
+    assert by_qbo_id == {"QB-99", "42"}
     assert all(kwargs["severity"] == "critical" for kwargs in recorded)
     assert all(kwargs["drift_type"] == "watermark_hold_bound_exceeded" for kwargs in recorded)
 
@@ -814,41 +805,19 @@ def test_commit_holding_outcome_one_second_under_bound_does_not_force_advance():
     assert result is run.sync_record
 
 
-def test_commit_holding_outcome_past_bound_resolves_real_qbo_id_for_projection_failure():
-    """The staging-repo resolver, when it hits, must supply the real id — not just the PK."""
+def test_commit_holding_outcome_past_bound_projection_failure_recorded_at_face_value():
+    """projection_failed_ids are recorded at face value with no staging-PK resolve step."""
     past_bound_hold = PAST_BOUND_HOLD
-    fake = FakeSyncService([_make_sync(hold_started_datetime=past_bound_hold)])
-    run = _opened_run(fake)
+    fake = FakeSyncService([_make_sync(hold_started_datetime=past_bound_hold, entity="bill")])
+    run = _opened_run(fake, entity="bill")
     outcome = SyncOutcome.for_service_pull()
-    outcome.record_projection_failure("42")
+    outcome.record_projection_failure("QBO-B-42")
 
-    with _patch_bound_forced_advance_deps(resolved_qbo_id="QB-resolved-42") as recorded:
+    with _patch_bound_forced_advance_deps() as recorded:
         run.commit(outcome)
 
     assert len(recorded) == 1
-    assert recorded[0]["qbo_id"] == "QB-resolved-42"
-
-
-def test_commit_holding_outcome_past_bound_item_projection_failure_uses_id_directly():
-    """U-307c Codex P2 fix: item's projection_failed_ids already carry the real
-    QBO id (no qbo.Item staging PK exists to resolve from) — must be recorded
-    at face value, NOT run through _resolve_staging_qbo_id (which would always
-    miss for item since its registry row carries no staging_repo, silently
-    losing a QboId the caller already had in hand)."""
-    past_bound_hold = PAST_BOUND_HOLD
-    fake = FakeSyncService([_make_sync(hold_started_datetime=past_bound_hold, entity="item")])
-    run = _opened_run(fake, entity="item")
-    outcome = SyncOutcome.for_service_pull()
-    outcome.record_projection_failure("QBO-I-42")  # already the real qbo_id, not a staging PK
-
-    with _patch_bound_forced_advance_deps() as recorded, patch(
-        "integrations.intuit.qbo.base.watermark._resolve_staging_qbo_id"
-    ) as mock_resolve:
-        run.commit(outcome)
-
-    mock_resolve.assert_not_called()
-    assert len(recorded) == 1
-    assert recorded[0]["qbo_id"] == "QBO-I-42"
+    assert recorded[0]["qbo_id"] == "QBO-B-42"
     assert "internal staging id" not in recorded[0]["details"]
 
 
@@ -926,42 +895,6 @@ def test_held_duration_reads_hold_started_datetime():
 def test_held_duration_none_when_anchor_unparseable():
     sync_record = _make_sync(hold_started_datetime="garbage")
     assert _held_duration(sync_record, datetime.now(timezone.utc)) is None
-
-
-def test_resolve_staging_qbo_id_none_for_entity_with_no_staging_repo():
-    """reimburse_charge has no read_by_id on its staging repo — must miss cleanly, not raise."""
-    assert _resolve_staging_qbo_id("reimburse_charge", 42) is None
-
-
-def test_resolve_staging_qbo_id_none_for_item_dbo_only_repoint():
-    """U-307c: qbo.Item is transient (never persisted) — item's registry entry
-    carries no staging_repo (same shape as reimburse_charge), so a projection
-    failure's id (now the real qbo_id passed directly by the sync script, not
-    a staging PK) resolves to no *additional* lookup rather than a wrong one."""
-    assert _resolve_staging_qbo_id("item", "QBO-I-99") is None
-
-
-def test_resolve_staging_qbo_id_resolves_via_the_entity_staging_repo(monkeypatch):
-    # _QBO_SYNC_ENTITY_META holds a direct class reference captured at sync_helper's import
-    # time, not a by-name lookup — patch the registry entry itself, not the origin module.
-    fake_row = SimpleNamespace(qbo_id="QB-real-id")
-    mock_repo_cls = Mock(return_value=Mock(read_by_id=Mock(return_value=fake_row)))
-    monkeypatch.setitem(
-        watermark_module._QBO_SYNC_ENTITY_META,
-        "bill",
-        _QboSyncEntityMeta(label="Bill", staging_repo=mock_repo_cls),
-    )
-    assert _resolve_staging_qbo_id("bill", 42) == "QB-real-id"
-
-
-def test_resolve_staging_qbo_id_none_when_repo_lookup_raises(monkeypatch):
-    mock_repo_cls = Mock(return_value=Mock(read_by_id=Mock(side_effect=RuntimeError("db down"))))
-    monkeypatch.setitem(
-        watermark_module._QBO_SYNC_ENTITY_META,
-        "bill",
-        _QboSyncEntityMeta(label="Bill", staging_repo=mock_repo_cls),
-    )
-    assert _resolve_staging_qbo_id("bill", 42) is None
 
 
 def test_commit_skips_only_outcome_advances_watermark_normally():

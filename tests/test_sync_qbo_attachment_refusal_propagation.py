@@ -172,7 +172,7 @@ def test_purchase_attachment_refusal_holds_watermark(error_factory):
     error = error_factory()
     result, outcome, purchase = _run_purchase_sync_with_attachment_error(error)
     assert outcome.projected_count == 1
-    assert str(purchase.id) in outcome.projection_failed_ids
+    assert str(purchase.qbo_id) in outcome.projection_failed_ids
     assert outcome.should_hold is True
     assert result["expenses_module_synced"] == 1
 
@@ -186,7 +186,7 @@ def test_vendorcredit_attachment_refusal_holds_watermark(error_factory):
     error = error_factory()
     result, outcome, vendor_credit = _run_vendorcredit_sync_with_attachment_error(error)
     assert outcome.projected_count == 1
-    assert str(vendor_credit.id) in outcome.projection_failed_ids
+    assert str(vendor_credit.qbo_id) in outcome.projection_failed_ids
     assert outcome.should_hold is True
     assert result["vendor_credits_synced"] == 1
 

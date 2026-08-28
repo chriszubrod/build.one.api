@@ -380,7 +380,7 @@ def sync_qbo_to_local(
                 except Exception as att_e:
                     logger.error(f"Failed to sync attachments for Bill {bill.qbo_id}: {att_e}")
         except Exception as e:
-            outcome.record_projection_error(bill.id, e, label="QboBill->Bill", logger=logger)
+            outcome.record_projection_error(bill.qbo_id, e, label="QboBill->Bill", logger=logger)
 
         # Add delay between batches to keep connection alive
         pace_batch(i, len(bills), logger, "bills")

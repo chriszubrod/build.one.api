@@ -227,7 +227,7 @@ def sync_qbo_to_local(
             logger.info(f"Synced QboInvoice {invoice.id} to Invoice {invoice_module.id} ({i + 1}/{len(invoices)})")
         except Exception as e:
             outcome.record_projection_error(
-                invoice.id, e, label="QboInvoice->Invoice", logger=logger
+                invoice.qbo_id, e, label="QboInvoice->Invoice", logger=logger
             )
 
         pace_batch(i, len(invoices), logger, "invoices")

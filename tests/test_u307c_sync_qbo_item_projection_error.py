@@ -93,12 +93,3 @@ def test_child_item_projection_failure_records_real_qbo_id_not_staging_pk():
 
     assert returned_outcome.projection_failed_ids == ["ITEM-CHILD-1"]
     assert "None" not in returned_outcome.failure_reasons
-
-
-def test_watermark_registry_item_entry_has_no_staging_repo():
-    """Companion assertion to watermark.py's own tests: item's registry row
-    carries no staging_repo (dropped alongside the qbo.Item transient-ification),
-    matching reimburse_charge's shape -- see test_qbo_watermark_runner.py."""
-    from integrations.intuit.qbo.base.watermark import _QBO_SYNC_ENTITY_META
-
-    assert _QBO_SYNC_ENTITY_META["item"].staging_repo is None

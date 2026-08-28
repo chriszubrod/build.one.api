@@ -130,7 +130,7 @@ def test_attachment_sync_budget_exceeded_holds_watermark():
     error = _budget_error()
     result, outcome, bill = _run_sync_with_attachment_error(error)
     assert outcome.projected_count == 1
-    assert str(bill.id) in outcome.projection_failed_ids
+    assert str(bill.qbo_id) in outcome.projection_failed_ids
     assert outcome.should_hold is True
     assert result["bills_module_synced"] == 1
 
@@ -139,7 +139,7 @@ def test_attachment_sync_write_refused_holds_watermark():
     error = _write_refused_error()
     result, outcome, bill = _run_sync_with_attachment_error(error)
     assert outcome.projected_count == 1
-    assert str(bill.id) in outcome.projection_failed_ids
+    assert str(bill.qbo_id) in outcome.projection_failed_ids
     assert outcome.should_hold is True
     assert result["bills_module_synced"] == 1
 

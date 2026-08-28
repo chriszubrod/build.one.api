@@ -99,7 +99,7 @@ def sync_qbo_to_local(
             logger.info(f"Synced QboCustomer {customer.id} to Customer {customer_module.id}")
         except Exception as e:
             outcome.record_projection_error(
-                customer.id, e, label="QboCustomer->Customer", logger=logger
+                customer.qbo_id, e, label="QboCustomer->Customer", logger=logger
             )
         
         # Add delay between batches to keep connection alive
@@ -122,7 +122,7 @@ def sync_qbo_to_local(
             logger.info(f"Synced QboCustomer {customer.id} to Project {project.id}")
         except Exception as e:
             outcome.record_projection_error(
-                customer.id, e, label="QboCustomer->Project", logger=logger
+                customer.qbo_id, e, label="QboCustomer->Project", logger=logger
             )
         
         # Add delay between batches to keep connection alive

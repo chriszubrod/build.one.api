@@ -219,9 +219,6 @@ def test_record_bound_forced_advance_details_include_failure_reasons():
                 side_effect=_fake_record_mapping_issue,
             )
         )
-        stack.enter_context(
-            patch.object(watermark_module, "_resolve_staging_qbo_id", return_value="QB-proj")
-        )
         run = WatermarkRun(
             sync_service=Mock(),
             provider="qbo",
@@ -240,6 +237,6 @@ def test_record_bound_forced_advance_details_include_failure_reasons():
 
     assert len(recorded) == 2
     staging_details = next(r["details"] for r in recorded if r["qbo_id"] == "QB-staging")
-    projection_details = next(r["details"] for r in recorded if r["qbo_id"] == "QB-proj")
+    projection_details = next(r["details"] for r in recorded if r["qbo_id"] == "7")
     assert "VendorCredit upsert returned no row" in staging_details
     assert "sync_from_qbo_vendor_credit returned no BillCredit row" in projection_details

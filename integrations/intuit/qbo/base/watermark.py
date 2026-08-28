@@ -1,13 +1,11 @@
 # Python Standard Library Imports
 import logging
-from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Dict, Optional
 
 # Third-party Imports
 
 # Local Imports
-from integrations.intuit.qbo.account.persistence.repo import QboAccountRepository
 from integrations.intuit.qbo.base.sync_outcome import (
     DEFAULT_FAILURE_REASON,
     FAILURE_REASON_PROJECTION,
@@ -15,14 +13,6 @@ from integrations.intuit.qbo.base.sync_outcome import (
     SyncOutcome,
     failure_reason_key,
 )
-from integrations.intuit.qbo.bill.persistence.repo import QboBillRepository
-from integrations.intuit.qbo.company_info.persistence.repo import QboCompanyInfoRepository
-from integrations.intuit.qbo.customer.persistence.repo import QboCustomerRepository
-from integrations.intuit.qbo.invoice.persistence.repo import QboInvoiceRepository
-from integrations.intuit.qbo.purchase.persistence.repo import QboPurchaseRepository
-from integrations.intuit.qbo.term.persistence.repo import QboTermRepository
-from integrations.intuit.qbo.vendor.persistence.repo import QboVendorRepository
-from integrations.intuit.qbo.vendorcredit.persistence.repo import QboVendorCreditRepository
 from integrations.sync.business.model import Sync
 from integrations.sync.business.service import SyncService
 from integrations.sync.persistence.repo import _parse_sync_last_sync
@@ -103,68 +93,23 @@ def _held_duration(sync_record: Sync, now: datetime) -> Optional[timedelta]:
     return now - anchor
 
 
-@dataclass(frozen=True)
-class _QboSyncEntityMeta:
-    # Capitalized display form for qbo.ReconciliationIssue.EntityType, matching every other
-    # writer of that column's convention ("Bill", "VendorCredit", ...).
-    label: str
-    # Staging repo exposing read_by_id(id) -> Optional[QboX] with a .qbo_id field, used to
-    # resolve a projection failure's internal staging PK back to the real QBO id. None when the
-    # entity's repo doesn't expose read_by_id (reimburse_charge — only read_by_realm_id /
-    # read_by_qbo_id_and_realm_id) — resolution falls back to no-id for it.
-    staging_repo: Optional[type] = None
-    # True when this entity's sync script already passes the real QBO id (not an
-    # internal staging PK) to record_projection_error — e.g. item (U-307c), whose
-    # qbo.Item staging table is transient/never persisted, so there is no PK to
-    # resolve. _record_bound_forced_advance treats projection_failed_ids as
-    # already-real ids for such an entity, skipping the staging-repo resolve step
-    # entirely (mirrors how staging_failed_ids are already recorded at face value).
-    projection_ids_are_qbo_ids: bool = False
-
-
 # Every scripts/sync_qbo_*.py sets its lowercase `entity = '...'` verbatim as WatermarkRun's 4th
 # constructor arg. One registry per entity (mirrors integrations/intuit/qbo/base/field_ownership.py's
 # _REGISTRY pattern) rather than parallel dicts, so a future entity can't drift out of sync between
 # its display label and its staging-repo lookup.
-_QBO_SYNC_ENTITY_META: Dict[str, _QboSyncEntityMeta] = {
-    "bill": _QboSyncEntityMeta("Bill", QboBillRepository),
-    "purchase": _QboSyncEntityMeta("Purchase", QboPurchaseRepository),
-    "invoice": _QboSyncEntityMeta("Invoice", QboInvoiceRepository),
-    "vendorcredit": _QboSyncEntityMeta("VendorCredit", QboVendorCreditRepository),
-    "vendor": _QboSyncEntityMeta("Vendor", QboVendorRepository),
-    "customer": _QboSyncEntityMeta("Customer", QboCustomerRepository),
-    # U-307c: no staging repo -- qbo.Item is transient (never persisted) since
-    # QboItemService._upsert_item's pull-side repoint, so record_projection_error
-    # is now called with the real qbo_id directly instead of a staging PK to
-    # resolve (projection_ids_are_qbo_ids=True — no other family does this today).
-    "item": _QboSyncEntityMeta("Item", projection_ids_are_qbo_ids=True),
-    "account": _QboSyncEntityMeta("Account", QboAccountRepository),
-    "term": _QboSyncEntityMeta("Term", QboTermRepository),
-    "company_info": _QboSyncEntityMeta("CompanyInfo", QboCompanyInfoRepository),
-    "reimburse_charge": _QboSyncEntityMeta("ReimburseCharge"),
+_QBO_SYNC_ENTITY_META: Dict[str, str] = {
+    "bill": "Bill",
+    "purchase": "Purchase",
+    "invoice": "Invoice",
+    "vendorcredit": "VendorCredit",
+    "vendor": "Vendor",
+    "customer": "Customer",
+    "item": "Item",
+    "account": "Account",
+    "term": "Term",
+    "company_info": "CompanyInfo",
+    "reimburse_charge": "ReimburseCharge",
 }
-
-
-def _resolve_staging_qbo_id(entity: str, staging_pk) -> Optional[str]:
-    """
-    Best-effort resolve a projection failure's internal staging PK back to the real QBO id, via
-    the entity's own staging repo (10 of 11 sync entities expose read_by_id(id).qbo_id;
-    reimburse_charge does not — see _QBO_SYNC_ENTITY_META). Failure-isolated: any lookup problem
-    returns None rather than raising — this is a readability nice-to-have for a reconciliation
-    issue, not load-bearing for the force-advance itself.
-    """
-    meta = _QBO_SYNC_ENTITY_META.get(entity)
-    if meta is None or meta.staging_repo is None:
-        return None
-    try:
-        row = meta.staging_repo().read_by_id(staging_pk)
-        return row.qbo_id if row else None
-    except Exception:
-        logger.exception(
-            "Could not resolve real QBO id for %s staging id=%s; recording without it",
-            entity, staging_pk,
-        )
-        return None
 
 
 class WatermarkRun:
@@ -401,8 +346,8 @@ class WatermarkRun:
                 return
 
             held_label = str(held)
-            meta = _QBO_SYNC_ENTITY_META.get(self.entity)
-            entity_type = meta.label if meta else self.entity
+            label = _QBO_SYNC_ENTITY_META.get(self.entity)
+            entity_type = label if label else self.entity
             repo = ReconciliationIssueRepository()
 
             def _record(qbo_id: Optional[str], details: str) -> None:
@@ -426,51 +371,20 @@ class WatermarkRun:
                     f"qbo_missing_locally detector."
                 ))
 
-            # projection_failed_ids do NOT carry the real QBO id for most entities — every
-            # sync_qbo_*.py projection loop calls record_projection_error(<local_obj>.id, ...)
-            # where <local_obj> is the internal qbo.<Entity> staging-table row, so .id is the
-            # staging PK, not .qbo_id (see scripts/sync_qbo_bill.py's own comment:
-            # "failed_bill_ids: qbo.Bill staging PKs; staging_failed_qbo_ids: QBO API Ids").
-            # Resolve the real id via the staging repo (works for 9 of 11 entities;
-            # reimburse_charge and any lookup failure fall back to None, labeled honestly in
-            # details) rather than recording the staging PK as if it were a QBO id —
-            # qbo.ReconciliationIssue.QboId is documented as "QBO entity id". item (U-307c) is
-            # the one entity whose projection_failed_ids already ARE real QBO ids (no staging
-            # PK exists to resolve from) — projection_ids_are_qbo_ids skips the resolve step
-            # for it entirely, mirroring staging_failed_ids' own face-value recording above.
-            projection_ids_are_qbo_ids = bool(meta and meta.projection_ids_are_qbo_ids)
-            for staging_pk in outcome.projection_failed_ids:
-                resolved_qbo_id = (
-                    staging_pk if projection_ids_are_qbo_ids
-                    else _resolve_staging_qbo_id(self.entity, staging_pk)
-                )
+            # projection_failed_ids now carry the real QBO id too, recorded at face value — every
+            # sync_qbo_*.py projection loop passes <local_obj>.qbo_id (not the internal staging PK)
+            # to record_projection_error as of this unit; see docs/design/watermark-qboid-projection.md.
+            for qbo_id in outcome.projection_failed_ids:
                 reason = outcome.failure_reasons.get(
-                    failure_reason_key(FAILURE_REASON_PROJECTION, staging_pk),
+                    failure_reason_key(FAILURE_REASON_PROJECTION, qbo_id),
                     DEFAULT_FAILURE_REASON,
                 )
-                if resolved_qbo_id is not None:
-                    detail = (
-                        f"projection failed for qbo_id={resolved_qbo_id} (reason: {reason})"
-                        if projection_ids_are_qbo_ids
-                        else (
-                            f"projection failed for qbo_id={resolved_qbo_id} (internal staging "
-                            f"id={staging_pk}, reason: {reason})"
-                        )
-                    )
-                    _record(resolved_qbo_id, (
-                        f"QBO sync watermark hold bound exceeded for entity {self.entity}: "
-                        f"{detail} held for {held_label}; watermark force-advanced past it. "
-                        f"Follow up via the QBO reconcile qbo_missing_locally detector."
-                    ))
-                else:
-                    _record(None, (
-                        f"QBO sync watermark hold bound exceeded for entity {self.entity}: "
-                        f"projection failed for internal qbo.{self.entity} staging id="
-                        f"{staging_pk} (could not resolve the real QBO id, reason: {reason}) held for "
-                        f"{held_label}; watermark force-advanced past it. Look up the staging "
-                        f"row by this id to find the real QBO id, then follow up via the QBO "
-                        f"reconcile qbo_missing_locally detector."
-                    ))
+                _record(qbo_id, (
+                    f"QBO sync watermark hold bound exceeded for entity {self.entity}: projection "
+                    f"qbo_id={qbo_id} failed ({reason}); held for {held_label}; "
+                    f"watermark force-advanced past it. Follow up via the QBO reconcile "
+                    f"qbo_missing_locally detector."
+                ))
         except Exception:
             logger.exception(
                 "Failed to record watermark_hold_bound_exceeded reconciliation issues; "
@@ -526,14 +440,13 @@ class WatermarkRun:
             bound = timedelta(seconds=_watermark_hold_bound_seconds())
             if held is not None and held >= bound:
                 self._record_bound_forced_advance(outcome, held)
-                # NOT all "qbo ids": projection_failed_ids are internal staging PKs, only
-                # staging_failed_ids are real QBO ids (see _record_bound_forced_advance, which
-                # resolves and records the two separately). Logged apart here for the same
-                # reason — an on-call engineer greping this log must not treat a staging PK as
-                # a searchable QBO id.
+                # Both lists are real QBO ids as of this unit (see _record_bound_forced_advance,
+                # which now records projection_failed_ids at face value, same as
+                # staging_failed_ids) — logged under distinct labels so an on-call engineer can
+                # still tell which failure tier (projection vs staging) each id came from.
                 logger.error(
                     "qbo.sync.watermark.bound_forced_advance entity=%s held_for=%s "
-                    "blocking_staging_ids=%s blocking_qbo_ids=%s",
+                    "blocking_projection_qbo_ids=%s blocking_staging_qbo_ids=%s",
                     self.entity,
                     held,
                     outcome.projection_failed_ids,

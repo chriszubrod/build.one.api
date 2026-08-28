@@ -98,7 +98,7 @@ def sync_qbo_to_local(
             logger.info(f"Synced QboTerm {term.id} to PaymentTerm {payment_term.id}")
         except Exception as e:
             outcome.record_projection_error(
-                term.id, e, label="QboTerm->PaymentTerm", logger=logger
+                term.qbo_id, e, label="QboTerm->PaymentTerm", logger=logger
             )
         
         # Add delay between batches to keep connection alive
@@ -170,7 +170,7 @@ def sync_existing_terms_to_payment_terms(
             logger.info(f"Synced QboTerm {term.id} ({term.name}) to PaymentTerm {payment_term.id}")
         except Exception as e:
             outcome.record_projection_error(
-                term.id, e, label="QboTerm->PaymentTerm", logger=logger
+                term.qbo_id, e, label="QboTerm->PaymentTerm", logger=logger
             )
         
         # Add delay between batches to keep connection alive

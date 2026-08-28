@@ -318,13 +318,13 @@ def sync_qbo_to_local(
                     f"QboVendorCredit {vendor_credit.id}: projection returned no BillCredit row"
                 )
                 outcome.record_projection_failure(
-                    vendor_credit.id,
+                    vendor_credit.qbo_id,
                     "sync_from_qbo_vendor_credit returned no BillCredit row",
                 )
 
         except Exception as e:
             outcome.record_projection_error(
-                vendor_credit.id, e, label="QboVendorCredit->BillCredit", logger=logger
+                vendor_credit.qbo_id, e, label="QboVendorCredit->BillCredit", logger=logger
             )
 
         # Add delay between batches to keep connection alive

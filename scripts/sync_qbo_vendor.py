@@ -89,7 +89,7 @@ def sync_qbo_to_local(
             logger.info(f"Synced QboVendor {vendor.id} to Vendor {vendor_module.id}")
         except Exception as e:
             outcome.record_projection_error(
-                vendor.id, e, label="QboVendor->Vendor", logger=logger
+                vendor.qbo_id, e, label="QboVendor->Vendor", logger=logger
             )
         
         # Add delay between batches to keep connection alive

@@ -237,7 +237,7 @@ def sync_qbo_to_local(
 
         except Exception as e:
             outcome.record_projection_error(
-                purchase.id, e, label="QboPurchase->Expense", logger=logger
+                purchase.qbo_id, e, label="QboPurchase->Expense", logger=logger
             )
 
         # Add delay between batches to keep connection alive

@@ -12,9 +12,11 @@ from integrations.intuit.qbo.base.field_ownership import (
     preserve_human_edited_name,
     raise_if_inactive_unmapped,
 )
-from integrations.intuit.qbo.base.identity_fastpath import run_identity_fastpath_dbo_only
+from integrations.intuit.qbo.base.identity_fastpath import (
+    run_identity_fastpath_dbo_only,
+    stamp_dbo_identity_with_lock,
+)
 from integrations.intuit.qbo.base.ids import coerce_id
-from integrations.intuit.qbo.base.locking import qbo_app_lock
 from integrations.intuit.qbo.base.reconciliation_recorder import record_mapping_issue
 from entities.vendor.business.service import VendorService
 from entities.vendor.business.model import Vendor
@@ -131,13 +133,25 @@ class VendorVendorConnector:
         The MISS branch (`_stamp_vendor_identity`) stamps the real identity
         including Active itself, so it does not call this method a second
         time for that.
+
+        Returns `None` on a ROWVERSION-race/concurrent-delete `update_by_id`
+        miss instead of raising directly (U-316) -- `run_identity_fastpath_
+        dbo_only`'s own `_apply()` already raises `raise_concurrent_write_race`
+        unconditionally whenever `apply_fields` returns `None` (UpdateVendorById,
+        U-330, now signals that miss via an empty result set instead of a
+        raised SQL error), so this method staying silent on a miss keeps that
+        single raise as the ONE place the guarantee lives -- mirrors
+        `ProjectCustomerConnector._apply_project_fields_and_sync`.
         """
         resolved_name = preserve_human_edited_name(vendor.name, incoming_name)
         # Nothing to fill an empty name FROM when QBO supplied no DisplayName; [Name] is NOT NULL
         # and unguarded in UpdateVendorById, so a blank write is either SQL 515 or silent data loss.
         if resolved_name and resolved_name != vendor.name:
             vendor.name = resolved_name
-            vendor = self.vendor_service.repo.update_by_id(vendor)
+            updated = self.vendor_service.repo.update_by_id(vendor)
+            if updated is None:
+                return None
+            vendor = updated
             logger.info(
                 f"Filled Vendor {vendor.id} name from QBO DisplayName "
                 f"(was empty or whitespace-only)"
@@ -246,49 +260,44 @@ class VendorVendorConnector:
 
     def _stamp_vendor_identity(self, candidate: Vendor, qbo_vendor: QboVendor) -> Optional[Vendor]:
         """
-        `stamp_identity` for the dbo-only fast path's MISS branch (U-313).
+        `stamp_identity` for the dbo-only fast path's MISS branch (U-313),
+        delegating the row-scoped lock + theft-guard + write sequence to the
+        shared `stamp_dbo_identity_with_lock` (U-328/U-331 —
+        `docs/design/stamp-lock-helper.md`) — see that function's own
+        docstring for why a SECOND lock, keyed on the CANDIDATE's vendor_id,
+        is needed here: `_resolve_vendor_candidate` binds by NAME (a
+        side-channel business key), so two different QboVendors (different
+        qbo_ids — no contention on the qbo_id-keyed lock upstream) could
+        name-match onto the SAME local Vendor concurrently.
 
-        Runs under its own app lock keyed on the CANDIDATE's vendor_id --
-        NOT `run_identity_fastpath_dbo_only`'s own create lock, which is keyed
-        on the qbo_id/realm_id being resolved. `_resolve_vendor_candidate`
-        binds by NAME (a side-channel business key), so two different
-        QboVendors (different qbo_ids -- no contention on the qbo_id-keyed
-        lock upstream) could name-match onto the SAME local Vendor
-        concurrently. Re-reads immediately before stamping and refuses to
-        overwrite a DIFFERENT existing identity. Mirrors
-        `AttachableAttachmentConnector._stamp_pulled_identity` (U-300b) /
-        `ItemCostCodeConnector._stamp_cost_code_identity` (U-307c) /
-        `CustomerCustomerConnector._stamp_customer_identity` (U-310) -- same
-        side-channel-candidate race, same fix.
-
-        Unlike Customer, Vendor has no other QBO-derived fields to (re-)apply
-        here -- name is this family's only mapped field, and by construction
-        it already matches exactly on the adopt path (`read_by_name` found an
-        exact string match) or was just set correctly by `.create()` on the
-        genuine-new path, so there is nothing to write beyond the identity
-        stamp itself (including Active, U-275) and the address sync.
+        No `apply_fields` — unlike Customer, Vendor has no other QBO-derived
+        field to (re-)apply here; name is this family's only mapped field,
+        and by construction it already matches exactly on the adopt path
+        (`read_by_name` found an exact string match) or was just set
+        correctly by `.create()` on the genuine-new path. `write_identity`
+        stamps the identity (including Active, U-275) and syncs addresses in
+        one same-lock step. `on_conflict` keeps only the reconciliation-
+        recording half of the former `_check_no_conflicting_vendor_identity`
+        call — the raise itself now lives in the shared helper.
         """
-        candidate_id = coerce_id(candidate.id)
-        lock_resource = f"qbo_dbo_identity_stamp:Vendor:{candidate_id}"
-        with qbo_app_lock(lock_resource) as got_lock:
-            if not got_lock:
-                raise RuntimeError(
-                    f"Could not acquire identity-stamp lock for Vendor {candidate_id} "
-                    f"(qbo_id={qbo_vendor.qbo_id}, realm_id={qbo_vendor.realm_id}) — holding "
-                    f"for retry without stamping."
-                )
-            current = self.vendor_service.read_by_id(candidate_id)
-            if current is None:
-                return None
-            self._check_no_conflicting_vendor_identity(current, qbo_vendor)
+        def _write_identity(c: Vendor) -> None:
             self.vendor_service.repo.set_qbo_identity(
-                id=candidate_id,
-                qbo_id=qbo_vendor.qbo_id,
-                realm_id=qbo_vendor.realm_id,
-                active=qbo_vendor.active,
+                id=c.id, qbo_id=qbo_vendor.qbo_id, realm_id=qbo_vendor.realm_id, active=qbo_vendor.active,
             )
-            self._sync_addresses(qbo_vendor, candidate_id)
-            return self.vendor_service.read_by_id(candidate_id)
+            self._sync_addresses(qbo_vendor, c.id)
+
+        candidate_id = coerce_id(candidate.id)
+        return stamp_dbo_identity_with_lock(
+            candidate_id=candidate_id,
+            entity_label="Vendor",
+            qbo_id=qbo_vendor.qbo_id,
+            realm_id=qbo_vendor.realm_id,
+            read_by_id=self.vendor_service.read_by_id,
+            write_identity=_write_identity,
+            on_conflict=lambda c: self._raise_duplicate_qbo_vendor_issue(
+                qbo_vendor=qbo_vendor, local_vendor=c, existing_qbo_id=c.qbo_id,
+            ),
+        )
 
     def _check_no_conflicting_vendor_identity(
         self, local_vendor: Vendor, qbo_vendor: QboVendor,

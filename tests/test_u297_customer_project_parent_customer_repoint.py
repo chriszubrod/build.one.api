@@ -48,9 +48,10 @@ from conftest import mock_qbo_app_lock_granted
 # they target (Section 1/2, on `_get_parent_customer_id` directly, need none
 # of this -- that resolver takes no lock at all).
 FASTPATH_LOCK_TARGET = "integrations.intuit.qbo.base.identity_fastpath.qbo_app_lock"
-PROJECT_STAMP_LOCK_TARGET = (
-    "integrations.intuit.qbo.customer.connector.project.business.service.qbo_app_lock"
-)
+# _stamp_project_identity's own lock now lives in the shared
+# stamp_dbo_identity_with_lock (U-328/U-331) inside identity_fastpath.py --
+# same target as the create lock above, not a separate connector-module import.
+PROJECT_STAMP_LOCK_TARGET = FASTPATH_LOCK_TARGET
 
 
 @contextmanager

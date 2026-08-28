@@ -155,7 +155,10 @@ def test_vendor_service_read_by_qbo_identity_is_bare_passthrough():
 
 VENDOR_MODULE = "integrations.intuit.qbo.vendor.connector.vendor.business.service"
 FASTPATH_LOCK_TARGET = "integrations.intuit.qbo.base.identity_fastpath.qbo_app_lock"
-STAMP_LOCK_TARGET = f"{VENDOR_MODULE}.qbo_app_lock"
+# _stamp_vendor_identity's own lock now lives in the shared
+# stamp_dbo_identity_with_lock (U-328/U-331) inside identity_fastpath.py --
+# same target as the create lock above, not a separate connector-module import.
+STAMP_LOCK_TARGET = FASTPATH_LOCK_TARGET
 
 
 def _granted_lock(*_args, **_kwargs):
@@ -441,26 +444,34 @@ def test_vendor_lock_resource_key_matches_dbo_only_namespace():
         recorded.append(resource_name)
         return _granted_lock()
 
-    with patch(FASTPATH_LOCK_TARGET, side_effect=_recording_lock), patch(
-        STAMP_LOCK_TARGET, side_effect=_granted_lock
-    ):
+    # FASTPATH_LOCK_TARGET and STAMP_LOCK_TARGET are now the SAME name (both
+    # locks live in identity_fastpath.py, U-328/U-331) -- one recording patch
+    # captures both acquisitions, in order.
+    with patch(FASTPATH_LOCK_TARGET, side_effect=_recording_lock):
         connector.sync_from_qbo_vendor(qbo_vendor)
 
-    assert recorded == ["qbo_dbo_identity_create:Vendor:QBO-V-1:r1"]
+    assert recorded == [
+        "qbo_dbo_identity_create:Vendor:QBO-V-1:r1",
+        "qbo_dbo_identity_stamp:Vendor:300",
+    ]
 
 
 def test_vendor_stamp_identity_refuses_to_overwrite_different_existing_identity():
-    """Also proves the shared `_check_no_conflicting_vendor_identity` records
-    a reconciliation issue from THIS call site too (/simplify simplification
+    """Also proves the shared helper's on_conflict wiring records a
+    reconciliation issue from THIS call site too (/simplify simplification
     lens: the pre-extraction code only recorded one from
-    _resolve_vendor_candidate's copy, an asymmetry the shared guard closes)."""
+    _resolve_vendor_candidate's copy, an asymmetry the shared guard closes).
+    Message text now comes from stamp_dbo_identity_with_lock's own canonical
+    theft-guard wording (U-328/U-331), not `_check_no_conflicting_vendor_
+    identity`'s -- that method still raises this same wording from its OTHER
+    call site (`_resolve_vendor_candidate`, tested above)."""
     connector, vendor_service, reconciliation_repo = _build_vendor_connector()
     candidate = _make_vendor(id=150)
     vendor_service.read_by_id.return_value = _make_vendor(id=150, qbo_id="QBO-OTHER", realm_id="r1")
     qbo_vendor = _make_qbo_vendor(qbo_id="QBO-V-1", realm_id="r1")
 
     with patch(STAMP_LOCK_TARGET, side_effect=_granted_lock):
-        with pytest.raises(ValueError, match="already carries a DIFFERENT identity"):
+        with pytest.raises(ValueError, match="already carries QBO identity QBO-OTHER"):
             connector._stamp_vendor_identity(candidate, qbo_vendor)
 
     vendor_service.repo.set_qbo_identity.assert_not_called()

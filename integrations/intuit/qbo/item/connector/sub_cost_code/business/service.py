@@ -9,9 +9,11 @@ from integrations.intuit.qbo.base.field_ownership import (
     preserve_human_edited_name,
     raise_if_inactive_unmapped,
 )
-from integrations.intuit.qbo.base.identity_fastpath import run_identity_fastpath_dbo_only
+from integrations.intuit.qbo.base.identity_fastpath import (
+    run_identity_fastpath_dbo_only,
+    stamp_dbo_identity_with_lock,
+)
 from integrations.intuit.qbo.base.ids import coerce_id
-from integrations.intuit.qbo.base.locking import qbo_app_lock
 from integrations.intuit.qbo.base.reconciliation_recorder import record_mapping_issue
 from integrations.intuit.qbo.item.business.model import QboItem
 from integrations.intuit.qbo.reconciliation.persistence.repo import ReconciliationIssueRepository
@@ -248,68 +250,52 @@ class ItemSubCostCodeConnector:
         cost_code_id: int,
     ) -> Optional[SubCostCode]:
         """
-        `stamp_identity` for the dbo-only fast path's MISS branch (U-307c).
+        `stamp_identity` for the dbo-only fast path's MISS branch (U-307c),
+        delegating the row-scoped lock + theft-guard + write sequence to the
+        shared `stamp_dbo_identity_with_lock` (U-328/U-331 —
+        `docs/design/stamp-lock-helper.md`) — see that function's own
+        docstring for why a SECOND lock, keyed on the CANDIDATE's
+        sub_cost_code_id, is needed here: `resolve_candidate` binds by NUMBER
+        (a side-channel business key), so two different QboItems (different
+        qbo_ids — no contention on the qbo_id-keyed lock upstream) could
+        number-match onto the SAME local SubCostCode concurrently.
 
-        Runs under its own app lock keyed on the CANDIDATE's sub_cost_code_id
-        -- NOT `run_identity_fastpath_dbo_only`'s own create lock, which is
-        keyed on the qbo_id/realm_id being resolved. `resolve_candidate` binds
-        by NUMBER (a side-channel business key, the same shape as Attachment's
-        hash-dedupe), so two different QboItems (different qbo_ids -- no
-        contention on the qbo_id-keyed lock upstream) could number-match onto
-        the SAME local SubCostCode concurrently. Re-reads immediately before
-        stamping and refuses to overwrite a DIFFERENT existing identity.
-        Mirrors `AttachableAttachmentConnector._stamp_pulled_identity`
-        (U-300b) -- same side-channel-candidate race, same fix, per that
-        method's own "next adopter" TODO.
-
-        The QBO-derived field write (name/description/cost_code_id) also
-        happens HERE, not in `resolve_candidate` -- applying it there would
-        let two concurrent QboItems that both number-match the SAME candidate
-        each write their own incoming values to the row BEFORE either
-        acquires this lock, corrupting whichever one loses the identity stamp
-        below (Codex round-2 P1: the round-1 realm-aware duplicate guard
-        closed the already-stamped case but not this pre-stamp mutation
-        race). Applying the field write inside this lock, after the
-        theft-guard confirms the row is still genuinely unclaimed (or
-        already this exact identity), makes the read-guard-write-stamp
-        sequence atomic per candidate row -- the loser raises before ever
-        touching the row's fields. A freshly `create()`d candidate already
-        carries correct fields; re-applying the same values here is a
-        harmless no-op.
+        `apply_fields` writes the QBO-derived name/description/cost_code_id
+        (U-219: name is raw, bypassing `preserve_human_edited_name`) and now
+        feeds `update_by_id`'s return value into the shared helper's own
+        None-guard — a previously DISCARDED return value, so a concurrent
+        ROWVERSION race on this write used to succeed silently; it now
+        raises and holds for retry (D1, U-328/U-331 — the one behavior
+        change this migration makes here). `on_conflict` reuses
+        `_raise_duplicate_qbo_item_issue` (below) — the SAME
+        `duplicate_qbo_item` DriftType `resolve_candidate`'s own number-match
+        guard already records, since both are the identical comparison on
+        the same row (a number-matched candidate already carrying a
+        DIFFERENT identity); mirrors Customer/Project/Vendor's precedent of
+        one shared recorder across both call sites (Decision 2).
         """
+
+        def _apply_fields(c: SubCostCode) -> Optional[SubCostCode]:
+            c.name = name
+            c.description = description
+            c.cost_code_id = cost_code_id
+            return self.sub_cost_code_service.repo.update_by_id(c)
+
         candidate_id = coerce_id(candidate.id)
-        lock_resource = f"qbo_dbo_identity_stamp:SubCostCode:{candidate_id}"
-        with qbo_app_lock(lock_resource) as got_lock:
-            if not got_lock:
-                raise RuntimeError(
-                    f"Could not acquire identity-stamp lock for SubCostCode {candidate_id} "
-                    f"(qbo_id={qbo_item.qbo_id}, realm_id={qbo_item.realm_id}) — holding for "
-                    f"retry without stamping."
-                )
-            current = self.sub_cost_code_service.read_by_id(str(candidate_id))
-            current_qbo_id = getattr(current, "qbo_id", None) if current else None
-            if current and current_qbo_id and not (
-                current_qbo_id == qbo_item.qbo_id
-                and (getattr(current, "realm_id", None) or "") == (qbo_item.realm_id or "")
-            ):
-                raise ValueError(
-                    f"SubCostCode {candidate_id} already carries QBO identity {current_qbo_id} "
-                    f"(realm {getattr(current, 'realm_id', None)}) — refusing to overwrite it "
-                    f"with qbo_id={qbo_item.qbo_id} realm_id={qbo_item.realm_id}"
-                )
-            if current is not None:
-                # U-219: adopt-by-number deliberately assigns name RAW, bypassing preserve_human_edited_name.
-                current.name = name
-                current.description = description
-                current.cost_code_id = cost_code_id
-                self.sub_cost_code_service.repo.update_by_id(current)
-            self.sub_cost_code_service.repo.set_qbo_identity(
-                id=candidate_id,
-                qbo_id=qbo_item.qbo_id,
-                realm_id=qbo_item.realm_id,
-                active=qbo_item.active,
-            )
-            return self.sub_cost_code_service.read_by_id(str(candidate_id))
+        return stamp_dbo_identity_with_lock(
+            candidate_id=candidate_id,
+            entity_label="SubCostCode",
+            qbo_id=qbo_item.qbo_id,
+            realm_id=qbo_item.realm_id,
+            read_by_id=self.sub_cost_code_service.read_by_id,
+            apply_fields=_apply_fields,
+            write_identity=lambda c: self.sub_cost_code_service.repo.set_qbo_identity(
+                id=c.id, qbo_id=qbo_item.qbo_id, realm_id=qbo_item.realm_id, active=qbo_item.active,
+            ),
+            on_conflict=lambda c: self._raise_duplicate_qbo_item_issue(
+                qbo_item=qbo_item, local_sub_cost_code=c, existing_qbo_id=c.qbo_id,
+            ),
+        )
 
     def _apply_sub_cost_code_fields_and_sync(
         self,

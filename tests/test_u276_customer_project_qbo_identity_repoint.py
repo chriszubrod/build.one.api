@@ -161,10 +161,10 @@ CUST_CONNECTOR_MODULE = (
     "integrations.intuit.qbo.customer.connector.customer.business.service"
 )
 FASTPATH_LOCK_TARGET = "integrations.intuit.qbo.base.identity_fastpath.qbo_app_lock"
-# _stamp_customer_identity acquires its OWN app lock directly (not through
-# run_identity_fastpath_dbo_only's create lock) -- a separate import in the
-# connector module, so it needs its own patch target.
-CUST_STAMP_LOCK_TARGET = f"{CUST_CONNECTOR_MODULE}.qbo_app_lock"
+# _stamp_customer_identity's own lock now lives in the shared
+# stamp_dbo_identity_with_lock (U-328/U-331) inside identity_fastpath.py --
+# same target as the create lock above, not a separate connector-module import.
+CUST_STAMP_LOCK_TARGET = FASTPATH_LOCK_TARGET
 
 
 def _make_customer(**overrides):
@@ -493,12 +493,16 @@ def test_customer_lock_resource_key_matches_dbo_only_namespace():
     )
     recorded = []
 
-    with patch(FASTPATH_LOCK_TARGET, side_effect=_recording_lock_factory(recorded)), patch(
-        CUST_STAMP_LOCK_TARGET, mock_qbo_app_lock_granted
-    ):
+    # FASTPATH_LOCK_TARGET and CUST_STAMP_LOCK_TARGET are now the SAME name
+    # (both locks live in identity_fastpath.py, U-328/U-331) -- one recording
+    # patch captures both acquisitions, in order.
+    with patch(FASTPATH_LOCK_TARGET, side_effect=_recording_lock_factory(recorded)):
         connector.sync_from_qbo_customer(qbo_customer)
 
-    assert recorded == ["qbo_dbo_identity_create:Customer:C-99:realm-1"]
+    assert recorded == [
+        "qbo_dbo_identity_create:Customer:C-99:realm-1",
+        "qbo_dbo_identity_stamp:Customer:300",
+    ]
 
 
 def test_customer_stamp_identity_refuses_to_overwrite_different_existing_identity():
@@ -510,7 +514,7 @@ def test_customer_stamp_identity_refuses_to_overwrite_different_existing_identit
     qbo_customer = _make_qbo_customer(qbo_id="C-99", realm_id="realm-1")
 
     with patch(CUST_STAMP_LOCK_TARGET, mock_qbo_app_lock_granted):
-        with pytest.raises(ValueError, match=r"already carries a DIFFERENT identity \(QboId=C-OTHER"):
+        with pytest.raises(ValueError, match=r"already carries QBO identity C-OTHER"):
             connector._stamp_customer_identity(
                 candidate, qbo_customer, name="X", email="x@x.com", phone="555",
             )
@@ -537,7 +541,7 @@ def test_customer_stamp_identity_records_duplicate_issue_even_when_resolve_candi
     qbo_customer = _make_qbo_customer(qbo_id="C-99", realm_id="realm-1")
 
     with patch(CUST_STAMP_LOCK_TARGET, mock_qbo_app_lock_granted):
-        with pytest.raises(ValueError, match=r"already carries a DIFFERENT identity \(QboId=C-OTHER"):
+        with pytest.raises(ValueError, match=r"already carries QBO identity C-OTHER"):
             connector._stamp_customer_identity(
                 candidate, qbo_customer, name="X", email="x@x.com", phone="555",
             )
@@ -789,10 +793,11 @@ def test_customer_stamp_identity_fails_closed_on_lock_timeout():
 PROJECT_CONNECTOR_MODULE = (
     "integrations.intuit.qbo.customer.connector.project.business.service"
 )
-# _stamp_project_identity acquires its OWN app lock directly (same pattern as
-# Customer's own stamp lock, Section 2) -- a separate import in the connector
-# module, so it needs its own patch target.
-PROJECT_STAMP_LOCK_TARGET = f"{PROJECT_CONNECTOR_MODULE}.qbo_app_lock"
+# _stamp_project_identity's own lock now lives in the shared
+# stamp_dbo_identity_with_lock (U-328/U-331) inside identity_fastpath.py --
+# same target as the create lock (FASTPATH_LOCK_TARGET, Section 2), not a
+# separate connector-module import.
+PROJECT_STAMP_LOCK_TARGET = FASTPATH_LOCK_TARGET
 
 
 def _make_project(**overrides):
@@ -1100,12 +1105,16 @@ def test_project_lock_resource_key_matches_dbo_only_namespace():
     project_service.read_by_id.return_value = _make_project(id=300, qbo_id="P-1", realm_id="realm-1")
     recorded = []
 
-    with patch(FASTPATH_LOCK_TARGET, side_effect=_recording_lock_factory(recorded)), patch(
-        PROJECT_STAMP_LOCK_TARGET, mock_qbo_app_lock_granted
-    ):
+    # FASTPATH_LOCK_TARGET and PROJECT_STAMP_LOCK_TARGET are now the SAME name
+    # (both locks live in identity_fastpath.py, U-328/U-331) -- one recording
+    # patch captures both acquisitions, in order.
+    with patch(FASTPATH_LOCK_TARGET, side_effect=_recording_lock_factory(recorded)):
         connector.sync_from_qbo_customer(qbo_customer)
 
-    assert recorded == ["qbo_dbo_identity_create:Project:P-1:realm-1"]
+    assert recorded == [
+        "qbo_dbo_identity_create:Project:P-1:realm-1",
+        "qbo_dbo_identity_stamp:Project:300",
+    ]
 
 
 def test_project_stamp_identity_refuses_to_overwrite_different_existing_identity():
@@ -1115,7 +1124,7 @@ def test_project_stamp_identity_refuses_to_overwrite_different_existing_identity
     qbo_customer = _make_qbo_customer(qbo_id="P-1", realm_id="realm-1", is_job=True)
 
     with patch(PROJECT_STAMP_LOCK_TARGET, mock_qbo_app_lock_granted):
-        with pytest.raises(ValueError, match=r"already carries a DIFFERENT identity \(QboId=P-OTHER"):
+        with pytest.raises(ValueError, match=r"already carries QBO identity P-OTHER"):
             connector._stamp_project_identity(candidate, qbo_customer, customer_id=7)
 
     project_service.repo.set_qbo_identity.assert_not_called()
@@ -1134,7 +1143,7 @@ def test_project_stamp_identity_records_duplicate_issue_even_when_resolve_candid
     qbo_customer = _make_qbo_customer(qbo_id="P-1", realm_id="realm-1", is_job=True)
 
     with patch(PROJECT_STAMP_LOCK_TARGET, mock_qbo_app_lock_granted):
-        with pytest.raises(ValueError, match=r"already carries a DIFFERENT identity \(QboId=P-OTHER"):
+        with pytest.raises(ValueError, match=r"already carries QBO identity P-OTHER"):
             connector._stamp_project_identity(candidate, qbo_customer, customer_id=7)
 
     reconciliation_repo.create.assert_called_once()

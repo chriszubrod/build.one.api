@@ -11,11 +11,10 @@ from integrations.intuit.qbo.base.field_ownership import (
 )
 from integrations.intuit.qbo.base.identity_consistency import verify_identity_dbo_only
 from integrations.intuit.qbo.base.identity_fastpath import (
-    raise_concurrent_write_race,
     run_identity_fastpath_dbo_only,
+    stamp_dbo_identity_with_lock,
 )
 from integrations.intuit.qbo.base.ids import coerce_id
-from integrations.intuit.qbo.base.locking import qbo_app_lock
 from integrations.intuit.qbo.customer.business.model import QboCustomer
 from integrations.intuit.qbo.customer.persistence.repo import QboCustomerRepository
 from integrations.intuit.qbo.physical_address.connector.business.service import PhysicalAddressAddressConnector
@@ -214,62 +213,57 @@ class CustomerProjectConnector:
         self, candidate: Project, qbo_customer: QboCustomer, *, customer_id: Optional[int],
     ) -> Optional[Project]:
         """
-        `stamp_identity` for the dbo-only fast path's MISS branch (U-311).
+        `stamp_identity` for the dbo-only fast path's MISS branch (U-311),
+        delegating the row-scoped lock + theft-guard + write sequence to the
+        shared `stamp_dbo_identity_with_lock` (U-328/U-331 —
+        `docs/design/stamp-lock-helper.md`) — see that function's own
+        docstring for why a SECOND lock, keyed on the CANDIDATE's project_id,
+        is needed here: `resolve_candidate` binds by NAME (a side-channel
+        business key), so two different QboCustomers (different qbo_ids — no
+        contention on the qbo_id-keyed lock upstream) could name-match onto
+        the SAME local Project concurrently.
 
-        Runs under its own app lock keyed on the CANDIDATE's project_id -- NOT
-        `run_identity_fastpath_dbo_only`'s own create lock, which is keyed on
-        the qbo_id/realm_id being resolved. `resolve_candidate` binds by NAME
-        (a side-channel business key), so two different QboCustomers
-        (different qbo_ids -- no contention on the qbo_id-keyed lock upstream)
-        could name-match onto the SAME local Project concurrently. Re-reads
-        immediately before stamping and refuses to overwrite a DIFFERENT
-        existing identity. Mirrors `_stamp_customer_identity` (U-310) /
-        `_stamp_vendor_identity` (U-313) -- same side-channel-candidate race,
-        same fix.
-
-        Writes ONLY CustomerId here (not name/description/status, and NOT via
-        the shared `_apply_project_fields_and_sync` the fast path's HIT branch
-        uses) -- U-303's deliberate adopt-by-name contract (see
-        `_resolve_project_candidate`'s own comment) requires the OTHER three
-        fields to survive a name-match adopt untouched; routing this MISS
-        branch through the full field-write helper would silently regress
-        that pre-existing behavior. A freshly `create()`d candidate already
-        carries the correct CustomerId; re-applying it here is a harmless
-        no-op. Applying the write inside this lock, after the theft-guard
-        confirms the row is still genuinely unclaimed (or already this exact
-        identity), makes the read-guard-write-stamp sequence atomic per
-        candidate row -- the loser raises before ever touching the row's
-        fields.
+        `apply_fields` writes ONLY CustomerId, and only when `customer_id is
+        not None` — U-303's deliberate adopt-by-name contract (see
+        `_resolve_project_candidate`'s own comment) requires name/
+        description/status to survive a name-match adopt untouched, so this
+        MISS branch deliberately does NOT route through the shared
+        `_apply_project_fields_and_sync` the fast path's HIT branch uses.
+        When `customer_id is None` the closure returns `current` unchanged
+        (still non-None, so the shared helper's None-guard treats it as a
+        no-op, not a race) — preserving the original's "skip the write
+        entirely" shape rather than turning it into a no-op UPDATE.
+        `write_identity` stamps the identity AND syncs addresses in one
+        same-lock step (every live copy already treats those as one atomic
+        post-guard step). `on_conflict` keeps only the reconciliation-
+        recording half of the former `_check_no_conflicting_project_identity`
+        call — the raise itself now lives in the shared helper.
         """
-        candidate_id = coerce_id(candidate.id)
-        lock_resource = f"qbo_dbo_identity_stamp:Project:{candidate_id}"
-        with qbo_app_lock(lock_resource) as got_lock:
-            if not got_lock:
-                raise RuntimeError(
-                    f"Could not acquire identity-stamp lock for Project {candidate_id} "
-                    f"(qbo_id={qbo_customer.qbo_id}, realm_id={qbo_customer.realm_id}) — holding for "
-                    f"retry without stamping."
-                )
-            current = self.project_service.read_by_id(candidate_id)
-            if current is not None:
-                # Re-read via read_by_id (not the name-matched row resolve_candidate
-                # already has in hand) mirrors _stamp_customer_identity's own U-310
-                # Codex-fixed rationale -- this is the read that reliably carries
-                # QboId/RealmId against a real DB round trip, so it's the one that
-                # actually protects production.
-                self._check_no_conflicting_project_identity(current, qbo_customer)
-                if customer_id is not None:
-                    current.customer_id = customer_id
-                    updated = self.project_service.repo.update_by_id(current)
-                    if updated is None:
-                        raise_concurrent_write_race(
-                            entity_label="Project", entity_id=candidate_id, path_label="identity stamp",
-                        )
+        def _apply_customer_id_only(c: Project) -> Optional[Project]:
+            if customer_id is None:
+                return c
+            c.customer_id = customer_id
+            return self.project_service.repo.update_by_id(c)
+
+        def _write_identity(c: Project) -> None:
             self.project_service.repo.set_qbo_identity(
-                id=candidate_id, qbo_id=qbo_customer.qbo_id, realm_id=qbo_customer.realm_id,
+                id=c.id, qbo_id=qbo_customer.qbo_id, realm_id=qbo_customer.realm_id,
             )
-            self._sync_addresses(qbo_customer, candidate_id)
-            return self.project_service.read_by_id(candidate_id)
+            self._sync_addresses(qbo_customer, c.id)
+
+        candidate_id = coerce_id(candidate.id)
+        return stamp_dbo_identity_with_lock(
+            candidate_id=candidate_id,
+            entity_label="Project",
+            qbo_id=qbo_customer.qbo_id,
+            realm_id=qbo_customer.realm_id,
+            read_by_id=self.project_service.read_by_id,
+            apply_fields=_apply_customer_id_only,
+            write_identity=_write_identity,
+            on_conflict=lambda c: self._raise_project_identity_conflict_issue(
+                qbo_customer=qbo_customer, local_project=c, existing_qbo_id=c.qbo_id,
+            ),
+        )
 
     @staticmethod
     def _conflicting_project_identity(local_project: Project, qbo_customer: QboCustomer) -> Optional[str]:

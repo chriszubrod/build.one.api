@@ -10,11 +10,10 @@ from integrations.intuit.qbo.base.field_ownership import (
     raise_if_inactive_unmapped,
 )
 from integrations.intuit.qbo.base.identity_fastpath import (
-    raise_concurrent_write_race,
     run_identity_fastpath_dbo_only,
+    stamp_dbo_identity_with_lock,
 )
 from integrations.intuit.qbo.base.ids import coerce_id
-from integrations.intuit.qbo.base.locking import qbo_app_lock
 from integrations.intuit.qbo.base.reconciliation_recorder import record_mapping_issue
 from integrations.intuit.qbo.customer.business.model import QboCustomer
 from integrations.intuit.qbo.reconciliation.persistence.repo import ReconciliationIssueRepository
@@ -165,75 +164,51 @@ class CustomerCustomerConnector:
         self, candidate: Customer, qbo_customer: QboCustomer, *, name: str, email: str, phone: str,
     ) -> Optional[Customer]:
         """
-        `stamp_identity` for the dbo-only fast path's MISS branch (U-310).
+        `stamp_identity` for the dbo-only fast path's MISS branch (U-310),
+        delegating the row-scoped lock + theft-guard + write sequence to the
+        shared `stamp_dbo_identity_with_lock` (U-328/U-331 —
+        `docs/design/stamp-lock-helper.md`) — see that function's own
+        docstring for why a SECOND lock, keyed on the CANDIDATE's
+        customer_id, is needed here: `resolve_candidate` binds by NAME (a
+        side-channel business key), so two different QboCustomers (different
+        qbo_ids — no contention on the qbo_id-keyed lock upstream) could
+        name-match onto the SAME local Customer concurrently.
 
-        Runs under its own app lock keyed on the CANDIDATE's customer_id --
-        NOT `run_identity_fastpath_dbo_only`'s own create lock, which is keyed
-        on the qbo_id/realm_id being resolved. `resolve_candidate` binds by
-        NAME (a side-channel business key), so two different QboCustomers
-        (different qbo_ids -- no contention on the qbo_id-keyed lock
-        upstream) could name-match onto the SAME local Customer concurrently.
-        Re-reads immediately before stamping and refuses to overwrite a
-        DIFFERENT existing identity. Mirrors
-        `AttachableAttachmentConnector._stamp_pulled_identity` (U-300b) /
-        `ItemCostCodeConnector._stamp_cost_code_identity` (U-307c) -- same
-        side-channel-candidate race, same fix.
-
-        The QBO-derived field write (name/email/phone) also happens HERE, not
-        in `resolve_candidate` -- applying it there would let two concurrent
-        QboCustomers that both name-match the SAME candidate (two different
-        qbo_ids, so no contention on the create lock upstream) each write
-        their own incoming values to the row BEFORE either acquires this
-        lock, corrupting whichever one loses the identity stamp below.
-        Applying the field write inside this lock, after the theft-guard
-        confirms the row is still genuinely unclaimed (or already this exact
-        identity), makes the read-guard-write-stamp sequence atomic per
-        candidate row -- the loser raises before ever touching the row's
-        fields. A freshly `create()`d candidate already carries correct
-        fields; re-applying the same values here is a harmless no-op.
+        `read_by_id` (not the name-matched row `resolve_candidate` already
+        has in hand) is the re-read that reliably carries QboId/RealmId
+        against a real DB read (U-310 Codex round-1 P2 —
+        `ReadCustomerByName` does not project them), so this is the theft-
+        guard call that actually protects production. `apply_fields` writes
+        name/email/phone (U-219: name is raw, bypassing
+        `preserve_human_edited_name` — adopt-by-name always assigns the
+        incoming value) and feeds `update_by_id`'s return value into the
+        shared helper's own None-guard (a ROWVERSION race must not silently
+        proceed to stamp identity on a row whose field write never took).
+        `on_conflict` keeps only the reconciliation-recording half of the
+        former `_check_no_conflicting_identity` call — the raise itself now
+        lives in the shared helper.
         """
+        def _apply_fields(c: Customer) -> Optional[Customer]:
+            c.name = name
+            c.email = email
+            c.phone = phone
+            return self.customer_service.repo.update_by_id(c)
+
         candidate_id = coerce_id(candidate.id)
-        lock_resource = f"qbo_dbo_identity_stamp:Customer:{candidate_id}"
-        with qbo_app_lock(lock_resource) as got_lock:
-            if not got_lock:
-                raise RuntimeError(
-                    f"Could not acquire identity-stamp lock for Customer {candidate_id} "
-                    f"(qbo_id={qbo_customer.qbo_id}, realm_id={qbo_customer.realm_id}) — holding for "
-                    f"retry without stamping."
-                )
-            current = self.customer_service.read_by_id(candidate_id)
-            if current is not None:
-                # U-310 fix (Codex round-1 P2): `ReadCustomerByName` does not
-                # project QboId/RealmId (entities/customer/sql/dbo.customer.sql),
-                # so `_resolve_customer_candidate`'s own call to this same guard
-                # never actually observes a populated qbo_id against a REAL DB
-                # read -- it only fires when a test mocks read_by_name to return
-                # one directly. This re-read via read_by_id DOES reliably carry
-                # QboId/RealmId (matches AttachableAttachmentConnector's own
-                # documented read_by_id-vs-read_by_hash distinction), so THIS
-                # call is the one that actually protects production -- not a
-                # redundant double-check.
-                self._check_no_conflicting_identity(current, qbo_customer)
-                # U-219-style adopt-by-name deliberately assigns name RAW,
-                # bypassing preserve_human_edited_name -- mirrors
-                # ItemCostCodeConnector._stamp_cost_code_identity exactly.
-                current.name = name
-                current.email = email
-                current.phone = phone
-                updated = self.customer_service.repo.update_by_id(current)
-                if updated is None:
-                    # U-310 fix (Codex round-1 P2): a ROWVERSION race between
-                    # the read above and this write must not silently proceed
-                    # to stamp identity on a row whose field write never took
-                    # -- same discipline as the fast path's own
-                    # on_apply_returned_none hit-branch guard (U-287).
-                    raise_concurrent_write_race(
-                        entity_label="Customer", entity_id=candidate_id, path_label="identity stamp",
-                    )
-            self.customer_service.repo.set_qbo_identity(
-                id=candidate_id, qbo_id=qbo_customer.qbo_id, realm_id=qbo_customer.realm_id,
-            )
-            return self.customer_service.read_by_id(candidate_id)
+        return stamp_dbo_identity_with_lock(
+            candidate_id=candidate_id,
+            entity_label="Customer",
+            qbo_id=qbo_customer.qbo_id,
+            realm_id=qbo_customer.realm_id,
+            read_by_id=self.customer_service.read_by_id,
+            apply_fields=_apply_fields,
+            write_identity=lambda c: self.customer_service.repo.set_qbo_identity(
+                id=c.id, qbo_id=qbo_customer.qbo_id, realm_id=qbo_customer.realm_id,
+            ),
+            on_conflict=lambda c: self._raise_duplicate_qbo_customer_issue(
+                qbo_customer=qbo_customer, local_customer=c, existing_qbo_id=c.qbo_id,
+            ),
+        )
 
     def _check_no_conflicting_identity(
         self, local_customer: Customer, qbo_customer: QboCustomer,

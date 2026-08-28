@@ -56,11 +56,11 @@ CC_SERVICE = "integrations.intuit.qbo.item.connector.cost_code.business.service"
 SCC_SERVICE = "integrations.intuit.qbo.item.connector.sub_cost_code.business.service"
 
 FASTPATH_LOCK_TARGET = "integrations.intuit.qbo.base.identity_fastpath.qbo_app_lock"
-# _stamp_{cost,sub_cost}_code_identity acquire their OWN app lock directly (not
-# through run_identity_fastpath_dbo_only's own create lock) -- a separate
-# import in each connector module, so each needs its own patch target.
-CC_STAMP_LOCK_TARGET = f"{CC_SERVICE}.qbo_app_lock"
-SCC_STAMP_LOCK_TARGET = f"{SCC_SERVICE}.qbo_app_lock"
+# _stamp_{cost,sub_cost}_code_identity's own lock now lives in the shared
+# stamp_dbo_identity_with_lock (U-328/U-331) inside identity_fastpath.py --
+# same target as the create lock above, not a separate connector-module import.
+CC_STAMP_LOCK_TARGET = FASTPATH_LOCK_TARGET
+SCC_STAMP_LOCK_TARGET = FASTPATH_LOCK_TARGET
 
 
 def _make_qbo_item(**overrides):
@@ -447,16 +447,24 @@ def test_cost_code_lock_resource_key_matches_dbo_only_namespace():
     )
     recorded = []
 
-    with patch(FASTPATH_LOCK_TARGET, side_effect=_recording_lock_factory(recorded)), patch(
-        CC_STAMP_LOCK_TARGET, side_effect=_granted_lock
-    ):
+    # FASTPATH_LOCK_TARGET and CC_STAMP_LOCK_TARGET are now the SAME name
+    # (both locks live in identity_fastpath.py, U-328/U-331) -- one recording
+    # patch captures both acquisitions, in order.
+    with patch(FASTPATH_LOCK_TARGET, side_effect=_recording_lock_factory(recorded)):
         connector.sync_from_qbo_item(qbo_item)
 
-    assert recorded == ["qbo_dbo_identity_create:CostCode:ITEM-99:realm-1"]
+    assert recorded == [
+        "qbo_dbo_identity_create:CostCode:ITEM-99:realm-1",
+        "qbo_dbo_identity_stamp:CostCode:300",
+    ]
 
 
 def test_cost_code_stamp_identity_refuses_to_overwrite_different_existing_identity():
-    connector, cost_code_service, _ = _build_cost_code_connector()
+    """Also proves the new Decision-2 on_conflict wiring (U-328/U-331) reuses
+    `_raise_duplicate_qbo_item_issue` (the SAME recorder/DriftType
+    resolve_candidate's own number-match guard already uses) on this
+    stamp-time race — Codex xhigh P3 finding on the stamp-lock-helper diff."""
+    connector, cost_code_service, reconciliation_repo = _build_cost_code_connector()
     candidate = _make_cost_code(id=150)
     cost_code_service.read_by_id.return_value = _make_cost_code(
         id=150, qbo_id="ITEM-OTHER", realm_id="realm-1"
@@ -468,6 +476,8 @@ def test_cost_code_stamp_identity_refuses_to_overwrite_different_existing_identi
             connector._stamp_cost_code_identity(candidate, qbo_item, name="X", description=None)
 
     cost_code_service.repo.set_qbo_identity.assert_not_called()
+    reconciliation_repo.create.assert_called_once()
+    assert reconciliation_repo.create.call_args.kwargs["drift_type"] == "duplicate_qbo_item"
     cost_code_service.repo.update_by_id.assert_not_called()  # never mutated before the raise
 
 
@@ -490,6 +500,31 @@ def test_cost_code_stamp_identity_applies_field_write_atomically_with_stamp():
     cost_code_service.repo.set_qbo_identity.assert_called_once_with(
         id=150, qbo_id="ITEM-99", realm_id="realm-1"
     )
+
+
+def test_cost_code_stamp_identity_concurrent_update_race_raises_and_holds():
+    """D1 (docs/design/stamp-lock-helper.md): before U-328/U-331, this
+    connector's own `_stamp_cost_code_identity` called `update_by_id` and
+    discarded its return value entirely -- a concurrent ROWVERSION race on
+    this exact write silently succeeded at `set_qbo_identity` anyway
+    (TODO.md:44-51, U-316 follow-up). Migrating onto the shared
+    `stamp_dbo_identity_with_lock` closes this structurally: `update_by_id`
+    returning None (the race) must now raise and hold for retry, and
+    set_qbo_identity must never fire on that path. Mutation target: reverting
+    the shared helper's apply_fields None-guard reproduces the pre-fix
+    silent-success bug and this test goes red."""
+    connector, cost_code_service, _ = _build_cost_code_connector()
+    candidate = _make_cost_code(id=150)
+    unmapped = _make_cost_code(id=150, qbo_id=None, realm_id=None, name="Old Name")
+    cost_code_service.read_by_id.return_value = unmapped
+    cost_code_service.repo.update_by_id.return_value = None  # race: row gone on write
+    qbo_item = _make_qbo_item(qbo_id="ITEM-99", realm_id="realm-1")
+
+    with patch(CC_STAMP_LOCK_TARGET, side_effect=_granted_lock):
+        with pytest.raises(RuntimeError, match="concurrent write race"):
+            connector._stamp_cost_code_identity(candidate, qbo_item, name="New Name", description="new desc")
+
+    cost_code_service.repo.set_qbo_identity.assert_not_called()
 
 
 def test_two_racers_number_matching_the_same_cost_code_serialize_and_the_loser_never_mutates_fields():
@@ -874,16 +909,24 @@ def test_sub_cost_code_lock_resource_key_matches_dbo_only_namespace():
     )
     recorded = []
 
-    with patch(FASTPATH_LOCK_TARGET, side_effect=_recording_lock_factory(recorded)), patch(
-        SCC_STAMP_LOCK_TARGET, side_effect=_granted_lock
-    ):
+    # FASTPATH_LOCK_TARGET and SCC_STAMP_LOCK_TARGET are now the SAME name
+    # (both locks live in identity_fastpath.py, U-328/U-331) -- one recording
+    # patch captures both acquisitions, in order.
+    with patch(FASTPATH_LOCK_TARGET, side_effect=_recording_lock_factory(recorded)):
         connector.sync_from_qbo_item(qbo_item)
 
-    assert recorded == ["qbo_dbo_identity_create:SubCostCode:ITEM-99:realm-1"]
+    assert recorded == [
+        "qbo_dbo_identity_create:SubCostCode:ITEM-99:realm-1",
+        "qbo_dbo_identity_stamp:SubCostCode:500",
+    ]
 
 
 def test_sub_cost_code_stamp_identity_refuses_to_overwrite_different_existing_identity():
-    connector, sub_cost_code_service, _, _r = _build_sub_cost_code_connector()
+    """Also proves the new Decision-2 on_conflict wiring (U-328/U-331) reuses
+    `_raise_duplicate_qbo_item_issue` (the SAME recorder/DriftType
+    resolve_candidate's own number-match guard already uses) on this
+    stamp-time race — Codex xhigh P3 finding on the stamp-lock-helper diff."""
+    connector, sub_cost_code_service, _, reconciliation_repo = _build_sub_cost_code_connector()
     candidate = _make_sub_cost_code(id=201)
     sub_cost_code_service.read_by_id.return_value = _make_sub_cost_code(
         id=201, qbo_id="ITEM-OTHER", realm_id="realm-1"
@@ -898,6 +941,8 @@ def test_sub_cost_code_stamp_identity_refuses_to_overwrite_different_existing_id
 
     sub_cost_code_service.repo.set_qbo_identity.assert_not_called()
     sub_cost_code_service.repo.update_by_id.assert_not_called()  # never mutated before the raise
+    reconciliation_repo.create.assert_called_once()
+    assert reconciliation_repo.create.call_args.kwargs["drift_type"] == "duplicate_qbo_item"
 
 
 def test_sub_cost_code_stamp_identity_applies_field_write_atomically_with_stamp():
@@ -921,6 +966,33 @@ def test_sub_cost_code_stamp_identity_applies_field_write_atomically_with_stamp(
     sub_cost_code_service.repo.set_qbo_identity.assert_called_once_with(
         id=201, qbo_id="ITEM-99", realm_id="realm-1", active=True,
     )
+
+
+def test_sub_cost_code_stamp_identity_concurrent_update_race_raises_and_holds():
+    """D1 (docs/design/stamp-lock-helper.md): before U-328/U-331, this
+    connector's own `_stamp_sub_cost_code_identity` called `update_by_id` and
+    discarded its return value entirely -- a concurrent ROWVERSION race on
+    this exact write silently succeeded at `set_qbo_identity` anyway
+    (TODO.md:44-51, U-316 follow-up). Migrating onto the shared
+    `stamp_dbo_identity_with_lock` closes this structurally: `update_by_id`
+    returning None (the race) must now raise and hold for retry, and
+    set_qbo_identity must never fire on that path. Mutation target: reverting
+    the shared helper's apply_fields None-guard reproduces the pre-fix
+    silent-success bug and this test goes red."""
+    connector, sub_cost_code_service, _, _r = _build_sub_cost_code_connector()
+    candidate = _make_sub_cost_code(id=201)
+    unmapped = _make_sub_cost_code(id=201, qbo_id=None, realm_id=None, name="Old", cost_code_id=999)
+    sub_cost_code_service.read_by_id.return_value = unmapped
+    sub_cost_code_service.repo.update_by_id.return_value = None  # race: row gone on write
+    qbo_item = _make_qbo_item(qbo_id="ITEM-99", realm_id="realm-1")
+
+    with patch(SCC_STAMP_LOCK_TARGET, side_effect=_granted_lock):
+        with pytest.raises(RuntimeError, match="concurrent write race"):
+            connector._stamp_sub_cost_code_identity(
+                candidate, qbo_item, name="New", description="new desc", cost_code_id=100,
+            )
+
+    sub_cost_code_service.repo.set_qbo_identity.assert_not_called()
 
 
 def test_sub_cost_code_stamp_identity_fails_closed_on_lock_timeout():

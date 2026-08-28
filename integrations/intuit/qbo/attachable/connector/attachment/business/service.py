@@ -11,9 +11,11 @@ from integrations.intuit.qbo.attachable.business.model import QboAttachable
 from integrations.intuit.qbo.attachable.external.client import QboAttachableClient
 from integrations.intuit.qbo.auth.business.service import QboAuthService
 from integrations.intuit.qbo.base.errors import QboBudgetExceededError, QboWriteRefusedError
-from integrations.intuit.qbo.base.identity_fastpath import run_identity_fastpath_dbo_only
+from integrations.intuit.qbo.base.identity_fastpath import (
+    run_identity_fastpath_dbo_only,
+    stamp_dbo_identity_with_lock,
+)
 from integrations.intuit.qbo.base.ids import coerce_id
-from integrations.intuit.qbo.base.locking import qbo_app_lock
 from integrations.intuit.qbo.base.reconciliation_recorder import record_mapping_issue
 from integrations.intuit.qbo.reconciliation.persistence.repo import ReconciliationIssueRepository
 from entities.attachment.business.service import AttachmentService
@@ -295,59 +297,78 @@ class AttachableAttachmentConnector:
 
         return attachment
 
-    def _stamp_pulled_identity(self, *, attachment_id: int, qbo_id: str, realm_id: str) -> Attachment:
+    def _stamp_pulled_identity(self, *, attachment_id: int, qbo_id: str, realm_id: str) -> Optional[Attachment]:
         """
-        `stamp_identity` for the dbo-only fast path's MISS branch (U-300b).
-        Wraps `AttachmentRepository.set_qbo_identity` (returns None) into a
-        refreshed-row-returning call, per Codex's U-300a review.
+        `stamp_identity` for the dbo-only fast path's MISS branch (U-300b),
+        delegating the row-scoped lock + theft-guard + write sequence to the
+        shared `stamp_dbo_identity_with_lock` (U-328/U-331 —
+        `docs/design/stamp-lock-helper.md`) — see that function's own
+        docstring for why a SECOND lock, keyed on the CANDIDATE's
+        attachment_id rather than the qbo_id/realm_id
+        `run_identity_fastpath_dbo_only` already locks on, is needed here:
+        two concurrent pulls for two DIFFERENT QboAttachables that
+        hash-dedupe onto the SAME Attachment acquire two DIFFERENT
+        qbo_id-keyed locks upstream (no contention there), so without this
+        second lock the second racer's pre-check could read stale state and
+        silently steal the identity.
 
-        Re-reads via `read_by_id` (reliably projects QboId/RealmId, unlike
-        `ReadAttachmentByHash`) immediately before stamping and refuses to
-        overwrite a DIFFERENT existing identity — the real theft-guard for a
-        hash-deduped candidate, since `_resolve_pulled_attachment_candidate`'s
-        own `read_by_hash` result can never carry a trustworthy QboId.
-
-        Runs under its own app lock keyed on the CANDIDATE's attachment_id —
-        NOT `run_identity_fastpath_dbo_only`'s own create lock, which is keyed
-        on the qbo_id/realm_id being resolved. Two concurrent pulls for two
-        DIFFERENT QboAttachables that hash-dedupe onto the SAME Attachment
-        acquire two DIFFERENT qbo_id-keyed locks upstream (no contention
-        there), so without this second, row-keyed lock the second racer's
-        pre-check could read stale state and silently steal the identity.
-        Disjoint namespace from `qbo_dbo_identity_create:*` and
-        `qbo_mapping_create:*` (U-304's unrelated staging-PK race).
-
-        TODO(shared primitive): any future `run_identity_fastpath_dbo_only`
-        adopter whose `resolve_candidate` can bind an existing row via a
-        side-channel key (hash-dedupe, or similar) will hit this exact same
-        race — worth folding into the shared helper once a second family
-        needs it, rather than each hand-rolling this lock again.
-
-        Deadlock note: only ever invoked from `run_identity_fastpath_dbo_
-        only`'s MISS branch, always while its `qbo_dbo_identity_create:*`
-        lock is held — so this lock is always acquired nested inside it, in
-        that one fixed order, from the single call site in
-        `sync_from_qbo_attachable`. Consistent one-directional nesting rules
-        out a lock-ordering cycle.
+        No `apply_fields` — Attachment has no QBO-derived field to write at
+        stamp time (the blob-heal happens on the fast path's HIT branch, via
+        `_verify_or_heal_pulled_blob`, not here). `on_conflict` records the
+        stamp-time race as a `ReconciliationIssue` (Decision 2, U-331) —
+        Attachment had no such recording before this unit; Customer/Project/
+        Vendor already did.
         """
-        lock_resource = f"qbo_dbo_identity_stamp:Attachment:{attachment_id}"
-        with qbo_app_lock(lock_resource) as got_lock:
-            if not got_lock:
-                raise RuntimeError(
-                    f"Could not acquire identity-stamp lock for Attachment {attachment_id} "
-                    f"(qbo_id={qbo_id}, realm_id={realm_id}) — holding for retry without stamping."
-                )
-            current = self.attachment_service.read_by_id(attachment_id)
-            if current and current.qbo_id and not (
-                current.qbo_id == qbo_id and (getattr(current, "realm_id", None) or "") == (realm_id or "")
-            ):
-                raise ValueError(
-                    f"Attachment {attachment_id} already carries QBO identity {current.qbo_id} "
-                    f"(realm {getattr(current, 'realm_id', None)}) — refusing to overwrite it with "
-                    f"qbo_id={qbo_id} realm_id={realm_id}"
-                )
-            self.attachment_service.repo.set_qbo_identity(id=attachment_id, qbo_id=qbo_id, realm_id=realm_id)
-            return self.attachment_service.read_by_id(attachment_id)
+        return stamp_dbo_identity_with_lock(
+            candidate_id=attachment_id,
+            entity_label="Attachment",
+            qbo_id=qbo_id,
+            realm_id=realm_id,
+            read_by_id=self.attachment_service.read_by_id,
+            write_identity=lambda c: self.attachment_service.repo.set_qbo_identity(
+                id=c.id, qbo_id=qbo_id, realm_id=realm_id,
+            ),
+            on_conflict=lambda c: self._raise_duplicate_qbo_attachment_issue(
+                attachment_id=attachment_id, qbo_id=qbo_id, realm_id=realm_id,
+                local_attachment=c, existing_qbo_id=c.qbo_id,
+            ),
+        )
+
+    def _raise_duplicate_qbo_attachment_issue(
+        self, *, attachment_id: int, qbo_id: str, realm_id: str,
+        local_attachment: Attachment, existing_qbo_id: str,
+    ) -> None:
+        """
+        Record a stamp-time theft-guard trip on qbo.ReconciliationIssue
+        (Decision 2, U-328/U-331) — closes the recording asymmetry
+        `stamp-lock-helper.md` D2 flagged: Customer/Project/Vendor already
+        recorded this class of race at stamp time, Attachment did not. Uses
+        the dedicated `attachment_identity_conflict` DriftType (registered in
+        drift_types.py, previously unused) rather than the push-side
+        `attachment_mapping_orphaned`/`attachment_upload_failed` types, which
+        describe a different failure shape (a push-side race, not a pull-side
+        hash-dedupe candidate race). No existing pull-side resolve-time
+        recorder to unify with here (unlike CostCode/SubCostCode's reused
+        `_raise_duplicate_qbo_item_issue`) — Attachment's `resolve_candidate`
+        (hash-dedupe) has no side-channel duplicate-identity check of its own.
+        """
+        details = (
+            f"Attachment stamp-time identity conflict. Candidate Attachment {attachment_id} "
+            f"already carries QboId={existing_qbo_id} (realm "
+            f"{getattr(local_attachment, 'realm_id', None)!r}) and cannot be re-stamped with "
+            f"qbo_id={qbo_id} realm_id={realm_id}. Resolve by merging or restoring the correct mapping."
+        )
+        record_mapping_issue(
+            self.reconciliation_repo,
+            drift_type="attachment_identity_conflict",
+            entity_type="Attachment",
+            entity_public_id=(
+                str(local_attachment.public_id) if getattr(local_attachment, "public_id", None) else None
+            ),
+            qbo_id=str(qbo_id) if qbo_id else None,
+            realm_id=realm_id or "",
+            details=details,
+        )
 
     def _mark_pending_extraction(self, attachment_id: int) -> None:
         """Flag a synced Attachment for text extraction (U-187). Failure-isolated:

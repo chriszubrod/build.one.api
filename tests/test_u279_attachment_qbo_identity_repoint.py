@@ -175,10 +175,10 @@ def _build_connector():
 
 
 LOCK_PATCH_TARGET = "integrations.intuit.qbo.base.identity_fastpath.qbo_app_lock"
-# _stamp_pulled_identity acquires ITS OWN app lock directly (not through
-# run_identity_fastpath_dbo_only's own create lock) — a separate import in
-# the connector module, so it needs its own, separate patch target.
-STAMP_LOCK_PATCH_TARGET = f"{ATT_CONNECTOR_MODULE}.qbo_app_lock"
+# _stamp_pulled_identity's own lock now lives in the shared
+# stamp_dbo_identity_with_lock (U-328/U-331) inside identity_fastpath.py --
+# same target as the create lock above, not a separate connector-module import.
+STAMP_LOCK_PATCH_TARGET = LOCK_PATCH_TARGET
 
 
 def _granted_lock(*_args, **_kwargs):
@@ -379,15 +379,19 @@ def test_lock_resource_key_matches_dbo_only_namespace():
 
     recorded = []
 
-    with patch(LOCK_PATCH_TARGET, side_effect=_recording_lock_factory(recorded)), patch(
-        STAMP_LOCK_PATCH_TARGET, side_effect=_granted_lock
-    ), patch.object(connector, "_download_from_qbo", return_value=b"file-bytes"), patch.object(
-        connector, "_upload_to_blob", return_value="https://blob/new.pdf"
-    ):
+    # LOCK_PATCH_TARGET and STAMP_LOCK_PATCH_TARGET are now the SAME name
+    # (both locks live in identity_fastpath.py, U-328/U-331) -- one recording
+    # patch captures both acquisitions, in order.
+    with patch(LOCK_PATCH_TARGET, side_effect=_recording_lock_factory(recorded)), patch.object(
+        connector, "_download_from_qbo", return_value=b"file-bytes"
+    ), patch.object(connector, "_upload_to_blob", return_value="https://blob/new.pdf"):
         attachment_service.calculate_hash.return_value = "hash123"
         connector.sync_from_qbo_attachable(qbo_attachable, "realm-1")
 
-    assert recorded == ["qbo_dbo_identity_create:Attachment:QBO-ATT-99:realm-1"]
+    assert recorded == [
+        "qbo_dbo_identity_create:Attachment:QBO-ATT-99:realm-1",
+        "qbo_dbo_identity_stamp:Attachment:77",
+    ]
 
 
 def test_race_discovered_under_lock_adopts_racer_without_touching_create_path():
@@ -443,8 +447,11 @@ def test_stamp_pulled_identity_refuses_to_overwrite_a_different_existing_identit
     hash-dedupe integration test above): a pre-stamp read_by_id showing a
     DIFFERENT qbo_id already on the row must raise, never call
     set_qbo_identity. An exact-match pre-existing identity (the coincidental
-    already-correct case) is allowed through, not raised."""
-    connector, attachment_service, _ = _build_connector()
+    already-correct case) is allowed through, not raised. Also proves the
+    new Decision-2 on_conflict wiring (U-328/U-331) records a
+    ReconciliationIssue on this race — Attachment had no such recording
+    before this unit (Codex xhigh P3 finding on the stamp-lock-helper diff)."""
+    connector, attachment_service, reconciliation_repo = _build_connector()
     attachment_service.read_by_id.return_value = _make_direct_attachment(
         id=77, qbo_id="QBO-ATT-OTHER", realm_id="realm-1"
     )
@@ -454,6 +461,8 @@ def test_stamp_pulled_identity_refuses_to_overwrite_a_different_existing_identit
             connector._stamp_pulled_identity(attachment_id=77, qbo_id="QBO-ATT-99", realm_id="realm-1")
 
     attachment_service.repo.set_qbo_identity.assert_not_called()
+    reconciliation_repo.create.assert_called_once()
+    assert reconciliation_repo.create.call_args.kwargs["drift_type"] == "attachment_identity_conflict"
 
 
 def test_stamp_pulled_identity_allows_exact_match_through():

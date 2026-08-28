@@ -680,6 +680,126 @@ def run_identity_fastpath_dbo_only(
         return FastPathOutcome(hit=True, entity=stamped)
 
 
+def stamp_dbo_identity_with_lock(
+    *,
+    candidate_id: int,
+    entity_label: str,
+    qbo_id: str,
+    realm_id: Optional[str],
+    read_by_id: Callable[[int], Any],
+    write_identity: Callable[[Any], None],
+    apply_fields: Optional[Callable[[Any], Optional[Any]]] = None,
+    on_conflict: Optional[Callable[[Any], None]] = None,
+    lock_timeout_ms: int = 15000,
+) -> Optional[Any]:
+    """
+    Stamp a QBO identity onto a candidate row under a row-scoped app lock
+    (U-328/U-331 — `docs/design/stamp-lock-helper.md`), for a
+    `run_identity_fastpath_dbo_only` MISS branch whose `resolve_candidate`
+    binds by a side-channel business key (hash, number, name) rather than by
+    `qbo_id`.
+
+    Why a SECOND lock, nested inside `run_identity_fastpath_dbo_only`'s own
+    `qbo_dbo_identity_create:*` lock: that outer lock is keyed on the
+    INCOMING (qbo_id, realm_id) being resolved, so it only serializes two
+    racers for the SAME external record. Two DIFFERENT incoming QBO records
+    (different qbo_ids — no contention on the outer lock) can still resolve
+    to the SAME local candidate row via `resolve_candidate`'s side-channel
+    key. This lock, keyed on the candidate row itself, is what serializes
+    those two racers against each other.
+
+    Mechanically extracted from six hand-copies (design doc §1/§3):
+      1. Acquire `qbo_dbo_identity_stamp:{entity_label}:{candidate_id}`;
+         fail closed (RuntimeError) on a timeout — never stamps under
+         uncertainty.
+      2. Re-read the candidate via `read_by_id`.
+      3. `current is None` → return None (a concurrent delete stole the row
+         out from under `resolve_candidate`) — the caller's own
+         `stamped is None` check turns this into
+         `raise_concurrent_write_race`, same as every other MISS-path None.
+      4. Theft-guard: refuse to overwrite a DIFFERENT existing identity,
+         calling `on_conflict(current)` first if provided, then raising
+         ValueError. Checking QboId alone would miss a same-QboId-different-
+         realm collision (QBO ids are only unique WITHIN a realm).
+      5. `apply_fields(current)` if provided — the family's own QBO-derived
+         field write, deferred to HERE (after the theft-guard, inside the
+         lock) so two racers landing on the same candidate can't each write
+         their own incoming values before either wins the identity stamp.
+         A `None` return (a ROWVERSION race / concurrent delete on THIS
+         update) raises via `raise_concurrent_write_race` — the guard
+         Customer/Project already hand-rolled here, now also closing the
+         same gap for CostCode/SubCostCode, whose hand-copies discarded
+         `update_by_id`'s return value entirely (a previously-silent race
+         now raises and holds for retry instead).
+      6. `write_identity(current)` — the family's own `set_qbo_identity`
+         call, plus any same-lock side effect (Project's/Vendor's own
+         `_sync_addresses`) the closure chooses to bundle in.
+      7. Re-read and return the refreshed row.
+
+    Args:
+        candidate_id: the row to stamp, already coerced to `int` by the
+            caller (mirrors every hand-copy's own `coerce_id(candidate.id)`).
+        entity_label: log/lock-namespace noun, e.g. "CostCode".
+        qbo_id / realm_id: the incoming identity to stamp.
+        read_by_id: the family's own `read_by_id` closure.
+        write_identity: `(current) -> None`, the family's `set_qbo_identity`
+            call. Kwargs are NOT uniform across families (e.g. `active=`
+            only applies to a family with a `QboActive` mirror), so this
+            stays a plain callable rather than a fixed helper param.
+        apply_fields: `(current) -> Optional[Any]`, the family's QBO-derived
+            field write. Omit for a family with nothing to write here
+            (Attachment, Vendor).
+        on_conflict: `(current) -> None`, called before the theft-guard's
+            raise, for a family that wants a `ReconciliationIssue` recorded
+            on a stamp-time race. Optional so a family need not grow one
+            just to adopt this helper.
+        lock_timeout_ms: forwarded to `qbo_app_lock`.
+
+    Returns:
+        The refreshed row (post `read_by_id`), or None when `current is
+        None` at step 3.
+
+    Raises:
+        RuntimeError: on a lock-acquire timeout, or via
+            `raise_concurrent_write_race` when `apply_fields` returns None.
+        ValueError: on a detected theft-guard conflict, after `on_conflict`
+            (when provided) has recorded it.
+    """
+    lock_resource = f"qbo_dbo_identity_stamp:{entity_label}:{candidate_id}"
+    with qbo_app_lock(lock_resource, timeout_ms=lock_timeout_ms) as got_lock:
+        if not got_lock:
+            raise RuntimeError(
+                f"Could not acquire identity-stamp lock for {entity_label} {candidate_id} "
+                f"(qbo_id={qbo_id}, realm_id={realm_id}) — holding for retry without stamping."
+            )
+
+        current = read_by_id(candidate_id)
+        if current is None:
+            return None
+
+        existing_qbo_id = getattr(current, "qbo_id", None)
+        if existing_qbo_id and not (
+            existing_qbo_id == qbo_id and (getattr(current, "realm_id", None) or "") == (realm_id or "")
+        ):
+            if on_conflict is not None:
+                on_conflict(current)
+            raise ValueError(
+                f"{entity_label} {candidate_id} already carries QBO identity {existing_qbo_id} "
+                f"(realm {getattr(current, 'realm_id', None)}) — refusing to overwrite it with "
+                f"qbo_id={qbo_id} realm_id={realm_id}"
+            )
+
+        if apply_fields is not None:
+            updated = apply_fields(current)
+            if updated is None:
+                raise_concurrent_write_race(
+                    entity_label=entity_label, entity_id=candidate_id, path_label="identity stamp",
+                )
+
+        write_identity(current)
+        return read_by_id(candidate_id)
+
+
 def run_line_identity_fastpath(
     *,
     parent_local_id: int,

@@ -185,9 +185,10 @@ def _make_qbo_term(**overrides: Any) -> QboTerm:
 # of the shared parametrizations below runs its sync inside granted-lock
 # patches -- mirrors the customer builder's identical U-310 fix below.
 FASTPATH_LOCK_TARGET = "integrations.intuit.qbo.base.identity_fastpath.qbo_app_lock"
-VENDOR_STAMP_LOCK_TARGET = (
-    "integrations.intuit.qbo.vendor.connector.vendor.business.service.qbo_app_lock"
-)
+# Each family's own stamp lock now lives in the shared
+# stamp_dbo_identity_with_lock (U-328/U-331) inside identity_fastpath.py --
+# same target as the create lock above, not a separate connector-module import.
+VENDOR_STAMP_LOCK_TARGET = FASTPATH_LOCK_TARGET
 
 
 def _build_vendor_connector() -> VendorVendorConnector:
@@ -224,9 +225,7 @@ def _build_vendor_connector() -> VendorVendorConnector:
     return connector
 
 
-CUST_STAMP_LOCK_TARGET = (
-    "integrations.intuit.qbo.customer.connector.customer.business.service.qbo_app_lock"
-)
+CUST_STAMP_LOCK_TARGET = FASTPATH_LOCK_TARGET
 
 
 def _build_customer_connector() -> CustomerCustomerConnector:
@@ -261,9 +260,7 @@ def _build_customer_connector() -> CustomerCustomerConnector:
     return connector
 
 
-PROJECT_STAMP_LOCK_TARGET = (
-    "integrations.intuit.qbo.customer.connector.project.business.service.qbo_app_lock"
-)
+PROJECT_STAMP_LOCK_TARGET = FASTPATH_LOCK_TARGET
 
 
 def _build_project_connector() -> CustomerProjectConnector:

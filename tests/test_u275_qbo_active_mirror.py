@@ -139,9 +139,10 @@ def _make_qbo_item(**overrides: Any) -> QboItem:
 # ------------------------------------------------------------------------- #
 
 VENDOR_FASTPATH_LOCK_TARGET = "integrations.intuit.qbo.base.identity_fastpath.qbo_app_lock"
-VENDOR_STAMP_LOCK_TARGET = (
-    "integrations.intuit.qbo.vendor.connector.vendor.business.service.qbo_app_lock"
-)
+# _stamp_vendor_identity's own lock now lives in the shared
+# stamp_dbo_identity_with_lock (U-328/U-331) inside identity_fastpath.py --
+# same target as the create lock above, not a separate connector-module import.
+VENDOR_STAMP_LOCK_TARGET = VENDOR_FASTPATH_LOCK_TARGET
 
 
 def _build_vendor_connector():
@@ -256,9 +257,10 @@ def test_payment_term_create_path_threads_active():
 # ------------------------------------------------------------------------- #
 
 SCC_FASTPATH_LOCK_TARGET = "integrations.intuit.qbo.base.identity_fastpath.qbo_app_lock"
-SCC_STAMP_LOCK_TARGET = (
-    "integrations.intuit.qbo.item.connector.sub_cost_code.business.service.qbo_app_lock"
-)
+# _stamp_sub_cost_code_identity's own lock now lives in the shared
+# stamp_dbo_identity_with_lock (U-328/U-331) inside identity_fastpath.py --
+# same target as the create lock above, not a separate connector-module import.
+SCC_STAMP_LOCK_TARGET = SCC_FASTPATH_LOCK_TARGET
 
 
 def _build_sub_cost_code_connector():

@@ -172,7 +172,9 @@ BEGIN
         CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
         [Name],
         [Email],
-        [Phone]
+        [Phone],
+        [QboId],
+        [RealmId]
     FROM dbo.[Customer]
     WHERE [Name] = @Name;
 

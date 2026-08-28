@@ -28,14 +28,19 @@ Carry-over items from sessions. Check off as done; prune anything stale.
 
 ## U-310 follow-ups (Customer Wave-5 dbo-only repoint) — deferred, not scope-creeped in (2026-08-24)
 
-- [ ] **`ReadCustomerByName` doesn't SELECT `[QboId]`/`[RealmId]`** (`entities/customer/sql/dbo.customer.sql`)
-  — unlike CostCode's `vw_CostCode` (which `ReadCostCodeByNumber` reads from and which DOES project identity),
-  so `CustomerCustomerConnector._resolve_customer_candidate`'s own duplicate-QboId guard is provably dead
-  against a real DB read; only `_stamp_customer_identity`'s `read_by_id`-based re-read (which does carry those
-  columns) ever actually fires in production (Codex round-1 P2, fixed by also guarding at the stamp site — see
-  `_check_no_conflicting_identity`). Fix, if picked up: add `[QboId]`, `[RealmId]` to `ReadCustomerByName`'s
-  SELECT list (mechanical, matches `ReadCustomerById`'s shape) — a SQL change, needs its own DBA-reviewed unit,
-  not bundled into this Python-only repoint.
+- [x] **DONE (U-326, 2026-08-28): `ReadCustomerByName` doesn't SELECT `[QboId]`/`[RealmId]`**
+  (`entities/customer/sql/dbo.customer.sql`) — unlike CostCode's `vw_CostCode` (which `ReadCostCodeByNumber`
+  reads from and which DOES project identity), so `CustomerCustomerConnector._resolve_customer_candidate`'s own
+  duplicate-QboId guard is provably dead against a real DB read; only `_stamp_customer_identity`'s
+  `read_by_id`-based re-read (which does carry those columns) ever actually fires in production (Codex round-1
+  P2, fixed by also guarding at the stamp site — see `_check_no_conflicting_identity`). Base file fixed to add
+  `[QboId]`, `[RealmId]` to `ReadCustomerByName`'s SELECT list (matches `ReadCustomerById`'s shape exactly);
+  base==live confirmed the other 8 sprocs in the file are drift-free and this is the only difference. **SQL
+  staged, not yet applied** — `scripts/migrations/u326_customer_read_by_name_qbo_projection.sql`, owed to /em
+  per `feedback_builders_never_mutate_prod_data`. Same fix still owed for `ReadVendorByName`
+  (`entities/vendor/sql/dbo.vendor.sql`, U-313's identical finding, below) and `ReadProjectByName`/
+  `ReadProjects`/`ReadProjectByPublicId` (`entities/project/sql/dbo.project.sql`, U-312's finding, below) — not
+  bundled into this unit per its own strict single-sproc scope.
 - [ ] **`run_identity_fastpath_dbo_only` (`integrations/intuit/qbo/base/identity_fastpath.py`) has no
   structural hook for a `stamp_identity`-returned-`None` ROWVERSION race**, unlike its HIT-branch
   `on_apply_returned_none` (which the primitive itself auto-invokes). U-310's `_stamp_customer_identity` had to

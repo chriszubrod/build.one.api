@@ -2,6 +2,27 @@
 
 Carry-over items from sessions. Check off as done; prune anything stale.
 
+## Post-migration follow-up wave — booked 2026-08-28 (after the trust-dbo migration + its 5-unit follow-up wave shipped/deployed/applied)
+
+- [ ] **`ReadProjectsByUserId` doesn't SELECT `[QboId]`/`[RealmId]`** (`entities/project/sql/dbo.project.sql`) — the
+  identical gap U-327 closed 2026-08-28 for `ReadProjects`/`ReadProjectByPublicId`/`ReadProjectByName`, left out of
+  scope there. Latent, not live-broken (no current caller reads `.qbo_id` off a `ReadProjectsByUserId`-sourced row).
+  Fix: add `[QboId]`, `[RealmId]` to its SELECT list, matching `ReadProjectById`'s shape (the existing repo `_from_db`
+  already maps them). ⚠️ **Follow the standing SQL-hygiene rule** (learned this wave): project's read sprocs are under
+  the U-050 single-source guard + the U-107 duplicate-sproc ratchet — commit ONLY the single-sourced base-file change,
+  stage the run-ready extract in **scratchpad** (never a committed `scripts/migrations/*.sql` — that trips both guards),
+  and /em regenerates the extract from the base file at apply time. DBA-reviewed SQL unit.
+
+- [ ] **Recorder-boilerplate consolidation — 6+ near-identical per-family `ReconciliationIssue` recorders.** Flagged by
+  U-331's `/simplify` (2026-08-28): each QBO connector's `_raise_duplicate_*_issue` / `_raise_*_conflict_issue` hand-rolls
+  a `record_mapping_issue(...)` call with only a family-specific `drift_type`/`details` string differing. U-218a already
+  extracted the low-level fail-isolated insert into `integrations/intuit/qbo/base/reconciliation_recorder.py::record_mapping_issue`;
+  the higher-level per-family recorders are still hand-copied. U-331's stamp-lock extraction made the `on_conflict` recorder
+  pattern uniform across all 6 dbo-only stamp connectors, sharpening the case. Consolidate the family-specific recorders into
+  one shared shape (entity label + drift_type + a details closure). Own unit — touches the shared `base/` recorder + multiple
+  connectors, so **design-gated (two-phase)**. Related to the existing U-214(b) heal+recorder-helper booking further below
+  (same "hand-copied recorder" class; check whether they should be one unit).
+
 ## U-316 follow-up (dbo-only identity fast path ROWVERSION hardening) — deferred, not scope-creeped in (2026-08-25)
 
 - [ ] **Vendor/Customer/Project QBO pull staging lacks an explicit falsy-id guard that Item/Attachable already

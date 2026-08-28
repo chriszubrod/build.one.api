@@ -291,7 +291,9 @@ BEGIN
         v.[HourlyRate],
         v.[Markup],
         v.[TrackCompliance],
-        v.[QboActive]
+        v.[QboActive],
+        v.[QboId],
+        v.[RealmId]
     FROM dbo.[Vendor] v
     WHERE v.[Name] = @Name AND v.[IsDeleted] = 0;
 END;
@@ -314,21 +316,11 @@ CREATE OR ALTER PROCEDURE UpdateVendorById
 )
 AS
 BEGIN
+    -- NOCOUNT is load-bearing for pyodbc: without it, DML row-count tokens
+    -- arrive as the first "result" and fetchone() never reaches the SELECT.
+    SET NOCOUNT ON;
+
     BEGIN TRANSACTION;
-
-    IF NOT EXISTS (SELECT 1 FROM dbo.[Vendor] WHERE [Id] = @Id AND [IsDeleted] = 0)
-    BEGIN
-        ROLLBACK TRANSACTION;
-        RAISERROR('Vendor not found.', 16, 1);
-        RETURN;
-    END
-
-    IF NOT EXISTS (SELECT 1 FROM dbo.[Vendor] WHERE [Id] = @Id AND [RowVersion] = @RowVersion AND [IsDeleted] = 0)
-    BEGIN
-        ROLLBACK TRANSACTION;
-        RAISERROR('Concurrency conflict: the vendor record has been modified by another user. Please refresh and try again.', 16, 1);
-        RETURN;
-    END
 
     DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();
 
@@ -340,6 +332,16 @@ BEGIN
     -- Note: this means there's no way to set HourlyRate/Markup back to NULL
     -- via this sproc once they're populated. If that becomes needed, add a
     -- separate ClearVendorRate sproc.
+    --
+    -- Validate-first / always-COMMIT shape (no in-proc ROLLBACK — pyodbc
+    -- runs autocommit-off, so an in-proc ROLLBACK zeroes the implicit outer
+    -- transaction and SQL Server raises error 266 on RETURN). RowVersion +
+    -- IsDeleted are checked in the WHERE; zero matched rows (not found,
+    -- soft-deleted, or a stale RowVersion) means OUTPUT returns an empty
+    -- result set, which the service raises as a concurrency conflict —
+    -- mirrors UpdateBudgetRevisionById's shape (single UPDATE...OUTPUT, no
+    -- separate final SELECT needed since this sproc, unlike
+    -- UpdateBudgetRevisionById, projects no joined columns).
     UPDATE dbo.[Vendor]
     SET
         [ModifiedDatetime] = @Now,
@@ -370,8 +372,10 @@ BEGIN
         INSERTED.[HourlyRate],
         INSERTED.[Markup],
         INSERTED.[TrackCompliance]
-    WHERE [Id] = @Id AND [RowVersion] = @RowVersion;
+    WHERE [Id] = @Id AND [RowVersion] = @RowVersion AND [IsDeleted] = 0;
 
+    -- Unconditional COMMIT: an in-proc ROLLBACK would zero pyodbc's implicit
+    -- outer txn (error 266), even on the zero-rows-updated path.
     COMMIT TRANSACTION;
 END;
 GO

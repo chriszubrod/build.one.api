@@ -266,7 +266,12 @@ class VendorService:
                 else:
                     existing.vendor_type_id = None
 
-        return self.repo.update_by_id(existing)
+        updated = self.repo.update_by_id(existing)
+        if updated is None:
+            raise ValueError(
+                "Concurrency conflict: Vendor has been modified by another user."
+            )
+        return updated
 
     def delete_by_public_id(self, public_id: str, *, tenant_id: int = None) -> Optional[Vendor]:
         """

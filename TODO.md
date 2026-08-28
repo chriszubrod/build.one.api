@@ -70,16 +70,24 @@ Carry-over items from sessions. Check off as done; prune anything stale.
 
 ## U-313 follow-ups (Vendor Wave-5 dbo-only repoint) — deferred, not scope-creeped in (2026-08-24)
 
-- [ ] **`ReadVendorByName` doesn't SELECT `[QboId]`/`[RealmId]`** (`entities/vendor/sql/dbo.vendor.sql`) — the
-  same gap U-310 found and TODO'd for Customer's `ReadCustomerByName` (see above), now confirmed for Vendor too
-  (`/simplify` reuse+simplification lenses, 2026-08-24): `VendorVendorConnector._resolve_vendor_candidate`'s own
-  duplicate-QboId guard (folded into the shared `_check_no_conflicting_vendor_identity`, mirroring
-  `CustomerCustomerConnector._check_no_conflicting_identity`) is provably dead against a real DB read; only
-  `_stamp_vendor_identity`'s `read_by_id`-based re-read (which DOES carry those columns, per `ReadVendorById`'s
-  SELECT list) ever actually fires in production. Fix, if picked up: add `[QboId]`, `[RealmId]` to
-  `ReadVendorByName`'s SELECT list (mechanical, matches `ReadVendorById`'s shape) — a SQL change, needs its own
-  DBA-reviewed unit, not bundled into this Python-only repoint. If/when U-310's identical `ReadCustomerByName`
-  fix is picked up, do both together (same root cause, same fix shape).
+- [x] **DONE (U-330, 2026-08-28): `ReadVendorByName` doesn't SELECT `[QboId]`/`[RealmId]`**
+  (`entities/vendor/sql/dbo.vendor.sql`) — the same gap U-310 found and TODO'd for Customer's
+  `ReadCustomerByName` (U-326, above), confirmed for Vendor too (`/simplify` reuse+simplification lenses,
+  2026-08-24): `VendorVendorConnector._resolve_vendor_candidate`'s own duplicate-QboId guard (folded into the
+  shared `_check_no_conflicting_vendor_identity`, mirroring `CustomerCustomerConnector.
+  _check_no_conflicting_identity`) was provably dead against a real DB read; only `_stamp_vendor_identity`'s
+  `read_by_id`-based re-read (which DOES carry those columns) ever actually fires in production. Base file
+  fixed to add `[QboId]`, `[RealmId]` to `ReadVendorByName`'s SELECT list (matches `ReadVendorById`'s shape
+  exactly); base==live confirmed all 12 sprocs in the file were drift-free before this change and this is the
+  only difference. **Bundled into the same unit**: `UpdateVendorById`'s in-sproc `ROLLBACK TRANSACTION`
+  (error-266 trap, flagged during the trust-dbo migration) was also converted to the validate-first /
+  always-COMMIT shape (`entities/budget_revision/sql/dbo.budget_revision.sql`'s canonical pattern) — same
+  file, one unit. **No migration file committed** — a committed `scripts/migrations/*.sql` extract for these
+  sprocs trips the U-107 duplicate-sproc ratchet test (`tests/test_sproc_single_source.py`), same as U-326/
+  U-327 before it. The run-ready 2-sproc extracts for /em's surgical apply live in the session scratchpad
+  instead, regenerable from this unit's base-file diff at apply time. Same `ReadXByName` gap still owed for
+  `ReadProjectByName`/`ReadProjects`/`ReadProjectByPublicId` (`entities/project/sql/dbo.project.sql`, U-312's
+  finding, below) — not bundled into this unit per its own strict two-sproc scope.
 - [ ] **P1 soft-delete-holds-identity guard is family-local, not on the shared primitive** (`/simplify` altitude
   lens, 2026-08-24). `VendorVendorConnector._resolve_vendor_candidate` now checks `read_deleted_by_qbo_identity`
   before create/adopt (a Vendor soft-deleted locally while still active in QBO must not be silently

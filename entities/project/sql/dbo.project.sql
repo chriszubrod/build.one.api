@@ -146,7 +146,9 @@ BEGIN
         [Status],
         [CustomerId],
         [Abbreviation],
-        [Notes]
+        [Notes],
+        [QboId],
+        [RealmId]
     FROM dbo.[Project] p
     WHERE
         @ActorIsSystemAdmin = 1
@@ -225,7 +227,9 @@ BEGIN
         [Status],
         [CustomerId],
         [Abbreviation],
-        [Notes]
+        [Notes],
+        [QboId],
+        [RealmId]
     FROM dbo.[Project] p
     WHERE [PublicId] = @PublicId
       AND (
@@ -264,7 +268,9 @@ BEGIN
         [Status],
         [CustomerId],
         [Abbreviation],
-        [Notes]
+        [Notes],
+        [QboId],
+        [RealmId]
     FROM dbo.[Project] p
     WHERE [Name] = @Name
       AND (

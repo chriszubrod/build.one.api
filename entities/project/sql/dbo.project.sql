@@ -400,7 +400,9 @@ BEGIN
             p.[Status],
             p.[CustomerId],
             p.[Abbreviation],
-            p.[Notes]
+            p.[Notes],
+            p.[QboId],
+            p.[RealmId]
         FROM dbo.[Project] p
         ORDER BY p.[Name] ASC;
     END
@@ -417,7 +419,9 @@ BEGIN
             p.[Status],
             p.[CustomerId],
             p.[Abbreviation],
-            p.[Notes]
+            p.[Notes],
+            p.[QboId],
+            p.[RealmId]
         FROM dbo.[Project] p
         INNER JOIN dbo.[UserProject] up ON up.[ProjectId] = p.[Id]
         WHERE up.[UserId] = @UserId

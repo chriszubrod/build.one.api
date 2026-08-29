@@ -11,15 +11,17 @@ Carry-over items from sessions. Check off as done; prune anything stale.
   read-through/degrade-safe). Single-sourced base-file change only; extract staged in scratchpad, applied live via
   `CREATE OR ALTER` (verified live == committed, CREATE-normalized). Read-sproc SELECT change — no code deploy needed.
 
-- [ ] **Recorder-boilerplate consolidation — 6+ near-identical per-family `ReconciliationIssue` recorders.** Flagged by
-  U-331's `/simplify` (2026-08-28): each QBO connector's `_raise_duplicate_*_issue` / `_raise_*_conflict_issue` hand-rolls
-  a `record_mapping_issue(...)` call with only a family-specific `drift_type`/`details` string differing. U-218a already
-  extracted the low-level fail-isolated insert into `integrations/intuit/qbo/base/reconciliation_recorder.py::record_mapping_issue`;
-  the higher-level per-family recorders are still hand-copied. U-331's stamp-lock extraction made the `on_conflict` recorder
-  pattern uniform across all 6 dbo-only stamp connectors, sharpening the case. Consolidate the family-specific recorders into
-  one shared shape (entity label + drift_type + a details closure). Own unit — touches the shared `base/` recorder + multiple
-  connectors, so **design-gated (two-phase)**. Related to the existing U-214(b) heal+recorder-helper booking further below
-  (same "hand-copied recorder" class; check whether they should be one unit).
+- [ ] **Recorder-boilerplate consolidation — ~16 near-identical per-family `ReconciliationIssue` recorders.** Flagged by
+  U-331's `/simplify` (2026-08-28). **📐 DESIGN WRITTEN 2026-08-29 (U-333) → `docs/design/u333-recorder-consolidation.md`,
+  awaiting /em Gate-2 before build dispatch.** Survey found the `_raise_*` recorders are ALL misnamed (none raise — the
+  fastpath/caller owns the raise), so this is a clean behavior-preserving seam. Design: 2 shared free functions in
+  `base/reconciliation_recorder.py` — `record_identity_mapping_conflict` (Shapes A+B, 11 connectors) +
+  `record_duplicate_identity_conflict` (Shape C, 5 incl. project); each wrapper collapses to a 3–5 line literal-forwarding
+  call; **the AST width-guard (`tests/test_qbo_reconciliation_recorder.py`) must be updated in lockstep** to discover the two
+  new call-site names (it's already pre-wired for a `_record_reconciliation_issue` seam). 4 genuine one-offs (deleted-vendor,
+  blank-display-name, attachment orphaned/upload-failed) scoped OUT. **Verdict on U-214(b): KEEP SEPARATE** — U-333 is the
+  recorder-wrapper layer (all already call `record_mapping_issue`); U-214(b) is the heal-branch control-flow layer below it.
+  Pure Python, no SQL. Own unit — touches shared `base/` + ~16 connectors + the guard, so **design-gated (two-phase)**.
 
 ## U-316 follow-up (dbo-only identity fast path ROWVERSION hardening) — deferred, not scope-creeped in (2026-08-25)
 

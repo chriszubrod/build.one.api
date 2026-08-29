@@ -461,7 +461,7 @@ def test_cost_code_lock_resource_key_matches_dbo_only_namespace():
 
 def test_cost_code_stamp_identity_refuses_to_overwrite_different_existing_identity():
     """Also proves the new Decision-2 on_conflict wiring (U-328/U-331) reuses
-    `_raise_duplicate_qbo_item_issue` (the SAME recorder/DriftType
+    `_record_duplicate_qbo_item_issue` (the SAME recorder/DriftType
     resolve_candidate's own number-match guard already uses) on this
     stamp-time race — Codex xhigh P3 finding on the stamp-lock-helper diff."""
     connector, cost_code_service, reconciliation_repo = _build_cost_code_connector()
@@ -923,7 +923,7 @@ def test_sub_cost_code_lock_resource_key_matches_dbo_only_namespace():
 
 def test_sub_cost_code_stamp_identity_refuses_to_overwrite_different_existing_identity():
     """Also proves the new Decision-2 on_conflict wiring (U-328/U-331) reuses
-    `_raise_duplicate_qbo_item_issue` (the SAME recorder/DriftType
+    `_record_duplicate_qbo_item_issue` (the SAME recorder/DriftType
     resolve_candidate's own number-match guard already uses) on this
     stamp-time race — Codex xhigh P3 finding on the stamp-lock-helper diff."""
     connector, sub_cost_code_service, _, reconciliation_repo = _build_sub_cost_code_connector()

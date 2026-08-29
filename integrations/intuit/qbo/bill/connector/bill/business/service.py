@@ -40,7 +40,10 @@ from integrations.intuit.qbo.base.identity_fastpath import (
     run_identity_fastpath,
 )
 from integrations.intuit.qbo.base.ids import coerce_id
-from integrations.intuit.qbo.base.reconciliation_recorder import record_mapping_issue
+from integrations.intuit.qbo.base.reconciliation_recorder import (
+    record_identity_mapping_conflict,
+    record_mapping_issue,
+)
 from integrations.intuit.qbo.base.cost_code_resolver import resolve_qbo_item_ref
 from integrations.intuit.qbo.reconciliation.persistence.repo import ReconciliationIssueRepository
 from entities.sub_cost_code.business.service import SubCostCodeService
@@ -223,7 +226,7 @@ class BillBillConnector:
             read_by_external_id=self.mapping_repo.read_by_qbo_bill_id,
             external_id_attr="qbo_bill_id",
             record_conflict_issue=lambda entity, by_local, by_external: (
-                self._raise_identity_mapping_conflict_issue(
+                self._record_identity_mapping_conflict_issue(
                     qbo_bill=qbo_bill,
                     dbo_bill_id=coerce_id(entity.id),
                     local_side_mapping=by_local,
@@ -387,7 +390,7 @@ class BillBillConnector:
             details=details,
         )
 
-    def _raise_identity_mapping_conflict_issue(
+    def _record_identity_mapping_conflict_issue(
         self,
         *,
         qbo_bill: QboBill,
@@ -395,37 +398,21 @@ class BillBillConnector:
         local_side_mapping: Optional[BillBill],
         qbo_side_mapping: Optional[BillBill],
     ) -> None:
-        """
-        Record a dbo-identity <-> mapping-table split found by run_identity_fastpath's
-        resolve_mapping_state. Mirrors CompanyInfoCompanyConnector's identically named/
-        shaped method — covers all three conflict shapes (qbo-side only, local-side
-        only, or both) in ONE issue, never silently dropping either side's blocker.
-        """
-        parts = [
-            f"BillBill identity conflict. dbo.Bill {dbo_bill_id} carries native QBO "
-            f"identity for QboBill {qbo_bill.id} (QboId={qbo_bill.qbo_id}, "
-            f"RealmId={qbo_bill.realm_id})."
-        ]
-        if qbo_side_mapping:
-            parts.append(
-                f"qbo-side: the mapping table still binds that same QboBill to a "
-                f"DIFFERENT Bill {qbo_side_mapping.bill_id} (mapping {qbo_side_mapping.id})."
-            )
-        if local_side_mapping:
-            parts.append(
-                f"local-side: Bill {dbo_bill_id}'s own mapping row (mapping "
-                f"{local_side_mapping.id}) still binds it to a DIFFERENT QboBill "
-                f"{local_side_mapping.qbo_bill_id}."
-            )
-        parts.append("Not auto-repointed — investigate which side is correct.")
-        record_mapping_issue(
+        record_identity_mapping_conflict(
             self.reconciliation_repo,
             drift_type="bill_identity_conflict",
             entity_type="Bill",
-            entity_public_id=None,
-            qbo_id=str(qbo_bill.qbo_id) if qbo_bill.qbo_id else None,
-            realm_id=qbo_bill.realm_id or "",
-            details=" ".join(parts),
+            mapping_label="BillBill",
+            qbo_label="QboBill",
+            dbo_id=dbo_bill_id,
+            qbo_row_id=qbo_bill.id,
+            raw_qbo_id=qbo_bill.qbo_id,
+            raw_realm_id=qbo_bill.realm_id,
+            realm_id=qbo_bill.realm_id,
+            local_side_mapping=local_side_mapping,
+            qbo_side_mapping=qbo_side_mapping,
+            qbo_side_local_fk_attr="bill_id",
+            local_side_qbo_fk_attr="qbo_bill_id",
         )
 
     # One of FIVE near-identical dbo-first/legacy-fallback vendor-ref resolvers

@@ -6,14 +6,13 @@ from typing import Optional
 # Third-party Imports
 
 # Local Imports
-from integrations.intuit.qbo.base.drift_types import DRIFT_COMPANY_IDENTITY_CONFLICT
 from integrations.intuit.qbo.base.identity_fastpath import (
     raise_concurrent_write_race,
     resolve_mapping_state,
     run_identity_fastpath,
 )
 from integrations.intuit.qbo.base.ids import coerce_id
-from integrations.intuit.qbo.base.reconciliation_recorder import record_mapping_issue
+from integrations.intuit.qbo.base.reconciliation_recorder import record_identity_mapping_conflict
 from integrations.intuit.qbo.company_info.connector.business.model import CompanyInfoCompany
 from integrations.intuit.qbo.company_info.connector.persistence.repo import CompanyInfoCompanyRepository
 from integrations.intuit.qbo.company_info.business.service import QboCompanyInfoService
@@ -122,7 +121,7 @@ class CompanyInfoCompanyConnector:
             read_by_external_id=self.mapping_repo.read_by_qbo_company_info_id,
             external_id_attr="qbo_company_info_id",
             record_conflict_issue=lambda entity, by_local, by_external: (
-                self._raise_identity_mapping_conflict_issue(
+                self._record_identity_mapping_conflict_issue(
                     qbo_company_info=qbo_company_info,
                     dbo_company_id=coerce_id(entity.id),
                     local_side_mapping=by_local,
@@ -459,7 +458,7 @@ class CompanyInfoCompanyConnector:
             external_id_attr="qbo_company_info_id",
         )
 
-    def _raise_identity_mapping_conflict_issue(
+    def _record_identity_mapping_conflict_issue(
         self,
         *,
         qbo_company_info: QboCompanyInfoModel,
@@ -468,38 +467,21 @@ class CompanyInfoCompanyConnector:
         qbo_side_mapping: Optional[CompanyInfoCompany],
         realm_id: str,
     ) -> None:
-        """
-        Record a dbo-identity <-> mapping-table split found by
-        _resolve_mapping_state. Mirrors CustomerCustomerConnector's identically
-        named/shaped method — covers all three conflict shapes (qbo-side only,
-        local-side only, or both) in ONE issue, never silently dropping either
-        side's blocker.
-        """
-        parts = [
-            f"CompanyInfoCompany identity conflict. dbo.Company {dbo_company_id} carries native "
-            f"QBO identity for QboCompanyInfo {qbo_company_info.id} (QboId={qbo_company_info.qbo_id}, "
-            f"RealmId={qbo_company_info.realm_id})."
-        ]
-        if qbo_side_mapping:
-            parts.append(
-                f"qbo-side: the mapping table still binds that same QboCompanyInfo to a DIFFERENT "
-                f"Company {qbo_side_mapping.company_id} (mapping {qbo_side_mapping.id})."
-            )
-        if local_side_mapping:
-            parts.append(
-                f"local-side: Company {dbo_company_id}'s own mapping row (mapping "
-                f"{local_side_mapping.id}) still binds it to a DIFFERENT QboCompanyInfo "
-                f"{local_side_mapping.qbo_company_info_id}."
-            )
-        parts.append("Not auto-repointed — investigate which side is correct.")
-        record_mapping_issue(
+        record_identity_mapping_conflict(
             self.reconciliation_repo,
             drift_type="company_identity_conflict",
             entity_type="Company",
-            entity_public_id=None,
-            qbo_id=str(qbo_company_info.qbo_id) if qbo_company_info.qbo_id else None,
-            realm_id=qbo_company_info.realm_id or realm_id or "",
-            details=" ".join(parts),
+            mapping_label="CompanyInfoCompany",
+            qbo_label="QboCompanyInfo",
+            dbo_id=dbo_company_id,
+            qbo_row_id=qbo_company_info.id,
+            raw_qbo_id=qbo_company_info.qbo_id,
+            raw_realm_id=qbo_company_info.realm_id,
+            realm_id=qbo_company_info.realm_id or realm_id,
+            local_side_mapping=local_side_mapping,
+            qbo_side_mapping=qbo_side_mapping,
+            qbo_side_local_fk_attr="company_id",
+            local_side_qbo_fk_attr="qbo_company_info_id",
         )
 
     def create_mapping(

@@ -134,13 +134,13 @@ def _build_bill_connector():
     return connector, mapping_repo, bill_service, reconciliation_repo
 
 
-def test_bill_raise_identity_mapping_conflict_issue_names_both_sides():
+def test_bill_record_identity_mapping_conflict_issue_names_both_sides():
     connector, _, _, reconciliation_repo = _build_bill_connector()
     qbo_bill = _make_qbo_bill(id=4, qbo_id="BILL-99", realm_id="realm-1")
     qbo_side = SimpleNamespace(id=2, bill_id=9, qbo_bill_id=4)
     local_side = SimpleNamespace(id=3, bill_id=55, qbo_bill_id=5)
 
-    connector._raise_identity_mapping_conflict_issue(
+    connector._record_identity_mapping_conflict_issue(
         qbo_bill=qbo_bill, dbo_bill_id=55,
         local_side_mapping=local_side, qbo_side_mapping=qbo_side,
     )
@@ -155,7 +155,7 @@ def test_bill_raise_identity_mapping_conflict_issue_names_both_sides():
     assert "DIFFERENT QboBill 5" in kwargs["details"]     # local-side conflicting QboBill
 
 
-def test_bill_raise_identity_mapping_conflict_issue_qbo_side_only():
+def test_bill_record_identity_mapping_conflict_issue_qbo_side_only():
     """Isolated qbo-side-only shape (local_side_mapping=None) — proves the
     qbo-side block alone produces its text and the local-side block is
     correctly skipped, not just that both substrings appear somewhere when
@@ -164,7 +164,7 @@ def test_bill_raise_identity_mapping_conflict_issue_qbo_side_only():
     qbo_bill = _make_qbo_bill(id=4, qbo_id="BILL-99", realm_id="realm-1")
     qbo_side = SimpleNamespace(id=2, bill_id=9, qbo_bill_id=4)
 
-    connector._raise_identity_mapping_conflict_issue(
+    connector._record_identity_mapping_conflict_issue(
         qbo_bill=qbo_bill, dbo_bill_id=55,
         local_side_mapping=None, qbo_side_mapping=qbo_side,
     )
@@ -174,7 +174,7 @@ def test_bill_raise_identity_mapping_conflict_issue_qbo_side_only():
     assert "local-side" not in kwargs["details"]
 
 
-def test_bill_raise_identity_mapping_conflict_issue_local_side_only():
+def test_bill_record_identity_mapping_conflict_issue_local_side_only():
     """Isolated local-side-only shape (qbo_side_mapping=None) — proves the
     local-side block alone produces its text and the qbo-side block is
     correctly skipped."""
@@ -182,7 +182,7 @@ def test_bill_raise_identity_mapping_conflict_issue_local_side_only():
     qbo_bill = _make_qbo_bill(id=4, qbo_id="BILL-99", realm_id="realm-1")
     local_side = SimpleNamespace(id=3, bill_id=55, qbo_bill_id=5)
 
-    connector._raise_identity_mapping_conflict_issue(
+    connector._record_identity_mapping_conflict_issue(
         qbo_bill=qbo_bill, dbo_bill_id=55,
         local_side_mapping=local_side, qbo_side_mapping=None,
     )

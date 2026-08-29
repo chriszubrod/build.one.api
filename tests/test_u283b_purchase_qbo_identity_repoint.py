@@ -145,13 +145,13 @@ def _build_purchase_connector():
     return connector, mapping_repo, expense_service, reconciliation_repo
 
 
-def test_expense_raise_identity_mapping_conflict_issue_names_both_sides():
+def test_expense_record_identity_mapping_conflict_issue_names_both_sides():
     connector, _, _, reconciliation_repo = _build_purchase_connector()
     qbo_purchase = _make_qbo_purchase(id=4, qbo_id="PURCH-99", realm_id="realm-1")
     qbo_side = SimpleNamespace(id=2, expense_id=9, qbo_purchase_id=4)
     local_side = SimpleNamespace(id=3, expense_id=55, qbo_purchase_id=5)
 
-    connector._raise_identity_mapping_conflict_issue(
+    connector._record_identity_mapping_conflict_issue(
         qbo_purchase=qbo_purchase, dbo_expense_id=55,
         local_side_mapping=local_side, qbo_side_mapping=qbo_side,
     )
@@ -166,7 +166,7 @@ def test_expense_raise_identity_mapping_conflict_issue_names_both_sides():
     assert "DIFFERENT QboPurchase 5" in kwargs["details"]       # local-side conflicting QboPurchase
 
 
-def test_expense_raise_identity_mapping_conflict_issue_qbo_side_only():
+def test_expense_record_identity_mapping_conflict_issue_qbo_side_only():
     """Isolated qbo-side-only shape (local_side_mapping=None) — proves the
     qbo-side block alone produces its text and the local-side block is
     correctly skipped, not just that both substrings appear somewhere when
@@ -175,7 +175,7 @@ def test_expense_raise_identity_mapping_conflict_issue_qbo_side_only():
     qbo_purchase = _make_qbo_purchase(id=4, qbo_id="PURCH-99", realm_id="realm-1")
     qbo_side = SimpleNamespace(id=2, expense_id=9, qbo_purchase_id=4)
 
-    connector._raise_identity_mapping_conflict_issue(
+    connector._record_identity_mapping_conflict_issue(
         qbo_purchase=qbo_purchase, dbo_expense_id=55,
         local_side_mapping=None, qbo_side_mapping=qbo_side,
     )
@@ -185,7 +185,7 @@ def test_expense_raise_identity_mapping_conflict_issue_qbo_side_only():
     assert "local-side" not in kwargs["details"]
 
 
-def test_expense_raise_identity_mapping_conflict_issue_local_side_only():
+def test_expense_record_identity_mapping_conflict_issue_local_side_only():
     """Isolated local-side-only shape (qbo_side_mapping=None) — proves the
     local-side block alone produces its text and the qbo-side block is
     correctly skipped."""
@@ -193,7 +193,7 @@ def test_expense_raise_identity_mapping_conflict_issue_local_side_only():
     qbo_purchase = _make_qbo_purchase(id=4, qbo_id="PURCH-99", realm_id="realm-1")
     local_side = SimpleNamespace(id=3, expense_id=55, qbo_purchase_id=5)
 
-    connector._raise_identity_mapping_conflict_issue(
+    connector._record_identity_mapping_conflict_issue(
         qbo_purchase=qbo_purchase, dbo_expense_id=55,
         local_side_mapping=local_side, qbo_side_mapping=None,
     )

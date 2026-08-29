@@ -22,7 +22,7 @@ from integrations.intuit.qbo.base.identity_fastpath import (
 )
 from integrations.intuit.qbo.base.cost_code_resolver import resolve_dbo_sub_cost_code
 from integrations.intuit.qbo.base.ids import coerce_id
-from integrations.intuit.qbo.base.reconciliation_recorder import record_mapping_issue
+from integrations.intuit.qbo.base.reconciliation_recorder import record_identity_mapping_conflict
 from integrations.intuit.qbo.reconciliation.persistence.repo import ReconciliationIssueRepository
 
 logger = logging.getLogger(__name__)
@@ -252,7 +252,7 @@ class PurchaseLineExpenseLineItemConnector:
             read_by_external_id=_read_by_qbo_purchase_line_id_cached,
             external_id_attr="qbo_purchase_line_id",
             record_conflict_issue=lambda entity, by_local, by_external: (
-                self._raise_line_identity_mapping_conflict_issue(
+                self._record_line_identity_mapping_conflict_issue(
                     qbo_line=qbo_line,
                     dbo_line_id=coerce_id(entity.id),
                     local_side_mapping=by_local,
@@ -365,7 +365,7 @@ class PurchaseLineExpenseLineItemConnector:
 
         return line_item
 
-    def _raise_line_identity_mapping_conflict_issue(
+    def _record_line_identity_mapping_conflict_issue(
         self,
         *,
         qbo_line: QboPurchaseLine,
@@ -374,40 +374,21 @@ class PurchaseLineExpenseLineItemConnector:
         qbo_side_mapping,
         realm_id: Optional[str] = None,
     ) -> None:
-        """
-        Record a dbo-identity <-> mapping-table split found by
-        run_line_identity_fastpath's resolve_mapping_state. Mirrors
-        BillLineItemConnector._raise_line_identity_mapping_conflict_issue
-        exactly, scoped to the expense line level — covers all three conflict
-        shapes (qbo-side only, local-side only, or both) in ONE issue, never
-        silently dropping either side's blocker.
-        """
-        parts = [
-            f"PurchaseLineExpenseLineItem identity conflict. dbo.ExpenseLineItem "
-            f"{dbo_line_id} carries native QBO identity for QboPurchaseLine "
-            f"{qbo_line.id} (QboLineId={qbo_line.qbo_line_id})."
-        ]
-        if qbo_side_mapping:
-            parts.append(
-                f"qbo-side: the mapping table still binds that same QboPurchaseLine to a "
-                f"DIFFERENT ExpenseLineItem {qbo_side_mapping.expense_line_item_id} "
-                f"(mapping {qbo_side_mapping.id})."
-            )
-        if local_side_mapping:
-            parts.append(
-                f"local-side: ExpenseLineItem {dbo_line_id}'s own mapping row (mapping "
-                f"{local_side_mapping.id}) still binds it to a DIFFERENT QboPurchaseLine "
-                f"{local_side_mapping.qbo_purchase_line_id}."
-            )
-        parts.append("Not auto-repointed — investigate which side is correct.")
-        record_mapping_issue(
+        record_identity_mapping_conflict(
             self.reconciliation_repo,
             drift_type="expense_line_identity_conflict",
             entity_type="ExpenseLineItem",
-            entity_public_id=None,
-            qbo_id=str(qbo_line.qbo_line_id) if qbo_line.qbo_line_id else None,
-            realm_id=realm_id or "",
-            details=" ".join(parts),
+            mapping_label="PurchaseLineExpenseLineItem",
+            qbo_label="QboPurchaseLine",
+            dbo_id=dbo_line_id,
+            qbo_row_id=qbo_line.id,
+            raw_qbo_line_id=qbo_line.qbo_line_id,
+            realm_id=realm_id,
+            local_side_mapping=local_side_mapping,
+            qbo_side_mapping=qbo_side_mapping,
+            qbo_side_local_fk_attr="expense_line_item_id",
+            local_side_qbo_fk_attr="qbo_purchase_line_id",
+            line_level=True,
         )
 
     def _get_sub_cost_code_id(self, qbo_item_ref_value: str, realm_id: Optional[str] = None) -> Optional[int]:

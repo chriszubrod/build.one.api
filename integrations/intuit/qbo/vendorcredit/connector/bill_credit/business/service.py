@@ -20,7 +20,10 @@ from entities.bill_credit_line_item.business.service import BillCreditLineItemSe
 from entities.vendor.business.service import VendorService
 from integrations.intuit.qbo.base.pull_race import guard_lines_present
 from integrations.intuit.qbo.base.compensation import rollback_orphan_header
-from integrations.intuit.qbo.base.reconciliation_recorder import record_mapping_issue
+from integrations.intuit.qbo.base.reconciliation_recorder import (
+    record_identity_mapping_conflict,
+    record_mapping_issue,
+)
 from integrations.intuit.qbo.base.field_ownership import preserve_human_edited_ref, qbo_ref_or_placeholder
 from integrations.intuit.qbo.base.identity_consistency import verify_identity_dbo_only
 from integrations.intuit.qbo.base.identity_fastpath import (
@@ -135,7 +138,7 @@ class VendorCreditBillCreditConnector:
                 read_by_external_id=self.mapping_repo.read_by_qbo_vendor_credit_id,
                 external_id_attr="qbo_vendor_credit_id",
                 record_conflict_issue=lambda entity, by_local, by_external: (
-                    self._raise_identity_mapping_conflict_issue(
+                    self._record_identity_mapping_conflict_issue(
                         qbo_vc=qbo_vc,
                         dbo_bill_credit_id=coerce_id(entity.id),
                         local_side_mapping=by_local,
@@ -377,7 +380,7 @@ class VendorCreditBillCreditConnector:
             external_id_attr="qbo_vendor_credit_id",
         )
 
-    def _raise_identity_mapping_conflict_issue(
+    def _record_identity_mapping_conflict_issue(
         self,
         *,
         qbo_vc: QboVendorCredit,
@@ -386,45 +389,34 @@ class VendorCreditBillCreditConnector:
         qbo_side_mapping: Optional[VendorCreditBillCreditMapping],
     ) -> None:
         """
-        Record a dbo-identity <-> mapping-table split found by _resolve_mapping_state.
-        Distinct from `_record_missing_bill_credit_issue` (a bound-row-read-empty
-        detection) — this is a post-hoc drift between two already-established identity
-        sources, most plausibly left behind by an identity "theft" event
-        (SetBillCreditQboIdentity's theft-clear UPDATE clears the losing row's
-        QboId/RealmId but does not touch the mapping table). Covers all three shapes in
-        ONE issue: qbo-side only, local-side only, or both (the "two-row crossed"
-        case) — never silently dropping either side's blocker. Mirrors
-        CustomerCustomerConnector._raise_identity_mapping_conflict_issue (U-276).
+        Post-hoc dbo-identity vs mapping-table split (U-278). Most plausibly left by an
+        identity-theft event (SetBillCreditQboIdentity theft-clear nulls QboId/RealmId but
+        not the mapping table). qbo-side note: LinkedTxn Tier-0 resolver reads this mapping.
         """
-        parts = [
-            f"VendorCreditBillCredit identity conflict. dbo.BillCredit {dbo_bill_credit_id} "
-            f"carries native QBO identity for QboVendorCredit {qbo_vc.id} "
-            f"(QboId={qbo_vc.qbo_id}, RealmId={qbo_vc.realm_id})."
-        ]
+        qbo_side_note = None
         if qbo_side_mapping:
-            parts.append(
-                f"qbo-side: the mapping table still binds that same QboVendorCredit to a "
-                f"DIFFERENT BillCredit {qbo_side_mapping.bill_credit_id} (mapping "
-                f"{qbo_side_mapping.id}) — the invoice-side LinkedTxn Tier-0 resolver "
+            qbo_side_note = (
+                f"the invoice-side LinkedTxn Tier-0 resolver "
                 f"(ProposeInvoiceSourceLinks) reading this mapping table will keep "
                 f"resolving to BillCredit {qbo_side_mapping.bill_credit_id}, not "
-                f"{dbo_bill_credit_id}, until repointed."
+                f"{dbo_bill_credit_id}, until repointed"
             )
-        if local_side_mapping:
-            parts.append(
-                f"local-side: BillCredit {dbo_bill_credit_id}'s own mapping row (mapping "
-                f"{local_side_mapping.id}) still binds it to a DIFFERENT QboVendorCredit "
-                f"{local_side_mapping.qbo_vendor_credit_id}."
-            )
-        parts.append("Not auto-repointed — investigate which side is correct.")
-        record_mapping_issue(
+        record_identity_mapping_conflict(
             self.reconciliation_repo,
             drift_type="vendorcredit_identity_conflict",
             entity_type="BillCredit",
-            entity_public_id=None,
-            qbo_id=str(qbo_vc.qbo_id) if qbo_vc.qbo_id else None,
-            realm_id=qbo_vc.realm_id or "",
-            details=" ".join(parts),
+            mapping_label="VendorCreditBillCredit",
+            qbo_label="QboVendorCredit",
+            dbo_id=dbo_bill_credit_id,
+            qbo_row_id=qbo_vc.id,
+            raw_qbo_id=qbo_vc.qbo_id,
+            raw_realm_id=qbo_vc.realm_id,
+            realm_id=qbo_vc.realm_id,
+            local_side_mapping=local_side_mapping,
+            qbo_side_mapping=qbo_side_mapping,
+            qbo_side_local_fk_attr="bill_credit_id",
+            local_side_qbo_fk_attr="qbo_vendor_credit_id",
+            qbo_side_note=qbo_side_note,
         )
 
     def _record_orphan_header_issue(

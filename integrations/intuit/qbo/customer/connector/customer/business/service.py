@@ -14,7 +14,10 @@ from integrations.intuit.qbo.base.identity_fastpath import (
     stamp_dbo_identity_with_lock,
 )
 from integrations.intuit.qbo.base.ids import coerce_id
-from integrations.intuit.qbo.base.reconciliation_recorder import record_mapping_issue
+from integrations.intuit.qbo.base.reconciliation_recorder import (
+    build_duplicate_qbo_identity_conflict_desc,
+    record_duplicate_identity_conflict,
+)
 from integrations.intuit.qbo.customer.business.model import QboCustomer
 from integrations.intuit.qbo.reconciliation.persistence.repo import ReconciliationIssueRepository
 from entities.customer.business.service import CustomerService
@@ -205,7 +208,7 @@ class CustomerCustomerConnector:
             write_identity=lambda c: self.customer_service.repo.set_qbo_identity(
                 id=c.id, qbo_id=qbo_customer.qbo_id, realm_id=qbo_customer.realm_id,
             ),
-            on_conflict=lambda c: self._raise_duplicate_qbo_customer_issue(
+            on_conflict=lambda c: self._record_duplicate_qbo_customer_issue(
                 qbo_customer=qbo_customer, local_customer=c, existing_qbo_id=c.qbo_id,
             ),
         )
@@ -237,7 +240,7 @@ class CustomerCustomerConnector:
             and (getattr(local_customer, "realm_id", None) or "") == (qbo_customer.realm_id or "")
         ):
             return
-        self._raise_duplicate_qbo_customer_issue(
+        self._record_duplicate_qbo_customer_issue(
             qbo_customer=qbo_customer,
             local_customer=local_customer,
             existing_qbo_id=existing_qbo_id,
@@ -249,7 +252,7 @@ class CustomerCustomerConnector:
             f"refusing to overwrite it."
         )
 
-    def _raise_duplicate_qbo_customer_issue(
+    def _record_duplicate_qbo_customer_issue(
         self,
         *,
         qbo_customer: QboCustomer,
@@ -257,33 +260,24 @@ class CustomerCustomerConnector:
         existing_qbo_id: str,
     ) -> None:
         """
-        Record a name-match-vs-different-existing-identity duplicate (U-310).
-        Reuses the pre-existing `customer_identity_conflict` DriftType (this
-        family's own conflict category, previously emitted by the now-deleted
-        mapping-table `_raise_identity_mapping_conflict_issue`) rather than
-        registering a new one in `drift_types.py` -- semantically the same
-        class of problem (an incoming QBO customer's identity conflicting
-        with what a local Customer already carries), and keeps this unit's
-        file scope to the two connector files.
+        Name-match-vs-different-existing-identity duplicate (U-310). Reuses
+        `customer_identity_conflict` (this family's own category, previously emitted by
+        the deleted mapping-table `_record_identity_mapping_conflict_issue`).
         """
         existing_realm_id = getattr(local_customer, "realm_id", None)
-        if existing_qbo_id == qbo_customer.qbo_id:
-            # U-310 fix (Codex round-1 P3): the guard also catches a
-            # same-QboId-different-realm collision -- don't call the QboId
-            # "DIFFERENT" when it's actually identical and only RealmId split.
-            conflict_desc = (
-                f"the SAME QboId {existing_qbo_id} but a DIFFERENT RealmId "
-                f"({existing_realm_id!r} vs incoming {qbo_customer.realm_id!r})"
-            )
-        else:
-            conflict_desc = f"a DIFFERENT QboId {existing_qbo_id} (realm {existing_realm_id!r})"
+        conflict_desc = build_duplicate_qbo_identity_conflict_desc(
+            existing_qbo_id=existing_qbo_id,
+            incoming_qbo_id=qbo_customer.qbo_id,
+            existing_realm_id=existing_realm_id,
+            incoming_realm_id=qbo_customer.realm_id,
+        )
         details = (
             f"Duplicate QBO customer detected. QboCustomer {qbo_customer.id} "
             f"(Name='{qbo_customer.display_name}') name-matches local Customer "
             f"{local_customer.id} which already carries {conflict_desc}. "
             f"Resolve by merging or renaming one of the QBO customers."
         )
-        record_mapping_issue(
+        record_duplicate_identity_conflict(
             self.reconciliation_repo,
             drift_type="customer_identity_conflict",
             entity_type="Customer",

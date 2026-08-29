@@ -25,7 +25,10 @@ from integrations.intuit.qbo.base.identity_fastpath import (
     run_identity_fastpath,
 )
 from integrations.intuit.qbo.base.ids import coerce_id
-from integrations.intuit.qbo.base.reconciliation_recorder import record_mapping_issue
+from integrations.intuit.qbo.base.reconciliation_recorder import (
+    record_identity_mapping_conflict,
+    record_mapping_issue,
+)
 from integrations.intuit.qbo.base.cost_code_resolver import resolve_qbo_item_ref
 from integrations.intuit.qbo.reconciliation.persistence.repo import ReconciliationIssueRepository
 from entities.sub_cost_code.business.service import SubCostCodeService
@@ -189,7 +192,7 @@ class PurchaseExpenseConnector:
                 read_by_external_id=self.mapping_repo.read_by_qbo_purchase_id,
                 external_id_attr="qbo_purchase_id",
                 record_conflict_issue=lambda entity, by_local, by_external: (
-                    self._raise_identity_mapping_conflict_issue(
+                    self._record_identity_mapping_conflict_issue(
                         qbo_purchase=qbo_purchase,
                         dbo_expense_id=coerce_id(entity.id),
                         local_side_mapping=by_local,
@@ -328,7 +331,7 @@ class PurchaseExpenseConnector:
                 read_by_local_id=self.mapping_repo.read_by_expense_id,
                 read_by_external_id=self.mapping_repo.read_by_qbo_purchase_id,
                 external_id_attr="qbo_purchase_id",
-                record_conflict_issue=lambda by_local, by_external: self._raise_identity_mapping_conflict_issue(
+                record_conflict_issue=lambda by_local, by_external: self._record_identity_mapping_conflict_issue(
                     qbo_purchase=qbo_purchase,
                     dbo_expense_id=expense_id,
                     local_side_mapping=by_local,
@@ -374,7 +377,7 @@ class PurchaseExpenseConnector:
 
         return expense
 
-    def _raise_identity_mapping_conflict_issue(
+    def _record_identity_mapping_conflict_issue(
         self,
         *,
         qbo_purchase: QboPurchase,
@@ -382,38 +385,21 @@ class PurchaseExpenseConnector:
         local_side_mapping: Optional[PurchaseExpense],
         qbo_side_mapping: Optional[PurchaseExpense],
     ) -> None:
-        """
-        Record a dbo-identity <-> mapping-table split found by run_identity_fastpath's
-        resolve_mapping_state. Mirrors BillBillConnector's identically named/shaped
-        method — covers all three conflict shapes (qbo-side only, local-side only, or
-        both) in ONE issue, never silently dropping either side's blocker.
-        """
-        parts = [
-            f"PurchaseExpense identity conflict. dbo.Expense {dbo_expense_id} carries "
-            f"native QBO identity for QboPurchase {qbo_purchase.id} "
-            f"(QboId={qbo_purchase.qbo_id}, RealmId={qbo_purchase.realm_id})."
-        ]
-        if qbo_side_mapping:
-            parts.append(
-                f"qbo-side: the mapping table still binds that same QboPurchase to a "
-                f"DIFFERENT Expense {qbo_side_mapping.expense_id} (mapping "
-                f"{qbo_side_mapping.id})."
-            )
-        if local_side_mapping:
-            parts.append(
-                f"local-side: Expense {dbo_expense_id}'s own mapping row (mapping "
-                f"{local_side_mapping.id}) still binds it to a DIFFERENT QboPurchase "
-                f"{local_side_mapping.qbo_purchase_id}."
-            )
-        parts.append("Not auto-repointed — investigate which side is correct.")
-        record_mapping_issue(
+        record_identity_mapping_conflict(
             self.reconciliation_repo,
             drift_type="expense_identity_conflict",
             entity_type="Expense",
-            entity_public_id=None,
-            qbo_id=str(qbo_purchase.qbo_id) if qbo_purchase.qbo_id else None,
-            realm_id=qbo_purchase.realm_id or "",
-            details=" ".join(parts),
+            mapping_label="PurchaseExpense",
+            qbo_label="QboPurchase",
+            dbo_id=dbo_expense_id,
+            qbo_row_id=qbo_purchase.id,
+            raw_qbo_id=qbo_purchase.qbo_id,
+            raw_realm_id=qbo_purchase.realm_id,
+            realm_id=qbo_purchase.realm_id,
+            local_side_mapping=local_side_mapping,
+            qbo_side_mapping=qbo_side_mapping,
+            qbo_side_local_fk_attr="expense_id",
+            local_side_qbo_fk_attr="qbo_purchase_id",
         )
 
     def _record_missing_expense_issue(
@@ -425,8 +411,7 @@ class PurchaseExpenseConnector:
     ) -> None:
         """
         Record an orphaned-mapping detection on qbo.ReconciliationIssue, failure-
-        isolated: a failed insert is logged loud but never breaks the sync (mirrors
-        the CustomerProject connector's _raise_missing_project_issue).
+        isolated: a failed insert is logged loud but never breaks the sync.
 
         Triggered when a PurchaseExpense mapping exists but its bound Expense read
         empty AND the (reference_number, vendor) fingerprint did not re-resolve to that

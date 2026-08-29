@@ -265,13 +265,13 @@ def test_apply_invoice_fields_raises_runtime_error_on_rowversion_race():
     invoice_service.repo.set_qbo_identity.assert_not_called()
 
 
-def test_raise_identity_mapping_conflict_issue_names_both_sides():
+def test_record_identity_mapping_conflict_issue_names_both_sides():
     connector, _, _, reconciliation_repo = _build_invoice_connector()
     qbo_invoice = _make_qbo_invoice(id=8, qbo_id="INV-QBO", realm_id="realm-z")
     qbo_side = SimpleNamespace(id=2, invoice_id=9, qbo_invoice_id=8)
     local_side = SimpleNamespace(id=3, invoice_id=7, qbo_invoice_id=5)
 
-    connector._raise_identity_mapping_conflict_issue(
+    connector._record_identity_mapping_conflict_issue(
         qbo_invoice=qbo_invoice, dbo_invoice_id=7,
         local_side_mapping=local_side, qbo_side_mapping=qbo_side,
     )
@@ -283,12 +283,12 @@ def test_raise_identity_mapping_conflict_issue_names_both_sides():
     assert "DIFFERENT QboInvoice 5" in kwargs["details"]
 
 
-def test_raise_identity_mapping_conflict_issue_qbo_side_only():
+def test_record_identity_mapping_conflict_issue_qbo_side_only():
     connector, _, _, reconciliation_repo = _build_invoice_connector()
     qbo_invoice = _make_qbo_invoice(id=8, qbo_id="INV-QBO", realm_id="realm-z")
     qbo_side = SimpleNamespace(id=2, invoice_id=9, qbo_invoice_id=8)
 
-    connector._raise_identity_mapping_conflict_issue(
+    connector._record_identity_mapping_conflict_issue(
         qbo_invoice=qbo_invoice, dbo_invoice_id=7,
         local_side_mapping=None, qbo_side_mapping=qbo_side,
     )

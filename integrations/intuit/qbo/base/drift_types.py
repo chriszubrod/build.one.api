@@ -2,8 +2,9 @@
 
 Two writer subsystems both register here: the daily full reconciler
 (integrations/intuit/qbo/reconciliation/business/service.py, which references these as named
-constants) and the per-connector mapping-issue recorder (base/reconciliation_recorder.py plus
-8 connector business/service.py modules, which pass string literals directly). A drift type
+constants) and the per-connector mapping-issue recorder (base/reconciliation_recorder.py — per-connector
+wrappers (~17) forward through record_identity_mapping_conflict /
+record_duplicate_identity_conflict, still passing string literals at the call site). A drift type
 must be added here before (or on discovery of) its first use so it's declared once, not tribal
 knowledge — see tests/test_qbo_reconciliation_recorder.py's AST-discovery guard.
 """

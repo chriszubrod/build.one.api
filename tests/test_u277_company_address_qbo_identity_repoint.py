@@ -126,7 +126,7 @@ def test_address_service_read_by_qbo_identity_is_a_thin_passthrough():
 #
 # Same testing shape as U-276's CustomerCustomerConnector section — the
 # mapping-conflict cases are unit-tested directly against
-# _resolve_mapping_state / _raise_identity_mapping_conflict_issue, plus
+# _resolve_mapping_state / _record_identity_mapping_conflict_issue, plus
 # end-to-end through sync_from_qbo_to_company() for the hard stop.
 #
 # U-287 UPDATE: a detected conflict no longer falls through to the pre-existing
@@ -205,13 +205,13 @@ def test_company_resolve_mapping_state_local_side_conflict():
     assert by_qbo_company_info is None
 
 
-def test_company_raise_identity_mapping_conflict_issue_names_both_sides():
+def test_company_record_identity_mapping_conflict_issue_names_both_sides():
     connector, _, _, reconciliation_repo = _build_company_connector()
     qbo_company_info = _make_qbo_company_info(id=4, qbo_id="CI-99", realm_id="realm-1")
     qbo_side = SimpleNamespace(id=2, company_id=9, qbo_company_info_id=4)
     local_side = SimpleNamespace(id=3, company_id=55, qbo_company_info_id=5)
 
-    connector._raise_identity_mapping_conflict_issue(
+    connector._record_identity_mapping_conflict_issue(
         qbo_company_info=qbo_company_info, dbo_company_id=55,
         local_side_mapping=local_side, qbo_side_mapping=qbo_side,
         realm_id="realm-1",
@@ -530,13 +530,13 @@ def test_address_resolve_mapping_state_local_side_conflict():
     assert by_qbo_physical_address is None
 
 
-def test_address_raise_identity_mapping_conflict_issue_names_both_sides():
+def test_address_record_identity_mapping_conflict_issue_names_both_sides():
     connector, _, _, reconciliation_repo = _build_address_connector()
     qbo_physical_address = _make_qbo_physical_address(id=100, qbo_id="PA-99", realm_id="realm-1")
     qbo_side = SimpleNamespace(id=2, address_id=9, qbo_physical_address_id=100)
     local_side = SimpleNamespace(id=3, address_id=55, qbo_physical_address_id=5)
 
-    connector._raise_identity_mapping_conflict_issue(
+    connector._record_identity_mapping_conflict_issue(
         qbo_physical_address=qbo_physical_address, dbo_address_id=55,
         local_side_mapping=local_side, qbo_side_mapping=qbo_side,
     )

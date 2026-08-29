@@ -167,13 +167,13 @@ def test_resolve_mapping_state_two_row_crossed_conflict():
     assert by_qbo_term.payment_term_id == 9
 
 
-def test_raise_identity_mapping_conflict_issue_names_both_sides():
+def test_record_identity_mapping_conflict_issue_names_both_sides():
     connector, _, _, reconciliation_repo = _build_term_connector()
     qbo_term = _make_qbo_term(id=30, qbo_id="T-99", realm_id="realm-1")
     qbo_side = SimpleNamespace(id=2, payment_term_id=9, qbo_term_id=30)
     local_side = SimpleNamespace(id=3, payment_term_id=55, qbo_term_id=5)
 
-    connector._raise_identity_mapping_conflict_issue(
+    connector._record_identity_mapping_conflict_issue(
         qbo_term=qbo_term, dbo_payment_term_id=55,
         local_side_mapping=local_side, qbo_side_mapping=qbo_side,
     )

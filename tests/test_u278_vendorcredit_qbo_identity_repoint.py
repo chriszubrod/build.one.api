@@ -103,7 +103,7 @@ def test_bill_credit_service_read_by_qbo_identity_none_skips_access_check():
 #
 # Same testing shape as test_u276_customer_project_qbo_identity_repoint.py's Section 2
 # — see its header comment for why conflict cases are unit-tested directly against
-# _resolve_mapping_state / _raise_identity_mapping_conflict_issue rather than only
+# _resolve_mapping_state / _record_identity_mapping_conflict_issue rather than only
 # through the full sync_from_qbo_vendor_credit().
 
 
@@ -185,13 +185,13 @@ def test_resolve_mapping_state_two_row_crossed_conflict():
     assert by_qbo_vc.bill_credit_id == 9
 
 
-def test_raise_identity_mapping_conflict_issue_names_both_sides():
+def test_record_identity_mapping_conflict_issue_names_both_sides():
     connector, _, _, reconciliation_repo = _build_bill_credit_connector()
     qbo_vc = _make_qbo_vc(id=30, qbo_id="VC-99", realm_id="realm-1")
     qbo_side = SimpleNamespace(id=2, bill_credit_id=9, qbo_vendor_credit_id=30)
     local_side = SimpleNamespace(id=3, bill_credit_id=55, qbo_vendor_credit_id=5)
 
-    connector._raise_identity_mapping_conflict_issue(
+    connector._record_identity_mapping_conflict_issue(
         qbo_vc=qbo_vc, dbo_bill_credit_id=55,
         local_side_mapping=local_side, qbo_side_mapping=qbo_side,
     )

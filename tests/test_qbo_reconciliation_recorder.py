@@ -35,9 +35,10 @@ _SQL_COLUMN_WIDTH_RE = re.compile(
     r"\[(DriftType|EntityType|Severity|Action)\]\s+NVARCHAR\((\d+)\)",
     re.IGNORECASE,
 )
-# Production call sites as of U-262 — guard must discover at least this many writers.
-# record_mapping_issue (17) + _record_reconciliation_issue (0) + direct repo.create (1).
-_MIN_CALL_SITES = 13
+# Production call sites as of U-333 — guard must discover at least this many writers.
+# record_mapping_issue (12) + record_identity_mapping_conflict (11) +
+# record_duplicate_identity_conflict (6) + direct repo.create (1) = 30 total discovered sites.
+_MIN_CALL_SITES = 30
 _SKIP_FILES = frozenset({"reconciliation_recorder.py"})
 _DEFAULT_KWARGS = {
     "severity": "critical",
@@ -127,14 +128,21 @@ def _receiver_suggests_reconciliation_issue_repo(receiver: ast.AST) -> bool:
     return False
 
 
+_WRITER_FN_NAMES = frozenset({
+    "record_mapping_issue",
+    "record_identity_mapping_conflict",
+    "record_duplicate_identity_conflict",
+})
+
+
 def _classify_reconciliation_issue_write_call(node: ast.AST) -> Optional[str]:
     if not isinstance(node, ast.Call):
         return None
     func = node.func
-    if isinstance(func, ast.Name) and func.id == "record_mapping_issue":
-        return "record_mapping_issue"
-    if isinstance(func, ast.Attribute) and func.attr == "record_mapping_issue":
-        return "record_mapping_issue"
+    if isinstance(func, ast.Name) and func.id in _WRITER_FN_NAMES:
+        return func.id
+    if isinstance(func, ast.Attribute) and func.attr in _WRITER_FN_NAMES:
+        return func.attr
     if isinstance(func, ast.Attribute) and func.attr == "_record_reconciliation_issue":
         return "_record_reconciliation_issue"
     if isinstance(func, ast.Attribute) and func.attr == "create":

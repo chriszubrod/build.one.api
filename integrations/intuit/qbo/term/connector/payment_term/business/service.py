@@ -14,7 +14,9 @@ from integrations.intuit.qbo.base.identity_fastpath import (
     run_identity_fastpath,
 )
 from integrations.intuit.qbo.base.ids import coerce_id
-from integrations.intuit.qbo.base.reconciliation_recorder import record_mapping_issue
+from integrations.intuit.qbo.base.reconciliation_recorder import (
+    record_identity_mapping_conflict,
+)
 from integrations.intuit.qbo.reconciliation.persistence.repo import ReconciliationIssueRepository
 from integrations.intuit.qbo.term.connector.payment_term.business.model import TermPaymentTerm
 from integrations.intuit.qbo.term.connector.payment_term.persistence.repo import TermPaymentTermRepository
@@ -101,7 +103,7 @@ class TermPaymentTermConnector:
             read_by_external_id=self.mapping_repo.read_by_qbo_term_id,
             external_id_attr="qbo_term_id",
             record_conflict_issue=lambda entity, by_local, by_external: (
-                self._raise_identity_mapping_conflict_issue(
+                self._record_identity_mapping_conflict_issue(
                     qbo_term=qbo_term,
                     dbo_payment_term_id=coerce_id(entity.id),
                     local_side_mapping=by_local,
@@ -261,7 +263,7 @@ class TermPaymentTermConnector:
             return "missing", by_payment_term, by_qbo_term
         return "conflict", by_payment_term, by_qbo_term
 
-    def _raise_identity_mapping_conflict_issue(
+    def _record_identity_mapping_conflict_issue(
         self,
         *,
         qbo_term: QboTerm,
@@ -269,42 +271,21 @@ class TermPaymentTermConnector:
         local_side_mapping: Optional[TermPaymentTerm],
         qbo_side_mapping: Optional[TermPaymentTerm],
     ) -> None:
-        """
-        Record a dbo-identity <-> mapping-table split found by _resolve_mapping_state.
-        Covers all three shapes in ONE issue: qbo-side only, local-side only, or both
-        (the "two-row crossed" case) — never silently dropping either side's blocker.
-        Mirrors VendorCreditBillCreditConnector._raise_identity_mapping_conflict_issue
-        (U-278). `drift_type` is a literal string (not the drift_types.py constant) to
-        match the established connector convention — the AST-discovery test guard
-        (tests/test_qbo_reconciliation_recorder.py) only recognizes string-literal
-        `record_mapping_issue` kwargs.
-        """
-        parts = [
-            f"TermPaymentTerm identity conflict. dbo.PaymentTerm {dbo_payment_term_id} "
-            f"carries native QBO identity for QboTerm {qbo_term.id} "
-            f"(QboId={qbo_term.qbo_id}, RealmId={qbo_term.realm_id})."
-        ]
-        if qbo_side_mapping:
-            parts.append(
-                f"qbo-side: the mapping table still binds that same QboTerm to a "
-                f"DIFFERENT PaymentTerm {qbo_side_mapping.payment_term_id} (mapping "
-                f"{qbo_side_mapping.id})."
-            )
-        if local_side_mapping:
-            parts.append(
-                f"local-side: PaymentTerm {dbo_payment_term_id}'s own mapping row "
-                f"(mapping {local_side_mapping.id}) still binds it to a DIFFERENT "
-                f"QboTerm {local_side_mapping.qbo_term_id}."
-            )
-        parts.append("Not auto-repointed — investigate which side is correct.")
-        record_mapping_issue(
+        record_identity_mapping_conflict(
             self.reconciliation_repo,
             drift_type="payment_term_identity_conflict",
             entity_type="PaymentTerm",
-            entity_public_id=None,
-            qbo_id=str(qbo_term.qbo_id) if qbo_term.qbo_id else None,
-            realm_id=qbo_term.realm_id or "",
-            details=" ".join(parts),
+            mapping_label="TermPaymentTerm",
+            qbo_label="QboTerm",
+            dbo_id=dbo_payment_term_id,
+            qbo_row_id=qbo_term.id,
+            raw_qbo_id=qbo_term.qbo_id,
+            raw_realm_id=qbo_term.realm_id,
+            realm_id=qbo_term.realm_id,
+            local_side_mapping=local_side_mapping,
+            qbo_side_mapping=qbo_side_mapping,
+            qbo_side_local_fk_attr="payment_term_id",
+            local_side_qbo_fk_attr="qbo_term_id",
         )
 
     def create_mapping(

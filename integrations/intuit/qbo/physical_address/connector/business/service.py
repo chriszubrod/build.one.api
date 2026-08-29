@@ -12,7 +12,9 @@ from integrations.intuit.qbo.base.identity_fastpath import (
     run_identity_fastpath,
 )
 from integrations.intuit.qbo.base.ids import coerce_id
-from integrations.intuit.qbo.base.reconciliation_recorder import record_mapping_issue
+from integrations.intuit.qbo.base.reconciliation_recorder import (
+    record_identity_mapping_conflict,
+)
 from integrations.intuit.qbo.physical_address.connector.business.model import PhysicalAddressAddress
 from integrations.intuit.qbo.physical_address.connector.persistence.repo import PhysicalAddressAddressRepository
 from integrations.intuit.qbo.physical_address.business.service import QboPhysicalAddressService
@@ -121,7 +123,7 @@ class PhysicalAddressAddressConnector:
             read_by_external_id=self.mapping_repo.read_by_qbo_physical_address_id,
             external_id_attr="qbo_physical_address_id",
             record_conflict_issue=lambda entity, by_local, by_external: (
-                self._raise_identity_mapping_conflict_issue(
+                self._record_identity_mapping_conflict_issue(
                     qbo_physical_address=qbo_physical_address,
                     dbo_address_id=coerce_id(entity.id),
                     local_side_mapping=by_local,
@@ -403,7 +405,7 @@ class PhysicalAddressAddressConnector:
             external_id_attr="qbo_physical_address_id",
         )
 
-    def _raise_identity_mapping_conflict_issue(
+    def _record_identity_mapping_conflict_issue(
         self,
         *,
         qbo_physical_address: QboPhysicalAddress,
@@ -411,38 +413,21 @@ class PhysicalAddressAddressConnector:
         local_side_mapping: Optional[PhysicalAddressAddress],
         qbo_side_mapping: Optional[PhysicalAddressAddress],
     ) -> None:
-        """
-        Record a dbo-identity <-> mapping-table split found by
-        _resolve_mapping_state. Mirrors CustomerCustomerConnector's identically
-        named/shaped method — covers all three conflict shapes (qbo-side only,
-        local-side only, or both) in ONE issue, never silently dropping either
-        side's blocker.
-        """
-        parts = [
-            f"PhysicalAddressAddress identity conflict. dbo.Address {dbo_address_id} carries native "
-            f"QBO identity for QboPhysicalAddress {qbo_physical_address.id} "
-            f"(QboId={qbo_physical_address.qbo_id}, RealmId={qbo_physical_address.realm_id})."
-        ]
-        if qbo_side_mapping:
-            parts.append(
-                f"qbo-side: the mapping table still binds that same QboPhysicalAddress to a DIFFERENT "
-                f"Address {qbo_side_mapping.address_id} (mapping {qbo_side_mapping.id})."
-            )
-        if local_side_mapping:
-            parts.append(
-                f"local-side: Address {dbo_address_id}'s own mapping row (mapping "
-                f"{local_side_mapping.id}) still binds it to a DIFFERENT QboPhysicalAddress "
-                f"{local_side_mapping.qbo_physical_address_id}."
-            )
-        parts.append("Not auto-repointed — investigate which side is correct.")
-        record_mapping_issue(
+        record_identity_mapping_conflict(
             self.reconciliation_repo,
             drift_type="address_identity_conflict",
             entity_type="Address",
-            entity_public_id=None,
-            qbo_id=str(qbo_physical_address.qbo_id) if qbo_physical_address.qbo_id else None,
-            realm_id=qbo_physical_address.realm_id or "",
-            details=" ".join(parts),
+            mapping_label="PhysicalAddressAddress",
+            qbo_label="QboPhysicalAddress",
+            dbo_id=dbo_address_id,
+            qbo_row_id=qbo_physical_address.id,
+            raw_qbo_id=qbo_physical_address.qbo_id,
+            raw_realm_id=qbo_physical_address.realm_id,
+            realm_id=qbo_physical_address.realm_id,
+            local_side_mapping=local_side_mapping,
+            qbo_side_mapping=qbo_side_mapping,
+            qbo_side_local_fk_attr="address_id",
+            local_side_qbo_fk_attr="qbo_physical_address_id",
         )
 
     def create_mapping(

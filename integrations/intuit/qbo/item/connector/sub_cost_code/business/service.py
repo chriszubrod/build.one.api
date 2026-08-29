@@ -14,7 +14,7 @@ from integrations.intuit.qbo.base.identity_fastpath import (
     stamp_dbo_identity_with_lock,
 )
 from integrations.intuit.qbo.base.ids import coerce_id
-from integrations.intuit.qbo.base.reconciliation_recorder import record_mapping_issue
+from integrations.intuit.qbo.base.reconciliation_recorder import record_duplicate_identity_conflict
 from integrations.intuit.qbo.item.business.model import QboItem
 from integrations.intuit.qbo.reconciliation.persistence.repo import ReconciliationIssueRepository
 from entities.cost_code.business.service import CostCodeService
@@ -220,7 +220,7 @@ class ItemSubCostCodeConnector:
             existing_qbo_id == qbo_item.qbo_id
             and (getattr(existing, "realm_id", None) or "") == (qbo_item.realm_id or "")
         ):
-            self._raise_duplicate_qbo_item_issue(
+            self._record_duplicate_qbo_item_issue(
                 qbo_item=qbo_item,
                 local_sub_cost_code=existing,
                 existing_qbo_id=existing_qbo_id,
@@ -267,7 +267,7 @@ class ItemSubCostCodeConnector:
         ROWVERSION race on this write used to succeed silently; it now
         raises and holds for retry (D1, U-328/U-331 — the one behavior
         change this migration makes here). `on_conflict` reuses
-        `_raise_duplicate_qbo_item_issue` (below) — the SAME
+        `_record_duplicate_qbo_item_issue` (below) — the SAME
         `duplicate_qbo_item` DriftType `resolve_candidate`'s own number-match
         guard already records, since both are the identical comparison on
         the same row (a number-matched candidate already carrying a
@@ -292,7 +292,7 @@ class ItemSubCostCodeConnector:
             write_identity=lambda c: self.sub_cost_code_service.repo.set_qbo_identity(
                 id=c.id, qbo_id=qbo_item.qbo_id, realm_id=qbo_item.realm_id, active=qbo_item.active,
             ),
-            on_conflict=lambda c: self._raise_duplicate_qbo_item_issue(
+            on_conflict=lambda c: self._record_duplicate_qbo_item_issue(
                 qbo_item=qbo_item, local_sub_cost_code=c, existing_qbo_id=c.qbo_id,
             ),
         )
@@ -318,20 +318,24 @@ class ItemSubCostCodeConnector:
         sub_cost_code.cost_code_id = cost_code_id
         return self.sub_cost_code_service.repo.update_by_id(sub_cost_code)
 
-    def _raise_duplicate_qbo_item_issue(
+    def _record_duplicate_qbo_item_issue(
         self,
         *,
         qbo_item: QboItem,
         local_sub_cost_code: SubCostCode,
         existing_qbo_id: str,
     ) -> None:
+        """
+        Number-match duplicate. Reuses `duplicate_qbo_item` — same DriftType as
+        `resolve_candidate`'s guard and ItemCostCodeConnector's stamp-time check.
+        """
         details = (
             f"Duplicate QBO item detected. QboItem qbo_id={qbo_item.qbo_id} "
             f"(Name='{qbo_item.name}') number-matches local SubCostCode {local_sub_cost_code.id} "
             f"which already carries a DIFFERENT QboId {existing_qbo_id}. Resolve by merging or "
             f"renaming one of the QBO items."
         )
-        record_mapping_issue(
+        record_duplicate_identity_conflict(
             self.reconciliation_repo,
             drift_type="duplicate_qbo_item",
             entity_type="SubCostCode",

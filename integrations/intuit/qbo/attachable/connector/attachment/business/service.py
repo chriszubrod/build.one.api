@@ -16,7 +16,10 @@ from integrations.intuit.qbo.base.identity_fastpath import (
     stamp_dbo_identity_with_lock,
 )
 from integrations.intuit.qbo.base.ids import coerce_id
-from integrations.intuit.qbo.base.reconciliation_recorder import record_mapping_issue
+from integrations.intuit.qbo.base.reconciliation_recorder import (
+    record_duplicate_identity_conflict,
+    record_mapping_issue,
+)
 from integrations.intuit.qbo.reconciliation.persistence.repo import ReconciliationIssueRepository
 from entities.attachment.business.service import AttachmentService
 from entities.attachment.business.model import Attachment
@@ -328,29 +331,20 @@ class AttachableAttachmentConnector:
             write_identity=lambda c: self.attachment_service.repo.set_qbo_identity(
                 id=c.id, qbo_id=qbo_id, realm_id=realm_id,
             ),
-            on_conflict=lambda c: self._raise_duplicate_qbo_attachment_issue(
+            on_conflict=lambda c: self._record_duplicate_qbo_attachment_issue(
                 attachment_id=attachment_id, qbo_id=qbo_id, realm_id=realm_id,
                 local_attachment=c, existing_qbo_id=c.qbo_id,
             ),
         )
 
-    def _raise_duplicate_qbo_attachment_issue(
+    def _record_duplicate_qbo_attachment_issue(
         self, *, attachment_id: int, qbo_id: str, realm_id: str,
         local_attachment: Attachment, existing_qbo_id: str,
     ) -> None:
         """
-        Record a stamp-time theft-guard trip on qbo.ReconciliationIssue
-        (Decision 2, U-328/U-331) — closes the recording asymmetry
-        `stamp-lock-helper.md` D2 flagged: Customer/Project/Vendor already
-        recorded this class of race at stamp time, Attachment did not. Uses
-        the dedicated `attachment_identity_conflict` DriftType (registered in
-        drift_types.py, previously unused) rather than the push-side
-        `attachment_mapping_orphaned`/`attachment_upload_failed` types, which
-        describe a different failure shape (a push-side race, not a pull-side
-        hash-dedupe candidate race). No existing pull-side resolve-time
-        recorder to unify with here (unlike CostCode/SubCostCode's reused
-        `_raise_duplicate_qbo_item_issue`) — Attachment's `resolve_candidate`
-        (hash-dedupe) has no side-channel duplicate-identity check of its own.
+        Stamp-time theft-guard (U-328/U-331 Decision 2). Uses `attachment_identity_conflict`,
+        NOT push-side `attachment_mapping_orphaned`/`attachment_upload_failed` — those describe
+        a different failure shape (push-side race, not pull-side hash-dedupe candidate race).
         """
         details = (
             f"Attachment stamp-time identity conflict. Candidate Attachment {attachment_id} "
@@ -358,7 +352,7 @@ class AttachableAttachmentConnector:
             f"{getattr(local_attachment, 'realm_id', None)!r}) and cannot be re-stamped with "
             f"qbo_id={qbo_id} realm_id={realm_id}. Resolve by merging or restoring the correct mapping."
         )
-        record_mapping_issue(
+        record_duplicate_identity_conflict(
             self.reconciliation_repo,
             drift_type="attachment_identity_conflict",
             entity_type="Attachment",

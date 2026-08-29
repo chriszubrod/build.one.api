@@ -17,7 +17,10 @@ from integrations.intuit.qbo.base.identity_fastpath import (
     stamp_dbo_identity_with_lock,
 )
 from integrations.intuit.qbo.base.ids import coerce_id
-from integrations.intuit.qbo.base.reconciliation_recorder import record_mapping_issue
+from integrations.intuit.qbo.base.reconciliation_recorder import (
+    record_duplicate_identity_conflict,
+    record_mapping_issue,
+)
 from entities.vendor.business.service import VendorService
 from entities.vendor.business.model import Vendor
 from entities.vendor_address.business.service import VendorAddressService
@@ -211,7 +214,7 @@ class VendorVendorConnector:
                 qbo_vendor.qbo_id, qbo_vendor.realm_id,
             )
             if deleted_holder is not None:
-                self._raise_deleted_vendor_holds_identity_issue(
+                self._record_deleted_vendor_holds_identity_issue(
                     qbo_vendor=qbo_vendor, deleted_vendor=deleted_holder,
                 )
                 raise ValueError(
@@ -225,7 +228,7 @@ class VendorVendorConnector:
             qbo_vendor.active, qbo_label="QboVendor", qbo_id=qbo_vendor.id, target="Vendor",
         )
         if not vendor_name:
-            self._raise_blank_display_name_issue(qbo_vendor=qbo_vendor)
+            self._record_blank_display_name_issue(qbo_vendor=qbo_vendor)
             raise ValueError(
                 f"QboVendor {qbo_vendor.id} has a blank DisplayName and no dbo-native "
                 f"identity match; cannot create or adopt a Vendor without a name."
@@ -294,7 +297,7 @@ class VendorVendorConnector:
             realm_id=qbo_vendor.realm_id,
             read_by_id=self.vendor_service.read_by_id,
             write_identity=_write_identity,
-            on_conflict=lambda c: self._raise_duplicate_qbo_vendor_issue(
+            on_conflict=lambda c: self._record_duplicate_qbo_vendor_issue(
                 qbo_vendor=qbo_vendor, local_vendor=c, existing_qbo_id=c.qbo_id,
             ),
         )
@@ -335,7 +338,7 @@ class VendorVendorConnector:
             and (getattr(local_vendor, "realm_id", None) or "") == (qbo_vendor.realm_id or "")
         ):
             return
-        self._raise_duplicate_qbo_vendor_issue(
+        self._record_duplicate_qbo_vendor_issue(
             qbo_vendor=qbo_vendor, local_vendor=local_vendor, existing_qbo_id=existing_qbo_id,
         )
         raise ValueError(
@@ -345,7 +348,7 @@ class VendorVendorConnector:
             f"refusing to overwrite it."
         )
 
-    def _raise_duplicate_qbo_vendor_issue(
+    def _record_duplicate_qbo_vendor_issue(
         self,
         *,
         qbo_vendor: QboVendor,
@@ -353,16 +356,8 @@ class VendorVendorConnector:
         existing_qbo_id: str,
     ) -> None:
         """
-        Record a name-match-vs-different-existing-identity duplicate (U-313).
-
-        Reuses the pre-existing `duplicate_qbo_vendor` DriftType (this
-        family's own conflict category, previously emitted by the old
-        mapping-table-based duplicate check this replaces) rather than
-        registering a new one -- semantically the same class of problem (an
-        incoming QBO vendor's identity conflicting with what a local Vendor
-        already carries), and keeps this unit's file scope to the connector
-        file. Mirrors `CustomerCustomerConnector._raise_duplicate_qbo_customer_issue`
-        (U-310).
+        Name-match duplicate (U-313). Reuses `duplicate_qbo_vendor` (this family's own
+        category from the old mapping-table check). Mirrors CustomerCustomerConnector (U-310).
         """
         details = (
             f"Duplicate QBO vendor detected. QboVendor {qbo_vendor.id} "
@@ -372,7 +367,7 @@ class VendorVendorConnector:
             f"renaming one of the QBO vendors."
         )
         qbo_id, realm_id = _qbo_vendor_ref(qbo_vendor)
-        record_mapping_issue(
+        record_duplicate_identity_conflict(
             self.reconciliation_repo,
             drift_type="duplicate_qbo_vendor",
             entity_type="Vendor",
@@ -382,7 +377,7 @@ class VendorVendorConnector:
             details=details,
         )
 
-    def _raise_deleted_vendor_holds_identity_issue(
+    def _record_deleted_vendor_holds_identity_issue(
         self, *, qbo_vendor: QboVendor, deleted_vendor,
     ) -> None:
         """
@@ -415,7 +410,7 @@ class VendorVendorConnector:
             details=details,
         )
 
-    def _raise_blank_display_name_issue(self, *, qbo_vendor: QboVendor) -> None:
+    def _record_blank_display_name_issue(self, *, qbo_vendor: QboVendor) -> None:
         """
         Record a blank-DisplayName detection on qbo.ReconciliationIssue.
 

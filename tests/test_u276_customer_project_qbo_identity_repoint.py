@@ -142,7 +142,7 @@ def test_customer_service_read_by_qbo_identity_is_a_thin_passthrough():
 # U-310 retired `qbo.CustomerCustomer` from this connector entirely (Wave-5
 # "trust dbo alone", `docs/design/wave5.md` §2/§4): there is no mapping table
 # left to read, write, self-heal, or conflict against, so the pre-U-310
-# _resolve_mapping_state / _raise_identity_mapping_conflict_issue /
+# _resolve_mapping_state / _record_identity_mapping_conflict_issue /
 # create_mapping tests this section used to hold are gone with the machinery
 # they covered. What THIS section must now prove is the dbo-only contract,
 # mirroring `test_u289_item_qbo_identity_repoint.py`'s ItemCostCodeConnector
@@ -531,7 +531,7 @@ def test_customer_stamp_identity_records_duplicate_issue_even_when_resolve_candi
     carries it. This is the guard that actually protects production; it must
     record the same `customer_identity_conflict` reconciliation issue the
     resolve_candidate-side guard does, not just raise silently. Mutation
-    target: deleting the `_raise_duplicate_qbo_customer_issue` call here drops
+    target: deleting the `_record_duplicate_qbo_customer_issue` call here drops
     the conflict record for every real-world hit of this guard."""
     connector, customer_service, reconciliation_repo = _build_customer_connector()
     candidate = _make_customer(id=150)
@@ -771,7 +771,7 @@ def test_customer_stamp_identity_fails_closed_on_lock_timeout():
 # (Wave-5 "trust dbo alone", `docs/design/wave5.md` §2/§4, mirroring U-310's
 # CustomerCustomerConnector one section up): no mapping-table read/write of
 # any kind on the sync_from_qbo_customer path, so the pre-U-311
-# _resolve_mapping_state / _raise_identity_mapping_conflict_issue /
+# _resolve_mapping_state / _record_identity_mapping_conflict_issue /
 # mapping-table hit/miss/heal-in-place tests this section used to hold are
 # gone with the machinery they covered (`_resolve_mapping_state` itself is
 # UNCHANGED and still tested directly where it's actually exercised --

@@ -558,12 +558,12 @@ def test_vendor_direct_hit_apply_returns_none_raises_runtime_error():
         connector.sync_from_qbo_vendor(qbo_vendor)
 
 
-def test_vendor_raise_duplicate_qbo_vendor_issue_names_the_conflicting_identity():
+def test_vendor_record_duplicate_qbo_vendor_issue_names_the_conflicting_identity():
     connector, _, reconciliation_repo = _build_vendor_connector()
     qbo_vendor = _make_qbo_vendor(qbo_id="QBO-V-1", realm_id="r1")
     local_vendor = _make_vendor(id=55, public_id="vendor-pub-55")
 
-    connector._raise_duplicate_qbo_vendor_issue(
+    connector._record_duplicate_qbo_vendor_issue(
         qbo_vendor=qbo_vendor, local_vendor=local_vendor, existing_qbo_id="QBO-OTHER",
     )
 

@@ -19,7 +19,11 @@ from integrations.intuit.qbo.customer.business.model import QboCustomer
 from integrations.intuit.qbo.customer.persistence.repo import QboCustomerRepository
 from integrations.intuit.qbo.physical_address.connector.business.service import PhysicalAddressAddressConnector
 from integrations.intuit.qbo.reconciliation.persistence.repo import ReconciliationIssueRepository
-from integrations.intuit.qbo.base.reconciliation_recorder import record_mapping_issue
+from integrations.intuit.qbo.base.reconciliation_recorder import (
+    build_duplicate_qbo_identity_conflict_desc,
+    record_duplicate_identity_conflict,
+    record_mapping_issue,
+)
 from entities.customer.business.service import CustomerService
 from entities.project.business.service import ProjectService
 from entities.project.business.model import Project
@@ -260,7 +264,7 @@ class CustomerProjectConnector:
             read_by_id=self.project_service.read_by_id,
             apply_fields=_apply_customer_id_only,
             write_identity=_write_identity,
-            on_conflict=lambda c: self._raise_project_identity_conflict_issue(
+            on_conflict=lambda c: self._record_project_identity_conflict_issue(
                 qbo_customer=qbo_customer, local_project=c, existing_qbo_id=c.qbo_id,
             ),
         )
@@ -304,13 +308,13 @@ class CustomerProjectConnector:
         identity yet, or a benign re-resolve). Otherwise records a
         `project_identity_conflict` reconciliation issue (reusing the
         DriftType the now-deleted mapping-table-era
-        `_raise_identity_mapping_conflict_issue` used to emit) and raises.
+        `_record_identity_mapping_conflict_issue` used to emit) and raises.
         Mirrors `_check_no_conflicting_identity` (U-310).
         """
         existing_qbo_id = self._conflicting_project_identity(local_project, qbo_customer)
         if existing_qbo_id is None:
             return
-        self._raise_project_identity_conflict_issue(
+        self._record_project_identity_conflict_issue(
             qbo_customer=qbo_customer, local_project=local_project, existing_qbo_id=existing_qbo_id,
         )
         raise ValueError(
@@ -320,33 +324,28 @@ class CustomerProjectConnector:
             f"refusing to overwrite it."
         )
 
-    def _raise_project_identity_conflict_issue(
+    def _record_project_identity_conflict_issue(
         self, *, qbo_customer: QboCustomer, local_project: Project, existing_qbo_id: str,
     ) -> None:
         """
-        Record a name-match-vs-different-existing-identity duplicate (U-311).
-        Mirrors `CustomerCustomerConnector._raise_duplicate_qbo_customer_issue`
-        (U-310) exactly. (`heal_missing_mapping`'s own duplicate check used to
-        be a separate mapping-table-based `_raise_duplicate_qbo_customer_issue`
-        on this class -- U-314-prereq repointed it onto the dbo-native
-        `duplicate_qbo_customer` recording inline in `heal_missing_mapping`
-        below, and U-314 deleted the now-dead mapping-table version.)
+        Name-match duplicate (U-311). Mirrors CustomerCustomerConnector (U-310). Reuses
+        `project_identity_conflict` (previously emitted by the deleted mapping-table
+        `_record_identity_mapping_conflict_issue`).
         """
         existing_realm_id = getattr(local_project, "realm_id", None)
-        if existing_qbo_id == qbo_customer.qbo_id:
-            conflict_desc = (
-                f"the SAME QboId {existing_qbo_id} but a DIFFERENT RealmId "
-                f"({existing_realm_id!r} vs incoming {qbo_customer.realm_id!r})"
-            )
-        else:
-            conflict_desc = f"a DIFFERENT QboId {existing_qbo_id} (realm {existing_realm_id!r})"
+        conflict_desc = build_duplicate_qbo_identity_conflict_desc(
+            existing_qbo_id=existing_qbo_id,
+            incoming_qbo_id=qbo_customer.qbo_id,
+            existing_realm_id=existing_realm_id,
+            incoming_realm_id=qbo_customer.realm_id,
+        )
         details = (
             f"Duplicate QBO sub-customer detected. QboCustomer {qbo_customer.id} "
             f"(DisplayName='{qbo_customer.display_name}') name-matches local Project "
             f"{local_project.id} which already carries {conflict_desc}. "
             f"Resolve by merging or renaming one of the QBO sub-customers."
         )
-        record_mapping_issue(
+        record_duplicate_identity_conflict(
             self.reconciliation_repo,
             drift_type="project_identity_conflict",
             entity_type="Project",
@@ -607,7 +606,7 @@ class CustomerProjectConnector:
         existing_local_with_identity = self.project_service.read_by_id(existing_local.id) or existing_local
         existing_qbo_id = self._conflicting_project_identity(existing_local_with_identity, qbo_customer)
         if existing_qbo_id is not None:
-            self._raise_project_identity_conflict_issue(
+            self._record_project_identity_conflict_issue(
                 qbo_customer=qbo_customer, local_project=existing_local_with_identity, existing_qbo_id=existing_qbo_id,
             )
             return None

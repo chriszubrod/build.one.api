@@ -26,7 +26,9 @@ from integrations.intuit.qbo.base.identity_fastpath import (
     raise_concurrent_write_race,
     run_identity_fastpath,
 )
-from integrations.intuit.qbo.base.reconciliation_recorder import record_mapping_issue
+from integrations.intuit.qbo.base.reconciliation_recorder import (
+    record_identity_mapping_conflict,
+)
 from integrations.intuit.qbo.base.cost_code_resolver import resolve_qbo_item_ref
 from integrations.intuit.qbo.reconciliation.persistence.repo import ReconciliationIssueRepository
 from integrations.intuit.qbo.base.ids import coerce_id
@@ -222,7 +224,7 @@ class InvoiceInvoiceConnector:
             read_by_external_id=self.mapping_repo.read_by_qbo_invoice_id,
             external_id_attr="qbo_invoice_id",
             record_conflict_issue=lambda entity, by_local, by_external: (
-                self._raise_identity_mapping_conflict_issue(
+                self._record_identity_mapping_conflict_issue(
                     qbo_invoice=qbo_invoice,
                     dbo_invoice_id=coerce_id(entity.id),
                     local_side_mapping=by_local,
@@ -445,7 +447,7 @@ class InvoiceInvoiceConnector:
                 read_by_local_id=self.mapping_repo.read_by_invoice_id,
                 read_by_external_id=self.mapping_repo.read_by_qbo_invoice_id,
                 external_id_attr="qbo_invoice_id",
-                record_conflict_issue=lambda by_local, by_external: self._raise_identity_mapping_conflict_issue(
+                record_conflict_issue=lambda by_local, by_external: self._record_identity_mapping_conflict_issue(
                     qbo_invoice=qbo_invoice,
                     dbo_invoice_id=invoice_id,
                     local_side_mapping=by_local,
@@ -613,7 +615,7 @@ class InvoiceInvoiceConnector:
             return False
         return abs(Decimal(str(total_amount)) - Decimal(str(other_total))) <= Decimal("0.01")
 
-    def _raise_identity_mapping_conflict_issue(
+    def _record_identity_mapping_conflict_issue(
         self,
         *,
         qbo_invoice: QboInvoice,
@@ -621,37 +623,21 @@ class InvoiceInvoiceConnector:
         local_side_mapping: Optional[InvoiceInvoice],
         qbo_side_mapping: Optional[InvoiceInvoice],
     ) -> None:
-        """
-        Record a dbo-identity <-> mapping-table split found by run_identity_fastpath's
-        resolve_mapping_state. Mirrors BillBillConnector's identically named/shaped
-        method — covers all three conflict shapes (qbo-side only, local-side only, or
-        both) in ONE issue, never silently dropping either side's blocker.
-        """
-        parts = [
-            f"InvoiceInvoice identity conflict. dbo.Invoice {dbo_invoice_id} carries "
-            f"native QBO identity for QboInvoice {qbo_invoice.id} "
-            f"(QboId={qbo_invoice.qbo_id}, RealmId={qbo_invoice.realm_id})."
-        ]
-        if qbo_side_mapping:
-            parts.append(
-                f"qbo-side: the mapping table still binds that same QboInvoice to a "
-                f"DIFFERENT Invoice {qbo_side_mapping.invoice_id} (mapping {qbo_side_mapping.id})."
-            )
-        if local_side_mapping:
-            parts.append(
-                f"local-side: Invoice {dbo_invoice_id}'s own mapping row (mapping "
-                f"{local_side_mapping.id}) still binds it to a DIFFERENT QboInvoice "
-                f"{local_side_mapping.qbo_invoice_id}."
-            )
-        parts.append("Not auto-repointed — investigate which side is correct.")
-        record_mapping_issue(
+        record_identity_mapping_conflict(
             self.reconciliation_repo,
             drift_type="invoice_identity_conflict",
             entity_type="Invoice",
-            entity_public_id=None,
-            qbo_id=str(qbo_invoice.qbo_id) if qbo_invoice.qbo_id else None,
-            realm_id=qbo_invoice.realm_id or "",
-            details=" ".join(parts),
+            mapping_label="InvoiceInvoice",
+            qbo_label="QboInvoice",
+            dbo_id=dbo_invoice_id,
+            qbo_row_id=qbo_invoice.id,
+            raw_qbo_id=qbo_invoice.qbo_id,
+            raw_realm_id=qbo_invoice.realm_id,
+            realm_id=qbo_invoice.realm_id,
+            local_side_mapping=local_side_mapping,
+            qbo_side_mapping=qbo_side_mapping,
+            qbo_side_local_fk_attr="invoice_id",
+            local_side_qbo_fk_attr="qbo_invoice_id",
         )
 
     # One of FOUR near-identical QBO customer-ref -> Project resolvers (invoice /

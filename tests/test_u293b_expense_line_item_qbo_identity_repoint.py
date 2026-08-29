@@ -63,13 +63,13 @@ def _build_connector():
     return connector, mapping_repo, expense_line_item_service, reconciliation_repo
 
 
-def test_raise_line_identity_mapping_conflict_issue_names_both_sides():
+def test_record_line_identity_mapping_conflict_issue_names_both_sides():
     connector, _, _, reconciliation_repo = _build_connector()
     qbo_line = _make_qbo_line(id=42, qbo_line_id="1")
     qbo_side = SimpleNamespace(id=2, expense_line_item_id=9, qbo_purchase_line_id=42)
     local_side = SimpleNamespace(id=3, expense_line_item_id=55, qbo_purchase_line_id=5)
 
-    connector._raise_line_identity_mapping_conflict_issue(
+    connector._record_line_identity_mapping_conflict_issue(
         qbo_line=qbo_line, dbo_line_id=55,
         local_side_mapping=local_side, qbo_side_mapping=qbo_side,
         realm_id="realm-1",
@@ -83,12 +83,12 @@ def test_raise_line_identity_mapping_conflict_issue_names_both_sides():
     assert "DIFFERENT QboPurchaseLine 5" in kwargs["details"]
 
 
-def test_raise_line_identity_mapping_conflict_issue_qbo_side_only():
+def test_record_line_identity_mapping_conflict_issue_qbo_side_only():
     connector, _, _, reconciliation_repo = _build_connector()
     qbo_line = _make_qbo_line(id=42, qbo_line_id="1")
     qbo_side = SimpleNamespace(id=2, expense_line_item_id=9, qbo_purchase_line_id=42)
 
-    connector._raise_line_identity_mapping_conflict_issue(
+    connector._record_line_identity_mapping_conflict_issue(
         qbo_line=qbo_line, dbo_line_id=55,
         local_side_mapping=None, qbo_side_mapping=qbo_side,
     )
@@ -99,12 +99,12 @@ def test_raise_line_identity_mapping_conflict_issue_qbo_side_only():
     assert kwargs["realm_id"] == ""
 
 
-def test_raise_line_identity_mapping_conflict_issue_local_side_only():
+def test_record_line_identity_mapping_conflict_issue_local_side_only():
     connector, _, _, reconciliation_repo = _build_connector()
     qbo_line = _make_qbo_line(id=42, qbo_line_id="1")
     local_side = SimpleNamespace(id=3, expense_line_item_id=55, qbo_purchase_line_id=5)
 
-    connector._raise_line_identity_mapping_conflict_issue(
+    connector._record_line_identity_mapping_conflict_issue(
         qbo_line=qbo_line, dbo_line_id=55,
         local_side_mapping=local_side, qbo_side_mapping=None,
     )

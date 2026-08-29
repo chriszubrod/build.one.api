@@ -11,17 +11,28 @@ Carry-over items from sessions. Check off as done; prune anything stale.
   read-through/degrade-safe). Single-sourced base-file change only; extract staged in scratchpad, applied live via
   `CREATE OR ALTER` (verified live == committed, CREATE-normalized). Read-sproc SELECT change — no code deploy needed.
 
-- [ ] **Recorder-boilerplate consolidation — ~16 near-identical per-family `ReconciliationIssue` recorders.** Flagged by
-  U-331's `/simplify` (2026-08-28). **📐 DESIGN WRITTEN 2026-08-29 (U-333) → `docs/design/u333-recorder-consolidation.md`,
-  awaiting /em Gate-2 before build dispatch.** Survey found the `_raise_*` recorders are ALL misnamed (none raise — the
-  fastpath/caller owns the raise), so this is a clean behavior-preserving seam. Design: 2 shared free functions in
-  `base/reconciliation_recorder.py` — `record_identity_mapping_conflict` (Shapes A+B, 11 connectors) +
-  `record_duplicate_identity_conflict` (Shape C, 5 incl. project); each wrapper collapses to a 3–5 line literal-forwarding
-  call; **the AST width-guard (`tests/test_qbo_reconciliation_recorder.py`) must be updated in lockstep** to discover the two
-  new call-site names (it's already pre-wired for a `_record_reconciliation_issue` seam). 4 genuine one-offs (deleted-vendor,
-  blank-display-name, attachment orphaned/upload-failed) scoped OUT. **Verdict on U-214(b): KEEP SEPARATE** — U-333 is the
-  recorder-wrapper layer (all already call `record_mapping_issue`); U-214(b) is the heal-branch control-flow layer below it.
-  Pure Python, no SQL. Own unit — touches shared `base/` + ~16 connectors + the guard, so **design-gated (two-phase)**.
+- [x] ~~**Recorder-boilerplate consolidation — ~16 near-identical per-family `ReconciliationIssue` recorders.**~~
+  **DONE 2026-08-29 (U-333 build; design `docs/design/u333-recorder-consolidation.md` approved at /em Gate-2 same day).**
+  Shipped as designed: `record_identity_mapping_conflict` (Shapes A+B, 11 wrappers, shared three-part details builder) +
+  `record_duplicate_identity_conflict` (Shape C, 6 wrappers incl. project — all six C wordings diverge, so per the design's
+  no-force-fit caveat the callers build their divergent `details` and customer/project share
+  `build_duplicate_qbo_identity_conflict_desc`); all 17 wrappers renamed `_raise_*` → `_record_*` (+ vendor's 2 scoped-out
+  recorders renamed for consistency, mechanism untouched); AST guard learns both new call-site names via
+  `_WRITER_FN_NAMES`, `_MIN_CALL_SITES` 13→30 (verified ledger 12+11+6+1); 18-case byte-for-byte characterization matrix
+  (`tests/test_u333_recorder_consolidation.py`, asserting at the `reconciliation_repo.create` seam) with pre-refactor
+  captured constants, mutation-proven RED twice. Codex Pass-1 PASS (xhigh, 0 findings) + re-PASS after the 4-lens Pass-2 batch.
+- [ ] **U-333 follow-ups (booked 2026-08-29, from Pass-2 lenses):** (a) **[U-214b] Static-type the A/B conflict sides** —
+  `record_identity_mapping_conflict` reads the mapping objects via two stringly `*_fk_attr` params (`getattr` inside the
+  never-raise guard), so an FK-attr rename becomes a logged-and-dropped issue instead of a loud break; replace with a small
+  per-side NamedTuple (e.g. `ConflictSide(mapping_id, other_id)`) built at each wrapper (restores static attribute access +
+  pre-refactor loudness; emitted bytes unchanged, char matrix pins it). Fold into U-214(b), which builds the heal-branch layer
+  on this same seam. (b) **[design-feedback] `record_duplicate_identity_conflict` is a never-raise pass-through** — all three
+  Pass-2 lenses independently flagged that it forwards its kwargs to the already-failure-isolated `record_mapping_issue`
+  unchanged (its shared value is the guard classification + the C-shape name); option: collapse the 6 C sites back to raw
+  `record_mapping_issue` and keep only `build_duplicate_qbo_identity_conflict_desc` — needs a one-line design amendment since
+  the approved design names two functions and the guard learns both. Decide at a future /em gate; harmless as-is.
+  (c) **[micro] `identity_fastpath.py:349`** docstring still says "the family's own `_raise_identity_mapping_conflict_issue`"
+  — one-word rename to `_record_…` next time that file is legitimately open (it was scope-frozen for U-333).
 
 ## U-316 follow-up (dbo-only identity fast path ROWVERSION hardening) — deferred, not scope-creeped in (2026-08-25)
 

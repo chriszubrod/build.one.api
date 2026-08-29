@@ -4,14 +4,12 @@ Carry-over items from sessions. Check off as done; prune anything stale.
 
 ## Post-migration follow-up wave — booked 2026-08-28 (after the trust-dbo migration + its 5-unit follow-up wave shipped/deployed/applied)
 
-- [ ] **`ReadProjectsByUserId` doesn't SELECT `[QboId]`/`[RealmId]`** (`entities/project/sql/dbo.project.sql`) — the
-  identical gap U-327 closed 2026-08-28 for `ReadProjects`/`ReadProjectByPublicId`/`ReadProjectByName`, left out of
-  scope there. Latent, not live-broken (no current caller reads `.qbo_id` off a `ReadProjectsByUserId`-sourced row).
-  Fix: add `[QboId]`, `[RealmId]` to its SELECT list, matching `ReadProjectById`'s shape (the existing repo `_from_db`
-  already maps them). ⚠️ **Follow the standing SQL-hygiene rule** (learned this wave): project's read sprocs are under
-  the U-050 single-source guard + the U-107 duplicate-sproc ratchet — commit ONLY the single-sourced base-file change,
-  stage the run-ready extract in **scratchpad** (never a committed `scripts/migrations/*.sql` — that trips both guards),
-  and /em regenerates the extract from the base file at apply time. DBA-reviewed SQL unit.
+- [x] ~~**`ReadProjectsByUserId` doesn't SELECT `[QboId]`/`[RealmId]`**~~ **DONE 2026-08-29 (U-332, `6001d371`).** Added
+  `p.[QboId]`, `p.[RealmId]` to BOTH SELECT variants (system-admin all-projects block + non-admin `INNER JOIN
+  dbo.[UserProject]` block), matching `ReadProjectById`'s shape; repo `_from_db` already `getattr`s them so no repo
+  change. Test `test_u332_read_projects_by_user_qbo_projection.py` (static both-block guard, mutation-proven RED +
+  read-through/degrade-safe). Single-sourced base-file change only; extract staged in scratchpad, applied live via
+  `CREATE OR ALTER` (verified live == committed, CREATE-normalized). Read-sproc SELECT change — no code deploy needed.
 
 - [ ] **Recorder-boilerplate consolidation — 6+ near-identical per-family `ReconciliationIssue` recorders.** Flagged by
   U-331's `/simplify` (2026-08-28): each QBO connector's `_raise_duplicate_*_issue` / `_raise_*_conflict_issue` hand-rolls

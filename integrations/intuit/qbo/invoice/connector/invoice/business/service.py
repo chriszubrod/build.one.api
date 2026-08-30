@@ -28,6 +28,7 @@ from integrations.intuit.qbo.base.identity_fastpath import (
 )
 from integrations.intuit.qbo.base.reconciliation_recorder import (
     record_identity_mapping_conflict,
+    record_mapping_issue,
 )
 from integrations.intuit.qbo.base.cost_code_resolver import resolve_qbo_item_ref
 from integrations.intuit.qbo.reconciliation.persistence.repo import ReconciliationIssueRepository
@@ -295,6 +296,32 @@ class InvoiceInvoiceConnector:
                     f"Invoice number '{invoice_number}' (project {proj.id}) is already mapped to a "
                     f"DIFFERENT QboInvoice {existing_map.qbo_invoice_id}; QboInvoice {qbo_invoice.id} "
                     f"will create a suffixed invoice (genuine number collision)."
+                )
+                try:
+                    from integrations.intuit.qbo.invoice.persistence.repo import QboInvoiceRepository
+                    colliding_qbo_invoice = QboInvoiceRepository().read_by_id(existing_map.qbo_invoice_id)
+                except Exception:
+                    logger.exception(
+                        f"Failed to resolve colliding QboInvoice {existing_map.qbo_invoice_id} for "
+                        f"reconciliation-issue recording"
+                    )
+                    colliding_qbo_invoice = None
+                colliding_qbo_id = colliding_qbo_invoice.qbo_id if colliding_qbo_invoice else None
+                record_mapping_issue(
+                    self.reconciliation_repo,
+                    drift_type="duplicate_qbo_invoice_number",
+                    entity_type="Invoice",
+                    entity_public_id=str(existing_local.public_id) if existing_local.public_id else None,
+                    qbo_id=str(colliding_qbo_id) if colliding_qbo_id else None,
+                    realm_id=qbo_invoice.realm_id or "",
+                    details=(
+                        f"Invoice number '{invoice_number}' (project {proj.id}) collides: local Invoice "
+                        f"{existing_local.id} (number '{existing_local.invoice_number}') is already mapped to "
+                        f"QboInvoice {existing_map.qbo_invoice_id} (QboId={colliding_qbo_id}); incoming "
+                        f"QboInvoice {qbo_invoice.id} (QboId={qbo_invoice.qbo_id}) will create a suffixed "
+                        f"invoice instead of overwriting the existing mapping."
+                    ),
+                    severity="critical",
                 )
             else:
                 # Positive-evidence guard: a (project, number) match alone is NOT enough to adopt.

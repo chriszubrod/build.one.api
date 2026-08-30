@@ -35,10 +35,10 @@ _SQL_COLUMN_WIDTH_RE = re.compile(
     r"\[(DriftType|EntityType|Severity|Action)\]\s+NVARCHAR\((\d+)\)",
     re.IGNORECASE,
 )
-# Production call sites as of U-333 — guard must discover at least this many writers.
-# record_mapping_issue (12) + record_identity_mapping_conflict (11) +
-# record_duplicate_identity_conflict (6) + direct repo.create (1) = 30 total discovered sites.
-_MIN_CALL_SITES = 30
+# Production call sites as of U-334 — guard must discover at least this many writers.
+# record_mapping_issue (13) + record_identity_mapping_conflict (11) +
+# record_duplicate_identity_conflict (6) + direct repo.create (1) = 31 total discovered sites.
+_MIN_CALL_SITES = 31
 _SKIP_FILES = frozenset({"reconciliation_recorder.py"})
 _DEFAULT_KWARGS = {
     "severity": "critical",

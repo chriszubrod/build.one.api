@@ -497,6 +497,7 @@ async def reconcile_qbo_router():
             ("purchase", service.reconcile_purchases),
             ("vendor_credit", service.reconcile_vendor_credits),
             ("invoice_draw", service.reconcile_invoice_draws),
+            ("billable_status_drift", service.reconcile_billable_status_drift),
         ):
             try:
                 fn(realm_id=auth.realm_id)

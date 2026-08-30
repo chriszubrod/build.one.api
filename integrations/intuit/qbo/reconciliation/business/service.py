@@ -2,11 +2,13 @@
 import logging
 import os
 import uuid
+from decimal import Decimal
 from typing import Optional
 
 # Local Imports
 from shared.authz.context import current_is_system_admin, current_user_id, system_authz
 from integrations.intuit.qbo.base.drift_types import (
+    DRIFT_BILLABLE_STATUS_DRIFT,
     DRIFT_DUPLICATE_MAPPING,
     DRIFT_FIELD_MISMATCH,
     DRIFT_INVOICE_DRAW_MISMATCH,
@@ -39,6 +41,7 @@ SEVERITY_BY_DRIFT = {
     DRIFT_DUPLICATE_MAPPING: "high",
     DRIFT_QBO_VOIDED: "low",
     DRIFT_INVOICE_DRAW_MISMATCH: "medium",
+    DRIFT_BILLABLE_STATUS_DRIFT: "medium",
 }
 
 # Counter keys rolled up from each detector into a reconcile run summary.
@@ -71,13 +74,17 @@ class ReconciliationService:
 
     def __init__(self, repo: Optional[ReconciliationIssueRepository] = None):
         self.repo = repo or ReconciliationIssueRepository()
-        # Per-run dedupe cache for qbo_voided keys. Scoped to ONE reconcile run:
-        # ReconciliationService is constructed per-invocation (admin reconcile router,
-        # scheduler _sync_reconcile_bills), so all three void detectors share one
-        # fetch and the cache dies with the run. If this service ever becomes
-        # long-lived or a singleton, invalidate this cache per run — otherwise it
-        # goes stale against issues resolved in SQL mid-life.
-        self._void_key_cache = None
+        # Per-run dedupe-key cache, keyed by drift_type (U-335 generalized this
+        # from a single qbo_voided-only cache once a second drift_type needed
+        # the identical idiom — see _unresolved_keys). Scoped to ONE reconcile
+        # run: ReconciliationService is constructed per-invocation (admin
+        # reconcile router, scheduler _sync_reconcile_bills), so every detector
+        # sharing a drift_type (the qbo_voided trio; the billable_status_drift
+        # Bill/Purchase pair) shares one fetch per drift_type and the cache dies
+        # with the run. If this service ever becomes long-lived or a singleton,
+        # invalidate this cache per run — otherwise it goes stale against issues
+        # resolved in SQL mid-life.
+        self._dedupe_key_caches: dict = {}
         # U-301a: same per-run memoization idiom as _void_key_cache, for
         # dbo.Expense's (Id, QboId) identity rows — reconcile_purchases's two
         # detectors both need this realm-scoped read; without caching it here
@@ -426,6 +433,78 @@ class ReconciliationService:
         )
         return {"run_id": run_id, **counts}
 
+    def reconcile_billable_status_drift(self, realm_id: str) -> dict:
+        """
+        Cross-source-state drift detector (U-335): flag BillLineItem /
+        ExpenseLineItem rows that are locally IsBilled=1 but whose mapped QBO
+        line still carries BillableStatus='Billable'. We deliberately never
+        push BillableStatus back to QBO on invoice completion
+        (entities/invoice/business/service.py::_sync_billed_status_to_qbo is
+        defined but has zero call sites — complete_invoice never calls it), so
+        QBO's Suggested Transactions tray keeps re-suggesting lines that are
+        already billed locally.
+
+        Pure SQL, no QBO API calls — same shape as reconcile_invoice_draws.
+        Detectors run in this order:
+          1. Bill branch — dbo.BillLineItem -> qbo.BillLineItemBillLine -> qbo.BillLine
+          2. Purchase branch — dbo.ExpenseLineItem -> qbo.PurchaseLineExpenseLineItem -> qbo.PurchaseLine
+
+        FLAG-ONLY: never auto-fixes, never mutates BillableStatus, never
+        touches the source rows. Aggregates to ONE issue per drifting parent
+        (Bill / Expense) — not per line — sized 2026-08-30 at ~1,104 drifting
+        lines / ~600 parents / ~$5.35M live; a per-line issue would flood the
+        table. Idempotent via the same (realm_id, entity_type, qbo_id)
+        unresolved-key dedupe the qbo_voided detectors use (see
+        _unresolved_keys), so a daily re-run only writes NEWLY-drifting
+        parents.
+        """
+        run_id = str(uuid.uuid4())
+        logger.info(
+            "qbo.reconcile.run.started",
+            extra={
+                "event_name": "qbo.reconcile.run.started",
+                "operation_name": "qbo.reconcile.billable_status_drift",
+                "entity_type": "BillLineItem/ExpenseLineItem",
+                "realm_id": realm_id,
+                "reconcile_run_id": run_id,
+            },
+        )
+
+        counts = dict.fromkeys(RECONCILE_COUNT_KEYS, 0)
+
+        try:
+            d1 = self._reconcile_bill_billable_status_drift(realm_id=realm_id, run_id=run_id)
+            for key in RECONCILE_COUNT_KEYS:
+                counts[key] += d1.get(key, 0)
+        except Exception:
+            logger.exception("qbo.reconcile.detector.failed",
+                             extra={"detector": "bill_billable_status_drift",
+                                    "reconcile_run_id": run_id})
+            counts["errors"] += 1
+
+        try:
+            d2 = self._reconcile_purchase_billable_status_drift(realm_id=realm_id, run_id=run_id)
+            for key in RECONCILE_COUNT_KEYS:
+                counts[key] += d2.get(key, 0)
+        except Exception:
+            logger.exception("qbo.reconcile.detector.failed",
+                             extra={"detector": "purchase_billable_status_drift",
+                                    "reconcile_run_id": run_id})
+            counts["errors"] += 1
+
+        logger.info(
+            "qbo.reconcile.run.completed",
+            extra={
+                "event_name": "qbo.reconcile.run.completed",
+                "operation_name": "qbo.reconcile.billable_status_drift",
+                "entity_type": "BillLineItem/ExpenseLineItem",
+                "realm_id": realm_id,
+                "reconcile_run_id": run_id,
+                **counts,
+            },
+        )
+        return {"run_id": run_id, **counts}
+
     # ------------------------------------------------------------------ #
     # Concrete detectors
     # ------------------------------------------------------------------ #
@@ -439,7 +518,7 @@ class ReconciliationService:
 
         U-305: "already synced" is resolved via dbo.Bill's own native QboId
         (U-238a), loaded once per run (shared with the voided detector via
-        _bill_identity_rows, mirroring _unresolved_void_keys's per-run
+        _bill_identity_rows, mirroring _unresolved_keys's per-run
         memoization) instead of a per-record qbo.Bill + qbo.BillBill
         staging/mapping round trip — Bill/VendorCredit fan-out of U-301a's
         Expense pilot.
@@ -581,35 +660,41 @@ class ReconciliationService:
     # Void detection (task #21)
     # ------------------------------------------------------------------ #
 
-    def _unresolved_void_keys(self) -> set:
-        """Open qbo_voided dedupe keys for this reconcile run (see _void_key_cache).
+    def _unresolved_keys(self, drift_type: str) -> set:
+        """Open (realm_id, entity_type, qbo_id) dedupe keys for `drift_type`,
+        cached per drift_type for the life of this ReconciliationService
+        instance (see _dedupe_key_caches) — generalized (U-335) from a
+        qbo_voided-only cache once billable_status_drift needed the identical
+        idiom (same shape as _identity_rows_for's generalization below).
 
-        Returns the live per-run cache object (not a copy); callers may .add() a
-        key they have just durably written, and that key is then visible to the
-        other detectors in the same run — safe because entity_type is part of the key.
+        Returns the live per-run cache set (not a copy); callers may .add() a
+        key they have just durably written, and that key is then visible to
+        other detectors sharing this drift_type in the same run — safe
+        because entity_type is part of the key.
         """
-        if self._void_key_cache is not None:
-            return self._void_key_cache
+        if drift_type in self._dedupe_key_caches:
+            return self._dedupe_key_caches[drift_type]
         from integrations.intuit.qbo.base.ids import normalize_qbo_id
         try:
-            rows = self.repo.read_unresolved_issue_keys_by_drift_type(DRIFT_QBO_VOIDED)
+            rows = self.repo.read_unresolved_issue_keys_by_drift_type(drift_type)
             keys = set()
             for realm_id, entity_type, qbo_id in rows:
                 normalized = normalize_qbo_id(qbo_id)
                 if not normalized:
                     continue
                 keys.add((realm_id, entity_type, normalized))
-            self._void_key_cache = keys
         except Exception:
-            # Fail open: empty key set means every 404 writes its issue — exactly
-            # pre-U-160 behaviour. Suppression must NEVER be the failure mode:
-            # a duplicate row is cheap, a lost flag is not.
+            # Fail open: empty key set means every drifting/voided candidate
+            # writes its issue — exactly pre-U-160 behaviour. Suppression must
+            # NEVER be the failure mode: a duplicate row is cheap, a lost flag
+            # is not.
             logger.exception(
-                "qbo.reconcile.void_dedupe.key_fetch_failed",
-                extra={"event_name": "qbo.reconcile.void_dedupe.key_fetch_failed"},
+                "qbo.reconcile.dedupe.key_fetch_failed",
+                extra={"event_name": "qbo.reconcile.dedupe.key_fetch_failed", "drift_type": drift_type},
             )
-            self._void_key_cache = set()
-        return self._void_key_cache
+            keys = set()
+        self._dedupe_key_caches[drift_type] = keys
+        return self._dedupe_key_caches[drift_type]
 
     def _expense_identity_rows(self, realm_id: str) -> list:
         """dbo.Expense's (Id, QboId) identity rows for a realm (U-301a), cached
@@ -775,7 +860,7 @@ class ReconciliationService:
                 key = (realm_id, "Bill", qbo_id)
                 # fetched lazily on the first confirmed 404 — a run with no voids pays no
                 # query; the instance cache keeps it to one fetch per run.
-                void_keys = self._unresolved_void_keys()
+                void_keys = self._unresolved_keys(DRIFT_QBO_VOIDED)
                 if key in void_keys:
                     flagged_deduped += 1
                     logger.info(
@@ -817,7 +902,7 @@ class ReconciliationService:
 
         U-301a: "already synced" is resolved via dbo.Expense's own native QboId
         (U-238a), loaded once per run (shared with the voided detector via
-        _expense_identity_rows, mirroring _unresolved_void_keys's per-run
+        _expense_identity_rows, mirroring _unresolved_keys's per-run
         memoization) instead of a per-record qbo.Purchase + qbo.PurchaseExpense
         staging/mapping round trip — same identity PurchaseExpenseConnector's
         fast path already resolves by.
@@ -1027,7 +1112,7 @@ class ReconciliationService:
                 key = (realm_id, "Expense", qbo_id)
                 # fetched lazily on the first confirmed 404 — a run with no voids pays no
                 # query; the instance cache keeps it to one fetch per run.
-                void_keys = self._unresolved_void_keys()
+                void_keys = self._unresolved_keys(DRIFT_QBO_VOIDED)
                 if key in void_keys:
                     flagged_deduped += 1
                     logger.info(
@@ -1069,7 +1154,7 @@ class ReconciliationService:
 
         U-305: "already synced" is resolved via dbo.BillCredit's own native
         QboId (U-238a), loaded once per run (shared with the voided detector
-        via _vendor_credit_identity_rows, mirroring _unresolved_void_keys's
+        via _vendor_credit_identity_rows, mirroring _unresolved_keys's
         per-run memoization) instead of a per-record qbo.VendorCredit +
         qbo.VendorCreditBillCredit staging/mapping round trip.
         """
@@ -1275,7 +1360,7 @@ class ReconciliationService:
                 key = (realm_id, "BillCredit", qbo_id)
                 # fetched lazily on the first confirmed 404 — a run with no voids pays no
                 # query; the instance cache keeps it to one fetch per run.
-                void_keys = self._unresolved_void_keys()
+                void_keys = self._unresolved_keys(DRIFT_QBO_VOIDED)
                 if key in void_keys:
                     flagged_deduped += 1
                     logger.info(
@@ -1308,6 +1393,210 @@ class ReconciliationService:
                     void_keys.add(key)
 
         return {"auto_fixed": 0, "flagged": flagged, "flagged_deduped": flagged_deduped, "errors": errors}
+
+    # ------------------------------------------------------------------ #
+    # Billable-status drift detection (U-335)
+    # ------------------------------------------------------------------ #
+
+    def _reconcile_bill_billable_status_drift(self, realm_id: str, run_id: str) -> dict:
+        """
+        Bill branch of the billable_status_drift detector (U-335). Scans
+        dbo.BillLineItem rows with IsBilled=1 whose mapped qbo.BillLine still
+        carries BillableStatus='Billable', aggregates to one issue per
+        drifting Bill (never per line), and dedupes against still-open issues
+        from a prior run via _unresolved_keys(DRIFT_BILLABLE_STATUS_DRIFT).
+        """
+        from shared.api.money import to_decimal_or_none
+        from shared.database import get_connection
+        from integrations.intuit.qbo.base.ids import normalize_qbo_id
+
+        flagged = 0
+        flagged_deduped = 0
+
+        with get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT
+                    b.Id AS BillId,
+                    CAST(b.PublicId AS NVARCHAR(50)) AS BillPublicId,
+                    b.QboId AS QboBillId,
+                    b.BillNumber,
+                    bli.Id AS BillLineItemId,
+                    bli.Amount AS LineAmount,
+                    inv.InvoiceNumber AS InvoiceNumber
+                FROM dbo.BillLineItem bli
+                JOIN dbo.Bill b ON b.Id = bli.BillId
+                JOIN qbo.BillLineItemBillLine map ON map.BillLineItemId = bli.Id
+                JOIN qbo.BillLine ql ON ql.Id = map.QboBillLineId
+                -- Cross-check the QBO staging line's own parent realm against the
+                -- dbo-native RealmId (U-335 review finding): a mapping row left
+                -- behind by an identity-theft-clear event (see
+                -- reconciliation_recorder.py's record_identity_mapping_conflict)
+                -- could otherwise point at a DIFFERENT realm's qbo.Bill/BillLine.
+                -- That divergence is its own identity-conflict drift, already
+                -- covered elsewhere — this detector must not misattribute it.
+                JOIN qbo.Bill qb ON qb.Id = ql.QboBillId AND qb.RealmId = b.RealmId
+                LEFT JOIN dbo.InvoiceLineItem ili ON ili.BillLineItemId = bli.Id
+                LEFT JOIN dbo.Invoice inv ON inv.Id = ili.InvoiceId
+                WHERE bli.IsBilled = 1
+                  AND ql.BillableStatus = 'Billable'
+                  AND b.RealmId = ?
+                  AND b.QboId IS NOT NULL
+                """,
+                realm_id,
+            )
+
+            groups: dict = {}
+            for row in cursor.fetchall():
+                g = groups.setdefault(row.BillId, {
+                    "public_id": row.BillPublicId,
+                    "qbo_id": row.QboBillId,
+                    "bill_number": row.BillNumber,
+                    # BillLineItemId -> Decimal amount (or None). dbo.InvoiceLineItem
+                    # has no UNIQUE constraint on BillLineItemId, so the LEFT JOIN
+                    # above can fan out one drifting line into multiple rows (U-335
+                    # review finding); keying by the source line's own id makes a
+                    # fanned-out repeat a no-op (first write wins) instead of
+                    # double-counting — one source of truth for count + amount.
+                    "lines": {},
+                    "invoice_numbers": set(),
+                })
+                g["lines"].setdefault(row.BillLineItemId, to_decimal_or_none(row.LineAmount))
+                if row.InvoiceNumber:
+                    g["invoice_numbers"].add(row.InvoiceNumber)
+
+            dedup_keys = self._unresolved_keys(DRIFT_BILLABLE_STATUS_DRIFT)
+            for g in groups.values():
+                qbo_id = normalize_qbo_id(g["qbo_id"])
+                if not qbo_id:
+                    continue
+                # flagged_deduped is a SUBSET of flagged (matches RECONCILE_COUNT_KEYS'
+                # documented invariant above) — a re-seen drifting parent still counts
+                # as flagged (it was really detected); only its duplicate issue-write
+                # is suppressed. Do not add flagged + flagged_deduped together.
+                flagged += 1
+                key = (realm_id, "Bill", qbo_id)
+                if key in dedup_keys:
+                    flagged_deduped += 1
+                    continue
+                line_count = len(g["lines"])
+                amount = sum((a for a in g["lines"].values() if a is not None), Decimal("0"))
+                invoice_list = ", ".join(sorted(g["invoice_numbers"])) if g["invoice_numbers"] else "unknown"
+                details = (
+                    f"{line_count} line(s) totaling ${amount:.2f} on Bill "
+                    f"{g['bill_number'] or qbo_id} are locally billed (IsBilled=1) but "
+                    f"still show BillableStatus='Billable' in QBO (never auto-pushed) "
+                    f"— QBO's Suggested Transactions will keep re-suggesting them. "
+                    f"Billed via Invoice(s): {invoice_list}."
+                )
+                # A failed write must NOT suppress a later retry — suppression is
+                # only ever justified by a row that really exists.
+                if self._record_issue(
+                    drift_type=DRIFT_BILLABLE_STATUS_DRIFT,
+                    action="flagged",
+                    entity_type="Bill",
+                    entity_public_id=g["public_id"],
+                    qbo_id=qbo_id,
+                    realm_id=realm_id,
+                    details=details,
+                    reconcile_run_id=run_id,
+                ):
+                    dedup_keys.add(key)
+
+        return {"auto_fixed": 0, "flagged": flagged, "flagged_deduped": flagged_deduped, "errors": 0}
+
+    def _reconcile_purchase_billable_status_drift(self, realm_id: str, run_id: str) -> dict:
+        """
+        Purchase (Expense) branch of the billable_status_drift detector
+        (U-335). Mirrors _reconcile_bill_billable_status_drift exactly, one
+        level down the QBO object model: dbo.ExpenseLineItem ->
+        qbo.PurchaseLineExpenseLineItem -> qbo.PurchaseLine.
+        """
+        from shared.api.money import to_decimal_or_none
+        from shared.database import get_connection
+        from integrations.intuit.qbo.base.ids import normalize_qbo_id
+
+        flagged = 0
+        flagged_deduped = 0
+
+        with get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT
+                    e.Id AS ExpenseId,
+                    CAST(e.PublicId AS NVARCHAR(50)) AS ExpensePublicId,
+                    e.QboId AS QboPurchaseId,
+                    e.ReferenceNumber,
+                    eli.Id AS ExpenseLineItemId,
+                    eli.Amount AS LineAmount,
+                    inv.InvoiceNumber AS InvoiceNumber
+                FROM dbo.ExpenseLineItem eli
+                JOIN dbo.Expense e ON e.Id = eli.ExpenseId
+                JOIN qbo.PurchaseLineExpenseLineItem map ON map.ExpenseLineItemId = eli.Id
+                JOIN qbo.PurchaseLine ql ON ql.Id = map.QboPurchaseLineId
+                -- Same realm cross-check as the Bill branch above — see its comment.
+                JOIN qbo.Purchase qp ON qp.Id = ql.QboPurchaseId AND qp.RealmId = e.RealmId
+                LEFT JOIN dbo.InvoiceLineItem ili ON ili.ExpenseLineItemId = eli.Id
+                LEFT JOIN dbo.Invoice inv ON inv.Id = ili.InvoiceId
+                WHERE eli.IsBilled = 1
+                  AND ql.BillableStatus = 'Billable'
+                  AND e.RealmId = ?
+                  AND e.QboId IS NOT NULL
+                """,
+                realm_id,
+            )
+
+            groups: dict = {}
+            for row in cursor.fetchall():
+                g = groups.setdefault(row.ExpenseId, {
+                    "public_id": row.ExpensePublicId,
+                    "qbo_id": row.QboPurchaseId,
+                    "reference_number": row.ReferenceNumber,
+                    # Same fan-out dedupe shape as the Bill branch above — see its comment.
+                    "lines": {},
+                    "invoice_numbers": set(),
+                })
+                g["lines"].setdefault(row.ExpenseLineItemId, to_decimal_or_none(row.LineAmount))
+                if row.InvoiceNumber:
+                    g["invoice_numbers"].add(row.InvoiceNumber)
+
+            dedup_keys = self._unresolved_keys(DRIFT_BILLABLE_STATUS_DRIFT)
+            for g in groups.values():
+                qbo_id = normalize_qbo_id(g["qbo_id"])
+                if not qbo_id:
+                    continue
+                # flagged_deduped is a SUBSET of flagged — see the matching comment
+                # in _reconcile_bill_billable_status_drift above.
+                flagged += 1
+                key = (realm_id, "Expense", qbo_id)
+                if key in dedup_keys:
+                    flagged_deduped += 1
+                    continue
+                line_count = len(g["lines"])
+                amount = sum((a for a in g["lines"].values() if a is not None), Decimal("0"))
+                invoice_list = ", ".join(sorted(g["invoice_numbers"])) if g["invoice_numbers"] else "unknown"
+                details = (
+                    f"{line_count} line(s) totaling ${amount:.2f} on Purchase "
+                    f"{g['reference_number'] or qbo_id} are locally billed (IsBilled=1) "
+                    f"but still show BillableStatus='Billable' in QBO (never "
+                    f"auto-pushed) — QBO's Suggested Transactions will keep "
+                    f"re-suggesting them. Billed via Invoice(s): {invoice_list}."
+                )
+                if self._record_issue(
+                    drift_type=DRIFT_BILLABLE_STATUS_DRIFT,
+                    action="flagged",
+                    entity_type="Expense",
+                    entity_public_id=g["public_id"],
+                    qbo_id=qbo_id,
+                    realm_id=realm_id,
+                    details=details,
+                    reconcile_run_id=run_id,
+                ):
+                    dedup_keys.add(key)
+
+        return {"auto_fixed": 0, "flagged": flagged, "flagged_deduped": flagged_deduped, "errors": 0}
 
     # ------------------------------------------------------------------ #
     # Issue-recording helper (shared across all detectors)

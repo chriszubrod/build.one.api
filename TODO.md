@@ -349,9 +349,17 @@ item 4) — own follow-on unit now that U-274 unblocked it. Two items surfaced b
 
 ## U-287 follow-ups (shared identity fast-path helper) — deferred from the two-pass review
 
-- [ ] **🟡 `company_info` + `physical_address` classify a transient ROWVERSION race as a PERMANENT skip
+- [x] **✅ DONE — already fixed by U-291 (2026-08-21); verified 2026-08-29.** Both connectors, at BOTH
+  update-empty sites (fast path + legacy mapping-table path), now call `raise_concurrent_write_race(...)`
+  (`base/identity_fastpath.py:264`) which **always raises `RuntimeError`, deliberately NOT `ValueError`** —
+  so `record_projection_error` rule 3 → failure/HOLD, exactly the classification the booking asked for. No
+  stray `ValueError` on any race path (the remaining `ValueError`s are legitimate "not found"/"no mapping"
+  permanent lookups = correct rule-2 skips), and no `except` swallows/reclassifies the `RuntimeError`. The
+  convergence onto the shared helper (whose docstring carries this exact rationale) swept these two along
+  with `term`/PaymentTerm — the booking's own U-291 footnote below foreshadowed it. ~~**🟡 `company_info` +
+  `physical_address` classify a transient ROWVERSION race as a PERMANENT skip
   (pre-existing, U-277, NOT introduced by U-287).** Both fast paths raise a plain
-  `ValueError("Failed to update Company"/"Address")` when `update_by_id` returns 0 rows. But
+  `ValueError("Failed to update Company"/"Address")` when `update_by_id` returns 0 rows. But~~
   `SyncOutcome.record_projection_error`'s **rule 2** classifies a plain `ValueError` as the connectors'
   permanent-data-issue convention → **skip**, so the watermark ADVANCES past a record whose fields were never
   written — and its own docstring names this the expensive direction ("a wrong skip loses the record until someone

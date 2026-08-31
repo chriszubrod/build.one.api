@@ -26,14 +26,14 @@ from pathlib import Path
 from typing import Mapping, Optional, Sequence
 
 from entities.invoice_line_item.business.service import InvoiceLineItemService
-from integrations.intuit.qbo.base.locking import qbo_app_lock
+from integrations.intuit.qbo.base.locking import qbo_app_lock, qbo_entity_sync_lock_resource
 from scripts.sync_helper import assert_cli_system_admin
 from shared.database import get_connection
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 logger = logging.getLogger("repair_invoice_line_duplicates")
 
-QBO_INVOICE_SYNC_LOCK = "qbo_sync:invoice"
+QBO_INVOICE_SYNC_LOCK = qbo_entity_sync_lock_resource("invoice")
 QBO_INVOICE_SYNC_LOCK_TIMEOUT_MS = 30_000
 
 

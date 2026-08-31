@@ -17,6 +17,7 @@ from scripts.sync_helper import (
     assert_cli_system_admin,
     exit_nonzero_on_sync_failure,
 )
+from integrations.intuit.qbo.base.locking import qbo_app_lock, qbo_entity_sync_lock_resource
 from integrations.intuit.qbo.base.pacing import pace_batch
 from integrations.intuit.qbo.base.watermark import (
     WatermarkRun,
@@ -384,6 +385,43 @@ def sync_qbo_invoice(
         }
 
 
+def run_locked(
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    customer_ref: Optional[str] = None,
+    project: Optional[str] = None,
+    skip_sync_record_update: bool = False,
+    dry_run: bool = False,
+) -> dict:
+    """
+    Lock-wrapped entry point for a direct CLI run (`python scripts/sync_qbo_invoice.py`).
+
+    This CLI invocation is a third path onto QboInvoiceService.sync_from_qbo,
+    independent of the (already-locked) admin dispatcher — locking must live
+    at this outer layer, not inside `sync_qbo_invoice()`, which the admin
+    path also calls while already holding this same resource (see
+    scripts/sync_qbo_account.py::run_locked for the full rationale).
+    """
+    lock_resource = qbo_entity_sync_lock_resource("invoice")
+    with qbo_app_lock(lock_resource) as got_lock:
+        if not got_lock:
+            return {
+                "result": {
+                    "success": False,
+                    "error": f"QBO invoice sync already in progress (lock '{lock_resource}' busy).",
+                },
+                "status_code": 409,
+            }
+        return sync_qbo_invoice(
+            start_date=start_date,
+            end_date=end_date,
+            customer_ref=customer_ref,
+            project=project,
+            skip_sync_record_update=skip_sync_record_update,
+            dry_run=dry_run,
+        )
+
+
 def parse_args():
     """Parse command line arguments."""
     parser = argparse.ArgumentParser(
@@ -489,7 +527,7 @@ if __name__ == "__main__":
             print(f"Error: start-date ({args.start_date}) must be before or equal to end-date ({args.end_date}).")
             sys.exit(1)
     
-    result = sync_qbo_invoice(
+    result = run_locked(
         start_date=args.start_date,
         end_date=args.end_date,
         customer_ref=args.customer_ref,

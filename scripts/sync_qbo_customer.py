@@ -15,6 +15,7 @@ from scripts.sync_helper import (
     assert_cli_system_admin,
     exit_nonzero_on_sync_failure,
 )
+from integrations.intuit.qbo.base.locking import qbo_app_lock, qbo_entity_sync_lock_resource
 from integrations.intuit.qbo.base.pacing import pace_batch
 from integrations.intuit.qbo.base.watermark import (
     WatermarkRun,
@@ -225,8 +226,31 @@ def sync_qbo_customer() -> dict:
         }
 
 
+def run_locked() -> dict:
+    """
+    Lock-wrapped entry point for a direct CLI run (`python scripts/sync_qbo_customer.py`).
+
+    This CLI invocation is a third path onto QboCustomerService.sync_from_qbo,
+    independent of the (already-locked) admin dispatcher — locking must live
+    at this outer layer, not inside `sync_qbo_customer()`, which the admin
+    path also calls while already holding this same resource (see
+    scripts/sync_qbo_account.py::run_locked for the full rationale).
+    """
+    lock_resource = qbo_entity_sync_lock_resource("customer")
+    with qbo_app_lock(lock_resource) as got_lock:
+        if not got_lock:
+            return {
+                "result": {
+                    "success": False,
+                    "error": f"QBO customer sync already in progress (lock '{lock_resource}' busy).",
+                },
+                "status_code": 409,
+            }
+        return sync_qbo_customer()
+
+
 if __name__ == "__main__":
     assert_cli_system_admin()
-    result = sync_qbo_customer()
+    result = run_locked()
     print(result)
     exit_nonzero_on_sync_failure(result)

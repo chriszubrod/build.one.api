@@ -2149,3 +2149,21 @@ These were surfaced during the unit and deliberately not built:
   (`verify_project_ref_or_none(project_service, project)`, collapsing the 3 push-side call sites) — would
   also fold the duplicated docstring paragraph into one place. Own unit; touches 6-7 already-shipped files +
   their tests, needs its own Gate-1 (not U-311's scope, which was Project-family-only).
+
+## U-339 follow-up (stamp-after-swallowed-mapping-failure fix, 2026-08-31) — deferred, non-blocking
+
+- [ ] **[altitude, deferred — design-gated, own unit] No shared mechanism enforces "only stamp QBO line
+  identity when the mapping create actually succeeded"** across the 4 line connectors
+  (`bill_line_item`, `invoice_line_item`, `purchase/expense_line_item`, `vendorcredit/bill_credit_line_item`)
+  — it's 2 hand-copied shapes today: `bill_line_item` (fixed this unit) and `vendorcredit/bill_credit_line_item`
+  use `try: create_mapping() except: warn() else: stamp_line_identity_or_warn()`; `invoice_line_item` and
+  `purchase/expense_line_item` use compensate-and-delete-then-re-raise (stamp is unreachable on failure by
+  construction there). Flagged by `/simplify`'s altitude lens during U-339. This exact bug — a swallowed
+  mapping-create failure leaving `stamp_line_identity_or_warn` unconditionally reachable — already shipped
+  once in `bill_line_item` (5 stamped-but-unmapped rows found live at U-293's Gate-1) and was only caught by
+  manual audit, not by construction. A 5th future line connector (or an edit to one of the 2 existing "warn"
+  connectors) has no structural guard against reintroducing it. Right-depth fix: extract a shared
+  `create_mapping_then_stamp(...)`-style helper (or two thin variants, one per failure-handling shape) in
+  `integrations/intuit/qbo/base/`, so the invariant is enforced by the call signature rather than by
+  convention. Own unit, needs its own Gate-1 — not U-339's scope, which was fix-the-live-bug +
+  confirm-siblings-don't-share-it.

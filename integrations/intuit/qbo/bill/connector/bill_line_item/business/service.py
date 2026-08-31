@@ -375,17 +375,21 @@ class BillLineItemConnector:
             logger.info(f"Created mapping: BillLineItem {line_item_id} <-> QboBillLine {qbo_bill_line.id}")
         except ValueError as e:
             logger.warning(f"Could not create mapping: {e}")
-
-        # U-238b: dbo line identity dual-write (create+update pairing for U-238c).
-        # Mapping is already committed — a stamp failure must NOT roll back the line item.
-        stamp_line_identity_or_warn(
-            self.bill_line_item_service.repo,
-            id=line_item_id,
-            qbo_id=qbo_bill_line.qbo_line_id,
-            realm_id=realm_id,
-            context=f"Created mapping for BillLineItem {line_item_id} for QboBillLine {qbo_bill_line.id}",
-            enforce_realm_pairing=True,
-        )
+        else:
+            # U-238b: dbo line identity dual-write (create+update pairing for U-238c).
+            # Mapping is already committed — a stamp failure must NOT roll back the line item.
+            # U-339: only reachable when create_mapping actually succeeded above — a swallowed
+            # ValueError must not stamp identity onto an unmapped line (a "stamped-but-unmapped"
+            # row that neither the fast path nor Shape-B's fingerprint can find on drift, U-293
+            # Gate-1).
+            stamp_line_identity_or_warn(
+                self.bill_line_item_service.repo,
+                id=line_item_id,
+                qbo_id=qbo_bill_line.qbo_line_id,
+                realm_id=realm_id,
+                context=f"Created mapping for BillLineItem {line_item_id} for QboBillLine {qbo_bill_line.id}",
+                enforce_realm_pairing=True,
+            )
 
         return line_item
 

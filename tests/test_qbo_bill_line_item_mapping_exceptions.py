@@ -90,6 +90,25 @@ def test_sync_from_qbo_bill_line_value_error_from_create_mapping_is_swallowed():
     assert result.id == 200  # returns the (now-unmapped) line_item; does not raise
 
 
+def test_sync_from_qbo_bill_line_value_error_from_create_mapping_skips_identity_stamp():
+    """
+    U-339 regression (U-293 follow-up #399): a swallowed create_mapping ValueError must NOT
+    stamp QBO identity onto the line item — the mapping was never created, so stamping identity
+    here produces a "stamped-but-unmapped" anomaly row (5 found live at U-293's Gate-1) that
+    later drift can't self-heal (neither the fast path nor Shape-B's fingerprint match). Identity
+    must only be stamped when create_mapping actually succeeded.
+    """
+    connector, mapping_repo = _build_connector()
+    mapping_repo.create.side_effect = ValueError("QboBillLine 1 is already mapped to BillLineItem 999")
+
+    result = connector.sync_from_qbo_bill_line(
+        100, _make_qbo_bill_line(line_id=1, qbo_line_id="QBO-LINE-SWALLOWED"), realm_id="realm-1"
+    )
+
+    assert result.id == 200  # line item creation itself still succeeds
+    connector.bill_line_item_service.repo.set_qbo_identity.assert_not_called()
+
+
 def test_sync_from_qbo_bill_line_database_constraint_error_from_create_mapping_propagates():
     """
     Regression for U-228 fix-round: a concurrent-pull race that loses the mapping INSERT must

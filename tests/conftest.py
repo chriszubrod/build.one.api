@@ -38,6 +38,14 @@ def mock_qbo_app_lock_granted(*_args, **_kwargs):
     yield True
 
 
+@contextmanager
+def mock_qbo_app_lock_denied(*_args, **_kwargs):
+    """Shared `qbo_app_lock` stand-in yielding False (lock busy) — the
+    mirror-image of `mock_qbo_app_lock_granted`; import this instead of
+    hand-rolling another local `yield False` copy (U-337 simplify pass)."""
+    yield False
+
+
 @pytest.fixture
 def grant_qbo_app_lock():
     """U-304: patches identity_fastpath.py's `qbo_app_lock` import to always

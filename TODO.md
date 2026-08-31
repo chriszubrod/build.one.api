@@ -2150,6 +2150,26 @@ These were surfaced during the unit and deliberately not built:
   also fold the duplicated docstring paragraph into one place. Own unit; touches 6-7 already-shipped files +
   their tests, needs its own Gate-1 (not U-311's scope, which was Project-family-only).
 
+## U-337 follow-up (account sync lock, 2026-08-31) — deferred, non-blocking
+
+- [ ] **[altitude, deferred — design-gated, own unit] The unlocked-dual-entry-point race U-337 fixed for
+  `account` is still open for every sibling QBO entity.** U-337 wrapped `POST /api/v1/sync/qbo-accounts` in
+  `qbo_app_lock(qbo_entity_sync_lock_resource("account"))` and repointed the admin `sync/qbo/{entity}`
+  dispatcher onto the same shared helper, so the two entry points for `account` now contend on one lock.
+  `/simplify`'s altitude lens confirmed by direct read that every other per-entity API route
+  (`integrations/intuit/qbo/{bill,vendor,purchase,invoice,customer,term,company_info,vendorcredit}/api/router.py`
+  — verified concretely for `bill_line_item`'s `sync_qbo_bills_router` at
+  `integrations/intuit/qbo/bill/api/router.py:31`) still calls its service's `sync_from_qbo` directly, no
+  lock at all — same race shape U-337 closed for account, just not yet applied there. Also found: a
+  **third**, still-unlocked entry point for `account` itself — `scripts/sync_qbo_account.py:106` calls
+  `qbo_account_service.sync_from_qbo(...)` directly, outside both locked paths — and
+  `scripts/repair_invoice_line_duplicates.py:36` hardcodes `QBO_INVOICE_SYNC_LOCK = "qbo_sync:invoice"` as a
+  literal string, exactly the drift-prone pattern `qbo_entity_sync_lock_resource` exists to prevent. Right-depth
+  fix: sweep every per-entity API route (and `sync_qbo_account.py`) onto
+  `qbo_app_lock(qbo_entity_sync_lock_resource(entity))`, and convert the `repair_invoice_line_duplicates.py`
+  literal to the shared helper. Own unit — not U-337's scope, which was the verified-open `account` finding
+  only.
+
 ## U-339 follow-up (stamp-after-swallowed-mapping-failure fix, 2026-08-31) — deferred, non-blocking
 
 - [ ] **[altitude, deferred — design-gated, own unit] No shared mechanism enforces "only stamp QBO line

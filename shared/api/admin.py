@@ -14,7 +14,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Path, Query, stat
 
 # Local Imports
 import config
-from integrations.intuit.qbo.base.locking import qbo_app_lock
+from integrations.intuit.qbo.base.locking import qbo_app_lock, qbo_entity_sync_lock_resource
 from shared.authz import set_authz_context
 from shared.rbac import require_module_api
 from shared.rbac_constants import Modules
@@ -445,7 +445,7 @@ async def sync_qbo_router(
     sync_fn = _qbo_sync_fn(entity)
     if not attachments and entity in _QBO_ENTITIES_WITH_ATTACHMENTS:
         sync_fn = partial(sync_fn, sync_attachments=False)
-    lock_resource = f"qbo_sync:{entity}"
+    lock_resource = qbo_entity_sync_lock_resource(entity)
 
     def _locked_sync_fn():
         with qbo_app_lock(lock_resource, timeout_ms=0) as got_lock:

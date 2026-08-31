@@ -1,11 +1,12 @@
 # Python Standard Library Imports
 
 # Third-party Imports
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException, status
 
 # Local Imports
 from integrations.intuit.qbo.account.api.schemas import QboAccountSync
 from integrations.intuit.qbo.account.business.service import QboAccountService
+from integrations.intuit.qbo.base.locking import qbo_app_lock, qbo_entity_sync_lock_resource
 from shared.rbac import require_module_api
 from shared.rbac_constants import Modules
 from shared.api.responses import list_response, item_response
@@ -19,10 +20,17 @@ def sync_qbo_accounts_router(body: QboAccountSync, current_user: dict = Depends(
     """
     Sync Accounts from QBO.
     """
-    result = service.sync_from_qbo(
-        realm_id=body.realm_id,
-        last_updated_time=body.last_updated_time,
-    )
+    lock_resource = qbo_entity_sync_lock_resource("account")
+    with qbo_app_lock(lock_resource) as got_lock:
+        if not got_lock:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"QBO account sync already in progress for realm {body.realm_id}. Try again shortly.",
+            )
+        result = service.sync_from_qbo(
+            realm_id=body.realm_id,
+            last_updated_time=body.last_updated_time,
+        )
     return list_response([account.to_dict() for account in result.synced])
 
 

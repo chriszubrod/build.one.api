@@ -489,17 +489,12 @@ class AttachableAttachmentConnector:
         entity_id: str,
     ) -> QboAttachable:
         """
-        Build an in-memory (never persisted) QboAttachable from the QBO
-        upload response, for callers that expect this method's historical
-        return type. U-285: the push path no longer creates a qbo.Attachable
-        row to back it, so `id`/`public_id`/`row_version`/timestamps are None.
+        Build a transient QboAttachable (see `QboAttachable.transient`) from
+        the QBO upload response, for callers that expect this method's
+        historical return type. U-285: the push path no longer creates a
+        qbo.Attachable row to back it.
         """
-        return QboAttachable(
-            id=None,
-            public_id=None,
-            row_version=None,
-            created_datetime=None,
-            modified_datetime=None,
+        return QboAttachable.transient(
             qbo_id=response.id,
             sync_token=response.sync_token,
             realm_id=realm_id,
@@ -523,31 +518,21 @@ class AttachableAttachmentConnector:
         entity_id: Optional[str] = None,
     ) -> QboAttachable:
         """
-        Build an in-memory (never persisted) QboAttachable from an Attachment
-        that dbo.Attachment already shows as pushed (U-285 push-path
-        idempotency fast path — no legacy qbo.Attachable/AttachableAttachment
-        row exists to read, so there is no QBO API response to build from
-        either; this call skips the QBO API entirely). `id`/`public_id`/
-        `row_version`/timestamps are None, matching
-        `_transient_attachable_from_response`'s contract for the fresh-push
-        case.
+        Build a transient QboAttachable (see `QboAttachable.transient`) from
+        an Attachment that dbo.Attachment already shows as pushed (U-285
+        push-path idempotency fast path — no legacy
+        qbo.Attachable/AttachableAttachment row exists to read, so there is
+        no QBO API response to build from either; this call skips the QBO
+        API entirely).
         """
-        return QboAttachable(
-            id=None,
-            public_id=None,
-            row_version=None,
-            created_datetime=None,
-            modified_datetime=None,
+        return QboAttachable.transient(
             qbo_id=attachment.qbo_id,
-            sync_token=None,
             realm_id=realm_id,
             file_name=attachment.original_filename or attachment.filename,
             note=attachment.description,
             category=attachment.category,
             content_type=attachment.content_type,
             size=attachment.file_size,
-            file_access_uri=None,
-            temp_download_uri=None,
             entity_ref_type=entity_type,
             entity_ref_value=entity_id,
         )

@@ -47,3 +47,46 @@ class QboAttachable:
     def to_dict(self) -> dict:
         """Convert to dictionary with JSON-serializable values."""
         return asdict(self)
+
+    @classmethod
+    def transient(
+        cls,
+        *,
+        qbo_id,
+        realm_id,
+        sync_token=None,
+        file_name=None,
+        note=None,
+        category=None,
+        content_type=None,
+        size=None,
+        file_access_uri=None,
+        temp_download_uri=None,
+        entity_ref_type=None,
+        entity_ref_value=None,
+    ) -> "QboAttachable":
+        """
+        Build an in-memory (never persisted) QboAttachable — id/public_id/row_version/
+        created_datetime/modified_datetime are always None since no local row backs a
+        transient instance. Collapses the 3 hand-copied constructions this shape had
+        (U-300b pull path, U-285 push path x2) into one factory (U-338).
+        """
+        return cls(
+            id=None,
+            public_id=None,
+            row_version=None,
+            created_datetime=None,
+            modified_datetime=None,
+            qbo_id=qbo_id,
+            sync_token=sync_token,
+            realm_id=realm_id,
+            file_name=file_name,
+            note=note,
+            category=category,
+            content_type=content_type,
+            size=size,
+            file_access_uri=file_access_uri,
+            temp_download_uri=temp_download_uri,
+            entity_ref_type=entity_ref_type,
+            entity_ref_value=entity_ref_value,
+        )

@@ -241,12 +241,11 @@ class QboAttachableService:
         qbo_att: QboAttachableExternalSchema,
     ) -> QboAttachable:
         """
-        Build an in-memory (never persisted) QboAttachable from a single QBO pull
-        response (U-300b: the pull path no longer stages a `qbo.Attachable` row —
-        identity resolution happens dbo-only in AttachableAttachmentConnector via
-        `run_identity_fastpath_dbo_only`, mirroring U-285's push-side
-        `_transient_attachable_from_response`). `id`/`public_id`/`row_version`/
-        timestamps are None since no local row backs it.
+        Build a transient QboAttachable (see `QboAttachable.transient`) from a
+        single QBO pull response (U-300b: the pull path no longer stages a
+        `qbo.Attachable` row — identity resolution happens dbo-only in
+        AttachableAttachmentConnector via `run_identity_fastpath_dbo_only`,
+        mirroring U-285's push-side `_transient_attachable_from_response`).
         """
         if not qbo_att.id:
             raise ValueError("QBO Attachable must have an ID")
@@ -259,12 +258,7 @@ class QboAttachableService:
             entity_ref_type = first_ref.entity_ref_type
             entity_ref_value = first_ref.entity_ref_value
 
-        return QboAttachable(
-            id=None,
-            public_id=None,
-            row_version=None,
-            created_datetime=None,
-            modified_datetime=None,
+        return QboAttachable.transient(
             qbo_id=qbo_att.id,
             sync_token=qbo_att.sync_token,
             realm_id=realm_id,

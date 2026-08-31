@@ -621,7 +621,10 @@ BEGIN
     INNER JOIN dbo.[Bill] b ON b.[QboId] = lc.[LinkedTxnId] AND b.[RealmId] = @RealmId
     INNER JOIN dbo.[BillLineItem] dbli ON dbli.[BillId] = b.[Id]
         AND dbli.[QboId] IS NOT NULL
-        AND ABS(dbli.[Amount] - lc.[QboAmount]) < 0.01
+        -- U-343: double-ABS (KI-34) -- a refund line's source Amount is stored
+        -- positive while the invoice line's QboAmount is negative; signed ABS
+        -- never matched it, producing a false "no source" halt (TB3-20).
+        AND ABS(ABS(dbli.[Amount]) - ABS(lc.[QboAmount])) < 0.01
     WHERE lc.[LinkedTxnType] = N'Bill'
 
     UNION ALL
@@ -639,7 +642,8 @@ BEGIN
     INNER JOIN dbo.[Expense] e ON e.[QboId] = lc.[LinkedTxnId] AND e.[RealmId] = @RealmId
     INNER JOIN dbo.[ExpenseLineItem] deli ON deli.[ExpenseId] = e.[Id]
         AND deli.[QboId] IS NOT NULL
-        AND ABS(deli.[Amount] - lc.[QboAmount]) < 0.01
+        -- U-343: double-ABS (KI-34), same refund-sign trap -- see Tier 0c comment above.
+        AND ABS(ABS(deli.[Amount]) - ABS(lc.[QboAmount])) < 0.01
     WHERE lc.[LinkedTxnType] = N'Purchase'
 
     UNION ALL
@@ -668,7 +672,8 @@ BEGIN
         CAST(1 AS BIT) AS [DirectDbo]
     FROM LineCtx lc
     INNER JOIN dbo.[BillLineItem] bli
-        ON ABS(bli.[Amount] - lc.[QboAmount]) < 0.01
+        -- U-343: double-ABS (KI-34), same refund-sign trap -- see Tier 0c comment above.
+        ON ABS(ABS(bli.[Amount]) - ABS(lc.[QboAmount])) < 0.01
         AND COALESCE(bli.[Description], N'') = COALESCE(lc.[QboDescription], N'')
         -- U-274 Gate-2 fix: restore the project scope the old CustomerRefValue-scoped
         -- qbo tier carried (the re-home dropped it, exploding cross-project matches).
@@ -692,7 +697,8 @@ BEGIN
         CAST(1 AS BIT) AS [DirectDbo]
     FROM LineCtx lc
     INNER JOIN dbo.[ExpenseLineItem] eli
-        ON ABS(eli.[Amount] - lc.[QboAmount]) < 0.01
+        -- U-343: double-ABS (KI-34), same refund-sign trap -- see Tier 0c comment above.
+        ON ABS(ABS(eli.[Amount]) - ABS(lc.[QboAmount])) < 0.01
         AND COALESCE(eli.[Description], N'') = COALESCE(lc.[QboDescription], N'')
         -- U-274 Gate-2 fix: restore the project scope the old CustomerRefValue-scoped
         -- qbo tier carried (the re-home dropped it, exploding cross-project matches).

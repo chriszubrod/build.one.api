@@ -36,8 +36,8 @@ Carry-over items from sessions. Check off as done; prune anything stale.
 
 ## U-316 follow-up (dbo-only identity fast path ROWVERSION hardening) — deferred, not scope-creeped in (2026-08-25)
 
-- [ ] **Vendor/Customer/Project QBO pull staging lacks an explicit falsy-id guard that Item/Attachable already
-  have.** `_upsert_vendor` (`integrations/intuit/qbo/vendor/business/service.py`) and `_upsert_customer`
+- [ ] **⚠️ CORRECTED 2026-08-31 (U-336 Gate-1): this booking's "future uniform caller-side DELETION" premise is WRONG.** Ground truth (verified in-code): ALL SIX families KEEP their caller-side `if outcome.entity is None: raise` backstop guard — the 4 siblings (`item/connector/cost_code:93`, `sub_cost_code:144`, `attachable/connector/attachment:92`, + item's) kept theirs as **tested backstops**, they did NOT delete them. So the uniform shape is *upstream falsy-id guard + KEPT tested backstop*, and U-336's amended scope = **add the 2 upstream guards to `_upsert_vendor`/`_upsert_customer` + KEEP all 3 caller-side guards, adding Item-style comments + backstop tests** to bring vendor/customer/project to parity with the siblings. → **dispatched as U-336 (amended).** ~~Vendor/Customer/Project QBO pull staging lacks an explicit falsy-id guard that Item/Attachable already
+  have.~~ `_upsert_vendor` (`integrations/intuit/qbo/vendor/business/service.py`) and `_upsert_customer`
   (`integrations/intuit/qbo/customer/business/service.py`) pass their staged object's id straight through to
   `run_identity_fastpath_dbo_only` with no truthiness check, unlike `QboItemService._upsert_item`
   (`integrations/intuit/qbo/item/business/service.py:126-127`, `if not qbo_item.id: raise ValueError(...)`) and

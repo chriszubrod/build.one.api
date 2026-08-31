@@ -92,9 +92,11 @@ class CustomerCustomerConnector:
         )
         if outcome.entity is None:
             # U-316: no longer race-reachable (see run_identity_fastpath_
-            # dbo_only's Raises docstring) — kept as a backstop for a falsy
-            # qbo_customer.qbo_id, which nothing upstream guards against yet
-            # (TODO.md follow-up).
+            # dbo_only's Raises docstring) — kept as a backstop for a
+            # directly-invoked falsy qbo_customer.qbo_id (this public method has
+            # no guard of its own; pinned by test_customer_no_qbo_id_raises).
+            # The production pull path already guards this upstream via
+            # QboCustomerService._upsert_customer (U-336).
             raise RuntimeError(
                 f"Failed to resolve Customer for QboCustomer {qbo_customer.id} "
                 f"(qbo_id={qbo_customer.qbo_id}) via the dbo-only identity fast path"

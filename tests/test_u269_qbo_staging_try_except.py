@@ -16,6 +16,7 @@ def _client_cm(records):
     client = MagicMock()
     client.query_all_items.return_value = records
     client.query_all_customers.return_value = records
+    client.query_all_vendors.return_value = records
     cm = MagicMock()
     cm.__enter__.return_value = client
     cm.__exit__.return_value = False

@@ -108,6 +108,9 @@ class QboVendorService:
         Returns:
             QboVendor: The created or updated record
         """
+        if not qbo_vendor.id:
+            raise ValueError("QBO Vendor must have an ID")
+
         # Check if vendor already exists
         existing = self.repo.read_by_qbo_id_and_realm_id(qbo_id=qbo_vendor.id, realm_id=realm_id)
         

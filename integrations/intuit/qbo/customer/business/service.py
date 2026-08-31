@@ -119,6 +119,9 @@ class QboCustomerService:
         Returns:
             QboCustomer: The created or updated record
         """
+        if not qbo_customer.id:
+            raise ValueError("QBO Customer must have an ID")
+
         # Check if customer already exists
         existing = self.repo.read_by_qbo_id_and_realm_id(qbo_id=qbo_customer.id, realm_id=realm_id)
         

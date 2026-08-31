@@ -104,9 +104,11 @@ class VendorVendorConnector:
         )
         if outcome.entity is None:
             # U-316: no longer race-reachable (see run_identity_fastpath_
-            # dbo_only's Raises docstring) — kept as a backstop for a falsy
-            # qbo_vendor.qbo_id, which nothing upstream guards against yet
-            # (TODO.md follow-up).
+            # dbo_only's Raises docstring) — kept as a backstop for a
+            # directly-invoked falsy qbo_vendor.qbo_id (this public method has
+            # no guard of its own; pinned by test_vendor_no_qbo_id_raises).
+            # The production pull path already guards this upstream via
+            # QboVendorService._upsert_vendor (U-336).
             raise RuntimeError(
                 f"Failed to resolve Vendor for QboVendor {qbo_vendor.id} "
                 f"(qbo_id={qbo_vendor.qbo_id}) via the dbo-only identity fast path"

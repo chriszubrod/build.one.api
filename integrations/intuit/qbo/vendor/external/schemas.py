@@ -50,10 +50,12 @@ class QboVendorUpdate(QboVendorBase):
     sync_token: str = Field(alias="SyncToken")
 
 
-class QboVendor(QboVendorUpdate):
+class QboVendor(QboVendorBase):
     """
     Full Vendor model with Id, SyncToken, and MetaData.
     """
+    id: Optional[str] = Field(default=None, alias="Id")
+    sync_token: Optional[str] = Field(default=None, alias="SyncToken")
     metadata: Optional[Dict[str, Any]] = Field(default=None, alias="MetaData")
 
     @field_validator('id', mode='before')

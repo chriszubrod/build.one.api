@@ -151,7 +151,7 @@ Carry-over items from sessions. Check off as done; prune anything stale.
 
 ## U-305 follow-ups (Bill/VendorCredit reconciliation dbo-native repoint) — deferred, not scope-creeped in (2026-08-23)
 
-- [ ] **DBA cleanup: dangling `qbo.BillBill` mapping row (`Id=16790`) points to `BillId=16808`, which does not
+- [x] **✅ DONE 2026-08-31 (/em, DB-applied, transaction+verify): deleted the 1 orphan `qbo.BillBill` row `Id=16790`** (BillId=16808 gone; QBO bill 65042/S0126980 has no local dbo.Bill to repoint to; nothing FK-references qbo.BillBill; verified 0 dangling rows remain post-delete). ⚠️ Downstream (correct): QBO bill 65042 will now surface as `qbo_missing_locally` on the next reconcile instead of being hidden by the dangling mapping — decide re-create-locally vs void-in-QBO then; also drop the allowlist entry in `scripts/verify_bill_vendorcredit_qbo_reconcile_repoint.py`. ~~DBA cleanup: dangling `qbo.BillBill` mapping row (`Id=16790`) points to `BillId=16808`, which does not
   exist in `dbo.Bill`.** Discovered via U-305's live equivalence check (`scripts/verify_bill_vendorcredit_qbo_reconcile_repoint.py`)
   comparing the old qbo.Bill+qbo.BillBill-driven "already synced" population against the new dbo.Bill.QboId one —
   QBO Bill id `65042` (`qbo.Bill.Id=17204`) is the only remaining divergence, allowlisted in that script as a

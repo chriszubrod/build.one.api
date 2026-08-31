@@ -2184,7 +2184,8 @@ These were surfaced during the unit and deliberately not built:
   `run_locked()`s, and `repair_invoice_line_duplicates.py` onto it. `qbo_app_lock` is now imported only by
   `locking.py` itself for entity-sync purposes, enforced by a guard test
   (`tests/test_u347_qbo_sync_locked_import_boundary.py`) so a new entry point gets the lock free and can't
-  hand-drift the resource key again.
+  hand-drift the resource key again. **✅ /em Gate-2 PASS (`3035d0e9`, 2026-08-31, isolated worktree): 3 helpers + all sites repointed + `item` locked; import-boundary guard + DI-smoke tests; both mutation-proven RED (skip-409 → contention tests RED; a router importing `qbo_app_lock` directly → guard RED); full suite green. Needs container deploy (batch w/ U-346, tip `3035d0e9`).**
+- [ ] **[⚠️ DISPOSITION for /em, non-blocking] U-347 found `item`'s AND `customer`'s QBO sync API routers are NOT mounted in `app.py`** — not HTTP-reachable in prod today (so their `@qbo_sync_locked_route` locks are belt-and-suspenders; the "live item-router race" flagged in U-347's design was not actually live). Pinned by a test. Decide: mount them (if the routes are wanted), delete the dead routers, or leave as-is.
 
 ## U-339 follow-up (stamp-after-swallowed-mapping-failure fix, 2026-08-31) — deferred, non-blocking
 

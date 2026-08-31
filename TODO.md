@@ -2152,7 +2152,7 @@ These were surfaced during the unit and deliberately not built:
 
 ## U-337 follow-up (account sync lock, 2026-08-31) — deferred, non-blocking
 
-- [ ] **[altitude, deferred — design-gated, own unit] The unlocked-dual-entry-point race U-337 fixed for
+- [ ] **→ DISPATCHED U-340 (2026-08-31): fan out the proven U-337 lock pattern to the sibling routers. [was: design-gated, own unit] The unlocked-dual-entry-point race U-337 fixed for
   `account` is still open for every sibling QBO entity.** U-337 wrapped `POST /api/v1/sync/qbo-accounts` in
   `qbo_app_lock(qbo_entity_sync_lock_resource("account"))` and repointed the admin `sync/qbo/{entity}`
   dispatcher onto the same shared helper, so the two entry points for `account` now contend on one lock.

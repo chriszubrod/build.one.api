@@ -6,6 +6,22 @@
 
 ---
 
+## ⚠️ CORRECTION — post-U-344 Gate-1 halt (2026-08-31)
+
+The first U-344 dispatch's Gate-1 read-side audit found a **4th read-side consumer this design's list MISSED, and it BLIND-negates** — so §2's "all read-sides are idempotent → sequence safely" assumption was WRONG. The builder correctly HALTED (no code shipped). Confirmed by /em:
+
+- **`entities/budget/sql/dbo.budget_variance.sql`** — `ReadBudgetVarianceByProjectId` (lines 144-151) and `ReadBudgetListRollups` (lines 254-261) do `WHEN ili.[BillCreditLineItemId] IS NOT NULL THEN -ISNULL(ili.[Price], 0)` (**6 sites, unconditional `-` — NOT `-ABS`**). A stored-negative BillCredit Price would become `-(-X) = +X`, inverting `DrawnPrice`/`RemainingToDraw` for any invoice with a fresh credit line. **This is the ONLY blind-negate site repo-wide** (line 102 negates `eli.[Amount]` for `Expense.IsCredit` — a different source Phase A never touches). The two confirmed Python sites (`cover.py:68` `if v > 0`, `router.py` `_toc_signed_amount`) remain idempotent.
+- **Residual (non-blocking):** `reconciliation.py:359` `LinkInvoiceLineItemSource` can relabel `Manual → BillCreditLineItem` without touching Price/Amount — a second write path Phase A's `create` negation would miss, leaving a QBO-linked credit positive.
+
+**Corrected scope for the re-dispatch (recommend one unit, SQL-apply-FIRST):**
+1. **Read-side prerequisite** — `budget_variance.sql`'s 6 `-ISNULL(ili.[Price], 0)` → `-ABS(ISNULL(ili.[Price], 0))` (idempotent; a NO-OP for today's positive rows, tolerant of the incoming negatives). SQL sproc change — **must be applied to prod BEFORE the Phase-A code deploys** (else new negative credits hit the still-blind `-ISNULL` and invert during the window).
+2. **Write-side (both paths)** — the `InvoiceLineItemService.create` negation (per §3) AND the `reconciliation.py:359` relabel path (negate Price/Amount when relabeling to `BillCreditLineItem`), so no write path leaves a positive credit.
+3. Phase B backfill + Phase C read-side cleanup unchanged (§4). NB post-fix the read-sides all yield the correct negative for a stored-negative credit (`-ABS`/only-negate-positive on a negative → stays negative), so Phase C is pure optional cleanup, not required for correctness.
+
+The rest of this doc (§3 write-site shape, §4 sequence, §6 decisions) still holds; §2's idempotency claim is now scoped to the Python sites only, with `budget_variance.sql` made idempotent by step 1 above.
+
+---
+
 ## 1. Problem (verified in-code)
 
 A BillCredit-sourced `dbo.InvoiceLineItem` stores **positive** `Price` (and `Amount`), even though a credit reduces the draw and should be negative. The QBO pull connector is NOT the write site — it only ever writes `SourceType='Manual'` lines. The real write path is **local invoice completion**:

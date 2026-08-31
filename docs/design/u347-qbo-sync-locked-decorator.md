@@ -352,3 +352,21 @@ would conflate distinct lock domains for no benefit.
 
 `entities/invoice/intelligence/prompt.md` — untouched, per standing rule; unrelated dirty WIP
 noted only because it shares the working tree with the in-flight CLI script edits in §2.4.
+
+---
+
+## /em Gate-2 verdict — APPROVED (2026-08-31)
+
+Design approved as written; it exceeds the brief (caught the self-deadlock trap, the FastAPI DI risk, the item-router live gap, and reimburse_charge). Decisions on §7:
+1. **§7.1 — 1 primitive + 2 named decorators** (`qbo_sync_lock` + `_route` + `_cli`). Approved — the 4 failure shapes are genuinely distinct; reject the polymorphic `mode=` decorator.
+2. **§7.2 — fold the admin dispatcher onto `qbo_sync_lock` (Layer 0), not a decorator.** Approved (runtime entity param can't be a static-entity decorator).
+3. **§7.3 — import-boundary guard test.** Approved.
+4. **§4 — the 7-router 409 text dropping "for realm {id}".** Approved (the lock is entity-only; the realm segment was misleading). Cosmetic, no test asserts the old wording.
+
+**Sequencing decision (§6.4 / §7.4):** U-346 (CLI-lock fan-out) is already in flight and closes real security gaps NOW — **let it land** (it must follow the `run_locked()` split per §3.3, which its `sync_qbo_account.py` reference enforces). U-347 **Phase-2 build dispatches AFTER U-346 lands + Gate-2**, and its repoint then converts U-346's hand-copied `run_locked()`s onto `@qbo_sync_locked_cli` (behavior-preserving) — the "wasted" hand-copies are cheap and get replaced. Accepting a handful more hand-copies is the right call vs. holding the security fix for the decorator.
+
+**2 live gaps U-347 Phase-2 MUST close (neither is in U-346's scope):**
+- **`item` router `/sync/qbo-items`** — unlocked live sync route (U-337/U-340 missed it). Same race class as the others, low-probability, but real.
+- **`sync_qbo_reimburse_charge.py`** — unlocked CLI, absent from U-340's 9-script list and from U-346's 9-script scope.
+
+Phase-2 build = the full §5 migration inventory (7 router repoints + item-router new lock + admin dispatcher + all CLI repoints/adds incl. reimburse_charge + repair script + the guard test), with a TestClient smoke request per repointed router (§3.2 DI risk).

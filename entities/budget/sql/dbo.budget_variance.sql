@@ -29,10 +29,18 @@
 --     SCC through the SOURCE line via COALESCE across all FOUR source FKs.
 --     Branch on FK presence, NOT SourceType (QBO re-pull clobbers the label
 --     back to 'Manual' — see TODO.md known issue).
---   * ILI.Price is stored as a POSITIVE magnitude even for credit-sourced
---     lines (entities/invoice/api/router.py:27-53) — negate BillCredit-
---     sourced lines and Expense-credit-sourced lines, and take Manual
---     lines' sign from ILI.Amount, or credits INCREASE drawn.
+--   * ILI.Price for a BillCreditLineItem source is TRANSITIONING to signed-
+--     negative at the write site (U-344) — new/relabeled rows land negative,
+--     pre-fix rows stay positive until the Phase-B backfill runs. The
+--     DrawnAgg CASE below uses -ABS(...), NOT a bare negate, so it is
+--     correct for EITHER stored sign (a no-op on an already-negative row) —
+--     do NOT "simplify" it back to -ISNULL(ili.[Price], 0) even once every
+--     row looks positive; that reintroduces the exact bug U-344 fixed the
+--     moment a fresh negative row lands. Expense-credit-sourced lines
+--     (Expense.IsCredit) are a SEPARATE, still-bare-negate mechanism U-344
+--     does not touch — do not conflate the two. Manual lines take their
+--     sign from ILI.Amount (the negative-Amount catch-all below), unrelated
+--     to either.
 --   * Lines with NULL SubCostCodeId aggregate into the Uncategorized row
 --     (SccId NULL). Lines with NULL ProjectId are invisible to any
 --     project's variance — documented blind spot, out of scope v1.
@@ -141,8 +149,12 @@ BEGIN
         SELECT ISNULL(COALESCE(ili.[SubCostCodeId], bli.[SubCostCodeId], eli.[SubCostCodeId],
                         bcli.[SubCostCodeId], elli.[SubCostCodeId]), -1) AS [SccId],
                SUM(CASE
+                     -- U-344: InvoiceLineItem.Price for a BillCreditLineItem source is
+                     -- transitioning to signed-negative at the write site; -ABS (not a
+                     -- bare -) keeps this branch idempotent across the mixed-sign window
+                     -- (old positive rows pre-backfill, new negative rows post-fix).
                      WHEN ili.[BillCreditLineItemId] IS NOT NULL
-                          THEN -ISNULL(ili.[Price], 0)
+                          THEN -ABS(ISNULL(ili.[Price], 0))
                      WHEN ili.[ExpenseLineItemId] IS NOT NULL AND e.[IsCredit] = 1
                           THEN -ISNULL(ili.[Price], 0)
                      WHEN ili.[BillLineItemId] IS NULL AND ili.[ExpenseLineItemId] IS NULL
@@ -251,8 +263,11 @@ BEGIN
     ) cv
     OUTER APPLY (
         SELECT SUM(CASE
+                     -- U-344: see the matching comment in ReadBudgetVarianceByProjectId
+                     -- above — -ABS keeps this branch idempotent across the mixed-sign
+                     -- (pre-backfill positive / post-fix negative) window.
                      WHEN ili.[BillCreditLineItemId] IS NOT NULL
-                          THEN -ISNULL(ili.[Price], 0)
+                          THEN -ABS(ISNULL(ili.[Price], 0))
                      WHEN ili.[ExpenseLineItemId] IS NOT NULL AND e.[IsCredit] = 1
                           THEN -ISNULL(ili.[Price], 0)
                      WHEN ili.[BillLineItemId] IS NULL AND ili.[ExpenseLineItemId] IS NULL

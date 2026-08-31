@@ -373,6 +373,24 @@ BEGIN
         [ExpenseLineItemId] = @ExpenseLineItemId,
         [BillCreditLineItemId] = @BillCreditLineItemId,
         [EmployeeLaborLineItemId] = NULL,
+        -- U-344 path B: a relabel ONTO BillCreditLineItem must land the same
+        -- signed-negative invariant the create-time write enforces (Phase A),
+        -- atomically with the FK repoint (no separate follow-up write to race
+        -- a concurrent RowVersion bump). -ABS is idempotent (a no-op on an
+        -- already-negative Price/Amount) and NULL-safe (a NULL stays NULL).
+        -- Every OTHER @SourceType leaves Price/Amount untouched — in
+        -- particular ExpenseLineItem's own sign convention (Expense.IsCredit)
+        -- is out of this sproc's scope and must not be second-guessed here.
+        [Price] = CASE
+            WHEN @SourceType = N'BillCreditLineItem' AND [Price] IS NOT NULL
+                 THEN -ABS([Price])
+            ELSE [Price]
+        END,
+        [Amount] = CASE
+            WHEN @SourceType = N'BillCreditLineItem' AND [Amount] IS NOT NULL
+                 THEN -ABS([Amount])
+            ELSE [Amount]
+        END,
         [ModifiedDatetime] = SYSUTCDATETIME()
     OUTPUT
         INSERTED.[Id],

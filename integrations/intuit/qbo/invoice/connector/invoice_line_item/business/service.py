@@ -123,10 +123,25 @@ class InvoiceLineItemConnector:
             the source-reset decision exactly as before.
             """
             existing_source_type = getattr(direct, "source_type", None)
-            amount_changed = (
-                self._normalize_for_fingerprint(direct.amount)
-                != self._normalize_for_fingerprint(amount)
-            )
+            # U-344: a BillCreditLineItem-sourced line stores Amount
+            # signed-negative (write-site fix + relabel negation), but QBO's
+            # own reported amount for this line is not guaranteed same-signed
+            # (see dbo.invoice.sql's Tier-3 fingerprint comment) — compare by
+            # MAGNITUDE for this source type, or every routine re-pull sees a
+            # spurious "amount changed" from the sign convention alone and
+            # resets the line back to Manual, un-billing and un-negating it.
+            # abs()'d on the Decimal before normalizing, the same
+            # sign-insensitive-comparison shape KI-34/U-343 established for
+            # ProposeInvoiceSourceLinks, rather than a bespoke string-slice.
+            def _fingerprint_amount(value):
+                if existing_source_type == "BillCreditLineItem" and value is not None:
+                    try:
+                        value = abs(Decimal(str(value)))
+                    except Exception:
+                        pass
+                return self._normalize_for_fingerprint(value)
+
+            amount_changed = _fingerprint_amount(direct.amount) != _fingerprint_amount(amount)
             if existing_source_type and existing_source_type != "Manual" and amount_changed:
                 logger.warning(
                     f"InvoiceLineItem {direct.id} amount differs from QBO "

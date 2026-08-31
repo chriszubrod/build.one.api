@@ -15,6 +15,13 @@ from shared.authz import current_user_id
 VALID_SOURCE_TYPES = {"BillLineItem", "ExpenseLineItem", "BillCreditLineItem", "ExpenseRefundLineItem", "Manual"}
 
 
+def _signed_for_billcredit(value: Optional[Decimal]) -> Optional[Decimal]:
+    """A BillCredit reduces the draw; every write path stores Price/Amount
+    signed-negative (U-344). -abs(), not -value, so it's idempotent over an
+    already-negative input."""
+    return -abs(value) if value is not None else value
+
+
 def _assert_can_access_invoice(invoice_id: Optional[int]) -> None:
     """Gate by the parent Invoice's project_id. Loads via repo to avoid recursive
     access checks through InvoiceService."""
@@ -60,6 +67,10 @@ class InvoiceLineItemService:
 
         if source_type not in VALID_SOURCE_TYPES:
             raise ValueError(f"Invalid source_type '{source_type}'. Must be one of: {', '.join(VALID_SOURCE_TYPES)}")
+
+        if source_type == "BillCreditLineItem":
+            price = _signed_for_billcredit(price)
+            amount = _signed_for_billcredit(amount)
 
         return self.repo.create(
             invoice_id=invoice.id,
@@ -168,6 +179,13 @@ class InvoiceLineItemService:
             existing.price = Decimal(str(price))
         if is_draft is not None:
             existing.is_draft = is_draft
+
+        # Self-heals ANY caller that writes a raw (possibly positive) value
+        # alongside source_type "BillCreditLineItem" — including a routine
+        # QBO re-sync's amount write — matching create()'s invariant.
+        if existing.source_type == "BillCreditLineItem":
+            existing.price = _signed_for_billcredit(existing.price)
+            existing.amount = _signed_for_billcredit(existing.amount)
 
         return self.repo.update_by_id(existing)
 

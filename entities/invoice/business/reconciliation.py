@@ -362,6 +362,11 @@ class InvoiceReconciliationService:
                 skipped.append({**row, "apply_action": "unsupported_source_type"})
                 continue
 
+            # U-344 path B: LinkInvoiceLineItemSource itself now negates
+            # Price/Amount atomically (single UPDATE) when @SourceType is
+            # 'BillCreditLineItem', so a relabel here never leaves a
+            # QBO-linked credit stored positive, and there is no separate
+            # follow-up write to race against a concurrent RowVersion bump.
             self.invoice_line_item_repo.link_invoice_line_item_source(
                 invoice_line_item_id=ili_id,
                 source_type=source_type,

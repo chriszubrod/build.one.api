@@ -49,8 +49,16 @@ def _signed_line_amount(row: dict) -> Optional[Decimal]:
     Amount + Markup — the ILI itself carries only the un-marked-up base because
     the QBO invoice splits markup into separate Manual lines); fall back to the
     ILI's own price then amount for sources with no marked-up Price column
-    (BillCreditLineItem, EmployeeLaborLineItem). Credits are stored as positive
-    magnitudes, so negate when positive to reflect the customer-facing reduction:
+    (BillCreditLineItem, EmployeeLaborLineItem). The `if v > 0` guard below is
+    deliberately idempotent, NOT an unconditional negate — do NOT "simplify"
+    it to `v = -v`, even once every row looks positive. BillCreditLineItem's
+    Price/Amount is TRANSITIONING to signed-negative at the write site
+    (U-344): new/relabeled rows already arrive negative and must pass through
+    unchanged; only pre-fix positive rows still need negating here. An
+    unconditional negate would double-negate the new rows the moment they
+    land — see budget_variance.sql's matching landmine note for the SQL-side
+    version of this same trap. ExpenseLineItem's Expense.IsCredit branch is a
+    separate mechanism U-344 does not touch.
       - BillCreditLineItem source (VendorCredit / credit memo)
       - ExpenseLineItem whose parent Expense.IsCredit = True (expense refund).
     """

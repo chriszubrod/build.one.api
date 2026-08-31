@@ -2192,7 +2192,7 @@ These were surfaced during the unit and deliberately not built:
 
 ## U-339 follow-up (stamp-after-swallowed-mapping-failure fix, 2026-08-31) — deferred, non-blocking
 
-- [ ] **[altitude, deferred — design-gated, own unit] No shared mechanism enforces "only stamp QBO line
+- [x] **✅ SHIPPED U-341 (`d11fde6c`), /em Gate-2 PASS 2026-08-31 (P0-surface): `create_mapping_then_stamp` helper (`base/line_identity_stamp.py`) makes the invariant structural — all 4 line connectors repointed, each preserving its distinct `catch` policy (bill=(ValueError,), bill_credit=(Exception,), invoice=(ValueError,DatabaseConstraintError), expense=(Exception,)); `stamp_identity` unreachable on mapping failure by construction. Behavior-preserving (full suite green, 28 tests), mutation-proven RED. Needs container deploy (batchable). [was: design-gated, own unit] No shared mechanism enforces "only stamp QBO line
   identity when the mapping create actually succeeded"** across the 4 line connectors
   (`bill_line_item`, `invoice_line_item`, `purchase/expense_line_item`, `vendorcredit/bill_credit_line_item`)
   — it's 2 hand-copied shapes today: `bill_line_item` (fixed this unit) and `vendorcredit/bill_credit_line_item`

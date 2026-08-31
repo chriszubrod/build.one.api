@@ -14,6 +14,7 @@ from entities.invoice_line_item.business.model import InvoiceLineItem
 from entities.invoice.business.service import InvoiceService
 from integrations.intuit.qbo.base.cache_lookup import cached_or_read
 from integrations.intuit.qbo.base.identity_drift import stamp_line_identity_or_warn
+from integrations.intuit.qbo.base.line_identity_stamp import create_mapping_then_stamp
 from integrations.intuit.qbo.base.identity_fastpath import (
     raise_concurrent_write_race,
     run_line_identity_fastpath,
@@ -319,10 +320,12 @@ class InvoiceLineItemConnector:
 
         # Create mapping
         line_item_id = coerce_id(line_item.id)
-        try:
-            mapping = self.create_mapping(invoice_line_item_id=line_item_id, qbo_invoice_line_id=qbo_invoice_line.id)
+
+        def _create_mapping():
+            self.create_mapping(invoice_line_item_id=line_item_id, qbo_invoice_line_id=qbo_invoice_line.id)
             logger.info(f"Created mapping: InvoiceLineItem {line_item_id} <-> QboInvoiceLine {qbo_invoice_line.id}")
-        except (ValueError, DatabaseConstraintError) as e:
+
+        def _on_mapping_failure(exc):
             # Compensating delete (U-247): an ILI created above but never mapped is an
             # unmapped-but-Manual phantom row. Delete it and re-raise so the caller's
             # per-line catch (InvoiceInvoiceConnector._sync_line_items) logs and moves on
@@ -330,7 +333,7 @@ class InvoiceLineItemConnector:
             # today (see that method's own "U-006" note on why NOT to add one casually);
             # this stays scoped to the single orphaned line, it does not touch the invoice
             # header.
-            logger.warning(f"Could not create mapping for InvoiceLineItem {line_item_id}: {e}")
+            logger.warning(f"Could not create mapping for InvoiceLineItem {line_item_id}: {exc}")
             try:
                 self.invoice_line_item_service.repo.delete_by_id(line_item_id)
             except Exception as cleanup_error:
@@ -342,22 +345,32 @@ class InvoiceLineItemConnector:
                     self._line_item_cache.pop(line_item.id, None)
             raise
 
-        # U-238b: dbo line identity dual-write (create+update pairing for U-238c).
-        # Mapping is already committed — a stamp failure must NOT roll back the line item.
-        stamp_line_identity_or_warn(
-            self.invoice_line_item_service.repo,
-            id=line_item_id,
-            qbo_id=qbo_invoice_line.qbo_line_id,
-            realm_id=realm_id,
-            context=f"Created mapping for InvoiceLineItem {line_item_id} for QboInvoiceLine {qbo_invoice_line.id}",
-            enforce_realm_pairing=True,
-        )
-        # U-272: dbo source-link provenance mirror (create+update pairing).
-        _stamp_source_provenance_or_warn(
-            self.invoice_line_item_service.repo,
-            qbo_invoice_line=qbo_invoice_line,
-            invoice_line_item_id=line_item_id,
-            context=f"Created mapping for InvoiceLineItem {line_item_id} for QboInvoiceLine {qbo_invoice_line.id}",
+        def _stamp_identity():
+            # U-238b: dbo line identity dual-write (create+update pairing for U-238c).
+            # Mapping is already committed — a stamp failure must NOT roll back the line item.
+            stamp_line_identity_or_warn(
+                self.invoice_line_item_service.repo,
+                id=line_item_id,
+                qbo_id=qbo_invoice_line.qbo_line_id,
+                realm_id=realm_id,
+                context=f"Created mapping for InvoiceLineItem {line_item_id} for QboInvoiceLine {qbo_invoice_line.id}",
+                enforce_realm_pairing=True,
+            )
+            # U-272: dbo source-link provenance mirror (create+update pairing).
+            _stamp_source_provenance_or_warn(
+                self.invoice_line_item_service.repo,
+                qbo_invoice_line=qbo_invoice_line,
+                invoice_line_item_id=line_item_id,
+                context=f"Created mapping for InvoiceLineItem {line_item_id} for QboInvoiceLine {qbo_invoice_line.id}",
+            )
+
+        # U-341: create_mapping_then_stamp makes _stamp_identity (and the source-
+        # provenance mirror) unreachable on a failed create by construction.
+        create_mapping_then_stamp(
+            create_mapping=_create_mapping,
+            stamp_identity=_stamp_identity,
+            on_mapping_failure=_on_mapping_failure,
+            catch=(ValueError, DatabaseConstraintError),
         )
 
         return line_item

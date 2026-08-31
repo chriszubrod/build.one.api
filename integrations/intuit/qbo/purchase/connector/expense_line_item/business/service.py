@@ -16,6 +16,7 @@ from entities.project.business.service import ProjectService
 from entities.sub_cost_code.business.service import SubCostCodeService
 from integrations.intuit.qbo.base.identity_consistency import verify_identity_dbo_only
 from integrations.intuit.qbo.base.identity_drift import stamp_line_identity_or_warn
+from integrations.intuit.qbo.base.line_identity_stamp import create_mapping_then_stamp
 from integrations.intuit.qbo.base.identity_fastpath import (
     raise_concurrent_write_race,
     run_line_identity_fastpath,
@@ -336,10 +337,12 @@ class PurchaseLineExpenseLineItemConnector:
         # Create mapping — if this fails we must roll back the line item we just created,
         # otherwise the unmapped line item will be duplicated on every subsequent sync run.
         line_item_id = coerce_id(line_item.id)
-        try:
-            mapping = self.create_mapping(expense_line_item_id=line_item_id, qbo_purchase_line_id=qbo_line.id)
+
+        def _create_mapping():
+            self.create_mapping(expense_line_item_id=line_item_id, qbo_purchase_line_id=qbo_line.id)
             logger.debug(f"Created mapping: ExpenseLineItem {line_item_id} <-> QboPurchaseLine {qbo_line.id}")
-        except Exception as e:
+
+        def _on_mapping_failure(exc):
             try:
                 self.expense_line_item_service.delete_by_public_id(line_item.public_id)
                 logger.warning(
@@ -349,18 +352,28 @@ class PurchaseLineExpenseLineItemConnector:
             except Exception as del_e:
                 logger.error(f"Could not delete orphan ExpenseLineItem {line_item_id}: {del_e}")
             raise ValueError(
-                f"Failed to create PurchaseLineExpenseLineItem mapping for QboPurchaseLine {qbo_line.id}: {e}"
-            ) from e
+                f"Failed to create PurchaseLineExpenseLineItem mapping for QboPurchaseLine {qbo_line.id}: {exc}"
+            ) from exc
 
-        # U-238b: dbo line identity dual-write (create+update pairing for U-238c).
-        # Mapping is already committed — a stamp failure must NOT roll back the line item.
-        stamp_line_identity_or_warn(
-            self.expense_line_item_service.repo,
-            id=line_item_id,
-            qbo_id=qbo_line.qbo_line_id,
-            realm_id=realm_id,
-            context=f"Created mapping for ExpenseLineItem {line_item_id} for QboPurchaseLine {qbo_line.id}",
-            enforce_realm_pairing=True,
+        def _stamp_identity():
+            # U-238b: dbo line identity dual-write (create+update pairing for U-238c).
+            # Mapping is already committed — a stamp failure must NOT roll back the line item.
+            stamp_line_identity_or_warn(
+                self.expense_line_item_service.repo,
+                id=line_item_id,
+                qbo_id=qbo_line.qbo_line_id,
+                realm_id=realm_id,
+                context=f"Created mapping for ExpenseLineItem {line_item_id} for QboPurchaseLine {qbo_line.id}",
+                enforce_realm_pairing=True,
+            )
+
+        # U-341: create_mapping_then_stamp makes _stamp_identity unreachable on a
+        # failed create by construction.
+        create_mapping_then_stamp(
+            create_mapping=_create_mapping,
+            stamp_identity=_stamp_identity,
+            on_mapping_failure=_on_mapping_failure,
+            catch=(Exception,),
         )
 
         return line_item

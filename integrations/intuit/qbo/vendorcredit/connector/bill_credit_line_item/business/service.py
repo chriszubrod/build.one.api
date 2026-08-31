@@ -13,6 +13,7 @@ from entities.bill_credit_line_item.business.model import BillCreditLineItem
 from entities.project.business.service import ProjectService
 from entities.sub_cost_code.business.service import SubCostCodeService
 from integrations.intuit.qbo.base.identity_drift import stamp_line_identity_or_warn
+from integrations.intuit.qbo.base.line_identity_stamp import create_mapping_then_stamp
 from integrations.intuit.qbo.base.identity_fastpath import (
     raise_concurrent_write_race,
     run_line_identity_fastpath,
@@ -253,12 +254,13 @@ class VendorCreditLineItemConnector:
         # qbo_line.id is the stable local PK of the QboVendorCreditLine record
         # (the snapshot layer now upserts lines in place).
         if line_item and qbo_line.id:
-            try:
+            def _create_mapping():
                 self.mapping_repo.create(
                     qbo_vendor_credit_line_id=qbo_line.id,
                     bill_credit_line_item_id=line_item.id,
                 )
-            except Exception as mapping_err:
+
+            def _on_mapping_failure(exc):
                 # Deliberately swallow mapping failure to warning (bill-style): the line
                 # IS persisted so the header total still balances (the invariant the
                 # parent's RuntimeError protects), and _match_unmapped_by_fingerprint
@@ -267,9 +269,10 @@ class VendorCreditLineItemConnector:
                 # line over a mapping blip.
                 logger.warning(
                     f"Created BillCreditLineItem {line_item.id} but could not create "
-                    f"VendorCreditLineItemBillCreditLineItem mapping: {mapping_err}"
+                    f"VendorCreditLineItemBillCreditLineItem mapping: {exc}"
                 )
-            else:
+
+            def _stamp_identity():
                 # U-238b: dbo line identity dual-write (create+update pairing for U-238c).
                 stamp_line_identity_or_warn(
                     self.bill_credit_line_item_service.repo,
@@ -282,6 +285,16 @@ class VendorCreditLineItemConnector:
                     ),
                     enforce_realm_pairing=True,
                 )
+
+            # U-341: create_mapping_then_stamp makes _stamp_identity unreachable on
+            # a failed create by construction — same invariant U-339 fixed by hand
+            # in the bill sibling, generalized so this connector can't regress it.
+            create_mapping_then_stamp(
+                create_mapping=_create_mapping,
+                stamp_identity=_stamp_identity,
+                on_mapping_failure=_on_mapping_failure,
+                catch=(Exception,),
+            )
 
         return line_item
 

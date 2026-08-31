@@ -18,6 +18,7 @@ from entities.bill.business.service import BillService
 from entities.project.business.service import ProjectService
 from entities.sub_cost_code.business.service import SubCostCodeService
 from integrations.intuit.qbo.base.identity_drift import stamp_line_identity_or_warn
+from integrations.intuit.qbo.base.line_identity_stamp import create_mapping_then_stamp
 from integrations.intuit.qbo.base.identity_consistency import verify_identity_dbo_only
 from integrations.intuit.qbo.base.identity_fastpath import (
     raise_concurrent_write_race,
@@ -361,27 +362,17 @@ class BillLineItemConnector:
         
         # Create mapping
         line_item_id = coerce_id(line_item.id)
-        # Deliberately ValueError-only (not DatabaseConstraintError): dbo.BillLineItem carries no
-        # uniqueness constraint of any kind (unlike dbo.Bill, protected by
-        # UQ_Bill_VendorId_BillNumber_BillDate), so a concurrent-pull race that loses this mapping
-        # insert must NOT be silently swallowed here — the just-created `line_item` above would be
-        # an undetectable, permanently duplicate row with no reconciliation trail. Left uncaught, a
-        # DatabaseConstraintError propagates to _sync_line_items' per-line catch, which raises
-        # RuntimeError and correctly triggers rollback_orphan_header (new-bill path) or holds the
-        # watermark (existing-bill path) — the pre-existing, self-healing behavior. See U-228
-        # Pass-1 hunt (confirmed P1) and the TODO.md follow-up for a proper adopt-on-race heal.
-        try:
-            mapping = self.create_mapping(bill_line_item_id=line_item_id, qbo_bill_line_id=qbo_bill_line.id)
+
+        def _create_mapping():
+            self.create_mapping(bill_line_item_id=line_item_id, qbo_bill_line_id=qbo_bill_line.id)
             logger.info(f"Created mapping: BillLineItem {line_item_id} <-> QboBillLine {qbo_bill_line.id}")
-        except ValueError as e:
-            logger.warning(f"Could not create mapping: {e}")
-        else:
+
+        def _on_mapping_failure(exc):
+            logger.warning(f"Could not create mapping: {exc}")
+
+        def _stamp_identity():
             # U-238b: dbo line identity dual-write (create+update pairing for U-238c).
             # Mapping is already committed — a stamp failure must NOT roll back the line item.
-            # U-339: only reachable when create_mapping actually succeeded above — a swallowed
-            # ValueError must not stamp identity onto an unmapped line (a "stamped-but-unmapped"
-            # row that neither the fast path nor Shape-B's fingerprint can find on drift, U-293
-            # Gate-1).
             stamp_line_identity_or_warn(
                 self.bill_line_item_service.repo,
                 id=line_item_id,
@@ -390,6 +381,28 @@ class BillLineItemConnector:
                 context=f"Created mapping for BillLineItem {line_item_id} for QboBillLine {qbo_bill_line.id}",
                 enforce_realm_pairing=True,
             )
+
+        # U-341: create_mapping_then_stamp makes _stamp_identity unreachable on a
+        # failed create_mapping by construction (U-339 fixed the same gap by hand
+        # here — this closes the *class* so it can't regress or reappear in a 5th
+        # connector). Deliberately ValueError-only (not DatabaseConstraintError):
+        # dbo.BillLineItem carries no uniqueness constraint of any kind (unlike
+        # dbo.Bill, protected by UQ_Bill_VendorId_BillNumber_BillDate), so a
+        # concurrent-pull race that loses this mapping insert must NOT be silently
+        # swallowed here — the just-created `line_item` above would be an
+        # undetectable, permanently duplicate row with no reconciliation trail.
+        # Left uncaught, a DatabaseConstraintError propagates to _sync_line_items'
+        # per-line catch, which raises RuntimeError and correctly triggers
+        # rollback_orphan_header (new-bill path) or holds the watermark
+        # (existing-bill path) — the pre-existing, self-healing behavior. See
+        # U-228 Pass-1 hunt (confirmed P1) and the TODO.md follow-up for a proper
+        # adopt-on-race heal.
+        create_mapping_then_stamp(
+            create_mapping=_create_mapping,
+            stamp_identity=_stamp_identity,
+            on_mapping_failure=_on_mapping_failure,
+            catch=(ValueError,),
+        )
 
         return line_item
 

@@ -65,6 +65,26 @@ CREATE TABLE [dbo].[TimeEntry]
 END
 GO
 
+-- U-345: idempotent column-add so a from-scratch build of this file doesn't fail on the
+-- CreatedByUserId param/INSERT-list references below — live since
+-- scripts/migrations/gap2_created_by_user_id.sql / gap2_created_by_user_id_finalize.sql.
+-- No-op against the live schema (column/FK already exist there).
+IF OBJECT_ID('dbo.TimeEntry', 'U') IS NOT NULL
+   AND NOT EXISTS (SELECT 1 FROM sys.columns
+                   WHERE object_id = OBJECT_ID('dbo.TimeEntry') AND name = 'CreatedByUserId')
+BEGIN
+    ALTER TABLE [dbo].[TimeEntry] ADD [CreatedByUserId] BIGINT NOT NULL
+        CONSTRAINT [DF_TimeEntry_CreatedByUserId] DEFAULT (17);
+END
+GO
+IF OBJECT_ID('dbo.TimeEntry', 'U') IS NOT NULL
+   AND NOT EXISTS (SELECT 1 FROM sys.foreign_keys WHERE name = 'FK_TimeEntry_CreatedByUser')
+BEGIN
+    ALTER TABLE [dbo].[TimeEntry] ADD CONSTRAINT [FK_TimeEntry_CreatedByUser]
+        FOREIGN KEY ([CreatedByUserId]) REFERENCES [dbo].[User]([Id]);
+END
+GO
+
 
 -- TimeLog Table
 -- Stores raw clock in/out timestamps for time entries (many per TimeEntry)
@@ -99,6 +119,26 @@ CREATE TABLE [dbo].[TimeLog]
     CONSTRAINT [FK_TimeLog_TimeEntry] FOREIGN KEY ([TimeEntryId]) REFERENCES [dbo].[TimeEntry]([Id]) ON DELETE CASCADE,
     CONSTRAINT [FK_TimeLog_Project] FOREIGN KEY ([ProjectId]) REFERENCES [dbo].[Project]([Id])
 );
+END
+GO
+
+-- U-345: idempotent column-add so a from-scratch build of this file doesn't fail on the
+-- CreatedByUserId param/INSERT-list references below — live since
+-- scripts/migrations/gap2_created_by_user_id.sql / gap2_created_by_user_id_finalize.sql.
+-- No-op against the live schema (column/FK already exist there).
+IF OBJECT_ID('dbo.TimeLog', 'U') IS NOT NULL
+   AND NOT EXISTS (SELECT 1 FROM sys.columns
+                   WHERE object_id = OBJECT_ID('dbo.TimeLog') AND name = 'CreatedByUserId')
+BEGIN
+    ALTER TABLE [dbo].[TimeLog] ADD [CreatedByUserId] BIGINT NOT NULL
+        CONSTRAINT [DF_TimeLog_CreatedByUserId] DEFAULT (17);
+END
+GO
+IF OBJECT_ID('dbo.TimeLog', 'U') IS NOT NULL
+   AND NOT EXISTS (SELECT 1 FROM sys.foreign_keys WHERE name = 'FK_TimeLog_CreatedByUser')
+BEGIN
+    ALTER TABLE [dbo].[TimeLog] ADD CONSTRAINT [FK_TimeLog_CreatedByUser]
+        FOREIGN KEY ([CreatedByUserId]) REFERENCES [dbo].[User]([Id]);
 END
 GO
 

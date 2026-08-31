@@ -19,6 +19,39 @@ CREATE TABLE [dbo].[User]
 END
 GO
 
+-- U-345: idempotent column-add so a from-scratch build of this file doesn't fail on the
+-- CreatedByUserId/ModifiedByUserId param/INSERT-list references below — live since
+-- entities/user/sql/migrations/001_phase0_access_control.sql. No-op against the live
+-- schema (columns/FKs already exist there).
+IF OBJECT_ID('dbo.[User]', 'U') IS NOT NULL
+   AND NOT EXISTS (SELECT 1 FROM sys.columns
+                   WHERE object_id = OBJECT_ID('dbo.[User]') AND name = 'CreatedByUserId')
+BEGIN
+    ALTER TABLE [dbo].[User] ADD [CreatedByUserId] BIGINT NULL;
+END
+GO
+IF OBJECT_ID('dbo.[User]', 'U') IS NOT NULL
+   AND NOT EXISTS (SELECT 1 FROM sys.columns
+                   WHERE object_id = OBJECT_ID('dbo.[User]') AND name = 'ModifiedByUserId')
+BEGIN
+    ALTER TABLE [dbo].[User] ADD [ModifiedByUserId] BIGINT NULL;
+END
+GO
+IF OBJECT_ID('dbo.[User]', 'U') IS NOT NULL
+   AND NOT EXISTS (SELECT 1 FROM sys.foreign_keys WHERE name = 'FK_User_CreatedByUser')
+BEGIN
+    ALTER TABLE [dbo].[User] ADD CONSTRAINT [FK_User_CreatedByUser]
+        FOREIGN KEY ([CreatedByUserId]) REFERENCES [dbo].[User]([Id]);
+END
+GO
+IF OBJECT_ID('dbo.[User]', 'U') IS NOT NULL
+   AND NOT EXISTS (SELECT 1 FROM sys.foreign_keys WHERE name = 'FK_User_ModifiedByUser')
+BEGIN
+    ALTER TABLE [dbo].[User] ADD CONSTRAINT [FK_User_ModifiedByUser]
+        FOREIGN KEY ([ModifiedByUserId]) REFERENCES [dbo].[User]([Id]);
+END
+GO
+
 -- Idempotent column adds for existing environments.
 IF COL_LENGTH('dbo.[User]', 'EmployeeId') IS NULL
     ALTER TABLE [dbo].[User] ADD [EmployeeId] BIGINT NULL;

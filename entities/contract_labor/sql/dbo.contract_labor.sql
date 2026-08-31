@@ -62,6 +62,26 @@ CREATE TABLE [dbo].[ContractLabor]
 END
 GO
 
+-- U-345: idempotent column-add so a from-scratch build of this file doesn't fail on the
+-- CreatedByUserId param/INSERT-list references below — live since
+-- scripts/migrations/gap2_created_by_user_id.sql / gap2_created_by_user_id_finalize.sql.
+-- No-op against the live schema (column/FK already exist there).
+IF OBJECT_ID('dbo.ContractLabor', 'U') IS NOT NULL
+   AND NOT EXISTS (SELECT 1 FROM sys.columns
+                   WHERE object_id = OBJECT_ID('dbo.ContractLabor') AND name = 'CreatedByUserId')
+BEGIN
+    ALTER TABLE [dbo].[ContractLabor] ADD [CreatedByUserId] BIGINT NOT NULL
+        CONSTRAINT [DF_ContractLabor_CreatedByUserId] DEFAULT (17);
+END
+GO
+IF OBJECT_ID('dbo.ContractLabor', 'U') IS NOT NULL
+   AND NOT EXISTS (SELECT 1 FROM sys.foreign_keys WHERE name = 'FK_ContractLabor_CreatedByUser')
+BEGIN
+    ALTER TABLE [dbo].[ContractLabor] ADD CONSTRAINT [FK_ContractLabor_CreatedByUser]
+        FOREIGN KEY ([CreatedByUserId]) REFERENCES [dbo].[User]([Id]);
+END
+GO
+
 
 -- ContractLaborLineItem Table
 -- Stores line items for contract labor bills (many per ContractLabor entry)
@@ -96,6 +116,26 @@ CREATE TABLE [dbo].[ContractLaborLineItem]
     CONSTRAINT [FK_ContractLaborLineItem_Project] FOREIGN KEY ([ProjectId]) REFERENCES [dbo].[Project]([Id]),
     CONSTRAINT [FK_ContractLaborLineItem_SubCostCode] FOREIGN KEY ([SubCostCodeId]) REFERENCES [dbo].[SubCostCode]([Id])
 );
+END
+GO
+
+-- U-345: idempotent column-add so a from-scratch build of this file doesn't fail on the
+-- CreatedByUserId param/INSERT-list references below — live since
+-- scripts/migrations/gap2_created_by_user_id.sql / gap2_created_by_user_id_finalize.sql.
+-- No-op against the live schema (column/FK already exist there).
+IF OBJECT_ID('dbo.ContractLaborLineItem', 'U') IS NOT NULL
+   AND NOT EXISTS (SELECT 1 FROM sys.columns
+                   WHERE object_id = OBJECT_ID('dbo.ContractLaborLineItem') AND name = 'CreatedByUserId')
+BEGIN
+    ALTER TABLE [dbo].[ContractLaborLineItem] ADD [CreatedByUserId] BIGINT NOT NULL
+        CONSTRAINT [DF_ContractLaborLineItem_CreatedByUserId] DEFAULT (17);
+END
+GO
+IF OBJECT_ID('dbo.ContractLaborLineItem', 'U') IS NOT NULL
+   AND NOT EXISTS (SELECT 1 FROM sys.foreign_keys WHERE name = 'FK_ContractLaborLineItem_CreatedByUser')
+BEGIN
+    ALTER TABLE [dbo].[ContractLaborLineItem] ADD CONSTRAINT [FK_ContractLaborLineItem_CreatedByUser]
+        FOREIGN KEY ([CreatedByUserId]) REFERENCES [dbo].[User]([Id]);
 END
 GO
 

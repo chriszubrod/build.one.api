@@ -27,6 +27,26 @@ CREATE TABLE [dbo].[BillCreditLineItem]
 END
 GO
 
+-- U-345: idempotent column-add so a from-scratch build of this file doesn't fail on the
+-- CreatedByUserId param/INSERT-list references below — live since
+-- scripts/migrations/gap2_created_by_user_id.sql / gap2_created_by_user_id_finalize.sql.
+-- No-op against the live schema (column/FK already exist there).
+IF OBJECT_ID('dbo.BillCreditLineItem', 'U') IS NOT NULL
+   AND NOT EXISTS (SELECT 1 FROM sys.columns
+                   WHERE object_id = OBJECT_ID('dbo.BillCreditLineItem') AND name = 'CreatedByUserId')
+BEGIN
+    ALTER TABLE [dbo].[BillCreditLineItem] ADD [CreatedByUserId] BIGINT NOT NULL
+        CONSTRAINT [DF_BillCreditLineItem_CreatedByUserId] DEFAULT (17);
+END
+GO
+IF OBJECT_ID('dbo.BillCreditLineItem', 'U') IS NOT NULL
+   AND NOT EXISTS (SELECT 1 FROM sys.foreign_keys WHERE name = 'FK_BillCreditLineItem_CreatedByUser')
+BEGIN
+    ALTER TABLE [dbo].[BillCreditLineItem] ADD CONSTRAINT [FK_BillCreditLineItem_CreatedByUser]
+        FOREIGN KEY ([CreatedByUserId]) REFERENCES [dbo].[User]([Id]);
+END
+GO
+
 IF OBJECT_ID('dbo.BillCreditLineItem', 'U') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_BillCreditLineItem_BillCreditId' AND object_id = OBJECT_ID('dbo.BillCreditLineItem'))
 BEGIN
 CREATE INDEX IX_BillCreditLineItem_BillCreditId ON [dbo].[BillCreditLineItem] ([BillCreditId]);

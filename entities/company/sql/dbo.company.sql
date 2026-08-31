@@ -13,13 +13,47 @@ CREATE TABLE [dbo].[Company]
 END
 GO
 
+-- U-345: idempotent column-add so a from-scratch build of this file doesn't fail on the
+-- CreatedByUserId/ModifiedByUserId param/INSERT-list references below — live since
+-- entities/company/sql/migrations/001_phase0_access_control.sql. No-op against the live
+-- schema (columns/FKs already exist there).
+IF OBJECT_ID('dbo.Company', 'U') IS NOT NULL
+   AND NOT EXISTS (SELECT 1 FROM sys.columns
+                   WHERE object_id = OBJECT_ID('dbo.Company') AND name = 'CreatedByUserId')
+BEGIN
+    ALTER TABLE [dbo].[Company] ADD [CreatedByUserId] BIGINT NULL;
+END
+GO
+IF OBJECT_ID('dbo.Company', 'U') IS NOT NULL
+   AND NOT EXISTS (SELECT 1 FROM sys.columns
+                   WHERE object_id = OBJECT_ID('dbo.Company') AND name = 'ModifiedByUserId')
+BEGIN
+    ALTER TABLE [dbo].[Company] ADD [ModifiedByUserId] BIGINT NULL;
+END
+GO
+IF OBJECT_ID('dbo.Company', 'U') IS NOT NULL
+   AND NOT EXISTS (SELECT 1 FROM sys.foreign_keys WHERE name = 'FK_Company_CreatedByUser')
+BEGIN
+    ALTER TABLE [dbo].[Company] ADD CONSTRAINT [FK_Company_CreatedByUser]
+        FOREIGN KEY ([CreatedByUserId]) REFERENCES [dbo].[User]([Id]);
+END
+GO
+IF OBJECT_ID('dbo.Company', 'U') IS NOT NULL
+   AND NOT EXISTS (SELECT 1 FROM sys.foreign_keys WHERE name = 'FK_Company_ModifiedByUser')
+BEGIN
+    ALTER TABLE [dbo].[Company] ADD CONSTRAINT [FK_Company_ModifiedByUser]
+        FOREIGN KEY ([ModifiedByUserId]) REFERENCES [dbo].[User]([Id]);
+END
+GO
+
 -- Idempotent column add for existing environments (U-277). Live since
 -- migration 238a_qbo_identity_headers.sql (2026-08); declared here so a
 -- fresh environment built from just the base file matches prod — mirrors
 -- entities/customer/sql/dbo.customer.sql's identical block for the same
--- migration family. (Pre-existing OrganizationId/CreatedByUserId/
--- ModifiedByUserId gap is unrelated and stays governed by README.md's
--- documented two-pass build order.)
+-- migration family. (Pre-existing OrganizationId gap is unrelated and stays
+-- governed by README.md's documented two-pass build order — CreatedByUserId/
+-- ModifiedByUserId are no longer part of this gap; U-345 added the idempotent
+-- ALTER-ADD guard for both below, see TODO.md.)
 IF OBJECT_ID('dbo.Company', 'U') IS NOT NULL
    AND NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('dbo.Company') AND name = 'QboId')
 BEGIN

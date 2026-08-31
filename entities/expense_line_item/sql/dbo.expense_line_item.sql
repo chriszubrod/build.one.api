@@ -28,6 +28,26 @@ CREATE TABLE [dbo].[ExpenseLineItem]
 END
 GO
 
+-- U-345: idempotent column-add so a from-scratch build of this file doesn't fail on the
+-- CreatedByUserId param/INSERT-list references below — live since
+-- scripts/migrations/gap2_created_by_user_id.sql / gap2_created_by_user_id_finalize.sql.
+-- No-op against the live schema (column/FK already exist there).
+IF OBJECT_ID('dbo.ExpenseLineItem', 'U') IS NOT NULL
+   AND NOT EXISTS (SELECT 1 FROM sys.columns
+                   WHERE object_id = OBJECT_ID('dbo.ExpenseLineItem') AND name = 'CreatedByUserId')
+BEGIN
+    ALTER TABLE [dbo].[ExpenseLineItem] ADD [CreatedByUserId] BIGINT NOT NULL
+        CONSTRAINT [DF_ExpenseLineItem_CreatedByUserId] DEFAULT (17);
+END
+GO
+IF OBJECT_ID('dbo.ExpenseLineItem', 'U') IS NOT NULL
+   AND NOT EXISTS (SELECT 1 FROM sys.foreign_keys WHERE name = 'FK_ExpenseLineItem_CreatedByUser')
+BEGIN
+    ALTER TABLE [dbo].[ExpenseLineItem] ADD CONSTRAINT [FK_ExpenseLineItem_CreatedByUser]
+        FOREIGN KEY ([CreatedByUserId]) REFERENCES [dbo].[User]([Id]);
+END
+GO
+
 IF OBJECT_ID('dbo.ExpenseLineItem', 'U') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_ExpenseLineItem_ExpenseId' AND object_id = OBJECT_ID('dbo.ExpenseLineItem'))
 BEGIN
 CREATE INDEX IX_ExpenseLineItem_ExpenseId ON [dbo].[ExpenseLineItem] ([ExpenseId]);

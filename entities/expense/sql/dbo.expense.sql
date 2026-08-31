@@ -1,9 +1,11 @@
 -- ⚠️ DRIFT WARNING — DO NOT re-run this whole file against an existing DB.
 -- This canonical file is STALE relative to the live schema:
---   • The CREATE TABLE block below omits IsCredit / CreatedByUserId /
---     SourceEmailMessageId (added later by add_is_credit_column.sql,
---     gap2_core_threading.sql, source_email_message_fk.sql). A from-scratch
---     run would build a table the CreateExpense INSERT then fails against.
+--   • The CREATE TABLE block below omits IsCredit / SourceEmailMessageId
+--     (added later by add_is_credit_column.sql, source_email_message_fk.sql).
+--     A from-scratch run would build a table the CreateExpense INSERT then
+--     fails against. (CreatedByUserId is no longer part of this gap — U-345
+--     added an idempotent ALTER-ADD guard for it below, mirroring every
+--     other entity in the campaign; see TODO.md.)
 --   • ReadExpenses / ReadExpensesPaginated / CountExpenses here LACK the live
 --     @ActorUserId / @ActorIsSystemAdmin RBAC params (from the Gap 1 list-scoping
 --     migrations) that the Python repo passes — re-running them would REGRESS
@@ -29,6 +31,26 @@ CREATE TABLE [dbo].[Expense]
     [IsDraft] BIT NOT NULL DEFAULT 1,
     CONSTRAINT [FK_Expense_Vendor] FOREIGN KEY ([VendorId]) REFERENCES [dbo].[Vendor]([Id])
 );
+END
+GO
+
+-- U-345: idempotent column-add so a from-scratch build of this file doesn't fail on the
+-- CreatedByUserId param/INSERT-list references below — live since
+-- scripts/migrations/gap2_created_by_user_id.sql / gap2_created_by_user_id_finalize.sql.
+-- No-op against the live schema (column/FK already exist there).
+IF OBJECT_ID('dbo.Expense', 'U') IS NOT NULL
+   AND NOT EXISTS (SELECT 1 FROM sys.columns
+                   WHERE object_id = OBJECT_ID('dbo.Expense') AND name = 'CreatedByUserId')
+BEGIN
+    ALTER TABLE [dbo].[Expense] ADD [CreatedByUserId] BIGINT NOT NULL
+        CONSTRAINT [DF_Expense_CreatedByUserId] DEFAULT (17);
+END
+GO
+IF OBJECT_ID('dbo.Expense', 'U') IS NOT NULL
+   AND NOT EXISTS (SELECT 1 FROM sys.foreign_keys WHERE name = 'FK_Expense_CreatedByUser')
+BEGIN
+    ALTER TABLE [dbo].[Expense] ADD CONSTRAINT [FK_Expense_CreatedByUser]
+        FOREIGN KEY ([CreatedByUserId]) REFERENCES [dbo].[User]([Id]);
 END
 GO
 

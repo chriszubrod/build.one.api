@@ -21,6 +21,26 @@ CREATE TABLE [dbo].[Invoice]
 END
 GO
 
+-- U-345: idempotent column-add so a from-scratch build of this file doesn't fail on the
+-- CreatedByUserId param/INSERT-list references below — live since
+-- scripts/migrations/gap2_created_by_user_id.sql / gap2_created_by_user_id_finalize.sql.
+-- No-op against the live schema (column/FK already exist there).
+IF OBJECT_ID('dbo.Invoice', 'U') IS NOT NULL
+   AND NOT EXISTS (SELECT 1 FROM sys.columns
+                   WHERE object_id = OBJECT_ID('dbo.Invoice') AND name = 'CreatedByUserId')
+BEGIN
+    ALTER TABLE [dbo].[Invoice] ADD [CreatedByUserId] BIGINT NOT NULL
+        CONSTRAINT [DF_Invoice_CreatedByUserId] DEFAULT (17);
+END
+GO
+IF OBJECT_ID('dbo.Invoice', 'U') IS NOT NULL
+   AND NOT EXISTS (SELECT 1 FROM sys.foreign_keys WHERE name = 'FK_Invoice_CreatedByUser')
+BEGIN
+    ALTER TABLE [dbo].[Invoice] ADD CONSTRAINT [FK_Invoice_CreatedByUser]
+        FOREIGN KEY ([CreatedByUserId]) REFERENCES [dbo].[User]([Id]);
+END
+GO
+
 IF OBJECT_ID('dbo.Invoice', 'U') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_Invoice_ProjectId' AND object_id = OBJECT_ID('dbo.Invoice'))
 BEGIN
 CREATE INDEX IX_Invoice_ProjectId ON [dbo].[Invoice] ([ProjectId]);

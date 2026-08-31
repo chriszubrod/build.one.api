@@ -28,6 +28,26 @@ CREATE TABLE [dbo].[Vendor]
 END
 GO
 
+-- U-345: idempotent column-add so a from-scratch build of this file doesn't fail on the
+-- CreatedByUserId param/INSERT-list references below — live since
+-- scripts/migrations/gap2_created_by_user_id.sql / gap2_created_by_user_id_finalize.sql.
+-- No-op against the live schema (column/FK already exist there).
+IF OBJECT_ID('dbo.Vendor', 'U') IS NOT NULL
+   AND NOT EXISTS (SELECT 1 FROM sys.columns
+                   WHERE object_id = OBJECT_ID('dbo.Vendor') AND name = 'CreatedByUserId')
+BEGIN
+    ALTER TABLE [dbo].[Vendor] ADD [CreatedByUserId] BIGINT NOT NULL
+        CONSTRAINT [DF_Vendor_CreatedByUserId] DEFAULT (17);
+END
+GO
+IF OBJECT_ID('dbo.Vendor', 'U') IS NOT NULL
+   AND NOT EXISTS (SELECT 1 FROM sys.foreign_keys WHERE name = 'FK_Vendor_CreatedByUser')
+BEGIN
+    ALTER TABLE [dbo].[Vendor] ADD CONSTRAINT [FK_Vendor_CreatedByUser]
+        FOREIGN KEY ([CreatedByUserId]) REFERENCES [dbo].[User]([Id]);
+END
+GO
+
 -- Idempotent column add for existing environments. Renames the
 -- legacy 'IntakeNotes' column when present so the data + UX label
 -- stay aligned ('Notes' is the user-facing name).

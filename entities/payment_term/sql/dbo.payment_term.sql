@@ -18,6 +18,26 @@ CREATE TABLE [dbo].[PaymentTerm]
 END
 GO
 
+-- U-345: idempotent column-add so a from-scratch build of this file doesn't fail on the
+-- CreatedByUserId param/INSERT-list references below — live since
+-- scripts/migrations/gap2_created_by_user_id.sql / gap2_created_by_user_id_finalize.sql.
+-- No-op against the live schema (column/FK already exist there).
+IF OBJECT_ID('dbo.PaymentTerm', 'U') IS NOT NULL
+   AND NOT EXISTS (SELECT 1 FROM sys.columns
+                   WHERE object_id = OBJECT_ID('dbo.PaymentTerm') AND name = 'CreatedByUserId')
+BEGIN
+    ALTER TABLE [dbo].[PaymentTerm] ADD [CreatedByUserId] BIGINT NOT NULL
+        CONSTRAINT [DF_PaymentTerm_CreatedByUserId] DEFAULT (17);
+END
+GO
+IF OBJECT_ID('dbo.PaymentTerm', 'U') IS NOT NULL
+   AND NOT EXISTS (SELECT 1 FROM sys.foreign_keys WHERE name = 'FK_PaymentTerm_CreatedByUser')
+BEGIN
+    ALTER TABLE [dbo].[PaymentTerm] ADD CONSTRAINT [FK_PaymentTerm_CreatedByUser]
+        FOREIGN KEY ([CreatedByUserId]) REFERENCES [dbo].[User]([Id]);
+END
+GO
+
 -- Idempotent column add for existing environments (U-282). Live since migration
 -- 238c_qbo_identity_reference.sql (2026-06) but never declared in this base file —
 -- a fresh environment built from just the base file would fail at CREATE PROCEDURE

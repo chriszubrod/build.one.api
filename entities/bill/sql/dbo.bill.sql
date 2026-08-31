@@ -23,6 +23,26 @@ CREATE TABLE [dbo].[Bill]
 END
 GO
 
+-- U-345: idempotent column-add so a from-scratch build of this file doesn't fail on the
+-- CreatedByUserId param/INSERT-list references below — live since
+-- scripts/migrations/gap2_created_by_user_id.sql / gap2_created_by_user_id_finalize.sql.
+-- No-op against the live schema (column/FK already exist there).
+IF OBJECT_ID('dbo.Bill', 'U') IS NOT NULL
+   AND NOT EXISTS (SELECT 1 FROM sys.columns
+                   WHERE object_id = OBJECT_ID('dbo.Bill') AND name = 'CreatedByUserId')
+BEGIN
+    ALTER TABLE [dbo].[Bill] ADD [CreatedByUserId] BIGINT NOT NULL
+        CONSTRAINT [DF_Bill_CreatedByUserId] DEFAULT (17);
+END
+GO
+IF OBJECT_ID('dbo.Bill', 'U') IS NOT NULL
+   AND NOT EXISTS (SELECT 1 FROM sys.foreign_keys WHERE name = 'FK_Bill_CreatedByUser')
+BEGIN
+    ALTER TABLE [dbo].[Bill] ADD CONSTRAINT [FK_Bill_CreatedByUser]
+        FOREIGN KEY ([CreatedByUserId]) REFERENCES [dbo].[User]([Id]);
+END
+GO
+
 -- Additive: IntakeSource + IntakeSourceDetail capture how a bill arrived
 -- (manual UI / agent / script). Set-once at create. Pre-existing rows
 -- stay NULL.

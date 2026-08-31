@@ -13,6 +13,39 @@ CREATE TABLE [dbo].[UserModule]
 END
 GO
 
+-- U-345: idempotent column-add so a from-scratch build of this file doesn't fail on the
+-- CreatedByUserId/ModifiedByUserId param/INSERT-list references below — live since
+-- entities/user_module/sql/migrations/001_phase0_access_control.sql. No-op against the live
+-- schema (columns/FKs already exist there).
+IF OBJECT_ID('dbo.UserModule', 'U') IS NOT NULL
+   AND NOT EXISTS (SELECT 1 FROM sys.columns
+                   WHERE object_id = OBJECT_ID('dbo.UserModule') AND name = 'CreatedByUserId')
+BEGIN
+    ALTER TABLE [dbo].[UserModule] ADD [CreatedByUserId] BIGINT NULL;
+END
+GO
+IF OBJECT_ID('dbo.UserModule', 'U') IS NOT NULL
+   AND NOT EXISTS (SELECT 1 FROM sys.columns
+                   WHERE object_id = OBJECT_ID('dbo.UserModule') AND name = 'ModifiedByUserId')
+BEGIN
+    ALTER TABLE [dbo].[UserModule] ADD [ModifiedByUserId] BIGINT NULL;
+END
+GO
+IF OBJECT_ID('dbo.UserModule', 'U') IS NOT NULL
+   AND NOT EXISTS (SELECT 1 FROM sys.foreign_keys WHERE name = 'FK_UserModule_CreatedByUser')
+BEGIN
+    ALTER TABLE [dbo].[UserModule] ADD CONSTRAINT [FK_UserModule_CreatedByUser]
+        FOREIGN KEY ([CreatedByUserId]) REFERENCES [dbo].[User]([Id]);
+END
+GO
+IF OBJECT_ID('dbo.UserModule', 'U') IS NOT NULL
+   AND NOT EXISTS (SELECT 1 FROM sys.foreign_keys WHERE name = 'FK_UserModule_ModifiedByUser')
+BEGIN
+    ALTER TABLE [dbo].[UserModule] ADD CONSTRAINT [FK_UserModule_ModifiedByUser]
+        FOREIGN KEY ([ModifiedByUserId]) REFERENCES [dbo].[User]([Id]);
+END
+GO
+
 CREATE OR ALTER PROCEDURE CreateUserModule
 (
     @UserId BIGINT,

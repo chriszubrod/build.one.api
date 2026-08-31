@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import Mapping, Optional, Sequence
 
 from entities.invoice_line_item.business.service import InvoiceLineItemService
-from integrations.intuit.qbo.base.locking import qbo_app_lock, qbo_entity_sync_lock_resource
+from integrations.intuit.qbo.base.locking import qbo_entity_sync_lock_resource, qbo_sync_lock
 from scripts.sync_helper import assert_cli_system_admin
 from shared.database import get_connection
 
@@ -630,7 +630,7 @@ def main() -> int:
                 in_manifest_not_repairable,
             )
 
-        lock_ctx = qbo_app_lock(QBO_INVOICE_SYNC_LOCK, timeout_ms=QBO_INVOICE_SYNC_LOCK_TIMEOUT_MS)
+        lock_ctx = qbo_sync_lock("invoice", timeout_ms=QBO_INVOICE_SYNC_LOCK_TIMEOUT_MS)
         with lock_ctx as got_lock:
             if not got_lock:
                 logger.error(

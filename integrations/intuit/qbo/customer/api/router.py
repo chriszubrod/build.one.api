@@ -1,10 +1,10 @@
 # Python Standard Library Imports
 
 # Third-party Imports
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends
 
 # Local Imports
-from integrations.intuit.qbo.base.locking import qbo_app_lock, qbo_entity_sync_lock_resource
+from integrations.intuit.qbo.base.locking import qbo_sync_locked_route
 from integrations.intuit.qbo.customer.api.schemas import QboCustomerSync
 from integrations.intuit.qbo.customer.business.service import QboCustomerService
 from shared.rbac import require_module_api
@@ -17,6 +17,7 @@ service = QboCustomerService()
 
 
 @router.post("/sync/qbo-customers")
+@qbo_sync_locked_route("customer")
 def sync_qbo_customers_router(body: QboCustomerSync, current_user: dict = Depends(require_module_api(Modules.QBO_SYNC, "can_create"))):
     """
     Sync Customers from QBO.
@@ -30,19 +31,12 @@ def sync_qbo_customers_router(body: QboCustomerSync, current_user: dict = Depend
     exactly like the outbox worker / admin drain, so scoped reads see every row.
     See feedback_outbox_authz_boundary.md.
     """
-    lock_resource = qbo_entity_sync_lock_resource("customer")
-    with qbo_app_lock(lock_resource) as got_lock:
-        if not got_lock:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=f"QBO customer sync already in progress for realm {body.realm_id}. Try again shortly.",
-            )
-        with system_authz():
-            result = service.sync_from_qbo(
-                realm_id=body.realm_id,
-                last_updated_time=body.last_updated_time,
-                sync_to_modules=body.sync_to_modules
-            )
+    with system_authz():
+        result = service.sync_from_qbo(
+            realm_id=body.realm_id,
+            last_updated_time=body.last_updated_time,
+            sync_to_modules=body.sync_to_modules
+        )
     return list_response([customer.to_dict() for customer in result.synced])
 
 

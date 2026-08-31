@@ -2169,36 +2169,22 @@ These were surfaced during the unit and deliberately not built:
   `/simplify` 4-lens: reuse/efficiency clean; one simplification applied (test file's redundant `case_id`
   column collapsed into `entity_key`); altitude confirmed right depth, logged 2 new deferred follow-ups below.
 
-## U-340 follow-up (QBO entity sync lock fan-out, 2026-08-31) — deferred, non-blocking
+## U-340 follow-up (QBO entity sync lock fan-out, 2026-08-31) — ✅ BOTH CLOSED (U-346, U-347)
 
-- [x] **→ APPROVED as its own unit, U-347 (design Gate-2 PASS, commit `0b8b440a`, 2026-08-31).**
-  **[altitude, deferred — own unit] No shared decorator/dependency generalizes the
-  acquire-lock-or-409 shape.** Six routers now each hand-write the same
-  `lock_resource = qbo_entity_sync_lock_resource("<entity>"); with qbo_app_lock(lock_resource) as got_lock: if
-  not got_lock: raise HTTPException(409, ...)` block (plus `account` from U-337) — every other `qbo_app_lock`
-  call site in the repo (admin dispatcher, outbox worker, mapping cleanup, identity fastpath) also hand-writes
-  its own block, so this diff follows the established convention, not a regression. A shared
-  `@qbo_sync_locked("<entity>")` decorator in `integrations/intuit/qbo/base/locking.py` would collapse the
-  repeated exception-shaping into one place and structurally rule out the class of bug both U-337 and this
-  unit exist to prevent (a hand-typed entity-string literal silently drifting). Design-gated — touches 7
-  already-shipped routers, needs its own Gate-1. Sequencing per U-347's approved design: U-346 (below) lands
-  first on the hand-copied shape; U-347 Phase-2 repoints everything (7 routers + 11 CLI scripts) onto the new
-  primitive/decorators afterward.
-- [x] **✅ SHIPPED U-346, 2026-08-31 (/em): fanned out `run_locked()` (U-340's `sync_qbo_account.py` pattern)
-  to all 10 remaining CLI-direct entry points — the assignment/this item named 9
-  (`sync_qbo_bill.py`/`_invoice.py`/`_purchase.py`/`_vendorcredit.py`/`_vendor.py`/`_customer.py`/`_item.py`/
-  `_term.py`/`_company_info.py`); Codex Pass-1 caught a 10th, `sync_qbo_reimburse_charge.py`, missing from
-  this item's own list despite having the identical live `admin.py::VALID_QBO_ENTITIES`/`_qbo_sync_fn` entry
-  point — fixed in the same unit rather than left open.** [concurrency, deferred — own unit] The sibling
-  `scripts/sync_qbo_*.py` CLI-direct entry points remain
-  unlocked, same shape `sync_qbo_account.py` had before U-340.** `sync_qbo_bill.py`, `_purchase.py`,
-  `_vendor.py`, `_customer.py`, `_company_info.py`, `_vendorcredit.py`, `_invoice.py`, `_item.py`, `_term.py`
-  each call their `sync_qbo_*()` directly under `if __name__ == "__main__":` with no lock — a direct CLI run
-  of any of these can still race the admin dispatcher / API route for that same entity. U-340 only scoped
-  `sync_qbo_account.py` (the one the assignment named); the other 8 need the identical `run_locked()`-style
-  fix (lock the CLI-only wrapper, never the shared function body the admin dispatcher also calls, or it
-  self-deadlocks). Right-depth fix: sweep all 8 the same way, ideally alongside the shared-decorator follow-up
-  above so the CLI wrapper can reuse it too.
+- [x] **[concurrency] → SHIPPED U-346 (2026-08-31, `859bf650`).** Added a `run_locked()` CLI wrapper to all 10
+  sibling `sync_qbo_*.py` scripts (bill, invoice, purchase, vendorcredit, vendor, customer, item, term,
+  company_info, reimburse_charge — the last one wasn't in this booking's original 9-script list, caught by
+  Codex Pass-1 in the same unit), mirroring `sync_qbo_account.py`'s U-340 pattern. (TODO hygiene note: this
+  closeout was written retroactively by U-347, which repointed all 10 `run_locked()`s onto the new shared
+  decorator below — U-346 itself shipped without a TODO update.)
+- [x] **[altitude] → SHIPPED U-347 (2026-08-31), see `docs/design/u347-qbo-sync-locked-decorator.md`.** Shared
+  `qbo_sync_lock` context manager + `qbo_sync_locked_route`/`qbo_sync_locked_cli` decorators in
+  `integrations/intuit/qbo/base/locking.py`; repointed all 8 live per-entity routers (the 7 already-shipped +
+  `item`, an unlocked live gap this unit's Map found and closed), the admin dispatcher, all 11 CLI
+  `run_locked()`s, and `repair_invoice_line_duplicates.py` onto it. `qbo_app_lock` is now imported only by
+  `locking.py` itself for entity-sync purposes, enforced by a guard test
+  (`tests/test_u347_qbo_sync_locked_import_boundary.py`) so a new entry point gets the lock free and can't
+  hand-drift the resource key again.
 
 ## U-339 follow-up (stamp-after-swallowed-mapping-failure fix, 2026-08-31) — deferred, non-blocking
 

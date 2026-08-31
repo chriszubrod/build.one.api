@@ -13,64 +13,51 @@ the API route's lock resource is the exact string the admin dispatcher would
 compute for the same entity key (a mismatch here is exactly the U-337 Pass-1
 P1 that let two locked-individually entry points still race each other).
 
+U-347 (Map finding): `item`'s `/sync/qbo-items` route was a live, unlocked
+gap that neither U-337 nor this unit's own original scope caught — added to
+`CASES` below rather than filed as a separate follow-up, now that the fix is
+a one-line `@qbo_sync_locked_route("item")` application. U-347 also
+repointed every case here onto the shared `qbo_sync_lock` primitive +
+`@qbo_sync_locked_route`/`@qbo_sync_locked_cli` decorators
+(`integrations/intuit/qbo/base/locking.py`) — `qbo_app_lock` is no longer
+imported by any router/CLI module, only by `locking.py` itself, so these
+tests patch it there.
+
 Mutation-proof (verified manually per case, not re-asserted here since these
 tests replace the primitive via monkeypatch, same as test_u337's note):
-reverting any one handler's `with qbo_app_lock(...)` wrap back to a bare
-`service.sync_from_qbo(...)` call turns that case's
+reverting any one handler's `@qbo_sync_locked_route(...)` decorator (or, for
+the CLI cases below, `@qbo_sync_locked_cli(...)`) turns that case's
 `test_sync_denied_lock_raises_409_and_skips_sync` RED.
 """
 
 import asyncio
 from contextlib import contextmanager
-from unittest.mock import MagicMock
 
 import pytest
 from fastapi import HTTPException
 
 import scripts.sync_qbo_account as sync_qbo_account_script
 
+import integrations.intuit.qbo.base.locking as locking
 import integrations.intuit.qbo.bill.api.router as bill_router
 import integrations.intuit.qbo.company_info.api.router as company_info_router
 import integrations.intuit.qbo.customer.api.router as customer_router
+import integrations.intuit.qbo.item.api.router as item_router
 import integrations.intuit.qbo.purchase.api.router as purchase_router
 import integrations.intuit.qbo.vendor.api.router as vendor_router
 import integrations.intuit.qbo.vendorcredit.api.router as vendorcredit_router
 import shared.api.admin as admin_module
 from conftest import mock_qbo_app_lock_denied
-from integrations.intuit.qbo.base.sync_outcome import SyncOutcome
 from integrations.intuit.qbo.bill.api.schemas import QboBillSync
 from integrations.intuit.qbo.company_info.api.schemas import QboCompanyInfoSync
 from integrations.intuit.qbo.customer.api.schemas import QboCustomerSync
+from integrations.intuit.qbo.item.api.schemas import QboItemSync
 from integrations.intuit.qbo.purchase.api.schemas import QboPurchaseSync
 from integrations.intuit.qbo.vendor.api.schemas import QboVendorSync
 from integrations.intuit.qbo.vendorcredit.api.schemas import QboVendorCreditSyncRequest
+from qbo_sync_test_helpers import _outcome, _patch_module_service, _patch_vendorcredit_service
 
 REALM_ID = "9341453129481934"
-
-
-def _outcome():
-    fake_item = MagicMock()
-    fake_item.to_dict.return_value = {"id": 1}
-    outcome = SyncOutcome.for_service_pull()
-    outcome.record_synced(fake_item)
-    return outcome
-
-
-def _patch_module_service(monkeypatch, module):
-    """bill/purchase/vendor/customer/company_info hold a module-level `service`."""
-    mock_service = MagicMock()
-    mock_service.sync_from_qbo.return_value = _outcome()
-    monkeypatch.setattr(module, "service", mock_service)
-    return mock_service
-
-
-def _patch_vendorcredit_service(monkeypatch, module):
-    """vendorcredit instantiates `QboVendorCreditService()` inside the handler —
-    patch the class so every instantiation returns the same mock."""
-    mock_service = MagicMock()
-    mock_service.sync_from_qbo.return_value = _outcome()
-    monkeypatch.setattr(module, "QboVendorCreditService", lambda: mock_service)
-    return mock_service
 
 
 # Each case: (entity_key, module, call, patch_service)
@@ -125,6 +112,14 @@ CASES = [
         ),
         _patch_vendorcredit_service,
     ),
+    (
+        "item",
+        item_router,
+        lambda cu: item_router.sync_qbo_items_router(
+            body=QboItemSync(realm_id=REALM_ID, last_updated_time=None), current_user=cu
+        ),
+        _patch_module_service,
+    ),
 ]
 CASE_IDS = [c[0] for c in CASES]
 
@@ -145,7 +140,7 @@ def test_sync_acquires_lock_and_calls_sync_inside_it(
         yield True
         entered.append("exit")
 
-    monkeypatch.setattr(module, "qbo_app_lock", _tracking_lock)
+    monkeypatch.setattr(locking, "qbo_app_lock", _tracking_lock)
     mock_service = patch_service(monkeypatch, module)
 
     def _assert_inside_lock(*args, **kwargs):
@@ -167,13 +162,14 @@ def test_sync_denied_lock_raises_409_and_skips_sync(
 ):
     """A busy lock must raise 409 and never reach `sync_from_qbo` — two
     overlapping calls serialize instead of racing."""
-    monkeypatch.setattr(module, "qbo_app_lock", mock_qbo_app_lock_denied)
+    monkeypatch.setattr(locking, "qbo_app_lock", mock_qbo_app_lock_denied)
     mock_service = patch_service(monkeypatch, module)
 
     with pytest.raises(HTTPException) as exc_info:
         call({})
 
     assert exc_info.value.status_code == 409
+    assert exc_info.value.detail == f"QBO {entity_key} sync already in progress. Try again shortly."
     mock_service.sync_from_qbo.assert_not_called()
 
 
@@ -194,11 +190,10 @@ def test_api_route_and_admin_dispatcher_share_one_lock_resource(
         seen_resources.append(resource_name)
         yield True
 
-    monkeypatch.setattr(module, "qbo_app_lock", _recording_lock)
+    monkeypatch.setattr(locking, "qbo_app_lock", _recording_lock)
     patch_service(monkeypatch, module)
     call({})
 
-    monkeypatch.setattr(admin_module, "qbo_app_lock", _recording_lock)
     monkeypatch.setattr(
         admin_module,
         "_qbo_sync_fn",
@@ -226,7 +221,7 @@ def test_account_script_run_locked_acquires_lock_matching_admin_key(monkeypatch)
         yield True
         entered.append("exit")
 
-    monkeypatch.setattr(sync_qbo_account_script, "qbo_app_lock", _tracking_lock)
+    monkeypatch.setattr(locking, "qbo_app_lock", _tracking_lock)
 
     def _fake_sync_qbo_account(skip_sync_record_update=False, dry_run=False):
         assert entered == ["enter"]
@@ -246,9 +241,7 @@ def test_account_script_run_locked_denied_returns_409_and_skips_sync(monkeypatch
     """A busy lock must short-circuit to a failure envelope (so
     `exit_nonzero_on_sync_failure` exits non-zero for cron/CLI callers)
     without ever calling `sync_qbo_account()`."""
-    monkeypatch.setattr(
-        sync_qbo_account_script, "qbo_app_lock", mock_qbo_app_lock_denied
-    )
+    monkeypatch.setattr(locking, "qbo_app_lock", mock_qbo_app_lock_denied)
     called = []
     monkeypatch.setattr(
         sync_qbo_account_script,

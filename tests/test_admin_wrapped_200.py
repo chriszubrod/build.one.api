@@ -4,6 +4,7 @@ from contextlib import contextmanager
 import pytest
 from fastapi import HTTPException
 
+import integrations.intuit.qbo.base.locking as locking
 import shared.api.admin as admin
 from shared.api.admin import sync_qbo_router
 
@@ -15,8 +16,14 @@ def _granted_lock(resource_name, timeout_ms=0):
 
 @pytest.fixture
 def mock_qbo_app_lock_granted(monkeypatch):
-    """Prevent real sp_getapplock round-trips; always grant the lock."""
-    monkeypatch.setattr(admin, "qbo_app_lock", _granted_lock)
+    """Prevent real sp_getapplock round-trips; always grant the lock.
+
+    U-347: `shared/api/admin.py` no longer imports `qbo_app_lock` directly
+    (it repoints onto `qbo_sync_lock`, which is the sole caller of
+    `qbo_app_lock` left in the codebase) — patch it at the source in
+    `locking.py`, same as test_u337/test_u340/test_u346.
+    """
+    monkeypatch.setattr(locking, "qbo_app_lock", _granted_lock)
 
 
 def test_sync_qbo_non_2xx_status_raises_502(monkeypatch, mock_qbo_app_lock_granted):
@@ -55,7 +62,7 @@ def test_sync_qbo_skipped_when_lock_busy(monkeypatch):
         assert timeout_ms == 0
         yield False
 
-    monkeypatch.setattr(admin, "qbo_app_lock", _denied_lock_bill)
+    monkeypatch.setattr(locking, "qbo_app_lock", _denied_lock_bill)
 
     sync_fn_called = False
 

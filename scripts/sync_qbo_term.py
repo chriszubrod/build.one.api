@@ -15,7 +15,7 @@ from scripts.sync_helper import (
     assert_cli_system_admin,
     exit_nonzero_on_sync_failure,
 )
-from integrations.intuit.qbo.base.locking import qbo_app_lock, qbo_entity_sync_lock_resource
+from integrations.intuit.qbo.base.locking import qbo_sync_locked_cli
 from integrations.intuit.qbo.base.pacing import pace_batch
 from integrations.intuit.qbo.base.watermark import (
     WatermarkRun,
@@ -329,6 +329,7 @@ def sync_qbo_term(resync_existing: bool = False) -> dict:
         }
 
 
+@qbo_sync_locked_cli("term")
 def run_locked(resync_existing: bool = False) -> dict:
     """
     Lock-wrapped entry point for a direct CLI run (`python scripts/sync_qbo_term.py`).
@@ -339,17 +340,7 @@ def run_locked(resync_existing: bool = False) -> dict:
     path also calls while already holding this same resource (see
     scripts/sync_qbo_account.py::run_locked for the full rationale).
     """
-    lock_resource = qbo_entity_sync_lock_resource("term")
-    with qbo_app_lock(lock_resource) as got_lock:
-        if not got_lock:
-            return {
-                "result": {
-                    "success": False,
-                    "error": f"QBO term sync already in progress (lock '{lock_resource}' busy).",
-                },
-                "status_code": 409,
-            }
-        return sync_qbo_term(resync_existing=resync_existing)
+    return sync_qbo_term(resync_existing=resync_existing)
 
 
 if __name__ == "__main__":

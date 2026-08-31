@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import JSONResponse
 
 # Local Imports
-from integrations.intuit.qbo.base.locking import qbo_app_lock, qbo_entity_sync_lock_resource
+from integrations.intuit.qbo.base.locking import qbo_sync_locked_route
 from integrations.intuit.qbo.bill.api.schemas import QboBillSync, QboBillPush
 from integrations.intuit.qbo.bill.business.service import QboBillService
 from integrations.intuit.qbo.outbox.business.service import (
@@ -25,22 +25,16 @@ service = QboBillService()
 
 
 @router.post("/sync/qbo-bills")
+@qbo_sync_locked_route("bill")
 def sync_qbo_bills_router(body: QboBillSync, current_user: dict = Depends(require_module_api(Modules.QBO_SYNC, "can_create"))):
     """
     Sync Bills from QBO.
     """
-    lock_resource = qbo_entity_sync_lock_resource("bill")
-    with qbo_app_lock(lock_resource) as got_lock:
-        if not got_lock:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=f"QBO bill sync already in progress for realm {body.realm_id}. Try again shortly.",
-            )
-        result = service.sync_from_qbo(
-            realm_id=body.realm_id,
-            last_updated_time=body.last_updated_time,
-            sync_to_modules=body.sync_to_modules
-        )
+    result = service.sync_from_qbo(
+        realm_id=body.realm_id,
+        last_updated_time=body.last_updated_time,
+        sync_to_modules=body.sync_to_modules
+    )
     return list_response([bill.to_dict() for bill in result.synced])
 
 

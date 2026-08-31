@@ -17,7 +17,7 @@ from scripts.sync_helper import (
     assert_cli_system_admin,
     exit_nonzero_on_sync_failure,
 )
-from integrations.intuit.qbo.base.locking import qbo_app_lock, qbo_entity_sync_lock_resource
+from integrations.intuit.qbo.base.locking import qbo_sync_locked_cli
 from integrations.intuit.qbo.base.watermark import (
     WatermarkRun,
     _normalize_last_sync,
@@ -258,6 +258,7 @@ Examples:
     return parser.parse_args()
 
 
+@qbo_sync_locked_cli("account")
 def run_locked(skip_sync_record_update: bool = False, dry_run: bool = False) -> dict:
     """
     Lock-wrapped entry point for a direct CLI run (`python scripts/sync_qbo_account.py`).
@@ -265,26 +266,16 @@ def run_locked(skip_sync_record_update: bool = False, dry_run: bool = False) -> 
     This CLI invocation is a third path onto QboAccountService.sync_from_qbo,
     independent of the (already-locked) API route and admin dispatcher — the
     admin dispatcher imports and calls `sync_qbo_account()` directly, never
-    this function, so its own `qbo_app_lock` hold is untouched here. Locking
-    must live at this outer layer, not inside `sync_qbo_account()` /
-    `sync_qbo_to_local()`: those are shared with the admin path, which already
-    holds this same resource for the duration of its call — a second acquire
-    from inside that call would self-deadlock against itself.
+    this function, so its own lock hold is untouched here. Locking must live
+    at this outer layer, not inside `sync_qbo_account()` / `sync_qbo_to_local()`:
+    those are shared with the admin path, which already holds this same
+    resource for the duration of its call — a second acquire from inside
+    that call would self-deadlock against itself.
     """
-    lock_resource = qbo_entity_sync_lock_resource("account")
-    with qbo_app_lock(lock_resource) as got_lock:
-        if not got_lock:
-            return {
-                "result": {
-                    "success": False,
-                    "error": f"QBO account sync already in progress (lock '{lock_resource}' busy).",
-                },
-                "status_code": 409,
-            }
-        return sync_qbo_account(
-            skip_sync_record_update=skip_sync_record_update,
-            dry_run=dry_run,
-        )
+    return sync_qbo_account(
+        skip_sync_record_update=skip_sync_record_update,
+        dry_run=dry_run,
+    )
 
 
 if __name__ == "__main__":

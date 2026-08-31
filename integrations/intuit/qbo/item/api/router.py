@@ -4,6 +4,7 @@
 from fastapi import APIRouter, Depends
 
 # Local Imports
+from integrations.intuit.qbo.base.locking import qbo_sync_locked_route
 from integrations.intuit.qbo.item.api.schemas import QboItemSync
 from integrations.intuit.qbo.item.business.service import QboItemService
 from shared.rbac import require_module_api
@@ -15,9 +16,14 @@ service = QboItemService()
 
 
 @router.post("/sync/qbo-items")
+@qbo_sync_locked_route("item")
 def sync_qbo_items_router(body: QboItemSync, current_user: dict = Depends(require_module_api(Modules.QBO_SYNC, "can_create"))):
     """
     Sync Items from QBO.
+
+    U-347: previously unlocked — a live gap neither U-337 nor U-340 caught.
+    Now serializes against the admin `/sync/qbo/item` dispatcher and any
+    other `item` sync entry point via the shared `qbo_sync:item` applock.
     """
     result = service.sync_from_qbo(
         realm_id=body.realm_id,

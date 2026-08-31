@@ -34,6 +34,7 @@ from contextlib import contextmanager
 
 import pytest
 
+import integrations.intuit.qbo.base.locking as locking
 import scripts.sync_qbo_bill as bill_script
 import scripts.sync_qbo_company_info as company_info_script
 import scripts.sync_qbo_customer as customer_script
@@ -82,7 +83,7 @@ def test_run_locked_acquires_lock_and_calls_sync_inside_it(
         yield True
         entered.append("exit")
 
-    monkeypatch.setattr(module, "qbo_app_lock", _tracking_lock)
+    monkeypatch.setattr(locking, "qbo_app_lock", _tracking_lock)
 
     def _fake_sync(*args, **kwargs):
         assert entered == ["enter"]
@@ -101,7 +102,7 @@ def test_run_locked_denied_returns_409_and_skips_sync(monkeypatch, entity_key, m
     """A busy lock must short-circuit to a failure envelope (so
     `exit_nonzero_on_sync_failure` exits non-zero for cron/CLI callers)
     without ever calling the underlying `sync_qbo_*()`."""
-    monkeypatch.setattr(module, "qbo_app_lock", mock_qbo_app_lock_denied)
+    monkeypatch.setattr(locking, "qbo_app_lock", mock_qbo_app_lock_denied)
     called = []
     monkeypatch.setattr(
         module, f"sync_qbo_{entity_key}", lambda *a, **kw: called.append((a, kw))
@@ -120,8 +121,6 @@ def test_run_locked_key_matches_admin_dispatcher_key(monkeypatch, entity_key, mo
     `sync/qbo/{entity}` dispatcher computes for the same entity — a mismatch
     here is exactly the U-337 Pass-1 P1 that let two locked-individually
     entry points still race each other unlocked."""
-    import shared.api.admin as admin_module
-
     seen = []
 
     @contextmanager
@@ -129,11 +128,11 @@ def test_run_locked_key_matches_admin_dispatcher_key(monkeypatch, entity_key, mo
         seen.append(resource_name)
         yield True
 
-    monkeypatch.setattr(module, "qbo_app_lock", _recording_lock)
+    monkeypatch.setattr(locking, "qbo_app_lock", _recording_lock)
     monkeypatch.setattr(module, f"sync_qbo_{entity_key}", lambda *a, **kw: OK_RESULT)
     module.run_locked()
 
-    admin_key = admin_module.qbo_entity_sync_lock_resource(entity_key)
+    admin_key = locking.qbo_entity_sync_lock_resource(entity_key)
     assert seen == [admin_key]
 
 

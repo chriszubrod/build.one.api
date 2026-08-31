@@ -17,7 +17,7 @@ from scripts.sync_helper import (
     assert_cli_system_admin,
     exit_nonzero_on_sync_failure,
 )
-from integrations.intuit.qbo.base.locking import qbo_app_lock, qbo_entity_sync_lock_resource
+from integrations.intuit.qbo.base.locking import qbo_sync_locked_cli
 from integrations.intuit.qbo.base.watermark import (
     WatermarkRun,
     _normalize_last_sync,
@@ -627,6 +627,7 @@ def sync_qbo_bill(
         }
 
 
+@qbo_sync_locked_cli("bill")
 def run_locked(
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
@@ -645,24 +646,14 @@ def run_locked(
     also calls while already holding this same resource (see
     scripts/sync_qbo_account.py::run_locked for the full rationale).
     """
-    lock_resource = qbo_entity_sync_lock_resource("bill")
-    with qbo_app_lock(lock_resource) as got_lock:
-        if not got_lock:
-            return {
-                "result": {
-                    "success": False,
-                    "error": f"QBO bill sync already in progress (lock '{lock_resource}' busy).",
-                },
-                "status_code": 409,
-            }
-        return sync_qbo_bill(
-            start_date=start_date,
-            end_date=end_date,
-            skip_sync_record_update=skip_sync_record_update,
-            sync_attachments=sync_attachments,
-            dry_run=dry_run,
-            include_bill_payload=include_bill_payload,
-        )
+    return sync_qbo_bill(
+        start_date=start_date,
+        end_date=end_date,
+        skip_sync_record_update=skip_sync_record_update,
+        sync_attachments=sync_attachments,
+        dry_run=dry_run,
+        include_bill_payload=include_bill_payload,
+    )
 
 
 def parse_args():

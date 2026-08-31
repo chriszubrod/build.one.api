@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 
 # Local Imports
 from integrations.intuit.qbo.base.ids import coerce_id
-from integrations.intuit.qbo.base.locking import qbo_app_lock, qbo_entity_sync_lock_resource
+from integrations.intuit.qbo.base.locking import qbo_sync_locked_route
 from integrations.intuit.qbo.purchase.api.schemas import QboPurchaseSync
 from integrations.intuit.qbo.purchase.business.service import QboPurchaseService
 from integrations.intuit.qbo.purchase.connector.expense.business.service import PurchaseExpenseConnector
@@ -24,24 +24,18 @@ service = QboPurchaseService()
 
 
 @router.post("/sync/qbo-purchases")
+@qbo_sync_locked_route("purchase")
 def sync_qbo_purchases_router(body: QboPurchaseSync, current_user: dict = Depends(require_module_api(Modules.QBO_SYNC, "can_create"))):
     """
     Sync Purchases from QBO.
     """
-    lock_resource = qbo_entity_sync_lock_resource("purchase")
-    with qbo_app_lock(lock_resource) as got_lock:
-        if not got_lock:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=f"QBO purchase sync already in progress for realm {body.realm_id}. Try again shortly.",
-            )
-        result = service.sync_from_qbo(
-            realm_id=body.realm_id,
-            last_updated_time=body.last_updated_time,
-            start_date=body.start_date,
-            end_date=body.end_date,
-            sync_to_modules=body.sync_to_modules
-        )
+    result = service.sync_from_qbo(
+        realm_id=body.realm_id,
+        last_updated_time=body.last_updated_time,
+        start_date=body.start_date,
+        end_date=body.end_date,
+        sync_to_modules=body.sync_to_modules
+    )
     return list_response([purchase.to_dict() for purchase in result.synced])
 
 

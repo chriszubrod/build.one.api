@@ -15,7 +15,7 @@ from scripts.sync_helper import (
     assert_cli_system_admin,
     exit_nonzero_on_sync_failure,
 )
-from integrations.intuit.qbo.base.locking import qbo_app_lock, qbo_entity_sync_lock_resource
+from integrations.intuit.qbo.base.locking import qbo_sync_locked_cli
 from integrations.intuit.qbo.base.watermark import (
     WatermarkRun,
     _normalize_last_sync,
@@ -166,6 +166,7 @@ def sync_qbo_company_info() -> dict:
         }
 
 
+@qbo_sync_locked_cli("company_info")
 def run_locked() -> dict:
     """
     Lock-wrapped entry point for a direct CLI run (`python scripts/sync_qbo_company_info.py`).
@@ -176,17 +177,7 @@ def run_locked() -> dict:
     path also calls while already holding this same resource (see
     scripts/sync_qbo_account.py::run_locked for the full rationale).
     """
-    lock_resource = qbo_entity_sync_lock_resource("company_info")
-    with qbo_app_lock(lock_resource) as got_lock:
-        if not got_lock:
-            return {
-                "result": {
-                    "success": False,
-                    "error": f"QBO company_info sync already in progress (lock '{lock_resource}' busy).",
-                },
-                "status_code": 409,
-            }
-        return sync_qbo_company_info()
+    return sync_qbo_company_info()
 
 
 if __name__ == "__main__":

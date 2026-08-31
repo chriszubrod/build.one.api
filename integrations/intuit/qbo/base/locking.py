@@ -1,7 +1,11 @@
 # Python Standard Library Imports
+import functools
 import logging
 from contextlib import contextmanager
-from typing import Iterator
+from typing import Callable, Iterator
+
+# Third-party Imports
+from fastapi import HTTPException, status
 
 # Local Imports
 from shared.database import get_connection
@@ -130,3 +134,80 @@ def qbo_app_lock(resource_name: str, timeout_ms: int = 15000) -> Iterator[bool]:
                 cursor.close()
             except Exception:
                 pass
+
+
+@contextmanager
+def qbo_sync_lock(entity: str, timeout_ms: int = 15000) -> Iterator[bool]:
+    """
+    Acquire the `qbo_app_lock` for a QBO entity's sync, keyed via
+    `qbo_entity_sync_lock_resource(entity)` — the ONE place that turns an
+    entity name into the `qbo_sync:<entity>` resource string for sync
+    purposes (U-347). Every entity-sync entry point (API route, CLI script,
+    admin dispatcher, or a script that merely needs to contend against a
+    live sync) should acquire through this — never by re-deriving the
+    resource string and calling `qbo_app_lock` directly — so the key can't
+    drift the way it did before U-337.
+    """
+    with qbo_app_lock(qbo_entity_sync_lock_resource(entity), timeout_ms=timeout_ms) as got_lock:
+        yield got_lock
+
+
+def qbo_sync_locked_route(entity: str, timeout_ms: int = 15000) -> Callable:
+    """
+    Decorator for a `POST /sync/qbo-*` FastAPI route handler (U-347).
+    Wraps the call in `qbo_sync_lock(entity)`; raises `HTTPException(409)`
+    on contention instead of calling the wrapped handler.
+
+    Preserves the wrapped function's signature via `functools.wraps` (sets
+    `__wrapped__`, which `inspect.signature` follows by default) so
+    FastAPI's dependency-injection resolution of `body`/`Depends(...)`
+    params still works through the decorator.
+    """
+    def decorator(func: Callable) -> Callable:
+        @functools.wraps(func)
+        def wrapper(*args, **kwargs):
+            with qbo_sync_lock(entity, timeout_ms=timeout_ms) as got_lock:
+                if not got_lock:
+                    raise HTTPException(
+                        status_code=status.HTTP_409_CONFLICT,
+                        detail=f"QBO {entity} sync already in progress. Try again shortly.",
+                    )
+                return func(*args, **kwargs)
+        return wrapper
+    return decorator
+
+
+def qbo_sync_locked_cli(entity: str, timeout_ms: int = 15000) -> Callable:
+    """
+    Decorator for a `sync_qbo_*.py` CLI `run_locked()` entry function
+    (U-347). Wraps the call in `qbo_sync_lock(entity)`; on contention
+    returns a `status_code=409` dict in the SAME `{"result": {...},
+    "status_code": int}` shape every `sync_qbo_*()` function already
+    returns, instead of calling the wrapped function — so a caller (or
+    `exit_nonzero_on_sync_failure`) never needs to special-case lock-busy
+    vs. a real sync failure.
+
+    MUST be applied to a dedicated CLI-only entry function (`run_locked`),
+    NEVER to the shared `sync_qbo_<entity>()` function itself — the admin
+    dispatcher calls that shared function directly while already holding
+    this exact resource, so decorating it would make the admin path nest a
+    second acquire of the same resource from a second DB session and
+    self-deadlock (see `sync_qbo_account.py::run_locked`'s own docstring
+    for the original rationale).
+    """
+    def decorator(func: Callable) -> Callable:
+        @functools.wraps(func)
+        def wrapper(*args, **kwargs):
+            with qbo_sync_lock(entity, timeout_ms=timeout_ms) as got_lock:
+                if not got_lock:
+                    resource = qbo_entity_sync_lock_resource(entity)
+                    return {
+                        "result": {
+                            "success": False,
+                            "error": f"QBO {entity} sync already in progress (lock '{resource}' busy).",
+                        },
+                        "status_code": 409,
+                    }
+                return func(*args, **kwargs)
+        return wrapper
+    return decorator

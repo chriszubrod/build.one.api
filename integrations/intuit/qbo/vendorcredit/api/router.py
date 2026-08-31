@@ -4,7 +4,7 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 
 # Local Imports
-from integrations.intuit.qbo.base.locking import qbo_app_lock, qbo_entity_sync_lock_resource
+from integrations.intuit.qbo.base.locking import qbo_sync_locked_route
 from integrations.intuit.qbo.vendorcredit.api.schemas import QboVendorCreditSyncRequest
 from integrations.intuit.qbo.vendorcredit.business.service import QboVendorCreditService
 from shared.rbac import require_module_api
@@ -15,6 +15,7 @@ router = APIRouter(prefix="/api/v1", tags=["api", "qbo", "vendorcredit"])
 
 
 @router.post("/sync/qbo-vendorcredits")
+@qbo_sync_locked_route("vendorcredit")
 def sync_qbo_vendor_credits_router(
     body: QboVendorCreditSyncRequest,
     current_user: dict = Depends(require_module_api(Modules.QBO_SYNC, "can_create")),
@@ -22,31 +23,24 @@ def sync_qbo_vendor_credits_router(
     """
     Sync VendorCredits from QBO to local cache and optionally to BillCredit module.
     """
-    lock_resource = qbo_entity_sync_lock_resource("vendorcredit")
-    with qbo_app_lock(lock_resource) as got_lock:
-        if not got_lock:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=f"QBO vendorcredit sync already in progress for realm {body.realm_id}. Try again shortly.",
-            )
-        try:
-            service = QboVendorCreditService()
-            result = service.sync_from_qbo(
-                realm_id=body.realm_id,
-                last_updated_time=body.last_updated_time,
-                start_date=body.start_date,
-                end_date=body.end_date,
-                sync_to_modules=body.sync_to_modules,
-            )
-            return {
-                "status": "success",
-                "count": len(result.synced),
-                "vendor_credits": [vc.to_dict() for vc in result.synced],
-            }
-        except ValueError as e:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
-        except Exception as e:
-            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
+    try:
+        service = QboVendorCreditService()
+        result = service.sync_from_qbo(
+            realm_id=body.realm_id,
+            last_updated_time=body.last_updated_time,
+            start_date=body.start_date,
+            end_date=body.end_date,
+            sync_to_modules=body.sync_to_modules,
+        )
+        return {
+            "status": "success",
+            "count": len(result.synced),
+            "vendor_credits": [vc.to_dict() for vc in result.synced],
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
 
 
 @router.get("/get/qbo-vendorcredits/realm/{realm_id}")

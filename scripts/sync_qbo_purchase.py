@@ -17,7 +17,7 @@ from scripts.sync_helper import (
     assert_cli_system_admin,
     exit_nonzero_on_sync_failure,
 )
-from integrations.intuit.qbo.base.locking import qbo_app_lock, qbo_entity_sync_lock_resource
+from integrations.intuit.qbo.base.locking import qbo_sync_locked_cli
 from integrations.intuit.qbo.base.watermark import (
     WatermarkRun,
     _normalize_last_sync,
@@ -479,6 +479,7 @@ def sync_qbo_purchase(
         }
 
 
+@qbo_sync_locked_cli("purchase")
 def run_locked(
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
@@ -494,22 +495,12 @@ def run_locked(
     path also calls while already holding this same resource (see
     scripts/sync_qbo_account.py::run_locked for the full rationale).
     """
-    lock_resource = qbo_entity_sync_lock_resource("purchase")
-    with qbo_app_lock(lock_resource) as got_lock:
-        if not got_lock:
-            return {
-                "result": {
-                    "success": False,
-                    "error": f"QBO purchase sync already in progress (lock '{lock_resource}' busy).",
-                },
-                "status_code": 409,
-            }
-        return sync_qbo_purchase(
-            start_date=start_date,
-            end_date=end_date,
-            skip_sync_record_update=skip_sync_record_update,
-            dry_run=dry_run,
-        )
+    return sync_qbo_purchase(
+        start_date=start_date,
+        end_date=end_date,
+        skip_sync_record_update=skip_sync_record_update,
+        dry_run=dry_run,
+    )
 
 
 def parse_args():

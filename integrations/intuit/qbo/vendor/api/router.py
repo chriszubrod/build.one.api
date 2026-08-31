@@ -1,10 +1,10 @@
 # Python Standard Library Imports
 
 # Third-party Imports
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends
 
 # Local Imports
-from integrations.intuit.qbo.base.locking import qbo_app_lock, qbo_entity_sync_lock_resource
+from integrations.intuit.qbo.base.locking import qbo_sync_locked_route
 from integrations.intuit.qbo.vendor.api.schemas import QboVendorCreate, QboVendorUpdate, QboVendorSync
 from integrations.intuit.qbo.vendor.business.service import QboVendorService
 from shared.rbac import require_module_api
@@ -17,6 +17,7 @@ service = QboVendorService()
 
 
 @router.post("/sync/qbo-vendors")
+@qbo_sync_locked_route("vendor")
 def sync_qbo_vendors_router(body: QboVendorSync, current_user: dict = Depends(require_module_api(Modules.QBO_SYNC, "can_create"))):
     """
     Sync Vendors from QBO.
@@ -28,19 +29,12 @@ def sync_qbo_vendors_router(body: QboVendorSync, current_user: dict = Depends(re
     via the shared `system_authz()` contextmanager like the outbox worker /
     admin drain. See feedback_outbox_authz_boundary.md.
     """
-    lock_resource = qbo_entity_sync_lock_resource("vendor")
-    with qbo_app_lock(lock_resource) as got_lock:
-        if not got_lock:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=f"QBO vendor sync already in progress for realm {body.realm_id}. Try again shortly.",
-            )
-        with system_authz():
-            result = service.sync_from_qbo(
-                realm_id=body.realm_id,
-                last_updated_time=body.last_updated_time,
-                sync_to_modules=body.sync_to_modules
-            )
+    with system_authz():
+        result = service.sync_from_qbo(
+            realm_id=body.realm_id,
+            last_updated_time=body.last_updated_time,
+            sync_to_modules=body.sync_to_modules
+        )
     return list_response([vendor.to_dict() for vendor in result.synced])
 
 

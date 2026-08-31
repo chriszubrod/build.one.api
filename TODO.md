@@ -1746,7 +1746,7 @@ Follow-ups / post-purge:
 - [x] **✅ CLOSED — audit run live 2026-08-30: 0 split-staging duplicate QboIds in both `qbo.Purchase` and `qbo.Bill` (BR-MAIN-23 historical case already healed).** ~~Audit for split-staging duplicates in `qbo.Purchase` / `qbo.Bill`.~~ Surfaced on BR-MAIN-23 (2026-05-08): a single QBO Purchase (QboApi 69340 / Artistic Tile / $45,484.04) appeared as two `qbo.Purchase` rows in our staging, each holding only one of its lines (Line 1 NotBillable on the kept row, Line 2 Billable on the orphan row). Past-sync corruption — recipe is in playbook Step 3c. Audit query to find others before they bite a future invoice: `SELECT QboId, COUNT(*) FROM qbo.Purchase WHERE RealmId='9130353016965726' GROUP BY QboId HAVING COUNT(*) > 1;` — same shape on `qbo.Bill`. Surface findings, then heal each in turn via Step 3c.
 - [x] **✅ DONE — fixed by U-247 (+ the fastpath lookup-first mapping); verified live 2026-08-30.** `sync_from_qbo_invoice_line` now (a) reads the existing mapping by `QboInvoiceLineId` FIRST and reuses it on re-run (`service.py:254`, so the collision is avoided for the normal case), and (b) on a `create_mapping` `DatabaseConstraintError` does a **U-247 compensating delete** of the just-created phantom ILI + re-raise (`:325-343`) so the caller moves on and the next tick self-heals — **no orphan ILI is left behind**. Live check: the 9 unmapped Manual ILIs on 4 QBO-mapped invoices are NOT bug-residue — they're legitimate local labor/markup additions (base + "X% markup for …" pairs on invoices otherwise 95-102/106 mapped), which correctly have no QBO line to map to. No data cleanup owed. ~~Fix `InvoiceInvoiceConnector` re-run UNIQUE-constraint failure~~ — surfaced HP2-09 / Q44862, 2026-05-15. Per-line `InvoiceLineItemConnector.sync_from_qbo_invoice_line` failed on the second connector invocation with `UQ_InvoiceLineItemInvoiceLine_QboInvoiceLineId` violations, leaving N orphan ILI rows (created but unmapped). The connector should either UPDATE the existing mapping in place or catch the unique-constraint collision and reuse the existing ILI. Workaround documented in playbook Known Issue #20 (delete orphan ILIs before re-fingerprinting).
 - [x] ~~**Fix `BillService.sync_to_excel_workbook` to fall back to `Amount` when `Price` is NULL**~~ — shipped 2026-07-03 in the single-bill MS sync AND the Box row builder (parity with `sync_bills_batch_to_excel`); the DB side of `/reconcile` uses the same rule. Playbook KI-16.
-- [ ] **→ DISPATCHED U-343 (2026-08-31): VERIFIED OPEN — the fingerprint SQL is in `ProposeInvoiceSourceLinks` (`entities/invoice/sql/dbo.invoice.sql`); 4 branches (Bill/Purchase tiers 0c/0d/1/2, ~lines 624/642/671/695) use signed `ABS(x-y)` while only VendorCredit (724) has the double-ABS fix → refund lines never match. Fix: 4 comparisons → `ABS(ABS(x)-ABS(y))`.** **Extend the KI-34 sign-insensitive fingerprint to the Purchase (Expense) branch — and audit the Bill branch.** KI-34 fixed the sign mismatch only for VendorCredit (`ABS(ABS(vcl.Amount) - ABS(?))`), but **refund `qbo.PurchaseLine` rows are stored POSITIVE while their `qbo.InvoiceLine` counterpart is NEGATIVE** — same trap, different branch. The Purchase query in playbook Step 4.1 still uses a signed `ABS(pl.Amount - ?)`, so refund lines never match and surface as false "no source" halts. Found on TB3-20 (2026-08-07): 6 lines (Amazon "Biscuit Lutron REFUND" ×4, a Home Depot refund, and one more) resolved **only** after applying `ABS(ABS(pl.Amount) - ABS(?))` by hand. Fix the playbook query AND `entities/invoice/business/` source-linking engine (U-177) together, apply the same treatment to the Bill branch defensively, and add a regression fixture with a negative invoice line against a positive source line. Note the 1:1 guard matters here: greedy assignment must exclude already-claimed FKs, or two same-amount refunds on one day both grab the same ELI (observed on TB3-20 before the guard was added).
+- [x] **✅ SHIPPED U-343 (`f28f0d5d`), /em Gate-2 PASS + APPLIED live 2026-08-31 (P0-surface).** All 4 Bill/Purchase source-amount comparisons in `ProposeInvoiceSourceLinks` converted signed `ABS(x-y)` → double-ABS `ABS(ABS(x)-ABS(y))`, matching the Tier-3 precedent (5 total, 0 signed remain). Refund lines (positive source Amount vs negative invoice QboAmount) now match instead of false-halting. Static guard test mutation-proven RED. **Sproc APPLIED to prod + verified live==committed** (the sproc executes from the DB — the apply IS the deployment, no container deploy). Codex xhigh PASS.** **Extend the KI-34 sign-insensitive fingerprint to the Purchase (Expense) branch — and audit the Bill branch.** KI-34 fixed the sign mismatch only for VendorCredit (`ABS(ABS(vcl.Amount) - ABS(?))`), but **refund `qbo.PurchaseLine` rows are stored POSITIVE while their `qbo.InvoiceLine` counterpart is NEGATIVE** — same trap, different branch. The Purchase query in playbook Step 4.1 still uses a signed `ABS(pl.Amount - ?)`, so refund lines never match and surface as false "no source" halts. Found on TB3-20 (2026-08-07): 6 lines (Amazon "Biscuit Lutron REFUND" ×4, a Home Depot refund, and one more) resolved **only** after applying `ABS(ABS(pl.Amount) - ABS(?))` by hand. Fix the playbook query AND `entities/invoice/business/` source-linking engine (U-177) together, apply the same treatment to the Bill branch defensively, and add a regression fixture with a negative invoice line against a positive source line. Note the 1:1 guard matters here: greedy assignment must exclude already-claimed FKs, or two same-amount refunds on one day both grab the same ELI (observed on TB3-20 before the guard was added).
 - [x] ~~**Audit `dbo.Project` for duplicate same-Name rows.**~~ Closed 2026-06-03. Root cause was NOT project_specialist — it was `CustomerProjectConnector.sync_from_qbo_customer` creating a fresh `dbo.Project` whenever the QboCustomer had no `qbo.CustomerProject` mapping, with no name-match guard. Fix: a70dea8 added name-match-before-create + `duplicate_qbo_customer` reconciliation issue for QBO-side dups (e.g. SJC). Belt-and-suspenders: `UQ_Project_Name_CustomerId_Active` filtered unique index (see [add_uq_project_name_customerid_active.sql](scripts/migrations/add_uq_project_name_customerid_active.sql)). All 22 historical dups merged via [cleanup.project_duplicates.sql](intelligence/persistence/sql/cleanup.project_duplicates.sql). Audit doc: [docs/dedupe-project-rows.md](docs/dedupe-project-rows.md). Full incident write-up in SESSION_NOTES.md (2026-06-03).
 - [x] ~~**Add `BillCreditService.sync_to_excel_workbook`.**~~ Exists as `BillCreditCompleteService.sync_to_excel_workbook(bill_credit, line_items, project_id)` (+ Box mirror `._enqueue_box_excel`). Playbook Step 7b + KI-26 updated 2026-07-03.
 - [ ] **📐 DESIGN WRITTEN U-344 (2026-08-31), Gate-2-ready — `docs/design/u344-billcredit-price-sign.md`.** VERIFIED OPEN + misattributed (root is the LOCAL completion path, not the pull connector): BillCredit-sourced ILI `Price`/`Amount` stored positive at `invoice/business/service.py:1409`/`:1499`; 3 read-side negations (cover/TOC/draw-matrix) load-bearing. Design: store `-abs()` at `InvoiceLineItemService.create` (Phase A) → /em backfill with corrected predicate (Phase B) → deferred read-side cleanup (Phase C); read-side is idempotent (only-negate-positive) so the phases sequence safely. Corrected the TODO:1752 backfill predicate (`Amount<0` matched 0 rows — ILI Amount is stored positive too).** **Fix `InvoiceInvoiceConnector` storing `Price = abs(Amount)` on BillCreditLineItem-sourced ILIs.** Connector stores Price as positive magnitude even when Amount is negative (credit). Display-layer workaround deployed 2026-05-28 (`_toc_signed_amount` in `entities/invoice/api/router.py` negates for credit source type). Root fix: connector should preserve the sign on Price. One-time backfill after fix: `UPDATE dbo.InvoiceLineItem SET Price = -ABS(Price) WHERE SourceType = 'BillCreditLineItem' AND Amount < 0 AND Price > 0` — verify that's the only drift shape before running. Surfaced on BR-MAIN-24 where the $21K credit rendered positive, inflating the TOC grand total by $42K.
@@ -2150,25 +2150,45 @@ These were surfaced during the unit and deliberately not built:
   also fold the duplicated docstring paragraph into one place. Own unit; touches 6-7 already-shipped files +
   their tests, needs its own Gate-1 (not U-311's scope, which was Project-family-only).
 
-## U-337 follow-up (account sync lock, 2026-08-31) — deferred, non-blocking
+## U-337 follow-up (account sync lock, 2026-08-31) — ✅ CLOSED by U-340 (2026-08-31)
 
-- [ ] **→ DISPATCHED U-340 (2026-08-31): fan out the proven U-337 lock pattern to the sibling routers. [was: design-gated, own unit] The unlocked-dual-entry-point race U-337 fixed for
-  `account` is still open for every sibling QBO entity.** U-337 wrapped `POST /api/v1/sync/qbo-accounts` in
-  `qbo_app_lock(qbo_entity_sync_lock_resource("account"))` and repointed the admin `sync/qbo/{entity}`
-  dispatcher onto the same shared helper, so the two entry points for `account` now contend on one lock.
-  `/simplify`'s altitude lens confirmed by direct read that every other per-entity API route
-  (`integrations/intuit/qbo/{bill,vendor,purchase,invoice,customer,term,company_info,vendorcredit}/api/router.py`
-  — verified concretely for `bill_line_item`'s `sync_qbo_bills_router` at
-  `integrations/intuit/qbo/bill/api/router.py:31`) still calls its service's `sync_from_qbo` directly, no
-  lock at all — same race shape U-337 closed for account, just not yet applied there. Also found: a
-  **third**, still-unlocked entry point for `account` itself — `scripts/sync_qbo_account.py:106` calls
-  `qbo_account_service.sync_from_qbo(...)` directly, outside both locked paths — and
-  `scripts/repair_invoice_line_duplicates.py:36` hardcodes `QBO_INVOICE_SYNC_LOCK = "qbo_sync:invoice"` as a
-  literal string, exactly the drift-prone pattern `qbo_entity_sync_lock_resource` exists to prevent. Right-depth
-  fix: sweep every per-entity API route (and `sync_qbo_account.py`) onto
-  `qbo_app_lock(qbo_entity_sync_lock_resource(entity))`, and convert the `repair_invoice_line_duplicates.py`
-  literal to the shared helper. Own unit — not U-337's scope, which was the verified-open `account` finding
-  only.
+- [x] **→ SHIPPED U-340 (2026-08-31): fanned out the proven U-337 lock pattern to the sibling routers.**
+  Wrapped all 6 remaining per-entity API routes with live `/sync/*` handlers
+  (`bill`/`purchase`/`vendor`/`customer`/`company_info`/`vendorcredit`) in
+  `qbo_app_lock(qbo_entity_sync_lock_resource(entity))`, 409 on a busy lock — same shape as U-337's account
+  fix, entity strings verified to match `shared/api/admin.py`'s dispatcher keys exactly. `term` had no API
+  router to fix (only entry point is the already-locked admin dispatcher); `invoice`'s `/sync/qbo-invoices`
+  route was left alone — it's dead code, disabled and never calling `sync_from_qbo`, so a lock there would
+  wrap nothing. `scripts/sync_qbo_account.py`'s third unlocked entry point (the CLI `__main__` path) is now
+  locked via a new `run_locked()` wrapper — locking only the CLI path, not `sync_qbo_account()`/
+  `sync_qbo_to_local()` themselves, since those are also called by the admin dispatcher which already holds
+  the same lock for that whole call; wrapping at the originally-suggested line 106 would have self-deadlocked
+  every admin/scheduler-triggered account sync. `scripts/repair_invoice_line_duplicates.py`'s hardcoded
+  `"qbo_sync:invoice"` literal now calls the shared helper. Codex `xhigh` round 1: PASS, 0 findings.
+  `/simplify` 4-lens: reuse/efficiency clean; one simplification applied (test file's redundant `case_id`
+  column collapsed into `entity_key`); altitude confirmed right depth, logged 2 new deferred follow-ups below.
+
+## U-340 follow-up (QBO entity sync lock fan-out, 2026-08-31) — deferred, non-blocking
+
+- [ ] **[altitude, deferred — own unit] No shared decorator/dependency generalizes the
+  acquire-lock-or-409 shape.** Six routers now each hand-write the same
+  `lock_resource = qbo_entity_sync_lock_resource("<entity>"); with qbo_app_lock(lock_resource) as got_lock: if
+  not got_lock: raise HTTPException(409, ...)` block (plus `account` from U-337) — every other `qbo_app_lock`
+  call site in the repo (admin dispatcher, outbox worker, mapping cleanup, identity fastpath) also hand-writes
+  its own block, so this diff follows the established convention, not a regression. A shared
+  `@qbo_sync_locked("<entity>")` decorator in `integrations/intuit/qbo/base/locking.py` would collapse the
+  repeated exception-shaping into one place and structurally rule out the class of bug both U-337 and this
+  unit exist to prevent (a hand-typed entity-string literal silently drifting). Design-gated — touches 7
+  already-shipped routers, needs its own Gate-1.
+- [ ] **[concurrency, deferred — own unit] The sibling `scripts/sync_qbo_*.py` CLI-direct entry points remain
+  unlocked, same shape `sync_qbo_account.py` had before U-340.** `sync_qbo_bill.py`, `_purchase.py`,
+  `_vendor.py`, `_customer.py`, `_company_info.py`, `_vendorcredit.py`, `_invoice.py`, `_item.py`, `_term.py`
+  each call their `sync_qbo_*()` directly under `if __name__ == "__main__":` with no lock — a direct CLI run
+  of any of these can still race the admin dispatcher / API route for that same entity. U-340 only scoped
+  `sync_qbo_account.py` (the one the assignment named); the other 8 need the identical `run_locked()`-style
+  fix (lock the CLI-only wrapper, never the shared function body the admin dispatcher also calls, or it
+  self-deadlocks). Right-depth fix: sweep all 8 the same way, ideally alongside the shared-decorator follow-up
+  above so the CLI wrapper can reuse it too.
 
 ## U-339 follow-up (stamp-after-swallowed-mapping-failure fix, 2026-08-31) — deferred, non-blocking
 

@@ -73,8 +73,8 @@ Carry-over items from sessions. Check off as done; prune anything stale.
   (`entities/vendor/sql/dbo.vendor.sql`, U-313's identical finding, below) and `ReadProjectByName`/
   `ReadProjects`/`ReadProjectByPublicId` (`entities/project/sql/dbo.project.sql`, U-312's finding, below) — not
   bundled into this unit per its own strict single-sproc scope.
-- [ ] **`run_identity_fastpath_dbo_only` (`integrations/intuit/qbo/base/identity_fastpath.py`) has no
-  structural hook for a `stamp_identity`-returned-`None` ROWVERSION race**, unlike its HIT-branch
+- [x] **✅ DONE — closed by U-328/U-331 (verified 2026-08-31).** The shared `stamp_dbo_identity_with_lock` (the on_stamp-returned-None hook this asked for) now owns the stamp+guard sequence, and `ItemCostCodeConnector._stamp_cost_code_identity` was migrated onto it (`item/connector/cost_code/business/service.py:170-211` — `_apply_fields` returns `update_by_id(c)`, fed to the helper's D1 guard which raises on a None race). The previously-UNGUARDED CostCode gap is closed. ~~`run_identity_fastpath_dbo_only` has no
+  structural hook for a `stamp_identity`-returned-`None` ROWVERSION race~~, unlike its HIT-branch
   `on_apply_returned_none` (which the primitive itself auto-invokes). U-310's `_stamp_customer_identity` had to
   hand-roll this check inline (Codex round-1 P2). **Confirmed via `/simplify`'s altitude lens that the shipped
   precedent, `ItemCostCodeConnector._stamp_cost_code_identity` (U-307c, `integrations/intuit/qbo/item/connector/cost_code/business/service.py`),
@@ -195,8 +195,8 @@ verified Claude Workflow hunt (workspace out of Codex credits this session — s
 U-286/U-287/U-289 board rows for the same episode) but deliberately not folded in — different call site / broader
 blast radius than this unit's narrow scope:
 
-- [ ] **"Healed repoint" branch (lines ~238-251, unchanged by U-303) has the identical `set_qbo_identity`-before-
-  field-write ordering bug U-303's own first draft had — and it's still live.** When a `qbo.CustomerProject`
+- [x] **✅ DONE — closed by U-311 (dbo-only repoint) + U-328/U-331 (verified 2026-08-31).** The stale-mapping heal-repoint branch was ELIMINATED: it existed only because the mapping table was a second, independently-writable store that could go stale, and dbo-only mode has no second store left (see the connector's own comment at `service.py:171-174`). The surviving MISS-branch stamp (`_stamp_project_identity`) now routes through the shared `stamp_dbo_identity_with_lock`, which owns the apply-fields-then-write-identity ordering + the None-race guard — so the `set_qbo_identity`-before-field-write ordering bug no longer exists. ~~"Healed repoint" branch (lines ~238-251, unchanged by U-303) has the identical `set_qbo_identity`-before-
+  field-write ordering bug U-303's own first draft had — and it's still live.~~ When a `qbo.CustomerProject`
   mapping exists but its bound Project reads empty, and a same-name local Project is found to repoint to, the code
   calls `set_qbo_identity(id=replacement.id, ...)` (line 238) BEFORE `_apply_project_fields_and_sync(replacement,
   ...)` (line 243), whose internal `update_by_id` reuses `replacement`'s RowVersion captured earlier at the
@@ -1128,7 +1128,7 @@ Surfaced while billing OVH / BR-MAIN contract-labor and pushing to QBO.
 - [ ] **[OPS]** **Reassign OVH (proj 145) off the local "0 - Temp Customer" placeholder** (`dbo.Project.CustomerId = 1`) to its real client (Steve Richardson / the correct `dbo.Customer`). The QBO push works regardless (mapping is project→QBO-customer directly), but the local project pointing at the temp customer is wrong and will confuse any local customer-scoped reporting. Check other projects for the same temp-customer placeholder.
 - [ ] **[OPS]** **Refresh the stale local `qbo.BillLine` mirror for the 14 re-pushed OVH bills** (QboIds 72822–72835). `update_has_been_billed_in_qbo` updates the live QBO bill + the `qbo.Bill` header sync-token but does NOT re-store the `qbo.BillLine` rows, so the local mirror still reads the pre-fix `NotBillable` / no-CustomerRef state. Live QBO is correct; only the local mirror is stale. A `scripts/sync_qbo_bill.py` pull over those bills (or a targeted re-store) reconciles it — do it before any reconciliation job runs on those bills or it'll flag false drift.
 - [ ] **[OPS]** **Back-fill earlier missed non-billable A/P.** Before the 2026-07-06 fix, `generate_bills_for_vendor` silently skipped non-billable-only SCC groups, so the contractor was under-billed for those hours (e.g. Ricky Moreno's `HE7`/`HE12` non-billable lines on his OVH CL never got an A/P bill). The code now bills them going forward; identify + back-fill any already-`billed`/closed CLs whose non-billable lines were dropped. Query: CL line items with `IsBillable=0` and `BillLineItemId IS NULL` on CLs whose other lines are billed.
-- [ ] **[OPS]** **Remove the temporary SQL firewall rule** `claude-temp-session-access` on server `bchristopher` (rg `buildone_group`) once the current DB-work session is done — `az sql server firewall-rule delete --resource-group buildone_group --server bchristopher --name claude-temp-session-access`. (Session-authorized on 2026-07-06 to restore DB access after the IP rotated off the allow-list.)
+- [x] **✅ [OPS] DONE 2026-08-31 — temp SQL firewall rule `claude-temp-session-access` removed** (`az sql server firewall-rule delete`, confirmed gone). Had been re-added 2026-08-30 for the Part-2 invoice-dedupe DB work when the session IP rotated off the allow-list. (If a future session needs local DB access, re-add for the current IP then delete at session end.)
 
 ## Structured Alias entities — ProjectAlias, VendorAlias, SubCostCodeAlias, CostCodeAlias (2026-06-26)
 

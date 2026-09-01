@@ -340,35 +340,29 @@ def test_project_create_mapping_identity_failure_propagates():
 
 
 def _make_company_connector():
-    mapping_repo = Mock()
-    mapping_repo.read_by_company_id.return_value = None
-    mapping_repo.read_by_qbo_company_info_id.return_value = None
-    mapping_repo.create.return_value = SimpleNamespace(id=1)
     company_service = Mock()
     company_service.repo = Mock()
     connector = CompanyInfoCompanyConnector(
-        mapping_repo=mapping_repo,
         company_service=company_service,
     )
-    return connector, mapping_repo, company_service.repo
+    return connector, company_service.repo
 
 
-def test_company_create_mapping_dual_writes_identity():
-    connector, mapping_repo, company_repo = _make_company_connector()
+def test_company_create_mapping_stamps_identity():
+    connector, company_repo = _make_company_connector()
     connector.create_mapping(
         company_id=1,
         qbo_company_info_id=2,
         qbo_id="CI-1",
         realm_id="realm-c",
     )
-    mapping_repo.create.assert_called_once_with(company_id=1, qbo_company_info_id=2)
     company_repo.set_qbo_identity.assert_called_once_with(
         id=1, qbo_id="CI-1", realm_id="realm-c"
     )
 
 
 def test_company_create_mapping_identity_failure_propagates():
-    connector, mapping_repo, company_repo = _make_company_connector()
+    connector, company_repo = _make_company_connector()
     company_repo.set_qbo_identity.side_effect = RuntimeError("stamp failed")
     with pytest.raises(RuntimeError, match="stamp failed"):
         connector.create_mapping(
@@ -377,7 +371,6 @@ def test_company_create_mapping_identity_failure_propagates():
             qbo_id="CI-1",
             realm_id="realm-c",
         )
-    mapping_repo.create.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

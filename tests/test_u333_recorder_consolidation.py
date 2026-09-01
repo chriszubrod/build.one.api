@@ -75,20 +75,6 @@ _EXPECTED = {
             "auto-repointed — investigate which side is correct."
         ),
     },
-    "company_info": {
-        "drift_type": "company_identity_conflict",
-        "entity_type": "Company",
-        "entity_public_id": None,
-        "qbo_id": "CI-99",
-        "realm_id": "fallback-realm",
-        "details": (
-            "CompanyInfoCompany identity conflict. dbo.Company 55 carries native QBO identity for "
-            "QboCompanyInfo 4 (QboId=CI-99, RealmId=None). qbo-side: the mapping table still binds "
-            "that same QboCompanyInfo to a DIFFERENT Company 9 (mapping 2). local-side: Company "
-            "55's own mapping row (mapping 3) still binds it to a DIFFERENT QboCompanyInfo 5. Not "
-            "auto-repointed — investigate which side is correct."
-        ),
-    },
     "term": {
         "drift_type": "payment_term_identity_conflict",
         "entity_type": "PaymentTerm",
@@ -239,6 +225,18 @@ _EXPECTED = {
             "Resolve by merging or renaming one of the QBO vendors."
         ),
     },
+    "company_diff_qbo": {
+        "drift_type": "company_identity_conflict",
+        "entity_type": "Company",
+        "entity_public_id": "77777777-7777-7777-7777-777777777777",
+        "qbo_id": "CI-NEW",
+        "realm_id": "realm-in",
+        "details": (
+            "Duplicate QBO company detected. QboCompanyInfo 4 (Name='Acme') name-matches local "
+            "Company 7 which already carries a DIFFERENT QboId CI-OLD (realm 'realm-old'). Resolve "
+            "by merging or renaming one of the QBO companies."
+        ),
+    },
     "cost_code": {
         "drift_type": "duplicate_qbo_item",
         "entity_type": "CostCode",
@@ -316,16 +314,6 @@ def test_recorder_consolidation_emits_identical_tuple(family):
             dbo_expense_id=55,
             local_side_mapping=SimpleNamespace(id=3, expense_id=55, qbo_purchase_id=5),
             qbo_side_mapping=SimpleNamespace(id=2, expense_id=9, qbo_purchase_id=4),
-        )
-    elif family == "company_info":
-        c = object.__new__(CompanyInfoCompanyConnector)
-        c.reconciliation_repo = Mock()
-        c._record_identity_mapping_conflict_issue(
-            qbo_company_info=SimpleNamespace(id=4, qbo_id="CI-99", realm_id=None),
-            dbo_company_id=55,
-            local_side_mapping=SimpleNamespace(id=3, company_id=55, qbo_company_info_id=5),
-            qbo_side_mapping=SimpleNamespace(id=2, company_id=9, qbo_company_info_id=4),
-            realm_id="fallback-realm",
         )
     elif family == "term":
         c = object.__new__(TermPaymentTermConnector)
@@ -435,6 +423,17 @@ def test_recorder_consolidation_emits_identical_tuple(family):
             qbo_vendor=SimpleNamespace(id=4, qbo_id="V-NEW", realm_id="realm-1", display_name="VendorX"),
             local_vendor=SimpleNamespace(id=7, public_id=UUID("33333333-3333-3333-3333-333333333333")),
             existing_qbo_id="V-OLD",
+        )
+    elif family == "company_diff_qbo":
+        c = object.__new__(CompanyInfoCompanyConnector)
+        c.reconciliation_repo = Mock()
+        c._record_duplicate_qbo_company_issue(
+            qbo_company_info=SimpleNamespace(id=4, qbo_id="CI-NEW", realm_id="realm-in", legal_name="Acme"),
+            local_company=SimpleNamespace(
+                id=7, public_id=UUID("77777777-7777-7777-7777-777777777777"), realm_id="realm-old"
+            ),
+            existing_qbo_id="CI-OLD",
+            realm_id="realm-in",
         )
     elif family == "cost_code":
         c = object.__new__(ItemCostCodeConnector)

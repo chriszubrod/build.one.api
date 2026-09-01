@@ -51,7 +51,11 @@ HEADER_ENTITY_SPECS: tuple[FlatEntitySpec, ...] = (
     # and qbo.CustomerProject is staged for DROP. A LEFT JOIN through that table would
     # flag every dbo-stamped row as a false orphan_dbo_value and error outright once
     # the table is dropped.
-    FlatEntitySpec("company", "Company", "CompanyInfoCompany", "CompanyInfo", "CompanyId", "QboCompanyInfoId", False, "SetCompanyQboIdentity"),
+    #
+    # U-350: the "company" row was removed for the identical reason — this family is
+    # now dbo-native only (qbo.CompanyInfoCompany retired, the U-349 program's
+    # pattern-setter), and a LEFT JOIN through it would flag every dbo-stamped Company
+    # as a false orphan_dbo_value and error outright once the table is dropped.
 )
 
 

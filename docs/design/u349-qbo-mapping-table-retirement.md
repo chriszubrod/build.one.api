@@ -128,6 +128,13 @@ FOUNDATIONAL helper build (#8, simplest line-item so the primitive is proven cle
 across the remaining line-items, recon ones last.
 
 ### Collision rules (parallelism)
+- **`base/identity_drift.py` registry + `tests/test_identity_drift_bulk_read.py` count assertion —
+  EVERY header retirement (#3–#7) removes its `FlatEntitySpec` row AND the `untouched_keys` count
+  test decrements. Two header units built in parallel each decrement from the SAME stale base →
+  the double-decrement bug (U-351+U-352 landed both at "3" when the true combined count was 2;
+  caught only in rebase). SERIALIZE header retirements, OR on rebase RECOMPUTE the count against
+  the actual registry contents (not the stale base) — never trust the pre-rebase assertion.**
+  (Line-item families #8–#11 are not FlatEntitySpec header entities, so they don't touch this.)
 - `reconciliation/business/service.py` — #7, #10, #11 → **strictly serial**, never concurrent.
 - `outbox/business/worker.py` — #5, #6, #7 → not concurrent with each other.
 - `base/compensation.py` / `base/identity_consistency.py` — #6 (BillBill) touches shared base → run **solo**.

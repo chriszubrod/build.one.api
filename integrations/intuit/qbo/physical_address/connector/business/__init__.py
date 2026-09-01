@@ -1,6 +1,5 @@
-# PhysicalAddress to Address Connector Business Module
-from integrations.intuit.qbo.physical_address.connector.business.model import PhysicalAddressAddress
-from integrations.intuit.qbo.physical_address.connector.business.service import PhysicalAddressAddressConnector
+# Python Standard Library Imports
 
-__all__ = ["PhysicalAddressAddress", "PhysicalAddressAddressConnector"]
+# Third-party Imports
 
+# Local Imports

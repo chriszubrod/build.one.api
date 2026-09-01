@@ -66,7 +66,11 @@ REFERENCE_ENTITY_SPECS: tuple[FlatEntitySpec, ...] = (
     # A LEFT JOIN through those tables would flag every dbo-stamped row as a false
     # orphan_dbo_value and error outright once the tables are dropped.
     FlatEntitySpec("payment_term", "PaymentTerm", "TermPaymentTerm", "Term", "PaymentTermId", "QboTermId", False, "SetPaymentTermQboIdentity"),
-    FlatEntitySpec("address", "Address", "PhysicalAddressAddress", "PhysicalAddress", "AddressId", "QboPhysicalAddressId", False, "SetAddressQboIdentity"),
+    # U-351: the "address" row was removed for the identical reason — this family is
+    # now dbo-native only (qbo.PhysicalAddressAddress retired, the U-349 program's
+    # second family), and a LEFT JOIN through it would flag every dbo-stamped Address
+    # as a false orphan_dbo_value and error outright once the table is dropped.
+    #
     # U-300c-prereq: the "attachment" reference-drift spec row was removed — the attachable
     # push/pull both went dbo-native (U-285/U-300b/U-300c-prereq), so a LEFT JOIN through
     # qbo.AttachableAttachment/qbo.Attachable now flags every dbo-stamped attachment as a

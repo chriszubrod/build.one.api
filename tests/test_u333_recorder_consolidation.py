@@ -105,20 +105,6 @@ _EXPECTED = {
             "QboVendorCredit 5. Not auto-repointed — investigate which side is correct."
         ),
     },
-    "physical_address": {
-        "drift_type": "address_identity_conflict",
-        "entity_type": "Address",
-        "entity_public_id": None,
-        "qbo_id": "ADDR-99",
-        "realm_id": "realm-1",
-        "details": (
-            "PhysicalAddressAddress identity conflict. dbo.Address 55 carries native QBO identity "
-            "for QboPhysicalAddress 4 (QboId=ADDR-99, RealmId=realm-1). qbo-side: the mapping "
-            "table still binds that same QboPhysicalAddress to a DIFFERENT Address 9 (mapping 2). "
-            "local-side: Address 55's own mapping row (mapping 3) still binds it to a DIFFERENT "
-            "QboPhysicalAddress 5. Not auto-repointed — investigate which side is correct."
-        ),
-    },
     "bill_line_item": {
         "drift_type": "bill_line_item_identity_conflict",
         "entity_type": "BillLineItem",
@@ -237,6 +223,18 @@ _EXPECTED = {
             "by merging or renaming one of the QBO companies."
         ),
     },
+    "address_diff_qbo": {
+        "drift_type": "address_identity_conflict",
+        "entity_type": "Address",
+        "entity_public_id": "88888888-8888-8888-8888-888888888888",
+        "qbo_id": "ADDR-NEW",
+        "realm_id": "realm-in",
+        "details": (
+            "Duplicate QBO address detected. QboPhysicalAddress 4 name-matches local "
+            "Address 7 which already carries a DIFFERENT QboId ADDR-OLD (realm 'realm-old'). Resolve "
+            "by merging or renaming one of the QBO addresses."
+        ),
+    },
     "cost_code": {
         "drift_type": "duplicate_qbo_item",
         "entity_type": "CostCode",
@@ -333,15 +331,6 @@ def test_recorder_consolidation_emits_identical_tuple(family):
             local_side_mapping=SimpleNamespace(id=3, bill_credit_id=55, qbo_vendor_credit_id=5),
             qbo_side_mapping=SimpleNamespace(id=2, bill_credit_id=9, qbo_vendor_credit_id=4),
         )
-    elif family == "physical_address":
-        c = object.__new__(PhysicalAddressAddressConnector)
-        c.reconciliation_repo = Mock()
-        c._record_identity_mapping_conflict_issue(
-            qbo_physical_address=SimpleNamespace(id=4, qbo_id="ADDR-99", realm_id="realm-1"),
-            dbo_address_id=55,
-            local_side_mapping=SimpleNamespace(id=3, address_id=55, qbo_physical_address_id=5),
-            qbo_side_mapping=SimpleNamespace(id=2, address_id=9, qbo_physical_address_id=4),
-        )
     elif family == "bill_line_item":
         c = object.__new__(BillLineItemConnector)
         c.reconciliation_repo = Mock()
@@ -434,6 +423,16 @@ def test_recorder_consolidation_emits_identical_tuple(family):
             ),
             existing_qbo_id="CI-OLD",
             realm_id="realm-in",
+        )
+    elif family == "address_diff_qbo":
+        c = object.__new__(PhysicalAddressAddressConnector)
+        c.reconciliation_repo = Mock()
+        c._record_duplicate_qbo_address_issue(
+            qbo_physical_address=SimpleNamespace(id=4, qbo_id="ADDR-NEW", realm_id="realm-in"),
+            local_address=SimpleNamespace(
+                id=7, public_id=UUID("88888888-8888-8888-8888-888888888888"), realm_id="realm-old"
+            ),
+            existing_qbo_id="ADDR-OLD",
         )
     elif family == "cost_code":
         c = object.__new__(ItemCostCodeConnector)

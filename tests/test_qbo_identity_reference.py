@@ -1,11 +1,15 @@
 """Pure-logic tests for U-238c dbo-native QBO identity on reference entities."""
 from __future__ import annotations
 
+import sys
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, Mock, patch
 
 import pytest
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from conftest import mock_qbo_app_lock_granted
 from entities.address.business.model import Address
 from integrations.intuit.qbo.base.identity_drift import REFERENCE_ENTITY_SPECS, classify_qbo_identity_drift
 from integrations.intuit.qbo.physical_address.business.model import QboPhysicalAddress
@@ -54,15 +58,8 @@ EXPECTED_REFERENCE_SPECS = {
         "has_sync_token": False,
         "sproc": "SetPaymentTermQboIdentity",
     },
-    "address": {
-        "label": "Address",
-        "mapping_table": "PhysicalAddressAddress",
-        "staging_table": "PhysicalAddress",
-        "dbo_fk_col": "AddressId",
-        "staging_fk_col": "QboPhysicalAddressId",
-        "has_sync_token": False,
-        "sproc": "SetAddressQboIdentity",
-    },
+    # "address" reference-spec row removed in U-351 (physical_address went
+    # dbo-native; see integrations/intuit/qbo/base/identity_drift.py).
     # "attachment" reference-spec row removed in U-300c-prereq (attachable went
     # fully dbo-native; see integrations/intuit/qbo/base/identity_drift.py).
     "bill_credit": {
@@ -226,42 +223,37 @@ def test_payment_term_create_mapping_identity_failure_propagates():
     mapping_repo.create.assert_not_called()
 
 
+# U-351: create_mapping now ONLY stamps dbo.Address.QboId/RealmId — there is no
+# qbo.PhysicalAddressAddress mapping row left to dual-write. Mirrors
+# test_qbo_identity_headers.py's _make_company_connector/test_company_create_mapping_*
+# (U-350's identical shape for the sibling header family).
+
+
 def _make_address_connector():
-    mapping_repo = Mock()
-    mapping_repo.read_by_address_id.return_value = None
-    mapping_repo.read_by_qbo_physical_address_id.return_value = None
-    mapping_repo.create.return_value = SimpleNamespace(
-        id=1, address_id=1, qbo_physical_address_id=100
-    )
     address_service = Mock()
     address_service.repo = Mock()
-    qbo_physical_address_service = Mock()
-    qbo_physical_address_service.repo = Mock()
     connector = PhysicalAddressAddressConnector(
-        mapping_repo=mapping_repo,
         address_service=address_service,
-        qbo_physical_address_service=qbo_physical_address_service,
     )
-    return connector, mapping_repo, address_service, qbo_physical_address_service
+    return connector, address_service.repo
 
 
-def test_address_create_mapping_dual_writes_identity():
-    connector, mapping_repo, address_service, _ = _make_address_connector()
+def test_address_create_mapping_stamps_identity():
+    connector, address_repo = _make_address_connector()
     connector.create_mapping(
         address_id=14,
         qbo_physical_address_id=25,
         qbo_id="A-1",
         realm_id="realm-addr",
     )
-    address_service.repo.set_qbo_identity.assert_called_once_with(
+    address_repo.set_qbo_identity.assert_called_once_with(
         id=14, qbo_id="A-1", realm_id="realm-addr"
     )
-    mapping_repo.create.assert_called_once_with(address_id=14, qbo_physical_address_id=25)
 
 
 def test_address_create_mapping_identity_failure_propagates():
-    connector, mapping_repo, address_service, _ = _make_address_connector()
-    address_service.repo.set_qbo_identity.side_effect = RuntimeError("stamp failed")
+    connector, address_repo = _make_address_connector()
+    address_repo.set_qbo_identity.side_effect = RuntimeError("stamp failed")
     with pytest.raises(RuntimeError, match="stamp failed"):
         connector.create_mapping(
             address_id=14,
@@ -269,7 +261,6 @@ def test_address_create_mapping_identity_failure_propagates():
             qbo_id="A-1",
             realm_id="realm-addr",
         )
-    mapping_repo.create.assert_not_called()
 
 
 def _make_bill_credit_connector():
@@ -334,18 +325,25 @@ def test_bill_credit_create_path_identity_failure_propagates_before_mapping():
     mapping_repo.create.assert_not_called()
 
 
-def test_address_sync_does_not_overwrite_identity_on_shared_street_city_cannot_remap():
-    """Two QboPhysicalAddress rows share street/city; second sync must not restamp the first."""
-    mapping_repo = Mock()
+FASTPATH_LOCK_TARGET = "integrations.intuit.qbo.base.identity_fastpath.qbo_app_lock"
+STAMP_LOCK_TARGET = FASTPATH_LOCK_TARGET
+
+
+def test_address_sync_does_not_steal_identity_on_shared_street_city_second_sync():
+    """Two QboPhysicalAddress rows share street/city; the second sync must not
+    re-stamp (steal) the identity the first sync already bound. Under the U-351
+    dbo-only fast path this is `_check_no_conflicting_address_identity` — a hard
+    raise, not the old mapping-table era's silent "cannot remap" no-op."""
     address_service = Mock()
     address_service.repo = Mock()
     qbo_physical_address_service = Mock()
     qbo_repo = qbo_physical_address_service.repo
+    reconciliation_repo = Mock()
 
     connector = PhysicalAddressAddressConnector(
-        mapping_repo=mapping_repo,
         address_service=address_service,
         qbo_physical_address_service=qbo_physical_address_service,
+        reconciliation_repo=reconciliation_repo,
     )
 
     shared_address = Address(
@@ -361,20 +359,6 @@ def test_address_sync_does_not_overwrite_identity_on_shared_street_city_cannot_r
         zip="78701",
         country=None,
     )
-    updated_address = Address(
-        id="1",
-        public_id="addr-pub",
-        row_version=None,
-        created_datetime=None,
-        modified_datetime="2026-01-01 00:00:00",
-        street_one="123 Main",
-        street_two="",
-        city="Austin",
-        state="TX",
-        zip="78701",
-        country=None,
-    )
-
     qbo_bill = QboPhysicalAddress(
         id=100,
         public_id=None,
@@ -411,38 +395,42 @@ def test_address_sync_does_not_overwrite_identity_on_shared_street_city_cannot_r
 
     qbo_repo.read_by_id.side_effect = read_qbo_by_id
 
-    # U-277 fast path: neither "42_bill" nor "42_ship" has ever been stamped on
-    # a dbo.Address yet in this scenario, so the direct dbo-identity lookup
-    # must miss for both syncs — exercising the pre-existing mapping-table /
-    # street-city path this test is actually about, not the new fast path.
+    # Neither "42_bill" nor "42_ship" has ever been stamped on a dbo.Address yet
+    # in this scenario, so the direct dbo-identity lookup must miss for both syncs.
     address_service.read_by_qbo_identity.return_value = None
 
-    # First sync: no mapping, create address + mapping via create_mapping.
-    mapping_repo.read_by_qbo_physical_address_id.return_value = None
-    mapping_repo.read_by_address_id.return_value = None
+    # First sync: no existing Address by street/city -- genuine miss, create +
+    # stamp identity for "42_bill" under the dbo-only fast path's create lock.
     address_service.read_by_street_one_and_city.return_value = None
     address_service.create.return_value = shared_address
-    address_service.repo.update_by_id.return_value = updated_address
+    address_service.repo.update_by_id.side_effect = lambda a: a
+    address_service.read_by_id.side_effect = [shared_address, shared_address]
 
-    connector.sync_from_qbo_to_address(100)
+    with patch(FASTPATH_LOCK_TARGET, mock_qbo_app_lock_granted), patch(
+        STAMP_LOCK_TARGET, mock_qbo_app_lock_granted
+    ):
+        connector.sync_from_qbo_to_address(100)
 
     assert address_service.repo.set_qbo_identity.call_count == 1
     address_service.repo.set_qbo_identity.assert_called_with(
-        id=1, qbo_id="42_bill", realm_id="realm-1"
+        id="1", qbo_id="42_bill", realm_id="realm-1"
     )
+    # Simulate what the DB now holds post-stamp -- set_qbo_identity is a mocked
+    # repo call, so it doesn't mutate this in-memory dataclass on its own.
+    shared_address.qbo_id = "42_bill"
+    shared_address.realm_id = "realm-1"
 
-    # Second sync: street/city match finds existing address mapped to the first QBO row.
-    mapping_repo.read_by_qbo_physical_address_id.return_value = None
-    mapping_repo.read_by_address_id.return_value = SimpleNamespace(
-        id=1, address_id=1, qbo_physical_address_id=100
-    )
+    # Second sync: street/city match finds the SAME Address, now already
+    # carrying a DIFFERENT identity ("42_bill") -- must raise, never re-stamp.
     address_service.read_by_street_one_and_city.return_value = shared_address
-    address_service.read_by_id.return_value = shared_address
     address_service.repo.set_qbo_identity.reset_mock()
 
-    connector.sync_from_qbo_to_address(200)
+    with patch(FASTPATH_LOCK_TARGET, mock_qbo_app_lock_granted):
+        with pytest.raises(ValueError, match="already carries a DIFFERENT identity"):
+            connector.sync_from_qbo_to_address(200)
 
     address_service.repo.set_qbo_identity.assert_not_called()
+    reconciliation_repo.create.assert_called_once()
 
 
 @patch("scripts.backfill_qbo_identity_reference.assert_cli_system_admin")

@@ -1,5 +1,5 @@
-"""Pure-logic tests for U-277 (Phase-4) / U-350: repoint the `company_info` +
-`physical_address` connector families' identity resolution off
+"""Pure-logic tests for U-277 (Phase-4) / U-350 / U-351: repoint the
+`company_info` + `physical_address` connector families' identity resolution off
 qbo.CompanyInfo / qbo.CompanyInfoCompany / qbo.PhysicalAddress /
 qbo.PhysicalAddressAddress onto dbo.Company / dbo.Address's native
 QboId/RealmId (U-238a/c). Mirrors tests/test_u276_customer_project_qbo_identity_repoint.py's
@@ -15,9 +15,12 @@ Covers:
      and no mapping-vs-dbo conflict state left to test. Mirrors U-310's
      CustomerCustomerConnector / U-313's VendorVendorConnector one-for-one. See
      Section 2's own header for the one Company-specific divergence.
-  3. PhysicalAddressAddressConnector's fast path — UNCHANGED by U-350, still the
-     pre-existing mapping-table hop (qbo.PhysicalAddressAddress is a separate U-349
-     family, out of scope for this unit).
+  3. PhysicalAddressAddressConnector's identity resolution — as of U-351 this is
+     ALSO the DBO-ONLY fast path, mirroring Section 2 one-for-one: no
+     qbo.PhysicalAddressAddress read or write of any kind. One divergence from
+     Company: `sync_from_qbo_to_address` takes no separate realm_id parameter at
+     all (realm comes straight from `qbo_physical_address.realm_id`), so there is
+     no connector-level fallback to test — see Section 3's own header.
 
 Out of scope (confirmed at Gate-1): no outbound push anywhere in the codebase reads
 dbo.Company.QboId or dbo.Address.QboId to build a QBO reference — U-276's Section 4
@@ -525,304 +528,428 @@ def test_company_stamp_identity_applies_field_write_atomically_with_stamp():
 
 
 # --- Section 3: PhysicalAddressAddressConnector fast path ---
-# Same testing shape as Section 2.
+#
+# U-351 UPDATE: this family is now the DBO-ONLY fast path
+# (`run_identity_fastpath_dbo_only`), mirroring Section 2's CompanyInfoCompanyConnector
+# one-for-one. No qbo.PhysicalAddressAddress read or write of any kind, so there is no
+# mapping-table fallback, no self-heal, and no mapping-vs-dbo conflict state left to
+# test. A hit updates fields and writes nothing else; a genuine miss adopts by
+# (street_one, city) or creates, then stamps identity under the candidate's own lock.
+# One Address-specific divergence from Company: `sync_from_qbo_to_address` takes no
+# separate realm_id parameter at all — realm comes straight from
+# `qbo_physical_address.realm_id`, so there is no connector-level fallback to test
+# (Company's U-277 fallback has no analog here).
 
 
 def _build_address_connector():
-    mapping_repo = Mock()
     address_service = Mock()
     address_service.repo = Mock()
     reconciliation_repo = Mock()
     qbo_physical_address_service = Mock()
     qbo_physical_address_service.repo = Mock()
     connector = PhysicalAddressAddressConnector(
-        mapping_repo=mapping_repo,
         address_service=address_service,
         qbo_physical_address_service=qbo_physical_address_service,
         reconciliation_repo=reconciliation_repo,
     )
-    return connector, mapping_repo, address_service, reconciliation_repo
+    return connector, address_service, reconciliation_repo
 
 
-def test_address_resolve_mapping_state_consistent():
-    connector, mapping_repo, _, _ = _build_address_connector()
-    qbo_physical_address = _make_qbo_physical_address(id=100)
-    mapping_repo.read_by_address_id.return_value = SimpleNamespace(id=1, qbo_physical_address_id=100)
-    mapping_repo.read_by_qbo_physical_address_id.return_value = SimpleNamespace(id=1, address_id=55)
-
-    state, _, _ = connector._resolve_mapping_state(address_id=55, qbo_physical_address=qbo_physical_address)
-
-    assert state == "consistent"
-
-
-def test_address_resolve_mapping_state_missing():
-    connector, mapping_repo, _, _ = _build_address_connector()
-    qbo_physical_address = _make_qbo_physical_address(id=100)
-    mapping_repo.read_by_address_id.return_value = None
-    mapping_repo.read_by_qbo_physical_address_id.return_value = None
-
-    state, _, _ = connector._resolve_mapping_state(address_id=55, qbo_physical_address=qbo_physical_address)
-
-    assert state == "missing"
-
-
-def test_address_resolve_mapping_state_qbo_side_conflict():
-    connector, mapping_repo, _, _ = _build_address_connector()
-    qbo_physical_address = _make_qbo_physical_address(id=100)
-    mapping_repo.read_by_address_id.return_value = None
-    mapping_repo.read_by_qbo_physical_address_id.return_value = SimpleNamespace(id=2, address_id=9)
-
-    state, by_address, by_qbo_physical_address = connector._resolve_mapping_state(
-        address_id=55, qbo_physical_address=qbo_physical_address
-    )
-
-    assert state == "conflict"
-    assert by_address is None
-    assert by_qbo_physical_address.address_id == 9
-
-
-def test_address_resolve_mapping_state_local_side_conflict():
-    connector, mapping_repo, _, _ = _build_address_connector()
-    qbo_physical_address = _make_qbo_physical_address(id=100)
-    mapping_repo.read_by_address_id.return_value = SimpleNamespace(id=3, qbo_physical_address_id=5)
-    mapping_repo.read_by_qbo_physical_address_id.return_value = None
-
-    state, by_address, by_qbo_physical_address = connector._resolve_mapping_state(
-        address_id=55, qbo_physical_address=qbo_physical_address
-    )
-
-    assert state == "conflict"
-    assert by_address.qbo_physical_address_id == 5
-    assert by_qbo_physical_address is None
-
-
-def test_address_record_identity_mapping_conflict_issue_names_both_sides():
-    connector, _, _, reconciliation_repo = _build_address_connector()
-    qbo_physical_address = _make_qbo_physical_address(id=100, qbo_id="PA-99", realm_id="realm-1")
-    qbo_side = SimpleNamespace(id=2, address_id=9, qbo_physical_address_id=100)
-    local_side = SimpleNamespace(id=3, address_id=55, qbo_physical_address_id=5)
-
-    connector._record_identity_mapping_conflict_issue(
-        qbo_physical_address=qbo_physical_address, dbo_address_id=55,
-        local_side_mapping=local_side, qbo_side_mapping=qbo_side,
-    )
-
-    reconciliation_repo.create.assert_called_once()
-    kwargs = reconciliation_repo.create.call_args.kwargs
-    assert kwargs["drift_type"] == "address_identity_conflict"
-    # Phrase-level checks, not bare digit substrings — the always-emitted
-    # first sentence's own "55"/"100"/"PA-99" would trivially satisfy a plain
-    # "in details" check even if the qbo-side/local-side blocks were dropped.
-    assert "Address 9 (mapping 2)" in kwargs["details"]          # qbo-side conflicting Address
-    assert "DIFFERENT QboPhysicalAddress 5" in kwargs["details"]  # local-side conflicting QboPhysicalAddress
-
-
-def test_address_fast_path_hit_conflict_raises_and_never_steals_identity():
-    """Address twin of the Company hard-stop test. REWRITTEN BY U-287.
-
-    This family's fall-through was the most direct of the two: on a qbo-side conflict
-    the legacy path resolves Address 9 via the pre-existing mapping, updates it, and
-    then the trailing stamp block (`if not needs_mapping_repair and mapping is not
-    None and mapping.qbo_physical_address_id == ...`) calls set_qbo_identity on
-    Address 9 — and SetAddressQboIdentity's theft-clear UPDATE nulls QboId/RealmId on
-    ANY other row holding that pair, i.e. Address 55. Identity theft, reachable
-    without any by-street/city miss. The `protected_address_id` guard never covered it.
-    """
-    connector, mapping_repo, address_service, reconciliation_repo = _build_address_connector()
-    qbo_physical_address = _make_qbo_physical_address(qbo_id="PA-99", realm_id="realm-1")
-    direct_hit = SimpleNamespace(id=55, street_one="", street_two="", city="", state="", zip="")
-    address_service.read_by_qbo_identity.return_value = direct_hit
-    mapping_repo.read_by_address_id.return_value = None
-    conflicting = SimpleNamespace(id=2, address_id=9, qbo_physical_address_id=qbo_physical_address.id)
-    mapping_repo.read_by_qbo_physical_address_id.return_value = conflicting
-    # If the fall-through were still present, these would let it reach Address 9,
-    # write it, and stamp identity onto it — stealing it from Address 55.
-    address_service.read_by_id.return_value = SimpleNamespace(
-        id=9, street_one="", street_two="", city="", state="", zip="",
-        modified_datetime="2026-01-01 00:00:00",
-    )
-    address_service.repo.update_by_id.side_effect = lambda a: a
-
-    connector.qbo_physical_address_service.repo.read_by_id.return_value = qbo_physical_address
-    with pytest.raises(ValueError):
-        connector.sync_from_qbo_to_address(qbo_physical_address.id)
-
-    reconciliation_repo.create.assert_called_once()
-    address_service.create.assert_not_called()  # NO duplicate Address minted
-    address_service.repo.update_by_id.assert_not_called()  # NO write to ANY Address
-    address_service.repo.set_qbo_identity.assert_not_called()  # NO identity theft
-
-
-def test_address_fast_path_local_side_conflict_raises_before_legacy_rediscovery():
-    """Local-side-only conflict shape, Address twin. REWRITTEN BY U-287.
-
-    Under U-277 this fell through and relied on `protected_address_id` to spare
-    Address 55 when the by-street/city search re-found it. When that search MISSED
-    — a corrected street line, a changed city — the fall-through minted a duplicate
-    Address and stamped PA-99's identity onto it, stealing it from Address 55.
-    """
-    connector, mapping_repo, address_service, reconciliation_repo = _build_address_connector()
+def test_address_direct_hit_updates_fields_no_create_or_stamp():
+    connector, address_service, _ = _build_address_connector()
     qbo_physical_address = _make_qbo_physical_address(
-        qbo_id="PA-99", realm_id="realm-1", line1="123 Main", city="Austin"
+        qbo_id="PA-99", realm_id="realm-1", line1="123 Main", city="Austin",
     )
-    direct_hit = SimpleNamespace(
-        id=55, street_one="123 Main", street_two="", city="Austin", state="OLD", zip="00000"
-    )
+    direct_hit = SimpleNamespace(id=55, street_one="Old St", street_two="", city="Old City", state="OK", zip="00000")
     address_service.read_by_qbo_identity.return_value = direct_hit
-    mapping_repo.read_by_address_id.return_value = SimpleNamespace(id=3, qbo_physical_address_id=7)
-    mapping_repo.read_by_qbo_physical_address_id.return_value = None
-    # The by-street/city MISS is the dangerous variant the old guard did not cover.
-    address_service.read_by_street_one_and_city.return_value = None
-    address_service.create.return_value = SimpleNamespace(id=77)
-    address_service.repo.update_by_id.side_effect = lambda a: a
-
-    connector.qbo_physical_address_service.repo.read_by_id.return_value = qbo_physical_address
-    with pytest.raises(ValueError):
-        connector.sync_from_qbo_to_address(qbo_physical_address.id)
-
-    reconciliation_repo.create.assert_called_once()
-    assert direct_hit.state == "OLD"  # untouched, never overwritten with PA-99's data
-    address_service.create.assert_not_called()  # NO duplicate Address minted
-    address_service.repo.update_by_id.assert_not_called()  # NO write to ANY Address
-    address_service.repo.set_qbo_identity.assert_not_called()  # NO identity theft
-
-
-def test_address_fast_path_hit_self_heals_missing_mapping():
-    connector, mapping_repo, address_service, _ = _build_address_connector()
-    qbo_physical_address = _make_qbo_physical_address(qbo_id="PA-99", realm_id="realm-1")
-    direct_hit = SimpleNamespace(id=55, street_one="", street_two="", city="", state="", zip="")
-    address_service.read_by_qbo_identity.return_value = direct_hit
-    address_service.repo.update_by_id.side_effect = lambda a: a
-    mapping_repo.read_by_address_id.return_value = None
-    mapping_repo.read_by_qbo_physical_address_id.return_value = None
-
-    connector.qbo_physical_address_service.repo.read_by_id.return_value = qbo_physical_address
-    connector.sync_from_qbo_to_address(qbo_physical_address.id)
-
-    mapping_repo.create.assert_called_once_with(
-        address_id=55, qbo_physical_address_id=qbo_physical_address.id
-    )
-
-
-def test_address_fast_path_self_heal_race_escalates_to_recorded_conflict():
-    connector, mapping_repo, address_service, reconciliation_repo = _build_address_connector()
-    qbo_physical_address = _make_qbo_physical_address(qbo_id="PA-99", realm_id="realm-1")
-    direct_hit = SimpleNamespace(id=55, street_one="", street_two="", city="", state="", zip="")
-    address_service.read_by_qbo_identity.return_value = direct_hit
-    address_service.repo.update_by_id.side_effect = lambda a: a
-    mapping_repo.read_by_address_id.side_effect = [None, None]
-    mapping_repo.read_by_qbo_physical_address_id.side_effect = [
-        None, SimpleNamespace(id=9, address_id=3, qbo_physical_address_id=qbo_physical_address.id)
-    ]
-    mapping_repo.create.side_effect = Exception("UNIQUE constraint violation")
-
-    connector.qbo_physical_address_service.repo.read_by_id.return_value = qbo_physical_address
-    connector.sync_from_qbo_to_address(qbo_physical_address.id)
-
-    reconciliation_repo.create.assert_called_once()
-    kwargs = reconciliation_repo.create.call_args.kwargs
-    assert kwargs["drift_type"] == "address_identity_conflict"
-
-
-def test_address_fast_path_hit_consistent_skips_mapping_table_write():
-    connector, mapping_repo, address_service, _ = _build_address_connector()
-    qbo_physical_address = _make_qbo_physical_address(
-        qbo_id="PA-99", realm_id="realm-1", line1="456 Elm"
-    )
-    direct_hit = SimpleNamespace(id=55, street_one="", street_two="", city="", state="", zip="")
-    address_service.read_by_qbo_identity.return_value = direct_hit
-    address_service.repo.update_by_id.side_effect = lambda a: a
-    mapping_repo.read_by_address_id.return_value = SimpleNamespace(
-        id=1, qbo_physical_address_id=qbo_physical_address.id
-    )
-    mapping_repo.read_by_qbo_physical_address_id.return_value = SimpleNamespace(id=1, address_id=55)
+    updated = SimpleNamespace(id=55, street_one="123 Main", city="Austin")
+    address_service.repo.update_by_id.return_value = updated
 
     connector.qbo_physical_address_service.repo.read_by_id.return_value = qbo_physical_address
     result = connector.sync_from_qbo_to_address(qbo_physical_address.id)
 
-    assert result.street_one == "456 Elm"
-    mapping_repo.create.assert_not_called()
+    assert result is updated
+    address_service.repo.update_by_id.assert_called_once()
     address_service.create.assert_not_called()
-    # Identity is already correct by construction on the fast path — must not re-stamp.
+    address_service.repo.set_qbo_identity.assert_not_called()
+    address_service.read_by_street_one_and_city.assert_not_called()
+
+
+def test_address_direct_hit_always_overwrites_fields():
+    """QBO is source of truth for physical_address — same as company_info, the
+    write is a raw, unconditional overwrite (no preserve_human_edited_*)."""
+    connector, address_service, _ = _build_address_connector()
+    qbo_physical_address = _make_qbo_physical_address(
+        qbo_id="PA-99", realm_id="realm-1", line1="New St", line2="Suite 2",
+        city="New City", country_sub_division_code="TX", postal_code="78701",
+    )
+    direct_hit = SimpleNamespace(
+        id=55, street_one="Curated Old St", street_two="", city="Old City", state="OK", zip="00000",
+    )
+    address_service.read_by_qbo_identity.return_value = direct_hit
+    address_service.repo.update_by_id.side_effect = lambda a: a
+
+    connector.qbo_physical_address_service.repo.read_by_id.return_value = qbo_physical_address
+    result = connector.sync_from_qbo_to_address(qbo_physical_address.id)
+
+    assert result.street_one == "New St"
+    assert result.street_two == "Suite 2"
+    assert result.city == "New City"
+    assert result.state == "TX"
+    assert result.zip == "78701"
+
+
+def test_address_genuine_miss_creates_new_and_stamps_identity():
+    connector, address_service, _ = _build_address_connector()
+    qbo_physical_address = _make_qbo_physical_address(
+        qbo_id="PA-99", realm_id="realm-1", line1="123 Main", city="Austin",
+        country_sub_division_code="TX", postal_code="78701",
+    )
+    address_service.read_by_qbo_identity.return_value = None
+    address_service.read_by_street_one_and_city.return_value = None
+    created = SimpleNamespace(id=300, qbo_id=None, realm_id=None)
+    address_service.create.return_value = created
+    stamped = SimpleNamespace(id=300, qbo_id="PA-99", realm_id="realm-1")
+    address_service.read_by_id.side_effect = [created, stamped]
+
+    connector.qbo_physical_address_service.repo.read_by_id.return_value = qbo_physical_address
+    with patch(FASTPATH_LOCK_TARGET, mock_qbo_app_lock_granted), patch(
+        STAMP_LOCK_TARGET, mock_qbo_app_lock_granted
+    ):
+        result = connector.sync_from_qbo_to_address(qbo_physical_address.id)
+
+    assert result is stamped
+    address_service.create.assert_called_once_with(
+        street_one="123 Main", street_two="", city="Austin", state="TX", zip="78701",
+    )
+    address_service.repo.set_qbo_identity.assert_called_once_with(
+        id=300, qbo_id="PA-99", realm_id="realm-1"
+    )
+
+
+def test_address_genuine_miss_adopts_existing_unmapped_by_street_and_city():
+    connector, address_service, _ = _build_address_connector()
+    qbo_physical_address = _make_qbo_physical_address(
+        qbo_id="PA-99", realm_id="realm-1", line1="123 Main", city="Austin",
+        country_sub_division_code="TX", postal_code="78701",
+    )
+    address_service.read_by_qbo_identity.return_value = None
+    existing = SimpleNamespace(
+        id=150, qbo_id=None, realm_id=None, street_one="Old", street_two="", city="Old City",
+        state="OK", zip="00000",
+    )
+    address_service.read_by_street_one_and_city.return_value = existing
+    address_service.repo.update_by_id.side_effect = lambda a: a
+    stamped = SimpleNamespace(id=150, qbo_id="PA-99", realm_id="realm-1", street_one="123 Main")
+    address_service.read_by_id.side_effect = [existing, stamped]
+
+    connector.qbo_physical_address_service.repo.read_by_id.return_value = qbo_physical_address
+    with patch(FASTPATH_LOCK_TARGET, mock_qbo_app_lock_granted), patch(
+        STAMP_LOCK_TARGET, mock_qbo_app_lock_granted
+    ):
+        result = connector.sync_from_qbo_to_address(qbo_physical_address.id)
+
+    assert result is stamped
+    assert existing.street_one == "123 Main"
+    assert existing.city == "Austin"
+    address_service.create.assert_not_called()
+    address_service.repo.set_qbo_identity.assert_called_once_with(
+        id=150, qbo_id="PA-99", realm_id="realm-1"
+    )
+
+
+def test_address_blank_incoming_street_or_city_skips_the_adopt_lookup_and_creates():
+    connector, address_service, _ = _build_address_connector()
+    qbo_physical_address = _make_qbo_physical_address(
+        qbo_id="PA-99", realm_id="realm-1", line1=None, city=None,
+        country_sub_division_code="TX", postal_code="78701",
+    )
+    address_service.read_by_qbo_identity.return_value = None
+    created = SimpleNamespace(id=300, street_one="")
+    address_service.create.return_value = created
+    address_service.read_by_id.side_effect = [created, created]
+
+    connector.qbo_physical_address_service.repo.read_by_id.return_value = qbo_physical_address
+    with patch(FASTPATH_LOCK_TARGET, mock_qbo_app_lock_granted), patch(
+        STAMP_LOCK_TARGET, mock_qbo_app_lock_granted
+    ):
+        connector.sync_from_qbo_to_address(qbo_physical_address.id)
+
+    address_service.read_by_street_one_and_city.assert_not_called()
+    address_service.create.assert_called_once_with(street_one="", street_two="", city="", state="TX", zip="78701")
+
+
+def test_address_resolve_candidate_does_not_mutate_or_persist_the_adopted_row():
+    """Mirrors CompanyInfoCompanyConnector's identical guard (U-350): the field
+    write happens only in _stamp_address_identity, atomically with the identity
+    stamp under the candidate's own lock — resolve_candidate itself must be PURE."""
+    connector, address_service, _ = _build_address_connector()
+    qbo_physical_address = _make_qbo_physical_address(qbo_id="PA-99", realm_id="realm-1", line1="123 Main", city="Austin")
+    existing = SimpleNamespace(
+        id=150, qbo_id=None, realm_id=None, street_one="Untouched", street_two="", city="Untouched City",
+        state="OK", zip="00000",
+    )
+    address_service.read_by_street_one_and_city.return_value = existing
+
+    candidate = connector._resolve_address_candidate(
+        qbo_physical_address, street_one="123 Main", street_two="", city="Austin", state="TX", zip_code="78701",
+    )
+
+    assert candidate is existing
+    assert existing.street_one == "Untouched"
+    assert existing.city == "Untouched City"
+    address_service.repo.update_by_id.assert_not_called()
+
+
+def test_address_duplicate_qbo_id_guard_raises_and_records_issue():
+    """A street/city-matched Address already carrying a DIFFERENT QboId must NOT
+    be returned as the candidate -- stamp_identity's theft-clear would silently
+    re-point it. Must raise + record an address_identity_conflict issue instead,
+    mirroring the mapping-table-era contract this replaces."""
+    connector, address_service, reconciliation_repo = _build_address_connector()
+    qbo_physical_address = _make_qbo_physical_address(qbo_id="PA-99", realm_id="realm-1", line1="123 Main", city="Austin")
+    address_service.read_by_qbo_identity.return_value = None
+    existing = SimpleNamespace(id=150, public_id="address-pub-150", qbo_id="PA-OTHER", realm_id="realm-1")
+    address_service.read_by_street_one_and_city.return_value = existing
+
+    connector.qbo_physical_address_service.repo.read_by_id.return_value = qbo_physical_address
+    with patch(FASTPATH_LOCK_TARGET, mock_qbo_app_lock_granted):
+        with pytest.raises(ValueError, match="already carries a DIFFERENT identity"):
+            connector.sync_from_qbo_to_address(qbo_physical_address.id)
+
+    address_service.repo.update_by_id.assert_not_called()
+    address_service.repo.set_qbo_identity.assert_not_called()
+    reconciliation_repo.create.assert_called_once()
+    assert reconciliation_repo.create.call_args.kwargs["drift_type"] == "address_identity_conflict"
+
+
+def test_address_stamp_time_reread_catches_conflict_the_street_city_lookup_cannot_see():
+    """Codex xhigh P2 (U-351): `ReadAddressByStreetOneAndCity` does not project
+    `QboId`/`RealmId` (entities/address/sql/dbo.address.sql), so a row returned
+    by `read_by_street_one_and_city` always carries `qbo_id=None` in production
+    -- `_resolve_address_candidate`'s own `_check_no_conflicting_address_identity`
+    call structurally cannot see a conflict there (same shape as
+    `ReadCompanyByName`, which likewise omits QboId/RealmId — this is the
+    established, already-shipped characteristic of the pattern, not new here).
+    The REAL guarantee lives one level down: `stamp_dbo_identity_with_lock`'s
+    own `read_by_id` re-read DOES project QboId/RealmId (`ReadAddressById`), so
+    it must still catch and raise on the SAME row the early check missed."""
+    connector, address_service, reconciliation_repo = _build_address_connector()
+    qbo_physical_address = _make_qbo_physical_address(qbo_id="PA-99", realm_id="realm-1", line1="123 Main", city="Austin")
+    address_service.read_by_qbo_identity.return_value = None
+    # Matches the real SQL shape: no qbo_id/realm_id in the street/city projection.
+    street_city_match = SimpleNamespace(id=150, public_id="address-pub-150", street_one="123 Main", city="Austin")
+    address_service.read_by_street_one_and_city.return_value = street_city_match
+    # The stamp-time read_by_id re-read uses the REAL column set and reveals the
+    # conflict the street/city lookup couldn't.
+    address_service.read_by_id.return_value = SimpleNamespace(
+        id=150, public_id="address-pub-150", qbo_id="PA-OTHER", realm_id="realm-1",
+    )
+
+    connector.qbo_physical_address_service.repo.read_by_id.return_value = qbo_physical_address
+    with patch(FASTPATH_LOCK_TARGET, mock_qbo_app_lock_granted), patch(
+        STAMP_LOCK_TARGET, mock_qbo_app_lock_granted
+    ):
+        with pytest.raises(ValueError, match="already carries QBO identity PA-OTHER"):
+            connector.sync_from_qbo_to_address(qbo_physical_address.id)
+
+    address_service.repo.update_by_id.assert_not_called()
+    address_service.repo.set_qbo_identity.assert_not_called()
+    reconciliation_repo.create.assert_called_once()
+    assert reconciliation_repo.create.call_args.kwargs["drift_type"] == "address_identity_conflict"
+
+
+def test_address_duplicate_guard_catches_same_qbo_id_different_realm():
+    """QBO ids are only unique WITHIN a realm, so a QboId-only check would let a
+    same-QboId-different-realm row through and overwrite its fields before
+    _stamp_address_identity's own (qbo_id AND realm_id) check ever runs."""
+    connector, address_service, reconciliation_repo = _build_address_connector()
+    qbo_physical_address = _make_qbo_physical_address(qbo_id="PA-99", realm_id="realm-1", line1="123 Main", city="Austin")
+    address_service.read_by_qbo_identity.return_value = None
+    existing = SimpleNamespace(
+        id=150, public_id="address-pub-150", qbo_id="PA-99", realm_id="realm-OTHER", street_one="Untouched",
+    )
+    address_service.read_by_street_one_and_city.return_value = existing
+
+    connector.qbo_physical_address_service.repo.read_by_id.return_value = qbo_physical_address
+    with patch(FASTPATH_LOCK_TARGET, mock_qbo_app_lock_granted):
+        with pytest.raises(ValueError, match="already carries a DIFFERENT identity"):
+            connector.sync_from_qbo_to_address(qbo_physical_address.id)
+
+    assert existing.street_one == "Untouched"  # never mutated before the raise
+    address_service.repo.update_by_id.assert_not_called()
+    address_service.repo.set_qbo_identity.assert_not_called()
+    reconciliation_repo.create.assert_called_once()
+
+
+def test_address_race_discovered_hit_adopts_racer_without_create():
+    connector, address_service, _ = _build_address_connector()
+    qbo_physical_address = _make_qbo_physical_address(qbo_id="PA-99", realm_id="realm-1")
+    racer_row = SimpleNamespace(id=400, qbo_id="PA-99", realm_id="realm-1")
+    address_service.read_by_qbo_identity.side_effect = [None, racer_row]
+    address_service.repo.update_by_id.side_effect = lambda a: a
+
+    connector.qbo_physical_address_service.repo.read_by_id.return_value = qbo_physical_address
+    with patch(FASTPATH_LOCK_TARGET, mock_qbo_app_lock_granted):
+        result = connector.sync_from_qbo_to_address(qbo_physical_address.id)
+
+    assert result is racer_row
+    address_service.create.assert_not_called()
+    address_service.repo.set_qbo_identity.assert_not_called()
+    assert address_service.read_by_qbo_identity.call_args_list == [
+        call("PA-99", "realm-1"),
+        call("PA-99", "realm-1"),
+    ]
+
+
+def test_address_update_returning_none_raises_runtime_error_not_value_error():
+    """A ROWVERSION race on the HIT branch (update_by_id affected 0 rows) must
+    raise RuntimeError, NOT ValueError (U-291 discipline, carried through the
+    repoint)."""
+    connector, address_service, _ = _build_address_connector()
+    qbo_physical_address = _make_qbo_physical_address(qbo_id="PA-99", realm_id="realm-1")
+    address_service.read_by_qbo_identity.return_value = SimpleNamespace(id=55)
+    address_service.repo.update_by_id.return_value = None  # race: row gone on write
+
+    connector.qbo_physical_address_service.repo.read_by_id.return_value = qbo_physical_address
+    with pytest.raises(RuntimeError, match="concurrent write race"):
+        connector.sync_from_qbo_to_address(qbo_physical_address.id)
+
+    address_service.create.assert_not_called()
     address_service.repo.set_qbo_identity.assert_not_called()
 
 
-def test_address_fast_path_update_returns_none_raises_runtime_error():
-    """ROWVERSION race: a concurrent writer touched the fast-path-matched
-    Address between the read and this UPDATE, so update_by_id() affects 0
-    rows and returns None. Must raise cleanly (mirrors the adjacent legacy
-    path's own guard), not propagate a bare None into an .id access.
-
-    RuntimeError, deliberately NOT ValueError (U-291): a ROWVERSION race is
-    transient, not a permanent data problem — record_projection_error's rule 2
-    classifies a plain ValueError as a permanent SKIP, which would advance the
-    watermark past this record anyway. Was ValueError pre-U-291; renamed from
-    test_address_fast_path_update_returns_none_raises_value_error."""
-    connector, mapping_repo, address_service, _ = _build_address_connector()
-    qbo_physical_address = _make_qbo_physical_address(qbo_id="PA-99", realm_id="realm-1")
-    direct_hit = SimpleNamespace(id=55, street_one="", street_two="", city="", state="", zip="")
-    address_service.read_by_qbo_identity.return_value = direct_hit
-    address_service.repo.update_by_id.return_value = None
-    mapping_repo.read_by_address_id.return_value = SimpleNamespace(
-        id=1, qbo_physical_address_id=qbo_physical_address.id
-    )
-    mapping_repo.read_by_qbo_physical_address_id.return_value = SimpleNamespace(id=1, address_id=55)
-
-    connector.qbo_physical_address_service.repo.read_by_id.return_value = qbo_physical_address
-
-    with pytest.raises(RuntimeError, match="Failed to update Address"):
-        connector.sync_from_qbo_to_address(qbo_physical_address.id)
-
-
-def test_address_legacy_path_update_returns_none_raises_runtime_error():
-    """The legacy (non-fast-path) update branch has its own INDEPENDENT copy of
-    the same ROWVERSION-race guard (a separate inline block, not a shared
-    closure with the fast path) — U-291 found and fixed both, not just the
-    fast-path copy the board's shorthand named."""
-    connector, mapping_repo, address_service, _ = _build_address_connector()
-    qbo_physical_address = _make_qbo_physical_address(qbo_id="PA-99", realm_id="realm-1")
-    address_service.read_by_qbo_identity.return_value = None  # fast path misses
-    mapping_repo.read_by_qbo_physical_address_id.return_value = SimpleNamespace(id=1, address_id=55)
-    address_service.read_by_id.return_value = SimpleNamespace(
-        id=55, street_one="", street_two="", city="", state="", zip="", modified_datetime=None
-    )
-    address_service.repo.update_by_id.return_value = None
-
-    connector.qbo_physical_address_service.repo.read_by_id.return_value = qbo_physical_address
-
-    with pytest.raises(RuntimeError, match="Failed to update Address"):
-        connector.sync_from_qbo_to_address(qbo_physical_address.id)
-
-
-def test_address_fast_path_miss_falls_back_to_mapping_table_path():
-    connector, mapping_repo, address_service, _ = _build_address_connector()
-    qbo_physical_address = _make_qbo_physical_address(qbo_id="PA-99", realm_id="realm-1")
-    address_service.read_by_qbo_identity.return_value = None
-    mapping_repo.read_by_qbo_physical_address_id.return_value = None
-    address_service.read_by_street_one_and_city.return_value = None
-    created = SimpleNamespace(id=77)
-    address_service.create.return_value = created
-    mapping_repo.read_by_address_id.return_value = None
-
-    connector.qbo_physical_address_service.repo.read_by_id.return_value = qbo_physical_address
-    result = connector.sync_from_qbo_to_address(qbo_physical_address.id)
-
-    address_service.read_by_qbo_identity.assert_called_once_with("PA-99", "realm-1")
-    assert result is created
-    address_service.create.assert_called_once()
-
-
-def test_address_fast_path_skipped_entirely_when_no_qbo_id():
-    """A record with no external qbo_id can't possibly have a dbo-native
-    identity match — the fast-path lookup should not even be attempted."""
-    connector, mapping_repo, address_service, _ = _build_address_connector()
+def test_address_no_qbo_id_raises():
+    connector, address_service, _ = _build_address_connector()
     qbo_physical_address = _make_qbo_physical_address(qbo_id=None)
-    mapping_repo.read_by_qbo_physical_address_id.return_value = None
-    address_service.read_by_street_one_and_city.return_value = None
-    address_service.create.return_value = SimpleNamespace(id=1)
-    mapping_repo.read_by_address_id.return_value = None
 
     connector.qbo_physical_address_service.repo.read_by_id.return_value = qbo_physical_address
-    connector.sync_from_qbo_to_address(qbo_physical_address.id)
+    with pytest.raises(RuntimeError, match="dbo-only identity fast path"):
+        connector.sync_from_qbo_to_address(qbo_physical_address.id)
 
     address_service.read_by_qbo_identity.assert_not_called()
+
+
+def test_address_realm_id_comes_straight_from_staging_row_no_connector_fallback():
+    """Unlike CompanyInfoCompanyConnector, sync_from_qbo_to_address takes no
+    separate realm_id parameter — there is nothing to fall back to, so a falsy
+    qbo_physical_address.realm_id must be passed through as-is (None), never
+    silently defaulted."""
+    connector, address_service, _ = _build_address_connector()
+    qbo_physical_address = _make_qbo_physical_address(qbo_id="PA-99", realm_id=None)
+    address_service.read_by_qbo_identity.return_value = None
+    address_service.read_by_street_one_and_city.return_value = None
+    created = SimpleNamespace(id=1)
+    address_service.create.return_value = created
+    address_service.read_by_id.side_effect = [created, SimpleNamespace(id=1, qbo_id="PA-99", realm_id=None)]
+
+    connector.qbo_physical_address_service.repo.read_by_id.return_value = qbo_physical_address
+    with patch(FASTPATH_LOCK_TARGET, mock_qbo_app_lock_granted), patch(
+        STAMP_LOCK_TARGET, mock_qbo_app_lock_granted
+    ):
+        connector.sync_from_qbo_to_address(qbo_physical_address.id)
+
+    assert address_service.read_by_qbo_identity.call_args_list == [
+        call("PA-99", None),
+        call("PA-99", None),
+    ]
+
+
+def test_address_stamp_identity_refuses_to_overwrite_different_existing_identity():
+    connector, address_service, _ = _build_address_connector()
+    candidate = SimpleNamespace(id=150)
+    address_service.read_by_id.return_value = SimpleNamespace(
+        id=150, public_id="address-pub-150", qbo_id="PA-OTHER", realm_id="realm-1",
+    )
+    qbo_physical_address = _make_qbo_physical_address(qbo_id="PA-99", realm_id="realm-1")
+
+    with patch(STAMP_LOCK_TARGET, mock_qbo_app_lock_granted):
+        with pytest.raises(ValueError, match=r"already carries QBO identity PA-OTHER"):
+            connector._stamp_address_identity(
+                candidate, qbo_physical_address, street_one="123 Main", street_two="", city="Austin",
+                state="TX", zip_code="78701",
+            )
+
+    address_service.repo.set_qbo_identity.assert_not_called()
+    address_service.repo.update_by_id.assert_not_called()  # never mutated before the raise
+
+
+def test_address_stamp_identity_update_returning_none_raises_runtime_error():
+    """A ROWVERSION race between the pre-stamp read and the field-write
+    update_by_id call must not silently proceed to stamp identity on a row
+    whose write never took."""
+    connector, address_service, _ = _build_address_connector()
+    candidate = SimpleNamespace(id=150)
+    address_service.read_by_id.return_value = SimpleNamespace(
+        id=150, qbo_id=None, realm_id=None, street_one="Old",
+    )
+    address_service.repo.update_by_id.return_value = None  # race: row gone on write
+    qbo_physical_address = _make_qbo_physical_address(qbo_id="PA-99", realm_id="realm-1", line1="New")
+
+    with patch(STAMP_LOCK_TARGET, mock_qbo_app_lock_granted):
+        with pytest.raises(RuntimeError, match="concurrent write race"):
+            connector._stamp_address_identity(
+                candidate, qbo_physical_address, street_one="New", street_two="", city="Austin",
+                state="TX", zip_code="78701",
+            )
+
+    address_service.repo.set_qbo_identity.assert_not_called()
+
+
+def test_address_stamp_identity_sanitizes_blank_fields_to_empty_string():
+    """Codex xhigh round-1 P1 (U-350), carried over here: on the genuine-miss
+    create path, `_resolve_address_candidate`'s own `.create(street_one=... or
+    "", ...)` already sanitizes blank incoming fields — but this method's OWN
+    apply_fields closure must ALSO sanitize, or it would re-derive the fields RAW
+    and immediately overwrite that already-sanitized value with None, which
+    `UpdateAddressById`'s `NOT NULL` columns reject. Mutation target: dropping the
+    `or ""` here reintroduces the None write."""
+    connector, address_service, _ = _build_address_connector()
+    candidate = SimpleNamespace(id=150)
+    unmapped = SimpleNamespace(id=150, qbo_id=None, realm_id=None, street_one="", street_two="", city="", state="", zip="")
+    address_service.read_by_id.return_value = unmapped
+    address_service.repo.update_by_id.side_effect = lambda a: a
+    qbo_physical_address = _make_qbo_physical_address(
+        qbo_id="PA-99", realm_id="realm-1", line1=None, line2=None, city=None,
+        country_sub_division_code=None, postal_code=None,
+    )
+
+    with patch(STAMP_LOCK_TARGET, mock_qbo_app_lock_granted):
+        connector._stamp_address_identity(
+            candidate, qbo_physical_address, street_one=None, street_two=None, city=None,
+            state=None, zip_code=None,
+        )
+
+    assert unmapped.street_one == ""
+    assert unmapped.street_two == ""
+    assert unmapped.city == ""
+    assert unmapped.state == ""
+    assert unmapped.zip == ""
+
+
+def test_address_stamp_identity_applies_field_write_atomically_with_stamp():
+    """The field write happens INSIDE this method, under the candidate lock, not
+    in resolve_candidate — confirms it's actually applied, and that
+    write_identity delegates through create_mapping (no mapping row left)."""
+    connector, address_service, _ = _build_address_connector()
+    candidate = SimpleNamespace(id=150)
+    unmapped = SimpleNamespace(
+        id=150, qbo_id=None, realm_id=None, street_one="Old", street_two="", city="Old City",
+        state="OK", zip="00000",
+    )
+    address_service.read_by_id.return_value = unmapped
+    address_service.repo.update_by_id.side_effect = lambda a: a
+    qbo_physical_address = _make_qbo_physical_address(qbo_id="PA-99", realm_id="realm-1", line1="New", city="Austin")
+
+    with patch(STAMP_LOCK_TARGET, mock_qbo_app_lock_granted):
+        connector._stamp_address_identity(
+            candidate, qbo_physical_address, street_one="New", street_two="", city="Austin",
+            state="TX", zip_code="78701",
+        )
+
+    assert unmapped.street_one == "New"
+    assert unmapped.city == "Austin"
+    address_service.repo.update_by_id.assert_called_once_with(unmapped)
+    address_service.repo.set_qbo_identity.assert_called_once_with(
+        id=150, qbo_id="PA-99", realm_id="realm-1"
+    )

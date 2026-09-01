@@ -80,6 +80,18 @@ REFERENCE_ENTITY_SPECS: tuple[FlatEntitySpec, ...] = (
     # push/pull both went dbo-native (U-285/U-300b/U-300c-prereq), so a LEFT JOIN through
     # qbo.AttachableAttachment/qbo.Attachable now flags every dbo-stamped attachment as a
     # false orphan_dbo_value, and the join errors outright once U-300c drops the tables.
+    # U-353: qbo.VendorCreditBillCredit (this row's `mapping_table`) is retired —
+    # UNLIKE payment_term/address/attachment above, this row is KEPT, not removed.
+    # reconciliation/business/service.py's _vendor_credit_identity_rows still looks
+    # this row up by key ("bill_credit") to call read_qbo_identity_rows_by_realm_id,
+    # which only reads `spec.label`/`spec.access_udf` (a pure dbo.BillCredit read —
+    # no mapping/staging JOIN); removing the row would raise StopIteration there and
+    # break the VendorCredit missing-locally/voided reconciliation detectors. The
+    # `mapping_table`/`staging_table` fields are now stale for THIS entity and unused
+    # by that reader; the 3 scripts that DO JOIN through `mapping_table`
+    # (check_qbo_identity_drift_reference.py, backfill_qbo_identity_reference.py,
+    # audit_dangling_qbo_mappings.py) exclude "bill_credit" from their own working
+    # sets instead — see each script's own comment.
     FlatEntitySpec(
         "bill_credit", "BillCredit", "VendorCreditBillCredit", "VendorCredit", "BillCreditId",
         "QboVendorCreditId", False, "SetBillCreditQboIdentity",

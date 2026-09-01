@@ -20,12 +20,14 @@ from integrations.intuit.qbo.vendorcredit.business.model import QboVendorCredit,
 from integrations.intuit.qbo.vendorcredit.connector.bill_credit.business.service import (
     VendorCreditBillCreditConnector,
 )
-from integrations.intuit.qbo.vendorcredit.connector.bill_credit.persistence.repo import (
-    VendorCreditBillCreditMapping,
-)
 from integrations.intuit.qbo.vendorcredit.persistence.repo import QboVendorCreditRepository
 
 _REPO = "integrations.intuit.qbo.vendorcredit.persistence.repo"
+
+# U-353: connector CREATE now runs under run_identity_fastpath_dbo_only's create
+# lock (no more mapping-table legacy path) — grant it for every test in this
+# pure-logic module so the MISS/create branch resolves without a real DB.
+pytestmark = pytest.mark.usefixtures("grant_qbo_app_lock")
 
 _LINE_ROW = dict(
     Id=1,
@@ -192,16 +194,14 @@ def _qbo_line(**overrides) -> QboVendorCreditLine:
 
 
 def _connector_with_fakes():
-    mapping_repo = MagicMock()
     bill_credit_service = MagicMock()
     bill_credit_line_item_service = MagicMock()
     vendor_service = MagicMock()
     reconciliation_repo = MagicMock()
-    # U-278: no prior dbo-native identity yet — these tests target the CREATE/UPDATE
-    # mapping-table paths, which is what a real never-before-synced BillCredit reports.
+    # U-353: no dbo-native identity yet — these tests target the CREATE/UPDATE
+    # paths, which is what a real never-before-synced BillCredit reports.
     bill_credit_service.read_by_qbo_identity.return_value = None
     connector = VendorCreditBillCreditConnector(
-        mapping_repo=mapping_repo,
         bill_credit_service=bill_credit_service,
         bill_credit_line_item_service=bill_credit_line_item_service,
         vendor_service=vendor_service,
@@ -209,13 +209,12 @@ def _connector_with_fakes():
     )
     connector._get_vendor_public_id = MagicMock(return_value="vendor-pid")
     connector._sync_line_items = MagicMock()
-    return connector, mapping_repo, bill_credit_service
+    return connector, bill_credit_service
 
 
 def test_connector_create_total_amount_preserves_zero():
     """Site: connector CREATE ``total_amount=`` handoff (service.py CREATE path)."""
-    connector, mapping_repo, bill_credit_service = _connector_with_fakes()
-    mapping_repo.read_by_qbo_vendor_credit_id.return_value = None
+    connector, bill_credit_service = _connector_with_fakes()
     captured = _capture_kwargs(bill_credit_service.create, _bill_credit())
 
     connector.sync_from_qbo_vendor_credit(_qbo_vc(), qbo_lines=[])
@@ -225,18 +224,10 @@ def test_connector_create_total_amount_preserves_zero():
 
 def test_connector_update_total_amount_preserves_zero():
     """Site: connector UPDATE ``total_amount=`` handoff (service.py UPDATE path)."""
-    connector, mapping_repo, bill_credit_service = _connector_with_fakes()
-    mapping_repo.read_by_qbo_vendor_credit_id.return_value = VendorCreditBillCreditMapping(
-        id=1,
-        public_id="map-1",
-        row_version="rv",
-        created_datetime=None,
-        modified_datetime=None,
-        qbo_vendor_credit_id=10,
-        bill_credit_id=20,
-    )
+    connector, bill_credit_service = _connector_with_fakes()
     existing = _bill_credit()
-    bill_credit_service.read_by_id.return_value = existing
+    # U-353: the UPDATE/HIT branch is reached via a direct dbo-native identity match.
+    bill_credit_service.read_by_qbo_identity.return_value = existing
     captured = _capture_kwargs(bill_credit_service.update_by_public_id, existing)
 
     connector.sync_from_qbo_vendor_credit(_qbo_vc(), qbo_lines=[])
@@ -312,8 +303,7 @@ def test_end_to_end_zero_credit_creates_with_zero_total():
     with _captured_proc_params(_row_echoing_insert) as params:
         staged = QboVendorCreditRepository().create(_qbo_vc(total_amt=Decimal("0")))
 
-    connector, mapping_repo, bill_credit_service = _connector_with_fakes()
-    mapping_repo.read_by_qbo_vendor_credit_id.return_value = None
+    connector, bill_credit_service = _connector_with_fakes()
     captured = _capture_kwargs(bill_credit_service.create, _bill_credit())
 
     connector.sync_from_qbo_vendor_credit(staged, qbo_lines=[])

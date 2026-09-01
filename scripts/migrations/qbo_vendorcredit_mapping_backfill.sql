@@ -7,6 +7,10 @@
 -- Conservative: count-matched credits only; skip any line already mapped (UNIQUE-safe).
 -- Idempotent. Run with:
 --   python scripts/run_sql.py scripts/migrations/qbo_vendorcredit_mapping_backfill.sql
+--
+-- U-353: already applied historically (this file's whole purpose was a one-time
+-- 2026-06-18 fix). Its FROM qbo.VendorCreditBillCredit (below) now depends on a
+-- table retired by U-353 -- do not re-run after /em applies the DROP.
 
 WITH counts AS (
     SELECT m.BillCreditId, m.QboVendorCreditId,

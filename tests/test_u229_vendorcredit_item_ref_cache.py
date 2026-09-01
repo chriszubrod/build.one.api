@@ -86,26 +86,16 @@ def test_run_scoped_item_ref_cache_and_single_line_connector():
         lambda ref, realm=None: scc_by_ref.get(ref)
     )
 
-    existing_mapping = SimpleNamespace(bill_credit_id=10, id=1)
     bill_credit_a = _make_bill_credit(bill_credit_id=10, public_id="bc-pub-10")
     bill_credit_b = _make_bill_credit(bill_credit_id=20, public_id="bc-pub-20")
 
-    mapping_repo = Mock()
-    mapping_repo.read_by_qbo_vendor_credit_id.side_effect = [
-        existing_mapping,
-        SimpleNamespace(bill_credit_id=20, id=2),
-    ]
-
     bill_credit_service = Mock()
-    bill_credit_service.read_by_id.side_effect = [bill_credit_a, bill_credit_b]
+    # U-353: dbo-only HIT — one direct-identity read per sync (no mapping-table hop).
+    bill_credit_service.read_by_qbo_identity.side_effect = [bill_credit_a, bill_credit_b]
     bill_credit_service.update_by_public_id.side_effect = [bill_credit_a, bill_credit_b]
     bill_credit_service.repo = Mock()
-    # U-278: no prior dbo-native identity yet — this test exercises the mapping-table
-    # UPDATE path across two sequential syncs.
-    bill_credit_service.read_by_qbo_identity.return_value = None
 
     connector = VendorCreditBillCreditConnector(
-        mapping_repo=mapping_repo,
         bill_credit_service=bill_credit_service,
         vendor_service=Mock(),
         reconciliation_repo=Mock(),

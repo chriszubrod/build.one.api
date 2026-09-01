@@ -283,10 +283,8 @@ def _make_qbo_vc_line(*, line_id=1, qbo_line_id="line-1", amount=Decimal("100.00
 
 
 def _build_vc_connector(**overrides):
-    mapping_repo = Mock()
     bill_credit_service = Mock()
     connector = VendorCreditBillCreditConnector(
-        mapping_repo=mapping_repo,
         bill_credit_service=bill_credit_service,
         bill_credit_line_item_service=Mock(),
         vendor_service=Mock(),
@@ -294,10 +292,10 @@ def _build_vc_connector(**overrides):
     )
     for key, value in overrides.items():
         setattr(connector, key, value)
-    # U-278: no prior dbo-native identity yet — these rollback/compensation tests
-    # exercise the CREATE and mapping-table UPDATE paths, not the fast path. Set on
-    # whichever bill_credit_service ended up assigned (default or override) so an
-    # overridden Mock doesn't skip this.
+    # U-353: dbo-only identity — read_by_qbo_identity's return value alone decides
+    # CREATE (None -> genuine miss) vs UPDATE (truthy -> direct hit). Set on whichever
+    # bill_credit_service ended up assigned (default or override) so an overridden
+    # Mock doesn't skip this.
     connector.bill_credit_service.read_by_qbo_identity.return_value = None
     connector._get_vendor_public_id = Mock(return_value="vendor-pub-id")
     return connector
@@ -318,20 +316,16 @@ def test_vendorcredit_sync_from_qbo_line_propagates_exception():
         connector.sync_from_qbo_line(1, "bc-pub-1", qbo_line)
 
 
-def test_new_vendorcredit_line_sync_failure_compensating_rollback():
-    """NEW-credit path: line sync failure deletes mapping then header and re-raises."""
+def test_new_vendorcredit_line_sync_failure_compensating_rollback(grant_qbo_app_lock):
+    """NEW-credit (dbo-only MISS) path: line sync failure deletes the just-created
+    header and re-raises. U-353: no mapping row to delete anymore — the shared
+    rollback_orphan_header helper still runs, with a no-op delete_mapping."""
     fake_bc = SimpleNamespace(id=42, public_id="bc-pub-42")
-    call_order = []
-
-    mapping_repo = Mock()
-    mapping_repo.read_by_qbo_vendor_credit_id.return_value = None
-    mapping_repo.delete_by_qbo_vendor_credit_id.side_effect = lambda *_: call_order.append("mapping")
 
     bill_credit_service = Mock()
     bill_credit_service.create.return_value = fake_bc
-    bill_credit_service.delete_by_public_id.side_effect = lambda *_: call_order.append("header")
 
-    connector = _build_vc_connector(mapping_repo=mapping_repo, bill_credit_service=bill_credit_service)
+    connector = _build_vc_connector(bill_credit_service=bill_credit_service)
     connector._sync_line_items = Mock(side_effect=RuntimeError("line sync failed"))
 
     qbo_vc = _make_qbo_vc()
@@ -340,14 +334,12 @@ def test_new_vendorcredit_line_sync_failure_compensating_rollback():
     with pytest.raises(RuntimeError, match="line sync failed"):
         connector.sync_from_qbo_vendor_credit(qbo_vc, qbo_lines)
 
-    mapping_repo.delete_by_qbo_vendor_credit_id.assert_called_once_with(qbo_vc.id)
     bill_credit_service.delete_by_public_id.assert_called_once_with("bc-pub-42")
-    assert call_order == ["mapping", "header"]
 
 
 def test_existing_vendorcredit_resync_failure_does_not_compensating_delete():
-    """Existing-mapping re-sync: line sync failure must NOT delete the bill credit."""
-    existing_mapping = SimpleNamespace(bill_credit_id=42, id=99)
+    """Existing-BillCredit (dbo-only HIT) re-sync: line sync failure must NOT delete
+    the bill credit — only the CREATE/MISS path compensates."""
     fake_bc = SimpleNamespace(
         id=42,
         public_id="bc-pub-42",
@@ -355,15 +347,14 @@ def test_existing_vendorcredit_resync_failure_does_not_compensating_delete():
         credit_number="VC-EXISTING",
     )
 
-    mapping_repo = Mock()
-    mapping_repo.read_by_qbo_vendor_credit_id.return_value = existing_mapping
-
     bill_credit_service = Mock()
-    bill_credit_service.read_by_id.return_value = fake_bc
     bill_credit_service.update_by_public_id.return_value = fake_bc
     bill_credit_service.delete_by_public_id = Mock()
 
-    connector = _build_vc_connector(mapping_repo=mapping_repo, bill_credit_service=bill_credit_service)
+    connector = _build_vc_connector(bill_credit_service=bill_credit_service)
+    # _build_vc_connector defaults read_by_qbo_identity to None (the MISS/CREATE
+    # shape the other two tests need) — set the HIT AFTER, so it isn't clobbered.
+    connector.bill_credit_service.read_by_qbo_identity.return_value = fake_bc
     connector._sync_line_items = Mock(side_effect=RuntimeError("line sync failed"))
 
     qbo_vc = _make_qbo_vc()

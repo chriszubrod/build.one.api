@@ -6,7 +6,10 @@ from unittest.mock import Mock, patch
 import pytest
 
 from entities.bill.business.service import BillService
-from entities.bill_credit.business.service import BillCreditService
+from entities.bill_credit.business.service import (
+    BillCreditService,
+    _clear_legacy_vendorcredit_billcredit_mapping,
+)
 from entities.expense.business.service import ExpenseService
 from integrations.intuit.qbo.base.mapping_cleanup import delete_own_qbo_mapping_before_header
 
@@ -158,37 +161,79 @@ def test_delete_own_qbo_mapping_before_header_restore_failed_callback_failure_st
     on_restore_failed.assert_called_once_with(mapping, restore_exc)
 
 
-@patch("integrations.intuit.qbo.base.mapping_cleanup.qbo_app_lock", _granted_lock)
-def test_bill_credit_delete_clears_qbo_mapping_before_header():
+def test_bill_credit_delete_no_longer_clears_any_qbo_mapping():
+    """U-353: qbo.VendorCreditBillCredit is retired — BillCredit's delete no
+    longer calls delete_own_qbo_mapping_before_header at all (dbo.BillCredit.
+    QboId/RealmId are plain columns that die with the row; there is no
+    separate mapping row to clear first). A straight header delete, same
+    shape as Bill/Expense before U-226 ever touched them — plus the U-353
+    deploy-gap bridge (see the dedicated tests below), which is a real DB call
+    here since it isn't mocked; that's fine — the harness's no-live-DB guard
+    fires and is caught by the bridge's own broad tolerance."""
     bill_credit = SimpleNamespace(id=42, public_id="bc-pub")
-    call_order = []
 
     mock_repo = Mock()
-    mock_repo.delete_by_id.side_effect = lambda *_: call_order.append("header") or bill_credit
-
-    mock_mapping_repo = Mock()
-    fake_mapping = SimpleNamespace(qbo_vendor_credit_id=100)
-    mock_mapping_repo.read_by_bill_credit_id.return_value = fake_mapping
-    mock_mapping_repo.delete_by_qbo_vendor_credit_id.side_effect = (
-        lambda *_: call_order.append("mapping")
-    )
+    mock_repo.delete_by_id.return_value = bill_credit
 
     svc = BillCreditService(repo=mock_repo)
 
     with patch.object(svc, "read_by_public_id", return_value=bill_credit), patch(
         "entities.bill_credit_line_item.business.service.BillCreditLineItemService"
-    ) as li_svc_cls, patch(
-        "integrations.intuit.qbo.vendorcredit.connector.bill_credit.persistence.repo.VendorCreditBillCreditMappingRepository",
-        return_value=mock_mapping_repo,
-    ):
+    ) as li_svc_cls:
         li_svc_cls.return_value.read_by_bill_credit_id.return_value = []
-        svc.delete_by_public_id("bc-pub")
+        result = svc.delete_by_public_id("bc-pub")
 
-    assert call_order == ["mapping", "header"]
-    mock_mapping_repo.read_by_bill_credit_id.assert_called_once_with(42)
-    mock_mapping_repo.delete_by_qbo_vendor_credit_id.assert_called_once_with(100)
-    mock_mapping_repo.create.assert_not_called()
+    assert result is bill_credit
     mock_repo.delete_by_id.assert_called_once_with(42)
+
+
+# --- U-353 deploy-gap bridge: _clear_legacy_vendorcredit_billcredit_mapping ---
+#
+# Builders never apply prod DDL — the DROP TABLE for qbo.VendorCreditBillCredit
+# lands AFTER this unit's code deploys, not atomically with it (see repo CLAUDE.md
+# + the call site's own comment). Until that DROP is applied, a historical
+# BillCredit synced before this unit may still have a legacy mapping row pointing
+# at it via a NO_ACTION FK — deleting the header without clearing it first 547s.
+
+_MODULE = "entities.bill_credit.business.service"
+# get_connection is imported INSIDE _clear_legacy_vendorcredit_billcredit_mapping
+# (not at module top), so it must be patched at its own definition — patching
+# f"{_MODULE}.get_connection" would find no such module attribute to replace.
+_DATABASE_MODULE = "shared.database"
+
+
+def test_legacy_mapping_bridge_issues_object_id_guarded_delete():
+    """The IF OBJECT_ID(...) IS NOT NULL guard makes both the table-still-live
+    AND the table-already-dropped case a single statement evaluated by SQL
+    Server itself — no Python-side table-existence branching needed (and none
+    left to test): the guard is SQL Server's job, not this function's."""
+    cursor = Mock()
+    conn = Mock()
+    conn.cursor.return_value = cursor
+
+    with patch(f"{_DATABASE_MODULE}.get_connection") as mock_get_conn:
+        mock_get_conn.return_value.__enter__.return_value = conn
+        _clear_legacy_vendorcredit_billcredit_mapping(42)
+
+    cursor.execute.assert_called_once_with(
+        "IF OBJECT_ID('qbo.VendorCreditBillCredit', 'U') IS NOT NULL "
+        "DELETE FROM [qbo].[VendorCreditBillCredit] WHERE [BillCreditId] = ?",
+        (42,),
+    )
+
+
+def test_legacy_mapping_bridge_logs_but_swallows_unexpected_errors():
+    """A genuine unexpected DB error (network blip, etc.) is logged, not raised —
+    best-effort only. The real safety net is the FK itself: if a mapping row
+    really does still exist and this bridge failed to clear it, the subsequent
+    header DELETE 547s anyway (fail-safe, not fail-silent-corruption)."""
+    with patch(f"{_DATABASE_MODULE}.get_connection") as mock_get_conn, patch(
+        f"{_MODULE}.logger"
+    ) as mock_logger:
+        mock_get_conn.side_effect = RuntimeError("connection reset")
+        _clear_legacy_vendorcredit_billcredit_mapping(42)  # must not raise
+
+    mock_logger.warning.assert_called_once()
 
 
 @patch("integrations.intuit.qbo.base.mapping_cleanup.qbo_app_lock", _granted_lock)

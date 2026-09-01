@@ -68,10 +68,6 @@ SPROC_DRIFT_LEDGER: dict[str, frozenset[str]] = {
         'integrations/intuit/qbo/vendorcredit/sql/qbo.vendorcredit.sql',
         'scripts/migrations/qbo_vendorcredit_upsert_inplace.sql',
     }),  # known-dup, home=integrations/intuit/qbo/vendorcredit/sql/qbo.vendorcredit.sql
-    "DeleteVendorCreditBillCreditByQboVendorCreditId": frozenset({
-        'integrations/intuit/qbo/vendorcredit/connector/bill_credit/sql/qbo.vendorcredit_bill_credit.sql',
-        'scripts/migrations/qbo_vendorcredit_reconcile_deletes.sql',
-    }),  # known-dup, home=integrations/intuit/qbo/vendorcredit/connector/bill_credit/sql/qbo.vendorcredit_bill_credit.sql
     "DeleteVendorCreditLineItemBillCreditLineItemById": frozenset({
         'integrations/intuit/qbo/vendorcredit/connector/bill_credit_line_item/sql/qbo.vendorcredit_line_item_bill_credit_line_item.sql',
         'scripts/migrations/qbo_vendorcredit_mapping_sprocs_dbo.sql',

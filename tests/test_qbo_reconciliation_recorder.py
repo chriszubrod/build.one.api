@@ -35,17 +35,24 @@ _SQL_COLUMN_WIDTH_RE = re.compile(
     r"\[(DriftType|EntityType|Severity|Action)\]\s+NVARCHAR\((\d+)\)",
     re.IGNORECASE,
 )
-# Production call sites as of U-352 — guard must discover at least this many writers.
-# Was 31 as of U-334. U-351 (physical_address) is net neutral here: it retired one
-# legacy record_identity_mapping_conflict call (the mapping-table-era
+# Production call sites as of U-353 — guard must discover at least this many writers.
+# Was 31 as of U-334. record_mapping_issue (12) + record_identity_mapping_conflict (9)
+# + record_duplicate_identity_conflict (6) + direct repo.create (1) = 28 total.
+# U-351 (physical_address) was net neutral: retired one legacy
+# record_identity_mapping_conflict call (the mapping-table-era
 # _record_identity_mapping_conflict_issue) and added one new record_duplicate_
 # identity_conflict call (_record_duplicate_qbo_address_issue, reachable since
-# Address's create path DOES adopt by street/city). U-352 (payment_term) removed one
-# record_duplicate_identity_conflict call outright — TermPaymentTermConnector.
-# _record_duplicate_qbo_payment_term_issue was deleted as dead code, since PaymentTerm's
-# create path never adopts by name and so has no side-channel collision that call could
-# ever have fired for. Net: 31 - 1 = 30 total discovered sites.
-_MIN_CALL_SITES = 30
+# Address's create path DOES adopt by street/city) -- 11->10, 6->7.
+# U-352 (payment_term) removed one record_duplicate_identity_conflict call outright
+# -- TermPaymentTermConnector._record_duplicate_qbo_payment_term_issue was deleted as
+# dead code, since PaymentTerm's create path never adopts by name and so has no
+# side-channel collision that call could ever have fired for -- 7->6.
+# U-353 (this unit) retired qbo.VendorCreditBillCredit, removing
+# VendorCreditBillCreditConnector's _record_identity_mapping_conflict_issue
+# (record_identity_mapping_conflict, 10->9) and _record_missing_bill_credit_issue
+# (record_mapping_issue, 13->12) -- both call sites protected a mapping-table-vs-dbo
+# drift scenario that no longer exists once dbo.BillCredit.QboId is the sole store.
+_MIN_CALL_SITES = 28
 _SKIP_FILES = frozenset({"reconciliation_recorder.py"})
 _DEFAULT_KWARGS = {
     "severity": "critical",

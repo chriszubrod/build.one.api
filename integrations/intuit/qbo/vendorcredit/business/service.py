@@ -122,19 +122,17 @@ class QboVendorCreditService:
 
         Deletion order (respects FK NO ACTION constraints):
           1. VendorCreditLineItemBillCreditLineItem mapping rows for the credit's lines.
-          2. The VendorCreditBillCredit mapping row (before deleting the BillCredit).
-          3. The BillCredit (app-layer cascade: BillCreditLineItem -> attachment -> blob,
-             with any InvoiceLineItem FK nullified first by the line-item delete).
-          4. The QboVendorCredit (FK_QboVendorCreditLine_QboVendorCredit CASCADE handles lines).
+          2. The BillCredit, resolved by dbo-native QBO identity (U-278/U-353 — no
+             qbo.VendorCreditBillCredit mapping table left to hop through). App-layer
+             cascade: BillCreditLineItem -> attachment -> blob, with any InvoiceLineItem
+             FK nullified first by the line-item delete.
+          3. The QboVendorCredit (FK_QboVendorCreditLine_QboVendorCredit CASCADE handles lines).
         """
         from integrations.intuit.qbo.base.delete_reconcile import (
             record_partial_delete_issue,
             strict_confirmed_deleted_ids,
         )
         from integrations.intuit.qbo.base.ids import normalize_qbo_id
-        from integrations.intuit.qbo.vendorcredit.connector.bill_credit.persistence.repo import (
-            VendorCreditBillCreditMappingRepository,
-        )
         from integrations.intuit.qbo.vendorcredit.connector.bill_credit_line_item.persistence.repo import (
             VendorCreditLineItemBillCreditLineItemMappingRepository,
         )
@@ -153,7 +151,6 @@ class QboVendorCreditService:
         if not confirmed:
             return 0
 
-        bc_mapping_repo = VendorCreditBillCreditMappingRepository()
         line_mapping_repo = VendorCreditLineItemBillCreditLineItemMappingRepository()
         bill_credit_service = BillCreditService()
 
@@ -166,33 +163,42 @@ class QboVendorCreditService:
                 f"QboVendorCredit qbo_id={local.qbo_id} (local id={local.id}) confirmed deleted in QBO — "
                 f"deleting local record and mapped BillCredit"
             )
-            mapping_removed = False
+            # U-353: renamed from mapping_removed (pre-U-353, only Step 1/2's mapping
+            # deletes could set it) — Step 2 now deletes the BillCredit itself
+            # directly (no mapping row involved), so this must also cover THAT
+            # destructive action; otherwise a run with no line mappings but a
+            # successful BillCredit delete would skip the partial-delete issue below
+            # if Step 3 then failed (Codex xhigh round-1 P3). A list, not a bool,
+            # so the recorded issue names what ACTUALLY happened instead of always
+            # blaming the line-item mapping — the pre-U-353 code's label was always
+            # accurate because only the mapping-delete branch could set the flag;
+            # now either branch (or both) can (code-review Angle A round-2). Set
+            # BEFORE each attempt, not after it succeeds: a raise partway through
+            # delete_by_public_id's own cascade (line items/attachments/blobs) is
+            # itself a real partial-delete, and must not be lost just because the
+            # call that started it never returned.
+            destructive_labels = []
             try:
                 # Step 1: line mappings (before BillCreditLineItem deletion).
                 for line in self.repo.read_lines_by_vendor_credit_id(local.id):
                     try:
                         lm = line_mapping_repo.read_by_qbo_line_id(line.id)
                         if lm:
+                            destructive_labels.append("VendorCreditLineItemBillCreditLineItem mapping")
                             line_mapping_repo.delete_by_id(lm.id)
-                            mapping_removed = True
                     except Exception as e:
                         logger.warning(
                             f"Could not delete VendorCreditLineItemBillCreditLineItem mapping for "
                             f"line {line.id} (VC {local.qbo_id}): {e}"
                         )
 
-                # Step 2: the VendorCreditBillCredit mapping BEFORE the BillCredit.
-                bc_mapping = bc_mapping_repo.read_by_qbo_vendor_credit_id(local.id)
-                if bc_mapping:
-                    try:
-                        bc_mapping_repo.delete_by_qbo_vendor_credit_id(local.id)
-                        mapping_removed = True
-                    except Exception as e:
-                        logger.warning(f"Could not delete VendorCreditBillCredit mapping for VC {local.qbo_id}: {e}")
-                    bc = bill_credit_service.read_by_id(bc_mapping.bill_credit_id)
-                    if bc:
-                        bill_credit_service.delete_by_public_id(bc.public_id)
-                        logger.info(f"Deleted BillCredit id={bc.id} mapped to deleted QboVendorCredit {local.qbo_id}")
+                # Step 2: the BillCredit, resolved directly via dbo-native QBO identity
+                # (U-353 — no more qbo.VendorCreditBillCredit mapping row to hop through).
+                bc = bill_credit_service.read_by_qbo_identity(local.qbo_id, realm_id)
+                if bc:
+                    destructive_labels.append("BillCredit header")
+                    bill_credit_service.delete_by_public_id(bc.public_id)
+                    logger.info(f"Deleted BillCredit id={bc.id} mapped to deleted QboVendorCredit {local.qbo_id}")
 
                 # Step 3: the QboVendorCredit staging (CASCADE removes qbo.VendorCreditLine).
                 self.repo.delete_by_qbo_id(local.qbo_id)
@@ -200,10 +206,10 @@ class QboVendorCreditService:
                 deleted += 1
             except Exception as e:
                 logger.error(f"Failed to delete stale QboVendorCredit {local.qbo_id}: {e}")
-                if mapping_removed:
+                if destructive_labels:
                     record_partial_delete_issue(
                         entity_type="VendorCredit",
-                        mapping_label="VendorCreditBillCredit/VendorCreditLineItemBillCreditLineItem",
+                        mapping_label=" + ".join(destructive_labels),
                         mapped_label="BillCredit",
                         realm_id=realm_id,
                         qbo_id=local.qbo_id,

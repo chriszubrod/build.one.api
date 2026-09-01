@@ -455,8 +455,9 @@ GO
 
 
 -- Reconcile-deletes: delete a staging header by QBO id. The lines are removed by
--- FK_QboVendorCreditLine_QboVendorCredit ON DELETE CASCADE; mappings + BillCredit
--- are deleted by the service first.
+-- FK_QboVendorCreditLine_QboVendorCredit ON DELETE CASCADE; the BillCredit is
+-- deleted by the service first (dbo-native identity, U-353 — no mapping table
+-- to clear anymore).
 CREATE OR ALTER PROCEDURE DeleteQboVendorCreditByQboId
     @QboId NVARCHAR(50)
 AS
@@ -466,84 +467,9 @@ BEGIN
 END;
 GO
 
--- Mapping table for VendorCredit <-> BillCredit
-GO
-
-IF OBJECT_ID('qbo.VendorCreditBillCredit', 'U') IS NULL
-BEGIN
-CREATE TABLE [qbo].[VendorCreditBillCredit]
-(
-    [Id] BIGINT IDENTITY(1,1) PRIMARY KEY NOT NULL,
-    [PublicId] UNIQUEIDENTIFIER NOT NULL DEFAULT NEWID(),
-    [RowVersion] ROWVERSION NOT NULL,
-    [CreatedDatetime] DATETIME2(3) NOT NULL,
-    [ModifiedDatetime] DATETIME2(3) NULL,
-    [QboVendorCreditId] BIGINT NOT NULL,
-    [BillCreditId] BIGINT NOT NULL,
-    CONSTRAINT [FK_VendorCreditBillCredit_QboVendorCredit] FOREIGN KEY ([QboVendorCreditId]) REFERENCES [qbo].[VendorCredit]([Id]),
-    CONSTRAINT [FK_VendorCreditBillCredit_BillCredit] FOREIGN KEY ([BillCreditId]) REFERENCES [dbo].[BillCredit]([Id]),
-    CONSTRAINT [UQ_VendorCreditBillCredit_QboVendorCreditId] UNIQUE ([QboVendorCreditId]),
-    CONSTRAINT [UQ_VendorCreditBillCredit_BillCreditId] UNIQUE ([BillCreditId])
-);
-END
-GO
-
-GO
-
-CREATE OR ALTER PROCEDURE CreateVendorCreditBillCredit
-(
-    @QboVendorCreditId BIGINT,
-    @BillCreditId BIGINT
-)
-AS
-BEGIN
-    BEGIN TRANSACTION;
-    DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();
-    
-    INSERT INTO [qbo].[VendorCreditBillCredit] ([CreatedDatetime], [ModifiedDatetime], [QboVendorCreditId], [BillCreditId])
-    OUTPUT
-        INSERTED.[Id], INSERTED.[PublicId], INSERTED.[RowVersion],
-        CONVERT(VARCHAR(19), INSERTED.[CreatedDatetime], 120) AS [CreatedDatetime],
-        CONVERT(VARCHAR(19), INSERTED.[ModifiedDatetime], 120) AS [ModifiedDatetime],
-        INSERTED.[QboVendorCreditId], INSERTED.[BillCreditId]
-    VALUES (@Now, @Now, @QboVendorCreditId, @BillCreditId);
-    
-    COMMIT TRANSACTION;
-END;
-GO
-
-GO
-
-CREATE OR ALTER PROCEDURE ReadVendorCreditBillCreditByBillCreditId
-(
-    @BillCreditId BIGINT
-)
-AS
-BEGIN
-    SELECT
-        [Id], [PublicId], [RowVersion],
-        CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
-        CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
-        [QboVendorCreditId], [BillCreditId]
-    FROM [qbo].[VendorCreditBillCredit]
-    WHERE [BillCreditId] = @BillCreditId;
-END;
-GO
-
-GO
-
-CREATE OR ALTER PROCEDURE ReadVendorCreditBillCreditByQboVendorCreditId
-(
-    @QboVendorCreditId BIGINT
-)
-AS
-BEGIN
-    SELECT
-        [Id], [PublicId], [RowVersion],
-        CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
-        CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
-        [QboVendorCreditId], [BillCreditId]
-    FROM [qbo].[VendorCreditBillCredit]
-    WHERE [QboVendorCreditId] = @QboVendorCreditId;
-END;
-GO
+-- U-353: the qbo.VendorCreditBillCredit mapping table (CREATE TABLE +
+-- CreateVendorCreditBillCredit / ReadVendorCreditBillCreditByBillCreditId /
+-- ReadVendorCreditBillCreditByQboVendorCreditId) was retired here. dbo.BillCredit's
+-- own QboId/RealmId columns (U-278) are the sole identity store; qbo.VendorCredit
+-- (this file's staging table, above) is untouched. See
+-- docs/design/u349-qbo-mapping-table-retirement.md family 4.

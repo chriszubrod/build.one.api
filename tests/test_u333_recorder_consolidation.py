@@ -23,9 +23,6 @@ from integrations.intuit.qbo.purchase.connector.expense_line_item.business.servi
     PurchaseLineExpenseLineItemConnector,
 )
 from integrations.intuit.qbo.vendor.connector.vendor.business.service import VendorVendorConnector
-from integrations.intuit.qbo.vendorcredit.connector.bill_credit.business.service import (
-    VendorCreditBillCreditConnector,
-)
 from integrations.intuit.qbo.vendorcredit.connector.bill_credit_line_item.business.service import (
     VendorCreditLineItemConnector,
 )
@@ -74,6 +71,11 @@ _EXPECTED = {
             "auto-repointed — investigate which side is correct."
         ),
     },
+    # "physical_address" (this legacy-conflict shape) was superseded in U-351 by
+    # "address_diff_qbo" below — PhysicalAddressAddressConnector no longer has
+    # _record_identity_mapping_conflict_issue (qbo.PhysicalAddressAddress is
+    # retired); its dbo-only duplicate-identity guard is a different method,
+    # covered by the "address_diff_qbo" entry alongside customer/project/company.
     # "payment_term_diff_qbo" entry removed in U-352 (/simplify altitude finding):
     # TermPaymentTermConnector's create path never adopts a pre-existing row by
     # name, so it has no side-channel collision a duplicate-identity conflict could
@@ -82,22 +84,10 @@ _EXPECTED = {
     # rather than kept for sibling-shape symmetry. See
     # integrations/intuit/qbo/term/connector/payment_term/business/service.py's
     # `_stamp_payment_term_identity` docstring for the full reasoning.
-    "bill_credit": {
-        "drift_type": "vendorcredit_identity_conflict",
-        "entity_type": "BillCredit",
-        "entity_public_id": None,
-        "qbo_id": "VC-99",
-        "realm_id": "realm-1",
-        "details": (
-            "VendorCreditBillCredit identity conflict. dbo.BillCredit 55 carries native QBO identity "
-            "for QboVendorCredit 4 (QboId=VC-99, RealmId=realm-1). qbo-side: the mapping table still "
-            "binds that same QboVendorCredit to a DIFFERENT BillCredit 9 (mapping 2) — the "
-            "invoice-side LinkedTxn Tier-0 resolver (ProposeInvoiceSourceLinks) reading this mapping "
-            "table will keep resolving to BillCredit 9, not 55, until repointed. local-side: "
-            "BillCredit 55's own mapping row (mapping 3) still binds it to a DIFFERENT "
-            "QboVendorCredit 5. Not auto-repointed — investigate which side is correct."
-        ),
-    },
+    # U-353: "bill_credit" removed — VendorCreditBillCreditConnector no longer has
+    # _record_identity_mapping_conflict_issue (qbo.VendorCreditBillCredit is retired;
+    # run_identity_fastpath_dbo_only has no mapping-table-vs-dbo conflict state left
+    # to detect — dbo.BillCredit's own unique index is the sole guard now).
     "bill_line_item": {
         "drift_type": "bill_line_item_identity_conflict",
         "entity_type": "BillLineItem",
@@ -305,15 +295,6 @@ def test_recorder_consolidation_emits_identical_tuple(family):
             dbo_expense_id=55,
             local_side_mapping=SimpleNamespace(id=3, expense_id=55, qbo_purchase_id=5),
             qbo_side_mapping=SimpleNamespace(id=2, expense_id=9, qbo_purchase_id=4),
-        )
-    elif family == "bill_credit":
-        c = object.__new__(VendorCreditBillCreditConnector)
-        c.reconciliation_repo = Mock()
-        c._record_identity_mapping_conflict_issue(
-            qbo_vc=SimpleNamespace(id=4, qbo_id="VC-99", realm_id="realm-1"),
-            dbo_bill_credit_id=55,
-            local_side_mapping=SimpleNamespace(id=3, bill_credit_id=55, qbo_vendor_credit_id=5),
-            qbo_side_mapping=SimpleNamespace(id=2, bill_credit_id=9, qbo_vendor_credit_id=4),
         )
     elif family == "bill_line_item":
         c = object.__new__(BillLineItemConnector)

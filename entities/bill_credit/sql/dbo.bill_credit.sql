@@ -472,12 +472,13 @@ GO
 -- U-278 (Phase-4, header/reference repoint): direct dbo-native identity lookup,
 -- mirroring ReadCustomerByQboIdAndRealmId (U-276). Lets VendorCreditBillCreditConnector
 -- resolve "does a dbo.BillCredit already exist for this external QBO id" WITHOUT hopping
--- through the qbo.VendorCredit / qbo.VendorCreditBillCredit staging/mapping tables — every
--- BillCredit synced at least once already carries QboId/RealmId via SetBillCreditQboIdentity,
--- so this is the steady-state fast path; the mapping-table lookup remains as a fallback for
--- rows that predate identity stamping. RealmId NULL-equality mirrors SetBillCreditQboIdentity's
--- own stolen-identity comparison. No RBAC threading — BillCredit has no row-level RBAC on
--- direct-id reads (ReadBillCreditById/ReadBillCreditByPublicId are unscoped too).
+-- through the qbo.VendorCredit staging table. U-353: this is now the SOLE identity
+-- resolution path — every BillCredit synced at least once carries QboId/RealmId via
+-- SetBillCreditQboIdentity, and the qbo.VendorCreditBillCredit mapping-table fallback
+-- for rows that predate identity stamping is retired (the table itself is dropped).
+-- RealmId NULL-equality mirrors SetBillCreditQboIdentity's own stolen-identity
+-- comparison. No RBAC threading — BillCredit has no row-level RBAC on direct-id reads
+-- (ReadBillCreditById/ReadBillCreditByPublicId are unscoped too).
 CREATE OR ALTER PROCEDURE ReadBillCreditByQboIdAndRealmId
 (
     @QboId NVARCHAR(50),

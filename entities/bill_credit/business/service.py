@@ -15,6 +15,44 @@ from shared.authz import current_user_id, current_is_system_admin
 logger = logging.getLogger(__name__)
 
 
+def _clear_legacy_vendorcredit_billcredit_mapping(bill_credit_id: int) -> None:
+    """U-353 deploy-gap bridge for BillCreditService.delete_by_public_id — see its
+    call site for the full rationale. Raw SQL, not a repo/model (both retired):
+    deletes any row in the (soon-to-be-dropped) qbo.VendorCreditBillCredit table
+    that still points at this BillCredit, so its NO_ACTION FK never blocks the
+    header delete below.
+
+    The `IF OBJECT_ID(...) IS NOT NULL` guard (code-review Angle G/round-2,
+    matching the same idiom the base .sql file's own `CREATE TABLE` guard
+    already uses) makes the table-already-dropped case — the normal state once
+    /em applies the DROP — a plain no-op evaluated by SQL Server itself, NOT a
+    caught Python exception: no substring-matching on driver error text, which
+    this codebase has already been burned by once (see
+    shared/database.py::map_database_error's own comment on why SQL 547's
+    error text can't be substring-matched safely, and shared/db_constraints.py's
+    `_has_error_number`). Once /em applies the DROP, this whole function
+    becomes a permanent no-op and should be deleted."""
+    from shared.database import get_connection
+
+    try:
+        with get_connection() as conn:
+            conn.cursor().execute(
+                "IF OBJECT_ID('qbo.VendorCreditBillCredit', 'U') IS NOT NULL "
+                "DELETE FROM [qbo].[VendorCreditBillCredit] WHERE [BillCreditId] = ?",
+                (bill_credit_id,),
+            )
+    except Exception as e:
+        # Only reachable now for a genuine unexpected failure (connection reset,
+        # deadlock, permissions) — table-missing no longer raises at all. Logged,
+        # not raised: best-effort only. The real safety net is the FK itself — if
+        # a mapping row really does still exist and this failed to clear it, the
+        # header delete below 547s anyway (fail-safe, not fail-silent-corruption).
+        logger.warning(
+            f"Could not clear legacy qbo.VendorCreditBillCredit mapping for "
+            f"BillCredit {bill_credit_id}: {e}"
+        )
+
+
 class BillCreditService:
     """
     Service for BillCredit entity business operations.
@@ -318,44 +356,19 @@ class BillCreditService:
             except Exception as e:
                 logger.warning(f"Error processing bill credit line item {line_item.id if line_item.id else 'unknown'}: {e}")
         
-        # Clear this BillCredit's own qbo.VendorCreditBillCredit mapping row, then delete the
-        # header. FK is NO_ACTION in prod (not CASCADE — the base .sql file's CREATE TABLE only
-        # applies on first create, so an already-existing prod table never picked it up), so an
-        # unmapped delete either 547s a QBO-pulled credit or leaves a permanent dangling
-        # mapping. If the header delete fails for any other reason after the mapping is gone,
-        # the mapping is restored so a failed attempt never unmaps a still-live credit (U-226).
-        from integrations.intuit.qbo.vendorcredit.connector.bill_credit.persistence.repo import (
-            VendorCreditBillCreditMappingRepository,
-        )
-        from integrations.intuit.qbo.base.mapping_cleanup import (
-            delete_own_qbo_mapping_before_header,
-            make_restore_failed_recorder,
-        )
-
-        _vc_bc_mapping_repo = VendorCreditBillCreditMappingRepository()
-
-        def _bill_credit_staging_repo():
-            from integrations.intuit.qbo.vendorcredit.persistence.repo import QboVendorCreditRepository
-
-            return QboVendorCreditRepository()
-
-        return delete_own_qbo_mapping_before_header(
-            read_mapping=lambda: _vc_bc_mapping_repo.read_by_bill_credit_id(bill_credit_id),
-            delete_mapping=lambda m: _vc_bc_mapping_repo.delete_by_qbo_vendor_credit_id(
-                m.qbo_vendor_credit_id
-            ),
-            recreate_mapping=lambda m: _vc_bc_mapping_repo.create(
-                qbo_vendor_credit_id=m.qbo_vendor_credit_id,
-                bill_credit_id=m.bill_credit_id,
-            ),
-            delete_header=lambda: self.repo.delete_by_id(existing.id),
-            entity_label="BillCredit",
-            entity_id=bill_credit_id,
-            on_restore_failed=make_restore_failed_recorder(
-                entity_type="BillCredit",
-                mapping_label="VendorCreditBillCredit",
-                staging_repo_factory=_bill_credit_staging_repo,
-                qbo_id_from_mapping=lambda m: m.qbo_vendor_credit_id,
-                local_id=bill_credit_id,
-            ),
-        )
+        # U-353: dbo.BillCredit.QboId/RealmId (U-278) is the sole QBO identity store
+        # going forward — the connector no longer creates qbo.VendorCreditBillCredit
+        # rows. But builders never apply prod DDL (see repo CLAUDE.md); the DROP TABLE
+        # for this retired mapping table is handed to /em and lands AFTER this code
+        # deploys, not atomically with it. Until that DROP is applied, a historical
+        # BillCredit synced before this unit may still have a legacy mapping row
+        # pointing at it via a NO_ACTION FK (U-226) — deleting the header without
+        # clearing it first would 547. Best-effort bridge: no repo/model (those are
+        # retired), just enough to unblock the header delete during the deploy gap;
+        # delete this call once /em confirms the DROP has landed. Deliberately does
+        # NOT restore the mapping row on a header-delete failure (unlike the old
+        # delete_own_qbo_mapping_before_header this replaced) — dbo.BillCredit.QboId
+        # is the sole identity store now, so a lost legacy mapping row no longer
+        # orphans identity resolution the way losing it once could.
+        _clear_legacy_vendorcredit_billcredit_mapping(existing.id)
+        return self.repo.delete_by_id(existing.id)

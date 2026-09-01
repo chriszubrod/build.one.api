@@ -249,24 +249,21 @@ def test_address_create_mapping_identity_failure_propagates():
 
 
 def _make_bill_credit_connector():
-    mapping_repo = Mock()
-    mapping_repo.read_by_qbo_vendor_credit_id.return_value = None
-    mapping_repo.create.return_value = SimpleNamespace(id=1)
     bill_credit_service = Mock()
     bill_credit_service.repo = Mock()
-    # U-278: no prior dbo-native identity yet — these tests exercise the CREATE path,
+    # U-353: no dbo-native identity yet — these tests exercise the CREATE/MISS path,
     # which is exactly what a real never-before-synced BillCredit would report.
     bill_credit_service.read_by_qbo_identity.return_value = None
-    connector = VendorCreditBillCreditConnector(
-        mapping_repo=mapping_repo, bill_credit_service=bill_credit_service
-    )
+    connector = VendorCreditBillCreditConnector(bill_credit_service=bill_credit_service)
     connector._get_vendor_public_id = Mock(return_value="vendor-pub")
     connector._sync_line_items = Mock()
-    return connector, mapping_repo, bill_credit_service.repo, bill_credit_service
+    return connector, bill_credit_service.repo, bill_credit_service
 
 
-def test_bill_credit_create_path_dual_writes_identity_before_mapping():
-    connector, mapping_repo, repo, bill_credit_service = _make_bill_credit_connector()
+def test_bill_credit_create_path_dual_writes_identity(grant_qbo_app_lock):
+    """U-353: no more mapping-table dual-write — the CREATE path stamps
+    dbo-native identity directly onto the just-created BillCredit."""
+    connector, repo, bill_credit_service = _make_bill_credit_connector()
     bill_credit_service.create.return_value = SimpleNamespace(id=16, public_id="bc-pub")
     qbo_vc = SimpleNamespace(
         id=30,
@@ -278,21 +275,15 @@ def test_bill_credit_create_path_dual_writes_identity_before_mapping():
         total_amt="10.00",
         private_note="note",
     )
-    call_order = []
-    repo.set_qbo_identity.side_effect = lambda **kwargs: call_order.append("stamp")
-    mapping_repo.create.side_effect = lambda **kwargs: call_order.append("mapping") or SimpleNamespace(
-        id=1
-    )
 
     connector.sync_from_qbo_vendor_credit(qbo_vc, qbo_lines=[SimpleNamespace()])
 
     repo.set_qbo_identity.assert_called_once_with(id=16, qbo_id="VC-1", realm_id="realm-bc")
-    mapping_repo.create.assert_called_once_with(qbo_vendor_credit_id=30, bill_credit_id=16)
-    assert call_order == ["stamp", "mapping"]
+    connector._sync_line_items.assert_called_once()
 
 
-def test_bill_credit_create_path_identity_failure_propagates_before_mapping():
-    connector, mapping_repo, repo, bill_credit_service = _make_bill_credit_connector()
+def test_bill_credit_create_path_identity_failure_propagates(grant_qbo_app_lock):
+    connector, repo, bill_credit_service = _make_bill_credit_connector()
     bill_credit_service.create.return_value = SimpleNamespace(id=16, public_id="bc-pub")
     repo.set_qbo_identity.side_effect = RuntimeError("stamp failed")
     qbo_vc = SimpleNamespace(
@@ -307,7 +298,7 @@ def test_bill_credit_create_path_identity_failure_propagates_before_mapping():
     )
     with pytest.raises(RuntimeError, match="stamp failed"):
         connector.sync_from_qbo_vendor_credit(qbo_vc, qbo_lines=[SimpleNamespace()])
-    mapping_repo.create.assert_not_called()
+    connector._sync_line_items.assert_not_called()
 
 
 FASTPATH_LOCK_TARGET = "integrations.intuit.qbo.base.identity_fastpath.qbo_app_lock"
@@ -418,12 +409,15 @@ def test_address_sync_does_not_steal_identity_on_shared_street_city_second_sync(
     reconciliation_repo.create.assert_called_once()
 
 
-@patch("scripts.backfill_qbo_identity_reference.assert_cli_system_admin")
-@patch("scripts.backfill_qbo_identity_reference.backfill_entity", return_value=False)
-def test_backfill_main_returns_nonzero_on_entity_verification_failure(mock_backfill, mock_admin):
-    with patch("sys.argv", ["backfill_qbo_identity_reference.py", "--entity", "bill_credit"]):
-        assert backfill_main() == 1
-    mock_backfill.assert_called_once()
+# test_backfill_main_returns_nonzero_on_entity_verification_failure removed
+# (U-353): it drove main() with `--entity bill_credit`, the last reference
+# family with a live mapping table to backfill FROM. U-351 (address) and
+# U-352 (payment_term) already retired their own rows entirely; U-353 excludes
+# "bill_credit" from ENTITY_SPECS too (its mapping table is retired) without
+# removing the FlatEntitySpec row itself (still needed elsewhere — see
+# identity_drift.py's own comment) — so ENTITY_SPECS is now genuinely empty
+# and no per-entity --entity value is valid anymore. The fanout-failure test
+# below still covers main()'s other nonzero-exit path with zero entities.
 
 
 @patch("scripts.backfill_qbo_identity_reference.assert_cli_system_admin")

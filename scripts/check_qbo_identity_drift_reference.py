@@ -82,11 +82,24 @@ def _scan_entity(spec: FlatEntitySpec) -> dict[str, int]:
     return counts
 
 
+# U-353: qbo.VendorCreditBillCredit is retired, so "bill_credit"'s mapping-table
+# JOIN below (_drift_query) would raise "invalid object name" if run. The spec row
+# itself stays in REFERENCE_ENTITY_SPECS (reconciliation's own dbo-native reader
+# still needs it — see identity_drift.py's comment there); this script just excludes
+# it from its own mapping-table-drift working set, same disposition U-325 gave
+# vendor/customer/cost_code/sub_cost_code (removed outright there, since nothing
+# else needed those rows).
+_MAPPING_TABLE_RETIRED_KEYS = frozenset({"bill_credit"})
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="Detect dbo vs qbo reference identity drift (read-only).")
     ap.add_argument(
         "--entity",
-        choices=[*(spec.key for spec in REFERENCE_ENTITY_SPECS), "all"],
+        choices=[
+            *(spec.key for spec in REFERENCE_ENTITY_SPECS if spec.key not in _MAPPING_TABLE_RETIRED_KEYS),
+            "all",
+        ],
         default="all",
     )
     args = ap.parse_args()
@@ -94,7 +107,7 @@ def main() -> int:
     assert_cli_system_admin()
 
     specs = (
-        REFERENCE_ENTITY_SPECS
+        tuple(s for s in REFERENCE_ENTITY_SPECS if s.key not in _MAPPING_TABLE_RETIRED_KEYS)
         if args.entity == "all"
         else tuple(s for s in REFERENCE_ENTITY_SPECS if s.key == args.entity)
     )

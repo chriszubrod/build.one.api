@@ -1,5 +1,13 @@
-"""U-225 guard: qbo.VendorCreditBillCredit is declared by exactly one CREATE TABLE body,
-and the U-225 FK-gap migration declares all 22 expected NO-ACTION foreign keys."""
+"""U-225 guard: the U-225 FK-gap migration declares all 22 expected NO-ACTION
+foreign keys.
+
+U-353: qbo.VendorCreditBillCredit was retired (table + connector SQL file both
+removed), so this file's original guard -- exactly one CREATE TABLE
+[qbo].[VendorCreditBillCredit] body across the repo -- no longer applies; there
+is zero such bodies now, by design. That guard (and the connector-file
+existence check it depended on) was removed rather than updated to assert
+"zero"; the FK-gap migration guard below is unrelated to VendorCreditBillCredit
+(it covers the other 11 mapping tables' FK constraints) and stays as-is."""
 
 from __future__ import annotations
 
@@ -9,61 +17,6 @@ from pathlib import Path
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-
-VENDORCREDIT_BASE_FILE = (
-    REPO_ROOT / "integrations/intuit/qbo/vendorcredit/sql/qbo.vendorcredit.sql"
-)
-VENDORCREDIT_CONNECTOR_FILE = (
-    REPO_ROOT
-    / "integrations/intuit/qbo/vendorcredit/connector/bill_credit/sql/qbo.vendorcredit_bill_credit.sql"
-)
-
-_CREATE_TABLE_RE = re.compile(
-    r"CREATE\s+TABLE\s+\[qbo\]\.\[VendorCreditBillCredit\]", re.IGNORECASE
-)
-
-
-def _count_create_table_bodies() -> dict[str, int]:
-    counts = {}
-    for path in (VENDORCREDIT_BASE_FILE, VENDORCREDIT_CONNECTOR_FILE):
-        text = path.read_text(encoding="utf-8")
-        counts[str(path.relative_to(REPO_ROOT))] = len(_CREATE_TABLE_RE.findall(text))
-    return counts
-
-
-def test_files_exist() -> None:
-    assert VENDORCREDIT_BASE_FILE.is_file(), f"missing {VENDORCREDIT_BASE_FILE}"
-    assert VENDORCREDIT_CONNECTOR_FILE.is_file(), f"missing {VENDORCREDIT_CONNECTOR_FILE}"
-
-
-def test_vendor_credit_bill_credit_has_exactly_one_create_table_body() -> None:
-    """U-225: the connector file's divergent (INT, CASCADE) body must stay deleted --
-    the base file (qbo.vendorcredit.sql) is the sole home, matching live prod
-    (BIGINT ids, NO ACTION on both FKs, re-measured 2026-08-16)."""
-    counts = _count_create_table_bodies()
-    total = sum(counts.values())
-    assert total == 1, (
-        f"expected exactly one CREATE TABLE [qbo].[VendorCreditBillCredit] body "
-        f"across the repo, found {total}: {counts!r}"
-    )
-    base_rel = str(VENDORCREDIT_BASE_FILE.relative_to(REPO_ROOT))
-    assert counts[base_rel] == 1, (
-        f"expected the CREATE TABLE body to live in {base_rel}, found counts={counts!r}"
-    )
-
-
-def test_vendor_credit_bill_credit_base_declares_no_action_both_sides() -> None:
-    text = VENDORCREDIT_BASE_FILE.read_text(encoding="utf-8")
-    # Locate the CREATE TABLE block and confirm neither FK carries ON DELETE CASCADE.
-    match = _CREATE_TABLE_RE.search(text)
-    assert match, "CREATE TABLE [qbo].[VendorCreditBillCredit] not found in base file"
-    block_end = text.index(");", match.start())
-    block = text[match.start():block_end]
-    assert "ON DELETE CASCADE" not in block.upper(), (
-        "qbo.VendorCreditBillCredit base file must declare NO ACTION (implicit, no "
-        "ON DELETE clause) to match live prod -- found an explicit ON DELETE CASCADE"
-    )
-
 
 # ---------------------------------------------------------------------------
 # U-225 Part 2: the FK-gap migration must declare all 22 constraints (11 tables x 2).

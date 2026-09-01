@@ -7,10 +7,6 @@ from typing import List, Optional
 # Local Imports
 from shared.api.money import to_decimal_or_none
 from integrations.intuit.qbo.vendorcredit.business.model import QboVendorCredit, QboVendorCreditLine
-from integrations.intuit.qbo.vendorcredit.connector.bill_credit.persistence.repo import (
-    VendorCreditBillCreditMappingRepository,
-    VendorCreditBillCreditMapping,
-)
 from integrations.intuit.qbo.vendorcredit.connector.bill_credit_line_item.business.service import (
     VendorCreditLineItemConnector,
 )
@@ -20,17 +16,10 @@ from entities.bill_credit_line_item.business.service import BillCreditLineItemSe
 from entities.vendor.business.service import VendorService
 from integrations.intuit.qbo.base.pull_race import guard_lines_present
 from integrations.intuit.qbo.base.compensation import rollback_orphan_header
-from integrations.intuit.qbo.base.reconciliation_recorder import (
-    record_identity_mapping_conflict,
-    record_mapping_issue,
-)
+from integrations.intuit.qbo.base.reconciliation_recorder import record_mapping_issue
 from integrations.intuit.qbo.base.field_ownership import preserve_human_edited_ref, qbo_ref_or_placeholder
 from integrations.intuit.qbo.base.identity_consistency import verify_identity_dbo_only
-from integrations.intuit.qbo.base.identity_fastpath import (
-    raise_concurrent_write_race,
-    resolve_mapping_state,
-    run_identity_fastpath,
-)
+from integrations.intuit.qbo.base.identity_fastpath import run_identity_fastpath_dbo_only
 from integrations.intuit.qbo.base.ids import coerce_id
 from integrations.intuit.qbo.reconciliation.persistence.repo import ReconciliationIssueRepository
 
@@ -38,18 +27,36 @@ logger = logging.getLogger(__name__)
 
 
 class VendorCreditBillCreditConnector:
-    """Connector service for syncing QBO VendorCredits to BillCredits."""
+    """
+    Connector service for syncing QBO VendorCredits to BillCredits.
+
+    U-353: dbo-only identity resolution via `run_identity_fastpath_dbo_only` --
+    no `qbo.VendorCreditBillCredit` mapping-table read/write of any kind (U-349
+    program family 4, mirrors U-350's `CompanyInfoCompanyConnector` / U-310's
+    `CustomerCustomerConnector` / U-313's `VendorVendorConnector`, per Wave 5's
+    "trust dbo alone" plan, `docs/design/u349-qbo-mapping-table-retirement.md`).
+    `dbo.BillCredit.QboId`/`RealmId` (U-278) is the sole identity store;
+    dbo.BillCredit's own filtered unique index (`UQ_BillCredit_QboId_RealmId`)
+    + `SetBillCreditQboIdentity`'s theft-clear UPDATE guarantee at most one row
+    holds a given identity at any instant, so a direct hit needs no
+    cross-check and the old heal/adopt-by-fingerprint branch structure (driven
+    by a second, independently-writable mapping table) no longer has anything
+    to drift from. Unlike U-350 (Company, name-matched master data),
+    BillCredit is a transactional document with no natural pre-identity dedup
+    target, so a genuine miss simply creates a new BillCredit -- protected at
+    the DB layer by `UQ_BillCredit_VendorId_CreditNumber`, exactly as the
+    pre-U-353 legacy CREATE path already was. No push path exists for this
+    connector (pull-only, confirmed at Gate-1 -- nothing dead to remove).
+    """
 
     def __init__(
         self,
-        mapping_repo: Optional[VendorCreditBillCreditMappingRepository] = None,
         bill_credit_service: Optional[BillCreditService] = None,
         bill_credit_line_item_service: Optional[BillCreditLineItemService] = None,
         vendor_service: Optional[VendorService] = None,
         reconciliation_repo: Optional[ReconciliationIssueRepository] = None,
         line_item_connector: Optional[VendorCreditLineItemConnector] = None,
     ):
-        self.mapping_repo = mapping_repo or VendorCreditBillCreditMappingRepository()
         self.bill_credit_service = bill_credit_service or BillCreditService()
         self.bill_credit_line_item_service = bill_credit_line_item_service or BillCreditLineItemService()
         self.vendor_service = vendor_service or VendorService()
@@ -66,14 +73,13 @@ class VendorCreditBillCreditConnector:
         qbo_lines: List[QboVendorCreditLine],
     ) -> Optional[BillCredit]:
         """
-        Sync a QBO VendorCredit to BillCredit module.
-        
+        Sync a QBO VendorCredit to BillCredit module, via the dbo-only identity
+        fast path (U-353).
+
         Process:
-        1. Resolve vendor via VendorRefValue -> QboVendor -> VendorVendor -> Vendor
-        2. Check if BillCredit already exists via mapping table
-        3. Create or update BillCredit
-        4. Create mapping record
-        5. Sync line items
+        1. Resolve vendor via VendorRefValue -> QboVendor -> Vendor (dbo-native)
+        2. Direct dbo.BillCredit.QboId/RealmId hit -> update in place
+        3. Genuine miss -> create a new BillCredit, stamp identity, sync lines
         """
         # Last-resort guard against the QBO pull-race that mints half-built credits (see
         # base.pull_race). Placed BEFORE the try so the RuntimeError isn't swallowed by the
@@ -84,7 +90,6 @@ class VendorCreditBillCreditConnector:
         )
 
         try:
-            # Step 1: Resolve vendor
             vendor_public_id = self._get_vendor_public_id(qbo_vc.vendor_ref_value, qbo_vc.realm_id)
             if not vendor_public_id:
                 # Permanent data issue — raise (don't silently return None) so the
@@ -93,69 +98,19 @@ class VendorCreditBillCreditConnector:
                 raise ValueError(
                     f"No vendor mapping found for QBO vendor ref: {qbo_vc.vendor_ref_value}"
                 )
-            
+
             # QBO-derived credit number (real DocNumber or the QBO-<id> placeholder).
             # Hoisted once and reused on both the UPDATE and CREATE paths, mirroring the
             # Bill/Expense siblings.
             credit_number = qbo_ref_or_placeholder(qbo_vc.doc_number, qbo_vc.qbo_id)
 
-            # U-278 (Phase-4, header/reference repoint): resolve identity directly against
-            # dbo.BillCredit's native QboId/RealmId (Phase 2) before falling back to the
-            # qbo.VendorCreditBillCredit mapping-table hop below. Every BillCredit synced
-            # even once already carries this identity (set_qbo_identity is called on both
-            # the create path and _apply_bill_credit_fields_and_sync below), so this covers
-            # the steady-state case without touching qbo.VendorCredit at all. Mirrors
-            # CustomerCustomerConnector.sync_from_qbo_customer (U-276) exactly.
-            #
-            # The mapping-table state is checked BEFORE any write, not after: writing to
-            # the dbo-identity-matched BillCredit first and detecting a conflict afterward
-            # would corrupt that BillCredit's data in the case where the mapping table —
-            # not dbo identity — is actually still the correct side (U-276 round-3 finding).
-            # On a detected conflict we record it and RAISE — never fall through to the
-            # legacy mapping-table path, which would call set_qbo_identity on a DIFFERENT
-            # row with the same (QboId, RealmId) `direct` already holds; the sproc's own
-            # theft-detection UPDATE would then silently NULL `direct`'s identity, and a
-            # local-side-only conflict could additionally mint a duplicate BillCredit via
-            # Step 3 CREATE. See the raise below for the full rationale.
-            # _apply_bill_credit_fields_and_sync raises internally (via
-            # raise_concurrent_write_race, U-291) on a ROWVERSION-race/concurrent-delete
-            # update failure — one guard inside the shared helper protects every caller
-            # (this fast path, and the legacy branch below) rather than each call site
-            # needing its own. Replaces this connector's own pre-migration behavior,
-            # which only logged a warning and let the None flow through as a silent
-            # success (`FastPathOutcome(hit=True, entity=None)`, which the caller
-            # returned straight through to project_records — counted as a projected
-            # SUCCESS with the BillCredit never actually written).
-            outcome = run_identity_fastpath(
+            outcome = run_identity_fastpath_dbo_only(
                 qbo_id=qbo_vc.qbo_id,
                 realm_id=qbo_vc.realm_id,
-                external_id=qbo_vc.id,
                 entity_label="BillCredit",
                 external_label="QboVendorCredit",
-                mapping_label="VendorCreditBillCredit",
+                lock_resource_label="BillCredit",
                 read_direct_by_qbo_identity=self.bill_credit_service.read_by_qbo_identity,
-                read_by_local_id=self.mapping_repo.read_by_bill_credit_id,
-                read_by_external_id=self.mapping_repo.read_by_qbo_vendor_credit_id,
-                external_id_attr="qbo_vendor_credit_id",
-                record_conflict_issue=lambda entity, by_local, by_external: (
-                    self._record_identity_mapping_conflict_issue(
-                        qbo_vc=qbo_vc,
-                        dbo_bill_credit_id=coerce_id(entity.id),
-                        local_side_mapping=by_local,
-                        qbo_side_mapping=by_external,
-                    )
-                ),
-                conflict_message=lambda entity: (
-                    f"VendorCreditBillCredit identity conflict for QboVendorCredit "
-                    f"{qbo_vc.qbo_id} (id={qbo_vc.id}): dbo.BillCredit {entity.id} "
-                    f"already carries this identity but the mapping table "
-                    f"disagrees. Not auto-repointed; see the recorded "
-                    f"reconciliation issue. Skipping until a human resolves it."
-                ),
-                create_mapping=lambda local_id: self.mapping_repo.create(
-                    qbo_vendor_credit_id=qbo_vc.id,
-                    bill_credit_id=local_id,
-                ),
                 apply_fields=lambda entity: self._apply_bill_credit_fields_and_sync(
                     entity,
                     qbo_vc=qbo_vc,
@@ -163,120 +118,24 @@ class VendorCreditBillCreditConnector:
                     credit_number=credit_number,
                     qbo_lines=qbo_lines,
                 ),
+                resolve_candidate=lambda: self._create_bill_credit(
+                    qbo_vc=qbo_vc, vendor_public_id=vendor_public_id, credit_number=credit_number,
+                ),
+                stamp_identity=lambda candidate: self._stamp_bill_credit_identity(
+                    candidate, qbo_vc=qbo_vc, qbo_lines=qbo_lines,
+                ),
             )
-            if outcome.hit:
-                return outcome.entity
-
-            # Step 2: Check for existing mapping
-            existing_mapping = self.mapping_repo.read_by_qbo_vendor_credit_id(qbo_vc.id)
-
-            if existing_mapping:
-                # Found existing mapping. Resolve the BillCredit to update. HEAL-don't-
-                # delete (U-031, mirroring U-029 Purchase->Expense): the empty-read branch
-                # must NEVER fall through to Step 3 CREATE — that mints a DUPLICATE
-                # BillCredit. (This connector's flavor of the bug: it didn't delete the
-                # mapping, it just silently fell through to create when the read came back
-                # empty.)
-                bill_credit = self.bill_credit_service.read_by_id(existing_mapping.bill_credit_id)
-                if not bill_credit:
-                    # Bound BillCredit read empty. Re-resolve by the natural
-                    # (credit_number, vendor) fingerprint and heal ONLY when it re-binds the
-                    # SAME BillCredit the mapping already targets (a confirmed transient
-                    # empty-read). The fingerprint keys on the QBO-derived credit_number
-                    # (what CREATE writes); the same-id gate makes a wrong/duplicate row safe
-                    # under a non-TOP-1 fingerprint proc (id != mapping → record+raise).
-                    replacement = self.bill_credit_service.read_by_credit_number_and_vendor_public_id(
-                        credit_number, vendor_public_id
-                    )
-                    if replacement and replacement.id == existing_mapping.bill_credit_id:
-                        logger.warning(
-                            f"BillCredit {existing_mapping.bill_credit_id} read empty for "
-                            f"QboVendorCredit {qbo_vc.qbo_id} but re-resolved by "
-                            f"(credit_number, vendor) — transient empty-read; healing in "
-                            f"place, not recreating."
-                        )
-                        bill_credit = replacement
-                    else:
-                        # No fingerprint match, or a match under a DIFFERENT id we cannot
-                        # safely repoint to (no mapping-update sproc): preserve the mapping,
-                        # create nothing, record a critical reconciliation issue, and RAISE.
-                        # The pull caller treats this ValueError as a per-item skip; the
-                        # issue is the durable follow-up record.
-                        self._record_missing_bill_credit_issue(
-                            qbo_vc=qbo_vc, mapping=existing_mapping, fingerprint=replacement
-                        )
-                        raise ValueError(
-                            f"VendorCreditBillCredit mapping {existing_mapping.id} points at "
-                            f"missing BillCredit {existing_mapping.bill_credit_id} and no "
-                            f"local BillCredit fingerprinted by credit_number "
-                            f"'{credit_number}' + vendor resolves to it for QboVendorCredit "
-                            f"{qbo_vc.qbo_id}; preserving mapping, skipping."
-                        )
-
-                # U-027 (rule of three) + line sync live in the shared helper now (U-278)
-                # so this path and the direct-identity fast path above apply the exact
-                # same QboVendorCredit->BillCredit field mapping. This (legacy) path may
-                # be updating a row that predates identity stamping, so — unlike the fast
-                # path — it (re-)stamps dbo-native identity itself after the helper
-                # returns. See _apply_bill_credit_fields_and_sync for the full rationale.
-                updated = self._apply_bill_credit_fields_and_sync(
-                    bill_credit,
-                    qbo_vc=qbo_vc,
-                    vendor_public_id=vendor_public_id,
-                    credit_number=credit_number,
-                    qbo_lines=qbo_lines,
-                    path_label="legacy mapping-table path",
+            if outcome.entity is None:
+                # No longer race-reachable in practice (see run_identity_fastpath_
+                # dbo_only's Raises docstring) — kept as a backstop for a directly
+                # invoked falsy qbo_vc.qbo_id, mirroring every sibling connector's
+                # identical guard (U-350/U-310/U-313/U-311).
+                raise RuntimeError(
+                    f"Failed to resolve BillCredit for QboVendorCredit {qbo_vc.id} "
+                    f"(qbo_id={qbo_vc.qbo_id}) via the dbo-only identity fast path"
                 )
-                self.bill_credit_service.repo.set_qbo_identity(
-                    id=coerce_id(updated.id),
-                    qbo_id=qbo_vc.qbo_id,
-                    realm_id=qbo_vc.realm_id,
-                )
-                return updated
+            return outcome.entity
 
-            # Step 3: Create new BillCredit
-            bill_credit = self.bill_credit_service.create(
-                vendor_public_id=vendor_public_id,
-                credit_date=qbo_vc.txn_date,
-                credit_number=credit_number,
-                total_amount=to_decimal_or_none(qbo_vc.total_amt),
-                memo=qbo_vc.private_note,
-                is_draft=False,
-            )
-            
-            if bill_credit:
-                self.bill_credit_service.repo.set_qbo_identity(
-                    id=coerce_id(bill_credit.id),
-                    qbo_id=qbo_vc.qbo_id,
-                    realm_id=qbo_vc.realm_id,
-                )
-                # Step 4: Create mapping
-                self.mapping_repo.create(
-                    qbo_vendor_credit_id=qbo_vc.id,
-                    bill_credit_id=bill_credit.id,
-                )
-                
-                # Step 5: Sync line items
-                # Compensating rollback — a permanent line failure must not leave a header-only
-                # zombie; delete the just-created header + mapping and re-raise (watermark holds;
-                # re-pull is idempotent).
-                try:
-                    self._sync_line_items(bill_credit.id, bill_credit.public_id, qbo_lines, qbo_vc.realm_id)
-                except Exception:
-                    rollback_orphan_header(
-                        delete_header=lambda: self.bill_credit_service.delete_by_public_id(bill_credit.public_id),
-                        delete_mapping=lambda: self.mapping_repo.delete_by_qbo_vendor_credit_id(qbo_vc.id),
-                        entity_label='BillCredit', entity_id=bill_credit.id,
-                        on_header_delete_failed=lambda exc: self._record_orphan_header_issue(
-                            bill_credit=bill_credit, qbo_vc=qbo_vc, exc=exc
-                        ),
-                    )
-                    raise
-                
-                logger.info(f"Created BillCredit {bill_credit.public_id} from VendorCredit {qbo_vc.qbo_id}")
-            
-            return bill_credit
-            
         except ValueError:
             # Permanent data issue — propagate for the caller to classify as a skip.
             raise
@@ -294,36 +153,36 @@ class VendorCreditBillCreditConnector:
         vendor_public_id: str,
         credit_number: str,
         qbo_lines: List[QboVendorCreditLine],
-        path_label: str = "fast path",
-    ) -> BillCredit:
+    ) -> Optional[BillCredit]:
         """
-        Write the QboVendorCredit-derived fields onto an existing BillCredit, persist it,
-        and sync its line items. Shared by the direct dbo-identity fast path (U-278) and
-        the existing mapping-table update path so the QboVendorCredit -> BillCredit field
-        mapping lives in exactly one place (no drift between the two update sites) AND
-        both get the same ROWVERSION-race guard for free (U-291): a None
-        `update_by_public_id` return is raised here, not returned, so a caller cannot
-        forget to check for it. `path_label` names which caller hit the race, for the
-        log trail. Mirrors CustomerProjectConnector._apply_project_fields_and_sync
-        (U-276).
+        `apply_fields` for the dbo-only fast path's HIT branch (U-353): write the
+        QboVendorCredit-derived fields onto an existing dbo-identity-matched
+        BillCredit, persist, and sync its line items. Covers both a plain direct
+        hit and a race-resolved hit (run_identity_fastpath_dbo_only calls this
+        same callback for both — see that function's docstring).
 
-        Deliberately does NOT stamp dbo-native identity — the fast-path caller's row
-        already carries it by construction (that's how `read_by_qbo_identity` found it in
-        the first place; re-stamping there would be a wasted round trip on the steady-state
-        path this whole feature exists to keep cheap). Only the legacy mapping-table path
-        may be updating a row that predates identity stamping, so IT calls
-        `set_qbo_identity` itself after this returns — same asymmetry as
-        `_apply_project_fields_and_sync` (U-276), which carries no `set_qbo_identity` call
-        at all for the identical reason.
+        Deliberately does NOT stamp dbo-native identity — the row already carries
+        it by construction (that's how `read_by_qbo_identity` found it in the
+        first place; re-stamping here would be a wasted round trip on the
+        steady-state path this whole feature exists to keep cheap). Mirrors
+        `CompanyInfoCompanyConnector._apply_company_fields_and_sync` (U-350).
 
-        U-027 (rule of three): never clobber a human-corrected credit_number on re-pull.
-        Preserve the stored value unless it is empty/null or the QBO-<id> placeholder
-        (which still upgrades to a real doc_number). The CREATE path is unchanged. See
-        base.field_ownership. ACCEPTED RESIDUAL: same as the Bill sibling — a preserved
-        credit_number diverges from the QBO number, so IF this credit's mapping is later
-        lost while it persists (abnormal), the CREATE path's
-        UQ_BillCredit_VendorId_CreditNumber dedup keys on the QBO number and won't match
-        -> possible duplicate. Adopt-style recovery is a separate reviewed unit (TODO.md).
+        Returns None on a ROWVERSION-race/concurrent-delete `update_by_public_id`
+        miss (U-291) — `run_identity_fastpath_dbo_only`'s own `_apply()` raises
+        `raise_concurrent_write_race` unconditionally whenever `apply_fields`
+        returns None, so this method staying silent on a miss (and skipping line
+        sync) is what keeps that single raise as the ONE place the guarantee lives.
+
+        U-027 (rule of three): never clobber a human-corrected credit_number on
+        re-pull. Preserve the stored value unless it is empty/null or the
+        QBO-<id> placeholder (which still upgrades to a real doc_number). The
+        CREATE path is unchanged. See base.field_ownership. ACCEPTED RESIDUAL:
+        same as the Bill sibling — a preserved credit_number diverges from the
+        QBO number, so IF this credit's mapping is later lost while it persists
+        (structurally no longer possible post-U-353 — dbo identity has no
+        second store to lose), the CREATE path's UQ_BillCredit_VendorId_
+        CreditNumber dedup keys on the QBO number and won't match -> possible
+        duplicate. Retained here as historical context only.
         """
         effective_credit_number = preserve_human_edited_ref(
             bill_credit.credit_number, credit_number, qbo_vc.qbo_id
@@ -338,86 +197,87 @@ class VendorCreditBillCreditConnector:
             memo=qbo_vc.private_note,
         )
         if updated is None:
-            raise_concurrent_write_race(
-                entity_label="BillCredit", entity_id=bill_credit.id, path_label=path_label
-            )
+            return None
         self._sync_line_items(updated.id, updated.public_id, qbo_lines, qbo_vc.realm_id)
         return updated
 
-    def _resolve_mapping_state(self, *, bill_credit_id: int, qbo_vc: QboVendorCredit):
+    def _create_bill_credit(
+        self, *, qbo_vc: QboVendorCredit, vendor_public_id: str, credit_number: str,
+    ) -> Optional[BillCredit]:
         """
-        Read-only check of the VendorCreditBillCredit mapping table against a
-        dbo-identity match, BEFORE any write happens (U-278 fast path). Must run before
-        `_apply_bill_credit_fields_and_sync` — writing to the dbo-identity-matched
-        BillCredit first and detecting a conflict afterward would corrupt that
-        BillCredit's data in the case where the mapping table, not dbo identity, is
-        actually still the correct side (U-276 round-3 finding).
-
-        Checks BOTH directions like create_mapping's own 1:1 guards — a
-        bill_credit_id-only check would miss a stale mapping still binding this
-        qbo_vendor_credit_id to a DIFFERENT BillCredit (left behind by an earlier
-        identity "theft" — see SetBillCreditQboIdentity's own theft-clear UPDATE, which
-        does not clean up the mapping table). A stale entry here also feeds the
-        invoice-side LinkedTxn Tier-0 resolver (ProposeInvoiceSourceLinks), which reads
-        this same mapping table, so leaving it undetected can misroute LinkedTxn
-        resolution to the wrong BillCredit.
-
-        NOTE (U-287): no production caller — `sync_from_qbo_*` passes these same
-        accessors straight to `run_identity_fastpath`, which calls the shared
-        `resolve_mapping_state` itself. Retained as the per-family test seam for the
-        U-276/277/278/279 suites, which call this by name. Disposition booked in TODO.md.
-
-        Returns (state, by_bill_credit, by_qbo_vc) — see
-        base.identity_fastpath.resolve_mapping_state, which owns the algorithm and
-        documents the "consistent"/"missing"/"conflict" semantics (U-287); this is the
-        VendorCreditBillCredit binding of it.
+        `resolve_candidate` for the dbo-only fast path's MISS branch (U-353):
+        called only under `run_identity_fastpath_dbo_only`'s create lock, once a
+        genuine miss is confirmed (no dbo.BillCredit currently holds this
+        identity, including the re-read under lock). Unlike Company's
+        by-name-match candidate resolution, BillCredit is a transactional
+        document — there is no natural existing-row lookup to attempt first;
+        this mirrors the pre-U-353 legacy CREATE step exactly, protected by
+        `UQ_BillCredit_VendorId_CreditNumber` at the DB layer.
         """
-        return resolve_mapping_state(
-            local_id=bill_credit_id,
-            external_id=qbo_vc.id,
-            read_by_local_id=self.mapping_repo.read_by_bill_credit_id,
-            read_by_external_id=self.mapping_repo.read_by_qbo_vendor_credit_id,
-            external_id_attr="qbo_vendor_credit_id",
+        logger.info(f"No existing BillCredit found. Creating new BillCredit from QboVendorCredit {qbo_vc.id}")
+        return self.bill_credit_service.create(
+            vendor_public_id=vendor_public_id,
+            credit_date=qbo_vc.txn_date,
+            credit_number=credit_number,
+            total_amount=to_decimal_or_none(qbo_vc.total_amt),
+            memo=qbo_vc.private_note,
+            is_draft=False,
         )
 
-    def _record_identity_mapping_conflict_issue(
-        self,
-        *,
-        qbo_vc: QboVendorCredit,
-        dbo_bill_credit_id: int,
-        local_side_mapping: Optional[VendorCreditBillCreditMapping],
-        qbo_side_mapping: Optional[VendorCreditBillCreditMapping],
-    ) -> None:
+    def _stamp_bill_credit_identity(
+        self, candidate: Optional[BillCredit], *, qbo_vc: QboVendorCredit, qbo_lines: List[QboVendorCreditLine],
+    ) -> Optional[BillCredit]:
         """
-        Post-hoc dbo-identity vs mapping-table split (U-278). Most plausibly left by an
-        identity-theft event (SetBillCreditQboIdentity theft-clear nulls QboId/RealmId but
-        not the mapping table). qbo-side note: LinkedTxn Tier-0 resolver reads this mapping.
+        `stamp_identity` for the dbo-only fast path's MISS branch (U-353): stamp
+        dbo-native identity onto the just-created BillCredit, then sync its line
+        items. `candidate` is a fresh, uniquely-ours row from `_create_bill_credit`
+        (not a side-channel-key match shared with any other incoming QBO record),
+        so — unlike Company's by-name candidate — there is no concurrent-different-
+        qbo_id race to guard with `stamp_dbo_identity_with_lock`'s extra lock;
+        `run_identity_fastpath_dbo_only`'s own create lock already serializes two
+        syncs of the SAME QboVendorCredit against each other.
+
+        On a permanent line-sync failure, best-effort deletes the just-created
+        header via `rollback_orphan_header` so a bad create never strands a
+        header-only zombie (mirrors the pre-U-353 legacy CREATE path's
+        compensating rollback) — `delete_mapping` is a no-op here, since there is
+        no mapping row left to delete; the shared helper's mapping-then-header
+        delete ORDER is dead weight for this family now but the parameter itself
+        stays required (PurchaseExpense, family 5, still has a real mapping to
+        delete via this exact helper — see `base/compensation.py`).
+
+        Re-reads and returns the row after stamping (code-review Angle D, round
+        2): `set_qbo_identity` is a void DB write that never mutates `candidate`
+        in memory, so returning `candidate` as-is would hand the caller a
+        BillCredit whose `qbo_id`/`realm_id` still read as their pre-stamp
+        `None` even though the DB row is correctly stamped — every sibling
+        dbo-only connector gets this freshness guarantee for free from
+        `stamp_dbo_identity_with_lock`'s own re-read; this family's simpler
+        shape (no side-channel-key race, so that helper's second lock isn't
+        needed — see above) still owes the caller the same freshness.
         """
-        qbo_side_note = None
-        if qbo_side_mapping:
-            qbo_side_note = (
-                f"the invoice-side LinkedTxn Tier-0 resolver "
-                f"(ProposeInvoiceSourceLinks) reading this mapping table will keep "
-                f"resolving to BillCredit {qbo_side_mapping.bill_credit_id}, not "
-                f"{dbo_bill_credit_id}, until repointed"
+        if candidate is None:
+            return None
+
+        self.bill_credit_service.repo.set_qbo_identity(
+            id=coerce_id(candidate.id), qbo_id=qbo_vc.qbo_id, realm_id=qbo_vc.realm_id,
+        )
+
+        try:
+            self._sync_line_items(candidate.id, candidate.public_id, qbo_lines, qbo_vc.realm_id)
+        except Exception:
+            rollback_orphan_header(
+                delete_header=lambda: self.bill_credit_service.delete_by_public_id(candidate.public_id),
+                delete_mapping=lambda: None,
+                entity_label='BillCredit', entity_id=candidate.id,
+                on_header_delete_failed=lambda exc: self._record_orphan_header_issue(
+                    bill_credit=candidate, qbo_vc=qbo_vc, exc=exc
+                ),
             )
-        record_identity_mapping_conflict(
-            self.reconciliation_repo,
-            drift_type="vendorcredit_identity_conflict",
-            entity_type="BillCredit",
-            mapping_label="VendorCreditBillCredit",
-            qbo_label="QboVendorCredit",
-            dbo_id=dbo_bill_credit_id,
-            qbo_row_id=qbo_vc.id,
-            raw_qbo_id=qbo_vc.qbo_id,
-            raw_realm_id=qbo_vc.realm_id,
-            realm_id=qbo_vc.realm_id,
-            local_side_mapping=local_side_mapping,
-            qbo_side_mapping=qbo_side_mapping,
-            qbo_side_local_fk_attr="bill_credit_id",
-            local_side_qbo_fk_attr="qbo_vendor_credit_id",
-            qbo_side_note=qbo_side_note,
-        )
+            raise
+
+        logger.info(f"Created BillCredit {candidate.public_id} from VendorCredit {qbo_vc.qbo_id}")
+        return self.bill_credit_service.read_by_id(candidate.id)
 
     def _record_orphan_header_issue(
         self,
@@ -434,89 +294,10 @@ class VendorCreditBillCreditConnector:
             qbo_id=str(qbo_vc.qbo_id) if qbo_vc.qbo_id else None,
             realm_id=qbo_vc.realm_id or "",
             details=(
-                f"Compensating rollback deleted VendorCreditBillCredit mapping but "
-                f"failed to delete orphan BillCredit {bill_credit.id} "
-                f"({bill_credit.public_id}): {exc}. Header blocks re-pull until "
-                f"manually resolved."
+                f"Compensating rollback failed to delete orphan BillCredit {bill_credit.id} "
+                f"({bill_credit.public_id}): {exc}. Header blocks re-pull until manually resolved."
             ),
         )
-
-    def _record_missing_bill_credit_issue(
-        self,
-        *,
-        qbo_vc: QboVendorCredit,
-        mapping: VendorCreditBillCreditMapping,
-        fingerprint: Optional[BillCredit] = None,
-    ) -> None:
-        """
-        Record an orphaned-mapping detection on qbo.ReconciliationIssue, failure-
-        isolated: a failed insert is logged loud but never breaks the sync (mirrors
-        the Purchase/CustomerProject connectors' recorders).
-
-        Triggered when a VendorCreditBillCredit mapping exists but its bound BillCredit
-        read empty AND the (credit_number, vendor) fingerprint did not re-resolve to
-        that same BillCredit. We deliberately do NOT create a BillCredit or drop the
-        mapping here — a transient empty-read would otherwise mint a duplicate; the
-        mapping is preserved for the next tick / a human to resolve.
-        """
-        if fingerprint is not None:
-            fingerprint_note = (
-                f" A different BillCredit {fingerprint.id} matches the (credit_number, "
-                f"vendor) fingerprint but is not the mapped row; not repointing (no "
-                f"mapping-update path)."
-            )
-        else:
-            fingerprint_note = (
-                " No local BillCredit matches the (credit_number, vendor) fingerprint."
-            )
-        details = (
-            f"Orphaned VendorCreditBillCredit mapping. Mapping {mapping.id} "
-            f"(QboVendorCredit {qbo_vc.id}, QboId={qbo_vc.qbo_id}) points at BillCredit "
-            f"{mapping.bill_credit_id} which no longer reads.{fingerprint_note} Mapping "
-            f"preserved; no BillCredit created. Investigate whether the BillCredit was "
-            f"deleted/renumbered."
-        )
-        record_mapping_issue(
-            self.reconciliation_repo,
-            drift_type="orphaned_vc_billcredit_mapping",
-            entity_type="BillCredit",
-            entity_public_id=None,
-            qbo_id=str(qbo_vc.qbo_id) if qbo_vc.qbo_id else None,
-            realm_id=qbo_vc.realm_id or "",
-            details=details,
-        )
-
-    # One of FIVE near-identical dbo-first/legacy-fallback vendor-ref resolvers
-    # (U-284v): this one, BillBillConnector._get_vendor_public_id (pull) +
-    # _get_qbo_vendor_ref (push), PurchaseExpenseConnector._get_vendor_public_id,
-    # ExpenseCodingItemService._resolve_vendor_id. Hand-copied deliberately,
-    # mirroring _get_project_public_id's own precedent — see TODO.md's
-    # U-005[reuse] entry before adding a 6th copy or consolidating.
-    def _get_vendor_public_id(self, qbo_vendor_ref_value: Optional[str], realm_id: Optional[str] = None) -> Optional[str]:
-        """Resolve QBO vendor ref (QBO API string ID) to local Vendor public_id.
-
-        U-313: dbo.Vendor's native QboId/RealmId is the SOLE identity store
-        for Vendor (Wave 5 "trust dbo alone" — qbo.VendorVendor no longer has
-        a writer, see docs/design/wave5.md). No legacy hop left to fall back
-        to on a miss (removed; it had no data source left either).
-        """
-        if not qbo_vendor_ref_value:
-            return None
-
-        try:
-            direct_vendor = self.vendor_service.read_by_qbo_identity(qbo_vendor_ref_value, realm_id)
-            if direct_vendor:
-                verified_qbo_id = verify_identity_dbo_only(
-                    direct_vendor,
-                    read_direct_by_qbo_identity=self.vendor_service.read_by_qbo_identity,
-                )
-                if verified_qbo_id:
-                    return direct_vendor.public_id
-
-            return None
-        except Exception as e:
-            logger.warning(f"Error resolving vendor ref {qbo_vendor_ref_value}: {e}")
-            return None
 
     def _sync_line_items(
         self,
@@ -556,3 +337,35 @@ class VendorCreditBillCreditConnector:
                 f"{len(failed)} of {len(qbo_lines)} credit line(s) failed to project for "
                 f"bill_credit_id={bill_credit_id}: {failed}"
             )
+
+    # One of FIVE near-identical dbo-first/legacy-fallback vendor-ref resolvers
+    # (U-284v): this one, BillBillConnector._get_vendor_public_id (pull) +
+    # _get_qbo_vendor_ref (push), PurchaseExpenseConnector._get_vendor_public_id,
+    # ExpenseCodingItemService._resolve_vendor_id. Hand-copied deliberately,
+    # mirroring _get_project_public_id's own precedent — see TODO.md's
+    # U-005[reuse] entry before adding a 6th copy or consolidating.
+    def _get_vendor_public_id(self, qbo_vendor_ref_value: Optional[str], realm_id: Optional[str] = None) -> Optional[str]:
+        """Resolve QBO vendor ref (QBO API string ID) to local Vendor public_id.
+
+        U-313: dbo.Vendor's native QboId/RealmId is the SOLE identity store
+        for Vendor (Wave 5 "trust dbo alone" — qbo.VendorVendor no longer has
+        a writer, see docs/design/wave5.md). No legacy hop left to fall back
+        to on a miss (removed; it had no data source left either).
+        """
+        if not qbo_vendor_ref_value:
+            return None
+
+        try:
+            direct_vendor = self.vendor_service.read_by_qbo_identity(qbo_vendor_ref_value, realm_id)
+            if direct_vendor:
+                verified_qbo_id = verify_identity_dbo_only(
+                    direct_vendor,
+                    read_direct_by_qbo_identity=self.vendor_service.read_by_qbo_identity,
+                )
+                if verified_qbo_id:
+                    return direct_vendor.public_id
+
+            return None
+        except Exception as e:
+            logger.warning(f"Error resolving vendor ref {qbo_vendor_ref_value}: {e}")
+            return None

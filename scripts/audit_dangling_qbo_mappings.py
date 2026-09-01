@@ -24,8 +24,14 @@ logger = logging.getLogger("audit_dangling_qbo_mappings")
 # only — InvoiceService.delete_by_public_id has the identical uncleared-mapping gap this unit
 # fixes for BillCredit/Bill/Expense, but Invoice was out of scope for the U-226 fix itself; see
 # TODO/BOARD for the deferred follow-up.
+#
+# U-353: "bill_credit" was removed from this tuple — qbo.VendorCreditBillCredit (its
+# mapping_table) is retired, so a dangling-mapping count against it is meaningless
+# (there is no more mapping table to strand a dangling row in) and the query would
+# raise "invalid object name" if left in. The bill_credit FlatEntitySpec row itself
+# stays in REFERENCE_ENTITY_SPECS for an unrelated reconciliation consumer — see
+# identity_drift.py's comment there.
 _AUDIT_SPEC_KEYS: tuple[str, ...] = (
-    "bill_credit",
     "bill",
     "expense",
     "invoice",

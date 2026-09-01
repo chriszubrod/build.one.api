@@ -3,9 +3,11 @@
 Entity delete services (Bill, BillCredit, Expense) hand-cascade their own children but,
 absent this, never clear the qbo.* mapping row that points back at their own header row —
 leaving a permanent dangling mapping, or (where the mapping FK is NO_ACTION rather than
-CASCADE in prod — VendorCreditBillCredit and PurchaseExpense) a SQL 547 on the header
-delete itself. If the header delete fails after the mapping is cleared, the mapping is
-best-effort restored so a failed attempt never unmaps a still-live entity. See U-226.
+CASCADE in prod — PurchaseExpense) a SQL 547 on the header delete itself. If the header
+delete fails after the mapping is cleared, the mapping is best-effort restored so a
+failed attempt never unmaps a still-live entity. See U-226. (BillCredit's own
+VendorCreditBillCredit mapping was retired U-353 — its delete no longer calls this
+helper at all; dbo.BillCredit.QboId/RealmId are plain columns that die with the row.)
 
 Also used for line-item mapping cleanup (BillLineItem, InvoiceLineItem, ExpenseLineItem,
 U-241) — the mechanism does not distinguish header vs line item; it clears one qbo.*

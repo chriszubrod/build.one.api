@@ -26,10 +26,11 @@ def rollback_orphan_header(
     line-sync failure, so a permanent per-line failure never strands a header-only 'zombie'.
 
     **Load-bearing delete order:** the mapping MUST be deleted before the header because
-    qbo.*→dbo.* mapping FKs are NO_ACTION on VendorCreditBillCredit and PurchaseExpense
-    (qbo.BillBill has no FK at all). Deleting the header first leaves an FK-blocked partial
-    rollback that is worse than the zombie this helper prevents — that ordering is
-    load-bearing, not cosmetic.
+    qbo.*→dbo.* mapping FKs are NO_ACTION on PurchaseExpense (qbo.BillBill has no FK at
+    all; VendorCreditBillCredit was retired U-353 — its own call site now passes a
+    no-op `delete_mapping`, so this ordering is moot for that family but still
+    load-bearing for PurchaseExpense). Deleting the header first leaves an FK-blocked
+    partial rollback that is worse than the zombie this helper prevents.
 
     Each delete is isolated in its own try/except: failures are LOGGED, never raised, so the
     caller's ORIGINAL line-sync exception propagates unchanged (the pull watermark holds and

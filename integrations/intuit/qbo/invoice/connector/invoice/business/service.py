@@ -1362,7 +1362,7 @@ class InvoiceInvoiceConnector:
         Walk the mapping chain:
           BillLineItem     → BillBill → QboBill.qbo_id → (ReimburseCharge or "Bill")
           ExpenseLineItem  → PurchaseExpense → QboPurchase.qbo_id → "Purchase"
-          BillCreditLineItem → VendorCreditBillCredit → QboVendorCredit.qbo_id → "VendorCredit"
+          BillCreditLineItem → dbo.BillCredit.QboId (U-353 dbo-native) → "VendorCredit"
           Manual           → None (no linked transaction)
 
         Returns None if the chain cannot be resolved or for Manual lines.
@@ -1411,23 +1411,20 @@ class InvoiceInvoiceConnector:
 
             elif line_item.source_type == "BillCreditLineItem" and line_item.bill_credit_line_item_id:
                 from entities.bill_credit_line_item.business.service import BillCreditLineItemService
-                from integrations.intuit.qbo.vendorcredit.connector.bill_credit.persistence.repo import VendorCreditBillCreditMappingRepository
-                from integrations.intuit.qbo.vendorcredit.persistence.repo import QboVendorCreditRepository
+                from entities.bill_credit.business.service import BillCreditService
 
                 credit_li = BillCreditLineItemService().read_by_id(line_item.bill_credit_line_item_id)
                 if not credit_li or not credit_li.bill_credit_id:
                     return None
 
-                vc_mapping = VendorCreditBillCreditMappingRepository().read_by_bill_credit_id(credit_li.bill_credit_id)
-                if not vc_mapping:
-                    logger.debug(f"No VendorCreditBillCredit mapping for bill_credit_id={credit_li.bill_credit_id}")
+                # U-353: dbo.BillCredit.QboId is the sole identity store — no more
+                # qbo.VendorCreditBillCredit mapping row to hop through.
+                bill_credit = BillCreditService().read_by_id(credit_li.bill_credit_id)
+                if not bill_credit or not bill_credit.qbo_id:
+                    logger.debug(f"No dbo-native QBO identity for bill_credit_id={credit_li.bill_credit_id}")
                     return None
 
-                qbo_vc = QboVendorCreditRepository().read_by_id(vc_mapping.qbo_vendor_credit_id)
-                if not qbo_vc or not qbo_vc.qbo_id:
-                    return None
-
-                return QboLinkedTxn(txn_id=qbo_vc.qbo_id, txn_type="VendorCredit")
+                return QboLinkedTxn(txn_id=bill_credit.qbo_id, txn_type="VendorCredit")
 
         except Exception as e:
             logger.warning(f"Error resolving LinkedTxn for InvoiceLineItem {line_item.id}: {e}")

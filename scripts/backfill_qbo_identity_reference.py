@@ -26,7 +26,12 @@ from shared.database import call_procedure, get_connection
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 logger = logging.getLogger("backfill_qbo_identity_reference")
 
-ENTITY_SPECS = {spec.key: spec for spec in REFERENCE_ENTITY_SPECS}
+# U-353: qbo.VendorCreditBillCredit is retired, so "bill_credit"'s mapping-table
+# JOINs below would raise "invalid object name" if run. The spec row itself stays
+# in REFERENCE_ENTITY_SPECS (reconciliation's own dbo-native reader still needs
+# it — see identity_drift.py's comment there); this backfill tool just excludes it
+# from its own working set — there is nothing left to backfill FROM for this family.
+ENTITY_SPECS = {spec.key: spec for spec in REFERENCE_ENTITY_SPECS if spec.key != "bill_credit"}
 
 
 def parse_physical_address_parent_qbo_id(qbo_id: Optional[str]) -> Optional[str]:

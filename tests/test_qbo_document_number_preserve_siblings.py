@@ -194,10 +194,9 @@ def _make_bill_credit(*, credit_number, bc_id=400, public_id="bc-pub-400"):
 
 def _build_vc_connector():
     connector = VendorCreditBillCreditConnector()
-    connector.mapping_repo = Mock()
     connector.bill_credit_service = Mock()
-    # U-278: no prior dbo-native identity yet — force the legacy mapping-table path
-    # these tests are actually exercising (the number-preserve UPDATE path).
+    # U-353: no dbo-native identity yet by default — the number-preserve UPDATE
+    # tests below override this to a direct HIT via _run_vc_update.
     connector.bill_credit_service.read_by_qbo_identity.return_value = None
     connector.bill_credit_line_item_service = Mock()
     connector.vendor_service = Mock()
@@ -207,10 +206,8 @@ def _build_vc_connector():
 
 
 def _run_vc_update(connector, qbo_vc, stored_bc):
-    connector.mapping_repo.read_by_qbo_vendor_credit_id.return_value = SimpleNamespace(
-        id=1, bill_credit_id=stored_bc.id
-    )
-    connector.bill_credit_service.read_by_id.return_value = stored_bc
+    # U-353: the UPDATE/HIT branch is reached via a direct dbo-native identity match.
+    connector.bill_credit_service.read_by_qbo_identity.return_value = stored_bc
     connector.bill_credit_service.update_by_public_id.return_value = stored_bc
 
     with patch(f"{VC_SERVICE}.guard_lines_present"):
@@ -258,14 +255,13 @@ def test_vc_update_preserves_manual_when_doc_number_none():
     assert passed == "CM-42"
 
 
-def test_vc_create_sets_number_from_doc_number():
+def test_vc_create_sets_number_from_doc_number(grant_qbo_app_lock):
     connector = _build_vc_connector()
     qbo_vc = _make_qbo_vc(qbo_id="99", doc_number="VC-300")
-    connector.mapping_repo.read_by_qbo_vendor_credit_id.return_value = None  # CREATE
+    # bill_credit_service.read_by_qbo_identity already defaults to None (CREATE/MISS).
     connector.bill_credit_service.create.return_value = _make_bill_credit(
         credit_number="VC-300", bc_id=401, public_id="bc-pub-401"
     )
-    connector.mapping_repo.create.return_value = SimpleNamespace(id=2)
 
     with patch(f"{VC_SERVICE}.guard_lines_present"):
         connector.sync_from_qbo_vendor_credit(qbo_vc, [])

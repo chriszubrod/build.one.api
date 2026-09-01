@@ -57,6 +57,11 @@ KNOWN_ORPHANED_MAPPINGS = {
 }
 
 
+# U-353: the "BillCredit" family entry was removed — qbo.VendorCreditBillCredit
+# (its mapping_table) is retired, so this script's mapping-table JOIN would raise
+# "Invalid object name" once /em applies the DROP. The U-305 equivalence proof
+# this script exists for was already completed for BillCredit (see BOARD.md);
+# "Bill" (still on its own mapping table, family 6, not yet retired) stays live.
 FAMILIES = [
     {
         "label": "Bill",
@@ -64,13 +69,6 @@ FAMILIES = [
         "mapping_table": "qbo.BillBill",
         "mapping_fk_col": "QboBillId",
         "dbo_table": "dbo.Bill",
-    },
-    {
-        "label": "BillCredit",
-        "staging_table": "qbo.VendorCredit",
-        "mapping_table": "qbo.VendorCreditBillCredit",
-        "mapping_fk_col": "QboVendorCreditId",
-        "dbo_table": "dbo.BillCredit",
     },
 ]
 
@@ -163,7 +161,8 @@ def verify() -> int:
             print(f"  - {f}")
         return 1
 
-    print("\nPASS -- old and new identity-resolution populations are identical for Bill and BillCredit.")
+    checked = ", ".join(f["label"] for f in FAMILIES)
+    print(f"\nPASS -- old and new identity-resolution populations are identical for {checked}.")
     return 0
 
 

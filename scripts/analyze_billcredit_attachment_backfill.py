@@ -34,6 +34,13 @@ logger = logging.getLogger("analyze_billcredit_attachment_backfill")
 _BASELINE_COUNT = 443
 _REPORTS_DIR = Path(__file__).resolve().parent / "_reports"
 
+# U-353: qbo.VendorCreditBillCredit (joined below) is retired — non-runtime,
+# manually-invoked analysis tool, annotated rather than repointed per
+# docs/design/u349-qbo-mapping-table-retirement.md's "annotate, don't block"
+# disposition for this class of script. Will raise "Invalid object name" once
+# /em applies the DROP; repoint the JOIN onto dbo.BillCredit.QboId (drop the
+# qbo.VendorCreditBillCredit hop entirely — qbo.VendorCredit's own QboId is
+# already reachable via dbo.BillCredit directly) before next use.
 _BILLCREDITS_WITHOUT_ATTACHMENTS_SQL = """
 SELECT
     bc.Id AS BillCreditId,

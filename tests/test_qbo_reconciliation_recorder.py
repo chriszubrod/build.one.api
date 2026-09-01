@@ -52,7 +52,7 @@ _SQL_COLUMN_WIDTH_RE = re.compile(
 # (record_identity_mapping_conflict, 10->9) and _record_missing_bill_credit_issue
 # (record_mapping_issue, 13->12) -- both call sites protected a mapping-table-vs-dbo
 # drift scenario that no longer exists once dbo.BillCredit.QboId is the sole store.
-_MIN_CALL_SITES = 28
+_MIN_CALL_SITES = 27
 _SKIP_FILES = frozenset({"reconciliation_recorder.py"})
 _DEFAULT_KWARGS = {
     "severity": "critical",

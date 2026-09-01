@@ -29,13 +29,14 @@ def rollback_orphan_header(
     header because qbo.*→dbo.* mapping FKs were NO_ACTION on PurchaseExpense (qbo.BillBill
     never had a FK at all — irrelevant now, but never load-bearing here either).
     VendorCreditBillCredit was retired U-353, PurchaseExpense was retired U-354, and
-    BillBill was retired U-355 — all three families' own call sites now pass a no-op
-    `delete_mapping`, so this ordering is moot for every currently-migrated family; it
-    may still be load-bearing for a header family not yet retired (InvoiceInvoice as of
-    this writing, family 7 of the U-349 program — see
-    docs/design/u349-qbo-mapping-table-retirement.md; its own FK shape hasn't been
-    re-verified against this helper's rationale). Deleting the header first leaves an
-    FK-blocked partial rollback that is worse than the zombie this helper prevents.
+    BillBill was retired U-355, and InvoiceInvoice — the last header family — was
+    retired U-356 (its create-path rollback, `InvoiceInvoiceConnector._stamp_invoice_
+    identity`, is a NEW call site of this helper and passes a no-op `delete_mapping`
+    too). Every header family's call site now passes a no-op `delete_mapping`, so the
+    ordering is moot for all of them; it stays documented because the helper itself
+    still honors it for any future mapping-bearing caller. Deleting the header first
+    would leave an FK-blocked partial rollback that is worse than the zombie this
+    helper prevents.
 
     Each delete is isolated in its own try/except: failures are LOGGED, never raised, so the
     caller's ORIGINAL line-sync exception propagates unchanged (the pull watermark holds and

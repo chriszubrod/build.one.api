@@ -22,132 +22,39 @@ def _mock_qbo_app_lock():
 # --- Invoice header ---
 
 
-def test_invoice_delete_clears_qbo_mapping_before_header():
+def test_invoice_delete_no_longer_clears_any_qbo_mapping():
+    """U-356: qbo.InvoiceInvoice is retired — Invoice's delete no longer calls
+    delete_own_qbo_mapping_before_header at all (dbo.Invoice.QboId/RealmId are
+    plain columns that die with the row; there is no separate mapping row to
+    clear-then-restore). A straight header delete, preceded by the U-356
+    deploy-gap bridge (patched here; its own OBJECT_ID-guard + swallow tests
+    live in test_u226 alongside its Bill/BillCredit/Expense siblings). Unlike
+    Bill's, that bridge is FK-REQUIRED until /em drops the table —
+    FK_InvoiceInvoice_Invoice (NO_ACTION) is live in prod — so the order
+    bridge -> header is asserted, not just the calls."""
     invoice = SimpleNamespace(id=11, public_id="inv-pub")
     call_order = []
 
     mock_repo = Mock()
     mock_repo.delete_by_id.side_effect = lambda *_: call_order.append("header") or invoice
 
-    mock_mapping_repo = Mock()
-    fake_mapping = SimpleNamespace(id=77, invoice_id=11, qbo_invoice_id=500)
-    mock_mapping_repo.read_by_invoice_id.return_value = fake_mapping
-    mock_mapping_repo.delete_by_id.side_effect = lambda *_: call_order.append("mapping")
-
     svc = InvoiceService(repo=mock_repo)
     svc.invoice_line_item_service.read_by_invoice_id = Mock(return_value=[])
     svc.invoice_attachment_service.read_by_invoice_id = Mock(return_value=[])
 
     with patch.object(svc, "read_by_public_id", return_value=invoice), patch(
-        "integrations.intuit.qbo.invoice.connector.invoice.persistence.repo.InvoiceInvoiceRepository",
-        return_value=mock_mapping_repo,
-    ):
-        result = svc.delete_by_public_id("inv-pub")
-
-    assert call_order == ["mapping", "header"]
-    assert result is invoice
-    mock_mapping_repo.read_by_invoice_id.assert_called_once_with(11)
-    mock_mapping_repo.delete_by_id.assert_called_once_with(77)
-    mock_mapping_repo.create.assert_not_called()
-    mock_repo.delete_by_id.assert_called_once_with(11)
-
-
-def test_invoice_delete_header_failure_restores_qbo_mapping():
-    invoice = SimpleNamespace(id=11, public_id="inv-pub")
-    header_exc = RuntimeError("FK 547 on Invoice delete")
-
-    mock_repo = Mock()
-    mock_repo.delete_by_id.side_effect = header_exc
-
-    mock_mapping_repo = Mock()
-    fake_mapping = SimpleNamespace(id=77, invoice_id=11, qbo_invoice_id=500)
-    mock_mapping_repo.read_by_invoice_id.return_value = fake_mapping
-
-    svc = InvoiceService(repo=mock_repo)
-    svc.invoice_line_item_service.read_by_invoice_id = Mock(return_value=[])
-    svc.invoice_attachment_service.read_by_invoice_id = Mock(return_value=[])
-
-    with patch.object(svc, "read_by_public_id", return_value=invoice), patch(
-        "integrations.intuit.qbo.invoice.connector.invoice.persistence.repo.InvoiceInvoiceRepository",
-        return_value=mock_mapping_repo,
-    ):
-        with pytest.raises(RuntimeError, match="FK 547 on Invoice delete") as exc_info:
-            svc.delete_by_public_id("inv-pub")
-
-    assert exc_info.value is header_exc
-    mock_mapping_repo.delete_by_id.assert_called_once_with(77)
-    mock_mapping_repo.create.assert_called_once_with(invoice_id=11, qbo_invoice_id=500)
-    mock_repo.delete_by_id.assert_called_once_with(11)
-
-
-def test_invoice_delete_no_mapping_skips_mapping_repo_mutations():
-    invoice = SimpleNamespace(id=11, public_id="inv-pub")
-
-    mock_repo = Mock()
-    mock_repo.delete_by_id.return_value = invoice
-
-    mock_mapping_repo = Mock()
-    mock_mapping_repo.read_by_invoice_id.return_value = None
-
-    svc = InvoiceService(repo=mock_repo)
-    svc.invoice_line_item_service.read_by_invoice_id = Mock(return_value=[])
-    svc.invoice_attachment_service.read_by_invoice_id = Mock(return_value=[])
-
-    with patch.object(svc, "read_by_public_id", return_value=invoice), patch(
-        "integrations.intuit.qbo.invoice.connector.invoice.persistence.repo.InvoiceInvoiceRepository",
-        return_value=mock_mapping_repo,
-    ):
+        "entities.invoice.business.service._clear_legacy_invoice_invoice_mapping",
+        side_effect=lambda *_: call_order.append("bridge"),
+    ) as bridge, patch(
+        "integrations.intuit.qbo.base.mapping_cleanup.delete_own_qbo_mapping_before_header"
+    ) as legacy_helper:
         result = svc.delete_by_public_id("inv-pub")
 
     assert result is invoice
-    mock_mapping_repo.delete_by_id.assert_not_called()
-    mock_mapping_repo.create.assert_not_called()
+    assert call_order == ["bridge", "header"]
+    bridge.assert_called_once_with(11)
+    legacy_helper.assert_not_called()
     mock_repo.delete_by_id.assert_called_once_with(11)
-
-
-def test_invoice_delete_header_and_mapping_restore_failure_records_reconciliation_issue():
-    invoice = SimpleNamespace(id=11, public_id="inv-pub")
-    header_exc = RuntimeError("FK 547 on Invoice delete")
-    restore_exc = RuntimeError("mapping recreate failed")
-
-    mock_repo = Mock()
-    mock_repo.delete_by_id.side_effect = header_exc
-
-    mock_mapping_repo = Mock()
-    fake_mapping = SimpleNamespace(id=77, invoice_id=11, qbo_invoice_id=500)
-    mock_mapping_repo.read_by_invoice_id.return_value = fake_mapping
-    mock_mapping_repo.create.side_effect = restore_exc
-
-    mock_staging = SimpleNamespace(realm_id="realm-1", qbo_id="qbo-inv-11")
-    mock_staging_repo = Mock()
-    mock_staging_repo.read_by_id.return_value = mock_staging
-
-    svc = InvoiceService(repo=mock_repo)
-    svc.invoice_line_item_service.read_by_invoice_id = Mock(return_value=[])
-    svc.invoice_attachment_service.read_by_invoice_id = Mock(return_value=[])
-
-    with patch.object(svc, "read_by_public_id", return_value=invoice), patch(
-        "integrations.intuit.qbo.invoice.connector.invoice.persistence.repo.InvoiceInvoiceRepository",
-        return_value=mock_mapping_repo,
-    ), patch(
-        "integrations.intuit.qbo.invoice.persistence.repo.QboInvoiceRepository",
-        return_value=mock_staging_repo,
-    ), patch(
-        "integrations.intuit.qbo.base.delete_reconcile.record_partial_delete_issue"
-    ) as record_issue:
-        with pytest.raises(RuntimeError, match="FK 547 on Invoice delete") as exc_info:
-            svc.delete_by_public_id("inv-pub")
-
-    assert exc_info.value is header_exc
-    mock_staging_repo.read_by_id.assert_called_once_with(500)
-    record_issue.assert_called_once()
-    assert record_issue.call_args.kwargs["entity_type"] == "Invoice"
-    assert record_issue.call_args.kwargs["mapping_label"] == "InvoiceInvoice"
-    assert record_issue.call_args.kwargs["mapped_label"] == "Invoice"
-    assert record_issue.call_args.kwargs["realm_id"] == "realm-1"
-    assert record_issue.call_args.kwargs["qbo_id"] == "qbo-inv-11"
-    assert record_issue.call_args.kwargs["local_id"] == 11
-    assert record_issue.call_args.kwargs["error"] is restore_exc
 
 
 # --- BillLineItem ---

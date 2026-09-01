@@ -237,8 +237,10 @@ def _qbo_lines_query(*, invoice_id: Optional[int] = None) -> str:
         ql.[Description],
         ql.[Amount]
     FROM dbo.[Invoice] i
-    INNER JOIN qbo.[InvoiceInvoice] ii ON ii.[InvoiceId] = i.[Id]
-    INNER JOIN qbo.[InvoiceLine] ql ON ql.[QboInvoiceId] = ii.[QboInvoiceId]
+    -- U-356: dbo-native identity JOIN (qbo.InvoiceInvoice retired); both sides
+    -- unique per (QboId, RealmId), so still 1:1 per invoice.
+    INNER JOIN qbo.[Invoice] qi ON qi.[QboId] = i.[QboId] AND qi.[RealmId] = i.[RealmId]
+    INNER JOIN qbo.[InvoiceLine] ql ON ql.[QboInvoiceId] = qi.[Id]
     {where}
     ORDER BY i.[Id], ql.[Id]
     """

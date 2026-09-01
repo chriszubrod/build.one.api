@@ -422,7 +422,6 @@ def test_invoice_sync_from_qbo_invoice_forwards_realm_id_to_line_connector():
     )
 
     connector = InvoiceInvoiceConnector(
-        mapping_repo=MagicMock(),
         line_mapping_repo=MagicMock(),
         invoice_service=MagicMock(),
         project_service=MagicMock(),
@@ -430,10 +429,10 @@ def test_invoice_sync_from_qbo_invoice_forwards_realm_id_to_line_connector():
         customer_project_repo=MagicMock(),
         reconciliation_repo=MagicMock(),
     )
-    stub_qbo_identity_fastpath_miss(connector.invoice_service)
-    connector.mapping_repo.read_by_qbo_invoice_id.return_value = mapping
+    # U-356: dbo-only fast path -- a direct dbo.Invoice identity HIT replaces the
+    # retired "existing qbo.InvoiceInvoice mapping" UPDATE branch.
+    connector.invoice_service.read_by_qbo_identity.return_value = invoice
     connector._get_project_public_id = MagicMock(return_value="proj-pub")
-    connector.invoice_service.read_by_id.return_value = invoice
     connector.invoice_service.update_by_public_id.return_value = invoice
     connector.invoice_service.repo = MagicMock()
 
@@ -470,7 +469,6 @@ def test_invoice_invoice_connector_preload_caches_sets_flag():
     )
 
     connector = InvoiceInvoiceConnector(
-        mapping_repo=MagicMock(read_all=MagicMock(return_value=[])),
         line_mapping_repo=MagicMock(read_all=MagicMock(return_value=[])),
         invoice_service=MagicMock(read_all=MagicMock(return_value=[])),
     )
@@ -915,9 +913,6 @@ def _build_invoice_header_create_connector(created_invoice):
         InvoiceInvoiceConnector,
     )
 
-    mapping_repo = MagicMock()
-    mapping_repo.read_by_qbo_invoice_id.return_value = None
-
     invoice_service = MagicMock()
     invoice_service.create.return_value = created_invoice
     invoice_service.repo.read_by_invoice_number_and_project_id.return_value = None
@@ -926,7 +921,6 @@ def _build_invoice_header_create_connector(created_invoice):
     project_service.read_by_public_id.return_value = SimpleNamespace(id=200)
 
     connector = InvoiceInvoiceConnector(
-        mapping_repo=mapping_repo,
         line_mapping_repo=MagicMock(),
         invoice_service=invoice_service,
         project_service=project_service,
@@ -955,13 +949,20 @@ def _make_qbo_invoice_for_header_create():
     )
 
 
+# U-356: the two compensating-delete tests below used to fire on a
+# `create_mapping` failure (a qbo.InvoiceInvoice insert). That mapping is
+# retired; the equivalent hazard is now a failed dbo identity STAMP on the
+# just-created header — the identity-stamp rollback race fix (U-354/U-355
+# pattern). Same assertions, different trigger.
+
+
 @patch("integrations.intuit.qbo.base.identity_fastpath.qbo_app_lock", mock_qbo_app_lock_granted)
-def test_sync_from_qbo_invoice_compensating_delete_on_mapping_failure():
+def test_sync_from_qbo_invoice_compensating_delete_on_identity_stamp_failure():
     created_invoice = SimpleNamespace(id=1057, public_id="inv-pub-1057")
     connector = _build_invoice_header_create_connector(created_invoice)
-    connector.create_mapping = MagicMock(side_effect=ValueError("already mapped"))
+    connector.invoice_service.repo.set_qbo_identity.side_effect = ValueError("stamp refused")
 
-    with pytest.raises(ValueError, match="already mapped"):
+    with pytest.raises(ValueError, match="stamp refused"):
         connector.sync_from_qbo_invoice(_make_qbo_invoice_for_header_create(), [])
 
     connector.invoice_service.delete_by_public_id.assert_called_once_with("inv-pub-1057")
@@ -975,8 +976,8 @@ def test_sync_from_qbo_invoice_compensating_delete_on_database_constraint_error(
 
     created_invoice = SimpleNamespace(id=1057, public_id="inv-pub-1057")
     connector = _build_invoice_header_create_connector(created_invoice)
-    connector.create_mapping = MagicMock(
-        side_effect=DatabaseConstraintError(UNIQUE_VIOLATION, "duplicate mapping")
+    connector.invoice_service.repo.set_qbo_identity.side_effect = DatabaseConstraintError(
+        UNIQUE_VIOLATION, "duplicate identity"
     )
 
     with pytest.raises(DatabaseConstraintError):

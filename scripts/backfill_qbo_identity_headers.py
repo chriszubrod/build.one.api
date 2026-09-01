@@ -53,6 +53,10 @@ def _stamp_via_sproc(
 # from its own working set — there is nothing left to backfill FROM for this
 # family. Mirrors backfill_qbo_identity_reference.py's identical "bill_credit"
 # exclusion (U-353).
+# U-356: with the "invoice" row gone (qbo.InvoiceInvoice retired — the last header
+# family), this working set is now EMPTY: every header family is dbo-native only and
+# there is no mapping+staging pair left to backfill FROM. The script is kept as a
+# no-op (`--entity all` iterates nothing) pending its deletion as dead code.
 ENTITY_SPECS = {spec.key: spec for spec in HEADER_ENTITY_SPECS if spec.key != "bill"}
 
 
@@ -182,6 +186,14 @@ def main() -> None:
     assert_cli_system_admin()
 
     keys = list(ENTITY_SPECS.keys()) if args.entity == "all" else [args.entity]
+    if not keys:
+        # U-356: every header family is dbo-native only — there is no mapping+staging
+        # pair left to backfill FROM. Say so loudly rather than print an empty run.
+        logger.warning(
+            "No header entity has a mapping table left to backfill from (all retired, "
+            "U-350..U-356) — NOTHING was stamped. This script is dead; see TODO.md."
+        )
+        return
     mode = "APPLY" if args.apply else "DRY-RUN"
     print(f"\n=== {mode}: QBO identity header backfill ===")
     for key in keys:

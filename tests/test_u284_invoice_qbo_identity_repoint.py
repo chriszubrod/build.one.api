@@ -15,16 +15,16 @@ dual-write (U-238b) exists. Nothing here touches that connector.
 Covers:
   1. InvoiceRepository.read_by_qbo_identity (sproc call shape) + InvoiceService's
      RBAC-scoped passthrough (assert_can_access_project, matching read_by_id).
-  2. InvoiceInvoiceConnector.sync_from_qbo_invoice's fast path: consistent hit
-     (update + SyncToken re-stamp, no mapping-table write), missing hit
-     (self-heals a missing mapping row via mapping_repo.create directly, not
-     via connector.create_mapping), conflict (hard stop — raises, records the
-     issue, never writes to the conflicted Invoice), miss (falls back to the
-     pre-existing mapping-table path unchanged, reusing the same
-     `_apply_invoice_fields` closure the legacy branch now also calls).
-  3. The shared `_apply_invoice_fields` closure's ROWVERSION-race guard
-     (update_by_public_id returning None -> RuntimeError via
-     raise_concurrent_write_race, never a bare crash or a swallowed None).
+  2. InvoiceInvoiceConnector.sync_from_qbo_invoice's fast path — rewritten for
+     the dbo-only shape (U-356 retired qbo.InvoiceInvoice; there is no
+     CONSISTENT/MISSING/CONFLICT mapping-table state machine left): a direct
+     dbo.Invoice identity HIT updates + re-stamps SyncToken + syncs lines and
+     never creates; a MISS resolves/creates a candidate and stamps it (covered
+     in depth by tests/test_u356_invoice_mapping_retire.py).
+  3. The shared `_write_qbo_fields` closure's ROWVERSION-race guard
+     (update_by_public_id returning None -> RuntimeError via the shared
+     helper's raise_concurrent_write_race, never a bare crash or a swallowed
+     None).
 """
 import sys
 from pathlib import Path
@@ -119,16 +119,15 @@ def test_invoice_service_read_by_qbo_identity_none_short_circuits_rbac():
     mock_assert.assert_not_called()
 
 
-# --- Section 2: InvoiceInvoiceConnector fast path ---
+# --- Section 2: InvoiceInvoiceConnector fast path (dbo-only, U-356) ---
 
 
 def _build_invoice_connector():
-    mapping_repo = Mock()
     invoice_service = Mock()
     invoice_service.repo = Mock()
     reconciliation_repo = Mock()
     connector = InvoiceInvoiceConnector(
-        mapping_repo=mapping_repo,
+        line_mapping_repo=Mock(),
         invoice_service=invoice_service,
         reconciliation_repo=reconciliation_repo,
     )
@@ -136,100 +135,16 @@ def _build_invoice_connector():
     # exercised elsewhere; stub them so header-identity behavior is isolated.
     connector._get_project_public_id = Mock(return_value="proj-pub-1")
     connector._sync_line_items = Mock()
-    return connector, mapping_repo, invoice_service, reconciliation_repo
+    return connector, invoice_service, reconciliation_repo
 
 
-def test_fast_path_consistent_hit_updates_and_restamps_without_mapping_write():
-    connector, mapping_repo, invoice_service, _ = _build_invoice_connector()
+def test_fast_path_direct_hit_updates_restamps_and_syncs_lines_without_creating():
+    connector, invoice_service, reconciliation_repo = _build_invoice_connector()
     qbo_invoice = _make_qbo_invoice()
     direct = SimpleNamespace(
         id=7, public_id="inv-pub-7", row_version="rv", invoice_number="INV-100"
     )
     invoice_service.read_by_qbo_identity.return_value = direct
-    # Consistent: mapping table agrees with the dbo-identity match.
-    mapping_repo.read_by_invoice_id.return_value = SimpleNamespace(
-        id=1, invoice_id=7, qbo_invoice_id=8
-    )
-    mapping_repo.read_by_qbo_invoice_id.return_value = SimpleNamespace(
-        id=1, invoice_id=7, qbo_invoice_id=8
-    )
-    updated = SimpleNamespace(id=7, public_id="inv-pub-7", invoice_number="INV-100")
-    invoice_service.update_by_public_id.return_value = updated
-
-    result = connector.sync_from_qbo_invoice(qbo_invoice, [])
-
-    assert result is updated
-    invoice_service.update_by_public_id.assert_called_once()
-    invoice_service.repo.set_qbo_identity.assert_called_once_with(
-        id=7, qbo_id="INV-QBO", realm_id="realm-z", sync_token="3"
-    )
-    # Fast path never writes a mapping row on a consistent hit.
-    mapping_repo.create.assert_not_called()
-    connector._sync_line_items.assert_called_once()
-
-
-@patch("integrations.intuit.qbo.base.identity_fastpath.qbo_app_lock", _granted_lock)
-def test_fast_path_missing_self_heals_mapping_via_repo_create_directly():
-    """MISSING state (dbo carries identity, no mapping row on either side) must
-    self-heal by creating the mapping row directly via mapping_repo.create — NOT
-    via connector.create_mapping, which would redundantly re-stamp identity."""
-    connector, mapping_repo, invoice_service, _ = _build_invoice_connector()
-    qbo_invoice = _make_qbo_invoice()
-    direct = SimpleNamespace(
-        id=7, public_id="inv-pub-7", row_version="rv", invoice_number="INV-100"
-    )
-    invoice_service.read_by_qbo_identity.return_value = direct
-    mapping_repo.read_by_invoice_id.return_value = None
-    mapping_repo.read_by_qbo_invoice_id.return_value = None
-    updated = SimpleNamespace(id=7, public_id="inv-pub-7", invoice_number="INV-100")
-    invoice_service.update_by_public_id.return_value = updated
-    connector.create_mapping = Mock()
-
-    result = connector.sync_from_qbo_invoice(qbo_invoice, [])
-
-    assert result is updated
-    mapping_repo.create.assert_called_once_with(invoice_id=7, qbo_invoice_id=8)
-    connector.create_mapping.assert_not_called()
-
-
-def test_fast_path_conflict_hard_stops_never_writes_conflicted_invoice():
-    connector, mapping_repo, invoice_service, reconciliation_repo = _build_invoice_connector()
-    qbo_invoice = _make_qbo_invoice()
-    direct = SimpleNamespace(
-        id=7, public_id="inv-pub-7", row_version="rv", invoice_number="INV-100"
-    )
-    invoice_service.read_by_qbo_identity.return_value = direct
-    # Conflict: dbo.Invoice 7 carries this identity, but the mapping table
-    # binds QboInvoice 8 to a DIFFERENT Invoice (9).
-    mapping_repo.read_by_invoice_id.return_value = None
-    mapping_repo.read_by_qbo_invoice_id.return_value = SimpleNamespace(
-        id=2, invoice_id=9, qbo_invoice_id=8
-    )
-
-    with pytest.raises(ValueError, match="InvoiceInvoice identity conflict"):
-        connector.sync_from_qbo_invoice(qbo_invoice, [])
-
-    invoice_service.update_by_public_id.assert_not_called()
-    invoice_service.repo.set_qbo_identity.assert_not_called()
-    mapping_repo.create.assert_not_called()
-    reconciliation_repo.create.assert_called_once()
-    assert reconciliation_repo.create.call_args.kwargs["drift_type"] == "invoice_identity_conflict"
-
-
-def test_fast_path_miss_falls_back_to_legacy_mapping_path_unchanged():
-    """No dbo-identity match (qbo_id unstamped or unknown) -> falls straight
-    through to the pre-existing mapping-table UPDATE path, still routed through
-    the shared _apply_invoice_fields closure."""
-    connector, mapping_repo, invoice_service, _ = _build_invoice_connector()
-    qbo_invoice = _make_qbo_invoice()
-    invoice_service.read_by_qbo_identity.return_value = None  # fast path miss
-
-    mapping = SimpleNamespace(id=1, invoice_id=7, qbo_invoice_id=8)
-    mapping_repo.read_by_qbo_invoice_id.return_value = mapping
-    existing = SimpleNamespace(
-        id=7, public_id="inv-pub-7", row_version="rv", invoice_number="INV-100"
-    )
-    invoice_service.read_by_id.return_value = existing
     updated = SimpleNamespace(id=7, public_id="inv-pub-7", invoice_number="INV-100")
     invoice_service.update_by_public_id.return_value = updated
 
@@ -237,62 +152,66 @@ def test_fast_path_miss_falls_back_to_legacy_mapping_path_unchanged():
 
     assert result is updated
     invoice_service.read_by_qbo_identity.assert_called_once_with("INV-QBO", "realm-z")
+    invoice_service.update_by_public_id.assert_called_once()
     invoice_service.repo.set_qbo_identity.assert_called_once_with(
         id=7, qbo_id="INV-QBO", realm_id="realm-z", sync_token="3"
     )
+    connector._sync_line_items.assert_called_once_with(7, "inv-pub-7", [], "realm-z")
+    invoice_service.create.assert_not_called()
+    reconciliation_repo.create.assert_not_called()
 
 
 @patch("integrations.intuit.qbo.base.identity_fastpath.qbo_app_lock", _granted_lock)
-def test_apply_invoice_fields_raises_runtime_error_on_rowversion_race():
+def test_fast_path_miss_creates_and_stamps_under_the_create_lock():
+    """No dbo-identity match (qbo_id unstamped or unknown) -> a genuine miss,
+    resolved under run_identity_fastpath_dbo_only's create lock: no adopt
+    candidate here, so a fresh Invoice is created and stamped."""
+    connector, invoice_service, _ = _build_invoice_connector()
+    connector.project_service = Mock()
+    connector.project_service.read_by_public_id.return_value = SimpleNamespace(id=42)
+    qbo_invoice = _make_qbo_invoice()
+    invoice_service.read_by_qbo_identity.return_value = None  # both reads: miss
+    invoice_service.repo.read_by_invoice_number_and_project_id.return_value = None
+    connector._find_adoptable_invoice_by_fingerprint = Mock(return_value=None)
+    created = SimpleNamespace(id=9, public_id="inv-pub-9")
+    invoice_service.create.return_value = created
+    refreshed = SimpleNamespace(id=9, public_id="inv-pub-9", qbo_id="INV-QBO", realm_id="realm-z")
+    invoice_service.read_by_id.return_value = refreshed
+
+    result = connector.sync_from_qbo_invoice(qbo_invoice, [])
+
+    assert result is refreshed
+    invoice_service.create.assert_called_once()
+    assert invoice_service.create.call_args.kwargs["invoice_number"] == "INV-100"
+    invoice_service.repo.set_qbo_identity.assert_called_once_with(
+        id=9, qbo_id="INV-QBO", realm_id="realm-z", sync_token="3"
+    )
+    invoice_service.update_by_public_id.assert_not_called()
+
+
+def test_write_qbo_fields_rowversion_race_raises_runtime_error():
     """A concurrent writer racing the UPDATE (update_by_public_id returns None)
     must raise RuntimeError via raise_concurrent_write_race — never a bare
     AttributeError crash and never a plain ValueError (U-291's ruling: a
     ValueError would be classified as a permanent skip and advance the
     watermark past a transient race)."""
-    connector, mapping_repo, invoice_service, _ = _build_invoice_connector()
+    connector, invoice_service, _ = _build_invoice_connector()
     qbo_invoice = _make_qbo_invoice()
     direct = SimpleNamespace(
         id=7, public_id="inv-pub-7", row_version="rv", invoice_number="INV-100"
     )
     invoice_service.read_by_qbo_identity.return_value = direct
-    mapping_repo.read_by_invoice_id.return_value = None
-    mapping_repo.read_by_qbo_invoice_id.return_value = None
     invoice_service.update_by_public_id.return_value = None  # race
 
     with pytest.raises(RuntimeError, match="concurrent write race"):
         connector.sync_from_qbo_invoice(qbo_invoice, [])
 
     invoice_service.repo.set_qbo_identity.assert_not_called()
+    connector._sync_line_items.assert_not_called()
 
 
-def test_record_identity_mapping_conflict_issue_names_both_sides():
-    connector, _, _, reconciliation_repo = _build_invoice_connector()
-    qbo_invoice = _make_qbo_invoice(id=8, qbo_id="INV-QBO", realm_id="realm-z")
-    qbo_side = SimpleNamespace(id=2, invoice_id=9, qbo_invoice_id=8)
-    local_side = SimpleNamespace(id=3, invoice_id=7, qbo_invoice_id=5)
-
-    connector._record_identity_mapping_conflict_issue(
-        qbo_invoice=qbo_invoice, dbo_invoice_id=7,
-        local_side_mapping=local_side, qbo_side_mapping=qbo_side,
-    )
-
-    reconciliation_repo.create.assert_called_once()
-    kwargs = reconciliation_repo.create.call_args.kwargs
-    assert kwargs["drift_type"] == "invoice_identity_conflict"
-    assert "Invoice 9 (mapping 2)" in kwargs["details"]
-    assert "DIFFERENT QboInvoice 5" in kwargs["details"]
-
-
-def test_record_identity_mapping_conflict_issue_qbo_side_only():
-    connector, _, _, reconciliation_repo = _build_invoice_connector()
-    qbo_invoice = _make_qbo_invoice(id=8, qbo_id="INV-QBO", realm_id="realm-z")
-    qbo_side = SimpleNamespace(id=2, invoice_id=9, qbo_invoice_id=8)
-
-    connector._record_identity_mapping_conflict_issue(
-        qbo_invoice=qbo_invoice, dbo_invoice_id=7,
-        local_side_mapping=None, qbo_side_mapping=qbo_side,
-    )
-
-    kwargs = reconciliation_repo.create.call_args.kwargs
-    assert "Invoice 9 (mapping 2)" in kwargs["details"]
-    assert "local-side" not in kwargs["details"]
+def test_falsy_qbo_id_is_a_hard_runtime_error_not_a_silent_none():
+    connector, invoice_service, _ = _build_invoice_connector()
+    with pytest.raises(RuntimeError, match="dbo-only identity fast path"):
+        connector.sync_from_qbo_invoice(_make_qbo_invoice(qbo_id=None), [])
+    invoice_service.read_by_qbo_identity.assert_not_called()

@@ -32,7 +32,6 @@ from integrations.intuit.qbo.invoice.business.model import QboInvoice
 from integrations.intuit.qbo.invoice.external.client import QboInvoiceClient
 from integrations.intuit.qbo.invoice.persistence.repo import QboInvoiceRepository
 from integrations.intuit.qbo.invoice.connector.invoice.business.service import InvoiceInvoiceConnector
-from integrations.intuit.qbo.invoice.connector.invoice.persistence.repo import InvoiceInvoiceRepository
 from integrations.intuit.qbo.auth.business.service import QboAuthService
 from entities.project.business.service import ProjectService
 
@@ -47,6 +46,22 @@ logging.basicConfig(
 # Sync configuration
 MAX_RETRIES = 3  # Max retries for transient errors
 INITIAL_RETRY_DELAY = 2.0  # Initial retry delay (seconds)
+
+
+def _read_qbo_stamped_invoice_ids(realm_id: str) -> set:
+    """Ids of every dbo.Invoice carrying native QBO identity in this realm (dry-run
+    stat only; U-356 replacement for InvoiceInvoiceRepository.read_all_invoice_ids
+    — realm-scoped like sync_qbo_bill.py's equivalent, where the retired read was
+    not)."""
+    from shared.database import get_connection
+
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT [Id] FROM dbo.[Invoice] WHERE [QboId] IS NOT NULL AND [RealmId] = ?",
+            realm_id,
+        )
+        return {row.Id for row in cursor.fetchall()}
 
 
 def _resolve_project_to_customer_ref(project_name: str) -> str:
@@ -116,9 +131,10 @@ def _dry_run_preview(
     existing = invoice_repo.read_by_realm_id(realm_id)
     existing_qbo_ids = {inv.qbo_id for inv in existing}
 
-    # Check existing Invoice module mappings (read-only)
-    mapping_repo = InvoiceInvoiceRepository()
-    mapped_invoice_ids = mapping_repo.read_all_invoice_ids()
+    # Check existing Invoice module identities (read-only). U-356: dbo.Invoice.QboId
+    # is the sole "already projected" store (qbo.InvoiceInvoice retired) — same
+    # unscoped raw-SQL id-set the retired read_all_invoice_ids() returned.
+    mapped_invoice_ids = _read_qbo_stamped_invoice_ids(realm_id)
 
     would_create_qbo = [inv for inv in qbo_invoices if inv.id not in existing_qbo_ids]
     would_update_qbo = [inv for inv in qbo_invoices if inv.id in existing_qbo_ids]

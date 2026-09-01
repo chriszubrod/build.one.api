@@ -690,51 +690,105 @@ class QboOutboxWorker:
             conflict_error.__context__ = None
             raise
 
-    # U-301b-deferred (Chris's Gate-1 call, 2026-08-22): _refresh_invoice below
-    # is deliberately left on the legacy qbo.Invoice two-hop, unlike its sibling
-    # _refresh_bill above. Invoice's equivalent outbox sync kind
-    # (sync_invoice_to_qbo) has ZERO live rows ever (pushes are disabled per
-    # CLAUDE.md), so there is no live traffic to equivalence-prove a repoint
-    # against — unlike Bill's 918 live sync_bill_to_qbo rows. Repoint the same
-    # way (dbo-native fast path + verify_invoice_qbo_identity wrapper on
-    # identity_consistency.py's shared engine) once/if this push is re-enabled
-    # and carries real traffic to verify against. Tracked in TODO.md under
-    # "U-301b-deferred". (Expense's own _refresh_expense sibling was retired
-    # U-354 along with the rest of its dead push path — sync_expense_to_qbo
-    # never had a producer either, so this branch was equally unreachable;
-    # see qbo.PurchaseExpense mapping-table retirement.)
     def _refresh_invoice(self, row: QboOutbox) -> None:
+        """
+        U-356: dbo.Invoice.QboId/RealmId (U-238a) is the sole identity store
+        now that qbo.InvoiceInvoice is retired -- the legacy two-hop this method
+        was deliberately left on at U-301b (Chris's Gate-1 call, 2026-08-22:
+        `sync_invoice_to_qbo` has ZERO live outbox rows ever, so there was no
+        traffic to equivalence-prove a repoint against) had to go with the
+        table, so it is repointed MECHANICALLY onto the same dbo-only shape as
+        `_refresh_bill` above — not equivalence-proven against traffic, because
+        there still is none (Invoice push stays disabled per CLAUDE.md).
+
+        `invoice.qbo_id` is re-read by id first: ReadInvoiceByPublicId does NOT
+        select QboId/RealmId (only ReadInvoiceById / ReadInvoiceByQboIdAndRealmId
+        do — see entities/invoice/business/model.py). A falsy qbo_id means the
+        Invoice has never been pushed -- nothing to refresh, plain return. On a
+        GENUINE conflict (dbo.Invoice.QboId no longer resolves back to this same
+        Invoice on a fresh read), refuses to guess: records an
+        invoice_identity_conflict ReconciliationIssue and RAISES — see
+        `_refresh_bill`'s docstring for why a silent return would be wrong here
+        (`sync_to_qbo_invoice`'s UPDATE path would otherwise proceed on a
+        disputed identity).
+        """
         from integrations.intuit.qbo.invoice.business.service import QboInvoiceService
-        from integrations.intuit.qbo.invoice.connector.invoice.persistence.repo import (
-            InvoiceInvoiceRepository,
-        )
         from integrations.intuit.qbo.invoice.connector.invoice.business.service import (
             InvoiceInvoiceConnector,
         )
         from integrations.intuit.qbo.invoice.external.client import QboInvoiceClient
-        from integrations.intuit.qbo.invoice.persistence.repo import QboInvoiceRepository
+        from integrations.intuit.qbo.base.identity_consistency import verify_identity_dbo_only
         from entities.invoice.business.service import InvoiceService
 
-        invoice = InvoiceService().read_by_public_id(row.entity_public_id)
+        invoice_service = InvoiceService()
+        invoice = invoice_service.read_by_public_id(row.entity_public_id)
         if not invoice:
             return
-
-        mapping = InvoiceInvoiceRepository().read_by_invoice_id(int(invoice.id))
-        if not mapping:
+        # Re-read by id for the identity columns (see docstring); a None here
+        # means the row was deleted between the two reads — nothing to refresh.
+        invoice = invoice_service.read_by_id(int(invoice.id))
+        if not invoice or not invoice.qbo_id:
             return
 
-        local_qbo_invoice = QboInvoiceRepository().read_by_id(mapping.qbo_invoice_id)
-        if not local_qbo_invoice or not local_qbo_invoice.qbo_id:
-            return
+        verified = verify_identity_dbo_only(
+            invoice, read_direct_by_qbo_identity=invoice_service.read_by_qbo_identity,
+        )
+        if not verified:
+            # _record_invoice_identity_conflict always raises (mirrors
+            # _record_bill_identity_conflict), so nothing follows this call.
+            self._record_invoice_identity_conflict(row, invoice)
 
         with QboInvoiceClient(realm_id=row.realm_id) as client:
-            fresh = client.get_invoice(local_qbo_invoice.qbo_id)
+            fresh = client.get_invoice(verified)
         refreshed_invoice, refreshed_lines = QboInvoiceService().upsert_from_external(
             fresh, row.realm_id
         )
         InvoiceInvoiceConnector().sync_from_qbo_invoice(
             qbo_invoice=refreshed_invoice, qbo_invoice_lines=refreshed_lines
         )
+
+    def _record_invoice_identity_conflict(self, row: QboOutbox, invoice) -> None:
+        """Invoice sibling of `_record_bill_identity_conflict` (U-356): record
+        the conflict and raise ValueError with `__context__` explicitly severed
+        — see that method's comments for why `from None` alone is not enough
+        and why the drift_type must stay a string literal here. A second
+        hand-copy rather than a shared helper: the AST width guard
+        (tests/test_qbo_reconciliation_recorder.py) needs the literal at the
+        `record_mapping_issue` call site, and two copies don't yet meet the
+        rule of three.
+        """
+        from integrations.intuit.qbo.base.reconciliation_recorder import record_mapping_issue
+        from integrations.intuit.qbo.reconciliation.persistence.repo import (
+            ReconciliationIssueRepository,
+        )
+
+        record_mapping_issue(
+            ReconciliationIssueRepository(),
+            drift_type="invoice_identity_conflict",
+            entity_type="Invoice",
+            entity_public_id=row.entity_public_id,
+            qbo_id=invoice.qbo_id,
+            realm_id=row.realm_id or "",
+            details=(
+                f"Outbox refresh for Invoice {invoice.id} found a genuine identity conflict: "
+                f"dbo.Invoice.QboId={invoice.qbo_id!r} no longer resolves back to Invoice "
+                f"{invoice.id} on a fresh dbo-only read (see verify_identity_dbo_only) — the "
+                f"identity was reassigned to a different Invoice. Refusing to refresh with "
+                f"disputed identity — dead-lettering outbox row {row.public_id} immediately "
+                f"rather than risk corrupting the local Invoice cache. Investigate which side "
+                f"is correct."
+            ),
+        )
+        conflict_error = ValueError(
+            f"Invoice {invoice.id} identity conflict — dbo.Invoice.QboId no longer resolves "
+            f"back to this Invoice on a fresh dbo-only read. See the recorded "
+            f"invoice_identity_conflict ReconciliationIssue for detail."
+        )
+        try:
+            raise conflict_error
+        except ValueError:
+            conflict_error.__context__ = None
+            raise
 
     def _handle_sync_bill(self, row: QboOutbox) -> None:
         # Lazy imports to avoid heavyweight chains at module load.

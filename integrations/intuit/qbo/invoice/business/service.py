@@ -477,34 +477,25 @@ class QboInvoiceService:
         no QBO mapping or no lines (U-292 — the dbo-native seam draw_financials.py
         consumes in place of its former ItemRefName parser).
 
-        U-284: resolves the staging-side QboInvoice off dbo.Invoice's own native
-        QboId/RealmId (U-238a) as the fast path, falling back to the
-        qbo.InvoiceInvoice mapping table on a miss — mirrors every Python-side
-        fast path in this program (identity_fastpath.py's hit=False contract).
-        A dbo-identity miss (unbackfilled QboId, or a stale/theft-cleared
-        identity whose mapping row is still intact) is NOT the same as "never
-        synced to QBO"; treating it as such would silently drop cost-coded
-        lines from the Trend PDF for an invoice that's actually mapped fine.
-        qbo.Invoice/qbo.InvoiceLine stay exactly as they were either way.
+        U-284 resolved the staging-side QboInvoice off dbo.Invoice's own native
+        QboId/RealmId (U-238a) as a fast path with a qbo.InvoiceInvoice
+        mapping-table fallback; U-356 retired that table, so dbo identity is
+        now the ONLY resolution: an Invoice with no QboId stamped, or whose
+        (QboId, RealmId) resolves to no qbo.Invoice staging row, returns [] —
+        there is no second store left for a "mapped but unstamped" row to hide
+        in (the U-238a backfill closed that class; 986 = 986 live at cutover).
+        qbo.Invoice/qbo.InvoiceLine stay exactly as they were.
         """
         from entities.invoice.business.service import InvoiceService
-        from integrations.intuit.qbo.invoice.connector.invoice.persistence.repo import (
-            InvoiceInvoiceRepository,
-        )
 
         invoice = InvoiceService().read_by_id(invoice_id)
-        realm_id = invoice.realm_id if invoice else None
-        qbo_invoice_id = None
-        if invoice and invoice.qbo_id:
-            qbo_invoice = self.repo.read_by_qbo_id_and_realm_id(invoice.qbo_id, invoice.realm_id)
-            if qbo_invoice:
-                qbo_invoice_id = qbo_invoice.id
-        if qbo_invoice_id is None:
-            mapping = InvoiceInvoiceRepository().read_by_invoice_id(invoice_id)
-            if not mapping or not mapping.qbo_invoice_id:
-                return []
-            qbo_invoice_id = mapping.qbo_invoice_id
-        lines = self.line_repo.read_by_qbo_invoice_id(qbo_invoice_id)
+        if not invoice or not invoice.qbo_id:
+            return []
+        realm_id = invoice.realm_id
+        qbo_invoice = self.repo.read_by_qbo_id_and_realm_id(invoice.qbo_id, invoice.realm_id)
+        if not qbo_invoice:
+            return []
+        lines = self.line_repo.read_by_qbo_invoice_id(qbo_invoice.id)
         if not lines:
             return []
 

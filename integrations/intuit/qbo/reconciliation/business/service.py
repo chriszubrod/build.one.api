@@ -50,6 +50,46 @@ SEVERITY_BY_DRIFT = {
 # issue-write is suppressed. Do not add them together.
 RECONCILE_COUNT_KEYS = ("auto_fixed", "flagged", "flagged_deduped", "errors")
 
+# reconcile_invoice_draws' row source (U-356): dbo-native identity JOIN.
+#
+# Pre-U-356 this hopped through the qbo.InvoiceInvoice mapping table
+# (FROM qbo.InvoiceInvoice map JOIN dbo.Invoice i ON i.Id = map.InvoiceId
+#  JOIN qbo.Invoice qi ON qi.Id = map.QboInvoiceId WHERE qi.RealmId = ?).
+# Re-expressed off dbo.Invoice.QboId/RealmId (U-238a — the sole identity
+# store now that the mapping table is retired), joined to its qbo.Invoice
+# staging row by that identity. Both sides are unique per (QboId, RealmId)
+# (UQ_Invoice_QboId_RealmId / UQ_QboInvoice_QboId_RealmId), so the JOIN is
+# still 1:1 per invoice. Realm-scoped on dbo.Invoice's own RealmId; a
+# NULL-realm row on either side never joins (was excluded by the old
+# `qi.RealmId = ?` too). `i.QboId IS NOT NULL` is implied by the inner JOIN
+# and stated anyway so the filtered UQ_Invoice_QboId_RealmId index is
+# provably eligible under a parameterized plan. Live-equivalent at cutover (read-only prod check,
+# 2026-09-01): 986 rows each way, symmetric difference 0.
+#
+# Module-level (not inline) so tests/test_u356_invoice_mapping_retire.py can
+# execute THIS exact text against the legacy mapping-hop query on a shared
+# fixture DB and assert the two return the same rows.
+INVOICE_DRAW_ROWS_SQL = """
+    SELECT i.Id, CAST(i.PublicId AS NVARCHAR(50)) AS PublicId,
+           i.InvoiceNumber, i.TotalAmount, i.IsDraft,
+           qi.QboId, qi.TotalAmt,
+           (SELECT COUNT(*) FROM dbo.InvoiceLineItem x WHERE x.InvoiceId = i.Id) AS DboLines,
+           (SELECT COUNT(*) FROM qbo.InvoiceLine ql WHERE ql.QboInvoiceId = qi.Id) AS QboLines,
+           (SELECT COUNT(*) FROM dbo.InvoiceLineItem x
+              WHERE x.InvoiceId = i.Id AND x.SourceType = 'Manual') AS ManualLines,
+           (SELECT COUNT(*) FROM dbo.InvoiceLineItem x
+              LEFT JOIN dbo.BillLineItem b ON b.Id = x.BillLineItemId
+              LEFT JOIN dbo.ExpenseLineItem e ON e.Id = x.ExpenseLineItemId
+              LEFT JOIN dbo.BillCreditLineItem c ON c.Id = x.BillCreditLineItemId
+            WHERE x.InvoiceId = i.Id
+              AND x.SourceType IN ('BillLineItem','ExpenseLineItem','BillCreditLineItem')
+              AND COALESCE(b.IsBilled, e.IsBilled, c.IsBilled, 0) = 0) AS UnbilledSources
+    FROM dbo.Invoice i
+    JOIN qbo.Invoice qi ON qi.QboId = i.QboId AND qi.RealmId = i.RealmId
+    WHERE i.RealmId = ?
+      AND i.QboId IS NOT NULL
+"""
+
 
 class ReconciliationService:
     """
@@ -315,7 +355,9 @@ class ReconciliationService:
         Daily DB-side invariant check for customer invoices (the InvoiceAgent
         reconciliation invariant, checked between runs):
 
-        For every QBO-mapped dbo.Invoice:
+        For every dbo.Invoice carrying native QBO identity (QboId/RealmId, U-238a)
+        in this realm, joined to its qbo.Invoice staging row by that identity
+        (U-356 — see INVOICE_DRAW_ROWS_SQL for the retired mapping-table hop):
           1. dbo.Invoice.TotalAmount == qbo.Invoice.TotalAmt (±0.01)
           2. dbo.InvoiceLineItem count == qbo.InvoiceLine count
           3. Completed (IsDraft=0) invoices have no unlinked ('Manual') lines
@@ -344,29 +386,7 @@ class ReconciliationService:
         try:
             with get_connection() as conn:
                 cursor = conn.cursor()
-                cursor.execute(
-                    """
-                    SELECT i.Id, CAST(i.PublicId AS NVARCHAR(50)) AS PublicId,
-                           i.InvoiceNumber, i.TotalAmount, i.IsDraft,
-                           qi.QboId, qi.TotalAmt,
-                           (SELECT COUNT(*) FROM dbo.InvoiceLineItem x WHERE x.InvoiceId = i.Id) AS DboLines,
-                           (SELECT COUNT(*) FROM qbo.InvoiceLine ql WHERE ql.QboInvoiceId = qi.Id) AS QboLines,
-                           (SELECT COUNT(*) FROM dbo.InvoiceLineItem x
-                              WHERE x.InvoiceId = i.Id AND x.SourceType = 'Manual') AS ManualLines,
-                           (SELECT COUNT(*) FROM dbo.InvoiceLineItem x
-                              LEFT JOIN dbo.BillLineItem b ON b.Id = x.BillLineItemId
-                              LEFT JOIN dbo.ExpenseLineItem e ON e.Id = x.ExpenseLineItemId
-                              LEFT JOIN dbo.BillCreditLineItem c ON c.Id = x.BillCreditLineItemId
-                            WHERE x.InvoiceId = i.Id
-                              AND x.SourceType IN ('BillLineItem','ExpenseLineItem','BillCreditLineItem')
-                              AND COALESCE(b.IsBilled, e.IsBilled, c.IsBilled, 0) = 0) AS UnbilledSources
-                    FROM qbo.InvoiceInvoice map
-                    JOIN dbo.Invoice i ON i.Id = map.InvoiceId
-                    JOIN qbo.Invoice qi ON qi.Id = map.QboInvoiceId
-                    WHERE qi.RealmId = ?
-                    """,
-                    realm_id,
-                )
+                cursor.execute(INVOICE_DRAW_ROWS_SQL, realm_id)
                 # Anti-flood: this detector writes AT MOST ONE summary issue per
                 # run (the reconcile_bills pattern — a per-invoice flag here would
                 # re-insert one row per invoice per day with no dedupe, and the

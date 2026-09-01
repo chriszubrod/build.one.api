@@ -31,6 +31,10 @@ logger = logging.getLogger("check_qbo_identity_drift_headers")
 # check_qbo_identity_drift_reference.py gives "bill_credit" (U-353).
 _MAPPING_TABLE_RETIRED_KEYS = frozenset({"bill"})
 
+# U-356: with the "invoice" row gone (qbo.InvoiceInvoice retired — the last header
+# family), this working set is now EMPTY: every header family is dbo-native only and
+# there is no mapping+staging pair left to drift-check against. Kept as a no-op
+# (`--entity all` iterates nothing) pending its deletion as dead code.
 ENTITY_SPECS = tuple(s for s in HEADER_ENTITY_SPECS if s.key not in _MAPPING_TABLE_RETIRED_KEYS)
 
 
@@ -107,6 +111,15 @@ def main() -> int:
     assert_cli_system_admin()
 
     specs = ENTITY_SPECS if args.entity == "all" else tuple(s for s in ENTITY_SPECS if s.key == args.entity)
+    if not specs:
+        # U-356: every header family is dbo-native only — there is no mapping+staging
+        # pair left to drift-check. Say so loudly rather than print a "no drift"
+        # summary that examined zero rows (a false green).
+        logger.warning(
+            "No header entity has a mapping table left to drift-check (all retired, "
+            "U-350..U-356) — NOTHING was examined. This script is dead; see TODO.md."
+        )
+        return 0
 
     print("\n=== QBO identity drift summary (read-only) ===")
     print(f"{'Entity':<10} {'match':>8} {'drift':>8} {'pending':>8} {'orphan':>8}")

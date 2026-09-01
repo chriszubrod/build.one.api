@@ -75,7 +75,28 @@ _SQL_COLUMN_WIDTH_RE = re.compile(
 # unlike every sibling anomaly path this same unit touches -- fixed by adding
 # 2 more record_mapping_issue calls (drift_type "bill_identity_conflict" and
 # the new "bill_staging_row_missing"). Net: 26->28.
-_MIN_CALL_SITES = 28
+# U-356 (invoice) retired qbo.InvoiceInvoice — the last header family — for the
+# same shape, net 28->32 (recomputed against the actual tree at an isolated
+# worktree, per U-354's Gate-2 miss): REMOVED InvoiceInvoiceConnector's
+# mapping-table-era _record_identity_mapping_conflict_issue
+# (record_identity_mapping_conflict, 7->6); ADDED five anomaly recorders, all
+# mirroring already-shipped sibling shapes — the identity-stamp-rollback's
+# _record_orphan_header_issue (record_mapping_issue, "orphan_invoice_header";
+# U-354/U-355 pattern), the adopt-path theft-guard's
+# _record_duplicate_qbo_invoice_issue (record_duplicate_identity_conflict,
+# "invoice_identity_conflict"; U-350 pattern — Invoice's create path DOES adopt
+# by number/fingerprint, unlike Bill/Expense), sync_to_qbo_invoice's two
+# hard-refusal recorders ("invoice_identity_conflict" + the new
+# "invoice_staging_row_missing"; U-355's Pass-1 finding applied to the dormant
+# Invoice push at repoint time rather than re-found later), and the outbox
+# worker's _record_invoice_identity_conflict ("invoice_identity_conflict";
+# _refresh_invoice's dbo-only repoint, the U-301b `_refresh_bill` shape).
+# The pre-existing "duplicate_qbo_invoice_number" recorder (U-334) is unchanged,
+# and the Pass-1 altitude finding added a SECOND "duplicate_qbo_invoice_number"
+# recorder for the suffix-exhaustion refusal (all ten -N variants taken — the
+# un-projected QBO invoice would otherwise be invisible to the daily reconcile),
+# 32->33.
+_MIN_CALL_SITES = 33
 _SKIP_FILES = frozenset({"reconciliation_recorder.py"})
 _DEFAULT_KWARGS = {
     "severity": "critical",

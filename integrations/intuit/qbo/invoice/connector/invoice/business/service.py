@@ -1,33 +1,31 @@
 # Python Standard Library Imports
 import logging
+from dataclasses import dataclass
 from decimal import Decimal
 from typing import List, Optional
 
 # Third-party Imports
 
 # Local Imports
-from integrations.intuit.qbo.invoice.connector.invoice.business.model import InvoiceInvoice
-from integrations.intuit.qbo.invoice.connector.invoice.persistence.repo import InvoiceInvoiceRepository
 from integrations.intuit.qbo.invoice.connector.invoice_line_item.persistence.repo import InvoiceLineItemInvoiceLineRepository
 from integrations.intuit.qbo.invoice.business.model import QboInvoice, QboInvoiceLine
 from integrations.intuit.qbo.customer.persistence.repo import QboCustomerRepository
 from entities.invoice.business.service import InvoiceService
 from entities.invoice.business.model import Invoice
 from entities.project.business.service import ProjectService
-from integrations.intuit.qbo.base.cache_lookup import cached_or_read
 from integrations.intuit.qbo.base.identity_consistency import verify_identity_dbo_only
 from integrations.intuit.qbo.base.field_ownership import (
     preserve_human_edited_ref,
     qbo_ref_or_placeholder,
 )
+from integrations.intuit.qbo.base.compensation import rollback_orphan_header
 from integrations.intuit.qbo.base.identity_fastpath import (
-    CONSISTENT,
-    guard_create_mapping_rollback,
-    raise_concurrent_write_race,
-    run_identity_fastpath,
+    run_identity_fastpath_dbo_only,
+    stamp_dbo_identity_with_lock,
 )
 from integrations.intuit.qbo.base.reconciliation_recorder import (
-    record_identity_mapping_conflict,
+    build_duplicate_qbo_identity_conflict_desc,
+    record_duplicate_identity_conflict,
     record_mapping_issue,
 )
 from integrations.intuit.qbo.base.cost_code_resolver import resolve_qbo_item_ref
@@ -38,6 +36,25 @@ from entities.sub_cost_code.business.service import SubCostCodeService
 logger = logging.getLogger(__name__)
 
 
+@dataclass(frozen=True)
+class _InvoiceCandidate:
+    """`resolve_candidate` -> `stamp_identity` handoff for the dbo-only fast path's
+    MISS branch (U-356): which local Invoice to bind, and whether it is a
+    pre-existing row ADOPTED by side-channel key (stamped under its own candidate
+    lock; never rolled back on a stamp failure; never line-synced — see
+    `_adopt_invoice_identity`) or a fresh header this sync just minted (rolled
+    back on a stamp / line-sync failure). `id` is what
+    `run_identity_fastpath_dbo_only` reads off the candidate for its own
+    concurrent-write-race message."""
+
+    invoice: Invoice
+    adopted: bool
+
+    @property
+    def id(self):
+        return self.invoice.id
+
+
 class InvoiceInvoiceConnector:
     """
     Connector service for synchronization between QboInvoice and Invoice modules.
@@ -45,7 +62,6 @@ class InvoiceInvoiceConnector:
 
     def __init__(
         self,
-        mapping_repo: Optional[InvoiceInvoiceRepository] = None,
         line_mapping_repo: Optional[InvoiceLineItemInvoiceLineRepository] = None,
         invoice_service: Optional[InvoiceService] = None,
         project_service: Optional[ProjectService] = None,
@@ -54,8 +70,13 @@ class InvoiceInvoiceConnector:
         reconciliation_repo: Optional[ReconciliationIssueRepository] = None,
         sub_cost_code_service: Optional[SubCostCodeService] = None,
     ):
-        """Initialize the InvoiceInvoiceConnector."""
-        self.mapping_repo = mapping_repo or InvoiceInvoiceRepository()
+        """Initialize the InvoiceInvoiceConnector.
+
+        U-356: the header mapping repo (qbo.InvoiceInvoice) is retired —
+        dbo.Invoice.QboId/RealmId is the sole header identity store. The LINE
+        mapping repo (qbo.InvoiceLineItemInvoiceLine, `line_mapping_repo`) is a
+        separate family (U-358) and is deliberately untouched here.
+        """
         self.line_mapping_repo = line_mapping_repo or InvoiceLineItemInvoiceLineRepository()
         self.invoice_service = invoice_service or InvoiceService()
         self.project_service = project_service or ProjectService()
@@ -74,7 +95,6 @@ class InvoiceInvoiceConnector:
 
         # In-memory caches to avoid repeated DB lookups across invoice syncs
         self._project_cache: dict = {}          # {(realm_id, qbo_customer_ref_value): project_public_id}
-        self._invoice_mapping_cache: dict = {}  # {qbo_invoice_id: InvoiceInvoice}
         self._line_mapping_cache: dict = {}     # {qbo_invoice_line_id: InvoiceLineItemInvoiceLine}
         self._invoice_cache: dict = {}          # {invoice_id: Invoice}
         self._line_item_cache: dict = {}        # {invoice_line_item_id: InvoiceLineItem}
@@ -87,11 +107,10 @@ class InvoiceInvoiceConnector:
         """
         from entities.invoice_line_item.business.service import InvoiceLineItemService
 
-        logger.info("Pre-loading InvoiceInvoice mapping cache...")
-        all_mappings = self.mapping_repo.read_all()
-        self._invoice_mapping_cache = {m.qbo_invoice_id: m for m in all_mappings}
-        logger.info(f"Pre-loaded {len(self._invoice_mapping_cache)} InvoiceInvoice mappings")
-
+        # U-356: no header-mapping preload — header identity is resolved per
+        # invoice straight off dbo.Invoice.QboId/RealmId (an indexed point read),
+        # not from a bulk qbo.InvoiceInvoice snapshot. The LINE mapping preload
+        # below is a different family (U-358) and stays.
         logger.info("Pre-loading InvoiceLineItemInvoiceLine mapping cache...")
         all_line_mappings = self.line_mapping_repo.read_all()
         self._line_mapping_cache = {m.qbo_invoice_line_id: m for m in all_line_mappings}
@@ -112,17 +131,21 @@ class InvoiceInvoiceConnector:
 
     def sync_from_qbo_invoice(self, qbo_invoice: QboInvoice, qbo_invoice_lines: List[QboInvoiceLine]) -> Invoice:
         """
-        Sync data from QboInvoice to Invoice module.
-        
+        Sync a QBO Invoice to the Invoice module, via the dbo-only identity fast
+        path (U-356 — qbo.InvoiceInvoice is retired; dbo.Invoice.QboId/RealmId,
+        U-238a, is the sole identity store).
+
         This method:
-        1. Checks if a mapping exists
-        2. Creates or updates the Invoice accordingly
-        3. Syncs line items to InvoiceLineItem module
-        
+        1. Resolves the QBO CustomerRef to a Project public_id (dbo-native)
+        2. Direct dbo.Invoice.QboId/RealmId hit -> update in place + sync lines
+        3. Genuine miss -> gap-detect/adopt a mapping-lost local Invoice by
+           (project, number) or header fingerprint (U-034), else create a new
+           Invoice (suffixing a colliding number); stamp identity; sync lines
+
         Args:
             qbo_invoice: QboInvoice record
             qbo_invoice_lines: List of QboInvoiceLine records for this invoice
-        
+
         Returns:
             Invoice: The synced Invoice record
         """
@@ -134,7 +157,7 @@ class InvoiceInvoiceConnector:
             raise ValueError(
                 f"No project mapping found for QBO customer ref: {qbo_invoice.customer_ref_value}"
             )
-        
+
         # Map QBO Invoice fields to Invoice module fields
         invoice_number = qbo_ref_or_placeholder(qbo_invoice.doc_number, qbo_invoice.qbo_id)
         invoice_date = qbo_invoice.txn_date or ""
@@ -142,30 +165,37 @@ class InvoiceInvoiceConnector:
         memo = qbo_invoice.private_note
         total_amount = qbo_invoice.total_amt
 
-        def _apply_invoice_fields(direct: Invoice) -> Invoice:
+        def _write_qbo_fields(target: Invoice) -> Optional[Invoice]:
             """
-            Write the QBO-derived fields onto an existing Invoice, stamp identity,
-            then sync its line items. Shared by the fast path's apply_fields and the
-            legacy "mapping found" branch below so the QboInvoice->Invoice field
-            mapping lives in exactly one place (no drift between the two update
-            sites) — mirrors BillBillConnector's `_apply_bill_fields`.
+            Write the QBO-derived fields onto an existing Invoice (no identity
+            stamp, no line sync). Shared by the fast path's HIT `apply_fields`
+            and the MISS branch's adopt path (`_adopt_invoice_identity`, where it
+            runs inside the candidate's own stamp lock) so the QboInvoice->Invoice
+            field mapping lives in exactly one place — mirrors
+            BillBillConnector's `_apply_bill_fields`.
 
             U-027/U-034 (rule of three, completed for Invoice): never clobber a
             human-corrected invoice_number on re-pull. Preserve the stored value
             unless it is empty/null or the QBO-<id> placeholder (which still
             upgrades to a real doc_number) — exactly like the Bill/BillCredit/
             Expense siblings. This is safe because the lost-mapping gap-detect/
-            adopt path below no longer keys ONLY on the QBO-derived number: when a
+            adopt path no longer keys ONLY on the QBO-derived number: when a
             preserved (divergent) number makes the number lookup miss, a header
             fingerprint (total + txn_date + project) re-adopts the renamed invoice
             instead of minting a phantom -N duplicate. CREATE path unchanged.
+
+            Returns None on a ROWVERSION-race / concurrent-delete
+            `update_by_public_id` miss (U-291) — both callers hand that None to a
+            shared helper whose own `raise_concurrent_write_race` is the ONE place
+            the guarantee lives (`run_identity_fastpath_dbo_only._apply` on the
+            HIT path, `stamp_dbo_identity_with_lock` step 5 on the adopt path).
             """
             effective_invoice_number = preserve_human_edited_ref(
-                direct.invoice_number, invoice_number, qbo_invoice.qbo_id
+                target.invoice_number, invoice_number, qbo_invoice.qbo_id
             )
             updated = self.invoice_service.update_by_public_id(
-                direct.public_id,
-                row_version=direct.row_version,
+                target.public_id,
+                row_version=target.row_version,
                 project_public_id=project_public_id,
                 invoice_date=invoice_date,
                 due_date=due_date,
@@ -175,160 +205,166 @@ class InvoiceInvoiceConnector:
                 is_draft=False,
             )
             if updated is None:
-                # ROWVERSION race: a concurrent writer touched this exact Invoice
-                # between the read and this UPDATE, so it affected 0 rows. Shared
-                # by both the fast path and the legacy "mapping found" branch
-                # below, so both are fixed by this one guard (U-291).
                 logger.error(
-                    f"Failed to update Invoice {direct.id} from QboInvoice {qbo_invoice.id} - "
+                    f"Failed to update Invoice {target.id} from QboInvoice {qbo_invoice.id} - "
                     f"update_by_public_id returned None (concurrent write race)"
                 )
-                raise_concurrent_write_race(entity_label="Invoice", entity_id=direct.id)
-            invoice_id = coerce_id(updated.id)
-            # Invoice carries SyncToken as part of its identity (like Bill/Expense) —
-            # this re-stamp is NOT redundant even when QboId/RealmId are already
-            # correct-by-construction (the fast path only found `direct` because
-            # they already match): it refreshes SyncToken on every pull, which the
-            # legacy path also always did.
-            self.invoice_service.repo.set_qbo_identity(
-                id=invoice_id,
-                qbo_id=qbo_invoice.qbo_id,
-                realm_id=qbo_invoice.realm_id,
-                sync_token=getattr(qbo_invoice, "sync_token", None),
-            )
-            # Update invoice cache with fresh record
+                return None
             if self._invoice_cache is not None:
                 self._invoice_cache[updated.id] = updated
-            # Sync line items for existing invoice
+            return updated
+
+        def _apply_invoice_fields(direct: Invoice) -> Optional[Invoice]:
+            """
+            `apply_fields` for the dbo-only fast path's HIT branch: write the
+            QBO-derived fields, re-stamp identity, sync line items. Covers both a
+            plain direct hit and a race-resolved hit
+            (`run_identity_fastpath_dbo_only` calls this for both).
+
+            Invoice carries SyncToken as part of its identity (like Bill/Expense) —
+            this re-stamp is NOT redundant even when QboId/RealmId are already
+            correct-by-construction (the fast path only found `direct` because
+            they already match): it refreshes SyncToken on every pull, matching
+            the pre-U-356 behavior exactly.
+            """
+            updated = _write_qbo_fields(direct)
+            if updated is None:
+                return None
+            invoice_id = coerce_id(updated.id)
+            self._set_invoice_qbo_identity(invoice_id, qbo_invoice)
             self._sync_line_items(
                 invoice_id, updated.public_id, qbo_invoice_lines, qbo_invoice.realm_id
             )
             return updated
 
-        # U-284 (Phase-4): resolve identity directly against dbo.Invoice's native
-        # QboId/RealmId (U-238a) before falling back to the qbo.InvoiceInvoice
-        # mapping-table hop below. Every Invoice synced even once already carries
-        # this identity (set_qbo_identity is called on both the update and create
-        # paths), so this covers the steady-state case without touching
-        # qbo.Invoice at all. Mirrors BillBillConnector's U-283 fast path exactly —
-        # conflict->RAISE is structural (base.identity_fastpath), never a
-        # fall-through to the legacy path below.
-        outcome = run_identity_fastpath(
+        outcome = run_identity_fastpath_dbo_only(
             qbo_id=qbo_invoice.qbo_id,
             realm_id=qbo_invoice.realm_id,
-            external_id=qbo_invoice.id,
             entity_label="Invoice",
             external_label="QboInvoice",
-            mapping_label="InvoiceInvoice",
+            lock_resource_label="Invoice",
             read_direct_by_qbo_identity=self.invoice_service.read_by_qbo_identity,
-            read_by_local_id=self.mapping_repo.read_by_invoice_id,
-            read_by_external_id=self.mapping_repo.read_by_qbo_invoice_id,
-            external_id_attr="qbo_invoice_id",
-            record_conflict_issue=lambda entity, by_local, by_external: (
-                self._record_identity_mapping_conflict_issue(
-                    qbo_invoice=qbo_invoice,
-                    dbo_invoice_id=coerce_id(entity.id),
-                    local_side_mapping=by_local,
-                    qbo_side_mapping=by_external,
+            apply_fields=_apply_invoice_fields,
+            resolve_candidate=lambda: self._resolve_invoice_candidate(
+                qbo_invoice=qbo_invoice,
+                project_public_id=project_public_id,
+                invoice_number=invoice_number,
+                invoice_date=invoice_date,
+                due_date=due_date,
+                memo=memo,
+                total_amount=total_amount,
+            ),
+            stamp_identity=lambda candidate: (
+                self._adopt_invoice_identity(
+                    candidate, qbo_invoice=qbo_invoice, write_fields=_write_qbo_fields,
+                )
+                if candidate.adopted
+                else self._stamp_fresh_invoice_identity(
+                    candidate.invoice, qbo_invoice=qbo_invoice, qbo_invoice_lines=qbo_invoice_lines,
                 )
             ),
-            conflict_message=lambda entity: (
-                f"InvoiceInvoice identity conflict for QboInvoice {qbo_invoice.qbo_id} "
-                f"(id={qbo_invoice.id}): dbo.Invoice {entity.id} already carries this "
-                f"identity but the mapping table disagrees. Not auto-repointed; "
-                f"see the recorded reconciliation issue. Skipping until a human "
-                f"resolves it."
-            ),
-            create_mapping=lambda local_id: self.mapping_repo.create(
-                invoice_id=local_id, qbo_invoice_id=qbo_invoice.id
-            ),
-            apply_fields=_apply_invoice_fields,
-            race_lock_mapping_label="InvoiceInvoice",
         )
-        if outcome.hit:
-            return outcome.entity
-
-        # Check for existing mapping (use cache when pre-loaded, else fall back to DB)
-        mapping = cached_or_read(
-            self._caches_preloaded, self._invoice_mapping_cache, qbo_invoice.id,
-            self.mapping_repo.read_by_qbo_invoice_id,
-        )
-
-        if mapping:
-            # Found existing mapping - use cached Invoice record to avoid DB read
-            invoice = cached_or_read(
-                self._caches_preloaded, self._invoice_cache, mapping.invoice_id,
-                self.invoice_service.read_by_id,
+        if outcome.entity is None:
+            # No longer race-reachable in practice (see run_identity_fastpath_
+            # dbo_only's Raises docstring) — kept as a backstop for a directly
+            # invoked falsy qbo_invoice.qbo_id, mirroring every sibling
+            # connector's identical guard (U-350/U-353/U-354/U-355).
+            raise RuntimeError(
+                f"Failed to resolve Invoice for QboInvoice {qbo_invoice.id} "
+                f"(qbo_id={qbo_invoice.qbo_id}) via the dbo-only identity fast path"
             )
-            if invoice:
-                logger.info(f"Updating existing Invoice {invoice.id} from QboInvoice {qbo_invoice.id}")
-                return _apply_invoice_fields(invoice)
-            else:
-                logger.warning(f"Mapping exists but Invoice {mapping.invoice_id} not found. Creating new Invoice.")
-                self.mapping_repo.delete_by_id(mapping.id)
-                mapping = None
+        return outcome.entity
 
-        # --- Gap-detect / adopt: prevent phantom "-N" duplicate invoices ---
-        # If a local Invoice already exists for this (project, number) but isn't mapped to THIS
-        # QboInvoice, it's almost certainly the same invoice whose header mapping was lost (or a
-        # manual original). ADOPT it (ensure the mapping, take the UPDATE path) rather than minting
-        # a phantom suffixed duplicate via the retry loop below. Only a number genuinely owned by a
-        # DIFFERENT QboInvoice falls through to a real CREATE. (Fix for the 46 phantom -N invoices.)
+    def _resolve_invoice_candidate(
+        self,
+        *,
+        qbo_invoice: QboInvoice,
+        project_public_id: str,
+        invoice_number: str,
+        invoice_date: str,
+        due_date: str,
+        memo,
+        total_amount,
+    ) -> _InvoiceCandidate:
+        """
+        `resolve_candidate` for the dbo-only fast path's MISS branch (U-356):
+        called only under `run_identity_fastpath_dbo_only`'s create lock, once a
+        genuine miss is confirmed (no dbo.Invoice currently holds this identity,
+        including the re-read under lock).
+
+        Gap-detect / adopt first (prevents phantom "-N" duplicate invoices): if a
+        local Invoice already exists for this (project, number) — or, when a
+        human RENAMED it, matches the header fingerprint (U-034) — and carries
+        no QBO identity of its own, it is almost certainly the same invoice
+        whose identity was lost (or a manual original). ADOPT it (the stamp
+        happens in `_adopt_invoice_identity`, under the candidate's own lock)
+        rather than minting a phantom suffixed duplicate via the create loop
+        below. A candidate already bound to a DIFFERENT QBO invoice is a
+        genuine number collision: recorded as `duplicate_qbo_invoice_number`
+        (U-334) and never stolen — falls through to a real, suffixed CREATE.
+
+        The dbo-only "already bound elsewhere?" check replaces the retired
+        mapping-table read. A number-matched row is re-read BY ID first:
+        ReadInvoiceByInvoiceNumberAndProjectId does not select QboId/RealmId
+        (only ReadInvoiceById / ReadInvoiceByQboIdAndRealmId do — see
+        entities/invoice/business/model.py), so the lookup row's `qbo_id` is
+        always None and must not be trusted for this decision. A fingerprint-
+        matched row needs no re-read: `_find_adoptable_invoice_by_fingerprint`
+        already returns the by-id row it vetted. Cold path only (MISS branch),
+        one by-id read per adopt candidate — the same cost profile as the
+        per-candidate mapping read this replaces.
+        """
         proj = self.project_service.read_by_public_id(project_public_id) if project_public_id else None
         existing_local = (
             self.invoice_service.repo.read_by_invoice_number_and_project_id(invoice_number, proj.id)
             if proj else None
         )
-        # U-034 (completes the rule of three for Invoice): if the QBO-derived-number lookup
-        # missed, the local invoice may have been RENAMED by a human — its number now diverges
-        # from QBO's (the UPDATE path above preserves that edit) and its header mapping has since
-        # been lost. Fall back to a header fingerprint (total + txn_date + project) so the renamed
-        # invoice is RE-ADOPTED here rather than missed and phantom-duplicated by the suffix-CREATE
-        # loop below (the "46 phantom -N invoices" bug this whole path exists to prevent).
+        if existing_local:
+            existing_local = self.invoice_service.read_by_id(int(existing_local.id))
+        # U-034 (completes the rule of three for Invoice): if the QBO-derived-number
+        # lookup missed, the local invoice may have been RENAMED by a human — its
+        # number now diverges from QBO's (the HIT path preserves that edit) and its
+        # identity has since been lost. Fall back to a header fingerprint (total +
+        # txn_date + project) so the renamed invoice is RE-ADOPTED here rather than
+        # missed and phantom-duplicated by the suffix-CREATE loop below (the "46
+        # phantom -N invoices" bug this whole path exists to prevent).
         if not existing_local and proj:
             existing_local = self._find_adoptable_invoice_by_fingerprint(
-                proj.id, total_amount, invoice_date, qbo_invoice.id
+                proj.id, total_amount, invoice_date, qbo_invoice.qbo_id, qbo_invoice.realm_id
             )
         if existing_local:
-            existing_map = self.mapping_repo.read_by_invoice_id(int(existing_local.id))
-            if existing_map and existing_map.qbo_invoice_id != qbo_invoice.id:
+            if self._carries_different_qbo_identity(
+                existing_local, qbo_invoice.qbo_id, qbo_invoice.realm_id
+            ):
                 logger.warning(
-                    f"Invoice number '{invoice_number}' (project {proj.id}) is already mapped to a "
-                    f"DIFFERENT QboInvoice {existing_map.qbo_invoice_id}; QboInvoice {qbo_invoice.id} "
+                    f"Invoice number '{invoice_number}' (project {proj.id}) is already bound to a "
+                    f"DIFFERENT QBO invoice (QboId={existing_local.qbo_id}, "
+                    f"RealmId={existing_local.realm_id}); QboInvoice {qbo_invoice.id} "
                     f"will create a suffixed invoice (genuine number collision)."
                 )
-                try:
-                    from integrations.intuit.qbo.invoice.persistence.repo import QboInvoiceRepository
-                    colliding_qbo_invoice = QboInvoiceRepository().read_by_id(existing_map.qbo_invoice_id)
-                except Exception:
-                    logger.exception(
-                        f"Failed to resolve colliding QboInvoice {existing_map.qbo_invoice_id} for "
-                        f"reconciliation-issue recording"
-                    )
-                    colliding_qbo_invoice = None
-                colliding_qbo_id = colliding_qbo_invoice.qbo_id if colliding_qbo_invoice else None
                 record_mapping_issue(
                     self.reconciliation_repo,
                     drift_type="duplicate_qbo_invoice_number",
                     entity_type="Invoice",
                     entity_public_id=str(existing_local.public_id) if existing_local.public_id else None,
-                    qbo_id=str(colliding_qbo_id) if colliding_qbo_id else None,
+                    qbo_id=str(existing_local.qbo_id),
                     realm_id=qbo_invoice.realm_id or "",
                     details=(
                         f"Invoice number '{invoice_number}' (project {proj.id}) collides: local Invoice "
-                        f"{existing_local.id} (number '{existing_local.invoice_number}') is already mapped to "
-                        f"QboInvoice {existing_map.qbo_invoice_id} (QboId={colliding_qbo_id}); incoming "
-                        f"QboInvoice {qbo_invoice.id} (QboId={qbo_invoice.qbo_id}) will create a suffixed "
-                        f"invoice instead of overwriting the existing mapping."
+                        f"{existing_local.id} (number '{existing_local.invoice_number}') already carries "
+                        f"dbo-native QBO identity QboId={existing_local.qbo_id} "
+                        f"(RealmId={existing_local.realm_id}); incoming QboInvoice {qbo_invoice.id} "
+                        f"(QboId={qbo_invoice.qbo_id}) will create a suffixed invoice instead of "
+                        f"overwriting the existing identity."
                     ),
                     severity="critical",
                 )
             else:
                 # Positive-evidence guard: a (project, number) match alone is NOT enough to adopt.
-                # Local-origin / manual invoices are normally UNMAPPED (QBO push is disabled) and a
+                # Local-origin / manual invoices are normally UNSTAMPED (QBO push is disabled) and a
                 # local invoice can legitimately share a number with a DIFFERENT QboInvoice; adopting
                 # one would overwrite its header and double-add lines. Only adopt when the header
-                # fingerprint confirms the SAME invoice whose mapping was lost: total within $0.01 AND
+                # fingerprint confirms the SAME invoice whose identity was lost: total within $0.01 AND
                 # same txn date. Otherwise fall through to the safe (non-destructive) suffix CREATE.
                 same_invoice = self._header_fingerprint_matches(
                     total_amount, invoice_date,
@@ -338,7 +374,7 @@ class InvoiceInvoiceConnector:
                 # Provenance guard (Pass-1 P2): only re-adopt an invoice that QBO actually
                 # materialized (its line items carry InvoiceLineItemInvoiceLine mappings).
                 # A manual/local-origin invoice — which, since QBO invoice push is disabled,
-                # is exactly what stays unmapped — must never be adopted even on an exact
+                # is exactly what stays unstamped — must never be adopted even on an exact
                 # (number, total, date) match; that would bind it to QBO and overwrite its
                 # header. Gates BOTH the number-matched and fingerprint-fallback adopt routes,
                 # which converge here (the fingerprint helper also pre-filters on provenance
@@ -348,7 +384,7 @@ class InvoiceInvoiceConnector:
                     logger.warning(
                         f"Local Invoice {existing_local.id} shares (project {proj.id}, number "
                         f"'{invoice_number}') with QboInvoice {qbo_invoice.id} but is NOT an "
-                        f"adoptable mapping-lost QBO invoice (fingerprint_match={same_invoice}, "
+                        f"adoptable identity-lost QBO invoice (fingerprint_match={same_invoice}, "
                         f"qbo_provenance={has_qbo_provenance}) — NOT adopting; will create a "
                         f"suffixed invoice."
                     )
@@ -357,53 +393,7 @@ class InvoiceInvoiceConnector:
                         f"Adopting existing Invoice {existing_local.id} for QboInvoice {qbo_invoice.id} "
                         f"(number '{invoice_number}', fingerprint match) instead of minting a phantom"
                     )
-                    from entities.invoice_line_item.business.service import InvoiceLineItemService
-                    had_lines = bool(InvoiceLineItemService().read_by_invoice_id(int(existing_local.id)))
-                    if not existing_map:
-                        self.create_mapping(
-                            invoice_id=int(existing_local.id),
-                            qbo_invoice_id=qbo_invoice.id,
-                            qbo_id=qbo_invoice.qbo_id,
-                            realm_id=qbo_invoice.realm_id,
-                            sync_token=getattr(qbo_invoice, "sync_token", None),
-                        )
-                    # Preserve a human-corrected number here too: re-adopting a RENAMED invoice
-                    # must not overwrite its number back to the QBO-derived value (that would
-                    # re-clobber the very edit the fingerprint let us find). Placeholder/empty
-                    # still upgrades. Mirrors the plain UPDATE path above.
-                    adopt_invoice_number = preserve_human_edited_ref(
-                        existing_local.invoice_number, invoice_number, qbo_invoice.qbo_id
-                    )
-                    updated = self.invoice_service.update_by_public_id(
-                        existing_local.public_id,
-                        row_version=existing_local.row_version,
-                        project_public_id=project_public_id,
-                        invoice_date=invoice_date,
-                        due_date=due_date,
-                        invoice_number=adopt_invoice_number,
-                        total_amount=Decimal(str(total_amount)) if total_amount is not None else None,
-                        memo=memo,
-                        is_draft=False,
-                    )
-                    updated_id = coerce_id(updated.id)
-                    self.invoice_service.repo.set_qbo_identity(
-                        id=updated_id,
-                        qbo_id=qbo_invoice.qbo_id,
-                        realm_id=qbo_invoice.realm_id,
-                        sync_token=getattr(qbo_invoice, "sync_token", None),
-                    )
-                    if self._invoice_cache is not None:
-                        self._invoice_cache[updated.id] = updated
-                    # Re-project lines ONLY when the adopted invoice is EMPTY. Never re-sync onto an
-                    # already-populated invoice: its source-backed (Bill/Expense) lines aren't matched
-                    # by the Manual-only line fingerprinter, so every QBO line would be DOUBLE-ADDED as
-                    # a phantom Manual duplicate. A populated invoice keeps its lines; re-establishing
-                    # the header mapping lets future UPDATE pulls reconcile via the existing line maps.
-                    if not had_lines:
-                        self._sync_line_items(
-                            updated.id, updated.public_id, qbo_invoice_lines, qbo_invoice.realm_id
-                        )
-                    return updated
+                    return _InvoiceCandidate(existing_local, adopted=True)
 
         # Create new Invoice, handling duplicate invoice numbers
         logger.info(f"Creating new Invoice from QboInvoice {qbo_invoice.id}: invoice_number={invoice_number}")
@@ -426,112 +416,188 @@ class InvoiceInvoiceConnector:
                     logger.info(f"Duplicate invoice number, retrying with: {create_number}")
                 else:
                     raise
-        
+        else:
+            # Every suffix variant is taken. Record it (it IS a number collision,
+            # ten times over — the same drift_type the single-collision branch
+            # above records; without a durable row the un-projected QBO invoice
+            # would be invisible to the daily reconcile, which only scans
+            # dbo.Invoice rows WITH identity), then fail loud with the same
+            # ValueError class the loop's own "already exists" branch carries (a
+            # permanent per-item skip for the pull caller), instead of the
+            # UnboundLocalError the pre-U-356 loop fell into here.
+            record_mapping_issue(
+                self.reconciliation_repo,
+                drift_type="duplicate_qbo_invoice_number",
+                entity_type="Invoice",
+                entity_public_id=None,
+                qbo_id=str(qbo_invoice.qbo_id) if qbo_invoice.qbo_id else None,
+                realm_id=qbo_invoice.realm_id or "",
+                details=(
+                    f"Invoice number '{invoice_number}' (project {proj.id if proj else None}) and "
+                    f"all of its suffix variants ('{invoice_number}-2'..'{invoice_number}-11') already "
+                    f"exist; QboInvoice {qbo_invoice.id} (QboId={qbo_invoice.qbo_id}) could not be "
+                    f"projected and will be skipped until a human frees a number."
+                ),
+                severity="critical",
+            )
+            raise ValueError(
+                f"Invoice number '{invoice_number}' (project {proj.id if proj else None}) and all "
+                f"of its suffix variants already exist; cannot create Invoice for QboInvoice "
+                f"{qbo_invoice.id}"
+            )
+
         # Update invoice cache with newly created record
         if self._invoice_cache is not None:
             self._invoice_cache[invoice.id] = invoice
+        return _InvoiceCandidate(invoice, adopted=False)
 
-        # Create mapping
+    def _stamp_fresh_invoice_identity(
+        self,
+        invoice: Invoice,
+        *,
+        qbo_invoice: QboInvoice,
+        qbo_invoice_lines: List[QboInvoiceLine],
+    ) -> Optional[Invoice]:
+        """
+        `stamp_identity` for a FRESH candidate on the dbo-only fast path's MISS
+        branch (U-356) — a row `_resolve_invoice_candidate`'s create loop just
+        minted (an ADOPTED candidate goes to `_adopt_invoice_identity` instead;
+        `sync_from_qbo_invoice`'s `stamp_identity` lambda dispatches on
+        `_InvoiceCandidate.adopted`).
+
+        The row is uniquely ours, so — like Bill (U-355) — there is no
+        concurrent-different-qbo_id race to guard with extra locking; the fast
+        path's own create lock already serializes two syncs of the SAME
+        QboInvoice. On a failure in EITHER the identity stamp or the line sync,
+        best-effort deletes the just-created header via `rollback_orphan_header`
+        so a bad create never strands a header-only zombie — the identity-stamp
+        rollback race fix (U-354/U-355 pattern): without it, a transient
+        `set_qbo_identity` failure during CREATE mints an unstamped orphan
+        Invoice that `read_direct_by_qbo_identity` can never find again (it
+        carries no QboId), and the next pull tick mints a genuine duplicate —
+        the exact "phantom -N invoice" class this connector's adopt path exists
+        to prevent. Both steps share ONE try/except so a stamp failure gets the
+        same cleanup as a line-sync failure (`_sync_line_items` swallows per-line
+        failures today, so in practice only the stamp can raise here — but the
+        rollback now stands regardless, closing the U-006 landmine that note
+        used to carry).
+
+        Re-reads and returns the row after stamping (mirrors Bill/Expense):
+        `set_qbo_identity` is a void DB write that never mutates `invoice` in
+        memory, so returning it as-is would hand the caller an Invoice whose
+        `qbo_id`/`realm_id` still read as their pre-stamp `None`.
+        """
         invoice_id = coerce_id(invoice.id)
         try:
-            mapping = self.create_mapping(
-                invoice_id=invoice_id,
-                qbo_invoice_id=qbo_invoice.id,
-                qbo_id=qbo_invoice.qbo_id,
-                realm_id=qbo_invoice.realm_id,
-                sync_token=getattr(qbo_invoice, "sync_token", None),
+            self._set_invoice_qbo_identity(invoice_id, qbo_invoice)
+            self._sync_line_items(
+                invoice_id, invoice.public_id, qbo_invoice_lines, qbo_invoice.realm_id
             )
-            logger.info(f"Created mapping: Invoice {invoice_id} <-> QboInvoice {qbo_invoice.id}")
-        except Exception as e:
-            # U-302 (mirrors U-298's PurchaseExpenseConnector fix exactly): a concurrent
-            # sync_from_qbo_invoice racing this SAME QboInvoice (no sp_getapplock serializes
-            # the two EXPLICIT create_mapping() calls against each other) can win between
-            # create_mapping's own set_qbo_identity stamp and its mapping_repo.create insert:
-            # the racer's identity-fastpath recheck sees this Invoice's freshly-stamped
-            # identity, finds no mapping yet (MISSING), and self-heals via
-            # run_identity_fastpath's own MISSING branch (locked end-to-end by
-            # `race_lock_mapping_label="InvoiceInvoice"` passed above, U-304) — which is
-            # exactly what the insert above is now failing on (a benign unique-constraint
-            # collision, not a real failure). Blindly rolling back here would DELETE the
-            # racer's now-valid, already-mapped (and possibly already line-synced) Invoice —
-            # a silent, unrecoverable loss of a legitimately-completed financial record.
-            # guard_create_mapping_rollback (U-304) rechecks resolve_mapping_state UNDER
-            # create_race_lock — the SAME lock the self-heal above acquires around BOTH its
-            # field-write and its mapping insert — so no THIRD racer can bind to this
-            # Invoice in the window between that recheck and the delete below; the two
-            # hand-copied recheck-before-rollback bodies U-298 and U-302 each carried (a
-            # point-in-time snapshot with no re-verification immediately before the delete
-            # call) are now the same one lock-guarded helper.
-            #
-            # U-304 also broadens this except clause from (ValueError, DatabaseConstraintError)
-            # to Exception — mirrors PurchaseExpenseConnector's existing except Exception exactly
-            # (U-302's booked P2: a deadlock/timeout on the mapping insert previously raised
-            # something outside that narrower tuple and bypassed this whole guard).
-            outcome = guard_create_mapping_rollback(
-                mapping_label="InvoiceInvoice",
-                external_id=qbo_invoice.id,
-                local_id=invoice_id,
-                read_by_local_id=self.mapping_repo.read_by_invoice_id,
-                read_by_external_id=self.mapping_repo.read_by_qbo_invoice_id,
-                external_id_attr="qbo_invoice_id",
-                record_conflict_issue=lambda by_local, by_external: self._record_identity_mapping_conflict_issue(
-                    qbo_invoice=qbo_invoice,
-                    dbo_invoice_id=invoice_id,
-                    local_side_mapping=by_local,
-                    qbo_side_mapping=by_external,
-                ),
+        except Exception:
+            rollback_orphan_header(
                 delete_header=lambda: self.invoice_service.delete_by_public_id(invoice.public_id),
+                delete_mapping=lambda: None,
                 entity_label="Invoice",
+                entity_id=invoice_id,
+                on_header_delete_failed=lambda exc: self._record_orphan_header_issue(
+                    invoice=invoice, qbo_invoice=qbo_invoice, exc=exc
+                ),
             )
-            if outcome.state == CONSISTENT:
-                logger.warning(
-                    f"Invoice {invoice_id}'s own mapping create raced with a concurrent "
-                    f"sync of the SAME QboInvoice {qbo_invoice.id}, which won first; "
-                    f"returning its result instead of rolling back a valid Invoice."
-                )
-                racer_current = self.invoice_service.read_by_id(invoice_id)
-                if racer_current is not None and self._invoice_cache is not None:
-                    # Refresh the cache like every other mutating success path
-                    # in this file (_apply_invoice_fields, the "mapping found"
-                    # branch) — a stale entry here would misinform a later
-                    # in-batch cache read.
-                    self._invoice_cache[invoice_id] = racer_current
-                return racer_current or invoice
-            # Do NOT leave an orphan invoice with no mapping — that is exactly how the phantom -N
-            # invoices accrued. The just-created (still line-less) header has already been rolled
-            # back (or a rollback attempted) inside guard_create_mapping_rollback; re-raise so the
-            # caller's watermark holds and the invoice retries cleanly next sync.
-            logger.error(
-                f"create_mapping failed for new Invoice {invoice_id} <-> QboInvoice {qbo_invoice.id}: {e}; "
-                f"rolling back the orphan invoice"
-            )
-            if not outcome.delete_succeeded:
-                logger.critical(
-                    f"  ORPHAN CLEANUP FAILED: Invoice {invoice_id} (public_id {invoice.public_id}) was "
-                    f"created with NO mapping and could NOT be rolled back ({outcome.delete_exc}) — "
-                    f"REQUIRES MANUAL CLEANUP (it is an adoptable/suffixable phantom on the next pull)."
-                )
             raise
 
-        # Sync line items for new invoice.
-        # NOTE: unlike the Bill/Expense/BillCredit connectors, this NEW-invoice path has NO
-        # compensating rollback because _sync_line_items below SWALLOWS per-line failures
-        # (never raises) — so it cannot strand a header-only "zombie" invoice via that path.
-        # If _sync_line_items is ever changed to RAISE on line failure (to match the
-        # fail-atomic philosophy of the other three connectors), this path MUST adopt
-        # integrations.intuit.qbo.base.compensation.rollback_orphan_header (delete the
-        # just-created header + qbo.InvoiceInvoice mapping, then re-raise) or it will
-        # reintroduce the zombie-invoice bug. See U-006.
-        self._sync_line_items(
-            invoice_id, invoice.public_id, qbo_invoice_lines, qbo_invoice.realm_id
+        refreshed = self.invoice_service.read_by_id(invoice_id)
+        if refreshed is not None and self._invoice_cache is not None:
+            self._invoice_cache[invoice_id] = refreshed
+        return refreshed
+
+    def _adopt_invoice_identity(
+        self,
+        candidate: _InvoiceCandidate,
+        *,
+        qbo_invoice: QboInvoice,
+        write_fields,
+    ) -> Optional[Invoice]:
+        """
+        `stamp_identity` for an ADOPTED (pre-existing, side-channel-keyed)
+        candidate, delegating the row-scoped lock + theft-guard + write sequence
+        to the shared `stamp_dbo_identity_with_lock` (U-328/U-331) — see that
+        function's docstring for why a SECOND lock, keyed on the candidate's own
+        id, is needed: `_resolve_invoice_candidate` binds by (project, number) or
+        header fingerprint, so two DIFFERENT incoming QBO invoices could resolve
+        to the SAME local Invoice concurrently. Mirrors
+        `CompanyInfoCompanyConnector._stamp_company_identity` (U-350). Never
+        rolled back on a failure: it is a human's / an earlier pull's live
+        financial record, not something this sync minted.
+
+        `apply_fields` is the shared `_write_qbo_fields` closure (preserving a
+        human-corrected number — re-adopting a RENAMED invoice must not overwrite
+        its number back to the QBO-derived value, that would re-clobber the very
+        edit the fingerprint let us find), run AFTER the theft-guard, inside the
+        lock, against the fresh under-lock re-read (so its ROWVERSION is current).
+        `on_conflict` records `invoice_identity_conflict` (the DriftType the
+        retired mapping-table-era recorder used to emit) — the raise itself lives
+        in the shared helper.
+
+        Lines are NEVER re-projected onto an adopted invoice. An adoptable
+        candidate must pass `_has_qbo_line_provenance`, which is only true when
+        the invoice already carries ≥1 QBO-mapped line item — so an adopted
+        invoice is populated by construction, and re-syncing onto a populated
+        invoice would DOUBLE-ADD every QBO line as a phantom Manual duplicate
+        (its source-backed Bill/Expense lines aren't matched by the Manual-only
+        line fingerprinter). Re-establishing the header identity is enough: future
+        HIT pulls reconcile via the existing line maps. (The pre-U-356 "re-sync
+        only when the adopted invoice is EMPTY" branch was unreachable for the
+        same reason — the provenance gate already implied non-empty.)
+        """
+        stamped = stamp_dbo_identity_with_lock(
+            candidate_id=coerce_id(candidate.invoice.id),
+            entity_label="Invoice",
+            qbo_id=qbo_invoice.qbo_id,
+            realm_id=qbo_invoice.realm_id,
+            read_by_id=self.invoice_service.read_by_id,
+            apply_fields=write_fields,
+            write_identity=lambda current: self._set_invoice_qbo_identity(
+                coerce_id(current.id), qbo_invoice
+            ),
+            on_conflict=lambda current: self._record_duplicate_qbo_invoice_issue(
+                qbo_invoice=qbo_invoice, local_invoice=current
+            ),
+        )
+        if stamped is not None and self._invoice_cache is not None:
+            self._invoice_cache[stamped.id] = stamped
+        return stamped
+
+    def _set_invoice_qbo_identity(self, invoice_id: int, qbo_invoice: QboInvoice) -> None:
+        """The one `SetInvoiceQboIdentity` call shape shared by the HIT re-stamp,
+        the fresh-create stamp and the adopt-path `write_identity` (U-356)."""
+        self.invoice_service.repo.set_qbo_identity(
+            id=invoice_id,
+            qbo_id=qbo_invoice.qbo_id,
+            realm_id=qbo_invoice.realm_id,
+            sync_token=getattr(qbo_invoice, "sync_token", None),
         )
 
-        return invoice
+    @staticmethod
+    def _carries_different_qbo_identity(local_invoice, qbo_id: Optional[str], realm_id: Optional[str]) -> bool:
+        """True when `local_invoice` already carries a dbo-native QBO identity
+        that is NOT this exact (qbo_id, realm_id) pair — i.e. it belongs to a
+        DIFFERENT QBO invoice and must never be adopted/re-pointed. The dbo-only
+        replacement for the retired "mapped to a different QboInvoice" check.
+        Checking QboId alone would miss a same-QboId-different-realm collision
+        (QBO ids are only unique WITHIN a realm) — same predicate the shared
+        `stamp_dbo_identity_with_lock` theft-guard applies at stamp time."""
+        existing_qbo_id = getattr(local_invoice, "qbo_id", None)
+        if not existing_qbo_id:
+            return False
+        return not (
+            existing_qbo_id == qbo_id
+            and (getattr(local_invoice, "realm_id", None) or "") == (realm_id or "")
+        )
 
     def _find_adoptable_invoice_by_fingerprint(
-        self, project_id, total_amount, invoice_date, qbo_invoice_id
+        self, project_id, total_amount, invoice_date, qbo_id, realm_id
     ) -> Optional[Invoice]:
-        """Find a mapping-lost local Invoice for this project whose header fingerprint
+        """Find an identity-lost local Invoice for this project whose header fingerprint
         matches the incoming QBO invoice, so a human-RENAMED invoice (whose number no
         longer equals the QBO-derived value and is therefore missed by
         read_by_invoice_number_and_project_id) is still RE-ADOPTED instead of phantom-
@@ -544,18 +610,20 @@ class InvoiceInvoiceConnector:
         or None (no match, ambiguous multi-match, or a missing signal) so the caller
         falls through to the safe suffix-CREATE.
 
-        Adoptable = has QBO line-mapping provenance (see _has_qbo_line_provenance) AND is
-        unmapped, or already mapped to THIS QboInvoice. A candidate mapped to a DIFFERENT
-        QboInvoice is a distinct invoice and is never returned (genuine-collision case);
-        a candidate with NO QBO provenance is a distinct manual invoice and is never
-        returned either (closes the Pass-1 P2 false-adopt path). RESIDUAL: two distinct
-        QBO-derived invoices in one project sharing (total, date) with one's header
-        mapping lost is ambiguous — the single-match rule falls through to suffix-CREATE
-        rather than risk a wrong QBO-to-QBO bind.
+        Adoptable = has QBO line-mapping provenance (see _has_qbo_line_provenance) AND
+        carries no dbo-native QBO identity, or already carries exactly THIS one. A
+        candidate bound to a DIFFERENT QBO invoice is a distinct invoice and is never
+        returned (genuine-collision case); a candidate with NO QBO provenance is a
+        distinct manual invoice and is never returned either (closes the Pass-1 P2
+        false-adopt path). RESIDUAL: two distinct QBO-derived invoices in one project
+        sharing (total, date) with one's identity lost is ambiguous — the single-match
+        rule falls through to suffix-CREATE rather than risk a wrong QBO-to-QBO bind.
 
         Candidate source is the preloaded _invoice_cache (production batch path) or a full
-        read when caches_preloaded=False. Pure in-memory scan; the per-candidate mapping read only
-        runs for the tiny subset that already passed the fingerprint filter.
+        read when caches_preloaded=False. Pure in-memory scan; the per-candidate by-id
+        re-read (ReadInvoices does not select QboId/RealmId — see
+        `_resolve_invoice_candidate`) only runs for the tiny subset that already passed
+        the fingerprint filter, replacing the per-candidate mapping read one-for-one.
         """
         qbo_date = str(invoice_date or "").strip()[:10]
         if total_amount is None or not qbo_date:
@@ -577,28 +645,30 @@ class InvoiceInvoiceConnector:
                 getattr(inv, "total_amount", None), getattr(inv, "invoice_date", None),
             ):
                 continue
-            ex_map = self.mapping_repo.read_by_invoice_id(int(inv.id))
-            if ex_map and ex_map.qbo_invoice_id != qbo_invoice_id:
-                continue  # bound to a DIFFERENT QboInvoice -> genuine separate invoice
+            current = self.invoice_service.read_by_id(int(inv.id))
+            if current is None:
+                continue  # deleted between the scan and this re-read
+            if self._carries_different_qbo_identity(current, qbo_id, realm_id):
+                continue  # bound to a DIFFERENT QBO invoice -> genuine separate invoice
             if not self._has_qbo_line_provenance(int(inv.id)):
                 # No QBO line-mapping provenance -> a distinct local/manual invoice that
                 # merely shares the fingerprint (QBO invoice push is disabled, so manual
-                # invoices are exactly the unmapped ones). Never adopt it (Pass-1 P2).
+                # invoices are exactly the unstamped ones). Never adopt it (Pass-1 P2).
                 continue
-            matches.append(inv)
+            matches.append(current)
 
         if len(matches) == 1:
             logger.info(
                 f"Fingerprint (total {total_amount}, date {qbo_date}, project {project_id}) "
-                f"re-adopting mapping-lost local Invoice {matches[0].id} for QboInvoice "
-                f"{qbo_invoice_id} (number diverged via a human edit)."
+                f"re-adopting identity-lost local Invoice {matches[0].id} for QBO invoice "
+                f"{qbo_id} (number diverged via a human edit)."
             )
             return matches[0]
         if len(matches) > 1:
             logger.warning(
                 f"Fingerprint (total {total_amount}, date {qbo_date}, project {project_id}) "
-                f"matched {len(matches)} adoptable local invoices for QboInvoice "
-                f"{qbo_invoice_id}; ambiguous -- NOT adopting, will suffix-CREATE."
+                f"matched {len(matches)} adoptable local invoices for QBO invoice "
+                f"{qbo_id}; ambiguous -- NOT adopting, will suffix-CREATE."
             )
         return None
 
@@ -606,8 +676,8 @@ class InvoiceInvoiceConnector:
         """True if any of the invoice's line items carries an InvoiceLineItemInvoiceLine
         mapping — i.e. it was materialized by a QBO pull. A local-origin/manual invoice
         has none (and since QBO invoice push is disabled, manual invoices are exactly the
-        ones that stay unmapped), so this separates a mapping-LOST QBO invoice — the only
-        thing we may re-adopt — from a distinct manual invoice that merely shares the
+        ones that stay unstamped), so this separates an identity-LOST QBO invoice — the
+        only thing we may re-adopt — from a distinct manual invoice that merely shares the
         header fingerprint. Closes the Pass-1 P2 false-adopt path.
 
         Cost is confined to the tiny set of fingerprint-matched candidates. Residual: if a
@@ -642,29 +712,51 @@ class InvoiceInvoiceConnector:
             return False
         return abs(Decimal(str(total_amount)) - Decimal(str(other_total))) <= Decimal("0.01")
 
-    def _record_identity_mapping_conflict_issue(
-        self,
-        *,
-        qbo_invoice: QboInvoice,
-        dbo_invoice_id: int,
-        local_side_mapping: Optional[InvoiceInvoice],
-        qbo_side_mapping: Optional[InvoiceInvoice],
-    ) -> None:
-        record_identity_mapping_conflict(
+    def _record_duplicate_qbo_invoice_issue(self, *, qbo_invoice: QboInvoice, local_invoice) -> None:
+        """Adopt-time theft-guard conflict (U-356): the candidate resolved as this
+        QBO invoice's identity-lost local counterpart turned out, on the fresh
+        under-lock re-read, to already carry a DIFFERENT QBO identity. Records
+        the same `invoice_identity_conflict` DriftType the retired mapping-table
+        recorder emitted; `stamp_dbo_identity_with_lock` raises right after.
+        `realm_id` is the caller's effective realm (U-350 P2), never the possibly
+        stale row value."""
+        record_duplicate_identity_conflict(
             self.reconciliation_repo,
             drift_type="invoice_identity_conflict",
             entity_type="Invoice",
-            mapping_label="InvoiceInvoice",
-            qbo_label="QboInvoice",
-            dbo_id=dbo_invoice_id,
-            qbo_row_id=qbo_invoice.id,
-            raw_qbo_id=qbo_invoice.qbo_id,
-            raw_realm_id=qbo_invoice.realm_id,
-            realm_id=qbo_invoice.realm_id,
-            local_side_mapping=local_side_mapping,
-            qbo_side_mapping=qbo_side_mapping,
-            qbo_side_local_fk_attr="invoice_id",
-            local_side_qbo_fk_attr="qbo_invoice_id",
+            qbo_id=str(qbo_invoice.qbo_id) if qbo_invoice.qbo_id else None,
+            realm_id=qbo_invoice.realm_id or "",
+            entity_public_id=(
+                str(local_invoice.public_id) if getattr(local_invoice, "public_id", None) else None
+            ),
+            details=(
+                f"Invoice {local_invoice.id} (number "
+                f"{getattr(local_invoice, 'invoice_number', None)!r}) was resolved as the "
+                f"identity-lost local counterpart of QboInvoice {qbo_invoice.id} "
+                f"(QboId={qbo_invoice.qbo_id}, RealmId={qbo_invoice.realm_id}) but by stamp time "
+                f"already carried "
+                + build_duplicate_qbo_identity_conflict_desc(
+                    existing_qbo_id=local_invoice.qbo_id,
+                    incoming_qbo_id=qbo_invoice.qbo_id,
+                    existing_realm_id=getattr(local_invoice, "realm_id", None),
+                    incoming_realm_id=qbo_invoice.realm_id,
+                )
+                + ". Not re-pointed — investigate which side is correct."
+            ),
+        )
+
+    def _record_orphan_header_issue(self, *, invoice: Invoice, qbo_invoice: QboInvoice, exc: Exception) -> None:
+        record_mapping_issue(
+            self.reconciliation_repo,
+            drift_type="orphan_invoice_header",
+            entity_type="Invoice",
+            entity_public_id=str(invoice.public_id) if invoice.public_id else None,
+            qbo_id=str(qbo_invoice.qbo_id) if qbo_invoice.qbo_id else None,
+            realm_id=qbo_invoice.realm_id or "",
+            details=(
+                f"Compensating rollback failed to delete orphan Invoice {invoice.id} "
+                f"({invoice.public_id}): {exc}. Header blocks re-pull until manually resolved."
+            ),
         )
 
     # One of FOUR near-identical QBO customer-ref -> Project resolvers (invoice /
@@ -799,68 +891,6 @@ class InvoiceInvoiceConnector:
                 # U-006). Do not change this to raise without adding rollback_orphan_header there.
                 logger.error(f"Failed to sync QboInvoiceLine {qbo_line.id} to InvoiceLineItem: {e}")
 
-    def create_mapping(
-        self,
-        invoice_id: int,
-        qbo_invoice_id: int,
-        *,
-        qbo_id: Optional[str],
-        realm_id: Optional[str],
-        sync_token: Optional[str] = None,
-    ) -> InvoiceInvoice:
-        """
-        Create a mapping between Invoice and QboInvoice.
-        
-        Args:
-            invoice_id: Database ID of Invoice record
-            qbo_invoice_id: Database ID of QboInvoice record
-        
-        Returns:
-            InvoiceInvoice: The created mapping record
-        
-        Raises:
-            ValueError: If mapping already exists or validation fails
-        """
-        # Validate 1:1 constraints only when caches_preloaded is False.
-        # When caches_preloaded=True, we already checked before calling create_mapping.
-        if not self._caches_preloaded:
-            existing_by_invoice = self.mapping_repo.read_by_invoice_id(invoice_id)
-            if existing_by_invoice:
-                raise ValueError(
-                    f"Invoice {invoice_id} is already mapped to QboInvoice {existing_by_invoice.qbo_invoice_id}"
-                )
-            existing_by_qbo_invoice = self.mapping_repo.read_by_qbo_invoice_id(qbo_invoice_id)
-            if existing_by_qbo_invoice:
-                raise ValueError(
-                    f"QboInvoice {qbo_invoice_id} is already mapped to Invoice {existing_by_qbo_invoice.invoice_id}"
-                )
-
-        # Stamp dbo-native identity FIRST — if this fails, nothing else has been
-        # created yet, so the caller's existing rollback (delete the just-created
-        # entity) fully cleans up with no orphaned mapping row.
-        self.invoice_service.repo.set_qbo_identity(
-            id=invoice_id,
-            qbo_id=qbo_id,
-            realm_id=realm_id,
-            sync_token=sync_token,
-        )
-        # Create mapping and update cache
-        new_mapping = self.mapping_repo.create(invoice_id=invoice_id, qbo_invoice_id=qbo_invoice_id)
-        self._invoice_mapping_cache[qbo_invoice_id] = new_mapping
-        return new_mapping
-
-    def get_mapping_by_invoice_id(self, invoice_id: int) -> Optional[InvoiceInvoice]:
-        """
-        Get mapping by Invoice ID.
-        """
-        return self.mapping_repo.read_by_invoice_id(invoice_id)
-
-    def get_mapping_by_qbo_invoice_id(self, qbo_invoice_id: int) -> Optional[InvoiceInvoice]:
-        """
-        Get mapping by QboInvoice ID.
-        """
-        return self.mapping_repo.read_by_qbo_invoice_id(qbo_invoice_id)
-
     # ------------------------------------------------------------------
     # Local → QBO direction
     # ------------------------------------------------------------------
@@ -869,8 +899,17 @@ class InvoiceInvoiceConnector:
         """
         Push a local Invoice to QuickBooks Online.
 
-        Creates the invoice in QBO if not yet synced. If already mapped,
+        Creates the invoice in QBO if not yet synced. If already synced
+        (dbo.Invoice.QboId/RealmId — the sole identity store since U-356),
         updates the existing QBO invoice with the current local data.
+
+        DORMANT PATH (U-356): Invoice push is disabled — `complete_invoice`
+        never enqueues, the `/sync/invoice/{id}/qbo` router is a no-op stub,
+        and the `sync_invoice_to_qbo` outbox Kind has had ZERO rows ever. The
+        retired qbo.InvoiceInvoice reads here were repointed mechanically onto
+        dbo-native identity (mirroring `BillBillConnector.sync_to_qbo_bill`,
+        U-355) so the path stays coherent and mapping-free; unlike Bill's live
+        push there was no traffic to equivalence-prove the repoint against.
 
         Args:
             invoice: Local Invoice record
@@ -956,14 +995,82 @@ class InvoiceInvoiceConnector:
                 )
             raise ValueError("Invoice has no line items. QBO requires at least one line item.")
 
-        # UPDATE path — invoice already synced to QBO
+        # UPDATE path — invoice already synced to QBO (dbo-native identity, verified;
+        # U-356). `invoice` may come from a by-public-id read (the outbox worker's
+        # _handle_sync_invoice) and ReadInvoiceByPublicId does NOT select
+        # QboId/RealmId (only ReadInvoiceById / ReadInvoiceByQboIdAndRealmId do —
+        # see entities/invoice/business/model.py), so the identity is re-read by
+        # id here rather than trusted off the caller's row. A truthy qbo_id is
+        # then re-verified via verify_identity_dbo_only before being used for the
+        # qbo.Invoice staging-cache lookup — a stale/reassigned identity must never
+        # resolve to the WRONG cached QboInvoice (mirrors sync_to_qbo_bill, U-355).
         from integrations.intuit.qbo.base.errors import QboError, QboNotFoundError
-        existing_mapping = self.mapping_repo.read_by_invoice_id(invoice_id)
-        if existing_mapping:
-            local_qbo_invoice = qbo_invoice_repo.read_by_id(existing_mapping.qbo_invoice_id)
+        current = self.invoice_service.read_by_id(invoice_id)
+        if current is None:
+            # Deleted locally between the caller's by-public-id read and this
+            # re-read. A fall-through would take the CREATE branch (the caller's
+            # row carries no qbo_id) and mint a QBO Invoice for a row that no
+            # longer exists — refuse instead (same shape as the outbox handler's
+            # own not-found raise).
+            raise ValueError(
+                f"Invoice {invoice_id} no longer exists locally (deleted between the caller's read "
+                f"and the push); refusing to create a QBO Invoice for a missing row."
+            )
+        local_qbo_invoice = None
+        if getattr(current, "qbo_id", None):
+            verified_qbo_id = verify_identity_dbo_only(
+                current, read_direct_by_qbo_identity=self.invoice_service.read_by_qbo_identity,
+            )
+            if not verified_qbo_id:
+                record_mapping_issue(
+                    self.reconciliation_repo,
+                    drift_type="invoice_identity_conflict",
+                    entity_type="Invoice",
+                    entity_public_id=str(invoice.public_id) if invoice.public_id else None,
+                    qbo_id=str(current.qbo_id),
+                    realm_id=realm_id or "",
+                    details=(
+                        f"Push refused for Invoice {invoice_id}: dbo.Invoice.QboId={current.qbo_id!r} "
+                        f"no longer resolves back to this Invoice on a fresh dbo-only read (see "
+                        f"verify_identity_dbo_only) — the identity was reassigned to a different "
+                        f"Invoice. Investigate which side is correct."
+                    ),
+                )
+                raise ValueError(
+                    f"Invoice {invoice_id} carries a QBO identity (qbo_id={current.qbo_id!r}) that no "
+                    f"longer resolves back to it on a fresh dbo-only read — refusing to push a "
+                    f"possibly stolen/reassigned identity. See verify_identity_dbo_only."
+                )
+            local_qbo_invoice = qbo_invoice_repo.read_by_qbo_id_and_realm_id(
+                verified_qbo_id, current.realm_id
+            )
             if not local_qbo_invoice or not local_qbo_invoice.qbo_id:
-                raise ValueError(f"Mapping exists but QboInvoice not found for invoice_id {invoice_id}")
-
+                # dbo.Invoice carries a verified QboId but the local qbo.Invoice staging
+                # cache has no row for it — a genuine data-integrity anomaly (the stamp
+                # and the staging-cache write happen together at the end of this
+                # method), not the ordinary "never pushed" case. Refuse rather than
+                # risk pushing a DUPLICATE Invoice into QBO.
+                record_mapping_issue(
+                    self.reconciliation_repo,
+                    drift_type="invoice_staging_row_missing",
+                    entity_type="Invoice",
+                    entity_public_id=str(invoice.public_id) if invoice.public_id else None,
+                    qbo_id=str(verified_qbo_id),
+                    realm_id=realm_id or "",
+                    details=(
+                        f"Push refused for Invoice {invoice_id}: dbo.Invoice carries a verified QboId "
+                        f"({verified_qbo_id!r}, realm_id={current.realm_id!r}) but no local qbo.Invoice "
+                        f"staging row exists for it. Investigate the missing staging row before "
+                        f"retrying — pushing again risks creating a duplicate Invoice in QBO."
+                    ),
+                )
+                raise ValueError(
+                    f"Invoice {invoice_id} carries a verified QBO identity (qbo_id={verified_qbo_id!r}, "
+                    f"realm_id={current.realm_id!r}) but no local qbo.Invoice staging row exists for "
+                    f"it — refusing to push a possible duplicate. Investigate the missing staging row "
+                    f"before retrying."
+                )
+        if local_qbo_invoice:
             logger.info(f"Updating existing QBO Invoice {local_qbo_invoice.qbo_id} for local Invoice {invoice_id}")
 
             # Fetch fresh SyncToken. If the invoice was deleted in QBO, clear the stale mapping
@@ -1022,16 +1129,21 @@ class InvoiceInvoiceConnector:
                     apply_tax_after_discount=None,
                     global_tax_calculation=None,
                 )
-                return qbo_invoice_repo.read_by_id(existing_mapping.qbo_invoice_id)
+                return qbo_invoice_repo.read_by_id(local_qbo_invoice.id)
 
             except QboError as e:
                 msg = str(e).lower()
                 if "not found" in msg or "inactive" in msg:
+                    # Nothing to clear (U-356): the CREATE path below re-stamps
+                    # dbo.Invoice.QboId/RealmId with the NEW QBO id via
+                    # SetInvoiceQboIdentity's unconditional non-NULL overwrite,
+                    # exactly where the retired mapping row used to be deleted
+                    # and re-created. The stale qbo.Invoice staging row is left
+                    # in place, as before.
                     logger.warning(
                         f"QBO Invoice {local_qbo_invoice.qbo_id} is gone or inactive in QBO. "
-                        f"Clearing stale mapping and re-creating. Error: {e}"
+                        f"Re-creating; dbo identity is re-stamped below. Error: {e}"
                     )
-                    self.mapping_repo.delete_by_id(existing_mapping.id)
                 else:
                     raise
 
@@ -1058,15 +1170,16 @@ class InvoiceInvoiceConnector:
             created_invoice.id, realm_id
         )
         if existing_local_qbo_invoice:
-            conflicting_mapping = self.mapping_repo.read_by_qbo_invoice_id(
-                existing_local_qbo_invoice.id
-            )
-            if conflicting_mapping:
+            # U-356: dbo.Invoice.QboId/RealmId (unique per realm) is the sole
+            # "already bound" store — a DIFFERENT local Invoice holding this
+            # identity means this retry must not stamp onto it.
+            holder = self.invoice_service.read_by_qbo_identity(created_invoice.id, realm_id)
+            if holder is not None and coerce_id(holder.id) != invoice_id:
                 raise ValueError(
                     f"QboInvoice {existing_local_qbo_invoice.id} (QboId={created_invoice.id}) is already mapped to a "
-                    f"different Invoice {conflicting_mapping.invoice_id}; cannot push Invoice {invoice_id} onto it. This "
-                    f"indicates a race between this push retry and an independent pull, or a duplicate local "
-                    f"Invoice. Manual investigation required."
+                    f"different Invoice {holder.id} (dbo.Invoice.QboId/RealmId); cannot push Invoice {invoice_id} "
+                    f"onto it. This indicates a race between this push retry and an independent pull, or a "
+                    f"duplicate local Invoice. Manual investigation required."
                 )
             local_qbo_invoice = existing_local_qbo_invoice
             logger.info(
@@ -1148,19 +1261,15 @@ class InvoiceInvoiceConnector:
                 except Exception as e:
                     logger.warning(f"Could not store QboInvoiceLine for QBO line {qbo_line.id}: {e}")
 
-        # Create InvoiceInvoice mapping
-        qbo_invoice_id_local = coerce_id(local_qbo_invoice.id)
-        try:
-            self.create_mapping(
-                invoice_id=invoice_id,
-                qbo_invoice_id=qbo_invoice_id_local,
-                qbo_id=local_qbo_invoice.qbo_id,
-                realm_id=local_qbo_invoice.realm_id or realm_id,
-                sync_token=getattr(local_qbo_invoice, "sync_token", None),
-            )
-            logger.info(f"Created mapping: Invoice {invoice_id} <-> QboInvoice {qbo_invoice_id_local}")
-        except ValueError as e:
-            logger.warning(f"Could not create InvoiceInvoice mapping: {e}")
+        # Stamp dbo-native identity — the sole identity store (U-356); there is
+        # no mapping row to write. SetInvoiceQboIdentity's theft-clear + the
+        # UQ_Invoice_QboId_RealmId index guarantee at most one holder. The local
+        # qbo.Invoice mirror carries (qbo_id, realm_id, sync_token) in the same
+        # attribute shape as a pulled QboInvoice, so the one shared stamp call
+        # serves the push too (its realm_id is always this push's `realm_id` —
+        # it was created or looked up with it above).
+        self._set_invoice_qbo_identity(invoice_id, local_qbo_invoice)
+        logger.info(f"Stamped dbo identity: Invoice {invoice_id} <-> QBO Invoice {local_qbo_invoice.qbo_id}")
 
         return local_qbo_invoice
 

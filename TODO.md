@@ -163,9 +163,16 @@ Carry-over items from sessions. Check off as done; prune anything stale.
   Bill can re-sync cleanly), or is this a data-entry mistake in the mapping table needing a different repoint
   target. Zero urgency (1 record, has been silently unchecked by any reconciliation path indefinitely).
 
-## U-301b-deferred (Expense/Invoice outbox refresh repoint) — booked, not started (2026-08-22)
+## U-301b-deferred (Expense/Invoice outbox refresh repoint) — CLOSED by U-354 + U-356 (2026-09-01)
 
-- [ ] **Repoint `_refresh_expense`/`_refresh_invoice` in `integrations/intuit/qbo/outbox/business/worker.py`
+- [x] **Closed.** `_refresh_expense` was retired outright in U-354 (its whole dead push chain went with
+  `qbo.PurchaseExpense`). `_refresh_invoice` was repointed MECHANICALLY in U-356 onto the same dbo-only
+  shape as `_refresh_bill` (`verify_identity_dbo_only` + hard-refuse recording `invoice_identity_conflict`
+  with a severed `__context__`) because `qbo.InvoiceInvoice` — the legacy two-hop it was deliberately left
+  on — was retired; still ZERO `sync_invoice_to_qbo` outbox rows ever, so this repoint is NOT
+  equivalence-proven against traffic (there is none), only against the `_refresh_bill` shape + tests.
+  Original booking kept below for the record.
+- [ ] ~~**Repoint `_refresh_expense`/`_refresh_invoice` in `integrations/intuit/qbo/outbox/business/worker.py`~~
   the same way `_refresh_bill` was repointed (U-301b): dbo-native fast path via new
   `verify_expense_qbo_identity`/`verify_invoice_qbo_identity` wrappers on `base/identity_consistency.py`'s
   shared `_verify_dbo_qbo_identity` engine, hard-refuse (record + raise, `__context__` explicitly severed —
@@ -175,6 +182,70 @@ Carry-over items from sessions. Check off as done; prune anything stale.
   ever** (Expense/Invoice pushes are disabled per this file's own conventions) vs. Bill's 918 live rows — no
   live traffic to equivalence-prove a repoint against. Pick this up once/if those pushes are re-enabled and
   carry real traffic. Mirrors the U-293-Bill-pilot → U-293b-fanout precedent.
+
+## U-356 follow-ups (retire `qbo.InvoiceInvoice`, U-349 family 7) — deferred, not scope-creeped in (2026-09-01)
+
+- [ ] **Deploy-gap bridge shared-helper extraction — NOW PAST rule-of-three (4 hand-copies).**
+  `_clear_legacy_vendorcredit_billcredit_mapping` (U-353), `_clear_legacy_purchase_expense_mapping` (U-354),
+  `_clear_legacy_bill_bill_mapping` (U-355), `_clear_legacy_invoice_invoice_mapping` (U-356) are the same
+  ~30-line `IF OBJECT_ID(...) IS NOT NULL DELETE ... WHERE <fk> = ?` + swallow-and-log block parametrized
+  by (table, fk column, label). Either extract to `integrations/intuit/qbo/base/` (`clear_legacy_mapping_row(
+  table, fk_col, entity_label, entity_id)`) or — better, since every DROP is now applied for U-353..U-355 —
+  DELETE the already-no-op copies and the helper question disappears with the last DROP (U-356's, once
+  /em applies it). Own unit, after the U-356 DROP lands.
+- [ ] **Dormant Invoice push chain: delete or keep?** `InvoiceInvoiceConnector.sync_to_qbo_invoice` (+
+  `_build_qbo_invoice_line`/`_resolve_linked_txn_for_line`/`_build_reimburse_charge_lookup`/
+  `_get_qbo_customer_ref`), the outbox `_handle_sync_invoice` + `_refresh_invoice` handlers, the
+  `sync_invoice_to_qbo` Kind (+ `scripts/retry_qbo_outbox_dead_letters.py`'s allow-list entry) and the
+  `/sync/invoice/{id}/qbo` router STUB are all mapping-free as of U-356 but carry ZERO traffic (push disabled
+  per CLAUDE.md; the router returns "disabled" without enqueuing). U-354 deleted Expense's equivalent dead
+  chain outright; U-356 repointed Invoice's mechanically instead, respecting the 2026-08-22 Gate-1 call to
+  keep it. /em decision: delete it (U-354 shape) or keep it dormant. Tests riding on it: `test_u239`'s invoice
+  section, `test_u307b`'s item-ref tests.
+- [ ] **`entities/invoice/intelligence/prompt.md` (InvoiceAgent playbook) is stale on Invoice recovery** —
+  its manual-recovery section runs `DELETE FROM qbo.InvoiceInvoice WHERE InvoiceId = ?` directly (line ~474)
+  and reads `InvoiceInvoice` mappings; both are gone once /em drops the table. Not fixed in U-356: the file
+  had concurrent uncommitted WIP in another session at Gate-1 (not this unit's to sweep), and it is a large
+  content edit disproportionate to the unit — same call U-355 made for Bill's sections.
+- [ ] **`scripts/backfill_qbo_identity_headers.py` + `scripts/check_qbo_identity_drift_headers.py` are dead.**
+  Their working sets (`HEADER_ENTITY_SPECS` minus the kept-for-reconciliation `bill` row) are EMPTY after
+  U-356 removed `invoice` — every header family is dbo-native only, there is no mapping+staging pair left to
+  backfill from or drift-check against. Both still import + parse cleanly and iterate nothing. Delete them
+  (and `audit_dangling_qbo_mappings.py`'s header branch is already line-only). Once the line-item families
+  (U-357..U-360) land, `backfill_qbo_identity_lines.py`/`check_qbo_identity_drift_lines.py` +
+  `LINE_ENTITY_SPECS` follow.
+- [ ] **Outbox worker `_record_<entity>_identity_conflict` is now 2 hand-copies (Bill U-301b, Invoice U-356)**
+  sharing the non-obvious severed-`__context__` re-raise tail. Rule-of-three not met; the `record_mapping_issue`
+  literal must stay at each call site for the AST width guard, but the raise tail can be one helper when a 3rd
+  appears.
+- [ ] **`ReadInvoiceByPublicId` now projects `QboId`/`RealmId` (additive, in `dbo.invoice.sql`) — once /em applies it,
+  delete the two deploy-gap by-id re-reads it exists to replace:** `InvoiceInvoiceConnector.sync_to_qbo_invoice`'s
+  `current = self.invoice_service.read_by_id(invoice_id)` and `QboOutboxWorker._refresh_invoice`'s equivalent, and
+  read `invoice.qbo_id` straight off the by-public-id row like `_refresh_bill` does (U-301b shape). The Python re-read
+  is correct BEFORE the apply (timing-independent); it is only redundant after. `ReadInvoices` /
+  `ReadInvoiceByInvoiceNumberAndProjectId` deliberately stay unprojected (adopt candidates are re-read by id, the
+  U-310/U-311 by-name precedent).
+- [ ] **`_record_orphan_header_issue` is now a 4th verbatim copy** (bill 349 / expense 274 / bill_credit 282 /
+  invoice) differing only in drift_type + entity noun. Lift into `base/reconciliation_recorder.py` as
+  `record_orphan_header_issue(repo, *, drift_type, entity_type, entity_public_id, qbo_id, realm_id, entity_id, exc)`
+  keeping the literals at the call sites (AST width guard). Cross-family → own unit.
+- [ ] **`set_qbo_identity` discards `SetInvoiceQboIdentity`'s OUTPUT row** (Id/QboId/RealmId/SyncToken) and every
+  stamp site then pays a `ReadInvoiceById` to see what it just wrote (`_stamp_fresh_invoice_identity`'s refresh read;
+  `stamp_dbo_identity_with_lock` step 7 — shared base). Return the OUTPUT (add `INSERTED.RowVersion`) and
+  `dataclasses.replace` it onto the in-memory row; base change, all families → own unit.
+- [ ] **Retire the U-356 legacy-equivalence fixtures with the DROP:** `tests/test_u356_invoice_mapping_retire.py`'s
+  `_LEGACY_MAPPING_HOP_SQL` freezes the retired `qbo.InvoiceInvoice` query as a permanent fixture (a new draw
+  invariant column must be added to a dead query or the equality assert goes RED), and
+  `test_reconcile_invoice_draws_executes_the_module_level_row_source` is tautological. Keep the SQLite fixture +
+  expected-tuple asserts (behavior); delete the equivalence + substring tests once the cutover proof has served.
+- [ ] **Outbox refresh test fixtures are a Bill→Invoice rename** (`_patch_invoice_refresh_stack` etc. in
+  `test_u356_...` vs `test_u301b_...`; `_FakeIssueRepo` now defined in ~9 test files). Move a parametrised
+  `patch_outbox_refresh_stack(monkeypatch, family=...)` + `_FakeIssueRepo` into `tests/conftest.py`.
+- [ ] **Conflict-predicate extraction (booked at U-350, still open) has one more copy:**
+  `InvoiceInvoiceConnector._carries_different_qbo_identity` restates the same "existing identity ≠ this exact
+  (qbo_id, realm_id)" predicate `stamp_dbo_identity_with_lock`'s theft-guard and
+  `CompanyInfoCompanyConnector._check_no_conflicting_company_identity` carry. Fold in with that booked
+  `base/identity_fastpath.py` cleanup.
 
 ## U-301c follow-ups (ProposeInvoiceSourceLinks Tier 0c/0d repoint) — deferred, not scope-creeped in (2026-08-22)
 

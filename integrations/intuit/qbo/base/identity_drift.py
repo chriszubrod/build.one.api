@@ -15,9 +15,9 @@ logger = logging.getLogger(__name__)
 class FlatEntitySpec:
     """One row of the flat dbo<->qbo mapping<->qbo staging topology (no line-parent hop).
 
-    Single source of truth (currently 3 entities: 2 header + 1 reference — see
+    Single source of truth (currently 2 entities: 1 header + 1 reference — see
     HEADER_ENTITY_SPECS / REFERENCE_ENTITY_SPECS below, row count trimmed over time as
-    families go dbo-native, most recently U-354; each row's own removal comment there
+    families go dbo-native, most recently U-356; each row's own removal comment there
     names the retirement that dropped it) across 4 backfill/drift scripts:
     scripts/backfill_qbo_identity_headers.py, scripts/check_qbo_identity_drift_headers.py,
     scripts/backfill_qbo_identity_reference.py, and scripts/check_qbo_identity_drift_reference.py
@@ -60,7 +60,15 @@ HEADER_ENTITY_SPECS: tuple[FlatEntitySpec, ...] = (
         "bill", "Bill", "BillBill", "Bill", "BillId", "QboBillId", True, "SetBillQboIdentity",
         access_udf="UserCanAccessBill",
     ),
-    FlatEntitySpec("invoice", "Invoice", "InvoiceInvoice", "Invoice", "InvoiceId", "QboInvoiceId", True, "SetInvoiceQboIdentity"),
+    # U-356: the "invoice" row was removed for the same reason as expense/company/
+    # project below — this family is now dbo-native only (qbo.InvoiceInvoice
+    # retired, U-349 program family 7). Like "expense" (U-354), nothing looks this
+    # row up by key: reconciliation's reconcile_invoice_draws is a hand-written
+    # SQL detector (INVOICE_DRAW_ROWS_SQL, re-expressed dbo-native in the same
+    # unit), never routed through this registry, so there is no StopIteration
+    # risk. With it gone, HEADER_ENTITY_SPECS is down to the single kept-for-
+    # reconciliation "bill" row — the two header backfill/drift scripts'
+    # mapping-JOIN working sets are now EMPTY (see their own comments).
     # U-325: the "project" row was removed — this family is now dbo-native only (U-314),
     # and qbo.CustomerProject is staged for DROP. A LEFT JOIN through that table would
     # flag every dbo-stamped row as a false orphan_dbo_value and error outright once

@@ -31,11 +31,6 @@ class _FakeQboInvoice:
         self.id = id
 
 
-class _FakeMapping:
-    def __init__(self, qbo_invoice_id):
-        self.qbo_invoice_id = qbo_invoice_id
-
-
 class _FakeQboLine:
     def __init__(self, item_ref_value, amount, detail_type="SalesItemLineDetail"):
         self.item_ref_value = item_ref_value
@@ -69,7 +64,6 @@ class _FakeLineRepo:
 
 
 def _service(monkeypatch, *, invoice_qbo_id="83-INV", qbo_invoice_id=900,
-             legacy_mapping_qbo_invoice_id="_unset",
              lines_by_qbo_invoice_id,
              sub_cost_codes=(), cost_codes=(),
              direct_sub_cost_code=None, direct_cost_code=None):
@@ -77,14 +71,12 @@ def _service(monkeypatch, *, invoice_qbo_id="83-INV", qbo_invoice_id=900,
     with its line_repo injected (mirroring how draw_financials.py's caller only ever
     controls the invoice/line data, never the QBO reference tables).
 
-    U-284: identity resolution tries dbo.Invoice.QboId/RealmId -> qbo.Invoice as
-    the fast path (invoice_qbo_id=None models an unsynced/unbackfilled Invoice;
-    qbo_invoice_id=None models a stamped Invoice whose qbo.Invoice staging row
-    can't be found by that identity), falling back to the pre-existing
-    qbo.InvoiceInvoice mapping table on a fast-path miss —
-    legacy_mapping_qbo_invoice_id models that fallback's result (the sentinel
-    "_unset" means "no legacy mapping row exists at all", distinct from a
-    mapping row that itself carries a NULL qbo_invoice_id).
+    U-284 resolved identity via dbo.Invoice.QboId/RealmId -> qbo.Invoice as the
+    fast path with a qbo.InvoiceInvoice mapping-table fallback; U-356 retired
+    that table, so the dbo identity is the ONLY resolution: invoice_qbo_id=None
+    models an unsynced Invoice, qbo_invoice_id=None models a stamped Invoice
+    whose qbo.Invoice staging row can't be found by that identity — both now
+    resolve to [] with no second store to fall back to.
 
     U-307a: `direct_sub_cost_code` / `direct_cost_code` model a dbo-native
     identity HIT (SubCostCode.QboId / CostCode.QboId already stamped for this
@@ -103,17 +95,6 @@ def _service(monkeypatch, *, invoice_qbo_id="83-INV", qbo_invoice_id=900,
     class _FakeQboInvoiceRepo:
         def read_by_qbo_id_and_realm_id(self, qbo_id, realm_id):
             return _FakeQboInvoice(id=qbo_invoice_id) if qbo_invoice_id is not None else None
-
-    class _FakeInvoiceInvoiceRepository:
-        def read_by_invoice_id(self, invoice_id):
-            if legacy_mapping_qbo_invoice_id == "_unset":
-                return None
-            return _FakeMapping(qbo_invoice_id=legacy_mapping_qbo_invoice_id)
-
-    monkeypatch.setattr(
-        "integrations.intuit.qbo.invoice.connector.invoice.persistence.repo.InvoiceInvoiceRepository",
-        _FakeInvoiceInvoiceRepository,
-    )
 
     # --- dbo-native identity + by-id fakes ---
     # Shared (not per-instance) call log — a fresh service instance is constructed
@@ -241,64 +222,43 @@ def test_unresolvable_qbo_item_falls_to_uncoded(monkeypatch):
 # scenario already covered by test_unresolvable_qbo_item_falls_to_uncoded.
 
 
-def test_unsynced_invoice_with_no_legacy_mapping_returns_empty(monkeypatch):
-    """Invoice never QBO-synced (no QboId stamped) AND no legacy qbo.InvoiceInvoice
-    mapping row either -> genuinely never synced -> []."""
+def test_unsynced_invoice_returns_empty(monkeypatch):
+    """Invoice never QBO-synced (no QboId stamped) -> genuinely never synced -> []."""
     svc = _service(monkeypatch, invoice_qbo_id=None, lines_by_qbo_invoice_id={})
     assert svc.cost_coded_lines_for_invoice(invoice_id=1) == []
 
 
-def test_qbo_invoice_not_found_with_no_legacy_mapping_returns_empty(monkeypatch):
+def test_qbo_invoice_not_found_returns_empty(monkeypatch):
     """Invoice carries a QboId/RealmId but no qbo.Invoice staging row resolves for
-    it, AND no legacy mapping row exists either -> [] rather than raising."""
+    it -> [] rather than raising."""
     svc = _service(monkeypatch, qbo_invoice_id=None, lines_by_qbo_invoice_id={})
     assert svc.cost_coded_lines_for_invoice(invoice_id=1) == []
 
 
-def test_unbackfilled_invoice_falls_back_to_legacy_mapping(monkeypatch):
-    """U-284 regression guard: dbo.Invoice.QboId not (yet) stamped must NOT be
-    treated as 'never synced' when a legacy qbo.InvoiceInvoice mapping row still
-    resolves it (e.g. predates the identity backfill, or SetInvoiceQboIdentity's
-    theft-clear UPDATE nulled this row's identity without touching the mapping
-    table) — the fast-path miss must fall back, exactly like every other
-    Phase-4 repoint's identity_fastpath.py contract, not silently drop lines."""
+def test_unstamped_invoice_has_no_legacy_mapping_fallback(monkeypatch):
+    """U-356 regression guard (inverse of U-284's): with qbo.InvoiceInvoice
+    retired there is NO second store to fall back to — an unstamped Invoice
+    returns [] even when lines exist under some qbo.Invoice id, and the
+    resolver never reaches the line repo at all."""
     svc = _service(
         monkeypatch,
         invoice_qbo_id=None,
-        legacy_mapping_qbo_invoice_id=900,
         lines_by_qbo_invoice_id={900: [_FakeQboLine("83", 715.00)]},
         direct_sub_cost_code=_FakeSubCostCode(id=7, cost_code_id=3, qbo_id="83", realm_id="realm-1"),
         cost_codes=[_FakeCostCode(id=3, number="02", name="Dumpsters")],
     )
-    triples = svc.cost_coded_lines_for_invoice(invoice_id=1)
-    assert triples == [("02", "Dumpsters", Decimal("715.00"))]
+    assert svc.cost_coded_lines_for_invoice(invoice_id=1) == []
 
 
-def test_stale_dbo_identity_falls_back_to_legacy_mapping(monkeypatch):
-    """Same regression guard as above, for the OTHER fast-path-miss shape: dbo.Invoice
-    carries a QboId, but no qbo.Invoice staging row resolves by that identity (e.g.
-    a stale/theft-cleared realm mismatch) — must still fall back to the legacy
-    mapping table rather than returning [] for an invoice that IS actually mapped."""
+def test_stale_dbo_identity_has_no_legacy_mapping_fallback(monkeypatch):
+    """Same guard for the OTHER miss shape: dbo.Invoice carries a QboId but no
+    qbo.Invoice staging row resolves by that identity -> [] (no fallback)."""
     svc = _service(
         monkeypatch,
         qbo_invoice_id=None,
-        legacy_mapping_qbo_invoice_id=900,
         lines_by_qbo_invoice_id={900: [_FakeQboLine("83", 715.00)]},
         direct_sub_cost_code=_FakeSubCostCode(id=7, cost_code_id=3, qbo_id="83", realm_id="realm-1"),
         cost_codes=[_FakeCostCode(id=3, number="02", name="Dumpsters")],
-    )
-    triples = svc.cost_coded_lines_for_invoice(invoice_id=1)
-    assert triples == [("02", "Dumpsters", Decimal("715.00"))]
-
-
-def test_legacy_mapping_with_no_qbo_invoice_id_returns_empty(monkeypatch):
-    """A legacy mapping row that itself carries a NULL qbo_invoice_id must not be
-    treated as a hit."""
-    svc = _service(
-        monkeypatch,
-        invoice_qbo_id=None,
-        legacy_mapping_qbo_invoice_id=None,
-        lines_by_qbo_invoice_id={},
     )
     assert svc.cost_coded_lines_for_invoice(invoice_id=1) == []
 

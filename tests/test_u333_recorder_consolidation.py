@@ -12,7 +12,6 @@ from integrations.intuit.qbo.bill.connector.bill_line_item.business.service impo
 from integrations.intuit.qbo.company_info.connector.business.service import CompanyInfoCompanyConnector
 from integrations.intuit.qbo.customer.connector.customer.business.service import CustomerCustomerConnector
 from integrations.intuit.qbo.customer.connector.project.business.service import CustomerProjectConnector
-from integrations.intuit.qbo.invoice.connector.invoice.business.service import InvoiceInvoiceConnector
 from integrations.intuit.qbo.invoice.connector.invoice_line_item.business.service import InvoiceLineItemConnector
 from integrations.intuit.qbo.item.connector.cost_code.business.service import ItemCostCodeConnector
 from integrations.intuit.qbo.item.connector.sub_cost_code.business.service import ItemSubCostCodeConnector
@@ -32,20 +31,11 @@ _EXPECTED = {
     # run_identity_fastpath_dbo_only has no mapping-table-vs-dbo conflict state
     # left to detect — dbo.Bill's own unique index is the sole guard now).
     # Mirrors "expense"/"bill_credit" below (U-353/U-354).
-    "invoice": {
-        "drift_type": "invoice_identity_conflict",
-        "entity_type": "Invoice",
-        "entity_public_id": None,
-        "qbo_id": "INV-99",
-        "realm_id": "realm-1",
-        "details": (
-            "InvoiceInvoice identity conflict. dbo.Invoice 55 carries native QBO identity for "
-            "QboInvoice 4 (QboId=INV-99, RealmId=realm-1). qbo-side: the mapping table still binds "
-            "that same QboInvoice to a DIFFERENT Invoice 9 (mapping 2). local-side: Invoice 55's "
-            "own mapping row (mapping 3) still binds it to a DIFFERENT QboInvoice 5. Not "
-            "auto-repointed — investigate which side is correct."
-        ),
-    },
+    # U-356: "invoice" removed — InvoiceInvoiceConnector no longer has
+    # _record_identity_mapping_conflict_issue (qbo.InvoiceInvoice is retired, the
+    # last header family). Its dbo-only adopt-path theft-guard recorder
+    # (_record_duplicate_qbo_invoice_issue, record_duplicate_identity_conflict)
+    # is a different method/shape, covered in tests/test_u356_invoice_mapping_retire.py.
     # U-354: "expense" removed — PurchaseExpenseConnector no longer has
     # _record_identity_mapping_conflict_issue (qbo.PurchaseExpense is retired;
     # run_identity_fastpath_dbo_only has no mapping-table-vs-dbo conflict state left
@@ -250,16 +240,7 @@ def _assert_recorded(repo, expected):
 @pytest.mark.parametrize("family", list(_EXPECTED))
 def test_recorder_consolidation_emits_identical_tuple(family):
     expected = _EXPECTED[family]
-    if family == "invoice":
-        c = object.__new__(InvoiceInvoiceConnector)
-        c.reconciliation_repo = Mock()
-        c._record_identity_mapping_conflict_issue(
-            qbo_invoice=SimpleNamespace(id=4, qbo_id="INV-99", realm_id="realm-1"),
-            dbo_invoice_id=55,
-            local_side_mapping=SimpleNamespace(id=3, invoice_id=55, qbo_invoice_id=5),
-            qbo_side_mapping=SimpleNamespace(id=2, invoice_id=9, qbo_invoice_id=4),
-        )
-    elif family == "bill_line_item":
+    if family == "bill_line_item":
         c = object.__new__(BillLineItemConnector)
         c.reconciliation_repo = Mock()
         c._record_line_identity_mapping_conflict_issue(

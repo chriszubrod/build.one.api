@@ -20,10 +20,8 @@ from shared.database import get_connection
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 logger = logging.getLogger("audit_dangling_qbo_mappings")
 
-# Keys covered by this audit, in stable output order. "invoice" is included for visibility
-# only — InvoiceService.delete_by_public_id has the identical uncleared-mapping gap this unit
-# fixes for BillCredit/Bill/Expense, but Invoice was out of scope for the U-226 fix itself; see
-# TODO/BOARD for the deferred follow-up.
+# Keys covered by this audit, in stable output order (line-item families only now —
+# every header family's mapping table has been retired, see below).
 #
 # U-353: "bill_credit" was removed from this tuple — qbo.VendorCreditBillCredit (its
 # mapping_table) is retired, so a dangling-mapping count against it is meaningless
@@ -42,8 +40,12 @@ logger = logging.getLogger("audit_dangling_qbo_mappings")
 # and the query would raise "invalid object name" if left in. The "bill"
 # FlatEntitySpec row itself stays in HEADER_ENTITY_SPECS for an unrelated
 # reconciliation consumer — see identity_drift.py's comment there.
+#
+# U-356: "invoice" was removed for the same reason as "expense" — qbo.InvoiceInvoice
+# is retired, and its FlatEntitySpec row was removed entirely from HEADER_ENTITY_SPECS
+# (nothing else looks it up by key), so `spec_by_key["invoice"]` below would KeyError
+# if left in. That was the last header family; only line-item topologies remain.
 _AUDIT_SPEC_KEYS: tuple[str, ...] = (
-    "invoice",
     "bill_line_item",
     "invoice_line_item",
     "bill_credit_line_item",

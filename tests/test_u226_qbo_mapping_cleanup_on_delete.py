@@ -14,6 +14,7 @@ from entities.expense.business.service import (
     ExpenseService,
     _clear_legacy_purchase_expense_mapping,
 )
+from entities.invoice.business.service import _clear_legacy_invoice_invoice_mapping
 from integrations.intuit.qbo.base.mapping_cleanup import delete_own_qbo_mapping_before_header
 
 
@@ -385,3 +386,48 @@ def test_bill_legacy_mapping_bridge_logs_but_swallows_unexpected_errors():
     mock_logger.warning.assert_called_once()
 
 
+# --- U-356 deploy-gap bridge: _clear_legacy_invoice_invoice_mapping ---
+#
+# Builders never apply prod DDL — the DROP TABLE for qbo.InvoiceInvoice lands
+# AFTER this unit's code deploys, not atomically with it. UNLIKE Bill's
+# bridge, qbo.InvoiceInvoice carries a live FK_InvoiceInvoice_Invoice ->
+# dbo.Invoice (NO_ACTION, u225 migration; verified in prod sys.foreign_keys),
+# so a leftover row here WOULD 547 the header delete: this bridge is a
+# delete-order requirement (the PurchaseExpense / VendorCreditBillCredit
+# shape), not hygiene.
+
+_INVOICE_MODULE = "entities.invoice.business.service"
+
+
+def test_invoice_legacy_mapping_bridge_issues_object_id_guarded_delete():
+    """The IF OBJECT_ID(...) IS NOT NULL guard makes both the table-still-live
+    AND the table-already-dropped case a single statement evaluated by SQL
+    Server itself — no Python-side table-existence branching needed (and none
+    left to test): the guard is SQL Server's job, not this function's."""
+    cursor = Mock()
+    conn = Mock()
+    conn.cursor.return_value = cursor
+
+    with patch(f"{_DATABASE_MODULE}.get_connection") as mock_get_conn:
+        mock_get_conn.return_value.__enter__.return_value = conn
+        _clear_legacy_invoice_invoice_mapping(11)
+
+    cursor.execute.assert_called_once_with(
+        "IF OBJECT_ID('qbo.InvoiceInvoice', 'U') IS NOT NULL "
+        "DELETE FROM [qbo].[InvoiceInvoice] WHERE [InvoiceId] = ?",
+        (11,),
+    )
+
+
+def test_invoice_legacy_mapping_bridge_logs_but_swallows_unexpected_errors():
+    """A genuine unexpected DB error (network blip, etc.) is logged, not
+    raised — best-effort only. The FK is the real safety net: if a mapping row
+    really does still exist and this failed to clear it, the header delete
+    547s anyway (fail-safe, not fail-silent-corruption)."""
+    with patch(f"{_DATABASE_MODULE}.get_connection") as mock_get_conn, patch(
+        f"{_INVOICE_MODULE}.logger"
+    ) as mock_logger:
+        mock_get_conn.side_effect = RuntimeError("connection reset")
+        _clear_legacy_invoice_invoice_mapping(11)  # must not raise
+
+    mock_logger.warning.assert_called_once()

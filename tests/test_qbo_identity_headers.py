@@ -131,46 +131,69 @@ def test_set_qbo_identity_calls_sproc(repo_path, sproc, extra_params):
 
 
 def _make_invoice_connector():
-    mapping_repo = Mock()
-    mapping_repo.read_by_invoice_id.return_value = None
-    mapping_repo.read_by_qbo_invoice_id.return_value = None
-    mapping_repo.create.return_value = SimpleNamespace(id=1)
     invoice_service = Mock()
     invoice_service.repo = Mock()
     stub_qbo_identity_fastpath_miss(invoice_service)
     connector = InvoiceInvoiceConnector(
-        mapping_repo=mapping_repo, invoice_service=invoice_service, reconciliation_repo=Mock()
+        line_mapping_repo=Mock(), invoice_service=invoice_service, reconciliation_repo=Mock()
     )
-    return connector, mapping_repo, invoice_service.repo
+    return connector, invoice_service.repo
 
 
-def test_invoice_create_mapping_dual_writes_identity():
-    connector, mapping_repo, invoice_repo = _make_invoice_connector()
-    connector.create_mapping(
-        invoice_id=7,
-        qbo_invoice_id=8,
-        qbo_id="INV-1",
+def _qbo_invoice(**overrides):
+    defaults = dict(
+        id=8,
+        qbo_id="INV-QBO",
         realm_id="realm-z",
         sync_token="tok",
+        customer_ref_value="cust1",
+        doc_number="INV-1",
+        txn_date="2026-01-01",
+        due_date="",
+        private_note="",
+        total_amt=100,
     )
-    mapping_repo.create.assert_called_once_with(invoice_id=7, qbo_invoice_id=8)
+    defaults.update(overrides)
+    return SimpleNamespace(**defaults)
+
+
+@pytest.mark.usefixtures("grant_qbo_app_lock")
+def test_invoice_create_path_stamps_dbo_identity_only():
+    """U-356: the create path stamps dbo.Invoice.QboId/RealmId/SyncToken ONLY —
+    there is no qbo.InvoiceInvoice mapping row left to dual-write (the table +
+    its repo are retired). dbo identity is the sole store."""
+    connector, invoice_repo = _make_invoice_connector()
+    connector._get_project_public_id = Mock(return_value="proj-pub")
+    connector.project_service = Mock()
+    connector.project_service.read_by_public_id.return_value = SimpleNamespace(id=5)
+    invoice_repo.read_by_invoice_number_and_project_id.return_value = None
+    connector._find_adoptable_invoice_by_fingerprint = Mock(return_value=None)
+    connector.invoice_service.create.return_value = SimpleNamespace(id=7, public_id="inv7")
+    connector.invoice_service.read_by_id.return_value = SimpleNamespace(id=7, public_id="inv7")
+    connector._sync_line_items = Mock()
+
+    connector.sync_from_qbo_invoice(_qbo_invoice(), [])
+
     invoice_repo.set_qbo_identity.assert_called_once_with(
-        id=7, qbo_id="INV-1", realm_id="realm-z", sync_token="tok"
+        id=7, qbo_id="INV-QBO", realm_id="realm-z", sync_token="tok"
     )
 
 
-def test_invoice_create_mapping_identity_failure_propagates():
-    connector, mapping_repo, invoice_repo = _make_invoice_connector()
+@pytest.mark.usefixtures("grant_qbo_app_lock")
+def test_invoice_create_path_identity_failure_propagates():
+    connector, invoice_repo = _make_invoice_connector()
+    connector._get_project_public_id = Mock(return_value="proj-pub")
+    connector.project_service = Mock()
+    connector.project_service.read_by_public_id.return_value = SimpleNamespace(id=5)
+    invoice_repo.read_by_invoice_number_and_project_id.return_value = None
+    connector._find_adoptable_invoice_by_fingerprint = Mock(return_value=None)
+    connector.invoice_service.create.return_value = SimpleNamespace(id=7, public_id="inv7")
+    connector._sync_line_items = Mock()
     invoice_repo.set_qbo_identity.side_effect = RuntimeError("stamp failed")
+
     with pytest.raises(RuntimeError, match="stamp failed"):
-        connector.create_mapping(
-            invoice_id=7,
-            qbo_invoice_id=8,
-            qbo_id="INV-1",
-            realm_id="realm-z",
-            sync_token="tok",
-        )
-    mapping_repo.create.assert_not_called()
+        connector.sync_from_qbo_invoice(_qbo_invoice(), [])
+    connector._sync_line_items.assert_not_called()
 
 
 def _make_project_connector():
@@ -278,36 +301,27 @@ def test_company_create_mapping_identity_failure_propagates():
 
 
 def test_invoice_update_path_stamps_identity():
-    connector, mapping_repo, invoice_repo = _make_invoice_connector()
-    mapping = SimpleNamespace(id=1, invoice_id=7, qbo_invoice_id=8)
+    """U-356: the "existing invoice" UPDATE path is a direct dbo identity HIT
+    (read_by_qbo_identity), re-stamping SyncToken on every pull."""
+    connector, invoice_repo = _make_invoice_connector()
     invoice = SimpleNamespace(id=7, public_id="inv7", row_version="rv", invoice_number="INV-1")
-    qbo_invoice = SimpleNamespace(
-        id=8,
-        qbo_id="INV-QBO",
-        realm_id="realm-z",
-        sync_token="tok-new",
-        customer_ref_value="cust1",
-        doc_number="INV-1",
-        txn_date="2026-01-01",
-        due_date="",
-        private_note="",
-        total_amt=100,
-    )
-    mapping_repo.read_by_qbo_invoice_id.return_value = mapping
+    connector.invoice_service.read_by_qbo_identity.return_value = invoice
     connector._get_project_public_id = Mock(return_value="proj-pub")
-    connector.invoice_service.read_by_id = Mock(return_value=invoice)
     connector.invoice_service.update_by_public_id = Mock(return_value=invoice)
     connector._sync_line_items = Mock()
 
-    connector.sync_from_qbo_invoice(qbo_invoice, [])
+    connector.sync_from_qbo_invoice(_qbo_invoice(sync_token="tok-new"), [])
 
     invoice_repo.set_qbo_identity.assert_called_once_with(
         id=7, qbo_id="INV-QBO", realm_id="realm-z", sync_token="tok-new"
     )
 
 
+@pytest.mark.usefixtures("grant_qbo_app_lock")
 def test_invoice_adopt_update_path_stamps_identity():
-    connector, mapping_repo, invoice_repo = _make_invoice_connector()
+    """U-356: the adopt path stamps under stamp_dbo_identity_with_lock (the
+    candidate's own lock + theft-guard), against the fresh by-id re-read."""
+    connector, invoice_repo = _make_invoice_connector()
     existing = SimpleNamespace(
         id=99,
         public_id="inv99",
@@ -315,29 +329,17 @@ def test_invoice_adopt_update_path_stamps_identity():
         invoice_number="INV-1",
         total_amount=Decimal("100.00"),
         invoice_date="2026-01-01",
+        qbo_id=None,
+        realm_id=None,
     )
     proj = SimpleNamespace(id=5, public_id="proj5")
-    qbo_invoice = SimpleNamespace(
-        id=8,
-        qbo_id="INV-QBO",
-        realm_id="realm-z",
-        sync_token="tok-adopt",
-        customer_ref_value="cust1",
-        doc_number="INV-1",
-        txn_date="2026-01-01",
-        due_date="",
-        private_note="",
-        total_amt=100,
-    )
-    mapping_repo.read_by_qbo_invoice_id.return_value = None
     connector._get_project_public_id = Mock(return_value="proj5")
     connector.project_service.read_by_public_id = Mock(return_value=proj)
     connector.invoice_service.repo.read_by_invoice_number_and_project_id = Mock(return_value=existing)
-    mapping_repo.read_by_invoice_id.return_value = None
+    connector.invoice_service.read_by_id = Mock(return_value=existing)
     connector._header_fingerprint_matches = Mock(return_value=True)
     connector._has_qbo_line_provenance = Mock(return_value=True)
     connector.invoice_service.update_by_public_id = Mock(return_value=existing)
-    connector.create_mapping = Mock()
     connector._sync_line_items = Mock()
 
     with patch(
@@ -345,7 +347,7 @@ def test_invoice_adopt_update_path_stamps_identity():
     ) as mock_lis:
         mock_lis.return_value.read_by_invoice_id.return_value = [SimpleNamespace()]
 
-        connector.sync_from_qbo_invoice(qbo_invoice, [])
+        connector.sync_from_qbo_invoice(_qbo_invoice(sync_token="tok-adopt"), [])
 
     invoice_repo.set_qbo_identity.assert_called_once_with(
         id=99, qbo_id="INV-QBO", realm_id="realm-z", sync_token="tok-adopt"

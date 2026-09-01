@@ -3,6 +3,8 @@ from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from integrations.intuit.qbo.bill.external.schemas import QboBill, QboBillLine, QboReferenceType
 from integrations.intuit.qbo.invoice.external.schemas import (
     QboInvoice,
@@ -210,13 +212,24 @@ def test_sync_to_qbo_bill_first_create_stores_local_mirror_and_lines():
     )
 
 
-def _make_invoice_connector():
+def _make_invoice_connector(*, current_qbo_id=None, current_realm_id=None, verify_hit_id=None):
+    """U-356: the push path resolves "already pushed" off dbo.Invoice.QboId/RealmId
+    (re-read by id, then verify_identity_dbo_only) — no qbo.InvoiceInvoice mapping
+    repo. `current_qbo_id`/`current_realm_id` model the by-id row's identity;
+    `verify_hit_id` models what a fresh read_by_qbo_identity resolves to."""
     from integrations.intuit.qbo.invoice.connector.invoice.business.service import InvoiceInvoiceConnector
 
     connector = InvoiceInvoiceConnector.__new__(InvoiceInvoiceConnector)
-    connector.mapping_repo = MagicMock()
-    connector.mapping_repo.read_by_invoice_id.return_value = None
-    connector.create_mapping = MagicMock(return_value=SimpleNamespace(id=1))
+    connector.invoice_service = MagicMock()
+    connector.invoice_service.repo = MagicMock()
+    connector.invoice_service.read_by_id.return_value = SimpleNamespace(
+        id=8, public_id="44444444-4444-4444-4444-444444444444",
+        qbo_id=current_qbo_id, realm_id=current_realm_id,
+    )
+    connector.invoice_service.read_by_qbo_identity.return_value = (
+        SimpleNamespace(id=verify_hit_id) if verify_hit_id is not None else None
+    )
+    connector.reconciliation_repo = MagicMock()
     return connector
 
 
@@ -297,7 +310,6 @@ def test_sync_to_qbo_invoice_retry_reuses_local_mirror_and_creates_mapping():
 
     qbo_invoice_repo = MagicMock()
     qbo_invoice_repo.read_by_qbo_id_and_realm_id.return_value = existing_local_invoice
-    connector.mapping_repo.read_by_qbo_invoice_id.return_value = None
     qbo_invoice_line_repo = MagicMock()
     qbo_invoice_line_repo.read_by_qbo_invoice_id.return_value = [existing_local_line]
 
@@ -331,12 +343,10 @@ def test_sync_to_qbo_invoice_retry_reuses_local_mirror_and_creates_mapping():
         LOCAL_QBO_INVOICE_ID
     )
     qbo_invoice_line_repo.create.assert_not_called()
-    connector.create_mapping.assert_called_once_with(
-        invoice_id=8,
-        qbo_invoice_id=LOCAL_QBO_INVOICE_ID,
-        qbo_id=QBO_INVOICE_ID,
-        realm_id=REALM_ID,
-        sync_token="0",
+    # U-356: no holder for this identity -> stamp dbo identity onto THIS invoice.
+    connector.invoice_service.read_by_qbo_identity.assert_called_once_with(QBO_INVOICE_ID, REALM_ID)
+    connector.invoice_service.repo.set_qbo_identity.assert_called_once_with(
+        id=8, qbo_id=QBO_INVOICE_ID, realm_id=REALM_ID, sync_token="0"
     )
 
 
@@ -346,11 +356,11 @@ def test_sync_to_qbo_invoice_retry_raises_when_mirror_already_mapped_to_differen
     created_invoice = _make_created_qbo_invoice()
 
     existing_local_invoice = _make_existing_local_invoice()
-    conflicting_mapping = SimpleNamespace(invoice_id=888)
+    # U-356: a DIFFERENT dbo.Invoice already carries (created QboId, realm).
+    connector.invoice_service.read_by_qbo_identity.return_value = SimpleNamespace(id=888)
 
     qbo_invoice_repo = MagicMock()
     qbo_invoice_repo.read_by_qbo_id_and_realm_id.return_value = existing_local_invoice
-    connector.mapping_repo.read_by_qbo_invoice_id.return_value = conflicting_mapping
 
     prereqs = _patch_invoice_sync_prereqs(connector)
     with (
@@ -375,11 +385,11 @@ def test_sync_to_qbo_invoice_retry_raises_when_mirror_already_mapped_to_differen
             assert False, "expected ValueError"
         except ValueError as exc:
             assert "already mapped to a different Invoice" in str(exc)
-            assert str(conflicting_mapping.invoice_id) in str(exc)
+            assert "888" in str(exc)
             assert str(invoice.id) in str(exc)
 
     qbo_invoice_repo.create.assert_not_called()
-    connector.create_mapping.assert_not_called()
+    connector.invoice_service.repo.set_qbo_identity.assert_not_called()
 
 
 def test_sync_to_qbo_invoice_first_create_stores_local_mirror_and_lines():
@@ -430,4 +440,132 @@ def test_sync_to_qbo_invoice_first_create_stores_local_mirror_and_lines():
         LOCAL_QBO_INVOICE_ID
     )
     qbo_invoice_line_repo.create.assert_called_once()
-    connector.create_mapping.assert_called_once()
+    connector.invoice_service.repo.set_qbo_identity.assert_called_once_with(
+        id=8, qbo_id=QBO_INVOICE_ID, realm_id=REALM_ID, sync_token="0"
+    )
+
+
+# --- U-356: the already-pushed (UPDATE) leg, dbo-native + verified ------------
+
+
+def test_sync_to_qbo_invoice_already_pushed_verified_takes_update_path():
+    """dbo.Invoice carries a verified identity whose qbo.Invoice staging row
+    resolves -> UPDATE the QBO invoice in place; never create, never re-stamp."""
+    connector = _make_invoice_connector(
+        current_qbo_id=QBO_INVOICE_ID, current_realm_id=REALM_ID, verify_hit_id=8,
+    )
+    invoice, line_item = _make_invoice_and_line_item()
+    existing_local_invoice = SimpleNamespace(
+        id=LOCAL_QBO_INVOICE_ID, qbo_id=QBO_INVOICE_ID, realm_id=REALM_ID,
+        sync_token="0", row_version_bytes=b"rv",
+    )
+    updated = _make_created_qbo_invoice()
+
+    qbo_invoice_repo = MagicMock()
+    qbo_invoice_repo.read_by_qbo_id_and_realm_id.return_value = existing_local_invoice
+    refreshed = SimpleNamespace(id=LOCAL_QBO_INVOICE_ID)
+    qbo_invoice_repo.read_by_id.return_value = refreshed
+
+    prereqs = _patch_invoice_sync_prereqs(connector)
+    with (
+        prereqs[0], prereqs[1], prereqs[2] as ili_svc_cls, prereqs[3],
+        patch("integrations.intuit.qbo.invoice.persistence.repo.QboInvoiceRepository",
+              return_value=qbo_invoice_repo),
+        patch("integrations.intuit.qbo.invoice.persistence.repo.QboInvoiceLineRepository"),
+        prereqs[4] as client_cls,
+    ):
+        ili_svc_cls.return_value.read_by_invoice_id.return_value = [line_item]
+        client = client_cls.return_value.__enter__.return_value
+        client.get_invoice.return_value = SimpleNamespace(sync_token="7")
+        client.update_invoice.return_value = updated
+
+        result = connector.sync_to_qbo_invoice(invoice=invoice, realm_id=REALM_ID)
+
+    assert result is refreshed
+    qbo_invoice_repo.read_by_qbo_id_and_realm_id.assert_called_once_with(QBO_INVOICE_ID, REALM_ID)
+    client.get_invoice.assert_called_once_with(QBO_INVOICE_ID)
+    client.update_invoice.assert_called_once()
+    client.create_invoice.assert_not_called()
+    qbo_invoice_repo.update_by_qbo_id.assert_called_once()
+    connector.invoice_service.repo.set_qbo_identity.assert_not_called()
+    connector.reconciliation_repo.create.assert_not_called()
+
+
+def test_sync_to_qbo_invoice_refuses_when_invoice_deleted_between_reads():
+    """The by-id re-read misses (deleted after the outbox handler's by-public-id
+    read): refuse, never fall through to CREATE a QBO Invoice for a missing row."""
+    connector = _make_invoice_connector()
+    connector.invoice_service.read_by_id.return_value = None
+    invoice, line_item = _make_invoice_and_line_item()
+
+    prereqs = _patch_invoice_sync_prereqs(connector)
+    with (
+        prereqs[0], prereqs[1], prereqs[2] as ili_svc_cls, prereqs[3],
+        patch("integrations.intuit.qbo.invoice.persistence.repo.QboInvoiceRepository"),
+        patch("integrations.intuit.qbo.invoice.persistence.repo.QboInvoiceLineRepository"),
+        prereqs[4] as client_cls,
+    ):
+        ili_svc_cls.return_value.read_by_invoice_id.return_value = [line_item]
+        with pytest.raises(ValueError, match="no longer exists locally"):
+            connector.sync_to_qbo_invoice(invoice=invoice, realm_id=REALM_ID)
+
+    client_cls.return_value.__enter__.return_value.create_invoice.assert_not_called()
+    connector.invoice_service.repo.set_qbo_identity.assert_not_called()
+
+
+def test_sync_to_qbo_invoice_refuses_unverifiable_identity_and_records_issue():
+    """dbo.Invoice.QboId is set but a fresh dbo-only read resolves to a DIFFERENT
+    Invoice (reassigned/stolen) -> record invoice_identity_conflict + raise,
+    before any QBO call."""
+    connector = _make_invoice_connector(
+        current_qbo_id=QBO_INVOICE_ID, current_realm_id=REALM_ID, verify_hit_id=999,
+    )
+    invoice, line_item = _make_invoice_and_line_item()
+    qbo_invoice_repo = MagicMock()
+
+    prereqs = _patch_invoice_sync_prereqs(connector)
+    with (
+        prereqs[0], prereqs[1], prereqs[2] as ili_svc_cls, prereqs[3],
+        patch("integrations.intuit.qbo.invoice.persistence.repo.QboInvoiceRepository",
+              return_value=qbo_invoice_repo),
+        patch("integrations.intuit.qbo.invoice.persistence.repo.QboInvoiceLineRepository"),
+        prereqs[4] as client_cls,
+    ):
+        ili_svc_cls.return_value.read_by_invoice_id.return_value = [line_item]
+        with pytest.raises(ValueError, match="no longer resolves back"):
+            connector.sync_to_qbo_invoice(invoice=invoice, realm_id=REALM_ID)
+
+    client_cls.return_value.__enter__.return_value.create_invoice.assert_not_called()
+    qbo_invoice_repo.read_by_qbo_id_and_realm_id.assert_not_called()
+    kwargs = connector.reconciliation_repo.create.call_args.kwargs
+    assert kwargs["drift_type"] == "invoice_identity_conflict"
+    assert kwargs["entity_type"] == "Invoice"
+    assert kwargs["qbo_id"] == QBO_INVOICE_ID
+    assert kwargs["realm_id"] == REALM_ID
+
+
+def test_sync_to_qbo_invoice_refuses_when_verified_identity_has_no_staging_row():
+    """Verified identity but no local qbo.Invoice staging row: a data-integrity
+    anomaly, not "never pushed" -> record invoice_staging_row_missing + raise
+    rather than risk a duplicate Invoice in QBO."""
+    connector = _make_invoice_connector(
+        current_qbo_id=QBO_INVOICE_ID, current_realm_id=REALM_ID, verify_hit_id=8,
+    )
+    invoice, line_item = _make_invoice_and_line_item()
+    qbo_invoice_repo = MagicMock()
+    qbo_invoice_repo.read_by_qbo_id_and_realm_id.return_value = None
+
+    prereqs = _patch_invoice_sync_prereqs(connector)
+    with (
+        prereqs[0], prereqs[1], prereqs[2] as ili_svc_cls, prereqs[3],
+        patch("integrations.intuit.qbo.invoice.persistence.repo.QboInvoiceRepository",
+              return_value=qbo_invoice_repo),
+        patch("integrations.intuit.qbo.invoice.persistence.repo.QboInvoiceLineRepository"),
+        prereqs[4] as client_cls,
+    ):
+        ili_svc_cls.return_value.read_by_invoice_id.return_value = [line_item]
+        with pytest.raises(ValueError, match="no local qbo.Invoice staging row"):
+            connector.sync_to_qbo_invoice(invoice=invoice, realm_id=REALM_ID)
+
+    client_cls.return_value.__enter__.return_value.create_invoice.assert_not_called()
+    assert connector.reconciliation_repo.create.call_args.kwargs["drift_type"] == "invoice_staging_row_missing"

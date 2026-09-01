@@ -236,7 +236,14 @@ BEGIN
         [InvoiceNumber],
         [TotalAmount],
         [Memo],
-        [IsDraft]
+        [IsDraft],
+        -- U-356: identity columns projected here too (root-cause fix, mirrors
+        -- U-301b ReadBillByPublicId / U-354 ReadExpenseByPublicId) so by-public-id
+        -- readers (outbox _refresh_invoice, sync_to_qbo_invoice) can drop their
+        -- deploy-gap by-id re-reads once this is applied. Additive: _from_db
+        -- reads QboId/RealmId via getattr with a None default.
+        [QboId],
+        [RealmId]
     FROM dbo.[Invoice]
     WHERE [PublicId] = @PublicId;
 
@@ -802,16 +809,19 @@ AS
 BEGIN
     SET NOCOUNT ON;
 
-    -- U-284 (Phase-4): resolve the staging-side QboInvoice off dbo.Invoice's
+    -- U-284 (Phase-4) resolved the staging-side QboInvoice off dbo.Invoice's
     -- native QboId/RealmId (U-238a) as the fast path, falling back to the
-    -- qbo.InvoiceInvoice mapping table on a miss — mirrors every Python-side
-    -- fast path in this program (identity_fastpath.py's hit=False contract):
-    -- a dbo-identity miss is NOT the same as "no mapping exists". A stale/
-    -- unbackfilled dbo.Invoice.QboId (e.g. SetInvoiceQboIdentity's theft-clear
-    -- UPDATE nulls the losing row's identity but never touches
-    -- qbo.InvoiceInvoice) must not be treated as "not synced" here, or this
-    -- invariant gate false-halts a legitimate draw push. qbo.Invoice/
-    -- qbo.InvoiceLine stay exactly as they were either way.
+    -- qbo.InvoiceInvoice mapping table on a miss. U-356 retired that table
+    -- (this sproc was its last live dbo dependent — sys.sql_expression_
+    -- dependencies), so dbo identity is now the ONLY resolution: an Invoice
+    -- with no QboId stamped, or whose identity resolves to no qbo.Invoice
+    -- row, simply yields NULL QBO-side counts below (no second store left
+    -- for a "mapped but unstamped" row to hide in — the U-238a backfill
+    -- closed that class; 986 = 986 live at cutover). qbo.Invoice/
+    -- qbo.InvoiceLine stay exactly as they were.
+    --
+    -- Apply order: this CREATE OR ALTER must land BEFORE the qbo.InvoiceInvoice
+    -- DROP TABLE, so the live sproc never references a dropped object.
     DECLARE @QboId NVARCHAR(50), @RealmId NVARCHAR(50), @QboInvoiceId BIGINT;
 
     SELECT @QboId = i.[QboId], @RealmId = i.[RealmId]
@@ -825,13 +835,6 @@ BEGIN
         WHERE qi.[QboId] = @QboId
           AND ((qi.[RealmId] = @RealmId) OR (qi.[RealmId] IS NULL AND @RealmId IS NULL))
         ORDER BY qi.[Id] DESC;
-    END
-
-    IF @QboInvoiceId IS NULL
-    BEGIN
-        SELECT @QboInvoiceId = ii.[QboInvoiceId]
-        FROM qbo.[InvoiceInvoice] ii
-        WHERE ii.[InvoiceId] = @InvoiceId;
     END
 
     SELECT
@@ -870,8 +873,8 @@ GO
 -- this external QBO id" WITHOUT hopping through the qbo.InvoiceInvoice
 -- mapping table — every Invoice synced at least once already carries
 -- QboId/RealmId via SetInvoiceQboIdentity, so this is the steady-state fast
--- path; the mapping-table lookup remains as a fallback for rows that predate
--- identity stamping. Unlike Bill, Invoice has no per-row UserCanAccessInvoice
+-- path (U-356: the mapping table is retired, so this is the ONLY path).
+-- Unlike Bill, Invoice has no per-row UserCanAccessInvoice
 -- UDF — RBAC is enforced at the service layer (assert_can_access_project),
 -- matching ReadInvoiceById/ReadInvoiceByPublicId's existing plain-SELECT shape.
 CREATE OR ALTER PROCEDURE ReadInvoiceByQboIdAndRealmId

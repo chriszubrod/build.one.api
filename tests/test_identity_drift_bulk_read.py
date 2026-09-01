@@ -34,19 +34,22 @@ def test_bill_and_bill_credit_specs_carry_their_access_udf():
 
 def test_other_registry_entities_are_unaffected_by_the_new_field():
     """Additive-only (Decision-1): every spec besides bill/bill_credit still
-    defaults access_udf to None — no behavior change to the other 5."""
+    defaults access_udf to None — no behavior change to the others (none left
+    as of U-356; the assertion below is the registry's retirement ledger)."""
     untouched_keys = {
         s.key for s in (*HEADER_ENTITY_SPECS, *REFERENCE_ENTITY_SPECS)
         if s.key not in ("bill", "bill_credit")
     }
-    # 1 after U-354 removed "expense" from the drift registry (qbo.PurchaseExpense
-    # retired, U-349 program family 5 — see identity_drift.py's own comment); was 2
+    # 0 after U-356 removed "invoice" (qbo.InvoiceInvoice retired, U-349 program
+    # family 7 — the LAST header family; only the two kept-for-reconciliation rows
+    # bill/bill_credit remain in the whole registry); was 1 after U-354 removed
+    # "expense" (qbo.PurchaseExpense retired, family 5 — see identity_drift.py); was 2
     # after U-351 removed "address" AND U-352 removed "payment_term" (each
     # independently computed 3 from a base of 4 after U-350 removed "company" —
     # landing both drops the true combined count to 2, not 3); was 5 after U-325
     # removed project/vendor/customer/cost_code/sub_cost_code; was 10 after
     # U-300c-prereq removed "attachment"; was 11 before that).
-    assert len(untouched_keys) == 1
+    assert len(untouched_keys) == 0
     for s in (*HEADER_ENTITY_SPECS, *REFERENCE_ENTITY_SPECS):
         if s.key not in ("bill", "bill_credit"):
             assert s.access_udf is None

@@ -24,7 +24,7 @@ class Invoice:
     total_amount: Optional[Decimal]
     memo: Optional[str]
     is_draft: Optional[bool]
-    qbo_id: Optional[str] = None   # dbo-native QBO identity (U-238a); only ReadInvoiceById/ReadInvoiceByQboIdAndRealmId select it
+    qbo_id: Optional[str] = None   # dbo-native QBO identity (U-238a); selected by ReadInvoiceById/ReadInvoiceByQboIdAndRealmId (+ ReadInvoiceByPublicId once U-356's sproc apply lands); NOT by ReadInvoices/ReadInvoiceByInvoiceNumber*/ReadInvoicesPaginated — re-read by id before trusting it
     realm_id: Optional[str] = None
 
     @property

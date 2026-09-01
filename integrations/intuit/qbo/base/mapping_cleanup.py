@@ -7,14 +7,15 @@ CASCADE in prod — PurchaseExpense) a SQL 547 on the header delete itself. If t
 delete fails after the mapping is cleared, the mapping is best-effort restored so a
 failed attempt never unmaps a still-live entity. See U-226. (BillCredit's own
 VendorCreditBillCredit mapping was retired U-353, Expense's own PurchaseExpense
-mapping was retired U-354, and Bill's own BillBill mapping was retired U-355 — none
-of the three deletes call this helper anymore; dbo.BillCredit.QboId/RealmId,
-dbo.Expense.QboId/RealmId, and dbo.Bill.QboId/RealmId are plain columns that die
-with the row. Each instead uses its own deploy-gap bridge — see entities/bill_credit/
-business/service.py::_clear_legacy_vendorcredit_billcredit_mapping, entities/expense/
-business/service.py::_clear_legacy_purchase_expense_mapping, and entities/bill/
-business/service.py::_clear_legacy_bill_bill_mapping — until /em applies each
-retired table's DROP.)
+mapping was retired U-354, Bill's own BillBill mapping was retired U-355, and
+Invoice's own InvoiceInvoice mapping was retired U-356 — no HEADER delete calls this
+helper anymore; dbo.<Entity>.QboId/RealmId are plain columns that die with the row.
+Each instead uses its own deploy-gap bridge — see entities/bill_credit/business/
+service.py::_clear_legacy_vendorcredit_billcredit_mapping, entities/expense/business/
+service.py::_clear_legacy_purchase_expense_mapping, entities/bill/business/
+service.py::_clear_legacy_bill_bill_mapping, and entities/invoice/business/
+service.py::_clear_legacy_invoice_invoice_mapping — until /em applies each retired
+table's DROP. Four hand-copies now: past rule-of-three, extraction booked.)
 
 Also used for line-item mapping cleanup (BillLineItem, InvoiceLineItem, ExpenseLineItem,
 U-241) — the mechanism does not distinguish header vs line item; it clears one qbo.*

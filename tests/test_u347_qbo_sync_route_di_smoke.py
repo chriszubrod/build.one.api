@@ -27,8 +27,18 @@ expected envelope is the proof: routing, body validation, RBAC dependency
 resolution, the lock decorator, and the handler body all round-tripped
 correctly through the decorator.
 
-**Unexpected finding while writing this test (not a decorator bug — a
-pre-existing gap this test is the first to surface, because every prior
+**U-348 UPDATE (resolves the finding below):** both routers are now
+`app.include_router`'d in `app.py` — `customer` and `item` were added to
+`CASES` and get full HTTP-path coverage like their siblings, and the guard
+test below was inverted to pin the mounted state. `customer` was mounted
+**sync-only**: its 3 `/get/qbo-customers*` staging reads were removed
+(mirroring U-307d's item treatment) because they read `qbo.Customer`
+directly — a Wave-5 `trust-dbo` staging-removal drop target. The forensic
+history below is retained because it explains WHY the routers sat unmounted
+and why the reads were safe to drop (zero callers).
+
+**Original finding (while writing this test — not a decorator bug — a
+pre-existing gap this test was the first to surface, because every prior
 lock test calls the router function directly in Python, never through the
 mounted app):** `integrations/intuit/qbo/customer/api/router.py` and
 `integrations/intuit/qbo/item/api/router.py` are never `app.include_router`'d
@@ -40,18 +50,15 @@ regardless of this unit's decorator work. U-340's own docstring claim that
 `/sync/*` handlers" was incorrect for this one entity — it verified the
 Python-level lock/call contract (which is real and correct) but never
 verified HTTP-reachability, because no test before this one went through the
-ASGI app. `item`'s route has the identical gap. Locking both is still the
+ASGI app. `item`'s route had the identical gap. Locking both was still the
 right, harmless thing to do (defense-in-depth for if/when either router is
-ever mounted, and the CLI + admin-dispatcher paths for both entities ARE
-live and were already racing each other pre-U-346), but the "live gap in
-prod today" framing in this unit's design-doc Map (§2.1) overstated it for
-`item` specifically — flagged to `/em` at handback, not silently corrected
-in the approved doc. `CASES` below only exercises the 6 entities actually
-mounted through the full HTTP path; `test_customer_and_item_routers_are_not_mounted_in_app`
-pins the current (unreachable) state so a future accidental mount — or an
-accidental "cleanup" deletion of what looks like dead code but isn't, since
-it's still called directly by other tests and would need the same review
-either way — gets noticed.
+ever mounted — which U-348 then did — and the CLI + admin-dispatcher paths
+for both entities ARE live and were already racing each other pre-U-346),
+but the "live gap in prod today" framing in that unit's design-doc Map
+(§2.1) overstated it for `item` specifically — flagged to `/em` at handback,
+not silently corrected in the approved doc. That the lock was already in
+place is exactly what made U-348's mount a safe 4-line wiring change rather
+than a new race.
 """
 
 import inspect
@@ -63,6 +70,8 @@ import integrations.intuit.qbo.account.api.router as account_router
 import integrations.intuit.qbo.base.locking as locking
 import integrations.intuit.qbo.bill.api.router as bill_router
 import integrations.intuit.qbo.company_info.api.router as company_info_router
+import integrations.intuit.qbo.customer.api.router as customer_router
+import integrations.intuit.qbo.item.api.router as item_router
 import integrations.intuit.qbo.purchase.api.router as purchase_router
 import integrations.intuit.qbo.vendor.api.router as vendor_router
 import integrations.intuit.qbo.vendorcredit.api.router as vendorcredit_router
@@ -72,10 +81,9 @@ from qbo_sync_test_helpers import _patch_module_service, _patch_vendorcredit_ser
 
 
 # Each case: (entity_key, path, module, handler_fn_name, patch_service).
-# `customer` and `item` are DELIBERATELY excluded here — see the module
-# docstring: neither router is mounted in `app.py`, so there is no live path
-# for a TestClient POST to reach. Their decorator/DI wiring is still proven
-# by `test_u340_qbo_entity_sync_lock_fanout.py`'s direct-call cases.
+# `customer` and `item` were added by U-348, which `app.include_router`'d both
+# routers (see the module docstring) — they now have live HTTP paths and get the
+# same full-path DI-smoke + lock-deny coverage as their siblings.
 CASES = [
     ("account", "/api/v1/sync/qbo-accounts", account_router, "sync_qbo_accounts_router", _patch_module_service),
     ("bill", "/api/v1/sync/qbo-bills", bill_router, "sync_qbo_bills_router", _patch_module_service),
@@ -83,21 +91,31 @@ CASES = [
     ("vendor", "/api/v1/sync/qbo-vendors", vendor_router, "sync_qbo_vendors_router", _patch_module_service),
     ("company_info", "/api/v1/sync/qbo-company-info", company_info_router, "sync_qbo_company_info_router", _patch_module_service),
     ("vendorcredit", "/api/v1/sync/qbo-vendorcredits", vendorcredit_router, "sync_qbo_vendor_credits_router", _patch_vendorcredit_service),
+    ("customer", "/api/v1/sync/qbo-customers", customer_router, "sync_qbo_customers_router", _patch_module_service),
+    ("item", "/api/v1/sync/qbo-items", item_router, "sync_qbo_items_router", _patch_module_service),
 ]
 CASE_IDS = [c[0] for c in CASES]
 
 
-def test_customer_and_item_routers_are_not_mounted_in_app():
-    """Pins the finding in the module docstring: as of U-347, neither
-    router is wired into `app.py`. If this ever flips (someone adds
-    `app.include_router(...)` for one of them), this test goes RED as a
-    prompt to also add it to `CASES` above for full HTTP-path coverage —
-    not because mounting it would be wrong, just because it's a
-    consequential change (a genuinely new live endpoint) that deserves its
-    own review, not a silent side effect of some unrelated diff."""
+def test_customer_and_item_sync_routers_are_mounted_in_app():
+    """U-348 mounted both routers (they were unmounted through U-347 — see the
+    module docstring history). This pins the new state: the two sync POSTs must
+    stay reachable so a future accidental unmount goes RED. Both are `synced in
+    the same manner as their other entities` per the mount directive."""
     mounted_paths = {route.path for route in app.routes if hasattr(route, "path")}
-    assert "/api/v1/sync/qbo-customers" not in mounted_paths
-    assert "/api/v1/sync/qbo-items" not in mounted_paths
+    assert "/api/v1/sync/qbo-customers" in mounted_paths
+    assert "/api/v1/sync/qbo-items" in mounted_paths
+
+
+def test_customer_staging_get_routes_are_not_exposed():
+    """U-348 mounted `customer` sync-only: the 3 `/get/qbo-customers*` staging
+    reads were removed (mirroring U-307d's item treatment) because they read
+    `qbo.Customer` directly — a Wave-5 `trust-dbo` staging-removal drop target
+    with zero callers, which would 500 once the table drops. Guard against a
+    future re-add that would re-entrench a doomed staging dependency."""
+    mounted_paths = {route.path for route in app.routes if hasattr(route, "path")}
+    assert "/api/v1/get/qbo-customers" not in mounted_paths
+    assert "/api/v1/get/qbo-customer/{qbo_id}" not in mounted_paths
 
 
 @pytest.fixture

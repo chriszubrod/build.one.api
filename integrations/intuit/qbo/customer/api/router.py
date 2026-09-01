@@ -39,29 +39,9 @@ def sync_qbo_customers_router(body: QboCustomerSync, current_user: dict = Depend
         )
     return list_response([customer.to_dict() for customer in result.synced])
 
-
-@router.get("/get/qbo-customers")
-def get_qbo_customers_router(current_user: dict = Depends(require_module_api(Modules.QBO_SYNC))):
-    """
-    Read all QBO customers.
-    """
-    customers = service.read_all()
-    return list_response([customer.to_dict() for customer in customers])
-
-
-@router.get("/get/qbo-customers/realm/{realm_id}")
-def get_qbo_customers_by_realm_id_router(realm_id: str, current_user: dict = Depends(require_module_api(Modules.QBO_SYNC))):
-    """
-    Read all QBO customers by realm ID.
-    """
-    customers = service.read_by_realm_id(realm_id=realm_id)
-    return list_response([customer.to_dict() for customer in customers])
-
-
-@router.get("/get/qbo-customer/{qbo_id}")
-def get_qbo_customer_by_qbo_id_router(qbo_id: str, current_user: dict = Depends(require_module_api(Modules.QBO_SYNC))):
-    """
-    Read a QBO customer by QBO ID.
-    """
-    customer = service.read_by_qbo_id(qbo_id=qbo_id)
-    return customer.to_dict() if customer else None
+# U-348: the 3 admin GET routes (/get/qbo-customers, /get/qbo-customers/realm/{realm_id},
+# /get/qbo-customer/{qbo_id}) were removed when this router was mounted — they read
+# qbo.Customer directly (zero web/scheduler/api callers) and qbo.Customer is a Wave-5
+# "trust-dbo" staging-removal drop target, so they would 500 once the table drops.
+# Mirrors U-307d's identical treatment of the item router. POST /sync/qbo-customers
+# (the live pull) stays; it drives the dbo-native Customer/Project + QboId identity.

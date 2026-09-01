@@ -333,7 +333,6 @@ def _make_connector():
     from integrations.intuit.qbo.bill.connector.bill.business.service import BillBillConnector
 
     connector = BillBillConnector(
-        mapping_repo=MagicMock(),
         bill_service=MagicMock(),
         vendor_service=MagicMock(),
         reconciliation_repo=MagicMock(),

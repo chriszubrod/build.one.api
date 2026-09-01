@@ -46,7 +46,14 @@ def _stamp_via_sproc(
     return bool(row and row.Stolen)
 
 
-ENTITY_SPECS = {spec.key: spec for spec in HEADER_ENTITY_SPECS}
+# U-355: qbo.BillBill is retired, so "bill"'s mapping-table JOINs below would
+# raise "invalid object name" if run. The spec row itself stays in
+# HEADER_ENTITY_SPECS (reconciliation's own dbo-native reader still needs it —
+# see identity_drift.py's comment there); this backfill tool just excludes it
+# from its own working set — there is nothing left to backfill FROM for this
+# family. Mirrors backfill_qbo_identity_reference.py's identical "bill_credit"
+# exclusion (U-353).
+ENTITY_SPECS = {spec.key: spec for spec in HEADER_ENTITY_SPECS if spec.key != "bill"}
 
 
 def _count_sql(spec: FlatEntitySpec) -> str:

@@ -52,7 +52,30 @@ _SQL_COLUMN_WIDTH_RE = re.compile(
 # (record_identity_mapping_conflict, 10->9) and _record_missing_bill_credit_issue
 # (record_mapping_issue, 13->12) -- both call sites protected a mapping-table-vs-dbo
 # drift scenario that no longer exists once dbo.BillCredit.QboId is the sole store.
-_MIN_CALL_SITES = 27
+# U-354 (purchase/expense) removed TWO recorders -- PurchaseExpenseConnector's
+# _record_identity_mapping_conflict_issue (record_identity_mapping_conflict,
+# 9->8) and _record_missing_expense_issue (record_mapping_issue, 12->11) -- and
+# ADDED ONE, the new identity-stamp-rollback's _record_orphan_header_issue
+# (record_mapping_issue, 11->12) -- net 28->27 (Gate-2 fixup; the true count
+# was legitimately 27, not an accidental recorder drop -- see commit 2fd712af).
+# U-355 (this unit) retired qbo.BillBill for the identical shape:
+# BillBillConnector's own _record_identity_mapping_conflict_issue
+# (record_identity_mapping_conflict, 8->7) and _record_missing_bill_issue
+# (record_mapping_issue, 12->11) are removed -- both protected a mapping-
+# table-vs-dbo drift scenario that no longer exists once dbo.Bill.QboId is the
+# sole store -- and the identity-stamp-rollback's new _record_orphan_header_issue
+# (record_mapping_issue, drift_type "orphan_bill_header", 11->12) is added.
+# outbox/business/worker.py's _record_bill_identity_conflict is UNCHANGED
+# (still 1 record_mapping_issue call; only its internal mechanics were
+# repointed onto verify_identity_dbo_only). Net so far: 27->26. The Claude
+# Pass-1 hunt then found `sync_to_qbo_bill`'s two new hard-refusal raises
+# (the already-pushed short-circuit's "identity no longer verifies" and
+# "verified but no local qbo.Bill staging row" branches) were the only
+# identity-anomaly paths in this unit NOT recording a ReconciliationIssue,
+# unlike every sibling anomaly path this same unit touches -- fixed by adding
+# 2 more record_mapping_issue calls (drift_type "bill_identity_conflict" and
+# the new "bill_staging_row_missing"). Net: 26->28.
+_MIN_CALL_SITES = 28
 _SKIP_FILES = frozenset({"reconciliation_recorder.py"})
 _DEFAULT_KWARGS = {
     "severity": "critical",

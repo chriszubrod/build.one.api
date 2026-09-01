@@ -89,25 +89,6 @@ def stub_qbo_identity_fastpath_miss(entity_service_mock) -> None:
     entity_service_mock.read_by_qbo_identity.return_value = None
 
 
-def stub_identity_check_trusts(mapping_repo_mock) -> None:
-    """Stub a family's `read_identity_check` (U-306, base/identity_consistency.py)
-    to the ordinary not-fully-migrated-yet state — no mapping row of its own, and
-    the mapping table doesn't bind this QboId to any OTHER local row either — so
-    `verify_*_qbo_identity` trusts the dbo-stamped QboId. Import this instead of
-    hand-rolling another `IdentityCheckResult(None, None, None)` literal.
-
-    A bare Mock() auto-returns a truthy Mock for `.read_identity_check(...)`,
-    whose `.mapping_id` is itself a truthy Mock — which would otherwise divert
-    the engine into its "mapping exists" branch instead of the no-mapping
-    branch most callers of this helper actually want to exercise.
-    """
-    from integrations.intuit.qbo.base.identity_consistency import IdentityCheckResult
-
-    mapping_repo_mock.read_identity_check.return_value = IdentityCheckResult(
-        mapping_id=None, forward_external_qbo_id=None, reverse_mapped_local_id=None
-    )
-
-
 def pytest_configure(config):
     """Fail fast with guidance if the interpreter is missing project deps.
 

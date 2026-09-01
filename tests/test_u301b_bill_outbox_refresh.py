@@ -1,18 +1,18 @@
-"""U-301b: outbox worker's Bill refresh-on-SyncToken-mismatch, repointed onto
-dbo.Bill's own native QboId (U-238a) via the shared verify_bill_qbo_identity
-wrapper, with a fast path / legacy fallback / hard-refuse-on-conflict split.
+"""U-301b/U-355: outbox worker's Bill refresh-on-SyncToken-mismatch.
 
-No prior test coverage existed for _refresh_bill at all (grepped tests/ for
-QboOutboxWorker/_refresh_from_qbo before writing this file) despite this path
-being live-exercised (918 "done" sync_bill_to_qbo outbox rows in prod as of
-this unit) -- these tests close that gap for the branches this unit's
-repoint introduces/changes.
+Originally repointed (U-301b) onto dbo.Bill's own native QboId (U-238a) via a
+fast path / legacy qbo.BillBill fallback / hard-refuse-on-conflict split. U-355
+retired qbo.BillBill entirely, so `_refresh_bill` is now dbo-only:
+`verify_identity_dbo_only` (base/identity_consistency.py) replaces the retired
+`verify_bill_qbo_identity` wrapper, and there is no legacy two-hop left to fall
+back to. These tests were rewritten for the dbo-only shape; the original file
+(918 "done" sync_bill_to_qbo outbox rows in prod as of U-301b) still applies —
+no prior coverage existed for _refresh_bill before that unit.
 """
 from types import SimpleNamespace
 
 import pytest
 
-from integrations.intuit.qbo.base.identity_consistency import IdentityCheckResult
 from integrations.intuit.qbo.outbox.business.worker import QboOutboxWorker
 
 
@@ -25,44 +25,20 @@ class _FakeIssueRepo:
 
 
 class _FakeBillService:
-    def __init__(self, bill):
+    """`read_by_public_id` returns the fixture bill; `read_by_qbo_identity`
+    reproduces verify_identity_dbo_only's own direct-read contract: return a
+    row whose `.id` either matches (verify succeeds), differs (a reassigned/
+    stolen identity), or is None (the identity resolves to nothing anymore)."""
+
+    def __init__(self, bill, *, fresh_by_identity=None):
         self._bill = bill
+        self._fresh_by_identity = fresh_by_identity
 
     def read_by_public_id(self, public_id):
         return self._bill
 
-
-class _FakeBillBillRepo:
-    def __init__(self, *, mapping=None, qbo_bill_by_id=None):
-        self._mapping = mapping
-        self._qbo_bill_by_id = qbo_bill_by_id or {}
-
-    def read_by_bill_id(self, bill_id):
-        return self._mapping
-
-    def read_identity_check(self, *, local_id, qbo_id):
-        """U-306's single JOIN'd read, reproduced here from this fake's own
-        `_mapping` + `_qbo_bill_by_id` state — mirrors what the real sproc's
-        forward JOIN would compute. No reverse-direction fixture exists in
-        this file's cases (H1 is covered at the engine level in
-        tests/test_u306_identity_verify_engine.py), so that arm is always
-        None here."""
-        if self._mapping is None:
-            return IdentityCheckResult(mapping_id=None, forward_external_qbo_id=None, reverse_mapped_local_id=None)
-        external = self._qbo_bill_by_id.get(self._mapping.qbo_bill_id)
-        return IdentityCheckResult(
-            mapping_id=self._mapping.id,
-            forward_external_qbo_id=(external.qbo_id if external else None),
-            reverse_mapped_local_id=None,
-        )
-
-
-class _FakeQboBillRepo:
-    def __init__(self, *, by_id=None):
-        self._by_id = by_id or {}
-
-    def read_by_id(self, id_):
-        return self._by_id.get(id_)
+    def read_by_qbo_identity(self, qbo_id, realm_id):
+        return self._fresh_by_identity
 
 
 class _FakeQboBillClient:
@@ -102,21 +78,13 @@ def _patch_bill_refresh_stack(
     monkeypatch,
     *,
     bill,
-    bill_bill_mapping=None,
-    qbo_bill_by_id=None,
+    fresh_by_identity=None,
     client=None,
     issue_repo=None,
 ):
     monkeypatch.setattr(
-        "entities.bill.business.service.BillService", lambda: _FakeBillService(bill)
-    )
-    monkeypatch.setattr(
-        "integrations.intuit.qbo.bill.connector.bill.persistence.repo.BillBillRepository",
-        lambda: _FakeBillBillRepo(mapping=bill_bill_mapping, qbo_bill_by_id=qbo_bill_by_id or {}),
-    )
-    monkeypatch.setattr(
-        "integrations.intuit.qbo.bill.persistence.repo.QboBillRepository",
-        lambda: _FakeQboBillRepo(by_id=qbo_bill_by_id or {}),
+        "entities.bill.business.service.BillService",
+        lambda: _FakeBillService(bill, fresh_by_identity=fresh_by_identity),
     )
     fake_client = client or _FakeQboBillClient()
     monkeypatch.setattr(
@@ -147,92 +115,12 @@ def _row(*, entity_public_id="bill-pid-1", realm_id="realm-1", public_id="outbox
     )
 
 
-def _conflicting_bill_fixture():
-    """bill.qbo_id set AND a BillBill mapping exists whose resolved external
-    QboId genuinely DISAGREES -- shared by both hard-refuse tests below."""
-    bill = SimpleNamespace(id=42, qbo_id="QBO-42-DBO")
-    mapping = SimpleNamespace(id=7, bill_id=42, qbo_bill_id=501)
-    qbo_bill_by_id = {501: SimpleNamespace(id=501, qbo_id="QBO-42-STOLEN")}
-    return bill, mapping, qbo_bill_by_id
-
-
-@pytest.mark.parametrize(
-    "label,bill_bill_mapping,qbo_bill_by_id",
-    [
-        (
-            "unmapped: no BillBill mapping row yet -- verify trusts bill.qbo_id "
-            "(nothing to disagree with)",
-            None,
-            {},
-        ),
-        (
-            "mapping_agrees: BillBill mapping exists and its resolved external "
-            "QboId matches -- verify confirms trust",
-            SimpleNamespace(id=7, bill_id=42, qbo_bill_id=501),
-            {501: SimpleNamespace(id=501, qbo_id="QBO-42")},
-        ),
-        (
-            "mapping_dangling: BillBill mapping exists but its QboBillId no "
-            "longer resolves to anything (orphaned mapping surviving a partial "
-            "pull) -- _verify_dbo_qbo_identity's shared engine (inherited, not "
-            "introduced by this diff -- the same KNOWN RESIDUAL the 3 sibling "
-            "wrappers document) falls through to trusting bill.qbo_id here too, "
-            "identically to the no-mapping case, NOT a hard-refuse (only a "
-            "resolved-and-disagreeing external id triggers that)",
-            SimpleNamespace(id=7, bill_id=42, qbo_bill_id=501),
-            {},
-        ),
-    ],
-    ids=["unmapped", "mapping_agrees", "mapping_dangling"],
-)
-def test_refresh_bill_fast_path_trusts_dbo_native_identity(
-    monkeypatch, label, bill_bill_mapping, qbo_bill_by_id
-):
-    bill = SimpleNamespace(id=42, qbo_id="QBO-42")
+def test_refresh_bill_proceeds_when_dbo_identity_verifies(monkeypatch):
+    """bill.qbo_id set AND a fresh dbo-only re-read resolves back to this same
+    Bill -- verify_identity_dbo_only trusts it, no mapping table involved."""
+    bill = SimpleNamespace(id=42, qbo_id="QBO-42", realm_id="realm-1")
     client, qbo_bill_service, connector, issue_repo = _patch_bill_refresh_stack(
-        monkeypatch, bill=bill, bill_bill_mapping=bill_bill_mapping, qbo_bill_by_id=qbo_bill_by_id
-    )
-
-    worker = QboOutboxWorker(repo=SimpleNamespace())
-    worker._refresh_bill(_row())
-
-    assert client.get_bill_calls == ["QBO-42"], label
-    assert len(connector.calls) == 1, label
-    assert issue_repo.created == [], label
-
-
-def test_refresh_bill_falls_through_to_legacy_lookup_when_no_dbo_qbo_id(monkeypatch):
-    """bill.qbo_id is None (not yet migrated) -- falls through to the legacy
-    qbo.BillBill -> qbo.Bill two-hop, unchanged from pre-U-301b behavior."""
-    bill = SimpleNamespace(id=42, qbo_id=None)
-    mapping = SimpleNamespace(id=7, bill_id=42, qbo_bill_id=501)
-    qbo_bill_by_id = {501: SimpleNamespace(id=501, qbo_id="QBO-LEGACY-42")}
-    client, qbo_bill_service, connector, issue_repo = _patch_bill_refresh_stack(
-        monkeypatch, bill=bill, bill_bill_mapping=mapping, qbo_bill_by_id=qbo_bill_by_id
-    )
-
-    worker = QboOutboxWorker(repo=SimpleNamespace())
-    worker._refresh_bill(_row())
-
-    assert client.get_bill_calls == ["QBO-LEGACY-42"]
-    assert len(connector.calls) == 1
-    assert issue_repo.created == []
-
-
-def test_refresh_bill_fast_path_trusts_dbo_native_identity_when_mapping_dangling(monkeypatch):
-    """_verify_dbo_qbo_identity's shared engine (inherited, not introduced by
-    this diff — the same KNOWN RESIDUAL the 3 sibling wrappers document) has a
-    third branch beyond "no mapping" / "mapping disagrees": a BillBill mapping
-    row exists but its QboBillId no longer resolves to anything (or resolves
-    to a row with a falsy qbo_id) -- e.g. an orphaned mapping surviving a
-    partial pull. This falls through to trusting bill.qbo_id, identically to
-    the no-mapping-at-all case, NOT a hard-refuse (only a resolved-and-
-    disagreeing external id triggers that)."""
-    bill = SimpleNamespace(id=42, qbo_id="QBO-42")
-    mapping = SimpleNamespace(id=7, bill_id=42, qbo_bill_id=501)
-    # qbo_bill_by_id has no entry for 501 -- read_by_id returns None (dangling FK).
-    client, qbo_bill_service, connector, issue_repo = _patch_bill_refresh_stack(
-        monkeypatch, bill=bill, bill_bill_mapping=mapping, qbo_bill_by_id={}
+        monkeypatch, bill=bill, fresh_by_identity=SimpleNamespace(id=42),
     )
 
     worker = QboOutboxWorker(repo=SimpleNamespace())
@@ -243,11 +131,12 @@ def test_refresh_bill_fast_path_trusts_dbo_native_identity_when_mapping_dangling
     assert issue_repo.created == []
 
 
-def test_refresh_bill_no_mapping_and_no_dbo_qbo_id_is_a_noop(monkeypatch):
-    """Preserves pre-U-301b behavior: nothing to refresh from, silently returns."""
-    bill = SimpleNamespace(id=42, qbo_id=None)
+def test_refresh_bill_no_qbo_id_is_a_noop(monkeypatch):
+    """bill.qbo_id is None (never pushed) -- nothing to refresh from, silently
+    returns. No legacy mapping-table hop left to fall back to (U-355)."""
+    bill = SimpleNamespace(id=42, qbo_id=None, realm_id="realm-1")
     client, qbo_bill_service, connector, issue_repo = _patch_bill_refresh_stack(
-        monkeypatch, bill=bill, bill_bill_mapping=None
+        monkeypatch, bill=bill,
     )
 
     worker = QboOutboxWorker(repo=SimpleNamespace())
@@ -258,17 +147,40 @@ def test_refresh_bill_no_mapping_and_no_dbo_qbo_id_is_a_noop(monkeypatch):
     assert issue_repo.created == []
 
 
-def test_refresh_bill_hard_refuses_on_genuine_identity_conflict(monkeypatch):
-    """bill.qbo_id set AND a BillBill mapping exists whose resolved external
-    QboId DISAGREES -- U-301b's Chris-approved design: refuse to refresh
-    (never call client.get_bill with disputed identity), record a
-    bill_identity_conflict ReconciliationIssue AND raise (never a silent
-    return -- silently returning here would let BillBillConnector.sync_to_qbo_bill's
-    existing-mapping short-circuit complete the retried push as a no-op
-    "done" with the conflict surfaced nowhere but the ReconciliationIssue)."""
-    bill, mapping, qbo_bill_by_id = _conflicting_bill_fixture()
+def test_refresh_bill_returns_early_when_bill_not_found(monkeypatch):
     client, qbo_bill_service, connector, issue_repo = _patch_bill_refresh_stack(
-        monkeypatch, bill=bill, bill_bill_mapping=mapping, qbo_bill_by_id=qbo_bill_by_id
+        monkeypatch, bill=None,
+    )
+
+    worker = QboOutboxWorker(repo=SimpleNamespace())
+    worker._refresh_bill(_row())
+
+    assert client.get_bill_calls == []
+    assert connector.calls == []
+    assert issue_repo.created == []
+
+
+@pytest.mark.parametrize(
+    "label,fresh_by_identity",
+    [
+        ("reassigned: fresh read resolves to a DIFFERENT Bill id", SimpleNamespace(id=99)),
+        ("vanished: fresh read finds no row at all", None),
+    ],
+    ids=["reassigned", "vanished"],
+)
+def test_refresh_bill_hard_refuses_on_genuine_identity_conflict(
+    monkeypatch, label, fresh_by_identity
+):
+    """bill.qbo_id set but a fresh dbo-only re-read no longer resolves back to
+    this same Bill -- U-355's hard-refuse: never call client.get_bill with
+    disputed identity, record a bill_identity_conflict ReconciliationIssue AND
+    raise (never a silent return -- silently returning here would let
+    BillBillConnector.sync_to_qbo_bill's already-pushed short-circuit complete
+    the retried push as a no-op "done" with the conflict surfaced nowhere but
+    the ReconciliationIssue)."""
+    bill = SimpleNamespace(id=42, qbo_id="QBO-42-DBO", realm_id="realm-1")
+    client, qbo_bill_service, connector, issue_repo = _patch_bill_refresh_stack(
+        monkeypatch, bill=bill, fresh_by_identity=fresh_by_identity,
     )
 
     worker = QboOutboxWorker(repo=SimpleNamespace())
@@ -276,28 +188,28 @@ def test_refresh_bill_hard_refuses_on_genuine_identity_conflict(monkeypatch):
         worker._refresh_bill(_row(entity_public_id="bill-pid-conflict"))
 
     # Never touches QBO or the local cache with disputed identity.
-    assert client.get_bill_calls == []
-    assert qbo_bill_service.calls == []
-    assert connector.calls == []
+    assert client.get_bill_calls == [], label
+    assert qbo_bill_service.calls == [], label
+    assert connector.calls == [], label
 
-    assert len(issue_repo.created) == 1
+    assert len(issue_repo.created) == 1, label
     issue = issue_repo.created[0]
     assert issue["drift_type"] == "bill_identity_conflict"
     assert issue["entity_type"] == "Bill"
     assert issue["entity_public_id"] == "bill-pid-conflict"
     assert issue["qbo_id"] == "QBO-42-DBO"
-    assert "QBO-42-STOLEN" in issue["details"]
 
 
 def test_refresh_bill_conflict_raise_dead_letters_immediately_via_process_inner(monkeypatch):
-    """Closes the gap an adversarial review found: _refresh_bill in isolation
-    proves the hard-refuse fires, but only driving it through _process_inner
-    (the real caller, via a QboSyncTokenMismatchError from the dispatch-table
-    handler) proves the OUTBOX ROW actually ends up dead-lettered rather than
-    silently marked done. is_retryable_error walks __cause__/__context__, so this
-    also pins that _record_bill_identity_conflict's catch-and-reraise (which
-    manually clears the conflict ValueError's __context__ before a bare `raise`)
-    is load-bearing: without it, the original QboSyncTokenMismatchError's
+    """Closes the gap an adversarial review found (U-301b): _refresh_bill in
+    isolation proves the hard-refuse fires, but only driving it through
+    _process_inner (the real caller, via a QboSyncTokenMismatchError from the
+    dispatch-table handler) proves the OUTBOX ROW actually ends up
+    dead-lettered rather than silently marked done. is_retryable_error walks
+    __cause__/__context__, so this also pins that
+    _record_bill_identity_conflict's catch-and-reraise (which manually clears
+    the conflict ValueError's __context__ before a bare `raise`) is
+    load-bearing: without it, the original QboSyncTokenMismatchError's
     is_retryable=True would leak through __context__ and misclassify this
     ValueError as retryable -- `raise ... from None` alone does NOT clear
     __context__'s value (only __cause__ and the display-only
@@ -306,9 +218,9 @@ def test_refresh_bill_conflict_raise_dead_letters_immediately_via_process_inner(
     from integrations.intuit.qbo.outbox.business.model import QboOutbox
     from integrations.intuit.qbo.base.errors import QboSyncTokenMismatchError
 
-    bill, mapping, qbo_bill_by_id = _conflicting_bill_fixture()
+    bill = SimpleNamespace(id=42, qbo_id="QBO-42-DBO", realm_id="realm-1")
     client, qbo_bill_service, connector, issue_repo = _patch_bill_refresh_stack(
-        monkeypatch, bill=bill, bill_bill_mapping=mapping, qbo_bill_by_id=qbo_bill_by_id
+        monkeypatch, bill=bill, fresh_by_identity=SimpleNamespace(id=99),
     )
 
     # First handler(row) call raises the mismatch; the retried call (which
@@ -357,16 +269,3 @@ def test_refresh_bill_conflict_raise_dead_letters_immediately_via_process_inner(
     assert call_count["n"] == 1, "handler(row) must not be retried after a hard-refuse"
     assert dead_lettered.get("id") == 1
     assert len(issue_repo.created) == 1
-
-
-def test_refresh_bill_returns_early_when_bill_not_found(monkeypatch):
-    client, qbo_bill_service, connector, issue_repo = _patch_bill_refresh_stack(
-        monkeypatch, bill=None
-    )
-
-    worker = QboOutboxWorker(repo=SimpleNamespace())
-    worker._refresh_bill(_row())
-
-    assert client.get_bill_calls == []
-    assert connector.calls == []
-    assert issue_repo.created == []

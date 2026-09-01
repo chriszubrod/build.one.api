@@ -2,12 +2,15 @@
 and InvoiceInvoiceConnector's project-resolver heal-by-name fallback (U-311).
 See each connector's own dedicated repoint suite (test_u276/u278/u283/u283b)
 for the dbo-only fast-path/verify coverage this file used to duplicate."""
+import sys
 from decimal import Decimal
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 import pytest
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 from integrations.intuit.qbo.customer.connector.project.business.service import CustomerProjectConnector
 from integrations.intuit.qbo.invoice.connector.invoice.business.service import InvoiceInvoiceConnector
 from conftest import stub_qbo_identity_fastpath_miss

@@ -180,13 +180,16 @@ def test_recover_duplicate_qbo_bill_records_issue_and_reraises_typed_error():
     connector.vendor_service = MagicMock()
     connector.vendor_service.read_by_id.return_value = vendor
     connector.reconciliation_repo = MagicMock()
-    connector.create_mapping = MagicMock()
     connector.qbo_bill_repo = MagicMock()
 
     dup_error = QboDuplicateError("Duplicate DocNumber", code="6140", http_status=400)
 
+    # U-355: record_mapping_issue is now imported at module scope in the
+    # connector file (not re-imported inside the function body each call), so
+    # the patch target is where it's LOOKED UP (the connector's own module
+    # namespace), not where it's originally defined.
     with patch(
-        "integrations.intuit.qbo.base.reconciliation_recorder.record_mapping_issue"
+        "integrations.intuit.qbo.bill.connector.bill.business.service.record_mapping_issue"
     ) as record_issue:
         with pytest.raises(QboDuplicateError) as exc_info:
             connector._recover_duplicate_qbo_bill(
@@ -204,7 +207,6 @@ def test_recover_duplicate_qbo_bill_records_issue_and_reraises_typed_error():
     assert len(kwargs["drift_type"]) <= 32
     assert "Acme Supply" in kwargs["details"]
     assert "DOC-7" in kwargs["details"]
-    connector.create_mapping.assert_not_called()
     connector.qbo_bill_repo.create.assert_not_called()
 
 
@@ -215,6 +217,7 @@ def test_sync_to_qbo_bill_duplicate_records_issue_and_propagates_typed_error():
     connector = BillBillConnector.__new__(BillBillConnector)
     bill = MagicMock()
     bill.id = 7
+    bill.qbo_id = None  # U-355: falsy -> skip the already-pushed short-circuit
     bill.public_id = "33333333-3333-3333-3333-333333333333"
     bill.bill_number = "DOC-7"
     bill.bill_date = "2026-01-15"
@@ -232,8 +235,7 @@ def test_sync_to_qbo_bill_duplicate_records_issue_and_propagates_typed_error():
     line_item.is_billable = True
     line_item.is_billed = False
 
-    connector.mapping_repo = MagicMock()
-    connector.mapping_repo.read_by_bill_id.return_value = None
+    connector.bill_service = MagicMock()
     connector.bill_line_item_service = MagicMock()
     connector.bill_line_item_service.read_by_bill_id.return_value = [line_item]
     connector.vendor_service = MagicMock()
@@ -252,7 +254,7 @@ def test_sync_to_qbo_bill_duplicate_records_issue_and_propagates_typed_error():
     ), patch.object(connector, "_get_qbo_sales_term_ref", return_value=None), patch(
         "integrations.intuit.qbo.bill.connector.bill.business.service.QboBillClient"
     ) as client_cls, patch(
-        "integrations.intuit.qbo.base.reconciliation_recorder.record_mapping_issue"
+        "integrations.intuit.qbo.bill.connector.bill.business.service.record_mapping_issue"
     ) as record_issue:
         client_cls.return_value.__enter__.return_value.create_bill.side_effect = dup_error
 

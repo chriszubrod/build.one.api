@@ -5,14 +5,14 @@ DB is the middle layer — all sync flows through DB.
 
 Four directions:
 
-  1. DB -> QBO   Bills missing a BillBill QBO mapping are reported (not pushed — use
-                 bill completion or POST /sync/bill-to-qbo to enqueue via the outbox).
-                 BillLineItems missing BillLineItemBillLine mappings are repaired by
-                 matching to QboBillLines by description + amount.
+  1. DB -> QBO   Bills with no QBO identity stamped (dbo.Bill.QboId, U-355) are reported
+                 (not pushed — use bill completion or POST /sync/bill-to-qbo to enqueue
+                 via the outbox). BillLineItems missing BillLineItemBillLine mappings are
+                 repaired by matching to QboBillLines by description + amount.
 
   2. QBO -> DB   Local qbo.Bill / qbo.Purchase records whose lines reference the project
-                 but have no matching dbo.Bill / dbo.Expense (BillBill mapping, or
-                 U-354 dbo-native QBO identity for Expense) are pulled via
+                 but have no matching dbo.Bill / dbo.Expense (U-355 dbo-native QBO identity
+                 for Bill, U-354 dbo-native QBO identity for Expense) are pulled via
                  sync_from_qbo_bill() / sync_from_qbo_purchase().
                  (Run scripts/sync_qbo_bill.py first to refresh local qbo tables from QBO API.)
 
@@ -54,7 +54,6 @@ from entities.vendor.persistence.repo import VendorRepository
 from integrations.intuit.qbo.auth.business.service import QboAuthService
 from scripts.sync_helper import assert_cli_system_admin
 from integrations.intuit.qbo.bill.connector.bill.business.service import BillBillConnector
-from integrations.intuit.qbo.bill.connector.bill.persistence.repo import BillBillRepository
 from integrations.intuit.qbo.bill.connector.bill_line_item.persistence.repo import BillLineItemBillLineRepository
 from integrations.intuit.qbo.bill.persistence.repo import QboBillRepository, QboBillLineRepository
 # For post-mapping SubCostCode back-fill (a direct mapping-create otherwise bypasses the
@@ -313,7 +312,7 @@ def report_db_to_qbo_bills(
     bills_by_id: Dict,
     mapped_bill_ids: Set[int],
 ) -> int:
-    """Report bills with no BillBill mapping (diagnostic only — does not write to QBO)."""
+    """Report bills with no QBO identity stamped (diagnostic only — does not write to QBO)."""
     reported_count = 0
 
     for bill_id, bill in bills_by_id.items():
@@ -321,7 +320,7 @@ def report_db_to_qbo_bills(
             continue  # Already mapped
 
         print(
-            f"  [DB->QBO] Bill #{bill.bill_number} (id={bill_id}) — missing BillBill mapping "
+            f"  [DB->QBO] Bill #{bill.bill_number} (id={bill_id}) — no QBO identity stamped "
             f"(report only). If this bill's push DEAD-LETTERED, replay it with "
             f"scripts/retry_qbo_outbox_dead_letters.py, which PRESERVES the original "
             f"RequestId. Do NOT use POST /sync/bill-to-qbo for it: enqueue() mints a "
@@ -336,18 +335,18 @@ def report_db_to_qbo_bills(
 def repair_qbo_line_item_mappings(
     bills_by_id: Dict,
     line_items_by_bill_id: Dict,
-    bill_bill_repo: BillBillRepository,
+    qbo_bill_repo: QboBillRepository,
     bill_line_item_bill_line_repo: BillLineItemBillLineRepository,
     qbo_bill_line_repo: QboBillLineRepository,
     dry_run: bool,
     realm_id: Optional[str] = None,
 ) -> Tuple[List[str], int]:
     """
-    For each bill that exists in QBO (has a BillBill mapping) but whose line items
-    are missing BillLineItemBillLine records, match each BillLineItem to its
+    For each bill that exists in QBO (dbo.Bill.QboId stamped, U-355) but whose line
+    items are missing BillLineItemBillLine records, match each BillLineItem to its
     QboBillLine by description + amount and create the missing mapping.
 
-    Bills with no BillBill mapping at all are skipped (handled by report_db_to_qbo_bills).
+    Bills with no QBO identity at all are skipped (handled by report_db_to_qbo_bills).
 
     Returns (issues, repairs_count).
     """
@@ -356,8 +355,11 @@ def repair_qbo_line_item_mappings(
     _bli_repo = BillLineItemRepository()
 
     for bill_id, bill in bills_by_id.items():
-        bill_bill = bill_bill_repo.read_by_bill_id(bill_id)
-        if not bill_bill:
+        if not bill.qbo_id:
+            continue
+
+        local_qbo_bill = qbo_bill_repo.read_by_qbo_id_and_realm_id(bill.qbo_id, realm_id)
+        if not local_qbo_bill:
             continue
 
         unlinked = [
@@ -367,11 +369,11 @@ def repair_qbo_line_item_mappings(
         if not unlinked:
             continue
 
-        qbo_lines = qbo_bill_line_repo.read_by_qbo_bill_id(bill_bill.qbo_bill_id)
+        qbo_lines = qbo_bill_line_repo.read_by_qbo_bill_id(local_qbo_bill.id)
         if not qbo_lines:
             issues.append(
                 f"  [QBO repair] Bill #{bill.bill_number}: no QboBillLines found "
-                f"for qbo_bill_id={bill_bill.qbo_bill_id} — cannot repair"
+                f"for qbo_bill_id={local_qbo_bill.id} — cannot repair"
             )
             continue
 
@@ -459,7 +461,7 @@ def repair_qbo_line_item_mappings(
 def sync_qbo_to_db_bills(
     qbo_customer_ref: str,
     realm_id: str,
-    bill_bill_repo: BillBillRepository,
+    bill_service: BillService,
     qbo_bill_repo: QboBillRepository,
     qbo_bill_line_repo: QboBillLineRepository,
     connector: BillBillConnector,
@@ -467,7 +469,9 @@ def sync_qbo_to_db_bills(
 ) -> Tuple[List[str], int]:
     """
     Check local qbo.Bill records whose lines reference this project but have
-    no BillBill mapping, and pull them into DB via sync_from_qbo_bill().
+    no matching dbo.Bill (U-355: dbo.Bill.QboId is the sole identity store —
+    no more qbo.BillBill mapping to check), and pull them into DB via
+    sync_from_qbo_bill().
 
     Note: Run scripts/sync_qbo_bill.py first to refresh local qbo tables from QBO API.
     """
@@ -496,7 +500,7 @@ def sync_qbo_to_db_bills(
         if not qbo_bill:
             continue
 
-        if bill_bill_repo.read_by_qbo_bill_id(qbo_bill.id):
+        if bill_service.read_by_qbo_identity(qbo_bill.qbo_id, realm_id):
             continue  # Already mapped to a DB bill
 
         lines = qbo_bill_line_repo.read_by_qbo_bill_id(qbo_bill.id)
@@ -943,7 +947,6 @@ def process_project(
     bill_line_item_repo: BillLineItemRepository,
     expense_repo: ExpenseRepository,
     expense_line_item_repo: ExpenseLineItemRepository,
-    bill_bill_repo: BillBillRepository,
     bill_line_item_bill_line_repo: BillLineItemBillLineRepository,
     qbo_bill_repo: QboBillRepository,
     qbo_bill_line_repo: QboBillLineRepository,
@@ -1044,7 +1047,9 @@ def process_project(
     if not bills_by_id:
         print("  No completed bills — skipping DB->QBO check.")
     else:
-        mapped_bill_ids = bill_bill_repo.read_all_bill_ids()
+        # U-355: dbo.Bill.QboId is the sole identity store now — derive directly
+        # from the already-loaded Bill rows, no qbo.BillBill mapping table to read.
+        mapped_bill_ids = {bid for bid, b in bills_by_id.items() if b.qbo_id}
         qbo_issues = check_db_to_qbo(
             bills_by_id, line_items_by_bill_id,
             mapped_bill_ids, bill_line_item_bill_line_repo,
@@ -1066,7 +1071,7 @@ def process_project(
         repair_issues, repairs_count = repair_qbo_line_item_mappings(
             bills_by_id=bills_by_id,
             line_items_by_bill_id=line_items_by_bill_id,
-            bill_bill_repo=bill_bill_repo,
+            qbo_bill_repo=qbo_bill_repo,
             bill_line_item_bill_line_repo=bill_line_item_bill_line_repo,
             qbo_bill_line_repo=qbo_bill_line_repo,
             dry_run=dry_run,
@@ -1086,7 +1091,7 @@ def process_project(
         bill_sync_issues, bill_synced = sync_qbo_to_db_bills(
             qbo_customer_ref=qbo_customer_ref,
             realm_id=realm_id,
-            bill_bill_repo=bill_bill_repo,
+            bill_service=bill_service,
             qbo_bill_repo=qbo_bill_repo,
             qbo_bill_line_repo=qbo_bill_line_repo,
             connector=bill_bill_connector,
@@ -1204,7 +1209,6 @@ def main():
     bill_line_item_repo = BillLineItemRepository()
     expense_repo = ExpenseRepository()
     expense_line_item_repo = ExpenseLineItemRepository()
-    bill_bill_repo = BillBillRepository()
     bill_line_item_bill_line_repo = BillLineItemBillLineRepository()
     qbo_bill_repo = QboBillRepository()
     qbo_bill_line_repo = QboBillLineRepository()
@@ -1272,7 +1276,6 @@ def main():
             bill_line_item_repo=bill_line_item_repo,
             expense_repo=expense_repo,
             expense_line_item_repo=expense_line_item_repo,
-            bill_bill_repo=bill_bill_repo,
             bill_line_item_bill_line_repo=bill_line_item_bill_line_repo,
             qbo_bill_repo=qbo_bill_repo,
             qbo_bill_line_repo=qbo_bill_line_repo,

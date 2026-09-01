@@ -1375,7 +1375,7 @@ def test_bill_get_qbo_customer_ref_reads_project_directly():
     from integrations.intuit.qbo.bill.external.schemas import QboReferenceType
 
     connector = BillBillConnector(
-        mapping_repo=Mock(), bill_service=Mock(), vendor_service=Mock(),
+        bill_service=Mock(), vendor_service=Mock(),
         vendor_vendor_repo=Mock(), qbo_vendor_repo=Mock(), qbo_bill_repo=Mock(),
         qbo_bill_line_repo=Mock(), bill_line_item_service=Mock(),
         customer_project_repo=Mock(), qbo_customer_repo=Mock(),
@@ -1396,7 +1396,7 @@ def test_bill_get_qbo_customer_ref_none_when_project_never_synced():
     from integrations.intuit.qbo.bill.connector.bill.business.service import BillBillConnector
 
     connector = BillBillConnector(
-        mapping_repo=Mock(), bill_service=Mock(), vendor_service=Mock(),
+        bill_service=Mock(), vendor_service=Mock(),
         vendor_vendor_repo=Mock(), qbo_vendor_repo=Mock(), qbo_bill_repo=Mock(),
         qbo_bill_line_repo=Mock(), bill_line_item_service=Mock(),
         customer_project_repo=Mock(), qbo_customer_repo=Mock(),
@@ -1416,7 +1416,7 @@ def test_bill_get_qbo_customer_ref_none_when_verification_fails():
     from integrations.intuit.qbo.bill.connector.bill.business.service import BillBillConnector
 
     connector = BillBillConnector(
-        mapping_repo=Mock(), bill_service=Mock(), vendor_service=Mock(),
+        bill_service=Mock(), vendor_service=Mock(),
         vendor_vendor_repo=Mock(), qbo_vendor_repo=Mock(), qbo_bill_repo=Mock(),
         qbo_bill_line_repo=Mock(), bill_line_item_service=Mock(),
         customer_project_repo=Mock(), qbo_customer_repo=Mock(),

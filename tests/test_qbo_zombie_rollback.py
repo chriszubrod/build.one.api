@@ -8,7 +8,6 @@ from unittest.mock import Mock, patch
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from conftest import stub_qbo_identity_fastpath_miss
 from integrations.intuit.qbo.base.compensation import rollback_orphan_header
 from integrations.intuit.qbo.bill.connector.bill.business.service import BillBillConnector
 from integrations.intuit.qbo.vendorcredit.connector.bill_credit.business.service import (
@@ -38,10 +37,8 @@ def _make_qbo_bill_line(*, line_id=1, amount=Decimal("100.00")):
 
 
 def _build_connector(**overrides):
-    mapping_repo = Mock()
     bill_service = Mock()
     connector = BillBillConnector(
-        mapping_repo=mapping_repo,
         bill_service=bill_service,
         vendor_service=Mock(),
         vendor_vendor_repo=Mock(),
@@ -58,8 +55,11 @@ def _build_connector(**overrides):
     for key, value in overrides.items():
         setattr(connector, key, value)
     connector._get_vendor_public_id = Mock(return_value="vendor-pub-id")
-    # U-283: these tests exercise the legacy create/rollback path.
-    stub_qbo_identity_fastpath_miss(connector.bill_service)
+    # U-355: dbo-only identity — read_by_qbo_identity's return value alone decides
+    # CREATE (None -> genuine miss) vs UPDATE (truthy -> direct hit). Set on whichever
+    # bill_service ended up assigned (default or override) so an overridden Mock
+    # doesn't skip this.
+    connector.bill_service.read_by_qbo_identity.return_value = None
     return connector
 
 
@@ -149,21 +149,16 @@ def test_rollback_orphan_header_header_delete_fail_preserves_original_exception(
     callback.assert_called_once_with(header_exc)
 
 
-def test_new_bill_line_sync_failure_compensating_rollback():
-    """NEW-bill path: line sync failure deletes header + mapping and re-raises."""
+def test_new_bill_line_sync_failure_compensating_rollback(grant_qbo_app_lock):
+    """NEW-bill (dbo-only MISS) path: line sync failure deletes the just-created
+    header and re-raises. U-355: no mapping row to delete anymore — the shared
+    rollback_orphan_header helper still runs, with a no-op delete_mapping."""
     fake_bill = SimpleNamespace(id=42, public_id="bill-pub-42")
-    fake_mapping = SimpleNamespace(id=99)
-
-    mapping_repo = Mock()
-    mapping_repo.read_by_qbo_bill_id.return_value = None
-    mapping_repo.read_by_bill_id.return_value = fake_mapping
 
     bill_service = Mock()
     bill_service.create.return_value = fake_bill
-    bill_service.delete_by_public_id = Mock()
 
-    connector = _build_connector(mapping_repo=mapping_repo, bill_service=bill_service)
-    connector.create_mapping = Mock(return_value=fake_mapping)
+    connector = _build_connector(bill_service=bill_service)
     connector._sync_line_items = Mock(side_effect=RuntimeError("line sync failed"))
 
     qbo_bill = _make_qbo_bill()
@@ -173,22 +168,18 @@ def test_new_bill_line_sync_failure_compensating_rollback():
         connector.sync_from_qbo_bill(qbo_bill, qbo_lines)
 
     bill_service.delete_by_public_id.assert_called_once_with("bill-pub-42")
-    mapping_repo.delete_by_id.assert_called_once_with(99)
 
 
-def test_new_bill_successful_onboarding_no_rollback():
-    """NEW-bill path: successful line sync leaves header intact."""
-    fake_bill = SimpleNamespace(id=42, public_id="bill-pub-42")
-
-    mapping_repo = Mock()
-    mapping_repo.read_by_qbo_bill_id.return_value = None
+def test_new_bill_successful_onboarding_no_rollback(grant_qbo_app_lock):
+    """NEW-bill (dbo-only MISS) path: successful line sync leaves header intact."""
+    fake_bill = SimpleNamespace(id=42, public_id="bill-pub-42", qbo_id=None, realm_id=None)
+    refreshed = SimpleNamespace(id=42, public_id="bill-pub-42", qbo_id="QB-1", realm_id="realm-1")
 
     bill_service = Mock()
     bill_service.create.return_value = fake_bill
-    bill_service.delete_by_public_id = Mock()
+    bill_service.read_by_id.return_value = refreshed
 
-    connector = _build_connector(mapping_repo=mapping_repo, bill_service=bill_service)
-    connector.create_mapping = Mock(return_value=SimpleNamespace(id=99))
+    connector = _build_connector(bill_service=bill_service)
     connector._sync_line_items = Mock()
 
     qbo_bill = _make_qbo_bill()
@@ -196,34 +187,13 @@ def test_new_bill_successful_onboarding_no_rollback():
 
     result = connector.sync_from_qbo_bill(qbo_bill, qbo_lines)
 
-    assert result is fake_bill
+    assert result is refreshed
     bill_service.delete_by_public_id.assert_not_called()
-    mapping_repo.delete_by_id.assert_not_called()
 
 
-def test_new_bill_mapping_read_failure_still_raises_original_and_deletes_header():
-    '''If the rollback mapping READ raises, the ORIGINAL line-sync error must still propagate
-    and the header delete must still be attempted (mapping read failure is logged, not masking).'''
-    fake_bill = SimpleNamespace(id=42, public_id='bill-pub-42')
-    mapping_repo = Mock()
-    mapping_repo.read_by_qbo_bill_id.return_value = None
-    mapping_repo.read_by_bill_id.side_effect = ValueError('db blip on mapping read')
-    bill_service = Mock()
-    bill_service.create.return_value = fake_bill
-    bill_service.delete_by_public_id = Mock()
-    connector = _build_connector(mapping_repo=mapping_repo, bill_service=bill_service)
-    connector.create_mapping = Mock(return_value=SimpleNamespace(id=99))
-    connector._sync_line_items = Mock(side_effect=RuntimeError('line sync failed'))
-    qbo_bill = _make_qbo_bill()
-    qbo_lines = [_make_qbo_bill_line()]
-    with pytest.raises(RuntimeError, match='line sync failed'):
-        connector.sync_from_qbo_bill(qbo_bill, qbo_lines)
-    bill_service.delete_by_public_id.assert_called_once_with('bill-pub-42')
-
-
-def test_existing_mapping_resync_failure_does_not_compensating_delete():
-    """Existing-mapping re-sync: line sync failure must NOT delete the bill."""
-    existing_mapping = SimpleNamespace(bill_id=42, id=99)
+def test_existing_bill_resync_failure_does_not_compensating_delete():
+    """Existing-Bill (dbo-only HIT) re-sync: line sync failure must NOT delete
+    the bill — only the CREATE/MISS path compensates."""
     fake_bill = SimpleNamespace(
         id=42,
         public_id="bill-pub-42",
@@ -231,15 +201,14 @@ def test_existing_mapping_resync_failure_does_not_compensating_delete():
         bill_number="INV-EXISTING",  # read by the U-027 preserve decision on UPDATE
     )
 
-    mapping_repo = Mock()
-    mapping_repo.read_by_qbo_bill_id.return_value = existing_mapping
-
     bill_service = Mock()
-    bill_service.read_by_id.return_value = fake_bill
     bill_service.update_by_public_id.return_value = fake_bill
     bill_service.delete_by_public_id = Mock()
 
-    connector = _build_connector(mapping_repo=mapping_repo, bill_service=bill_service)
+    connector = _build_connector(bill_service=bill_service)
+    # _build_connector defaults read_by_qbo_identity to None (the MISS/CREATE
+    # shape the other two tests need) — set the HIT AFTER, so it isn't clobbered.
+    connector.bill_service.read_by_qbo_identity.return_value = fake_bill
     connector._sync_line_items = Mock(side_effect=RuntimeError("line sync failed"))
 
     qbo_bill = _make_qbo_bill()
@@ -249,7 +218,6 @@ def test_existing_mapping_resync_failure_does_not_compensating_delete():
         connector.sync_from_qbo_bill(qbo_bill, qbo_lines)
 
     bill_service.delete_by_public_id.assert_not_called()
-    mapping_repo.delete_by_id.assert_not_called()
 
 
 # --- VendorCredit line connector: unswallow + parent rollback (U-218a) ---

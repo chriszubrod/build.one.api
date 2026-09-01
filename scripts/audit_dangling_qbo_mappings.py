@@ -36,8 +36,13 @@ logger = logging.getLogger("audit_dangling_qbo_mappings")
 # qbo.PurchaseExpense is retired. Unlike bill_credit, the "expense" FlatEntitySpec
 # row was ALSO removed entirely from HEADER_ENTITY_SPECS (nothing else looks it up
 # by key), so `spec_by_key["expense"]` below would now KeyError if left in.
+#
+# U-355: "bill" was removed from this tuple for the same reason as "bill_credit" —
+# qbo.BillBill is retired, so a dangling-mapping count against it is meaningless
+# and the query would raise "invalid object name" if left in. The "bill"
+# FlatEntitySpec row itself stays in HEADER_ENTITY_SPECS for an unrelated
+# reconciliation consumer — see identity_drift.py's comment there.
 _AUDIT_SPEC_KEYS: tuple[str, ...] = (
-    "bill",
     "invoice",
     "bill_line_item",
     "invoice_line_item",

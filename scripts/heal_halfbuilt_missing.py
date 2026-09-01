@@ -32,7 +32,17 @@ logger = logging.getLogger("heal_halfbuilt_missing")
 CFG = {
     "bill": dict(
         hdr="dbo.Bill", line="dbo.BillLineItem", line_fk="BillId",
-        mp="qbo.BillBill", mp_dbo="BillId", mp_qbo="QboBillId",
+        # U-355: qbo.BillBill is retired -- dbo.Bill.QboId/RealmId (U-238a) is
+        # the sole identity store now. `mp` becomes a derived table that joins
+        # dbo.Bill back to the qbo.Bill staging row's internal PK (still what
+        # the qline/linemap joins below key on) via the raw external
+        # QboId+RealmId, instead of hopping through the retired mapping table
+        # -- same (mp_dbo, mp_qbo) column shape, so _targets()'s shared SQL
+        # template needed no changes. Mirrors "expense" below (U-354).
+        mp="(SELECT b.Id AS BillId, qb.Id AS QboBillId FROM dbo.Bill b "
+           "JOIN qbo.Bill qb ON qb.QboId = b.QboId AND qb.RealmId = b.RealmId "
+           "WHERE b.QboId IS NOT NULL)",
+        mp_dbo="BillId", mp_qbo="QboBillId",
         qline="qbo.BillLine", qline_fk="QboBillId",
         linemap="qbo.BillLineItemBillLine", linemap_dbo="BillLineItemId",
     ),

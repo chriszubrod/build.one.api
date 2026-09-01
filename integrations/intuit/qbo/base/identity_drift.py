@@ -42,6 +42,20 @@ class FlatEntitySpec:
 
 
 HEADER_ENTITY_SPECS: tuple[FlatEntitySpec, ...] = (
+    # U-355: qbo.BillBill (this row's `mapping_table`) is retired — UNLIKE
+    # expense/company/project below, this row is KEPT, not removed.
+    # reconciliation/business/service.py::_bill_identity_rows still looks this
+    # row up by key ("bill") to call read_qbo_identity_rows_by_realm_id, which
+    # only reads `spec.label`/`spec.access_udf` (a pure dbo.Bill read — no
+    # mapping/staging JOIN); removing the row would raise StopIteration there
+    # and break every reconciliation detector built on `_bill_identity_rows`
+    # (missing-locally, voided, etc.). The `mapping_table`/`staging_table`
+    # fields are now stale for THIS entity and unused by that reader; the 3
+    # scripts that DO JOIN through `mapping_table`
+    # (check_qbo_identity_drift_headers.py, backfill_qbo_identity_headers.py,
+    # audit_dangling_qbo_mappings.py) exclude "bill" from their own working
+    # sets instead — see each script's own comment. Mirrors "bill_credit"'s
+    # identical precedent in REFERENCE_ENTITY_SPECS below (U-353).
     FlatEntitySpec(
         "bill", "Bill", "BillBill", "Bill", "BillId", "QboBillId", True, "SetBillQboIdentity",
         access_udf="UserCanAccessBill",

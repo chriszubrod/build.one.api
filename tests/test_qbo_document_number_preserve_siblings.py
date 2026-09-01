@@ -29,7 +29,6 @@ from unittest.mock import Mock, patch
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from conftest import stub_qbo_identity_fastpath_miss
 
 
 # ===========================================================================
@@ -68,7 +67,6 @@ def _make_bill(*, bill_number, bill_id=700, public_id="bill-pub-700"):
 
 def _build_bill_connector():
     connector = BillBillConnector(
-        mapping_repo=Mock(),
         bill_service=Mock(),
         vendor_service=Mock(),
         vendor_vendor_repo=Mock(),
@@ -84,16 +82,15 @@ def _build_bill_connector():
     )
     connector._get_vendor_public_id = Mock(return_value="vendor-pub-1")
     connector._sync_line_items = Mock()  # isolate the number decision
-    # U-283: this test exercises the legacy number-preserve branch.
-    stub_qbo_identity_fastpath_miss(connector.bill_service)
+    # U-355: no dbo-native identity yet by default — the number-preserve UPDATE
+    # tests below override this to a direct HIT via _run_bill_update.
+    connector.bill_service.read_by_qbo_identity.return_value = None
     return connector
 
 
 def _run_bill_update(connector, qbo_bill, stored_bill):
-    connector.mapping_repo.read_by_qbo_bill_id.return_value = SimpleNamespace(
-        id=1, bill_id=stored_bill.id
-    )
-    connector.bill_service.read_by_id.return_value = stored_bill
+    # U-355: the UPDATE/HIT branch is reached via a direct dbo-native identity match.
+    connector.bill_service.read_by_qbo_identity.return_value = stored_bill
     connector.bill_service.update_by_public_id.return_value = stored_bill
 
     with patch(f"{BILL_SERVICE}.guard_lines_present"):
@@ -141,15 +138,13 @@ def test_bill_update_preserves_manual_when_doc_number_none():
     assert passed == "INV-9987"
 
 
-def test_bill_create_sets_number_from_doc_number():
+def test_bill_create_sets_number_from_doc_number(grant_qbo_app_lock):
     connector = _build_bill_connector()
     qbo_bill = _make_qbo_bill(qbo_id="88", doc_number="B-5001")
-    connector.mapping_repo.read_by_qbo_bill_id.return_value = None  # no mapping => CREATE
-    connector.mapping_repo.read_by_bill_id.return_value = None
+    # bill_service.read_by_qbo_identity already defaults to None (CREATE/MISS).
     connector.bill_service.create.return_value = _make_bill(
         bill_number="B-5001", bill_id=701, public_id="bill-pub-701"
     )
-    connector.mapping_repo.create.return_value = SimpleNamespace(id=2)
 
     with patch(f"{BILL_SERVICE}.guard_lines_present"):
         connector.sync_from_qbo_bill(qbo_bill, [])

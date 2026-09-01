@@ -264,6 +264,9 @@ def test_bill_reconcile_aborted_gate_deletes_nothing():
 
 
 def test_bill_reconcile_deletes_only_confirmed():
+    """U-355: the Bill resolved-via-dbo-native-identity resolution (no more
+    qbo.BillBill mapping hop) — a genuine miss (no dbo.Bill holds this
+    identity) just means nothing to delete at Step 2, not a skip."""
     svc, repo = _make_bill_service()
     confirmed_local = MagicMock(qbo_id="42", id=1)
     unconfirmed_local = MagicMock(qbo_id="43", id=2)
@@ -275,12 +278,12 @@ def test_bill_reconcile_deletes_only_confirmed():
         "integrations.intuit.qbo.base.delete_reconcile.strict_confirmed_deleted_ids",
         return_value={"42"},
     ), patch(
-        "integrations.intuit.qbo.bill.connector.bill.persistence.repo.BillBillRepository"
-    ) as bb_repo_cls, patch(
         "integrations.intuit.qbo.bill.connector.bill_line_item.persistence.repo.BillLineItemBillLineRepository"
     ), patch(
         "entities.bill.business.service.BillService"
-    ):
-        bb_repo_cls.return_value.read_by_qbo_bill_id.return_value = None
+    ) as bill_svc_cls:
+        bill_svc_cls.return_value.read_by_qbo_identity.return_value = None
         assert svc._reconcile_deleted_bills(REALM_ID) == 1
     repo.delete_by_qbo_id.assert_called_once_with("42")
+    bill_svc_cls.return_value.read_by_qbo_identity.assert_called_once_with("42", REALM_ID)
+    bill_svc_cls.return_value.delete_by_public_id.assert_not_called()

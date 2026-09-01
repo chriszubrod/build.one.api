@@ -23,7 +23,15 @@ from shared.database import get_connection
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 logger = logging.getLogger("check_qbo_identity_drift_headers")
 
-ENTITY_SPECS = HEADER_ENTITY_SPECS
+# U-355: qbo.BillBill is retired, so "bill"'s mapping-table JOIN below
+# (_drift_query) would raise "invalid object name" if run. The spec row itself
+# stays in HEADER_ENTITY_SPECS (reconciliation's own dbo-native reader still
+# needs it — see identity_drift.py's comment there); this script just excludes
+# it from its own mapping-table-drift working set, same disposition
+# check_qbo_identity_drift_reference.py gives "bill_credit" (U-353).
+_MAPPING_TABLE_RETIRED_KEYS = frozenset({"bill"})
+
+ENTITY_SPECS = tuple(s for s in HEADER_ENTITY_SPECS if s.key not in _MAPPING_TABLE_RETIRED_KEYS)
 
 
 def _drift_query(spec: FlatEntitySpec) -> str:

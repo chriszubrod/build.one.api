@@ -33,8 +33,8 @@ from integrations.intuit.qbo.bill.business.service import QboBillService
 from integrations.intuit.qbo.bill.business.model import QboBill
 from integrations.intuit.qbo.bill.external.client import QboBillClient
 from integrations.intuit.qbo.bill.connector.bill.business.service import BillBillConnector
-from integrations.intuit.qbo.bill.connector.bill.persistence.repo import BillBillRepository
 from integrations.intuit.qbo.bill.persistence.repo import QboBillRepository, QboBillLineRepository
+from integrations.intuit.qbo.base.identity_drift import HEADER_ENTITY_SPECS, read_qbo_identity_rows_by_realm_id
 from integrations.intuit.qbo.auth.business.service import QboAuthService
 from integrations.intuit.qbo.attachable.business.service import QboAttachableService
 from integrations.intuit.qbo.bill.connector.bill_line_item.persistence.repo import BillLineItemBillLineRepository
@@ -212,9 +212,14 @@ def _dry_run_preview(
     existing = bill_repo.read_by_realm_id(realm_id)
     existing_qbo_ids = {b.qbo_id for b in existing}
 
-    # Check how many local Bills already have QBO mappings (read-only)
-    mapping_repo = BillBillRepository()
-    mapped_bill_ids = mapping_repo.read_all_bill_ids()
+    # Check how many local Bills already have a QBO identity stamped (read-only).
+    # U-355: dbo.Bill.QboId is the sole identity store — no more qbo.BillBill
+    # mapping table to count against. This CLI is already gated by
+    # assert_cli_system_admin() in main(), so the bulk read runs system-admin-scoped.
+    _bill_spec = next(s for s in HEADER_ENTITY_SPECS if s.key == "bill")
+    mapped_bill_ids = read_qbo_identity_rows_by_realm_id(
+        _bill_spec, realm_id, actor_is_system_admin=True,
+    )
     mapped_count = len(mapped_bill_ids) if mapped_bill_ids else 0
 
     would_create = [b for b in qbo_bills if b.id not in existing_qbo_ids]

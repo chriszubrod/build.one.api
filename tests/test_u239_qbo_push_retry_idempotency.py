@@ -24,14 +24,12 @@ def _make_bill_connector():
     from integrations.intuit.qbo.bill.connector.bill.business.service import BillBillConnector
 
     connector = BillBillConnector.__new__(BillBillConnector)
-    connector.mapping_repo = MagicMock()
-    connector.mapping_repo.read_by_bill_id.return_value = None
     connector.bill_line_item_service = MagicMock()
     connector.vendor_service = MagicMock()
     connector.qbo_bill_repo = MagicMock()
     connector.qbo_bill_line_repo = MagicMock()
     connector.bill_service = MagicMock()
-    connector.create_mapping = MagicMock(return_value=SimpleNamespace(id=1))
+    connector.reconciliation_repo = MagicMock()
     return connector
 
 
@@ -98,90 +96,82 @@ def _patch_bill_sync_prereqs(connector, line_item):
     )
 
 
-def test_sync_to_qbo_bill_retry_reuses_local_mirror_and_creates_mapping():
+def test_sync_to_qbo_bill_already_pushed_short_circuits_to_existing_local_mirror():
+    """U-355: dbo.Bill.QboId is the sole "already pushed" signal now. A
+    verified identity + an existing qbo.Bill staging row short-circuits to
+    that row, never touching QBO or rebuilding lines — the whole vendor-ref/
+    line-build/QboBillClient machinery below is unreachable on this path."""
     connector = _make_bill_connector()
-    bill, line_item = _make_bill_and_line_item()
-    created_bill = _make_created_qbo_bill()
+    bill, _line_item = _make_bill_and_line_item()
+    bill.qbo_id = QBO_BILL_ID
+    bill.realm_id = REALM_ID
 
     existing_local_bill = _make_existing_local_bill()
-    existing_local_line = SimpleNamespace(id=LOCAL_QBO_BILL_LINE_ID, qbo_line_id="line-1")
-
+    connector.bill_service.read_by_qbo_identity.return_value = SimpleNamespace(id=bill.id)
     connector.qbo_bill_repo.read_by_qbo_id_and_realm_id.return_value = existing_local_bill
-    connector.mapping_repo.read_by_qbo_bill_id.return_value = None
-    connector.qbo_bill_line_repo.read_by_qbo_bill_id.return_value = [existing_local_line]
 
-    prereqs = _patch_bill_sync_prereqs(connector, line_item)
-    with prereqs[0], prereqs[1], prereqs[2], prereqs[3] as term_ref_mock, patch(
-        "integrations.intuit.qbo.bill.connector.bill.business.service.QboBillClient"
-    ) as client_cls, patch.object(connector, "_store_qbo_bill_line") as store_line_mock, patch(
-        "integrations.intuit.qbo.bill.connector.bill_line_item.business.service.BillLineItemConnector"
-    ) as line_connector_cls:
-        client_cls.return_value.__enter__.return_value.create_bill.return_value = created_bill
-
-        result = connector.sync_to_qbo_bill(bill=bill, realm_id=REALM_ID)
-
-    # U-296: the real call-site wiring (bill.payment_term_id, realm_id) must
-    # reach _get_qbo_sales_term_ref exactly -- this is the only test in the
-    # suite that exercises sync_to_qbo_bill's actual call to it rather than
-    # calling the resolver directly, so it's the one place a swapped/wrong
-    # argument at the call site would be caught.
-    term_ref_mock.assert_called_once_with(bill.payment_term_id, REALM_ID)
+    result = connector.sync_to_qbo_bill(bill=bill, realm_id=REALM_ID)
 
     assert result is existing_local_bill
+    connector.bill_service.read_by_qbo_identity.assert_called_once_with(QBO_BILL_ID, REALM_ID)
     connector.qbo_bill_repo.read_by_qbo_id_and_realm_id.assert_called_once_with(
         QBO_BILL_ID, REALM_ID
     )
     connector.qbo_bill_repo.create.assert_not_called()
-    connector.qbo_bill_line_repo.read_by_qbo_bill_id.assert_called_once_with(
-        LOCAL_QBO_BILL_ID
-    )
-    store_line_mock.assert_not_called()
-    connector.qbo_bill_line_repo.create.assert_not_called()
-    line_connector_cls.return_value.create_mapping.assert_called_once_with(
-        bill_line_item_id=101,
-        qbo_bill_line_id=LOCAL_QBO_BILL_LINE_ID,
-    )
-    connector.create_mapping.assert_called_once_with(
-        bill_id=7,
-        qbo_bill_id=LOCAL_QBO_BILL_ID,
-        qbo_id=QBO_BILL_ID,
-        realm_id=REALM_ID,
-        sync_token="0",
-    )
+    connector.bill_service.repo.set_qbo_identity.assert_not_called()
 
 
-def test_sync_to_qbo_bill_retry_raises_when_mirror_already_mapped_to_different_bill():
+def test_sync_to_qbo_bill_refuses_when_identity_no_longer_verifies():
+    """bill.qbo_id is set, but a fresh dbo-only re-read resolves to a
+    DIFFERENT Bill (a stale/reassigned identity) — refuse rather than push
+    under disputed identity."""
     connector = _make_bill_connector()
-    bill, line_item = _make_bill_and_line_item()
-    created_bill = _make_created_qbo_bill()
+    bill, _line_item = _make_bill_and_line_item()
+    bill.qbo_id = QBO_BILL_ID
+    bill.realm_id = REALM_ID
 
-    existing_local_bill = _make_existing_local_bill()
-    conflicting_mapping = SimpleNamespace(bill_id=999)
+    connector.bill_service.read_by_qbo_identity.return_value = SimpleNamespace(id=999)
 
-    connector.qbo_bill_repo.read_by_qbo_id_and_realm_id.return_value = existing_local_bill
-    connector.mapping_repo.read_by_qbo_bill_id.return_value = conflicting_mapping
+    try:
+        connector.sync_to_qbo_bill(bill=bill, realm_id=REALM_ID)
+        assert False, "expected ValueError"
+    except ValueError as exc:
+        assert "no longer resolves back to it" in str(exc)
 
-    prereqs = _patch_bill_sync_prereqs(connector, line_item)
-    with prereqs[0], prereqs[1], prereqs[2], prereqs[3], patch(
-        "integrations.intuit.qbo.bill.connector.bill.business.service.QboBillClient"
-    ) as client_cls:
-        client_cls.return_value.__enter__.return_value.create_bill.return_value = created_bill
+    connector.qbo_bill_repo.read_by_qbo_id_and_realm_id.assert_not_called()
+    connector.qbo_bill_repo.create.assert_not_called()
+    connector.reconciliation_repo.create.assert_called_once()
+    assert connector.reconciliation_repo.create.call_args.kwargs["drift_type"] == "bill_identity_conflict"
 
-        try:
-            connector.sync_to_qbo_bill(bill=bill, realm_id=REALM_ID)
-            assert False, "expected ValueError"
-        except ValueError as exc:
-            assert "already mapped to a different Bill" in str(exc)
-            assert str(conflicting_mapping.bill_id) in str(exc)
-            assert str(bill.id) in str(exc)
+
+def test_sync_to_qbo_bill_refuses_when_verified_identity_has_no_local_staging_row():
+    """bill.qbo_id verifies (still resolves back to this same Bill), but no
+    local qbo.Bill staging row exists for it — a genuine data-integrity
+    anomaly (the stamp and the staging-cache write happen together), not the
+    ordinary never-pushed case. Refuse rather than risk pushing a duplicate."""
+    connector = _make_bill_connector()
+    bill, _line_item = _make_bill_and_line_item()
+    bill.qbo_id = QBO_BILL_ID
+    bill.realm_id = REALM_ID
+
+    connector.bill_service.read_by_qbo_identity.return_value = SimpleNamespace(id=bill.id)
+    connector.qbo_bill_repo.read_by_qbo_id_and_realm_id.return_value = None
+
+    try:
+        connector.sync_to_qbo_bill(bill=bill, realm_id=REALM_ID)
+        assert False, "expected ValueError"
+    except ValueError as exc:
+        assert "no local qbo.Bill staging row exists" in str(exc)
 
     connector.qbo_bill_repo.create.assert_not_called()
-    connector.create_mapping.assert_not_called()
+    connector.reconciliation_repo.create.assert_called_once()
+    assert connector.reconciliation_repo.create.call_args.kwargs["drift_type"] == "bill_staging_row_missing"
 
 
 def test_sync_to_qbo_bill_first_create_stores_local_mirror_and_lines():
     connector = _make_bill_connector()
     bill, line_item = _make_bill_and_line_item()
+    bill.qbo_id = None  # U-355: falsy -> skip the already-pushed short-circuit
     created_bill = _make_created_qbo_bill()
 
     created_local_bill = SimpleNamespace(
@@ -215,7 +205,9 @@ def test_sync_to_qbo_bill_first_create_stores_local_mirror_and_lines():
     connector.qbo_bill_repo.create.assert_called_once()
     store_line_mock.assert_called_once_with(LOCAL_QBO_BILL_ID, created_bill.line[0])
     line_connector_cls.return_value.create_mapping.assert_called_once()
-    connector.create_mapping.assert_called_once()
+    connector.bill_service.repo.set_qbo_identity.assert_called_once_with(
+        id=7, qbo_id=QBO_BILL_ID, realm_id=REALM_ID, sync_token="0"
+    )
 
 
 def _make_invoice_connector():

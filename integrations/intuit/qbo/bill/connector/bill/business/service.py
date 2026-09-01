@@ -6,8 +6,6 @@ from decimal import Decimal
 # Third-party Imports
 
 # Local Imports
-from integrations.intuit.qbo.bill.connector.bill.business.model import BillBill
-from integrations.intuit.qbo.bill.connector.bill.persistence.repo import BillBillRepository
 from integrations.intuit.qbo.bill.business.model import QboBill, QboBillLine
 from integrations.intuit.qbo.bill.persistence.repo import QboBillRepository, QboBillLineRepository
 from integrations.intuit.qbo.bill.external.client import QboBillClient
@@ -33,19 +31,12 @@ from integrations.intuit.qbo.base.pull_race import guard_lines_present
 from integrations.intuit.qbo.base.compensation import rollback_orphan_header
 from integrations.intuit.qbo.base.field_ownership import preserve_human_edited_ref, qbo_ref_or_placeholder
 from integrations.intuit.qbo.base.identity_consistency import verify_identity_dbo_only
-from integrations.intuit.qbo.base.identity_fastpath import (
-    raise_concurrent_write_race,
-    run_identity_fastpath,
-)
+from integrations.intuit.qbo.base.identity_fastpath import run_identity_fastpath_dbo_only
 from integrations.intuit.qbo.base.ids import coerce_id
-from integrations.intuit.qbo.base.reconciliation_recorder import (
-    record_identity_mapping_conflict,
-    record_mapping_issue,
-)
+from integrations.intuit.qbo.base.reconciliation_recorder import record_mapping_issue
 from integrations.intuit.qbo.base.cost_code_resolver import resolve_qbo_item_ref
 from integrations.intuit.qbo.reconciliation.persistence.repo import ReconciliationIssueRepository
 from entities.sub_cost_code.business.service import SubCostCodeService
-from shared.database import DatabaseConstraintError
 
 logger = logging.getLogger(__name__)
 
@@ -53,11 +44,33 @@ logger = logging.getLogger(__name__)
 class BillBillConnector:
     """
     Connector service for synchronization between QboBill and Bill modules.
+
+    U-355: dbo-only identity resolution via `run_identity_fastpath_dbo_only` --
+    no `qbo.BillBill` mapping-table read/write of any kind (U-349 program family
+    6/11, the heaviest header connector -- mirrors U-350's `CompanyInfoCompanyConnector`
+    / U-353's `VendorCreditBillCreditConnector` / U-354's `PurchaseExpenseConnector`,
+    per Wave 5's "trust dbo alone" plan,
+    `docs/design/u349-qbo-mapping-table-retirement.md`). `dbo.Bill.QboId`/`RealmId`
+    (U-238a) is the sole identity store; dbo.Bill's own filtered unique index
+    (`UQ_Bill_QboId_RealmId`) + `SetBillQboIdentity`'s theft-clear UPDATE guarantee
+    at most one row holds a given identity at any instant, so a direct hit needs no
+    cross-check and the old heal/adopt-by-fingerprint branch structure (driven by a
+    second, independently-writable mapping table) no longer has anything to drift
+    from. Like VendorCredit, Bill has its own natural CREATE-dedup
+    (`UQ_Bill_VendorId_BillNumber_BillDate`), so a genuine miss is a plain create --
+    the DB constraint, not a mapping-table check, is what protects against a
+    concurrent duplicate.
+
+    Unlike Expense/VendorCredit/PhysicalAddress/Term/CompanyInfo, Bill's PUSH path
+    (`sync_to_qbo_bill`, dispatched by the outbox worker's live `sync_bill_to_qbo`
+    Kind) is real, high-volume traffic (918 live rows as of this unit) -- it is
+    repointed onto dbo-native identity below (see `sync_to_qbo_bill` and
+    `update_has_been_billed_in_qbo`), not deleted the way Expense's dead
+    `sync_expense_to_qbo` push was in U-354.
     """
 
     def __init__(
         self,
-        mapping_repo: Optional[BillBillRepository] = None,
         bill_service: Optional[BillService] = None,
         vendor_service: Optional[VendorService] = None,
         vendor_vendor_repo=None,
@@ -77,7 +90,6 @@ class BillBillConnector:
         sub_cost_code_service: Optional[SubCostCodeService] = None,
     ):
         """Initialize the BillBillConnector."""
-        self.mapping_repo = mapping_repo or BillBillRepository()
         self.bill_service = bill_service or BillService()
         self.vendor_service = vendor_service or VendorService()
         # U-313: no longer read anywhere in this file (_get_vendor_public_id/
@@ -132,25 +144,19 @@ class BillBillConnector:
 
     def sync_from_qbo_bill(self, qbo_bill: QboBill, qbo_bill_lines: List[QboBillLine]) -> Bill:
         """
-        Sync data from QboBill to Bill module.
-        
+        Sync a QBO Bill to the Bill module, via the dbo-only identity fast path
+        (U-355).
+
         This method:
-        1. Checks if a mapping exists
-        2. Creates or updates the Bill accordingly
-        3. Syncs line items to BillLineItem module
-        
-        Args:
-            qbo_bill: QboBill record
-            qbo_bill_lines: List of QboBillLine records for this bill
-        
-        Returns:
-            Bill: The synced Bill record
+        1. Resolves the vendor mapping to get a Vendor public_id (dbo-native)
+        2. Direct dbo.Bill.QboId/RealmId hit -> update in place
+        3. Genuine miss -> create a new Bill, stamp identity, sync lines
         """
         # Find vendor mapping to get Vendor public_id
         vendor_public_id = self._get_vendor_public_id(qbo_bill.vendor_ref_value, qbo_bill.realm_id)
         if not vendor_public_id:
             raise ValueError(f"No vendor mapping found for QBO vendor ref: {qbo_bill.vendor_ref_value}")
-        
+
         # Map QBO Bill fields to Bill module fields
         bill_number = qbo_ref_or_placeholder(qbo_bill.doc_number, qbo_bill.qbo_id)
         bill_date = qbo_bill.txn_date or ""
@@ -165,18 +171,28 @@ class BillBillConnector:
             entity_label="QboBill", entity_id=qbo_bill.id, qbo_id=qbo_bill.qbo_id,
         )
 
-        def _apply_bill_fields(direct: Bill) -> Bill:
+        def _apply_bill_fields(direct: Bill) -> Optional[Bill]:
             """
-            Write the QBO-derived fields onto an existing Bill, stamp identity, then
-            sync its line items. Shared by the fast path's apply_fields and the
-            legacy "mapping found" branch below so the QboBill->Bill field mapping
-            lives in exactly one place (no drift between the two update sites) —
-            mirrors PurchaseExpenseConnector's `_apply_expense_fields`.
+            `apply_fields` for the dbo-only fast path's HIT branch (U-355): write the
+            QBO-derived fields onto an existing dbo-identity-matched Bill, persist,
+            and sync its line items. Covers both a plain direct hit and a
+            race-resolved hit (run_identity_fastpath_dbo_only calls this same
+            callback for both).
 
             U-027 (rule of three): never clobber a human-corrected bill_number on
             re-pull. Preserve the stored value unless it is empty/null or the
-            QBO-<id> placeholder (which still upgrades to a real doc_number). CREATE
-            path below is unchanged. See base.field_ownership.
+            QBO-<id> placeholder (which still upgrades to a real doc_number). See
+            base.field_ownership.
+
+            Bill carries SyncToken as part of its identity (like Expense/Purchase) --
+            this re-stamp is NOT skipped on a plain HIT: it refreshes SyncToken on
+            every pull, matching the pre-U-355 behavior exactly.
+
+            Returns None on a ROWVERSION-race/concurrent-delete `update_by_public_id`
+            miss (U-291) -- `run_identity_fastpath_dbo_only`'s own `_apply()` raises
+            `raise_concurrent_write_race` unconditionally whenever `apply_fields`
+            returns None, so this method staying silent on a miss (and skipping line
+            sync) is what keeps that single raise as the ONE place the guarantee lives.
             """
             effective_bill_number = preserve_human_edited_ref(
                 direct.bill_number, bill_number, qbo_bill.qbo_id
@@ -193,21 +209,8 @@ class BillBillConnector:
                 row_version=direct.row_version,
             )
             if updated is None:
-                # ROWVERSION race: a concurrent writer touched this exact Bill
-                # between the read and this UPDATE, so it affected 0 rows. Shared
-                # by both the fast path and the legacy "mapping found" branch
-                # below (line ~269), so both are fixed by this one guard (U-291).
-                logger.error(
-                    f"Failed to update Bill {direct.id} from QboBill {qbo_bill.id} - "
-                    f"update_by_public_id returned None (concurrent write race)"
-                )
-                raise_concurrent_write_race(entity_label="Bill", entity_id=direct.id)
+                return None
             bill_id = coerce_id(updated.id)
-            # Bill/Expense carry SyncToken as part of their identity (unlike
-            # Project/Company/BillCredit) — this re-stamp is NOT redundant even when
-            # QboId/RealmId are already correct-by-construction (the fast path only
-            # found `direct` because they already match): it refreshes SyncToken on
-            # every pull, which the legacy path also always did.
             self.bill_service.repo.set_qbo_identity(
                 id=bill_id,
                 qbo_id=qbo_bill.qbo_id,
@@ -217,100 +220,59 @@ class BillBillConnector:
             self._sync_line_items(bill_id, qbo_bill_lines, qbo_bill.realm_id)
             return updated
 
-        # U-283 (Phase-4): resolve identity directly against dbo.Bill's native
-        # QboId/RealmId (U-238a) before falling back to the qbo.BillBill
-        # mapping-table hop below. Every Bill synced even once already carries
-        # this identity (set_qbo_identity is called on both the update and
-        # create paths), so this covers the steady-state case without touching
-        # qbo.Bill at all. Mirrors CompanyInfoCompanyConnector's U-287 fast path
-        # exactly — conflict->RAISE is structural (base.identity_fastpath), never
-        # a fall-through to the legacy path below.
-        outcome = run_identity_fastpath(
+        outcome = run_identity_fastpath_dbo_only(
             qbo_id=qbo_bill.qbo_id,
             realm_id=qbo_bill.realm_id,
-            external_id=qbo_bill.id,
             entity_label="Bill",
             external_label="QboBill",
-            mapping_label="BillBill",
+            lock_resource_label="Bill",
             read_direct_by_qbo_identity=self.bill_service.read_by_qbo_identity,
-            read_by_local_id=self.mapping_repo.read_by_bill_id,
-            read_by_external_id=self.mapping_repo.read_by_qbo_bill_id,
-            external_id_attr="qbo_bill_id",
-            record_conflict_issue=lambda entity, by_local, by_external: (
-                self._record_identity_mapping_conflict_issue(
-                    qbo_bill=qbo_bill,
-                    dbo_bill_id=coerce_id(entity.id),
-                    local_side_mapping=by_local,
-                    qbo_side_mapping=by_external,
-                )
-            ),
-            conflict_message=lambda entity: (
-                f"BillBill identity conflict for QboBill {qbo_bill.qbo_id} "
-                f"(id={qbo_bill.id}): dbo.Bill {entity.id} already carries this "
-                f"identity but the mapping table disagrees. Not auto-repointed; "
-                f"see the recorded reconciliation issue. Skipping until a human "
-                f"resolves it."
-            ),
-            create_mapping=lambda local_id: self.mapping_repo.create(
-                bill_id=local_id, qbo_bill_id=qbo_bill.id
-            ),
             apply_fields=_apply_bill_fields,
+            resolve_candidate=lambda: self._create_bill(
+                qbo_bill=qbo_bill,
+                vendor_public_id=vendor_public_id,
+                bill_number=bill_number,
+                bill_date=bill_date,
+                due_date=due_date,
+                memo=memo,
+                total_amount=total_amount,
+            ),
+            stamp_identity=lambda candidate: self._stamp_bill_identity(
+                candidate, qbo_bill=qbo_bill, qbo_bill_lines=qbo_bill_lines,
+            ),
         )
-        if outcome.hit:
-            return outcome.entity
+        if outcome.entity is None:
+            # No longer race-reachable in practice (see run_identity_fastpath_
+            # dbo_only's Raises docstring) — kept as a backstop for a directly
+            # invoked falsy qbo_bill.qbo_id, mirroring every sibling connector's
+            # identical guard (U-350/U-353/U-354).
+            raise RuntimeError(
+                f"Failed to resolve Bill for QboBill {qbo_bill.id} "
+                f"(qbo_id={qbo_bill.qbo_id}) via the dbo-only identity fast path"
+            )
+        return outcome.entity
 
-        # Check for existing mapping
-        mapping = self.mapping_repo.read_by_qbo_bill_id(qbo_bill.id)
-
-        if mapping:
-            # Found existing mapping. Resolve the Bill to update. HEAL-don't-delete
-            # (U-031, mirroring U-029 Purchase->Expense): a transient empty-read must
-            # NEVER delete the mapping and fall through to CREATE — that would mint a
-            # DUPLICATE Bill (the exact hazard U-029 fixed for Expense).
-            bill = self.bill_service.read_by_id(mapping.bill_id)
-            if bill:
-                logger.info(f"Updating existing Bill {bill.id} from QboBill {qbo_bill.id}")
-            else:
-                # Bound Bill read empty. Bill has no unique NAME like Project, and there
-                # is no mapping-repoint sproc, so re-resolve by the closest natural
-                # fingerprint — (bill_number, vendor) — and heal ONLY when it re-binds the
-                # SAME Bill the mapping already targets (a confirmed transient empty-read).
-                # The fingerprint keys on the QBO-derived bill_number (what CREATE writes);
-                # the same-id gate makes a wrong/duplicate row safe under a non-TOP-1
-                # fingerprint proc (id != mapping.bill_id → record+raise, never a wrong
-                # bind). See _record_missing_bill_issue.
-                replacement = self.bill_service.read_by_bill_number_and_vendor_public_id(
-                    bill_number, vendor_public_id
-                )
-                if replacement and replacement.id == mapping.bill_id:
-                    logger.warning(
-                        f"Bill {mapping.bill_id} read empty for QboBill {qbo_bill.id} but "
-                        f"re-resolved by (bill_number, vendor) — transient empty-read; "
-                        f"healing in place, not recreating."
-                    )
-                    bill = replacement
-                else:
-                    # No fingerprint match, or a match under a DIFFERENT id we cannot
-                    # safely repoint to (no mapping-update sproc): preserve the mapping,
-                    # create nothing, record a critical reconciliation issue, and RAISE.
-                    # The pull caller treats this ValueError as a per-item skip (watermark
-                    # advances, sync stays healthy); the issue is the durable follow-up.
-                    self._record_missing_bill_issue(
-                        qbo_bill=qbo_bill, mapping=mapping, fingerprint=replacement
-                    )
-                    raise ValueError(
-                        f"BillBill mapping {mapping.id} points at missing Bill "
-                        f"{mapping.bill_id} and no local Bill fingerprinted by bill_number "
-                        f"'{bill_number}' + vendor resolves to it for QboBill "
-                        f"{qbo_bill.id}; preserving mapping, skipping."
-                    )
-
-            bill = _apply_bill_fields(bill)
-            return bill
-
-        # Create new Bill
+    def _create_bill(
+        self,
+        *,
+        qbo_bill: QboBill,
+        vendor_public_id: str,
+        bill_number: str,
+        bill_date: str,
+        due_date: str,
+        memo,
+        total_amount,
+    ) -> Optional[Bill]:
+        """
+        `resolve_candidate` for the dbo-only fast path's MISS branch (U-355):
+        called only under `run_identity_fastpath_dbo_only`'s create lock, once a
+        genuine miss is confirmed (no dbo.Bill currently holds this identity,
+        including the re-read under lock). Mirrors the pre-U-355 legacy CREATE
+        step exactly; `UQ_Bill_VendorId_BillNumber_BillDate` (not a mapping-table
+        check) is what protects against a concurrent duplicate.
+        """
         logger.info(f"Creating new Bill from QboBill {qbo_bill.id}: bill_number={bill_number}")
-        bill = self.bill_service.create(
+        return self.bill_service.create(
             vendor_public_id=vendor_public_id,
             bill_date=bill_date,
             due_date=due_date,
@@ -319,111 +281,89 @@ class BillBillConnector:
             memo=memo,
             is_draft=False,
             # QBO-origin bills have no local PDF; the universal attachment rule
-            # does not apply. Line items are created by _sync_line_items below,
-            # not by create()'s placeholder-attachment path.
+            # does not apply. Line items are created by _stamp_bill_identity's
+            # own _sync_line_items call below, not by create()'s
+            # placeholder-attachment path.
             require_attachment=False,
         )
-        
-        # Create mapping
-        bill_id = coerce_id(bill.id)
+
+    def _stamp_bill_identity(
+        self,
+        candidate: Optional[Bill],
+        *,
+        qbo_bill: QboBill,
+        qbo_bill_lines: List[QboBillLine],
+    ) -> Optional[Bill]:
+        """
+        `stamp_identity` for the dbo-only fast path's MISS branch (U-355): stamp
+        dbo-native identity onto the just-created Bill, then sync its line items.
+        `candidate` is a fresh, uniquely-ours row from `_create_bill` (not a
+        side-channel-key match shared with any other incoming QBO record), so —
+        unlike Company's by-name candidate — there is no concurrent-different-
+        qbo_id race to guard with extra locking; `run_identity_fastpath_dbo_only`'s
+        own create lock already serializes two syncs of the SAME QboBill against
+        each other.
+
+        On a permanent failure in EITHER the identity stamp or the line sync,
+        best-effort deletes the just-created header via `rollback_orphan_header`
+        so a bad create never strands a header-only zombie -- the identity-stamp
+        rollback race fix (U-354 pattern): before this fix, a transient
+        `set_qbo_identity` failure during CREATE could mint an unstamped orphan
+        Bill that `read_direct_by_qbo_identity` can never find again (it carries
+        no QboId), and the next pull tick would mint a genuine duplicate. Both
+        steps share ONE try/except (not two) so a `set_qbo_identity` failure gets
+        the exact same cleanup as a line-sync failure.
+
+        Re-reads and returns the row after stamping (mirrors
+        `PurchaseExpenseConnector._stamp_expense_identity`, U-354):
+        `set_qbo_identity` is a void DB write that never mutates `candidate` in
+        memory, so returning `candidate` as-is would hand the caller a Bill whose
+        `qbo_id`/`realm_id` still read as their pre-stamp `None` even though the
+        DB row is correctly stamped.
+        """
+        if candidate is None:
+            return None
+
+        bill_id = coerce_id(candidate.id)
         try:
-            mapping = self.create_mapping(
-                bill_id=bill_id,
-                qbo_bill_id=qbo_bill.id,
+            self.bill_service.repo.set_qbo_identity(
+                id=bill_id,
                 qbo_id=qbo_bill.qbo_id,
                 realm_id=qbo_bill.realm_id,
                 sync_token=getattr(qbo_bill, "sync_token", None),
             )
-            logger.info(f"Created mapping: Bill {bill_id} <-> QboBill {qbo_bill.id}")
-        except (ValueError, DatabaseConstraintError) as e:
-            logger.warning(f"Could not create mapping: {e}")
-        
-        # Compensating rollback — a permanent line failure must not leave a header-only zombie;
-        # delete the just-created header + qbo.BillBill mapping and re-raise (watermark holds;
-        # re-pull is idempotent).
-        try:
             self._sync_line_items(bill_id, qbo_bill_lines, qbo_bill.realm_id)
         except Exception:
-            def _delete_bill_mapping():
-                _m = self.mapping_repo.read_by_bill_id(bill_id)
-                if _m:
-                    self.mapping_repo.delete_by_id(_m.id)
             rollback_orphan_header(
-                delete_header=lambda: self.bill_service.delete_by_public_id(bill.public_id),
-                delete_mapping=_delete_bill_mapping,
+                delete_header=lambda: self.bill_service.delete_by_public_id(candidate.public_id),
+                delete_mapping=lambda: None,
                 entity_label='Bill', entity_id=bill_id,
+                on_header_delete_failed=lambda exc: self._record_orphan_header_issue(
+                    bill=candidate, qbo_bill=qbo_bill, exc=exc
+                ),
             )
             raise
-        
-        return bill
 
-    def _record_missing_bill_issue(
+        return self.bill_service.read_by_id(bill_id)
+
+    def _record_orphan_header_issue(
         self,
         *,
+        bill: Bill,
         qbo_bill: QboBill,
-        mapping: BillBill,
-        fingerprint: Optional[Bill] = None,
+        exc: Exception,
     ) -> None:
-        """
-        Record an orphaned-mapping detection on qbo.ReconciliationIssue, failure-
-        isolated: a failed insert is logged loud but never breaks the sync (mirrors
-        the Purchase/CustomerProject connectors' recorders).
-
-        Triggered when a BillBill mapping exists but its bound Bill read empty AND the
-        (bill_number, vendor) fingerprint did not re-resolve to that same Bill. We
-        deliberately do NOT delete the mapping or create a Bill here — a transient
-        empty-read would otherwise mint a duplicate; the mapping is preserved for the
-        next tick / a human to resolve.
-        """
-        if fingerprint is not None:
-            fingerprint_note = (
-                f" A different Bill {fingerprint.id} matches the (bill_number, vendor) "
-                f"fingerprint but is not the mapped row; not repointing (no "
-                f"mapping-update path)."
-            )
-        else:
-            fingerprint_note = (
-                " No local Bill matches the (bill_number, vendor) fingerprint."
-            )
-        details = (
-            f"Orphaned BillBill mapping. Mapping {mapping.id} (QboBill {qbo_bill.id}, "
-            f"QboId={qbo_bill.qbo_id}) points at Bill {mapping.bill_id} which no longer "
-            f"reads.{fingerprint_note} Mapping preserved; no Bill created. Investigate "
-            f"whether the Bill was deleted/renumbered."
-        )
         record_mapping_issue(
             self.reconciliation_repo,
-            drift_type="orphaned_bill_bill_mapping",
+            drift_type="orphan_bill_header",
             entity_type="Bill",
-            entity_public_id=None,
+            entity_public_id=str(bill.public_id) if bill.public_id else None,
             qbo_id=str(qbo_bill.qbo_id) if qbo_bill.qbo_id else None,
             realm_id=qbo_bill.realm_id or "",
-            details=details,
-        )
-
-    def _record_identity_mapping_conflict_issue(
-        self,
-        *,
-        qbo_bill: QboBill,
-        dbo_bill_id: int,
-        local_side_mapping: Optional[BillBill],
-        qbo_side_mapping: Optional[BillBill],
-    ) -> None:
-        record_identity_mapping_conflict(
-            self.reconciliation_repo,
-            drift_type="bill_identity_conflict",
-            entity_type="Bill",
-            mapping_label="BillBill",
-            qbo_label="QboBill",
-            dbo_id=dbo_bill_id,
-            qbo_row_id=qbo_bill.id,
-            raw_qbo_id=qbo_bill.qbo_id,
-            raw_realm_id=qbo_bill.realm_id,
-            realm_id=qbo_bill.realm_id,
-            local_side_mapping=local_side_mapping,
-            qbo_side_mapping=qbo_side_mapping,
-            qbo_side_local_fk_attr="bill_id",
-            local_side_qbo_fk_attr="qbo_bill_id",
+            details=(
+                f"Compensating rollback failed to delete orphan Bill {bill.id} "
+                f"({bill.public_id}): {exc}. Header blocks re-pull until manually resolved."
+            ),
         )
 
     # One of FIVE near-identical dbo-first/legacy-fallback vendor-ref resolvers
@@ -467,17 +407,17 @@ class BillBillConnector:
     def _sync_line_items(self, bill_id: int, qbo_bill_lines: List[QboBillLine], realm_id: Optional[str] = None) -> None:
         """
         Sync bill line items to BillLineItem module.
-        
+
         Args:
             bill_id: Database ID of the Bill
             qbo_bill_lines: List of QboBillLine records
         """
         if not qbo_bill_lines:
             return
-        
+
         # Import here to avoid circular dependencies
         from integrations.intuit.qbo.bill.connector.bill_line_item.business.service import BillLineItemConnector
-        
+
         line_connector = BillLineItemConnector()
 
         # Attempt EVERY line (so the log enumerates all problems in one pass), collect
@@ -498,94 +438,96 @@ class BillBillConnector:
                 f"bill_id={bill_id}: {failed}"
             )
 
-    def create_mapping(
-        self,
-        bill_id: int,
-        qbo_bill_id: int,
-        *,
-        qbo_id: Optional[str],
-        realm_id: Optional[str],
-        sync_token: Optional[str] = None,
-    ) -> BillBill:
-        """
-        Create a mapping between Bill and QboBill.
-        
-        Args:
-            bill_id: Database ID of Bill record
-            qbo_bill_id: Database ID of QboBill record
-        
-        Returns:
-            BillBill: The created mapping record
-        
-        Raises:
-            ValueError: If mapping already exists or validation fails
-        """
-        # Validate 1:1 constraints
-        existing_by_bill = self.mapping_repo.read_by_bill_id(bill_id)
-        if existing_by_bill:
-            raise ValueError(
-                f"Bill {bill_id} is already mapped to QboBill {existing_by_bill.qbo_bill_id}"
-            )
-        
-        existing_by_qbo_bill = self.mapping_repo.read_by_qbo_bill_id(qbo_bill_id)
-        if existing_by_qbo_bill:
-            raise ValueError(
-                f"QboBill {qbo_bill_id} is already mapped to Bill {existing_by_qbo_bill.bill_id}"
-            )
-        
-        # Stamp dbo-native identity FIRST — if this fails, nothing else has been
-        # created yet, so the caller's existing rollback (delete the just-created
-        # entity) fully cleans up with no orphaned mapping row.
-        self.bill_service.repo.set_qbo_identity(
-            id=bill_id,
-            qbo_id=qbo_id,
-            realm_id=realm_id,
-            sync_token=sync_token,
-        )
-        mapping = self.mapping_repo.create(bill_id=bill_id, qbo_bill_id=qbo_bill_id)
-        return mapping
-
-    def get_mapping_by_bill_id(self, bill_id: int) -> Optional[BillBill]:
-        """
-        Get mapping by Bill ID.
-        """
-        return self.mapping_repo.read_by_bill_id(bill_id)
-
-    def get_mapping_by_qbo_bill_id(self, qbo_bill_id: int) -> Optional[BillBill]:
-        """
-        Get mapping by QboBill ID.
-        """
-        return self.mapping_repo.read_by_qbo_bill_id(qbo_bill_id)
-
     def sync_to_qbo_bill(self, bill: Bill, realm_id: str) -> QboBill:
         """
-        Sync a local Bill to QuickBooks Online.
-        
+        Sync a local Bill to QuickBooks Online, via the dbo-only identity fast
+        path (U-355). Live push traffic (the outbox worker's `sync_bill_to_qbo`
+        Kind, 918 rows as of this unit) -- repointed, not retired.
+
+        dbo.Bill.QboId/RealmId is the sole "already pushed" signal now; there is
+        no qbo.BillBill mapping row to check. A truthy `bill.qbo_id` is
+        re-verified via `verify_identity_dbo_only` before being trusted for the
+        qbo.Bill staging-cache lookup below (mirrors `outbox/business/worker.py
+        ::_refresh_bill`'s own repoint) -- a stale/reassigned identity must never
+        resolve to the WRONG cached QboBill.
+
         This method:
-        1. Checks if a mapping already exists (skip if already synced)
+        1. Checks whether the Bill is already pushed (dbo-native identity, verified)
         2. Looks up vendor mapping to get QBO vendor reference
         3. Builds QBO Bill payload with line items
         4. Creates Bill in QBO via API
-        5. Stores QboBill locally and creates mapping
-        
+        5. Stores QboBill locally and stamps dbo-native identity
+
         Args:
             bill: Local Bill record to sync
             realm_id: QBO realm ID for API access
-        
+
         Returns:
             QboBill: The local QboBill record created
-            
+
         Raises:
             ValueError: If mapping lookup fails (vendor not mapped, etc.)
         """
         bill_id = coerce_id(bill.id)
-        
-        # Check if already mapped
-        existing_mapping = self.mapping_repo.read_by_bill_id(bill_id)
-        if existing_mapping:
-            logger.info(f"Bill {bill_id} is already mapped to QboBill {existing_mapping.qbo_bill_id}")
-            return self.qbo_bill_repo.read_by_id(existing_mapping.qbo_bill_id)
-        
+
+        # Already-pushed short-circuit (dbo-native, verified)
+        if bill.qbo_id:
+            verified_qbo_id = verify_identity_dbo_only(
+                bill, read_direct_by_qbo_identity=self.bill_service.read_by_qbo_identity,
+            )
+            if not verified_qbo_id:
+                record_mapping_issue(
+                    self.reconciliation_repo,
+                    drift_type="bill_identity_conflict",
+                    entity_type="Bill",
+                    entity_public_id=str(bill.public_id) if bill.public_id else None,
+                    qbo_id=bill.qbo_id,
+                    realm_id=realm_id,
+                    details=(
+                        f"Push refused for Bill {bill_id}: dbo.Bill.QboId={bill.qbo_id!r} no "
+                        f"longer resolves back to this Bill on a fresh dbo-only read (see "
+                        f"verify_identity_dbo_only) — the identity was reassigned to a "
+                        f"different Bill. Investigate which side is correct."
+                    ),
+                )
+                raise ValueError(
+                    f"Bill {bill_id} carries a QBO identity (qbo_id={bill.qbo_id!r}) that no "
+                    f"longer resolves back to it on a fresh dbo-only read — refusing to push a "
+                    f"possibly stolen/reassigned identity. See verify_identity_dbo_only."
+                )
+            existing_local_qbo_bill = self.qbo_bill_repo.read_by_qbo_id_and_realm_id(
+                verified_qbo_id, realm_id
+            )
+            if existing_local_qbo_bill:
+                logger.info(f"Bill {bill_id} is already mapped to QboBill {existing_local_qbo_bill.id}")
+                return existing_local_qbo_bill
+            # dbo.Bill carries a verified QboId but the local qbo.Bill staging cache has
+            # no row for (verified_qbo_id, realm_id) — a genuine data-integrity anomaly
+            # (the stamp and the staging-cache write happen together at the end of this
+            # method), not the ordinary "never pushed" case. Refuse rather than risk
+            # pushing a DUPLICATE Bill into QBO for an entity that already has one out
+            # there.
+            record_mapping_issue(
+                self.reconciliation_repo,
+                drift_type="bill_staging_row_missing",
+                entity_type="Bill",
+                entity_public_id=str(bill.public_id) if bill.public_id else None,
+                qbo_id=str(verified_qbo_id),
+                realm_id=realm_id,
+                details=(
+                    f"Push refused for Bill {bill_id}: dbo.Bill carries a verified QboId "
+                    f"({verified_qbo_id!r}, realm_id={realm_id!r}) but no local qbo.Bill "
+                    f"staging row exists for it. Investigate the missing staging row before "
+                    f"retrying — pushing again risks creating a duplicate Bill in QBO."
+                ),
+            )
+            raise ValueError(
+                f"Bill {bill_id} carries a verified QBO identity (qbo_id={verified_qbo_id!r}, "
+                f"realm_id={realm_id!r}) but no local qbo.Bill staging row exists for it — "
+                f"refusing to push a possible duplicate. Investigate the missing staging row "
+                f"before retrying."
+            )
+
         # Require bill_number — QBO DocNumber must be present; exclude_none=True would silently drop it
         if not bill.bill_number:
             raise ValueError(f"Bill {bill_id} has no bill_number. Set a bill number before syncing to QBO.")
@@ -598,10 +540,10 @@ class BillBillConnector:
         qbo_vendor_ref = self._get_qbo_vendor_ref(bill.vendor_id)
         if not qbo_vendor_ref:
             raise ValueError(f"No QBO vendor mapping found for vendor_id: {bill.vendor_id}")
-        
+
         # Get bill line items
         bill_line_items = self.bill_line_item_service.read_by_bill_id(bill_id=bill_id)
-        
+
         # Build QBO line items — all line items must have valid mappings.
         # A partial sync is not allowed; if any line item cannot be mapped, the entire sync fails.
         qbo_lines = []
@@ -614,7 +556,7 @@ class BillBillConnector:
             qbo_line = self._build_qbo_line(line_item, idx, realm_id)
             qbo_lines.append(qbo_line)
             line_num_to_line_item_id[idx] = line_item.id
-        
+
         # Get AP Account reference
         ap_account_ref = self._get_ap_account_ref(realm_id)
 
@@ -632,7 +574,7 @@ class BillBillConnector:
             private_note=bill.memo,
             line=qbo_lines,
         )
-        
+
         logger.info(f"Creating Bill in QBO for local Bill {bill_id}: doc_number={bill.bill_number}")
 
         # Log payload for debugging
@@ -661,31 +603,21 @@ class BillBillConnector:
                 )
 
         logger.info(f"Created QBO Bill {created_bill.id} with SyncToken {created_bill.sync_token}")
-        
+
         # Get vendor name for storage
         vendor = self.vendor_service.read_by_id(bill.vendor_id) if bill.vendor_id else None
         vendor_name = vendor.name if vendor else None
-        
+
         # Store QboBill locally — reuse on retry if a prior attempt already persisted it
         existing_local_qbo_bill = self.qbo_bill_repo.read_by_qbo_id_and_realm_id(
             created_bill.id, realm_id
         )
         if existing_local_qbo_bill:
-            conflicting_mapping = self.mapping_repo.read_by_qbo_bill_id(
-                existing_local_qbo_bill.id
-            )
-            if conflicting_mapping:
-                raise ValueError(
-                    f"QboBill {existing_local_qbo_bill.id} (QboId={created_bill.id}) is already mapped to a "
-                    f"different Bill {conflicting_mapping.bill_id}; cannot push Bill {bill_id} onto it. This "
-                    f"indicates a race between this push retry and an independent pull, or a duplicate local "
-                    f"Bill. Manual investigation required."
-                )
-            local_qbo_bill = existing_local_qbo_bill
             logger.info(
                 f"QboBill already stored locally for QboId {created_bill.id} "
-                f"(retry after prior partial success) — reusing local record {local_qbo_bill.id}"
+                f"(retry after prior partial success) — reusing local record {existing_local_qbo_bill.id}"
             )
+            local_qbo_bill = existing_local_qbo_bill
         else:
             local_qbo_bill = self.qbo_bill_repo.create(
                 qbo_id=created_bill.id,
@@ -711,7 +643,7 @@ class BillBillConnector:
                 global_tax_calculation=created_bill.global_tax_calculation,
             )
             logger.info(f"Stored local QboBill {local_qbo_bill.id}")
-        
+
         # Store QboBillLines locally and create line item mappings
         if created_bill.line:
             from integrations.intuit.qbo.bill.connector.bill_line_item.business.service import BillLineItemConnector
@@ -744,21 +676,16 @@ class BillBillConnector:
                         logger.info(f"Created line mapping: BillLineItem {bill_line_item_id} <-> QboBillLine {stored_line_id}")
                     except ValueError as e:
                         logger.warning(f"Could not create line mapping: {e}")
-        
-        # Create mapping
-        qbo_bill_id = coerce_id(local_qbo_bill.id)
-        try:
-            mapping = self.create_mapping(
-                bill_id=bill_id,
-                qbo_bill_id=qbo_bill_id,
-                qbo_id=local_qbo_bill.qbo_id,
-                realm_id=local_qbo_bill.realm_id or realm_id,
-                sync_token=getattr(local_qbo_bill, "sync_token", None),
-            )
-            logger.info(f"Created mapping: Bill {bill_id} <-> QboBill {qbo_bill_id}")
-        except ValueError as e:
-            logger.warning(f"Could not create mapping: {e}")
-        
+
+        # Stamp dbo-native identity — the sole identity store now (U-355)
+        self.bill_service.repo.set_qbo_identity(
+            id=bill_id,
+            qbo_id=local_qbo_bill.qbo_id,
+            realm_id=local_qbo_bill.realm_id or realm_id,
+            sync_token=getattr(local_qbo_bill, "sync_token", None),
+        )
+        logger.info(f"Stamped dbo-native QBO identity: Bill {bill_id} <-> QboBill {local_qbo_bill.id}")
+
         return local_qbo_bill
 
     def _recover_duplicate_qbo_bill(
@@ -776,8 +703,6 @@ class BillBillConnector:
         create mappings. Adopt-style recovery is a separate reviewed unit
         (see TODO.md); a wrong adoption is permanent and invisible to daily reconcile.
         """
-        from integrations.intuit.qbo.base.reconciliation_recorder import record_mapping_issue
-
         vendor = self.vendor_service.read_by_id(bill.vendor_id) if bill.vendor_id else None
         vendor_name = vendor.name if vendor else "unknown"
 
@@ -803,15 +728,38 @@ class BillBillConnector:
         """
         Re-push a QBO Bill with updated BillableStatus = HasBeenBilled on billed line items.
         Called after invoice completion to reflect the billed state in QBO.
+
+        U-355: resolves the target QboBill via dbo.Bill's own QboId (verified via
+        verify_identity_dbo_only against a fresh dbo-only read), not the retired
+        qbo.BillBill mapping hop — mirrors this connector's own sync_to_qbo_bill
+        short-circuit.
         """
         from integrations.intuit.qbo.bill.external.schemas import QboBillUpdate
 
-        mapping = self.mapping_repo.read_by_bill_id(bill_id)
-        if not mapping:
-            logger.debug(f"No QBO mapping for bill_id={bill_id}, skipping HasBeenBilled update")
+        bill = self.bill_service.read_by_id(bill_id)
+        if not bill or not bill.qbo_id:
+            logger.debug(f"No QBO identity for bill_id={bill_id}, skipping HasBeenBilled update")
             return
 
-        local_qbo_bill = self.qbo_bill_repo.read_by_id(mapping.qbo_bill_id)
+        verified_qbo_id = verify_identity_dbo_only(
+            bill, read_direct_by_qbo_identity=self.bill_service.read_by_qbo_identity,
+        )
+        if not verified_qbo_id:
+            logger.error(
+                f"Bill {bill_id}'s dbo QboId no longer resolves back to it on a fresh "
+                f"dbo-only read — refusing to push a HasBeenBilled update with a possibly "
+                f"stolen/reassigned identity."
+            )
+            return
+
+        # U-355 review fix: scope the staging lookup to bill.realm_id (the SAME realm
+        # source verify_identity_dbo_only just checked against), not the bare `realm_id`
+        # param — the two must agree, or a caller-supplied realm_id that ever diverges
+        # from the bill's own stamped realm (single-realm today, so always equal, but
+        # multi-realm activation is an already-booked future change) would let the verify
+        # step pass while this lookup silently misses and returns early, looking like
+        # "nothing to do" instead of a real mismatch.
+        local_qbo_bill = self.qbo_bill_repo.read_by_qbo_id_and_realm_id(verified_qbo_id, bill.realm_id)
         if not local_qbo_bill or not local_qbo_bill.qbo_id:
             return
 
@@ -914,10 +862,10 @@ class BillBillConnector:
     def _get_qbo_vendor_ref(self, vendor_id: int) -> Optional[QboReferenceType]:
         """
         Get QBO VendorRef from local vendor_id.
-        
+
         Args:
             vendor_id: Local vendor database ID
-            
+
         Returns:
             QboReferenceType with QBO vendor value and name, or None
         """
@@ -1126,9 +1074,9 @@ class BillBillConnector:
                 )
         else:
             raise ValueError(f"BillLineItem {line_item.id} has no sub_cost_code_id. All line items require a SubCostCode for QBO sync.")
-        
+
         customer_ref = self._get_qbo_customer_ref(line_item.project_id) if line_item.project_id else None
-        
+
         # Determine billable status.
         # is_billable=None means default billable (treat same as True).
         # is_billable=False means explicitly not billable.
@@ -1154,12 +1102,12 @@ class BillBillConnector:
                 billable_status = "NotBillable"
         else:
             billable_status = "NotBillable"
-        
+
         # Calculate markup percent (convert from decimal like 0.10 to percentage like 10)
         markup_percent = None
         if line_item.markup is not None:
             markup_percent = line_item.markup * Decimal('100')
-        
+
         # Item-based expense line
         # Ensure we have an amount - QBO requires either Amount or (Qty + UnitPrice)
         line_amount = line_item.amount
@@ -1218,7 +1166,7 @@ class BillBillConnector:
             qty = None
             unit_price = None
             markup_percent = None
-            
+
             if qbo_line.item_based_expense_line_detail:
                 detail = qbo_line.item_based_expense_line_detail
                 if detail.item_ref:
@@ -1249,7 +1197,7 @@ class BillBillConnector:
                     class_ref_value = detail.class_ref.value
                     class_ref_name = detail.class_ref.name
                 billable_status = detail.billable_status
-            
+
             return self.qbo_bill_line_repo.create(
                 qbo_bill_id=qbo_bill_id,
                 qbo_line_id=qbo_line.id,

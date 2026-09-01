@@ -8,7 +8,6 @@ import pytest
 from integrations.intuit.qbo.attachable.connector.attachment.business.service import (
     AttachableAttachmentConnector,
 )
-from integrations.intuit.qbo.bill.connector.bill.business.service import BillBillConnector
 from integrations.intuit.qbo.bill.connector.bill_line_item.business.service import BillLineItemConnector
 from integrations.intuit.qbo.company_info.connector.business.service import CompanyInfoCompanyConnector
 from integrations.intuit.qbo.customer.connector.customer.business.service import CustomerCustomerConnector
@@ -28,20 +27,11 @@ from integrations.intuit.qbo.vendorcredit.connector.bill_credit_line_item.busine
 
 # Captured pre-refactor from scratchpad harness (U-333 Task 4).
 _EXPECTED = {
-    "bill": {
-        "drift_type": "bill_identity_conflict",
-        "entity_type": "Bill",
-        "entity_public_id": None,
-        "qbo_id": "BILL-99",
-        "realm_id": "realm-1",
-        "details": (
-            "BillBill identity conflict. dbo.Bill 55 carries native QBO identity for QboBill 4 "
-            "(QboId=BILL-99, RealmId=realm-1). qbo-side: the mapping table still binds that same "
-            "QboBill to a DIFFERENT Bill 9 (mapping 2). local-side: Bill 55's own mapping row "
-            "(mapping 3) still binds it to a DIFFERENT QboBill 5. Not auto-repointed — "
-            "investigate which side is correct."
-        ),
-    },
+    # U-355: "bill" removed — BillBillConnector no longer has
+    # _record_identity_mapping_conflict_issue (qbo.BillBill is retired;
+    # run_identity_fastpath_dbo_only has no mapping-table-vs-dbo conflict state
+    # left to detect — dbo.Bill's own unique index is the sole guard now).
+    # Mirrors "expense"/"bill_credit" below (U-353/U-354).
     "invoice": {
         "drift_type": "invoice_identity_conflict",
         "entity_type": "Invoice",
@@ -260,16 +250,7 @@ def _assert_recorded(repo, expected):
 @pytest.mark.parametrize("family", list(_EXPECTED))
 def test_recorder_consolidation_emits_identical_tuple(family):
     expected = _EXPECTED[family]
-    if family == "bill":
-        c = object.__new__(BillBillConnector)
-        c.reconciliation_repo = Mock()
-        c._record_identity_mapping_conflict_issue(
-            qbo_bill=SimpleNamespace(id=4, qbo_id="BILL-99", realm_id="realm-1"),
-            dbo_bill_id=55,
-            local_side_mapping=SimpleNamespace(id=3, bill_id=55, qbo_bill_id=5),
-            qbo_side_mapping=SimpleNamespace(id=2, bill_id=9, qbo_bill_id=4),
-        )
-    elif family == "invoice":
+    if family == "invoice":
         c = object.__new__(InvoiceInvoiceConnector)
         c.reconciliation_repo = Mock()
         c._record_identity_mapping_conflict_issue(

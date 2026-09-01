@@ -12,7 +12,6 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from conftest import stub_qbo_identity_fastpath_miss
 from integrations.intuit.qbo.base.identity_drift import classify_qbo_identity_drift
-from integrations.intuit.qbo.bill.connector.bill.business.service import BillBillConnector
 from integrations.intuit.qbo.company_info.connector.business.service import CompanyInfoCompanyConnector
 from integrations.intuit.qbo.customer.connector.project.business.service import CustomerProjectConnector
 from integrations.intuit.qbo.invoice.connector.invoice.business.service import InvoiceInvoiceConnector
@@ -129,48 +128,6 @@ def test_set_qbo_identity_calls_sproc(repo_path, sproc, extra_params):
 # ---------------------------------------------------------------------------
 # Connector dual-write call sites
 # ---------------------------------------------------------------------------
-
-
-def _make_bill_connector():
-    mapping_repo = Mock()
-    mapping_repo.read_by_bill_id.return_value = None
-    mapping_repo.read_by_qbo_bill_id.return_value = None
-    mapping_repo.create.return_value = SimpleNamespace(id=1)
-    bill_service = Mock()
-    bill_service.repo = Mock()
-    # U-283: these tests exercise the legacy create_mapping()/sync path.
-    stub_qbo_identity_fastpath_miss(bill_service)
-    connector = BillBillConnector(mapping_repo=mapping_repo, bill_service=bill_service)
-    return connector, mapping_repo, bill_service.repo
-
-
-def test_bill_create_mapping_dual_writes_identity():
-    connector, mapping_repo, bill_repo = _make_bill_connector()
-    connector.create_mapping(
-        bill_id=10,
-        qbo_bill_id=20,
-        qbo_id="QB-10",
-        realm_id="realm-x",
-        sync_token="sync-1",
-    )
-    mapping_repo.create.assert_called_once_with(bill_id=10, qbo_bill_id=20)
-    bill_repo.set_qbo_identity.assert_called_once_with(
-        id=10, qbo_id="QB-10", realm_id="realm-x", sync_token="sync-1"
-    )
-
-
-def test_bill_create_mapping_identity_failure_propagates():
-    connector, mapping_repo, bill_repo = _make_bill_connector()
-    bill_repo.set_qbo_identity.side_effect = RuntimeError("stamp failed")
-    with pytest.raises(RuntimeError, match="stamp failed"):
-        connector.create_mapping(
-            bill_id=10,
-            qbo_bill_id=20,
-            qbo_id="QB-10",
-            realm_id="realm-x",
-            sync_token="sync-1",
-        )
-    mapping_repo.create.assert_not_called()
 
 
 def _make_invoice_connector():
@@ -318,35 +275,6 @@ def test_company_create_mapping_identity_failure_propagates():
 # NOTE: FIX 1/2 sproc no-op + steal guards are SQL-only; this harness has no live DB,
 # so those behaviors are not regression-tested here — the guards live in the sprocs themselves.
 # ---------------------------------------------------------------------------
-
-
-def test_bill_update_path_stamps_identity():
-    connector, mapping_repo, bill_repo = _make_bill_connector()
-    mapping = SimpleNamespace(id=1, bill_id=10)
-    bill = SimpleNamespace(id=10, public_id="b10", row_version="rv", bill_number="B1")
-    qbo_bill = SimpleNamespace(
-        id=20,
-        qbo_id="QB-10",
-        realm_id="realm-x",
-        sync_token="sync-new",
-        vendor_ref_value="v1",
-        doc_number="B1",
-        txn_date="2026-01-01",
-        due_date="",
-        private_note="",
-        total_amt=0,
-    )
-    mapping_repo.read_by_qbo_bill_id.return_value = mapping
-    connector.bill_service.read_by_id = Mock(return_value=bill)
-    connector.bill_service.update_by_public_id = Mock(return_value=bill)
-    connector._get_vendor_public_id = Mock(return_value="vendor-pub")
-    connector._sync_line_items = Mock()
-
-    connector.sync_from_qbo_bill(qbo_bill, [])
-
-    bill_repo.set_qbo_identity.assert_called_once_with(
-        id=10, qbo_id="QB-10", realm_id="realm-x", sync_token="sync-new"
-    )
 
 
 def test_invoice_update_path_stamps_identity():

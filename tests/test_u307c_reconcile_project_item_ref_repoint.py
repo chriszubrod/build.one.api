@@ -18,8 +18,8 @@ from scripts.reconcile_project import repair_qbo_line_item_mappings
 MODULE = "scripts.reconcile_project"
 
 
-def _make_bill(bill_id=1, bill_number="B-1"):
-    return SimpleNamespace(id=bill_id, bill_number=bill_number)
+def _make_bill(bill_id=1, bill_number="B-1", qbo_id="BILL-99"):
+    return SimpleNamespace(id=bill_id, bill_number=bill_number, qbo_id=qbo_id)
 
 
 def _make_line_item(*, li_id=10, description="Lumber", amount="100.00", sub_cost_code_id=None):
@@ -35,23 +35,26 @@ def _make_qbo_bill_line(*, qbl_id=20, description="Lumber", amount="100.00", lin
     )
 
 
-def _repos(*, bill_bill, qbo_lines, existing_mapping=None):
-    bill_bill_repo = MagicMock()
-    bill_bill_repo.read_by_bill_id.return_value = bill_bill
+def _repos(*, local_qbo_bill, qbo_lines, existing_mapping=None):
+    # U-355: qbo.BillBill is retired -- the "already in QBO" check now resolves
+    # the local qbo.Bill staging row directly via (bill.qbo_id, realm_id), not a
+    # BillBill mapping row's own qbo_bill_id.
+    qbo_bill_repo = MagicMock()
+    qbo_bill_repo.read_by_qbo_id_and_realm_id.return_value = local_qbo_bill
     bill_line_item_bill_line_repo = MagicMock()
     bill_line_item_bill_line_repo.read_by_bill_line_item_id.return_value = None
     bill_line_item_bill_line_repo.read_by_qbo_bill_line_id.return_value = existing_mapping
     qbo_bill_line_repo = MagicMock()
     qbo_bill_line_repo.read_by_qbo_bill_id.return_value = qbo_lines
-    return bill_bill_repo, bill_line_item_bill_line_repo, qbo_bill_line_repo
+    return qbo_bill_repo, bill_line_item_bill_line_repo, qbo_bill_line_repo
 
 
 def test_backfill_resolves_sub_cost_code_dbo_natively_and_threads_realm_id():
     bill = _make_bill()
     li = _make_line_item(sub_cost_code_id=None)
     qbo_line = _make_qbo_bill_line(item_ref_value="ITEM-Q1")
-    bill_bill = SimpleNamespace(qbo_bill_id=99)
-    bill_bill_repo, bl_repo, qbo_bill_line_repo = _repos(bill_bill=bill_bill, qbo_lines=[qbo_line])
+    local_qbo_bill = SimpleNamespace(id=99)
+    qbo_bill_repo, bl_repo, qbo_bill_line_repo = _repos(local_qbo_bill=local_qbo_bill, qbo_lines=[qbo_line])
 
     resolved = SimpleNamespace(id=555)
     bli_repo_instance = MagicMock()
@@ -62,7 +65,7 @@ def test_backfill_resolves_sub_cost_code_dbo_natively_and_threads_realm_id():
         issues, repairs_count = repair_qbo_line_item_mappings(
             bills_by_id={1: bill},
             line_items_by_bill_id={1: [li]},
-            bill_bill_repo=bill_bill_repo,
+            qbo_bill_repo=qbo_bill_repo,
             bill_line_item_bill_line_repo=bl_repo,
             qbo_bill_line_repo=qbo_bill_line_repo,
             dry_run=False,
@@ -81,8 +84,8 @@ def test_backfill_skips_when_sub_cost_code_already_set():
     bill = _make_bill()
     li = _make_line_item(sub_cost_code_id=42)
     qbo_line = _make_qbo_bill_line(item_ref_value="ITEM-Q1")
-    bill_bill = SimpleNamespace(qbo_bill_id=99)
-    bill_bill_repo, bl_repo, qbo_bill_line_repo = _repos(bill_bill=bill_bill, qbo_lines=[qbo_line])
+    local_qbo_bill = SimpleNamespace(id=99)
+    qbo_bill_repo, bl_repo, qbo_bill_line_repo = _repos(local_qbo_bill=local_qbo_bill, qbo_lines=[qbo_line])
 
     bli_repo_instance = MagicMock()
     with patch(f"{MODULE}.resolve_dbo_sub_cost_code") as mock_resolve, patch(
@@ -91,7 +94,7 @@ def test_backfill_skips_when_sub_cost_code_already_set():
         repair_qbo_line_item_mappings(
             bills_by_id={1: bill},
             line_items_by_bill_id={1: [li]},
-            bill_bill_repo=bill_bill_repo,
+            qbo_bill_repo=qbo_bill_repo,
             bill_line_item_bill_line_repo=bl_repo,
             qbo_bill_line_repo=qbo_bill_line_repo,
             dry_run=False,
@@ -107,8 +110,8 @@ def test_backfill_no_item_ref_value_skips_resolution():
     bill = _make_bill()
     li = _make_line_item(sub_cost_code_id=None)
     qbo_line = _make_qbo_bill_line(item_ref_value=None)
-    bill_bill = SimpleNamespace(qbo_bill_id=99)
-    bill_bill_repo, bl_repo, qbo_bill_line_repo = _repos(bill_bill=bill_bill, qbo_lines=[qbo_line])
+    local_qbo_bill = SimpleNamespace(id=99)
+    qbo_bill_repo, bl_repo, qbo_bill_line_repo = _repos(local_qbo_bill=local_qbo_bill, qbo_lines=[qbo_line])
 
     with patch(f"{MODULE}.resolve_dbo_sub_cost_code") as mock_resolve, patch(
         f"{MODULE}.BillLineItemRepository"
@@ -116,7 +119,7 @@ def test_backfill_no_item_ref_value_skips_resolution():
         repair_qbo_line_item_mappings(
             bills_by_id={1: bill},
             line_items_by_bill_id={1: [li]},
-            bill_bill_repo=bill_bill_repo,
+            qbo_bill_repo=qbo_bill_repo,
             bill_line_item_bill_line_repo=bl_repo,
             qbo_bill_line_repo=qbo_bill_line_repo,
             dry_run=False,
@@ -131,8 +134,8 @@ def test_backfill_resolver_miss_leaves_sub_cost_code_null_no_error():
     bill = _make_bill()
     li = _make_line_item(sub_cost_code_id=None)
     qbo_line = _make_qbo_bill_line(item_ref_value="ITEM-Q1")
-    bill_bill = SimpleNamespace(qbo_bill_id=99)
-    bill_bill_repo, bl_repo, qbo_bill_line_repo = _repos(bill_bill=bill_bill, qbo_lines=[qbo_line])
+    local_qbo_bill = SimpleNamespace(id=99)
+    qbo_bill_repo, bl_repo, qbo_bill_line_repo = _repos(local_qbo_bill=local_qbo_bill, qbo_lines=[qbo_line])
 
     bli_repo_instance = MagicMock()
     with patch(f"{MODULE}.resolve_dbo_sub_cost_code", return_value=None), patch(
@@ -141,7 +144,7 @@ def test_backfill_resolver_miss_leaves_sub_cost_code_null_no_error():
         issues, repairs_count = repair_qbo_line_item_mappings(
             bills_by_id={1: bill},
             line_items_by_bill_id={1: [li]},
-            bill_bill_repo=bill_bill_repo,
+            qbo_bill_repo=qbo_bill_repo,
             bill_line_item_bill_line_repo=bl_repo,
             qbo_bill_line_repo=qbo_bill_line_repo,
             dry_run=False,
@@ -158,14 +161,14 @@ def test_backfill_dry_run_never_resolves_or_creates_mapping():
     bill = _make_bill()
     li = _make_line_item(sub_cost_code_id=None)
     qbo_line = _make_qbo_bill_line(item_ref_value="ITEM-Q1")
-    bill_bill = SimpleNamespace(qbo_bill_id=99)
-    bill_bill_repo, bl_repo, qbo_bill_line_repo = _repos(bill_bill=bill_bill, qbo_lines=[qbo_line])
+    local_qbo_bill = SimpleNamespace(id=99)
+    qbo_bill_repo, bl_repo, qbo_bill_line_repo = _repos(local_qbo_bill=local_qbo_bill, qbo_lines=[qbo_line])
 
     with patch(f"{MODULE}.resolve_dbo_sub_cost_code") as mock_resolve:
         issues, repairs_count = repair_qbo_line_item_mappings(
             bills_by_id={1: bill},
             line_items_by_bill_id={1: [li]},
-            bill_bill_repo=bill_bill_repo,
+            qbo_bill_repo=qbo_bill_repo,
             bill_line_item_bill_line_repo=bl_repo,
             qbo_bill_line_repo=qbo_bill_line_repo,
             dry_run=True,

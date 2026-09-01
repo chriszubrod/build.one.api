@@ -10,7 +10,6 @@ from integrations.intuit.qbo.bill.external.schemas import QboReferenceType
 
 def _build_connector():
     connector = BillBillConnector(
-        mapping_repo=Mock(),
         bill_service=Mock(),
         vendor_service=Mock(),
         vendor_vendor_repo=Mock(),

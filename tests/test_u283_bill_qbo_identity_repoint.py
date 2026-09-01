@@ -1,29 +1,25 @@
-"""Pure-logic tests for U-283 (Phase-4): repoint the `bill` connector family's
-header identity resolution off qbo.Bill / qbo.BillBill onto dbo.Bill's native
-QboId/RealmId (U-238a), via the shared base/identity_fastpath.py helper
-(U-287) — no per-family copy of the state machine. Also covers the U-276 §10
-prereq fold-in: bill_line_item's `_get_project_public_id` pull resolver tries
+"""Pure-logic tests for U-283 (Phase-4 repoint), then U-355 (mapping-table
+retirement): the `bill` connector family's header identity resolution against
+dbo.Bill's native QboId/RealmId (U-238a). Also covers the U-276 §10 prereq
+fold-in: bill_line_item's `_get_project_public_id` pull resolver tries
 dbo.Project's native identity first.
 
-Unlike U-276/277/278/279 (built before U-287), this connector calls
-`run_identity_fastpath()`/`resolve_mapping_state()` directly — there is no
-per-family `_resolve_mapping_state()` test-seam wrapper to test here, since
-there is no pre-existing suite depending on that method name. The shared
-helper's state machine is already exhaustively tested in
-tests/test_u287_identity_fastpath_helper.py; these tests instead prove THIS
-connector's wiring: the callbacks it hands the helper, and that a conflict
-never writes to the dbo-identity-matched row.
+Mirrors tests/test_u283b_purchase_qbo_identity_repoint.py's post-U-354 shape
+exactly (both retirements follow the same `run_identity_fastpath_dbo_only`
+template) — see that file's own docstring.
 
 Covers:
   1. BillRepository.read_by_qbo_identity (sproc call shape) + BillService's
      thin passthrough.
-  2. BillBillConnector.sync_from_qbo_bill's fast path: consistent hit (update +
-     SyncToken re-stamp, no mapping-table write), missing hit (self-heals a
-     missing mapping row via mapping_repo.create directly, not via
-     connector.create_mapping), conflict (hard stop — raises, records the
-     issue, never writes to the conflicted Bill), miss (falls back to the
-     pre-existing mapping-table path unchanged, reusing the same
-     `_apply_bill_fields` closure).
+  2. BillBillConnector's dbo-only identity fast path (U-355 — qbo.BillBill is
+     retired; run_identity_fastpath_dbo_only's own conflict/race machinery is
+     covered generically by tests/test_u300a_identity_fastpath_dbo_only.py, so
+     this section only proves THIS connector's resolve_candidate/
+     stamp_identity/apply_fields wiring, including the identity-stamp rollback
+     race fix). Like Expense/Purchase, Bill carries SyncToken as part of its
+     identity — the HIT branch's apply_fields must still re-stamp identity (to
+     refresh SyncToken) even though QboId/RealmId are already
+     correct-by-construction.
   3. BillLineItemConnector._get_project_public_id: direct dbo.Project lookup,
      verified via `verify_identity_dbo_only` (U-311, Wave-5 Option A) — a
      second dbo-only re-read by the resolved row's own identity, no
@@ -39,6 +35,12 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from integrations.intuit.qbo.bill.connector.bill.business.service import BillBillConnector
+
+SERVICE_MODULE = "integrations.intuit.qbo.bill.connector.bill.business.service"
+
+# U-355: the MISS/create branch runs under run_identity_fastpath_dbo_only's own
+# create lock — grant it for every test in this pure-logic module.
+pytestmark = pytest.mark.usefixtures("grant_qbo_app_lock")
 
 
 def _make_qbo_bill(**overrides):
@@ -114,16 +116,19 @@ def test_bill_service_read_by_qbo_identity_threads_actor_scope():
     assert result is sentinel
 
 
-# --- Section 2: BillBillConnector fast path ---
+# --- Section 2: BillBillConnector dbo-only fast path (U-355) ---
+#
+# No more _record_identity_mapping_conflict_issue / _record_missing_bill_issue
+# to unit-test directly (both retired with the mapping table — see this
+# module's own top docstring) — every scenario below drives the full
+# sync_from_qbo_bill().
 
 
 def _build_bill_connector():
-    mapping_repo = Mock()
     bill_service = Mock()
     bill_service.repo = Mock()
     reconciliation_repo = Mock()
     connector = BillBillConnector(
-        mapping_repo=mapping_repo,
         bill_service=bill_service,
         reconciliation_repo=reconciliation_repo,
     )
@@ -131,249 +136,221 @@ def _build_bill_connector():
     # exercised elsewhere; stub them so header-identity behavior is isolated.
     connector._get_vendor_public_id = Mock(return_value="vendor-pub-1")
     connector._sync_line_items = Mock()
-    return connector, mapping_repo, bill_service, reconciliation_repo
+    return connector, bill_service, reconciliation_repo
 
 
-def test_bill_record_identity_mapping_conflict_issue_names_both_sides():
-    connector, _, _, reconciliation_repo = _build_bill_connector()
-    qbo_bill = _make_qbo_bill(id=4, qbo_id="BILL-99", realm_id="realm-1")
-    qbo_side = SimpleNamespace(id=2, bill_id=9, qbo_bill_id=4)
-    local_side = SimpleNamespace(id=3, bill_id=55, qbo_bill_id=5)
-
-    connector._record_identity_mapping_conflict_issue(
-        qbo_bill=qbo_bill, dbo_bill_id=55,
-        local_side_mapping=local_side, qbo_side_mapping=qbo_side,
-    )
-
-    reconciliation_repo.create.assert_called_once()
-    kwargs = reconciliation_repo.create.call_args.kwargs
-    assert kwargs["drift_type"] == "bill_identity_conflict"
-    # Phrase-level checks, not bare digit substrings — the always-emitted
-    # first sentence's own "55"/"4"/"BILL-99" would trivially satisfy a plain
-    # "in details" check even if the qbo-side/local-side blocks were dropped.
-    assert "Bill 9 (mapping 2)" in kwargs["details"]      # qbo-side conflicting Bill
-    assert "DIFFERENT QboBill 5" in kwargs["details"]     # local-side conflicting QboBill
-
-
-def test_bill_record_identity_mapping_conflict_issue_qbo_side_only():
-    """Isolated qbo-side-only shape (local_side_mapping=None) — proves the
-    qbo-side block alone produces its text and the local-side block is
-    correctly skipped, not just that both substrings appear somewhere when
-    both objects are supplied together."""
-    connector, _, _, reconciliation_repo = _build_bill_connector()
-    qbo_bill = _make_qbo_bill(id=4, qbo_id="BILL-99", realm_id="realm-1")
-    qbo_side = SimpleNamespace(id=2, bill_id=9, qbo_bill_id=4)
-
-    connector._record_identity_mapping_conflict_issue(
-        qbo_bill=qbo_bill, dbo_bill_id=55,
-        local_side_mapping=None, qbo_side_mapping=qbo_side,
-    )
-
-    kwargs = reconciliation_repo.create.call_args.kwargs
-    assert "Bill 9 (mapping 2)" in kwargs["details"]
-    assert "local-side" not in kwargs["details"]
-
-
-def test_bill_record_identity_mapping_conflict_issue_local_side_only():
-    """Isolated local-side-only shape (qbo_side_mapping=None) — proves the
-    local-side block alone produces its text and the qbo-side block is
-    correctly skipped."""
-    connector, _, _, reconciliation_repo = _build_bill_connector()
-    qbo_bill = _make_qbo_bill(id=4, qbo_id="BILL-99", realm_id="realm-1")
-    local_side = SimpleNamespace(id=3, bill_id=55, qbo_bill_id=5)
-
-    connector._record_identity_mapping_conflict_issue(
-        qbo_bill=qbo_bill, dbo_bill_id=55,
-        local_side_mapping=local_side, qbo_side_mapping=None,
-    )
-
-    kwargs = reconciliation_repo.create.call_args.kwargs
-    assert "DIFFERENT QboBill 5" in kwargs["details"]
-    assert "qbo-side" not in kwargs["details"]
-
-
-def test_bill_fast_path_hit_conflict_raises_and_never_writes():
-    connector, mapping_repo, bill_service, reconciliation_repo = _build_bill_connector()
-    qbo_bill = _make_qbo_bill(qbo_id="BILL-99", realm_id="realm-1")
-    direct_hit = SimpleNamespace(id=55, public_id="pub-55", bill_number="B-1", row_version="rv")
-    bill_service.read_by_qbo_identity.return_value = direct_hit
-    mapping_repo.read_by_bill_id.return_value = None
-    conflicting = SimpleNamespace(id=2, bill_id=9, qbo_bill_id=qbo_bill.id)
-    mapping_repo.read_by_qbo_bill_id.return_value = conflicting
-    # If the fast path fell through (it must not), these would let the legacy
-    # branch reach and write Bill 9 or mint a duplicate.
-    bill_service.read_by_id.return_value = SimpleNamespace(
-        id=9, public_id="pub-9", bill_number="B-1", row_version="rv9"
-    )
-    bill_service.read_by_bill_number_and_vendor_public_id.return_value = None
-    bill_service.create.return_value = SimpleNamespace(id=77, public_id="pub-77")
-    bill_service.update_by_public_id.side_effect = lambda *a, **k: pytest.fail(
-        "must not write to any Bill on a detected identity conflict"
-    )
-
-    with pytest.raises(ValueError):
-        connector.sync_from_qbo_bill(qbo_bill, _ONE_LINE)
-
-    reconciliation_repo.create.assert_called_once()  # conflict recorded (durable follow-up)
-    kwargs = reconciliation_repo.create.call_args.kwargs
-    assert kwargs["drift_type"] == "bill_identity_conflict"
-    bill_service.create.assert_not_called()  # NO duplicate Bill minted
-    bill_service.repo.set_qbo_identity.assert_not_called()  # NO identity theft
-
-
-def test_bill_fast_path_hit_consistent_refreshes_synctoken_skips_mapping_write():
-    """Unlike Company/Address/Project, Bill carries SyncToken as part of its
-    identity — the fast path's apply_fields must still re-stamp identity on a
-    CONSISTENT hit (to refresh SyncToken), even though QboId/RealmId are
-    already correct-by-construction. Only the mapping-table write is skipped."""
-    connector, mapping_repo, bill_service, _ = _build_bill_connector()
+def test_bill_dbo_only_hit_updates_in_place_and_restamps_synctoken():
+    """Like Expense/Purchase, Bill carries SyncToken as part of its identity —
+    a direct dbo.Bill.QboId/RealmId hit still re-stamps identity, to refresh
+    SyncToken on every pull, even though QboId/RealmId are already
+    correct-by-construction."""
+    connector, bill_service, _ = _build_bill_connector()
     qbo_bill = _make_qbo_bill(qbo_id="BILL-99", realm_id="realm-1", sync_token="7")
     direct_hit = SimpleNamespace(id=55, public_id="pub-55", bill_number="B-1", row_version="rv-55")
     bill_service.read_by_qbo_identity.return_value = direct_hit
     updated = SimpleNamespace(id=55, public_id="pub-55")
     bill_service.update_by_public_id.return_value = updated
-    mapping_repo.read_by_bill_id.return_value = SimpleNamespace(id=1, qbo_bill_id=qbo_bill.id)
-    mapping_repo.read_by_qbo_bill_id.return_value = SimpleNamespace(id=1, bill_id=55)
 
     result = connector.sync_from_qbo_bill(qbo_bill, _ONE_LINE)
 
     assert result is updated
-    mapping_repo.create.assert_not_called()
+    bill_service.create.assert_not_called()
     bill_service.repo.set_qbo_identity.assert_called_once_with(
         id=55, qbo_id="BILL-99", realm_id="realm-1", sync_token="7"
     )
-    connector._sync_line_items.assert_called_once()
+    connector._sync_line_items.assert_called_once_with(55, _ONE_LINE, "realm-1")
 
 
-def test_bill_fast_path_hit_missing_self_heals_via_mapping_repo_not_connector_create_mapping():
-    """On MISSING, the mapping row must be created via mapping_repo.create(...)
-    directly (bypassing BillBillConnector.create_mapping, which would
-    redundantly re-stamp identity that the fast path already verified)."""
-    connector, mapping_repo, bill_service, _ = _build_bill_connector()
+def test_bill_dbo_only_hit_write_race_raises_runtime_error():
+    """If `direct` is deleted between read_by_qbo_identity and the write
+    (BillService.update_by_public_id returns None on a ROWVERSION race /
+    concurrent delete), run_identity_fastpath_dbo_only's own guard must raise —
+    never let the None flow through as a silent success (U-291)."""
+    connector, bill_service, _ = _build_bill_connector()
     qbo_bill = _make_qbo_bill(qbo_id="BILL-99", realm_id="realm-1")
     direct_hit = SimpleNamespace(id=55, public_id="pub-55", bill_number="B-1", row_version="rv-55")
     bill_service.read_by_qbo_identity.return_value = direct_hit
-    bill_service.update_by_public_id.return_value = SimpleNamespace(id=55, public_id="pub-55")
-    mapping_repo.read_by_bill_id.return_value = None
-    mapping_repo.read_by_qbo_bill_id.return_value = None
+    bill_service.update_by_public_id.return_value = None  # race: row gone on write
 
-    connector.sync_from_qbo_bill(qbo_bill, _ONE_LINE)
+    with pytest.raises(RuntimeError, match="concurrent write race"):
+        connector.sync_from_qbo_bill(qbo_bill, _ONE_LINE)
 
-    mapping_repo.create.assert_called_once_with(bill_id=55, qbo_bill_id=qbo_bill.id)
-    # Exactly one stamp (from apply_fields' SyncToken refresh) — routing mapping
-    # creation through the connector's OWN create_mapping() instead of
-    # mapping_repo.create() directly would double-stamp identity redundantly.
-    assert bill_service.repo.set_qbo_identity.call_count == 1
+    connector._sync_line_items.assert_not_called()
 
 
-def test_bill_fast_path_self_heal_race_escalates_to_recorded_conflict():
-    """A concurrent sync can turn 'missing' into 'conflict' between the
-    pre-check and the create() call (no sp_getapplock serializes this — same
-    known gap as every sibling family). The create() failure must not be a
-    bare warning — re-check and record a real conflict issue when that's what
-    actually happened. Mirrors every other Phase-4 family's own version of this
-    test (e.g. test_u282_payment_term_qbo_identity_repoint.py)."""
-    connector, mapping_repo, bill_service, reconciliation_repo = _build_bill_connector()
-    qbo_bill = _make_qbo_bill(qbo_id="BILL-99", realm_id="realm-1")
-    direct_hit = SimpleNamespace(id=55, public_id="pub-55", bill_number="B-1", row_version="rv-55")
-    bill_service.read_by_qbo_identity.return_value = direct_hit
-    updated = SimpleNamespace(id=55, public_id="pub-55")
-    bill_service.update_by_public_id.return_value = updated
-    mapping_repo.read_by_bill_id.side_effect = [None, None]
-    mapping_repo.read_by_qbo_bill_id.side_effect = [
-        None, SimpleNamespace(id=9, bill_id=3, qbo_bill_id=qbo_bill.id)
-    ]
-    mapping_repo.create.side_effect = Exception("UNIQUE constraint violation")
+def test_bill_dbo_only_miss_creates_and_stamps_identity():
+    """A genuine miss (no dbo.Bill currently holds this identity) creates a
+    fresh Bill, stamps dbo-native identity, and syncs lines — no mapping row of
+    any kind. The final return value is a FRESH re-read (not the pre-stamp
+    `create()` object) — set_qbo_identity is a void DB write that never mutates
+    the in-memory candidate, so returning it unread would hand the caller stale
+    qbo_id/realm_id=None even though the row is stamped."""
+    connector, bill_service, _ = _build_bill_connector()
+    qbo_bill = _make_qbo_bill(qbo_id="BILL-99", realm_id="realm-1", sync_token="3")
+    bill_service.read_by_qbo_identity.return_value = None
+    created = SimpleNamespace(id=77, public_id="pub-77", qbo_id=None, realm_id=None)
+    bill_service.create.return_value = created
+    refreshed = SimpleNamespace(id=77, public_id="pub-77", qbo_id="BILL-99", realm_id="realm-1")
+    bill_service.read_by_id.return_value = refreshed
 
     result = connector.sync_from_qbo_bill(qbo_bill, _ONE_LINE)
+
+    # run_identity_fastpath_dbo_only re-reads under its create lock (race
+    # re-check) before treating this as a genuine miss — 2 calls, not 1.
+    bill_service.read_by_qbo_identity.assert_called_with("BILL-99", "realm-1")
+    assert bill_service.read_by_qbo_identity.call_count == 2
+    bill_service.create.assert_called_once()
+    bill_service.read_by_id.assert_called_once_with(77)
+    assert result is refreshed
+    assert result.qbo_id == "BILL-99"
+    bill_service.repo.set_qbo_identity.assert_called_once_with(
+        id=77, qbo_id="BILL-99", realm_id="realm-1", sync_token="3"
+    )
+    connector._sync_line_items.assert_called_once_with(77, _ONE_LINE, "realm-1")
+
+
+def test_bill_dbo_only_miss_identity_stamp_failure_rolls_back_header():
+    """A transient set_qbo_identity failure on the MISS/create path must ALSO
+    delete the just-created header (best-effort) — not just a line-sync
+    failure. Without this, a stamp failure leaves an unstamped orphan Bill that
+    read_direct_by_qbo_identity can never find again (no QboId), so the next
+    pull tick mints a genuine duplicate. Mirrors the pre-U-355 legacy
+    create_mapping()'s own contract: "Stamp dbo-native identity FIRST — if this
+    fails, nothing else has been created yet, so the caller's existing
+    rollback... fully cleans up.\""""
+    connector, bill_service, reconciliation_repo = _build_bill_connector()
+    qbo_bill = _make_qbo_bill(qbo_id="BILL-99", realm_id="realm-1")
+    bill_service.read_by_qbo_identity.return_value = None
+    created = SimpleNamespace(id=77, public_id="pub-77")
+    bill_service.create.return_value = created
+    bill_service.repo.set_qbo_identity.side_effect = RuntimeError("connection reset")
+    bill_service.delete_by_public_id.return_value = created
+
+    with pytest.raises(RuntimeError, match="connection reset"):
+        connector.sync_from_qbo_bill(qbo_bill, _ONE_LINE)
+
+    bill_service.delete_by_public_id.assert_called_once_with("pub-77")
+    connector._sync_line_items.assert_not_called()  # never reached — stamp failed first
+    reconciliation_repo.create.assert_not_called()  # header delete succeeded — no issue to record
+
+
+def test_bill_dbo_only_miss_line_sync_failure_rolls_back_header():
+    """A permanent line-sync failure on the MISS/create path must delete the
+    just-created header (best-effort) so a bad create never strands a
+    header-only zombie — mirrors the pre-U-355 legacy CREATE path's
+    compensating rollback, minus the (now nonexistent) mapping-row delete."""
+    connector, bill_service, reconciliation_repo = _build_bill_connector()
+    qbo_bill = _make_qbo_bill(qbo_id="BILL-99", realm_id="realm-1")
+    bill_service.read_by_qbo_identity.return_value = None
+    created = SimpleNamespace(id=77, public_id="pub-77")
+    bill_service.create.return_value = created
+    connector._sync_line_items.side_effect = RuntimeError("2 of 2 line item(s) failed to project")
+    bill_service.delete_by_public_id.return_value = created
+
+    with pytest.raises(RuntimeError, match="failed to project"):
+        connector.sync_from_qbo_bill(qbo_bill, _ONE_LINE)
+
+    bill_service.delete_by_public_id.assert_called_once_with("pub-77")
+    reconciliation_repo.create.assert_not_called()  # header delete succeeded — no issue to record
+
+
+def test_bill_dbo_only_miss_header_delete_also_fails_records_orphan_issue():
+    """If the compensating header delete ALSO fails after a line-sync failure,
+    the orphan is recorded as a reconciliation issue (U-226-style) so it isn't
+    silently lost — mirrors the legacy CREATE path's on_header_delete_failed."""
+    connector, bill_service, reconciliation_repo = _build_bill_connector()
+    qbo_bill = _make_qbo_bill(qbo_id="BILL-99", realm_id="realm-1")
+    bill_service.read_by_qbo_identity.return_value = None
+    created = SimpleNamespace(id=77, public_id="pub-77")
+    bill_service.create.return_value = created
+    connector._sync_line_items.side_effect = RuntimeError("line failure")
+    bill_service.delete_by_public_id.side_effect = Exception("db down")
+
+    with pytest.raises(RuntimeError, match="line failure"):
+        connector.sync_from_qbo_bill(qbo_bill, _ONE_LINE)
 
     reconciliation_repo.create.assert_called_once()
     kwargs = reconciliation_repo.create.call_args.kwargs
-    assert kwargs["drift_type"] == "bill_identity_conflict"
-    # A regression that silently dropped the still-valid updated entity (e.g.
-    # returning None instead) on this escalation path would pass a
-    # call-count-only assertion.
-    assert result is updated
+    assert kwargs["drift_type"] == "orphan_bill_header"
 
 
-def test_bill_fast_path_update_returns_none_raises_runtime_error():
-    """ROWVERSION race: a concurrent writer touched the fast-path-matched Bill
-    between the read and this UPDATE, so update_by_public_id() affects 0 rows
-    and returns None. Must raise cleanly, not propagate a bare None onward.
-
-    RuntimeError, deliberately NOT ValueError (U-291): a ROWVERSION race is
-    transient, not a permanent data problem — record_projection_error's rule 2
-    classifies a plain ValueError as a permanent SKIP, which would advance the
-    watermark past this record anyway. Was ValueError pre-U-291; renamed from
-    test_bill_fast_path_update_returns_none_raises_value_error."""
-    connector, mapping_repo, bill_service, _ = _build_bill_connector()
-    qbo_bill = _make_qbo_bill(qbo_id="BILL-99", realm_id="realm-1")
-    direct_hit = SimpleNamespace(id=55, public_id="pub-55", bill_number="B-1", row_version="rv-55")
-    bill_service.read_by_qbo_identity.return_value = direct_hit
-    bill_service.update_by_public_id.return_value = None
-    mapping_repo.read_by_bill_id.return_value = SimpleNamespace(id=1, qbo_bill_id=qbo_bill.id)
-    mapping_repo.read_by_qbo_bill_id.return_value = SimpleNamespace(id=1, bill_id=55)
-
-    with pytest.raises(RuntimeError, match="Failed to update Bill"):
-        connector.sync_from_qbo_bill(qbo_bill, _ONE_LINE)
-
-    bill_service.repo.set_qbo_identity.assert_not_called()
-
-
-def test_bill_legacy_path_update_returns_none_raises_runtime_error():
-    """The legacy "mapping found" branch (sync_from_qbo_bill's Step ~230) calls
-    the SAME shared `_apply_bill_fields` closure the fast path uses — one fix
-    covers both call sites by construction, but pin it explicitly since it's a
-    genuinely different code path (proves no duplicated/diverging update logic
-    reintroduces the gap, mirroring
-    test_bill_fast_path_miss_falls_back_to_legacy_mapping_table_path's setup)."""
-    connector, mapping_repo, bill_service, _ = _build_bill_connector()
-    qbo_bill = _make_qbo_bill(qbo_id="BILL-99", realm_id="realm-1")
-    bill_service.read_by_qbo_identity.return_value = None  # fast path misses
-    existing_mapping = SimpleNamespace(id=1, bill_id=55, qbo_bill_id=qbo_bill.id)
-    mapping_repo.read_by_qbo_bill_id.return_value = existing_mapping
-    existing_bill = SimpleNamespace(id=55, public_id="pub-55", bill_number="B-1", row_version="rv-55")
-    bill_service.read_by_id.return_value = existing_bill
-    bill_service.update_by_public_id.return_value = None
-
-    with pytest.raises(RuntimeError, match="Failed to update Bill"):
-        connector.sync_from_qbo_bill(qbo_bill, _ONE_LINE)
-
-
-def test_bill_fast_path_miss_falls_back_to_legacy_mapping_table_path():
-    """No dbo row carries this identity yet -> the pre-existing mapping-table-
-    based logic must still run, reusing the SAME `_apply_bill_fields` closure
-    (proving no duplicated/diverging update logic between the two paths)."""
-    connector, mapping_repo, bill_service, _ = _build_bill_connector()
-    qbo_bill = _make_qbo_bill(qbo_id="BILL-99", realm_id="realm-1")
-    bill_service.read_by_qbo_identity.return_value = None
-    existing_mapping = SimpleNamespace(id=1, bill_id=55, qbo_bill_id=qbo_bill.id)
-    mapping_repo.read_by_qbo_bill_id.return_value = existing_mapping
-    existing_bill = SimpleNamespace(id=55, public_id="pub-55", bill_number="B-1", row_version="rv-55")
-    bill_service.read_by_id.return_value = existing_bill
-    updated = SimpleNamespace(id=55, public_id="pub-55")
-    bill_service.update_by_public_id.return_value = updated
-
-    result = connector.sync_from_qbo_bill(qbo_bill, _ONE_LINE)
-
-    bill_service.read_by_qbo_identity.assert_called_once_with("BILL-99", "realm-1")
-    assert result is updated
-    bill_service.repo.set_qbo_identity.assert_called_once()  # legacy path still stamps identity
-
-
-def test_bill_fast_path_skipped_entirely_when_no_qbo_id():
+def test_bill_dbo_only_no_qbo_id_hits_backstop_raise():
     """A record with no external qbo_id can't possibly have a dbo-native
-    identity match — the fast-path lookup should not even be attempted."""
-    connector, mapping_repo, bill_service, _ = _build_bill_connector()
-    qbo_bill = _make_qbo_bill(qbo_id=None)
-    mapping_repo.read_by_qbo_bill_id.return_value = None
-    created = SimpleNamespace(id=77, public_id="pub-77")
-    bill_service.create.return_value = created
+    identity match — run_identity_fastpath_dbo_only short-circuits to
+    hit=False/entity=None without even attempting the direct lookup, and the
+    connector's own backstop (kept for a directly-invoked falsy qbo_id,
+    mirroring every sibling connector — not reachable via the real pull path)
+    raises rather than silently creating."""
+    connector, bill_service, _ = _build_bill_connector()
+    qbo_bill = _make_qbo_bill(id=4, qbo_id=None)
 
-    result = connector.sync_from_qbo_bill(qbo_bill, _ONE_LINE)
+    with pytest.raises(RuntimeError, match="dbo-only identity fast path"):
+        connector.sync_from_qbo_bill(qbo_bill, _ONE_LINE)
 
     bill_service.read_by_qbo_identity.assert_not_called()
-    assert result is created
+    bill_service.create.assert_not_called()
+
+
+# --- Section 2b: BillBillConnector.update_has_been_billed_in_qbo (U-355) ---
+#
+# No prior test coverage existed for this method at all (grepped tests/ before
+# writing this section) despite it being live-exercised on every invoice
+# completion that bills a QBO-synced Bill. Resolves the target QboBill via
+# dbo.Bill's own QboId (verified via verify_identity_dbo_only), not the retired
+# qbo.BillBill mapping hop.
+
+
+def _build_bill_connector_for_hbb():
+    bill_service = Mock()
+    connector = BillBillConnector(bill_service=bill_service)
+    return connector, bill_service
+
+
+def test_update_has_been_billed_no_qbo_identity_is_a_noop():
+    connector, bill_service = _build_bill_connector_for_hbb()
+    bill_service.read_by_id.return_value = SimpleNamespace(id=7, qbo_id=None, realm_id="realm-1")
+
+    connector.update_has_been_billed_in_qbo(7, "realm-1")
+
+    bill_service.read_by_qbo_identity.assert_not_called()
+
+
+def test_update_has_been_billed_refuses_when_identity_no_longer_verifies():
+    """A fresh dbo-only re-read resolves to a DIFFERENT Bill -- refuse (log,
+    return) rather than push a HasBeenBilled update under disputed identity."""
+    connector, bill_service = _build_bill_connector_for_hbb()
+    bill = SimpleNamespace(id=7, qbo_id="BILL-99", realm_id="realm-1")
+    bill_service.read_by_id.return_value = bill
+    bill_service.read_by_qbo_identity.return_value = SimpleNamespace(id=999)
+    connector.qbo_bill_repo = Mock()
+
+    connector.update_has_been_billed_in_qbo(7, "realm-1")
+
+    connector.qbo_bill_repo.read_by_qbo_id_and_realm_id.assert_not_called()
+
+
+def test_update_has_been_billed_uses_bills_own_realm_id_for_staging_lookup():
+    """Review fix: the staging-cache lookup must use bill.realm_id -- the SAME
+    realm source verify_identity_dbo_only just checked against -- not the bare
+    `realm_id` parameter, so the two can never silently diverge (single-realm
+    today, so they're always equal in practice, but the parameter and the
+    bill's own stamped realm are conceptually different sources)."""
+    connector, bill_service = _build_bill_connector_for_hbb()
+    bill = SimpleNamespace(id=7, qbo_id="BILL-99", realm_id="bills-own-realm")
+    bill_service.read_by_id.return_value = bill
+    bill_service.read_by_qbo_identity.return_value = SimpleNamespace(id=7)
+    connector.qbo_bill_repo = Mock()
+    connector.qbo_bill_repo.read_by_qbo_id_and_realm_id.return_value = None
+
+    # Called with a DIFFERENT realm_id than the bill's own -- if the lookup used
+    # this parameter instead of bill.realm_id, this test's mock would still be
+    # consistent (both None) and hide the bug; asserting the CALL ARGS below is
+    # what actually pins the fix.
+    connector.update_has_been_billed_in_qbo(7, "caller-supplied-realm")
+
+    connector.qbo_bill_repo.read_by_qbo_id_and_realm_id.assert_called_once_with(
+        "BILL-99", "bills-own-realm"
+    )
 
 
 # --- Section 3: BillLineItemConnector._get_project_public_id resolver fold-in ---

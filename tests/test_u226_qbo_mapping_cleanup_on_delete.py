@@ -5,7 +5,7 @@ from unittest.mock import Mock, patch
 
 import pytest
 
-from entities.bill.business.service import BillService
+from entities.bill.business.service import BillService, _clear_legacy_bill_bill_mapping
 from entities.bill_credit.business.service import (
     BillCreditService,
     _clear_legacy_vendorcredit_billcredit_mapping,
@@ -310,18 +310,19 @@ def test_expense_legacy_mapping_bridge_logs_but_swallows_unexpected_errors():
     mock_logger.warning.assert_called_once()
 
 
-@patch("integrations.intuit.qbo.base.mapping_cleanup.qbo_app_lock", _granted_lock)
-def test_bill_delete_clears_qbo_mapping_before_header():
+def test_bill_delete_no_longer_clears_any_qbo_mapping():
+    """U-355: qbo.BillBill is retired — Bill's delete no longer calls
+    delete_own_qbo_mapping_before_header at all (dbo.Bill.QboId/RealmId are
+    plain columns that die with the row; there is no separate mapping row to
+    clear first). A straight header delete, same shape as BillCredit/Expense
+    before U-226 ever touched them — plus the U-355 deploy-gap bridge (see the
+    dedicated tests below), which is a real DB call here since it isn't
+    mocked; that's fine — the harness's no-live-DB guard fires and is caught
+    by the bridge's own broad tolerance."""
     bill = SimpleNamespace(id=7, public_id="bill-pub")
-    call_order = []
 
     mock_repo = Mock()
-    mock_repo.delete_by_id.side_effect = lambda *_: call_order.append("header") or bill
-
-    mock_mapping_repo = Mock()
-    fake_mapping = SimpleNamespace(id=55, qbo_bill_id=200)
-    mock_mapping_repo.read_by_bill_id.return_value = fake_mapping
-    mock_mapping_repo.delete_by_id.side_effect = lambda *_: call_order.append("mapping")
+    mock_repo.delete_by_id.return_value = bill
 
     svc = BillService(repo=mock_repo)
     svc.bill_line_item_service.read_by_bill_id = Mock(return_value=[])
@@ -330,18 +331,57 @@ def test_bill_delete_clears_qbo_mapping_before_header():
         "entities.review.persistence.repo.ReviewRepository"
     ) as review_repo_cls, patch(
         "integrations.ms.mail.message.connector.bill.persistence.repo.MsMessageBillRepository"
-    ) as ms_msg_repo_cls, patch(
-        "integrations.intuit.qbo.bill.connector.bill.persistence.repo.BillBillRepository",
-        return_value=mock_mapping_repo,
-    ):
+    ) as ms_msg_repo_cls:
         review_repo_cls.return_value.delete_by_bill_id = Mock()
         ms_msg_repo_cls.return_value.read_by_bill_id.return_value = []
-        svc.delete_by_public_id("bill-pub")
+        result = svc.delete_by_public_id("bill-pub")
 
-    assert call_order == ["mapping", "header"]
-    mock_mapping_repo.read_by_bill_id.assert_called_once_with(7)
-    mock_mapping_repo.delete_by_id.assert_called_once_with(55)
-    mock_mapping_repo.create.assert_not_called()
+    assert result is bill
     mock_repo.delete_by_id.assert_called_once_with(7)
+
+
+# --- U-355 deploy-gap bridge: _clear_legacy_bill_bill_mapping ---
+#
+# Builders never apply prod DDL — the DROP TABLE for qbo.BillBill lands AFTER
+# this unit's code deploys, not atomically with it (see repo CLAUDE.md + the
+# call site's own comment). Unlike BillCredit/Expense, qbo.BillBill carries no
+# FK at all, so a leftover legacy row here can never 547 the header delete —
+# this bridge is pure hygiene, not a delete-order requirement.
+
+_BILL_MODULE = "entities.bill.business.service"
+
+
+def test_bill_legacy_mapping_bridge_issues_object_id_guarded_delete():
+    """The IF OBJECT_ID(...) IS NOT NULL guard makes both the table-still-live
+    AND the table-already-dropped case a single statement evaluated by SQL
+    Server itself — no Python-side table-existence branching needed (and none
+    left to test): the guard is SQL Server's job, not this function's."""
+    cursor = Mock()
+    conn = Mock()
+    conn.cursor.return_value = cursor
+
+    with patch(f"{_DATABASE_MODULE}.get_connection") as mock_get_conn:
+        mock_get_conn.return_value.__enter__.return_value = conn
+        _clear_legacy_bill_bill_mapping(7)
+
+    cursor.execute.assert_called_once_with(
+        "IF OBJECT_ID('qbo.BillBill', 'U') IS NOT NULL "
+        "DELETE FROM [qbo].[BillBill] WHERE [BillId] = ?",
+        (7,),
+    )
+
+
+def test_bill_legacy_mapping_bridge_logs_but_swallows_unexpected_errors():
+    """A genuine unexpected DB error (network blip, etc.) is logged, not
+    raised — best-effort only. Unlike BillCredit/Expense there is no FK to
+    fall back on as a safety net (qbo.BillBill never had one), but a stale row
+    here is harmless — it just becomes orphaned once the table is dropped."""
+    with patch(f"{_DATABASE_MODULE}.get_connection") as mock_get_conn, patch(
+        f"{_BILL_MODULE}.logger"
+    ) as mock_logger:
+        mock_get_conn.side_effect = RuntimeError("connection reset")
+        _clear_legacy_bill_bill_mapping(7)  # must not raise
+
+    mock_logger.warning.assert_called_once()
 
 

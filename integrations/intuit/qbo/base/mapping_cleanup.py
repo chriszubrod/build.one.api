@@ -6,12 +6,14 @@ leaving a permanent dangling mapping, or (where the mapping FK is NO_ACTION rath
 CASCADE in prod — PurchaseExpense) a SQL 547 on the header delete itself. If the header
 delete fails after the mapping is cleared, the mapping is best-effort restored so a
 failed attempt never unmaps a still-live entity. See U-226. (BillCredit's own
-VendorCreditBillCredit mapping was retired U-353, and Expense's own PurchaseExpense
-mapping was retired U-354 — neither delete calls this helper anymore; dbo.BillCredit.
-QboId/RealmId and dbo.Expense.QboId/RealmId are plain columns that die with the row.
-Each instead uses its own deploy-gap bridge — see entities/bill_credit/business/
-service.py::_clear_legacy_vendorcredit_billcredit_mapping and entities/expense/
-business/service.py::_clear_legacy_purchase_expense_mapping — until /em applies the
+VendorCreditBillCredit mapping was retired U-353, Expense's own PurchaseExpense
+mapping was retired U-354, and Bill's own BillBill mapping was retired U-355 — none
+of the three deletes call this helper anymore; dbo.BillCredit.QboId/RealmId,
+dbo.Expense.QboId/RealmId, and dbo.Bill.QboId/RealmId are plain columns that die
+with the row. Each instead uses its own deploy-gap bridge — see entities/bill_credit/
+business/service.py::_clear_legacy_vendorcredit_billcredit_mapping, entities/expense/
+business/service.py::_clear_legacy_purchase_expense_mapping, and entities/bill/
+business/service.py::_clear_legacy_bill_bill_mapping — until /em applies each
 retired table's DROP.)
 
 Also used for line-item mapping cleanup (BillLineItem, InvoiceLineItem, ExpenseLineItem,

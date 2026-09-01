@@ -151,7 +151,7 @@ Carry-over items from sessions. Check off as done; prune anything stale.
 
 ## U-305 follow-ups (Bill/VendorCredit reconciliation dbo-native repoint) — deferred, not scope-creeped in (2026-08-23)
 
-- [x] **✅ DONE 2026-08-31 (/em, DB-applied, transaction+verify): deleted the 1 orphan `qbo.BillBill` row `Id=16790`** (BillId=16808 gone; QBO bill 65042/S0126980 has no local dbo.Bill to repoint to; nothing FK-references qbo.BillBill; verified 0 dangling rows remain post-delete). ⚠️ Downstream (correct): QBO bill 65042 will now surface as `qbo_missing_locally` on the next reconcile instead of being hidden by the dangling mapping — decide re-create-locally vs void-in-QBO then; also drop the allowlist entry in `scripts/verify_bill_vendorcredit_qbo_reconcile_repoint.py`. ~~DBA cleanup: dangling `qbo.BillBill` mapping row (`Id=16790`) points to `BillId=16808`, which does not
+- [x] **✅ DONE 2026-08-31 (/em, DB-applied, transaction+verify): deleted the 1 orphan `qbo.BillBill` row `Id=16790`** (BillId=16808 gone; QBO bill 65042/S0126980 has no local dbo.Bill to repoint to; nothing FK-references qbo.BillBill; verified 0 dangling rows remain post-delete). ⚠️ Downstream (correct): QBO bill 65042 will now surface as `qbo_missing_locally` on the next reconcile instead of being hidden by the dangling mapping — decide re-create-locally vs void-in-QBO then. `scripts/verify_bill_vendorcredit_qbo_reconcile_repoint.py` (incl. its allowlist entry) was deleted outright by U-355 — qbo.BillBill itself is retired, so the OLD-vs-NEW equivalence it proved has no "OLD" left to compare against. ~~DBA cleanup: dangling `qbo.BillBill` mapping row (`Id=16790`) points to `BillId=16808`, which does not
   exist in `dbo.Bill`.** Discovered via U-305's live equivalence check (`scripts/verify_bill_vendorcredit_qbo_reconcile_repoint.py`)
   comparing the old qbo.Bill+qbo.BillBill-driven "already synced" population against the new dbo.Bill.QboId one —
   QBO Bill id `65042` (`qbo.Bill.Id=17204`) is the only remaining divergence, allowlisted in that script as a
@@ -2204,3 +2204,17 @@ These were surfaced during the unit and deliberately not built:
   `integrations/intuit/qbo/base/`, so the invariant is enforced by the call signature rather than by
   convention. Own unit, needs its own Gate-1 — not U-339's scope, which was fix-the-live-bug +
   confirm-siblings-don't-share-it.
+
+## U-355 follow-up (qbo.BillBill mapping retirement, 2026-09-01) — deferred, non-blocking
+
+- [ ] **`entities/invoice/intelligence/prompt.md` (InvoiceAgent playbook) is now stale on Bill recovery.**
+  Its manual-recovery sections (draft-collision recovery, zombie-header recovery) contain literal
+  `INSERT INTO qbo.BillBill (...)` recipes for hand-repairing a bill's QBO mapping — qbo.BillBill is
+  retired (U-355); dbo.Bill.QboId/RealmId (stamped via `BillService.repo.set_qbo_identity`) is the sole
+  identity store now. An agent following this playbook verbatim post-DROP would either error (INSERT
+  into a dropped table) or, pre-DROP, write to a table nothing reads anymore. Not fixed in this unit —
+  it's a substantial content edit across a large, actively-used agent prompt (multiple recovery
+  sub-cases reference the mapping table), out of proportion to a mechanical mapping-table retirement.
+  Needs its own pass: read the current recovery flows end-to-end and rewrite each `qbo.BillBill` step
+  as a direct `UPDATE dbo.Bill SET QboId = ?, RealmId = ? WHERE Id = ?` (mirroring
+  `Set BillQboIdentity`'s theft-clear semantics — don't hand-write a raw UPDATE that skips it).

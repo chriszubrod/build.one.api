@@ -131,17 +131,17 @@ class QboBillService:
 
         Deletion order (respects FK NO ACTION constraints):
           1. BillLineItemBillLine mapping rows for the bill's lines.
-          2. The BillBill mapping row (before deleting the Bill).
-          3. The Bill (app-layer cascade: BillLineItem -> attachment -> blob, with any
-             InvoiceLineItem FK nullified first by BillService.delete_by_public_id).
-          4. The QboBill (FK_QboBillLine_QboBill ON DELETE CASCADE handles qbo.BillLine).
+          2. The Bill, resolved directly via dbo-native QBO identity (U-355 — no
+             more qbo.BillBill mapping to hop through). App-layer cascade:
+             BillLineItem -> attachment -> blob, with any InvoiceLineItem FK
+             nullified first by BillService.delete_by_public_id).
+          3. The QboBill (FK_QboBillLine_QboBill ON DELETE CASCADE handles qbo.BillLine).
         """
         from integrations.intuit.qbo.base.delete_reconcile import (
             record_partial_delete_issue,
             strict_confirmed_deleted_ids,
         )
         from integrations.intuit.qbo.base.ids import normalize_qbo_id
-        from integrations.intuit.qbo.bill.connector.bill.persistence.repo import BillBillRepository
         from integrations.intuit.qbo.bill.connector.bill_line_item.persistence.repo import BillLineItemBillLineRepository
         from entities.bill.business.service import BillService
 
@@ -158,7 +158,6 @@ class QboBillService:
         if not confirmed:
             return 0
 
-        bill_bill_repo = BillBillRepository()
         line_mapping_repo = BillLineItemBillLineRepository()
         bill_service = BillService()
 
@@ -171,33 +170,37 @@ class QboBillService:
                 f"QboBill qbo_id={local.qbo_id} (local id={local.id}) confirmed deleted in QBO — "
                 f"deleting local record and mapped Bill"
             )
-            mapping_removed = False
+            # U-355: a list, not a bool — Step 2 now deletes the Bill header
+            # directly (no mapping row involved), so this must also cover THAT
+            # destructive action; otherwise a run with no line mappings but a
+            # successful Bill delete would skip the partial-delete issue below
+            # if Step 3 then failed. Set BEFORE each attempt, not after it
+            # succeeds: a raise partway through delete_by_public_id's own cascade
+            # (line items/attachments/blobs) is itself a real partial-delete, and
+            # must not be lost just because the call that started it never
+            # returned. Mirrors QboPurchaseService's identical U-354 fix.
+            destructive_labels = []
             try:
                 # Step 1: line mappings (before BillLineItem deletion — FK NO ACTION).
                 for line in self.line_repo.read_by_qbo_bill_id(local.id):
                     try:
                         lm = line_mapping_repo.read_by_qbo_bill_line_id(line.id)
                         if lm:
+                            destructive_labels.append("BillLineItemBillLine mapping")
                             line_mapping_repo.delete_by_id(lm.id)
-                            mapping_removed = True
                     except Exception as e:
                         logger.warning(
                             f"Could not delete BillLineItemBillLine mapping for "
                             f"QboBillLine {line.id} (QboBill {local.qbo_id}): {e}"
                         )
 
-                # Step 2: the BillBill mapping BEFORE the Bill (FK NO ACTION).
-                bb_mapping = bill_bill_repo.read_by_qbo_bill_id(local.id)
-                if bb_mapping:
-                    try:
-                        bill_bill_repo.delete_by_id(bb_mapping.id)
-                        mapping_removed = True
-                    except Exception as e:
-                        logger.warning(f"Could not delete BillBill mapping for QboBill {local.qbo_id}: {e}")
-                    bill = bill_service.read_by_id(bb_mapping.bill_id)
-                    if bill:
-                        bill_service.delete_by_public_id(bill.public_id)
-                        logger.info(f"Deleted Bill id={bill.id} mapped to deleted QboBill {local.qbo_id}")
+                # Step 2: the Bill, resolved directly via dbo-native QBO identity
+                # (U-355 — no more qbo.BillBill mapping row to hop through).
+                bill = bill_service.read_by_qbo_identity(local.qbo_id, realm_id)
+                if bill:
+                    destructive_labels.append("Bill header")
+                    bill_service.delete_by_public_id(bill.public_id)
+                    logger.info(f"Deleted Bill id={bill.id} mapped to deleted QboBill {local.qbo_id}")
 
                 # Step 3: the QboBill staging (CASCADE removes qbo.BillLine).
                 self.repo.delete_by_qbo_id(local.qbo_id)
@@ -205,10 +208,14 @@ class QboBillService:
                 deleted += 1
             except Exception as e:
                 logger.error(f"Failed to delete stale QboBill {local.qbo_id}: {e}")
-                if mapping_removed:
+                if destructive_labels:
+                    # dict.fromkeys(...) dedupes while preserving first-seen order — a
+                    # bill with 3+ mapped lines would otherwise repeat "BillLineItemBillLine
+                    # mapping" once per line, turning the recorded issue's label into
+                    # unreadable noise instead of a clean summary.
                     record_partial_delete_issue(
                         entity_type="Bill",
-                        mapping_label="BillBill/BillLineItemBillLine",
+                        mapping_label=" + ".join(dict.fromkeys(destructive_labels)),
                         mapped_label="Bill",
                         realm_id=realm_id,
                         qbo_id=local.qbo_id,

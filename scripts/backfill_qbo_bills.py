@@ -1,6 +1,6 @@
 """
 Targeted, staged backfill of QBO bills that are present in QBO but not yet projected
-into the local app (no qbo.BillBill mapping).
+into the local app (no dbo.Bill row carries this QBO identity yet).
 
 SAFE BY DEFAULT: dry-run unless --apply is passed. Dry-run is READ-ONLY (SELECTs only)
 and reports exactly which bills fall into which bucket. --apply runs the SAME pipeline a
@@ -99,8 +99,15 @@ def _classify_bucket(cur, mapped_vendor_id, doc_number, txn_date) -> str:
 
 
 def select_unmapped(*, year=None, qbo_id=None, realm_id=None):
-    """READ-ONLY: classify every unmapped qbo.Bill into a bucket. Returns list of dicts."""
-    where = ["NOT EXISTS (SELECT 1 FROM qbo.BillBill bb WHERE bb.QboBillId = qb.Id)"]
+    """READ-ONLY: classify every unmapped qbo.Bill into a bucket. Returns list of dicts.
+
+    U-355: qbo.BillBill is retired — "unmapped" is now "no dbo.Bill carries
+    this (QboId, RealmId) identity yet" (dbo.Bill.QboId is the sole identity
+    store), not a mapping-table absence.
+    """
+    where = [
+        "NOT EXISTS (SELECT 1 FROM dbo.Bill b WHERE b.QboId = qb.QboId AND b.RealmId = qb.RealmId)"
+    ]
     params = []
     if year:
         where.append("LEFT(qb.TxnDate,4) = ?")

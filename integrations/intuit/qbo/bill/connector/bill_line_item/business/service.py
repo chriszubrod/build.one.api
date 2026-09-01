@@ -9,7 +9,6 @@ from decimal import Decimal
 from integrations.intuit.qbo.bill.connector.bill_line_item.business.model import BillLineItemBillLine
 from integrations.intuit.qbo.bill.connector.bill_line_item.persistence.repo import BillLineItemBillLineRepository
 from integrations.intuit.qbo.bill.business.model import QboBillLine
-from integrations.intuit.qbo.bill.connector.bill.persistence.repo import BillBillRepository
 from integrations.intuit.qbo.bill.persistence.repo import QboBillLineRepository
 from integrations.intuit.qbo.customer.persistence.repo import QboCustomerRepository
 from entities.bill_line_item.business.service import BillLineItemService
@@ -42,7 +41,7 @@ class BillLineItemConnector:
         mapping_repo: Optional[BillLineItemBillLineRepository] = None,
         bill_line_item_service: Optional[BillLineItemService] = None,
         bill_service: Optional[BillService] = None,
-        bill_bill_repo: Optional[BillBillRepository] = None,
+        bill_bill_repo=None,
         qbo_bill_line_repo: Optional[QboBillLineRepository] = None,
         sub_cost_code_service: Optional[SubCostCodeService] = None,
         qbo_customer_repo: Optional[QboCustomerRepository] = None,
@@ -54,7 +53,14 @@ class BillLineItemConnector:
         self.mapping_repo = mapping_repo or BillLineItemBillLineRepository()
         self.bill_line_item_service = bill_line_item_service or BillLineItemService()
         self.bill_service = bill_service or BillService()
-        self.bill_bill_repo = bill_bill_repo or BillBillRepository()
+        # U-355: never read anywhere in this file even before this unit (grep-
+        # confirmed) -- BillBillRepository (its old type) is retired along with
+        # qbo.BillBill, so this can no longer default-construct one. Kept as an
+        # untyped, unconstructed constructor param (U-313/U-311/U-352 precedent)
+        # so the existing test call sites across other units that still pass
+        # bill_bill_repo= don't need to change for a unit whose real scope is
+        # elsewhere.
+        self.bill_bill_repo = bill_bill_repo
         self.qbo_bill_line_repo = qbo_bill_line_repo or QboBillLineRepository()
         # Cost-code resolution dep (U-307a; U-307d retired the legacy qbo.Item*
         # fallback repos) -- only passed to cost_code_resolver.resolve_dbo_sub_cost_code,

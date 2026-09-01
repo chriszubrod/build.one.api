@@ -31,7 +31,6 @@ def _make_connector(**overrides):
     from integrations.intuit.qbo.bill.connector.bill.business.service import BillBillConnector
 
     kwargs = dict(
-        mapping_repo=MagicMock(),
         bill_service=MagicMock(),
         vendor_service=MagicMock(),
         reconciliation_repo=MagicMock(),

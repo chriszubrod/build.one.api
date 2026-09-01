@@ -327,7 +327,9 @@ BEGIN
         [TotalAmount],
         [Memo],
         [IsDraft],
-        [IsCredit]
+        [IsCredit],
+        [QboId],
+        [RealmId]
     FROM dbo.[Expense]
     WHERE [PublicId] = @PublicId;
 

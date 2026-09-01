@@ -18,7 +18,6 @@ from integrations.intuit.qbo.invoice.connector.invoice_line_item.business.servic
 from integrations.intuit.qbo.item.connector.cost_code.business.service import ItemCostCodeConnector
 from integrations.intuit.qbo.item.connector.sub_cost_code.business.service import ItemSubCostCodeConnector
 from integrations.intuit.qbo.physical_address.connector.business.service import PhysicalAddressAddressConnector
-from integrations.intuit.qbo.purchase.connector.expense.business.service import PurchaseExpenseConnector
 from integrations.intuit.qbo.purchase.connector.expense_line_item.business.service import (
     PurchaseLineExpenseLineItemConnector,
 )
@@ -57,20 +56,12 @@ _EXPECTED = {
             "auto-repointed — investigate which side is correct."
         ),
     },
-    "expense": {
-        "drift_type": "expense_identity_conflict",
-        "entity_type": "Expense",
-        "entity_public_id": None,
-        "qbo_id": "PUR-99",
-        "realm_id": "realm-1",
-        "details": (
-            "PurchaseExpense identity conflict. dbo.Expense 55 carries native QBO identity for "
-            "QboPurchase 4 (QboId=PUR-99, RealmId=realm-1). qbo-side: the mapping table still binds "
-            "that same QboPurchase to a DIFFERENT Expense 9 (mapping 2). local-side: Expense 55's "
-            "own mapping row (mapping 3) still binds it to a DIFFERENT QboPurchase 5. Not "
-            "auto-repointed — investigate which side is correct."
-        ),
-    },
+    # U-354: "expense" removed — PurchaseExpenseConnector no longer has
+    # _record_identity_mapping_conflict_issue (qbo.PurchaseExpense is retired;
+    # run_identity_fastpath_dbo_only has no mapping-table-vs-dbo conflict state left
+    # to detect — dbo.Expense's own unique index is the sole guard now). Mirrors
+    # "bill_credit" below (U-353) — same transactional-document shape, no
+    # by-name dedup to leave a "duplicate detected" recorder behind.
     # "physical_address" (this legacy-conflict shape) was superseded in U-351 by
     # "address_diff_qbo" below — PhysicalAddressAddressConnector no longer has
     # _record_identity_mapping_conflict_issue (qbo.PhysicalAddressAddress is
@@ -286,15 +277,6 @@ def test_recorder_consolidation_emits_identical_tuple(family):
             dbo_invoice_id=55,
             local_side_mapping=SimpleNamespace(id=3, invoice_id=55, qbo_invoice_id=5),
             qbo_side_mapping=SimpleNamespace(id=2, invoice_id=9, qbo_invoice_id=4),
-        )
-    elif family == "expense":
-        c = object.__new__(PurchaseExpenseConnector)
-        c.reconciliation_repo = Mock()
-        c._record_identity_mapping_conflict_issue(
-            qbo_purchase=SimpleNamespace(id=4, qbo_id="PUR-99", realm_id="realm-1"),
-            dbo_expense_id=55,
-            local_side_mapping=SimpleNamespace(id=3, expense_id=55, qbo_purchase_id=5),
-            qbo_side_mapping=SimpleNamespace(id=2, expense_id=9, qbo_purchase_id=4),
         )
     elif family == "bill_line_item":
         c = object.__new__(BillLineItemConnector)

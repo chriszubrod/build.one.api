@@ -1443,9 +1443,8 @@ def test_purchase_get_qbo_customer_ref_reads_project_directly():
     from integrations.intuit.qbo.purchase.external.schemas import QboReferenceType
 
     connector = PurchaseExpenseConnector(
-        mapping_repo=Mock(), expense_service=Mock(), vendor_service=Mock(),
-        vendor_vendor_repo=Mock(), qbo_vendor_repo=Mock(), qbo_purchase_repo=Mock(),
-        qbo_purchase_line_repo=Mock(),
+        expense_service=Mock(), vendor_service=Mock(),
+        vendor_vendor_repo=Mock(), qbo_vendor_repo=Mock(),
     )
     fake_project_service = Mock()
     project = SimpleNamespace(id=7, name="OL-14 - Overton Lea", qbo_id="QBO-P-7", realm_id="realm-1")

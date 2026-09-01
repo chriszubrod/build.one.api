@@ -25,12 +25,16 @@ def rollback_orphan_header(
     """Best-effort compensating delete of a just-created header + its QBO mapping after a
     line-sync failure, so a permanent per-line failure never strands a header-only 'zombie'.
 
-    **Load-bearing delete order:** the mapping MUST be deleted before the header because
-    qbo.*→dbo.* mapping FKs are NO_ACTION on PurchaseExpense (qbo.BillBill has no FK at
-    all; VendorCreditBillCredit was retired U-353 — its own call site now passes a
-    no-op `delete_mapping`, so this ordering is moot for that family but still
-    load-bearing for PurchaseExpense). Deleting the header first leaves an FK-blocked
-    partial rollback that is worse than the zombie this helper prevents.
+    **Load-bearing delete order (historical):** the mapping had to be deleted before the
+    header because qbo.*→dbo.* mapping FKs were NO_ACTION on PurchaseExpense (qbo.BillBill
+    has no FK at all). VendorCreditBillCredit was retired U-353 and PurchaseExpense was
+    retired U-354 — both families' own call sites now pass a no-op `delete_mapping`, so
+    this ordering is moot for every currently-migrated family; it may still be load-bearing
+    for a header family not yet retired (InvoiceInvoice as of this writing, family 7 of
+    the U-349 program — see docs/design/u349-qbo-mapping-table-retirement.md; its own FK
+    shape hasn't been re-verified against this helper's rationale). Deleting the header first
+    leaves an
+    FK-blocked partial rollback that is worse than the zombie this helper prevents.
 
     Each delete is isolated in its own try/except: failures are LOGGED, never raised, so the
     caller's ORIGINAL line-sync exception propagates unchanged (the pull watermark holds and

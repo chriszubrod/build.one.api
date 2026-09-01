@@ -43,7 +43,6 @@ from shared.database import get_connection
 # Must match QboOutboxWorker._dispatch_table keys.
 KNOWN_KINDS = frozenset({
     "sync_bill_to_qbo",
-    "sync_expense_to_qbo",
     "sync_invoice_to_qbo",
     "recode_purchase_line",
 })

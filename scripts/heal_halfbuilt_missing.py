@@ -38,7 +38,17 @@ CFG = {
     ),
     "expense": dict(
         hdr="dbo.Expense", line="dbo.ExpenseLineItem", line_fk="ExpenseId",
-        mp="qbo.PurchaseExpense", mp_dbo="ExpenseId", mp_qbo="QboPurchaseId",
+        # U-354: qbo.PurchaseExpense is retired -- dbo.Expense.QboId/RealmId
+        # (U-238a) is the sole identity store now. `mp` becomes a derived table
+        # that joins dbo.Expense back to the qbo.Purchase staging row's internal
+        # PK (still what the qline/linemap joins below key on) via the raw
+        # external QboId+RealmId, instead of hopping through the retired
+        # mapping table -- same (mp_dbo, mp_qbo) column shape, so _targets()'s
+        # shared SQL template needed no changes.
+        mp="(SELECT e.Id AS ExpenseId, qp.Id AS QboPurchaseId FROM dbo.Expense e "
+           "JOIN qbo.Purchase qp ON qp.QboId = e.QboId AND qp.RealmId = e.RealmId "
+           "WHERE e.QboId IS NOT NULL)",
+        mp_dbo="ExpenseId", mp_qbo="QboPurchaseId",
         qline="qbo.PurchaseLine", qline_fk="QboPurchaseId",
         linemap="qbo.PurchaseLineExpenseLineItem", linemap_dbo="ExpenseLineItemId",
     ),

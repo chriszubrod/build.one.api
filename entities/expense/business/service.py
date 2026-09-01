@@ -40,6 +40,44 @@ from shared.storage import AzureBlobStorage, AzureBlobStorageError
 logger = logging.getLogger(__name__)
 
 
+def _clear_legacy_purchase_expense_mapping(expense_id: int) -> None:
+    """U-354 deploy-gap bridge for ExpenseService.delete_by_public_id — see its
+    call site for the full rationale. Raw SQL, not a repo/model (both retired):
+    deletes any row in the (soon-to-be-dropped) qbo.PurchaseExpense table that
+    still points at this Expense, so its NO_ACTION FK never blocks the header
+    delete below.
+
+    The `IF OBJECT_ID(...) IS NOT NULL` guard (mirrors
+    entities/bill_credit/business/service.py::_clear_legacy_vendorcredit_billcredit_mapping,
+    U-353) makes the table-already-dropped case — the normal state once /em
+    applies the DROP — a plain no-op evaluated by SQL Server itself, NOT a
+    caught Python exception: no substring-matching on driver error text, which
+    this codebase has already been burned by once (see
+    shared/database.py::map_database_error's own comment on why SQL 547's
+    error text can't be substring-matched safely, and shared/db_constraints.py's
+    `_has_error_number`). Once /em applies the DROP, this whole function
+    becomes a permanent no-op and should be deleted."""
+    from shared.database import get_connection
+
+    try:
+        with get_connection() as conn:
+            conn.cursor().execute(
+                "IF OBJECT_ID('qbo.PurchaseExpense', 'U') IS NOT NULL "
+                "DELETE FROM [qbo].[PurchaseExpense] WHERE [ExpenseId] = ?",
+                (expense_id,),
+            )
+    except Exception as e:
+        # Only reachable now for a genuine unexpected failure (connection reset,
+        # deadlock, permissions) — table-missing no longer raises at all. Logged,
+        # not raised: best-effort only. The real safety net is the FK itself — if
+        # a mapping row really does still exist and this failed to clear it, the
+        # header delete below 547s anyway (fail-safe, not fail-silent-corruption).
+        logger.warning(
+            f"Could not clear legacy qbo.PurchaseExpense mapping for Expense "
+            f"{expense_id}: {e}"
+        )
+
+
 class ExpenseService:
     """
     Service for Expense entity business operations.
@@ -564,44 +602,23 @@ class ExpenseService:
             except Exception as e:
                 logger.warning(f"Error processing expense line item {line_item.id if line_item.id else 'unknown'}: {e}")
         
-        # Clear this Expense's own qbo.PurchaseExpense mapping row, then delete the header. FK
-        # is NO_ACTION in prod, so an unmapped delete either 547s a QBO-pulled expense or leaves
-        # a permanent dangling mapping. If the header delete fails for any other reason (e.g. an
-        # orphaned ExpenseLineItem — qbo.PurchaseLineExpenseLineItem cleanup is a separate,
-        # deferred gap, see the audit script) after the mapping is gone, restore it so a failed
-        # attempt never unmaps a still-live expense (U-226).
-        from integrations.intuit.qbo.purchase.connector.expense.persistence.repo import (
-            PurchaseExpenseRepository,
-        )
-        from integrations.intuit.qbo.base.mapping_cleanup import (
-            delete_own_qbo_mapping_before_header,
-            make_restore_failed_recorder,
-        )
-
-        _purchase_expense_repo = PurchaseExpenseRepository()
-
-        def _expense_staging_repo():
-            from integrations.intuit.qbo.purchase.persistence.repo import QboPurchaseRepository
-
-            return QboPurchaseRepository()
-
-        return delete_own_qbo_mapping_before_header(
-            read_mapping=lambda: _purchase_expense_repo.read_by_expense_id(expense_id),
-            delete_mapping=lambda m: _purchase_expense_repo.delete_by_id(m.id),
-            recreate_mapping=lambda m: _purchase_expense_repo.create(
-                qbo_purchase_id=m.qbo_purchase_id, expense_id=m.expense_id
-            ),
-            delete_header=lambda: self.repo.delete_by_id(existing.id),
-            entity_label="Expense",
-            entity_id=expense_id,
-            on_restore_failed=make_restore_failed_recorder(
-                entity_type="Expense",
-                mapping_label="PurchaseExpense",
-                staging_repo_factory=_expense_staging_repo,
-                qbo_id_from_mapping=lambda m: m.qbo_purchase_id,
-                local_id=expense_id,
-            ),
-        )
+        # U-354: dbo.Expense.QboId/RealmId (U-238a) is the sole QBO identity store
+        # going forward — the connector no longer creates qbo.PurchaseExpense
+        # rows. But builders never apply prod DDL (see repo CLAUDE.md); the DROP
+        # TABLE for this retired mapping table is handed to /em and lands AFTER
+        # this code deploys, not atomically with it. Until that DROP is applied,
+        # a historical Expense synced before this unit may still have a legacy
+        # mapping row pointing at it via a NO_ACTION FK — deleting the header
+        # without clearing it first would 547. Best-effort bridge: no repo/model
+        # (those are retired), just enough to unblock the header delete during
+        # the deploy gap; delete this call once /em confirms the DROP has
+        # landed. Deliberately does NOT restore the mapping row on a
+        # header-delete failure (unlike the old delete_own_qbo_mapping_before_header
+        # this replaced) — dbo.Expense.QboId is the sole identity store now, so a
+        # lost legacy mapping row no longer orphans identity resolution the way
+        # losing it once could.
+        _clear_legacy_purchase_expense_mapping(expense_id)
+        return self.repo.delete_by_id(existing.id)
 
     def complete_expense(self, public_id: str) -> dict:
         """

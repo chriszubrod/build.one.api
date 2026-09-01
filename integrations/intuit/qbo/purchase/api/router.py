@@ -9,7 +9,6 @@ from integrations.intuit.qbo.base.locking import qbo_sync_locked_route
 from integrations.intuit.qbo.purchase.api.schemas import QboPurchaseSync
 from integrations.intuit.qbo.purchase.business.service import QboPurchaseService
 from integrations.intuit.qbo.purchase.connector.expense.business.service import PurchaseExpenseConnector
-from integrations.intuit.qbo.purchase.connector.expense.persistence.repo import PurchaseExpenseRepository
 from integrations.intuit.qbo.purchase.connector.expense_line_item.persistence.repo import PurchaseLineExpenseLineItemRepository
 from entities.expense.business.service import ExpenseService
 from entities.expense_line_item.business.service import ExpenseLineItemService
@@ -97,23 +96,30 @@ def cancel_expense_from_qbo_purchase_router(
         raise HTTPException(status_code=404, detail=f"Expense not found")
     expense_id = coerce_id(expense.id)
 
-    pe_repo = PurchaseExpenseRepository()
-    pleli_repo = PurchaseLineExpenseLineItemRepository()
-    mapping = pe_repo.read_by_expense_id(expense_id=expense_id)
-    if not mapping:
+    # U-354: dbo.Expense.QboId is the sole QBO identity store — no more
+    # qbo.PurchaseExpense mapping row to gate on. ReadExpenseByPublicId (used
+    # above) selects QboId/RealmId as of this unit (entities/expense/sql/
+    # dbo.expense.sql), but that sproc change is applied by /em separately
+    # from this code deploy — until it lands, `expense.qbo_id` here would
+    # read None for every expense. Re-read by id (ReadExpenseById has always
+    # selected QboId/RealmId live) so this endpoint is correct regardless of
+    # SQL/code deploy ordering.
+    expense_with_identity = ExpenseService().read_by_id(expense_id)
+    if not expense_with_identity or not expense_with_identity.qbo_id:
         raise HTTPException(status_code=400, detail="Expense is not linked to a QBO purchase")
 
-    # Delete PurchaseLineExpenseLineItem mappings first
+    # Delete PurchaseLineExpenseLineItem mappings first (family 11, out of
+    # scope for U-354 — untouched)
+    pleli_repo = PurchaseLineExpenseLineItemRepository()
     line_items = ExpenseLineItemService().read_by_expense_id(expense_id=expense_id)
     for li in line_items:
         pleli = pleli_repo.read_by_expense_line_item_id(expense_line_item_id=li.id)
         if pleli:
             pleli_repo.delete_by_id(pleli.id)
 
-    # Delete PurchaseExpense mapping
-    pe_repo.delete_by_id(mapping.id)
-
-    # Delete the expense (cascades to line items, attachments, etc.)
+    # Delete the expense (cascades to line items, attachments, etc.; also clears
+    # any deploy-gap-window legacy qbo.PurchaseExpense row via ExpenseService's
+    # own bridge — see entities/expense/business/service.py)
     ExpenseService().delete_by_public_id(public_id=expense_public_id)
 
     return {"status": "cancelled", "redirect": "/expense/list"}

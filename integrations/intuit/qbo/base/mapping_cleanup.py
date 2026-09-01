@@ -6,8 +6,13 @@ leaving a permanent dangling mapping, or (where the mapping FK is NO_ACTION rath
 CASCADE in prod — PurchaseExpense) a SQL 547 on the header delete itself. If the header
 delete fails after the mapping is cleared, the mapping is best-effort restored so a
 failed attempt never unmaps a still-live entity. See U-226. (BillCredit's own
-VendorCreditBillCredit mapping was retired U-353 — its delete no longer calls this
-helper at all; dbo.BillCredit.QboId/RealmId are plain columns that die with the row.)
+VendorCreditBillCredit mapping was retired U-353, and Expense's own PurchaseExpense
+mapping was retired U-354 — neither delete calls this helper anymore; dbo.BillCredit.
+QboId/RealmId and dbo.Expense.QboId/RealmId are plain columns that die with the row.
+Each instead uses its own deploy-gap bridge — see entities/bill_credit/business/
+service.py::_clear_legacy_vendorcredit_billcredit_mapping and entities/expense/
+business/service.py::_clear_legacy_purchase_expense_mapping — until /em applies the
+retired table's DROP.)
 
 Also used for line-item mapping cleanup (BillLineItem, InvoiceLineItem, ExpenseLineItem,
 U-241) — the mechanism does not distinguish header vs line item; it clears one qbo.*

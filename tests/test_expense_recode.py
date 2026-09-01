@@ -105,13 +105,10 @@ def _make_raw_purchase(
 
 def _build_connector(*, item_ref=FAKE_ITEM_REF, customer_ref=FAKE_CUSTOMER_REF) -> PurchaseExpenseConnector:
     connector = PurchaseExpenseConnector(
-        mapping_repo=MagicMock(),
         expense_service=MagicMock(),
         vendor_service=MagicMock(),
         vendor_vendor_repo=MagicMock(),
         qbo_vendor_repo=MagicMock(),
-        qbo_purchase_repo=MagicMock(),
-        qbo_purchase_line_repo=MagicMock(),
     )
     connector._get_qbo_item_ref = MagicMock(return_value=item_ref)
     connector._get_qbo_customer_ref = MagicMock(return_value=customer_ref)

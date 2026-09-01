@@ -138,13 +138,10 @@ def _make_purchase_connector(**overrides):
     from integrations.intuit.qbo.purchase.connector.expense.business.service import PurchaseExpenseConnector
 
     kwargs = dict(
-        mapping_repo=MagicMock(),
         expense_service=MagicMock(),
         vendor_service=MagicMock(),
         vendor_vendor_repo=MagicMock(),
         qbo_vendor_repo=MagicMock(),
-        qbo_purchase_repo=MagicMock(),
-        qbo_purchase_line_repo=MagicMock(),
         reconciliation_repo=MagicMock(),
         sub_cost_code_service=MagicMock(),
     )
@@ -173,22 +170,6 @@ def test_purchase_item_ref_none_cases_with_no_legacy_fallback(sub_cost_code):
     connector.sub_cost_code_service.read_by_id.return_value = sub_cost_code
 
     assert connector._get_qbo_item_ref(7, REALM_ID) is None
-
-
-def test_purchase_build_qbo_line_threads_realm_id_to_item_ref_resolution():
-    from integrations.intuit.qbo.purchase.external.schemas import QboReferenceType
-
-    connector = _make_purchase_connector()
-    connector._get_qbo_item_ref = MagicMock(return_value=QboReferenceType(value="9", name="Concrete"))
-    connector._get_qbo_customer_ref = MagicMock(return_value=None)
-    line_item = SimpleNamespace(
-        id=1, sub_cost_code_id=7, project_id=None, is_billable=None,
-        amount=None, quantity=None, rate=None, description="d",
-    )
-
-    connector._build_qbo_line(line_item, 1, REALM_ID)
-
-    connector._get_qbo_item_ref.assert_called_once_with(7, REALM_ID)
 
 
 def test_purchase_recode_purchase_line_threads_realm_id_to_item_ref_resolution():

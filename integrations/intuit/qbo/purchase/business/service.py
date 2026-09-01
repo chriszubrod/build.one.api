@@ -391,18 +391,18 @@ class QboPurchaseService:
         Order of deletion (respects FK NO ACTION constraints added by the FK migration):
           1. Delete all PurchaseLineExpenseLineItem mapping rows for the purchase's lines
              (required before deleting ExpenseLineItems — FK NO ACTION would block them).
-          2. Delete the PurchaseExpense mapping row
-             (required before deleting the Expense — FK NO ACTION would block it).
-          3. Delete the Expense (app-layer cascade: ExpenseLineItem → attachment → blob).
-          4. Delete the QboPurchase — FK_QboPurchaseLine_QboPurchase CASCADE handles
-             qbo.PurchaseLine rows; mapping rows were already removed in steps 1–2.
+          2. Delete the Expense, resolved directly via dbo-native QBO identity (U-354 —
+             no more qbo.PurchaseExpense mapping to hop through). App-layer cascade:
+             ExpenseLineItem → attachment → blob.
+          3. Delete the QboPurchase — FK_QboPurchaseLine_QboPurchase CASCADE handles
+             qbo.PurchaseLine rows; PurchaseLineExpenseLineItem rows were already
+             removed in step 1.
         """
         from integrations.intuit.qbo.base.delete_reconcile import (
             record_partial_delete_issue,
             strict_confirmed_deleted_ids,
         )
         from integrations.intuit.qbo.base.ids import normalize_qbo_id
-        from integrations.intuit.qbo.purchase.connector.expense.persistence.repo import PurchaseExpenseRepository
         from integrations.intuit.qbo.purchase.connector.expense_line_item.persistence.repo import PurchaseLineExpenseLineItemRepository
         from entities.expense.business.service import ExpenseService
 
@@ -419,7 +419,6 @@ class QboPurchaseService:
         if not confirmed:
             return 0
 
-        purchase_expense_repo = PurchaseExpenseRepository()
         line_mapping_repo = PurchaseLineExpenseLineItemRepository()
         expense_service = ExpenseService()
 
@@ -432,7 +431,16 @@ class QboPurchaseService:
                 f"QboPurchase qbo_id={local.qbo_id} (local id={local.id}) confirmed deleted in QBO — "
                 f"deleting local record and mapped Expense"
             )
-            mapping_removed = False
+            # U-354: a list, not a bool — Step 2 now deletes the Expense header
+            # directly (no mapping row involved), so this must also cover THAT
+            # destructive action; otherwise a run with no line mappings but a
+            # successful Expense delete would skip the partial-delete issue below
+            # if Step 3 then failed. Set BEFORE each attempt, not after it
+            # succeeds: a raise partway through delete_by_public_id's own cascade
+            # (line items/attachments/blobs) is itself a real partial-delete, and
+            # must not be lost just because the call that started it never
+            # returned. Mirrors QboVendorCreditService's identical U-353 fix.
+            destructive_labels = []
             try:
                 # Step 1: Delete PurchaseLineExpenseLineItem mappings for every line of this purchase.
                 # Must come before ExpenseLineItem deletion: FK_PurchaseLineExpenseLineItem_ExpenseLineItem
@@ -442,45 +450,40 @@ class QboPurchaseService:
                     try:
                         line_mapping = line_mapping_repo.read_by_qbo_purchase_line_id(line.id)
                         if line_mapping:
+                            destructive_labels.append("PurchaseLineExpenseLineItem mapping")
                             line_mapping_repo.delete_by_id(line_mapping.id)
-                            mapping_removed = True
                     except Exception as e:
                         logger.warning(
                             f"Could not delete PurchaseLineExpenseLineItem mapping for "
                             f"QboPurchaseLine {line.id} (QboPurchase {local.qbo_id}): {e}"
                         )
 
-                # Step 2: Delete the PurchaseExpense mapping BEFORE deleting the Expense.
-                # FK_PurchaseExpense_Expense (NO ACTION) blocks deleting an Expense while a
-                # mapping row references it — delete the mapping first to unblock the deletion.
-                pe_mapping = purchase_expense_repo.read_by_qbo_purchase_id(local.id)
-                if pe_mapping:
-                    try:
-                        purchase_expense_repo.delete_by_id(pe_mapping.id)
-                        mapping_removed = True
-                    except Exception as e:
-                        logger.warning(
-                            f"Could not delete PurchaseExpense mapping for QboPurchase {local.qbo_id}: {e}"
-                        )
-                    expense = expense_service.read_by_id(pe_mapping.expense_id)
-                    if expense:
-                        expense_service.delete_by_public_id(expense.public_id)
-                        logger.info(
-                            f"Deleted Expense id={expense.id} mapped to deleted QboPurchase {local.qbo_id}"
-                        )
+                # Step 2: the Expense, resolved directly via dbo-native QBO identity
+                # (U-354 — no more qbo.PurchaseExpense mapping row to hop through).
+                expense = expense_service.read_by_qbo_identity(local.qbo_id, realm_id)
+                if expense:
+                    destructive_labels.append("Expense header")
+                    expense_service.delete_by_public_id(expense.public_id)
+                    logger.info(
+                        f"Deleted Expense id={expense.id} mapped to deleted QboPurchase {local.qbo_id}"
+                    )
 
                 # Step 3: Delete the QboPurchase.
                 # FK_QboPurchaseLine_QboPurchase ON DELETE CASCADE handles PurchaseLine deletion.
-                # PurchaseExpense and PurchaseLineExpenseLineItem rows were already deleted above.
+                # PurchaseLineExpenseLineItem rows were already deleted above.
                 self.repo.delete_by_qbo_id(local.qbo_id)
                 logger.info(f"Deleted QboPurchase qbo_id={local.qbo_id}")
                 deleted += 1
             except Exception as e:
                 logger.error(f"Failed to delete stale QboPurchase {local.qbo_id}: {e}")
-                if mapping_removed:
+                if destructive_labels:
+                    # dict.fromkeys(...) dedupes while preserving first-seen order — a
+                    # purchase with 3+ mapped lines would otherwise repeat "PurchaseLine
+                    # ExpenseLineItem mapping" once per line, turning the recorded issue's
+                    # label into unreadable noise instead of a clean summary.
                     record_partial_delete_issue(
                         entity_type="Purchase",
-                        mapping_label="PurchaseExpense/PurchaseLineExpenseLineItem",
+                        mapping_label=" + ".join(dict.fromkeys(destructive_labels)),
                         mapped_label="Expense",
                         realm_id=realm_id,
                         qbo_id=local.qbo_id,

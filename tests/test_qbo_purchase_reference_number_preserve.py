@@ -1,25 +1,17 @@
 """Pure-logic tests for U-024 / KI-42 — QBO purchase->Expense re-sync must not
 clobber a manually-corrected reference_number (vendor invoice number).
 
-On the UPDATE path of PurchaseExpenseConnector.sync_from_qbo_purchase, the stored
-expense.reference_number is PRESERVED unless it is empty/None OR the QBO-<qbo_id>
-placeholder (which still upgrades to a real doc_number). The CREATE path is
-unchanged (always set from the QBO-derived value). Mocks stand in for the
-expense_service + repos so no DB/QBO I/O runs.
+On the UPDATE (dbo-only fast-path HIT) branch of PurchaseExpenseConnector.
+sync_from_qbo_purchase, the stored expense.reference_number is PRESERVED
+unless it is empty/None OR the QBO-<qbo_id> placeholder (which still upgrades
+to a real doc_number). The CREATE (MISS) path is unchanged (always set from
+the QBO-derived value). Mocks stand in for the expense_service + repos so no
+DB/QBO I/O runs.
 """
-import sys
-from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 import pytest
-
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-from conftest import stub_qbo_identity_fastpath_miss
-
-from integrations.intuit.qbo.purchase.connector.expense.business.service import (
-    PurchaseExpenseConnector,
-)
 
 SERVICE_MODULE = "integrations.intuit.qbo.purchase.connector.expense.business.service"
 # The connector builds its line connector via a lazy import from this module.
@@ -27,6 +19,10 @@ LINE_CONNECTOR_PATH = (
     "integrations.intuit.qbo.purchase.connector.expense_line_item.business.service"
     ".PurchaseLineExpenseLineItemConnector"
 )
+
+# U-354: the MISS/create branch runs under run_identity_fastpath_dbo_only's own
+# create lock — grant it for every test in this pure-logic module.
+pytestmark = pytest.mark.usefixtures("grant_qbo_app_lock")
 
 
 def _make_qbo_purchase(*, qbo_id="77", doc_number="5001", realm_id="realm-1"):
@@ -40,6 +36,7 @@ def _make_qbo_purchase(*, qbo_id="77", doc_number="5001", realm_id="realm-1"):
         private_note="card spend",
         total_amt=100,
         credit=False,
+        sync_token="3",
     )
 
 
@@ -54,31 +51,29 @@ def _make_expense(*, reference_number, expense_id=500, public_id="exp-pub-500"):
 
 def _build_connector():
     """Build a PurchaseExpenseConnector with fully mocked deps (no DB/QBO)."""
+    from integrations.intuit.qbo.purchase.connector.expense.business.service import (
+        PurchaseExpenseConnector,
+    )
+
     with patch(LINE_CONNECTOR_PATH, return_value=Mock()):
         connector = PurchaseExpenseConnector(
-            mapping_repo=Mock(),
             expense_service=Mock(),
             vendor_service=Mock(),
             vendor_vendor_repo=Mock(),
             qbo_vendor_repo=Mock(),
-            qbo_purchase_repo=Mock(),
-            qbo_purchase_line_repo=Mock(),
         )
+    connector.expense_service.repo = Mock()
     # Short-circuit vendor resolution (exercised elsewhere) — this suite only
     # cares about the reference_number preserve/upgrade decision.
     connector._get_vendor_public_id = Mock(return_value="vendor-pub-1")
     connector._line_connector = Mock()  # empty line list => no-op anyway
-    # U-283b: these tests exercise the legacy reference_number preserve/upgrade path.
-    stub_qbo_identity_fastpath_miss(connector.expense_service)
     return connector
 
 
 def _run_update(connector, qbo_purchase, stored_expense):
-    """Drive the UPDATE path and return the reference_number passed to update_by_public_id."""
-    connector.mapping_repo.read_by_qbo_purchase_id.return_value = SimpleNamespace(
-        id=1, expense_id=stored_expense.id
-    )
-    connector.expense_service.read_by_id.return_value = stored_expense
+    """Drive the dbo-only fast path's HIT (UPDATE) branch and return the
+    reference_number passed to update_by_public_id."""
+    connector.expense_service.read_by_qbo_identity.return_value = stored_expense
     connector.expense_service.update_by_public_id.return_value = stored_expense
 
     with patch(f"{SERVICE_MODULE}.guard_lines_present"):
@@ -126,17 +121,16 @@ def test_update_sets_from_doc_number_when_stored_empty(stored_ref):
     assert passed == "5001"
 
 
-# --- (d) CREATE path is unchanged: set from the QBO-derived value ---
+# --- (d) CREATE (MISS) path is unchanged: set from the QBO-derived value ---
 
 def test_create_sets_reference_number_from_doc_number():
     connector = _build_connector()
     qbo_purchase = _make_qbo_purchase(qbo_id="77", doc_number="5001")
 
-    connector.mapping_repo.read_by_qbo_purchase_id.return_value = None  # no mapping => CREATE
-    connector.mapping_repo.read_by_expense_id.return_value = None
+    connector.expense_service.read_by_qbo_identity.return_value = None  # genuine miss
     created = _make_expense(reference_number="5001", expense_id=600, public_id="exp-pub-600")
     connector.expense_service.create.return_value = created
-    connector.mapping_repo.create.return_value = SimpleNamespace(id=2)
+    connector.expense_service.read_by_id.return_value = created
 
     with patch(f"{SERVICE_MODULE}.guard_lines_present"):
         connector.sync_from_qbo_purchase(qbo_purchase, [])

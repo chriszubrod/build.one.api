@@ -42,10 +42,12 @@ logger = logging.getLogger("cleanup_halfbuilt_dups_expense")
 
 
 def _dup_expense_ids(cur):
+    # U-354: qbo.PurchaseExpense is retired -- dbo.Expense.QboId (U-238a) is the
+    # sole identity store now; a QBO-sourced Expense is simply one with a QboId.
     cur.execute("""
-        SELECT h.Id FROM dbo.Expense h JOIN qbo.PurchaseExpense m ON m.ExpenseId=h.Id
+        SELECT h.Id FROM dbo.Expense h
         LEFT JOIN (SELECT ExpenseId pid, SUM(Amount) s, COUNT(*) n FROM dbo.ExpenseLineItem GROUP BY ExpenseId) li ON li.pid=h.Id
-        WHERE h.TotalAmount IS NOT NULL AND ISNULL(li.s,0) - h.TotalAmount > 0.01 AND li.n = 2
+        WHERE h.QboId IS NOT NULL AND h.TotalAmount IS NOT NULL AND ISNULL(li.s,0) - h.TotalAmount > 0.01 AND li.n = 2
         ORDER BY h.Id
     """)
     return [r.Id for r in cur.fetchall()]

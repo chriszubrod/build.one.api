@@ -10,7 +10,10 @@ from entities.bill_credit.business.service import (
     BillCreditService,
     _clear_legacy_vendorcredit_billcredit_mapping,
 )
-from entities.expense.business.service import ExpenseService
+from entities.expense.business.service import (
+    ExpenseService,
+    _clear_legacy_purchase_expense_mapping,
+)
 from integrations.intuit.qbo.base.mapping_cleanup import delete_own_qbo_mapping_before_header
 
 
@@ -236,6 +239,77 @@ def test_legacy_mapping_bridge_logs_but_swallows_unexpected_errors():
     mock_logger.warning.assert_called_once()
 
 
+def test_expense_delete_no_longer_clears_any_qbo_mapping():
+    """U-354: qbo.PurchaseExpense is retired — Expense's delete no longer calls
+    delete_own_qbo_mapping_before_header at all (dbo.Expense.QboId/RealmId are
+    plain columns that die with the row; there is no separate mapping row to
+    clear first). A straight header delete, same shape as Bill/BillCredit
+    before U-226 ever touched them — plus the U-354 deploy-gap bridge (see the
+    dedicated tests below), which is a real DB call here since it isn't
+    mocked; that's fine — the harness's no-live-DB guard fires and is caught
+    by the bridge's own broad tolerance."""
+    expense = SimpleNamespace(id=99, public_id="exp-pub")
+
+    mock_repo = Mock()
+    mock_repo.delete_by_id.return_value = expense
+
+    svc = ExpenseService(repo=mock_repo)
+
+    with patch.object(svc, "read_by_public_id", return_value=expense), patch(
+        "entities.expense_line_item.business.service.ExpenseLineItemService"
+    ) as li_svc_cls:
+        li_svc_cls.return_value.read_by_expense_id.return_value = []
+        result = svc.delete_by_public_id("exp-pub")
+
+    assert result is expense
+    mock_repo.delete_by_id.assert_called_once_with(99)
+
+
+# --- U-354 deploy-gap bridge: _clear_legacy_purchase_expense_mapping ---
+#
+# Builders never apply prod DDL — the DROP TABLE for qbo.PurchaseExpense lands
+# AFTER this unit's code deploys, not atomically with it (see repo CLAUDE.md +
+# the call site's own comment). Until that DROP is applied, a historical
+# Expense synced before this unit may still have a legacy mapping row pointing
+# at it via a NO_ACTION FK — deleting the header without clearing it first 547s.
+
+_EXPENSE_MODULE = "entities.expense.business.service"
+
+
+def test_expense_legacy_mapping_bridge_issues_object_id_guarded_delete():
+    """The IF OBJECT_ID(...) IS NOT NULL guard makes both the table-still-live
+    AND the table-already-dropped case a single statement evaluated by SQL
+    Server itself — no Python-side table-existence branching needed (and none
+    left to test): the guard is SQL Server's job, not this function's."""
+    cursor = Mock()
+    conn = Mock()
+    conn.cursor.return_value = cursor
+
+    with patch(f"{_DATABASE_MODULE}.get_connection") as mock_get_conn:
+        mock_get_conn.return_value.__enter__.return_value = conn
+        _clear_legacy_purchase_expense_mapping(99)
+
+    cursor.execute.assert_called_once_with(
+        "IF OBJECT_ID('qbo.PurchaseExpense', 'U') IS NOT NULL "
+        "DELETE FROM [qbo].[PurchaseExpense] WHERE [ExpenseId] = ?",
+        (99,),
+    )
+
+
+def test_expense_legacy_mapping_bridge_logs_but_swallows_unexpected_errors():
+    """A genuine unexpected DB error (network blip, etc.) is logged, not raised —
+    best-effort only. The real safety net is the FK itself: if a mapping row
+    really does still exist and this bridge failed to clear it, the subsequent
+    header DELETE 547s anyway (fail-safe, not fail-silent-corruption)."""
+    with patch(f"{_DATABASE_MODULE}.get_connection") as mock_get_conn, patch(
+        f"{_EXPENSE_MODULE}.logger"
+    ) as mock_logger:
+        mock_get_conn.side_effect = RuntimeError("connection reset")
+        _clear_legacy_purchase_expense_mapping(99)  # must not raise
+
+    mock_logger.warning.assert_called_once()
+
+
 @patch("integrations.intuit.qbo.base.mapping_cleanup.qbo_app_lock", _granted_lock)
 def test_bill_delete_clears_qbo_mapping_before_header():
     bill = SimpleNamespace(id=7, public_id="bill-pub")
@@ -271,111 +345,3 @@ def test_bill_delete_clears_qbo_mapping_before_header():
     mock_repo.delete_by_id.assert_called_once_with(7)
 
 
-@patch("integrations.intuit.qbo.base.mapping_cleanup.qbo_app_lock", _granted_lock)
-def test_expense_delete_clears_qbo_mapping_before_header():
-    expense = SimpleNamespace(id=99, public_id="exp-pub")
-    call_order = []
-
-    mock_repo = Mock()
-    mock_repo.delete_by_id.side_effect = lambda *_: call_order.append("header") or expense
-
-    mock_mapping_repo = Mock()
-    fake_mapping = SimpleNamespace(id=12, qbo_purchase_id=300)
-    mock_mapping_repo.read_by_expense_id.return_value = fake_mapping
-    mock_mapping_repo.delete_by_id.side_effect = lambda *_: call_order.append("mapping")
-
-    svc = ExpenseService(repo=mock_repo)
-
-    with patch.object(svc, "read_by_public_id", return_value=expense), patch(
-        "entities.expense_line_item.business.service.ExpenseLineItemService"
-    ) as li_svc_cls, patch(
-        "integrations.intuit.qbo.purchase.connector.expense.persistence.repo.PurchaseExpenseRepository",
-        return_value=mock_mapping_repo,
-    ):
-        li_svc_cls.return_value.read_by_expense_id.return_value = []
-        svc.delete_by_public_id("exp-pub")
-
-    assert call_order == ["mapping", "header"]
-    mock_mapping_repo.read_by_expense_id.assert_called_once_with(99)
-    mock_mapping_repo.delete_by_id.assert_called_once_with(12)
-    mock_mapping_repo.create.assert_not_called()
-    mock_repo.delete_by_id.assert_called_once_with(99)
-
-
-@patch("integrations.intuit.qbo.base.mapping_cleanup.qbo_app_lock", _granted_lock)
-def test_expense_delete_header_failure_restores_qbo_mapping():
-    expense = SimpleNamespace(id=99, public_id="exp-pub")
-    header_exc = RuntimeError("FK 547 on Expense delete")
-
-    mock_repo = Mock()
-    mock_repo.delete_by_id.side_effect = header_exc
-
-    mock_mapping_repo = Mock()
-    fake_mapping = SimpleNamespace(id=12, qbo_purchase_id=300, expense_id=99)
-    mock_mapping_repo.read_by_expense_id.return_value = fake_mapping
-
-    svc = ExpenseService(repo=mock_repo)
-
-    with patch.object(svc, "read_by_public_id", return_value=expense), patch(
-        "entities.expense_line_item.business.service.ExpenseLineItemService"
-    ) as li_svc_cls, patch(
-        "integrations.intuit.qbo.purchase.connector.expense.persistence.repo.PurchaseExpenseRepository",
-        return_value=mock_mapping_repo,
-    ):
-        li_svc_cls.return_value.read_by_expense_id.return_value = []
-        with pytest.raises(RuntimeError, match="FK 547 on Expense delete") as exc_info:
-            svc.delete_by_public_id("exp-pub")
-
-    assert exc_info.value is header_exc
-    mock_mapping_repo.delete_by_id.assert_called_once_with(12)
-    mock_mapping_repo.create.assert_called_once_with(
-        qbo_purchase_id=300, expense_id=99
-    )
-    mock_repo.delete_by_id.assert_called_once_with(99)
-
-
-@patch("integrations.intuit.qbo.base.mapping_cleanup.qbo_app_lock", _granted_lock)
-def test_expense_delete_header_and_mapping_restore_failure_records_reconciliation_issue():
-    expense = SimpleNamespace(id=99, public_id="exp-pub")
-    header_exc = RuntimeError("FK 547 on Expense delete")
-    restore_exc = RuntimeError("mapping recreate failed")
-
-    mock_repo = Mock()
-    mock_repo.delete_by_id.side_effect = header_exc
-
-    mock_mapping_repo = Mock()
-    fake_mapping = SimpleNamespace(id=12, qbo_purchase_id=300, expense_id=99)
-    mock_mapping_repo.read_by_expense_id.return_value = fake_mapping
-    mock_mapping_repo.create.side_effect = restore_exc
-
-    mock_staging = SimpleNamespace(realm_id="realm-1", qbo_id="qbo-99")
-    mock_staging_repo = Mock()
-    mock_staging_repo.read_by_id.return_value = mock_staging
-
-    svc = ExpenseService(repo=mock_repo)
-
-    with patch.object(svc, "read_by_public_id", return_value=expense), patch(
-        "entities.expense_line_item.business.service.ExpenseLineItemService"
-    ) as li_svc_cls, patch(
-        "integrations.intuit.qbo.purchase.connector.expense.persistence.repo.PurchaseExpenseRepository",
-        return_value=mock_mapping_repo,
-    ), patch(
-        "integrations.intuit.qbo.purchase.persistence.repo.QboPurchaseRepository",
-        return_value=mock_staging_repo,
-    ), patch(
-        "integrations.intuit.qbo.base.delete_reconcile.record_partial_delete_issue"
-    ) as record_issue:
-        li_svc_cls.return_value.read_by_expense_id.return_value = []
-        with pytest.raises(RuntimeError, match="FK 547 on Expense delete") as exc_info:
-            svc.delete_by_public_id("exp-pub")
-
-    assert exc_info.value is header_exc
-    mock_staging_repo.read_by_id.assert_called_once_with(300)
-    record_issue.assert_called_once()
-    assert record_issue.call_args.kwargs["entity_type"] == "Expense"
-    assert record_issue.call_args.kwargs["mapping_label"] == "PurchaseExpense"
-    assert record_issue.call_args.kwargs["mapped_label"] == "Expense"
-    assert record_issue.call_args.kwargs["realm_id"] == "realm-1"
-    assert record_issue.call_args.kwargs["qbo_id"] == "qbo-99"
-    assert record_issue.call_args.kwargs["local_id"] == 99
-    assert record_issue.call_args.kwargs["error"] is restore_exc

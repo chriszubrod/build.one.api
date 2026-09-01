@@ -5,10 +5,7 @@ from typing import Dict, List, Optional
 # Third-party Imports
 
 # Local Imports
-from integrations.intuit.qbo.purchase.connector.expense.business.model import PurchaseExpense
-from integrations.intuit.qbo.purchase.connector.expense.persistence.repo import PurchaseExpenseRepository
 from integrations.intuit.qbo.purchase.business.model import QboPurchase, QboPurchaseLine
-from integrations.intuit.qbo.purchase.persistence.repo import QboPurchaseRepository, QboPurchaseLineRepository
 from integrations.intuit.qbo.vendor.persistence.repo import QboVendorRepository
 from entities.expense.business.service import ExpenseService
 from entities.expense.business.model import Expense
@@ -18,17 +15,9 @@ from integrations.intuit.qbo.base.pull_race import guard_lines_present
 from integrations.intuit.qbo.base.compensation import rollback_orphan_header
 from integrations.intuit.qbo.base.identity_consistency import verify_identity_dbo_only
 from integrations.intuit.qbo.base.field_ownership import preserve_human_edited_ref, qbo_ref_or_placeholder
-from integrations.intuit.qbo.base.identity_fastpath import (
-    CONSISTENT,
-    guard_create_mapping_rollback,
-    raise_concurrent_write_race,
-    run_identity_fastpath,
-)
+from integrations.intuit.qbo.base.identity_fastpath import run_identity_fastpath_dbo_only
 from integrations.intuit.qbo.base.ids import coerce_id
-from integrations.intuit.qbo.base.reconciliation_recorder import (
-    record_identity_mapping_conflict,
-    record_mapping_issue,
-)
+from integrations.intuit.qbo.base.reconciliation_recorder import record_mapping_issue
 from integrations.intuit.qbo.base.cost_code_resolver import resolve_qbo_item_ref
 from integrations.intuit.qbo.reconciliation.persistence.repo import ReconciliationIssueRepository
 from entities.sub_cost_code.business.service import SubCostCodeService
@@ -39,22 +28,36 @@ logger = logging.getLogger(__name__)
 class PurchaseExpenseConnector:
     """
     Connector service for synchronization between QboPurchase and Expense modules.
+
+    U-354: dbo-only identity resolution via `run_identity_fastpath_dbo_only` --
+    no `qbo.PurchaseExpense` mapping-table read/write of any kind (U-349 program
+    family 5, mirrors U-350's `CompanyInfoCompanyConnector` / U-353's
+    `VendorCreditBillCreditConnector`, per Wave 5's "trust dbo alone" plan,
+    `docs/design/u349-qbo-mapping-table-retirement.md`). `dbo.Expense.QboId`/
+    `RealmId` (U-238a) is the sole identity store; dbo.Expense's own filtered
+    unique index + `SetExpenseQboIdentity`'s theft-clear UPDATE guarantee at
+    most one row holds a given identity at any instant, so a direct hit needs
+    no cross-check and the old heal/adopt-by-fingerprint branch structure
+    (driven by a second, independently-writable mapping table) no longer has
+    anything to drift from. Like VendorCredit (U-353), Expense is a
+    transactional document with no natural pre-identity dedup target, so a
+    genuine miss simply creates a new Expense -- no mapping-table constraint
+    protected the old CREATE path either (Expense carries no analogous unique
+    business key). The surgical `recode_purchase_line` cockpit path (below)
+    round-trips raw QBO JSON directly and never touched the mapping table --
+    untouched by this unit, per Chris's 2026-08-20 decision.
     """
 
     def __init__(
         self,
-        mapping_repo: Optional[PurchaseExpenseRepository] = None,
         expense_service: Optional[ExpenseService] = None,
         vendor_service: Optional[VendorService] = None,
         vendor_vendor_repo=None,
         qbo_vendor_repo: Optional[QboVendorRepository] = None,
-        qbo_purchase_repo: Optional[QboPurchaseRepository] = None,
-        qbo_purchase_line_repo: Optional[QboPurchaseLineRepository] = None,
         reconciliation_repo: Optional[ReconciliationIssueRepository] = None,
         sub_cost_code_service: Optional[SubCostCodeService] = None,
     ):
         """Initialize the PurchaseExpenseConnector."""
-        self.mapping_repo = mapping_repo or PurchaseExpenseRepository()
         self.expense_service = expense_service or ExpenseService()
         self.vendor_service = vendor_service or VendorService()
         # U-313: no longer read anywhere in this file (_get_vendor_public_id
@@ -68,8 +71,6 @@ class PurchaseExpenseConnector:
         # connector's constructor — see TODO.md's U-313 follow-ups.
         self.vendor_vendor_repo = vendor_vendor_repo
         self.qbo_vendor_repo = qbo_vendor_repo or QboVendorRepository()
-        self.qbo_purchase_repo = qbo_purchase_repo or QboPurchaseRepository()
-        self.qbo_purchase_line_repo = qbo_purchase_line_repo or QboPurchaseLineRepository()
         self.reconciliation_repo = reconciliation_repo or ReconciliationIssueRepository()
         # U-307b: only ever passed to cost_code_resolver.resolve_qbo_item_ref, never
         # used directly here. Kept as an injectable constructor param (not defaulted
@@ -85,26 +86,20 @@ class PurchaseExpenseConnector:
 
     def sync_from_qbo_purchase(self, qbo_purchase: QboPurchase, qbo_purchase_lines: List[QboPurchaseLine]) -> Expense:
         """
-        Sync data from QboPurchase to Expense module.
-        
-        This method:
-        1. Checks if a mapping exists
-        2. Creates or updates the Expense accordingly
-        3. Syncs line items to ExpenseLineItem module
-        
-        Args:
-            qbo_purchase: QboPurchase record
-            qbo_purchase_lines: List of QboPurchaseLine records for this purchase
-        
-        Returns:
-            Expense: The synced Expense record
+        Sync a QBO Purchase to Expense module, via the dbo-only identity fast
+        path (U-354).
+
+        Process:
+        1. Resolve vendor via EntityRefValue -> QboVendor -> Vendor (dbo-native)
+        2. Direct dbo.Expense.QboId/RealmId hit -> update in place
+        3. Genuine miss -> create a new Expense, stamp identity, sync lines
         """
         # Find vendor mapping to get Vendor public_id
         # Purchase uses EntityRef instead of VendorRef
         vendor_public_id = self._get_vendor_public_id(qbo_purchase.entity_ref_value, qbo_purchase.realm_id)
         if not vendor_public_id:
             raise ValueError(f"No vendor mapping found for QBO entity ref: {qbo_purchase.entity_ref_value}")
-        
+
         # Map QBO Purchase fields to Expense module fields
         reference_number = qbo_ref_or_placeholder(qbo_purchase.doc_number, qbo_purchase.qbo_id)
         expense_date = qbo_purchase.txn_date
@@ -118,18 +113,29 @@ class PurchaseExpenseConnector:
             entity_label="QboPurchase", entity_id=qbo_purchase.id, qbo_id=qbo_purchase.qbo_id,
         )
 
-        def _apply_expense_fields(direct: Expense) -> Expense:
+        def _apply_expense_fields(direct: Expense) -> Optional[Expense]:
             """
-            Write the QBO-derived fields onto an existing Expense, stamp identity, then
-            sync its line items. Shared by the fast path's apply_fields and the legacy
-            "mapping found" branch below so the QboPurchase->Expense field mapping lives
-            in exactly one place (no drift between the two update sites) — mirrors
-            BillBillConnector's `_apply_bill_fields`.
+            `apply_fields` for the dbo-only fast path's HIT branch (U-354): write
+            the QBO-derived fields onto an existing dbo-identity-matched Expense,
+            persist, and sync its line items. Covers both a plain direct hit and
+            a race-resolved hit (run_identity_fastpath_dbo_only calls this same
+            callback for both).
 
             KI-42 / U-024 (rule of three): never silently revert a human-corrected
-            reference_number on re-pull. The shared base helper keeps the stored value
-            unless it is empty/null or the QBO-<id> placeholder (which still upgrades to
-            a real doc_number when one appears). See base.field_ownership.
+            reference_number on re-pull. The shared base helper keeps the stored
+            value unless it is empty/null or the QBO-<id> placeholder (which still
+            upgrades to a real doc_number when one appears). See base.field_ownership.
+
+            Unlike Company/Address/Project/VendorCredit, Expense (like Bill) carries
+            SyncToken as part of its identity -- this re-stamp is NOT skipped on a
+            plain HIT: it refreshes SyncToken on every pull, matching the pre-U-354
+            behavior exactly.
+
+            Returns None on a ROWVERSION-race/concurrent-delete `update_by_public_id`
+            miss (U-291) -- `run_identity_fastpath_dbo_only`'s own `_apply()` raises
+            `raise_concurrent_write_race` unconditionally whenever `apply_fields`
+            returns None, so this method staying silent on a miss (and skipping line
+            sync) is what keeps that single raise as the ONE place the guarantee lives.
             """
             effective_ref = preserve_human_edited_ref(
                 direct.reference_number, reference_number, qbo_purchase.qbo_id
@@ -146,14 +152,8 @@ class PurchaseExpenseConnector:
                 is_credit=qbo_purchase.credit or False,
             )
             if updated is None:
-                # ROWVERSION race (U-291): a concurrent writer touched this exact
-                # Expense between the read and this UPDATE, so it affected 0 rows.
-                raise_concurrent_write_race(entity_label="Expense", entity_id=direct.id)
+                return None
             expense_id = coerce_id(updated.id)
-            # Expense (like Bill) carries SyncToken as part of its identity — this
-            # re-stamp is NOT redundant even on a CONSISTENT fast-path hit (dbo
-            # QboId/RealmId already matched): it refreshes SyncToken on every pull,
-            # which the legacy path also always did.
             self.expense_service.repo.set_qbo_identity(
                 id=expense_id,
                 qbo_id=qbo_purchase.qbo_id,
@@ -163,287 +163,132 @@ class PurchaseExpenseConnector:
             self._sync_line_items(expense_id, updated.public_id, qbo_purchase_lines, qbo_purchase.realm_id)
             return updated
 
-        def _resolve_identity_fastpath():
-            """
-            U-283b (Phase-4): resolve identity directly against dbo.Expense's native
-            QboId/RealmId (U-238a) before falling back to the qbo.PurchaseExpense
-            mapping-table hop below. Every Expense synced even once already carries
-            this identity (set_qbo_identity is called on both the update and create
-            paths), so this covers the steady-state case without touching qbo.Purchase
-            at all. Mirrors BillBillConnector's U-283 fast path exactly — conflict->RAISE
-            is structural (base.identity_fastpath), never a fall-through to the legacy
-            path below. qbo.Purchase/qbo.PurchaseLine remain a read-only audit mirror for
-            the expense-coding cockpit's recode_purchase_line (below, untouched) — this
-            repoint only takes identity resolution off that path, per Chris's 2026-08-20
-            decision.
-
-            Extracted to a closure (U-298) so it can be called a second time,
-            unchanged, as a create-time recheck below — see that call site for why.
-            """
-            return run_identity_fastpath(
-                qbo_id=qbo_purchase.qbo_id,
-                realm_id=qbo_purchase.realm_id,
-                external_id=qbo_purchase.id,
-                entity_label="Expense",
-                external_label="QboPurchase",
-                mapping_label="PurchaseExpense",
-                read_direct_by_qbo_identity=self.expense_service.read_by_qbo_identity,
-                read_by_local_id=self.mapping_repo.read_by_expense_id,
-                read_by_external_id=self.mapping_repo.read_by_qbo_purchase_id,
-                external_id_attr="qbo_purchase_id",
-                record_conflict_issue=lambda entity, by_local, by_external: (
-                    self._record_identity_mapping_conflict_issue(
-                        qbo_purchase=qbo_purchase,
-                        dbo_expense_id=coerce_id(entity.id),
-                        local_side_mapping=by_local,
-                        qbo_side_mapping=by_external,
-                    )
-                ),
-                conflict_message=lambda entity: (
-                    f"PurchaseExpense identity conflict for QboPurchase {qbo_purchase.qbo_id} "
-                    f"(id={qbo_purchase.id}): dbo.Expense {entity.id} already carries this "
-                    f"identity but the mapping table disagrees. Not auto-repointed; see the "
-                    f"recorded reconciliation issue. Skipping until a human resolves it."
-                ),
-                create_mapping=lambda local_id: self.mapping_repo.create(
-                    expense_id=local_id, qbo_purchase_id=qbo_purchase.id
-                ),
-                apply_fields=_apply_expense_fields,
-                race_lock_mapping_label="PurchaseExpense",
+        outcome = run_identity_fastpath_dbo_only(
+            qbo_id=qbo_purchase.qbo_id,
+            realm_id=qbo_purchase.realm_id,
+            entity_label="Expense",
+            external_label="QboPurchase",
+            lock_resource_label="Expense",
+            read_direct_by_qbo_identity=self.expense_service.read_by_qbo_identity,
+            apply_fields=_apply_expense_fields,
+            resolve_candidate=lambda: self._create_expense(
+                qbo_purchase=qbo_purchase, vendor_public_id=vendor_public_id, reference_number=reference_number,
+            ),
+            stamp_identity=lambda candidate: self._stamp_expense_identity(
+                candidate, qbo_purchase=qbo_purchase, qbo_purchase_lines=qbo_purchase_lines,
+            ),
+        )
+        if outcome.entity is None:
+            # No longer race-reachable in practice (see run_identity_fastpath_
+            # dbo_only's Raises docstring) — kept as a backstop for a directly
+            # invoked falsy qbo_purchase.qbo_id, mirroring every sibling
+            # connector's identical guard (U-350/U-353/U-310/U-313).
+            raise RuntimeError(
+                f"Failed to resolve Expense for QboPurchase {qbo_purchase.id} "
+                f"(qbo_id={qbo_purchase.qbo_id}) via the dbo-only identity fast path"
             )
+        return outcome.entity
 
-        outcome = _resolve_identity_fastpath()
-        if outcome.hit:
-            return outcome.entity
-
-        # Check for existing mapping
-        mapping = self.mapping_repo.read_by_qbo_purchase_id(qbo_purchase.id)
-        
-        if mapping:
-            # Found existing mapping. Resolve the Expense to update. HEAL-don't-delete
-            # (U-029, applying the U-022 CustomerProject pattern): a transient empty-read
-            # must NEVER delete the mapping and fall through to CREATE — that would mint a
-            # DUPLICATE Expense (the exact hazard U-024 flagged).
-            expense = self.expense_service.read_by_id(mapping.expense_id)
-            if expense:
-                logger.info(f"Updating existing Expense {expense.id} from QboPurchase {qbo_purchase.id}")
-                target = expense
-            else:
-                # Bound Expense read empty. Expense has no unique NAME like Project, and
-                # there is no mapping-repoint sproc, so re-resolve by the closest natural
-                # fingerprint — (reference_number, vendor) — and heal ONLY when it re-binds
-                # the SAME Expense the mapping already targets (a confirmed transient
-                # empty-read). See _record_missing_expense_issue for the fingerprint-key
-                # rationale.
-                replacement = self.expense_service.read_by_reference_number_and_vendor_public_id(
-                    reference_number, vendor_public_id
-                )
-                if replacement and replacement.id == mapping.expense_id:
-                    logger.warning(
-                        f"Expense {mapping.expense_id} read empty for QboPurchase "
-                        f"{qbo_purchase.id} but re-resolved by (reference_number, vendor) — "
-                        f"transient empty-read; healing in place, not recreating."
-                    )
-                    target = replacement
-                else:
-                    # No fingerprint match, or a match under a DIFFERENT id we cannot safely
-                    # repoint to (no mapping-update sproc): preserve the mapping, create
-                    # nothing, record a critical reconciliation issue, and RAISE. The purchase
-                    # pull treats this ValueError as a permanent skip (watermark advances, sync
-                    # stays healthy); the issue is the durable record for follow-up.
-                    self._record_missing_expense_issue(
-                        qbo_purchase=qbo_purchase, mapping=mapping, fingerprint=replacement
-                    )
-                    raise ValueError(
-                        f"PurchaseExpense mapping {mapping.id} points at missing Expense "
-                        f"{mapping.expense_id} and no local Expense fingerprinted by "
-                        f"reference_number '{reference_number}' + vendor resolves to it for "
-                        f"QboPurchase {qbo_purchase.id}; preserving mapping, skipping."
-                    )
-            return _apply_expense_fields(target)
-
-        # U-298 (Wave-1): re-run the SAME dbo-native fast path immediately before
-        # minting a brand-new Expense. Nothing serializes concurrent
-        # sync_from_qbo_purchase calls for the same QboPurchase (no sp_getapplock
-        # at this level — run_identity_fastpath's own create-mapping recheck above
-        # already documents this as a pre-existing, cross-family gap), so a second
-        # process racing this exact record between the check at the top of this
-        # method and this point would otherwise mint a genuine duplicate:
-        # SetExpenseQboIdentity's theft-clear UPDATE does not fail on a
-        # unique-index violation, it silently steals the (QboId, RealmId) pair
-        # onto whichever row stamps it LAST — leaving one Expense correctly
-        # identified and the other permanently orphaned (no QboId left to ever
-        # re-resolve it by). Recheck here folds into the race's winner (via the
-        # exact same self-heal / conflict handling as the top-of-function check)
-        # instead of creating the loser.
-        recheck = _resolve_identity_fastpath()
-        if recheck.hit:
-            return recheck.entity
-
-        # Create new Expense
+    def _create_expense(
+        self, *, qbo_purchase: QboPurchase, vendor_public_id: str, reference_number: str,
+    ) -> Optional[Expense]:
+        """
+        `resolve_candidate` for the dbo-only fast path's MISS branch (U-354):
+        called only under `run_identity_fastpath_dbo_only`'s create lock, once a
+        genuine miss is confirmed (no dbo.Expense currently holds this
+        identity, including the re-read under lock). Expense carries no
+        analogous unique business key to dedup against, so this mirrors the
+        pre-U-354 legacy CREATE step exactly.
+        """
         logger.info(f"Creating new Expense from QboPurchase {qbo_purchase.id}: reference_number={reference_number}")
-        expense = self.expense_service.create(
+        return self.expense_service.create(
             vendor_public_id=vendor_public_id,
-            expense_date=expense_date,
+            expense_date=qbo_purchase.txn_date,
             reference_number=reference_number,
-            total_amount=total_amount,
-            memo=memo,
+            total_amount=qbo_purchase.total_amt,
+            memo=qbo_purchase.private_note,
             is_draft=False,
             is_credit=qbo_purchase.credit or False,
         )
-        
-        # Create mapping — if this fails we must roll back the expense we just created,
-        # otherwise the unmapped expense will be duplicated on every subsequent sync run.
-        expense_id = coerce_id(expense.id)
+
+    def _stamp_expense_identity(
+        self, candidate: Optional[Expense], *, qbo_purchase: QboPurchase, qbo_purchase_lines: List[QboPurchaseLine],
+    ) -> Optional[Expense]:
+        """
+        `stamp_identity` for the dbo-only fast path's MISS branch (U-354): stamp
+        dbo-native identity onto the just-created Expense, then sync its line
+        items. `candidate` is a fresh, uniquely-ours row from `_create_expense`
+        (not a side-channel-key match shared with any other incoming QBO
+        record), so — unlike Company's by-name candidate — there is no
+        concurrent-different-qbo_id race to guard with extra locking;
+        `run_identity_fastpath_dbo_only`'s own create lock already serializes
+        two syncs of the SAME QboPurchase against each other.
+
+        On a permanent failure in EITHER the identity stamp or the line sync,
+        best-effort deletes the just-created header via `rollback_orphan_header`
+        so a bad create never strands a header-only zombie (mirrors the
+        pre-U-354 legacy CREATE path's compensating rollback, which wrapped
+        its own identity-stamp call in the same try/except as the mapping
+        insert — see `create_mapping`'s retired docstring: "Stamp dbo-native
+        identity FIRST — if this fails, nothing else has been created yet, so
+        the caller's existing rollback... fully cleans up") — `delete_mapping`
+        is a no-op here, since there is no mapping row left to delete. Both
+        steps share ONE try/except (not two) so a `set_qbo_identity` failure
+        gets the exact same cleanup as a line-sync failure — otherwise a
+        transient stamp failure would leave an unstamped orphan Expense that
+        `read_direct_by_qbo_identity` can never find again (it carries no
+        QboId), and the next pull tick would mint a genuine duplicate.
+
+        Re-reads and returns the row after stamping (mirrors
+        `VendorCreditBillCreditConnector._stamp_bill_credit_identity`,
+        U-353): `set_qbo_identity` is a void DB write that never mutates
+        `candidate` in memory, so returning `candidate` as-is would hand the
+        caller an Expense whose `qbo_id`/`realm_id` still read as their
+        pre-stamp `None` even though the DB row is correctly stamped.
+        """
+        if candidate is None:
+            return None
+
+        expense_id = coerce_id(candidate.id)
         try:
-            mapping = self.create_mapping(
-                expense_id=expense_id,
-                qbo_purchase_id=qbo_purchase.id,
+            self.expense_service.repo.set_qbo_identity(
+                id=expense_id,
                 qbo_id=qbo_purchase.qbo_id,
                 realm_id=qbo_purchase.realm_id,
                 sync_token=getattr(qbo_purchase, "sync_token", None),
             )
-            logger.info(f"Created mapping: Expense {expense_id} <-> QboPurchase {qbo_purchase.id}")
-        except Exception as e:
-            # U-298 (Gate-1 hunt finding, confirmed P1): a concurrent sync_from_qbo_purchase
-            # racing this SAME QboPurchase (no sp_getapplock serializes the two EXPLICIT
-            # create_mapping() calls against each other) can win between create_mapping's
-            # own set_qbo_identity stamp and its mapping_repo.create insert: the racer's
-            # identity-fastpath recheck sees this Expense's freshly-stamped identity, finds
-            # no mapping yet (MISSING), and self-heals via run_identity_fastpath's own
-            # MISSING branch (locked end-to-end by `race_lock_mapping_label=
-            # "PurchaseExpense"` passed above, U-304) — which is exactly what the insert
-            # above is now failing on (a benign unique-constraint collision, not a real
-            # failure). Blindly rolling back here would DELETE the racer's now-valid,
-            # already-mapped (and possibly already line-synced) Expense — a silent,
-            # unrecoverable loss of a legitimately-completed financial record with no FK to
-            # stop it. guard_create_mapping_rollback (U-304) rechecks resolve_mapping_state
-            # UNDER create_race_lock — the SAME lock the self-heal above acquires around
-            # BOTH its field-write and its mapping insert — so no THIRD racer can bind to
-            # this Expense in the window between that recheck and the delete below; the two
-            # hand-copied recheck-before-rollback bodies U-298 and U-302 each carried (a
-            # point-in-time snapshot with no re-verification immediately before the delete
-            # call) are now the same one lock-guarded helper.
-            outcome = guard_create_mapping_rollback(
-                mapping_label="PurchaseExpense",
-                external_id=qbo_purchase.id,
-                local_id=expense_id,
-                read_by_local_id=self.mapping_repo.read_by_expense_id,
-                read_by_external_id=self.mapping_repo.read_by_qbo_purchase_id,
-                external_id_attr="qbo_purchase_id",
-                record_conflict_issue=lambda by_local, by_external: self._record_identity_mapping_conflict_issue(
-                    qbo_purchase=qbo_purchase,
-                    dbo_expense_id=expense_id,
-                    local_side_mapping=by_local,
-                    qbo_side_mapping=by_external,
-                ),
-                delete_header=lambda: self.expense_service.delete_by_public_id(expense.public_id),
-                entity_label="Expense",
-            )
-            if outcome.state == CONSISTENT:
-                logger.warning(
-                    f"Expense {expense_id}'s own mapping create raced with a concurrent "
-                    f"sync of the SAME QboPurchase {qbo_purchase.id}, which won first; "
-                    f"returning its result instead of rolling back a valid Expense."
-                )
-                return self.expense_service.read_by_id(expense_id) or expense
-            if outcome.delete_succeeded:
-                logger.warning(
-                    f"Rolled back orphan Expense {expense_id} after mapping failure "
-                    f"for QboPurchase {qbo_purchase.id}"
-                )
-            else:
-                logger.error(f"Could not delete orphan Expense {expense_id}: {outcome.delete_exc}")
-            raise ValueError(
-                f"Failed to create PurchaseExpense mapping for QboPurchase {qbo_purchase.id}: {e}"
-            ) from e
-        
-        # Compensating rollback — a permanent line failure must not leave a header-only zombie;
-        # delete the just-created header + qbo.PurchaseExpense mapping and re-raise (watermark
-        # holds; re-pull is idempotent).
-        try:
-            self._sync_line_items(expense_id, expense.public_id, qbo_purchase_lines, qbo_purchase.realm_id)
+            self._sync_line_items(expense_id, candidate.public_id, qbo_purchase_lines, qbo_purchase.realm_id)
         except Exception:
-            def _delete_expense_mapping():
-                _m = self.mapping_repo.read_by_expense_id(expense_id)
-                if _m:
-                    self.mapping_repo.delete_by_id(_m.id)
             rollback_orphan_header(
-                delete_header=lambda: self.expense_service.delete_by_public_id(expense.public_id),
-                delete_mapping=_delete_expense_mapping,
+                delete_header=lambda: self.expense_service.delete_by_public_id(candidate.public_id),
+                delete_mapping=lambda: None,
                 entity_label='Expense', entity_id=expense_id,
+                on_header_delete_failed=lambda exc: self._record_orphan_header_issue(
+                    expense=candidate, qbo_purchase=qbo_purchase, exc=exc
+                ),
             )
             raise
 
-        return expense
+        return self.expense_service.read_by_id(expense_id)
 
-    def _record_identity_mapping_conflict_issue(
+    def _record_orphan_header_issue(
         self,
         *,
+        expense: Expense,
         qbo_purchase: QboPurchase,
-        dbo_expense_id: int,
-        local_side_mapping: Optional[PurchaseExpense],
-        qbo_side_mapping: Optional[PurchaseExpense],
+        exc: Exception,
     ) -> None:
-        record_identity_mapping_conflict(
-            self.reconciliation_repo,
-            drift_type="expense_identity_conflict",
-            entity_type="Expense",
-            mapping_label="PurchaseExpense",
-            qbo_label="QboPurchase",
-            dbo_id=dbo_expense_id,
-            qbo_row_id=qbo_purchase.id,
-            raw_qbo_id=qbo_purchase.qbo_id,
-            raw_realm_id=qbo_purchase.realm_id,
-            realm_id=qbo_purchase.realm_id,
-            local_side_mapping=local_side_mapping,
-            qbo_side_mapping=qbo_side_mapping,
-            qbo_side_local_fk_attr="expense_id",
-            local_side_qbo_fk_attr="qbo_purchase_id",
-        )
-
-    def _record_missing_expense_issue(
-        self,
-        *,
-        qbo_purchase: QboPurchase,
-        mapping: PurchaseExpense,
-        fingerprint: Optional[Expense] = None,
-    ) -> None:
-        """
-        Record an orphaned-mapping detection on qbo.ReconciliationIssue, failure-
-        isolated: a failed insert is logged loud but never breaks the sync.
-
-        Triggered when a PurchaseExpense mapping exists but its bound Expense read
-        empty AND the (reference_number, vendor) fingerprint did not re-resolve to that
-        same Expense. We deliberately do NOT delete the mapping or create an Expense
-        here — a transient empty-read would otherwise mint a duplicate; the mapping is
-        preserved for the next tick / a human to resolve.
-        """
-        if fingerprint is not None:
-            fingerprint_note = (
-                f" A different Expense {fingerprint.id} matches the (reference_number, "
-                f"vendor) fingerprint but is not the mapped row; not repointing "
-                f"(no mapping-update path)."
-            )
-        else:
-            fingerprint_note = (
-                " No local Expense matches the (reference_number, vendor) fingerprint."
-            )
-        details = (
-            f"Orphaned PurchaseExpense mapping. Mapping {mapping.id} (QboPurchase "
-            f"{qbo_purchase.id}, QboId={qbo_purchase.qbo_id}) points at Expense "
-            f"{mapping.expense_id} which no longer reads.{fingerprint_note} Mapping "
-            f"preserved; no Expense created. Investigate whether the Expense was "
-            f"deleted/renumbered."
-        )
         record_mapping_issue(
             self.reconciliation_repo,
-            drift_type="orphaned_purch_expense_mapping",
+            drift_type="orphan_expense_header",
             entity_type="Expense",
-            entity_public_id=None,
+            entity_public_id=str(expense.public_id) if expense.public_id else None,
             qbo_id=str(qbo_purchase.qbo_id) if qbo_purchase.qbo_id else None,
             realm_id=qbo_purchase.realm_id or "",
-            details=details,
+            details=(
+                f"Compensating rollback failed to delete orphan Expense {expense.id} "
+                f"({expense.public_id}): {exc}. Header blocks re-pull until manually resolved."
+            ),
         )
 
     # One of FIVE near-identical dbo-first/legacy-fallback vendor-ref resolvers
@@ -522,266 +367,6 @@ class PurchaseExpenseConnector:
                 f"Expense {expense_id}: {len(failed_line_ids)} of {len(qbo_purchase_lines)} "
                 f"line item(s) failed to project: {failed_line_ids}"
             )
-
-    def create_mapping(
-        self,
-        expense_id: int,
-        qbo_purchase_id: int,
-        *,
-        qbo_id: Optional[str],
-        realm_id: Optional[str],
-        sync_token: Optional[str] = None,
-    ) -> PurchaseExpense:
-        """
-        Create a mapping between Expense and QboPurchase.
-        
-        Args:
-            expense_id: Database ID of Expense record
-            qbo_purchase_id: Database ID of QboPurchase record
-        
-        Returns:
-            PurchaseExpense: The created mapping record
-        
-        Raises:
-            ValueError: If mapping already exists or validation fails
-        """
-        # Validate 1:1 constraints
-        existing_by_expense = self.mapping_repo.read_by_expense_id(expense_id)
-        if existing_by_expense:
-            raise ValueError(
-                f"Expense {expense_id} is already mapped to QboPurchase {existing_by_expense.qbo_purchase_id}"
-            )
-        
-        existing_by_qbo_purchase = self.mapping_repo.read_by_qbo_purchase_id(qbo_purchase_id)
-        if existing_by_qbo_purchase:
-            raise ValueError(
-                f"QboPurchase {qbo_purchase_id} is already mapped to Expense {existing_by_qbo_purchase.expense_id}"
-            )
-        
-        # Stamp dbo-native identity FIRST — if this fails, nothing else has been
-        # created yet, so the caller's existing rollback (delete the just-created
-        # entity) fully cleans up with no orphaned mapping row.
-        self.expense_service.repo.set_qbo_identity(
-            id=expense_id,
-            qbo_id=qbo_id,
-            realm_id=realm_id,
-            sync_token=sync_token,
-        )
-        mapping = self.mapping_repo.create(expense_id=expense_id, qbo_purchase_id=qbo_purchase_id)
-        return mapping
-
-    def get_mapping_by_expense_id(self, expense_id: int) -> Optional[PurchaseExpense]:
-        """
-        Get mapping by Expense ID.
-        """
-        return self.mapping_repo.read_by_expense_id(expense_id)
-
-    def get_mapping_by_qbo_purchase_id(self, qbo_purchase_id: int) -> Optional[PurchaseExpense]:
-        """
-        Get mapping by QboPurchase ID.
-        """
-        return self.mapping_repo.read_by_qbo_purchase_id(qbo_purchase_id)
-
-    def sync_to_qbo_purchase(self, expense: Expense, realm_id: str) -> QboPurchase:
-        """
-        Push local Expense changes back to QBO as a Purchase update.
-        Converts AccountBasedExpenseLineDetail → ItemBasedExpenseLineDetail.
-        
-        Args:
-            expense: Local Expense record to sync
-            realm_id: QBO realm ID for API access
-        
-        Returns:
-            QboPurchase: The updated local QboPurchase record
-            
-        Raises:
-            ValueError: If no mapping exists, QBO record not found, or no valid line items
-        """
-        expense_id = coerce_id(expense.id)
-        
-        # 1. Get existing mapping (REQUIRED - must already exist from pull)
-        mapping = self.mapping_repo.read_by_expense_id(expense_id)
-        if not mapping:
-            raise ValueError(
-                f"No QBO mapping found for Expense {expense_id}. "
-                "Cannot push - expense must originate from QBO sync."
-            )
-        
-        # 2. Get local QboPurchase record (has qbo_id, sync_token, payment_type, account_ref)
-        local_qbo_purchase = self.qbo_purchase_repo.read_by_id(mapping.qbo_purchase_id)
-        if not local_qbo_purchase:
-            raise ValueError(f"QboPurchase {mapping.qbo_purchase_id} not found")
-        
-        # 3. Get expense line items and build QBO lines
-        expense_line_item_service = ExpenseLineItemService()
-        expense_line_items = expense_line_item_service.read_by_expense_id(expense_id=expense_id)
-        
-        qbo_lines = []
-        skipped_lines = []
-        line_num_to_expense_line_item_id: Dict[int, int] = {}
-        for idx, line_item in enumerate(expense_line_items, start=1):
-            qbo_line = self._build_qbo_line(line_item, idx, realm_id)
-            if qbo_line:
-                qbo_lines.append(qbo_line)
-                line_num_to_expense_line_item_id[idx] = int(line_item.id)
-            else:
-                skipped_lines.append(line_item.id)
-        
-        # QBO requires at least one line item
-        if not qbo_lines:
-            if expense_line_items:
-                raise ValueError(
-                    f"Expense has {len(expense_line_items)} line item(s) but none have QBO Item mappings. "
-                    f"SubCostCodes must be mapped to QBO Items first. Skipped line item IDs: {skipped_lines}"
-                )
-            else:
-                raise ValueError("Expense has no line items. QBO requires at least one line item.")
-        
-        # 4. Build QboPurchaseUpdate (preserving PaymentType, AccountRef from original)
-        from integrations.intuit.qbo.purchase.external.schemas import (
-            QboPurchaseUpdate,
-            QboReferenceType,
-        )
-        
-        qbo_purchase_update = QboPurchaseUpdate(
-            id=local_qbo_purchase.qbo_id,
-            sync_token=local_qbo_purchase.sync_token,
-            payment_type=local_qbo_purchase.payment_type,
-            account_ref=QboReferenceType(
-                value=local_qbo_purchase.account_ref_value,
-                name=local_qbo_purchase.account_ref_name
-            ) if local_qbo_purchase.account_ref_value else None,
-            entity_ref=QboReferenceType(
-                value=local_qbo_purchase.entity_ref_value,
-                name=local_qbo_purchase.entity_ref_name
-            ) if local_qbo_purchase.entity_ref_value else None,
-            txn_date=local_qbo_purchase.txn_date,
-            doc_number=local_qbo_purchase.doc_number,
-            private_note=expense.memo,
-            line=qbo_lines,
-            currency_ref=QboReferenceType(
-                value=local_qbo_purchase.currency_ref_value,
-                name=local_qbo_purchase.currency_ref_name
-            ) if local_qbo_purchase.currency_ref_value else None,
-            department_ref=QboReferenceType(
-                value=local_qbo_purchase.department_ref_value,
-                name=local_qbo_purchase.department_ref_name
-            ) if local_qbo_purchase.department_ref_value else None,
-        )
-        
-        # 5. Update purchase in QBO. QboHttpClient (via QboPurchaseClient) resolves
-        # and refreshes the access token lazily, so no upfront auth call is needed.
-        from integrations.intuit.qbo.purchase.external.client import QboPurchaseClient
-
-        logger.info(f"Updating Purchase in QBO for local Expense {expense_id}: qbo_id={local_qbo_purchase.qbo_id}")
-
-        with QboPurchaseClient(realm_id=realm_id) as client:
-            updated_purchase = client.update_purchase(qbo_purchase_update)
-        
-        logger.info(f"Updated QBO Purchase {updated_purchase.id} with new SyncToken {updated_purchase.sync_token}")
-        
-        # 6. Update local QboPurchase record with new sync_token and line items
-        updated_local = self.qbo_purchase_repo.update_by_qbo_id(
-            qbo_id=local_qbo_purchase.qbo_id,
-            row_version=local_qbo_purchase.row_version_bytes,
-            sync_token=updated_purchase.sync_token,
-            realm_id=realm_id,
-            payment_type=local_qbo_purchase.payment_type,
-            account_ref_value=local_qbo_purchase.account_ref_value,
-            account_ref_name=local_qbo_purchase.account_ref_name,
-            entity_ref_value=local_qbo_purchase.entity_ref_value,
-            entity_ref_name=local_qbo_purchase.entity_ref_name,
-            credit=local_qbo_purchase.credit,
-            txn_date=local_qbo_purchase.txn_date,
-            doc_number=local_qbo_purchase.doc_number,
-            private_note=expense.memo,
-            total_amt=updated_purchase.total_amt,
-            currency_ref_value=local_qbo_purchase.currency_ref_value,
-            currency_ref_name=local_qbo_purchase.currency_ref_name,
-            exchange_rate=local_qbo_purchase.exchange_rate,
-            department_ref_value=local_qbo_purchase.department_ref_value,
-            department_ref_name=local_qbo_purchase.department_ref_name,
-            global_tax_calculation=local_qbo_purchase.global_tax_calculation,
-        )
-        
-        # 7. Update local QboPurchaseLine records
-        if updated_purchase.line:
-            self._update_local_purchase_lines(
-                updated_local.id,
-                updated_purchase.line,
-                line_num_to_expense_line_item_id=line_num_to_expense_line_item_id,
-            )
-
-        return updated_local
-
-    def _build_qbo_line(self, line_item, line_num: int, realm_id: Optional[str] = None):
-        """
-        Build a QBO Purchase line from a local ExpenseLineItem.
-        Converts to ItemBasedExpenseLineDetail with ItemRef and CustomerRef.
-
-        Args:
-            line_item: ExpenseLineItem record
-            line_num: Line number
-            realm_id: QBO realm ID this push targets
-
-        Returns:
-            QboPurchaseLine or None if no Item mapping exists
-        """
-        from integrations.intuit.qbo.purchase.external.schemas import (
-            QboPurchaseLine,
-            QboReferenceType,
-            QboItemBasedExpenseLineDetail,
-        )
-        from decimal import Decimal
-
-        # Get QBO ItemRef from SubCostCode
-        item_ref = self._get_qbo_item_ref(line_item.sub_cost_code_id, realm_id)
-        if not item_ref:
-            logger.warning(f"No QBO Item mapping for sub_cost_code_id={line_item.sub_cost_code_id}, skipping line {line_item.id}")
-            return None
-        
-        # Get QBO CustomerRef from Project
-        customer_ref = self._get_qbo_customer_ref(line_item.project_id) if line_item.project_id else None
-        
-        # Determine billable status
-        billable_status = None
-        if line_item.is_billable is True:
-            if customer_ref:
-                billable_status = "Billable" if not getattr(line_item, 'is_billed', False) else "HasBeenBilled"
-            else:
-                logger.warning(f"Line item {line_item.id} is billable but no CustomerRef available. Setting to NotBillable.")
-                billable_status = "NotBillable"
-        elif line_item.is_billable is False:
-            billable_status = "NotBillable"
-        
-        # Calculate amount
-        line_amount = line_item.amount
-        qty = Decimal(str(line_item.quantity)) if line_item.quantity else None
-        unit_price = line_item.rate
-        
-        if line_amount is None and qty is not None and unit_price is not None:
-            line_amount = qty * unit_price
-        
-        if line_amount is None:
-            logger.warning(f"Line item {line_item.id} has no amount, using 0.")
-            line_amount = Decimal('0')
-        
-        # Build ItemBasedExpenseLineDetail
-        detail = QboItemBasedExpenseLineDetail(
-            item_ref=item_ref,
-            customer_ref=customer_ref,
-            billable_status=billable_status,
-            qty=qty,
-            unit_price=unit_price,
-        )
-        
-        return QboPurchaseLine(
-            line_num=line_num,
-            description=line_item.description,
-            amount=line_amount,
-            detail_type="ItemBasedExpenseLineDetail",
-            item_based_expense_line_detail=detail,
-        )
 
     def recode_purchase_line(
         self,
@@ -975,120 +560,6 @@ class PurchaseExpenseConnector:
             return None
 
         return QboReferenceType(value=verified_qbo_id, name=project.name)
-
-    def _update_local_purchase_lines(
-        self,
-        qbo_purchase_id: int,
-        qbo_lines: list,
-        line_num_to_expense_line_item_id: Optional[Dict[int, int]] = None,
-    ) -> None:
-        """
-        Update local QboPurchaseLine records after QBO update.
-
-        Args:
-            qbo_purchase_id: Local QboPurchase database ID
-            qbo_lines: List of QboPurchaseLine from API response
-            line_num_to_expense_line_item_id: Optional map of line_num -> ExpenseLineItem.id.
-                When provided, a PurchaseLineExpenseLineItem mapping is created for each
-                stored QboPurchaseLine that does not already have one. Without this,
-                subsequent sync_from_qbo runs would duplicate the ExpenseLineItems.
-        """
-        for qbo_line in qbo_lines:
-            try:
-                # Check if line exists
-                existing_line = None
-                if qbo_line.id:
-                    existing_line = self.qbo_purchase_line_repo.read_by_qbo_purchase_id_and_qbo_line_id(
-                        qbo_purchase_id=qbo_purchase_id,
-                        qbo_line_id=qbo_line.id
-                    )
-
-                # Extract references from line detail
-                item_ref_value = None
-                item_ref_name = None
-                customer_ref_value = None
-                customer_ref_name = None
-                billable_status = None
-                qty = None
-                unit_price = None
-
-                if qbo_line.item_based_expense_line_detail:
-                    detail = qbo_line.item_based_expense_line_detail
-                    if detail.item_ref:
-                        item_ref_value = detail.item_ref.value
-                        item_ref_name = detail.item_ref.name
-                    if detail.customer_ref:
-                        customer_ref_value = detail.customer_ref.value
-                        customer_ref_name = detail.customer_ref.name
-                    billable_status = detail.billable_status
-                    qty = detail.qty
-                    unit_price = detail.unit_price
-
-                stored_line = None
-                if existing_line:
-                    stored_line = self.qbo_purchase_line_repo.update_by_id(
-                        id=existing_line.id,
-                        row_version=existing_line.row_version_bytes,
-                        line_num=qbo_line.line_num,
-                        description=qbo_line.description,
-                        amount=qbo_line.amount,
-                        detail_type=qbo_line.detail_type,
-                        item_ref_value=item_ref_value,
-                        item_ref_name=item_ref_name,
-                        account_ref_value=None,  # Cleared - now using ItemBasedExpenseLineDetail
-                        account_ref_name=None,
-                        customer_ref_value=customer_ref_value,
-                        customer_ref_name=customer_ref_name,
-                        class_ref_value=None,
-                        class_ref_name=None,
-                        billable_status=billable_status,
-                        qty=qty,
-                        unit_price=unit_price,
-                        markup_percent=None,
-                    ) or existing_line
-                else:
-                    stored_line = self.qbo_purchase_line_repo.create(
-                        qbo_purchase_id=qbo_purchase_id,
-                        qbo_line_id=qbo_line.id,
-                        line_num=qbo_line.line_num,
-                        description=qbo_line.description,
-                        amount=qbo_line.amount,
-                        detail_type=qbo_line.detail_type,
-                        item_ref_value=item_ref_value,
-                        item_ref_name=item_ref_name,
-                        account_ref_value=None,
-                        account_ref_name=None,
-                        customer_ref_value=customer_ref_value,
-                        customer_ref_name=customer_ref_name,
-                        class_ref_value=None,
-                        class_ref_name=None,
-                        billable_status=billable_status,
-                        qty=qty,
-                        unit_price=unit_price,
-                        markup_percent=None,
-                    )
-
-                # Create PurchaseLineExpenseLineItem mapping when correlation is available.
-                # Without this, subsequent sync_from_qbo creates duplicate ExpenseLineItems
-                # because no mapping exists to point back to the local ExpenseLineItem.
-                if line_num_to_expense_line_item_id and stored_line and qbo_line.line_num:
-                    eli_id = line_num_to_expense_line_item_id.get(qbo_line.line_num)
-                    if eli_id is not None:
-                        stored_line_id = coerce_id(stored_line.id)
-                        existing_mapping = self._line_connector.get_mapping_by_qbo_purchase_line_id(stored_line_id)
-                        if existing_mapping is None:
-                            try:
-                                self._line_connector.create_mapping(
-                                    expense_line_item_id=eli_id,
-                                    qbo_purchase_line_id=stored_line_id,
-                                )
-                                logger.info(
-                                    f"Created line mapping: ExpenseLineItem {eli_id} <-> QboPurchaseLine {stored_line_id}"
-                                )
-                            except ValueError as e:
-                                logger.warning(f"Could not create line mapping: {e}")
-            except Exception as e:
-                logger.error(f"Failed to update QboPurchaseLine: {e}")
 
 
 def sync_purchase_attachments_to_expense_line_items(

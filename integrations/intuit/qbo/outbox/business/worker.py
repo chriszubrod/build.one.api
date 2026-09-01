@@ -133,7 +133,6 @@ class QboOutboxWorker:
         # context so all POST/PUTs it issues carry the row's RequestId.
         self._dispatch_table: Dict[str, Callable[[QboOutbox], None]] = {
             "sync_bill_to_qbo": self._handle_sync_bill,
-            "sync_expense_to_qbo": self._handle_sync_expense,
             "sync_invoice_to_qbo": self._handle_sync_invoice,
             "recode_purchase_line": self._handle_recode_purchase_line,
         }
@@ -562,8 +561,6 @@ class QboOutboxWorker:
         """
         if row.entity_type == "Bill":
             self._refresh_bill(row)
-        elif row.entity_type == "Expense":
-            self._refresh_expense(row)
         elif row.entity_type == "Invoice":
             self._refresh_invoice(row)
         else:
@@ -728,50 +725,19 @@ class QboOutboxWorker:
             conflict_error.__context__ = None
             raise
 
-    # U-301b-deferred (Chris's Gate-1 call, 2026-08-22): _refresh_expense and
-    # _refresh_invoice below are deliberately left on the legacy qbo.Purchase/
-    # qbo.Invoice two-hop, unlike their sibling _refresh_bill above. Both
-    # families' equivalent outbox sync kinds (sync_expense_to_qbo,
-    # sync_invoice_to_qbo) have ZERO live rows ever (pushes are disabled per
+    # U-301b-deferred (Chris's Gate-1 call, 2026-08-22): _refresh_invoice below
+    # is deliberately left on the legacy qbo.Invoice two-hop, unlike its sibling
+    # _refresh_bill above. Invoice's equivalent outbox sync kind
+    # (sync_invoice_to_qbo) has ZERO live rows ever (pushes are disabled per
     # CLAUDE.md), so there is no live traffic to equivalence-prove a repoint
-    # against — unlike Bill's 918 live sync_bill_to_qbo rows. Repoint these two
-    # the same way (dbo-native fast path + verify_expense_qbo_identity /
-    # verify_invoice_qbo_identity wrappers on identity_consistency.py's shared
-    # engine) once/if their pushes are re-enabled and carry real traffic to
-    # verify against. Tracked in TODO.md under "U-301b-deferred".
-    def _refresh_expense(self, row: QboOutbox) -> None:
-        from integrations.intuit.qbo.purchase.business.service import QboPurchaseService
-        from integrations.intuit.qbo.purchase.connector.expense.persistence.repo import (
-            PurchaseExpenseRepository,
-        )
-        from integrations.intuit.qbo.purchase.connector.expense.business.service import (
-            PurchaseExpenseConnector,
-        )
-        from integrations.intuit.qbo.purchase.external.client import QboPurchaseClient
-        from integrations.intuit.qbo.purchase.persistence.repo import QboPurchaseRepository
-        from entities.expense.business.service import ExpenseService
-
-        expense = ExpenseService().read_by_public_id(row.entity_public_id)
-        if not expense:
-            return
-
-        mapping = PurchaseExpenseRepository().read_by_expense_id(int(expense.id))
-        if not mapping:
-            return
-
-        local_qbo_purchase = QboPurchaseRepository().read_by_id(mapping.qbo_purchase_id)
-        if not local_qbo_purchase or not local_qbo_purchase.qbo_id:
-            return
-
-        with QboPurchaseClient(realm_id=row.realm_id) as client:
-            fresh = client.get_purchase(local_qbo_purchase.qbo_id)
-        refreshed_purchase, refreshed_lines = QboPurchaseService().upsert_from_external(
-            fresh, row.realm_id
-        )
-        PurchaseExpenseConnector().sync_from_qbo_purchase(
-            qbo_purchase=refreshed_purchase, qbo_purchase_lines=refreshed_lines
-        )
-
+    # against — unlike Bill's 918 live sync_bill_to_qbo rows. Repoint the same
+    # way (dbo-native fast path + verify_invoice_qbo_identity wrapper on
+    # identity_consistency.py's shared engine) once/if this push is re-enabled
+    # and carries real traffic to verify against. Tracked in TODO.md under
+    # "U-301b-deferred". (Expense's own _refresh_expense sibling was retired
+    # U-354 along with the rest of its dead push path — sync_expense_to_qbo
+    # never had a producer either, so this branch was equally unreachable;
+    # see qbo.PurchaseExpense mapping-table retirement.)
     def _refresh_invoice(self, row: QboOutbox) -> None:
         from integrations.intuit.qbo.invoice.business.service import QboInvoiceService
         from integrations.intuit.qbo.invoice.connector.invoice.persistence.repo import (
@@ -818,21 +784,6 @@ class QboOutboxWorker:
         # and raises QboError on failure — the worker's outer handler
         # translates that into retry / dead-letter decisions.
         bill_service.push_to_qbo(bill=bill, realm_id=row.realm_id)
-
-    def _handle_sync_expense(self, row: QboOutbox) -> None:
-        from entities.expense.business.service import ExpenseService
-        from integrations.intuit.qbo.purchase.connector.expense.business.service import (
-            PurchaseExpenseConnector,
-        )
-
-        expense = ExpenseService().read_by_public_id(row.entity_public_id)
-        if not expense:
-            raise ValueError(f"Expense not found for public_id {row.entity_public_id}")
-
-        PurchaseExpenseConnector().sync_to_qbo_purchase(
-            expense=expense,
-            realm_id=row.realm_id,
-        )
 
     def _handle_sync_invoice(self, row: QboOutbox) -> None:
         from entities.invoice.business.service import InvoiceService

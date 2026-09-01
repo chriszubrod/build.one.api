@@ -416,71 +416,17 @@ def test_missing_self_heal_and_rollback_guard_share_one_lock_key(mock_lock):
 
 # --- connector-level end-to-end: the real wiring, not a synthetic call ------
 #
-# Drives each connector's ACTUAL sync_from_qbo_* through both the self-heal
-# path (a direct fast-path hit with no mapping row yet) and the rollback-guard
-# path (create_mapping fails on the plain CREATE branch), recording the real
-# sp_getapplock resource name each uses. Both must resolve to the SAME string
-# for the same external QBO id — the concrete proof (not just an isolated
-# create_race_lock/run_identity_fastpath unit claim) that the wiring in
-# PurchaseExpenseConnector.sync_from_qbo_purchase and
-# InvoiceInvoiceConnector.sync_from_qbo_invoice actually closes the race in
-# production.
-
-
-@patch(LOCK_PATCH_TARGET)
-def test_purchase_connector_self_heal_and_rollback_share_one_lock_key(mock_lock):
-    from integrations.intuit.qbo.purchase.connector.expense.business.service import (
-        PurchaseExpenseConnector,
-    )
-
-    recorded, _recording_lock = _recording_lock_factory()
-    mock_lock.side_effect = _recording_lock
-
-    def _make_connector():
-        mapping_repo = Mock()
-        expense_service = Mock()
-        expense_service.repo = Mock()
-        with patch(
-            "integrations.intuit.qbo.purchase.connector.expense_line_item.business.service"
-            ".PurchaseLineExpenseLineItemConnector",
-            return_value=Mock(),
-        ):
-            connector = PurchaseExpenseConnector(mapping_repo=mapping_repo, expense_service=expense_service)
-        connector._get_vendor_public_id = Mock(return_value="vendor-pub-1")
-        connector._sync_line_items = Mock()
-        return connector, mapping_repo, expense_service
-
-    qbo_purchase = SimpleNamespace(
-        id=901, qbo_id="PURCH-77", realm_id="realm-1", entity_ref_value="qbo-vendor-1",
-        doc_number="5001", txn_date="2026-08-01", private_note="card spend",
-        total_amt=100, credit=False, sync_token="3",
-    )
-    one_line = [SimpleNamespace(id=1)]
-
-    # Self-heal leg: a direct fast-path hit with no mapping row anywhere (MISSING).
-    connector, mapping_repo, expense_service = _make_connector()
-    direct_hit = SimpleNamespace(id=55, public_id="pub-55", reference_number="R-1", row_version="rv-55")
-    expense_service.read_by_qbo_identity.return_value = direct_hit
-    expense_service.update_by_public_id.return_value = SimpleNamespace(id=55, public_id="pub-55")
-    mapping_repo.read_by_expense_id.return_value = None
-    mapping_repo.read_by_qbo_purchase_id.return_value = None
-    mapping_repo.create.return_value = SimpleNamespace(id=1)
-    connector.sync_from_qbo_purchase(qbo_purchase, one_line)
-
-    # Rollback-guard leg: plain CREATE path, create_mapping's own insert fails
-    # for a reason no racer resolves (MISSING on both sides of the recheck too).
-    connector2, mapping_repo2, expense_service2 = _make_connector()
-    expense_service2.read_by_qbo_identity.return_value = None  # fast path misses
-    mapping_repo2.read_by_qbo_purchase_id.return_value = None
-    expense_service2.create.return_value = SimpleNamespace(id=77, public_id="pub-77")
-    mapping_repo2.read_by_expense_id.return_value = None
-    mapping_repo2.create.side_effect = Exception("UNIQUE constraint violation")
-    expense_service2.delete_by_public_id.return_value = None
-    with pytest.raises(ValueError):
-        connector2.sync_from_qbo_purchase(qbo_purchase, one_line)
-
-    assert len(recorded) == 2
-    assert recorded[0] == recorded[1] == "qbo_mapping_create:PurchaseExpense:901"
+# Drives InvoiceInvoiceConnector's ACTUAL sync_from_qbo_invoice through both
+# the self-heal path (a direct fast-path hit with no mapping row yet) and the
+# rollback-guard path (create_mapping fails on the plain CREATE branch),
+# recording the real sp_getapplock resource name each uses. Both must resolve
+# to the SAME string for the same external QBO id — the concrete proof (not
+# just an isolated create_race_lock/run_identity_fastpath unit claim) that the
+# wiring in InvoiceInvoiceConnector.sync_from_qbo_invoice actually closes the
+# race in production. (PurchaseExpenseConnector's own equivalent test was
+# retired U-354 along with race_lock_mapping_label/create_race_lock's use in
+# that connector — run_identity_fastpath_dbo_only's own create lock replaces
+# it entirely; see test_u283b_purchase_qbo_identity_repoint.py.)
 
 
 @patch(LOCK_PATCH_TARGET)

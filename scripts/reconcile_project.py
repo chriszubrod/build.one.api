@@ -11,7 +11,8 @@ Four directions:
                  matching to QboBillLines by description + amount.
 
   2. QBO -> DB   Local qbo.Bill / qbo.Purchase records whose lines reference the project
-                 but have no BillBill / PurchaseExpense mapping are pulled via
+                 but have no matching dbo.Bill / dbo.Expense (BillBill mapping, or
+                 U-354 dbo-native QBO identity for Expense) are pulled via
                  sync_from_qbo_bill() / sync_from_qbo_purchase().
                  (Run scripts/sync_qbo_bill.py first to refresh local qbo tables from QBO API.)
 
@@ -62,7 +63,6 @@ from integrations.intuit.qbo.base.cost_code_resolver import resolve_dbo_sub_cost
 from integrations.intuit.qbo.base.ids import coerce_id
 from entities.bill_line_item.persistence.repo import BillLineItemRepository
 from integrations.intuit.qbo.purchase.connector.expense.business.service import PurchaseExpenseConnector
-from integrations.intuit.qbo.purchase.connector.expense.persistence.repo import PurchaseExpenseRepository
 from integrations.intuit.qbo.purchase.persistence.repo import QboPurchaseRepository, QboPurchaseLineRepository
 from integrations.ms.sharepoint.driveitem.connector.project_excel.persistence.repo import DriveItemProjectExcelRepository
 from integrations.ms.sharepoint.driveitem.persistence.repo import MsDriveItemRepository
@@ -523,7 +523,8 @@ def sync_qbo_to_db_bills(
 
 def sync_qbo_to_db_expenses(
     qbo_customer_ref: str,
-    purchase_expense_repo: PurchaseExpenseRepository,
+    realm_id: str,
+    expense_service: ExpenseService,
     qbo_purchase_repo: QboPurchaseRepository,
     qbo_purchase_line_repo: QboPurchaseLineRepository,
     connector: PurchaseExpenseConnector,
@@ -531,7 +532,9 @@ def sync_qbo_to_db_expenses(
 ) -> Tuple[List[str], int]:
     """
     Check local qbo.Purchase records whose lines reference this project but have
-    no PurchaseExpense mapping, and pull them into DB via sync_from_qbo_purchase().
+    no matching dbo.Expense (U-354: dbo.Expense.QboId is the sole identity store —
+    no more qbo.PurchaseExpense mapping to check), and pull them into DB via
+    sync_from_qbo_purchase().
     """
     issues = []
     synced_count = 0
@@ -557,7 +560,7 @@ def sync_qbo_to_db_expenses(
         if not qbo_purchase:
             continue
 
-        if purchase_expense_repo.read_by_qbo_purchase_id(qbo_purchase.id):
+        if expense_service.read_by_qbo_identity(qbo_purchase.qbo_id, realm_id):
             continue  # Already mapped to a DB expense
 
         lines = qbo_purchase_line_repo.read_by_qbo_purchase_id(qbo_purchase.id)
@@ -946,7 +949,6 @@ def process_project(
     qbo_bill_line_repo: QboBillLineRepository,
     qbo_purchase_repo: QboPurchaseRepository,
     qbo_purchase_line_repo: QboPurchaseLineRepository,
-    purchase_expense_repo: PurchaseExpenseRepository,
     bill_bill_connector: BillBillConnector,
     purchase_expense_connector: PurchaseExpenseConnector,
     project_service: ProjectService,
@@ -1095,7 +1097,8 @@ def process_project(
 
         exp_sync_issues, exp_synced = sync_qbo_to_db_expenses(
             qbo_customer_ref=qbo_customer_ref,
-            purchase_expense_repo=purchase_expense_repo,
+            realm_id=realm_id,
+            expense_service=expense_service,
             qbo_purchase_repo=qbo_purchase_repo,
             qbo_purchase_line_repo=qbo_purchase_line_repo,
             connector=purchase_expense_connector,
@@ -1207,7 +1210,6 @@ def main():
     qbo_bill_line_repo = QboBillLineRepository()
     qbo_purchase_repo = QboPurchaseRepository()
     qbo_purchase_line_repo = QboPurchaseLineRepository()
-    purchase_expense_repo = PurchaseExpenseRepository()
     project_service = ProjectService()
     auth_service = QboAuthService()
     excel_mapping_repo = DriveItemProjectExcelRepository()
@@ -1276,7 +1278,6 @@ def main():
             qbo_bill_line_repo=qbo_bill_line_repo,
             qbo_purchase_repo=qbo_purchase_repo,
             qbo_purchase_line_repo=qbo_purchase_line_repo,
-            purchase_expense_repo=purchase_expense_repo,
             bill_bill_connector=bill_bill_connector,
             purchase_expense_connector=purchase_expense_connector,
             project_service=project_service,

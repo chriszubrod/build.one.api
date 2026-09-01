@@ -16,7 +16,6 @@ from integrations.intuit.qbo.bill.connector.bill.business.service import BillBil
 from integrations.intuit.qbo.company_info.connector.business.service import CompanyInfoCompanyConnector
 from integrations.intuit.qbo.customer.connector.project.business.service import CustomerProjectConnector
 from integrations.intuit.qbo.invoice.connector.invoice.business.service import InvoiceInvoiceConnector
-from integrations.intuit.qbo.purchase.connector.expense.business.service import PurchaseExpenseConnector
 
 
 # ---------------------------------------------------------------------------
@@ -172,65 +171,6 @@ def test_bill_create_mapping_identity_failure_propagates():
             sync_token="sync-1",
         )
     mapping_repo.create.assert_not_called()
-
-
-def _make_expense_connector():
-    mapping_repo = Mock()
-    mapping_repo.read_by_expense_id.return_value = None
-    mapping_repo.read_by_qbo_purchase_id.return_value = None
-    mapping_repo.create.return_value = SimpleNamespace(id=1)
-    expense_service = Mock()
-    expense_service.repo = Mock()
-    # U-283b: these tests exercise the legacy create_mapping()/sync path.
-    stub_qbo_identity_fastpath_miss(expense_service)
-    connector = PurchaseExpenseConnector(mapping_repo=mapping_repo, expense_service=expense_service)
-    return connector, mapping_repo, expense_service.repo
-
-
-def test_expense_create_mapping_dual_writes_identity():
-    connector, mapping_repo, expense_repo = _make_expense_connector()
-    connector.create_mapping(
-        expense_id=5,
-        qbo_purchase_id=6,
-        qbo_id="P-1",
-        realm_id="realm-y",
-        sync_token="st",
-    )
-    mapping_repo.create.assert_called_once_with(expense_id=5, qbo_purchase_id=6)
-    expense_repo.set_qbo_identity.assert_called_once_with(
-        id=5, qbo_id="P-1", realm_id="realm-y", sync_token="st"
-    )
-
-
-def test_expense_create_mapping_identity_failure_propagates():
-    connector, mapping_repo, expense_repo = _make_expense_connector()
-    expense_repo.set_qbo_identity.side_effect = RuntimeError("stamp failed")
-    with pytest.raises(RuntimeError, match="stamp failed"):
-        connector.create_mapping(
-            expense_id=5,
-            qbo_purchase_id=6,
-            qbo_id="P-1",
-            realm_id="realm-y",
-            sync_token="st",
-        )
-    mapping_repo.create.assert_not_called()
-
-
-def test_expense_create_mapping_stamp_before_mapping():
-    """FIX 3: identity stamp must precede mapping create so stamp failure leaves no orphan."""
-    connector, mapping_repo, expense_repo = _make_expense_connector()
-    call_order = []
-    expense_repo.set_qbo_identity.side_effect = lambda **_: call_order.append("stamp") or None
-    mapping_repo.create.side_effect = lambda **_: call_order.append("mapping") or SimpleNamespace(id=1)
-
-    connector.create_mapping(
-        expense_id=5,
-        qbo_purchase_id=6,
-        qbo_id="P-1",
-        realm_id="realm-y",
-        sync_token="st",
-    )
-    assert call_order == ["stamp", "mapping"]
 
 
 def _make_invoice_connector():
@@ -406,35 +346,6 @@ def test_bill_update_path_stamps_identity():
 
     bill_repo.set_qbo_identity.assert_called_once_with(
         id=10, qbo_id="QB-10", realm_id="realm-x", sync_token="sync-new"
-    )
-
-
-def test_expense_update_path_stamps_identity():
-    connector, mapping_repo, expense_repo = _make_expense_connector()
-    mapping = SimpleNamespace(id=1, expense_id=5)
-    expense = SimpleNamespace(id=5, public_id="e5", row_version="rv", reference_number="REF1")
-    qbo_purchase = SimpleNamespace(
-        id=6,
-        qbo_id="P-1",
-        realm_id="realm-y",
-        sync_token="st-new",
-        entity_ref_value="v1",
-        doc_number="REF1",
-        txn_date="2026-01-01",
-        private_note="",
-        total_amt=0,
-        credit=False,
-    )
-    mapping_repo.read_by_qbo_purchase_id.return_value = mapping
-    connector.expense_service.read_by_id = Mock(return_value=expense)
-    connector.expense_service.update_by_public_id = Mock(return_value=expense)
-    connector._get_vendor_public_id = Mock(return_value="vendor-pub")
-    connector._sync_line_items = Mock()
-
-    connector.sync_from_qbo_purchase(qbo_purchase, [])
-
-    expense_repo.set_qbo_identity.assert_called_once_with(
-        id=5, qbo_id="P-1", realm_id="realm-y", sync_token="st-new"
     )
 
 

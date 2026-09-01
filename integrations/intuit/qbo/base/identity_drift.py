@@ -15,9 +15,10 @@ logger = logging.getLogger(__name__)
 class FlatEntitySpec:
     """One row of the flat dbo<->qbo mapping<->qbo staging topology (no line-parent hop).
 
-    Single source of truth (currently 7 entities: 4 header + 3 reference — see
+    Single source of truth (currently 3 entities: 2 header + 1 reference — see
     HEADER_ENTITY_SPECS / REFERENCE_ENTITY_SPECS below, row count trimmed over time as
-    families go dbo-native, most recently U-325) across 4 backfill/drift scripts:
+    families go dbo-native, most recently U-354; each row's own removal comment there
+    names the retirement that dropped it) across 4 backfill/drift scripts:
     scripts/backfill_qbo_identity_headers.py, scripts/check_qbo_identity_drift_headers.py,
     scripts/backfill_qbo_identity_reference.py, and scripts/check_qbo_identity_drift_reference.py
     (U-238a transaction headers + U-238c reference entities). `dbo_table` was dropped as a
@@ -45,7 +46,6 @@ HEADER_ENTITY_SPECS: tuple[FlatEntitySpec, ...] = (
         "bill", "Bill", "BillBill", "Bill", "BillId", "QboBillId", True, "SetBillQboIdentity",
         access_udf="UserCanAccessBill",
     ),
-    FlatEntitySpec("expense", "Expense", "PurchaseExpense", "Purchase", "ExpenseId", "QboPurchaseId", True, "SetExpenseQboIdentity"),
     FlatEntitySpec("invoice", "Invoice", "InvoiceInvoice", "Invoice", "InvoiceId", "QboInvoiceId", True, "SetInvoiceQboIdentity"),
     # U-325: the "project" row was removed — this family is now dbo-native only (U-314),
     # and qbo.CustomerProject is staged for DROP. A LEFT JOIN through that table would
@@ -56,6 +56,13 @@ HEADER_ENTITY_SPECS: tuple[FlatEntitySpec, ...] = (
     # now dbo-native only (qbo.CompanyInfoCompany retired, the U-349 program's
     # pattern-setter), and a LEFT JOIN through it would flag every dbo-stamped Company
     # as a false orphan_dbo_value and error outright once the table is dropped.
+    #
+    # U-354: the "expense" row was removed for the identical reason — this family is
+    # now dbo-native only (qbo.PurchaseExpense retired, U-349 program family 5).
+    # Unlike "bill_credit" in REFERENCE_ENTITY_SPECS below, nothing looks this row up
+    # by key: reconciliation/business/service.py's _expense_identity_rows was already
+    # a hand-written U-301a pilot that calls ExpenseService() directly (never routed
+    # through this registry), so there is no StopIteration risk from removing it.
 )
 
 

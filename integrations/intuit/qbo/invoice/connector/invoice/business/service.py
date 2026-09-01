@@ -1361,7 +1361,7 @@ class InvoiceInvoiceConnector:
 
         Walk the mapping chain:
           BillLineItem     → BillBill → QboBill.qbo_id → (ReimburseCharge or "Bill")
-          ExpenseLineItem  → PurchaseExpense → QboPurchase.qbo_id → "Purchase"
+          ExpenseLineItem  → dbo.Expense.QboId (U-354 dbo-native) → "Purchase"
           BillCreditLineItem → dbo.BillCredit.QboId (U-353 dbo-native) → "VendorCredit"
           Manual           → None (no linked transaction)
 
@@ -1391,23 +1391,21 @@ class InvoiceInvoiceConnector:
 
             elif line_item.source_type == "ExpenseLineItem" and line_item.expense_line_item_id:
                 from entities.expense_line_item.business.service import ExpenseLineItemService
-                from integrations.intuit.qbo.purchase.connector.expense.persistence.repo import PurchaseExpenseRepository
-                from integrations.intuit.qbo.purchase.persistence.repo import QboPurchaseRepository
+                from entities.expense.business.service import ExpenseService
 
                 expense_li = ExpenseLineItemService().read_by_id(line_item.expense_line_item_id)
                 if not expense_li or not expense_li.expense_id:
                     return None
 
-                purchase_mapping = PurchaseExpenseRepository().read_by_expense_id(expense_li.expense_id)
-                if not purchase_mapping:
-                    logger.debug(f"No PurchaseExpense mapping for expense_id={expense_li.expense_id}")
+                # U-354: dbo.Expense.QboId is the sole identity store — no more
+                # qbo.PurchaseExpense mapping row to hop through. read_by_id (not
+                # read_by_public_id) — ReadExpenseByPublicId does not select QboId.
+                expense = ExpenseService().read_by_id(expense_li.expense_id)
+                if not expense or not expense.qbo_id:
+                    logger.debug(f"No dbo-native QBO identity for expense_id={expense_li.expense_id}")
                     return None
 
-                qbo_purchase = QboPurchaseRepository().read_by_id(purchase_mapping.qbo_purchase_id)
-                if not qbo_purchase or not qbo_purchase.qbo_id:
-                    return None
-
-                return QboLinkedTxn(txn_id=qbo_purchase.qbo_id, txn_type="Purchase")
+                return QboLinkedTxn(txn_id=expense.qbo_id, txn_type="Purchase")
 
             elif line_item.source_type == "BillCreditLineItem" and line_item.bill_credit_line_item_id:
                 from entities.bill_credit_line_item.business.service import BillCreditLineItemService

@@ -93,3 +93,56 @@ Per family:
    company_info — smallest reconciliation footprint) into one unit?
 3. **Staging-entity phase (the ~15 raw tables) stays a separate, later program** — it needs the pull
    to stop staging raw payloads, a bigger refactor; out of scope here.
+
+## 7. Canonical running order (2026-09-01, post-census)
+
+Unit ids == running position. Two axes drive complexity: **reconciliation JOINs** (force a dbo-native
+re-expression of drift queries in `reconciliation/business/service.py`) and **connector type**:
+
+- **Header connectors** (`run_identity_fastpath` → repoint onto the EXISTING
+  `run_identity_fastpath_dbo_only`): company_info, physical_address, term, vendorcredit, purchase,
+  bill, invoice. These CLONE U-350 directly — no new primitive.
+- **Line-item connectors** (`run_line_identity_fastpath`, parent+line identity): bill_line_item,
+  invoice_line_item, vendorcredit_line_item, expense_line_item. **There is NO
+  `run_line_identity_fastpath_dbo_only` yet** — the FIRST line-item retirement is FOUNDATIONAL:
+  it builds that shared helper (the line-item analog of `run_identity_fastpath_dbo_only`) and is
+  therefore **two-phase / design-gated** (`feedback_two_phase_dispatch_design_gated.md`), not a clone.
+
+| # | Family (mapping) | Unit | Connector | Recon | Real cross-family | Complexity | Status |
+|---|---|---|---|---|---|---|---|
+| 1 | company_info (CompanyInfoCompany) | U-350 | header | 0 | — | pattern-setter | ✅ done+dropped |
+| 2 | physical_address (PhysicalAddressAddress) | U-351 | header | 0 | — | clean clone | in flight |
+| 3 | term (TermPaymentTerm) | U-352 | header | 0 | bill SalesTermRef + sync script | medium | prompt ready |
+| 4 | vendorcredit (VendorCreditBillCredit) | U-353 | header | 0 | vendorcredit entity-SQL write | medium | queue |
+| 5 | purchase/expense (PurchaseExpense) | U-354 | header | 0 | outbox worker + invoice source-link + purchase svc/router | medium-heavy | queue |
+| 6 | bill (BillBill) | U-355 | header | 0 | base/compensation + base/identity_consistency + outbox + bill_line_item connector | heavy (solo) | queue |
+| 7 | invoice (InvoiceInvoice) | U-356 | header | **1** | reconciliation + outbox worker | hard (recon) | queue |
+| 8 | vendorcredit_line_item (…BillCreditLineItem) | U-357 | **line-item** | 0 | — | **FOUNDATIONAL: builds `run_line_identity_fastpath_dbo_only`; two-phase** | queue |
+| 9 | invoice_line_item (InvoiceLineItemInvoiceLine) | U-358 | line-item | 0 | invoice source-link | clone (needs #8's helper) | queue |
+| 10 | bill_line_item (BillLineItemBillLine) | U-359 | line-item | **1** | reconciliation + bill svc | hard (recon) | queue |
+| 11 | expense_line_item (PurchaseLineExpenseLineItem) | U-360 | line-item | **1** | reconciliation + purchase svc/router | hard (recon) | queue |
+
+**Ordering logic:** header families first (existing helper, ascending cross-family surface), the one
+header-with-recon (invoice) at the end of the header block; then the line-item block led by the
+FOUNDATIONAL helper build (#8, simplest line-item so the primitive is proven cleanly), then clone it
+across the remaining line-items, recon ones last.
+
+### Collision rules (parallelism)
+- `reconciliation/business/service.py` — #7, #10, #11 → **strictly serial**, never concurrent.
+- `outbox/business/worker.py` — #5, #6, #7 → not concurrent with each other.
+- `base/compensation.py` / `base/identity_consistency.py` — #6 (BillBill) touches shared base → run **solo**.
+- `base/identity_fastpath.py` — #8 ADDS the line-item dbo-only helper; #9/#10/#11 CONSUME it → #8 must
+  land (Gate-2 + merged) before #9–#11 dispatch; those three then serialize on reconciliation anyway.
+- `invoice/connector/invoice` source-link — read by #5 and #9 → serialize those two.
+
+### Wave cadence
+- **Wave A (headers, clone-able, 1–2 at a time):** #3 term → #4 vendorcredit → #5 purchase/expense.
+- **Wave B (heavy headers, solo):** #6 BillBill (base-helper blast radius) → #7 invoice (recon re-expression).
+- **Wave C (line-items):** #8 vendorcredit_line_item DESIGN → /em → BUILD (creates the helper) → then
+  #9 invoice_line_item → #10 bill_line_item → #11 expense_line_item (serial on reconciliation).
+- After enough families land on the shape, fold in the deferred conflict-predicate `/simplify`
+  extraction into `base/identity_fastpath.py` (U-350-booked cross-cutting cleanup).
+
+Net at completion: `qbo.*` 30 → **19** (11 mapping tables gone); the ~15 raw-staging entity tables
+(now unblocked, their mapping children removed) become the separate Phase-4/5 program; keep-set stays
+`qbo.Auth` + `Outbox`/`ReconciliationIssue`/`ApiUsage`/`Client`.

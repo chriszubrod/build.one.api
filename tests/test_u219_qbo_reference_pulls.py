@@ -301,16 +301,32 @@ def _build_project_connector() -> CustomerProjectConnector:
 
 
 def _build_payment_term_connector() -> TermPaymentTermConnector:
-    connector = TermPaymentTermConnector(
-        mapping_repo=Mock(),
-        payment_term_service=Mock(),
-        reconciliation_repo=Mock(),
-    )
-    connector.mapping_repo.read_by_qbo_term_id.return_value = None
-    # U-282: default the direct dbo-identity fast path to a miss so these tests keep
-    # exercising the mapping-table path they're testing (mirrors U-276's identical fix
-    # for customer/project above).
+    """U-352: the payment_term family is now dbo-only -- no mapping table, so
+    the create path runs inside `run_identity_fastpath_dbo_only`'s own app
+    lock, mirroring the vendor/customer/project builders above. Unlike those
+    three, `_stamp_payment_term_identity` has no candidate-scoped lock of its
+    own (no by-name adopt step means no side-channel collision to protect
+    against — `/simplify` altitude finding, U-352), and no `read_by_name`
+    stub here for the same reason: PaymentTerm's create path has no by-name
+    adopt step."""
+    connector = TermPaymentTermConnector(payment_term_service=Mock())
+    # U-282/U-352: default the direct dbo-identity fast path to a miss so these
+    # tests keep exercising the create path they're testing.
     connector.payment_term_service.read_by_qbo_identity.return_value = None
+    # `_stamp_payment_term_identity` re-reads the candidate after stamping and
+    # returns the re-read row. Resolve to whatever `create()` produced, so a
+    # create-path test still gets its own created row back.
+    connector.payment_term_service.read_by_id.side_effect = (
+        lambda _id: connector.payment_term_service.create.return_value
+    )
+
+    real_sync = connector.sync_from_qbo_term
+
+    def _sync_under_granted_locks(qbo_term):
+        with patch(FASTPATH_LOCK_TARGET, mock_qbo_app_lock_granted):
+            return real_sync(qbo_term)
+
+    connector.sync_from_qbo_term = _sync_under_granted_locks
     return connector
 
 
@@ -820,16 +836,21 @@ def _setup_project_mapped(connector: CustomerProjectConnector, local_name: str) 
 
 
 def _setup_payment_term_mapped(connector: TermPaymentTermConnector, local_name: str) -> str:
-    mapping = SimpleNamespace(id=1, payment_term_id=10)
+    """U-352: 'already mapped' for the payment_term family is now a direct
+    dbo-identity HIT (`read_by_qbo_identity`), not a qbo.TermPaymentTerm
+    mapping row -- the mapping table is gone. Same property under test: an
+    already-bound record still updates, and the name-preservation rule applies
+    on that update path (mirrors `_setup_customer_mapped`'s U-310 shape)."""
     payment_term = SimpleNamespace(
         id=10,
+        qbo_id="QBO-T-1",
+        realm_id="r1",
         name=local_name,
         description=None,
         discount_percent=None,
         discount_days=None,
         due_days=30,
     )
-    connector.mapping_repo.read_by_qbo_term_id.return_value = mapping
-    connector.payment_term_service.read_by_id.return_value = payment_term
+    connector.payment_term_service.read_by_qbo_identity.return_value = payment_term
     connector.payment_term_service.repo.update_by_id.side_effect = lambda p: p
     return local_name

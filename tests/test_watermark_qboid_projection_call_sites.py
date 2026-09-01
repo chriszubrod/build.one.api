@@ -487,9 +487,11 @@ def test_term_existing_rows_projection_failure_records_real_qbo_id_not_staging_p
     outcome = SyncOutcome.for_service_pull()
     qbo_term_repo = MagicMock()
     qbo_term_repo.read_all.return_value = [term]
-    term_mapping_repo = MagicMock()
-    term_mapping_repo.read_by_qbo_term_id.return_value = None
     term_connector = MagicMock()
+    # U-352: the "already synced?" skip check now reads dbo.PaymentTerm's own
+    # native QboId/RealmId identity (no more qbo.TermPaymentTerm mapping table)
+    # — a miss here is what lets this row reach sync_from_qbo_term below.
+    term_connector.payment_term_service.read_by_qbo_identity.return_value = None
     term_connector.sync_from_qbo_term.side_effect = RuntimeError("transient db error")
 
     with patch(f"{term_module.__name__}.with_retry", side_effect=_retry_calls_fn), patch(
@@ -498,7 +500,6 @@ def test_term_existing_rows_projection_failure_records_real_qbo_id_not_staging_p
         term_module.sync_existing_terms_to_payment_terms(
             qbo_term_repo=qbo_term_repo,
             term_connector=term_connector,
-            term_mapping_repo=term_mapping_repo,
             outcome=outcome,
         )
 

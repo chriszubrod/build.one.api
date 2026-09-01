@@ -22,7 +22,6 @@ from integrations.intuit.qbo.purchase.connector.expense.business.service import 
 from integrations.intuit.qbo.purchase.connector.expense_line_item.business.service import (
     PurchaseLineExpenseLineItemConnector,
 )
-from integrations.intuit.qbo.term.connector.payment_term.business.service import TermPaymentTermConnector
 from integrations.intuit.qbo.vendor.connector.vendor.business.service import VendorVendorConnector
 from integrations.intuit.qbo.vendorcredit.connector.bill_credit.business.service import (
     VendorCreditBillCreditConnector,
@@ -75,20 +74,14 @@ _EXPECTED = {
             "auto-repointed — investigate which side is correct."
         ),
     },
-    "term": {
-        "drift_type": "payment_term_identity_conflict",
-        "entity_type": "PaymentTerm",
-        "entity_public_id": None,
-        "qbo_id": "TERM-99",
-        "realm_id": "realm-1",
-        "details": (
-            "TermPaymentTerm identity conflict. dbo.PaymentTerm 55 carries native QBO identity for "
-            "QboTerm 4 (QboId=TERM-99, RealmId=realm-1). qbo-side: the mapping table still binds "
-            "that same QboTerm to a DIFFERENT PaymentTerm 9 (mapping 2). local-side: PaymentTerm "
-            "55's own mapping row (mapping 3) still binds it to a DIFFERENT QboTerm 5. Not "
-            "auto-repointed — investigate which side is correct."
-        ),
-    },
+    # "payment_term_diff_qbo" entry removed in U-352 (/simplify altitude finding):
+    # TermPaymentTermConnector's create path never adopts a pre-existing row by
+    # name, so it has no side-channel collision a duplicate-identity conflict could
+    # arise from — `_record_duplicate_qbo_payment_term_issue` (and the
+    # candidate-scoped lock that was its only caller) was removed as dead code
+    # rather than kept for sibling-shape symmetry. See
+    # integrations/intuit/qbo/term/connector/payment_term/business/service.py's
+    # `_stamp_payment_term_identity` docstring for the full reasoning.
     "bill_credit": {
         "drift_type": "vendorcredit_identity_conflict",
         "entity_type": "BillCredit",
@@ -312,15 +305,6 @@ def test_recorder_consolidation_emits_identical_tuple(family):
             dbo_expense_id=55,
             local_side_mapping=SimpleNamespace(id=3, expense_id=55, qbo_purchase_id=5),
             qbo_side_mapping=SimpleNamespace(id=2, expense_id=9, qbo_purchase_id=4),
-        )
-    elif family == "term":
-        c = object.__new__(TermPaymentTermConnector)
-        c.reconciliation_repo = Mock()
-        c._record_identity_mapping_conflict_issue(
-            qbo_term=SimpleNamespace(id=4, qbo_id="TERM-99", realm_id="realm-1"),
-            dbo_payment_term_id=55,
-            local_side_mapping=SimpleNamespace(id=3, payment_term_id=55, qbo_term_id=5),
-            qbo_side_mapping=SimpleNamespace(id=2, payment_term_id=9, qbo_term_id=4),
         )
     elif family == "bill_credit":
         c = object.__new__(VendorCreditBillCreditConnector)

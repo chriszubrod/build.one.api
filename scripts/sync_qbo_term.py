@@ -28,7 +28,6 @@ from integrations.sync.business.service import SyncService
 from integrations.intuit.qbo.term.business.service import QboTermService
 from integrations.intuit.qbo.term.business.model import QboTerm
 from integrations.intuit.qbo.term.connector.payment_term.business.service import TermPaymentTermConnector
-from integrations.intuit.qbo.term.connector.payment_term.persistence.repo import TermPaymentTermRepository
 from integrations.intuit.qbo.term.persistence.repo import QboTermRepository
 from integrations.intuit.qbo.auth.business.service import QboAuthService
 
@@ -115,28 +114,34 @@ def sync_qbo_to_local(
 def sync_existing_terms_to_payment_terms(
     qbo_term_repo: QboTermRepository,
     term_connector: TermPaymentTermConnector,
-    term_mapping_repo: TermPaymentTermRepository,
     outcome: SyncOutcome,
 ) -> dict:
     """
     Sync all existing QboTerm records to PaymentTerm module.
-    
+
     This is useful when QboTerm records were synced before the connector
     was set up, or to re-sync all records.
-    
+
+    U-352: the "already synced?" skip check used to key off the
+    qbo.TermPaymentTerm mapping table (now retired). Re-expressed against
+    dbo.PaymentTerm's own native QboId/RealmId identity
+    (`payment_term_service.read_by_qbo_identity`) instead — this preserves
+    the same skip behavior (the sweep still only processes genuinely-
+    unsynced rows) without touching the retired mapping table.
+
     Args:
         qbo_term_repo: QboTermRepository instance
         term_connector: TermPaymentTermConnector instance
-        term_mapping_repo: TermPaymentTermRepository instance
-    
+        outcome: SyncOutcome accumulator shared with the incremental pull above
+
     Returns:
         dict: Sync results
     """
     logger.info("Syncing existing QboTerm records to PaymentTerm module")
-    
+
     # Read all existing QboTerm records
     all_terms = qbo_term_repo.read_all()
-    
+
     if not all_terms:
         logger.info("No existing QboTerm records found")
         return {
@@ -144,21 +149,23 @@ def sync_existing_terms_to_payment_terms(
             "payment_terms_synced": 0,
             "skipped": 0,
         }
-    
+
     logger.info(f"Found {len(all_terms)} existing QboTerm records")
-    
+
     payment_terms_synced = 0
     skipped = 0
-    
+
     for i, term in enumerate(all_terms):
         try:
-            # Check if mapping already exists
-            existing_mapping = term_mapping_repo.read_by_qbo_term_id(term.id)
-            if existing_mapping:
-                logger.debug(f"QboTerm {term.id} already mapped to PaymentTerm {existing_mapping.payment_term_id}, skipping")
+            # Check if this QboTerm's identity is already bound to a PaymentTerm.
+            already_synced = term_connector.payment_term_service.read_by_qbo_identity(
+                term.qbo_id, term.realm_id
+            )
+            if already_synced:
+                logger.debug(f"QboTerm {term.id} already synced to PaymentTerm {already_synced.id}, skipping")
                 skipped += 1
                 continue
-            
+
             # Use retry logic for transient errors
             payment_term = with_retry(
                 term_connector.sync_from_qbo_term,
@@ -188,7 +195,6 @@ def sync_local_to_qbo(
     realm_id: str,
     last_sync_time: Optional[str],
     qbo_term_service: QboTermService,
-    term_mapping_repo: TermPaymentTermRepository,
     qbo_term_repo: QboTermRepository,
 ) -> dict:
     """
@@ -245,7 +251,6 @@ def sync_qbo_term(resync_existing: bool = False) -> dict:
         qbo_term_service = QboTermService()
         qbo_term_repo = QboTermRepository()
         term_connector = TermPaymentTermConnector()
-        term_mapping_repo = TermPaymentTermRepository()
         auth_service = QboAuthService()
         
         # Get realm ID
@@ -277,7 +282,6 @@ def sync_qbo_term(resync_existing: bool = False) -> dict:
         existing_sync_result = sync_existing_terms_to_payment_terms(
             qbo_term_repo=qbo_term_repo,
             term_connector=term_connector,
-            term_mapping_repo=term_mapping_repo,
             outcome=outcome,
         )
         

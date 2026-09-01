@@ -22,8 +22,6 @@ from integrations.intuit.qbo.vendor.persistence.repo import QboVendorRepository
 from integrations.intuit.qbo.customer.persistence.repo import QboCustomerRepository
 from integrations.intuit.qbo.account.persistence.repo import QboAccountRepository
 from integrations.intuit.qbo.account.business.service import AP_ACCOUNT_TYPE, select_ap_account
-from integrations.intuit.qbo.term.connector.payment_term.persistence.repo import TermPaymentTermRepository
-from integrations.intuit.qbo.term.persistence.repo import QboTermRepository
 from entities.bill.business.service import BillService
 from entities.bill.business.model import Bill
 from entities.bill_line_item.business.service import BillLineItemService
@@ -71,8 +69,8 @@ class BillBillConnector:
         qbo_customer_repo: Optional[QboCustomerRepository] = None,
         project_service: Optional[ProjectService] = None,
         qbo_account_repo: Optional[QboAccountRepository] = None,
-        term_payment_term_repo: Optional[TermPaymentTermRepository] = None,
-        qbo_term_repo: Optional[QboTermRepository] = None,
+        term_payment_term_repo=None,
+        qbo_term_repo=None,
         reconciliation_repo: Optional[ReconciliationIssueRepository] = None,
         company_service: Optional[CompanyService] = None,
         payment_term_service: Optional[PaymentTermService] = None,
@@ -109,8 +107,21 @@ class BillBillConnector:
         self.qbo_customer_repo = qbo_customer_repo or QboCustomerRepository()
         self.project_service = project_service or ProjectService()
         self.qbo_account_repo = qbo_account_repo or QboAccountRepository()
-        self.term_payment_term_repo = term_payment_term_repo or TermPaymentTermRepository()
-        self.qbo_term_repo = qbo_term_repo or QboTermRepository()
+        # U-352: neither attribute is read anywhere in this file anymore
+        # (_get_qbo_sales_term_ref's qbo.TermPaymentTerm two-hop fallback was
+        # removed — a dbo-native miss now returns None instead of falling back to a
+        # second store). `term_payment_term_repo`'s old repo class
+        # (TermPaymentTermRepository) was retired outright, so it can no longer be
+        # default-constructed; `qbo_term_repo`'s class (QboTermRepository) still
+        # exists but nothing here reads it either, so building one on every
+        # instantiation would be pure waste. Both kept as untyped, unconstructed
+        # constructor params so the existing test call sites across other units
+        # that still pass term_payment_term_repo=/qbo_term_repo= don't need to
+        # change for a unit whose real scope is the PaymentTerm mapping table, not
+        # this connector's constructor (mirrors U-313's vendor_vendor_repo / U-311's
+        # customer_project_repo precedent above).
+        self.term_payment_term_repo = term_payment_term_repo
+        self.qbo_term_repo = qbo_term_repo
         self.reconciliation_repo = reconciliation_repo or ReconciliationIssueRepository()
         self.company_service = company_service or CompanyService()
         self.payment_term_service = payment_term_service or PaymentTermService()
@@ -1052,24 +1063,22 @@ class BillBillConnector:
         """
         Get QBO SalesTermRef from local payment_term_id.
 
-        Reads dbo.PaymentTerm's native QboId/Name (U-282) FIRST — the
-        Phase-6 readiness audit's highest live-traffic single-family gap,
-        firing on every completed Bill's QBO push. Realm-verified before
-        being trusted (multi-realm safety, matching this file's other
-        dbo-first resolvers), then falls back to the legacy
-        qbo.TermPaymentTerm -> qbo.Term two-hop on a miss, realm mismatch,
-        or a transient dbo.PaymentTerm read failure (same "must not newly
-        break a push that never touched this table before" rationale as
-        _get_ap_account_ref's cache read above — the legacy hop is still a
-        real, working fallback and a dbo-side error is unrelated to it).
+        Reads dbo.PaymentTerm's native QboId/Name (U-282) EXCLUSIVELY — the
+        qbo.TermPaymentTerm -> qbo.Term legacy two-hop fallback was retired
+        (U-352, the U-349 program's 3rd family: `TermPaymentTermConnector`
+        went dbo-only, so there is no second store left to hop through). A
+        dbo-native miss (no QboId stamped yet, a realm mismatch, or a
+        transient dbo.PaymentTerm read failure) now returns None (no
+        SalesTermRef on the push) instead of falling back. This is a
+        deliberate PUSH-path behavior change on the miss branch, not a
+        like-for-like port of the pre-U-352 shape — covered by its own
+        regression test.
 
         `name` is sent to QBO as display-only text on SalesTermRef (QBO
         resolves the actual term link purely off `value`, the QboId) —
-        the dbo-first path returns dbo.PaymentTerm.Name, which a human can
-        rename locally (accepted residual, same "never clobber curation"
-        policy as preserve_human_edited_ref elsewhere in this package) and
-        which can therefore differ from qbo.Term's own mirrored name the
-        legacy hop would have sent. Deliberate, not a defect.
+        dbo.PaymentTerm.Name, which a human can rename locally (accepted
+        residual, same "never clobber curation" policy as
+        preserve_human_edited_ref elsewhere in this package).
 
         Args:
             payment_term_id: Local PaymentTerm database ID
@@ -1085,25 +1094,12 @@ class BillBillConnector:
             payment_term = self.payment_term_service.read_by_id(payment_term_id)
         except Exception as e:
             logger.warning(f"Failed to read dbo.PaymentTerm for payment_term_id {payment_term_id}: {e}")
-            payment_term = None
+            return None
 
         if payment_term and payment_term.qbo_id and payment_term.realm_id == realm_id:
             return QboReferenceType(value=payment_term.qbo_id, name=payment_term.name)
 
-        # Legacy mapping-table hop — dbo not yet stamped for this term, or
-        # its RealmId doesn't match this push's realm.
-        term_mapping = self.term_payment_term_repo.read_by_payment_term_id(payment_term_id)
-        if not term_mapping:
-            logger.debug(f"TermPaymentTerm mapping not found for payment_term_id: {payment_term_id}")
-            return None
-
-        # Get QboTerm
-        qbo_term = self.qbo_term_repo.read_by_id(term_mapping.qbo_term_id)
-        if not qbo_term or not qbo_term.qbo_id:
-            logger.debug(f"QboTerm not found for qbo_term_id: {term_mapping.qbo_term_id}")
-            return None
-
-        return QboReferenceType(value=qbo_term.qbo_id, name=qbo_term.name)
+        return None
 
     def _build_qbo_line(self, line_item, line_num: int, realm_id: Optional[str] = None) -> Optional[QboBillLineSchema]:
         """

@@ -28,7 +28,6 @@ import pytest
 from integrations.intuit.qbo.item.business.model import QboItem
 from integrations.intuit.qbo.item.connector.sub_cost_code.business.service import ItemSubCostCodeConnector
 from integrations.intuit.qbo.term.business.model import QboTerm
-from integrations.intuit.qbo.term.connector.payment_term.business.model import TermPaymentTerm
 from integrations.intuit.qbo.term.connector.payment_term.business.service import TermPaymentTermConnector
 from integrations.intuit.qbo.vendor.business.model import QboVendor
 from integrations.intuit.qbo.vendor.connector.vendor.business.service import VendorVendorConnector
@@ -200,52 +199,52 @@ def test_vendor_genuine_miss_create_path_threads_active():
 
 
 # ------------------------------------------------------------------------- #
-# PaymentTerm (no heal branch)
+# PaymentTerm (U-352: dbo-only, no mapping table, no heal branch)
 # ------------------------------------------------------------------------- #
 
+PAYMENT_TERM_FASTPATH_LOCK_TARGET = "integrations.intuit.qbo.base.identity_fastpath.qbo_app_lock"
+
+
 def _build_payment_term_connector():
-    connector = TermPaymentTermConnector(
-        mapping_repo=Mock(), payment_term_service=Mock(), reconciliation_repo=Mock()
-    )
-    # U-282: default the direct dbo-identity fast path to a miss so these tests keep
-    # exercising the mapping-table path they're testing (mirrors U-276's identical fix
+    connector = TermPaymentTermConnector(payment_term_service=Mock())
+    # U-282/U-352: default the direct dbo-identity fast path to a miss so these
+    # tests exercise the genuine-miss create path (mirrors U-276's identical fix
     # for customer/project).
     connector.payment_term_service.read_by_qbo_identity.return_value = None
     return connector
 
 
-def test_payment_term_update_path_threads_active():
+def test_payment_term_direct_hit_path_does_not_thread_active():
+    """U-352: unlike Vendor/SubCostCode above, PaymentTerm's HIT branch
+    deliberately does NOT refresh QboActive — a pre-existing staleness
+    tradeoff (U-282), explicitly preserved by the U-352 dbo-only rewrite
+    rather than importing the Vendor/SubCostCode refresh-every-hit pattern."""
     connector = _build_payment_term_connector()
     qbo_term = _make_qbo_term(active=False)
-    mapping = TermPaymentTerm(
-        id=1, public_id="m1", row_version=None, created_datetime=None,
-        modified_datetime=None, payment_term_id=13, qbo_term_id=1,
-    )
     payment_term = Mock(id=13, name="Net 30")
-    connector.mapping_repo.read_by_qbo_term_id.return_value = mapping
-    connector.payment_term_service.read_by_id.return_value = payment_term
+    connector.payment_term_service.read_by_qbo_identity.return_value = payment_term
     connector.payment_term_service.repo.update_by_id.side_effect = lambda pt: pt
 
     connector.sync_from_qbo_term(qbo_term)
 
-    connector.payment_term_service.repo.set_qbo_identity.assert_called_once_with(
-        id=13, qbo_id="QBO-T-1", realm_id="r1", active=False,
-    )
+    connector.payment_term_service.repo.set_qbo_identity.assert_not_called()
 
 
-def test_payment_term_create_path_threads_active():
+def test_payment_term_genuine_miss_create_path_threads_active():
+    """U-352: the create branch -- stamped once inside
+    `_stamp_payment_term_identity` with the real qbo_id/realm_id AND active, no
+    outer refresh wrapper (unlike SubCostCode's outer-wrapper shape above --
+    PaymentTerm folds the Active write into the single MISS-branch stamp
+    instead, and has no adopt-by-name path to also refresh on a HIT)."""
     connector = _build_payment_term_connector()
     qbo_term = _make_qbo_term(active=True)
-    created = Mock(id=14, name="Net 30")
-    connector.mapping_repo.read_by_qbo_term_id.return_value = None
+    created = Mock(id=14, name="Net 30", qbo_id=None, realm_id=None)
     connector.payment_term_service.create.return_value = created
-    connector.mapping_repo.read_by_payment_term_id.return_value = None
-    connector.mapping_repo.create.return_value = TermPaymentTerm(
-        id=2, public_id="m2", row_version=None, created_datetime=None,
-        modified_datetime=None, payment_term_id=14, qbo_term_id=1,
-    )
+    stamped = Mock(id=14, qbo_id="QBO-T-1", realm_id="r1")
+    connector.payment_term_service.read_by_id.return_value = stamped
 
-    connector.sync_from_qbo_term(qbo_term)
+    with patch(PAYMENT_TERM_FASTPATH_LOCK_TARGET, side_effect=_granted_lock):
+        connector.sync_from_qbo_term(qbo_term)
 
     connector.payment_term_service.repo.set_qbo_identity.assert_called_once_with(
         id=14, qbo_id="QBO-T-1", realm_id="r1", active=True,

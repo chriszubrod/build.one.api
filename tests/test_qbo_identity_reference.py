@@ -49,17 +49,10 @@ def test_classify_qbo_identity_drift_reference_fields(
 
 
 EXPECTED_REFERENCE_SPECS = {
-    "payment_term": {
-        "label": "PaymentTerm",
-        "mapping_table": "TermPaymentTerm",
-        "staging_table": "Term",
-        "dbo_fk_col": "PaymentTermId",
-        "staging_fk_col": "QboTermId",
-        "has_sync_token": False,
-        "sproc": "SetPaymentTermQboIdentity",
-    },
     # "address" reference-spec row removed in U-351 (physical_address went
     # dbo-native; see integrations/intuit/qbo/base/identity_drift.py).
+    # "payment_term" reference-spec row removed in U-352 (dbo-native only,
+    # qbo.TermPaymentTerm retired — see integrations/intuit/qbo/base/identity_drift.py).
     # "attachment" reference-spec row removed in U-300c-prereq (attachable went
     # fully dbo-native; see integrations/intuit/qbo/base/identity_drift.py).
     "bill_credit": {
@@ -165,23 +158,20 @@ def test_set_qbo_identity_calls_sproc(repo_path, sproc, extra_params):
     }
 
 
-# U-310/U-313: the Customer AND Vendor families' `create_mapping` dual-writes
-# are GONE -- CustomerCustomerConnector/VendorVendorConnector no longer touch
-# qbo.CustomerCustomer/qbo.VendorVendor at all (each stamps its dbo-native
-# identity inside its own `_stamp_*_identity` under the candidate's own app
-# lock instead). Their replacement contract -- "the identity stamp happens,
-# and a failure to stamp never leaves a half-bound row" -- is covered in
-# tests/test_u276_customer_project_qbo_identity_repoint.py's Section 2 and
-# tests/test_u290_vendor_qbo_identity_repoint.py's Section 2, which is where
-# each family's dbo-only tests now live. PaymentTerm below still has its
-# mapping table (not in Wave 5).
+# U-310/U-313/U-352: the Customer, Vendor, AND PaymentTerm families' `create_mapping`
+# dual-writes are GONE -- CustomerCustomerConnector/VendorVendorConnector/
+# TermPaymentTermConnector no longer touch qbo.CustomerCustomer/qbo.VendorVendor/
+# qbo.TermPaymentTerm at all (each stamps its dbo-native identity inside its own
+# `_stamp_*_identity` under the candidate's own app lock instead). Their replacement
+# contract -- "the identity stamp happens, and a failure to stamp never leaves a
+# half-bound row" -- is covered in tests/test_u276_customer_project_qbo_identity_
+# repoint.py's Section 2, tests/test_u290_vendor_qbo_identity_repoint.py's Section 2,
+# and tests/test_u282_payment_term_qbo_identity_repoint.py's Section 2, which is
+# where each family's dbo-only tests now live. `create_mapping` below now only
+# stamps `dbo.PaymentTerm.QboId`/`RealmId`/`QboActive` -- no mapping-row write left.
 
 
 def _make_payment_term_connector():
-    mapping_repo = Mock()
-    mapping_repo.read_by_payment_term_id.return_value = None
-    mapping_repo.read_by_qbo_term_id.return_value = None
-    mapping_repo.create.return_value = SimpleNamespace(id=1)
     payment_term_service = Mock()
     payment_term_service.repo = Mock()
     # U-282: default the direct dbo-identity fast path to a miss, matching the two
@@ -190,37 +180,32 @@ def _make_payment_term_connector():
     # create_mapping() directly (not sync_from_qbo_term), so it's a no-op today, but
     # keeps the builder consistent if a future test here calls sync_from_qbo_term.
     payment_term_service.read_by_qbo_identity.return_value = None
-    connector = TermPaymentTermConnector(
-        mapping_repo=mapping_repo, payment_term_service=payment_term_service
-    )
-    return connector, mapping_repo, payment_term_service.repo
+    connector = TermPaymentTermConnector(payment_term_service=payment_term_service)
+    return connector, payment_term_service.repo
 
 
-def test_payment_term_create_mapping_dual_writes_identity():
-    connector, mapping_repo, repo = _make_payment_term_connector()
+def test_payment_term_create_mapping_stamps_identity():
+    connector, repo = _make_payment_term_connector()
     connector.create_mapping(
         payment_term_id=13,
-        qbo_term_id=24,
         qbo_id="T-1",
         realm_id="realm-pt",
+        active=True,
     )
     repo.set_qbo_identity.assert_called_once_with(
-        id=13, qbo_id="T-1", realm_id="realm-pt", active=None
+        id=13, qbo_id="T-1", realm_id="realm-pt", active=True
     )
-    mapping_repo.create.assert_called_once_with(payment_term_id=13, qbo_term_id=24)
 
 
 def test_payment_term_create_mapping_identity_failure_propagates():
-    connector, mapping_repo, repo = _make_payment_term_connector()
+    connector, repo = _make_payment_term_connector()
     repo.set_qbo_identity.side_effect = RuntimeError("stamp failed")
     with pytest.raises(RuntimeError, match="stamp failed"):
         connector.create_mapping(
             payment_term_id=13,
-            qbo_term_id=24,
             qbo_id="T-1",
             realm_id="realm-pt",
         )
-    mapping_repo.create.assert_not_called()
 
 
 # U-351: create_mapping now ONLY stamps dbo.Address.QboId/RealmId — there is no
@@ -436,7 +421,7 @@ def test_address_sync_does_not_steal_identity_on_shared_street_city_second_sync(
 @patch("scripts.backfill_qbo_identity_reference.assert_cli_system_admin")
 @patch("scripts.backfill_qbo_identity_reference.backfill_entity", return_value=False)
 def test_backfill_main_returns_nonzero_on_entity_verification_failure(mock_backfill, mock_admin):
-    with patch("sys.argv", ["backfill_qbo_identity_reference.py", "--entity", "payment_term"]):
+    with patch("sys.argv", ["backfill_qbo_identity_reference.py", "--entity", "bill_credit"]):
         assert backfill_main() == 1
     mock_backfill.assert_called_once()
 

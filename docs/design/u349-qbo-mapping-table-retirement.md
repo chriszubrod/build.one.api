@@ -117,10 +117,10 @@ re-expression of drift queries in `reconciliation/business/service.py`) and **co
 | 5 | purchase/expense (PurchaseExpense) | U-354 | header | 0 | outbox worker + invoice source-link + purchase svc/router | medium-heavy | queue |
 | 6 | bill (BillBill) | U-355 | header | 0 | base/compensation + base/identity_consistency + outbox + bill_line_item connector | heavy (solo) | queue |
 | 7 | invoice (InvoiceInvoice) | U-356 | header | **1** | reconciliation + outbox worker | hard (recon) | queue |
-| 8 | vendorcredit_line_item (…BillCreditLineItem) | U-357 | **line-item** | 0 | — | **FOUNDATIONAL: builds `run_line_identity_fastpath_dbo_only`; two-phase** | queue |
-| 9 | invoice_line_item (InvoiceLineItemInvoiceLine) | U-358 | line-item | 0 | invoice source-link | clone (needs #8's helper) | queue |
-| 10 | bill_line_item (BillLineItemBillLine) | U-359 | line-item | **1** | reconciliation + bill svc | hard (recon) | queue |
-| 11 | expense_line_item (PurchaseLineExpenseLineItem) | U-360 | line-item | **1** | reconciliation + purchase svc/router | hard (recon) | queue |
+| 8 | vendorcredit_line_item (…BillCreditLineItem) | U-361 | **line-item** | 0 | — | **FOUNDATIONAL: builds `run_line_identity_fastpath_dbo_only`; two-phase** | queue |
+| 9 | invoice_line_item (InvoiceLineItemInvoiceLine) | U-362 | line-item | 0 | invoice source-link | clone (needs #8's helper) | queue |
+| 10 | bill_line_item (BillLineItemBillLine) | U-363 | line-item | **1** | reconciliation + bill svc | hard (recon) | queue |
+| 11 | expense_line_item (PurchaseLineExpenseLineItem) | U-364 | line-item | **1** | reconciliation + purchase svc/router | hard (recon) | queue |
 
 **Ordering logic:** header families first (existing helper, ascending cross-family surface), the one
 header-with-recon (invoice) at the end of the header block; then the line-item block led by the

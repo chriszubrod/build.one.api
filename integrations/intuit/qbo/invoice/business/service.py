@@ -20,6 +20,39 @@ MAX_RETRIES = 3  # Max retries for transient errors
 INITIAL_RETRY_DELAY = 2.0  # Initial retry delay (seconds)
 
 
+def _clear_legacy_invoice_line_item_invoice_line_mapping_by_qbo_line_id(qbo_invoice_line_id: int) -> None:
+    """U-362 deploy-gap bridge for QboInvoiceService._upsert_invoice_lines'
+    stale-line cleanup — see that method's call site. Raw SQL, not a repo/model
+    (both retired in this unit): deletes any row in the (soon-to-be-dropped)
+    qbo.InvoiceLineItemInvoiceLine table that still points at this staging
+    QboInvoiceLine, so its NO ACTION FK (FK_InvoiceLineItemInvoiceLine_
+    QboInvoiceLine, live since scripts/migrations/u225_qbo_mapping_fk_gaps.sql)
+    never blocks the stale-line delete below. Same OBJECT_ID-guard idiom as
+    entities/invoice_line_item/business/service.py's sibling bridge (and
+    BillCreditService's U-353 precedent) — table-already-dropped becomes a
+    plain SQL no-op, not a caught Python exception. Once /em applies the DROP,
+    this whole function becomes a permanent no-op and should be deleted."""
+    from shared.database import get_connection
+
+    try:
+        with get_connection() as conn:
+            conn.cursor().execute(
+                "IF OBJECT_ID('qbo.InvoiceLineItemInvoiceLine', 'U') IS NOT NULL "
+                "DELETE FROM [qbo].[InvoiceLineItemInvoiceLine] WHERE [QboInvoiceLineId] = ?",
+                (qbo_invoice_line_id,),
+            )
+    except Exception as e:
+        # Best-effort only — the real safety net is the FK itself. If a mapping
+        # row really does still exist and this failed to clear it, the stale
+        # QboInvoiceLine delete below 547s and is caught by its own try/except
+        # (fail-safe: the stale row just persists for the next pull to retry,
+        # never fail-silent-corruption).
+        logger.warning(
+            f"Could not clear legacy qbo.InvoiceLineItemInvoiceLine mapping for "
+            f"QboInvoiceLine {qbo_invoice_line_id}: {e}"
+        )
+
+
 class QboInvoiceService:
     """
     Service for QboInvoice entity business operations.
@@ -259,7 +292,8 @@ class QboInvoiceService:
         After inserting/updating all lines present in the QBO API response,
         any locally-stored QboInvoiceLine whose qbo_line_id is NOT in the
         current response is stale (line was removed in QBO). Stale lines are
-        deleted along with their InvoiceLineItemInvoiceLine mappings.
+        deleted directly (U-362: no more qbo.InvoiceLineItemInvoiceLine
+        mapping row to clear first).
 
         Args:
             qbo_invoice_id: Database ID of the QboInvoice
@@ -383,9 +417,18 @@ class QboInvoiceService:
 
         # Delete stale lines — any locally-stored QboInvoiceLine whose qbo_line_id is
         # no longer present in the QBO API response means QBO removed that line.
-        # Delete the InvoiceLineItemInvoiceLine mapping first (FK constraint), then the line.
-        from integrations.intuit.qbo.invoice.connector.invoice_line_item.persistence.repo import InvoiceLineItemInvoiceLineRepository
-        mapping_repo = InvoiceLineItemInvoiceLineRepository()
+        # U-362: the downstream InvoiceLineItem is matched by its own dbo-native
+        # (InvoiceId, QboId) identity now — the connector-level qbo.
+        # InvoiceLineItemInvoiceLine mapping this layer used to keep valid is
+        # retired. The TABLE itself is not dropped by this unit though, and it
+        # carries a live NO ACTION FK onto this staging row
+        # (FK_InvoiceLineItemInvoiceLine_QboInvoiceLine) — so the delete below
+        # still needs the mapping cleared first, via the deploy-gap bridge, or
+        # it 547s and the stale row silently survives. Its dbo InvoiceLineItem,
+        # if any, is left under its now-stale identity — the re-adopt matcher
+        # (base/line_orphan_adopt.py) picks it up on a future pull if QBO
+        # re-sends an equivalent line; nothing here can determine that on its
+        # own.
         stored_lines = self.line_repo.read_by_qbo_invoice_id(qbo_invoice_id)
         for stored_line in stored_lines:
             if stored_line.qbo_line_id not in current_qbo_line_ids:
@@ -393,13 +436,7 @@ class QboInvoiceService:
                     f"Deleting stale QboInvoiceLine id={stored_line.id} "
                     f"qbo_line_id={stored_line.qbo_line_id} (no longer in QBO response)"
                 )
-                try:
-                    stale_mapping = mapping_repo.read_by_qbo_invoice_line_id(stored_line.id)
-                    if stale_mapping:
-                        mapping_repo.delete_by_id(stale_mapping.id)
-                        logger.info(f"Deleted stale InvoiceLineItemInvoiceLine mapping id={stale_mapping.id}")
-                except Exception as e:
-                    logger.warning(f"Could not delete stale mapping for QboInvoiceLine {stored_line.id}: {e}")
+                _clear_legacy_invoice_line_item_invoice_line_mapping_by_qbo_line_id(stored_line.id)
                 try:
                     self.line_repo.delete_by_id(stored_line.id)
                     # Remove from cache so subsequent passes don't try to use the deleted line

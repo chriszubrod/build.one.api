@@ -222,7 +222,6 @@ def _make_invoice_connector(**overrides):
     from integrations.intuit.qbo.invoice.connector.invoice.business.service import InvoiceInvoiceConnector
 
     kwargs = dict(
-        line_mapping_repo=MagicMock(),
         invoice_service=MagicMock(),
         project_service=MagicMock(),
         qbo_customer_repo=MagicMock(),

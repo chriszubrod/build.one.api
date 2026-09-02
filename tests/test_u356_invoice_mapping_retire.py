@@ -64,7 +64,6 @@ def _build_connector():
     project_service = Mock()
     reconciliation_repo = Mock()
     connector = InvoiceInvoiceConnector(
-        line_mapping_repo=Mock(),
         invoice_service=invoice_service,
         project_service=project_service,
         qbo_customer_repo=Mock(),

@@ -78,13 +78,24 @@ DRIFT_BILL_LINE_ITEM_IDENTITY_CONFLICT = "bill_line_item_identity_conflict"
 # exceeds the live qbo.ReconciliationIssue.DriftType NVARCHAR(32) column width
 # (measured prod width, see _FIELD_LIMITS above) — Bill's own name only fits
 # because "bill" is short. Shortened per-family, not simply truncated.
-DRIFT_INVOICE_LINE_ITEM_IDENTITY_CONFLICT = "invoice_line_identity_conflict"
 DRIFT_EXPENSE_LINE_ITEM_IDENTITY_CONFLICT = "expense_line_identity_conflict"
 # U-361: "bc_line_item_identity_conflict" (DRIFT_BILL_CREDIT_LINE_ITEM_IDENTITY_
 # CONFLICT) was removed — its only writer was the bill_credit_line_item
 # connector's mapping-vs-dbo conflict recorder, retired with the mapping table;
 # run_line_identity_fastpath_dbo_only has no conflict state left to record.
 # Historical rows may still carry the value; nothing writes it any more.
+# U-362: "invoice_line_identity_conflict" (DRIFT_INVOICE_LINE_ITEM_IDENTITY_
+# CONFLICT) was removed for the same reason — its only writer was the
+# invoice_line_item connector's mapping-vs-dbo conflict recorder, retired
+# with qbo.InvoiceLineItemInvoiceLine. Historical rows may still carry the
+# value; nothing writes it any more.
+# U-362: dbo-only line fast path recorders for invoice_line_item (readopt-
+# failure / create-failure / rollback-failure), mirroring U-361b's 3-constant
+# shape for bill_credit_line_item (DRIFT_ORPHAN_BCLI_LINE_ITEM /
+# DRIFT_BCLI_LINE_READOPT_FAILED / DRIFT_BCLI_LINE_CREATE_FAILED above).
+DRIFT_ORPHAN_ILI_LINE_ITEM = "orphan_ili_line_item"
+DRIFT_ILI_LINE_READOPT_FAILED = "ili_line_readopt_failed"
+DRIFT_ILI_LINE_CREATE_FAILED = "ili_line_create_failed"
 
 KNOWN_DRIFT_TYPES: FrozenSet[str] = frozenset({
     DRIFT_QBO_MISSING_LOCALLY, DRIFT_LOCAL_MISSING_QBO, DRIFT_STALE_SYNC_TOKEN,
@@ -111,6 +122,6 @@ KNOWN_DRIFT_TYPES: FrozenSet[str] = frozenset({
     DRIFT_VENDOR_IDENTITY_CONFLICT, DRIFT_COST_CODE_IDENTITY_CONFLICT,
     DRIFT_SUB_COST_CODE_IDENTITY_CONFLICT, DRIFT_BILL_IDENTITY_CONFLICT,
     DRIFT_EXPENSE_IDENTITY_CONFLICT, DRIFT_INVOICE_IDENTITY_CONFLICT,
-    DRIFT_BILL_LINE_ITEM_IDENTITY_CONFLICT, DRIFT_INVOICE_LINE_ITEM_IDENTITY_CONFLICT,
-    DRIFT_EXPENSE_LINE_ITEM_IDENTITY_CONFLICT,
+    DRIFT_BILL_LINE_ITEM_IDENTITY_CONFLICT, DRIFT_EXPENSE_LINE_ITEM_IDENTITY_CONFLICT,
+    DRIFT_ORPHAN_ILI_LINE_ITEM, DRIFT_ILI_LINE_READOPT_FAILED, DRIFT_ILI_LINE_CREATE_FAILED,
 })

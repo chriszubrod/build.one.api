@@ -370,10 +370,10 @@ def main() -> None:
         "--entity",
         choices=[
             "bill_line_item",
-            "invoice_line_item",
             "expense_line_item",
             # U-361: "bill_credit_line_item" removed — its LineEntitySpec row is
             # gone from identity_drift.py (mapping table retired; dbo-native only).
+            # U-362: "invoice_line_item" removed for the same reason.
             "all",
         ],
         default="all",

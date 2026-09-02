@@ -1468,7 +1468,7 @@ def test_invoice_get_qbo_customer_ref_reads_project_directly():
     from integrations.intuit.qbo.invoice.external.schemas import QboReferenceType
 
     connector = InvoiceInvoiceConnector(
-        line_mapping_repo=Mock(), invoice_service=Mock(),
+        invoice_service=Mock(),
         project_service=Mock(), qbo_customer_repo=Mock(), customer_project_repo=Mock(),
     )
     project = SimpleNamespace(id=9, name="HA - 206 Haverford Ave", qbo_id="QBO-P-9", realm_id="realm-1")
@@ -1487,7 +1487,7 @@ def test_invoice_get_qbo_customer_ref_none_when_project_never_synced():
     )
 
     connector = InvoiceInvoiceConnector(
-        line_mapping_repo=Mock(), invoice_service=Mock(),
+        invoice_service=Mock(),
         project_service=Mock(), qbo_customer_repo=Mock(), customer_project_repo=Mock(),
     )
     connector.project_service.read_by_id.return_value = None

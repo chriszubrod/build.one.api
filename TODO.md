@@ -2309,12 +2309,17 @@ Design: `docs/design/u357-unified-status-review-status.md` (§9 = 24 open decisi
   `JOIN dbo.BillCreditLineItem dbcli ON dbcli.BillCreditId = <parent dbo id> AND dbcli.QboId = vcl.QboLineId`
   (parent-scoped — never join a line by QboId alone) and drop the mapping sentence.
 - [ ] **`rollback_orphan_header` is now also the line-level compensating delete** (U-361 wires it from the
-  bill_credit_line_item connector with a no-op `delete_mapping`). Name + log text still say "header"/"mapping";
-  once U-362–364 clone the shape, rename to a neutral `rollback_orphan_row(delete_row, ...)` and drop the
-  now-universally-no-op `delete_mapping` parameter (every remaining caller passes `lambda: None`).
-- [ ] **`_record_orphan_line_issue` is the 5th hand-copy of the orphan-recorder shape** (after the 4 header
-  connectors' `_record_orphan_header_issue`). Fold into the booked deploy-gap-bridge / recorder extraction
-  when it lands — do not add a 6th copy in U-362–364 without lifting it.
+  bill_credit_line_item connector with a no-op `delete_mapping`; U-362 clones the same shape onto
+  invoice_line_item). Name + log text still say "header"/"mapping"; once U-363–364 clone the shape too,
+  rename to a neutral `rollback_orphan_row(delete_row, ...)` and drop the now-universally-no-op
+  `delete_mapping` parameter (every remaining caller passes `lambda: None`).
+- [ ] **`_record_orphan_line_issue` is now the 6th hand-copy of the orphan-recorder shape** (after the 4
+  header connectors' `_record_orphan_header_issue` + U-361's bill_credit_line_item copy; U-362 added
+  invoice_line_item's as the 6th, explicitly against this TODO's own prior instruction not to — the
+  extraction kept getting deferred past each individual line-family unit and the debt compounded). Fold
+  into the booked deploy-gap-bridge / recorder extraction when it lands — do NOT add a 7th copy in
+  U-363/364 without lifting it this time; if U-363 lands before the extraction, treat the extraction as
+  a hard prerequisite, not another deferral.
 - [ ] **Delete `tests/test_u341_create_mapping_then_stamp.py`'s per-family expectation for
   `bill_credit_line_item` once the other 3 line families retire their mappings** — `create_mapping_then_stamp`
   and `stamp_line_identity_or_warn`'s create-path role end with the last line mapping (U-364); the HIT-path
@@ -2323,6 +2328,30 @@ Design: `docs/design/u357-unified-status-review-status.md` (§9 = 24 open decisi
 - [ ] **Docs that still describe the mapping-era line topology** (historical, left as-is):
   `docs/staging_removal_phase6_readiness.md` §"vendorcredit" (row 445 = the mapping), `docs/qbo-pull-sync-
   audit-2026-06-18.md` (the 2026-06 upsert-in-place design), `docs/staging_removal_phase4_5_scoping.md` §7.
+
+## U-362 follow-ups (qbo.InvoiceLineItemInvoiceLine retirement, 2026-09-02) — deferred, non-blocking
+
+- [ ] **`scripts/repair_invoice_line_duplicates.py`'s `IsMapped` classification is now stale.** It derives
+  `IsMapped` from `LEFT JOIN qbo.[InvoiceLineItemInvoiceLine] map ON map.[InvoiceLineItemId] = ili.[Id]`
+  (the retired connector-level mapping) rather than `dbo.InvoiceLineItem.QboId IS NOT NULL`. Post-U-362,
+  every newly-synced line reads `IsMapped=0` regardless of its real dbo-native identity — a legitimate new
+  line sharing a content fingerprint with an older, still-mapped Manual sibling under the same invoice could
+  now misclassify as a `repair` (deletion) candidate the script was built to prune. Mitigated by the script's
+  own dry-run-by-default + `--expect-count` human-review gate (this is a manually-run maintenance tool, not
+  an automated path), so booked here rather than fixed in-unit — mirrors the equivalent stale-script residual
+  U-361 booked for vendorcredit (not found there since no analogous one-off repair script exists for that
+  family). Fix: repoint the `IsMapped` derivation onto `ili.[QboId] IS NOT NULL` directly (no JOIN needed).
+- [ ] **`entities/invoice_line_item/persistence/repo.py:164` and `entities/invoice_line_item/business/
+  service.py:117`** still say "bypassing the qbo.InvoiceLine/qbo.InvoiceLineItemInvoiceLine staging/mapping
+  tables" in their `read_by_qbo_identity` docstrings — accurate history (describes what U-293b's repoint
+  bypassed) but slightly imprecise now that the mapping half is retired, not just bypassed. Cosmetic; reword
+  in passing next time either file is touched.
+- [ ] **`_clear_legacy_invoice_line_item_invoice_line_mapping` (entities/invoice_line_item/business/
+  service.py) and `_clear_legacy_invoice_line_item_invoice_line_mapping_by_qbo_line_id`
+  (integrations/intuit/qbo/invoice/business/service.py) become permanent no-ops once /em applies the
+  `qbo.InvoiceLineItemInvoiceLine` DROP** — same U-353/U-365 lifecycle as the other deploy-gap bridges.
+  Delete both (and their call sites) in the same pass that eventually cleans up U-361's analogous bridges,
+  not before the DROP actually lands.
 
 ## Found during iOS Simulator QA sweep (2026-09-02) — not fixed, scope was test-data cleanup only
 

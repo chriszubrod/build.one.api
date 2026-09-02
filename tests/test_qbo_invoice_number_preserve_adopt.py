@@ -74,7 +74,6 @@ def _make_invoice(
 
 def _build_connector():
     connector = InvoiceInvoiceConnector(
-        line_mapping_repo=Mock(),
         invoice_service=Mock(),
         project_service=Mock(),
         qbo_customer_repo=Mock(),
@@ -198,15 +197,14 @@ def test_identity_lost_renamed_invoice_readopts_via_fingerprint_no_phantom():
     connector._caches_preloaded = True
     connector.invoice_service.read_by_id.return_value = renamed  # by-id re-read: unstamped
     # The renamed invoice carries no header identity (identity-lost signature) but retains
-    # QBO LINE provenance (its InvoiceLineItemInvoiceLine mapping survives), which is what
-    # marks it an identity-lost QBO invoice (not a manual one).
-    connector.line_mapping_repo.read_by_invoice_line_item_id.return_value = SimpleNamespace(id=1)
+    # QBO LINE provenance (its InvoiceLineItem.QboId survives, U-362 dbo-native), which is
+    # what marks it an identity-lost QBO invoice (not a manual one).
     connector.invoice_service.update_by_public_id.return_value = renamed
 
     with patch(ILI_SERVICE) as ili_cls:
         # Used by both the provenance check and the had_lines check; give it a line item
-        # carrying an id so _has_qbo_line_provenance can look up its line mapping.
-        ili_cls.return_value.read_by_invoice_id.return_value = [SimpleNamespace(id=9001)]
+        # carrying a dbo-native qbo_id so _has_qbo_line_provenance finds it.
+        ili_cls.return_value.read_by_invoice_id.return_value = [SimpleNamespace(id=9001, qbo_id="1")]
         connector.sync_from_qbo_invoice(qbo_invoice, [])
 
     # No phantom minted.
@@ -290,11 +288,10 @@ def test_fingerprint_match_without_qbo_provenance_is_not_adopted():
     )
     created = _make_invoice(invoice_number="INV-100", inv_id=1058, public_id="inv-pub-1058")
     _wire_fingerprint_candidate(connector, manual, created=created)
-    # No line-mapping provenance -> manual invoice.
-    connector.line_mapping_repo.read_by_invoice_line_item_id.return_value = None
 
+    # No dbo-native line qbo_id -> manual invoice, no provenance.
     with patch(ILI_SERVICE) as ili_cls:
-        ili_cls.return_value.read_by_invoice_id.return_value = [SimpleNamespace(id=9001)]
+        ili_cls.return_value.read_by_invoice_id.return_value = [SimpleNamespace(id=9001, qbo_id=None)]
         connector.sync_from_qbo_invoice(qbo_invoice, [])
 
     connector.invoice_service.create.assert_called_once()
@@ -318,11 +315,11 @@ def test_number_matched_manual_invoice_without_provenance_is_not_adopted():
     connector.invoice_service.read_by_id.side_effect = (
         lambda invoice_id: manual if invoice_id == manual.id else created
     )
-    connector.line_mapping_repo.read_by_invoice_line_item_id.return_value = None  # NO provenance
     connector.invoice_service.create.return_value = created
 
+    # NO provenance: line item carries no dbo-native qbo_id.
     with patch(ILI_SERVICE) as ili_cls:
-        ili_cls.return_value.read_by_invoice_id.return_value = [SimpleNamespace(id=9001)]
+        ili_cls.return_value.read_by_invoice_id.return_value = [SimpleNamespace(id=9001, qbo_id=None)]
         connector.sync_from_qbo_invoice(qbo_invoice, [])
 
     connector.invoice_service.create.assert_called_once()
@@ -342,11 +339,11 @@ def test_number_matched_qbo_invoice_with_provenance_is_adopted():
     connector.project_service.read_by_public_id.return_value = SimpleNamespace(id=200)
     connector.invoice_service.repo.read_by_invoice_number_and_project_id.return_value = qbo_local  # number HIT
     connector.invoice_service.read_by_id.return_value = qbo_local  # unstamped header
-    connector.line_mapping_repo.read_by_invoice_line_item_id.return_value = SimpleNamespace(id=1)  # provenance
     connector.invoice_service.update_by_public_id.return_value = qbo_local
 
+    # Provenance: line item carries a dbo-native qbo_id.
     with patch(ILI_SERVICE) as ili_cls:
-        ili_cls.return_value.read_by_invoice_id.return_value = [SimpleNamespace(id=9001)]
+        ili_cls.return_value.read_by_invoice_id.return_value = [SimpleNamespace(id=9001, qbo_id="1")]
         connector.sync_from_qbo_invoice(qbo_invoice, [])
 
     connector.invoice_service.create.assert_not_called()

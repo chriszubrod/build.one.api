@@ -127,7 +127,6 @@ def _build_invoice_connector():
     invoice_service.repo = Mock()
     reconciliation_repo = Mock()
     connector = InvoiceInvoiceConnector(
-        line_mapping_repo=Mock(),
         invoice_service=invoice_service,
         reconciliation_repo=reconciliation_repo,
     )

@@ -215,7 +215,15 @@ BEGIN
         CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
         [InvoiceId], [SourceType],
         [BillLineItemId], [ExpenseLineItemId], [BillCreditLineItemId], [EmployeeLaborLineItemId],
-        [SubCostCodeId], [Description], [Quantity], [Rate], [Amount], [Markup], [Price], [IsDraft]
+        [SubCostCodeId], [Description], [Quantity], [Rate], [Amount], [Markup], [Price], [IsDraft],
+        -- U-362: added QboId/RealmId — InvoiceInvoiceConnector.preload_caches()
+        -- feeds this into the line connector's readopt candidate pool
+        -- (_manual_line_candidates), which depends on this column to tell a
+        -- stamped line from an unstamped one; omitting it made the whole
+        -- caches_preloaded=True path readopt-blind (every cached line looked
+        -- unstamped), the same self-rollback bug class as the other 4 sprocs
+        -- fixed in this unit.
+        [QboId], [RealmId]
     FROM dbo.[InvoiceLineItem]
     ORDER BY [CreatedDatetime] DESC;
     COMMIT TRANSACTION;
@@ -236,7 +244,12 @@ BEGIN
         CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
         [InvoiceId], [SourceType],
         [BillLineItemId], [ExpenseLineItemId], [BillCreditLineItemId], [EmployeeLaborLineItemId],
-        [SubCostCodeId], [Description], [Quantity], [Rate], [Amount], [Markup], [Price], [IsDraft]
+        [SubCostCodeId], [Description], [Quantity], [Rate], [Amount], [Markup], [Price], [IsDraft],
+        -- U-362: added QboId/RealmId — the dbo-only line fast path's post-stamp
+        -- re-read (read_by_id) verifies a stamp landed by comparing this column;
+        -- omitting it made every CREATE self-rollback (same class of bug U-361's
+        -- code review caught in ReadBillCreditLineItemById).
+        [QboId], [RealmId]
     FROM dbo.[InvoiceLineItem]
     WHERE [Id] = @Id;
     COMMIT TRANSACTION;
@@ -257,7 +270,8 @@ BEGIN
         CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
         [InvoiceId], [SourceType],
         [BillLineItemId], [ExpenseLineItemId], [BillCreditLineItemId], [EmployeeLaborLineItemId],
-        [SubCostCodeId], [Description], [Quantity], [Rate], [Amount], [Markup], [Price], [IsDraft]
+        [SubCostCodeId], [Description], [Quantity], [Rate], [Amount], [Markup], [Price], [IsDraft],
+        [QboId], [RealmId]
     FROM dbo.[InvoiceLineItem]
     WHERE [PublicId] = @PublicId;
     COMMIT TRANSACTION;
@@ -278,7 +292,13 @@ BEGIN
         CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
         [InvoiceId], [SourceType],
         [BillLineItemId], [ExpenseLineItemId], [BillCreditLineItemId], [EmployeeLaborLineItemId],
-        [SubCostCodeId], [Description], [Quantity], [Rate], [Amount], [Markup], [Price], [IsDraft]
+        [SubCostCodeId], [Description], [Quantity], [Rate], [Amount], [Markup], [Price], [IsDraft],
+        -- U-362: added QboId/RealmId — InvoiceInvoiceConnector._has_qbo_line_
+        -- provenance and the line connector's readopt-candidate scan both read
+        -- this column off rows from this sproc now (dbo-native, no more
+        -- qbo.InvoiceLineItemInvoiceLine mapping hop); omitting it silently
+        -- read every line as unstamped.
+        [QboId], [RealmId]
     FROM dbo.[InvoiceLineItem]
     WHERE [InvoiceId] = @InvoiceId
     ORDER BY [CreatedDatetime] ASC;
@@ -340,7 +360,11 @@ BEGIN
         INSERTED.[BillLineItemId], INSERTED.[ExpenseLineItemId], INSERTED.[BillCreditLineItemId],
         INSERTED.[EmployeeLaborLineItemId],
         INSERTED.[SubCostCodeId], INSERTED.[Description], INSERTED.[Quantity], INSERTED.[Rate],
-        INSERTED.[Amount], INSERTED.[Markup], INSERTED.[Price], INSERTED.[IsDraft]
+        INSERTED.[Amount], INSERTED.[Markup], INSERTED.[Price], INSERTED.[IsDraft],
+        -- U-362: the HIT-path update return value should carry the row's real
+        -- dbo-native identity, not silently read back as None (same class of
+        -- bug U-361's code review caught in UpdateBillCreditLineItemById).
+        INSERTED.[QboId], INSERTED.[RealmId]
     WHERE [Id] = @Id AND [RowVersion] = @RowVersion;
 
     COMMIT TRANSACTION;

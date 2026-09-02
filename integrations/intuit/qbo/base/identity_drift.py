@@ -158,11 +158,6 @@ LINE_ENTITY_SPECS: tuple[LineEntitySpec, ...] = (
         "SetBillLineItemQboIdentity",
     ),
     LineEntitySpec(
-        "invoice_line_item", "InvoiceLineItem", "InvoiceLineItemInvoiceLine", "InvoiceLine",
-        "InvoiceLineItemId", "QboInvoiceLineId", "InvoiceId", "Invoice", "QboInvoiceId",
-        "SetInvoiceLineItemQboIdentity",
-    ),
-    LineEntitySpec(
         "expense_line_item", "ExpenseLineItem", "PurchaseLineExpenseLineItem", "PurchaseLine",
         "ExpenseLineItemId", "QboPurchaseLineId", "ExpenseId", "Purchase", "QboPurchaseId",
         "SetExpenseLineItemQboIdentity",
@@ -176,7 +171,10 @@ LINE_ENTITY_SPECS: tuple[LineEntitySpec, ...] = (
     # the table is dropped and, until then, flag every dbo-stamped line as a
     # false orphan_dbo_value. Nothing looks this row up by key (same as
     # "expense"'s U-354 header removal), so there is no StopIteration risk.
-    # U-362/U-363/U-364 remove the remaining three rows the same way.
+    # U-362: the "invoice_line_item" row was removed the same way
+    # (qbo.InvoiceLineItemInvoiceLine retired, U-349 program family 9/11). The
+    # 3 consumer scripts had their own "invoice_line_item" --entity choice/key
+    # removed alongside this row. U-363/U-364 remove the remaining two.
 )
 
 

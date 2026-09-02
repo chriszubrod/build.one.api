@@ -7,7 +7,6 @@ from typing import List, Optional
 # Third-party Imports
 
 # Local Imports
-from integrations.intuit.qbo.invoice.connector.invoice_line_item.persistence.repo import InvoiceLineItemInvoiceLineRepository
 from integrations.intuit.qbo.invoice.business.model import QboInvoice, QboInvoiceLine
 from integrations.intuit.qbo.customer.persistence.repo import QboCustomerRepository
 from entities.invoice.business.service import InvoiceService
@@ -62,7 +61,6 @@ class InvoiceInvoiceConnector:
 
     def __init__(
         self,
-        line_mapping_repo: Optional[InvoiceLineItemInvoiceLineRepository] = None,
         invoice_service: Optional[InvoiceService] = None,
         project_service: Optional[ProjectService] = None,
         qbo_customer_repo: Optional[QboCustomerRepository] = None,
@@ -73,11 +71,12 @@ class InvoiceInvoiceConnector:
         """Initialize the InvoiceInvoiceConnector.
 
         U-356: the header mapping repo (qbo.InvoiceInvoice) is retired —
-        dbo.Invoice.QboId/RealmId is the sole header identity store. The LINE
-        mapping repo (qbo.InvoiceLineItemInvoiceLine, `line_mapping_repo`) is a
-        separate family (U-358) and is deliberately untouched here.
+        dbo.Invoice.QboId/RealmId is the sole header identity store. U-362
+        retired the LINE mapping repo too (qbo.InvoiceLineItemInvoiceLine) —
+        dbo.InvoiceLineItem.QboId/RealmId (U-238b), parent-scoped, is now the
+        sole line identity store as well; there is no mapping cache left to
+        preload or hand to the line connector.
         """
-        self.line_mapping_repo = line_mapping_repo or InvoiceLineItemInvoiceLineRepository()
         self.invoice_service = invoice_service or InvoiceService()
         self.project_service = project_service or ProjectService()
         self.qbo_customer_repo = qbo_customer_repo or QboCustomerRepository()
@@ -95,26 +94,21 @@ class InvoiceInvoiceConnector:
 
         # In-memory caches to avoid repeated DB lookups across invoice syncs
         self._project_cache: dict = {}          # {(realm_id, qbo_customer_ref_value): project_public_id}
-        self._line_mapping_cache: dict = {}     # {qbo_invoice_line_id: InvoiceLineItemInvoiceLine}
         self._invoice_cache: dict = {}          # {invoice_id: Invoice}
         self._line_item_cache: dict = {}        # {invoice_line_item_id: InvoiceLineItem}
         self._caches_preloaded: bool = False
 
     def preload_caches(self) -> None:
         """
-        Pre-load all mapping and module record caches from the database.
-        Call once before processing a large batch to eliminate per-invoice DB lookups.
+        Pre-load all module record caches from the database. Call once before
+        processing a large batch to eliminate per-invoice DB lookups.
+
+        U-356/U-362: no mapping-table preload for either header or line
+        identity — both are resolved per invoice straight off dbo-native
+        QboId/RealmId columns (indexed point reads), not a bulk qbo.* mapping
+        snapshot.
         """
         from entities.invoice_line_item.business.service import InvoiceLineItemService
-
-        # U-356: no header-mapping preload — header identity is resolved per
-        # invoice straight off dbo.Invoice.QboId/RealmId (an indexed point read),
-        # not from a bulk qbo.InvoiceInvoice snapshot. The LINE mapping preload
-        # below is a different family (U-358) and stays.
-        logger.info("Pre-loading InvoiceLineItemInvoiceLine mapping cache...")
-        all_line_mappings = self.line_mapping_repo.read_all()
-        self._line_mapping_cache = {m.qbo_invoice_line_id: m for m in all_line_mappings}
-        logger.info(f"Pre-loaded {len(self._line_mapping_cache)} InvoiceLineItemInvoiceLine mappings")
 
         logger.info("Pre-loading Invoice module records...")
         all_invoices = self.invoice_service.read_all()
@@ -673,25 +667,28 @@ class InvoiceInvoiceConnector:
         return None
 
     def _has_qbo_line_provenance(self, invoice_id: int) -> bool:
-        """True if any of the invoice's line items carries an InvoiceLineItemInvoiceLine
-        mapping — i.e. it was materialized by a QBO pull. A local-origin/manual invoice
-        has none (and since QBO invoice push is disabled, manual invoices are exactly the
-        ones that stay unstamped), so this separates an identity-LOST QBO invoice — the
-        only thing we may re-adopt — from a distinct manual invoice that merely shares the
-        header fingerprint. Closes the Pass-1 P2 false-adopt path.
+        """True if any of the invoice's line items carries a dbo-native QBO
+        line identity (InvoiceLineItem.QboId, U-238b/U-362) — i.e. it was
+        materialized by a QBO pull. A local-origin/manual invoice has none
+        (and since QBO invoice push is disabled, manual invoices are exactly
+        the ones that stay unstamped), so this separates an identity-LOST QBO
+        invoice — the only thing we may re-adopt — from a distinct manual
+        invoice that merely shares the header fingerprint. Closes the Pass-1
+        P2 false-adopt path.
 
-        Cost is confined to the tiny set of fingerprint-matched candidates. Residual: if a
-        QBO invoice's line mappings were ALSO wiped (or it had no lines), provenance can't
-        be proven and the caller falls through to the safe suffix-CREATE — the accepted,
-        VISIBLE degradation (never a silent wrong bind onto a human's manual invoice).
+        U-362: repointed off the retired qbo.InvoiceLineItemInvoiceLine
+        mapping table onto the dbo-native column directly — no I/O beyond the
+        line read that already happened. Cost is confined to the tiny set of
+        fingerprint-matched candidates. Residual: if a QBO invoice's line
+        identity was ALSO wiped (or it had no lines), provenance can't be
+        proven and the caller falls through to the safe suffix-CREATE — the
+        accepted, VISIBLE degradation (never a silent wrong bind onto a
+        human's manual invoice).
         """
         from entities.invoice_line_item.business.service import InvoiceLineItemService
 
         line_items = InvoiceLineItemService().read_by_invoice_id(int(invoice_id))
-        for li in line_items or []:
-            if self.line_mapping_repo.read_by_invoice_line_item_id(int(li.id)):
-                return True
-        return False
+        return any(getattr(li, "qbo_id", None) for li in line_items or [])
 
     @staticmethod
     def _header_fingerprint_matches(
@@ -875,15 +872,20 @@ class InvoiceInvoiceConnector:
         from integrations.intuit.qbo.invoice.connector.invoice_line_item.business.service import InvoiceLineItemConnector
 
         line_connector = InvoiceLineItemConnector(
-            line_mapping_cache=self._line_mapping_cache,
             line_item_cache=self._line_item_cache,
             caches_preloaded=self._caches_preloaded,
+        )
+        # U-361b re-adopt guard: this pull's full live QBO line-id set, so the
+        # line connector's stale-identity-orphan matcher never steals a line
+        # still correctly bound elsewhere in this same pull.
+        live_qbo_line_ids = frozenset(
+            line.qbo_line_id for line in qbo_invoice_lines if line.qbo_line_id
         )
 
         for qbo_line in qbo_invoice_lines:
             try:
                 line_connector.sync_from_qbo_invoice_line(
-                    invoice_id, invoice_public_id, qbo_line, realm_id
+                    invoice_id, invoice_public_id, qbo_line, live_qbo_line_ids, realm_id
                 )
             except Exception as e:
                 # LOAD-BEARING: swallowing (not raising) is what keeps the NEW-invoice path

@@ -95,7 +95,6 @@ def _build_customer_project_connector():
 
 def _build_invoice_connector(**overrides):
     connector = InvoiceInvoiceConnector(
-        line_mapping_repo=Mock(),
         invoice_service=Mock(),
         project_service=Mock(),
         qbo_customer_repo=Mock(),

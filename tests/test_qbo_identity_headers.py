@@ -135,7 +135,7 @@ def _make_invoice_connector():
     invoice_service.repo = Mock()
     stub_qbo_identity_fastpath_miss(invoice_service)
     connector = InvoiceInvoiceConnector(
-        line_mapping_repo=Mock(), invoice_service=invoice_service, reconciliation_repo=Mock()
+        invoice_service=invoice_service, reconciliation_repo=Mock()
     )
     return connector, invoice_service.repo
 

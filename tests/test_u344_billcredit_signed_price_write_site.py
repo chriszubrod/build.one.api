@@ -438,22 +438,20 @@ def _make_qbo_invoice_line(**overrides):
 
 
 def _build_qbo_connector():
-    mapping_repo = Mock()
     invoice_line_item_service = Mock()
     invoice_line_item_service.repo = Mock()
     invoice_service = Mock()
     reconciliation_repo = Mock()
     connector = InvoiceLineItemConnector(
-        mapping_repo=mapping_repo,
         invoice_line_item_service=invoice_line_item_service,
         invoice_service=invoice_service,
         reconciliation_repo=reconciliation_repo,
     )
-    return connector, mapping_repo, invoice_line_item_service, invoice_service
+    return connector, invoice_line_item_service, invoice_service
 
 
 def test_qbo_resync_same_magnitude_billcredit_line_is_not_treated_as_changed():
-    connector, mapping_repo, ili_svc, invoice_service = _build_qbo_connector()
+    connector, ili_svc, invoice_service = _build_qbo_connector()
     qbo_line = _make_qbo_invoice_line(qbo_line_id="1", amount=Decimal("500"))
     direct_hit = SimpleNamespace(
         id=55, public_id="pub-55", row_version="rv-55", qbo_id="1",
@@ -462,10 +460,8 @@ def test_qbo_resync_same_magnitude_billcredit_line_is_not_treated_as_changed():
     ili_svc.read_by_qbo_identity.return_value = direct_hit
     updated = SimpleNamespace(id=55, public_id="pub-55")
     ili_svc.update_by_public_id.return_value = updated
-    mapping_repo.read_by_invoice_line_item_id.return_value = SimpleNamespace(id=1, qbo_invoice_line_id=42)
-    mapping_repo.read_by_qbo_invoice_line_id.return_value = SimpleNamespace(id=1, invoice_line_item_id=55)
 
-    connector.sync_from_qbo_invoice_line(19146, "inv-pub", qbo_line, realm_id="realm-1")
+    connector.sync_from_qbo_invoice_line(19146, "inv-pub", qbo_line, frozenset({"1"}), realm_id="realm-1")
 
     invoice_service._reset_source_as_unbilled.assert_not_called()
     kwargs = ili_svc.update_by_public_id.call_args.kwargs
@@ -473,7 +469,7 @@ def test_qbo_resync_same_magnitude_billcredit_line_is_not_treated_as_changed():
 
 
 def test_qbo_resync_genuinely_different_billcredit_amount_still_resets_to_manual():
-    connector, mapping_repo, ili_svc, invoice_service = _build_qbo_connector()
+    connector, ili_svc, invoice_service = _build_qbo_connector()
     qbo_line = _make_qbo_invoice_line(qbo_line_id="1", amount=Decimal("600"))
     direct_hit = SimpleNamespace(
         id=55, public_id="pub-55", row_version="rv-55", qbo_id="1",
@@ -482,10 +478,8 @@ def test_qbo_resync_genuinely_different_billcredit_amount_still_resets_to_manual
     ili_svc.read_by_qbo_identity.return_value = direct_hit
     updated = SimpleNamespace(id=55, public_id="pub-55")
     ili_svc.update_by_public_id.return_value = updated
-    mapping_repo.read_by_invoice_line_item_id.return_value = SimpleNamespace(id=1, qbo_invoice_line_id=42)
-    mapping_repo.read_by_qbo_invoice_line_id.return_value = SimpleNamespace(id=1, invoice_line_item_id=55)
 
-    connector.sync_from_qbo_invoice_line(19146, "inv-pub", qbo_line, realm_id="realm-1")
+    connector.sync_from_qbo_invoice_line(19146, "inv-pub", qbo_line, frozenset({"1"}), realm_id="realm-1")
 
     invoice_service._reset_source_as_unbilled.assert_called_once_with(direct_hit)
     kwargs = ili_svc.update_by_public_id.call_args.kwargs
@@ -496,7 +490,7 @@ def test_qbo_resync_manual_line_sign_flip_is_still_treated_as_changed():
     """Magnitude-insensitivity is scoped to BillCreditLineItem only — a
     Manual-sourced line's sign is meaningful (it drives Manual's own credit
     detection) and must NOT be silently ignored."""
-    connector, mapping_repo, ili_svc, invoice_service = _build_qbo_connector()
+    connector, ili_svc, invoice_service = _build_qbo_connector()
     qbo_line = _make_qbo_invoice_line(qbo_line_id="1", amount=Decimal("-500"))
     direct_hit = SimpleNamespace(
         id=55, public_id="pub-55", row_version="rv-55", qbo_id="1",
@@ -505,10 +499,8 @@ def test_qbo_resync_manual_line_sign_flip_is_still_treated_as_changed():
     ili_svc.read_by_qbo_identity.return_value = direct_hit
     updated = SimpleNamespace(id=55, public_id="pub-55")
     ili_svc.update_by_public_id.return_value = updated
-    mapping_repo.read_by_invoice_line_item_id.return_value = SimpleNamespace(id=1, qbo_invoice_line_id=42)
-    mapping_repo.read_by_qbo_invoice_line_id.return_value = SimpleNamespace(id=1, invoice_line_item_id=55)
 
-    connector.sync_from_qbo_invoice_line(19146, "inv-pub", qbo_line, realm_id="realm-1")
+    connector.sync_from_qbo_invoice_line(19146, "inv-pub", qbo_line, frozenset({"1"}), realm_id="realm-1")
 
     invoice_service._reset_source_as_unbilled.assert_called_once_with(direct_hit)
     kwargs = ili_svc.update_by_public_id.call_args.kwargs

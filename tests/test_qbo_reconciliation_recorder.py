@@ -104,7 +104,15 @@ _SQL_COLUMN_WIDTH_RE = re.compile(
 # _record_create_failed_issue ("bcli_line_create_failed": a detectability-only
 # signal for a resolve_candidate that raised, possibly after a partial commit).
 # 33->35.
-_MIN_CALL_SITES = 35
+# U-362: cloned the U-361/U-361b shape onto invoice_line_item. Net -1+1+1+1:
+# removed InvoiceLineItemConnector._record_line_identity_mapping_conflict_
+# issue ("invoice_line_identity_conflict" — no mapping-vs-dbo conflict state
+# left to record once qbo.InvoiceLineItemInvoiceLine is retired), added the
+# same 3 dbo-only recorders as bill_credit_line_item: _record_orphan_line_
+# issue ("orphan_ili_line_item"), _record_readopt_stamp_failed_issue
+# ("ili_line_readopt_failed"), _record_create_failed_issue
+# ("ili_line_create_failed"). 35->37.
+_MIN_CALL_SITES = 37
 _SKIP_FILES = frozenset({"reconciliation_recorder.py"})
 _DEFAULT_KWARGS = {
     "severity": "critical",

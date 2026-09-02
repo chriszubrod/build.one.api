@@ -49,10 +49,10 @@ logger = logging.getLogger("audit_dangling_qbo_mappings")
 # U-361: "bill_credit_line_item" was removed for the same reason — qbo.VendorCredit
 # LineItemBillCreditLineItem is retired (the first line-item family) and its
 # LineEntitySpec row is gone from LINE_ENTITY_SPECS, so `spec_by_key[...]` below
-# would KeyError if left in. U-362/U-363/U-364 remove the other three the same way.
+# would KeyError if left in. U-362: "invoice_line_item" removed the same way
+# (qbo.InvoiceLineItemInvoiceLine retired). U-363/U-364 remove the other two.
 _AUDIT_SPEC_KEYS: tuple[str, ...] = (
     "bill_line_item",
-    "invoice_line_item",
     "expense_line_item",
 )
 

@@ -12,7 +12,6 @@ from integrations.intuit.qbo.bill.connector.bill_line_item.business.service impo
 from integrations.intuit.qbo.company_info.connector.business.service import CompanyInfoCompanyConnector
 from integrations.intuit.qbo.customer.connector.customer.business.service import CustomerCustomerConnector
 from integrations.intuit.qbo.customer.connector.project.business.service import CustomerProjectConnector
-from integrations.intuit.qbo.invoice.connector.invoice_line_item.business.service import InvoiceLineItemConnector
 from integrations.intuit.qbo.item.connector.cost_code.business.service import ItemCostCodeConnector
 from integrations.intuit.qbo.item.connector.sub_cost_code.business.service import ItemSubCostCodeConnector
 from integrations.intuit.qbo.physical_address.connector.business.service import PhysicalAddressAddressConnector
@@ -84,20 +83,6 @@ _EXPECTED = {
             "DIFFERENT QboPurchaseLine 5. Not auto-repointed — investigate which side is correct."
         ),
     },
-    "invoice_line_item": {
-        "drift_type": "invoice_line_identity_conflict",
-        "entity_type": "InvoiceLineItem",
-        "entity_public_id": None,
-        "qbo_id": "IL-99",
-        "realm_id": "realm-1",
-        "details": (
-            "InvoiceLineItemInvoiceLine identity conflict. dbo.InvoiceLineItem 55 carries native "
-            "QBO identity for QboInvoiceLine 4 (QboLineId=IL-99). qbo-side: the mapping table "
-            "still binds that same QboInvoiceLine to a DIFFERENT InvoiceLineItem 9 (mapping 2). "
-            "local-side: InvoiceLineItem 55's own mapping row (mapping 3) still binds it to a "
-            "DIFFERENT QboInvoiceLine 5. Not auto-repointed — investigate which side is correct."
-        ),
-    },
     # U-361: "bill_credit_line_item" removed — VendorCreditLineItemConnector no
     # longer has _record_line_identity_mapping_conflict_issue (qbo.VendorCredit
     # LineItemBillCreditLineItem is retired, the first line-item family;
@@ -105,6 +90,11 @@ _EXPECTED = {
     # left to record). Its dbo-only orphan-line recorder
     # (_record_orphan_line_issue, record_mapping_issue) is a different shape,
     # covered in tests/test_u361_bill_credit_line_item_mapping_retire.py.
+    # U-362: "invoice_line_item" removed for the same reason — InvoiceLineItem
+    # Connector no longer has _record_line_identity_mapping_conflict_issue
+    # (qbo.InvoiceLineItemInvoiceLine retired). Its dbo-only orphan-line
+    # recorders are covered in tests/test_u362_invoice_line_item_mapping_
+    # retire.py.
     "customer_same_qbo": {
         "drift_type": "customer_identity_conflict",
         "entity_type": "Customer",
@@ -247,16 +237,6 @@ def test_recorder_consolidation_emits_identical_tuple(family):
             dbo_line_id=55,
             local_side_mapping=SimpleNamespace(id=3, expense_line_item_id=55, qbo_purchase_line_id=5),
             qbo_side_mapping=SimpleNamespace(id=2, expense_line_item_id=9, qbo_purchase_line_id=4),
-            realm_id="realm-1",
-        )
-    elif family == "invoice_line_item":
-        c = object.__new__(InvoiceLineItemConnector)
-        c.reconciliation_repo = Mock()
-        c._record_line_identity_mapping_conflict_issue(
-            qbo_invoice_line=SimpleNamespace(id=4, qbo_line_id="IL-99"),
-            dbo_line_id=55,
-            local_side_mapping=SimpleNamespace(id=3, invoice_line_item_id=55, qbo_invoice_line_id=5),
-            qbo_side_mapping=SimpleNamespace(id=2, invoice_line_item_id=9, qbo_invoice_line_id=4),
             realm_id="realm-1",
         )
     elif family == "customer_same_qbo":

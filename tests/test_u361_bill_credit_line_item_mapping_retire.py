@@ -15,7 +15,10 @@ connector's wiring and the two design-§3/§4 build notes:
     mapping write, which no longer exists); a missing realm refuses BEFORE creating;
     a stamp failure rolls the fresh line back and re-raises; a rollback that itself
     fails records an `orphan_bcli_line_item` ReconciliationIssue.
-  * No content-fingerprint adopt, no mapping read/write anywhere.
+  * U-361b: MISS now tries a content-fingerprint READOPT first (a stale-
+    identity orphan, e.g. a QBO line-id regeneration) before ever creating —
+    see tests/test_u361b_line_readopt_fix.py for that fix's own coverage. No
+    mapping read/write anywhere (the mapping table itself stays retired).
   * The create lock is REACHABLE (design §3's /simplify-review note): the header
     connector's HIT path syncs lines with NO lock held, so the line helper's own
     lock is the only serialization for a line MISS there — shown here with a
@@ -80,6 +83,10 @@ def _build_connector():
     connector = VendorCreditLineItemConnector()
     bcli_svc = Mock()
     bcli_svc.repo = Mock()
+    # U-361b: the readopt step (run before every create) reads this — default to
+    # "nothing to adopt" so tests unrelated to readopt exercise a clean MISS/HIT
+    # without also needing to stub it themselves.
+    bcli_svc.read_by_bill_credit_id.return_value = []
     reconciliation_repo = Mock()
     connector.bill_credit_line_item_service = bcli_svc
     connector.reconciliation_repo = reconciliation_repo
@@ -116,7 +123,7 @@ def test_hit_updates_in_place_and_does_not_restamp_a_realm_complete_row():
     updated = SimpleNamespace(id=55, public_id="pub-55")
     bcli_svc.update_by_public_id.return_value = updated
 
-    result = connector.sync_from_qbo_line(19146, "bc-pub", qbo_line, realm_id="realm-1")
+    result = connector.sync_from_qbo_line(19146, "bc-pub", qbo_line, frozenset({"1"}), realm_id="realm-1")
 
     assert result is updated
     bcli_svc.read_by_qbo_identity.assert_called_once_with(19146, "1")
@@ -138,7 +145,7 @@ def test_hit_heals_a_legacy_row_missing_its_realm_half():
     bcli_svc.update_by_public_id.return_value = SimpleNamespace(id=55, public_id="pub-55")
 
     with patch(f"{LINE_SERVICE}.stamp_line_identity_or_warn") as mock_stamp:
-        connector.sync_from_qbo_line(19146, "bc-pub", qbo_line, realm_id="realm-1")
+        connector.sync_from_qbo_line(19146, "bc-pub", qbo_line, frozenset({"1"}), realm_id="realm-1")
 
     mock_stamp.assert_called_once()
     assert mock_stamp.call_args.kwargs["id"] == 55
@@ -154,7 +161,7 @@ def test_hit_without_a_call_realm_does_not_try_to_heal():
     bcli_svc.update_by_public_id.return_value = SimpleNamespace(id=55, public_id="pub-55")
 
     with patch(f"{LINE_SERVICE}.stamp_line_identity_or_warn") as mock_stamp:
-        connector.sync_from_qbo_line(19146, "bc-pub", qbo_line)
+        connector.sync_from_qbo_line(19146, "bc-pub", qbo_line, frozenset({"1"}))
 
     mock_stamp.assert_not_called()
 
@@ -166,7 +173,7 @@ def test_hit_update_returning_none_raises_runtime_error_and_never_stamps():
     bcli_svc.update_by_public_id.return_value = None
 
     with pytest.raises(RuntimeError, match="concurrent write race"):
-        connector.sync_from_qbo_line(19146, "bc-pub", qbo_line, realm_id="realm-1")
+        connector.sync_from_qbo_line(19146, "bc-pub", qbo_line, frozenset({"1"}), realm_id="realm-1")
 
     bcli_svc.repo.set_qbo_identity.assert_not_called()
     bcli_svc.create.assert_not_called()
@@ -184,7 +191,7 @@ def test_miss_creates_then_bare_stamps_then_returns_the_reread():
     reread = _stamped_row(77, "1")
     bcli_svc.read_by_id.return_value = reread
 
-    result = connector.sync_from_qbo_line(19146, "bc-pub", qbo_line, realm_id="realm-1")
+    result = connector.sync_from_qbo_line(19146, "bc-pub", qbo_line, frozenset({"1"}), realm_id="realm-1")
 
     assert result is reread  # the re-read, not the stale in-memory candidate
     bcli_svc.create.assert_called_once()
@@ -199,18 +206,22 @@ def test_miss_creates_then_bare_stamps_then_returns_the_reread():
     reconciliation_repo.create.assert_not_called()
 
 
-def test_miss_never_reads_or_writes_a_mapping_and_never_fingerprints():
+def test_miss_never_writes_a_mapping_but_does_check_for_a_readopt():
+    """U-361b: unlike the mapping-table era, there is no mapping repo to write —
+    but the MISS branch now DOES read read_by_bill_credit_id once, via the
+    readopt-before-create check (find_stale_identity_orphan), before falling
+    through to create. Superseded assertion: pre-U-361b this test asserted
+    read_by_bill_credit_id was NEVER called on a miss — that's exactly the
+    regression U-361b fixes (see tests/test_u361b_line_readopt_fix.py)."""
     connector, bcli_svc, _ = _build_connector()
     qbo_line = _make_qbo_line(qbo_line_id="1")
     bcli_svc.read_by_qbo_identity.return_value = None
     bcli_svc.create.return_value = SimpleNamespace(id=77, public_id="pub-77")
     bcli_svc.read_by_id.return_value = _stamped_row(77, "1")
 
-    connector.sync_from_qbo_line(19146, "bc-pub", qbo_line, realm_id="realm-1")
+    connector.sync_from_qbo_line(19146, "bc-pub", qbo_line, frozenset({"1"}), realm_id="realm-1")
 
-    # The pre-U-361 adopt read every sibling line under the parent to fingerprint
-    # it; the dbo-only MISS reads nothing but the parent-scoped identity.
-    bcli_svc.read_by_bill_credit_id.assert_not_called()
+    bcli_svc.read_by_bill_credit_id.assert_called_once_with(19146)
     assert bcli_svc.read_by_qbo_identity.call_count == 2  # outer miss + re-read under lock
 
 
@@ -220,7 +231,7 @@ def test_miss_with_missing_realm_refuses_before_creating():
     bcli_svc.read_by_qbo_identity.return_value = None
 
     with pytest.raises(RuntimeError, match="realm_id is missing"):
-        connector.sync_from_qbo_line(19146, "bc-pub", qbo_line)  # no realm_id
+        connector.sync_from_qbo_line(19146, "bc-pub", qbo_line, frozenset({"1"}))  # no realm_id
 
     bcli_svc.create.assert_not_called()
     bcli_svc.repo.set_qbo_identity.assert_not_called()
@@ -238,7 +249,7 @@ def test_miss_stamp_failure_rolls_back_the_fresh_line_and_reraises():
     bcli_svc.repo.set_qbo_identity.side_effect = RuntimeError("stamp db error")
 
     with pytest.raises(RuntimeError, match="stamp db error"):
-        connector.sync_from_qbo_line(19146, "bc-pub", qbo_line, realm_id="realm-1")
+        connector.sync_from_qbo_line(19146, "bc-pub", qbo_line, frozenset({"1"}), realm_id="realm-1")
 
     bcli_svc.delete_by_public_id.assert_called_once_with("pub-77")
     reconciliation_repo.create.assert_not_called()  # rollback succeeded: nothing to record
@@ -252,7 +263,7 @@ def test_miss_stamp_that_did_not_land_rolls_back_and_reraises():
     bcli_svc.read_by_id.return_value = _stamped_row(77, None, realm_id=None)  # sproc declined
 
     with pytest.raises(RuntimeError, match="identity stamp did not land"):
-        connector.sync_from_qbo_line(19146, "bc-pub", qbo_line, realm_id="realm-1")
+        connector.sync_from_qbo_line(19146, "bc-pub", qbo_line, frozenset({"1"}), realm_id="realm-1")
 
     bcli_svc.delete_by_public_id.assert_called_once_with("pub-77")
 
@@ -266,7 +277,7 @@ def test_miss_rollback_failure_records_an_orphan_line_issue_and_reraises_the_ori
     bcli_svc.delete_by_public_id.side_effect = RuntimeError("delete also failed")
 
     with pytest.raises(RuntimeError, match="stamp db error"):
-        connector.sync_from_qbo_line(19146, "bc-pub", qbo_line, realm_id="realm-1")
+        connector.sync_from_qbo_line(19146, "bc-pub", qbo_line, frozenset({"1"}), realm_id="realm-1")
 
     reconciliation_repo.create.assert_called_once()
     kwargs = reconciliation_repo.create.call_args.kwargs
@@ -286,7 +297,7 @@ def test_miss_create_failure_propagates_with_nothing_to_roll_back():
     bcli_svc.create.side_effect = RuntimeError("create failed")
 
     with pytest.raises(RuntimeError, match="create failed"):
-        connector.sync_from_qbo_line(19146, "bc-pub", qbo_line, realm_id="realm-1")
+        connector.sync_from_qbo_line(19146, "bc-pub", qbo_line, frozenset({"1"}), realm_id="realm-1")
 
     bcli_svc.repo.set_qbo_identity.assert_not_called()
     bcli_svc.delete_by_public_id.assert_not_called()
@@ -300,7 +311,7 @@ def test_miss_racer_under_lock_is_updated_not_duplicated():
     updated = SimpleNamespace(id=90, public_id="pub-90")
     bcli_svc.update_by_public_id.return_value = updated
 
-    result = connector.sync_from_qbo_line(19146, "bc-pub", qbo_line, realm_id="realm-1")
+    result = connector.sync_from_qbo_line(19146, "bc-pub", qbo_line, frozenset({"1"}), realm_id="realm-1")
 
     assert result is updated
     bcli_svc.create.assert_not_called()
@@ -318,7 +329,7 @@ def test_missing_qbo_line_id_fails_closed_without_creating():
     qbo_line = _make_qbo_line(qbo_line_id=None)
 
     with pytest.raises(ValueError, match="has no QBO Line.Id"):
-        connector.sync_from_qbo_line(19146, "bc-pub", qbo_line, realm_id="realm-1")
+        connector.sync_from_qbo_line(19146, "bc-pub", qbo_line, frozenset({"1"}), realm_id="realm-1")
 
     bcli_svc.read_by_qbo_identity.assert_not_called()
     bcli_svc.create.assert_not_called()
@@ -332,7 +343,7 @@ def test_staging_pk_is_not_part_of_identity():
     bcli_svc.read_by_qbo_identity.return_value = _stamped_row(55, "1")
     bcli_svc.update_by_public_id.return_value = SimpleNamespace(id=55, public_id="pub-55")
 
-    connector.sync_from_qbo_line(19146, "bc-pub", qbo_line, realm_id="realm-1")
+    connector.sync_from_qbo_line(19146, "bc-pub", qbo_line, frozenset({"1"}), realm_id="realm-1")
 
     bcli_svc.read_by_qbo_identity.assert_called_once_with(19146, "1")
 
@@ -346,7 +357,7 @@ def test_create_lock_key_is_parent_and_line_scoped():
     recorded, recording_lock = _recording_lock_factory()
 
     with patch(LOCK_PATCH_TARGET, side_effect=recording_lock):
-        connector.sync_from_qbo_line(19146, "bc-pub", qbo_line, realm_id="realm-1")
+        connector.sync_from_qbo_line(19146, "bc-pub", qbo_line, frozenset({"1"}), realm_id="realm-1")
 
     assert recorded == ["qbo_dbo_line_identity_create:BillCreditLineItem:19146:1"]
 

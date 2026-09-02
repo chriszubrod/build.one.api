@@ -1,5 +1,6 @@
 # Python Standard Library Imports
 import logging
+from decimal import Decimal
 from typing import Optional
 
 # Third-party Imports
@@ -14,6 +15,7 @@ from integrations.intuit.qbo.base.compensation import rollback_orphan_header
 from integrations.intuit.qbo.base.identity_drift import stamp_line_identity_or_warn
 from integrations.intuit.qbo.base.identity_fastpath import run_line_identity_fastpath_dbo_only
 from integrations.intuit.qbo.base.ids import coerce_id
+from integrations.intuit.qbo.base.line_orphan_adopt import find_stale_identity_orphan
 from integrations.intuit.qbo.base.reconciliation_recorder import record_mapping_issue
 from integrations.intuit.qbo.base.cost_code_resolver import resolve_dbo_sub_cost_code
 from integrations.intuit.qbo.reconciliation.persistence.repo import ReconciliationIssueRepository
@@ -52,6 +54,7 @@ class VendorCreditLineItemConnector:
         bill_credit_id: int,
         bill_credit_public_id: str,
         qbo_line: QboVendorCreditLine,
+        live_qbo_line_ids: frozenset,
         realm_id: Optional[str] = None,
     ) -> BillCreditLineItem:
         """
@@ -81,11 +84,19 @@ class VendorCreditLineItemConnector:
             row left to make it findable on the next pull (it would be
             re-created as a duplicate every pull) — so a stamp that raises or
             does not land is rolled back by the helper and re-raised.
-          * No content-fingerprint adopt (design §4, create-only). The pre-U-361
-            adopt re-bound "unmapped" local lines, a state a dbo-only row cannot
-            be in once stamped, so it has no dbo-only translation: a QBO line-id
-            regeneration now creates a sibling row instead of adopting the
-            stamped orphan.
+          * Re-adopt before create (U-361b). QBO regenerates a line's `Line.Id`
+            on certain edits with its content unchanged; a genuine MISS first
+            looks for a local line under this parent whose CURRENT identity is
+            no longer in `live_qbo_line_ids` (this pull's live line-id set) AND
+            whose content fingerprint matches the incoming line — a "stale-
+            identity orphan" — and re-stamps THAT row (reusing its dbo.Id, its
+            attachments, any InvoiceLineItem FK) instead of minting a sibling.
+            Only when nothing matches does a fresh line get created. This is
+            the dbo-only analog of the pre-U-361 `_match_unmapped_by_fingerprint`
+            adopt, generalized onto `run_line_identity_fastpath_dbo_only`'s
+            shared `readopt_candidate` slot — see that function's docstring for
+            why a readopt failure is NEVER rolled back (the row is real,
+            pre-existing data) unlike a fresh-create failure.
 
         Raises on any projection failure; the parent fails the whole credit so
         the watermark holds and it retries.
@@ -177,6 +188,33 @@ class VendorCreditLineItemConnector:
                 )
             return updated
 
+        def _readopt_stale_line() -> Optional[BillCreditLineItem]:
+            """
+            `readopt_candidate` for the MISS branch (U-361b): find a local line
+            under this BillCredit whose current identity is stale (not in
+            `live_qbo_line_ids`) and whose (description, amount, qty, unit_price)
+            fingerprint matches this QBO line. Matches the pre-U-361
+            `_match_unmapped_by_fingerprint` selection exactly — same fingerprint
+            fields, same stable position-order pick — generalized onto the
+            shared `find_stale_identity_orphan` (base/line_orphan_adopt.py) so
+            U-362/363/364 share the SAME matcher rather than hand-copying it.
+            Pure lookup: no field writes here — the primitive applies
+            `apply_fields` to whatever this returns before stamping.
+            """
+            existing = self.bill_credit_line_item_service.read_by_bill_credit_id(bill_credit_id)
+            return find_stale_identity_orphan(
+                existing_lines=existing,
+                live_qbo_line_ids=live_qbo_line_ids,
+                fingerprint=lambda li: (
+                    self._fingerprint(li.description), self._fingerprint(li.amount),
+                    self._fingerprint(li.quantity), self._fingerprint(li.unit_price),
+                ),
+                target=(
+                    self._fingerprint(qbo_line.description), self._fingerprint(qbo_line.amount),
+                    self._fingerprint(qbo_line.qty), self._fingerprint(qbo_line.unit_price),
+                ),
+            )
+
         def _create_line() -> Optional[BillCreditLineItem]:
             """
             `resolve_candidate` for the MISS branch: create the line fresh (no
@@ -254,10 +292,18 @@ class VendorCreditLineItemConnector:
             external_label="QboVendorCreditLine",
             lock_resource_label="BillCreditLineItem",
             read_direct_by_parent_and_qbo_line_id=self.bill_credit_line_item_service.read_by_qbo_identity,
+            readopt_candidate=_readopt_stale_line,
             resolve_candidate=_create_line,
             stamp_identity=_stamp_line_identity,
             rollback_candidate=_rollback_line,
             apply_fields=_apply_line_fields,
+            on_readopt_stamp_failed=lambda readopted, exc: self._record_readopt_stamp_failed_issue(
+                line_item=readopted, qbo_line=qbo_line, bill_credit_id=bill_credit_id,
+                realm_id=realm_id, exc=exc,
+            ),
+            on_create_failed=lambda exc: self._record_create_failed_issue(
+                qbo_line=qbo_line, bill_credit_id=bill_credit_id, realm_id=realm_id, exc=exc,
+            ),
         )
         # qbo_line_id is guaranteed truthy above, so the helper's only hit=False
         # outcome is unreachable here and hit=True never carries entity=None.
@@ -288,6 +334,83 @@ class VendorCreditLineItemConnector:
                 f"it is deleted or stamped by hand."
             ),
         )
+
+    def _record_readopt_stamp_failed_issue(
+        self,
+        *,
+        line_item: BillCreditLineItem,
+        qbo_line: QboVendorCreditLine,
+        bill_credit_id: int,
+        realm_id: Optional[str],
+        exc: Exception,
+    ) -> None:
+        """`on_readopt_stamp_failed` (U-361b): a stale-identity orphan was found
+        and matched, but re-applying/re-stamping it failed. NOTHING is deleted —
+        the row stays exactly as it was, under its OLD identity. Recorded so a
+        human knows this credit will keep re-adopting on retry rather than
+        silently double-counting forever (which is what would happen if this
+        went unnoticed and a future create-only regression reappeared)."""
+        record_mapping_issue(
+            self.reconciliation_repo,
+            drift_type="bcli_line_readopt_failed",
+            entity_type="BillCreditLineItem",
+            entity_public_id=str(line_item.public_id) if getattr(line_item, "public_id", None) else None,
+            qbo_id=str(qbo_line.qbo_line_id) if qbo_line.qbo_line_id else None,
+            realm_id=realm_id or "",
+            details=(
+                f"Found a stale-identity orphan BillCreditLineItem {line_item.id} "
+                f"({getattr(line_item, 'public_id', None)}) on BillCredit {bill_credit_id} "
+                f"matching QboVendorCreditLine {qbo_line.qbo_line_id} by content fingerprint, "
+                f"but re-adopting it failed: {exc}. The row was left UNTOUCHED under its "
+                f"previous identity (never deleted) - this credit will keep retrying the "
+                f"readopt on every re-pull until it succeeds or is resolved by hand."
+            ),
+        )
+
+    def _record_create_failed_issue(
+        self,
+        *,
+        qbo_line: QboVendorCreditLine,
+        bill_credit_id: int,
+        realm_id: Optional[str],
+        exc: Exception,
+    ) -> None:
+        """`on_create_failed` (U-361b P2 hardening): `resolve_candidate` (the
+        fresh-create path) raised. If the underlying INSERT actually committed
+        before the failure (e.g. a connection drop between the write landing
+        and the driver reading the result back), there is no candidate
+        reference to identify or delete - this is only a DETECTABILITY signal,
+        not a claim that a row exists. A human/reconciliation sweep for
+        BillCreditLineItem rows with QboId IS NULL under a stamped BillCredit
+        is what would actually confirm or refute it."""
+        record_mapping_issue(
+            self.reconciliation_repo,
+            drift_type="bcli_line_create_failed",
+            entity_type="BillCreditLineItem",
+            entity_public_id=None,
+            qbo_id=str(qbo_line.qbo_line_id) if qbo_line.qbo_line_id else None,
+            realm_id=realm_id or "",
+            details=(
+                f"Creating a new BillCreditLineItem for QboVendorCreditLine "
+                f"{qbo_line.qbo_line_id} on BillCredit {bill_credit_id} failed: {exc}. If the "
+                f"underlying write actually committed before this failure, an unstamped "
+                f"(QboId IS NULL) orphan may exist under this BillCredit - not confirmed by "
+                f"this record alone, but worth a manual check."
+            ),
+        )
+
+    @staticmethod
+    def _fingerprint(value) -> str:
+        """Canonicalize a value for content-fingerprint comparison (10 == 10.00).
+        Mirrors the pre-U-361 `_match_unmapped_by_fingerprint`'s own helper."""
+        if value is None:
+            return ""
+        if isinstance(value, Decimal):
+            return format(value.normalize(), "f")
+        try:
+            return format(Decimal(str(value)).normalize(), "f")
+        except Exception:
+            return str(value).strip()
 
     # One of FOUR near-identical QBO customer-ref -> Project resolvers (invoice /
     # purchase / vendorcredit / bill). All four are realm-scoped as of U-060; they

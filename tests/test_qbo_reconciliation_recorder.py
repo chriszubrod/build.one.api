@@ -96,7 +96,15 @@ _SQL_COLUMN_WIDTH_RE = re.compile(
 # recorder for the suffix-exhaustion refusal (all ten -N variants taken — the
 # un-projected QBO invoice would otherwise be invisible to the daily reconcile),
 # 32->33.
-_MIN_CALL_SITES = 33
+# U-361b: the readopt-before-create fix (base/identity_fastpath.py::
+# run_line_identity_fastpath_dbo_only) added two NEW recorders on the
+# bill_credit_line_item connector — _record_readopt_stamp_failed_issue
+# ("bcli_line_readopt_failed": a matched stale-identity orphan's re-adopt
+# failed; the row is left untouched, never deleted) and
+# _record_create_failed_issue ("bcli_line_create_failed": a detectability-only
+# signal for a resolve_candidate that raised, possibly after a partial commit).
+# 33->35.
+_MIN_CALL_SITES = 35
 _SKIP_FILES = frozenset({"reconciliation_recorder.py"})
 _DEFAULT_KWARGS = {
     "severity": "critical",

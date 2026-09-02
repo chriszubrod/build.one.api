@@ -976,11 +976,14 @@ def run_line_identity_fastpath_dbo_only(
     external_label: str,
     lock_resource_label: str,
     read_direct_by_parent_and_qbo_line_id: Callable[[int, str], Any],
+    readopt_candidate: Callable[[], Any],
     resolve_candidate: Callable[[], Any],
     stamp_identity: Callable[[Any], Any],
     apply_fields: Optional[Callable[[Any], Any]] = None,
     on_apply_returned_none: Optional[Callable[[Any], None]] = None,
     rollback_candidate: Optional[Callable[[Any], None]] = None,
+    on_readopt_stamp_failed: Optional[Callable[[Any, BaseException], None]] = None,
+    on_create_failed: Optional[Callable[[BaseException], None]] = None,
     lock_timeout_ms: int = 15000,
 ) -> FastPathOutcome:
     """
@@ -1029,17 +1032,45 @@ def run_line_identity_fastpath_dbo_only(
        lock held, and reconciliation's missing-locally autofix projects a
        parent with no pull-level lock either — proven by test, not asserted
        (tests/test_u361_bill_credit_line_item_mapping_retire.py).
-    2. Create-only, no adopt. A line has no independent adopt key: it is always
-       created fresh under an already-resolved parent, so `resolve_candidate`
-       for a line is "create it" — no side-channel business key two syncs could
-       both resolve to, hence no `stamp_dbo_identity_with_lock`-style second
-       lock and no `_check_no_conflicting` guard (Term's shape, U-352). The
-       with-mapping helper's "never self-heal a MISSING line" rule (U-293's
-       stale-orphan P1) does not carry over: that rule guarded against binding
-       a mapping row to a stale orphan whose recycled id merely LOOKED like a
-       new pairing. Here a direct hit on such an orphan is simply the in-place
-       update the family's upsert-by-stable-line-id snapshot layer already
-       performs whenever the id persists — the row follows QBO's current line.
+    2. Re-adopt-before-create (U-361b — see the module docstring in
+       `base/line_orphan_adopt.py` for the bug this closes). Originally
+       "create-only, no adopt" — that was a REGRESSION, not a simplification:
+       QBO regenerates a line's `Line.Id` on certain edits with the content
+       unchanged, and create-only silently minted a SIBLING row for the new id
+       while stranding the old one, permanently — a stray orphan whose money
+       gets double-counted everywhere the parent's lines are summed. On a
+       genuine MISS (confirmed under the lock), `readopt_candidate` is tried
+       FIRST: if it finds a local line under this parent whose CURRENT identity
+       no longer corresponds to any QBO line in this pull (a "stale-identity
+       orphan"), that row is `apply_fields`'d and `stamp_identity`'d — REUSING
+       the existing dbo.Id, never minting a new one — instead of creating fresh.
+       Only when `readopt_candidate` finds nothing does `resolve_candidate` run.
+       This mirrors the with-mapping helper's own pre-U-361 fingerprint-adopt
+       (`_match_unmapped_by_fingerprint`), generalized off the retired mapping
+       table's "unmapped" signal onto the dbo-only "not currently live" one —
+       see `base/line_orphan_adopt.py::find_stale_identity_orphan`.
+
+       This is a NEW, third rollback path — deliberately NOT the same as a
+       fresh-create failure. A readopted row is REAL, PRE-EXISTING data (it may
+       already be summed into a completed total, or FK'd from an InvoiceLineItem)
+       — it must NEVER be deleted just because its re-stamp failed. If
+       `apply_fields`/`stamp_identity` fails on a readopted candidate, the row is
+       left exactly as it was (still correctly findable by its OLD identity,
+       still correctly summed) and only `on_readopt_stamp_failed` fires — no
+       `rollback_candidate` call, ever, on this path. This is WHY readopt is a
+       first-class primitive parameter rather than something folded into
+       `resolve_candidate`: only the primitive, which owns the whole flow, can
+       tell a fresh mint (safe to delete) apart from a readopted row (never
+       delete) and route each stamp failure to the right recovery — a connector-
+       side helper `resolve_candidate` merely calls has no way to signal that
+       distinction back through the existing create+stamp+rollback machinery.
+       `readopt_candidate` is REQUIRED (no default), matching `resolve_candidate`
+       and `stamp_identity`: QBO's line-id-regeneration-on-edit behavior is
+       documented as universal across every transaction-line type this family
+       of primitives serves, so there is no legitimate case for a future clone
+       to omit this protection — a family with genuinely nothing to adopt still
+       states that explicitly (`lambda: None`), a visible, reviewable decision
+       rather than a silently missing parameter.
 
     The helper-level guarantee (U-354/U-355's identity-stamp rollback race fix,
     now structural)
@@ -1068,39 +1099,65 @@ def run_line_identity_fastpath_dbo_only(
     `rollback_candidate` is optional only so a caller that has genuinely nothing
     to compensate can omit it; a caller whose `resolve_candidate` creates a row
     should ALWAYS wire it (a missing one is logged at ERROR when it would have
-    run).
+    run). This entire guarantee applies ONLY to the fresh-create path — see
+    decision §2 above for why the readopt path is deliberately a different,
+    non-deleting recovery.
+
+    The create-failure gap (U-361b P2 hardening)
+    ---------------------------------------------
+    `resolve_candidate()` itself can raise AFTER its underlying INSERT already
+    committed — a connection drop between the DB accepting the write and the
+    Python driver reading back the result set. When that happens there is no
+    `candidate` reference at all (the call never returned), so nothing can be
+    identified or deleted — the row, if it exists, sits with `QboId IS NULL`,
+    invisible to `read_direct_by_parent_and_qbo_line_id` (which only matches on
+    a REAL qbo_line_id) and un-recoverable by name. `on_create_failed` fires
+    (best-effort, its own failure is logged and never masks the original) so
+    this is at least DETECTABLE by a human/reconciliation sweep rather than a
+    silent, permanent, invisible gap — the original exception then re-raises
+    unchanged either way, holding the pull for retry as before.
 
     What the caller still owns
     ---------------------------
     `read_direct_by_parent_and_qbo_line_id` — the entity service's own parent-
-    scoped `read_by_qbo_identity(parent_id, qbo_id)`. `resolve_candidate` — the
-    family's CREATE (fail closed BEFORE creating if the realm needed for the
-    stamp is unavailable). `stamp_identity` — the bare `Set<Entity>LineItem
-    QboIdentity` call on the candidate, returning a RE-READ of the row (the
-    stamp is a void DB write that never mutates the in-memory candidate).
-    `rollback_candidate` — the compensating delete (+ whatever the family records
-    when even that fails). `apply_fields` / `on_apply_returned_none` — as in every
-    sibling: the QBO-derived field write for an existing hit; a None return
-    fires the callback and then ALWAYS raises via `raise_concurrent_write_race`
-    (U-316's contract, so no caller can under-implement the callback into a
-    silent `entity=None`).
+    scoped `read_by_qbo_identity(parent_id, qbo_id)`. `readopt_candidate` — find
+    a stale-identity orphan to reuse (see decision §2); return None when there
+    is nothing to adopt. `resolve_candidate` — the family's CREATE (fail closed
+    BEFORE creating if the realm needed for the stamp is unavailable), tried
+    only when `readopt_candidate` found nothing. `stamp_identity` — the bare
+    `Set<Entity>LineItemQboIdentity` call on the candidate, returning a RE-READ
+    of the row (the stamp is a void DB write that never mutates the in-memory
+    candidate) — shared by both the readopt and fresh-create paths.
+    `rollback_candidate` — the compensating delete for a FRESH-CREATE stamp
+    failure only (+ whatever the family records when even that fails); NEVER
+    invoked for a readopt. `on_readopt_stamp_failed` — best-effort recorder for
+    a readopt whose `apply_fields`/`stamp_identity` failed; nothing is deleted.
+    `on_create_failed` — best-effort recorder for a `resolve_candidate` that
+    raised (see above). `apply_fields` / `on_apply_returned_none` — as in every
+    sibling: the QBO-derived field write for an existing hit OR a successful
+    readopt; a None return fires the callback and then ALWAYS raises via
+    `raise_concurrent_write_race` (U-316's contract, so no caller can under-
+    implement the callback into a silent `entity=None`).
 
     Returns:
         FastPathOutcome. `hit=False` ONLY when `qbo_line_id` is falsy (a dbo-only
         caller has no legacy path to fall back to); every other outcome — direct
-        hit, race-resolved hit, or a genuine miss resolved via
-        `resolve_candidate`/`stamp_identity` — reports `hit=True` and never
-        carries `entity=None`.
+        hit, race-resolved hit, a readopted stale-identity orphan, or a genuine
+        miss resolved via `resolve_candidate`/`stamp_identity` — reports
+        `hit=True` and never carries `entity=None`.
 
     Raises:
         RuntimeError: lock-acquire timeout (FAILS CLOSED — never creates under
             uncertainty); `apply_fields`/`stamp_identity` returning None (via
-            `raise_concurrent_write_race`); a stamp that did not land; a
-            `resolve_candidate` that returned None. Always RuntimeError, never
-            ValueError, so `record_projection_error` holds the record for retry
-            instead of skipping it permanently.
-        Whatever `resolve_candidate` or `stamp_identity` raise: re-raised
-            unchanged (after the rollback, for a stamp failure).
+            `raise_concurrent_write_race`); a stamp that did not land (on either
+            the readopt or fresh-create path); a `resolve_candidate` that
+            returned None. Always RuntimeError, never ValueError, so
+            `record_projection_error` holds the record for retry instead of
+            skipping it permanently.
+        Whatever `readopt_candidate`, `resolve_candidate`, or `stamp_identity`
+            raise: re-raised unchanged (after the rollback, for a fresh-create
+            stamp failure; after `on_readopt_stamp_failed`, for a readopt
+            failure; after `on_create_failed`, for a `resolve_candidate` raise).
     """
     if not qbo_line_id:
         return FastPathOutcome(hit=False)
@@ -1137,6 +1194,88 @@ def run_line_identity_fastpath_dbo_only(
                 f"failed: {rollback_exc} (original failure: {cause})"
             )
 
+    def _record_readopt_failure(readopted: Any, cause: BaseException) -> None:
+        """Best-effort recorder for a readopt whose apply/stamp failed. Never
+        deletes: `readopted` is REAL, PRE-EXISTING data (see decision §2) — it
+        is left exactly as it was, still findable by its OLD identity. Never
+        raises itself: the ORIGINAL failure (`cause`) is what the caller must
+        see."""
+        if on_readopt_stamp_failed is None:
+            logger.error(
+                f"{entity_label} {getattr(readopted, 'id', None)} readopt stamp failed "
+                f"({cause}) and no on_readopt_stamp_failed is wired - the row is left "
+                f"UNTOUCHED under its OLD identity (not deleted; a readopt is never rolled "
+                f"back). This credit will keep retrying until the readopt succeeds."
+            )
+            return
+        try:
+            on_readopt_stamp_failed(readopted, cause)
+        except Exception:
+            logger.exception(
+                f"on_readopt_stamp_failed callback itself raised for {entity_label} "
+                f"{getattr(readopted, 'id', None)} - the original readopt failure still "
+                f"propagates."
+            )
+
+    def _readopt(readopted: Any) -> FastPathOutcome:
+        """Apply the incoming QBO-derived fields onto a readopted stale-identity
+        orphan, then re-stamp it with the CURRENT qbo_line_id — reusing its
+        existing dbo.Id rather than minting a new row. Shares `apply_fields`
+        with the direct-hit path (the same field-write closure the connector
+        already wires for a HIT) rather than requiring a separate one; a
+        fingerprint match already means the fingerprinted fields agree, so this
+        is idempotent on those and only genuinely updates the non-fingerprint
+        ones (sub_cost_code/project/billable status, ...) that may have drifted
+        since the orphan's last live pull.
+
+        NEVER rolls back on failure — see decision §2's rollback-semantics
+        distinction. `apply_fields` returning None still goes through the
+        SHARED `raise_concurrent_write_race` contract (U-316) like every other
+        apply_fields caller; that path fires `on_apply_returned_none`, not
+        `on_readopt_stamp_failed` (the row was concurrently deleted, so there
+        is genuinely nothing left to record beyond what that callback already
+        covers).
+        """
+        if apply_fields is None:
+            applied = readopted
+        else:
+            logger.info(
+                f"Updating readopted {entity_label} {readopted.id} from {external_label} "
+                f"(stale-identity orphan re-adopted under parent {parent_local_id})"
+            )
+            applied = apply_fields(readopted)
+        if applied is None:
+            if on_apply_returned_none is not None:
+                on_apply_returned_none(readopted)
+            raise_concurrent_write_race(
+                entity_label=entity_label,
+                entity_id=readopted.id,
+                path_label="dbo-only line fast path (readopt apply)",
+            )
+
+        try:
+            stamped = stamp_identity(applied)
+        except Exception as stamp_exc:
+            _record_readopt_failure(applied, stamp_exc)
+            raise
+
+        if stamped is None:
+            raise_concurrent_write_race(
+                entity_label=entity_label,
+                entity_id=applied.id,
+                path_label="dbo-only line fast path (readopt stamp)",
+            )
+        if getattr(stamped, "qbo_id", None) != qbo_line_id:
+            unstamped = RuntimeError(
+                f"{entity_label} {applied.id} readopt stamp did not land: the re-read "
+                f"carries qbo_id={getattr(stamped, 'qbo_id', None)!r}, expected "
+                f"{qbo_line_id!r} (parent {parent_local_id}) - left untouched under its "
+                f"old identity (never rolled back); holding for retry."
+            )
+            _record_readopt_failure(applied, unstamped)
+            raise unstamped
+        return FastPathOutcome(hit=True, entity=stamped)
+
     direct = read_direct_by_parent_and_qbo_line_id(parent_local_id, qbo_line_id)
     if direct:
         return _apply(direct)
@@ -1162,7 +1301,28 @@ def run_line_identity_fastpath_dbo_only(
             )
             return _apply(direct_under_lock)
 
-        candidate = resolve_candidate()
+        readopted = readopt_candidate()
+        if readopted is not None:
+            logger.info(
+                f"{entity_label} stale-identity orphan found under parent {parent_local_id}: "
+                f"re-adopting {entity_label} {readopted.id} for {external_label} "
+                f"qbo_line_id={qbo_line_id} instead of minting a new row."
+            )
+            return _readopt(readopted)
+
+        try:
+            candidate = resolve_candidate()
+        except Exception as create_exc:
+            if on_create_failed is not None:
+                try:
+                    on_create_failed(create_exc)
+                except Exception:
+                    logger.exception(
+                        f"on_create_failed callback itself raised for {entity_label} "
+                        f"({external_label} qbo_line_id={qbo_line_id} under parent "
+                        f"{parent_local_id}) - the original create failure still propagates."
+                    )
+            raise
         if candidate is None:
             raise RuntimeError(
                 f"resolve_candidate returned None for {entity_label} ({external_label} "

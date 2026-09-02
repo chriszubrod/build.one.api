@@ -325,10 +325,18 @@ class VendorCreditBillCreditConnector:
         # Attempt EVERY line, collect failures, then RAISE if any failed — never leave
         # a BillCredit whose header total doesn't match its lines. Raising marks the
         # whole credit failed so the pull watermark holds and it retries (idempotent).
+        #
+        # U-361b: computed ONCE per credit (not per-line) — the dbo-only line fast
+        # path's readopt step needs the full set of this pull's CURRENT QBO line
+        # ids to tell a genuinely stale-identity orphan (safe to re-adopt) apart
+        # from a line correctly bound elsewhere in this same credit (never steal).
+        live_qbo_line_ids = frozenset(line.qbo_line_id for line in qbo_lines if line.qbo_line_id)
         failed = []
         for line in qbo_lines:
             try:
-                self.line_item_connector.sync_from_qbo_line(bill_credit_id, bill_credit_public_id, line, realm_id)
+                self.line_item_connector.sync_from_qbo_line(
+                    bill_credit_id, bill_credit_public_id, line, live_qbo_line_ids, realm_id
+                )
             except Exception as e:
                 logger.error(f"Error syncing line item {line.qbo_line_id}: {e}")
                 failed.append((line.qbo_line_id, str(e)))

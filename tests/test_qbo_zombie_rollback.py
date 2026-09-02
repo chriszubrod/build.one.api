@@ -276,12 +276,13 @@ def test_vendorcredit_sync_from_qbo_line_propagates_exception(grant_qbo_app_lock
     connector = VendorCreditLineItemConnector()
     connector.bill_credit_line_item_service = Mock()
     connector.bill_credit_line_item_service.read_by_qbo_identity.return_value = None  # dbo-only MISS
+    connector.bill_credit_line_item_service.read_by_bill_credit_id.return_value = []
     connector.bill_credit_line_item_service.create.side_effect = RuntimeError("projection failed")
 
     qbo_line = _make_qbo_vc_line()
 
     with pytest.raises(RuntimeError, match="projection failed"):
-        connector.sync_from_qbo_line(1, "bc-pub-1", qbo_line, realm_id="realm-1")
+        connector.sync_from_qbo_line(1, "bc-pub-1", qbo_line, frozenset({"line-1"}), realm_id="realm-1")
 
 
 def test_new_vendorcredit_line_sync_failure_compensating_rollback(grant_qbo_app_lock):

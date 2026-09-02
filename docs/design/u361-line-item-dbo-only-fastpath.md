@@ -72,12 +72,41 @@ lock. **Build note:** /simplify-review whether it is genuinely reachable (U-352 
 lock as over-engineering); if a test proves the parent lock already fully serializes and the line lock is
 unreachable, dropping it is acceptable — but that must be shown with a test, not asserted.
 
-## 4. MISS branch — APPROVED: create-only (no adopt)
+## 4. MISS branch — SUPERSEDED by U-361b: readopt-before-create (was "create-only, no adopt")
 
-A line has no independent adopt key — it is always created fresh under its parent (the parent adopt/create
-already happened). `resolve_candidate` for lines = **create fresh**, no adopt, no `_check_no_conflicting`
-guard (no side-channel key two syncs could both resolve to). Matches Term's shape (U-352, no-adopt), not
-Company's. Confirm in build that the pre-U-361 line create path has no adopt step.
+**§8.3's "accepted tradeoff" was a REGRESSION, not a simplification — found and fixed 2026-09-02
+(U-361b, Gate-2 adversarial re-review of the shipped U-361 commit `b2da251d`, Chris approved fix-now).**
+QBO regenerates a line's `Line.Id` on certain edits with its content unchanged (the exact case the
+pre-U-361 `_match_unmapped_by_fingerprint` was built for — the with-mapping helper's own "never self-heal
+a MISSING line" P1 finding was about the SAME underlying QBO behavior, from the other direction). Plain
+create-only silently minted a sibling row for the new id and permanently stranded the old one — a stray
+orphan double-counted into every sum over the parent's lines (`complete_bill_credit`'s
+`read_by_bill_credit_id`, invoice draw enrichment) and a dangling FK target for anything that already
+referenced it.
+
+**Fixed shape:** `run_line_identity_fastpath_dbo_only` gained a REQUIRED `readopt_candidate` parameter
+(no default, matching `resolve_candidate`/`stamp_identity`), tried first inside the create lock. A hit
+flows through the SAME `apply_fields` → `stamp_identity` pipeline as any existing row — reusing the
+row's dbo.Id, never minting a new one — but is a genuinely NEW third rollback path: a readopted row is
+REAL, pre-existing data (possibly invoice-FK'd, already summed into a completed total), so a readopt
+failure is NEVER rolled back/deleted (only recorded via `on_readopt_stamp_failed`), unlike a fresh-create
+failure. This is WHY it's a required primitive parameter rather than folded into `resolve_candidate`
+(design decision, justified in the U-361b commit): only the primitive, which owns the whole create+stamp
+flow, can tell a fresh mint (safe to delete on failure) apart from a readopted row (never delete) —
+`resolve_candidate` alone has no channel to signal that distinction back through the rollback machinery.
+
+The MATCHING rule itself is shared (`base/line_orphan_adopt.py::find_stale_identity_orphan`, pure/DB-free)
+so U-362–364 get it for free rather than hand-copying: a local line is eligible only when its CURRENT
+identity is NOT in this pull's live QBO line-id set (never steal a line correctly bound elsewhere in the
+same pull) AND its content fingerprint matches — same fields, same stable-position-order pick as the
+pre-U-361 `_match_unmapped_by_fingerprint`.
+
+Also folded in (P2 hardening, same review): `resolve_candidate()` itself can raise AFTER its INSERT
+already committed (a connection drop between the write landing and the driver reading it back) — no
+candidate reference exists in that case, so nothing can be identified or deleted. `on_create_failed`
+(optional) records this as a DETECTABILITY signal only, then re-raises unchanged; picked over "bring the
+create inside the rollback scope" because there is no reliable way to recover a row reference from a call
+that never returned.
 
 ## 5. First use — retire `qbo.VendorCreditLineItemBillCreditLineItem` (the U-361 payload)
 
@@ -121,6 +150,9 @@ Keep the helper purely `(parent, qbo_line_id)`-generic — nothing vendorcredit-
 1. **Build the shared `run_line_identity_fastpath_dbo_only` primitive in this unit** — APPROVED (inlining
    dbo-only resolution 4× is the anti-pattern the header helper avoided).
 2. **Create lock:** APPROVED **Option A** (parent+line-scoped, 15s) — with the build /simplify-reachability check (§3).
-3. **MISS branch:** APPROVED **create-only, no adopt** (§4).
+3. **MISS branch:** APPROVED **create-only, no adopt** (§4) — **SUPERSEDED 2026-09-02 by U-361b: readopt-
+   before-create. §4's rationale ("no side-channel key two syncs could both resolve to") missed that a
+   line's QBO-assigned identity itself IS recycled by QBO — not a side-channel key this design invented,
+   but the platform's own documented line-id-regeneration behavior. See §4 above for the fix.**
 4. **Dispatch:** approved → U-361 BUILD dispatched as a separate prompt (Claude writes, Claude 8-angle reviews —
    Codex out of credits); builder hands /em the DROP; /em deploys + drops per the usual runbook.

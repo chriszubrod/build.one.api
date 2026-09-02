@@ -42,10 +42,14 @@ def _harness(*, direct=None, **overrides):
     """Build a run_line_identity_fastpath_dbo_only kwargs dict plus the Mocks it drives.
     The default stamp returns a re-read carrying the resolved identity (the
     contract), so the helper's "stamp did not land" guard stays quiet unless a
-    test overrides it on purpose."""
+    test overrides it on purpose. readopt_candidate defaults to "nothing to
+    adopt" (None) so every pre-existing MISS-path test exercises the fresh-
+    create branch unchanged — readopt behavior itself is covered in its own
+    section below."""
     spy = SimpleNamespace(
         read_direct=Mock(return_value=direct),
         apply=Mock(side_effect=lambda e: e),
+        readopt_candidate=Mock(return_value=None),
         resolve_candidate=Mock(return_value=SimpleNamespace(id=77, public_id="pub-77")),
         stamp_identity=Mock(
             side_effect=lambda candidate: SimpleNamespace(
@@ -53,6 +57,8 @@ def _harness(*, direct=None, **overrides):
             )
         ),
         rollback_candidate=Mock(),
+        on_readopt_stamp_failed=Mock(),
+        on_create_failed=Mock(),
     )
     kwargs = dict(
         parent_local_id=19146,
@@ -61,10 +67,13 @@ def _harness(*, direct=None, **overrides):
         external_label="QboVendorCreditLine",
         lock_resource_label="BillCreditLineItem",
         read_direct_by_parent_and_qbo_line_id=spy.read_direct,
+        readopt_candidate=spy.readopt_candidate,
         resolve_candidate=spy.resolve_candidate,
         stamp_identity=spy.stamp_identity,
         rollback_candidate=spy.rollback_candidate,
         apply_fields=spy.apply,
+        on_readopt_stamp_failed=spy.on_readopt_stamp_failed,
+        on_create_failed=spy.on_create_failed,
     )
     kwargs.update(overrides)
     return kwargs, spy
@@ -379,6 +388,7 @@ def test_lock_is_held_across_reread_resolve_and_stamp(mock_lock):
         external_label="QboVendorCreditLine",
         lock_resource_label="BillCreditLineItem",
         read_direct_by_parent_and_qbo_line_id=_read_direct,
+        readopt_candidate=lambda: None,
         resolve_candidate=_resolve_candidate,
         stamp_identity=_stamp_identity,
     )
@@ -415,3 +425,194 @@ def test_rollback_runs_inside_the_lock(mock_lock):
     with pytest.raises(RuntimeError):
         run_line_identity_fastpath_dbo_only(**kwargs)
     assert call_order == ["lock_acquired", "rollback", "lock_released"]
+
+
+# =============================================================================
+# U-361b: readopt-before-create (the money-double-count fix)
+# =============================================================================
+#
+# readopt_candidate is tried FIRST on every genuine MISS (under the lock, after
+# the racer re-check). A hit there flows through apply_fields -> stamp_identity
+# like any other existing row, but on failure is NEVER rolled back/deleted
+# (on_readopt_stamp_failed fires instead) -- the row is real, pre-existing
+# data, not a fresh mint this call created. resolve_candidate (fresh create)
+# only runs when readopt_candidate returns None.
+
+
+@patch(LOCK_PATCH_TARGET, _granted_lock)
+def test_readopt_hit_applies_fields_then_stamps_and_never_creates():
+    kwargs, spy = _harness(direct=None)
+    readopted = SimpleNamespace(id=55, public_id="pub-55")
+    spy.readopt_candidate.return_value = readopted
+    spy.apply.side_effect = lambda row: SimpleNamespace(id=row.id, public_id=row.public_id)
+
+    outcome = run_line_identity_fastpath_dbo_only(**kwargs)
+
+    assert outcome.hit is True and outcome.entity.qbo_id == "3"
+    spy.readopt_candidate.assert_called_once_with()
+    spy.apply.assert_called_once_with(readopted)
+    spy.resolve_candidate.assert_not_called()
+    spy.stamp_identity.assert_called_once()
+    # stamp_identity is called on the APPLIED row (post apply_fields), not the
+    # raw readopt result -- apply_fields may return a different object (e.g. a
+    # fresh re-read from update_by_public_id).
+    stamped_arg = spy.stamp_identity.call_args.args[0]
+    assert stamped_arg.id == 55 and stamped_arg.public_id == "pub-55"
+
+
+@patch(LOCK_PATCH_TARGET, _granted_lock)
+def test_readopt_hit_with_apply_fields_omitted_stamps_the_row_as_is():
+    kwargs, spy = _harness(direct=None)
+    kwargs.pop("apply_fields")
+    readopted = SimpleNamespace(id=55, public_id="pub-55")
+    spy.readopt_candidate.return_value = readopted
+
+    outcome = run_line_identity_fastpath_dbo_only(**kwargs)
+
+    assert outcome.hit is True
+    spy.stamp_identity.assert_called_once_with(readopted)
+
+
+@patch(LOCK_PATCH_TARGET, _granted_lock)
+def test_readopt_apply_returning_none_raises_concurrent_write_race():
+    kwargs, spy = _harness(direct=None)
+    readopted = SimpleNamespace(id=55, public_id="pub-55")
+    spy.readopt_candidate.return_value = readopted
+    on_none = Mock()
+    kwargs["apply_fields"] = Mock(return_value=None)
+    kwargs["on_apply_returned_none"] = on_none
+    with pytest.raises(RuntimeError, match="concurrent write race"):
+        run_line_identity_fastpath_dbo_only(**kwargs)
+    on_none.assert_called_once_with(readopted)
+    spy.stamp_identity.assert_not_called()
+    spy.rollback_candidate.assert_not_called()  # a None apply never rolls back either
+
+
+@patch(LOCK_PATCH_TARGET, _granted_lock)
+def test_readopt_stamp_raising_never_rolls_back_only_records():
+    """The core rollback-semantics distinction this whole fix exists to
+    protect: a readopt failure must NEVER delete the row (it's real, pre-
+    existing data) -- only a fresh-create failure may."""
+    kwargs, spy = _harness(direct=None)
+    readopted = SimpleNamespace(id=55, public_id="pub-55")
+    spy.readopt_candidate.return_value = readopted
+    spy.stamp_identity.side_effect = RuntimeError("readopt stamp exploded")
+
+    with pytest.raises(RuntimeError, match="readopt stamp exploded"):
+        run_line_identity_fastpath_dbo_only(**kwargs)
+
+    spy.rollback_candidate.assert_not_called()
+    spy.on_readopt_stamp_failed.assert_called_once()
+    assert spy.on_readopt_stamp_failed.call_args.args[0].id == 55
+
+
+@patch(LOCK_PATCH_TARGET, _granted_lock)
+def test_readopt_stamp_raising_with_no_recorder_wired_still_reraises():
+    kwargs, spy = _harness(direct=None)
+    kwargs.pop("on_readopt_stamp_failed")
+    readopted = SimpleNamespace(id=55, public_id="pub-55")
+    spy.readopt_candidate.return_value = readopted
+    spy.stamp_identity.side_effect = RuntimeError("readopt stamp exploded")
+
+    with pytest.raises(RuntimeError, match="readopt stamp exploded"):
+        run_line_identity_fastpath_dbo_only(**kwargs)
+
+    spy.rollback_candidate.assert_not_called()
+
+
+@patch(LOCK_PATCH_TARGET, _granted_lock)
+def test_readopt_stamp_that_did_not_land_never_rolls_back_only_records():
+    kwargs, spy = _harness(direct=None)
+    readopted = SimpleNamespace(id=55, public_id="pub-55")
+    spy.readopt_candidate.return_value = readopted
+    spy.stamp_identity.side_effect = None
+    spy.stamp_identity.return_value = SimpleNamespace(id=55, public_id="pub-55", qbo_id="WRONG")
+
+    with pytest.raises(RuntimeError, match="readopt stamp did not land"):
+        run_line_identity_fastpath_dbo_only(**kwargs)
+
+    spy.rollback_candidate.assert_not_called()
+    spy.on_readopt_stamp_failed.assert_called_once()
+
+
+@patch(LOCK_PATCH_TARGET, _granted_lock)
+def test_readopt_stamp_returning_none_raises_race_without_recording_or_rollback():
+    """None means the row is already gone (concurrent delete) -- nothing to
+    record or compensate, same reading as the fresh-create path's identical
+    branch."""
+    kwargs, spy = _harness(direct=None)
+    readopted = SimpleNamespace(id=55, public_id="pub-55")
+    spy.readopt_candidate.return_value = readopted
+    spy.stamp_identity.side_effect = None
+    spy.stamp_identity.return_value = None
+
+    with pytest.raises(RuntimeError, match="concurrent write race"):
+        run_line_identity_fastpath_dbo_only(**kwargs)
+
+    spy.rollback_candidate.assert_not_called()
+    spy.on_readopt_stamp_failed.assert_not_called()
+
+
+@patch(LOCK_PATCH_TARGET, _granted_lock)
+def test_readopt_candidate_checked_before_resolve_candidate():
+    """A found readopt candidate must short-circuit resolve_candidate entirely
+    -- the whole point is to reuse the existing row's dbo.Id, never mint one."""
+    kwargs, spy = _harness(direct=None)
+    spy.readopt_candidate.return_value = SimpleNamespace(id=55, public_id="pub-55")
+    run_line_identity_fastpath_dbo_only(**kwargs)
+    spy.resolve_candidate.assert_not_called()
+
+
+@patch(LOCK_PATCH_TARGET, _granted_lock)
+def test_readopt_returning_none_falls_through_to_fresh_create():
+    kwargs, spy = _harness(direct=None)
+    spy.readopt_candidate.return_value = None  # explicit, matches the _harness default
+    outcome = run_line_identity_fastpath_dbo_only(**kwargs)
+    assert outcome.hit is True
+    spy.resolve_candidate.assert_called_once_with()
+
+
+@patch(LOCK_PATCH_TARGET, _granted_lock)
+def test_readopt_candidate_is_called_inside_the_lock_after_the_racer_recheck():
+    call_order = []
+    kwargs, spy = _harness(direct=None)
+    spy.read_direct.side_effect = lambda *a: (call_order.append("read_direct"), None)[1]
+    spy.readopt_candidate.side_effect = lambda: (call_order.append("readopt_candidate"), SimpleNamespace(id=55, public_id="pub-55"))[1]
+    run_line_identity_fastpath_dbo_only(**kwargs)
+    assert call_order == ["read_direct", "read_direct", "readopt_candidate"]
+
+
+# --- U-361b P2: the create-failure detectability recorder ---------------------
+
+
+@patch(LOCK_PATCH_TARGET, _granted_lock)
+def test_create_failure_records_via_on_create_failed_then_reraises():
+    kwargs, spy = _harness(direct=None)
+    spy.resolve_candidate.side_effect = RuntimeError("connection dropped mid-insert")
+
+    with pytest.raises(RuntimeError, match="connection dropped mid-insert"):
+        run_line_identity_fastpath_dbo_only(**kwargs)
+
+    spy.on_create_failed.assert_called_once()
+    assert isinstance(spy.on_create_failed.call_args.args[0], RuntimeError)
+    spy.rollback_candidate.assert_not_called()  # nothing to roll back -- no candidate reference
+
+
+@patch(LOCK_PATCH_TARGET, _granted_lock)
+def test_create_failure_with_no_recorder_wired_still_reraises():
+    kwargs, spy = _harness(direct=None)
+    kwargs.pop("on_create_failed")
+    spy.resolve_candidate.side_effect = RuntimeError("connection dropped mid-insert")
+
+    with pytest.raises(RuntimeError, match="connection dropped mid-insert"):
+        run_line_identity_fastpath_dbo_only(**kwargs)
+
+
+@patch(LOCK_PATCH_TARGET, _granted_lock)
+def test_create_failure_recorder_itself_raising_does_not_mask_the_original():
+    kwargs, spy = _harness(direct=None)
+    spy.resolve_candidate.side_effect = RuntimeError("connection dropped mid-insert")
+    spy.on_create_failed.side_effect = RuntimeError("recorder also blew up")
+
+    with pytest.raises(RuntimeError, match="connection dropped mid-insert"):
+        run_line_identity_fastpath_dbo_only(**kwargs)

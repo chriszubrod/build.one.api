@@ -320,6 +320,7 @@ def test_vendor_credit_line_connector_create_path_dual_writes_identity():
     bill_credit_line_item_service.read_by_id.return_value = SimpleNamespace(
         id=300, public_id="bcli-pub-300", qbo_id="QBO-VC-LINE-REAL", realm_id="realm-create",
     )
+    bill_credit_line_item_service.read_by_bill_credit_id.return_value = []
     bill_credit_line_item_service.repo = MagicMock()
 
     connector = VendorCreditLineItemConnector()
@@ -341,7 +342,7 @@ def test_vendor_credit_line_connector_create_path_dual_writes_identity():
     )
 
     with patch("integrations.intuit.qbo.base.identity_fastpath.qbo_app_lock", mock_qbo_app_lock_granted):
-        connector.sync_from_qbo_line(100, "bc-pub", qbo_line, realm_id="realm-create")
+        connector.sync_from_qbo_line(100, "bc-pub", qbo_line, frozenset({"QBO-VC-LINE-REAL"}), realm_id="realm-create")
 
     bill_credit_line_item_service.repo.set_qbo_identity.assert_called_once_with(
         id=300,
@@ -381,7 +382,7 @@ def test_vendor_credit_line_connector_update_path_heals_missing_realm_only():
             customer_ref_value=None,
             item_ref_value=None,
         )
-        connector.sync_from_qbo_line(100, "bc-pub", qbo_line, realm_id="realm-update")
+        connector.sync_from_qbo_line(100, "bc-pub", qbo_line, frozenset({"QBO-VC-LINE-UPD"}), realm_id="realm-update")
         return bill_credit_line_item_service
 
     realm_complete = SimpleNamespace(

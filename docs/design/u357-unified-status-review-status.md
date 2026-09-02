@@ -1,12 +1,11 @@
-# U-357 (PROVISIONAL) — Unified lifecycle `status` + `review_status` on every workflow entity (DESIGN / SCOPING)
+# U-357 — Unified lifecycle `status` + `review_status` on every workflow entity (DESIGN / SCOPING)
 
 **Status:** design/scoping, awaiting Chris's decisions (§9) and `/em` dispatch. **STOP — nothing is built,
 no SQL is applied, no deploy is sequenced by this document.** Every unit below is a proposal until `/em`
 promotes it; every SQL step is `/em`-applied (builders never touch prod).
-**Unit id:** **U-357 is PROVISIONAL.** The highest unit row on the board is U-356
-(`build.one.team/BOARD.md:268`), and the U-349 running order already pencils "U-357" for the
-`vendorcredit_line_item` mapping retirement (`docs/design/u349-qbo-mapping-table-retirement.md:120`;
-`BOARD.md:11,330`). `/em` assigns the real id(s); units here carry `LS-xx` labels until then.
+**Unit id:** **U-357 — confirmed by `/em` 2026-09-01.** The U-349 Wave-C session had booked its line-item design
+as U-357 (`45b8f278`) and then renumbered its block to U-361–364 (`75c62d23`) to cede U-357 to this program.
+Phase-0 ids: `LS-00a` = **U-357a**, `LS-00b` = **U-357b**, `LS-00d` = **U-357d**; later `LS-xx` units get ids at dispatch.
 **Citation freshness:** file:line references are as of 2026-09-01 after U-356 (`5c28a268`); `BOARD.md`/`TODO.md`
 line numbers drift daily — prefer the unit id / anchor text when generating unit prompts from this doc.
 **Class:** cross-repo lifecycle/vocabulary program (schema + sprocs + API + web + iOS + MCP + scheduler) →
@@ -93,6 +92,22 @@ sprocs are pinned per-object (`ResolveReviewRecipients*` :104-106; `Read/ReadCur
 `ReviewStatus` (:144) and `FK_Review_ReviewStatus` sits on `ReviewStatusId` (:19); `ReadInboxTasks` partitions
 `vw_Review` by four parents and ignores `IsDraft` (`dbo.inbox_tasks.sql:61-88`); the field-ownership registry
 declares a phantom `review_status_id` on Bill and Expense (`field_ownership.py:259-260,318-319`).
+
+### 3a. Prod census — U-357a (read-only, 2026-09-02 00:13Z)
+
+| Fact | Value |
+|---|---|
+| ContractLabor `Status` | `billed` 1,128 (306 with a Review row, 822 without) · `submitted` 38 (all with) · `pending_review` 23 (none) · `ready` 5 (1 with); **0 stray values** — confirms the 2026-07-02 rename never ran, and a `CK` can be added cleanly |
+| EmployeeLabor / Budget / BudgetRevision | EL **0 rows**; Budget `active` 1; BudgetRevision `approved` 2 |
+| TimeEntry latest-row status (Id tiebreak) | `approved` 859 · `billed` **260** · `draft` 10 · `submitted` 7; 2,864 history rows. The 260 `billed` rows were all written Feb–Mar 2026 by User 17 with no Note — a one-time backfill; no writer exists in current code (§3 "never written" is true of the code, not the data). `rejected` rows: 28 (May–Aug), all with notes |
+| TimeEntry → downstream ContractLabor | approved+CL billed 776 · approved+no CL 24 · approved+CL pending_review 16 · approved+CL ready 5 · approved+CL submitted 38 · billed+CL billed 338 · submitted+CL pending_review 7 |
+| `dbo.ReviewStatus` | seed intact (Submitted 10 / In Review 20 / Approved 30 final / Declined 100 declined; all active); invariants hold: 1 active declined, 1 active final-non-declined, MIN row non-final |
+| Review rows per parent | Bill 751 · Invoice 49 · ContractLabor 508 · **Expense 0 · BillCredit 0** (1,308 total) |
+| `IsDraft` × latest-review kind | **Bill** IsDraft=0: none 19,831 / approved 170 / submitted 39 / in_review 25 / declined 1 (**65 finalized-with-open-review misfits**); IsDraft=1: in_review 69 / submitted 8 / declined 1 / none 1. **Expense** 11,659 finalized + 10 draft, zero reviews. **BillCredit** 441 + 3 draft, zero reviews. **Invoice** IsDraft=0: none 981 / approved 13 / in_review 5; 0 drafts. **ContractLabor** billed: approved 203 / submitted 103 / none 822 · ready: none 4 / submitted 1 · submitted: submitted 38 · pending_review: none 23 |
+| Completion evidence on IsDraft=0 | Bill: QboId 20,062 · CompletionResult-only 1 · **no evidence 3** · drafts 79. Expense: QboId 11,659 · none 0 · drafts 10. BillCredit: 438 · 3 · 3. Invoice: 986 · 13 · 0 |
+| `IsDraft` dependents (four documents) | **none** — no indexes, no expression dependencies (schemabound or not); DEFAULTs are system-named (`DF__Bill__IsDraft__259C7031`, `DF__Expense__IsDraft__367CE370`, `DF__BillCredi__IsDra__18B7765F`, `DF__Invoice__IsDraft__5E20C076`) → Phase-3 step (c)'s `sys.default_constraints` lookup is required as written |
+| Review shape liveness | 5-parent live: `ContractLaborId` column + `FK_Review_ContractLabor` + `IX_Review_ContractLaborId` + 5-way `CK_Review_OneParent`; `CreateReview` has `@ContractLaborId` (param 8 of 10); `vw_Review` projects it; `ReadCurrentReviewsByBillIds` live == base. `dbo.Module 'Employee Labor'` exists (role migration 006 applied) |
+| RoleModule grants (7 modules) | `CanApprove`: Bills/Expenses = Controller, Owner, Project Manager, Tenant Admin; Bill Credits/Invoices/Contract Labor = Controller, Owner, Tenant Admin (**no PM on Contract Labor**); Time Tracking = Controller, Owner, PM, Tenant Admin. `CanComplete`: each `*Specialist` agent on its own module + Controller/Owner/TA. `CanSubmit`: AP Specialist (Bills), PM (Time Tracking), Controller/Owner/TA. Employee Labor = CanRead-only (Controller/Owner/TA). Tasks read-only for AP/AR Specialist, Controller, PM, Reviewer |
 
 ## 4. Target model
 

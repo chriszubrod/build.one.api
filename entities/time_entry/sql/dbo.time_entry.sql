@@ -1861,7 +1861,7 @@ BEGIN
         SELECT TOP 1 s.[Status]
         FROM dbo.[TimeEntryStatus] s
         WHERE s.[TimeEntryId] = te.[Id]
-        ORDER BY s.[CreatedDatetime] DESC
+        ORDER BY s.[CreatedDatetime] DESC, s.[Id] DESC
     ) cs
     LEFT JOIN dbo.[TimeLog] tl ON tl.[TimeEntryId] = te.[Id]
     LEFT JOIN dbo.[Project] p  ON p.[Id] = tl.[ProjectId]

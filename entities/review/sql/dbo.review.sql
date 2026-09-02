@@ -16,17 +16,20 @@ CREATE TABLE [dbo].[Review]
     [ExpenseId]        BIGINT NULL,
     [BillCreditId]     BIGINT NULL,
     [InvoiceId]        BIGINT NULL,
+    [ContractLaborId]  BIGINT NULL,
     CONSTRAINT [FK_Review_ReviewStatus] FOREIGN KEY ([ReviewStatusId]) REFERENCES dbo.[ReviewStatus]([Id]),
     CONSTRAINT [FK_Review_User]         FOREIGN KEY ([UserId])         REFERENCES dbo.[User]([Id]),
     CONSTRAINT [FK_Review_Bill]         FOREIGN KEY ([BillId])         REFERENCES dbo.[Bill]([Id]),
     CONSTRAINT [FK_Review_Expense]      FOREIGN KEY ([ExpenseId])      REFERENCES dbo.[Expense]([Id]),
     CONSTRAINT [FK_Review_BillCredit]   FOREIGN KEY ([BillCreditId])   REFERENCES dbo.[BillCredit]([Id]),
     CONSTRAINT [FK_Review_Invoice]      FOREIGN KEY ([InvoiceId])      REFERENCES dbo.[Invoice]([Id]),
+    CONSTRAINT [FK_Review_ContractLabor] FOREIGN KEY ([ContractLaborId]) REFERENCES dbo.[ContractLabor]([Id]),
     CONSTRAINT [CK_Review_OneParent] CHECK (
         (CASE WHEN [BillId]       IS NOT NULL THEN 1 ELSE 0 END) +
         (CASE WHEN [ExpenseId]    IS NOT NULL THEN 1 ELSE 0 END) +
         (CASE WHEN [BillCreditId] IS NOT NULL THEN 1 ELSE 0 END) +
-        (CASE WHEN [InvoiceId]    IS NOT NULL THEN 1 ELSE 0 END) = 1
+        (CASE WHEN [InvoiceId]    IS NOT NULL THEN 1 ELSE 0 END) +
+        (CASE WHEN [ContractLaborId] IS NOT NULL THEN 1 ELSE 0 END) = 1
     )
 );
 END
@@ -52,6 +55,50 @@ BEGIN
 END
 GO
 
+
+-- U-357b: ContractLabor as the 5th Review parent — live in prod since
+-- migrations/003_add_contract_labor_parent.sql (2026-05-28); folded into the base so a
+-- from-scratch build and the live schema agree (the base was 4-parent while the
+-- ContractLabor read/delete sprocs below already filter on [ContractLaborId]).
+-- No-op against the live schema (column / FK / 5-way CK already exist there).
+IF OBJECT_ID('dbo.Review', 'U') IS NOT NULL
+   AND COL_LENGTH('dbo.Review', 'ContractLaborId') IS NULL
+BEGIN
+    ALTER TABLE [dbo].[Review] ADD [ContractLaborId] BIGINT NULL;
+END
+GO
+IF OBJECT_ID('dbo.Review', 'U') IS NOT NULL
+   AND OBJECT_ID('dbo.ContractLabor', 'U') IS NOT NULL
+   AND NOT EXISTS (SELECT 1 FROM sys.foreign_keys WHERE name = 'FK_Review_ContractLabor')
+BEGIN
+    ALTER TABLE [dbo].[Review] ADD CONSTRAINT [FK_Review_ContractLabor]
+        FOREIGN KEY ([ContractLaborId]) REFERENCES [dbo].[ContractLabor]([Id]);
+END
+GO
+-- CK_Review_OneParent must count all five parents. Recreate ONLY when the live
+-- definition predates ContractLabor (4-parent); a correct 5-way CK is left alone.
+IF OBJECT_ID('dbo.Review', 'U') IS NOT NULL
+   AND EXISTS (SELECT 1 FROM sys.check_constraints
+               WHERE name = 'CK_Review_OneParent'
+                 AND parent_object_id = OBJECT_ID('dbo.Review')
+                 AND definition NOT LIKE '%ContractLaborId%')
+BEGIN
+    ALTER TABLE [dbo].[Review] DROP CONSTRAINT [CK_Review_OneParent];
+END
+GO
+IF OBJECT_ID('dbo.Review', 'U') IS NOT NULL
+   AND NOT EXISTS (SELECT 1 FROM sys.check_constraints
+                   WHERE name = 'CK_Review_OneParent' AND parent_object_id = OBJECT_ID('dbo.Review'))
+BEGIN
+    ALTER TABLE [dbo].[Review] ADD CONSTRAINT [CK_Review_OneParent] CHECK (
+        (CASE WHEN [BillId]          IS NOT NULL THEN 1 ELSE 0 END) +
+        (CASE WHEN [ExpenseId]       IS NOT NULL THEN 1 ELSE 0 END) +
+        (CASE WHEN [BillCreditId]    IS NOT NULL THEN 1 ELSE 0 END) +
+        (CASE WHEN [InvoiceId]       IS NOT NULL THEN 1 ELSE 0 END) +
+        (CASE WHEN [ContractLaborId] IS NOT NULL THEN 1 ELSE 0 END) = 1
+    );
+END
+GO
 
 -- =========================================================================
 -- Indexes (filtered, one per parent FK)
@@ -82,6 +129,13 @@ IF OBJECT_ID('dbo.Review', 'U') IS NOT NULL
    AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_Review_InvoiceId' AND object_id = OBJECT_ID('dbo.Review'))
 BEGIN
     CREATE INDEX [IX_Review_InvoiceId] ON [dbo].[Review]([InvoiceId]) WHERE [InvoiceId] IS NOT NULL;
+END
+GO
+
+IF OBJECT_ID('dbo.Review', 'U') IS NOT NULL
+   AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_Review_ContractLaborId' AND object_id = OBJECT_ID('dbo.Review'))
+BEGIN
+    CREATE INDEX [IX_Review_ContractLaborId] ON [dbo].[Review]([ContractLaborId]) WHERE [ContractLaborId] IS NOT NULL;
 END
 GO
 
@@ -132,6 +186,7 @@ AS
         r.[ExpenseId],
         r.[BillCreditId],
         r.[InvoiceId],
+        r.[ContractLaborId],
         r.[EmailMessageId],
         rs.[Name]       AS [StatusName],
         rs.[SortOrder]  AS [StatusSortOrder],
@@ -159,6 +214,7 @@ CREATE OR ALTER PROCEDURE CreateReview
     @ExpenseId       BIGINT = NULL,
     @BillCreditId    BIGINT = NULL,
     @InvoiceId       BIGINT = NULL,
+    @ContractLaborId BIGINT = NULL,
     @EmailMessageId  BIGINT = NULL,
     @CreatedByUserId BIGINT = NULL
 )
@@ -172,14 +228,14 @@ BEGIN
     INSERT INTO dbo.[Review] (
         [CreatedDatetime], [ModifiedDatetime],
         [ReviewStatusId], [UserId], [Comments],
-        [BillId], [ExpenseId], [BillCreditId], [InvoiceId],
+        [BillId], [ExpenseId], [BillCreditId], [InvoiceId], [ContractLaborId],
         [EmailMessageId],
         [CreatedByUserId]
     )
     VALUES (
         @Now, @Now,
         @ReviewStatusId, @UserId, @Comments,
-        @BillId, @ExpenseId, @BillCreditId, @InvoiceId,
+        @BillId, @ExpenseId, @BillCreditId, @InvoiceId, @ContractLaborId,
         @EmailMessageId,
         COALESCE(@CreatedByUserId, 17)
     );

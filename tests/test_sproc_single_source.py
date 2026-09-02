@@ -224,6 +224,12 @@ ENTITY_BASE_FILES = [
     ("bill_line_item", BILL_LINE_ITEM_BASE),
     ("expense_line_item", EXPENSE_LINE_ITEM_BASE),
     ("inbox_tasks", INBOX_TASKS_BASE),
+    # U-357b: dbo.review.sql reconciled to the live 5-parent shape (ContractLaborId
+    # column/FK/IX/5-way CK, vw_Review, CreateReview) and made the sole home of every
+    # sproc it declares; review migrations 003/005 and gap2_adjacent_threading's
+    # CreateReview copy stubbed. The per-sproc REVIEW_BASE pins in SINGLE_SOURCE_SPROCS
+    # stay beside this row on purpose (presence guards deletion; this row guards duplication).
+    ("review", REVIEW_BASE),
 ]
 
 ACCESS_UDFS = [

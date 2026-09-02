@@ -35,11 +35,6 @@ SPROC_DRIFT_LEDGER: dict[str, frozenset[str]] = {
         'entities/project_address/sql/dbo.project_address.sql',
         'scripts/migrations/gap2_reference_threading.sql',
     }),  # known-dup, home=entities/project_address/sql/dbo.project_address.sql
-    "CreateReview": frozenset({
-        'entities/review/sql/dbo.review.sql',
-        'entities/review/sql/migrations/005_review_sprocs_contract_labor.sql',
-        'scripts/migrations/gap2_adjacent_threading.sql',
-    }),  # known-dup, home=entities/review/sql/dbo.review.sql
     "CreateReviewStatus": frozenset({
         'entities/review_status/sql/dbo.review_status.sql',
         'scripts/migrations/gap2_adjacent_threading.sql',

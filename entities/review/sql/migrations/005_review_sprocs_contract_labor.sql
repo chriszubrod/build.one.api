@@ -16,85 +16,16 @@ SET NOCOUNT ON;
 GO
 
 
--- =========================================================================
--- View — add ContractLaborId column
--- =========================================================================
-
-CREATE OR ALTER VIEW [dbo].[vw_Review]
-AS
-    SELECT
-        r.[Id],
-        r.[PublicId],
-        r.[RowVersion],
-        CONVERT(VARCHAR(19), r.[CreatedDatetime], 120) AS [CreatedDatetime],
-        CONVERT(VARCHAR(19), r.[ModifiedDatetime], 120) AS [ModifiedDatetime],
-        r.[ReviewStatusId],
-        r.[UserId],
-        r.[Comments],
-        r.[BillId],
-        r.[ExpenseId],
-        r.[BillCreditId],
-        r.[InvoiceId],
-        r.[ContractLaborId],
-        r.[EmailMessageId],
-        rs.[Name]       AS [StatusName],
-        rs.[SortOrder]  AS [StatusSortOrder],
-        rs.[IsFinal]    AS [StatusIsFinal],
-        rs.[IsDeclined] AS [StatusIsDeclined],
-        rs.[Color]      AS [StatusColor],
-        u.[Firstname]   AS [UserFirstname],
-        u.[Lastname]    AS [UserLastname]
-    FROM dbo.[Review] r
-    INNER JOIN dbo.[ReviewStatus] rs ON r.[ReviewStatusId] = rs.[Id]
-    INNER JOIN dbo.[User] u          ON r.[UserId]         = u.[Id];
-GO
-
-
--- =========================================================================
--- CreateReview — accept @ContractLaborId
--- =========================================================================
-
-CREATE OR ALTER PROCEDURE CreateReview
-(
-    @ReviewStatusId   BIGINT,
-    @UserId           BIGINT,
-    @Comments         NVARCHAR(MAX) = NULL,
-    @BillId           BIGINT = NULL,
-    @ExpenseId        BIGINT = NULL,
-    @BillCreditId     BIGINT = NULL,
-    @InvoiceId        BIGINT = NULL,
-    @ContractLaborId  BIGINT = NULL,
-    @EmailMessageId   BIGINT = NULL,
-    @CreatedByUserId  BIGINT = NULL
-)
-AS
-BEGIN
-    SET NOCOUNT ON;
-    BEGIN TRANSACTION;
-
-    DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();
-
-    INSERT INTO dbo.[Review] (
-        [CreatedDatetime], [ModifiedDatetime],
-        [ReviewStatusId], [UserId], [Comments],
-        [BillId], [ExpenseId], [BillCreditId], [InvoiceId], [ContractLaborId],
-        [EmailMessageId],
-        [CreatedByUserId]
-    )
-    VALUES (
-        @Now, @Now,
-        @ReviewStatusId, @UserId, @Comments,
-        @BillId, @ExpenseId, @BillCreditId, @InvoiceId, @ContractLaborId,
-        @EmailMessageId,
-        COALESCE(@CreatedByUserId, 17)
-    );
-
-    SELECT * FROM dbo.[vw_Review] WHERE [Id] = SCOPE_IDENTITY();
-
-    COMMIT TRANSACTION;
-END;
-GO
-
+-- ---------------------------------------------------------------------------
+-- SUPERSEDED (U-357b, 2026-09-01) — view + sproc bodies removed, NOT the intent.
+-- Canonical definition now lives in exactly ONE place:
+--   entities/review/sql/dbo.review.sql
+-- Objects formerly redefined here (now canonical in the base file):
+--   dbo.vw_Review (projects [ContractLaborId]) · dbo.CreateReview (@ContractLaborId BIGINT = NULL)
+-- Re-running this file is now a no-op for these objects. Do NOT reintroduce a
+-- body here — a copy that drifts from the base file is the single-source hazard
+-- (U-037: a stale redefinition dropped live sproc params -> SQL 8144 outage).
+-- ---------------------------------------------------------------------------
 
 -- ---------------------------------------------------------------------------
 -- SUPERSEDED (U-126, 2026-07-23) — sproc bodies removed, NOT the intent.
@@ -116,4 +47,4 @@ GO
 -- ---------------------------------------------------------------------------
 
 
-PRINT 'Review view + CreateReview extended for contract_labor parent.';
+PRINT 'migrations/005 is superseded — no-op (see the banners above).';

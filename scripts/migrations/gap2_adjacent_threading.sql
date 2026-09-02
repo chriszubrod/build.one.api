@@ -269,42 +269,21 @@ END;
 GO
 
 -- ===== 7. CreateReview =====
-CREATE OR ALTER PROCEDURE CreateReview
-(
-    @ReviewStatusId BIGINT,
-    @UserId         BIGINT,
-    @Comments       NVARCHAR(MAX) = NULL,
-    @BillId         BIGINT = NULL,
-    @ExpenseId      BIGINT = NULL,
-    @BillCreditId   BIGINT = NULL,
-    @InvoiceId      BIGINT = NULL,
-    @CreatedByUserId BIGINT = NULL
-)
-AS
-BEGIN
-    SET NOCOUNT ON;
-    BEGIN TRANSACTION;
-
-    DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();
-
-    INSERT INTO dbo.[Review] (
-        [CreatedDatetime], [ModifiedDatetime],
-        [ReviewStatusId], [UserId], [Comments],
-        [BillId], [ExpenseId], [BillCreditId], [InvoiceId],
-        [CreatedByUserId]
-    )
-    VALUES (
-        @Now, @Now,
-        @ReviewStatusId, @UserId, @Comments,
-        @BillId, @ExpenseId, @BillCreditId, @InvoiceId,
-        COALESCE(@CreatedByUserId, 17)
-    );
-
-    SELECT * FROM dbo.[vw_Review] WHERE [Id] = SCOPE_IDENTITY();
-
-    COMMIT TRANSACTION;
-END;
-GO
+-- ---------------------------------------------------------------------------
+-- SUPERSEDED (U-357b, 2026-09-01) — body removed, NOT the @CreatedByUserId intent.
+--
+-- Canonical definition now lives in exactly ONE place:
+--   entities/review/sql/dbo.review.sql
+-- That base carries @CreatedByUserId (the original intent of this file) AND the
+-- @ContractLaborId + @EmailMessageId params this copy had drifted behind (both
+-- live in prod: migrations 003/005 + the EmailMessageId block in the base).
+--
+-- Drift: this body omitted @ContractLaborId and @EmailMessageId. The repo layer
+-- sends both, so re-running this file would revert prod CreateReview and break
+-- every review submit/advance/decline with SQL 8144 ("too many arguments") —
+-- the U-037 class. Re-running this file is now a no-op for CreateReview.
+-- Do NOT reintroduce a body here.
+-- ---------------------------------------------------------------------------
 
 -- ===== 8. CreateReviewStatus =====
 CREATE OR ALTER PROCEDURE CreateReviewStatus

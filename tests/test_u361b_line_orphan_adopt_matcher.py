@@ -92,6 +92,25 @@ def test_a_line_with_no_current_qbo_id_is_still_eligible():
     assert result is never_stamped
 
 
+def test_mixed_type_ids_normalize_before_membership_check():
+    """U-361c hardening: correctness must not depend on the caller keeping
+    `qbo_id` and `live_qbo_line_ids` the same type. A clone family could build
+    `live_qbo_line_ids` from int-typed staging ids while dbo `qbo_id` comes
+    back str (or vice versa) - see feedback_qbo_dbo_id_keyspaces. A line whose
+    str qbo_id canonically matches an int in the live set must still be
+    treated as LIVE (never stolen); a line with no live counterpart of any
+    type must still be eligible."""
+    still_live = _line(1, "1", ("Materials", "500"))  # str "1" == int 1, canonically
+    stale = _line(2, "3", ("Materials", "500"))  # "3" not live under any type
+    result = find_stale_identity_orphan(
+        existing_lines=[still_live, stale],
+        live_qbo_line_ids=frozenset({1, 2}),  # int-typed
+        fingerprint=_fingerprint,
+        target=("Materials", "500"),
+    )
+    assert result is stale
+
+
 def test_target_and_fingerprint_compare_as_tuples_not_by_identity():
     """A list vs. a tuple carrying the same values must still compare equal —
     callers may build either shape."""

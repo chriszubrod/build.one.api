@@ -29,6 +29,9 @@ from __future__ import annotations
 # Python Standard Library Imports
 from typing import Any, Callable, Iterable, Sequence
 
+# Local Imports
+from integrations.intuit.qbo.base.ids import normalize_qbo_id
+
 
 def find_stale_identity_orphan(
     *,
@@ -56,13 +59,25 @@ def find_stale_identity_orphan(
     whose current identity no longer corresponds to anything in this pull is
     "stale" and eligible for re-adoption.
 
+    Correctness here rests entirely on `qbo_id` and `live_qbo_line_ids`
+    sharing one canonical type — this codebase has a documented str-vs-int
+    QBO id-keyspace history (`feedback_qbo_dbo_id_keyspaces`), and a future
+    line family could easily build `live_qbo_line_ids` from int-typed staging
+    ids while dbo `qbo_id` comes back int too, or vice versa. Both sides are
+    normalized through `normalize_qbo_id` (canonical str; `None` stays `None`
+    and simply never matches a real id) BEFORE the membership check, so a
+    caller passing either type still gets the correct answer instead of a
+    silent over-adopt (every line looks stale) or under-adopt (nothing ever
+    matches) depending on which way the mismatch runs.
+
     Returns None when nothing matches — the caller then falls through to a
     fresh create.
     """
+    live_ids = frozenset(normalize_qbo_id(qbo_id) for qbo_id in live_qbo_line_ids)
     candidates = [
         line
         for line in sorted(existing_lines, key=lambda li: getattr(li, "id", 0) or 0)
-        if getattr(line, "qbo_id", None) not in live_qbo_line_ids
+        if normalize_qbo_id(getattr(line, "qbo_id", None)) not in live_ids
         and tuple(fingerprint(line)) == tuple(target)
     ]
     return candidates[0] if candidates else None

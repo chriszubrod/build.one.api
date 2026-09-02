@@ -2,9 +2,10 @@
 from typing import Any, Optional
 
 # Third-party Imports
-from fastapi import HTTPException, status
+from fastapi import status
 
 # Local Imports
+from shared.api.errors import ApiError, ErrorCode
 from shared.db_constraints import (
     FK_MISSING_MESSAGE,
     FK_REFERENCE_MESSAGE,
@@ -32,36 +33,62 @@ def accepted_response(id: str, id_field: str = "id") -> dict:
     return {"status": "accepted", id_field: id}
 
 
-def raise_workflow_error(err: str, default_message: str) -> None:
+# Lifecycle rejections reach this helper as flattened strings (ProcessEngine folds a
+# service exception into `"error": str(e)`), so Phase 0 derives the code from the
+# phrase the SERVER emits. Keyed on emitted phrases only — the update/delete guards
+# in entities/time_entry/business/service.py and time_log_service.py say
+# "Only 'draft' entries can be …"; submit says "Cannot transition from … to …".
+# Bridge (U-357d) — retire in LS-01 once typed lifecycle exceptions carry the code
+# from where the rule is decided (`shared/lifecycle/assert_transition`).
+_WORKFLOW_ERROR_CODES: tuple[tuple[str, str], ...] = (
+    ("transition", ErrorCode.TRANSITION_INVALID),
+    ("only 'draft' entries", ErrorCode.ENTRY_LOCKED),
+)
+
+
+def _derive_workflow_error_code(err_lower: str) -> str | None:
+    return next((code for phrase, code in _WORKFLOW_ERROR_CODES if phrase in err_lower), None)
+
+
+def raise_workflow_error(
+    err: str,
+    default_message: str,
+    *,
+    error_code: str | None = None,
+) -> None:
     """Map workflow engine error strings to appropriate HTTP exceptions.
 
     Reusable across all routers that call ProcessEngine.execute_synchronous().
+    An explicit `error_code` always wins; otherwise one is derived for the plain
+    400 branch only (never for the constraint-clean or 409 branches).
     """
     if not err:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=default_message,
-        )
-    # Clean constraint messages must not be re-routed by the 'already exists' -> 409
-    # rule, because 409 is the status the iOS client maps to its optimistic-concurrency
-    # conflict flow (which discards the queued local edit); 422 keeps it in the
-    # non-discarding requestFailed bucket.
-    status_code = status_for_clean_message(err)
-    if status_code is not None:
-        raise HTTPException(status_code=status_code, detail=err)
-    err_lower = err.lower()
-    if "already exists" in err_lower:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=err)
-    if "concurrency" in err_lower or "row-version" in err_lower:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=err)
-    raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=err)
+        status_code, detail = status.HTTP_400_BAD_REQUEST, default_message
+    else:
+        detail = err
+        err_lower = err.lower()
+        # Clean constraint messages must not be re-routed by the 'already exists' -> 409
+        # rule, because 409 is the status the iOS client maps to its optimistic-concurrency
+        # conflict flow (which discards the queued local edit); 422 keeps it in the
+        # non-discarding requestFailed bucket.
+        clean_status = status_for_clean_message(err)
+        if clean_status is not None:
+            status_code = clean_status
+        elif any(phrase in err_lower for phrase in ("already exists", "concurrency", "row-version")):
+            status_code = status.HTTP_409_CONFLICT
+        else:
+            status_code = status.HTTP_400_BAD_REQUEST
+            if error_code is None:
+                error_code = _derive_workflow_error_code(err_lower)
+    raise ApiError(status_code=status_code, detail=detail, error_code=error_code)
 
 
 def raise_not_found(entity_name: str) -> None:
     """Raise a standard 404 for a missing entity."""
-    raise HTTPException(
+    raise ApiError(
         status_code=status.HTTP_404_NOT_FOUND,
         detail=f"{entity_name} not found",
+        error_code=ErrorCode.NOT_FOUND,
     )
 
 
@@ -101,29 +128,34 @@ def raise_database_error(error: Exception) -> None:
         # ORIGINAL driver message, because the iOS duplicate-claim matcher keys off
         # 'duplicate'/'unique'/the constraint name. FK violations surface the clean
         # schema-free message.
-        raise HTTPException(
+        is_unique = error.violation.kind == UNIQUE
+        raise ApiError(
             status_code=error.violation.http_status,
-            detail=error.original if error.violation.kind == UNIQUE else error.violation.message,
+            detail=error.original if is_unique else error.violation.message,
+            error_code=ErrorCode.DUPLICATE_KEY if is_unique else ErrorCode.FK_VIOLATION,
         )
     message = str(error)
     lower = message.lower()
     if "duplicate key" in lower or "unique" in lower:
-        raise HTTPException(
+        raise ApiError(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=message,
+            error_code=ErrorCode.DUPLICATE_KEY,
         )
     if "547" in message:
         # Same wording the classified path returns — imported, not re-typed, so a
         # reworded message can't silently stop matching status_for_clean_message()
         # on the workflow path.
         if "reference constraint" in lower:
-            raise HTTPException(
+            raise ApiError(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail=FK_REFERENCE_MESSAGE,
+                error_code=ErrorCode.FK_VIOLATION,
             )
         if "foreign key constraint" in lower:
-            raise HTTPException(
+            raise ApiError(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail=FK_MISSING_MESSAGE,
+                error_code=ErrorCode.FK_VIOLATION,
             )
     raise error

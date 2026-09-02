@@ -137,26 +137,41 @@ logger = logging.getLogger(__name__)
 app = FastAPI()
 
 
-from shared.access import EntityNotAccessibleError
-from fastapi.responses import JSONResponse
+from shared.api.errors import install_error_handlers
 
-
-@app.exception_handler(EntityNotAccessibleError)
-async def _entity_not_accessible_handler(request: Request, exc: EntityNotAccessibleError):
-    """Map per-row access denial to 404 (not 403) so the URL doesn't confirm
-    the entity exists to a caller without UserProject access."""
-    return JSONResponse(status_code=404, content={"detail": "Not found"})
+# Every HTTP error body ({"detail", "error_code"}) — incl. the per-row access
+# masker (EntityNotAccessibleError -> 404) — is produced by shared/api/errors.py.
+install_error_handlers(app)
 
 
 class ProxyHeadersMiddleware(BaseHTTPMiddleware):
-    """Fix request URL scheme when behind a reverse proxy (Azure App Service)."""
+    """Per-request context from proxy/client headers, in ONE dispatch layer
+    (each BaseHTTPMiddleware layer costs ~140µs/request): fix the URL scheme
+    behind Azure App Service's reverse proxy, and record the client build the
+    iOS app sends (U-357d)."""
     async def dispatch(self, request: Request, call_next):
         # Check for X-Forwarded-Proto header (set by Azure App Service)
         forwarded_proto = request.headers.get("X-Forwarded-Proto")
         if forwarded_proto == "https":
             # Update the request URL to use HTTPS
             request.scope["scheme"] = "https"
-        
+
+        client_build = request.headers.get("X-Client-Build")
+        if client_build is not None:
+            # Structured (extra=) so it lands as App Insights customDimensions when
+            # DEBUG is enabled. The durable, query-side capture is the App Service
+            # setting OTEL_INSTRUMENTATION_HTTP_CAPTURE_HEADERS_SERVER_REQUEST=X-Client-Build
+            # (the ASGI instrumentation records it as a span attribute) — /em-applied.
+            logger.debug(
+                "client.build",
+                extra={
+                    "event_name": "client.build",
+                    "method": request.method,
+                    "path": request.scope["path"],
+                    "client_build": client_build,
+                },
+            )
+
         response = await call_next(request)
         return response
 

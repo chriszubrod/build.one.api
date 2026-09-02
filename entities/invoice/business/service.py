@@ -19,53 +19,6 @@ from shared.api.money import to_decimal_or_none
 logger = logging.getLogger(__name__)
 
 
-def _clear_legacy_invoice_invoice_mapping(invoice_id: int) -> None:
-    """U-356 deploy-gap bridge for InvoiceService.delete_by_public_id — see its
-    call site for the full rationale. Raw SQL, not a repo/model (both retired):
-    deletes any row in the (soon-to-be-dropped) qbo.InvoiceInvoice table that
-    still points at this Invoice.
-
-    UNLIKE Bill's bridge (qbo.BillBill never had a FK), qbo.InvoiceInvoice
-    carries a live `FK_InvoiceInvoice_Invoice` -> dbo.Invoice (NO_ACTION, added
-    by scripts/migrations/u225_qbo_mapping_fk_gaps.sql; verified in prod
-    sys.foreign_keys at U-356's Map — the older "InvoiceInvoice has no FK
-    today" note this replaced was stale). So until /em applies the DROP, a
-    leftover mapping row WOULD 547 the header delete below: this is a delete-
-    order requirement, the same shape as PurchaseExpense (U-354) /
-    VendorCreditBillCredit (U-353), not hygiene.
-
-    The `IF OBJECT_ID(...) IS NOT NULL` guard (mirrors
-    entities/expense/business/service.py::_clear_legacy_purchase_expense_mapping)
-    makes the table-already-dropped case — the normal state once /em applies
-    the DROP — a plain no-op evaluated by SQL Server itself, NOT a caught
-    Python exception: no substring-matching on driver error text, which this
-    codebase has already been burned by once (see
-    shared/database.py::map_database_error's own comment on why SQL 547's
-    error text can't be substring-matched safely, and shared/db_constraints.py's
-    `_has_error_number`). Once /em applies the DROP, this whole function
-    becomes a permanent no-op and should be deleted (it is the 4th hand-copy
-    of this bridge — past rule-of-three; extraction is booked, not done here)."""
-    from shared.database import get_connection
-
-    try:
-        with get_connection() as conn:
-            conn.cursor().execute(
-                "IF OBJECT_ID('qbo.InvoiceInvoice', 'U') IS NOT NULL "
-                "DELETE FROM [qbo].[InvoiceInvoice] WHERE [InvoiceId] = ?",
-                (invoice_id,),
-            )
-    except Exception as e:
-        # Only reachable now for a genuine unexpected failure (connection reset,
-        # deadlock, permissions) — table-missing no longer raises at all. Logged,
-        # not raised: best-effort only. The real safety net is the FK itself — if
-        # a mapping row really does still exist and this failed to clear it, the
-        # header delete below 547s anyway (fail-safe, not fail-silent-corruption).
-        logger.warning(
-            f"Could not clear legacy qbo.InvoiceInvoice mapping for Invoice "
-            f"{invoice_id}: {e}"
-        )
-
-
 def _col_letter_to_index(letters: str) -> int:
     """0-based column index: A=0, B=1, ..., Z=25, AA=26. Shared by the Excel
     DRAW REQUEST stamp (sync_to_excel_workbook) and un-tag (unstamp_draw_from_excel)."""
@@ -369,13 +322,8 @@ class InvoiceService:
             except Exception as e:
                 logger.warning(f"Error deleting invoice attachment {inv_attachment.id}: {e}")
 
-        # U-356: qbo.InvoiceInvoice is retired — dbo.Invoice.QboId/RealmId are plain
-        # columns that die with the row, so there is no separate mapping row left to
-        # clear-then-restore (the U-241 delete_own_qbo_mapping_before_header dance).
-        # The deploy-gap bridge below covers the window until /em applies the DROP:
-        # unlike Bill's, THIS one is a 547-avoidance requirement, not hygiene — see
-        # _clear_legacy_invoice_invoice_mapping's docstring.
-        _clear_legacy_invoice_invoice_mapping(invoice_id)
+        # U-356/U-365: no qbo.* mapping row to clear before the header delete —
+        # dbo.Invoice.QboId/RealmId die with the row.
         return self.repo.delete_by_id(existing.id)
 
     def complete_invoice(self, public_id: str) -> dict:

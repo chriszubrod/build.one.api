@@ -703,32 +703,3 @@ def test_refresh_invoice_hard_refuses_on_genuine_identity_conflict_with_severed_
     assert issue["entity_public_id"] == "inv-pid-conflict"
     assert issue["qbo_id"] == "INV-QBO"
     assert issue["realm_id"] == "realm-1"
-
-
-# ---------------------------------------------------------------------------
-# 5. deploy-gap bridge is what the Invoice delete now runs (see test_u226 for
-#    the bridge's own OBJECT_ID-guard + swallow tests, alongside its siblings)
-# ---------------------------------------------------------------------------
-
-
-def test_invoice_delete_runs_deploy_gap_bridge_then_header_delete():
-    from entities.invoice.business.service import InvoiceService
-
-    invoice = SimpleNamespace(id=11, public_id="inv-pub")
-    order = []
-    mock_repo = Mock()
-    mock_repo.delete_by_id.side_effect = lambda *_: order.append("header") or invoice
-    svc = InvoiceService(repo=mock_repo)
-    svc.invoice_line_item_service.read_by_invoice_id = Mock(return_value=[])
-    svc.invoice_attachment_service.read_by_invoice_id = Mock(return_value=[])
-
-    with patch.object(svc, "read_by_public_id", return_value=invoice), patch(
-        "entities.invoice.business.service._clear_legacy_invoice_invoice_mapping",
-        side_effect=lambda *_: order.append("bridge"),
-    ) as bridge:
-        result = svc.delete_by_public_id("inv-pub")
-
-    assert result is invoice
-    bridge.assert_called_once_with(11)
-    assert order == ["bridge", "header"]  # FK-required order until /em drops the table
-    mock_repo.delete_by_id.assert_called_once_with(11)

@@ -44,45 +44,6 @@ from shared.storage import AzureBlobStorage, AzureBlobStorageError
 logger = logging.getLogger(__name__)
 
 
-def _clear_legacy_bill_bill_mapping(bill_id: int) -> None:
-    """U-355 deploy-gap bridge for BillService.delete_by_public_id — see its
-    call site for the full rationale. Raw SQL, not a repo/model (both retired):
-    deletes any row in the (soon-to-be-dropped) qbo.BillBill table that still
-    points at this Bill. qbo.BillBill carries no FK (unlike PurchaseExpense/
-    VendorCreditBillCredit), so a stale row here can never 547 the header
-    delete below — this is pure hygiene, clearing a dangling mapping before
-    the table is dropped, not a delete-order requirement.
-
-    The `IF OBJECT_ID(...) IS NOT NULL` guard (mirrors
-    entities/bill_credit/business/service.py::_clear_legacy_vendorcredit_billcredit_mapping,
-    U-353, and entities/expense/business/service.py::_clear_legacy_purchase_expense_mapping,
-    U-354) makes the table-already-dropped case — the normal state once /em
-    applies the DROP — a plain no-op evaluated by SQL Server itself, NOT a
-    caught Python exception: no substring-matching on driver error text, which
-    this codebase has already been burned by once (see
-    shared/database.py::map_database_error's own comment on why SQL 547's
-    error text can't be substring-matched safely, and shared/db_constraints.py's
-    `_has_error_number`). Once /em applies the DROP, this whole function
-    becomes a permanent no-op and should be deleted."""
-    from shared.database import get_connection
-
-    try:
-        with get_connection() as conn:
-            conn.cursor().execute(
-                "IF OBJECT_ID('qbo.BillBill', 'U') IS NOT NULL "
-                "DELETE FROM [qbo].[BillBill] WHERE [BillId] = ?",
-                (bill_id,),
-            )
-    except Exception as e:
-        # Only reachable now for a genuine unexpected failure (connection reset,
-        # deadlock, permissions) — table-missing no longer raises at all. Logged,
-        # not raised: best-effort only, and (unlike PurchaseExpense/VendorCredit)
-        # there is no FK here for a leftover row to block anyway.
-        logger.warning(
-            f"Could not clear legacy qbo.BillBill mapping for Bill {bill_id}: {e}"
-        )
-
-
 def find_insertion_row_for_subcostcode(worksheet_values: List[List[Any]], target_subcostcode: str) -> Optional[int]:
     """
     Find the row number where a new line item should be inserted based on SubCostCode.
@@ -1391,23 +1352,8 @@ class BillService:
             logger.error(f"Failed to delete MsMessageBill links for bill {bill_id}: {e}")
             raise ValueError(f"Cannot delete bill: failed to delete MsMessageBill links for bill {bill_id}") from e
 
-        # U-355: dbo.Bill.QboId/RealmId (U-238a) is the sole QBO identity store
-        # going forward — the connector no longer creates qbo.BillBill rows. But
-        # builders never apply prod DDL (see repo CLAUDE.md); the DROP TABLE for
-        # this retired mapping table is handed to /em and lands AFTER this code
-        # deploys, not atomically with it. Until that DROP is applied, a
-        # historical Bill synced before this unit may still have a legacy
-        # mapping row pointing at it — qbo.BillBill carries no FK (unlike
-        # PurchaseExpense/VendorCreditBillCredit), so this is hygiene, not a
-        # 547-avoidance requirement. Best-effort bridge: no repo/model (those
-        # are retired), just enough to clear the stale row during the deploy
-        # gap; delete this call once /em confirms the DROP has landed.
-        # Deliberately does NOT restore the mapping row on a header-delete
-        # failure (unlike the old delete_own_qbo_mapping_before_header this
-        # replaced) — dbo.Bill.QboId is the sole identity store now, so a lost
-        # legacy mapping row no longer orphans identity resolution the way
-        # losing it once could.
-        _clear_legacy_bill_bill_mapping(bill_id)
+        # U-355/U-365: no qbo.* mapping row to clear before the header delete —
+        # dbo.Bill.QboId/RealmId die with the row.
         return self.repo.delete_by_id(existing.id)
 
 

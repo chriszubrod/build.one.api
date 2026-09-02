@@ -185,14 +185,14 @@ Carry-over items from sessions. Check off as done; prune anything stale.
 
 ## U-356 follow-ups (retire `qbo.InvoiceInvoice`, U-349 family 7) — deferred, not scope-creeped in (2026-09-01)
 
-- [ ] **Deploy-gap bridge shared-helper extraction — NOW PAST rule-of-three (4 hand-copies).**
-  `_clear_legacy_vendorcredit_billcredit_mapping` (U-353), `_clear_legacy_purchase_expense_mapping` (U-354),
-  `_clear_legacy_bill_bill_mapping` (U-355), `_clear_legacy_invoice_invoice_mapping` (U-356) are the same
-  ~30-line `IF OBJECT_ID(...) IS NOT NULL DELETE ... WHERE <fk> = ?` + swallow-and-log block parametrized
-  by (table, fk column, label). Either extract to `integrations/intuit/qbo/base/` (`clear_legacy_mapping_row(
-  table, fk_col, entity_label, entity_id)`) or — better, since every DROP is now applied for U-353..U-355 —
-  DELETE the already-no-op copies and the helper question disappears with the last DROP (U-356's, once
-  /em applies it). Own unit, after the U-356 DROP lands.
+- [ ] **`make_restore_failed_recorder` (`integrations/intuit/qbo/base/mapping_cleanup.py:26`) is dead — 0 callers since U-356 removed the last header wiring 2026-09-01.** All three surviving line-item call sites (BillLineItem/InvoiceLineItem/ExpenseLineItem) pass `on_restore_failed=None`. Surfaced by U-365's review (2026-09-02); out of U-365's scope (pure bridge deletion, not this module's factory). Delete it, or wire a line-item site to it if one wants a durable record of a lost-and-unrestorable line mapping.
+- [ ] **Stale post-DROP references outside the delete paths (surfaced by U-365's review, 2026-09-02), not fixed there (out of its scope — none are in a header `delete_by_public_id`):**
+  - `scripts/analyze_billcredit_attachment_backfill.py:52` still `JOIN qbo.VendorCreditBillCredit` — already self-annotated at :37-43 as needing a repoint before next use; now confirmed live-broken.
+  - `integrations/intuit/qbo/vendorcredit/connector/bill_credit/business/service.py:246-247` claims "PurchaseExpense, family 5, still has a real mapping to delete" — false since U-354; contradicted by `base/compensation.py`'s own "every header family's call site now passes a no-op `delete_mapping`".
+  - `integrations/intuit/qbo/base/compensation.py:29` says "qbo.BillBill never had a FK at all" — false; `scripts/migrations/u225_qbo_mapping_fk_gaps.sql` added `FK_BillBill_Bill` (NO_ACTION). Self-labelled "irrelevant now" in the same sentence, so low priority.
+  - `entities/expense/sql/backfill_is_credit.sql:11` and `integrations/intuit/qbo/purchase/sql/add_fk_constraints_to_mapping_tables.sql:16,34` — manual, run-by-hand-only SQL against the dropped `qbo.PurchaseExpense`; will error `Invalid object name` if ever re-run. Delete or annotate.
+
+- [x] ~~**Deploy-gap bridge shared-helper extraction — NOW PAST rule-of-three (4 hand-copies).**~~ **DONE via deletion (U-365, 2026-09-02):** all four tables were DROPPED live (batches 16-19), so the four no-op copies + their 9 bridge tests were deleted outright (8 in test_u226, 1 order-assertion test in test_u356); no helper to extract.
 - [ ] **Dormant Invoice push chain: delete or keep?** `InvoiceInvoiceConnector.sync_to_qbo_invoice` (+
   `_build_qbo_invoice_line`/`_resolve_linked_txn_for_line`/`_build_reimburse_charge_lookup`/
   `_get_qbo_customer_ref`), the outbox `_handle_sync_invoice` + `_refresh_invoice` handlers, the

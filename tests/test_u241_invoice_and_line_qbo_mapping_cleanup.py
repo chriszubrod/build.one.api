@@ -26,35 +26,26 @@ def test_invoice_delete_no_longer_clears_any_qbo_mapping():
     """U-356: qbo.InvoiceInvoice is retired — Invoice's delete no longer calls
     delete_own_qbo_mapping_before_header at all (dbo.Invoice.QboId/RealmId are
     plain columns that die with the row; there is no separate mapping row to
-    clear-then-restore). A straight header delete, preceded by the U-356
-    deploy-gap bridge (patched here; its own OBJECT_ID-guard + swallow tests
-    live in test_u226 alongside its Bill/BillCredit/Expense siblings). Unlike
-    Bill's, that bridge is FK-REQUIRED until /em drops the table —
-    FK_InvoiceInvoice_Invoice (NO_ACTION) is live in prod — so the order
-    bridge -> header is asserted, not just the calls."""
+    clear-then-restore). A straight header delete — the U-356 deploy-gap bridge
+    that briefly preceded it was deleted in U-365 once the table was dropped."""
     invoice = SimpleNamespace(id=11, public_id="inv-pub")
-    call_order = []
 
     mock_repo = Mock()
-    mock_repo.delete_by_id.side_effect = lambda *_: call_order.append("header") or invoice
+    mock_repo.delete_by_id.return_value = invoice
 
     svc = InvoiceService(repo=mock_repo)
     svc.invoice_line_item_service.read_by_invoice_id = Mock(return_value=[])
     svc.invoice_attachment_service.read_by_invoice_id = Mock(return_value=[])
 
     with patch.object(svc, "read_by_public_id", return_value=invoice), patch(
-        "entities.invoice.business.service._clear_legacy_invoice_invoice_mapping",
-        side_effect=lambda *_: call_order.append("bridge"),
-    ) as bridge, patch(
         "integrations.intuit.qbo.base.mapping_cleanup.delete_own_qbo_mapping_before_header"
-    ) as legacy_helper:
+    ) as legacy_helper, patch("shared.database.get_connection") as get_conn:
         result = svc.delete_by_public_id("inv-pub")
 
     assert result is invoice
-    assert call_order == ["bridge", "header"]
-    bridge.assert_called_once_with(11)
     legacy_helper.assert_not_called()
     mock_repo.delete_by_id.assert_called_once_with(11)
+    get_conn.assert_not_called()
 
 
 # --- BillLineItem ---

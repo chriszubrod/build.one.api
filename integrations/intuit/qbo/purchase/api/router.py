@@ -117,9 +117,7 @@ def cancel_expense_from_qbo_purchase_router(
         if pleli:
             pleli_repo.delete_by_id(pleli.id)
 
-    # Delete the expense (cascades to line items, attachments, etc.; also clears
-    # any deploy-gap-window legacy qbo.PurchaseExpense row via ExpenseService's
-    # own bridge — see entities/expense/business/service.py)
+    # Delete the expense (cascades to line items, attachments, etc.)
     ExpenseService().delete_by_public_id(public_id=expense_public_id)
 
     return {"status": "cancelled", "redirect": "/expense/list"}

@@ -1,25 +1,12 @@
-"""Clears an entity's own qbo.* mapping row when the entity itself is being deleted.
+"""Clears a row's own qbo.* mapping row before deleting the row it points at; if the
+delete then fails, the mapping is best-effort restored so a failed attempt never unmaps
+a still-live, QBO-synced row (U-226/U-241/U-243).
 
-Entity delete services (Bill, BillCredit, Expense) hand-cascade their own children but,
-absent this, never clear the qbo.* mapping row that points back at their own header row —
-leaving a permanent dangling mapping, or (where the mapping FK is NO_ACTION rather than
-CASCADE in prod — PurchaseExpense) a SQL 547 on the header delete itself. If the header
-delete fails after the mapping is cleared, the mapping is best-effort restored so a
-failed attempt never unmaps a still-live entity. See U-226. (BillCredit's own
-VendorCreditBillCredit mapping was retired U-353, Expense's own PurchaseExpense
-mapping was retired U-354, Bill's own BillBill mapping was retired U-355, and
-Invoice's own InvoiceInvoice mapping was retired U-356 — no HEADER delete calls this
-helper anymore; dbo.<Entity>.QboId/RealmId are plain columns that die with the row.
-Each instead uses its own deploy-gap bridge — see entities/bill_credit/business/
-service.py::_clear_legacy_vendorcredit_billcredit_mapping, entities/expense/business/
-service.py::_clear_legacy_purchase_expense_mapping, entities/bill/business/
-service.py::_clear_legacy_bill_bill_mapping, and entities/invoice/business/
-service.py::_clear_legacy_invoice_invoice_mapping — until /em applies each retired
-table's DROP. Four hand-copies now: past rule-of-three, extraction booked.)
-
-Also used for line-item mapping cleanup (BillLineItem, InvoiceLineItem, ExpenseLineItem,
-U-241) — the mechanism does not distinguish header vs line item; it clears one qbo.*
-mapping row before deleting the row it points at."""
+Live callers: the three line-item delete services (BillLineItem, InvoiceLineItem,
+ExpenseLineItem — U-241). Header deletes (Bill, BillCredit, Expense, Invoice) no longer
+need it — dbo.<Entity>.QboId/RealmId are plain columns that die with the row, once each
+header's own qbo.* mapping table was retired (U-353..U-356) and, finally, dropped
+(U-365 deleted the four deploy-gap bridges that bridged the retire-to-DROP window)."""
 import logging
 
 from integrations.intuit.qbo.base.locking import qbo_app_lock
@@ -35,7 +22,7 @@ def make_restore_failed_recorder(
     qbo_id_from_mapping,
     local_id,
 ):
-    """Factory for delete_own_qbo_mapping_before_header's on_restore_failed hook — records a durable qbo.ReconciliationIssue for the mapping-permanently-lost state. Never masks the original header-delete exception (the caller re-raises it unconditionally after invoking this)."""
+    """Factory for delete_own_qbo_mapping_before_header's on_restore_failed hook — records a durable qbo.ReconciliationIssue for the mapping-permanently-lost state. Never masks the original delete exception (the caller re-raises it unconditionally after invoking this). No live caller today (all three line-item call sites pass on_restore_failed=None); kept for a line-item site that later wants a durable record of a lost-and-unrestorable mapping."""
     def _on_mapping_restore_failed(mapping, restore_exc):
         try:
             from integrations.intuit.qbo.base.delete_reconcile import record_partial_delete_issue

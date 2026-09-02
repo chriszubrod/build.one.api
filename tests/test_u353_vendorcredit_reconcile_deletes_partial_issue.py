@@ -93,8 +93,7 @@ def test_billcredit_deleted_no_line_mappings_staging_failure_still_records_issue
 
 def test_delete_by_public_id_raising_still_records_issue():
     """code-review Angle A (round 2): a failure INSIDE delete_by_public_id itself
-    (e.g. the U-353 deploy-gap bridge inside it silently swallowing an unrelated
-    DB error, then the header delete 547s) must still be recorded — the
+    (e.g. the header delete 547s on a still-referenced row) must still be recorded — the
     destructive flag is set BEFORE the attempt, not only after success."""
     bill_credit = SimpleNamespace(id=99, public_id="bc-pub-99")
 

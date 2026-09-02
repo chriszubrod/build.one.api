@@ -2323,3 +2323,18 @@ Design: `docs/design/u357-unified-status-review-status.md` (§9 = 24 open decisi
 - [ ] **Docs that still describe the mapping-era line topology** (historical, left as-is):
   `docs/staging_removal_phase6_readiness.md` §"vendorcredit" (row 445 = the mapping), `docs/qbo-pull-sync-
   audit-2026-06-18.md` (the 2026-06 upsert-in-place design), `docs/staging_removal_phase4_5_scoping.md` §7.
+
+## Found during iOS Simulator QA sweep (2026-09-02) — not fixed, scope was test-data cleanup only
+
+- [ ] **`DeleteTimeEntryById` has no child cascade — `DELETE /time-entries/{public_id}` would 500 on any real
+  entry.** The sproc (`entities/time_entry/sql/dbo.time_entry.sql`) is a bare `DELETE FROM dbo.TimeEntry WHERE
+  Id=@Id`, but every entry gets a `dbo.TimeEntryStatus` row at creation (append-only, no delete method exists
+  anywhere in `TimeEntryStatusRepository`) and any clocked segment adds a `dbo.TimeLog` row — both FK-reference
+  `TimeEntry` with no `ON DELETE CASCADE` (standard for this repo — app code must cascade). So the "official"
+  delete path (`TimeEntryService.delete_by_public_id` → `repo.delete_by_id` → the sproc) would hit an FK
+  violation on any entry that ever received its initial 'draft' status stamp, i.e. every real entry — verified
+  live 2026-09-02 while cleaning up a QA test entry (had to delete the `TimeLog` child via `TimeLogService`
+  first, then leave the now-empty parent `TimeEntry` row in place, since there's no sanctioned way to remove
+  its `TimeEntryStatus` history row at all). Fix needs a design decision: either the sproc deletes children
+  in-transaction (breaks the append-only-history intent) or the delete endpoint is retired/replaced with an
+  explicit archive-style flow. Out of scope for the QA session that found it.

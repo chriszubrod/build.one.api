@@ -1,25 +1,20 @@
 # Python Standard Library Imports
 import logging
 from typing import Optional
-from decimal import Decimal
 
 # Third-party Imports
 
 # Local Imports
 from integrations.intuit.qbo.vendorcredit.business.model import QboVendorCreditLine
-from integrations.intuit.qbo.vendorcredit.connector.bill_credit_line_item.persistence.repo import VendorCreditLineItemBillCreditLineItemMappingRepository
 from entities.bill_credit_line_item.business.service import BillCreditLineItemService
 from entities.bill_credit_line_item.business.model import BillCreditLineItem
 from entities.project.business.service import ProjectService
 from entities.sub_cost_code.business.service import SubCostCodeService
+from integrations.intuit.qbo.base.compensation import rollback_orphan_header
 from integrations.intuit.qbo.base.identity_drift import stamp_line_identity_or_warn
-from integrations.intuit.qbo.base.line_identity_stamp import create_mapping_then_stamp
-from integrations.intuit.qbo.base.identity_fastpath import (
-    raise_concurrent_write_race,
-    run_line_identity_fastpath,
-)
+from integrations.intuit.qbo.base.identity_fastpath import run_line_identity_fastpath_dbo_only
 from integrations.intuit.qbo.base.ids import coerce_id
-from integrations.intuit.qbo.base.reconciliation_recorder import record_identity_mapping_conflict
+from integrations.intuit.qbo.base.reconciliation_recorder import record_mapping_issue
 from integrations.intuit.qbo.base.cost_code_resolver import resolve_dbo_sub_cost_code
 from integrations.intuit.qbo.reconciliation.persistence.repo import ReconciliationIssueRepository
 
@@ -33,7 +28,6 @@ class VendorCreditLineItemConnector:
         self.bill_credit_line_item_service = BillCreditLineItemService()
         self.project_service = ProjectService()
         self.sub_cost_code_service = SubCostCodeService()
-        self.mapping_repo = VendorCreditLineItemBillCreditLineItemMappingRepository()
         self.reconciliation_repo = reconciliation_repo or ReconciliationIssueRepository()
         # Run-scoped memo (U-229) — same shape as the sibling PurchaseLineExpenseLineItemConnector's
         # _sub_cost_code_cache (purchase/connector/expense_line_item/business/service.py), which
@@ -63,16 +57,50 @@ class VendorCreditLineItemConnector:
         """
         Upsert a QBO VendorCredit line into a BillCreditLineItem.
 
-        Matches an existing BillCreditLineItem via the (now-stable)
-        VendorCreditLineItemBillCreditLineItem mapping keyed on qbo_line.id; if the
-        mapping is missing (e.g. QBO regenerated the line id on an edit) it falls
-        back to a content fingerprint to adopt the orphaned local line instead of
-        duplicating it. Updates in place when matched, creates otherwise.
-        Prefers ItemBasedExpenseLineDetail when available.
+        U-361: dbo.BillCreditLineItem.QboId/RealmId (U-238b), scoped to this
+        line's own parent BillCredit, is the SOLE identity store — the
+        qbo.VendorCreditLineItemBillCreditLineItem mapping table is retired
+        (U-349 program family 8/11, the first line-item family). Resolution runs
+        through the shared `run_line_identity_fastpath_dbo_only` primitive
+        (base/identity_fastpath.py — see its docstring for the create lock, the
+        create-only MISS, and the stamp-rollback guarantee this connector relies
+        on rather than re-implements):
 
-        Raises on any projection failure; the parent fails the whole credit so the
-        watermark holds and it retries.
+          * HIT — a dbo row already carries `(bill_credit_id, qbo_line_id)`:
+            write the QBO-derived fields onto it in place. No identity re-stamp
+            (the row was found BY that identity; re-stamping every touch was the
+            mapping era's dual-write), except a one-off realm self-heal for a
+            legacy row stamped with a QboId but no RealmId — the pruned
+            `backfill_qbo_identity_lines.py --mode realm-only` was the only other
+            tool that could repair such a row for this family.
+          * MISS — create the line, then stamp identity with the bare
+            `set_qbo_identity`. The U-341 `create_mapping_then_stamp` /
+            `stamp_line_identity_or_warn` wrappers this path used to run guarded
+            the MAPPING write, which no longer exists; a best-effort stamp is no
+            longer acceptable either, because an unstamped line has no mapping
+            row left to make it findable on the next pull (it would be
+            re-created as a duplicate every pull) — so a stamp that raises or
+            does not land is rolled back by the helper and re-raised.
+          * No content-fingerprint adopt (design §4, create-only). The pre-U-361
+            adopt re-bound "unmapped" local lines, a state a dbo-only row cannot
+            be in once stamped, so it has no dbo-only translation: a QBO line-id
+            regeneration now creates a sibling row instead of adopting the
+            stamped orphan.
+
+        Raises on any projection failure; the parent fails the whole credit so
+        the watermark holds and it retries.
         """
+        if not qbo_line.qbo_line_id:
+            # Without a QBO Line.Id there is no dbo-native identity to resolve or
+            # stamp, and no mapping row keyed on the staging PK to make an
+            # unstamped line findable next pull — creating one would duplicate it
+            # on every re-pull. QBO always assigns Line.Id on a persisted
+            # transaction, so this is a fail-closed guard, not a path.
+            raise ValueError(
+                f"QboVendorCreditLine {qbo_line.id} on BillCredit {bill_credit_id} has no "
+                f"QBO Line.Id - cannot resolve or stamp dbo-native line identity; skipping."
+            )
+
         # Resolve project from CustomerRef (if billable)
         project_public_id = None
         if qbo_line.customer_ref_value:
@@ -97,13 +125,21 @@ class VendorCreditLineItemConnector:
         # Calculate billable amount (same as amount if billable)
         billable_amount = qbo_line.amount if is_billable else None
 
-        def _apply_line_fields(direct: BillCreditLineItem, *, path_label: str) -> Optional[BillCreditLineItem]:
+        def _apply_line_fields(direct: BillCreditLineItem) -> Optional[BillCreditLineItem]:
             """
-            Write the QBO-derived fields onto an existing, matched
-            BillCreditLineItem. Shared by the fast path and the legacy
-            "existing" branch (U-293b, mirroring BillLineItemConnector's
-            _apply_line_fields) — one update-logic site, not two hand-copies
-            that could drift.
+            `apply_fields` for the HIT branch: write the QBO-derived fields onto
+            the dbo-identity-matched BillCreditLineItem. Returns None on a
+            concurrent-DELETE `update_by_public_id` miss (code-review finding,
+            2026-09-01: `update_by_id` RAISES `DatabaseConcurrencyError` on an
+            actual ROWVERSION mismatch — it never returns None for that case;
+            None here means `update_by_public_id`'s own pre-check found the row
+            already gone). Either way the helper's own `_apply()` raises
+            `raise_concurrent_write_race` unconditionally on a None return, so
+            that ONE raise stays the single place the guarantee lives (mirrors
+            the header connector's `_apply_bill_credit_fields_and_sync`); a true
+            ROWVERSION conflict instead propagates `DatabaseConcurrencyError`
+            straight out of this closure, still caught by `_sync_line_items`'s
+            generic handler and still failing/retrying the credit the same way.
             """
             updated = self.bill_credit_line_item_service.update_by_public_id(
                 direct.public_id,
@@ -120,253 +156,138 @@ class VendorCreditLineItemConnector:
                 is_draft=False,
             )
             if updated is None:
-                # ROWVERSION race: a concurrent writer touched this exact
-                # BillCreditLineItem between the read and this UPDATE.
                 logger.error(
                     f"Failed to update BillCreditLineItem {direct.id} from "
-                    f"QboVendorCreditLine {qbo_line.id} - update_by_public_id "
-                    f"returned None (concurrent write race, {path_label})"
+                    f"QboVendorCreditLine {qbo_line.id} - update_by_public_id returned None "
+                    f"(concurrent delete: the row was gone by the time the update ran)"
                 )
-                raise_concurrent_write_race(
-                    entity_label="BillCreditLineItem", entity_id=direct.id, path_label=path_label
-                )
-            # U-238b: dbo line identity dual-write (create+update pairing for U-238c).
-            stamp_line_identity_or_warn(
-                self.bill_credit_line_item_service.repo,
-                id=int(updated.id),
-                qbo_id=qbo_line.qbo_line_id,
-                # U-293-dw fold-in: fall back to the row's own already-stamped
-                # realm_id when this call's realm_id is empty (see
-                # BillLineItemConnector's identical fallback for the full
-                # rationale).
-                realm_id=realm_id or getattr(direct, "realm_id", None),
-                context=f"Updated BillCreditLineItem {updated.id} ({path_label})",
-                enforce_realm_pairing=True,
-            )
-            return updated
-
-        # Memoized: qbo_line.id is fixed for this whole call, and both the fast
-        # path (via resolve_mapping_state, on a MISSING/CONFLICT classification)
-        # and the legacy path just below it (unconditionally, on a fast-path
-        # miss) ask this exact same question — mirrors BillLineItemConnector's
-        # identical memoization.
-        _qbo_line_mapping_cache = {}
-
-        def _read_by_qbo_line_id_cached(qbo_vendor_credit_line_id):
-            if qbo_vendor_credit_line_id not in _qbo_line_mapping_cache:
-                _qbo_line_mapping_cache[qbo_vendor_credit_line_id] = (
-                    self.mapping_repo.read_by_qbo_line_id(qbo_vendor_credit_line_id)
-                )
-            return _qbo_line_mapping_cache[qbo_vendor_credit_line_id]
-
-        # U-293b: resolve identity directly against dbo.BillCreditLineItem's
-        # native QboId, scoped to this line's own parent BillCredit (U-238b),
-        # before falling back to the
-        # qbo.VendorCreditLineItemBillCreditLineItem mapping-table hop below.
-        # Mirrors BillLineItemConnector's U-293 pilot exactly. conflict->RAISE
-        # is structural, never a fall-through to the legacy path.
-        if qbo_line.id:
-            outcome = run_line_identity_fastpath(
-                parent_local_id=bill_credit_id,
-                qbo_line_id=qbo_line.qbo_line_id,
-                external_id=qbo_line.id,
-                entity_label="BillCreditLineItem",
-                external_label="QboVendorCreditLine",
-                read_direct_by_parent_and_qbo_line_id=self.bill_credit_line_item_service.read_by_qbo_identity,
-                read_by_local_id=self.mapping_repo.read_by_bill_credit_line_item_id,
-                read_by_external_id=_read_by_qbo_line_id_cached,
-                external_id_attr="qbo_vendor_credit_line_id",
-                record_conflict_issue=lambda entity, by_local, by_external: (
-                    self._record_line_identity_mapping_conflict_issue(
-                        qbo_line=qbo_line,
-                        dbo_line_id=coerce_id(entity.id),
-                        local_side_mapping=by_local,
-                        qbo_side_mapping=by_external,
-                        realm_id=realm_id,
-                    )
-                ),
-                conflict_message=lambda entity: (
-                    f"VendorCreditLineItemBillCreditLineItem identity conflict for "
-                    f"QboVendorCreditLine {qbo_line.qbo_line_id} (id={qbo_line.id}) on "
-                    f"BillCredit {bill_credit_id}: dbo.BillCreditLineItem {entity.id} "
-                    f"already carries this identity but the mapping table disagrees. "
-                    f"Not auto-repointed; see the recorded reconciliation issue. "
-                    f"Skipping until a human resolves it."
-                ),
-                apply_fields=lambda direct: _apply_line_fields(direct, path_label="line fast path"),
-            )
-            if outcome.hit:
-                return outcome.entity
-
-        # --- Find an existing BillCreditLineItem to update in place ---
-        existing = None
-        mapping = _read_by_qbo_line_id_cached(qbo_line.id) if qbo_line.id else None
-        if mapping and mapping.bill_credit_line_item_id:
-            existing = self.bill_credit_line_item_service.read_by_id(mapping.bill_credit_line_item_id)
-            if not existing:
-                # Dangling mapping (line deleted out from under it) — drop it.
-                try:
-                    self.mapping_repo.delete_by_id(mapping.id)
-                except Exception as e:
-                    logger.warning(f"Could not delete dangling line mapping {mapping.id}: {e}")
-                mapping = None
-
-        if existing is None and bill_credit_id and qbo_line.id:
-            # Fingerprint fallback: adopt an unmapped local line with matching
-            # content (QBO regenerated the line id) rather than duplicating.
-            orphan = self._match_unmapped_by_fingerprint(bill_credit_id, qbo_line)
-            if orphan is not None:
-                try:
-                    self.mapping_repo.create(
-                        qbo_vendor_credit_line_id=qbo_line.id,
-                        bill_credit_line_item_id=orphan.id,
-                    )
-                    existing = orphan
-                    logger.info(
-                        f"Adopted orphaned BillCreditLineItem {orphan.id} for "
-                        f"QboVendorCreditLine {qbo_line.id} via content fingerprint"
-                    )
-                except Exception as e:
-                    logger.warning(f"Could not adopt orphaned BillCreditLineItem {orphan.id}: {e}")
-
-        if existing is not None:
-            # U-293b: reuse the SAME _apply_line_fields closure the fast path
-            # uses (update + identity re-stamp).
-            return _apply_line_fields(existing, path_label="legacy mapping-table path")
-
-        # --- No match: create a new line item + mapping ---
-        line_item = self.bill_credit_line_item_service.create(
-            bill_credit_public_id=bill_credit_public_id,
-            sub_cost_code_id=sub_cost_code_id,
-            project_public_id=project_public_id,
-            description=qbo_line.description,
-            quantity=qbo_line.qty,
-            unit_price=qbo_line.unit_price,
-            amount=qbo_line.amount,
-            is_billable=is_billable,
-            is_billed=is_billed,
-            billable_amount=billable_amount,
-            is_draft=False,
-        )
-
-        # Create VendorCreditLine <-> BillCreditLineItem mapping so that
-        # LinkedTxn references can be resolved when syncing invoices to QBO.
-        # qbo_line.id is the stable local PK of the QboVendorCreditLine record
-        # (the snapshot layer now upserts lines in place).
-        if line_item and qbo_line.id:
-            def _create_mapping():
-                self.mapping_repo.create(
-                    qbo_vendor_credit_line_id=qbo_line.id,
-                    bill_credit_line_item_id=line_item.id,
-                )
-
-            def _on_mapping_failure(exc):
-                # Deliberately swallow mapping failure to warning (bill-style): the line
-                # IS persisted so the header total still balances (the invariant the
-                # parent's RuntimeError protects), and _match_unmapped_by_fingerprint
-                # re-adopts the unmapped line on the next pull. We do NOT follow the
-                # purchase sibling's rollback-and-raise because that would delete a good
-                # line over a mapping blip.
-                logger.warning(
-                    f"Created BillCreditLineItem {line_item.id} but could not create "
-                    f"VendorCreditLineItemBillCreditLineItem mapping: {exc}"
-                )
-
-            def _stamp_identity():
-                # U-238b: dbo line identity dual-write (create+update pairing for U-238c).
+                return None
+            if realm_id and not getattr(direct, "realm_id", None):
+                # Legacy realm gap (U-293-dw): the row was found by its QboId but
+                # never got the RealmId half of the atomic pair. Heal it once,
+                # best-effort — a failure here must not fail the line (the row
+                # is still correctly identified by (BillCreditId, QboId)).
                 stamp_line_identity_or_warn(
                     self.bill_credit_line_item_service.repo,
-                    id=int(line_item.id),
+                    id=coerce_id(updated.id),
                     qbo_id=qbo_line.qbo_line_id,
                     realm_id=realm_id,
-                    context=(
-                        f"Created BillCreditLineItem {line_item.id} mapping for "
-                        f"QboVendorCreditLine {qbo_line.id}"
-                    ),
+                    context=f"Updated BillCreditLineItem {updated.id} (realm self-heal)",
                     enforce_realm_pairing=True,
                 )
+            return updated
 
-            # U-341: create_mapping_then_stamp makes _stamp_identity unreachable on
-            # a failed create by construction — same invariant U-339 fixed by hand
-            # in the bill sibling, generalized so this connector can't regress it.
-            create_mapping_then_stamp(
-                create_mapping=_create_mapping,
-                stamp_identity=_stamp_identity,
-                on_mapping_failure=_on_mapping_failure,
-                catch=(Exception,),
+        def _create_line() -> Optional[BillCreditLineItem]:
+            """
+            `resolve_candidate` for the MISS branch: create the line fresh (no
+            adopt — see the method docstring). Fails closed BEFORE creating when
+            the realm needed for the stamp is missing: SetBillCreditLineItemQbo
+            Identity's own atomic-pair guard declines to write a QboId without a
+            RealmId, so the line would come out unstamped — which post-U-361
+            means unfindable, i.e. re-created as a duplicate on every pull. The
+            helper would catch the un-landed stamp and roll the row back anyway;
+            refusing up front just saves the create+delete round trip.
+            """
+            if not realm_id:
+                raise RuntimeError(
+                    f"Refusing to create BillCreditLineItem for QboVendorCreditLine "
+                    f"{qbo_line.qbo_line_id} on BillCredit {bill_credit_id}: realm_id is "
+                    f"missing, so its dbo-native identity stamp could not land and the line "
+                    f"would be an unfindable orphan. Holding for retry."
+                )
+            return self.bill_credit_line_item_service.create(
+                bill_credit_public_id=bill_credit_public_id,
+                sub_cost_code_id=sub_cost_code_id,
+                project_public_id=project_public_id,
+                description=qbo_line.description,
+                quantity=qbo_line.qty,
+                unit_price=qbo_line.unit_price,
+                amount=qbo_line.amount,
+                is_billable=is_billable,
+                is_billed=is_billed,
+                billable_amount=billable_amount,
+                is_draft=False,
             )
 
-        return line_item
+        def _stamp_line_identity(candidate: BillCreditLineItem) -> Optional[BillCreditLineItem]:
+            """
+            `stamp_identity` for the MISS branch: the bare dbo-native stamp, then
+            a re-read — `set_qbo_identity` is a void DB write that never mutates
+            `candidate` in memory, and the helper verifies the returned row
+            actually carries the identity (its "stamp did not land" guard).
+            """
+            self.bill_credit_line_item_service.repo.set_qbo_identity(
+                id=coerce_id(candidate.id), qbo_id=qbo_line.qbo_line_id, realm_id=realm_id,
+            )
+            return self.bill_credit_line_item_service.read_by_id(coerce_id(candidate.id))
 
-    def _record_line_identity_mapping_conflict_issue(
+        def _rollback_line(candidate: BillCreditLineItem) -> None:
+            """
+            `rollback_candidate` for the MISS branch (U-354/U-355's identity-
+            stamp rollback, at line level): best-effort delete of the just-
+            created, unstamped line. `rollback_orphan_header` is the shared
+            compensating-delete mechanism (it is not header-specific beyond its
+            name — same isolate-each-delete, never-raise, record-on-final-
+            failure shape); `delete_mapping` is a no-op because there is no
+            mapping row. A failed delete leaves an unstamped orphan that inflates
+            this credit's local lines on every future pull, so it is recorded to
+            reconciliation monitoring exactly as the header connector records
+            its own orphan header.
+            """
+            rollback_orphan_header(
+                delete_header=lambda: self.bill_credit_line_item_service.delete_by_public_id(
+                    candidate.public_id
+                ),
+                delete_mapping=lambda: None,
+                entity_label="BillCreditLineItem",
+                entity_id=candidate.id,
+                on_header_delete_failed=lambda exc: self._record_orphan_line_issue(
+                    line_item=candidate, qbo_line=qbo_line, bill_credit_id=bill_credit_id,
+                    realm_id=realm_id, exc=exc,
+                ),
+            )
+
+        outcome = run_line_identity_fastpath_dbo_only(
+            parent_local_id=bill_credit_id,
+            qbo_line_id=qbo_line.qbo_line_id,
+            entity_label="BillCreditLineItem",
+            external_label="QboVendorCreditLine",
+            lock_resource_label="BillCreditLineItem",
+            read_direct_by_parent_and_qbo_line_id=self.bill_credit_line_item_service.read_by_qbo_identity,
+            resolve_candidate=_create_line,
+            stamp_identity=_stamp_line_identity,
+            rollback_candidate=_rollback_line,
+            apply_fields=_apply_line_fields,
+        )
+        # qbo_line_id is guaranteed truthy above, so the helper's only hit=False
+        # outcome is unreachable here and hit=True never carries entity=None.
+        return outcome.entity
+
+    def _record_orphan_line_issue(
         self,
         *,
+        line_item: BillCreditLineItem,
         qbo_line: QboVendorCreditLine,
-        dbo_line_id: int,
-        local_side_mapping,
-        qbo_side_mapping,
-        realm_id: Optional[str] = None,
+        bill_credit_id: int,
+        realm_id: Optional[str],
+        exc: Exception,
     ) -> None:
-        record_identity_mapping_conflict(
+        record_mapping_issue(
             self.reconciliation_repo,
-            drift_type="bc_line_item_identity_conflict",
+            drift_type="orphan_bcli_line_item",
             entity_type="BillCreditLineItem",
-            mapping_label="VendorCreditLineItemBillCreditLineItem",
-            qbo_label="QboVendorCreditLine",
-            dbo_id=dbo_line_id,
-            qbo_row_id=qbo_line.id,
-            raw_qbo_line_id=qbo_line.qbo_line_id,
-            realm_id=realm_id,
-            local_side_mapping=local_side_mapping,
-            qbo_side_mapping=qbo_side_mapping,
-            qbo_side_local_fk_attr="bill_credit_line_item_id",
-            local_side_qbo_fk_attr="qbo_vendor_credit_line_id",
-            line_level=True,
+            entity_public_id=str(line_item.public_id) if getattr(line_item, "public_id", None) else None,
+            qbo_id=str(qbo_line.qbo_line_id) if qbo_line.qbo_line_id else None,
+            realm_id=realm_id or "",
+            details=(
+                f"Compensating rollback failed to delete unstamped BillCreditLineItem "
+                f"{line_item.id} ({getattr(line_item, 'public_id', None)}) on BillCredit "
+                f"{bill_credit_id} after its identity stamp for QboVendorCreditLine "
+                f"{qbo_line.qbo_line_id} failed: {exc}. The orphan is invisible to the "
+                f"dbo-native fast path, so every re-pull will mint a duplicate line until "
+                f"it is deleted or stamped by hand."
+            ),
         )
-
-    @staticmethod
-    def _fingerprint(value) -> str:
-        """Canonicalize a value for content-fingerprint comparison (10 == 10.00)."""
-        if value is None:
-            return ""
-        if isinstance(value, Decimal):
-            return format(value.normalize(), "f")
-        try:
-            return format(Decimal(str(value)).normalize(), "f")
-        except Exception:
-            return str(value).strip()
-
-    def _match_unmapped_by_fingerprint(self, bill_credit_id: int, qbo_line: QboVendorCreditLine):
-        """
-        Find an unmapped BillCreditLineItem whose (description, amount, qty, unit_price)
-        matches the QBO line, POSITION-AWARE. When several unmapped lines share a
-        fingerprint (a 50-50 split, repeated draws), return the FIRST in stable position
-        order (by id ≈ creation ≈ LineNum). The caller consumes it (creates a mapping)
-        before the next QBO line, so processing lines in order pairs identical-content
-        lines 1:1 by position — robust to QBO line-id regeneration even with duplicate
-        content, instead of bailing and duplicating. Returns None only when nothing matches.
-        """
-        existing = self.bill_credit_line_item_service.read_by_bill_credit_id(bill_credit_id)
-        target = (
-            self._fingerprint(qbo_line.description), self._fingerprint(qbo_line.amount),
-            self._fingerprint(qbo_line.qty), self._fingerprint(qbo_line.unit_price),
-        )
-        matches = [
-            li for li in sorted(existing, key=lambda c: getattr(c, "id", 0) or 0)
-            if not self.mapping_repo.read_by_bill_credit_line_item_id(li.id)
-            and (
-                self._fingerprint(li.description), self._fingerprint(li.amount),
-                self._fingerprint(li.quantity), self._fingerprint(li.unit_price),
-            ) == target
-        ]
-        if matches:
-            if len(matches) > 1:
-                logger.info(
-                    f"{len(matches)} unmapped BillCreditLineItems share the fingerprint for "
-                    f"QboVendorCreditLine {qbo_line.id}; adopting the first by position"
-                )
-            return matches[0]
-        return None
 
     # One of FOUR near-identical QBO customer-ref -> Project resolvers (invoice /
     # purchase / vendorcredit / bill). All four are realm-scoped as of U-060; they

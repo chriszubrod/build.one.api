@@ -269,19 +269,19 @@ def _build_vc_connector(**overrides):
     return connector
 
 
-def test_vendorcredit_sync_from_qbo_line_propagates_exception():
-    """Line connector must raise on projection failure, not return None."""
+def test_vendorcredit_sync_from_qbo_line_propagates_exception(grant_qbo_app_lock):
+    """Line connector must raise on projection failure, not return None.
+    U-361: a create failure happens inside run_line_identity_fastpath_dbo_only's
+    MISS branch (under its create lock, granted here) and propagates unchanged."""
     connector = VendorCreditLineItemConnector()
-    connector.mapping_repo.read_by_qbo_line_id = Mock(return_value=None)
     connector.bill_credit_line_item_service = Mock()
-    connector.bill_credit_line_item_service.read_by_bill_credit_id.return_value = []
+    connector.bill_credit_line_item_service.read_by_qbo_identity.return_value = None  # dbo-only MISS
     connector.bill_credit_line_item_service.create.side_effect = RuntimeError("projection failed")
 
     qbo_line = _make_qbo_vc_line()
-    qbo_line.id = None  # skip fingerprint branch; exercise create path only
 
     with pytest.raises(RuntimeError, match="projection failed"):
-        connector.sync_from_qbo_line(1, "bc-pub-1", qbo_line)
+        connector.sync_from_qbo_line(1, "bc-pub-1", qbo_line, realm_id="realm-1")
 
 
 def test_new_vendorcredit_line_sync_failure_compensating_rollback(grant_qbo_app_lock):

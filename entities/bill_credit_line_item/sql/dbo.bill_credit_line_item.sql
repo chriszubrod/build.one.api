@@ -205,7 +205,9 @@ BEGIN
         [IsBillable],
         [IsBilled],
         [BillableAmount],
-        [IsDraft]
+        [IsDraft],
+        [QboId],
+        [RealmId]
     FROM dbo.[BillCreditLineItem]
     WHERE [Id] = @Id;
 
@@ -336,7 +338,9 @@ BEGIN
         INSERTED.[IsBillable],
         INSERTED.[IsBilled],
         INSERTED.[BillableAmount],
-        INSERTED.[IsDraft]
+        INSERTED.[IsDraft],
+        INSERTED.[QboId],
+        INSERTED.[RealmId]
     WHERE [Id] = @Id AND [RowVersion] = @RowVersion;
 
     COMMIT TRANSACTION;

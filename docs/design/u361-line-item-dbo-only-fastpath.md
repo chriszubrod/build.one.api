@@ -1,6 +1,20 @@
 # U-361 — `run_line_identity_fastpath_dbo_only` + retire `qbo.VendorCreditLineItemBillCreditLineItem` (DESIGN — APPROVED)
 
 **Status:** `/em` Gate-2 APPROVED 2026-09-01 (decisions §8 resolved below). Build dispatches as U-361.
+**Build (2026-09-01, U-361 build session):** implemented as designed, with these build-time findings —
+(a) §3 create lock KEPT (Option A): it is reachable, shown by test (`tests/test_u361_bill_credit_line_item_
+mapping_retire.py::test_header_hit_path_syncs_lines_with_no_lock_held`) — the header's HIT path syncs lines
+with no lock held, and reconciliation's missing-locally autofix holds no pull-level lock; on the header
+CREATE path the line lock nests one-directionally inside `qbo_dbo_identity_create:*`. (b) §4 "confirm no adopt
+step": the pre-U-361 path DID have a content-fingerprint adopt over *unmapped* lines; it has no dbo-only
+translation (a stamped orphan never looks unmapped), so create-only means a QBO line-id regeneration creates
+a sibling row instead of re-adopting the stamped orphan — accepted per §8.3. (c) §2 signature gained ONE
+param, `rollback_candidate`, to make the U-354/U-355 stamp rollback a helper guarantee (stamp raises OR the
+re-read does not carry `qbo_id` → rollback + re-raise; stamp returns None → race, no rollback). (d) §5 "0
+reconciliation consumers" was wrong: `vendorcredit/business/service.py` had two executed consumers (deleted-
+credit reconcile Step 1, stale-line cleanup), both repointed; "likely no identity_drift row" was wrong: the
+`LINE_ENTITY_SPECS` row + 3 script consumers were pruned. (e) Live: the 4 sprocs exist in BOTH dbo and qbo
+schemas (8 DROPs), 0 incoming FKs, map_rows 445 == dbo_stamped 445, null_realm 0, drift 0.
 **Unit id:** was U-357 in the u349 running order; **renumbered to U-361** because a concurrent session
 claimed U-357 for an unrelated "unified lifecycle status + review_status" design (commit 53f39d32). The
 line-item block is now U-361 (vendorcredit_line_item) → U-362 (invoice_line_item) → U-363 (bill_line_item)

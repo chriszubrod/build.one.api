@@ -102,12 +102,9 @@ BEGIN
 END;
 GO
 
-
-CREATE OR ALTER PROCEDURE [qbo].[DeleteVendorCreditLineItemBillCreditLineItemById]
-    @Id BIGINT
-AS
-BEGIN
-    SET NOCOUNT ON;
-    DELETE FROM [qbo].[VendorCreditLineItemBillCreditLineItem] WHERE [Id] = @Id;
-END
-GO
+-- U-361: the [qbo].[DeleteVendorCreditLineItemBillCreditLineItemById] body this
+-- file used to ALSO declare (a qbo-schema duplicate of the dbo copy — the exact
+-- shape U-353's live sys.procedures cross-check caught for the header family)
+-- was removed here: qbo.VendorCreditLineItemBillCreditLineItem is retired; the
+-- stale-line cleanup deletes the staging line directly now. /em drops BOTH
+-- schemas' copies post-deploy (see the U-361 DROP block).

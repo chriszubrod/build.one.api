@@ -43,10 +43,6 @@ SPROC_DRIFT_LEDGER: dict[str, frozenset[str]] = {
         'entities/sub_cost_code/sql/dbo.subcostcode.sql',
         'scripts/migrations/gap2_reference_threading.sql',
     }),  # known-dup, home=entities/sub_cost_code/sql/dbo.subcostcode.sql
-    "CreateVendorCreditLineItemBillCreditLineItem": frozenset({
-        'integrations/intuit/qbo/vendorcredit/connector/bill_credit_line_item/sql/qbo.vendorcredit_line_item_bill_credit_line_item.sql',
-        'scripts/migrations/qbo_vendorcredit_mapping_sprocs_dbo.sql',
-    }),  # known-dup, home=integrations/intuit/qbo/vendorcredit/connector/bill_credit_line_item/sql/qbo.vendorcredit_line_item_bill_credit_line_item.sql
     "CreateWorkflow": frozenset({
         'core/workflow/sql/dbo.workflow.sql',
         'core/workflow/sql/migrations/002_phase4_attribution_sprocs.sql',
@@ -63,11 +59,6 @@ SPROC_DRIFT_LEDGER: dict[str, frozenset[str]] = {
         'integrations/intuit/qbo/vendorcredit/sql/qbo.vendorcredit.sql',
         'scripts/migrations/qbo_vendorcredit_upsert_inplace.sql',
     }),  # known-dup, home=integrations/intuit/qbo/vendorcredit/sql/qbo.vendorcredit.sql
-    "DeleteVendorCreditLineItemBillCreditLineItemById": frozenset({
-        'integrations/intuit/qbo/vendorcredit/connector/bill_credit_line_item/sql/qbo.vendorcredit_line_item_bill_credit_line_item.sql',
-        'scripts/migrations/qbo_vendorcredit_mapping_sprocs_dbo.sql',
-        'scripts/migrations/qbo_vendorcredit_upsert_inplace.sql',
-    }),  # known-dup, home=integrations/intuit/qbo/vendorcredit/connector/bill_credit_line_item/sql/qbo.vendorcredit_line_item_bill_credit_line_item.sql
     "ReadEmailMessageByGraphMessageId": frozenset({
         'entities/email_message/sql/dbo.email_message.sql',
         'entities/email_message/sql/dbo.email_message_recipients.sql',
@@ -93,14 +84,6 @@ SPROC_DRIFT_LEDGER: dict[str, frozenset[str]] = {
         'integrations/intuit/qbo/vendorcredit/sql/qbo.vendorcredit.sql',
         'scripts/migrations/qbo_vendorcredit_upsert_inplace.sql',
     }),  # known-dup, home=integrations/intuit/qbo/vendorcredit/sql/qbo.vendorcredit.sql
-    "ReadVendorCreditLineItemBillCreditLineItemByBillCreditLineItemId": frozenset({
-        'integrations/intuit/qbo/vendorcredit/connector/bill_credit_line_item/sql/qbo.vendorcredit_line_item_bill_credit_line_item.sql',
-        'scripts/migrations/qbo_vendorcredit_mapping_sprocs_dbo.sql',
-    }),  # known-dup, home=integrations/intuit/qbo/vendorcredit/connector/bill_credit_line_item/sql/qbo.vendorcredit_line_item_bill_credit_line_item.sql
-    "ReadVendorCreditLineItemBillCreditLineItemByQboLineId": frozenset({
-        'integrations/intuit/qbo/vendorcredit/connector/bill_credit_line_item/sql/qbo.vendorcredit_line_item_bill_credit_line_item.sql',
-        'scripts/migrations/qbo_vendorcredit_mapping_sprocs_dbo.sql',
-    }),  # known-dup, home=integrations/intuit/qbo/vendorcredit/connector/bill_credit_line_item/sql/qbo.vendorcredit_line_item_bill_credit_line_item.sql
     "RecoverStuckProcessingEmailMessages": frozenset({
         'entities/email_message/sql/dbo.email_message.sql',
         'entities/email_message/sql/migrations/001_recovery_processing_reset.sql',

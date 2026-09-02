@@ -113,9 +113,8 @@ class BillCreditLineItemService:
         """
         Read a bill credit line item directly by its dbo-native QBO identity,
         scoped to its parent BillCredit (U-293b) — the line-level Phase-4
-        repoint seam, bypassing the
-        qbo.VendorCreditLine/qbo.VendorCreditLineItemBillCreditLineItem
-        staging/mapping tables.
+        repoint seam. As of U-361 this IS the line's only identity lookup: the
+        qbo.VendorCreditLineItemBillCreditLineItem mapping table is retired.
         """
         assert_can_access_bill_credit(bill_credit_id)
         return self.repo.read_by_qbo_identity(bill_credit_id=bill_credit_id, qbo_id=qbo_id)

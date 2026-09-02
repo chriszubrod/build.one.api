@@ -29,10 +29,11 @@ from integrations.intuit.qbo.vendorcredit.business.service import QboVendorCredi
 
 _SERVICE = "integrations.intuit.qbo.vendorcredit.business.service"
 _DELETE_RECONCILE = "integrations.intuit.qbo.base.delete_reconcile"
-_LINE_MAPPING_REPO = (
-    "integrations.intuit.qbo.vendorcredit.connector.bill_credit_line_item.persistence.repo"
-    ".VendorCreditLineItemBillCreditLineItemMappingRepository"
-)
+# U-361: the line-mapping repo this harness used to patch is gone — the
+# reconcile's former Step 1 (delete the credit's line-mapping rows) went with
+# qbo.VendorCreditLineItemBillCreditLineItem; only the BillCredit header and the
+# staging row are deleted now, so `destructive_labels` can only ever name the
+# header (the assertion below is unchanged and still meaningful).
 _BILL_CREDIT_SERVICE = "entities.bill_credit.business.service.BillCreditService"
 
 
@@ -43,12 +44,10 @@ def _local_vc(*, vc_id=10, qbo_id="VC-1"):
 def _run_reconcile(*, bill_credit_hit, staging_delete_error=None, delete_error=None):
     repo = Mock()
     repo.read_by_realm_id.return_value = [_local_vc()]
-    repo.read_lines_by_vendor_credit_id.return_value = []  # no lines -> no line mappings
     repo.delete_by_qbo_id.side_effect = staging_delete_error
 
     svc = QboVendorCreditService(repo=repo)
 
-    line_mapping_repo = Mock()
     bill_credit_service = Mock()
     bill_credit_service.read_by_qbo_identity.return_value = bill_credit_hit
     if delete_error is not None:
@@ -60,7 +59,7 @@ def _run_reconcile(*, bill_credit_hit, staging_delete_error=None, delete_error=N
 
     with patch(f"{_SERVICE}.QboVendorCreditClient", return_value=fake_client), patch(
         f"{_DELETE_RECONCILE}.strict_confirmed_deleted_ids", return_value={"VC-1"}
-    ), patch(f"{_LINE_MAPPING_REPO}", return_value=line_mapping_repo), patch(
+    ), patch(
         f"{_BILL_CREDIT_SERVICE}", return_value=bill_credit_service
     ), patch(
         f"{_DELETE_RECONCILE}.record_partial_delete_issue"

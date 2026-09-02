@@ -1,1 +1,0 @@
-# VendorCredit BillCreditLineItem Connector Persistence

@@ -9,7 +9,6 @@ from integrations.intuit.qbo.vendorcredit.connector.bill_credit.business.service
 from integrations.intuit.qbo.vendorcredit.connector.bill_credit_line_item.business.service import (
     VendorCreditLineItemConnector,
 )
-from conftest import stub_qbo_identity_fastpath_miss
 
 VC_BILL_CREDIT_SERVICE = (
     "integrations.intuit.qbo.vendorcredit.connector.bill_credit.business.service"
@@ -60,16 +59,18 @@ def _build_line_connector_with_item_mocks():
     exercised over that single dbo-native lookup."""
     connector = VendorCreditLineItemConnector()
     connector.sub_cost_code_service = Mock()
-    connector.mapping_repo = Mock()
-    connector.mapping_repo.read_by_qbo_line_id.return_value = None
     connector.bill_credit_line_item_service = Mock()
-    connector.bill_credit_line_item_service.read_by_bill_credit_id.return_value = []
-    connector.bill_credit_line_item_service.create.return_value = SimpleNamespace(id=1)
     connector.bill_credit_line_item_service.repo = Mock()
     connector._get_project_public_id = Mock(return_value=None)
-    # Keep the line-mapping write path on the mapping-table branch (not the U-293b
-    # dbo-native fast path) so this file stays focused on the item-ref cache.
-    stub_qbo_identity_fastpath_miss(connector.bill_credit_line_item_service)
+    # U-361: dbo-only line identity — make every line a direct HIT (an existing,
+    # realm-complete row) so the line sync is a plain in-place update with no
+    # create lock to grant, keeping this file focused on the item-ref cache.
+    connector.bill_credit_line_item_service.read_by_qbo_identity.side_effect = (
+        lambda bill_credit_id, qbo_id: SimpleNamespace(
+            id=1, public_id="bcli-pub", row_version="rv", qbo_id=qbo_id, realm_id="realm-1",
+        )
+    )
+    connector.bill_credit_line_item_service.update_by_public_id.return_value = SimpleNamespace(id=1)
     return connector
 
 

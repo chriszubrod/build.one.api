@@ -2297,3 +2297,29 @@ Design: `docs/design/u357-unified-status-review-status.md` (§9 = 24 open decisi
 - [ ] **U-357d · durable `X-Client-Build` capture (ops, /em)** — the middleware log is DEBUG (inert at prod log level). Query-side capture = App Service setting `OTEL_INSTRUMENTATION_HTTP_CAPTURE_HEADERS_SERVER_REQUEST=X-Client-Build` (the ASGI instrumentation records it as a span attribute). Needed before LS-06d's "no pre-U-357d decoder remains" check. Optional: a `current_client_build` ContextVar (shared/authz/context.py shape) for the later `lifecycle.is_draft_false_without_completion` telemetry event.
 - [ ] **U-357b · digest tiebreak untested** — `ReadTimeEntriesForDigestByWorkDate`'s latest-row `OUTER APPLY` now has the `Id` tiebreak like the other three sites, but nothing pins it (SQL-only; the pure-logic suite can't). Covered by the future DB-integration harness unit.
 - [ ] **U-357b · surgical apply owed** — the base-file reconcile is a no-op against live (`vw_Review`/`CreateReview`/`ReadCurrentReviewsByBillIds` proven base==live, normalized); only `ReadTimeEntriesForDigestByWorkDate` changes. Apply that one sproc surgically (`CREATE OR ALTER`), verify `OBJECT_DEFINITION` carries `s.[Id] DESC`.
+
+## U-361 follow-ups (qbo.VendorCreditLineItemBillCreditLineItem retirement + `run_line_identity_fastpath_dbo_only`, 2026-09-01) — deferred, non-blocking
+
+- [ ] **`entities/invoice/intelligence/prompt.md` (InvoiceAgent playbook) still JOINs the retired line mapping.**
+  Its VendorCredit fingerprint-match recipe (`JOIN qbo.VendorCreditLineItemBillCreditLineItem map ON
+  map.QboVendorCreditLineId = vcl.Id` → `dbo.BillCreditLineItem`) and its onboarding note ("rows exist with
+  `qbo.VendorCreditLineItemBillCreditLineItem` mappings") are stale post-U-361: an agent running that SQL
+  post-DROP errors. Not fixed in this unit — the file was concurrently dirty in another session (U-357d) and,
+  like the U-355 entry above, it's a content edit across a large agent prompt. Rewrite the arm as
+  `JOIN dbo.BillCreditLineItem dbcli ON dbcli.BillCreditId = <parent dbo id> AND dbcli.QboId = vcl.QboLineId`
+  (parent-scoped — never join a line by QboId alone) and drop the mapping sentence.
+- [ ] **`rollback_orphan_header` is now also the line-level compensating delete** (U-361 wires it from the
+  bill_credit_line_item connector with a no-op `delete_mapping`). Name + log text still say "header"/"mapping";
+  once U-362–364 clone the shape, rename to a neutral `rollback_orphan_row(delete_row, ...)` and drop the
+  now-universally-no-op `delete_mapping` parameter (every remaining caller passes `lambda: None`).
+- [ ] **`_record_orphan_line_issue` is the 5th hand-copy of the orphan-recorder shape** (after the 4 header
+  connectors' `_record_orphan_header_issue`). Fold into the booked deploy-gap-bridge / recorder extraction
+  when it lands — do not add a 6th copy in U-362–364 without lifting it.
+- [ ] **Delete `tests/test_u341_create_mapping_then_stamp.py`'s per-family expectation for
+  `bill_credit_line_item` once the other 3 line families retire their mappings** — `create_mapping_then_stamp`
+  and `stamp_line_identity_or_warn`'s create-path role end with the last line mapping (U-364); the HIT-path
+  realm self-heal in the bill_credit_line_item connector is the only `stamp_line_identity_or_warn` use left
+  in that family and can become a bare conditional `set_qbo_identity` then.
+- [ ] **Docs that still describe the mapping-era line topology** (historical, left as-is):
+  `docs/staging_removal_phase6_readiness.md` §"vendorcredit" (row 445 = the mapping), `docs/qbo-pull-sync-
+  audit-2026-06-18.md` (the 2026-06 upsert-in-place design), `docs/staging_removal_phase4_5_scoping.md` §7.

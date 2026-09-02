@@ -48,6 +48,19 @@ mapping table left to detect drift against — see that function's own docstring
 this is a new function rather than a mode flag here. Everything above this point is
 unaffected: no family still on a mapping table changes behavior until it separately
 migrates.
+
+A dbo-only LINE sibling (U-361)
+--------------------------------
+`run_line_identity_fastpath` (below) is the with-mapping helper for line-item
+families; `run_line_identity_fastpath_dbo_only` (at the bottom of this module) is
+its mapping-free analog for a line family that has retired its `qbo.<Parent>Line
+<Entity>LineItem` mapping table (the U-349 retirement program's line-item wave —
+vendorcredit_line_item first, then invoice/bill/expense line items clone it). It is
+to `run_line_identity_fastpath` what `run_identity_fastpath_dbo_only` is to
+`run_identity_fastpath`: same parent-scoped `(parent_local_id, qbo_line_id)` key, no
+second store left to cross-check, a create lock around the MISS branch, and — new
+at this layer — a helper-level guarantee that a failed identity stamp never strands
+an unstamped orphan line. See its own docstring.
 """
 
 # Python Standard Library Imports
@@ -519,6 +532,42 @@ def run_identity_fastpath(
     return _apply_and_maybe_self_heal()
 
 
+def _apply_dbo_only_hit(
+    row: Any,
+    *,
+    apply_fields: Optional[Callable[[Any], Any]],
+    on_apply_returned_none: Optional[Callable[[Any], None]],
+    entity_label: str,
+    external_label: str,
+    log_suffix: str,
+    path_label: str,
+) -> FastPathOutcome:
+    """
+    Shared HIT-branch body for every dbo-only fast path (header
+    `run_identity_fastpath_dbo_only`, line `run_line_identity_fastpath_dbo_only`):
+    write `apply_fields` onto an already-resolved row, and unconditionally raise
+    via `raise_concurrent_write_race` on a `None` return (U-316's contract — a
+    caller can never receive a silent `hit=True, entity=None`).
+
+    Factored out (code-review finding, 2026-09-01) after this exact body was
+    hand-copied once already between the header and line siblings — the class
+    of drift U-316 itself exists to prevent, now closed at its source instead
+    of per-copy. `log_suffix` and `path_label` are the only two things that
+    ever differed between the copies; everything else is identical by
+    construction now, not by convention.
+    """
+    if apply_fields is None:
+        updated = row
+    else:
+        logger.info(f"Updating existing {entity_label} {row.id} from {external_label} {log_suffix}")
+        updated = apply_fields(row)
+    if updated is None:
+        if on_apply_returned_none is not None:
+            on_apply_returned_none(row)
+        raise_concurrent_write_race(entity_label=entity_label, entity_id=row.id, path_label=path_label)
+    return FastPathOutcome(hit=True, entity=updated)
+
+
 def run_identity_fastpath_dbo_only(
     *,
     qbo_id: Optional[str],
@@ -632,21 +681,15 @@ def run_identity_fastpath_dbo_only(
         return FastPathOutcome(hit=False)
 
     def _apply(row: Any) -> FastPathOutcome:
-        if apply_fields is None:
-            updated = row
-        else:
-            logger.info(
-                f"Updating existing {entity_label} {row.id} from {external_label} "
-                f"(direct dbo-only identity match)"
-            )
-            updated = apply_fields(row)
-        if updated is None:
-            if on_apply_returned_none is not None:
-                on_apply_returned_none(row)
-            raise_concurrent_write_race(
-                entity_label=entity_label, entity_id=row.id, path_label="dbo-only fast path",
-            )
-        return FastPathOutcome(hit=True, entity=updated)
+        return _apply_dbo_only_hit(
+            row,
+            apply_fields=apply_fields,
+            on_apply_returned_none=on_apply_returned_none,
+            entity_label=entity_label,
+            external_label=external_label,
+            log_suffix="(direct dbo-only identity match)",
+            path_label="dbo-only fast path",
+        )
 
     direct = read_direct_by_qbo_identity(qbo_id, realm_id)
     if direct:
@@ -923,3 +966,229 @@ def run_line_identity_fastpath(
         return FastPathOutcome(hit=True, entity=None)
 
     return FastPathOutcome(hit=True, entity=updated)
+
+
+def run_line_identity_fastpath_dbo_only(
+    *,
+    parent_local_id: int,
+    qbo_line_id: Optional[str],
+    entity_label: str,
+    external_label: str,
+    lock_resource_label: str,
+    read_direct_by_parent_and_qbo_line_id: Callable[[int, str], Any],
+    resolve_candidate: Callable[[], Any],
+    stamp_identity: Callable[[Any], Any],
+    apply_fields: Optional[Callable[[Any], Any]] = None,
+    on_apply_returned_none: Optional[Callable[[Any], None]] = None,
+    rollback_candidate: Optional[Callable[[Any], None]] = None,
+    lock_timeout_ms: int = 15000,
+) -> FastPathOutcome:
+    """
+    Run the dbo-native identity fast path for a LINE-ITEM entity whose family
+    has NO mapping table left (U-361 — the U-349 retirement program's first
+    line-item family, `vendorcredit_line_item`/`dbo.BillCreditLineItem`;
+    `docs/design/u361-line-item-dbo-only-fastpath.md`). This is the dbo-only
+    analog of `run_line_identity_fastpath` above and the line-scoped analog of
+    `run_identity_fastpath_dbo_only` — a deliberate third sibling, not a mode
+    flag on either, for the same reasons each of those gives for being separate:
+
+      * vs. `run_identity_fastpath_dbo_only`: a line's identity is PARENT-SCOPED.
+        QBO line ids are per-transaction sequence numbers ("1", "2", "3"…)
+        reused across every parent, so the direct-read key is
+        `(parent_local_id, qbo_line_id)` against the family's own
+        `UQ_<Entity>LineItem_<Parent>Id_QboId` index — never `(qbo_id,
+        realm_id)`. There is no `realm_id` parameter at all: the parent header
+        pins the realm (resolved by the caller before any line runs), exactly
+        as `run_line_identity_fastpath` documents.
+      * vs. `run_line_identity_fastpath`: that helper's CONSISTENT/MISSING/
+        CONFLICT machinery exists to catch drift between dbo identity and an
+        independently-writable mapping table. Once the family's mapping table
+        is retired there is no second store to disagree with, so the five
+        mapping-specific parameters (`read_by_local_id`, `read_by_external_id`,
+        `external_id_attr`, `record_conflict_issue`, `conflict_message`) vanish
+        with it, and a direct hit is trusted outright — the filtered unique
+        index plus `Set<Entity>LineItemQboIdentity`'s theft-clear UPDATE already
+        guarantee at most one holder per `(parent, qbo_line_id)` at any instant.
+
+    The two decisions that shape the MISS branch (design §3/§4, approved)
+    ---------------------------------------------------------------------
+    1. Create lock (Option A, parent+line-scoped). Two concurrent syncs of the
+       same parent can both observe a MISS for the same line and both mint a
+       row; the unique index + theft-clear resolve that SILENTLY (the loser
+       orphans its own fresh row with no error). So a MISS re-reads and then
+       creates+stamps INSIDE `qbo_dbo_line_identity_create:{lock_resource_label}:
+       {parent_local_id}:{qbo_line_id}`. This is a NEW namespace, disjoint from
+       both `qbo_dbo_identity_create:*` (the header helper's, keyed on the
+       header's own QBO identity) and `qbo_mapping_create:*` (U-304's mapping-row
+       race). Nesting order is fixed and one-directional: a header connector's
+       CREATE path syncs lines from inside its own header create lock, so this
+       lock is acquired NESTED INSIDE `qbo_dbo_identity_create:*` — never the
+       reverse (this helper never touches a header lock), so no lock-ordering
+       cycle is possible. It is genuinely reachable on its own, not just
+       defense-in-depth: a header's HIT/update path syncs lines with NO header
+       lock held, and reconciliation's missing-locally autofix projects a
+       parent with no pull-level lock either — proven by test, not asserted
+       (tests/test_u361_bill_credit_line_item_mapping_retire.py).
+    2. Create-only, no adopt. A line has no independent adopt key: it is always
+       created fresh under an already-resolved parent, so `resolve_candidate`
+       for a line is "create it" — no side-channel business key two syncs could
+       both resolve to, hence no `stamp_dbo_identity_with_lock`-style second
+       lock and no `_check_no_conflicting` guard (Term's shape, U-352). The
+       with-mapping helper's "never self-heal a MISSING line" rule (U-293's
+       stale-orphan P1) does not carry over: that rule guarded against binding
+       a mapping row to a stale orphan whose recycled id merely LOOKED like a
+       new pairing. Here a direct hit on such an orphan is simply the in-place
+       update the family's upsert-by-stable-line-id snapshot layer already
+       performs whenever the id persists — the row follows QBO's current line.
+
+    The helper-level guarantee (U-354/U-355's identity-stamp rollback race fix,
+    now structural)
+    -----------------------------------------------------------------------
+    `resolve_candidate` has CREATED a row by the time `stamp_identity` runs. If
+    the stamp then fails, that row is an UNSTAMPED ORPHAN: invisible to every
+    future `read_direct_by_parent_and_qbo_line_id` (there is no mapping row to
+    find it by any more), so the next pull MISSes again and mints a duplicate —
+    silently, every pull, forever. The header connectors each hand-rolled a
+    compensating delete for this (U-354 expense, U-355 bill); here it lives in
+    the helper so a clone cannot forget it:
+      * `stamp_identity` RAISES  → `rollback_candidate(candidate)` runs (best-
+        effort, its own failure is logged and never masks the original), then
+        the ORIGINAL exception re-raises so the caller's watermark holds.
+      * `stamp_identity` returns a row whose `qbo_id` is not `qbo_line_id` (a
+        stamp that silently did not land — e.g. `Set<Entity>LineItemQboIdentity`'s
+        own atomic-pair guard declining to write QboId without a RealmId) →
+        same rollback, then RuntimeError. The row we hand back MUST carry the
+        identity we just resolved, or it is the orphan described above.
+      * `stamp_identity` returns None → `raise_concurrent_write_race` with NO
+        rollback: None means the candidate row is already gone (a concurrent
+        delete between create and stamp), so there is nothing to compensate —
+        the same reading `run_identity_fastpath_dbo_only` gives it.
+      * `resolve_candidate` returns None → RuntimeError (transient hold): nothing
+        was created, nothing to roll back, and no row means no identity to bind.
+    `rollback_candidate` is optional only so a caller that has genuinely nothing
+    to compensate can omit it; a caller whose `resolve_candidate` creates a row
+    should ALWAYS wire it (a missing one is logged at ERROR when it would have
+    run).
+
+    What the caller still owns
+    ---------------------------
+    `read_direct_by_parent_and_qbo_line_id` — the entity service's own parent-
+    scoped `read_by_qbo_identity(parent_id, qbo_id)`. `resolve_candidate` — the
+    family's CREATE (fail closed BEFORE creating if the realm needed for the
+    stamp is unavailable). `stamp_identity` — the bare `Set<Entity>LineItem
+    QboIdentity` call on the candidate, returning a RE-READ of the row (the
+    stamp is a void DB write that never mutates the in-memory candidate).
+    `rollback_candidate` — the compensating delete (+ whatever the family records
+    when even that fails). `apply_fields` / `on_apply_returned_none` — as in every
+    sibling: the QBO-derived field write for an existing hit; a None return
+    fires the callback and then ALWAYS raises via `raise_concurrent_write_race`
+    (U-316's contract, so no caller can under-implement the callback into a
+    silent `entity=None`).
+
+    Returns:
+        FastPathOutcome. `hit=False` ONLY when `qbo_line_id` is falsy (a dbo-only
+        caller has no legacy path to fall back to); every other outcome — direct
+        hit, race-resolved hit, or a genuine miss resolved via
+        `resolve_candidate`/`stamp_identity` — reports `hit=True` and never
+        carries `entity=None`.
+
+    Raises:
+        RuntimeError: lock-acquire timeout (FAILS CLOSED — never creates under
+            uncertainty); `apply_fields`/`stamp_identity` returning None (via
+            `raise_concurrent_write_race`); a stamp that did not land; a
+            `resolve_candidate` that returned None. Always RuntimeError, never
+            ValueError, so `record_projection_error` holds the record for retry
+            instead of skipping it permanently.
+        Whatever `resolve_candidate` or `stamp_identity` raise: re-raised
+            unchanged (after the rollback, for a stamp failure).
+    """
+    if not qbo_line_id:
+        return FastPathOutcome(hit=False)
+
+    def _apply(row: Any) -> FastPathOutcome:
+        return _apply_dbo_only_hit(
+            row,
+            apply_fields=apply_fields,
+            on_apply_returned_none=on_apply_returned_none,
+            entity_label=entity_label,
+            external_label=external_label,
+            log_suffix=(
+                f"(direct parent-scoped dbo-only identity match: parent {parent_local_id}, "
+                f"qbo_line_id={qbo_line_id})"
+            ),
+            path_label="dbo-only line fast path",
+        )
+
+    def _rollback(candidate: Any, cause: BaseException) -> None:
+        """Best-effort compensating rollback of the just-created candidate. Never
+        raises: the ORIGINAL failure (`cause`) is what the caller must see."""
+        if rollback_candidate is None:
+            logger.error(
+                f"{entity_label} {getattr(candidate, 'id', None)} identity stamp failed "
+                f"({cause}) and no rollback_candidate is wired - the row is left as an "
+                f"UNSTAMPED ORPHAN under parent {parent_local_id} (qbo_line_id={qbo_line_id})."
+            )
+            return
+        try:
+            rollback_candidate(candidate)
+        except Exception as rollback_exc:
+            logger.error(
+                f"Compensating rollback of {entity_label} {getattr(candidate, 'id', None)} "
+                f"failed: {rollback_exc} (original failure: {cause})"
+            )
+
+    direct = read_direct_by_parent_and_qbo_line_id(parent_local_id, qbo_line_id)
+    if direct:
+        return _apply(direct)
+
+    lock_resource = (
+        f"qbo_dbo_line_identity_create:{lock_resource_label}:{parent_local_id}:{qbo_line_id}"
+    )
+    with qbo_app_lock(lock_resource, timeout_ms=lock_timeout_ms) as got_lock:
+        if not got_lock:
+            raise RuntimeError(
+                f"Could not acquire dbo-only line identity create lock for {entity_label} "
+                f"({external_label} qbo_line_id={qbo_line_id} under parent {parent_local_id}) "
+                f"within {lock_timeout_ms}ms - holding for retry without creating."
+            )
+
+        direct_under_lock = read_direct_by_parent_and_qbo_line_id(parent_local_id, qbo_line_id)
+        if direct_under_lock:
+            logger.info(
+                f"{entity_label} line identity race resolved: another sync already bound "
+                f"{external_label} qbo_line_id={qbo_line_id} under parent {parent_local_id} to "
+                f"{entity_label} {direct_under_lock.id} - adopting it instead of minting a "
+                f"second row."
+            )
+            return _apply(direct_under_lock)
+
+        candidate = resolve_candidate()
+        if candidate is None:
+            raise RuntimeError(
+                f"resolve_candidate returned None for {entity_label} ({external_label} "
+                f"qbo_line_id={qbo_line_id} under parent {parent_local_id}) - nothing was "
+                f"created; holding for retry."
+            )
+
+        try:
+            stamped = stamp_identity(candidate)
+        except Exception as stamp_exc:
+            _rollback(candidate, stamp_exc)
+            raise
+
+        if stamped is None:
+            raise_concurrent_write_race(
+                entity_label=entity_label,
+                entity_id=candidate.id,
+                path_label="dbo-only line fast path (stamp)",
+            )
+        if getattr(stamped, "qbo_id", None) != qbo_line_id:
+            unstamped = RuntimeError(
+                f"{entity_label} {candidate.id} identity stamp did not land: the re-read "
+                f"carries qbo_id={getattr(stamped, 'qbo_id', None)!r}, expected "
+                f"{qbo_line_id!r} (parent {parent_local_id}) - rolled back rather than "
+                f"leave an unstamped orphan; holding for retry."
+            )
+            _rollback(candidate, unstamped)
+            raise unstamped
+        return FastPathOutcome(hit=True, entity=stamped)

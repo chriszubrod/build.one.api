@@ -310,9 +310,9 @@ class VendorCreditBillCreditConnector:
         Sync line items from QBO VendorCredit to BillCreditLineItems by UPSERTING
         each line in place (parity with Bill's _sync_line_items).
 
-        The snapshot layer (_upsert_vendor_credit_lines) keeps qbo.VendorCreditLine
-        PKs stable across re-pulls, so the VendorCreditLineItemBillCreditLineItem
-        mapping survives and each BillCreditLineItem is updated in place rather than
+        Each BillCreditLineItem is matched by its own dbo-native, parent-scoped
+        (BillCreditId, QboId) identity (U-361 — the VendorCreditLineItemBillCredit
+        LineItem mapping table is retired) and updated in place rather than
         deleted+recreated. This preserves the BillCreditLineItem PK, its attachments,
         and any InvoiceLineItem -> credit-line FK, and removes the old duplication
         vector entirely (an invoice-referenced line is updated, never re-created).
@@ -320,8 +320,8 @@ class VendorCreditBillCreditConnector:
         """
         # Upsert each QBO line in place. No delete-then-recreate: stale-line cleanup
         # lives in the snapshot layer, and the connector matches existing
-        # BillCreditLineItems via the (now-stable) line mapping (with a content
-        # fingerprint fallback for QBO line-id regeneration).
+        # BillCreditLineItems by dbo-native (BillCreditId, QboId) identity via the
+        # shared run_line_identity_fastpath_dbo_only primitive.
         # Attempt EVERY line, collect failures, then RAISE if any failed — never leave
         # a BillCredit whose header total doesn't match its lines. Raising marks the
         # whole credit failed so the pull watermark holds and it retries (idempotent).

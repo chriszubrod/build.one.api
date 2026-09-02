@@ -21,7 +21,10 @@ from conftest import mock_qbo_app_lock_granted, stub_qbo_identity_fastpath_miss
 
 
 def test_line_entity_specs_count():
-    assert len(LINE_ENTITY_SPECS) == 4
+    # U-361: 4 -> 3 — bill_credit_line_item is dbo-native only now (its mapping
+    # table is retired, so its row left the registry; see identity_drift.py).
+    assert len(LINE_ENTITY_SPECS) == 3
+    assert {s.key for s in LINE_ENTITY_SPECS} == {"bill_line_item", "invoice_line_item", "expense_line_item"}
 
 
 @pytest.mark.parametrize(
@@ -304,24 +307,25 @@ def test_invoice_line_connector_update_path_dual_writes_identity():
 
 
 def test_vendor_credit_line_connector_create_path_dual_writes_identity():
+    """U-361: the CREATE path stamps dbo-native identity via the bare
+    repo.set_qbo_identity inside run_line_identity_fastpath_dbo_only's MISS
+    branch (no mapping row to create first any more)."""
     from integrations.intuit.qbo.vendorcredit.connector.bill_credit_line_item.business.service import (
         VendorCreditLineItemConnector,
     )
 
-    mapping_repo = MagicMock()
-    mapping_repo.read_by_qbo_line_id.return_value = None
-
     bill_credit_line_item_service = MagicMock()
-    line_item = SimpleNamespace(id=300)
+    line_item = SimpleNamespace(id=300, public_id="bcli-pub-300")
     bill_credit_line_item_service.create.return_value = line_item
+    bill_credit_line_item_service.read_by_id.return_value = SimpleNamespace(
+        id=300, public_id="bcli-pub-300", qbo_id="QBO-VC-LINE-REAL", realm_id="realm-create",
+    )
     bill_credit_line_item_service.repo = MagicMock()
 
     connector = VendorCreditLineItemConnector()
-    connector.mapping_repo = mapping_repo
     connector.bill_credit_line_item_service = bill_credit_line_item_service
     connector._get_project_public_id = MagicMock(return_value=None)
     connector._get_sub_cost_code_id = MagicMock(return_value=None)
-    connector._match_unmapped_by_fingerprint = MagicMock(return_value=None)
     stub_qbo_identity_fastpath_miss(bill_credit_line_item_service)
 
     qbo_line = SimpleNamespace(
@@ -336,7 +340,8 @@ def test_vendor_credit_line_connector_create_path_dual_writes_identity():
         item_ref_value=None,
     )
 
-    connector.sync_from_qbo_line(100, "bc-pub", qbo_line, realm_id="realm-create")
+    with patch("integrations.intuit.qbo.base.identity_fastpath.qbo_app_lock", mock_qbo_app_lock_granted):
+        connector.sync_from_qbo_line(100, "bc-pub", qbo_line, realm_id="realm-create")
 
     bill_credit_line_item_service.repo.set_qbo_identity.assert_called_once_with(
         id=300,
@@ -345,44 +350,49 @@ def test_vendor_credit_line_connector_create_path_dual_writes_identity():
     )
 
 
-def test_vendor_credit_line_connector_update_path_dual_writes_identity():
+def test_vendor_credit_line_connector_update_path_heals_missing_realm_only():
+    """U-361: the UPDATE path no longer re-stamps identity on every touch (the
+    row was found BY its (BillCreditId, QboId) identity). The one remaining
+    write is the U-293-dw realm self-heal for a legacy row stamped with a QboId
+    but no RealmId — and only then."""
     from integrations.intuit.qbo.vendorcredit.connector.bill_credit_line_item.business.service import (
         VendorCreditLineItemConnector,
     )
 
-    mapping = SimpleNamespace(id=10, bill_credit_line_item_id=300)
-    existing = SimpleNamespace(id=300, public_id="bcli-pub", row_version="rv")
+    def _run(existing):
+        bill_credit_line_item_service = MagicMock()
+        bill_credit_line_item_service.read_by_qbo_identity.return_value = existing
+        bill_credit_line_item_service.update_by_public_id.return_value = existing
+        bill_credit_line_item_service.repo = MagicMock()
 
-    mapping_repo = MagicMock()
-    mapping_repo.read_by_qbo_line_id.return_value = mapping
+        connector = VendorCreditLineItemConnector()
+        connector.bill_credit_line_item_service = bill_credit_line_item_service
+        connector._get_project_public_id = MagicMock(return_value=None)
+        connector._get_sub_cost_code_id = MagicMock(return_value=None)
 
-    bill_credit_line_item_service = MagicMock()
-    bill_credit_line_item_service.read_by_id.return_value = existing
-    bill_credit_line_item_service.update_by_public_id.return_value = existing
-    bill_credit_line_item_service.repo = MagicMock()
+        qbo_line = SimpleNamespace(
+            id=1,
+            qbo_line_id="QBO-VC-LINE-UPD",
+            description="Credit",
+            amount=Decimal("50"),
+            qty=Decimal("1"),
+            unit_price=Decimal("50"),
+            billable_status=None,
+            customer_ref_value=None,
+            item_ref_value=None,
+        )
+        connector.sync_from_qbo_line(100, "bc-pub", qbo_line, realm_id="realm-update")
+        return bill_credit_line_item_service
 
-    connector = VendorCreditLineItemConnector()
-    connector.mapping_repo = mapping_repo
-    connector.bill_credit_line_item_service = bill_credit_line_item_service
-    connector._get_project_public_id = MagicMock(return_value=None)
-    connector._get_sub_cost_code_id = MagicMock(return_value=None)
-    stub_qbo_identity_fastpath_miss(bill_credit_line_item_service)
-
-    qbo_line = SimpleNamespace(
-        id=1,
-        qbo_line_id="QBO-VC-LINE-UPD",
-        description="Credit",
-        amount=Decimal("50"),
-        qty=Decimal("1"),
-        unit_price=Decimal("50"),
-        billable_status=None,
-        customer_ref_value=None,
-        item_ref_value=None,
+    realm_complete = SimpleNamespace(
+        id=300, public_id="bcli-pub", row_version="rv", qbo_id="QBO-VC-LINE-UPD", realm_id="realm-update",
     )
+    _run(realm_complete).repo.set_qbo_identity.assert_not_called()
 
-    connector.sync_from_qbo_line(100, "bc-pub", qbo_line, realm_id="realm-update")
-
-    bill_credit_line_item_service.repo.set_qbo_identity.assert_called_once_with(
+    realm_missing = SimpleNamespace(
+        id=300, public_id="bcli-pub", row_version="rv", qbo_id="QBO-VC-LINE-UPD", realm_id=None,
+    )
+    _run(realm_missing).repo.set_qbo_identity.assert_called_once_with(
         id=300,
         qbo_id="QBO-VC-LINE-UPD",
         realm_id="realm-update",

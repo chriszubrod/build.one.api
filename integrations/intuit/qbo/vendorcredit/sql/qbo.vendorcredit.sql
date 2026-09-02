@@ -355,8 +355,9 @@ GO
 
 -- Upsert-in-place support (VendorCredit line sync parity with Bill).
 -- Lets the snapshot layer match qbo.VendorCreditLine rows by stable QBO Line.Id
--- across re-pulls instead of delete-then-recreate, so row PKs stay stable and the
--- VendorCreditLineItemBillCreditLineItem mapping survives a re-pull.
+-- across re-pulls instead of delete-then-recreate, so row PKs stay stable. (The
+-- VendorCreditLineItemBillCreditLineItem mapping this used to keep valid is
+-- retired as of U-361 — dbo.BillCreditLineItem.QboId is the line identity now.)
 CREATE OR ALTER PROCEDURE ReadQboVendorCreditLineByVendorCreditIdAndQboLineId
 (
     @QboVendorCreditId BIGINT,

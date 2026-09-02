@@ -28,6 +28,11 @@ DRIFT_DUPLICATE_QBO_INVOICE_NUMBER = "duplicate_qbo_invoice_number"
 DRIFT_DUPLICATE_QBO_ITEM = "duplicate_qbo_item"
 DRIFT_ORPHANED_ITEM_COST_CODE_MAPPING = "orphaned_item_cost_code_mapping"
 DRIFT_ORPHAN_BILLCREDIT_HEADER = "orphan_billcredit_header"
+# U-361: a BillCreditLineItem created on the dbo-only line fast path's MISS
+# branch whose identity stamp failed AND whose compensating delete also failed —
+# an unstamped orphan the fast path can never find again (no mapping row left),
+# so every re-pull mints a duplicate until a human deletes or stamps it.
+DRIFT_ORPHAN_BCLI_LINE_ITEM = "orphan_bcli_line_item"
 DRIFT_ORPHAN_EXPENSE_HEADER = "orphan_expense_header"
 DRIFT_ORPHAN_BILL_HEADER = "orphan_bill_header"
 DRIFT_BILL_STAGING_ROW_MISSING = "bill_staging_row_missing"
@@ -66,7 +71,11 @@ DRIFT_BILL_LINE_ITEM_IDENTITY_CONFLICT = "bill_line_item_identity_conflict"
 # because "bill" is short. Shortened per-family, not simply truncated.
 DRIFT_INVOICE_LINE_ITEM_IDENTITY_CONFLICT = "invoice_line_identity_conflict"
 DRIFT_EXPENSE_LINE_ITEM_IDENTITY_CONFLICT = "expense_line_identity_conflict"
-DRIFT_BILL_CREDIT_LINE_ITEM_IDENTITY_CONFLICT = "bc_line_item_identity_conflict"
+# U-361: "bc_line_item_identity_conflict" (DRIFT_BILL_CREDIT_LINE_ITEM_IDENTITY_
+# CONFLICT) was removed — its only writer was the bill_credit_line_item
+# connector's mapping-vs-dbo conflict recorder, retired with the mapping table;
+# run_line_identity_fastpath_dbo_only has no conflict state left to record.
+# Historical rows may still carry the value; nothing writes it any more.
 
 KNOWN_DRIFT_TYPES: FrozenSet[str] = frozenset({
     DRIFT_QBO_MISSING_LOCALLY, DRIFT_LOCAL_MISSING_QBO, DRIFT_STALE_SYNC_TOKEN,
@@ -75,7 +84,8 @@ KNOWN_DRIFT_TYPES: FrozenSet[str] = frozenset({
     DRIFT_ORPHANED_BILL_BILL_MAPPING, DRIFT_DUPLICATE_QBO_BILL_DOCNUMBER,
     DRIFT_DUPLICATE_QBO_INVOICE_NUMBER, DRIFT_DUPLICATE_QBO_ITEM,
     DRIFT_ORPHANED_ITEM_COST_CODE_MAPPING,
-    DRIFT_ORPHAN_BILLCREDIT_HEADER, DRIFT_ORPHAN_EXPENSE_HEADER, DRIFT_ORPHAN_BILL_HEADER,
+    DRIFT_ORPHAN_BILLCREDIT_HEADER, DRIFT_ORPHAN_BCLI_LINE_ITEM,
+    DRIFT_ORPHAN_EXPENSE_HEADER, DRIFT_ORPHAN_BILL_HEADER,
     DRIFT_BILL_STAGING_ROW_MISSING, DRIFT_ORPHAN_INVOICE_HEADER,
     DRIFT_INVOICE_STAGING_ROW_MISSING, DRIFT_ORPHANED_VC_BILLCREDIT_MAPPING,
     DRIFT_ORPHANED_ITEM_SCC_MAPPING, DRIFT_ORPHANED_PURCH_EXPENSE_MAPPING,
@@ -92,5 +102,5 @@ KNOWN_DRIFT_TYPES: FrozenSet[str] = frozenset({
     DRIFT_SUB_COST_CODE_IDENTITY_CONFLICT, DRIFT_BILL_IDENTITY_CONFLICT,
     DRIFT_EXPENSE_IDENTITY_CONFLICT, DRIFT_INVOICE_IDENTITY_CONFLICT,
     DRIFT_BILL_LINE_ITEM_IDENTITY_CONFLICT, DRIFT_INVOICE_LINE_ITEM_IDENTITY_CONFLICT,
-    DRIFT_EXPENSE_LINE_ITEM_IDENTITY_CONFLICT, DRIFT_BILL_CREDIT_LINE_ITEM_IDENTITY_CONFLICT,
+    DRIFT_EXPENSE_LINE_ITEM_IDENTITY_CONFLICT,
 })

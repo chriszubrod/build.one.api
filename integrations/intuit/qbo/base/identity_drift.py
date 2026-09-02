@@ -167,11 +167,16 @@ LINE_ENTITY_SPECS: tuple[LineEntitySpec, ...] = (
         "ExpenseLineItemId", "QboPurchaseLineId", "ExpenseId", "Purchase", "QboPurchaseId",
         "SetExpenseLineItemQboIdentity",
     ),
-    LineEntitySpec(
-        "bill_credit_line_item", "BillCreditLineItem", "VendorCreditLineItemBillCreditLineItem",
-        "VendorCreditLine", "BillCreditLineItemId", "QboVendorCreditLineId", "BillCreditId",
-        "VendorCredit", "QboVendorCreditId", "SetBillCreditLineItemQboIdentity",
-    ),
+    # U-361: the "bill_credit_line_item" row was removed — this line family is
+    # now dbo-native only (qbo.VendorCreditLineItemBillCreditLineItem retired,
+    # U-349 program family 8/11, the first line-item family). Every consumer of
+    # this registry (scripts/backfill_qbo_identity_lines.py,
+    # scripts/check_qbo_identity_drift_lines.py, scripts/audit_dangling_qbo_
+    # mappings.py) JOINs through `mapping_table`, which would error outright once
+    # the table is dropped and, until then, flag every dbo-stamped line as a
+    # false orphan_dbo_value. Nothing looks this row up by key (same as
+    # "expense"'s U-354 header removal), so there is no StopIteration risk.
+    # U-362/U-363/U-364 remove the remaining three rows the same way.
 )
 
 

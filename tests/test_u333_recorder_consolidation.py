@@ -20,9 +20,6 @@ from integrations.intuit.qbo.purchase.connector.expense_line_item.business.servi
     PurchaseLineExpenseLineItemConnector,
 )
 from integrations.intuit.qbo.vendor.connector.vendor.business.service import VendorVendorConnector
-from integrations.intuit.qbo.vendorcredit.connector.bill_credit_line_item.business.service import (
-    VendorCreditLineItemConnector,
-)
 
 # Captured pre-refactor from scratchpad harness (U-333 Task 4).
 _EXPECTED = {
@@ -101,21 +98,13 @@ _EXPECTED = {
             "DIFFERENT QboInvoiceLine 5. Not auto-repointed — investigate which side is correct."
         ),
     },
-    "bill_credit_line_item": {
-        "drift_type": "bc_line_item_identity_conflict",
-        "entity_type": "BillCreditLineItem",
-        "entity_public_id": None,
-        "qbo_id": "BCL-99",
-        "realm_id": "realm-1",
-        "details": (
-            "VendorCreditLineItemBillCreditLineItem identity conflict. dbo.BillCreditLineItem 55 "
-            "carries native QBO identity for QboVendorCreditLine 4 (QboLineId=BCL-99). qbo-side: "
-            "the mapping table still binds that same QboVendorCreditLine to a DIFFERENT "
-            "BillCreditLineItem 9 (mapping 2). local-side: BillCreditLineItem 55's own mapping row "
-            "(mapping 3) still binds it to a DIFFERENT QboVendorCreditLine 5. Not auto-repointed — "
-            "investigate which side is correct."
-        ),
-    },
+    # U-361: "bill_credit_line_item" removed — VendorCreditLineItemConnector no
+    # longer has _record_line_identity_mapping_conflict_issue (qbo.VendorCredit
+    # LineItemBillCreditLineItem is retired, the first line-item family;
+    # run_line_identity_fastpath_dbo_only has no mapping-vs-dbo conflict state
+    # left to record). Its dbo-only orphan-line recorder
+    # (_record_orphan_line_issue, record_mapping_issue) is a different shape,
+    # covered in tests/test_u361_bill_credit_line_item_mapping_retire.py.
     "customer_same_qbo": {
         "drift_type": "customer_identity_conflict",
         "entity_type": "Customer",
@@ -268,20 +257,6 @@ def test_recorder_consolidation_emits_identical_tuple(family):
             dbo_line_id=55,
             local_side_mapping=SimpleNamespace(id=3, invoice_line_item_id=55, qbo_invoice_line_id=5),
             qbo_side_mapping=SimpleNamespace(id=2, invoice_line_item_id=9, qbo_invoice_line_id=4),
-            realm_id="realm-1",
-        )
-    elif family == "bill_credit_line_item":
-        c = object.__new__(VendorCreditLineItemConnector)
-        c.reconciliation_repo = Mock()
-        c._record_line_identity_mapping_conflict_issue(
-            qbo_line=SimpleNamespace(id=4, qbo_line_id="BCL-99"),
-            dbo_line_id=55,
-            local_side_mapping=SimpleNamespace(
-                id=3, bill_credit_line_item_id=55, qbo_vendor_credit_line_id=5
-            ),
-            qbo_side_mapping=SimpleNamespace(
-                id=2, bill_credit_line_item_id=9, qbo_vendor_credit_line_id=4
-            ),
             realm_id="realm-1",
         )
     elif family == "customer_same_qbo":

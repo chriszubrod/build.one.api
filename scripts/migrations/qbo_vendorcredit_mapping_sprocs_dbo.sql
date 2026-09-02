@@ -8,54 +8,15 @@
 -- Idempotent (CREATE OR ALTER). Old qbo.* copies are harmless (unused).
 --   python scripts/run_sql.py scripts/migrations/qbo_vendorcredit_mapping_sprocs_dbo.sql
 
-CREATE OR ALTER PROCEDURE [dbo].[CreateVendorCreditLineItemBillCreditLineItem]
-    @QboVendorCreditLineId BIGINT,
-    @BillCreditLineItemId BIGINT
-AS
-BEGIN
-    SET NOCOUNT ON;
-    INSERT INTO [qbo].[VendorCreditLineItemBillCreditLineItem] (
-        [QboVendorCreditLineId], [BillCreditLineItemId]
-    )
-    OUTPUT
-        inserted.[Id], inserted.[PublicId], inserted.[RowVersion],
-        inserted.[CreatedDatetime], inserted.[ModifiedDatetime],
-        inserted.[QboVendorCreditLineId], inserted.[BillCreditLineItemId]
-    VALUES (@QboVendorCreditLineId, @BillCreditLineItemId);
-END
-GO
-
-CREATE OR ALTER PROCEDURE [dbo].[ReadVendorCreditLineItemBillCreditLineItemByQboLineId]
-    @QboVendorCreditLineId BIGINT
-AS
-BEGIN
-    SET NOCOUNT ON;
-    SELECT
-        [Id], [PublicId], [RowVersion], [CreatedDatetime], [ModifiedDatetime],
-        [QboVendorCreditLineId], [BillCreditLineItemId]
-    FROM [qbo].[VendorCreditLineItemBillCreditLineItem]
-    WHERE [QboVendorCreditLineId] = @QboVendorCreditLineId;
-END
-GO
-
-CREATE OR ALTER PROCEDURE [dbo].[ReadVendorCreditLineItemBillCreditLineItemByBillCreditLineItemId]
-    @BillCreditLineItemId BIGINT
-AS
-BEGIN
-    SET NOCOUNT ON;
-    SELECT
-        [Id], [PublicId], [RowVersion], [CreatedDatetime], [ModifiedDatetime],
-        [QboVendorCreditLineId], [BillCreditLineItemId]
-    FROM [qbo].[VendorCreditLineItemBillCreditLineItem]
-    WHERE [BillCreditLineItemId] = @BillCreditLineItemId;
-END
-GO
-
-CREATE OR ALTER PROCEDURE [dbo].[DeleteVendorCreditLineItemBillCreditLineItemById]
-    @Id BIGINT
-AS
-BEGIN
-    SET NOCOUNT ON;
-    DELETE FROM [qbo].[VendorCreditLineItemBillCreditLineItem] WHERE [Id] = @Id;
-END
-GO
+--
+-- U-361: the four sproc bodies this file used to declare
+-- (CreateVendorCreditLineItemBillCreditLineItem,
+--  ReadVendorCreditLineItemBillCreditLineItemByQboLineId,
+--  ReadVendorCreditLineItemBillCreditLineItemByBillCreditLineItemId,
+--  DeleteVendorCreditLineItemBillCreditLineItemById — known-dups of the
+-- connector's qbo.vendorcredit_line_item_bill_credit_line_item.sql copies, per
+-- tests/sproc_drift_ledger.py) were removed here together with that base file:
+-- qbo.VendorCreditLineItemBillCreditLineItem is retired (U-349 program family
+-- 8/11). dbo.BillCreditLineItem.QboId/RealmId, parent-scoped, is the sole line
+-- identity store; /em drops the live table + sprocs post-deploy. Kept as a
+-- pointer stub for the migration history only — nothing to run.

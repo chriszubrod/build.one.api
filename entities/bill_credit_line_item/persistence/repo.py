@@ -186,9 +186,9 @@ class BillCreditLineItemRepository:
     def read_by_qbo_identity(self, bill_credit_id: int, qbo_id: str) -> Optional[BillCreditLineItem]:
         """
         Read a bill credit line item by its dbo-native QBO identity, scoped to
-        its parent BillCredit (U-293b) — the line-level Phase-4 repoint seam,
-        bypassing the qbo.VendorCreditLine/qbo.VendorCreditLineItemBillCreditLineItem
-        staging/mapping tables.
+        its parent BillCredit (U-293b) — the line-level Phase-4 repoint seam. As
+        of U-361 this IS the line's only identity lookup: the
+        qbo.VendorCreditLineItemBillCreditLineItem mapping table is retired.
 
         Parent-scoped, not global: a QBO line id is unique only within its
         parent transaction, matching the live

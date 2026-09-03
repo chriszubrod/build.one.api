@@ -142,6 +142,16 @@ across the remaining line-items, recon ones last.
   land (Gate-2 + merged) before #9–#11 dispatch; those three then serialize on reconciliation anyway.
 - `invoice/connector/invoice` source-link — read by #5 and #9 → serialize those two.
 
+### Pre-DROP live-dependency check — STRIP COMMENTS FIRST (U-362c gotcha, applies to #10/#11)
+Before dropping a mapping table, enumerate the live sprocs that still reference it — but a raw
+`sys.sql_modules.definition LIKE '%<MappingTable>%'` yields **false positives from the table name lingering
+in COMMENTS of sprocs already re-homed onto the `dbo` mirror**. In U-362c three sprocs
+(`ReadInvoiceLineItemsByInvoiceId`, `ProposeInvoiceSourceLinks`, `ReadInvoiceSourceLinkLines`) matched only
+in comments (re-homed onto `dbo.InvoiceLineItemSourceProvenance` back in U-272); the real body-refs were just
+the 5 pure CRUD sprocs. **Strip `/* */` and `--` comments before deciding a DROP blocker**, then confirm the
+survivors are unreferenced by the DEPLOYED code. Expect the same false positives for #10 (`BillLineItemBillLine`)
+and #11 (`PurchaseLineExpenseLineItem`) in the re-expressed reconciliation sprocs.
+
 ### Wave cadence
 - **Wave A (headers, clone-able, 1–2 at a time):** #3 term → #4 vendorcredit → #5 purchase/expense.
 - **Wave B (heavy headers, solo):** #6 BillBill (base-helper blast radius) → #7 invoice (recon re-expression).

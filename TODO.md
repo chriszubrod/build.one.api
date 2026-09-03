@@ -2428,3 +2428,52 @@ inappropriate to fold into an emergency P0 patch:
   its `TimeEntryStatus` history row at all). Fix needs a design decision: either the sproc deletes children
   in-transaction (breaks the append-only-history intent) or the delete endpoint is retired/replaced with an
   explicit archive-style flow. Out of scope for the QA session that found it.
+
+## Stale `qbo.InvoiceLineItemInvoiceLine` mappings after a QBO invoice gets recreated with the same DocNumber — found during U-362b's 70-row backfill, 2026-09-03
+
+- [ ] **`qbo.Invoice` has 24 DocNumber collisions in the live realm** (`9130353016965726`) — a QBO invoice getting
+  voided/recreated (new `QboId`, same human-readable `DocNumber`) is a known, recurring pattern this codebase
+  already has header-level machinery for (`DRIFT_DUPLICATE_QBO_INVOICE_NUMBER`, U-034's "rule of three"
+  fingerprint-adopt), but at least one invoice shows the machinery didn't fully repoint everything downstream.
+  Full collision list (`DocNumber → qbo.Invoice.Id`s, all same realm):
+  `BR-MAIN-18 (29,30)`, `CC-02 (796,799)`, `FP-07 (416,417)`, `FP-14 (277,278)`, `HA-01 (9 rows: 948,949,921,
+  914,915,916,917,918,919)`, `HA-02 (920,925)`, `HE12-Initial (883,892)`, `HE7-12 (440,441)`, `HP2-01 (112,113)`,
+  `HP2-12 (998,991)`, `HP-22 (31,32)`, `HRL-04 (614,579)`, `MR2-MAIN-04 (34,35)`, `MR2-MAIN-05 (950,905)`,
+  `MR2-SITE-04 (951,906)`, `OHR2-25 (107,108)`, `OHR2-30 (27,28)`, **`OHR2-37 (992,1000)` — the one confirmed
+  affected, see below**, `OHR2-GUEST-03 (105,106)`, `OL-09 (21,22)`, `OL-10 (931,932)`, `SD2-01 (192,193)`,
+  `TB3-17 (926,927)`, `WVA-11 (5,6)`, `WVA-14 (3,1)`. Only OHR2-37 has been checked for the downstream symptom
+  below — the other 23 are unverified and may or may not be affected.
+- [ ] **Confirmed symptom on `dbo.Invoice 1080` (OHR2-37, `QboId=75290` — the current invoice; `75707` is the
+  old/superseded one, same DocNumber, different total: $271,800.48 vs $235,083.66):** 15 of its
+  `dbo.InvoiceLineItem` rows have a `qbo.InvoiceLineItemInvoiceLine` mapping row that still points at a
+  `qbo.InvoiceLine` staging row under the OLD `qbo.Invoice.Id=1000` (`75707`), not the current `992` (`75290`).
+  Ids: `34055,34056,34057,34058,34059,34060,34061,34062,34063,34064,34065,34066,34067,34068,34070`. Verified
+  their `dbo.QboId` values (101-114, plus one that was "16" before U-362b's backfill touched it) are the
+  CORRECT, current ones — matching their actual position among the invoice's 114 current lines, almost
+  certainly stamped correctly by the still-live connector's normal dual-write on their last real pull against
+  the current invoice (`992`). It's the MAPPING ROW that's stale, not the dbo identity — so
+  `check_qbo_identity_drift_lines.py`'s `identity_match=FAIL` finding for these 14 (`34070` isn't flagged
+  because it currently reads `QboId IS NULL`) is real but backwards-pointing: trust `dbo`, not the mapping.
+- [ ] **What happened during U-362b's `--mode missing --apply` run (2026-09-03):** row `33346` ("Grill
+  Kitchen", $4,611.86) was one of the genuine 70 mapped-but-unstamped rows fixed by that backfill — its
+  mapping correctly points at line `16` under the CURRENT invoice (`992`), verified directly against
+  `qbo.InvoiceLine` staging content (description + amount match exactly). Stamping it correctly triggered
+  `SetInvoiceLineItemQboIdentity`'s theft-clear against row `34070`, which was WRONGLY holding `QboId=16`
+  (inherited from ITS stale mapping to the OLD invoice, where line `16` was a different line entirely — a
+  "14%" fee, $28,869.92). The theft-clear worked exactly as designed; net result is strictly better than
+  before (33346 now correctly identified; 34070 correctly reset to unstamped instead of squatting on someone
+  else's identity). **Do NOT re-run the backfill for row 34070 specifically** — its mapping is the stale one,
+  so a naive re-run would immediately steal `QboId=16` back from 33346, ping-ponging the identity between the
+  two rows depending on run order. Left as `QboId IS NULL`; expected to self-heal correctly once U-362/U-362b
+  deploy, via the NEW provenance-based recognizer (`InvoiceLineItemSourceProvenance`/`LinkedTxnType`/
+  `LinkedTxnId`), which doesn't go through the mapping table at all and was almost certainly stamped correctly
+  on 34070's own last real pull (2026-08-27, the same batch as the other 14).
+- [ ] **Fix direction (own unit, not touched here):** for each of the 24 DocNumber-collision invoices, find any
+  `dbo.InvoiceLineItem` rows whose `qbo.InvoiceLineItemInvoiceLine` mapping points at the OLDER/superseded
+  `qbo.Invoice.Id` (not the one the row's own parent `dbo.Invoice.QboId` currently resolves to) and either (a)
+  repoint the mapping to the correct current staging line (if one exists with matching content), or (b) simply
+  clear the stale mapping and let it re-resolve on the next pull — U-362/U-362b's dbo-only path plus the
+  provenance recognizer should handle re-identification correctly either way once deployed. Query to find
+  affected rows for a given `dbo.Invoice`: join `dbo.InvoiceLineItem` → `qbo.InvoiceLineItemInvoiceLine` →
+  `qbo.InvoiceLine` → `qbo.Invoice`, and compare that `qbo.Invoice.Id` against the one the header's own
+  `dbo.Invoice.QboId`/`RealmId` resolves to.

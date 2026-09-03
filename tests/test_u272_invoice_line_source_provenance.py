@@ -143,7 +143,8 @@ def test_stamp_source_provenance_or_warn_swallows_and_logs(caplog):
 
 
 # ---------------------------------------------------------------------------
-# U-362b: read_by_linked_txn -> sproc dispatch, ambiguity refusal
+# U-362b/U-362c: read_by_linked_txn -> sproc dispatch, returns the FULL
+# sibling set (U-362c: a collision is the COMMON case, not refused any more)
 # ---------------------------------------------------------------------------
 
 
@@ -156,12 +157,14 @@ def _provenance_row(**overrides):
         EmployeeLaborLineItemId=None, SubCostCodeId=None, Description="Materials",
         Quantity=None, Rate=None, Amount=Decimal("500.00"), Markup=None, Price=None,
         IsDraft=False, QboId=None, RealmId=None,
+        ProvLineNum=1, ProvQboAmount=Decimal("500.00"), ProvQboDescription="Materials",
+        ProvServiceDate="2026-07-15",
     )
     defaults.update(overrides)
     return SimpleNamespace(**defaults)
 
 
-def test_read_by_linked_txn_calls_sproc_and_returns_the_single_match():
+def test_read_by_linked_txn_calls_sproc_and_returns_the_sibling_list():
     repo = InvoiceLineItemRepository()
     cursor = MagicMock()
     cursor.fetchall.return_value = [_provenance_row()]
@@ -179,11 +182,16 @@ def test_read_by_linked_txn_calls_sproc_and_returns_the_single_match():
     assert mock_call.call_args.kwargs["params"] == {
         "InvoiceId": 19146, "LinkedTxnType": "ReimburseCharge", "LinkedTxnId": "RC-500",
     }
-    assert result.id == 99
-    assert result.source_type == "BillLineItem"
+    assert len(result) == 1
+    assert result[0].line_item.id == 99
+    assert result[0].line_item.source_type == "BillLineItem"
+    assert result[0].line_num == 1
+    assert result[0].qbo_amount == Decimal("500.00")
+    assert result[0].qbo_description == "Materials"
+    assert result[0].service_date == "2026-07-15"
 
 
-def test_read_by_linked_txn_returns_none_when_no_match():
+def test_read_by_linked_txn_returns_empty_list_when_no_match():
     repo = InvoiceLineItemRepository()
     cursor = MagicMock()
     cursor.fetchall.return_value = []
@@ -194,29 +202,35 @@ def test_read_by_linked_txn_returns_none_when_no_match():
         mock_conn_ctx.return_value.__enter__.return_value.cursor.return_value = cursor
         result = repo.read_by_linked_txn(19146, "ReimburseCharge", "RC-500")
 
-    assert result is None
+    assert result == []
 
 
-def test_read_by_linked_txn_refuses_to_guess_on_an_ambiguous_match(caplog):
-    """The recognition key (InvoiceId, LinkedTxnType, LinkedTxnId) is NOT
-    DB-enforced unique. If two different local lines somehow share it, picking
-    either one arbitrarily would starve the other of ever being recognized —
-    reproducing the exact phantom-duplicate class this whole mechanism exists
-    to prevent, just via a different door. Must refuse (return None), never
-    silently pick one."""
+def test_read_by_linked_txn_returns_every_sibling_on_a_collision():
+    """U-362c: the recognition key (InvoiceId, LinkedTxnType, LinkedTxnId) is
+    NOT DB-enforced unique, and a collision is the COMMON case — every sibling
+    invoice line drawn from ONE multi-line source Bill/Expense shares it
+    (LinkedTxnId is the source TRANSACTION id, no per-line TxnLineId). The
+    repo layer used to `fetchone()` and refuse (return None) here, which
+    treated the common case as "not found" and fell through to a phantom
+    Manual duplicate. It must now return the FULL set, in whatever order the
+    sproc gives them — the connector's tie-break (find_stale_identity_orphan)
+    picks the right one, not this method."""
     repo = InvoiceLineItemRepository()
     cursor = MagicMock()
-    cursor.fetchall.return_value = [_provenance_row(Id=99), _provenance_row(Id=150)]
+    cursor.fetchall.return_value = [
+        _provenance_row(Id=99, Amount=Decimal("500.00"), ProvQboAmount=Decimal("500.00"), ProvLineNum=1),
+        _provenance_row(Id=150, Amount=Decimal("300.00"), ProvQboAmount=Decimal("300.00"), ProvLineNum=2),
+    ]
 
     with patch(
         "entities.invoice_line_item.persistence.repo.get_connection"
     ) as mock_conn_ctx, patch(
         "entities.invoice_line_item.persistence.repo.call_procedure"
-    ), caplog.at_level("ERROR"):
+    ):
         mock_conn_ctx.return_value.__enter__.return_value.cursor.return_value = cursor
         result = repo.read_by_linked_txn(19146, "ReimburseCharge", "RC-500")
 
-    assert result is None
-    assert any("Ambiguous" in record.message for record in caplog.records)
+    assert [sib.line_item.id for sib in result] == [99, 150]
+    assert [sib.qbo_amount for sib in result] == [Decimal("500.00"), Decimal("300.00")]
 
 

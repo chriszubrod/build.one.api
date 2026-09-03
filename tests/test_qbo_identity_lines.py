@@ -25,11 +25,11 @@ def test_line_entity_specs_count():
     # table is retired, so its row left the registry; see identity_drift.py).
     # U-362: 3 -> 2 — invoice_line_item removed for the same reason...
     # U-362b: 2 -> 3 — ...then RESTORED (temporarily) once a Gate-2 adversarial
-    # workflow found the registry row still load-bearing for the backfill that
-    # heals mapped-but-unstamped rows before U-362's dbo-only code deploys. See
-    # identity_drift.py's LINE_ENTITY_SPECS comment for the full story.
-    assert len(LINE_ENTITY_SPECS) == 3
-    assert {s.key for s in LINE_ENTITY_SPECS} == {"bill_line_item", "expense_line_item", "invoice_line_item"}
+    # workflow found the registry row still load-bearing for a one-off backfill.
+    # U-362c: 3 -> 2 — re-removed once that backfill was done. See identity_
+    # drift.py's LINE_ENTITY_SPECS comment for the full story.
+    assert len(LINE_ENTITY_SPECS) == 2
+    assert {s.key for s in LINE_ENTITY_SPECS} == {"bill_line_item", "expense_line_item"}
 
 
 @pytest.mark.parametrize(
@@ -217,10 +217,12 @@ def test_invoice_line_connector_create_path_dual_writes_identity():
     invoice_line_item_service = MagicMock()
     invoice_line_item_service.create.return_value = SimpleNamespace(id=200, public_id="ili-pub-1")
     invoice_line_item_service.read_by_invoice_id.return_value = []
-    # U-362b: this line's LinkedTxn is set below (a realistic source-linked
-    # QBO line) — the source-linked recognizer must genuinely find nothing
-    # for this genuinely-new line, not an auto-generated MagicMock truthy stub.
-    invoice_line_item_service.read_by_linked_txn.return_value = None
+    # U-362b/U-362c: this line's LinkedTxn is set below (a realistic source-
+    # linked QBO line) — the source-linked recognizer must genuinely find
+    # nothing for this genuinely-new line, not an auto-generated MagicMock
+    # truthy stub. read_by_linked_txn returns the sibling SET (U-362c); empty
+    # is the real "no sibling" contract.
+    invoice_line_item_service.read_by_linked_txn.return_value = []
     invoice_line_item_service.read_by_id.return_value = SimpleNamespace(
         id=200, public_id="ili-pub-1", qbo_id="QBO-INV-LINE-REAL", realm_id="realm-create",
     )

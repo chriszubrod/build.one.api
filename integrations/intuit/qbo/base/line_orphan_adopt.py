@@ -27,7 +27,7 @@ docstring for why the distinction matters.
 from __future__ import annotations
 
 # Python Standard Library Imports
-from typing import Any, Callable, Iterable, Sequence
+from typing import Any, Callable, Iterable, Optional, Sequence
 
 # Local Imports
 from integrations.intuit.qbo.base.ids import normalize_qbo_id
@@ -39,6 +39,7 @@ def find_stale_identity_orphan(
     live_qbo_line_ids: frozenset,
     fingerprint: Callable[[Any], Sequence],
     target: Sequence,
+    position_key: Optional[Callable[[Any], Any]] = None,
 ) -> Any:
     """
     Find a local line under the same parent whose CURRENT identity is stale
@@ -51,6 +52,16 @@ def find_stale_identity_orphan(
     orphan — mirrors `_match_unmapped_by_fingerprint`'s pre-U-361 selection
     rule exactly, generalized off the mapping-table "unmapped" signal (which
     no longer exists) onto the dbo-only "not currently live" signal instead.
+
+    `position_key` overrides the default `.id`-based ordering when a caller
+    has a MORE precise position signal than local dbo creation order — e.g.
+    U-362c's source-linked sibling tie-break, where several invoice lines
+    drawn from one multi-line Bill/Expense are recognized by their shared
+    `LinkedTxn`: their dbo.Id reflects LOCAL creation order (whatever order
+    the billing/complete flow happened to create them in), not the SOURCE
+    document's own line order, so the provenance-mirrored `LineNum` is the
+    correct position signal there instead. Defaults to the original `.id`
+    ordering when omitted, so every existing caller is unaffected.
 
     A line whose `qbo_id` IS in `live_qbo_line_ids` is never a candidate, even
     if its content happens to match `target` — it is correctly bound to a
@@ -74,9 +85,10 @@ def find_stale_identity_orphan(
     fresh create.
     """
     live_ids = frozenset(normalize_qbo_id(qbo_id) for qbo_id in live_qbo_line_ids)
+    key = position_key or (lambda li: getattr(li, "id", 0) or 0)
     candidates = [
         line
-        for line in sorted(existing_lines, key=lambda li: getattr(li, "id", 0) or 0)
+        for line in sorted(existing_lines, key=key)
         if normalize_qbo_id(getattr(line, "qbo_id", None)) not in live_ids
         and tuple(fingerprint(line)) == tuple(target)
     ]

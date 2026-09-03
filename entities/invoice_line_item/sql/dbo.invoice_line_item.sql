@@ -734,14 +734,26 @@ GO
 
 
 -- =========================================================================
--- U-362b: dbo-native source-linked line recognition (see the connector's
--- InvoiceLineItemConnector._recognize_source_linked_line for the full
--- rationale — money-double-count bug this closes). Key: (InvoiceId,
+-- U-362b/U-362c: dbo-native source-linked line recognition (see the
+-- connector's InvoiceLineItemConnector._recognize_source_linked_line for the
+-- full rationale — money-double-count bug this closes). Key: (InvoiceId,
 -- LinkedTxnType, LinkedTxnId), the same fields InvoiceLineItemSourceProvenance
 -- already mirrors on every touch — NOT DB-enforced unique (that table's own
--- constraint is one row per InvoiceLineItemId, not per LinkedTxn); the repo
--- layer fetches ALL matches and refuses to guess if more than one comes back,
--- so no ORDER BY/TOP 1 here.
+-- constraint is one row per InvoiceLineItemId, not per LinkedTxn): a
+-- multi-line source Bill/Expense has ALL its invoice-drawn siblings share one
+-- LinkedTxn (LinkedTxnId is the source TRANSACTION id, no per-line TxnLineId)
+-- — the COMMON case, not an edge case (U-362c: 1,354 prod groups / 28,979
+-- lines). U-362b's repo layer refused to guess on a collision (`fetchone()`
+-- treated >1 rows as not-found, which fell through to a phantom duplicate —
+-- the exact bug class this sproc exists to close, just via a different door).
+-- U-362c fixes this at the Python layer (repo returns the FULL sibling set,
+-- content+position tie-break picks the right one) — this sproc just needs to
+-- return every match, so no ORDER BY/TOP 1 here, PLUS the provenance's own
+-- content-fingerprint fields (QboAmount/QboDescription/ServiceDate/LineNum)
+-- the tie-break needs. Prefixed Prov* to stay distinct from the InvoiceLine
+-- Item columns of the same underlying concept (ili.Amount/Description are
+-- the user-editable "snapshot" fields — see the table's own header comment
+-- above — never usable for this fingerprint).
 -- =========================================================================
 CREATE OR ALTER PROCEDURE ReadInvoiceLineItemByInvoiceIdAndLinkedTxn
 (
@@ -760,7 +772,9 @@ BEGIN
         ili.[InvoiceId], ili.[SourceType],
         ili.[BillLineItemId], ili.[ExpenseLineItemId], ili.[BillCreditLineItemId], ili.[EmployeeLaborLineItemId],
         ili.[SubCostCodeId], ili.[Description], ili.[Quantity], ili.[Rate], ili.[Amount], ili.[Markup],
-        ili.[Price], ili.[IsDraft], ili.[QboId], ili.[RealmId]
+        ili.[Price], ili.[IsDraft], ili.[QboId], ili.[RealmId],
+        prov.[LineNum] AS [ProvLineNum], prov.[QboAmount] AS [ProvQboAmount],
+        prov.[QboDescription] AS [ProvQboDescription], prov.[ServiceDate] AS [ProvServiceDate]
     FROM dbo.[InvoiceLineItem] ili
     INNER JOIN dbo.[InvoiceLineItemSourceProvenance] prov ON prov.[InvoiceLineItemId] = ili.[Id]
     WHERE ili.[InvoiceId] = @InvoiceId

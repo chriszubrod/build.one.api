@@ -14,12 +14,18 @@ from integrations.intuit.qbo.base.compensation import rollback_orphan_header
 from integrations.intuit.qbo.base.identity_fastpath import (
     run_line_identity_fastpath_dbo_only,
 )
-from integrations.intuit.qbo.base.ids import coerce_id, normalize_qbo_id
+from integrations.intuit.qbo.base.ids import coerce_id
 from integrations.intuit.qbo.base.line_orphan_adopt import find_stale_identity_orphan
 from integrations.intuit.qbo.base.reconciliation_recorder import record_mapping_issue
 from integrations.intuit.qbo.reconciliation.persistence.repo import ReconciliationIssueRepository
 
 logger = logging.getLogger(__name__)
+
+# U-362c: sentinel for `find_stale_identity_orphan`'s `position_key` when a
+# sibling carries no provenance LineNum — sorts after every real LineNum
+# (which QBO always assigns as a small positive int) without mixing float
+# and int in the same sort-key tuple.
+_NO_LINE_NUM_RANK = 2**31
 
 
 def _stamp_source_provenance_or_warn(repo, *, qbo_invoice_line: QboInvoiceLine, invoice_line_item_id: int, context: str) -> None:
@@ -32,7 +38,15 @@ def _stamp_source_provenance_or_warn(repo, *, qbo_invoice_line: QboInvoiceLine, 
     read THIS table live — a swallowed failure here silently drops that one
     line from source-link proposals until it self-heals on a future QBO pull
     of the same invoice (not guaranteed to be soon; the pull is
-    watermark-incremental)."""
+    watermark-incremental). U-362c added a SECOND, higher-stakes consumer:
+    `read_by_linked_txn`'s sibling-set recognition (`_recognize_source_
+    linked_line`) INNER JOINs this table, so a line with no provenance row at
+    all is invisible to that recognizer too — if this stamp never lands for a
+    line AND that line's QBO `Line.Id` later regenerates, its next pull can
+    mint a phantom Manual duplicate instead of self-healing (booked in
+    TODO.md "U-362c follow-ups", not fixed in this unit: narrow, pre-existing
+    since U-362b, and closing it fully means deciding what a sibling with no
+    fingerprint data should even match against)."""
     try:
         repo.set_source_provenance(
             invoice_line_item_id=invoice_line_item_id,
@@ -316,14 +330,8 @@ class InvoiceLineItemConnector:
             return find_stale_identity_orphan(
                 existing_lines=_manual_line_candidates(),
                 live_qbo_line_ids=live_qbo_line_ids,
-                fingerprint=lambda li: (
-                    self._normalize_for_fingerprint(li.description),
-                    self._normalize_for_fingerprint(li.amount),
-                ),
-                target=(
-                    self._normalize_for_fingerprint(description),
-                    self._normalize_for_fingerprint(amount),
-                ),
+                fingerprint=lambda li: self._content_fingerprint(li.description, li.amount),
+                target=self._content_fingerprint(description, amount),
             )
 
         def _create_line() -> Optional[InvoiceLineItem]:
@@ -440,14 +448,13 @@ class InvoiceLineItemConnector:
         self, invoice_id: int, qbo_invoice_line: QboInvoiceLine, live_qbo_line_ids: frozenset,
     ) -> Optional[InvoiceLineItem]:
         """
-        U-362b: dbo-native replacement for the OTHER job the retired
+        U-362b/U-362c: dbo-native replacement for the OTHER job the retired
         qbo.InvoiceLineItemInvoiceLine mapping used to do — recognizing that a
         re-pulled QBO invoice line already corresponds to an EXISTING local
         InvoiceLineItem created by the billing/complete flow and linked to its
         source (SourceType=BillLineItem/ExpenseLineItem/BillCreditLineItem,
         via `LinkInvoiceLineItemSource`), NOT by this pull path. Without this,
-        a source-linked line whose dbo.QboId was never stamped (a gap the
-        backfill closes for the 70 rows found live, 2026-09-02) MISSes on
+        a source-linked line whose dbo.QboId was never stamped MISSes on
         every future pull, is correctly excluded from the Manual-only readopt
         pool (it isn't Manual), and `_create_line` mints a phantom Manual
         sibling with the same amount — a straight invoice-draw double-count.
@@ -462,36 +469,101 @@ class InvoiceLineItemConnector:
         line correspond to an EXISTING local InvoiceLineItem"; not the same
         lookup, but see that sproc if this one's shape ever needs to change.)
         Stable across a QBO Line.Id regeneration, unlike the line id itself.
-        Returns None (falls through to the Manual-only fingerprint readopt)
-        when the incoming line carries no LinkedTxn — nothing to recognize
-        by — or when nothing matches. Not restricted to a particular
-        SourceType: a Manual line that happens to carry a real LinkedTxn
-        (rare, but the schema doesn't forbid it) is a MORE precise match here
-        than the Manual-fingerprint fallback would give it, so recognizing it
-        via this path first is strictly better, not a scope violation.
 
-        Same theft guard as `find_stale_identity_orphan` — including the same
-        `normalize_qbo_id` normalization that guard depends on (this codebase
-        has a documented str-vs-int QBO id-keyspace history, see that
-        function's own docstring): a matched candidate whose CURRENT identity
-        is in `live_qbo_line_ids` is correctly bound to a DIFFERENT live QBO
-        line in this same pull and must never be stolen (extreme edge case —
-        would mean the one-LinkedTxn-per-line invariant broke elsewhere — but
-        guarded anyway).
+        The key is NOT unique: EVERY sibling invoice line drawn from ONE
+        multi-line source Bill/Expense shares the SAME LinkedTxnId (it's the
+        source TRANSACTION id — QBO gives no per-line TxnLineId here) — the
+        COMMON case, not an edge case (U-362c: 1,354 prod groups / 28,979
+        lines collide). `read_by_linked_txn` returns the FULL sibling set;
+        this method tie-breaks to the ONE sibling the incoming QBO line
+        actually corresponds to via `find_stale_identity_orphan` (the SAME
+        matcher/rule the Manual-only fallback below uses):
+          - CONTENT fingerprint off the sibling's own PROVENANCE QboAmount/
+            QboDescription (the immutable last-pulled-QBO snapshot) — NEVER
+            the sibling's live InvoiceLineItem.amount/description, which are
+            user-editable and would corrupt the match (U-362b's own P2: a
+            content-blind rebind could overwrite the wrong line's amount and
+            un-bill its true source — worse than a duplicate). No
+            content-matching sibling -> None (falls through to Manual).
+          - POSITION tie-break by the sibling's provenance LineNum when >1
+            sibling shares the same content fingerprint (e.g. two identical-
+            amount draws from the same source) — LineNum is the SOURCE
+            document's own line order, unlike dbo.Id which only reflects
+            local creation order. An EXACT match against the INCOMING line's
+            OWN `line_num` ranks first, ahead of pure position order: a
+            content-matching sibling whose LineNum equals the incoming
+            line's is preferred over one that merely comes first by
+            LineNum/.id, so the pairing stays correct even when a PRIOR
+            sibling in the group failed to stamp (still-eligible, still
+            content-matching, but the WRONG one for THIS incoming line) or
+            the parent connector processes lines out of LineNum order —
+            without this, that prior-still-eligible sibling would otherwise
+            win purely on being "first by position," a real gap a Gate-2
+            adversarial review caught (Codex, 2026-09-03). Falls back to
+            plain LineNum-then-`.id` order only when no sibling's LineNum
+            exactly matches (LineNum missing on one or both sides, or a
+            genuine same-position tie) — money-neutral either way (same
+            amount), but still needs a deterministic 1:1 pairing so N
+            incoming QBO lines don't all race for the same sibling.
+            ServiceDate is captured in the sibling's fingerprint fields but
+            deliberately NOT part of the content match: it is a raw QBO
+            string mirror (not a typed date), and requiring exact string
+            equality risks a false-negative fall-through to a phantom Manual
+            create on a cosmetic QBO formatting drift — worse than the
+            disambiguation gap it would close, which the LineNum-exact
+            preference above already closes more reliably.
+          - Theft guard: `find_stale_identity_orphan` already excludes any
+            sibling whose CURRENT qbo_id is in `live_qbo_line_ids` (normalized
+            via `normalize_qbo_id`, U-361c) — correctly bound to a DIFFERENT
+            live QBO line in this same pull, never stolen. This is also what
+            makes repeated calls within one pull pair 1:1: once a sibling is
+            recognized and stamped, its qbo_id becomes a live id, so the next
+            incoming line's fresh DB read finds it no longer eligible.
+
+        Returns None (falls through to the Manual-only fingerprint readopt)
+        when the incoming line carries no LinkedTxn, no sibling exists, or no
+        sibling content-matches. Not restricted to a particular SourceType: a
+        Manual line that happens to carry a real LinkedTxn (rare, but the
+        schema doesn't forbid it) is a MORE precise match here than the
+        Manual-fingerprint fallback would give it, so recognizing it via this
+        path first is strictly better, not a scope violation.
         """
         linked_txn_type = qbo_invoice_line.linked_txn_type
         linked_txn_id = qbo_invoice_line.linked_txn_id
         if not linked_txn_type or not linked_txn_id:
             return None
-        candidate = self.invoice_line_item_service.read_by_linked_txn(
+        siblings = self.invoice_line_item_service.read_by_linked_txn(
             invoice_id, linked_txn_type, linked_txn_id,
         )
-        if candidate is None:
+        if not siblings:
             return None
-        live_ids = frozenset(normalize_qbo_id(qbo_id) for qbo_id in live_qbo_line_ids)
-        if normalize_qbo_id(getattr(candidate, "qbo_id", None)) in live_ids:
-            return None
-        return candidate
+        incoming_line_num = qbo_invoice_line.line_num
+        recognized = find_stale_identity_orphan(
+            existing_lines=siblings,
+            live_qbo_line_ids=live_qbo_line_ids,
+            fingerprint=lambda sib: self._content_fingerprint(sib.qbo_description, sib.qbo_amount),
+            target=self._content_fingerprint(qbo_invoice_line.description, qbo_invoice_line.amount),
+            position_key=lambda sib: (
+                0 if incoming_line_num is not None and sib.line_num == incoming_line_num else 1,
+                sib.line_num if sib.line_num is not None else _NO_LINE_NUM_RANK,
+                sib.id or 0,
+            ),
+        )
+        return recognized.line_item if recognized is not None else None
+
+    @classmethod
+    def _content_fingerprint(cls, description, amount) -> tuple:
+        """Shared (description, amount) content-fingerprint tuple — the SAME
+        two-value shape used by both `_recognize_source_linked_line`'s
+        sibling tie-break above and the Manual-only fingerprint readopt in
+        `_readopt_stale_line` below, so a future fix to the fingerprint rule
+        (this codebase's own history: BillCreditLineItem's sign-magnitude
+        normalization, U-344) touches one place, not two near-identical
+        lambda literals that could silently drift apart."""
+        return (
+            cls._normalize_for_fingerprint(description),
+            cls._normalize_for_fingerprint(amount),
+        )
 
     def _record_orphan_line_issue(
         self, *, line_item: InvoiceLineItem, qbo_invoice_line: QboInvoiceLine, invoice_id: int,
@@ -567,13 +639,22 @@ class InvoiceLineItemConnector:
 
     @staticmethod
     def _normalize_for_fingerprint(value) -> str:
-        """Canonicalize a value for content-fingerprint comparison."""
+        """Canonicalize a value for content-fingerprint comparison.
+
+        `+ 0` cancels a negative-zero sign BEFORE formatting (U-362c, Gate-2
+        adversarial finding): `Decimal("-0.00").normalize()` formats as
+        `"-0"` while `Decimal("0.00").normalize()` formats as `"0"` — two
+        numerically-IDENTICAL amounts (`Decimal("-0.00") == Decimal("0.00")`
+        is `True`) that would otherwise fingerprint as different strings and
+        miss a genuine content match for a real $0.00 line, e.g. a QBO amount
+        that round-trips as literal `-0` or a signed source amount netting to
+        exactly zero."""
         if value is None:
             return ""
         if isinstance(value, Decimal):
-            return format(value.normalize(), "f")
+            return format((value + 0).normalize(), "f")
         try:
-            return format(Decimal(str(value)).normalize(), "f")
+            return format((Decimal(str(value)) + 0).normalize(), "f")
         except Exception:
             pass
         return str(value).strip()

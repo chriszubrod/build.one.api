@@ -1,14 +1,14 @@
 # Python Standard Library Imports
 import base64
 import logging
-from typing import Optional
+from typing import List, Optional
 from decimal import Decimal
 
 # Third-party Imports
 import pyodbc
 
 # Local Imports
-from entities.invoice_line_item.business.model import InvoiceLineItem
+from entities.invoice_line_item.business.model import InvoiceLineItem, LinkedTxnSibling
 from shared.database import (
     call_procedure,
     get_connection,
@@ -179,9 +179,9 @@ class InvoiceLineItemRepository:
 
     def read_by_linked_txn(
         self, invoice_id: int, linked_txn_type: str, linked_txn_id: str
-    ) -> Optional[InvoiceLineItem]:
+    ) -> List[LinkedTxnSibling]:
         """
-        Read an invoice line item by its U-272 source-provenance linkage
+        Read the FULL sibling set sharing a U-272 source-provenance linkage
         (InvoiceLineItemSourceProvenance.LinkedTxnType/LinkedTxnId), scoped to
         its parent Invoice — U-362b's dbo-native replacement for the retired
         qbo.InvoiceLineItemInvoiceLine mapping hop that used to let a re-pulled
@@ -190,17 +190,20 @@ class InvoiceLineItemRepository:
         unlike the line id itself.
 
         The key is NOT DB-enforced unique (InvoiceLineItemSourceProvenance
-        only constrains one row per InvoiceLineItemId, not per LinkedTxn) — a
-        genuine collision would mean two different local lines, under the
-        same invoice, both trace back to the same QBO source transaction
-        (should not happen under the normal one-line-per-source write path,
-        but not ruled out by the schema). Rather than silently pick an
-        arbitrary one of them (which would starve the OTHER of ever being
-        recognized, reproducing the exact phantom-duplicate class this
-        method exists to prevent, just via a different door), an ambiguous
-        result is treated the same as "not found": logged loud, returned as
-        None, so the caller falls through to its next recognition step
-        instead of guessing.
+        only constrains one row per InvoiceLineItemId, not per LinkedTxn) —
+        and a collision is not an edge case: every sibling invoice line drawn
+        from ONE multi-line source Bill/Expense shares the SAME LinkedTxnId
+        (the source TRANSACTION id; QBO carries no per-line TxnLineId here).
+        U-362c: 1,354 prod groups / 28,979 lines share ≥2 siblings. This
+        method used to `fetchone()` and refuse (return None) on >1 rows,
+        treating the common case as "not found" — which fell through to the
+        Manual-only pool and minted a phantom duplicate, the exact bug class
+        this recognition exists to prevent, just via a different door.
+
+        Returns the full set instead; the caller (InvoiceLineItemConnector.
+        _recognize_source_linked_line) tie-breaks to the ONE sibling matching
+        the incoming QBO line's content + position via the shared
+        `find_stale_identity_orphan` matcher. Empty list when nothing matches.
         """
         try:
             with get_connection() as conn:
@@ -215,18 +218,23 @@ class InvoiceLineItemRepository:
                     },
                 )
                 rows = cursor.fetchall()
-                if len(rows) > 1:
-                    logger.error(
-                        "Ambiguous source-linked InvoiceLineItem match: %d rows share "
-                        "(InvoiceId=%s, LinkedTxnType=%s, LinkedTxnId=%s) - refusing to "
-                        "guess which one is correct; treating as not found.",
-                        len(rows), invoice_id, linked_txn_type, linked_txn_id,
-                    )
-                    return None
-                return self._from_db(rows[0]) if rows else None
+                return [self._sibling_from_db(row) for row in rows if row]
         except Exception as error:
             logger.error(f"Error during read invoice line item by linked txn: {error}")
             raise map_database_error(error)
+
+    def _sibling_from_db(self, row: pyodbc.Row) -> LinkedTxnSibling:
+        """Pairs a ReadInvoiceLineItemByInvoiceIdAndLinkedTxn row's
+        InvoiceLineItem columns (via the shared `_from_db`) with its Prov*-
+        prefixed provenance content-fingerprint columns (U-362c)."""
+        qbo_amount = getattr(row, "ProvQboAmount", None)
+        return LinkedTxnSibling(
+            line_item=self._from_db(row),
+            line_num=getattr(row, "ProvLineNum", None),
+            qbo_amount=Decimal(str(qbo_amount)) if qbo_amount is not None else None,
+            qbo_description=getattr(row, "ProvQboDescription", None),
+            service_date=getattr(row, "ProvServiceDate", None),
+        )
 
     def update_by_id(self, line_item: InvoiceLineItem) -> Optional[InvoiceLineItem]:
         try:

@@ -1,12 +1,12 @@
 # Python Standard Library Imports
 import logging
-from typing import Optional
+from typing import List, Optional
 from decimal import Decimal
 
 # Third-party Imports
 
 # Local Imports
-from entities.invoice_line_item.business.model import InvoiceLineItem
+from entities.invoice_line_item.business.model import InvoiceLineItem, LinkedTxnSibling
 from entities.invoice_line_item.persistence.repo import InvoiceLineItemRepository
 from entities.invoice.persistence.repo import InvoiceRepository
 from shared.access import assert_can_access_project
@@ -160,11 +160,12 @@ class InvoiceLineItemService:
 
     def read_by_linked_txn(
         self, invoice_id: int, linked_txn_type: str, linked_txn_id: str
-    ) -> Optional[InvoiceLineItem]:
+    ) -> List[LinkedTxnSibling]:
         """
-        Read an invoice line item by its U-272 source-provenance linkage,
-        scoped to its parent Invoice — U-362b's dbo-native source-linked-line
-        recognition seam (see the repo method's own docstring).
+        Read the full sibling set sharing a U-272 source-provenance linkage,
+        scoped to its parent Invoice — U-362b/U-362c's dbo-native source-
+        linked-line recognition seam (see the repo method's own docstring for
+        why this is a set, not a single row).
         """
         _assert_can_access_invoice(invoice_id)
         return self.repo.read_by_linked_txn(

@@ -122,3 +122,56 @@ def test_target_and_fingerprint_compare_as_tuples_not_by_identity():
         target=("Materials", "500"),  # tuple
     )
     assert result is stale
+
+
+# ---------------------------------------------------------------------------
+# U-362c: optional position_key override
+# ---------------------------------------------------------------------------
+
+
+def test_position_key_overrides_default_id_ordering():
+    """U-362c: a caller with a MORE precise position signal than dbo.Id (e.g.
+    the source document's own LineNum) can override the ordering. Two
+    candidates share a fingerprint; default `.id` order would pick the
+    lower-id one, but a custom position_key can rank the OTHER first."""
+    lower_id = _line(1, "1", ("Materials", "500"))
+    higher_id = _line(2, "1", ("Materials", "500"))
+    result = find_stale_identity_orphan(
+        existing_lines=[lower_id, higher_id],
+        live_qbo_line_ids=frozenset({"9"}),
+        fingerprint=_fingerprint,
+        target=("Materials", "500"),
+        position_key=lambda li: -li.id,  # reverses the default order
+    )
+    assert result is higher_id
+
+
+def test_position_key_omitted_preserves_default_id_ordering():
+    """Backward-compatibility: every existing caller (Manual fingerprint
+    readopt, BillCreditLineItem) doesn't pass position_key and must keep the
+    original `.id`-based selection unchanged."""
+    later = _line(5, "1", ("Materials", "500"))
+    earlier = _line(1, "1", ("Materials", "500"))
+    result = find_stale_identity_orphan(
+        existing_lines=[later, earlier],  # deliberately out of id order
+        live_qbo_line_ids=frozenset({"9"}),
+        fingerprint=_fingerprint,
+        target=("Materials", "500"),
+    )
+    assert result is earlier
+
+
+def test_position_key_still_respects_the_content_filter_and_theft_guard():
+    """A precise position_key does not bypass the OTHER two rules: a
+    non-matching fingerprint or a still-live qbo_id must still exclude a
+    candidate, even if position_key would otherwise rank it first."""
+    content_mismatch = _line(1, "1", ("Labor", "999"))
+    still_live = _line(2, "3", ("Materials", "500"))
+    result = find_stale_identity_orphan(
+        existing_lines=[content_mismatch, still_live],
+        live_qbo_line_ids=frozenset({"3"}),  # "3" IS live
+        fingerprint=_fingerprint,
+        target=("Materials", "500"),
+        position_key=lambda li: li.id,
+    )
+    assert result is None

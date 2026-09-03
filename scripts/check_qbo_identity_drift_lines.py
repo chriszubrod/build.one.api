@@ -96,10 +96,9 @@ def main() -> int:
             "expense_line_item",
             # U-361: "bill_credit_line_item" removed — its LineEntitySpec row is
             # gone from identity_drift.py (mapping table retired; dbo-native only).
-            # U-362b: "invoice_line_item" restored (see backfill_qbo_identity_
-            # lines.py's identical note). TEMPORARY: re-remove once /em's
-            # post-backfill DROP lands.
-            "invoice_line_item",
+            # U-362b temporarily restored "invoice_line_item" (see
+            # backfill_qbo_identity_lines.py's identical note); U-362c
+            # re-removed it once the one-off backfill was done.
             "all",
         ],
         default="all",

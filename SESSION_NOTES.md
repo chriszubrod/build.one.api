@@ -1,5 +1,28 @@
 # Session Notes
 
+## 🚀 U-363 — bill_line_item mapping retirement (family 10), DEPLOYED + DROPPED (2026-09-03, `/em`)
+
+Retired `qbo.BillLineItemBillLine` (23,678 rows) — the 10th of 11 U-349 mapping tables (`qbo.*` 22→21).
+Deployed `745d7285` (ACR `caam` / `aebcf7f8`, 11/11 openapi green). Repoints `BillLineItemConnector` onto
+the shared `run_line_identity_fastpath_dbo_only` primitive (the U-361/362 clone), re-expresses
+reconciliation's billable-status-drift detector off the mapping onto a dbo-native parent-scoped JOIN
+(FLAG-ONLY), and extracts a shared `base/line_orphan_recorder.py` (3 connectors repointed). Runbook:
+applied 4 sprocs (3 BLI gain `QboId/RealmId` projections; `ReadBillQboLinkInfo` re-expressed dbo-native)
+→ deploy → census (0 strand risk) → DROP 5 CRUD sprocs + table.
+
+### /em Gate-2 (builder self-reviewed — Codex out of credits — so the adversarial pass was load-bearing)
+- **Full adversarial Workflow (6 money-primary angles → verify): 0 blocking, 0 money-double-count.** The
+  one confirmed finding was P3 and PRE-EXISTING/out-of-scope: `expense_line_item.update_by_public_id` has
+  the same concurrent-delete race U-363 fixed for bill_line_item (spurious 500, defeats the purchase
+  connector's own race handling) — booked for U-364 with a precise repro.
+- **3 mutation-proofs, all RED-under-mutation then restored green:** recon parent-scoping (remove it →
+  cross-bill reused-line-id + equivalence tests RED), concurrent-delete guard (neuter → AttributeError RED),
+  push-stamp-verify (neuter → issue-not-recorded RED).
+- **Census gate (TODO-mandated):** 0 mapped-but-unstamped `dbo.BillLineItem` → prune-safe, DROP strands
+  nothing. Registry-row + 3-script prune now proven safe (quick follow-up).
+- Two real bugs the builder's own review caught + fixed: the concurrent-delete race (guard-clause) and a
+  live push-path stamp with no failure visibility (now stamp-then-verify → `bli_line_push_stamp_failed`).
+
 ## 🚀 U-362/362b/362c — invoice_line_item mapping retirement (family 9), DEPLOYED + DROPPED (2026-09-03, `/em`)
 
 Retired `qbo.InvoiceLineItemInvoiceLine` (30,513 rows) — the 9th of 11 U-349 mapping tables (`qbo.*` 23→22).

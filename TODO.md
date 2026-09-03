@@ -2440,6 +2440,12 @@ inappropriate to fold into an emergency P0 patch:
   missing` (dry-run, read-only) as part of this unit's Gate-2 runbook — if 0 rows, prune the registry row +
   the 3 scripts' `bill_line_item` entries in a quick follow-up; if >0, run `--apply` first (mirrors U-362b),
   THEN prune.**
+  **CENSUS RAN (2026-09-03, /em Gate-2 post-deploy): 0 mapped-but-unstamped `dbo.BillLineItem` rows** (all
+  23,678 mapped lines carry a dbo-native `QboId`; dbo has 23,687 stamped, a superset). So NO `--apply` heal
+  was needed and the DROP stranded nothing. **The registry-row + 3-script prune is now PROVEN SAFE — do it
+  as the quick follow-up** (mirrors U-365's header-table prune). The `qbo.BillLineItemBillLine` table +
+  5 CRUD sprocs are already DROPPED (745d7285 deployed as ACR caam), so the 2 deploy-gap bridges + these
+  script entries are now dead code.
 - [ ] **The 5 ops/diagnostic scripts that query `qbo.BillLineItemBillLine` directly via raw SQL** (not
   through the now-deleted `BillLineItemBillLineRepository` Python class, so none of them broke in this
   unit) — `scripts/fix_duplicate_bill_line_items.py`, `scripts/analyze_rc_source_fingerprint.py`,
@@ -2519,6 +2525,14 @@ inappropriate to fold into an emergency P0 patch:
     of U-364's timeline. **Confirmed NOT present** in `bill_credit_line_item`/`invoice_line_item` (both
     already have the `if not existing: return None` early guard, presumably fixed during their own U-361/
     U-362 units) — `bill_line_item` (this unit) and `expense_line_item` were the last two carrying it.
+    **U-363 /em Gate-2 adversarial pass CONFIRMED this (2026-09-03), adding one detail the note above
+    missed:** the crash defeats the purchase connector's OWN concurrent-write-race handling at
+    `integrations/intuit/qbo/purchase/connector/expense_line_item/business/service.py:202`, which relies
+    on a `None` return from `update_by_public_id` to raise a well-classified `raise_concurrent_write_race`
+    — that clean path can never fire because the service `AttributeError`-500s first. Still P3 (spurious
+    500 / misclassification, NOT money or data-loss). Minimal repro: `ExpenseLineItemService.update_by_public_id("<deleted-or-bad-pubid>", row_version="rv", description="x")` with `read_by_public_id`
+    returning `None` → `update_by_id(None)` → `AttributeError` → `DatabaseOperationError` (HTTP 500). Fix
+    is the one-line guard-clause U-363 applied to `bill_line_item`; fold into U-364.
   - `BillLineItemConnector._apply_line_fields`'s realm-self-heal guard (`if realm_id and not
     getattr(direct, "realm_id", None):`) is missing the `getattr(direct, "qbo_id", None)` qualifier
     `invoice_line_item`'s equivalent block gained in U-362b — that guard exists there because

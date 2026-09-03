@@ -1,6 +1,6 @@
 # U-362c — Invoice source-linked line recognition: collision tie-break + content-match + DROP gating (DESIGN)
 
-**Status:** Phase-1 design, awaiting `/em` Gate-2 approval. Approval dispatches the build (U-362c).
+**Status:** `/em` Gate-2 APPROVED 2026-09-03 (both §6 decisions approved by Chris: tie-break-by-content+position; DROP gated on 34070/OHR2-37). Build dispatches as U-362c.
 **Class:** P0-surface, money-primary; recognition-algorithm change → design-gated (3 iterative rounds
 converged on this root; U-362 shipped-but-halted, U-362b partial-fix-halted).
 **Origin:** /em Gate-2 adversarial workflows on U-362 + U-362b (money double-count on invoice draws).

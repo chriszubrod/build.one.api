@@ -118,7 +118,7 @@ re-expression of drift queries in `reconciliation/business/service.py`) and **co
 | 6 | bill (BillBill) | U-355 | header | 0 | base/compensation + base/identity_consistency + outbox + bill_line_item connector | heavy (solo) | queue |
 | 7 | invoice (InvoiceInvoice) | U-356 | header | **1** | reconciliation + outbox worker | hard (recon) | queue |
 | 8 | vendorcredit_line_item (…BillCreditLineItem) | U-361 | **line-item** | 0 (Map: 2 executed consumers in `vendorcredit/business/service.py`, both repointed) | — | **FOUNDATIONAL: builds `run_line_identity_fastpath_dbo_only`; two-phase** | ✅ built 2026-09-01 (Gate-2 pending) |
-| 9 | invoice_line_item (InvoiceLineItemInvoiceLine) | U-362 | line-item | 0 | invoice source-link | clone (needs #8's helper) | queue |
+| 9 | invoice_line_item (InvoiceLineItemInvoiceLine) | U-362→362b→362c | line-item | 0 | invoice source-link | clone (needs #8's helper); +3 adversarial-caught money bugs on source-linked-line collision (28,979 shared-LinkedTxn lines) | ✅ done+deployed+dropped 2026-09-03 (cd03ca84 / ACR caak; table 30,513 rows dropped) |
 | 10 | bill_line_item (BillLineItemBillLine) | U-363 | line-item | **1** | reconciliation + bill svc | hard (recon) | queue |
 | 11 | expense_line_item (PurchaseLineExpenseLineItem) | U-364 | line-item | **1** | reconciliation + purchase svc/router | hard (recon) | queue |
 

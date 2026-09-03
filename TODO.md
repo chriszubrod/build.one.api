@@ -2450,6 +2450,14 @@ with the already-shipped Manual-fingerprint matcher:
   `InvoiceLineItemSourceProvenance` row at all (`LEFT JOIN ... WHERE prov.InvoiceLineItemId IS NULL`) — if
   the count is 0 or small, this is theoretical; if not, worth a follow-up (either retry the stamp on failure,
   or widen `read_by_linked_txn` to also surface provenance-less source-linked siblings by some other signal).
+  **CENSUS RUN (2026-09-03, /em Gate-2, pre-DROP):** 645 source-linked lines have no provenance row, but
+  the TRUE at-risk slice — provless **AND** unstamped (`QboId IS NULL`) **AND** parent invoice in QBO
+  (re-pullable) — is exactly **1 line: `dbo.InvoiceLineItem` Id 30559.** The other 644: 575 have local-only
+  parents (never in QBO → no re-pull can visit them → inert), 69 are stamped (dbo-native fast-path catches
+  them first; the provenance gap only bites if `QboId` *also* regenerates). Confirmed **theoretical-in-
+  practice** and **DROP-inert** (the mapping was never read at runtime for identity — only via
+  `IF OBJECT_ID(...) IS NOT NULL`-guarded best-effort DELETEs, now no-ops). Deferred: optionally stamp
+  Id 30559's provenance from its live QBO line, or add a stranded-orphan sweep. Not a blocker.
 - [ ] **A sibling's content legitimately changing in QBO in the SAME pull cycle its `Line.Id` regenerates
   strands the original row.** The provenance fingerprint (frozen at the prior pull) no longer matches the
   incoming line's new content, so recognition correctly falls through (by design — content-match is
@@ -2468,3 +2476,17 @@ with the already-shipped Manual-fingerprint matcher:
   expose whether its pick was a genuine tie (not just "more than one candidate before filtering") for a
   caller to log/record it, which none of its 3 current callers do today. Own unit if picked up — touches
   the shared primitive's contract, not just this connector.
+
+- [ ] **OHR2-37 (dbo.Invoice 1080) carries ~15 STALE duplicate lines from the DocNumber-collision anomaly —
+  data cleanup, belongs to the DocNumber-collision reconciliation (booked 23cfbfd0), NOT the U-362c DROP.**
+  Diagnosed during the U-362c pre-DROP gate. The dbo invoice has **112 lines summing to its TotalAmount
+  ($506,884.14)** while the **live QBO invoice (QboId 75290) has only 97 lines summing to $271,800.48**.
+  The gap = **15 stale leftovers from the superseded QBO invoice**: 14 stamped with dead `QboId`s (not in
+  the live line set) + **Id 34070** (unstamped Manual, '14%', $28,869.92). 34070 is the *prior* version of
+  the "14%" overhead line; its current live twin (QboLineId 99, '14%', **$33,379.01**) is already correctly
+  stamped on **Id 33480** — so on re-pull line 99 hits 33480 and 34070 is never re-visited (NOT a duplicate-
+  mint risk; the design's original 34070 DROP-gate concern was resolved by this evidence, not by a repair —
+  stamping 34070→99 would be a wrong content-blind bind since amounts differ). The 15 stale rows overstate
+  OHR2-37's dbo total; a careful cleanup (they inflate a completed/billed invoice) should delete them under
+  the DocNumber-collision effort. **DROP-independent** — the mapping table is already gone and these rows are
+  dbo-native. `0` unstamped-dbo-lines-with-a-live-mapping existed program-wide, which is why the DROP was safe.

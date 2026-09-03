@@ -1,5 +1,28 @@
 # Session Notes
 
+## 🚀 U-362/362b/362c — invoice_line_item mapping retirement (family 9), DEPLOYED + DROPPED (2026-09-03, `/em`)
+
+Retired `qbo.InvoiceLineItemInvoiceLine` (30,513 rows) — the 9th of 11 U-349 mapping tables (`qbo.*` 23→22).
+Deployed `cd03ca84` (ACR `caak` / `287c9b0b`, 11/11 openapi green), applied `ReadInvoiceLineItemByInvoiceIdAndLinkedTxn`
+(now projects the provenance content-fingerprint columns the tie-break reads) BEFORE deploy, then dropped
+5 dbo CRUD sprocs + the table. Ships the fix for **three consecutive adversarial-workflow-caught money
+double-counts** on the 28,979-line shared-`LinkedTxn` class: the repo now returns the full sibling set and
+the connector tie-breaks by **content fingerprint + LineNum position** (content-match REQUIRED — never a
+blind rebind).
+
+### Gate-2 notes worth keeping
+- **The DROP scope's "verify live first" step earned its keep.** A naive `definition LIKE '%InvoiceLineItemInvoiceLine%'`
+  check flagged 3 extra sprocs (`ReadInvoiceLineItemsByInvoiceId`, `ProposeInvoiceSourceLinks`,
+  `ReadInvoiceSourceLinkLines`) as blockers — but they were **false positives from the table name appearing in
+  a comment**. Comment-stripped, only the 5 pure CRUD sprocs had a real body reference. (The 3 were re-homed
+  onto `dbo.InvoiceLineItemSourceProvenance` back in U-272.) Always strip comments before deciding a DROP blocker.
+- **34070 DROP-gate cleared by evidence, not repair.** Its live '14%' twin (QboLineId 99, $33,379.01) is
+  already stamped on Id 33480 → re-pull never re-mints 34070 (a stale $28,869.92 leftover). Stamping 34070→99
+  would've been a wrong content-blind bind (amounts differ). Program-wide `0` unstamped-dbo-lines-with-a-live-
+  mapping proved the DROP inert. OHR2-37's ~15 stale DocNumber-collision lines booked to TODO (23cfbfd0 effort).
+- **First mutation-proof attempt silently no-op'd** (a comment-fooled regex matched nothing → tests trivially
+  passed); redone correctly with 3 targeted mutations, each landing RED then restoring green.
+
 ## 🔨 U-297 — customer-parent reference-resolver repoint (2026-08-22, `/em`) — staged, not deployed
 
 Repointed `CustomerProjectConnector`'s **own parent-Customer lookup** (inside `sync_from_qbo_customer`)

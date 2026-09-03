@@ -90,6 +90,50 @@ INVOICE_DRAW_ROWS_SQL = """
       AND i.QboId IS NOT NULL
 """
 
+# _reconcile_bill_billable_status_drift's row source (U-363): dbo-native
+# identity JOIN, PARENT-SCOPED.
+#
+# Pre-U-363 this hopped through the qbo.BillLineItemBillLine mapping table
+# (FROM dbo.BillLineItem bli JOIN qbo.BillLineItemBillLine map ON
+#  map.BillLineItemId = bli.Id JOIN qbo.BillLine ql ON ql.Id =
+#  map.QboBillLineId JOIN qbo.Bill qb ON qb.Id = ql.QboBillId AND
+#  qb.RealmId = b.RealmId). Re-expressed off dbo.BillLineItem.QboId/RealmId
+# (U-238b — the sole identity store now that the mapping table is retired).
+#
+# A QBO line id is unique only WITHIN its parent transaction (confirmed
+# against live prod — the same invariant the connector's own identity fast
+# path relies on, see BillLineItemConnector.sync_from_qbo_bill_line): this
+# is why the JOIN resolves qb (the correct qbo.Bill staging row for THIS
+# dbo.Bill, via UQ_QboBill_QboId_RealmId) BEFORE matching ql by QboLineId
+# scoped to that qb — never a bare global QboLineId lookup, which could
+# otherwise match a different Bill's line that happens to reuse the same
+# QBO line id.
+#
+# Module-level (not inline) so a characterization test can execute THIS
+# exact text against the legacy mapping-hop query on a shared fixture DB
+# and assert the two return the same rows.
+BILL_BILLABLE_STATUS_DRIFT_ROWS_SQL = """
+    SELECT
+        b.Id AS BillId,
+        CAST(b.PublicId AS NVARCHAR(50)) AS BillPublicId,
+        b.QboId AS QboBillId,
+        b.BillNumber,
+        bli.Id AS BillLineItemId,
+        bli.Amount AS LineAmount,
+        inv.InvoiceNumber AS InvoiceNumber
+    FROM dbo.BillLineItem bli
+    JOIN dbo.Bill b ON b.Id = bli.BillId
+    JOIN qbo.Bill qb ON qb.QboId = b.QboId AND qb.RealmId = b.RealmId
+    JOIN qbo.BillLine ql ON ql.QboBillId = qb.Id AND ql.QboLineId = bli.QboId
+    LEFT JOIN dbo.InvoiceLineItem ili ON ili.BillLineItemId = bli.Id
+    LEFT JOIN dbo.Invoice inv ON inv.Id = ili.InvoiceId
+    WHERE bli.IsBilled = 1
+      AND ql.BillableStatus = 'Billable'
+      AND b.RealmId = ?
+      AND b.QboId IS NOT NULL
+      AND bli.QboId IS NOT NULL
+"""
+
 
 class ReconciliationService:
     """
@@ -466,7 +510,9 @@ class ReconciliationService:
 
         Pure SQL, no QBO API calls — same shape as reconcile_invoice_draws.
         Detectors run in this order:
-          1. Bill branch — dbo.BillLineItem -> qbo.BillLineItemBillLine -> qbo.BillLine
+          1. Bill branch — dbo.BillLineItem's own QboId/RealmId (U-363 —
+             see BILL_BILLABLE_STATUS_DRIFT_ROWS_SQL), parent-scoped to
+             qbo.Bill -> qbo.BillLine
           2. Purchase branch — dbo.ExpenseLineItem -> qbo.PurchaseLineExpenseLineItem -> qbo.PurchaseLine
 
         FLAG-ONLY: never auto-fixes, never mutates BillableStatus, never
@@ -1421,10 +1467,13 @@ class ReconciliationService:
     def _reconcile_bill_billable_status_drift(self, realm_id: str, run_id: str) -> dict:
         """
         Bill branch of the billable_status_drift detector (U-335). Scans
-        dbo.BillLineItem rows with IsBilled=1 whose mapped qbo.BillLine still
-        carries BillableStatus='Billable', aggregates to one issue per
-        drifting Bill (never per line), and dedupes against still-open issues
-        from a prior run via _unresolved_keys(DRIFT_BILLABLE_STATUS_DRIFT).
+        dbo.BillLineItem rows with IsBilled=1 whose QBO line still carries
+        BillableStatus='Billable' (U-363: dbo.BillLineItem's own QboId/RealmId
+        resolves the QBO line directly — see BILL_BILLABLE_STATUS_DRIFT_ROWS_SQL
+        for the retired qbo.BillLineItemBillLine mapping-table hop), aggregates
+        to one issue per drifting Bill (never per line), and dedupes against
+        still-open issues from a prior run via
+        _unresolved_keys(DRIFT_BILLABLE_STATUS_DRIFT).
         """
         from shared.api.money import to_decimal_or_none
         from shared.database import get_connection
@@ -1435,37 +1484,7 @@ class ReconciliationService:
 
         with get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute(
-                """
-                SELECT
-                    b.Id AS BillId,
-                    CAST(b.PublicId AS NVARCHAR(50)) AS BillPublicId,
-                    b.QboId AS QboBillId,
-                    b.BillNumber,
-                    bli.Id AS BillLineItemId,
-                    bli.Amount AS LineAmount,
-                    inv.InvoiceNumber AS InvoiceNumber
-                FROM dbo.BillLineItem bli
-                JOIN dbo.Bill b ON b.Id = bli.BillId
-                JOIN qbo.BillLineItemBillLine map ON map.BillLineItemId = bli.Id
-                JOIN qbo.BillLine ql ON ql.Id = map.QboBillLineId
-                -- Cross-check the QBO staging line's own parent realm against the
-                -- dbo-native RealmId (U-335 review finding): a mapping row left
-                -- behind by an identity-theft-clear event (see
-                -- reconciliation_recorder.py's record_identity_mapping_conflict)
-                -- could otherwise point at a DIFFERENT realm's qbo.Bill/BillLine.
-                -- That divergence is its own identity-conflict drift, already
-                -- covered elsewhere — this detector must not misattribute it.
-                JOIN qbo.Bill qb ON qb.Id = ql.QboBillId AND qb.RealmId = b.RealmId
-                LEFT JOIN dbo.InvoiceLineItem ili ON ili.BillLineItemId = bli.Id
-                LEFT JOIN dbo.Invoice inv ON inv.Id = ili.InvoiceId
-                WHERE bli.IsBilled = 1
-                  AND ql.BillableStatus = 'Billable'
-                  AND b.RealmId = ?
-                  AND b.QboId IS NOT NULL
-                """,
-                realm_id,
-            )
+            cursor.execute(BILL_BILLABLE_STATUS_DRIFT_ROWS_SQL, realm_id)
 
             groups: dict = {}
             for row in cursor.fetchall():

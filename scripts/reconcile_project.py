@@ -7,8 +7,9 @@ Four directions:
 
   1. DB -> QBO   Bills with no QBO identity stamped (dbo.Bill.QboId, U-355) are reported
                  (not pushed — use bill completion or POST /sync/bill-to-qbo to enqueue
-                 via the outbox). BillLineItems missing BillLineItemBillLine mappings are
-                 repaired by matching to QboBillLines by description + amount.
+                 via the outbox). BillLineItems with no QBO identity of their own
+                 (dbo.BillLineItem.QboId, U-363) are repaired by matching to
+                 QboBillLines by description + amount.
 
   2. QBO -> DB   Local qbo.Bill / qbo.Purchase records whose lines reference the project
                  but have no matching dbo.Bill / dbo.Expense (U-355 dbo-native QBO identity
@@ -54,7 +55,6 @@ from entities.vendor.persistence.repo import VendorRepository
 from integrations.intuit.qbo.auth.business.service import QboAuthService
 from scripts.sync_helper import assert_cli_system_admin
 from integrations.intuit.qbo.bill.connector.bill.business.service import BillBillConnector
-from integrations.intuit.qbo.bill.connector.bill_line_item.persistence.repo import BillLineItemBillLineRepository
 from integrations.intuit.qbo.bill.persistence.repo import QboBillRepository, QboBillLineRepository
 # For post-mapping SubCostCode back-fill (a direct mapping-create otherwise bypasses the
 # connector's ItemRef -> SubCostCode reconciliation, leaving the line's scc NULL).
@@ -288,11 +288,12 @@ def check_db_to_qbo(
     bills_by_id: Dict,
     line_items_by_bill_id: Dict,
     mapped_bill_ids: Set[int],
-    bill_line_item_bill_line_repo: BillLineItemBillLineRepository,
 ) -> List[str]:
-    """Check mapped bills' line items have QBO mappings.
+    """Check mapped bills' line items have their own dbo-native QBO identity
+    (U-363: dbo.BillLineItem.QboId — no more qbo.BillLineItemBillLine mapping
+    row to check).
 
-    Bill-level missing BillBill mappings are reported separately by
+    Bill-level missing QBO identity is reported separately by
     report_db_to_qbo_bills (report-only) to avoid double-counting.
     """
     issues = []
@@ -300,10 +301,10 @@ def check_db_to_qbo(
         if bill_id not in mapped_bill_ids:
             continue  # Unmapped bills: report_db_to_qbo_bills reports these
         for li in line_items_by_bill_id.get(bill_id, []):
-            if not bill_line_item_bill_line_repo.read_by_bill_line_item_id(li.id):
+            if not li.qbo_id:
                 issues.append(
                     f"  [DB->QBO] BillLineItem id={li.id} '{li.description}' "
-                    f"(bill #{bill.bill_number}) — missing BillLineItemBillLine QBO mapping"
+                    f"(bill #{bill.bill_number}) — missing QBO identity (QboId IS NULL)"
                 )
     return issues
 
@@ -336,15 +337,17 @@ def repair_qbo_line_item_mappings(
     bills_by_id: Dict,
     line_items_by_bill_id: Dict,
     qbo_bill_repo: QboBillRepository,
-    bill_line_item_bill_line_repo: BillLineItemBillLineRepository,
     qbo_bill_line_repo: QboBillLineRepository,
+    bill_line_item_repo: BillLineItemRepository,
     dry_run: bool,
     realm_id: Optional[str] = None,
 ) -> Tuple[List[str], int]:
     """
     For each bill that exists in QBO (dbo.Bill.QboId stamped, U-355) but whose line
-    items are missing BillLineItemBillLine records, match each BillLineItem to its
-    QboBillLine by description + amount and create the missing mapping.
+    items have no QBO identity of their own (dbo.BillLineItem.QboId IS NULL,
+    U-363 — no more qbo.BillLineItemBillLine mapping table), match each
+    BillLineItem to its QboBillLine by description + amount and stamp the
+    line's dbo-native identity directly.
 
     Bills with no QBO identity at all are skipped (handled by report_db_to_qbo_bills).
 
@@ -352,7 +355,6 @@ def repair_qbo_line_item_mappings(
     """
     issues = []
     repairs_count = 0
-    _bli_repo = BillLineItemRepository()
 
     for bill_id, bill in bills_by_id.items():
         if not bill.qbo_id:
@@ -364,7 +366,7 @@ def repair_qbo_line_item_mappings(
 
         unlinked = [
             li for li in line_items_by_bill_id.get(bill_id, [])
-            if not bill_line_item_bill_line_repo.read_by_bill_line_item_id(li.id)
+            if not li.qbo_id
         ]
         if not unlinked:
             continue
@@ -406,32 +408,60 @@ def repair_qbo_line_item_mappings(
 
             matched_qbo_line = candidates[0]
 
-            existing_mapping = bill_line_item_bill_line_repo.read_by_qbo_bill_line_id(matched_qbo_line.id)
-            if existing_mapping and existing_mapping.bill_line_item_id != li.id:
+            if not matched_qbo_line.qbo_line_id:
                 issues.append(
                     f"  [QBO repair] BillLineItem id={li.id} '{li.description}' "
-                    f"(bill #{bill.bill_number}) — QboBillLine id={matched_qbo_line.id} is already "
-                    f"mapped to BillLineItem id={existing_mapping.bill_line_item_id} "
+                    f"(bill #{bill.bill_number}) — matched QboBillLine id={matched_qbo_line.id} "
+                    f"has no QBO Line.Id — cannot stamp dbo-native identity"
+                )
+                continue
+
+            # Theft guard (U-363): another BillLineItem under this SAME Bill
+            # already holding this QBO line identity means the earlier match
+            # was wrong (or a duplicate from sync_from_qbo) — never steal it.
+            existing_holder = bill_line_item_repo.read_by_qbo_identity(
+                bill_id=bill_id, qbo_id=matched_qbo_line.qbo_line_id,
+            )
+            if existing_holder and existing_holder.id != li.id:
+                issues.append(
+                    f"  [QBO repair] BillLineItem id={li.id} '{li.description}' "
+                    f"(bill #{bill.bill_number}) — QboBillLine {matched_qbo_line.qbo_line_id} is already "
+                    f"held by BillLineItem id={existing_holder.id} "
                     f"(possible duplicate from sync_from_qbo)"
                 )
                 continue
 
             print(
                 f"  [QBO repair] BillLineItem id={li.id} '{li.description}' "
-                f"-> QboBillLine id={matched_qbo_line.id} (line_num={matched_qbo_line.line_num})"
+                f"-> QboBillLine {matched_qbo_line.qbo_line_id} (line_num={matched_qbo_line.line_num})"
             )
 
             if dry_run:
-                print(f"    DRY RUN: would create BillLineItemBillLine mapping")
+                print(f"    DRY RUN: would stamp dbo-native QBO identity")
                 repairs_count += 1
                 continue
 
             try:
-                bill_line_item_bill_line_repo.create(
-                    bill_line_item_id=li.id,
-                    qbo_bill_line_id=matched_qbo_line.id,
+                bill_line_item_repo.set_qbo_identity(
+                    id=li.id, qbo_id=matched_qbo_line.qbo_line_id, realm_id=realm_id,
                 )
-                print(f"    Created BillLineItemBillLine mapping")
+                # Verify the stamp actually landed — SetBillLineItemQboIdentity's
+                # atomic-pair guard silently no-ops the QboId write when neither
+                # this call's realm_id nor the row's own prior RealmId resolves
+                # (e.g. a disconnected/misconfigured QBO auth at run time, even
+                # though this Bill's own header proves the realm was once valid).
+                # A void write with no re-read would otherwise report success
+                # while leaving the row QboId IS NULL, silently re-flagged next run
+                # with no trace of this "successful" attempt.
+                restamped = bill_line_item_repo.read_by_id(li.id)
+                if not restamped or restamped.qbo_id != matched_qbo_line.qbo_line_id:
+                    issues.append(
+                        f"  [QBO repair] BillLineItem id={li.id} '{li.description}' "
+                        f"(bill #{bill.bill_number}) — stamp did not land (realm_id="
+                        f"{realm_id!r} incomplete?) — still QboId IS NULL"
+                    )
+                    continue
+                print(f"    Stamped dbo-native QBO identity")
                 repairs_count += 1
                 # Back-fill SubCostCode from the QBO line's ItemRef — the connector sets this on a
                 # normal pull, but this direct mapping-create bypasses it, leaving the line's scc
@@ -444,7 +474,7 @@ def repair_qbo_line_item_mappings(
                         )
                         if sub_cost_code:
                             li.sub_cost_code_id = coerce_id(sub_cost_code.id)
-                            _bli_repo.update_by_id(li)
+                            bill_line_item_repo.update_by_id(li)
                             print(f"    Back-filled SubCostCode {sub_cost_code.id} from ItemRef")
                 except Exception as scc_e:
                     issues.append(
@@ -947,7 +977,6 @@ def process_project(
     bill_line_item_repo: BillLineItemRepository,
     expense_repo: ExpenseRepository,
     expense_line_item_repo: ExpenseLineItemRepository,
-    bill_line_item_bill_line_repo: BillLineItemBillLineRepository,
     qbo_bill_repo: QboBillRepository,
     qbo_bill_line_repo: QboBillLineRepository,
     qbo_purchase_repo: QboPurchaseRepository,
@@ -1051,8 +1080,7 @@ def process_project(
         # from the already-loaded Bill rows, no qbo.BillBill mapping table to read.
         mapped_bill_ids = {bid for bid, b in bills_by_id.items() if b.qbo_id}
         qbo_issues = check_db_to_qbo(
-            bills_by_id, line_items_by_bill_id,
-            mapped_bill_ids, bill_line_item_bill_line_repo,
+            bills_by_id, line_items_by_bill_id, mapped_bill_ids,
         )
         for issue in qbo_issues:
             print(issue)
@@ -1067,13 +1095,13 @@ def process_project(
             mapped_bill_ids=mapped_bill_ids,
         )
 
-        # Repair BillLineItemBillLine mappings
+        # Repair missing dbo-native BillLineItem QBO identities
         repair_issues, repairs_count = repair_qbo_line_item_mappings(
             bills_by_id=bills_by_id,
             line_items_by_bill_id=line_items_by_bill_id,
             qbo_bill_repo=qbo_bill_repo,
-            bill_line_item_bill_line_repo=bill_line_item_bill_line_repo,
             qbo_bill_line_repo=qbo_bill_line_repo,
+            bill_line_item_repo=bill_line_item_repo,
             dry_run=dry_run,
             realm_id=realm_id,
         )
@@ -1209,7 +1237,6 @@ def main():
     bill_line_item_repo = BillLineItemRepository()
     expense_repo = ExpenseRepository()
     expense_line_item_repo = ExpenseLineItemRepository()
-    bill_line_item_bill_line_repo = BillLineItemBillLineRepository()
     qbo_bill_repo = QboBillRepository()
     qbo_bill_line_repo = QboBillLineRepository()
     qbo_purchase_repo = QboPurchaseRepository()
@@ -1276,7 +1303,6 @@ def main():
             bill_line_item_repo=bill_line_item_repo,
             expense_repo=expense_repo,
             expense_line_item_repo=expense_line_item_repo,
-            bill_line_item_bill_line_repo=bill_line_item_bill_line_repo,
             qbo_bill_repo=qbo_bill_repo,
             qbo_bill_line_repo=qbo_bill_line_repo,
             qbo_purchase_repo=qbo_purchase_repo,

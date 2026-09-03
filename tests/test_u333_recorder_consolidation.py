@@ -8,7 +8,6 @@ import pytest
 from integrations.intuit.qbo.attachable.connector.attachment.business.service import (
     AttachableAttachmentConnector,
 )
-from integrations.intuit.qbo.bill.connector.bill_line_item.business.service import BillLineItemConnector
 from integrations.intuit.qbo.company_info.connector.business.service import CompanyInfoCompanyConnector
 from integrations.intuit.qbo.customer.connector.customer.business.service import CustomerCustomerConnector
 from integrations.intuit.qbo.customer.connector.project.business.service import CustomerProjectConnector
@@ -55,20 +54,11 @@ _EXPECTED = {
     # _record_identity_mapping_conflict_issue (qbo.VendorCreditBillCredit is retired;
     # run_identity_fastpath_dbo_only has no mapping-table-vs-dbo conflict state left
     # to detect — dbo.BillCredit's own unique index is the sole guard now).
-    "bill_line_item": {
-        "drift_type": "bill_line_item_identity_conflict",
-        "entity_type": "BillLineItem",
-        "entity_public_id": None,
-        "qbo_id": "LINE-99",
-        "realm_id": "realm-1",
-        "details": (
-            "BillLineItemBillLine identity conflict. dbo.BillLineItem 55 carries native QBO identity "
-            "for QboBillLine 4 (QboLineId=LINE-99). qbo-side: the mapping table still binds that "
-            "same QboBillLine to a DIFFERENT BillLineItem 9 (mapping 2). local-side: BillLineItem "
-            "55's own mapping row (mapping 3) still binds it to a DIFFERENT QboBillLine 5. Not "
-            "auto-repointed — investigate which side is correct."
-        ),
-    },
+    # U-363: "bill_line_item" removed — BillLineItemConnector no longer has
+    # _record_line_identity_mapping_conflict_issue (qbo.BillLineItemBillLine is
+    # retired; run_line_identity_fastpath_dbo_only has no mapping-vs-dbo
+    # conflict state left to record). Its dbo-only orphan-line recorders are
+    # covered in tests/test_u363_bill_line_item_mapping_retire.py.
     "expense_line_item": {
         "drift_type": "expense_line_identity_conflict",
         "entity_type": "ExpenseLineItem",
@@ -219,17 +209,7 @@ def _assert_recorded(repo, expected):
 @pytest.mark.parametrize("family", list(_EXPECTED))
 def test_recorder_consolidation_emits_identical_tuple(family):
     expected = _EXPECTED[family]
-    if family == "bill_line_item":
-        c = object.__new__(BillLineItemConnector)
-        c.reconciliation_repo = Mock()
-        c._record_line_identity_mapping_conflict_issue(
-            qbo_bill_line=SimpleNamespace(id=4, qbo_line_id="LINE-99"),
-            dbo_line_id=55,
-            local_side_mapping=SimpleNamespace(id=3, bill_line_item_id=55, qbo_bill_line_id=5),
-            qbo_side_mapping=SimpleNamespace(id=2, bill_line_item_id=9, qbo_bill_line_id=4),
-            realm_id="realm-1",
-        )
-    elif family == "expense_line_item":
+    if family == "expense_line_item":
         c = object.__new__(PurchaseLineExpenseLineItemConnector)
         c.reconciliation_repo = Mock()
         c._record_line_identity_mapping_conflict_issue(

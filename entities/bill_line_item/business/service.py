@@ -1,4 +1,5 @@
 # Python Standard Library Imports
+import logging
 from typing import Optional
 from decimal import Decimal
 
@@ -12,6 +13,42 @@ from entities.bill_line_item.persistence.repo import BillLineItemRepository
 from entities.sub_cost_code.business.service import SubCostCodeService
 from entities.project.business.service import ProjectService
 from entities.bill.business.service import BillService
+
+logger = logging.getLogger(__name__)
+
+
+def _clear_legacy_bill_line_item_bill_line_mapping(bill_line_item_id: int) -> None:
+    """U-363 deploy-gap bridge for BillLineItemService.delete_by_public_id — see
+    its call site. Raw SQL, not a repo/model (both retired in this unit):
+    deletes any row in the (soon-to-be-dropped) qbo.BillLineItemBillLine table
+    that still points at this BillLineItem, so its NO ACTION FK
+    (FK_BillLineItemBillLine_BillLineItem, live since
+    scripts/migrations/u225_qbo_mapping_fk_gaps.sql) never blocks the line
+    delete below. Mirrors InvoiceLineItemService's U-362
+    _clear_legacy_invoice_line_item_invoice_line_mapping bridge exactly (same
+    OBJECT_ID-guard idiom — table-already-dropped becomes a plain SQL no-op,
+    not a caught Python exception). Once /em applies the DROP for this table,
+    this whole function becomes a permanent no-op and should be deleted (see
+    U-365, which did exactly that for the 4 header mapping tables)."""
+    from shared.database import get_connection
+
+    try:
+        with get_connection() as conn:
+            conn.cursor().execute(
+                "IF OBJECT_ID('qbo.BillLineItemBillLine', 'U') IS NOT NULL "
+                "DELETE FROM [qbo].[BillLineItemBillLine] WHERE [BillLineItemId] = ?",
+                (bill_line_item_id,),
+            )
+    except Exception as e:
+        # Only reachable now for a genuine unexpected failure (connection reset,
+        # deadlock, permissions) — table-missing no longer raises at all. Logged,
+        # not raised: best-effort only. The real safety net is the FK itself — if
+        # a mapping row really does still exist and this failed to clear it, the
+        # line delete below 547s anyway (fail-safe, not fail-silent-corruption).
+        logger.warning(
+            f"Could not clear legacy qbo.BillLineItemBillLine mapping for "
+            f"BillLineItem {bill_line_item_id}: {e}"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -176,53 +213,55 @@ class BillLineItemService:
         """
         # TODO: In Phase 10, validate tenant_id matches record's tenant
         existing = self.read_by_public_id(public_id=public_id)
-        if existing:
-            existing.row_version = row_version
-            
-            # Validate Bill exists if provided (using public_id)
-            if bill_public_id is not None:
-                bill = BillService().read_by_public_id(public_id=bill_public_id)
-                if not bill:
-                    raise ValueError(f"Bill with public_id '{bill_public_id}' not found.")
-                existing.bill_id = bill.id
-            
-            # Set SubCostCode only when provided; None PRESERVES the existing value (never clears).
-            if sub_cost_code_id is not None:
-                # Note: SubCostCodeService.read_by_id expects a string
-                sub_cost_code = SubCostCodeService().read_by_id(id=str(sub_cost_code_id))
-                if not sub_cost_code:
-                    raise ValueError(f"SubCostCode with id '{sub_cost_code_id}' not found.")
-                existing.sub_cost_code_id = sub_cost_code_id
-            
-            # Set Project only when provided; None PRESERVES the existing value (never clears — the
-            # update sproc's unconditional [ProjectId] SET receives the loaded id, so it re-writes).
-            # No clear-a-project path exists; see U-172 (won't-fix, behavior ratified by U-111).
-            if project_public_id is not None:
-                project = ProjectService().read_by_public_id(public_id=project_public_id)
-                if not project:
-                    raise ValueError(f"Project with public_id '{project_public_id}' not found.")
-                existing.project_id = project.id
-            
-            # Update fields
-            if description is not None:
-                existing.description = description
-            if quantity is not None:
-                existing.quantity = quantity
-            if rate is not None:
-                existing.rate = Decimal(str(rate))
-            if amount is not None:
-                existing.amount = Decimal(str(amount))
-            if is_billable is not None:
-                existing.is_billable = is_billable
-            if is_billed is not None:
-                existing.is_billed = is_billed
-            if markup is not None:
-                existing.markup = Decimal(str(markup))
-            if price is not None:
-                existing.price = Decimal(str(price))
-            if is_draft is not None:
-                existing.is_draft = is_draft
-            
+        if not existing:
+            return None
+
+        existing.row_version = row_version
+
+        # Validate Bill exists if provided (using public_id)
+        if bill_public_id is not None:
+            bill = BillService().read_by_public_id(public_id=bill_public_id)
+            if not bill:
+                raise ValueError(f"Bill with public_id '{bill_public_id}' not found.")
+            existing.bill_id = bill.id
+
+        # Set SubCostCode only when provided; None PRESERVES the existing value (never clears).
+        if sub_cost_code_id is not None:
+            # Note: SubCostCodeService.read_by_id expects a string
+            sub_cost_code = SubCostCodeService().read_by_id(id=str(sub_cost_code_id))
+            if not sub_cost_code:
+                raise ValueError(f"SubCostCode with id '{sub_cost_code_id}' not found.")
+            existing.sub_cost_code_id = sub_cost_code_id
+
+        # Set Project only when provided; None PRESERVES the existing value (never clears — the
+        # update sproc's unconditional [ProjectId] SET receives the loaded id, so it re-writes).
+        # No clear-a-project path exists; see U-172 (won't-fix, behavior ratified by U-111).
+        if project_public_id is not None:
+            project = ProjectService().read_by_public_id(public_id=project_public_id)
+            if not project:
+                raise ValueError(f"Project with public_id '{project_public_id}' not found.")
+            existing.project_id = project.id
+
+        # Update fields
+        if description is not None:
+            existing.description = description
+        if quantity is not None:
+            existing.quantity = quantity
+        if rate is not None:
+            existing.rate = Decimal(str(rate))
+        if amount is not None:
+            existing.amount = Decimal(str(amount))
+        if is_billable is not None:
+            existing.is_billable = is_billable
+        if is_billed is not None:
+            existing.is_billed = is_billed
+        if markup is not None:
+            existing.markup = Decimal(str(markup))
+        if price is not None:
+            existing.price = Decimal(str(price))
+        if is_draft is not None:
+            existing.is_draft = is_draft
+
         return self.repo.update_by_id(existing)
 
     def delete_by_public_id(self, public_id: str, *, tenant_id: int = None) -> Optional[BillLineItem]:
@@ -239,28 +278,16 @@ class BillLineItemService:
             for cl_entry in cl_repo.read_by_bill_line_item_id(existing.id):
                 cl_entry.bill_line_item_id = None
                 cl_repo.update_by_id(cl_entry)
-            # Clear this BillLineItem's own qbo.BillLineItemBillLine mapping row, then delete the
-            # line. BillLineItemBillLine has no FK today, so an unmapped delete silently orphans it
-            # (a future FK migration would turn that into a 547 instead). If the line delete fails
-            # for any other reason after the mapping is gone, restore it so a failed attempt never
-            # unmaps a still-live, QBO-synced line (U-241).
-            from integrations.intuit.qbo.bill.connector.bill_line_item.persistence.repo import (
-                BillLineItemBillLineRepository,
-            )
-            from integrations.intuit.qbo.base.mapping_cleanup import delete_own_qbo_mapping_before_header
-
-            _bli_bill_line_repo = BillLineItemBillLineRepository()
-
-            return delete_own_qbo_mapping_before_header(
-                read_mapping=lambda: _bli_bill_line_repo.read_by_bill_line_item_id(existing.id),
-                delete_mapping=lambda m: _bli_bill_line_repo.delete_by_id(m.id),
-                recreate_mapping=lambda m: _bli_bill_line_repo.create(
-                    bill_line_item_id=m.bill_line_item_id, qbo_bill_line_id=m.qbo_bill_line_id
-                ),
-                delete_header=lambda: self.repo.delete_by_id(existing.id),
-                entity_label="BillLineItem",
-                entity_id=existing.id,
-                # on_restore_failed=None: see mapping_cleanup.py's on_restore_failed docstring (U-241).
-                on_restore_failed=None,
-            )
+            # U-363: qbo.BillLineItemBillLine's CONNECTOR (mapping_repo,
+            # create_mapping, the legacy fastpath's mapping fallback) is retired
+            # — dbo.BillLineItem.QboId/RealmId (U-238b) is the sole identity store
+            # going forward. The TABLE itself is not dropped by this unit (that's
+            # a separate /em-run post-deploy step), and it carries a live NO
+            # ACTION FK onto this one (FK_BillLineItemBillLine_BillLineItem,
+            # added by scripts/migrations/u225_qbo_mapping_fk_gaps.sql) — so a
+            # still-mapped row's delete WOULD 547 without this bridge. Correcting
+            # this comment's prior claim: that FK did not exist when this delete
+            # path was first written, but it does now.
+            _clear_legacy_bill_line_item_bill_line_mapping(existing.id)
+            return self.repo.delete_by_id(existing.id)
         return None

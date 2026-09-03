@@ -420,6 +420,12 @@ class BillBillConnector:
 
         line_connector = BillLineItemConnector()
 
+        # U-363: computed ONCE per bill (not per-line) — the dbo-only line fast
+        # path's readopt step needs the full set of this pull's CURRENT QBO line
+        # ids to tell a genuinely stale-identity orphan (safe to re-adopt) apart
+        # from a line correctly bound elsewhere in this same bill (never steal).
+        live_qbo_line_ids = frozenset(line.qbo_line_id for line in qbo_bill_lines if line.qbo_line_id)
+
         # Attempt EVERY line (so the log enumerates all problems in one pass), collect
         # failures, then RAISE if any failed. The Bill header total was already written
         # from QBO, so swallowing a per-line failure would leave a silently unbalanced
@@ -428,7 +434,7 @@ class BillBillConnector:
         failed = []
         for qbo_line in qbo_bill_lines:
             try:
-                line_connector.sync_from_qbo_bill_line(bill_id, qbo_line, realm_id)
+                line_connector.sync_from_qbo_bill_line(bill_id, qbo_line, live_qbo_line_ids, realm_id)
             except Exception as e:
                 logger.error(f"Failed to sync QboBillLine {qbo_line.id} to BillLineItem: {e}")
                 failed.append((qbo_line.id, str(e)))
@@ -644,11 +650,10 @@ class BillBillConnector:
             )
             logger.info(f"Stored local QboBill {local_qbo_bill.id}")
 
-        # Store QboBillLines locally and create line item mappings
+        # Store QboBillLines locally and stamp each BillLineItem's dbo-native
+        # QBO identity directly (U-363 — no more qbo.BillLineItemBillLine
+        # mapping row to create).
         if created_bill.line:
-            from integrations.intuit.qbo.bill.connector.bill_line_item.business.service import BillLineItemConnector
-            line_connector = BillLineItemConnector()
-
             existing_lines_by_qbo_line_id = {
                 line.qbo_line_id: line
                 for line in self.qbo_bill_line_repo.read_by_qbo_bill_id(local_qbo_bill.id)
@@ -664,18 +669,44 @@ class BillBillConnector:
                 if not stored_line:
                     stored_line = self._store_qbo_bill_line(local_qbo_bill.id, qbo_line)
 
-                # Create BillLineItem <-> QboBillLine mapping using line_num match
+                # Stamp the matching BillLineItem's dbo-native QBO identity using
+                # line_num match (U-363: qbo_line.id here is the real QBO Line.Id
+                # from the create-Bill API response, not a staging PK).
                 if stored_line and qbo_line.line_num and qbo_line.line_num in line_num_to_line_item_id:
                     bill_line_item_id = line_num_to_line_item_id[qbo_line.line_num]
-                    stored_line_id = coerce_id(stored_line.id)
                     try:
-                        line_connector.create_mapping(
-                            bill_line_item_id=bill_line_item_id,
-                            qbo_bill_line_id=stored_line_id,
+                        self.bill_line_item_service.repo.set_qbo_identity(
+                            id=bill_line_item_id, qbo_id=qbo_line.id, realm_id=realm_id,
                         )
-                        logger.info(f"Created line mapping: BillLineItem {bill_line_item_id} <-> QboBillLine {stored_line_id}")
-                    except ValueError as e:
-                        logger.warning(f"Could not create line mapping: {e}")
+                        # Verify the stamp actually landed — set_qbo_identity is a void
+                        # write, and SetBillLineItemQboIdentity's atomic-pair guard can
+                        # silently no-op the QboId write when realm can't resolve (see
+                        # scripts/reconcile_project.py's identical verify-then-report
+                        # shape). This Bill was JUST successfully created in QBO — an
+                        # unverified silent no-op here would leave a real, live-in-QBO
+                        # line with no dbo-native identity and no visibility into it.
+                        restamped = self.bill_line_item_service.repo.read_by_id(bill_line_item_id)
+                        if not restamped or restamped.qbo_id != qbo_line.id:
+                            record_mapping_issue(
+                                self.reconciliation_repo,
+                                drift_type="bli_line_push_stamp_failed",
+                                entity_type="BillLineItem",
+                                entity_public_id=str(restamped.public_id) if restamped and restamped.public_id else None,
+                                qbo_id=str(qbo_line.id),
+                                realm_id=realm_id or "",
+                                details=(
+                                    f"BillLineItem {bill_line_item_id} was just pushed to QBO as "
+                                    f"part of Bill {bill_id} (QboBillLine {qbo_line.id}), but its "
+                                    f"dbo-native identity stamp did not land (realm_id={realm_id!r} "
+                                    f"incomplete?) — the line exists live in QBO but this row still "
+                                    f"reads QboId IS NULL. Needs manual stamping or a "
+                                    f"backfill_qbo_identity_lines.py run."
+                                ),
+                            )
+                        else:
+                            logger.info(f"Stamped dbo-native QBO identity: BillLineItem {bill_line_item_id} <-> QboBillLine {qbo_line.id}")
+                    except Exception as e:
+                        logger.warning(f"Could not stamp BillLineItem {bill_line_item_id} QBO identity: {e}")
 
         # Stamp dbo-native identity — the sole identity store now (U-355)
         self.bill_service.repo.set_qbo_identity(

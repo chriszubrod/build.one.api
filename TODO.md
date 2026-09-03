@@ -2310,16 +2310,29 @@ Design: `docs/design/u357-unified-status-review-status.md` (§9 = 24 open decisi
   (parent-scoped — never join a line by QboId alone) and drop the mapping sentence.
 - [ ] **`rollback_orphan_header` is now also the line-level compensating delete** (U-361 wires it from the
   bill_credit_line_item connector with a no-op `delete_mapping`; U-362 clones the same shape onto
-  invoice_line_item). Name + log text still say "header"/"mapping"; once U-363–364 clone the shape too,
-  rename to a neutral `rollback_orphan_row(delete_row, ...)` and drop the now-universally-no-op
-  `delete_mapping` parameter (every remaining caller passes `lambda: None`).
-- [ ] **`_record_orphan_line_issue` is now the 6th hand-copy of the orphan-recorder shape** (after the 4
-  header connectors' `_record_orphan_header_issue` + U-361's bill_credit_line_item copy; U-362 added
-  invoice_line_item's as the 6th, explicitly against this TODO's own prior instruction not to — the
-  extraction kept getting deferred past each individual line-family unit and the debt compounded). Fold
-  into the booked deploy-gap-bridge / recorder extraction when it lands — do NOT add a 7th copy in
-  U-363/364 without lifting it this time; if U-363 lands before the extraction, treat the extraction as
-  a hard prerequisite, not another deferral.
+  invoice_line_item; U-363 clones it a 3rd time onto bill_line_item). Name + log text still say
+  "header"/"mapping"; U-363/U-364 is now this entry's own "once ... clone the shape too" trigger fully
+  met (3 of the eventual 4 line families) — rename to a neutral `rollback_orphan_row(delete_row, ...)` and
+  drop the now-universally-no-op `delete_mapping` parameter (every remaining caller passes `lambda: None`)
+  once U-364 lands too, or sooner as its own small unit. Not done in U-363 itself (unlike the
+  orphan-recorder extraction above, this entry never carried "hard prerequisite" language for U-363
+  specifically — a rename touches every header connector too, a materially larger blast radius than the
+  recorder extraction).
+- [x] **DONE (U-363, 2026-09-03): `_record_orphan_line_issue`/`_record_readopt_stamp_failed_issue`/
+  `_record_create_failed_issue` extracted** into `integrations/intuit/qbo/base/line_orphan_recorder.py`
+  (`record_orphan_line_issue`/`record_readopt_stamp_failed_issue`/`record_create_failed_issue`,
+  parameterized on `drift_type`/`entity_type`/`parent_label`/`parent_id`) — the hard prerequisite this
+  entry required before U-363 could add a 7th hand-copy. All three existing connectors repointed onto it
+  in the same unit (not left as more copies): `bill_credit_line_item` (U-361), `invoice_line_item`
+  (U-362), and the new `bill_line_item` (U-363) — 9 hand-copies collapsed to 3 shared functions + 9 thin
+  call sites. `drift_type` stays a literal STRING at each connector's call site (not a `DRIFT_*` constant
+  reference) — this mirrors `record_identity_mapping_conflict`/`record_duplicate_identity_conflict`'s own
+  existing convention exactly, required by `tests/test_qbo_reconciliation_recorder.py`'s AST width-guard
+  (`_string_literal` only resolves `ast.Constant`, not a `Name` reference to an imported constant); the
+  new module joins that scanner's `_SKIP_FILES` (same reason `reconciliation_recorder.py` itself is
+  skipped) and its 3 function names join `_WRITER_FN_NAMES`. `_MIN_CALL_SITES` unchanged at 39 (same 9
+  call sites, just via the wrapper names now). `expense_line_item` (U-364) should repoint onto this same
+  module when it clones the shape — do not add a 10th hand-copy.
 - [ ] **Delete `tests/test_u341_create_mapping_then_stamp.py`'s per-family expectation for
   `bill_credit_line_item` once the other 3 line families retire their mappings** — `create_mapping_then_stamp`
   and `stamp_line_identity_or_warn`'s create-path role end with the last line mapping (U-364); the HIT-path
@@ -2413,6 +2426,117 @@ inappropriate to fold into an emergency P0 patch:
   deleting a `LineEntitySpec`/`FlatEntitySpec` registry row, require a one-line prod query proving zero
   "unstamped but still-mapped" rows exist for that family — not prose-only "TEMPORARY, re-remove later"
   discipline. Process/tooling change, not a code fix; own unit if adopted.
+
+## U-363 follow-ups (qbo.BillLineItemBillLine retirement, 2026-09-03) — deferred, non-blocking
+
+- [ ] **`LINE_ENTITY_SPECS`' `bill_line_item` row (and the 3 script consumers that key off it —
+  `scripts/backfill_qbo_identity_lines.py`, `scripts/check_qbo_identity_drift_lines.py`,
+  `scripts/audit_dangling_qbo_mappings.py`) were deliberately NOT pruned in this unit**, per U-362b's
+  own follow-up recommendation directly above: prove zero "mapped but unstamped" `dbo.BillLineItem` rows
+  exist in prod BEFORE removing the row that lets `backfill_qbo_identity_lines.py --entity bill_line_item`
+  heal any that do — U-362b found 70 such rows for `invoice_line_item` by checking first rather than
+  assuming U-361's prune-immediately precedent was safe to repeat blindly. **/em: run
+  `PYTHONPATH=. ./.venv/bin/python scripts/backfill_qbo_identity_lines.py --entity bill_line_item --mode
+  missing` (dry-run, read-only) as part of this unit's Gate-2 runbook — if 0 rows, prune the registry row +
+  the 3 scripts' `bill_line_item` entries in a quick follow-up; if >0, run `--apply` first (mirrors U-362b),
+  THEN prune.**
+- [ ] **The 5 ops/diagnostic scripts that query `qbo.BillLineItemBillLine` directly via raw SQL** (not
+  through the now-deleted `BillLineItemBillLineRepository` Python class, so none of them broke in this
+  unit) — `scripts/fix_duplicate_bill_line_items.py`, `scripts/analyze_rc_source_fingerprint.py`,
+  `scripts/verify_propose_invoice_source_links_tier0.py`, `scripts/heal_halfbuilt_missing.py`,
+  `scripts/cleanup_halfbuilt_dups.py` — keep working as-is against the still-live table, and become
+  permanent no-ops (not errors — their queries just return empty) once /em applies the eventual DROP.
+  Out of this unit's scope (none of them touch the live pull/push path); worth a sweep to delete or
+  repoint whichever are still useful once the table is gone, alongside the DROP itself.
+- [ ] **`_clear_legacy_bill_line_item_bill_line_mapping` (`entities/bill_line_item/business/service.py`)
+  and `_clear_legacy_bill_line_item_bill_line_mapping_by_qbo_line_id` (`integrations/intuit/qbo/bill/
+  business/service.py`) become permanent no-ops once /em applies the `qbo.BillLineItemBillLine` DROP** —
+  same U-353/U-362/U-365 lifecycle as every other deploy-gap bridge in this program. Delete both (and
+  their 3 call sites: the entity delete path, `_upsert_bill_lines`' stale-line cleanup, and
+  `_reconcile_deleted_bills`' Step 1) in the same pass that eventually cleans up U-361/U-362's analogous
+  bridges, not before the DROP actually lands.
+- [ ] **`_fingerprint` (`bill_line_item`, this unit) is now the 4th near-identical hand-copy of the
+  Decimal-canonicalization-for-fingerprint-matching shape** — after `bill_credit_line_item`'s own
+  `_fingerprint` (U-361), `invoice_line_item`'s `_normalize_for_fingerprint` (U-362, which also carries
+  U-362c's negative-zero `+ 0` fix — a fix the other 3 copies don't have and would need hand-applying if
+  ever exercised by a negative-Decimal input). All 4 (soon a 5th, `expense_line_item`/U-364) do the exact
+  same `Decimal(...).normalize()` dance under a different method name. Extract once into `base/` (e.g.
+  `line_orphan_adopt.py`, which already owns `find_stale_identity_orphan` — the ONLY consumer of this
+  normalization) — own unit, not done here (mirrors this same TODO's treatment of the orphan-recorder
+  shape before its own hard-prerequisite lift: don't lift preemptively mid-clone-unit without deciding to,
+  but flag it explicitly this time so it doesn't silently reach a 5th/6th copy the way the recorder did).
+- [ ] **`_reconcile_deleted_bills` Step 1 now labels "BillLineItemBillLine mapping" as a destructive action
+  for EVERY line iterated**, not only when a mapping row actually existed (the pre-U-363 code checked
+  `read_by_qbo_bill_line_id` first and only appended the label on a hit). The new best-effort bridge has
+  no return value signaling whether it deleted anything, so `record_partial_delete_issue`'s audit-trail
+  `mapping_label` field now overstates what was actually cleared on any bill whose lines were never mapped
+  to begin with (increasingly common as the connector stops creating new mappings going forward).
+  Cosmetic/diagnostic only — the actual delete behavior is correct — but worth a small follow-up either
+  fixing the bridge to return a bool, or simply dropping the per-line label append now that "the mapping
+  might exist" is no longer worth naming specifically (the FK guard is the real safety net either way).
+- [ ] **Two efficiency findings, both matching the ALREADY-ESTABLISHED U-361/U-362 pattern (not unique to
+  this unit, so not fixed here — own unit if adopted, would touch all 3-4 line families uniformly):** (1)
+  both deploy-gap bridges (`_clear_legacy_bill_line_item_bill_line_mapping[_by_qbo_line_id]`) open a fresh
+  `get_connection()` per LINE inside a per-bill loop rather than batching one `DELETE ... WHERE id IN
+  (...)` per bill — same shape U-362's invoice bridges already ship; (2) `_readopt_stale_line`'s
+  `read_by_bill_id(bill_id)` call re-fetches the WHOLE bill's line items on every single MISS instead of
+  once per bill (mirrors `_sync_line_items`'s own `live_qbo_line_ids` hoisting one level up, which the
+  readopt step doesn't share) — same shape as `bill_credit_line_item`'s `_readopt_stale_line` and
+  `invoice_line_item`'s equivalent. Both become O(1)-per-bill with a small refactor threading the
+  pre-fetched line list down from `_sync_line_items`, same fix shape across every family at once.
+- [ ] **Pass-2 (`/simplify`) findings, deferred as own-unit cross-cutting fixes (not unique to this unit's
+  diff, would touch shared infra or all 3-4 line families uniformly):**
+  - `entities/bill_line_item/persistence/repo.py::set_qbo_identity` (and its per-entity siblings for
+    bill_credit_line_item/invoice_line_item/expense_line_item) discards the row its own
+    `SetBillLineItemQboIdentity`-family sproc already computes and returns (`@Id, @FinalQboId,
+    @FinalRealmId, @Stolen` — the sproc's own comment says this reflects "what's actually stored, not
+    the raw input params"), forcing every caller that needs to verify a stamp landed (this unit added
+    2 such callers: `scripts/reconcile_project.py`'s repair function and `BillBillConnector.sync_to_qbo_bill`'s
+    push-path stamp, both new) to pay for a SECOND round trip re-deriving what the first call's own
+    response already had. `bill_credit_line_item`/`invoice_line_item`'s existing `_stamp_line_identity`
+    closures already independently re-read for the identical reason (U-361/U-362). Root-cause fix: have
+    `set_qbo_identity` return the row instead of `None`, once, for all 4 families' repos + every call
+    site — not done here to avoid changing an established `-> None` contract mid-unit for 3 already-
+    shipped call sites this unit doesn't otherwise touch.
+  - `tests/test_qbo_reconciliation_recorder.py::_string_literal` only resolves `ast.Constant`, never a
+    `Name` reference to an imported `drift_types.*` constant — this is WHY every per-connector
+    `record_mapping_issue`/`record_identity_mapping_conflict`/`record_duplicate_identity_conflict`/(now)
+    `record_orphan_line_issue`-family call site must pass a bare string literal instead of the named
+    `DRIFT_*` constant `drift_types.py` itself declares for exactly this drift type — 2 independent
+    sources of truth (the constant, used only for `KNOWN_DRIFT_TYPES` membership + the reconciler's own
+    internal calls; the literal, hand-retyped at every connector call site) for the same string, with
+    nothing forcing them to stay in sync beyond code review. Real fix: teach `_string_literal` to also
+    resolve a `Name`/`Attribute` node against `drift_types.py`'s module namespace (a handful of lines in
+    the scanner) so every call site can use the named constant instead — a scanner change, not touched
+    here since it's shared test infrastructure well outside this unit's diff.
+  - `entities/expense_line_item/business/service.py:177`'s `update_by_public_id` has the IDENTICAL
+    missing-early-return bug this unit fixed in `bill_line_item`'s own copy (`if existing:` wraps the
+    field-set block but `return self.repo.update_by_id(existing)` sits OUTSIDE it — a concurrent-delete
+    `None` falls through to `update_by_id(None)`, raising an opaque `AttributeError`-derived
+    `DatabaseOperationError` instead of returning `None` cleanly). This is a LIVE, present-day hazard on
+    ANY ordinary PATCH racing a concurrent DELETE — not something U-364 (expense_line_item's own eventual
+    dbo-only repoint) introduces, and not gated on that unit landing. Worth its own small fix independent
+    of U-364's timeline. **Confirmed NOT present** in `bill_credit_line_item`/`invoice_line_item` (both
+    already have the `if not existing: return None` early guard, presumably fixed during their own U-361/
+    U-362 units) — `bill_line_item` (this unit) and `expense_line_item` were the last two carrying it.
+  - `BillLineItemConnector._apply_line_fields`'s realm-self-heal guard (`if realm_id and not
+    getattr(direct, "realm_id", None):`) is missing the `getattr(direct, "qbo_id", None)` qualifier
+    `invoice_line_item`'s equivalent block gained in U-362b — that guard exists there because
+    `invoice_line_item`'s `apply_fields` closure is shared between the HIT branch (always has a qbo_id by
+    construction) AND the readopt branch (a Manual-fingerprint-matched candidate can be entirely
+    unstamped), and without it a genuinely-unstamped readopt candidate gets redundantly stamped here AND
+    again by `stamp_identity` right after — harmless (the sproc's own idempotent CASE-WHEN) but a wasted
+    round trip, and it conflates "legacy realm gap" with "never stamped at all." The identical shared-
+    apply_fields-between-HIT-and-readopt shape applies to `bill_line_item` too (confirmed: `read_by_bill_id`
+    used by `_readopt_stale_line` returns ALL lines under the bill regardless of QboId, so an unstamped
+    orphan — e.g. left behind by a prior rollback-failure recorded as `orphan_bli_line_item` — CAN be
+    picked up by a later pull's fingerprint match) — not fixed here since it's a pure efficiency nit
+    (never a correctness issue: `stamp_line_identity_or_warn` cannot raise, so nothing "escapes"
+    `apply_fields" the way U-362b's own comment worries about), and `bill_credit_line_item`'s copy
+    (U-361, unmodified by this unit) doesn't have the guard either — a 3-way inconsistency across the
+    family that a shared realm-self-heal helper (see the `_fingerprint` extraction note above — same
+    `base/line_orphan_adopt.py` would be the natural home) should resolve uniformly rather than patching
+    one family at a time.
 
 ## Found during iOS Simulator QA sweep (2026-09-02) — not fixed, scope was test-data cleanup only
 

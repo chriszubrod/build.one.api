@@ -243,7 +243,9 @@ BEGIN
         [IsBilled],
         [Markup],
         [Price],
-        [IsDraft]
+        [IsDraft],
+        [QboId],
+        [RealmId]
     FROM dbo.[BillLineItem]
     WHERE [PublicId] = @PublicId;
 
@@ -280,7 +282,9 @@ BEGIN
         [IsBilled],
         [Markup],
         [Price],
-        [IsDraft]
+        [IsDraft],
+        [QboId],
+        [RealmId]
     FROM dbo.[BillLineItem]
     WHERE [BillId] = @BillId
     ORDER BY [CreatedDatetime] DESC;
@@ -348,7 +352,9 @@ BEGIN
         INSERTED.[IsBilled],
         INSERTED.[Markup],
         INSERTED.[Price],
-        INSERTED.[IsDraft]
+        INSERTED.[IsDraft],
+        INSERTED.[QboId],
+        INSERTED.[RealmId]
     WHERE [Id] = @Id AND [RowVersion] = @RowVersion;
 
     COMMIT TRANSACTION;

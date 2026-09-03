@@ -73,6 +73,11 @@ DRIFT_SUB_COST_CODE_IDENTITY_CONFLICT = "sub_cost_code_identity_conflict"
 DRIFT_BILL_IDENTITY_CONFLICT = "bill_identity_conflict"
 DRIFT_EXPENSE_IDENTITY_CONFLICT = "expense_identity_conflict"
 DRIFT_INVOICE_IDENTITY_CONFLICT = "invoice_identity_conflict"
+# U-363: this constant's only writer (BillLineItemConnector's mapping-vs-dbo
+# conflict recorder) was retired with qbo.BillLineItemBillLine —
+# run_line_identity_fastpath_dbo_only has no conflict state left to record.
+# Historical rows may still carry the value; nothing writes it any more.
+# Mirrors U-361/U-362's identical treatment of the bcli/ili conflict types.
 DRIFT_BILL_LINE_ITEM_IDENTITY_CONFLICT = "bill_line_item_identity_conflict"
 # The other 3 line families' full "<family>_line_item_identity_conflict" name
 # exceeds the live qbo.ReconciliationIssue.DriftType NVARCHAR(32) column width
@@ -96,6 +101,19 @@ DRIFT_EXPENSE_LINE_ITEM_IDENTITY_CONFLICT = "expense_line_identity_conflict"
 DRIFT_ORPHAN_ILI_LINE_ITEM = "orphan_ili_line_item"
 DRIFT_ILI_LINE_READOPT_FAILED = "ili_line_readopt_failed"
 DRIFT_ILI_LINE_CREATE_FAILED = "ili_line_create_failed"
+# U-363: dbo-only line fast path recorders for bill_line_item (readopt-
+# failure / create-failure / rollback-failure), mirroring U-361b/U-362's
+# identical 3-constant shape (DRIFT_ORPHAN_BCLI_LINE_ITEM / DRIFT_ORPHAN_ILI_
+# LINE_ITEM above).
+DRIFT_ORPHAN_BLI_LINE_ITEM = "orphan_bli_line_item"
+DRIFT_BLI_LINE_READOPT_FAILED = "bli_line_readopt_failed"
+DRIFT_BLI_LINE_CREATE_FAILED = "bli_line_create_failed"
+# U-363 altitude-review finding: BillBillConnector.sync_to_qbo_bill's push-path
+# line stamp (a bare set_qbo_identity, no mapping row left to fall back on) can
+# silently no-op the same way the pull-path's dbo-only fast path already
+# guards against — the Bill is genuinely already live in QBO by this point, so
+# this is a flag-for-follow-up, not a refuse/rollback scenario.
+DRIFT_BLI_LINE_PUSH_STAMP_FAILED = "bli_line_push_stamp_failed"
 
 KNOWN_DRIFT_TYPES: FrozenSet[str] = frozenset({
     DRIFT_QBO_MISSING_LOCALLY, DRIFT_LOCAL_MISSING_QBO, DRIFT_STALE_SYNC_TOKEN,
@@ -124,4 +142,6 @@ KNOWN_DRIFT_TYPES: FrozenSet[str] = frozenset({
     DRIFT_EXPENSE_IDENTITY_CONFLICT, DRIFT_INVOICE_IDENTITY_CONFLICT,
     DRIFT_BILL_LINE_ITEM_IDENTITY_CONFLICT, DRIFT_EXPENSE_LINE_ITEM_IDENTITY_CONFLICT,
     DRIFT_ORPHAN_ILI_LINE_ITEM, DRIFT_ILI_LINE_READOPT_FAILED, DRIFT_ILI_LINE_CREATE_FAILED,
+    DRIFT_ORPHAN_BLI_LINE_ITEM, DRIFT_BLI_LINE_READOPT_FAILED, DRIFT_BLI_LINE_CREATE_FAILED,
+    DRIFT_BLI_LINE_PUSH_STAMP_FAILED,
 })

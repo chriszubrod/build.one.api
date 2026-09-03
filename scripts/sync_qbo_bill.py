@@ -37,7 +37,6 @@ from integrations.intuit.qbo.bill.persistence.repo import QboBillRepository, Qbo
 from integrations.intuit.qbo.base.identity_drift import HEADER_ENTITY_SPECS, read_qbo_identity_rows_by_realm_id
 from integrations.intuit.qbo.auth.business.service import QboAuthService
 from integrations.intuit.qbo.attachable.business.service import QboAttachableService
-from integrations.intuit.qbo.bill.connector.bill_line_item.persistence.repo import BillLineItemBillLineRepository
 from entities.bill.business.service import BillService
 from entities.bill_line_item.business.service import BillLineItemService
 from entities.bill_line_item_attachment.business.service import BillLineItemAttachmentService

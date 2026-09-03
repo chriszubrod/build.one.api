@@ -112,8 +112,22 @@ _SQL_COLUMN_WIDTH_RE = re.compile(
 # issue ("orphan_ili_line_item"), _record_readopt_stamp_failed_issue
 # ("ili_line_readopt_failed"), _record_create_failed_issue
 # ("ili_line_create_failed"). 35->37.
-_MIN_CALL_SITES = 37
-_SKIP_FILES = frozenset({"reconciliation_recorder.py"})
+# U-363: cloned the identical shape onto bill_line_item. Net -1+1+1+1: removed
+# BillLineItemConnector._record_line_identity_mapping_conflict_issue
+# ("bill_line_item_identity_conflict" — no mapping-vs-dbo conflict state left
+# once qbo.BillLineItemBillLine is retired), added the same 3 dbo-only
+# recorders: _record_orphan_line_issue ("orphan_bli_line_item"),
+# _record_readopt_stamp_failed_issue ("bli_line_readopt_failed"),
+# _record_create_failed_issue ("bli_line_create_failed"). 37->39. Same unit's
+# Pass-2 altitude review then found BillBillConnector.sync_to_qbo_bill's new
+# push-path line stamp (replacing the old create_mapping()) had no failure
+# visibility at all — added one more record_mapping_issue call
+# ("bli_line_push_stamp_failed") for a stamp that silently doesn't land on an
+# already-live-in-QBO line. 39->40. Recomputed programmatically at a clean
+# checkout (discover_reconciliation_issue_write_literals() == 40), not
+# hand-counted, per the standing U-354 protocol.
+_MIN_CALL_SITES = 40
+_SKIP_FILES = frozenset({"reconciliation_recorder.py", "line_orphan_recorder.py"})
 _DEFAULT_KWARGS = {
     "severity": "critical",
     "action": _ACTION_DEFAULT,
@@ -206,6 +220,16 @@ _WRITER_FN_NAMES = frozenset({
     "record_mapping_issue",
     "record_identity_mapping_conflict",
     "record_duplicate_identity_conflict",
+    # U-363: base/line_orphan_recorder.py's 3 shared per-line-family wrappers
+    # (the hard-prerequisite extraction of the orphan-line-recorder shape out
+    # of bill_credit_line_item/invoice_line_item/bill_line_item's 9 hand-
+    # copies) — same "wrapper forwards a variable, callers pass literals"
+    # shape as record_identity_mapping_conflict/record_duplicate_identity_
+    # conflict above, so the writer set and the file skip below both need the
+    # matching entry.
+    "record_orphan_line_issue",
+    "record_readopt_stamp_failed_issue",
+    "record_create_failed_issue",
 })
 
 

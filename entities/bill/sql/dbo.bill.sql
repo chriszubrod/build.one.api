@@ -653,28 +653,24 @@ GO
 -- =====================================================================
 -- ReadBillQboLinkInfo — bill-level (one QBO bill per dbo.Bill in practice).
 -- =====================================================================
--- Walks dbo.Bill → dbo.BillLineItem → qbo.BillLineItemBillLine →
--- qbo.BillLine → qbo.Bill to fetch the Intuit (QboId, RealmId) used to
--- construct the QBO web URL. Returns at most one row.
---
--- A bill is "synced" once at least one line item has been pushed to QBO.
--- We pick the qbo.Bill with the lowest Id (oldest) to be stable across
--- re-sync churn. Returns empty if no line item is mapped yet.
+-- U-363: reads dbo.Bill's own QboId/RealmId directly (U-355 — the sole
+-- identity store for the header). Pre-U-363 this walked dbo.BillLineItem ->
+-- qbo.BillLineItemBillLine -> qbo.BillLine -> qbo.Bill to reach the same
+-- (QboId, RealmId) pair via a line item's mapping — a needless hop now that
+-- the header carries its own identity. Output column names (QboId,
+-- QboRealmId) are unchanged, so the caller (BillRepository.read_qbo_link_info)
+-- needed no update. Returns empty if the bill has never been pushed to QBO.
 
 CREATE OR ALTER PROCEDURE dbo.ReadBillQboLinkInfo (@BillId BIGINT)
 AS
 BEGIN
     SET NOCOUNT ON;
-    SELECT TOP 1
-        qb.[QboId]    AS QboId,
-        qb.[RealmId]  AS QboRealmId
-    FROM dbo.[BillLineItem] bli
-    INNER JOIN qbo.[BillLineItemBillLine] map ON map.[BillLineItemId] = bli.[Id]
-    INNER JOIN qbo.[BillLine] qbline           ON qbline.[Id] = map.[QboBillLineId]
-    INNER JOIN qbo.[Bill] qb                   ON qb.[Id] = qbline.[QboBillId]
-    WHERE bli.[BillId] = @BillId
-      AND qb.[QboId] IS NOT NULL
-    ORDER BY qb.[Id] ASC;
+    SELECT
+        b.[QboId]    AS QboId,
+        b.[RealmId]  AS QboRealmId
+    FROM dbo.[Bill] b
+    WHERE b.[Id] = @BillId
+      AND b.[QboId] IS NOT NULL;
 END;
 GO
 

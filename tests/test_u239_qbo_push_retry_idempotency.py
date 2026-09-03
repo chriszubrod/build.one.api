@@ -187,15 +187,20 @@ def test_sync_to_qbo_bill_first_create_stores_local_mirror_and_lines():
     connector.qbo_bill_repo.read_by_qbo_id_and_realm_id.return_value = None
     connector.qbo_bill_repo.create.return_value = created_local_bill
     connector.qbo_bill_line_repo.read_by_qbo_bill_id.return_value = []
+    # U-363: the push-path line stamp verifies via a re-read (same shape as
+    # scripts/reconcile_project.py's repair function) — stub it to reflect a
+    # landed stamp so this test exercises the success path, not the
+    # verification-failure branch a bare MagicMock would otherwise fall into.
+    connector.bill_line_item_service.repo.read_by_id.return_value = SimpleNamespace(
+        id=line_item.id, public_id="line-pub", qbo_id=created_bill.line[0].id, realm_id=REALM_ID,
+    )
 
     prereqs = _patch_bill_sync_prereqs(connector, line_item)
     with prereqs[0], prereqs[1], prereqs[2], prereqs[3], patch(
         "integrations.intuit.qbo.bill.connector.bill.business.service.QboBillClient"
     ) as client_cls, patch.object(
         connector, "_store_qbo_bill_line", return_value=created_local_line
-    ) as store_line_mock, patch(
-        "integrations.intuit.qbo.bill.connector.bill_line_item.business.service.BillLineItemConnector"
-    ) as line_connector_cls:
+    ) as store_line_mock:
         client_cls.return_value.__enter__.return_value.create_bill.return_value = created_bill
 
         result = connector.sync_to_qbo_bill(bill=bill, realm_id=REALM_ID)
@@ -206,10 +211,60 @@ def test_sync_to_qbo_bill_first_create_stores_local_mirror_and_lines():
     )
     connector.qbo_bill_repo.create.assert_called_once()
     store_line_mock.assert_called_once_with(LOCAL_QBO_BILL_ID, created_bill.line[0])
-    line_connector_cls.return_value.create_mapping.assert_called_once()
+    # U-363: no more qbo.BillLineItemBillLine mapping row — the matching
+    # BillLineItem's dbo-native identity is stamped directly by line_num match.
+    connector.bill_line_item_service.repo.set_qbo_identity.assert_called_once_with(
+        id=line_item.id, qbo_id=created_bill.line[0].id, realm_id=REALM_ID,
+    )
     connector.bill_service.repo.set_qbo_identity.assert_called_once_with(
         id=7, qbo_id=QBO_BILL_ID, realm_id=REALM_ID, sync_token="0"
     )
+    connector.reconciliation_repo.create.assert_not_called()  # stamp verified landed
+
+
+def test_sync_to_qbo_bill_first_create_records_issue_when_line_stamp_does_not_land():
+    """U-363 altitude-review fix: the push-path line stamp is a void write that
+    can silently no-op (SetBillLineItemQboIdentity's atomic-pair guard) — the
+    Bill is genuinely already live in QBO by this point, so a failed stamp
+    must be flagged (ReconciliationIssue), not silently swallowed the way the
+    old create_mapping()'s bare try/except would have let it slide."""
+    connector = _make_bill_connector()
+    bill, line_item = _make_bill_and_line_item()
+    bill.qbo_id = None
+    created_bill = _make_created_qbo_bill()
+
+    created_local_bill = SimpleNamespace(
+        id=LOCAL_QBO_BILL_ID, qbo_id=QBO_BILL_ID, realm_id=REALM_ID, sync_token="0",
+    )
+    created_local_line = SimpleNamespace(id=LOCAL_QBO_BILL_LINE_ID)
+
+    connector.qbo_bill_repo.read_by_qbo_id_and_realm_id.return_value = None
+    connector.qbo_bill_repo.create.return_value = created_local_bill
+    connector.qbo_bill_line_repo.read_by_qbo_bill_id.return_value = []
+    # The stamp call itself doesn't raise, but the re-read shows the row still
+    # unstamped — the atomic-pair guard silently declined (e.g. realm_id came
+    # back empty from _get_ap_account_ref's own realm resolution).
+    connector.bill_line_item_service.repo.read_by_id.return_value = SimpleNamespace(
+        id=line_item.id, public_id="line-pub", qbo_id=None, realm_id=None,
+    )
+
+    prereqs = _patch_bill_sync_prereqs(connector, line_item)
+    with prereqs[0], prereqs[1], prereqs[2], prereqs[3], patch(
+        "integrations.intuit.qbo.bill.connector.bill.business.service.QboBillClient"
+    ) as client_cls, patch.object(
+        connector, "_store_qbo_bill_line", return_value=created_local_line
+    ):
+        client_cls.return_value.__enter__.return_value.create_bill.return_value = created_bill
+
+        result = connector.sync_to_qbo_bill(bill=bill, realm_id=REALM_ID)
+
+    assert result is created_local_bill  # the push itself still succeeds/returns
+    connector.reconciliation_repo.create.assert_called_once()
+    kwargs = connector.reconciliation_repo.create.call_args.kwargs
+    assert kwargs["drift_type"] == "bli_line_push_stamp_failed"
+    assert kwargs["entity_type"] == "BillLineItem"
+    assert kwargs["qbo_id"] == created_bill.line[0].id
+    assert "still reads QboId IS NULL" in kwargs["details"]
 
 
 def _make_invoice_connector(*, current_qbo_id=None, current_realm_id=None, verify_hit_id=None):

@@ -278,8 +278,6 @@ def test_bill_reconcile_deletes_only_confirmed():
         "integrations.intuit.qbo.base.delete_reconcile.strict_confirmed_deleted_ids",
         return_value={"42"},
     ), patch(
-        "integrations.intuit.qbo.bill.connector.bill_line_item.persistence.repo.BillLineItemBillLineRepository"
-    ), patch(
         "entities.bill.business.service.BillService"
     ) as bill_svc_cls:
         bill_svc_cls.return_value.read_by_qbo_identity.return_value = None

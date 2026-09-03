@@ -16,7 +16,11 @@ from integrations.intuit.qbo.base.identity_drift import stamp_line_identity_or_w
 from integrations.intuit.qbo.base.identity_fastpath import run_line_identity_fastpath_dbo_only
 from integrations.intuit.qbo.base.ids import coerce_id
 from integrations.intuit.qbo.base.line_orphan_adopt import find_stale_identity_orphan
-from integrations.intuit.qbo.base.reconciliation_recorder import record_mapping_issue
+from integrations.intuit.qbo.base.line_orphan_recorder import (
+    record_create_failed_issue,
+    record_orphan_line_issue,
+    record_readopt_stamp_failed_issue,
+)
 from integrations.intuit.qbo.base.cost_code_resolver import resolve_dbo_sub_cost_code
 from integrations.intuit.qbo.reconciliation.persistence.repo import ReconciliationIssueRepository
 
@@ -279,9 +283,16 @@ class VendorCreditLineItemConnector:
                 delete_mapping=lambda: None,
                 entity_label="BillCreditLineItem",
                 entity_id=candidate.id,
-                on_header_delete_failed=lambda exc: self._record_orphan_line_issue(
-                    line_item=candidate, qbo_line=qbo_line, bill_credit_id=bill_credit_id,
-                    realm_id=realm_id, exc=exc,
+                on_header_delete_failed=lambda exc: record_orphan_line_issue(
+                    self.reconciliation_repo,
+                    drift_type="orphan_bcli_line_item",
+                    entity_type="BillCreditLineItem",
+                    line_item=candidate,
+                    qbo_line_id=qbo_line.qbo_line_id,
+                    parent_label="BillCredit",
+                    parent_id=bill_credit_id,
+                    realm_id=realm_id,
+                    exc=exc,
                 ),
             )
 
@@ -297,107 +308,31 @@ class VendorCreditLineItemConnector:
             stamp_identity=_stamp_line_identity,
             rollback_candidate=_rollback_line,
             apply_fields=_apply_line_fields,
-            on_readopt_stamp_failed=lambda readopted, exc: self._record_readopt_stamp_failed_issue(
-                line_item=readopted, qbo_line=qbo_line, bill_credit_id=bill_credit_id,
-                realm_id=realm_id, exc=exc,
+            on_readopt_stamp_failed=lambda readopted, exc: record_readopt_stamp_failed_issue(
+                self.reconciliation_repo,
+                drift_type="bcli_line_readopt_failed",
+                entity_type="BillCreditLineItem",
+                line_item=readopted,
+                qbo_line_id=qbo_line.qbo_line_id,
+                parent_label="BillCredit",
+                parent_id=bill_credit_id,
+                realm_id=realm_id,
+                exc=exc,
             ),
-            on_create_failed=lambda exc: self._record_create_failed_issue(
-                qbo_line=qbo_line, bill_credit_id=bill_credit_id, realm_id=realm_id, exc=exc,
+            on_create_failed=lambda exc: record_create_failed_issue(
+                self.reconciliation_repo,
+                drift_type="bcli_line_create_failed",
+                entity_type="BillCreditLineItem",
+                qbo_line_id=qbo_line.qbo_line_id,
+                parent_label="BillCredit",
+                parent_id=bill_credit_id,
+                realm_id=realm_id,
+                exc=exc,
             ),
         )
         # qbo_line_id is guaranteed truthy above, so the helper's only hit=False
         # outcome is unreachable here and hit=True never carries entity=None.
         return outcome.entity
-
-    def _record_orphan_line_issue(
-        self,
-        *,
-        line_item: BillCreditLineItem,
-        qbo_line: QboVendorCreditLine,
-        bill_credit_id: int,
-        realm_id: Optional[str],
-        exc: Exception,
-    ) -> None:
-        record_mapping_issue(
-            self.reconciliation_repo,
-            drift_type="orphan_bcli_line_item",
-            entity_type="BillCreditLineItem",
-            entity_public_id=str(line_item.public_id) if getattr(line_item, "public_id", None) else None,
-            qbo_id=str(qbo_line.qbo_line_id) if qbo_line.qbo_line_id else None,
-            realm_id=realm_id or "",
-            details=(
-                f"Compensating rollback failed to delete unstamped BillCreditLineItem "
-                f"{line_item.id} ({getattr(line_item, 'public_id', None)}) on BillCredit "
-                f"{bill_credit_id} after its identity stamp for QboVendorCreditLine "
-                f"{qbo_line.qbo_line_id} failed: {exc}. The orphan is invisible to the "
-                f"dbo-native fast path, so every re-pull will mint a duplicate line until "
-                f"it is deleted or stamped by hand."
-            ),
-        )
-
-    def _record_readopt_stamp_failed_issue(
-        self,
-        *,
-        line_item: BillCreditLineItem,
-        qbo_line: QboVendorCreditLine,
-        bill_credit_id: int,
-        realm_id: Optional[str],
-        exc: Exception,
-    ) -> None:
-        """`on_readopt_stamp_failed` (U-361b): a stale-identity orphan was found
-        and matched, but re-applying/re-stamping it failed. NOTHING is deleted —
-        the row stays exactly as it was, under its OLD identity. Recorded so a
-        human knows this credit will keep re-adopting on retry rather than
-        silently double-counting forever (which is what would happen if this
-        went unnoticed and a future create-only regression reappeared)."""
-        record_mapping_issue(
-            self.reconciliation_repo,
-            drift_type="bcli_line_readopt_failed",
-            entity_type="BillCreditLineItem",
-            entity_public_id=str(line_item.public_id) if getattr(line_item, "public_id", None) else None,
-            qbo_id=str(qbo_line.qbo_line_id) if qbo_line.qbo_line_id else None,
-            realm_id=realm_id or "",
-            details=(
-                f"Found a stale-identity orphan BillCreditLineItem {line_item.id} "
-                f"({getattr(line_item, 'public_id', None)}) on BillCredit {bill_credit_id} "
-                f"matching QboVendorCreditLine {qbo_line.qbo_line_id} by content fingerprint, "
-                f"but re-adopting it failed: {exc}. The row was left UNTOUCHED under its "
-                f"previous identity (never deleted) - this credit will keep retrying the "
-                f"readopt on every re-pull until it succeeds or is resolved by hand."
-            ),
-        )
-
-    def _record_create_failed_issue(
-        self,
-        *,
-        qbo_line: QboVendorCreditLine,
-        bill_credit_id: int,
-        realm_id: Optional[str],
-        exc: Exception,
-    ) -> None:
-        """`on_create_failed` (U-361b P2 hardening): `resolve_candidate` (the
-        fresh-create path) raised. If the underlying INSERT actually committed
-        before the failure (e.g. a connection drop between the write landing
-        and the driver reading the result back), there is no candidate
-        reference to identify or delete - this is only a DETECTABILITY signal,
-        not a claim that a row exists. A human/reconciliation sweep for
-        BillCreditLineItem rows with QboId IS NULL under a stamped BillCredit
-        is what would actually confirm or refute it."""
-        record_mapping_issue(
-            self.reconciliation_repo,
-            drift_type="bcli_line_create_failed",
-            entity_type="BillCreditLineItem",
-            entity_public_id=None,
-            qbo_id=str(qbo_line.qbo_line_id) if qbo_line.qbo_line_id else None,
-            realm_id=realm_id or "",
-            details=(
-                f"Creating a new BillCreditLineItem for QboVendorCreditLine "
-                f"{qbo_line.qbo_line_id} on BillCredit {bill_credit_id} failed: {exc}. If the "
-                f"underlying write actually committed before this failure, an unstamped "
-                f"(QboId IS NULL) orphan may exist under this BillCredit - not confirmed by "
-                f"this record alone, but worth a manual check."
-            ),
-        )
 
     @staticmethod
     def _fingerprint(value) -> str:

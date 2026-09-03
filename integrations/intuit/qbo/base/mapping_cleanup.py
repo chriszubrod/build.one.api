@@ -2,11 +2,15 @@
 delete then fails, the mapping is best-effort restored so a failed attempt never unmaps
 a still-live, QBO-synced row (U-226/U-241/U-243).
 
-Live callers: the three line-item delete services (BillLineItem, InvoiceLineItem,
-ExpenseLineItem — U-241). Header deletes (Bill, BillCredit, Expense, Invoice) no longer
-need it — dbo.<Entity>.QboId/RealmId are plain columns that die with the row, once each
-header's own qbo.* mapping table was retired (U-353..U-356) and, finally, dropped
-(U-365 deleted the four deploy-gap bridges that bridged the retire-to-DROP window)."""
+Live caller: ExpenseLineItem's delete service (U-241) — the last line family still on
+this shared clear-then-restore helper. BillLineItem (U-363) and InvoiceLineItem (U-362)
+each moved to their own OBJECT_ID-guarded deploy-gap bridge instead (a plain best-effort
+clear, no restore-on-failure — the mapping row is retirement debris, not load-bearing
+data, so a failed restore has no functional consequence once dbo-native identity is the
+sole store). Header deletes (Bill, BillCredit, Expense, Invoice) no longer need it either
+— dbo.<Entity>.QboId/RealmId are plain columns that die with the row, once each header's
+own qbo.* mapping table was retired (U-353..U-356) and, finally, dropped (U-365 deleted
+the four deploy-gap bridges that bridged the retire-to-DROP window)."""
 import logging
 
 from integrations.intuit.qbo.base.locking import qbo_app_lock

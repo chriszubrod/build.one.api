@@ -16,7 +16,11 @@ from integrations.intuit.qbo.base.identity_fastpath import (
 )
 from integrations.intuit.qbo.base.ids import coerce_id
 from integrations.intuit.qbo.base.line_orphan_adopt import find_stale_identity_orphan
-from integrations.intuit.qbo.base.reconciliation_recorder import record_mapping_issue
+from integrations.intuit.qbo.base.line_orphan_recorder import (
+    record_create_failed_issue,
+    record_orphan_line_issue,
+    record_readopt_stamp_failed_issue,
+)
 from integrations.intuit.qbo.reconciliation.persistence.repo import ReconciliationIssueRepository
 
 logger = logging.getLogger(__name__)
@@ -414,9 +418,16 @@ class InvoiceLineItemConnector:
                 delete_mapping=lambda: None,
                 entity_label="InvoiceLineItem",
                 entity_id=candidate.id,
-                on_header_delete_failed=lambda exc: self._record_orphan_line_issue(
-                    line_item=candidate, qbo_invoice_line=qbo_invoice_line, invoice_id=invoice_id,
-                    realm_id=realm_id, exc=exc,
+                on_header_delete_failed=lambda exc: record_orphan_line_issue(
+                    self.reconciliation_repo,
+                    drift_type="orphan_ili_line_item",
+                    entity_type="InvoiceLineItem",
+                    line_item=candidate,
+                    qbo_line_id=qbo_invoice_line.qbo_line_id,
+                    parent_label="Invoice",
+                    parent_id=invoice_id,
+                    realm_id=realm_id,
+                    exc=exc,
                 ),
             )
 
@@ -432,12 +443,26 @@ class InvoiceLineItemConnector:
             stamp_identity=_stamp_line_identity,
             rollback_candidate=_rollback_line,
             apply_fields=_apply_line_fields,
-            on_readopt_stamp_failed=lambda readopted, exc: self._record_readopt_stamp_failed_issue(
-                line_item=readopted, qbo_invoice_line=qbo_invoice_line, invoice_id=invoice_id,
-                realm_id=realm_id, exc=exc,
+            on_readopt_stamp_failed=lambda readopted, exc: record_readopt_stamp_failed_issue(
+                self.reconciliation_repo,
+                drift_type="ili_line_readopt_failed",
+                entity_type="InvoiceLineItem",
+                line_item=readopted,
+                qbo_line_id=qbo_invoice_line.qbo_line_id,
+                parent_label="Invoice",
+                parent_id=invoice_id,
+                realm_id=realm_id,
+                exc=exc,
             ),
-            on_create_failed=lambda exc: self._record_create_failed_issue(
-                qbo_invoice_line=qbo_invoice_line, invoice_id=invoice_id, realm_id=realm_id, exc=exc,
+            on_create_failed=lambda exc: record_create_failed_issue(
+                self.reconciliation_repo,
+                drift_type="ili_line_create_failed",
+                entity_type="InvoiceLineItem",
+                qbo_line_id=qbo_invoice_line.qbo_line_id,
+                parent_label="Invoice",
+                parent_id=invoice_id,
+                realm_id=realm_id,
+                exc=exc,
             ),
         )
         # qbo_line_id is guaranteed truthy above, so the helper's only hit=False
@@ -563,78 +588,6 @@ class InvoiceLineItemConnector:
         return (
             cls._normalize_for_fingerprint(description),
             cls._normalize_for_fingerprint(amount),
-        )
-
-    def _record_orphan_line_issue(
-        self, *, line_item: InvoiceLineItem, qbo_invoice_line: QboInvoiceLine, invoice_id: int,
-        realm_id: Optional[str], exc: Exception,
-    ) -> None:
-        record_mapping_issue(
-            self.reconciliation_repo,
-            drift_type="orphan_ili_line_item",
-            entity_type="InvoiceLineItem",
-            entity_public_id=str(line_item.public_id) if getattr(line_item, "public_id", None) else None,
-            qbo_id=str(qbo_invoice_line.qbo_line_id) if qbo_invoice_line.qbo_line_id else None,
-            realm_id=realm_id or "",
-            details=(
-                f"Compensating rollback failed to delete unstamped InvoiceLineItem "
-                f"{line_item.id} ({getattr(line_item, 'public_id', None)}) on Invoice "
-                f"{invoice_id} after its identity stamp for QboInvoiceLine "
-                f"{qbo_invoice_line.qbo_line_id} failed: {exc}. The orphan is invisible "
-                f"to the dbo-native fast path, so every re-pull will mint a duplicate "
-                f"line until it is deleted or stamped by hand."
-            ),
-        )
-
-    def _record_readopt_stamp_failed_issue(
-        self, *, line_item: InvoiceLineItem, qbo_invoice_line: QboInvoiceLine, invoice_id: int,
-        realm_id: Optional[str], exc: Exception,
-    ) -> None:
-        """`on_readopt_stamp_failed` (U-361b shape): a stale-identity orphan was
-        found and matched, but re-applying/re-stamping it failed. NOTHING is
-        deleted — the row stays exactly as it was, under its OLD identity.
-        Recorded so a human knows this invoice will keep re-adopting on retry
-        rather than silently double-counting draws forever."""
-        record_mapping_issue(
-            self.reconciliation_repo,
-            drift_type="ili_line_readopt_failed",
-            entity_type="InvoiceLineItem",
-            entity_public_id=str(line_item.public_id) if getattr(line_item, "public_id", None) else None,
-            qbo_id=str(qbo_invoice_line.qbo_line_id) if qbo_invoice_line.qbo_line_id else None,
-            realm_id=realm_id or "",
-            details=(
-                f"Found a stale-identity orphan InvoiceLineItem {line_item.id} "
-                f"({getattr(line_item, 'public_id', None)}) on Invoice {invoice_id} "
-                f"matching QboInvoiceLine {qbo_invoice_line.qbo_line_id} by content "
-                f"fingerprint, but re-adopting it failed: {exc}. The row was left "
-                f"UNTOUCHED under its previous identity (never deleted) - this invoice "
-                f"will keep retrying the readopt on every re-pull until it succeeds or "
-                f"is resolved by hand."
-            ),
-        )
-
-    def _record_create_failed_issue(
-        self, *, qbo_invoice_line: QboInvoiceLine, invoice_id: int, realm_id: Optional[str], exc: Exception,
-    ) -> None:
-        """`on_create_failed` (U-361b P2 hardening shape): `resolve_candidate`
-        (the fresh-create path) raised. If the underlying INSERT actually
-        committed before the failure, there is no candidate reference to
-        identify or delete - this is only a DETECTABILITY signal, not a claim
-        that a row exists."""
-        record_mapping_issue(
-            self.reconciliation_repo,
-            drift_type="ili_line_create_failed",
-            entity_type="InvoiceLineItem",
-            entity_public_id=None,
-            qbo_id=str(qbo_invoice_line.qbo_line_id) if qbo_invoice_line.qbo_line_id else None,
-            realm_id=realm_id or "",
-            details=(
-                f"Creating a new InvoiceLineItem for QboInvoiceLine "
-                f"{qbo_invoice_line.qbo_line_id} on Invoice {invoice_id} failed: {exc}. If "
-                f"the underlying write actually committed before this failure, an "
-                f"unstamped (QboId IS NULL) orphan may exist under this Invoice - not "
-                f"confirmed by this record alone, but worth a manual check."
-            ),
         )
 
     @staticmethod

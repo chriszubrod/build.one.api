@@ -206,13 +206,14 @@ class BillRepository:
 
     def read_qbo_link_info(self, bill_id: int) -> Optional[dict]:
         """
-        Read the Intuit (QboId, RealmId) for the bill's first QBO-synced
-        line item — used by the service to build a deep link to the bill
-        in the QuickBooks Online web app.
+        Read the Intuit (QboId, RealmId) for the bill header — used by the
+        service to build a deep link to the bill in the QuickBooks Online
+        web app.
 
-        Returns None when no line item is mapped to QBO yet (i.e. the
-        bill has been drafted locally but not pushed). Powered by
-        `dbo.ReadBillQboLinkInfo`.
+        Returns None when the bill itself has no QboId stamped yet (i.e. it
+        has been drafted locally but not pushed). Powered by
+        `dbo.ReadBillQboLinkInfo`, which reads `dbo.Bill.QboId`/`.RealmId`
+        directly (U-363 — no more line-item mapping-table hop).
         """
         try:
             with get_connection() as conn:

@@ -7,6 +7,7 @@ from typing import Any, Dict, Optional
 from integrations.ms.base.client import DEFAULT_BASE_URL, MsGraphClient
 from integrations.ms.base.errors import MsGraphError, build_error_envelope
 from integrations.ms.base.locking import ms_app_lock
+from integrations.ms.base.paths import encode_path_segment
 
 logger = logging.getLogger(__name__)
 
@@ -442,7 +443,7 @@ def upload_small_file(
     try:
         with MsGraphClient() as client:
             item = client.upload(
-                f"drives/{drive_id}/items/{parent_item_id}:/{filename}:/content",
+                f"drives/{drive_id}/items/{parent_item_id}:/{encode_path_segment(filename)}:/content",
                 content=content,
                 content_type=content_type,
                 method="PUT",
@@ -481,7 +482,7 @@ def upload_large_file(
     try:
         with MsGraphClient() as client:
             session = client.post(
-                f"drives/{drive_id}/items/{parent_item_id}:/{filename}:/createUploadSession",
+                f"drives/{drive_id}/items/{parent_item_id}:/{encode_path_segment(filename)}:/createUploadSession",
                 json={
                     "item": {
                         "@microsoft.graph.conflictBehavior": "replace",
@@ -625,7 +626,7 @@ def create_folder(drive_id: str, parent_item_id: str, folder_name: str) -> dict:
             try:
                 with MsGraphClient() as client:
                     existing = client.get(
-                        f"drives/{drive_id}/items/{parent_item_id}:/{folder_name}",
+                        f"drives/{drive_id}/items/{parent_item_id}:/{encode_path_segment(folder_name)}",
                         operation_name="driveitem.get_by_path",
                     )
                 return {

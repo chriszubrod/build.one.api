@@ -396,6 +396,7 @@ class MsOutboxWorker:
         import httpx
 
         from integrations.ms.base.client import MsGraphClient
+        from integrations.ms.base.paths import encode_path_segment
 
         drive_id = payload["drive_id"]
         parent_item_id = payload["parent_item_id"]
@@ -408,7 +409,7 @@ class MsOutboxWorker:
         if not upload_url:
             with MsGraphClient() as client:
                 session = client.post(
-                    f"drives/{drive_id}/items/{parent_item_id}:/{filename}:/createUploadSession",
+                    f"drives/{drive_id}/items/{parent_item_id}:/{encode_path_segment(filename)}:/createUploadSession",
                     json={
                         "item": {
                             "@microsoft.graph.conflictBehavior": "replace",

@@ -4,7 +4,7 @@ import types
 from contextlib import contextmanager
 from decimal import Decimal
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pyodbc
 import pytest
@@ -44,6 +44,21 @@ def mock_qbo_app_lock_denied(*_args, **_kwargs):
     mirror-image of `mock_qbo_app_lock_granted`; import this instead of
     hand-rolling another local `yield False` copy (U-337 simplify pass)."""
     yield False
+
+
+def mock_ms_graph_client_cm(return_value=None):
+    """A MsGraphClient()-as-context-manager double: `__enter__` returns the
+    same mock so `with MsGraphClient() as client: client.upload(...)` calls
+    land on it and can be asserted via `client.upload.call_args`/`.post`/`.get`.
+    Import this instead of hand-rolling another local copy."""
+    instance = MagicMock()
+    instance.__enter__.return_value = instance
+    instance.__exit__.return_value = False
+    if return_value is not None:
+        instance.upload.return_value = return_value
+        instance.post.return_value = return_value
+        instance.get.return_value = return_value
+    return instance
 
 
 @pytest.fixture

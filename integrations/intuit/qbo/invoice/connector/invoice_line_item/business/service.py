@@ -14,7 +14,7 @@ from integrations.intuit.qbo.base.compensation import rollback_orphan_header
 from integrations.intuit.qbo.base.identity_fastpath import (
     run_line_identity_fastpath_dbo_only,
 )
-from integrations.intuit.qbo.base.ids import coerce_id
+from integrations.intuit.qbo.base.ids import coerce_id, normalize_qbo_id
 from integrations.intuit.qbo.base.line_orphan_adopt import find_stale_identity_orphan
 from integrations.intuit.qbo.base.reconciliation_recorder import record_mapping_issue
 from integrations.intuit.qbo.reconciliation.persistence.repo import ReconciliationIssueRepository
@@ -227,7 +227,7 @@ class InvoiceLineItemConnector:
                     f"(concurrent write race)"
                 )
                 return None
-            if realm_id and not getattr(direct, "realm_id", None):
+            if realm_id and getattr(direct, "qbo_id", None) and not getattr(direct, "realm_id", None):
                 # Legacy realm gap (U-293-dw): the row was found by its QboId but
                 # never got the RealmId half of the atomic pair. Heal it once,
                 # best-effort — a failure here must not fail the line (the row
@@ -237,6 +237,18 @@ class InvoiceLineItemConnector:
                 # try/except (base/identity_fastpath.py's _readopt), so an
                 # uncaught raise here would skip on_readopt_stamp_failed
                 # entirely instead of being recorded.
+                # The `direct.qbo_id` guard (U-362b) scopes this to an already-
+                # PARTIALLY-stamped row specifically — a HIT is always one by
+                # construction (read_by_qbo_identity only returns rows WHERE
+                # QboId = @QboId), but a readopted candidate (U-362b's
+                # provenance recognition, or the pre-existing Manual-fingerprint
+                # match) can be entirely unstamped (QboId AND RealmId both
+                # None); without this guard, that case redundantly double-
+                # stamps here AND in stamp_identity right after — harmless
+                # (the sproc's own idempotent CASE-WHEN makes the second call a
+                # no-op) but a wasted round trip, and it muddies "legacy realm
+                # gap" (this branch's real intent) with "never stamped at all"
+                # (stamp_identity's job, exclusively, below).
                 try:
                     self.invoice_line_item_service.repo.set_qbo_identity(
                         id=coerce_id(updated.id), qbo_id=qbo_invoice_line.qbo_line_id, realm_id=realm_id,
@@ -276,17 +288,31 @@ class InvoiceLineItemConnector:
 
         def _readopt_stale_line() -> Optional[InvoiceLineItem]:
             """
-            `readopt_candidate` for the MISS branch (U-361b's shared matcher,
-            cloned): find a local Manual InvoiceLineItem under this Invoice
-            whose current identity is stale (not in `live_qbo_line_ids`) and
-            whose (description, amount) fingerprint matches this QBO line —
-            identical selection to the pre-U-362 `_find_and_match_manual_by_
-            fingerprint` (task #17), generalized onto the shared
-            `find_stale_identity_orphan` (base/line_orphan_adopt.py) so
-            U-362/363/364 share the SAME matcher rather than hand-copying it.
+            `readopt_candidate` for the MISS branch: two recognition steps,
+            tried in order, feeding the SAME apply_fields -> stamp_identity
+            pipeline (both are "reuse this dbo.Id, never mint a sibling").
+
+            1. Source-linked recognition (U-362b, any SourceType != Manual) —
+               tried FIRST, see `_recognize_source_linked_line`'s own
+               docstring.
+            2. Manual-only fingerprint readopt (U-361b's shared matcher,
+               cloned) — find a local Manual InvoiceLineItem under this
+               Invoice whose current identity is stale (not in
+               `live_qbo_line_ids`) and whose (description, amount)
+               fingerprint matches this QBO line — identical selection to
+               the pre-U-362 `_find_and_match_manual_by_fingerprint` (task
+               #17), generalized onto the shared `find_stale_identity_orphan`
+               (base/line_orphan_adopt.py) so U-362/363/364 share the SAME
+               matcher rather than hand-copying it.
+
             Pure lookup: no field writes here — the primitive applies
             `apply_fields` to whatever this returns before stamping.
             """
+            recognized = self._recognize_source_linked_line(
+                invoice_id, qbo_invoice_line, live_qbo_line_ids,
+            )
+            if recognized is not None:
+                return recognized
             return find_stale_identity_orphan(
                 existing_lines=_manual_line_candidates(),
                 live_qbo_line_ids=live_qbo_line_ids,
@@ -409,6 +435,63 @@ class InvoiceLineItemConnector:
         # qbo_line_id is guaranteed truthy above, so the helper's only hit=False
         # outcome is unreachable here and hit=True never carries entity=None.
         return outcome.entity
+
+    def _recognize_source_linked_line(
+        self, invoice_id: int, qbo_invoice_line: QboInvoiceLine, live_qbo_line_ids: frozenset,
+    ) -> Optional[InvoiceLineItem]:
+        """
+        U-362b: dbo-native replacement for the OTHER job the retired
+        qbo.InvoiceLineItemInvoiceLine mapping used to do — recognizing that a
+        re-pulled QBO invoice line already corresponds to an EXISTING local
+        InvoiceLineItem created by the billing/complete flow and linked to its
+        source (SourceType=BillLineItem/ExpenseLineItem/BillCreditLineItem,
+        via `LinkInvoiceLineItemSource`), NOT by this pull path. Without this,
+        a source-linked line whose dbo.QboId was never stamped (a gap the
+        backfill closes for the 70 rows found live, 2026-09-02) MISSes on
+        every future pull, is correctly excluded from the Manual-only readopt
+        pool (it isn't Manual), and `_create_line` mints a phantom Manual
+        sibling with the same amount — a straight invoice-draw double-count.
+
+        Recognition key: (InvoiceId, LinkedTxnType, LinkedTxnId) — the U-272
+        source-provenance mirror (`InvoiceLineItemSourceProvenance`,
+        `_stamp_source_provenance_or_warn`) already writes this on every
+        touch. (`entities/invoice/sql/dbo.invoice.sql`'s `ProposeInvoiceSource
+        Links`/`ReadInvoiceSourceLinkLines` already read the same table for a
+        DIFFERENT question — "which local Bill/Expense line is THIS invoice
+        line's source" — this method answers "does an incoming QBO invoice
+        line correspond to an EXISTING local InvoiceLineItem"; not the same
+        lookup, but see that sproc if this one's shape ever needs to change.)
+        Stable across a QBO Line.Id regeneration, unlike the line id itself.
+        Returns None (falls through to the Manual-only fingerprint readopt)
+        when the incoming line carries no LinkedTxn — nothing to recognize
+        by — or when nothing matches. Not restricted to a particular
+        SourceType: a Manual line that happens to carry a real LinkedTxn
+        (rare, but the schema doesn't forbid it) is a MORE precise match here
+        than the Manual-fingerprint fallback would give it, so recognizing it
+        via this path first is strictly better, not a scope violation.
+
+        Same theft guard as `find_stale_identity_orphan` — including the same
+        `normalize_qbo_id` normalization that guard depends on (this codebase
+        has a documented str-vs-int QBO id-keyspace history, see that
+        function's own docstring): a matched candidate whose CURRENT identity
+        is in `live_qbo_line_ids` is correctly bound to a DIFFERENT live QBO
+        line in this same pull and must never be stolen (extreme edge case —
+        would mean the one-LinkedTxn-per-line invariant broke elsewhere — but
+        guarded anyway).
+        """
+        linked_txn_type = qbo_invoice_line.linked_txn_type
+        linked_txn_id = qbo_invoice_line.linked_txn_id
+        if not linked_txn_type or not linked_txn_id:
+            return None
+        candidate = self.invoice_line_item_service.read_by_linked_txn(
+            invoice_id, linked_txn_type, linked_txn_id,
+        )
+        if candidate is None:
+            return None
+        live_ids = frozenset(normalize_qbo_id(qbo_id) for qbo_id in live_qbo_line_ids)
+        if normalize_qbo_id(getattr(candidate, "qbo_id", None)) in live_ids:
+            return None
+        return candidate
 
     def _record_orphan_line_issue(
         self, *, line_item: InvoiceLineItem, qbo_invoice_line: QboInvoiceLine, invoice_id: int,

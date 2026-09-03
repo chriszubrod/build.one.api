@@ -49,11 +49,16 @@ logger = logging.getLogger("audit_dangling_qbo_mappings")
 # U-361: "bill_credit_line_item" was removed for the same reason — qbo.VendorCredit
 # LineItemBillCreditLineItem is retired (the first line-item family) and its
 # LineEntitySpec row is gone from LINE_ENTITY_SPECS, so `spec_by_key[...]` below
-# would KeyError if left in. U-362: "invoice_line_item" removed the same way
-# (qbo.InvoiceLineItemInvoiceLine retired). U-363/U-364 remove the other two.
+# would KeyError if left in. U-363/U-364 remove the other two when their tables drop.
+# U-362b: "invoice_line_item" restored — U-362 removed it, then U-362b found the
+# registry row (and this key) still needed live: qbo.InvoiceLineItemInvoiceLine
+# is NOT dropped yet, and this audit is part of how a dangling mapping (the exact
+# money-double-count precursor U-362b fixed) gets caught. TEMPORARY: re-remove
+# once /em's post-backfill DROP lands.
 _AUDIT_SPEC_KEYS: tuple[str, ...] = (
     "bill_line_item",
     "expense_line_item",
+    "invoice_line_item",
 )
 
 

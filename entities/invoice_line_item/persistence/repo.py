@@ -177,6 +177,57 @@ class InvoiceLineItemRepository:
             logger.error(f"Error during read invoice line item by QBO identity: {error}")
             raise map_database_error(error)
 
+    def read_by_linked_txn(
+        self, invoice_id: int, linked_txn_type: str, linked_txn_id: str
+    ) -> Optional[InvoiceLineItem]:
+        """
+        Read an invoice line item by its U-272 source-provenance linkage
+        (InvoiceLineItemSourceProvenance.LinkedTxnType/LinkedTxnId), scoped to
+        its parent Invoice — U-362b's dbo-native replacement for the retired
+        qbo.InvoiceLineItemInvoiceLine mapping hop that used to let a re-pulled
+        QBO invoice line find its way back to an existing SOURCE-LINKED local
+        line (SourceType != Manual). Stable across a QBO Line.Id regeneration,
+        unlike the line id itself.
+
+        The key is NOT DB-enforced unique (InvoiceLineItemSourceProvenance
+        only constrains one row per InvoiceLineItemId, not per LinkedTxn) — a
+        genuine collision would mean two different local lines, under the
+        same invoice, both trace back to the same QBO source transaction
+        (should not happen under the normal one-line-per-source write path,
+        but not ruled out by the schema). Rather than silently pick an
+        arbitrary one of them (which would starve the OTHER of ever being
+        recognized, reproducing the exact phantom-duplicate class this
+        method exists to prevent, just via a different door), an ambiguous
+        result is treated the same as "not found": logged loud, returned as
+        None, so the caller falls through to its next recognition step
+        instead of guessing.
+        """
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(
+                    cursor=cursor,
+                    name="ReadInvoiceLineItemByInvoiceIdAndLinkedTxn",
+                    params={
+                        "InvoiceId": invoice_id,
+                        "LinkedTxnType": linked_txn_type,
+                        "LinkedTxnId": linked_txn_id,
+                    },
+                )
+                rows = cursor.fetchall()
+                if len(rows) > 1:
+                    logger.error(
+                        "Ambiguous source-linked InvoiceLineItem match: %d rows share "
+                        "(InvoiceId=%s, LinkedTxnType=%s, LinkedTxnId=%s) - refusing to "
+                        "guess which one is correct; treating as not found.",
+                        len(rows), invoice_id, linked_txn_type, linked_txn_id,
+                    )
+                    return None
+                return self._from_db(rows[0]) if rows else None
+        except Exception as error:
+            logger.error(f"Error during read invoice line item by linked txn: {error}")
+            raise map_database_error(error)
+
     def update_by_id(self, line_item: InvoiceLineItem) -> Optional[InvoiceLineItem]:
         try:
             with get_connection() as conn:

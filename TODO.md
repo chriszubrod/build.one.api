@@ -2353,6 +2353,67 @@ Design: `docs/design/u357-unified-status-review-status.md` (§9 = 24 open decisi
   Delete both (and their call sites) in the same pass that eventually cleans up U-361's analogous bridges,
   not before the DROP actually lands.
 
+## U-362b follow-ups (source-linked line recognition fix, 2026-09-02) — deferred, non-blocking
+
+Own adversarial `/code-review high` pass (8 angles) found 2 CONFIRMED P0/P1s, fixed in-unit (type-safety
+theft-guard normalization; ambiguous-recognition-match refusal instead of a silent arbitrary pick — see
+`entities/invoice_line_item/persistence/repo.py::read_by_linked_txn` and the connector's
+`_recognize_source_linked_line`). The following PLAUSIBLE findings were assessed and deliberately deferred
+— narrower/compounding-condition risk, or scope that would touch foundational already-reviewed code, both
+inappropriate to fold into an emergency P0 patch:
+
+- [ ] **`UpsertInvoiceLineItemSourceProvenance`'s unconditional mirror-not-merge write (pre-existing U-272
+  code, not modified by U-362b) can null out a good `InvoiceLineItemSourceProvenance` row on a transient QBO
+  omission of `LinkedTxn`** — this codebase documents exactly this QBO behavior (KI-32, see
+  `integrations/intuit/qbo/invoice/external/client.py:317`). The new U-362b recognizer now depends more on
+  that data staying populated than any prior consumer did. Requires TWO compounding conditions to actually
+  manifest a duplicate (a transient LinkedTxn omission on some pull, THEN a Line.Id regeneration on a LATER
+  pull before LinkedTxn reappears) — narrower than the primary bug this unit fixes, but real. Fix direction:
+  make the provenance upsert preserve existing `LinkedTxnType`/`LinkedTxnId` when the incoming pull's values
+  are null, mirroring the `preserve_human_edited_ref`/`preserve_human_edited_name` "don't clobber on a blank
+  incoming value" pattern already established elsewhere in this codebase — but this changes already-shipped,
+  already-audited U-272 write semantics with OTHER consumers (`ProposeInvoiceSourceLinks`,
+  `ReadInvoiceSourceLinkLines`) that need re-verifying against the changed semantics; own unit.
+- [ ] **`_recognize_source_linked_line` bypasses the `caches_preloaded=True` batch-pull optimization** —
+  unlike the sibling `_manual_line_candidates`, it always issues a live DB round trip via
+  `InvoiceLineItemService.read_by_linked_txn`, reintroducing the per-line round-trip cost
+  `InvoiceInvoiceConnector.preload_caches()` exists to eliminate for large invoices. Fix direction: extend
+  `preload_caches()` to also bulk-load `InvoiceLineItemSourceProvenance` into an in-memory
+  `{(invoice_id, linked_txn_type, linked_txn_id): line_item}` index, mirroring `_manual_line_candidates`'s
+  existing `caches_preloaded` branch.
+- [ ] **The same new DB round trip runs INSIDE the per-line `qbo_dbo_line_identity_create:*` applock**
+  (`base/identity_fastpath.py`'s `readopt_candidate()` call site), extending lock-hold duration for every
+  source-linked MISS. Under contention (a large invoice pull, or several concurrent syncs on the same
+  invoice) this raises the odds of hitting the 15s `lock_timeout_ms` on a sibling line. Same fix as the item
+  above (an in-memory index) removes this too — both dissolve together once the cache is extended.
+- [ ] **`ReadInvoiceLineItemByInvoiceIdAndLinkedTxn` (new sproc) hand-copies a 3rd independent SELECT
+  column-list** already duplicated in `ReadInvoiceLineItemById` and `ReadInvoiceLineItemByInvoiceIdAndQboId`
+  in the same file — the exact drift risk that already bit this file once (a missing `QboId`/`RealmId`
+  projection made every CREATE self-rollback, fixed in U-362 proper). Own unit: extract a shared column-list
+  (a SQL view, or at minimum a documented "keep these N sprocs' SELECT lists in sync" comment anchor).
+- [ ] **Source-linked recognition (`_recognize_source_linked_line`) is connector-local, not a shared
+  `base/` primitive** — unlike the pre-existing Manual-fingerprint matcher, which was deliberately extracted
+  into `base/line_orphan_adopt.py::find_stale_identity_orphan` specifically so U-362/363/364 share one
+  matcher instead of hand-copying it. If `bill_line_item`/`expense_line_item` (U-363/U-364) never grow an
+  analogous "created by another entity's flow, linked after the fact" shape (their SQL has no `SourceType`/
+  `InvoiceLineItemSourceProvenance` concept — checked, they don't today), this may never need lifting. Revisit
+  if a future family does grow one; don't lift preemptively for a hypothetical second consumer.
+- [ ] **Unverified against prod: does the runtime recognition fix alone already heal all 70 known
+  mapped-but-unstamped rows, making the restored backfill/registry-row/3-script capability partially or
+  fully redundant?** The runtime fix self-heals any row that still carries a valid
+  `InvoiceLineItemSourceProvenance` entry on its next routine pull; the backfill's only unique value is
+  healing a row that ALSO lacks a provenance row (unverifiable from the codebase alone). Kept the backfill
+  as a belt-and-suspenders safety net per the original assignment's explicit instruction rather than assume
+  redundancy. **/em: before or instead of running the backfill, consider querying prod for `COUNT(*)` of
+  the 70 rows that have NO matching `InvoiceLineItemSourceProvenance` row — if 0, the runtime fix alone is
+  sufficient and the backfill run (and the temporary registry restoration) can be skipped entirely.**
+- [ ] **No automated invariant stops a future line-family retirement (U-363/U-364) from repeating this
+  exact mistake** (removing backfill/recognition capability in the same commit that needs it, found only by
+  a post-hoc Gate-2 adversarial pass). Recommendation for the U-349 program's remaining units: before
+  deleting a `LineEntitySpec`/`FlatEntitySpec` registry row, require a one-line prod query proving zero
+  "unstamped but still-mapped" rows exist for that family — not prose-only "TEMPORARY, re-remove later"
+  discipline. Process/tooling change, not a code fix; own unit if adopted.
+
 ## Found during iOS Simulator QA sweep (2026-09-02) — not fixed, scope was test-data cleanup only
 
 - [ ] **`DeleteTimeEntryById` has no child cascade — `DELETE /time-entries/{public_id}` would 500 on any real

@@ -158,6 +158,19 @@ class InvoiceLineItemService:
         _assert_can_access_invoice(invoice_id)
         return self.repo.read_by_qbo_identity(invoice_id=invoice_id, qbo_id=qbo_id)
 
+    def read_by_linked_txn(
+        self, invoice_id: int, linked_txn_type: str, linked_txn_id: str
+    ) -> Optional[InvoiceLineItem]:
+        """
+        Read an invoice line item by its U-272 source-provenance linkage,
+        scoped to its parent Invoice — U-362b's dbo-native source-linked-line
+        recognition seam (see the repo method's own docstring).
+        """
+        _assert_can_access_invoice(invoice_id)
+        return self.repo.read_by_linked_txn(
+            invoice_id=invoice_id, linked_txn_type=linked_txn_type, linked_txn_id=linked_txn_id,
+        )
+
     def update_by_public_id(
         self,
         public_id: str,

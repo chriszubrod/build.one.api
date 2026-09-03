@@ -731,3 +731,40 @@ BEGIN
     END
 END;
 GO
+
+
+-- =========================================================================
+-- U-362b: dbo-native source-linked line recognition (see the connector's
+-- InvoiceLineItemConnector._recognize_source_linked_line for the full
+-- rationale — money-double-count bug this closes). Key: (InvoiceId,
+-- LinkedTxnType, LinkedTxnId), the same fields InvoiceLineItemSourceProvenance
+-- already mirrors on every touch — NOT DB-enforced unique (that table's own
+-- constraint is one row per InvoiceLineItemId, not per LinkedTxn); the repo
+-- layer fetches ALL matches and refuses to guess if more than one comes back,
+-- so no ORDER BY/TOP 1 here.
+-- =========================================================================
+CREATE OR ALTER PROCEDURE ReadInvoiceLineItemByInvoiceIdAndLinkedTxn
+(
+    @InvoiceId BIGINT,
+    @LinkedTxnType NVARCHAR(64),
+    @LinkedTxnId NVARCHAR(50)
+)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    SELECT
+        ili.[Id], ili.[PublicId], ili.[RowVersion],
+        CONVERT(VARCHAR(19), ili.[CreatedDatetime], 120) AS [CreatedDatetime],
+        CONVERT(VARCHAR(19), ili.[ModifiedDatetime], 120) AS [ModifiedDatetime],
+        ili.[InvoiceId], ili.[SourceType],
+        ili.[BillLineItemId], ili.[ExpenseLineItemId], ili.[BillCreditLineItemId], ili.[EmployeeLaborLineItemId],
+        ili.[SubCostCodeId], ili.[Description], ili.[Quantity], ili.[Rate], ili.[Amount], ili.[Markup],
+        ili.[Price], ili.[IsDraft], ili.[QboId], ili.[RealmId]
+    FROM dbo.[InvoiceLineItem] ili
+    INNER JOIN dbo.[InvoiceLineItemSourceProvenance] prov ON prov.[InvoiceLineItemId] = ili.[Id]
+    WHERE ili.[InvoiceId] = @InvoiceId
+      AND prov.[LinkedTxnType] = @LinkedTxnType
+      AND prov.[LinkedTxnId] = @LinkedTxnId;
+END;
+GO

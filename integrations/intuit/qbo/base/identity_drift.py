@@ -162,19 +162,32 @@ LINE_ENTITY_SPECS: tuple[LineEntitySpec, ...] = (
         "ExpenseLineItemId", "QboPurchaseLineId", "ExpenseId", "Purchase", "QboPurchaseId",
         "SetExpenseLineItemQboIdentity",
     ),
-    # U-361: the "bill_credit_line_item" row was removed — this line family is
-    # now dbo-native only (qbo.VendorCreditLineItemBillCreditLineItem retired,
-    # U-349 program family 8/11, the first line-item family). Every consumer of
-    # this registry (scripts/backfill_qbo_identity_lines.py,
-    # scripts/check_qbo_identity_drift_lines.py, scripts/audit_dangling_qbo_
-    # mappings.py) JOINs through `mapping_table`, which would error outright once
-    # the table is dropped and, until then, flag every dbo-stamped line as a
-    # false orphan_dbo_value. Nothing looks this row up by key (same as
-    # "expense"'s U-354 header removal), so there is no StopIteration risk.
-    # U-362: the "invoice_line_item" row was removed the same way
-    # (qbo.InvoiceLineItemInvoiceLine retired, U-349 program family 9/11). The
-    # 3 consumer scripts had their own "invoice_line_item" --entity choice/key
-    # removed alongside this row. U-363/U-364 remove the remaining two.
+    # U-362b: RESTORED. U-362 removed this row (mapping-table consumer retired
+    # from the connector) — then a Gate-2 adversarial workflow found 70 live
+    # prod dbo.InvoiceLineItem rows that are mapped-but-UNSTAMPED (QboId NULL,
+    # all source-linked BillLineItem/ExpenseLineItem): the mapping table
+    # (qbo.InvoiceLineItemInvoiceLine, still live — not dropped by U-362) is the
+    # ONLY thing that lets scripts/backfill_qbo_identity_lines.py --entity
+    # invoice_line_item --mode missing heal them (QboId = the mapped
+    # qbo.InvoiceLine.QboLineId) before U-362's dbo-only code deploys and mints
+    # a phantom Manual duplicate for each on its next routine re-pull. Restored
+    # for that backfill run + the drift/dangling-mapping audits that catch this
+    # exact class of gap (scripts/check_qbo_identity_drift_lines.py,
+    # scripts/audit_dangling_qbo_mappings.py), NOT because the connector maps
+    # again — it doesn't. KNOWN NOISE while this row stays in: every InvoiceLine
+    # Item the dbo-only connector stamps post-deploy has no mapping row by
+    # design, so check_qbo_identity_drift_lines.py will flag it `orphan_dbo_
+    # value` — expected, not a regression; ignore invoice_line_item findings
+    # there until the row is re-removed. TEMPORARY — same original rationale as
+    # U-361's own removal (JOINs error once the table is actually dropped): once
+    # /em runs the backfill and later applies the eventual DROP, re-remove this
+    # row and the matching --entity choice/key in the 3 consumer scripts, same
+    # as U-361/U-363/U-364.
+    LineEntitySpec(
+        "invoice_line_item", "InvoiceLineItem", "InvoiceLineItemInvoiceLine", "InvoiceLine",
+        "InvoiceLineItemId", "QboInvoiceLineId", "InvoiceId", "Invoice", "QboInvoiceId",
+        "SetInvoiceLineItemQboIdentity",
+    ),
 )
 
 

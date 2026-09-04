@@ -9,9 +9,7 @@ from integrations.intuit.qbo.base.locking import qbo_sync_locked_route
 from integrations.intuit.qbo.purchase.api.schemas import QboPurchaseSync
 from integrations.intuit.qbo.purchase.business.service import QboPurchaseService
 from integrations.intuit.qbo.purchase.connector.expense.business.service import PurchaseExpenseConnector
-from integrations.intuit.qbo.purchase.connector.expense_line_item.persistence.repo import PurchaseLineExpenseLineItemRepository
 from entities.expense.business.service import ExpenseService
-from entities.expense_line_item.business.service import ExpenseLineItemService
 from shared.rbac import require_module_api
 from shared.rbac_constants import Modules
 
@@ -108,14 +106,14 @@ def cancel_expense_from_qbo_purchase_router(
     if not expense_with_identity or not expense_with_identity.qbo_id:
         raise HTTPException(status_code=400, detail="Expense is not linked to a QBO purchase")
 
-    # Delete PurchaseLineExpenseLineItem mappings first (family 11, out of
-    # scope for U-354 — untouched)
-    pleli_repo = PurchaseLineExpenseLineItemRepository()
-    line_items = ExpenseLineItemService().read_by_expense_id(expense_id=expense_id)
-    for li in line_items:
-        pleli = pleli_repo.read_by_expense_line_item_id(expense_line_item_id=li.id)
-        if pleli:
-            pleli_repo.delete_by_id(pleli.id)
+    # U-364: family 11's qbo.PurchaseLineExpenseLineItem mapping is retired —
+    # ExpenseLineItemService.delete_by_public_id (called per line by the
+    # cascade below) already clears any legacy mapping row itself via its own
+    # OBJECT_ID-guarded deploy-gap bridge, so this endpoint no longer needs a
+    # separate pre-delete loop naming the (soon-to-be-dropped) mapping repo
+    # directly — that direct, unguarded construction would start failing hard
+    # once /em applies the eventual table/sproc DROP, ahead of the delete it
+    # was meant to protect.
 
     # Delete the expense (cascades to line items, attachments, etc.)
     ExpenseService().delete_by_public_id(public_id=expense_public_id)

@@ -1,4 +1,5 @@
 # Python Standard Library Imports
+import logging
 from typing import Optional
 from decimal import Decimal
 
@@ -12,6 +13,40 @@ from entities.project.business.service import ProjectService
 from entities.expense.business.service import ExpenseService
 from shared.access import assert_can_access_expense
 from shared.authz import current_user_id
+
+logger = logging.getLogger(__name__)
+
+
+def _clear_legacy_purchase_line_expense_line_item_mapping(expense_line_item_id: int) -> None:
+    """U-364 deploy-gap bridge for ExpenseLineItemService.delete_by_public_id —
+    see its call site. Raw SQL, not a repo/model (both retired in this unit):
+    deletes any row in the (soon-to-be-dropped) qbo.PurchaseLineExpenseLineItem
+    table that still points at this ExpenseLineItem, so its NO ACTION FK
+    (FK_PurchaseLineExpenseLineItem_ExpenseLineItem) never blocks the line
+    delete below. Mirrors entities/bill_line_item/business/service.py's U-363
+    sibling bridge exactly (same OBJECT_ID-guard idiom — table-already-dropped
+    becomes a plain SQL no-op, not a caught Python exception). Once /em
+    applies the DROP for this table, this whole function becomes a permanent
+    no-op and should be deleted."""
+    from shared.database import get_connection
+
+    try:
+        with get_connection() as conn:
+            conn.cursor().execute(
+                "IF OBJECT_ID('qbo.PurchaseLineExpenseLineItem', 'U') IS NOT NULL "
+                "DELETE FROM [qbo].[PurchaseLineExpenseLineItem] WHERE [ExpenseLineItemId] = ?",
+                (expense_line_item_id,),
+            )
+    except Exception as e:
+        # Only reachable now for a genuine unexpected failure (connection reset,
+        # deadlock, permissions) — table-missing no longer raises at all. Logged,
+        # not raised: best-effort only. The real safety net is the FK itself — if
+        # a mapping row really does still exist and this failed to clear it, the
+        # line delete below 547s anyway (fail-safe, not fail-silent-corruption).
+        logger.warning(
+            f"Could not clear legacy qbo.PurchaseLineExpenseLineItem mapping for "
+            f"ExpenseLineItem {expense_line_item_id}: {e}"
+        )
 
 
 class ExpenseLineItemService:
@@ -130,50 +165,52 @@ class ExpenseLineItemService:
         """
         # TODO: In Phase 10, validate tenant_id matches record's tenant
         existing = self.read_by_public_id(public_id=public_id)
-        if existing:
-            existing.row_version = row_version
-            
-            # Validate Expense exists if provided (using public_id)
-            if expense_public_id is not None:
-                expense = ExpenseService().read_by_public_id(public_id=expense_public_id)
-                if not expense:
-                    raise ValueError(f"Expense with public_id '{expense_public_id}' not found.")
-                existing.expense_id = expense.id
-            
-            # Validate SubCostCode exists if provided (or allow None to clear the relationship)
-            if sub_cost_code_id is not None:
-                sub_cost_code = SubCostCodeService().read_by_id(id=str(sub_cost_code_id))
-                if not sub_cost_code:
-                    raise ValueError(f"SubCostCode with id '{sub_cost_code_id}' not found.")
-                existing.sub_cost_code_id = sub_cost_code_id
-            
-            # Validate Project exists if provided (or allow None to clear the relationship)
-            if project_public_id is not None:
-                project = ProjectService().read_by_public_id(public_id=project_public_id)
-                if not project:
-                    raise ValueError(f"Project with public_id '{project_public_id}' not found.")
-                existing.project_id = project.id
-            
-            # Update fields
-            if description is not None:
-                existing.description = description
-            if quantity is not None:
-                existing.quantity = quantity
-            if rate is not None:
-                existing.rate = Decimal(str(rate))
-            if amount is not None:
-                existing.amount = Decimal(str(amount))
-            if is_billable is not None:
-                existing.is_billable = is_billable
-            if is_billed is not None:
-                existing.is_billed = is_billed
-            if markup is not None:
-                existing.markup = Decimal(str(markup))
-            if price is not None:
-                existing.price = Decimal(str(price))
-            if is_draft is not None:
-                existing.is_draft = is_draft
-            
+        if not existing:
+            return None
+
+        existing.row_version = row_version
+
+        # Validate Expense exists if provided (using public_id)
+        if expense_public_id is not None:
+            expense = ExpenseService().read_by_public_id(public_id=expense_public_id)
+            if not expense:
+                raise ValueError(f"Expense with public_id '{expense_public_id}' not found.")
+            existing.expense_id = expense.id
+
+        # Validate SubCostCode exists if provided (or allow None to clear the relationship)
+        if sub_cost_code_id is not None:
+            sub_cost_code = SubCostCodeService().read_by_id(id=str(sub_cost_code_id))
+            if not sub_cost_code:
+                raise ValueError(f"SubCostCode with id '{sub_cost_code_id}' not found.")
+            existing.sub_cost_code_id = sub_cost_code_id
+
+        # Validate Project exists if provided (or allow None to clear the relationship)
+        if project_public_id is not None:
+            project = ProjectService().read_by_public_id(public_id=project_public_id)
+            if not project:
+                raise ValueError(f"Project with public_id '{project_public_id}' not found.")
+            existing.project_id = project.id
+
+        # Update fields
+        if description is not None:
+            existing.description = description
+        if quantity is not None:
+            existing.quantity = quantity
+        if rate is not None:
+            existing.rate = Decimal(str(rate))
+        if amount is not None:
+            existing.amount = Decimal(str(amount))
+        if is_billable is not None:
+            existing.is_billable = is_billable
+        if is_billed is not None:
+            existing.is_billed = is_billed
+        if markup is not None:
+            existing.markup = Decimal(str(markup))
+        if price is not None:
+            existing.price = Decimal(str(price))
+        if is_draft is not None:
+            existing.is_draft = is_draft
+
         return self.repo.update_by_id(existing)
 
     def delete_by_public_id(self, public_id: str, *, tenant_id: int = None) -> Optional[ExpenseLineItem]:
@@ -232,28 +269,16 @@ class ExpenseLineItemService:
                 "Error during attachment cleanup for ExpenseLineItem %s: %s", existing.id, e
             )
 
-        # Step 3: Delete the line item — clear its qbo.PurchaseLineExpenseLineItem mapping first.
-        # PurchaseLineExpenseLineItem already has a live, enforced NO-ACTION FK in prod — deleting
-        # a QBO-synced ExpenseLineItem is ALREADY BROKEN today (547), not merely a future risk. If
-        # the line delete fails for any other reason after the mapping is gone, restore it so a
-        # failed attempt never unmaps a still-live, QBO-synced line (U-241).
-        from integrations.intuit.qbo.purchase.connector.expense_line_item.persistence.repo import (
-            PurchaseLineExpenseLineItemRepository,
-        )
-        from integrations.intuit.qbo.base.mapping_cleanup import delete_own_qbo_mapping_before_header
-
-        _pleli_repo = PurchaseLineExpenseLineItemRepository()
-
-        return delete_own_qbo_mapping_before_header(
-            read_mapping=lambda: _pleli_repo.read_by_expense_line_item_id(existing.id),
-            delete_mapping=lambda m: _pleli_repo.delete_by_id(m.id),
-            recreate_mapping=lambda m: _pleli_repo.create(
-                qbo_purchase_line_id=m.qbo_purchase_line_id,
-                expense_line_item_id=m.expense_line_item_id,
-            ),
-            delete_header=lambda: self.repo.delete_by_id(existing.id),
-            entity_label="ExpenseLineItem",
-            entity_id=existing.id,
-            # on_restore_failed=None: see mapping_cleanup.py's on_restore_failed docstring (U-241).
-            on_restore_failed=None,
-        )
+        # Step 3: Delete the line item. U-364: qbo.PurchaseLineExpenseLineItem's
+        # CONNECTOR (mapping_repo, create_mapping, the legacy fastpath's mapping
+        # fallback) is retired — dbo.ExpenseLineItem.QboId/RealmId (U-238b) is
+        # the sole identity store going forward. The TABLE itself is not
+        # dropped by this unit (that's a separate /em-run post-deploy step),
+        # and it carries a live NO ACTION FK onto this one
+        # (FK_PurchaseLineExpenseLineItem_ExpenseLineItem) — so a still-mapped
+        # row's delete WOULD 547 without this bridge. The old restore-on-
+        # failure (delete_own_qbo_mapping_before_header, U-241) is no longer
+        # needed post-U-364: the mapping is redundant, so losing a row on a
+        # failed delete is harmless — the dbo-native QboId is the identity.
+        _clear_legacy_purchase_line_expense_line_item_mapping(existing.id)
+        return self.repo.delete_by_id(existing.id)

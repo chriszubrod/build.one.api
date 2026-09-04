@@ -21,6 +21,40 @@ MAX_RETRIES = 3  # Max retries for transient errors
 INITIAL_RETRY_DELAY = 2.0  # Initial retry delay (seconds)
 
 
+def _clear_legacy_purchase_line_expense_line_item_mapping_by_qbo_line_id(qbo_purchase_line_id: int) -> None:
+    """U-364 deploy-gap bridge for QboPurchaseService's stale-line cleanup
+    (_upsert_purchase_lines) and deleted-purchase reconcile
+    (_reconcile_deleted_purchases) — see their call sites. Raw SQL, not a
+    repo/model (both retired in this unit): deletes any row in the (soon-to-
+    be-dropped) qbo.PurchaseLineExpenseLineItem table that still points at
+    this staging QboPurchaseLine, so its NO ACTION FK
+    (FK_PurchaseLineExpenseLineItem_QboPurchaseLine) never blocks the staging
+    line's delete. Same OBJECT_ID-guard idiom as entities/expense_line_item/
+    business/service.py's sibling bridge (and U-363's bill precedent) —
+    table-already-dropped becomes a plain SQL no-op, not a caught Python
+    exception. Once /em applies the DROP, this whole function becomes a
+    permanent no-op and should be deleted."""
+    from shared.database import get_connection
+
+    try:
+        with get_connection() as conn:
+            conn.cursor().execute(
+                "IF OBJECT_ID('qbo.PurchaseLineExpenseLineItem', 'U') IS NOT NULL "
+                "DELETE FROM [qbo].[PurchaseLineExpenseLineItem] WHERE [QboPurchaseLineId] = ?",
+                (qbo_purchase_line_id,),
+            )
+    except Exception as e:
+        # Best-effort only — the real safety net is the FK itself. If a mapping
+        # row really does still exist and this failed to clear it, the stale
+        # QboPurchaseLine delete below 547s and is caught by its own try/except
+        # (fail-safe: the stale row just persists for the next pull to retry,
+        # never fail-silent-corruption).
+        logger.warning(
+            f"Could not clear legacy qbo.PurchaseLineExpenseLineItem mapping for "
+            f"QboPurchaseLine {qbo_purchase_line_id}: {e}"
+        )
+
+
 class QboPurchaseService:
     """
     Service for QboPurchase entity business operations.
@@ -234,7 +268,8 @@ class QboPurchaseService:
         After inserting/updating all lines present in the QBO API response,
         any locally-stored QboPurchaseLine whose qbo_line_id is NOT in the
         current response is stale (line was removed in QBO). Stale lines are
-        deleted along with their PurchaseLineExpenseLineItem mappings.
+        deleted; U-364's deploy-gap bridge clears any legacy
+        PurchaseLineExpenseLineItem mapping row first (see below).
 
         Args:
             qbo_purchase_id: Database ID of the QboPurchase
@@ -343,39 +378,29 @@ class QboPurchaseService:
 
         # Stale lines — any locally-stored QboPurchaseLine whose qbo_line_id is no longer
         # present in the QBO API response means QBO removed (or regenerated the id of) that
-        # line. ORPHAN the local ExpenseLineItem (delete only the QBO mapping + the
-        # QboPurchaseLine staging row) rather than DELETING the ExpenseLineItem + its
-        # attachment — matching Bill/VendorCredit. Destroying the local line on a QBO
-        # line-id regeneration was a data-loss path; keeping it (unmapped) lets the
-        # connector's content-fingerprint fallback re-adopt it on the same pull.
-        from integrations.intuit.qbo.purchase.connector.expense_line_item.persistence.repo import PurchaseLineExpenseLineItemRepository
-        mapping_repo = PurchaseLineExpenseLineItemRepository()
+        # line. The dbo ExpenseLineItem is preserved (never deleted here) — U-364: the
+        # downstream ExpenseLineItem is matched by its own dbo-native (ExpenseId, QboId)
+        # identity now — the connector-level qbo.PurchaseLineExpenseLineItem mapping this
+        # layer used to keep valid is retired. The TABLE itself is not dropped by this
+        # unit though, and it carries a live NO ACTION FK onto this staging row
+        # (FK_PurchaseLineExpenseLineItem_QboPurchaseLine) — so the delete below still
+        # needs the mapping cleared first, via the deploy-gap bridge, or it 547s and the
+        # stale row silently survives. Its dbo ExpenseLineItem, if any, is left under its
+        # now-stale identity — the re-adopt matcher (base/line_orphan_adopt.py) picks it
+        # up on a future pull if QBO re-sends an equivalent line; nothing here can
+        # determine that on its own.
         stored_lines = self.line_repo.read_by_qbo_purchase_id(qbo_purchase_id)
         for stored_line in stored_lines:
             if stored_line.qbo_line_id not in current_qbo_line_ids:
                 logger.info(
                     f"Deleting stale QboPurchaseLine id={stored_line.id} "
-                    f"qbo_line_id={stored_line.qbo_line_id} (no longer in QBO response); "
-                    f"orphaning its ExpenseLineItem (kept for re-adoption)"
+                    f"qbo_line_id={stored_line.qbo_line_id} (no longer in QBO response)"
                 )
-                # Delete the mapping FIRST so the dbo ExpenseLineItem becomes unmapped
-                # (re-adoptable by the connector's fingerprint fallback), then the
-                # QboPurchaseLine staging row. The ExpenseLineItem itself is preserved.
-                mapping_cleaned = True
+                _clear_legacy_purchase_line_expense_line_item_mapping_by_qbo_line_id(stored_line.id)
                 try:
-                    stale_mapping = mapping_repo.read_by_qbo_purchase_line_id(stored_line.id)
-                    if stale_mapping:
-                        mapping_repo.delete_by_id(stale_mapping.id)
-                        logger.info(f"Deleted stale PurchaseLineExpenseLineItem mapping id={stale_mapping.id}")
+                    self.line_repo.delete_by_id(stored_line.id)
                 except Exception as e:
-                    mapping_cleaned = False
-                    logger.error(f"Could not delete stale mapping for QboPurchaseLine {stored_line.id}: {e} — skipping line deletion to prevent orphan")
-
-                if mapping_cleaned:
-                    try:
-                        self.line_repo.delete_by_id(stored_line.id)
-                    except Exception as e:
-                        logger.warning(f"Could not delete stale QboPurchaseLine {stored_line.id}: {e}")
+                    logger.warning(f"Could not delete stale QboPurchaseLine {stored_line.id}: {e}")
 
     def _reconcile_deleted_purchases(
         self,
@@ -389,21 +414,19 @@ class QboPurchaseService:
         see base/delete_reconcile.py. An aborted gate deletes nothing.
 
         Order of deletion (respects FK NO ACTION constraints added by the FK migration):
-          1. Delete all PurchaseLineExpenseLineItem mapping rows for the purchase's lines
-             (required before deleting ExpenseLineItems — FK NO ACTION would block them).
+          1. PurchaseLineExpenseLineItem mapping rows for the purchase's lines (U-364
+             deploy-gap bridge — the table is not yet dropped).
           2. Delete the Expense, resolved directly via dbo-native QBO identity (U-354 —
              no more qbo.PurchaseExpense mapping to hop through). App-layer cascade:
              ExpenseLineItem → attachment → blob.
           3. Delete the QboPurchase — FK_QboPurchaseLine_QboPurchase CASCADE handles
-             qbo.PurchaseLine rows; PurchaseLineExpenseLineItem rows were already
-             removed in step 1.
+             qbo.PurchaseLine rows.
         """
         from integrations.intuit.qbo.base.delete_reconcile import (
             record_partial_delete_issue,
             strict_confirmed_deleted_ids,
         )
         from integrations.intuit.qbo.base.ids import normalize_qbo_id
-        from integrations.intuit.qbo.purchase.connector.expense_line_item.persistence.repo import PurchaseLineExpenseLineItemRepository
         from entities.expense.business.service import ExpenseService
 
         local_purchases = self.repo.read_by_realm_id(realm_id)
@@ -419,7 +442,6 @@ class QboPurchaseService:
         if not confirmed:
             return 0
 
-        line_mapping_repo = PurchaseLineExpenseLineItemRepository()
         expense_service = ExpenseService()
 
         deleted = 0
@@ -442,21 +464,10 @@ class QboPurchaseService:
             # returned. Mirrors QboVendorCreditService's identical U-353 fix.
             destructive_labels = []
             try:
-                # Step 1: Delete PurchaseLineExpenseLineItem mappings for every line of this purchase.
-                # Must come before ExpenseLineItem deletion: FK_PurchaseLineExpenseLineItem_ExpenseLineItem
-                # (NO ACTION) blocks deleting an ExpenseLineItem while a mapping row references it.
-                purchase_lines = self.line_repo.read_by_qbo_purchase_id(local.id)
-                for line in purchase_lines:
-                    try:
-                        line_mapping = line_mapping_repo.read_by_qbo_purchase_line_id(line.id)
-                        if line_mapping:
-                            destructive_labels.append("PurchaseLineExpenseLineItem mapping")
-                            line_mapping_repo.delete_by_id(line_mapping.id)
-                    except Exception as e:
-                        logger.warning(
-                            f"Could not delete PurchaseLineExpenseLineItem mapping for "
-                            f"QboPurchaseLine {line.id} (QboPurchase {local.qbo_id}): {e}"
-                        )
+                # Step 1: line mappings (before ExpenseLineItem deletion — FK NO ACTION).
+                for line in self.line_repo.read_by_qbo_purchase_id(local.id):
+                    destructive_labels.append("PurchaseLineExpenseLineItem mapping")
+                    _clear_legacy_purchase_line_expense_line_item_mapping_by_qbo_line_id(line.id)
 
                 # Step 2: the Expense, resolved directly via dbo-native QBO identity
                 # (U-354 — no more qbo.PurchaseExpense mapping row to hop through).
@@ -470,7 +481,6 @@ class QboPurchaseService:
 
                 # Step 3: Delete the QboPurchase.
                 # FK_QboPurchaseLine_QboPurchase ON DELETE CASCADE handles PurchaseLine deletion.
-                # PurchaseLineExpenseLineItem rows were already deleted above.
                 self.repo.delete_by_qbo_id(local.qbo_id)
                 logger.info(f"Deleted QboPurchase qbo_id={local.qbo_id}")
                 deleted += 1

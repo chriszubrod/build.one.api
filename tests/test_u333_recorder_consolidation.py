@@ -14,9 +14,6 @@ from integrations.intuit.qbo.customer.connector.project.business.service import 
 from integrations.intuit.qbo.item.connector.cost_code.business.service import ItemCostCodeConnector
 from integrations.intuit.qbo.item.connector.sub_cost_code.business.service import ItemSubCostCodeConnector
 from integrations.intuit.qbo.physical_address.connector.business.service import PhysicalAddressAddressConnector
-from integrations.intuit.qbo.purchase.connector.expense_line_item.business.service import (
-    PurchaseLineExpenseLineItemConnector,
-)
 from integrations.intuit.qbo.vendor.connector.vendor.business.service import VendorVendorConnector
 
 # Captured pre-refactor from scratchpad harness (U-333 Task 4).
@@ -59,20 +56,12 @@ _EXPECTED = {
     # retired; run_line_identity_fastpath_dbo_only has no mapping-vs-dbo
     # conflict state left to record). Its dbo-only orphan-line recorders are
     # covered in tests/test_u363_bill_line_item_mapping_retire.py.
-    "expense_line_item": {
-        "drift_type": "expense_line_identity_conflict",
-        "entity_type": "ExpenseLineItem",
-        "entity_public_id": None,
-        "qbo_id": "EL-99",
-        "realm_id": "realm-1",
-        "details": (
-            "PurchaseLineExpenseLineItem identity conflict. dbo.ExpenseLineItem 55 carries native "
-            "QBO identity for QboPurchaseLine 4 (QboLineId=EL-99). qbo-side: the mapping table "
-            "still binds that same QboPurchaseLine to a DIFFERENT ExpenseLineItem 9 (mapping 2). "
-            "local-side: ExpenseLineItem 55's own mapping row (mapping 3) still binds it to a "
-            "DIFFERENT QboPurchaseLine 5. Not auto-repointed — investigate which side is correct."
-        ),
-    },
+    # U-364: "expense_line_item" removed — PurchaseLineExpenseLineItemConnector
+    # no longer has _record_line_identity_mapping_conflict_issue
+    # (qbo.PurchaseLineExpenseLineItem is retired, the LAST line-item family;
+    # run_line_identity_fastpath_dbo_only has no mapping-vs-dbo conflict state
+    # left to record). Its dbo-only orphan-line recorders are covered in
+    # tests/test_u364_expense_line_item_mapping_retire.py.
     # U-361: "bill_credit_line_item" removed — VendorCreditLineItemConnector no
     # longer has _record_line_identity_mapping_conflict_issue (qbo.VendorCredit
     # LineItemBillCreditLineItem is retired, the first line-item family;
@@ -209,17 +198,7 @@ def _assert_recorded(repo, expected):
 @pytest.mark.parametrize("family", list(_EXPECTED))
 def test_recorder_consolidation_emits_identical_tuple(family):
     expected = _EXPECTED[family]
-    if family == "expense_line_item":
-        c = object.__new__(PurchaseLineExpenseLineItemConnector)
-        c.reconciliation_repo = Mock()
-        c._record_line_identity_mapping_conflict_issue(
-            qbo_line=SimpleNamespace(id=4, qbo_line_id="EL-99"),
-            dbo_line_id=55,
-            local_side_mapping=SimpleNamespace(id=3, expense_line_item_id=55, qbo_purchase_line_id=5),
-            qbo_side_mapping=SimpleNamespace(id=2, expense_line_item_id=9, qbo_purchase_line_id=4),
-            realm_id="realm-1",
-        )
-    elif family == "customer_same_qbo":
+    if family == "customer_same_qbo":
         c = object.__new__(CustomerCustomerConnector)
         c.reconciliation_repo = Mock()
         c._record_duplicate_qbo_customer_issue(

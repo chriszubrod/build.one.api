@@ -134,6 +134,45 @@ BILL_BILLABLE_STATUS_DRIFT_ROWS_SQL = """
       AND bli.QboId IS NOT NULL
 """
 
+# _reconcile_purchase_billable_status_drift's row source (U-364): dbo-native
+# identity JOIN, PARENT-SCOPED. Mirrors BILL_BILLABLE_STATUS_DRIFT_ROWS_SQL
+# above exactly, one level down the QBO object model (Expense/Purchase
+# instead of Bill) — see that constant's own comment for the full rationale
+# (both the retired mapping-table hop this replaces and the parent-scoping
+# invariant a bare `ql.QboLineId = eli.QboId` would violate).
+#
+# Pre-U-364 this hopped through the qbo.PurchaseLineExpenseLineItem mapping
+# table (FROM dbo.ExpenseLineItem eli JOIN qbo.PurchaseLineExpenseLineItem map
+# ON map.ExpenseLineItemId = eli.Id JOIN qbo.PurchaseLine ql ON ql.Id =
+# map.QboPurchaseLineId JOIN qbo.Purchase qp ON qp.Id = ql.QboPurchaseId AND
+# qp.RealmId = e.RealmId). Re-expressed off dbo.ExpenseLineItem.QboId/RealmId
+# (U-238b — the sole identity store now that the mapping table is retired).
+#
+# Module-level (not inline) so a characterization test can execute THIS exact
+# text against the legacy mapping-hop query on a shared fixture DB and assert
+# the two return the same rows.
+PURCHASE_BILLABLE_STATUS_DRIFT_ROWS_SQL = """
+    SELECT
+        e.Id AS ExpenseId,
+        CAST(e.PublicId AS NVARCHAR(50)) AS ExpensePublicId,
+        e.QboId AS QboPurchaseId,
+        e.ReferenceNumber,
+        eli.Id AS ExpenseLineItemId,
+        eli.Amount AS LineAmount,
+        inv.InvoiceNumber AS InvoiceNumber
+    FROM dbo.ExpenseLineItem eli
+    JOIN dbo.Expense e ON e.Id = eli.ExpenseId
+    JOIN qbo.Purchase qp ON qp.QboId = e.QboId AND qp.RealmId = e.RealmId
+    JOIN qbo.PurchaseLine ql ON ql.QboPurchaseId = qp.Id AND ql.QboLineId = eli.QboId
+    LEFT JOIN dbo.InvoiceLineItem ili ON ili.ExpenseLineItemId = eli.Id
+    LEFT JOIN dbo.Invoice inv ON inv.Id = ili.InvoiceId
+    WHERE eli.IsBilled = 1
+      AND ql.BillableStatus = 'Billable'
+      AND e.RealmId = ?
+      AND e.QboId IS NOT NULL
+      AND eli.QboId IS NOT NULL
+"""
+
 
 class ReconciliationService:
     """
@@ -1549,8 +1588,10 @@ class ReconciliationService:
         """
         Purchase (Expense) branch of the billable_status_drift detector
         (U-335). Mirrors _reconcile_bill_billable_status_drift exactly, one
-        level down the QBO object model: dbo.ExpenseLineItem ->
-        qbo.PurchaseLineExpenseLineItem -> qbo.PurchaseLine.
+        level down the QBO object model (U-364: dbo.ExpenseLineItem's own
+        QboId/RealmId resolves the QBO line directly — see
+        PURCHASE_BILLABLE_STATUS_DRIFT_ROWS_SQL for the retired
+        qbo.PurchaseLineExpenseLineItem mapping-table hop).
         """
         from shared.api.money import to_decimal_or_none
         from shared.database import get_connection
@@ -1561,31 +1602,7 @@ class ReconciliationService:
 
         with get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute(
-                """
-                SELECT
-                    e.Id AS ExpenseId,
-                    CAST(e.PublicId AS NVARCHAR(50)) AS ExpensePublicId,
-                    e.QboId AS QboPurchaseId,
-                    e.ReferenceNumber,
-                    eli.Id AS ExpenseLineItemId,
-                    eli.Amount AS LineAmount,
-                    inv.InvoiceNumber AS InvoiceNumber
-                FROM dbo.ExpenseLineItem eli
-                JOIN dbo.Expense e ON e.Id = eli.ExpenseId
-                JOIN qbo.PurchaseLineExpenseLineItem map ON map.ExpenseLineItemId = eli.Id
-                JOIN qbo.PurchaseLine ql ON ql.Id = map.QboPurchaseLineId
-                -- Same realm cross-check as the Bill branch above — see its comment.
-                JOIN qbo.Purchase qp ON qp.Id = ql.QboPurchaseId AND qp.RealmId = e.RealmId
-                LEFT JOIN dbo.InvoiceLineItem ili ON ili.ExpenseLineItemId = eli.Id
-                LEFT JOIN dbo.Invoice inv ON inv.Id = ili.InvoiceId
-                WHERE eli.IsBilled = 1
-                  AND ql.BillableStatus = 'Billable'
-                  AND e.RealmId = ?
-                  AND e.QboId IS NOT NULL
-                """,
-                realm_id,
-            )
+            cursor.execute(PURCHASE_BILLABLE_STATUS_DRIFT_ROWS_SQL, realm_id)
 
             groups: dict = {}
             for row in cursor.fetchall():

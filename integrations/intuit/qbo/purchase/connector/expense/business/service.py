@@ -353,9 +353,17 @@ class PurchaseExpenseConnector:
         line_connector = self._line_connector
         failed_line_ids = []
 
+        # U-364: computed ONCE per expense (not per-line) — the dbo-only line fast
+        # path's readopt step needs the full set of this pull's CURRENT QBO line
+        # ids to tell a genuinely stale-identity orphan (safe to re-adopt) apart
+        # from a line correctly bound elsewhere in this same expense (never steal).
+        live_qbo_line_ids = frozenset(line.qbo_line_id for line in qbo_purchase_lines if line.qbo_line_id)
+
         for qbo_line in qbo_purchase_lines:
             try:
-                line_connector.sync_from_qbo_purchase_line(expense_id, expense_public_id, qbo_line, realm_id)
+                line_connector.sync_from_qbo_purchase_line(
+                    expense_id, expense_public_id, qbo_line, live_qbo_line_ids, realm_id
+                )
             except Exception as e:
                 logger.error(f"Failed to sync QboPurchaseLine {qbo_line.id} to ExpenseLineItem: {e}")
                 failed_line_ids.append(qbo_line.id)

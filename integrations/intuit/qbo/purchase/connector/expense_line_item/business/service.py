@@ -6,8 +6,6 @@ from decimal import Decimal
 # Third-party Imports
 
 # Local Imports
-from integrations.intuit.qbo.purchase.connector.expense_line_item.business.model import PurchaseLineExpenseLineItem
-from integrations.intuit.qbo.purchase.connector.expense_line_item.persistence.repo import PurchaseLineExpenseLineItemRepository
 from integrations.intuit.qbo.purchase.business.model import QboPurchaseLine
 from integrations.intuit.qbo.customer.persistence.repo import QboCustomerRepository
 from entities.expense_line_item.business.service import ExpenseLineItemService
@@ -16,14 +14,19 @@ from entities.project.business.service import ProjectService
 from entities.sub_cost_code.business.service import SubCostCodeService
 from integrations.intuit.qbo.base.identity_consistency import verify_identity_dbo_only
 from integrations.intuit.qbo.base.identity_drift import stamp_line_identity_or_warn
-from integrations.intuit.qbo.base.line_identity_stamp import create_mapping_then_stamp
 from integrations.intuit.qbo.base.identity_fastpath import (
     raise_concurrent_write_race,
-    run_line_identity_fastpath,
+    run_line_identity_fastpath_dbo_only,
 )
+from integrations.intuit.qbo.base.line_orphan_adopt import find_stale_identity_orphan
+from integrations.intuit.qbo.base.compensation import rollback_orphan_header
 from integrations.intuit.qbo.base.cost_code_resolver import resolve_dbo_sub_cost_code
 from integrations.intuit.qbo.base.ids import coerce_id
-from integrations.intuit.qbo.base.reconciliation_recorder import record_identity_mapping_conflict
+from integrations.intuit.qbo.base.line_orphan_recorder import (
+    record_create_failed_issue,
+    record_orphan_line_issue,
+    record_readopt_stamp_failed_issue,
+)
 from integrations.intuit.qbo.reconciliation.persistence.repo import ReconciliationIssueRepository
 
 logger = logging.getLogger(__name__)
@@ -69,11 +72,18 @@ def preserve_stored_value(default_value, qbo_value, stored_value):
 class PurchaseLineExpenseLineItemConnector:
     """
     Connector service for synchronization between QboPurchaseLine and ExpenseLineItem.
+
+    U-364: dbo.ExpenseLineItem.QboId/RealmId (U-238b), scoped to this line's own
+    parent Expense, is the SOLE identity store — the qbo.PurchaseLineExpenseLineItem
+    mapping table is retired (U-349 program family 11/11, LAST family, cloning
+    U-363's bill_line_item shape). Unlike Bill, Expense carries expense-specific
+    field-decision helpers (default_amount_only_line / preserve_stored_value, for
+    Ramp amount-only card-spend lines) which are unaffected by the identity repoint
+    and are kept unchanged below.
     """
 
     def __init__(
         self,
-        mapping_repo: Optional[PurchaseLineExpenseLineItemRepository] = None,
         expense_line_item_service: Optional[ExpenseLineItemService] = None,
         sub_cost_code_service: Optional[SubCostCodeService] = None,
         customer_project_repo=None,
@@ -82,7 +92,6 @@ class PurchaseLineExpenseLineItemConnector:
         reconciliation_repo: Optional[ReconciliationIssueRepository] = None,
     ):
         """Initialize the PurchaseLineExpenseLineItemConnector."""
-        self.mapping_repo = mapping_repo or PurchaseLineExpenseLineItemRepository()
         self.expense_line_item_service = expense_line_item_service or ExpenseLineItemService()
         # Cost-code resolution dep (U-307a; U-307d retired the legacy qbo.Item*
         # fallback repos) -- only passed to cost_code_resolver.resolve_dbo_sub_cost_code.
@@ -104,19 +113,61 @@ class PurchaseLineExpenseLineItemConnector:
         self.qbo_customer_repo = qbo_customer_repo or QboCustomerRepository()
         self.project_service = project_service or ProjectService()
         self.reconciliation_repo = reconciliation_repo or ReconciliationIssueRepository()
+        # U-364: qbo.PurchaseLineExpenseLineItem's mapping repo/model/create_mapping/
+        # fingerprint-adopt are retired -- dbo.ExpenseLineItem.QboId/RealmId (U-238b)
+        # is the sole identity store going forward. Unlike customer_project_repo/
+        # qbo_customer_repo above (dead from an EARLIER, unrelated retirement with
+        # real existing callers to stay compatible with), no live caller anywhere
+        # in the repo ever constructs this connector with a mapping_repo= kwarg
+        # (grep-confirmed), so — mirroring BillLineItemConnector's own U-363
+        # precedent exactly — the param is dropped outright rather than kept as
+        # dead DI.
 
-    def sync_from_qbo_purchase_line(self, expense_id: int, expense_public_id: str, qbo_line: QboPurchaseLine, realm_id: Optional[str] = None) -> ExpenseLineItem:
+    def sync_from_qbo_purchase_line(
+        self,
+        expense_id: int,
+        expense_public_id: str,
+        qbo_line: QboPurchaseLine,
+        live_qbo_line_ids: frozenset,
+        realm_id: Optional[str] = None,
+    ) -> ExpenseLineItem:
         """
-        Sync data from QboPurchaseLine to ExpenseLineItem module.
+        Upsert a QBO PurchaseLine into an ExpenseLineItem, via the shared dbo-only
+        line identity fast path (base/identity_fastpath.py::
+        run_line_identity_fastpath_dbo_only — see its docstring for the create
+        lock, the create-only MISS, and the stamp-rollback guarantee this
+        connector relies on rather than re-implements):
 
-        Args:
-            expense_id: Database ID of the Expense
-            expense_public_id: Public ID of the Expense (passed in to avoid a per-line DB read)
-            qbo_line: QboPurchaseLine record
+          * HIT — a dbo row already carries `(expense_id, qbo_line_id)`: write the
+            QBO-derived fields onto it in place.
+          * MISS — re-adopt before create (U-361b's shape). QBO regenerates a
+            line's `Line.Id` on certain edits with its content unchanged; a
+            genuine MISS first looks for a local line under this parent whose
+            CURRENT identity is no longer in `live_qbo_line_ids` (this pull's
+            live line-id set) AND whose content fingerprint matches the
+            incoming line — a "stale-identity orphan" — and re-stamps THAT row
+            (reusing its dbo.Id, its attachments, any InvoiceLineItem FK)
+            instead of minting a sibling. Only when nothing matches does a
+            fresh line get created, then stamped with the bare
+            `set_qbo_identity`. A stamp that raises or does not land is rolled
+            back by the helper and re-raised — an unstamped line has no
+            mapping row left to make it findable on the next pull (it would be
+            re-created as a duplicate every pull), so a best-effort stamp is
+            not acceptable.
 
-        Returns:
-            ExpenseLineItem: The synced ExpenseLineItem record
+        Raises on any projection failure; the parent fails the whole expense so
+        the watermark holds and it retries.
         """
+        if not qbo_line.qbo_line_id:
+            # Without a QBO Line.Id there is no dbo-native identity to resolve or
+            # stamp, and no mapping row keyed on the staging PK to make an
+            # unstamped line findable next pull — creating one would duplicate it
+            # on every re-pull. QBO always assigns Line.Id on a persisted
+            # transaction, so this is a fail-closed guard, not a path.
+            raise ValueError(
+                f"QboPurchaseLine {qbo_line.id} on Expense {expense_id} has no QBO "
+                f"Line.Id - cannot resolve or stamp dbo-native line identity; skipping."
+            )
 
         # Resolve sub_cost_code from item reference
         sub_cost_code_id = None
@@ -148,10 +199,16 @@ class PurchaseLineExpenseLineItemConnector:
             # QBO stores markup as percentage (e.g., 10 for 10%), we store as decimal (e.g., 0.10)
             markup = Decimal(str(qbo_line.markup_percent)) / Decimal('100')
 
+        description = qbo_line.description
+        amount = qbo_line.amount
+
         # What this pull WOULD write if the local row carried nothing (U-098). A QBO
         # amount-only line (Ramp card spend on 58999) has no Qty/UnitPrice/MarkupInfo
         # at all, which used to persist as NULL quantity/rate/markup. Derived once
         # per line; the create and update paths below decide whether to apply them.
+        # This is also what `create()` persists for an amount-only line — so the
+        # readopt fingerprint below matches against these DEFAULTED values, not the
+        # raw (possibly-None) qbo_line.qty/unit_price.
         default_qty, default_rate = default_amount_only_line(
             qbo_line.qty, qbo_line.unit_price, qbo_line.amount
         )
@@ -167,14 +224,21 @@ class PurchaseLineExpenseLineItemConnector:
             else:
                 price = amount_val
 
-        def _apply_line_fields(direct: ExpenseLineItem, *, path_label: str) -> Optional[ExpenseLineItem]:
+        def _apply_line_fields(direct: ExpenseLineItem) -> Optional[ExpenseLineItem]:
             """
-            Write the QBO-derived fields onto an existing, matched ExpenseLineItem.
-            Shared by the fast path and the legacy "mapping found" branch (U-293b,
-            mirroring BillLineItemConnector's _apply_line_fields) — one update-logic
-            site, not two hand-copies that could drift. `direct` plays the role the
-            legacy path's own `line_item` used to: its CURRENT stored quantity/rate/
-            markup feed preserve_stored_value exactly as before.
+            `apply_fields` for the HIT branch: write the QBO-derived fields onto
+            the dbo-identity-matched ExpenseLineItem. Returns None on a concurrent-
+            DELETE `update_by_public_id` miss — the primitive's `_apply()` raises
+            `raise_concurrent_write_race` unconditionally on a None return, so
+            that ONE raise stays the single place the guarantee lives.
+
+            Identity itself is NOT unconditionally re-stamped here (U-364's
+            shape, mirroring U-363's bill_line_item) — the row was found BY that
+            identity; re-stamping every touch was the mapping era's dual-write. A
+            one-off realm self-heal below is the exception: a legacy row can be
+            stamped with a QboId but no RealmId (a partial historical stamp), and
+            a fast-path HIT that skipped healing it would find such a row
+            forever afterward and never correct it.
             """
             update_qty = preserve_stored_value(default_qty, qbo_line.qty, direct.quantity)
             update_rate = preserve_stored_value(default_rate, qbo_line.unit_price, direct.rate)
@@ -185,10 +249,10 @@ class PurchaseLineExpenseLineItemConnector:
                 row_version=direct.row_version,
                 sub_cost_code_id=sub_cost_code_id,
                 project_public_id=project_public_id,
-                description=qbo_line.description,
+                description=description,
                 quantity=update_qty,
                 rate=update_rate,
-                amount=qbo_line.amount,
+                amount=amount,
                 is_billable=is_billable,
                 is_billed=is_billed,
                 markup=update_markup,
@@ -201,208 +265,195 @@ class PurchaseLineExpenseLineItemConnector:
                 logger.error(
                     f"Failed to update ExpenseLineItem {direct.id} from QboPurchaseLine "
                     f"{qbo_line.id} - update_by_public_id returned None "
-                    f"(concurrent write race, {path_label})"
+                    f"(concurrent write race)"
                 )
                 raise_concurrent_write_race(
-                    entity_label="ExpenseLineItem", entity_id=direct.id, path_label=path_label
+                    entity_label="ExpenseLineItem", entity_id=direct.id, path_label="line fast path"
                 )
-            stamp_line_identity_or_warn(
-                self.expense_line_item_service.repo,
-                id=int(updated.id),
-                qbo_id=qbo_line.qbo_line_id,
-                # U-293-dw fold-in: fall back to the row's own already-stamped
-                # realm_id when this call's realm_id is empty — an UPDATE touch
-                # on a line that's already realm-complete must still re-stamp
-                # QboId (e.g. QBO recycled the line id), not get skipped by
-                # stamp_line_identity_or_warn's atomic-pair guard just because
-                # this particular caller didn't have a fresh realm_id in hand.
-                realm_id=realm_id or getattr(direct, "realm_id", None),
-                context=f"Updated ExpenseLineItem {updated.id} ({path_label})",
-                enforce_realm_pairing=True,
-            )
+            if realm_id and not getattr(direct, "realm_id", None):
+                # Legacy realm gap (U-293-dw): the row was found by its QboId but
+                # never got the RealmId half of the atomic pair. Heal it once,
+                # best-effort — a failure here must not fail the line (the row
+                # is still correctly identified by (ExpenseId, QboId)).
+                stamp_line_identity_or_warn(
+                    self.expense_line_item_service.repo,
+                    id=coerce_id(updated.id),
+                    qbo_id=qbo_line.qbo_line_id,
+                    realm_id=realm_id,
+                    context=f"Updated ExpenseLineItem {updated.id} (realm self-heal)",
+                    enforce_realm_pairing=True,
+                )
             return updated
 
-        # Memoized: qbo_line.id is fixed for this whole call, and both the fast
-        # path (via resolve_mapping_state, on a MISSING/CONFLICT classification)
-        # and the legacy path just below it (unconditionally, on a fast-path
-        # miss) ask this exact same question — mirrors BillLineItemConnector's
-        # identical memoization.
-        _qbo_purchase_line_mapping_cache = {}
+        def _readopt_stale_line() -> Optional[ExpenseLineItem]:
+            """
+            `readopt_candidate` for the MISS branch (U-361b's shape): find a
+            local line under this Expense whose current identity is stale (not
+            in `live_qbo_line_ids`) and whose (description, amount, qty, rate)
+            fingerprint matches this QBO line, via the shared
+            `find_stale_identity_orphan` (base/line_orphan_adopt.py), the same
+            matcher U-361/U-362/U-363 use. Single-tier — the pre-U-364 two-tier
+            `_find_and_match_by_fingerprint` shim (raw-exact first, normalized
+            fallback second, to prefer an exact match over a coincidentally-
+            normalized sibling) is retired — but BOTH sides of the comparison
+            run through `default_amount_only_line` before fingerprinting, not
+            just the target: a stale candidate already carrying the defaulted
+            quantity=1/rate=amount shape `create()` persists is unaffected (the
+            defaulting is a no-op once both fields are already set), but a
+            LEGACY pre-U-098 orphan whose quantity/rate are still NULL (created
+            before the amount-only default existed, then went stale before ever
+            being re-synced in place to self-heal) now normalizes to the SAME
+            defaulted shape as the incoming line instead of silently missing
+            the match and minting a duplicate (Codex Gate-2 P2, U-364 round 2).
+            Pure lookup: no field writes here — the primitive applies
+            `apply_fields` to whatever this returns before stamping.
+            """
+            existing = self.expense_line_item_service.read_by_expense_id(expense_id=expense_id)
 
-        def _read_by_qbo_purchase_line_id_cached(qbo_purchase_line_id):
-            if qbo_purchase_line_id not in _qbo_purchase_line_mapping_cache:
-                _qbo_purchase_line_mapping_cache[qbo_purchase_line_id] = (
-                    self.mapping_repo.read_by_qbo_purchase_line_id(qbo_purchase_line_id)
+            def _fp(desc, amt, qty, rate) -> tuple:
+                return (
+                    self._fingerprint(desc), self._fingerprint(amt),
+                    self._fingerprint(qty), self._fingerprint(rate),
                 )
-            return _qbo_purchase_line_mapping_cache[qbo_purchase_line_id]
 
-        # U-293b: resolve identity directly against dbo.ExpenseLineItem's native
-        # QboId, scoped to this line's own parent Expense (U-238b), before
-        # falling back to the qbo.PurchaseLineExpenseLineItem mapping-table hop
-        # below. Mirrors BillLineItemConnector's U-293 pilot exactly.
-        # conflict->RAISE is structural (base.identity_fastpath.
-        # run_line_identity_fastpath), never a fall-through to the legacy path.
-        outcome = run_line_identity_fastpath(
+            def _candidate_fingerprint(li) -> tuple:
+                cand_qty, cand_rate = default_amount_only_line(li.quantity, li.rate, li.amount)
+                return _fp(li.description, li.amount, cand_qty, cand_rate)
+
+            return find_stale_identity_orphan(
+                existing_lines=existing,
+                live_qbo_line_ids=live_qbo_line_ids,
+                fingerprint=_candidate_fingerprint,
+                target=_fp(description, amount, default_qty, default_rate),
+            )
+
+        def _create_line() -> Optional[ExpenseLineItem]:
+            """
+            `resolve_candidate` for the MISS branch: create the line fresh (no
+            adopt — see the method docstring). Fails closed BEFORE creating when
+            the realm needed for the stamp is missing: SetExpenseLineItemQboIdentity's
+            own atomic-pair guard declines to write a QboId without a RealmId, so
+            the line would come out unstamped — which post-U-364 means
+            unfindable, i.e. re-created as a duplicate on every pull. The helper
+            would catch the un-landed stamp and roll the row back anyway;
+            refusing up front just saves the create+delete round trip.
+            """
+            if not realm_id:
+                raise RuntimeError(
+                    f"Refusing to create ExpenseLineItem for Expense {expense_id}: "
+                    f"realm_id is missing, so its dbo-native identity stamp could not "
+                    f"land and the line would be an unfindable orphan. Holding for retry."
+                )
+            return self.expense_line_item_service.create(
+                expense_public_id=expense_public_id,
+                sub_cost_code_id=sub_cost_code_id,
+                project_public_id=project_public_id,
+                description=description,
+                quantity=default_qty,
+                rate=default_rate,
+                amount=amount,
+                is_billable=is_billable,
+                is_billed=is_billed,
+                markup=default_markup,
+                price=price,
+                is_draft=False,
+            )
+
+        def _stamp_line_identity(candidate: ExpenseLineItem) -> Optional[ExpenseLineItem]:
+            """
+            `stamp_identity` for the MISS branch: the bare dbo-native stamp, then
+            a re-read — `set_qbo_identity` is a void DB write that never mutates
+            `candidate` in memory, and the helper verifies the returned row
+            actually carries the identity (its "stamp did not land" guard).
+            """
+            self.expense_line_item_service.repo.set_qbo_identity(
+                id=coerce_id(candidate.id), qbo_id=qbo_line.qbo_line_id, realm_id=realm_id,
+            )
+            return self.expense_line_item_service.read_by_id(coerce_id(candidate.id))
+
+        def _rollback_line(candidate: ExpenseLineItem) -> None:
+            """
+            `rollback_candidate` for the MISS branch (U-354/U-355/U-363's
+            identity-stamp rollback, at line level): best-effort delete of the
+            just-created, unstamped line. `rollback_orphan_header` is the shared
+            compensating-delete mechanism (not header-specific beyond its name);
+            `delete_mapping` is a no-op because there is no mapping row. A
+            failed delete leaves an unstamped orphan that inflates this
+            expense's local lines on every future pull, so it is recorded to
+            reconciliation monitoring exactly as the header connector records
+            its own orphan header.
+            """
+            rollback_orphan_header(
+                delete_header=lambda: self.expense_line_item_service.delete_by_public_id(
+                    candidate.public_id
+                ),
+                delete_mapping=lambda: None,
+                entity_label="ExpenseLineItem",
+                entity_id=candidate.id,
+                on_header_delete_failed=lambda exc: record_orphan_line_issue(
+                    self.reconciliation_repo,
+                    drift_type="orphan_eli_line_item",
+                    entity_type="ExpenseLineItem",
+                    line_item=candidate,
+                    qbo_line_id=qbo_line.qbo_line_id,
+                    parent_label="Expense",
+                    parent_id=expense_id,
+                    realm_id=realm_id,
+                    exc=exc,
+                ),
+            )
+
+        outcome = run_line_identity_fastpath_dbo_only(
             parent_local_id=expense_id,
             qbo_line_id=qbo_line.qbo_line_id,
-            external_id=qbo_line.id,
             entity_label="ExpenseLineItem",
             external_label="QboPurchaseLine",
+            lock_resource_label="ExpenseLineItem",
             read_direct_by_parent_and_qbo_line_id=self.expense_line_item_service.read_by_qbo_identity,
-            read_by_local_id=self.mapping_repo.read_by_expense_line_item_id,
-            read_by_external_id=_read_by_qbo_purchase_line_id_cached,
-            external_id_attr="qbo_purchase_line_id",
-            record_conflict_issue=lambda entity, by_local, by_external: (
-                self._record_line_identity_mapping_conflict_issue(
-                    qbo_line=qbo_line,
-                    dbo_line_id=coerce_id(entity.id),
-                    local_side_mapping=by_local,
-                    qbo_side_mapping=by_external,
-                    realm_id=realm_id,
-                )
-            ),
-            conflict_message=lambda entity: (
-                f"PurchaseLineExpenseLineItem identity conflict for QboPurchaseLine "
-                f"{qbo_line.qbo_line_id} (id={qbo_line.id}) on Expense {expense_id}: "
-                f"dbo.ExpenseLineItem {entity.id} already carries this identity but "
-                f"the mapping table disagrees. Not auto-repointed; see the recorded "
-                f"reconciliation issue. Skipping until a human resolves it."
-            ),
-            apply_fields=lambda direct: _apply_line_fields(direct, path_label="line fast path"),
-        )
-        if outcome.hit:
-            return outcome.entity
-
-        # Check for existing mapping. Memoized above — if the fast path already
-        # asked this (MISSING/CONFLICT), this is a cache hit, not a second round trip.
-        mapping = _read_by_qbo_purchase_line_id_cached(qbo_line.id)
-
-        if not mapping:
-            # Shape B fallback (task #17): content-fingerprint match when QBO
-            # regenerates line IDs. Adopts an existing unmapped ExpenseLineItem
-            # whose fields match this QBO line rather than creating a duplicate.
-            orphan = self._find_and_match_by_fingerprint(
-                expense_id=expense_id,
-                description=qbo_line.description,
-                amount=qbo_line.amount,
-                qty=qbo_line.qty,
-                rate=qbo_line.unit_price,
-            )
-            if orphan is not None:
-                logger.info(
-                    f"Adopting orphaned ExpenseLineItem {orphan.id} for QboPurchaseLine {qbo_line.id} "
-                    f"via content fingerprint match"
-                )
-                try:
-                    mapping = self.mapping_repo.create(
-                        expense_line_item_id=int(orphan.id),
-                        qbo_purchase_line_id=qbo_line.id,
-                    )
-                except Exception as error:
-                    logger.warning(
-                        f"Could not adopt orphaned ExpenseLineItem {orphan.id}: {error}"
-                    )
-
-        if mapping:
-            # Found existing mapping - update the ExpenseLineItem
-            line_item = self.expense_line_item_service.read_by_id(mapping.expense_line_item_id)
-            if line_item:
-                logger.debug(f"Updating existing ExpenseLineItem {line_item.id} from QboPurchaseLine {qbo_line.id}")
-                # U-293b: reuse the SAME _apply_line_fields closure the fast path
-                # uses (update + preserve-stored-value + identity re-stamp).
-                return _apply_line_fields(line_item, path_label="legacy mapping-table path")
-            else:
-                # Mapping exists but ExpenseLineItem not found - recreate
-                logger.warning(f"Mapping exists but ExpenseLineItem {mapping.expense_line_item_id} not found. Creating new.")
-                self.mapping_repo.delete_by_id(mapping.id)
-                mapping = None
-
-        # Create new ExpenseLineItem
-        logger.debug(f"Creating new ExpenseLineItem from QboPurchaseLine {qbo_line.id}")
-        line_item = self.expense_line_item_service.create(
-            expense_public_id=expense_public_id,
-            sub_cost_code_id=sub_cost_code_id,
-            project_public_id=project_public_id,
-            description=qbo_line.description,
-            quantity=default_qty,
-            rate=default_rate,
-            amount=qbo_line.amount,
-            is_billable=is_billable,
-            is_billed=is_billed,
-            markup=default_markup,
-            price=price,
-            is_draft=False,
-        )
-
-        # Create mapping — if this fails we must roll back the line item we just created,
-        # otherwise the unmapped line item will be duplicated on every subsequent sync run.
-        line_item_id = coerce_id(line_item.id)
-
-        def _create_mapping():
-            self.create_mapping(expense_line_item_id=line_item_id, qbo_purchase_line_id=qbo_line.id)
-            logger.debug(f"Created mapping: ExpenseLineItem {line_item_id} <-> QboPurchaseLine {qbo_line.id}")
-
-        def _on_mapping_failure(exc):
-            try:
-                self.expense_line_item_service.delete_by_public_id(line_item.public_id)
-                logger.warning(
-                    f"Rolled back orphan ExpenseLineItem {line_item_id} after mapping failure "
-                    f"for QboPurchaseLine {qbo_line.id}"
-                )
-            except Exception as del_e:
-                logger.error(f"Could not delete orphan ExpenseLineItem {line_item_id}: {del_e}")
-            raise ValueError(
-                f"Failed to create PurchaseLineExpenseLineItem mapping for QboPurchaseLine {qbo_line.id}: {exc}"
-            ) from exc
-
-        def _stamp_identity():
-            # U-238b: dbo line identity dual-write (create+update pairing for U-238c).
-            # Mapping is already committed — a stamp failure must NOT roll back the line item.
-            stamp_line_identity_or_warn(
-                self.expense_line_item_service.repo,
-                id=line_item_id,
-                qbo_id=qbo_line.qbo_line_id,
+            readopt_candidate=_readopt_stale_line,
+            resolve_candidate=_create_line,
+            stamp_identity=_stamp_line_identity,
+            rollback_candidate=_rollback_line,
+            apply_fields=_apply_line_fields,
+            on_readopt_stamp_failed=lambda readopted, exc: record_readopt_stamp_failed_issue(
+                self.reconciliation_repo,
+                drift_type="eli_line_readopt_failed",
+                entity_type="ExpenseLineItem",
+                line_item=readopted,
+                qbo_line_id=qbo_line.qbo_line_id,
+                parent_label="Expense",
+                parent_id=expense_id,
                 realm_id=realm_id,
-                context=f"Created mapping for ExpenseLineItem {line_item_id} for QboPurchaseLine {qbo_line.id}",
-                enforce_realm_pairing=True,
-            )
-
-        # U-341: create_mapping_then_stamp makes _stamp_identity unreachable on a
-        # failed create by construction.
-        create_mapping_then_stamp(
-            create_mapping=_create_mapping,
-            stamp_identity=_stamp_identity,
-            on_mapping_failure=_on_mapping_failure,
-            catch=(Exception,),
+                exc=exc,
+            ),
+            on_create_failed=lambda exc: record_create_failed_issue(
+                self.reconciliation_repo,
+                drift_type="eli_line_create_failed",
+                entity_type="ExpenseLineItem",
+                qbo_line_id=qbo_line.qbo_line_id,
+                parent_label="Expense",
+                parent_id=expense_id,
+                realm_id=realm_id,
+                exc=exc,
+            ),
         )
+        # qbo_line_id is guaranteed truthy above, so the helper's only hit=False
+        # outcome is unreachable here and hit=True never carries entity=None.
+        return outcome.entity
 
-        return line_item
-
-    def _record_line_identity_mapping_conflict_issue(
-        self,
-        *,
-        qbo_line: QboPurchaseLine,
-        dbo_line_id: int,
-        local_side_mapping,
-        qbo_side_mapping,
-        realm_id: Optional[str] = None,
-    ) -> None:
-        record_identity_mapping_conflict(
-            self.reconciliation_repo,
-            drift_type="expense_line_identity_conflict",
-            entity_type="ExpenseLineItem",
-            mapping_label="PurchaseLineExpenseLineItem",
-            qbo_label="QboPurchaseLine",
-            dbo_id=dbo_line_id,
-            qbo_row_id=qbo_line.id,
-            raw_qbo_line_id=qbo_line.qbo_line_id,
-            realm_id=realm_id,
-            local_side_mapping=local_side_mapping,
-            qbo_side_mapping=qbo_side_mapping,
-            qbo_side_local_fk_attr="expense_line_item_id",
-            local_side_qbo_fk_attr="qbo_purchase_line_id",
-            line_level=True,
-        )
+    @staticmethod
+    def _fingerprint(value) -> str:
+        """Canonicalize a value for content-fingerprint comparison (10 == 10.00).
+        Mirrors bill_line_item's own `_fingerprint` (U-363), which itself mirrors
+        this connector's pre-U-364 `_normalize_for_fingerprint`."""
+        if value is None:
+            return ""
+        if isinstance(value, Decimal):
+            return format(value.normalize(), "f")
+        try:
+            return format(Decimal(str(value)).normalize(), "f")
+        except Exception:
+            return str(value).strip()
 
     def _get_sub_cost_code_id(self, qbo_item_ref_value: str, realm_id: Optional[str] = None) -> Optional[int]:
         """
@@ -494,150 +545,3 @@ class PurchaseLineExpenseLineItemConnector:
 
         self._project_cache[cache_key] = None
         return None
-
-    def create_mapping(self, expense_line_item_id: int, qbo_purchase_line_id: int) -> PurchaseLineExpenseLineItem:
-        """
-        Create a mapping between ExpenseLineItem and QboPurchaseLine.
-
-        Args:
-            expense_line_item_id: Database ID of ExpenseLineItem record
-            qbo_purchase_line_id: Database ID of QboPurchaseLine record
-
-        Returns:
-            PurchaseLineExpenseLineItem: The created mapping record
-
-        Raises:
-            ValueError: If mapping already exists or validation fails
-        """
-        # Validate 1:1 constraints
-        existing_by_line_item = self.mapping_repo.read_by_expense_line_item_id(expense_line_item_id)
-        if existing_by_line_item:
-            raise ValueError(
-                f"ExpenseLineItem {expense_line_item_id} is already mapped to QboPurchaseLine {existing_by_line_item.qbo_purchase_line_id}"
-            )
-
-        existing_by_qbo_line = self.mapping_repo.read_by_qbo_purchase_line_id(qbo_purchase_line_id)
-        if existing_by_qbo_line:
-            raise ValueError(
-                f"QboPurchaseLine {qbo_purchase_line_id} is already mapped to ExpenseLineItem {existing_by_qbo_line.expense_line_item_id}"
-            )
-
-        # Create mapping
-        return self.mapping_repo.create(expense_line_item_id=expense_line_item_id, qbo_purchase_line_id=qbo_purchase_line_id)
-
-    # ------------------------------------------------------------------ #
-    # Shape B line-matching helpers (task #17)
-    # ------------------------------------------------------------------ #
-
-    @staticmethod
-    def _normalize_for_fingerprint(value) -> str:
-        """Canonicalize a value for content-fingerprint comparison."""
-        if value is None:
-            return ""
-        if isinstance(value, Decimal):
-            return format(value.normalize(), "f")
-        try:
-            return format(Decimal(str(value)).normalize(), "f")
-        except Exception:
-            pass
-        return str(value).strip()
-
-    def _fingerprint_tuple(self, description, amount, qty, rate):
-        return (
-            self._normalize_for_fingerprint(description),
-            self._normalize_for_fingerprint(amount),
-            self._normalize_for_fingerprint(qty),
-            self._normalize_for_fingerprint(rate),
-        )
-
-    def _find_and_match_by_fingerprint(
-        self,
-        *,
-        expense_id: int,
-        description,
-        amount,
-        qty,
-        rate,
-    ):
-        """
-        Find an unmapped ExpenseLineItem whose content fingerprint matches,
-        POSITION-AWARE.
-
-        Two tiers preserve pre-patch adoption while rescuing legacy NULL rows:
-        - Tier 1 (exact): raw (description, amount, qty, rate) on target vs
-          (description, amount, quantity, rate) on each candidate — no defaulting.
-        - Tier 2 (normalized fallback): only if tier 1 found nothing, compare
-          default_amount_only_line on both sides.
-
-        Invariant: any row the pre-patch matcher would adopt is still adopted
-        (tier 1); normalization only adds matches where tier 1 would find none.
-
-        Tier 2 is a LEGACY-ROW SHIM, not a permanent feature: it exists only because
-        rows created before U-098 stored NULL quantity/rate where the pull now stores
-        1 x amount. Retire it (and collapse back to one tier) once no unmapped
-        ExpenseLineItem on a QBO-sourced Expense still has NULL quantity/rate —
-        otherwise it will be carried along into any future shared-matcher extraction.
-
-        When several unmapped lines share a fingerprint within a tier, return the
-        FIRST in stable position order (by id ≈ creation ≈ LineNum). The caller
-        consumes it (creates a mapping) before the next QBO line, so processing lines
-        in order pairs identical-content lines 1:1 by position — robust to QBO line-id
-        regeneration even with duplicate content, instead of bailing and duplicating.
-        Returns None only when nothing matches in either tier.
-        """
-        existing = self.expense_line_item_service.read_by_expense_id(expense_id=expense_id)
-        unmapped = [
-            li for li in sorted(existing, key=lambda c: int(getattr(c, "id", 0) or 0))
-            if not self.mapping_repo.read_by_expense_line_item_id(int(li.id))
-        ]
-
-        def matches_for(tier_target, defaulted: bool):
-            """Candidates whose fingerprint equals tier_target, in position order."""
-            found = []
-            for candidate in unmapped:
-                cand_amount = getattr(candidate, "amount", None)
-                cand_qty = getattr(candidate, "quantity", None)
-                cand_rate = getattr(candidate, "rate", None)
-                if defaulted:
-                    cand_qty, cand_rate = default_amount_only_line(cand_qty, cand_rate, cand_amount)
-                candidate_fp = self._fingerprint_tuple(
-                    getattr(candidate, "description", None), cand_amount, cand_qty, cand_rate
-                )
-                if candidate_fp == tier_target:
-                    found.append(candidate)
-            return found
-
-        def adopt(matches, tier_label):
-            if len(matches) > 1:
-                logger.info(
-                    f"{len(matches)} unmapped ExpenseLineItems share the tier-{tier_label} "
-                    f"fingerprint; adopting the first by position (QBO line-id regeneration)"
-                )
-            return matches[0]
-
-        # Tier 1 — raw, exactly as the pre-patch matcher compared. Runs alone whenever
-        # it hits, so the normalized pass costs nothing on the common path.
-        exact = matches_for(self._fingerprint_tuple(description, amount, qty, rate), defaulted=False)
-        if exact:
-            return adopt(exact, "exact")
-
-        # Tier 2 — legacy-row rescue only (see docstring).
-        norm_qty, norm_rate = default_amount_only_line(qty, rate, amount)
-        normalized = matches_for(
-            self._fingerprint_tuple(description, amount, norm_qty, norm_rate), defaulted=True
-        )
-        if normalized:
-            return adopt(normalized, "normalized")
-        return None
-
-    def get_mapping_by_expense_line_item_id(self, expense_line_item_id: int) -> Optional[PurchaseLineExpenseLineItem]:
-        """
-        Get mapping by ExpenseLineItem ID.
-        """
-        return self.mapping_repo.read_by_expense_line_item_id(expense_line_item_id)
-
-    def get_mapping_by_qbo_purchase_line_id(self, qbo_purchase_line_id: int) -> Optional[PurchaseLineExpenseLineItem]:
-        """
-        Get mapping by QboPurchaseLine ID.
-        """
-        return self.mapping_repo.read_by_qbo_purchase_line_id(qbo_purchase_line_id)

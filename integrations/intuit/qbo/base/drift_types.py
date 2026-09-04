@@ -114,6 +114,13 @@ DRIFT_BLI_LINE_CREATE_FAILED = "bli_line_create_failed"
 # guards against — the Bill is genuinely already live in QBO by this point, so
 # this is a flag-for-follow-up, not a refuse/rollback scenario.
 DRIFT_BLI_LINE_PUSH_STAMP_FAILED = "bli_line_push_stamp_failed"
+# U-364: dbo-only line fast path recorders for expense_line_item (readopt-
+# failure / create-failure / rollback-failure), mirroring U-361b/U-362/U-363's
+# identical 3-constant shape (DRIFT_ORPHAN_BLI_LINE_ITEM above) — the LAST
+# family of the U-349 line-item retirement program.
+DRIFT_ORPHAN_ELI_LINE_ITEM = "orphan_eli_line_item"
+DRIFT_ELI_LINE_READOPT_FAILED = "eli_line_readopt_failed"
+DRIFT_ELI_LINE_CREATE_FAILED = "eli_line_create_failed"
 
 KNOWN_DRIFT_TYPES: FrozenSet[str] = frozenset({
     DRIFT_QBO_MISSING_LOCALLY, DRIFT_LOCAL_MISSING_QBO, DRIFT_STALE_SYNC_TOKEN,
@@ -144,4 +151,5 @@ KNOWN_DRIFT_TYPES: FrozenSet[str] = frozenset({
     DRIFT_ORPHAN_ILI_LINE_ITEM, DRIFT_ILI_LINE_READOPT_FAILED, DRIFT_ILI_LINE_CREATE_FAILED,
     DRIFT_ORPHAN_BLI_LINE_ITEM, DRIFT_BLI_LINE_READOPT_FAILED, DRIFT_BLI_LINE_CREATE_FAILED,
     DRIFT_BLI_LINE_PUSH_STAMP_FAILED,
+    DRIFT_ORPHAN_ELI_LINE_ITEM, DRIFT_ELI_LINE_READOPT_FAILED, DRIFT_ELI_LINE_CREATE_FAILED,
 })

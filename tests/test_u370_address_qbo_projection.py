@@ -28,6 +28,7 @@ _ADDRESS_RESULT_PROCS = (
     "ReadAddresses",
     "ReadAddressById",
     "ReadAddressByQboIdAndRealmId",
+    "ReadDeletedAddressByQboIdAndRealmId",
     "ReadAddressByPublicId",
     "ReadAddressByStreetOneAndCity",
     "UpdateAddressById",
@@ -61,7 +62,11 @@ def _result_column_blocks(proc_name: str) -> list[frozenset[str]]:
         )
     )
     assert blocks, f"no SELECT/OUTPUT result lists found in {proc_name}"
-    return blocks
+    # DeleteAddressById's unused-link NOT EXISTS uses `SELECT 1 FROM` — not
+    # an Address-shaped result. Keep lists that project the Address row.
+    shaped = [b for b in blocks if "StreetOne" in b]
+    assert shaped, f"no Address-shaped result lists found in {proc_name}"
+    return shaped
 
 
 def _mock_row(**kwargs):

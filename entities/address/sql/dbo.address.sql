@@ -14,7 +14,8 @@ CREATE TABLE [dbo].[Address]
     [City] NVARCHAR(255) NOT NULL,
     [State] NVARCHAR(2) NOT NULL,
     [Zip] NVARCHAR(5) NOT NULL,
-    [Country] NVARCHAR(255) NOT NULL
+    [Country] NVARCHAR(255) NOT NULL,
+    [IsDeleted] BIT NOT NULL DEFAULT 0
 );
 END
 GO
@@ -35,6 +36,14 @@ IF OBJECT_ID('dbo.Address', 'U') IS NOT NULL
    AND NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('dbo.Address') AND name = 'RealmId')
 BEGIN
     ALTER TABLE [dbo].[Address] ADD [RealmId] NVARCHAR(50) NULL;
+END
+GO
+
+-- U-370 C1: unused-only soft-delete. Idempotent for existing environments.
+IF OBJECT_ID('dbo.Address', 'U') IS NOT NULL
+   AND COL_LENGTH('dbo.Address', 'IsDeleted') IS NULL
+BEGIN
+    ALTER TABLE [dbo].[Address] ADD [IsDeleted] BIT NOT NULL DEFAULT 0;
 END
 GO
 
@@ -77,6 +86,7 @@ BEGIN
         INSERTED.[State],
         INSERTED.[Zip],
         INSERTED.[Country],
+        INSERTED.[IsDeleted],
         INSERTED.[QboId],
         INSERTED.[RealmId]
     VALUES (@Now, @Now, @StreetOne, @StreetTwo, @City, @State, @Zip, @Country);
@@ -105,9 +115,11 @@ BEGIN
         [State],
         [Zip],
         [Country],
+        [IsDeleted],
         [QboId],
         [RealmId]
     FROM dbo.[Address]
+    WHERE [IsDeleted] = 0
     ORDER BY [StreetOne] ASC, [City] ASC;
 
     COMMIT TRANSACTION;
@@ -137,10 +149,11 @@ BEGIN
         [State],
         [Zip],
         [Country],
+        [IsDeleted],
         [QboId],
         [RealmId]
     FROM dbo.[Address]
-    WHERE [Id] = @Id;
+    WHERE [Id] = @Id AND [IsDeleted] = 0;
 
     COMMIT TRANSACTION;
 END;
@@ -153,6 +166,7 @@ GO
 -- staging/mapping tables — every Address synced at least once already
 -- carries QboId/RealmId via SetAddressQboIdentity. RealmId NULL-equality
 -- mirrors SetAddressQboIdentity's own stolen-identity comparison.
+-- U-370 C1: live rows only (IsDeleted = 0). Tombstones are ReadDeletedAddressByQboIdAndRealmId.
 CREATE OR ALTER PROCEDURE ReadAddressByQboIdAndRealmId
 (
     @QboId NVARCHAR(50),
@@ -174,10 +188,53 @@ BEGIN
         [State],
         [Zip],
         [Country],
+        [IsDeleted],
         [QboId],
         [RealmId]
     FROM dbo.[Address]
     WHERE [QboId] = @QboId
+      AND [IsDeleted] = 0
+      AND (([RealmId] = @RealmId) OR ([RealmId] IS NULL AND @RealmId IS NULL));
+
+    COMMIT TRANSACTION;
+END;
+
+
+
+GO
+
+-- U-370 C1 / U-313 P1 class: does a SOFT-DELETED Address still hold this
+-- identity? ReadAddressByQboIdAndRealmId filters IsDeleted = 0, so a
+-- tombstone reads as a miss to the live path. SetAddressQboIdentity's
+-- theft-clear has no IsDeleted filter — without this read the connector
+-- would mint a duplicate live row and strip the tombstone's QboId.
+CREATE OR ALTER PROCEDURE ReadDeletedAddressByQboIdAndRealmId
+(
+    @QboId NVARCHAR(50),
+    @RealmId NVARCHAR(50) = NULL
+)
+AS
+BEGIN
+    BEGIN TRANSACTION;
+
+    SELECT
+        [Id],
+        [PublicId],
+        [RowVersion],
+        CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
+        CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
+        [StreetOne],
+        [StreetTwo],
+        [City],
+        [State],
+        [Zip],
+        [Country],
+        [IsDeleted],
+        [QboId],
+        [RealmId]
+    FROM dbo.[Address]
+    WHERE [QboId] = @QboId
+      AND [IsDeleted] = 1
       AND (([RealmId] = @RealmId) OR ([RealmId] IS NULL AND @RealmId IS NULL));
 
     COMMIT TRANSACTION;
@@ -207,10 +264,11 @@ BEGIN
         [State],
         [Zip],
         [Country],
+        [IsDeleted],
         [QboId],
         [RealmId]
     FROM dbo.[Address]
-    WHERE [PublicId] = @PublicId;
+    WHERE [PublicId] = @PublicId AND [IsDeleted] = 0;
 
     COMMIT TRANSACTION;
 END;
@@ -219,6 +277,10 @@ END;
 
 GO
 
+-- U-370 C2: QBO adopt soft-dedup only. No unique index on (StreetOne, City)
+-- (or + State). Case follows DB collation; state is ignored; cross-state
+-- collisions possible. TOP 1 + lowest Id makes fetchone deterministic when
+-- duplicates exist. Tombstones are skipped (U-370 C1).
 CREATE OR ALTER PROCEDURE ReadAddressByStreetOneAndCity
 (
     @StreetOne NVARCHAR(255),
@@ -228,7 +290,7 @@ AS
 BEGIN
     BEGIN TRANSACTION;
 
-    SELECT
+    SELECT TOP 1
         [Id],
         [PublicId],
         [RowVersion],
@@ -240,10 +302,12 @@ BEGIN
         [State],
         [Zip],
         [Country],
+        [IsDeleted],
         [QboId],
         [RealmId]
     FROM dbo.[Address]
-    WHERE [StreetOne] = @StreetOne AND [City] = @City;
+    WHERE [StreetOne] = @StreetOne AND [City] = @City AND [IsDeleted] = 0
+    ORDER BY [Id] ASC;
 
     COMMIT TRANSACTION;
 END;
@@ -290,9 +354,10 @@ BEGIN
         INSERTED.[State],
         INSERTED.[Zip],
         INSERTED.[Country],
+        INSERTED.[IsDeleted],
         INSERTED.[QboId],
         INSERTED.[RealmId]
-    WHERE [Id] = @Id AND [RowVersion] = @RowVersion;
+    WHERE [Id] = @Id AND [RowVersion] = @RowVersion AND [IsDeleted] = 0;
 
     COMMIT TRANSACTION;
 END;
@@ -301,30 +366,41 @@ END;
 
 GO
 
+-- U-370 C1: unused-only soft-delete. Linked VendorAddress / ProjectAddress
+-- rows leave the UPDATE matching zero rows (always-COMMIT, no RAISERROR /
+-- ROLLBACK). Service maps that empty result to the house 422 FK message.
 CREATE OR ALTER PROCEDURE DeleteAddressById
 (
     @Id BIGINT
 )
 AS
 BEGIN
+    SET NOCOUNT ON;
     BEGIN TRANSACTION;
 
-    DELETE FROM dbo.[Address]
+    UPDATE dbo.[Address]
+    SET
+        [IsDeleted] = 1,
+        [ModifiedDatetime] = SYSUTCDATETIME()
     OUTPUT
-        DELETED.[Id],
-        DELETED.[PublicId],
-        DELETED.[RowVersion],
-        CONVERT(VARCHAR(19), DELETED.[CreatedDatetime], 120) AS [CreatedDatetime],
-        CONVERT(VARCHAR(19), DELETED.[ModifiedDatetime], 120) AS [ModifiedDatetime],
-        DELETED.[StreetOne],
-        DELETED.[StreetTwo],
-        DELETED.[City],
-        DELETED.[State],
-        DELETED.[Zip],
-        DELETED.[Country],
-        DELETED.[QboId],
-        DELETED.[RealmId]
-    WHERE [Id] = @Id;
+        INSERTED.[Id],
+        INSERTED.[PublicId],
+        INSERTED.[RowVersion],
+        CONVERT(VARCHAR(19), INSERTED.[CreatedDatetime], 120) AS [CreatedDatetime],
+        CONVERT(VARCHAR(19), INSERTED.[ModifiedDatetime], 120) AS [ModifiedDatetime],
+        INSERTED.[StreetOne],
+        INSERTED.[StreetTwo],
+        INSERTED.[City],
+        INSERTED.[State],
+        INSERTED.[Zip],
+        INSERTED.[Country],
+        INSERTED.[IsDeleted],
+        INSERTED.[QboId],
+        INSERTED.[RealmId]
+    WHERE [Id] = @Id
+      AND [IsDeleted] = 0
+      AND NOT EXISTS (SELECT 1 FROM dbo.[VendorAddress] va WHERE va.[AddressId] = @Id)
+      AND NOT EXISTS (SELECT 1 FROM dbo.[ProjectAddress] pa WHERE pa.[AddressId] = @Id);
 
     COMMIT TRANSACTION;
 END;
@@ -336,6 +412,9 @@ BEGIN
 END
 GO
 
+-- Theft-clear has no IsDeleted filter (intentional): a tombstone still holding
+-- this identity is stripped if a live row is stamped. The connector must
+-- refuse via ReadDeletedAddressByQboIdAndRealmId before that stamp (U-370 C1).
 CREATE OR ALTER PROCEDURE SetAddressQboIdentity
 (
     @Id BIGINT,

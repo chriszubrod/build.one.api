@@ -2,7 +2,10 @@
 
 ## U-370 — Address HTTP CRUD guards (2026-09-06)
 
-Shipped A1–A4 + B5, then B1 + B6, then B2–B4 + B7 (no board/TODO heading recut; C left open).
+Shipped A1–A4 + B5, then B1 + B6, then B2–B4 + B7, then C1 + C2 (no board/TODO heading recut).
+- **C1:** unused-only soft-delete (`IsDeleted`); linked VendorAddress/ProjectAddress stays 422. `ReadDeletedAddressByQboIdAndRealmId` + connector refuse-duplicate (`deleted_address_holds_identity`). Street/city adopt skips tombstones. **SQL apply owed** (with B1).
+- **C2:** no unique index. `ReadAddressByStreetOneAndCity` is `TOP 1` + lowest `Id`.
+- Tests: `tests/test_u370_address_soft_delete.py`.
 - **B2:** keep always-US. Create/update write `country.country_name` only; dropped hasattr/isinstance + stale "finding/creating the country record" comments.
 - **B3:** `Address.id` + `read_by_id` are `int`; invoice draw-request lookup passes `address_id` through.
 - **B4:** `AddressService.set_qbo_identity` passthrough; connectors still call `.repo`.

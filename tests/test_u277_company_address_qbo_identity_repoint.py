@@ -544,6 +544,7 @@ def test_company_stamp_identity_applies_field_write_atomically_with_stamp():
 def _build_address_connector():
     address_service = Mock()
     address_service.repo = Mock()
+    address_service.read_deleted_by_qbo_identity.return_value = None
     reconciliation_repo = Mock()
     qbo_physical_address_service = Mock()
     qbo_physical_address_service.repo = Mock()
@@ -625,6 +626,33 @@ def test_address_genuine_miss_creates_new_and_stamps_identity():
     address_service.repo.set_qbo_identity.assert_called_once_with(
         id=300, qbo_id="PA-99", realm_id="realm-1"
     )
+    address_service.read_deleted_by_qbo_identity.assert_called_once_with("PA-99", "realm-1")
+
+
+def test_address_deleted_holder_of_identity_raises_and_records_issue_no_duplicate():
+    """U-370 C1: a locally soft-deleted Address that still holds this QBO
+    identity must not be street/city-adopted or reminted."""
+    connector, address_service, reconciliation_repo = _build_address_connector()
+    qbo_physical_address = _make_qbo_physical_address(
+        qbo_id="PA-99", realm_id="realm-1", line1="123 Main", city="Austin",
+    )
+    address_service.read_by_qbo_identity.return_value = None
+    deleted_holder = SimpleNamespace(id=77, public_id="addr-pub-77", qbo_id="PA-99")
+    address_service.read_deleted_by_qbo_identity.return_value = deleted_holder
+
+    connector.qbo_physical_address_service.repo.read_by_id.return_value = qbo_physical_address
+    with patch(FASTPATH_LOCK_TARGET, mock_qbo_app_lock_granted):
+        with pytest.raises(ValueError, match="already held by soft-deleted Address"):
+            connector.sync_from_qbo_to_address(qbo_physical_address.id)
+
+    address_service.read_deleted_by_qbo_identity.assert_called_once_with("PA-99", "realm-1")
+    address_service.read_by_street_one_and_city.assert_not_called()
+    address_service.create.assert_not_called()
+    address_service.repo.set_qbo_identity.assert_not_called()
+    reconciliation_repo.create.assert_called_once()
+    kwargs = reconciliation_repo.create.call_args.kwargs
+    assert kwargs["drift_type"] == "deleted_address_holds_identity"
+    assert "77" in kwargs["details"]
 
 
 def test_address_genuine_miss_adopts_existing_unmapped_by_street_and_city():

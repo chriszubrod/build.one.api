@@ -13,6 +13,7 @@ from integrations.intuit.qbo.base.ids import coerce_id
 from integrations.intuit.qbo.base.reconciliation_recorder import (
     build_duplicate_qbo_identity_conflict_desc,
     record_duplicate_identity_conflict,
+    record_mapping_issue,
 )
 from integrations.intuit.qbo.physical_address.business.service import QboPhysicalAddressService
 from integrations.intuit.qbo.physical_address.business.model import QboPhysicalAddress
@@ -159,10 +160,12 @@ class PhysicalAddressAddressConnector:
         `resolve_candidate` for the dbo-only fast path's MISS branch (U-351):
         called only under `run_identity_fastpath_dbo_only`'s create lock, once
         a genuine miss is confirmed (no dbo.Address currently holds this
-        identity, including the re-read under lock). Adopts an existing
-        Address by (street_one, city) match first — the pre-U-351 fast path's
-        own Step 2 by-street/city dedup safety net, preserved WITHOUT its
-        mapping read/repair — before falling through to a fresh create.
+        identity, including the re-read under lock).         Refuses when a tombstone still holds this identity (U-370 C1).
+        Otherwise adopts an existing live Address by (street_one, city)
+        match first — the pre-U-351 fast path's own Step 2 by-street/city
+        dedup safety net, preserved WITHOUT its mapping read/repair — before
+        falling through to a fresh create. Street/city is soft-dedup only
+        (U-370 C2: no unique index; TOP 1 lowest Id).
         Mirrors `CompanyInfoCompanyConnector._resolve_company_candidate` (U-350).
 
         Reads `qbo_physical_address.realm_id` directly rather than taking a
@@ -171,6 +174,30 @@ class PhysicalAddressAddressConnector:
         fallback, so the two values can never diverge here; a second parameter
         would just be redundant threaded state (Pass-2 simplification).
         """
+        # P1 guard (U-370 C1 / U-313 Vendor): live read_by_qbo_identity
+        # filters IsDeleted=0, so a locally soft-deleted Address that still
+        # holds this QBO identity reads as a miss. Street/city adopt skips
+        # tombstones. Without this check the create path would mint a
+        # duplicate live row and SetAddressQboIdentity's theft-clear (no
+        # IsDeleted filter) would strip the tombstone's QboId. Refuse +
+        # record; do not revive.
+        if qbo_physical_address.qbo_id:
+            deleted_holder = self.address_service.read_deleted_by_qbo_identity(
+                qbo_physical_address.qbo_id, qbo_physical_address.realm_id,
+            )
+            if deleted_holder is not None:
+                self._record_deleted_address_holds_identity_issue(
+                    qbo_physical_address=qbo_physical_address,
+                    deleted_address=deleted_holder,
+                )
+                raise ValueError(
+                    f"QboPhysicalAddress {qbo_physical_address.id} "
+                    f"(QboId={qbo_physical_address.qbo_id}, "
+                    f"RealmId={qbo_physical_address.realm_id}) identity is already held "
+                    f"by soft-deleted Address {deleted_holder.id}; not creating a "
+                    f"duplicate. Restore the Address or resolve in QBO."
+                )
+
         existing = (
             self.address_service.read_by_street_one_and_city(street_one=street_one, city=city)
             if street_one and city
@@ -343,6 +370,30 @@ class PhysicalAddressAddressConnector:
             drift_type="address_identity_conflict",
             entity_type="Address",
             entity_public_id=str(local_address.public_id) if local_address.public_id else None,
+            qbo_id=str(qbo_physical_address.qbo_id) if qbo_physical_address.qbo_id else None,
+            realm_id=qbo_physical_address.realm_id or "",
+            details=details,
+        )
+
+    def _record_deleted_address_holds_identity_issue(
+        self, *, qbo_physical_address: QboPhysicalAddress, deleted_address,
+    ) -> None:
+        """U-370 C1: tombstone still holds this identity — refuse minting."""
+        details = (
+            f"QboPhysicalAddress {qbo_physical_address.id} (QboId="
+            f"{qbo_physical_address.qbo_id}, RealmId={qbo_physical_address.realm_id}) "
+            f"identity is already held by soft-deleted Address {deleted_address.id}. "
+            f"Not creating a duplicate. Restore the Address or resolve in QBO."
+        )
+        record_mapping_issue(
+            self.reconciliation_repo,
+            drift_type="deleted_address_holds_identity",
+            entity_type="Address",
+            entity_public_id=(
+                str(deleted_address.public_id)
+                if getattr(deleted_address, "public_id", None)
+                else None
+            ),
             qbo_id=str(qbo_physical_address.qbo_id) if qbo_physical_address.qbo_id else None,
             realm_id=qbo_physical_address.realm_id or "",
             details=details,

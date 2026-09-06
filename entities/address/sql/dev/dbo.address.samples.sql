@@ -32,6 +32,11 @@ EXEC ReadAddressByQboIdAndRealmId
     @RealmId = '9130353016965726';
 GO
 
+EXEC ReadDeletedAddressByQboIdAndRealmId
+    @QboId = 'PA-99',
+    @RealmId = '9130353016965726';
+GO
+
 EXEC UpdateAddressById
     @Id = 2,
     @RowVersion = 0x0000000000020B74,

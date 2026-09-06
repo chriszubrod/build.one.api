@@ -51,6 +51,7 @@ class AddressRepository:
                 country=country,
                 qbo_id=getattr(row, "QboId", None),
                 realm_id=getattr(row, "RealmId", None),
+                is_deleted=bool(getattr(row, "IsDeleted", False)),
             )
         except AttributeError as error:
             logger.error(f"Attribute error during address mapping: {error}")
@@ -127,6 +128,7 @@ class AddressRepository:
         """
         Read an address directly by its dbo-native QBO identity (U-277), bypassing
         the qbo.PhysicalAddress / qbo.PhysicalAddressAddress staging/mapping tables entirely.
+        Live rows only (IsDeleted = 0). Tombstones: read_deleted_by_qbo_identity.
         """
         try:
             with get_connection() as conn:
@@ -140,6 +142,22 @@ class AddressRepository:
                 return self._from_db(row)
         except Exception as error:
             logger.error(f"Error during read address by QBO identity: {error}")
+            raise map_database_error(error)
+
+    def read_deleted_by_qbo_identity(self, qbo_id: str, realm_id: Optional[str] = None) -> Optional[Address]:
+        """U-370 C1 / U-313 P1 guard — a tombstone still holding this identity?"""
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(
+                    cursor=cursor,
+                    name="ReadDeletedAddressByQboIdAndRealmId",
+                    params={"QboId": qbo_id, "RealmId": realm_id},
+                )
+                row = cursor.fetchone()
+                return self._from_db(row)
+        except Exception as error:
+            logger.error(f"Error during read deleted address by QBO identity: {error}")
             raise map_database_error(error)
 
     def read_by_public_id(self, public_id: str) -> Optional[Address]:

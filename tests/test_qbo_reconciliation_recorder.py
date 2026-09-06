@@ -126,7 +126,10 @@ _SQL_COLUMN_WIDTH_RE = re.compile(
 # already-live-in-QBO line. 39->40. Recomputed programmatically at a clean
 # checkout (discover_reconciliation_issue_write_literals() == 40), not
 # hand-counted, per the standing U-354 protocol.
-_MIN_CALL_SITES = 40
+# U-370 C1: PhysicalAddressAddressConnector records
+# deleted_address_holds_identity when a tombstone still holds the QBO
+# identity. 40->41.
+_MIN_CALL_SITES = 41
 _SKIP_FILES = frozenset({"reconciliation_recorder.py", "line_orphan_recorder.py"})
 _DEFAULT_KWARGS = {
     "severity": "critical",

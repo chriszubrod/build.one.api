@@ -6,6 +6,8 @@ from typing import Optional
 # Local Imports
 from entities.address.business.model import Address, Country
 from entities.address.persistence.repo import AddressRepository
+from shared.database import DatabaseConstraintError
+from shared.db_constraints import FK_REFERENCE_MESSAGE, FK_REFERENCE_VIOLATION
 
 
 class AddressService:
@@ -56,6 +58,10 @@ class AddressService:
         """
         return self.repo.read_by_qbo_identity(qbo_id, realm_id)
 
+    def read_deleted_by_qbo_identity(self, qbo_id: str, realm_id: Optional[str] = None) -> Optional[Address]:
+        """U-370 C1 guard passthrough — see AddressRepository.read_deleted_by_qbo_identity."""
+        return self.repo.read_deleted_by_qbo_identity(qbo_id, realm_id)
+
     def set_qbo_identity(
         self,
         *,
@@ -89,10 +95,11 @@ class AddressService:
         return self.repo.update_by_id(existing)
 
     def delete_by_public_id(self, public_id: str) -> Optional[Address]:
-        """
-        Delete an address by public ID.
-        """
+        """Soft-delete an unused address. Linked rows stay 422 (A4 / C1)."""
         existing = self.read_by_public_id(public_id=public_id)
-        if existing:
-            return self.repo.delete_by_id(existing.id)
-        return None
+        if not existing:
+            return None
+        deleted = self.repo.delete_by_id(existing.id)
+        if deleted is None:
+            raise DatabaseConstraintError(FK_REFERENCE_VIOLATION, FK_REFERENCE_MESSAGE)
+        return deleted

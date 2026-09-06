@@ -312,6 +312,7 @@ def test_address_sync_does_not_steal_identity_on_shared_street_city_second_sync(
     raise, not the old mapping-table era's silent "cannot remap" no-op."""
     address_service = Mock()
     address_service.repo = Mock()
+    address_service.read_deleted_by_qbo_identity.return_value = None
     qbo_physical_address_service = Mock()
     qbo_repo = qbo_physical_address_service.repo
     reconciliation_repo = Mock()

@@ -66,8 +66,6 @@ class AddressRepository:
         try:
             with get_connection() as conn:
                 cursor = conn.cursor()
-                # For now, we'll pass the country abbreviation to the stored procedure
-                # The stored procedure should handle finding/creating the country record
                 call_procedure(
                     cursor=cursor,
                     name="CreateAddress",
@@ -77,7 +75,7 @@ class AddressRepository:
                         "City": city,
                         "State": state,
                         "Zip": zip,
-                        "Country": country.country_name if hasattr(country, 'country_name') else (country.value.get("name") if isinstance(country.value, dict) else str(country)),
+                        "Country": country.country_name,
                     },
                 )
                 row = cursor.fetchone()
@@ -187,8 +185,6 @@ class AddressRepository:
         try:
             with get_connection() as conn:
                 cursor = conn.cursor()
-                # For now, we'll pass the country abbreviation to the stored procedure
-                # The stored procedure should handle finding/updating the country record
                 call_procedure(
                     cursor=cursor,
                     name="UpdateAddressById",
@@ -200,7 +196,7 @@ class AddressRepository:
                         "City": address.city,
                         "State": address.state,
                         "Zip": address.zip,
-                        "Country": address.country.country_name if address.country and hasattr(address.country, 'country_name') else (address.country.value.get("name") if address.country and isinstance(address.country.value, dict) else (Country.UNITED_STATES.country_name if not address.country else str(address.country))),
+                        "Country": (address.country or Country.UNITED_STATES).country_name,
                     },
                 )
                 row = cursor.fetchone()

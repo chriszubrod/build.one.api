@@ -35,7 +35,7 @@ class Country(Enum):
 
 @dataclass
 class Address:
-    id: Optional[str]
+    id: Optional[int]
     public_id: Optional[str]
     row_version: Optional[str]
     created_datetime: Optional[str]

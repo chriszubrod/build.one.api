@@ -1788,10 +1788,10 @@ Board: [U-370](../build.one.team/BOARD.md) (Ready). Review of the Address stack 
 
 ### A — Correctness (ship first; can be one unit)
 
-- [ ] **A1. Null-safe GET / DELETE / UPDATE + `raise_not_found`.** `get_address_by_public_id` and `delete_address_by_public_id` call `address.to_dict()` when the service returns `None` → `AttributeError` → 500. Mirror customer: `if not address: raise_not_found("Address")`. Same smell on `address_type` (separate if desired).
-- [ ] **A2. `AddressService.update_by_public_id` must not call `repo.update_by_id(None)`.** When `read_by_public_id` misses, early-return `None` and let the router `raise_not_found`. (Customer has the same pattern — fix Address here; Customer optional follow-up.)
-- [ ] **A3. Schema lengths vs SQL — create/update can 500.** Pydantic allows `state` max 50 / `zip` max 20 / `city` max 100; SQL is `NVARCHAR(2)` / `NVARCHAR(5)` / `NVARCHAR(255)`. Tighten schemas to match SQL (or widen columns if ZIP+4 / longer state codes are intentional). `state`/`zip` are the dangerous pair.
-- [ ] **A4. Delete policy: hard delete + refuse when referenced (422). Soft-delete NOT in this unit.**
+- [x] **A1. Null-safe GET / DELETE / UPDATE + `raise_not_found`.** `get_address_by_public_id` and `delete_address_by_public_id` call `address.to_dict()` when the service returns `None` → `AttributeError` → 500. Mirror customer: `if not address: raise_not_found("Address")`. Same smell on `address_type` (separate if desired).
+- [x] **A2. `AddressService.update_by_public_id` must not call `repo.update_by_id(None)`.** When `read_by_public_id` misses, early-return `None` and let the router `raise_not_found`. (Customer has the same pattern — fix Address here; Customer optional follow-up.)
+- [x] **A3. Schema lengths vs SQL — create/update can 500.** Pydantic allows `state` max 50 / `zip` max 20 / `city` max 100; SQL is `NVARCHAR(2)` / `NVARCHAR(5)` / `NVARCHAR(255)`. Tighten schemas to match SQL (or widen columns if ZIP+4 / longer state codes are intentional). `state`/`zip` are the dangerous pair.
+- [x] **A4. Delete policy: hard delete + refuse when referenced (422). Soft-delete NOT in this unit.**
   **Inbound FKs (current):** `FK_VendorAddress_Address`, `FK_ProjectAddress_Address` only. Web U-157's third FK (`FK_PhysicalAddressAddress_Address`) is **stale** — mapping table retired U-351.
   **Today:** in-use delete → SQL 547 → `DatabaseConstraintError` → opaque 500 (address router never calls `raise_database_error`). Most deletes are in-use (common path).
   **Decision:** Option A — keep hard delete; block when referenced. Unlink stays on junction delete (`/delete/vendor_address`, `/delete/project_address`). Do **not** soft-delete, cascade, or auto-unlink.
@@ -1800,13 +1800,13 @@ Board: [U-370](../build.one.team/BOARD.md) (Ready). Review of the Address stack 
 
 ### B — Consistency / design debt (fold into A or split)
 
-- [ ] **B1. QboId/RealmId projection drift.** `ReadAddressById` / `ReadAddressByQboIdAndRealmId` return identity; `CreateAddress`, `ReadAddresses`, `ReadAddressByPublicId`, `ReadAddressByStreetOneAndCity`, `UpdateAddressById` do not. Repo uses `getattr(..., None)`. Align SELECT lists (or document "identity only on by-id / by-qbo reads").
-- [ ] **B2. Country half-modeled.** `Country` enum forces United States; SQL stores free-text `Country`; `_from_db` ignores DB value and always sets `UNITED_STATES`; repo comments still mention "finding/creating the country record"; create/update country serialization is an overcomplicated `hasattr`/`isinstance` chain. Simplify: honor stored value or drop from public contract; pass `country.country_name` only.
-- [ ] **B3. `id` typing.** Model/service treat `id` as `Optional[str]` / `read_by_id(id: str)`; SQL/repo use `BIGINT`/`int`. Invoice does `read_by_id(str(...))`. Align to `int` (and coerce at call sites if needed).
-- [ ] **B4. `set_qbo_identity` is repo-only.** Service exposes `read_by_qbo_identity` but not stamp; connectors reach through `.repo`. Optional: expose on service for boundary consistency (QBO peers often do the same — low priority).
-- [ ] **B5. Thin API/CRUD tests.** QBO identity well covered (`test_u277_…`); router 404/422/validation paths are not. Add with A1–A4.
-- [ ] **B6. Dev samples stale.** `sql/dev/dbo.address.samples.sql` — old source path comment, `@Country = 'USA'`, no QBO sprocs. Refresh when touching SQL.
-- [ ] **B7. RBAC piggyback.** All Address routes use `Modules.VENDORS`; Address also backs projects via `ProjectAddress`. Confirm project-only roles are OK locked out (or document intentional shared lookup under Vendors). Web `addressPermissions.ts` mirrors this — leave until Vendors unpark extracts canonical owner (web U-157 deferred).
+- [x] **B1. QboId/RealmId projection drift.** `ReadAddressById` / `ReadAddressByQboIdAndRealmId` return identity; `CreateAddress`, `ReadAddresses`, `ReadAddressByPublicId`, `ReadAddressByStreetOneAndCity`, `UpdateAddressById` do not. Repo uses `getattr(..., None)`. Align SELECT lists (or document "identity only on by-id / by-qbo reads").
+- [x] **B2. Country half-modeled.** `Country` enum forces United States; SQL stores free-text `Country`; `_from_db` ignores DB value and always sets `UNITED_STATES`; repo comments still mention "finding/creating the country record"; create/update country serialization is an overcomplicated `hasattr`/`isinstance` chain. **Decision (2026-09-06):** keep always-US (no honor-stored, no drop from JSON). Writes pass `country.country_name` only; dropped hasattr/isinstance + stale country-record comments.
+- [x] **B3. `id` typing.** Model/service treat `id` as `Optional[str]` / `read_by_id(id: str)`; SQL/repo use `BIGINT`/`int`. Invoice does `read_by_id(str(...))`. **Done (2026-09-06):** model + `read_by_id` are `int`; invoice draw-request lookup passes `address_id` through (already `int`).
+- [x] **B4. `set_qbo_identity` is repo-only.** Service exposes `read_by_qbo_identity` but not stamp; connectors reach through `.repo`. **Done (2026-09-06):** `AddressService.set_qbo_identity` passthrough added. Connectors still call `.repo` (Bill/Customer/Project pattern).
+- [x] **B5. Thin API/CRUD tests.** QBO identity well covered (`test_u277_…`); router 404/422/validation paths are not. Add with A1–A4.
+- [x] **B6. Dev samples stale.** `sql/dev/dbo.address.samples.sql` — old source path comment, `@Country = 'USA'`, no QBO sprocs. Refresh when touching SQL.
+- [x] **B7. RBAC piggyback.** All Address routes use `Modules.VENDORS`; Address also backs projects via `ProjectAddress`. Confirm project-only roles are OK locked out (or document intentional shared lookup under Vendors). Web `addressPermissions.ts` mirrors this — leave until Vendors unpark extracts canonical owner (web U-157 deferred). **Decision (2026-09-06):** keep VENDORS-only; document as intentional shared catalog under Vendors. Project-only roles stay locked out. No dual-gate. No behavior change.
 
 ### C — Explicitly deferred (do not do in A/B)
 

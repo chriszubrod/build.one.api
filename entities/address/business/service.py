@@ -31,7 +31,7 @@ class AddressService:
         """
         return self.repo.read_all()
 
-    def read_by_id(self, id: str) -> Optional[Address]:
+    def read_by_id(self, id: int) -> Optional[Address]:
         """
         Read an address by ID.
         """
@@ -55,6 +55,21 @@ class AddressService:
         Phase-4 repoint seam, bypassing the qbo.PhysicalAddress staging table.
         """
         return self.repo.read_by_qbo_identity(qbo_id, realm_id)
+
+    def set_qbo_identity(
+        self,
+        *,
+        id: int,
+        qbo_id: Optional[str],
+        realm_id: Optional[str] = None,
+    ) -> None:
+        """Stamp dbo-native QBO identity. Bare passthrough.
+
+        Connectors still call ``.repo.set_qbo_identity`` (same as Bill /
+        Customer / Project). This exists so HTTP/service callers do not
+        have to reach through the repository.
+        """
+        self.repo.set_qbo_identity(id=id, qbo_id=qbo_id, realm_id=realm_id)
 
     def update_by_public_id(self, public_id: str, address) -> Optional[Address]:
         """

@@ -1,3 +1,13 @@
+"""Address HTTP CRUD.
+
+Addresses are a shared catalog (VendorAddress + ProjectAddress) gated on
+``Modules.VENDORS``. That is intentional: there is no Address module, and
+project-only roles stay locked out of catalog CRUD. Dual-gate
+VENDORS|PROJECTS is not the contract. Web ``addressPermissions.ts``
+mirrors this. Leave until Vendors unpark extracts a canonical owner
+(web U-157).
+"""
+
 # Python Standard Library Imports
 
 # Third-party Imports

@@ -2,7 +2,12 @@
 
 ## U-370 — Address HTTP CRUD guards (2026-09-06)
 
-Shipped A1–A4 + B5, then B1 + B6 (no board/TODO heading recut; B2–B4/B7 and C left open).
+Shipped A1–A4 + B5, then B1 + B6, then B2–B4 + B7 (no board/TODO heading recut; C left open).
+- **B2:** keep always-US. Create/update write `country.country_name` only; dropped hasattr/isinstance + stale "finding/creating the country record" comments.
+- **B3:** `Address.id` + `read_by_id` are `int`; invoice draw-request lookup passes `address_id` through.
+- **B4:** `AddressService.set_qbo_identity` passthrough; connectors still call `.repo`.
+- **B7:** VENDORS-only documented as intentional shared catalog (router + web `addressPermissions.ts`). No dual-gate, no behavior change.
+- Tests: `tests/test_u370_address_design_debt.py`.
 - GET/DELETE missing → `raise_not_found("Address")` (404), not `None.to_dict()` 500.
 - `update_by_public_id` early-returns `None` instead of `repo.update_by_id(None)`.
 - Pydantic `state`/`zip` max lengths match SQL (`NVARCHAR(2)`/`(5)`); city left at 100.

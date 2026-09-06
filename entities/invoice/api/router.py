@@ -135,7 +135,7 @@ def _resolve_draw_request_recipient(project_id: Optional[int]) -> tuple:
         from entities.address.business.service import AddressService
         pas = ProjectAddressService().read_by_project_id(project_id)
         if pas and pas[0].address_id:
-            addr = AddressService().read_by_id(str(pas[0].address_id))
+            addr = AddressService().read_by_id(pas[0].address_id)
             if addr:
                 if addr.street_one:
                     to_lines.append(addr.street_one)

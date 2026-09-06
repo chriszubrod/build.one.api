@@ -116,7 +116,7 @@ def _do_list(parent_type: str, parent_public_id: str):
 def submit_review_bill_router(
     public_id: str,
     body: ReviewSubmitRequest,
-    current_user: dict = Depends(require_module_api(Modules.BILLS, "can_update")),
+    current_user: dict = Depends(require_module_api(Modules.BILLS, "can_submit")),
 ):
     return _do_action(
         action="submit",
@@ -131,7 +131,7 @@ def submit_review_bill_router(
 def advance_review_bill_router(
     public_id: str,
     body: ReviewAdvanceRequest,
-    current_user: dict = Depends(require_module_api(Modules.BILLS, "can_update")),
+    current_user: dict = Depends(require_module_api(Modules.BILLS, "can_submit")),
 ):
     return _do_action(
         action="advance",
@@ -146,7 +146,7 @@ def advance_review_bill_router(
 def decline_review_bill_router(
     public_id: str,
     body: ReviewDeclineRequest,
-    current_user: dict = Depends(require_module_api(Modules.BILLS, "can_update")),
+    current_user: dict = Depends(require_module_api(Modules.BILLS, "can_submit")),
 ):
     return _do_action(
         action="decline",
@@ -173,7 +173,7 @@ def get_reviews_bill_router(
 def submit_review_expense_router(
     public_id: str,
     body: ReviewSubmitRequest,
-    current_user: dict = Depends(require_module_api(Modules.EXPENSES, "can_update")),
+    current_user: dict = Depends(require_module_api(Modules.EXPENSES, "can_submit")),
 ):
     return _do_action(
         action="submit",
@@ -188,7 +188,7 @@ def submit_review_expense_router(
 def advance_review_expense_router(
     public_id: str,
     body: ReviewAdvanceRequest,
-    current_user: dict = Depends(require_module_api(Modules.EXPENSES, "can_update")),
+    current_user: dict = Depends(require_module_api(Modules.EXPENSES, "can_submit")),
 ):
     return _do_action(
         action="advance",
@@ -203,7 +203,7 @@ def advance_review_expense_router(
 def decline_review_expense_router(
     public_id: str,
     body: ReviewDeclineRequest,
-    current_user: dict = Depends(require_module_api(Modules.EXPENSES, "can_update")),
+    current_user: dict = Depends(require_module_api(Modules.EXPENSES, "can_submit")),
 ):
     return _do_action(
         action="decline",
@@ -230,7 +230,7 @@ def get_reviews_expense_router(
 def submit_review_bill_credit_router(
     public_id: str,
     body: ReviewSubmitRequest,
-    current_user: dict = Depends(require_module_api(Modules.BILL_CREDITS, "can_update")),
+    current_user: dict = Depends(require_module_api(Modules.BILL_CREDITS, "can_submit")),
 ):
     return _do_action(
         action="submit",
@@ -245,7 +245,7 @@ def submit_review_bill_credit_router(
 def advance_review_bill_credit_router(
     public_id: str,
     body: ReviewAdvanceRequest,
-    current_user: dict = Depends(require_module_api(Modules.BILL_CREDITS, "can_update")),
+    current_user: dict = Depends(require_module_api(Modules.BILL_CREDITS, "can_submit")),
 ):
     return _do_action(
         action="advance",
@@ -260,7 +260,7 @@ def advance_review_bill_credit_router(
 def decline_review_bill_credit_router(
     public_id: str,
     body: ReviewDeclineRequest,
-    current_user: dict = Depends(require_module_api(Modules.BILL_CREDITS, "can_update")),
+    current_user: dict = Depends(require_module_api(Modules.BILL_CREDITS, "can_submit")),
 ):
     return _do_action(
         action="decline",
@@ -287,7 +287,7 @@ def get_reviews_bill_credit_router(
 def submit_review_invoice_router(
     public_id: str,
     body: ReviewSubmitRequest,
-    current_user: dict = Depends(require_module_api(Modules.INVOICES, "can_update")),
+    current_user: dict = Depends(require_module_api(Modules.INVOICES, "can_submit")),
 ):
     return _do_action(
         action="submit",
@@ -302,7 +302,7 @@ def submit_review_invoice_router(
 def advance_review_invoice_router(
     public_id: str,
     body: ReviewAdvanceRequest,
-    current_user: dict = Depends(require_module_api(Modules.INVOICES, "can_update")),
+    current_user: dict = Depends(require_module_api(Modules.INVOICES, "can_submit")),
 ):
     return _do_action(
         action="advance",
@@ -317,7 +317,7 @@ def advance_review_invoice_router(
 def decline_review_invoice_router(
     public_id: str,
     body: ReviewDeclineRequest,
-    current_user: dict = Depends(require_module_api(Modules.INVOICES, "can_update")),
+    current_user: dict = Depends(require_module_api(Modules.INVOICES, "can_submit")),
 ):
     return _do_action(
         action="decline",
@@ -348,7 +348,7 @@ def get_reviews_invoice_router(
 def submit_review_contract_labor_router(
     public_id: str,
     body: ReviewSubmitRequest,
-    current_user: dict = Depends(require_module_api(Modules.TIME_TRACKING, "can_update")),
+    current_user: dict = Depends(require_module_api(Modules.TIME_TRACKING, "can_submit")),
 ):
     return _do_action(
         action="submit",
@@ -363,7 +363,7 @@ def submit_review_contract_labor_router(
 def advance_review_contract_labor_router(
     public_id: str,
     body: ReviewAdvanceRequest,
-    current_user: dict = Depends(require_module_api(Modules.TIME_TRACKING, "can_update")),
+    current_user: dict = Depends(require_module_api(Modules.TIME_TRACKING, "can_submit")),
 ):
     return _do_action(
         action="advance",
@@ -378,7 +378,7 @@ def advance_review_contract_labor_router(
 def decline_review_contract_labor_router(
     public_id: str,
     body: ReviewDeclineRequest,
-    current_user: dict = Depends(require_module_api(Modules.TIME_TRACKING, "can_update")),
+    current_user: dict = Depends(require_module_api(Modules.TIME_TRACKING, "can_submit")),
 ):
     return _do_action(
         action="decline",

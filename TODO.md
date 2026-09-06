@@ -2,6 +2,29 @@
 
 Carry-over items from sessions. Check off as done; prune anything stale.
 
+## `can_submit` migration for review routes (audited + backfilled 2026-09-06; route migration NOT yet built)
+
+- [ ] **Migrate `/submit|advance|decline/review/*` (and TimeEntry `/submit`) from `can_update` to `can_submit`, now that grants are backfilled.**
+  Follow-up from `docs/design/bill-edit-resubmit-review.md` §7 decision 2. Audit doc:
+  `docs/design/rolemodule-can_submit-audit.md`. Read-only prod `RoleModule` query found
+  the `can_update`/`can_submit` sets were **not** identical for any of the 5 modules the
+  `/submit|advance|decline/review/*` routes actually gate on (Bills, Expenses, Bill
+  Credits, Invoices, Time Tracking — the last one governs Contract Labor review too,
+  since those routes gate on `Modules.TIME_TRACKING` not `Modules.CONTRACT_LABOR`).
+  8 distinct roles / 9 Role×Module grants had `can_update=True`/`can_submit=False`
+  (Bill Specialist, Project Manager [Bills + Expenses, 2 grants], Expense Specialist,
+  Bill Credit Specialist, Invoice Specialist, Field Crew, Intern, Time Tracking
+  Specialist); 0 roles had the opposite (safe) mismatch. Same risk flagged in
+  `build.one.web/TODO.md` ("No drift detection between web permission strings and the
+  API's `require_module_api`").
+  **2026-09-06: Chris chose backfill-then-migrate. Backfill APPLIED** (9 rows, prod
+  `dbo.RoleModule`, verified — see audit doc for the exact statement run). `can_update`
+  and `can_submit` are now identical across every grant for the 5 route-relevant
+  modules, so the code migration is now a true no-behavior-change swap. **Remaining:
+  the actual route migration** (`entities/review/api/router.py` + `entities/time_entry/
+  api/router.py`'s `/submit`) — not yet built, needs its own plan/Map→Hunt→Refactor→
+  Test→Docs pass before touching code.
+
 ## Post-migration follow-up wave — booked 2026-08-28 (after the trust-dbo migration + its 5-unit follow-up wave shipped/deployed/applied)
 
 - [x] ~~**`ReadProjectsByUserId` doesn't SELECT `[QboId]`/`[RealmId]`**~~ **DONE 2026-08-29 (U-332, `6001d371`).** Added
@@ -246,6 +269,22 @@ Carry-over items from sessions. Check off as done; prune anything stale.
   (qbo_id, realm_id)" predicate `stamp_dbo_identity_with_lock`'s theft-guard and
   `CompanyInfoCompanyConnector._check_no_conflicting_company_identity` carry. Fold in with that booked
   `base/identity_fastpath.py` cleanup.
+
+## U-314 follow-up (qbo.CustomerProject retirement) — surfaced running OVH-02, 2026-09-04
+
+- [ ] **`entities/invoice/intelligence/prompt.md` (InvoiceAgent playbook) Step 1 still queries the retired
+  `qbo.CustomerProject` mapping table.** Its project-resolution SQL (`JOIN qbo.CustomerProject cp ON
+  cp.ProjectId = ?` → `qbo.Customer`) and the Step 1 heal recipe (`CustomerProjectConnector().create_mapping(...)`)
+  are stale post-U-314: the table is dropped, `dbo.Project.QboId`/`.RealmId` is the sole identity store now
+  (stamped via `SetProjectQboIdentity`). Confirmed live-broken running the OVH-02 playbook session
+  (2026-09-04): the literal Step 1 query raised `Invalid object name 'qbo.CustomerProject'`; worked around
+  ad hoc by reading `dbo.Project.QboId`/`.RealmId` directly. Rewrite Step 1's project-resolution query as a
+  plain `SELECT Id, PublicId, Name, Abbreviation, QboId, RealmId FROM dbo.Project WHERE ...` and its heal
+  recipe as a direct `SetProjectQboIdentity`-style stamp (mirroring the U-355/U-361 entries' treatment of
+  the analogous Bill/VendorCredit mapping-table retirements). Same "large, actively-used agent prompt,
+  disproportionate content edit" reasoning as those entries — worth doing as one consolidated pass across
+  all four stale sections (this one + the U-355 Bill-recovery entry + the U-361 VendorCredit entry + the
+  U-363 Bill-fingerprint entry below) rather than four separate edits.
 
 ## U-301c follow-ups (ProposeInvoiceSourceLinks Tier 0c/0d repoint) — deferred, not scope-creeped in (2026-08-22)
 
@@ -1203,6 +1242,8 @@ Surfaced while billing OVH / BR-MAIN contract-labor and pushing to QBO.
 - [ ] **[OPS]** **Reassign OVH (proj 145) off the local "0 - Temp Customer" placeholder** (`dbo.Project.CustomerId = 1`) to its real client (Steve Richardson / the correct `dbo.Customer`). The QBO push works regardless (mapping is project→QBO-customer directly), but the local project pointing at the temp customer is wrong and will confuse any local customer-scoped reporting. Check other projects for the same temp-customer placeholder.
 - [ ] **[OPS]** **Refresh the stale local `qbo.BillLine` mirror for the 14 re-pushed OVH bills** (QboIds 72822–72835). `update_has_been_billed_in_qbo` updates the live QBO bill + the `qbo.Bill` header sync-token but does NOT re-store the `qbo.BillLine` rows, so the local mirror still reads the pre-fix `NotBillable` / no-CustomerRef state. Live QBO is correct; only the local mirror is stale. A `scripts/sync_qbo_bill.py` pull over those bills (or a targeted re-store) reconciles it — do it before any reconciliation job runs on those bills or it'll flag false drift.
 - [ ] **[OPS]** **Back-fill earlier missed non-billable A/P.** Before the 2026-07-06 fix, `generate_bills_for_vendor` silently skipped non-billable-only SCC groups, so the contractor was under-billed for those hours (e.g. Ricky Moreno's `HE7`/`HE12` non-billable lines on his OVH CL never got an A/P bill). The code now bills them going forward; identify + back-fill any already-`billed`/closed CLs whose non-billable lines were dropped. Query: CL line items with `IsBillable=0` and `BillLineItemId IS NULL` on CLs whose other lines are billed.
+- [x] **[OPS]** **OVH (proj 145) has no external draw-workflow mapping — RESOLVED (partial), Chris decision 2026-09-04: Box-only, no SharePoint.** No `ms.DriveItemProjectExcel`, no `ms.DriveItemProjectModule`, no `box.ProjectWorkbook`; only a Box `invoices` (AP-archive) `box.ProjectFolder` row (added 2026-07-23), not a `draw_requests` one. Both OVH-01 (2026-07-06) and OVH-02 (2026-09-04) ran in the InvoiceAgent playbook's Local-only-draw mode as a result. **Live-checked 2026-09-04: OVH has NO folder anywhere under SharePoint's `200 - Rogers Build Projects` root (103 project folders enumerated, no match)** — this project was never provisioned in SharePoint at all, not merely unmapped. Chris confirmed: stay Box-only going forward, do not provision SharePoint for OVH. OVH-02's packet was manually pushed into a new `OVH-02` Box subfolder (siblings under the existing `invoices`-mapped project folder, mirroring the `OVH-01` folder Chris had already created by hand) since no `draw_requests` mapping exists to drive the automated `_generate_invoice_packet`/`_enqueue_box_line_pdfs` push. A misfiled line PDF (Nacho's Painting #457387, actually billed on OVH-02) was moved from `OVH-01` into `OVH-02` in Box.
+- [ ] **[OPS]** **Decide: formalize OVH's Box draw pipeline, or keep doing it by hand each draw?** Following the above — OVH could get a real `box.ProjectFolder(DocClass='draw_requests')` mapping (pointed at a `15 - Draw Requests`-equivalent, or just reuse the existing per-draw-subfolder convention Chris is already using under the `invoices`-mapped folder) so future draws auto-push their packet + line PDFs via the standard pipeline instead of a manual per-draw folder-create + upload. Low urgency — OVH draws are infrequent — but worth deciding before a 3rd manual push.
 - [x] **✅ [OPS] DONE 2026-08-31 — temp SQL firewall rule `claude-temp-session-access` removed** (`az sql server firewall-rule delete`, confirmed gone). Had been re-added 2026-08-30 for the Part-2 invoice-dedupe DB work when the session IP rotated off the allow-list. (If a future session needs local DB access, re-add for the current IP then delete at session end.)
 
 ## Structured Alias entities — ProjectAlias, VendorAlias, SubCostCodeAlias, CostCodeAlias (2026-06-26)
@@ -2462,6 +2503,16 @@ inappropriate to fold into an emergency P0 patch:
 
 ## U-363 follow-ups (qbo.BillLineItemBillLine retirement, 2026-09-03) — deferred, non-blocking
 
+- [ ] **`entities/invoice/intelligence/prompt.md` (InvoiceAgent playbook) Step 4.1's Bill fingerprint query
+  still JOINs the retired `qbo.BillLineItemBillLine` mapping.** Its "Try Bill first" fingerprint-match
+  recipe (`JOIN qbo.BillLineItemBillLine map ON map.QboBillLineId = bl.Id` → `dbo.BillLineItem`) errors
+  `Invalid object name 'qbo.BillLineItemBillLine'` post-DROP — confirmed live-broken running the OVH-02
+  playbook session (2026-09-04); the KI-35 direct-dbo fallback (Amount + Description + BillDate match
+  against `dbo.BillLineItem` directly, already documented in the playbook for locally-originated bills)
+  still works unchanged and was used as the workaround. Rewrite the "Try Bill first" arm to match KI-35's
+  shape (parent-scoped: `Amount` + `Description` + `Bill.BillDate = qbo.InvoiceLine.ServiceDate`, no
+  mapping-table hop) and drop the now-dead mapping-table sentence — same consolidated-pass note as the
+  U-314 entry above (this file, "U-314 follow-up" section).
 - [ ] **`LINE_ENTITY_SPECS`' `bill_line_item` row (and the 3 script consumers that key off it —
   `scripts/backfill_qbo_identity_lines.py`, `scripts/check_qbo_identity_drift_lines.py`,
   `scripts/audit_dangling_qbo_mappings.py`) were deliberately NOT pruned in this unit**, per U-362b's

@@ -469,7 +469,7 @@ def delete_time_entry(
 @router.post("/{public_id}/submit")
 def submit_time_entry(
     public_id: str,
-    current_user: dict = Depends(require_module_api(Modules.TIME_TRACKING, "can_update")),
+    current_user: dict = Depends(require_module_api(Modules.TIME_TRACKING, "can_submit")),
 ):
     """
     Submit a time entry for review. Transitions from 'draft' to 'submitted'.

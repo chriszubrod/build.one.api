@@ -724,16 +724,13 @@ def test_address_duplicate_qbo_id_guard_raises_and_records_issue():
 
 
 def test_address_stamp_time_reread_catches_conflict_the_street_city_lookup_cannot_see():
-    """Codex xhigh P2 (U-351): `ReadAddressByStreetOneAndCity` does not project
-    `QboId`/`RealmId` (entities/address/sql/dbo.address.sql), so a row returned
-    by `read_by_street_one_and_city` always carries `qbo_id=None` in production
-    -- `_resolve_address_candidate`'s own `_check_no_conflicting_address_identity`
-    call structurally cannot see a conflict there (same shape as
-    `ReadCompanyByName`, which likewise omits QboId/RealmId — this is the
-    established, already-shipped characteristic of the pattern, not new here).
-    The REAL guarantee lives one level down: `stamp_dbo_identity_with_lock`'s
-    own `read_by_id` re-read DOES project QboId/RealmId (`ReadAddressById`), so
-    it must still catch and raise on the SAME row the early check missed."""
+    """Stamp-time `read_by_id` re-read is the lock-scope guarantee. U-370 B1
+    closed the SQL gap (`ReadAddressByStreetOneAndCity` now projects
+    QboId/RealmId), so the early street/city check *can* see a conflict when
+    the row carries those attributes. This test still mocks a street/city
+    result *without* identity (the pre-B1 / getattr-None shape) and proves
+    `stamp_dbo_identity_with_lock`'s `read_by_id` re-read still raises on
+    the same row — defense in depth if an early read ever comes back bare."""
     connector, address_service, reconciliation_repo = _build_address_connector()
     qbo_physical_address = _make_qbo_physical_address(qbo_id="PA-99", realm_id="realm-1", line1="123 Main", city="Austin")
     address_service.read_by_qbo_identity.return_value = None

@@ -1,5 +1,5 @@
 -- DEV/TEST ONLY: sample calls removed from production migration.
--- Source: services/address/sql/dbo.address.sql
+-- Source: entities/address/sql/dbo.address.sql
 -- Run manually in non-production environments.
 
 EXEC CreateAddress
@@ -8,7 +8,7 @@ EXEC CreateAddress
     @City = 'Anytown',
     @State = 'CA',
     @Zip = '12345',
-    @Country = 'USA';
+    @Country = 'United States';
 GO
 
 EXEC ReadAddresses;
@@ -27,6 +27,11 @@ EXEC ReadAddressByStreetOneAndCity
     @City = 'Anytown';
 GO
 
+EXEC ReadAddressByQboIdAndRealmId
+    @QboId = 'PA-99',
+    @RealmId = '9130353016965726';
+GO
+
 EXEC UpdateAddressById
     @Id = 2,
     @RowVersion = 0x0000000000020B74,
@@ -35,7 +40,13 @@ EXEC UpdateAddressById
     @City = 'Anytown',
     @State = 'CA',
     @Zip = '12345',
-    @Country = 'USA';
+    @Country = 'United States';
+GO
+
+EXEC SetAddressQboIdentity
+    @Id = 2,
+    @QboId = 'PA-99',
+    @RealmId = '9130353016965726';
 GO
 
 EXEC DeleteAddressById

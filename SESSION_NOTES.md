@@ -2,12 +2,14 @@
 
 ## U-370 — Address HTTP CRUD guards (2026-09-06)
 
-Shipped A1–A4 + B5 only (no board/TODO heading recut; B1–B4/B6–B7 and C left open).
+Shipped A1–A4 + B5, then B1 + B6 (no board/TODO heading recut; B2–B4/B7 and C left open).
 - GET/DELETE missing → `raise_not_found("Address")` (404), not `None.to_dict()` 500.
 - `update_by_public_id` early-returns `None` instead of `repo.update_by_id(None)`.
 - Pydantic `state`/`zip` max lengths match SQL (`NVARCHAR(2)`/`(5)`); city left at 100.
 - Delete wraps `raise_database_error` so in-use 547 → **422** + house `FK_REFERENCE_MESSAGE` (not 409). No junction preflight (asymmetric `read_by_address_id` APIs; 547 is the backstop).
 - Tests: `tests/test_u370_address_crud_guards.py`.
+- **B1:** `CreateAddress` / `ReadAddresses` / `ReadAddressByPublicId` / `ReadAddressByStreetOneAndCity` / `UpdateAddressById` / `DeleteAddressById` now project `QboId`/`RealmId` matching `ReadAddressById`. Additive SELECT/OUTPUT; `getattr` already safe. **SQL apply owed** (builders do not apply). Tests: `tests/test_u370_address_qbo_projection.py`.
+- **B6:** refreshed `sql/dev/dbo.address.samples.sql` (source path, `United States`, QBO read/stamp samples).
 
 ## 🚀 U-363 — bill_line_item mapping retirement (family 10), DEPLOYED + DROPPED (2026-09-03, `/em`)
 

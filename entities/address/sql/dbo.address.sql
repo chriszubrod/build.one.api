@@ -76,7 +76,9 @@ BEGIN
         INSERTED.[City],
         INSERTED.[State],
         INSERTED.[Zip],
-        INSERTED.[Country]
+        INSERTED.[Country],
+        INSERTED.[QboId],
+        INSERTED.[RealmId]
     VALUES (@Now, @Now, @StreetOne, @StreetTwo, @City, @State, @Zip, @Country);
 
     COMMIT TRANSACTION;
@@ -102,7 +104,9 @@ BEGIN
         [City],
         [State],
         [Zip],
-        [Country]
+        [Country],
+        [QboId],
+        [RealmId]
     FROM dbo.[Address]
     ORDER BY [StreetOne] ASC, [City] ASC;
 
@@ -202,7 +206,9 @@ BEGIN
         [City],
         [State],
         [Zip],
-        [Country]
+        [Country],
+        [QboId],
+        [RealmId]
     FROM dbo.[Address]
     WHERE [PublicId] = @PublicId;
 
@@ -233,7 +239,9 @@ BEGIN
         [City],
         [State],
         [Zip],
-        [Country]
+        [Country],
+        [QboId],
+        [RealmId]
     FROM dbo.[Address]
     WHERE [StreetOne] = @StreetOne AND [City] = @City;
 
@@ -281,7 +289,9 @@ BEGIN
         INSERTED.[City],
         INSERTED.[State],
         INSERTED.[Zip],
-        INSERTED.[Country]
+        INSERTED.[Country],
+        INSERTED.[QboId],
+        INSERTED.[RealmId]
     WHERE [Id] = @Id AND [RowVersion] = @RowVersion;
 
     COMMIT TRANSACTION;
@@ -311,7 +321,9 @@ BEGIN
         DELETED.[City],
         DELETED.[State],
         DELETED.[Zip],
-        DELETED.[Country]
+        DELETED.[Country],
+        DELETED.[QboId],
+        DELETED.[RealmId]
     WHERE [Id] = @Id;
 
     COMMIT TRANSACTION;

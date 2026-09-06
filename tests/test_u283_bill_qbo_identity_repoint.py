@@ -161,6 +161,24 @@ def test_bill_dbo_only_hit_updates_in_place_and_restamps_synctoken():
     connector._sync_line_items.assert_called_once_with(55, _ONE_LINE, "realm-1")
 
 
+def test_bill_dbo_only_hit_passes_completion_pipeline_escape_hatch():
+    """U-372: BillService.update_by_public_id now refuses an is_draft flip
+    unless `_via_completion_pipeline=True` — the QBO-pull HIT branch is one
+    of the two legitimate callers and must pass it, or every re-pull of an
+    already-QBO-linked bill would start raising ValueError."""
+    connector, bill_service, _ = _build_bill_connector()
+    qbo_bill = _make_qbo_bill(qbo_id="BILL-99", realm_id="realm-1")
+    direct_hit = SimpleNamespace(id=55, public_id="pub-55", bill_number="B-1", row_version="rv-55")
+    bill_service.read_by_qbo_identity.return_value = direct_hit
+    bill_service.update_by_public_id.return_value = SimpleNamespace(id=55, public_id="pub-55")
+
+    connector.sync_from_qbo_bill(qbo_bill, _ONE_LINE)
+
+    kwargs = bill_service.update_by_public_id.call_args.kwargs
+    assert kwargs["is_draft"] is False
+    assert kwargs["_via_completion_pipeline"] is True
+
+
 def test_bill_dbo_only_hit_write_race_raises_runtime_error():
     """If `direct` is deleted between read_by_qbo_identity and the write
     (BillService.update_by_public_id returns None on a ROWVERSION race /

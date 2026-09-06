@@ -207,6 +207,7 @@ class BillBillConnector:
                 memo=memo,
                 is_draft=False,
                 row_version=direct.row_version,
+                _via_completion_pipeline=True,
             )
             if updated is None:
                 return None

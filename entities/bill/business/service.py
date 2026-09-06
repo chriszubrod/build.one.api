@@ -1013,9 +1013,20 @@ class BillService:
         total_amount: float = None,
         memo: str = None,
         is_draft: bool = None,
+        _via_completion_pipeline: bool = False,
     ) -> Optional[Bill]:
         """
         Update a bill by public ID.
+
+        `is_draft` is not a directly-editable field on this generic path.
+        This method backs `PUT /api/v1/update/bill/{public_id}` — reachable
+        from web, iOS, and the `update_bill` agent tool — and a caller-driven
+        `is_draft` flip here would commit the completion state locally
+        without running `complete_bill`'s SharePoint/Excel/QBO push. Only
+        `complete_bill()` and `BillBillConnector._apply_bill_fields` (QBO-pull
+        reconciliation) may change it, by passing `_via_completion_pipeline=True`
+        — an internal-only kwarg, structurally unreachable from any HTTP caller
+        since the router's payload never includes it.
         """
         # TODO: In Phase 10, validate tenant_id matches record's tenant
         existing = self.read_by_public_id(public_id=public_id)
@@ -1048,6 +1059,11 @@ class BillService:
         if memo is not None:
             existing.memo = memo
         if is_draft is not None:
+            if is_draft != existing.is_draft and not _via_completion_pipeline:
+                raise ValueError(
+                    "Bill completion state (is_draft) cannot be changed via this endpoint. "
+                    f"Complete a draft bill via POST /api/v1/complete/bill/{public_id}."
+                )
             existing.is_draft = is_draft
 
         # Duplicate check when completing (transitioning from draft to non-draft)
@@ -1491,7 +1507,9 @@ class BillService:
                     is_draft=False
                 )
                 
-                finalized_bill = self.update_by_public_id(public_id=public_id, **bill_update.model_dump())
+                finalized_bill = self.update_by_public_id(
+                    public_id=public_id, _via_completion_pipeline=True, **bill_update.model_dump()
+                )
                 
                 if finalized_bill:
                     logger.info(f"Bill {public_id} finalized on attempt {attempt + 1}")

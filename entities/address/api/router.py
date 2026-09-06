@@ -8,7 +8,12 @@ from entities.address.api.schemas import AddressCreate, AddressUpdate
 from entities.address.business.service import AddressService
 from shared.rbac import require_module_api
 from shared.rbac_constants import Modules
-from shared.api.responses import list_response, item_response, raise_not_found
+from shared.api.responses import (
+    item_response,
+    list_response,
+    raise_database_error,
+    raise_not_found,
+)
 
 router = APIRouter(prefix="/api/v1", tags=["api", "address"])
 
@@ -43,6 +48,8 @@ def get_address_by_public_id_router(public_id: str, current_user: dict = Depends
     Read an address by public ID.
     """
     address = AddressService().read_by_public_id(public_id=public_id)
+    if not address:
+        raise_not_found("Address")
     return item_response(address.to_dict())
 
 
@@ -67,5 +74,10 @@ def delete_address_by_public_id_router(public_id: str, current_user: dict = Depe
     """
     Delete an address by public ID.
     """
-    address = AddressService().delete_by_public_id(public_id=public_id)
+    try:
+        address = AddressService().delete_by_public_id(public_id=public_id)
+    except Exception as error:
+        raise_database_error(error)
+    if not address:
+        raise_not_found("Address")
     return item_response(address.to_dict())

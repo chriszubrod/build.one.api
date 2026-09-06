@@ -1,5 +1,14 @@
 # Session Notes
 
+## U-370 — Address HTTP CRUD guards (2026-09-06)
+
+Shipped A1–A4 + B5 only (no board/TODO heading recut; B1–B4/B6–B7 and C left open).
+- GET/DELETE missing → `raise_not_found("Address")` (404), not `None.to_dict()` 500.
+- `update_by_public_id` early-returns `None` instead of `repo.update_by_id(None)`.
+- Pydantic `state`/`zip` max lengths match SQL (`NVARCHAR(2)`/`(5)`); city left at 100.
+- Delete wraps `raise_database_error` so in-use 547 → **422** + house `FK_REFERENCE_MESSAGE` (not 409). No junction preflight (asymmetric `read_by_address_id` APIs; 547 is the backstop).
+- Tests: `tests/test_u370_address_crud_guards.py`.
+
 ## 🚀 U-363 — bill_line_item mapping retirement (family 10), DEPLOYED + DROPPED (2026-09-03, `/em`)
 
 Retired `qbo.BillLineItemBillLine` (23,678 rows) — the 10th of 11 U-349 mapping tables (`qbo.*` 22→21).

@@ -25,12 +25,12 @@ class AddressCreate(BaseModel):
     )
     state: str = Field(
         min_length=1,
-        max_length=50,
+        max_length=2,
         description="The state of the address."
     )
     zip: str = Field(
         min_length=1,
-        max_length=20,
+        max_length=5,
         description="The zip code of the address."
     )
 
@@ -56,11 +56,11 @@ class AddressUpdate(BaseModel):
     )
     state: str = Field(
         min_length=1,
-        max_length=50,
+        max_length=2,
         description="The state of the address."
     )
     zip: str = Field(
         min_length=1,
-        max_length=20,
+        max_length=5,
         description="The zip code of the address."
     )

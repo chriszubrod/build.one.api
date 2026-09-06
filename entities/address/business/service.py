@@ -61,15 +61,16 @@ class AddressService:
         Update an address by public ID.
         """
         existing = self.read_by_public_id(public_id=public_id)
-        if existing:
-            existing.row_version = address.row_version
-            existing.street_one = address.street_one
-            existing.street_two = address.street_two
-            existing.city = address.city
-            existing.state = address.state
-            existing.zip = address.zip
-            # Country is always United States
-            existing.country = Country.UNITED_STATES
+        if not existing:
+            return None
+        existing.row_version = address.row_version
+        existing.street_one = address.street_one
+        existing.street_two = address.street_two
+        existing.city = address.city
+        existing.state = address.state
+        existing.zip = address.zip
+        # Country is always United States
+        existing.country = Country.UNITED_STATES
         return self.repo.update_by_id(existing)
 
     def delete_by_public_id(self, public_id: str) -> Optional[Address]:

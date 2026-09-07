@@ -12,6 +12,7 @@ import pyodbc
 from entities.vendor.business.model import Vendor
 from shared.database import (
     call_procedure,
+    conn_ctx,
     get_connection,
     map_database_error,
 )
@@ -115,6 +116,77 @@ class VendorRepository:
         except Exception as error:
             logger.error(f"Error during read all vendors: {error}")
             raise map_database_error(error)
+
+    def read_public_ids_by_ids(self, ids: list[int], *, conn: Optional[pyodbc.Connection] = None) -> dict[int, str]:
+        """Return a mapping of VendorId -> Vendor PublicId for the requested ids.
+
+        Read-side echo seam (U-409): bill reads carry only the integer
+        `vendor_id`, but `BillUpdate.vendor_public_id` is REQUIRED — iOS has no
+        Vendor surface of its own, so the server echoes the identity it already
+        knows rather than making the client translate int -> UUID.
+
+        Reuses the existing `ReadVendors` sproc (no new sproc / no DDL): one
+        query for the whole batch, not N+1. `ReadVendors` filters
+        `IsDeleted = 0`, so a soft-deleted vendor is simply absent from the
+        result and its bill echoes `null`.
+
+        An id with no row is OMITTED from the mapping — callers `.get()` it to
+        `None`. Never substitutes another vendor: a wrong echo would re-point
+        the bill to the WRONG vendor on the next update (BillService.update
+        resolves vendor_public_id -> vendor_id and overwrites), so every
+        failure mode here degrades to `null`, including a DB error.
+        """
+        if not ids:
+            return {}
+        try:
+            # Coercion inside the try so a bad id fails closed like any other error.
+            wanted = {int(i) for i in ids if i is not None}
+            if not wanted:
+                return {}
+            with conn_ctx(conn) as c:
+                cursor = c.cursor()
+                try:
+                    call_procedure(
+                        cursor=cursor,
+                        name="ReadVendors",
+                        params={},
+                    )
+                    rows = cursor.fetchall()
+                finally:
+                    cursor.close()
+                return {row.Id: str(row.PublicId) for row in rows if row.Id in wanted}
+        except Exception as error:
+            logger.error(f"Error during read vendor public ids by ids: {error}")
+            return {}
+
+    def read_public_id_by_id(self, id: int, *, conn: Optional[pyodbc.Connection] = None) -> Optional[str]:
+        """Vendor PublicId for a single id, or None (U-409, N=1 companion).
+
+        Same contract as `read_public_ids_by_ids` — missing or soft-deleted
+        resolves to None, never a substitute, and a DB error degrades to None
+        rather than failing the bill read that called it — but over the
+        indexed `ReadVendorById` (`WHERE Id = @Id AND IsDeleted = 0`) instead
+        of scanning the full ~1.1k-row vendor catalogue for one UUID. The
+        batch method stays the right shape for the bills LIST route.
+        """
+        if not id:
+            return None
+        try:
+            with conn_ctx(conn) as c:
+                cursor = c.cursor()
+                try:
+                    call_procedure(
+                        cursor=cursor,
+                        name="ReadVendorById",
+                        params={"Id": id},
+                    )
+                    row = cursor.fetchone()
+                finally:
+                    cursor.close()
+                return str(row.PublicId) if row else None
+        except Exception as error:
+            logger.error(f"Error during read vendor public id by id: {error}")
+            return None
 
     def read_by_id(self, id: int) -> Optional[Vendor]:
         """

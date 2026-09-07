@@ -4,7 +4,7 @@ import logging
 import pyodbc
 import time
 from contextlib import contextmanager
-from typing import Callable, TypeVar, Any
+from typing import Callable, Optional, TypeVar, Any
 
 # Third-party Imports
 
@@ -116,6 +116,26 @@ def get_connection(retries: int = 2, backoff: float = 0.5):
             conn.close()
         except Exception:
             pass  # Ignore close errors
+
+
+@contextmanager
+def conn_ctx(conn: Optional[pyodbc.Connection] = None):
+    """Yield `conn` if provided (no lifecycle management); else open a fresh one.
+
+    The seam that lets a repository method either join a caller's existing
+    transaction/connection or stand alone, so a router can batch several repo
+    reads onto one connection instead of checking out a new one per call.
+
+    Canonical home for the pattern. `entities/bill/persistence/repo.py` still
+    carries a private `_conn_ctx` copy predating this; migrate it here (and the
+    hand-rolled variants in `core/workflow{,_event}/persistence/repo.py`)
+    rather than adding a fourth.
+    """
+    if conn is not None:
+        yield conn
+    else:
+        with get_connection() as c:
+            yield c
 
 
 def call_procedure(cursor: pyodbc.Cursor, name: str, params: dict):

@@ -2,6 +2,53 @@
 
 Carry-over items from sessions. Check off as done; prune anything stale.
 
+## U-409 follow-ups (vendor_public_id echo on bill reads) — deferred, not scope-creeped in (2026-09-07)
+
+- [ ] **Move the echo into the read sprocs — the right-depth home.** `ReadBillsPaginated`
+  (`entities/bill/sql/dbo.bill.sql:538`) and the search variant (`:584`) **already**
+  `LEFT JOIN dbo.[Vendor] v ON b.[VendorId] = v.[Id]` for the name-search predicate, so
+  adding `v.[PublicId] AS [VendorPublicId]` to their SELECT is one line, **zero extra
+  queries and zero extra round-trips** — versus today's separate `ReadVendors` call per
+  bills-list page. `ReadBillById` (`:182`) and `ReadBillByPublicId` (`:275`) need one small
+  LEFT JOIN each. Because `BillRepository._from_db` reads optional columns via
+  `getattr(row, ..., None)`, **no Python change is required** once the columns exist — the
+  router enrichment then deletes itself. Excluded from U-409 only because that unit was
+  no-DDL/no-new-sproc.
+- [ ] **Same trap on three sibling entities — fix them the same way, together.**
+  `ExpenseUpdate` (`entities/expense/api/schemas.py:101`), `BillCreditUpdate`
+  (`entities/bill_credit/api/schemas.py:40`) and `InvoiceUpdate`
+  (`entities/invoice/api/schemas.py:47`) each require a `*_public_id` FK identity that
+  their reads never return (models expose only the int FK). All three paginated reads
+  **already join the FK table** — `dbo.expense.sql:495`, `dbo.bill_credit.sql:351`,
+  `dbo.invoice.sql:440` — so the same one-line SELECT addition covers each. Do this rather
+  than copy-pasting U-409's router-echo shape 3 entities × ~3 endpoints.
+- [ ] **In-proc cache for the vendor id→public_id map — decide separately.** U-409
+  deliberately shipped without one. The bills-LIST route still reads the full ~1.1k-row
+  vendor table (17 cols, `ORDER BY Name`) once per page via `ReadVendors`. The single-bill
+  reads no longer do (they use the indexed `ReadVendorById`). Largely mooted if the sproc
+  join above lands — decide that first.
+- [ ] **`ReviewRepository.read_current_by_bill_ids` should accept `conn=`.** It opens its
+  own connection *inside* `get_bills_router`'s existing `with get_connection()` block
+  (`entities/review/persistence/repo.py:212`, called at `entities/bill/api/router.py:163`),
+  so that endpoint holds two pooled connections concurrently. Pre-existing, not introduced
+  by U-409 — the new vendor call took the `conn=`-sharing path instead.
+- [ ] **Migrate the two remaining `_conn_ctx` copies onto `shared.database.conn_ctx`.**
+  U-409 promoted the helper to `shared/database.py` and used it, but did not touch the
+  private copy in `entities/bill/persistence/repo.py:24` (outside that unit's blast radius)
+  nor the two hand-rolled variants in `core/workflow/persistence/repo.py:100` and
+  `core/workflow_event/persistence/repo.py:91`. Four optional-conn sites, three shapes.
+- [ ] **Enrichment failure is indistinguishable from "no such vendor".**
+  `VendorRepository.read_public_ids_by_ids` / `read_public_id_by_id` swallow every
+  exception to `{}` / `None` — deliberately (a null echo is safe; a guessed vendor would
+  re-point the bill on the next PUT). But a revoked `EXECUTE` GRANT or a renamed sproc then
+  yields `vendor_public_id: null` on every bill under an HTTP 200, surfacing only as
+  "iOS can't save bills." Wants a distinguishable signal (log once with the sproc name at
+  error level, alert on it), not a behavior change.
+- [ ] **Asymmetric payment-term bug (booked out of U-409, unfixed).** A BOGUS
+  `payment_term_public_id` silently CLEARS the bill's term, while a bogus `vendor_public_id`
+  raises (`entities/bill/business/service.py` ~:1044-1048). Nil correctly PRESERVES in both
+  cases — it is specifically the *invalid-but-present* branch that diverges.
+
 ## `can_submit` migration for review routes (audited + backfilled 2026-09-06; route migration NOT yet built)
 
 - [ ] **Migrate `/submit|advance|decline/review/*` (and TimeEntry `/submit`) from `can_update` to `can_submit`, now that grants are backfilled.**

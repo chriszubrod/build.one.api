@@ -17,6 +17,7 @@ from entities.bill.persistence.folder_run_repo import (
     BillFolderRunRepository,
 )
 from entities.bill.persistence.repo import BillRepository
+from entities.vendor.persistence.repo import VendorRepository
 from shared.api.auth_user import resolve_user_id
 from shared.api.money import to_decimal_or_none
 from shared.api.responses import list_response, item_response, accepted_response, raise_workflow_error, raise_not_found
@@ -32,6 +33,36 @@ router = APIRouter(prefix="/api/v1", tags=["api", "bill"])
 _FOLDER_SUMMARY_TTL_SECONDS = 300.0
 _folder_summary_cache: dict[int, tuple[float, dict]] = {}
 _folder_summary_lock = threading.Lock()
+
+
+def _with_vendor_public_id(data):
+    """Echo `vendor_public_id` onto a workflow-engine bill payload (U-409).
+
+    POST /create/bill and PUT /update/bill return Bill.to_dict() through the
+    generic engine serializer, so without this they'd omit the field that the
+    reads now carry. That asymmetry is not cosmetic: iOS upserts these write
+    responses straight into Core Data, overwriting every field from the
+    payload, and rebuilds its next queued PUT body from that cached row — so a
+    write response missing the field would nil the cached value and leave the
+    next offline edit unable to send a REQUIRED field. Resolved from the
+    PERSISTED vendor_id, so the echo reflects stored state rather than
+    parroting what the caller sent.
+    """
+    if isinstance(data, dict) and "vendor_id" in data:
+        data["vendor_public_id"] = _resolve_vendor_public_id(data.get("vendor_id"))
+    return data
+
+
+def _resolve_vendor_public_id(vendor_id: Optional[int]) -> Optional[str]:
+    """Vendor PublicId for a single bill's vendor, or None (U-409).
+
+    Skips the DB entirely for an unset vendor_id. A missing or soft-deleted
+    vendor resolves to None — never another vendor's id, since the echoed
+    value is what the next update writes back.
+    """
+    if not vendor_id:
+        return None
+    return VendorRepository().read_public_id_by_id(vendor_id)
 
 
 @router.post("/create/bill")
@@ -105,7 +136,7 @@ async def create_bill_router(
     # draft' is not the same as 'completed'. (U-080 — removed a dead trigger
     # whose scheduled _run_complete_bill always self-skipped on the already
     # non-draft row.)
-    return item_response(data)
+    return item_response(await asyncio.to_thread(_with_vendor_public_id, data))
 
 
 @router.get("/get/bills")
@@ -125,6 +156,7 @@ async def get_bills_router(
         service = BillService()
         repo = BillRepository()
         review_repo = ReviewRepository()
+        vendor_repo = VendorRepository()
         with get_connection() as conn:
             bills = service.read_paginated(
                 page_number=page,
@@ -146,9 +178,15 @@ async def get_bills_router(
             # call instead of N+1, so AP can spot Draft × ReviewStatus
             # combinations without extra round-trips from React.
             review_map = review_repo.read_current_by_bill_ids(bill_ids) if bill_ids else {}
-        return bills, total, project_map, review_map
+            # Vendor PublicId echo (U-409) — bills carry only the integer
+            # vendor_id, but BillUpdate.vendor_public_id is REQUIRED, so iOS
+            # can't build a legal update body from a read alone. One batch
+            # ReadVendors call on this same connection, not N+1.
+            vendor_ids = [b.vendor_id for b in bills if b.vendor_id]
+            vendor_public_id_map = vendor_repo.read_public_ids_by_ids(vendor_ids, conn=conn) if vendor_ids else {}
+        return bills, total, project_map, review_map, vendor_public_id_map
 
-    bills, total, project_map, review_map = await asyncio.to_thread(_fetch)
+    bills, total, project_map, review_map, vendor_public_id_map = await asyncio.to_thread(_fetch)
     bill_dicts = [bill.to_dict() for bill in bills]
     for bd in bill_dicts:
         bd["project_id"] = project_map.get(bd["id"])
@@ -156,6 +194,7 @@ async def get_bills_router(
         bd["review_status"] = review.status_name if review else None
         bd["review_status_is_final"] = review.status_is_final if review else None
         bd["review_status_is_declined"] = review.status_is_declined if review else None
+        bd["vendor_public_id"] = vendor_public_id_map.get(bd["vendor_id"])
 
     return {
         "data": bill_dicts,
@@ -298,14 +337,17 @@ async def get_bill_by_public_id_router(public_id: str, current_user: dict = Depe
         if not bill:
             return None
         qbo_bill_url = service.get_qbo_bill_url(bill_id=bill.id)
-        return bill, qbo_bill_url
+        # Vendor PublicId echo (U-409) — see get_bills_router.
+        vendor_public_id = _resolve_vendor_public_id(bill.vendor_id)
+        return bill, qbo_bill_url, vendor_public_id
 
     result = await asyncio.to_thread(_fetch)
     if not result:
         raise_not_found("Bill")
-    bill, qbo_bill_url = result
+    bill, qbo_bill_url, vendor_public_id = result
     payload = bill.to_dict()
     payload["qbo_bill_url"] = qbo_bill_url
+    payload["vendor_public_id"] = vendor_public_id
     return item_response(payload)
 
 
@@ -317,7 +359,10 @@ def get_bill_by_id_router(id: int, current_user: dict = Depends(require_module_a
     bill = BillService().read_by_id(id=id)
     if not bill:
         raise_not_found("Bill")
-    return item_response(bill.to_dict())
+    payload = bill.to_dict()
+    # Vendor PublicId echo (U-409) — this is the read iOS calls before a PUT.
+    payload["vendor_public_id"] = _resolve_vendor_public_id(bill.vendor_id)
+    return item_response(payload)
 
 
 @router.put("/update/bill/{public_id}")
@@ -362,7 +407,7 @@ async def update_bill_by_public_id_router(
     # /complete/bill/{public_id} (durable, CompletionJob-covered). (U-080 —
     # removed a dead trigger that always self-skipped on the already
     # non-draft row.)
-    return item_response(data)
+    return item_response(await asyncio.to_thread(_with_vendor_public_id, data))
 
 
 @router.delete("/delete/bill/{public_id}")

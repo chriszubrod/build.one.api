@@ -1533,10 +1533,11 @@ class InvoiceService:
 
             att_service = AttachmentService()
             invoice_number = invoice.invoice_number or invoice.public_id
-            errors = []
-            synced_count = 0
-            skipped_count = 0
-            uploaded_attachment_outcomes: dict = {}  # attachment_id -> skipped bool
+            from integrations.ms.outbox.business.service import SharePointUploadTally
+            tally = SharePointUploadTally()
+            # Packets carry their own filename, so they are a separate id-space
+            # from the line attachments even in the same destination folder.
+            enqueued_packet_ids: set = set()
 
             # Create (or reuse) a subfolder named after the invoice
             # number. Uses read_or_create so re-runs of complete_invoice
@@ -1568,15 +1569,12 @@ class InvoiceService:
             # 3. Upload each unique attachment
             for row_data in attachment_rows:
                 att_id = row_data["attachment_id"]
-                if att_id in uploaded_attachment_outcomes:
-                    if uploaded_attachment_outcomes[att_id]:
-                        skipped_count += 1
-                    else:
-                        synced_count += 1
+                # Same file on another line — the tally counts files.
+                if tally.already_enqueued(att_id):
                     continue
                 blob_url = row_data["blob_url"]
                 if not blob_url:
-                    errors.append({"attachment_id": att_id, "error": "Missing blob URL"})
+                    tally.record_error({"attachment_id": att_id, "error": "Missing blob URL"})
                     continue
 
                 from entities.invoice.business.naming import build_line_pdf_filename
@@ -1607,26 +1605,25 @@ class InvoiceService:
                     )
                     outcome = sharepoint_upload_outcome(queued)
                     if outcome == "refused":
-                        errors.append({
+                        tally.record_error({
                             "attachment_id": att_id,
                             "error": "SharePoint upload enqueue refused (ALLOW_MS_WRITES=false or enqueue failure)"
                         })
                         continue
 
-                    was_skipped = outcome == "skipped"
-                    uploaded_attachment_outcomes[att_id] = was_skipped
-                    if was_skipped:
-                        skipped_count += 1
-                    else:
-                        synced_count += 1
+                    tally.record(att_id, outcome)
                 except Exception as e:
-                    errors.append({"attachment_id": att_id, "error": str(e)})
+                    tally.record_error({"attachment_id": att_id, "error": str(e)})
                     continue
 
             # 4. Upload packet PDF if one has already been generated
             existing_links = self.invoice_attachment_service.read_by_invoice_id(invoice_id=invoice.id)
             for link in existing_links:
                 if not link.attachment_id:
+                    continue
+                # Two InvoiceAttachment links can point at one packet blob; that
+                # is still a single file. Guard before the read.
+                if link.attachment_id in enqueued_packet_ids:
                     continue
                 packet_att = att_service.read_by_id(link.attachment_id)
                 if not packet_att or packet_att.category != "invoice_packet" or not packet_att.blob_url:
@@ -1646,27 +1643,17 @@ class InvoiceService:
                     )
                     outcome = sharepoint_upload_outcome(queued)
                     if outcome == "refused":
-                        errors.append({
+                        tally.record_error({
                             "packet": True,
                             "error": "SharePoint upload enqueue refused (ALLOW_MS_WRITES=false or enqueue failure)"
                         })
-                    elif outcome == "skipped":
-                        skipped_count += 1
-                    else:
-                        synced_count += 1
+                        continue
+                    enqueued_packet_ids.add(packet_att.id)
+                    tally.record(packet_att.id, outcome)
                 except Exception as e:
-                    errors.append({"packet": True, "error": str(e)})
+                    tally.record_error({"packet": True, "error": str(e)})
 
-            message = f"Queued {synced_count} file(s) for SharePoint upload"
-            if skipped_count > 0:
-                message += f", {skipped_count} already uploaded (skipped)"
-            return {
-                "success": not errors,
-                "message": message,
-                "synced_count": synced_count,
-                "skipped_count": skipped_count,
-                "errors": errors,
-            }
+            return tally.as_dict(success=not tally.errors, message=tally.message())
 
         except Exception as e:
             logger.exception("Error uploading invoice attachments to SharePoint")

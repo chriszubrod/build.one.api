@@ -775,10 +775,11 @@ class BillService:
                     # No attachment for this line item, skip
                     continue
                 
-                # Check if we've already uploaded this attachment
+                # Check if we've already uploaded this attachment. `synced_count`
+                # counts FILES, so a second line item pointing at the same
+                # attachment adds nothing.
                 if attachment_link.attachment_id in uploaded_attachments:
-                    logger.info(f"Attachment {attachment_link.attachment_id} already uploaded, skipping duplicate")
-                    synced_count += 1
+                    logger.info(f"Attachment {attachment_link.attachment_id} already uploaded, skipping duplicate line item")
                     continue
                 
                 # Get attachment record
@@ -2628,9 +2629,11 @@ class BillService:
         Upload attachments for line items to the project's module folder in SharePoint.
         Downloads from Azure Blob Storage and uploads to SharePoint with final filename.
         When bill has >1 line item, filename: {Project} - {Vendor} - {BillNumber} - Multiple See Image - {Amount} - {Date}.
-        
+
+        Counting is per FILE, not per line item — see `SharePointUploadTally`.
+
         Returns:
-            Dict with success, synced_count, and errors
+            Dict with success, synced_count, skipped_count, and errors
         """
         try:
             # Get the Bills module — fail fast if not found
@@ -2643,6 +2646,7 @@ class BillService:
                     "success": False,
                     "message": "Bills module not found. Create a module named 'Bills' before syncing.",
                     "synced_count": 0,
+                    "skipped_count": 0,
                     "errors": [{"error": "Bills module not found"}]
                 }
             
@@ -2659,6 +2663,7 @@ class BillService:
                     "success": False,
                     "message": f"Module folder not linked for project {project_id}",
                     "synced_count": 0,
+                    "skipped_count": 0,
                     "errors": [{"error": f"Module folder not linked for project {project_id}"}]
                 }
             
@@ -2670,6 +2675,7 @@ class BillService:
                     "success": False,
                     "message": "Module folder missing drive or item_id",
                     "synced_count": 0,
+                    "skipped_count": 0,
                     "errors": [{"error": "Module folder missing drive or item_id"}]
                 }
             
@@ -2679,6 +2685,7 @@ class BillService:
                     "success": False,
                     "message": "Drive not found",
                     "synced_count": 0,
+                    "skipped_count": 0,
                     "errors": [{"error": "Drive not found"}]
                 }
             
@@ -2692,6 +2699,7 @@ class BillService:
                     "success": False,
                     "message": "Vendor not found",
                     "synced_count": 0,
+                    "skipped_count": 0,
                     "errors": [{"error": "Vendor not found"}]
                 }
             
@@ -2702,6 +2710,7 @@ class BillService:
                     "success": False,
                     "message": f"Project {project_id} not found",
                     "synced_count": 0,
+                    "skipped_count": 0,
                     "errors": [{"error": f"Project {project_id} not found"}]
                 }
             
@@ -2713,12 +2722,17 @@ class BillService:
                     "success": False,
                     "message": f"Failed to initialize storage: {str(e)}",
                     "synced_count": 0,
+                    "skipped_count": 0,
                     "errors": [{"error": f"Failed to initialize storage: {str(e)}"}]
                 }
             
-            synced_count = 0
-            errors = []
-            uploaded_attachments = {}  # Track to avoid duplicates
+            from integrations.ms.outbox.business.service import (
+                MsOutboxService,
+                SharePointUploadTally,
+                sharepoint_upload_outcome,
+            )
+            tally = SharePointUploadTally()
+            ms_outbox = MsOutboxService()
 
             logger.info(f"SharePoint sync: Processing {len(line_items)} line items for project {project_id}")
 
@@ -2739,16 +2753,16 @@ class BillService:
 
                     logger.debug(f"Found attachment for line item {line_item.public_id}, attachment_id={attachment_link.attachment_id}")
                     
-                    # Check if already uploaded
-                    if attachment_link.attachment_id in uploaded_attachments:
-                        logger.info(f"Attachment {attachment_link.attachment_id} already uploaded, skipping")
-                        synced_count += 1
+                    # Same file on another line item — already enqueued, and
+                    # the tally counts files, not line items.
+                    if tally.already_enqueued(attachment_link.attachment_id):
+                        logger.info(f"Attachment {attachment_link.attachment_id} already enqueued for this bill, skipping duplicate line item")
                         continue
                     
                     # Get attachment record
                     attachment = self.attachment_service.read_by_id(id=attachment_link.attachment_id)
                     if not attachment or not attachment.blob_url:
-                        errors.append({
+                        tally.record_error({
                             "line_item_id": line_item.id,
                             "line_item_public_id": line_item.public_id,
                             "error": "Attachment not found or missing blob_url"
@@ -2780,8 +2794,7 @@ class BillService:
                     # Enqueue SharePoint upload. Worker fetches blob at drain
                     # time, uploads, and links the resulting DriveItem back
                     # to the Attachment record (via `attachment_id` in payload).
-                    from integrations.ms.outbox.business.service import MsOutboxService
-                    queued = MsOutboxService().enqueue_sharepoint_upload(
+                    queued = ms_outbox.enqueue_sharepoint_upload(
                         entity_type="Bill",
                         entity_public_id=str(bill.public_id),
                         drive_id=drive.drive_id,
@@ -2791,41 +2804,35 @@ class BillService:
                         blob_path=attachment.blob_url,
                         attachment_id=attachment.id,
                     )
-                    if queued is None:
+                    outcome = sharepoint_upload_outcome(queued)
+                    if outcome == "refused":
                         logger.error(f"SharePoint upload enqueue refused for '{sharepoint_filename}'")
-                        errors.append({
+                        tally.record_error({
                             "line_item_id": line_item.id,
                             "line_item_public_id": line_item.public_id,
                             "error": "SharePoint upload enqueue refused (ALLOW_MS_WRITES=false or enqueue failure)"
                         })
                         continue
 
-                    uploaded_attachments[attachment_link.attachment_id] = sharepoint_filename
-                    synced_count += 1
+                    tally.record(attachment_link.attachment_id, outcome)
                     logger.info(
                         f"Queued SharePoint upload: '{sharepoint_filename}' "
-                        f"(outbox {queued.public_id}, attachment_id={attachment.id})"
+                        f"(outbox {queued.public_id}, attachment_id={attachment.id}, outcome={outcome})"
                     )
                     
                 except Exception as e:
                     logger.exception(f"Error processing line item {line_item.id}")
-                    errors.append({
+                    tally.record_error({
                         "line_item_id": line_item.id,
                         "line_item_public_id": line_item.public_id,
                         "error": f"Unexpected error: {str(e)}"
                     })
             
-            success = synced_count > 0 or len(errors) == 0
-            message = f"Queued {synced_count} file(s) for SharePoint upload"
-            if errors:
-                message += f" with {len(errors)} error(s)"
-
-            return {
-                "success": success,
-                "message": message,
-                "synced_count": synced_count,
-                "errors": errors
-            }
+            success = tally.synced_count > 0 or tally.skipped_count > 0 or len(tally.errors) == 0
+            return tally.as_dict(
+                success=success,
+                message=tally.message(with_error_count=True),
+            )
             
         except Exception as e:
             logger.exception(f"Error uploading attachments for project {project_id}")
@@ -2833,5 +2840,6 @@ class BillService:
                 "success": False,
                 "message": f"Error: {str(e)}",
                 "synced_count": 0,
+                "skipped_count": 0,
                 "errors": [{"error": str(e)}]
             }

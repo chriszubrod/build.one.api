@@ -5,6 +5,9 @@ Covers bill_credit._upload_attachments_to_module_folder and
 invoice._upload_to_sharepoint: outbox enqueue replaces synchronous blob
 download + driveitem_service.upload_file, and skipped_count vs synced_count
 discriminates U-221 idempotency-guard skips from genuinely new enqueues.
+
+Both counters count FILES, never line items: an attachment shared by several
+line items is one upload and must count exactly once.
 """
 
 from decimal import Decimal
@@ -186,8 +189,25 @@ def _bill_credit_line_item(*, public_id):
     )
 
 
-def test_bill_credit_shared_attachment_dedup_credits_skipped_count(bill_credit_complete_service):
-    """Two line items sharing one attachment: dedup branch must mirror first occurrence's skip."""
+def test_bill_credit_shared_attachment_counts_one_file(bill_credit_complete_service):
+    """Two line items, one shared attachment, one outbox row -> counts total 1."""
+    result, enqueue_mock = _stub_bill_credit_upload_deps(
+        bill_credit_complete_service,
+        enqueue_return=_outbox_row(status="pending"),
+        line_items=[
+            _bill_credit_line_item(public_id="bcli-1"),
+            _bill_credit_line_item(public_id="bcli-2"),
+        ],
+    )
+
+    assert result["synced_count"] == 1
+    assert result["skipped_count"] == 0
+    assert "Queued 1 file(s) for SharePoint upload" in result["message"]
+    enqueue_mock.assert_called_once()
+
+
+def test_bill_credit_shared_attachment_skip_counts_one_file(bill_credit_complete_service):
+    """Same, when the outbox reports the file already uploaded."""
     result, enqueue_mock = _stub_bill_credit_upload_deps(
         bill_credit_complete_service,
         enqueue_return=_outbox_row(status="done"),
@@ -197,8 +217,9 @@ def test_bill_credit_shared_attachment_dedup_credits_skipped_count(bill_credit_c
         ],
     )
 
-    assert result["skipped_count"] == 2
     assert result["synced_count"] == 0
+    assert result["skipped_count"] == 1
+    assert "1 already uploaded (skipped)" in result["message"]
     enqueue_mock.assert_called_once()
 
 
@@ -324,8 +345,8 @@ def test_invoice_no_download_file_on_upload_path():
     driveitem.upload_file.assert_not_called()
 
 
-def test_invoice_shared_attachment_dedup_credits_skipped_count():
-    """Two line items sharing one attachment: dedup branch must mirror first occurrence's skip."""
+def test_invoice_shared_attachment_counts_one_file():
+    """Two lines sharing one attachment, one outbox row -> counts total 1."""
     service = InvoiceService()
     shared_rows = [
         {
@@ -361,8 +382,9 @@ def test_invoice_shared_attachment_dedup_credits_skipped_count():
         line_attachment_rows=shared_rows,
     )
 
-    assert result["skipped_count"] == 2
     assert result["synced_count"] == 0
+    assert result["skipped_count"] == 1
+    assert "1 already uploaded (skipped)" in result["message"]
     enqueue_mock.assert_called_once()
 
 
@@ -394,3 +416,229 @@ def test_invoice_packet_enqueue_done_increments_skipped_count():
     assert result["skipped_count"] == 1
     assert "already uploaded (skipped)" in result["message"]
     enqueue_mock.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# Bill + Expense module-folder uploads: counts are per FILE, not per line item.
+#
+# Regression for the live 2026-09-08 observation on bill #26-0183 (two line
+# items sharing attachment 29670): the dedup branch credited synced_count on
+# the path that enqueues nothing, so completion reported "Queued 2 file(s)"
+# against a single outbox row.
+# ---------------------------------------------------------------------------
+
+_BILL_MODULE = "entities.bill.business.service"
+_EXPENSE_MODULE = "entities.expense.business.service"
+
+def _stub_lazy_ms_collaborators(service, *, module_folder, drive):
+    """BillService / ExpenseService build their MS collaborators through lazy
+    properties, so patching the module namespace around __init__ never fires.
+    Seed the backing attributes so no real connector is ever constructed."""
+    connector = MagicMock()
+    connector.get_folder_for_module = MagicMock(return_value=module_folder)
+    service._project_module_connector = connector
+    service._project_excel_connector = MagicMock()
+    service._driveitem_service = MagicMock()
+    drive_repo = MagicMock()
+    drive_repo.read_by_id = MagicMock(return_value=drive)
+    service._drive_repo = drive_repo
+    return connector, drive_repo
+
+
+def _shared_attachment_link():
+    """Every line item resolves to the SAME attachment — the defect's shape."""
+    return SimpleNamespace(attachment_id=29670)
+
+
+def _storage_stub():
+    """AzureBlobStorage double. The expense paths probe the blob (fail-fast)
+    before enqueueing and unpack a (bytes, metadata) tuple; bill does not."""
+    storage_cls = MagicMock()
+    storage_cls.return_value.download_file.return_value = (b"pdf-bytes", {})
+    return storage_cls
+
+
+def _attachment():
+    return SimpleNamespace(
+        id=29670,
+        blob_url="https://blob.example/shared.pdf",
+        content_type="application/pdf",
+        file_extension="pdf",
+        original_filename="shared.pdf",
+    )
+
+
+def _line_item(prefix, line_id):
+    """Minimal line item: the upload loops only read these six attributes."""
+    return SimpleNamespace(
+        id=line_id,
+        public_id=f"{prefix}-{line_id}",
+        project_id=1,
+        sub_cost_code_id=None,
+        description="Line",
+        price=Decimal("50.00"),
+    )
+
+
+def _run_bill_module_folder_upload(*, enqueue_return, line_items):
+    from entities.bill.business.service import BillService
+
+    service = BillService(repo=MagicMock())
+    _stub_lazy_ms_collaborators(
+        service,
+        module_folder={"ms_drive_id": 10, "item_id": "folder-item-1"},
+        drive=SimpleNamespace(drive_id="drive-graph-id", public_id="drive-pub"),
+    )
+    service.module_service.read_by_name = MagicMock(return_value=SimpleNamespace(id=1, name="Bills"))
+    service.vendor_service.read_by_id = MagicMock(
+        return_value=SimpleNamespace(id=1, name="Siteworks", abbreviation="SW")
+    )
+    service.project_service.read_by_id = MagicMock(
+        return_value=SimpleNamespace(id=1, name="Project", abbreviation="PRJ")
+    )
+    service.bill_line_item_attachment_service.read_by_bill_line_item_id = MagicMock(
+        return_value=_shared_attachment_link()
+    )
+    service.attachment_service.read_by_id = MagicMock(return_value=_attachment())
+
+    bill = SimpleNamespace(
+        id=20370,
+        public_id="bill-pub",
+        bill_number="26-0183",
+        bill_date="2026-09-01",
+        total_amount=Decimal("100.00"),
+        vendor_id=1,
+    )
+
+    enqueue_mock = MagicMock(return_value=enqueue_return)
+    with patch(f"{_BILL_MODULE}.AzureBlobStorage", _storage_stub()), patch(
+        "integrations.ms.outbox.business.service.MsOutboxService"
+    ) as ms_outbox_cls:
+        ms_outbox_cls.return_value.enqueue_sharepoint_upload = enqueue_mock
+        result = service._upload_attachments_to_module_folder(
+            bill=bill,
+            line_items=line_items,
+            project_id=1,
+            bill_line_items_count=len(line_items),
+        )
+    return result, enqueue_mock
+
+
+def test_bill_shared_attachment_counts_one_file():
+    """Two line items, one shared attachment, one outbox row -> 'Queued 1 file(s)'."""
+    result, enqueue_mock = _run_bill_module_folder_upload(
+        enqueue_return=_outbox_row(status="pending"),
+        line_items=[_line_item("bli", 1), _line_item("bli", 2)],
+    )
+
+    enqueue_mock.assert_called_once()
+    assert result["synced_count"] == 1
+    assert result["skipped_count"] == 0
+    assert "Queued 1 file(s) for SharePoint upload" in result["message"]
+
+
+def test_bill_single_line_still_counts_one_file():
+    result, enqueue_mock = _run_bill_module_folder_upload(
+        enqueue_return=_outbox_row(status="pending"),
+        line_items=[_line_item("bli", 1)],
+    )
+
+    enqueue_mock.assert_called_once()
+    assert result["synced_count"] == 1
+    assert "Queued 1 file(s) for SharePoint upload" in result["message"]
+
+
+def test_bill_shared_attachment_guard_skip_counts_one_file():
+    """Outbox reports the file already uploaded: one skip, not one per line."""
+    result, enqueue_mock = _run_bill_module_folder_upload(
+        enqueue_return=_outbox_row(status="done"),
+        line_items=[_line_item("bli", 1), _line_item("bli", 2)],
+    )
+
+    enqueue_mock.assert_called_once()
+    assert result["synced_count"] == 0
+    assert result["skipped_count"] == 1
+    assert "Queued 0 file(s) for SharePoint upload, 1 already uploaded (skipped)" in result["message"]
+    assert result["success"] is True
+
+
+def test_bill_enqueue_refused_counts_neither():
+    result, enqueue_mock = _run_bill_module_folder_upload(
+        enqueue_return=None,
+        line_items=[_line_item("bli", 1), _line_item("bli", 2)],
+    )
+
+    # Refusal does not memoize the attachment, so the second line retries.
+    assert enqueue_mock.call_count == 2
+    assert result["synced_count"] == 0
+    assert result["skipped_count"] == 0
+    assert len(result["errors"]) == 2
+
+
+def _run_expense_module_folder_upload(*, enqueue_return, line_items):
+    from entities.expense.business.service import ExpenseService
+
+    service = ExpenseService()
+    _stub_lazy_ms_collaborators(
+        service,
+        module_folder={"ms_drive_id": 10, "item_id": "folder-item-1"},
+        drive=SimpleNamespace(drive_id="drive-graph-id", public_id="drive-pub"),
+    )
+    service.module_service.read_by_name = MagicMock(return_value=SimpleNamespace(id=2, name="Expenses"))
+    service.vendor_service.read_by_id = MagicMock(
+        return_value=SimpleNamespace(id=1, name="Vendor", abbreviation="VND")
+    )
+    service.project_service.read_by_id = MagicMock(
+        return_value=SimpleNamespace(id=1, name="Project", abbreviation="PRJ")
+    )
+    service.expense_line_item_attachment_service.read_by_expense_line_item_id = MagicMock(
+        return_value=_shared_attachment_link()
+    )
+    service.attachment_service.read_by_id = MagicMock(return_value=_attachment())
+
+    expense = SimpleNamespace(
+        id=1,
+        public_id="exp-pub",
+        reference_number="EXP-1",
+        expense_date="2026-09-01",
+        total_amount=Decimal("100.00"),
+        vendor_id=1,
+        is_credit=False,
+    )
+
+    enqueue_mock = MagicMock(return_value=enqueue_return)
+    with patch(f"{_EXPENSE_MODULE}.AzureBlobStorage", _storage_stub()), patch(
+        "integrations.ms.outbox.business.service.MsOutboxService"
+    ) as ms_outbox_cls:
+        ms_outbox_cls.return_value.enqueue_sharepoint_upload = enqueue_mock
+        result = service._upload_attachments_to_module_folder(
+            expense=expense,
+            line_items=line_items,
+            project_id=1,
+            expense_line_items_count=len(line_items),
+        )
+    return result, enqueue_mock
+
+
+def test_expense_shared_attachment_counts_one_file():
+    result, enqueue_mock = _run_expense_module_folder_upload(
+        enqueue_return=_outbox_row(status="pending"),
+        line_items=[_line_item("eli", 1), _line_item("eli", 2)],
+    )
+
+    enqueue_mock.assert_called_once()
+    assert result["synced_count"] == 1
+    assert result["skipped_count"] == 0
+    assert "Queued 1 file(s) for SharePoint upload" in result["message"]
+
+
+def test_expense_shared_attachment_guard_skip_counts_one_file():
+    result, enqueue_mock = _run_expense_module_folder_upload(
+        enqueue_return=_outbox_row(status="done"),
+        line_items=[_line_item("eli", 1), _line_item("eli", 2)],
+    )
+
+    enqueue_mock.assert_called_once()
+    assert result["synced_count"] == 0
+    assert result["skipped_count"] == 1
+    assert "1 already uploaded (skipped)" in result["message"]

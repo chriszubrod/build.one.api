@@ -4,6 +4,7 @@ import logging
 import os
 import uuid
 from datetime import datetime, timedelta, timezone
+from dataclasses import dataclass, field
 from typing import Any, Dict, Optional, Set
 
 # Local Imports
@@ -33,6 +34,69 @@ def sharepoint_upload_outcome(queued: Optional[MsOutbox]) -> str:
     if queued is None:
         return "refused"
     return "skipped" if queued.status == "done" else "synced"
+
+
+@dataclass
+class SharePointUploadTally:
+    """
+    Per-FILE tally for one SharePoint upload loop.
+
+    Both counters count FILES, never line items. An attachment shared by
+    several line items is ONE upload and must count exactly once: crediting a
+    counter on the dedupe branch — the branch that enqueues nothing — is how
+    bill #26-0183 reported "Queued 2 file(s) for SharePoint upload" against a
+    single outbox row (observed live 2026-09-08). `synced_count` is files newly
+    enqueued; `skipped_count` is files the outbox reported as already uploaded
+    (the U-221 idempotency guard).
+
+    Every loop that calls `enqueue_sharepoint_upload` should tally through this
+    rather than hand-rolling counters — there are five such loops (bill,
+    expense module folder, expense receipts folder, bill_credit, invoice) and
+    the defect above was hand-copied into each of them.
+
+    Dedupe key is the attachment id, which is sufficient ONLY because each of
+    those loops is scoped to a single destination folder. A loop that spans
+    destinations (one attachment filed into several project folders) must key
+    on destination too — `_find_coalescible` treats those as distinct uploads.
+    """
+
+    synced_count: int = 0
+    skipped_count: int = 0
+    errors: list = field(default_factory=list)
+    _enqueued_attachment_ids: set = field(default_factory=set, repr=False)
+
+    def already_enqueued(self, attachment_id: Any) -> bool:
+        """True when an earlier line item already enqueued this same file."""
+        return attachment_id in self._enqueued_attachment_ids
+
+    def record(self, attachment_id: Any, outcome: str) -> None:
+        """Credit ONE file. `outcome` comes from `sharepoint_upload_outcome`."""
+        self._enqueued_attachment_ids.add(attachment_id)
+        if outcome == "skipped":
+            self.skipped_count += 1
+        else:
+            self.synced_count += 1
+
+    def record_error(self, error: Dict[str, Any]) -> None:
+        self.errors.append(error)
+
+    def message(self, head: Optional[str] = None, *, with_error_count: bool = False) -> str:
+        """`head` overrides the default opener (the receipts folder names itself)."""
+        message = head or f"Queued {self.synced_count} file(s) for SharePoint upload"
+        if self.skipped_count > 0:
+            message += f", {self.skipped_count} already uploaded (skipped)"
+        if with_error_count and self.errors:
+            message += f" with {len(self.errors)} error(s)"
+        return message
+
+    def as_dict(self, *, success: bool, message: str) -> Dict[str, Any]:
+        return {
+            "success": success,
+            "message": message,
+            "synced_count": self.synced_count,
+            "skipped_count": self.skipped_count,
+            "errors": self.errors,
+        }
 
 
 # Per the Round 0 decision: only uploads coalesce (duplicate enqueues for the

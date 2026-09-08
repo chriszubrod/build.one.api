@@ -240,6 +240,7 @@ def sync_qbo_to_local(
             "attachments_synced": 0,
             "excel_rows_synced": 0,
             "sharepoint_uploads_synced": 0,
+            "sharepoint_uploads_skipped": 0,
             "box_excel_batches": 0,
             "vendor_credits": [],
             "skipped_count": 0,
@@ -256,6 +257,7 @@ def sync_qbo_to_local(
     attachments_synced = 0
     excel_rows_synced = 0
     sharepoint_uploads_synced = 0
+    sharepoint_uploads_skipped = 0  # outbox says already uploaded
     box_excel_batches = 0
     synced_credits = []    # (bill_credit, bill_credit_id) — collected for batched budget-tracker Excel sync
     bill_credit_complete_service = BillCreditCompleteService()
@@ -375,6 +377,7 @@ def sync_qbo_to_local(
                         project_id=proj_id,
                     )
                     sharepoint_uploads_synced += sp_result.get("synced_count", 0)
+                    sharepoint_uploads_skipped += sp_result.get("skipped_count", 0)
                     if sp_result.get("errors"):
                         for err in sp_result["errors"]:
                             logger.warning(f"SharePoint upload error for project {proj_id}: {err}")
@@ -415,6 +418,7 @@ def sync_qbo_to_local(
         "attachments_synced": attachments_synced,
         "excel_rows_synced": excel_rows_synced,
         "sharepoint_uploads_synced": sharepoint_uploads_synced,
+        "sharepoint_uploads_skipped": sharepoint_uploads_skipped,
         "box_excel_batches": box_excel_batches,
         "skipped_count": len(outcome.skipped_ids),
         "skipped_vendor_credit_ids": outcome.skipped_ids,
@@ -562,7 +566,8 @@ def sync_qbo_vendorcredit(
             f"BillCredits module synced: {qbo_to_local_result['bill_credits_module_synced']}, "
             f"attachments synced: {qbo_to_local_result['attachments_synced']}, "
             f"Excel rows synced: {qbo_to_local_result['excel_rows_synced']}, "
-            f"SharePoint uploads: {qbo_to_local_result['sharepoint_uploads_synced']}, "
+            f"SharePoint uploads: {qbo_to_local_result['sharepoint_uploads_synced']} "
+            f"(+{qbo_to_local_result['sharepoint_uploads_skipped']} already uploaded), "
             f"Box Excel batches: {qbo_to_local_result['box_excel_batches']}"
         )
         

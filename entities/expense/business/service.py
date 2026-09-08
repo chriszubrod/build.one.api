@@ -1184,34 +1184,41 @@ class ExpenseService:
     def _upload_attachments_to_module_folder(
         self, expense, line_items: List, project_id: int, expense_line_items_count: int = 1
     ) -> dict:
-        """Upload attachments to SharePoint module folder. Mirrors Bill _upload_attachments_to_module_folder."""
+        """Upload attachments to SharePoint module folder. Mirrors Bill
+        _upload_attachments_to_module_folder, including its per-FILE counting:
+        an attachment shared by several line items is one upload and counts once.
+        """
         try:
             module = self.module_service.read_by_name("Expenses") or self.module_service.read_by_name("Expense")
             if not module:
-                return {"success": False, "message": "Expense module not found — ensure a module named 'Expenses' exists", "synced_count": 0, "errors": [{"error": "Expense module not found"}]}
+                return {"success": False, "message": "Expense module not found — ensure a module named 'Expenses' exists", "synced_count": 0, "skipped_count": 0, "errors": [{"error": "Expense module not found"}]}
             module_folder = self.project_module_connector.get_folder_for_module(project_id=project_id, module_id=int(module.id))
             if not module_folder:
-                return {"success": False, "message": f"Module folder not linked for project {project_id}", "synced_count": 0, "errors": [{"error": f"Module folder not linked for project {project_id}"}]}
+                return {"success": False, "message": f"Module folder not linked for project {project_id}", "synced_count": 0, "skipped_count": 0, "errors": [{"error": f"Module folder not linked for project {project_id}"}]}
             folder_ms_drive_id = module_folder.get("ms_drive_id")
             folder_item_id = module_folder.get("item_id")
             if not folder_ms_drive_id or not folder_item_id:
-                return {"success": False, "message": "Module folder missing drive or item_id", "synced_count": 0, "errors": [{"error": "Module folder missing drive or item_id"}]}
+                return {"success": False, "message": "Module folder missing drive or item_id", "synced_count": 0, "skipped_count": 0, "errors": [{"error": "Module folder missing drive or item_id"}]}
             drive = self.drive_repo.read_by_id(folder_ms_drive_id)
             if not drive:
-                return {"success": False, "message": "Drive not found", "synced_count": 0, "errors": [{"error": "Drive not found"}]}
+                return {"success": False, "message": "Drive not found", "synced_count": 0, "skipped_count": 0, "errors": [{"error": "Drive not found"}]}
             vendor = self.vendor_service.read_by_id(id=expense.vendor_id) if expense.vendor_id else None
             if not vendor:
-                return {"success": False, "message": "Vendor not found", "synced_count": 0, "errors": [{"error": "Vendor not found"}]}
+                return {"success": False, "message": "Vendor not found", "synced_count": 0, "skipped_count": 0, "errors": [{"error": "Vendor not found"}]}
             project = self.project_service.read_by_id(id=str(project_id))
             if not project:
-                return {"success": False, "message": f"Project {project_id} not found", "synced_count": 0, "errors": [{"error": f"Project {project_id} not found"}]}
+                return {"success": False, "message": f"Project {project_id} not found", "synced_count": 0, "skipped_count": 0, "errors": [{"error": f"Project {project_id} not found"}]}
             try:
                 storage = AzureBlobStorage()
             except Exception as e:
-                return {"success": False, "message": str(e), "synced_count": 0, "errors": [{"error": str(e)}]}
-            synced_count = 0
-            errors = []
-            uploaded_attachments = {}
+                return {"success": False, "message": str(e), "synced_count": 0, "skipped_count": 0, "errors": [{"error": str(e)}]}
+            from integrations.ms.outbox.business.service import (
+                MsOutboxService,
+                SharePointUploadTally,
+                sharepoint_upload_outcome,
+            )
+            tally = SharePointUploadTally()
+            ms_outbox = MsOutboxService()
             for line_item in line_items:
                 try:
                     if not line_item.public_id:
@@ -1219,12 +1226,12 @@ class ExpenseService:
                     attachment_link = self.expense_line_item_attachment_service.read_by_expense_line_item_id(expense_line_item_public_id=line_item.public_id)
                     if not attachment_link or not attachment_link.attachment_id:
                         continue
-                    if attachment_link.attachment_id in uploaded_attachments:
-                        synced_count += 1
+                    # Same file on another line item — the tally counts files.
+                    if tally.already_enqueued(attachment_link.attachment_id):
                         continue
                     attachment = self.attachment_service.read_by_id(id=attachment_link.attachment_id)
                     if not attachment or not attachment.blob_url:
-                        errors.append({"line_item_id": line_item.id, "line_item_public_id": line_item.public_id, "error": "Attachment not found or missing blob_url"})
+                        tally.record_error({"line_item_id": line_item.id, "line_item_public_id": line_item.public_id, "error": "Attachment not found or missing blob_url"})
                         continue
                     sub_cost_code_number = ""
                     if line_item.sub_cost_code_id:
@@ -1258,14 +1265,13 @@ class ExpenseService:
                     try:
                         _file_content, _metadata = storage.download_file(attachment.blob_url)
                     except Exception as e:
-                        errors.append({"line_item_id": line_item.id, "error": str(e)})
+                        tally.record_error({"line_item_id": line_item.id, "error": str(e)})
                         continue
                     # Probe the blob (above) to fail-fast if the blob is
                     # missing. Actual upload happens via outbox; worker
                     # re-fetches at drain time.
                     content_type = attachment.content_type or "application/octet-stream"
-                    from integrations.ms.outbox.business.service import MsOutboxService
-                    queued = MsOutboxService().enqueue_sharepoint_upload(
+                    queued = ms_outbox.enqueue_sharepoint_upload(
                         entity_type="Expense",
                         entity_public_id=str(expense.public_id),
                         drive_id=drive.drive_id,
@@ -1275,17 +1281,17 @@ class ExpenseService:
                         blob_path=attachment.blob_url,
                         attachment_id=attachment.id,
                     )
-                    if queued is None:
-                        errors.append({"line_item_id": line_item.id, "error": "SharePoint upload enqueue refused (ALLOW_MS_WRITES=false)"})
+                    outcome = sharepoint_upload_outcome(queued)
+                    if outcome == "refused":
+                        tally.record_error({"line_item_id": line_item.id, "error": "SharePoint upload enqueue refused (ALLOW_MS_WRITES=false)"})
                         continue
-                    uploaded_attachments[attachment_link.attachment_id] = sharepoint_filename
-                    synced_count += 1
+                    tally.record(attachment_link.attachment_id, outcome)
                 except Exception as e:
-                    errors.append({"line_item_id": line_item.id, "error": str(e)})
-            return {"success": not errors, "message": f"Queued {synced_count} file(s) for SharePoint upload", "synced_count": synced_count, "errors": errors}
+                    tally.record_error({"line_item_id": line_item.id, "error": str(e)})
+            return tally.as_dict(success=not tally.errors, message=tally.message())
         except Exception as e:
             logger.exception(f"Error uploading attachments for project {project_id}")
-            return {"success": False, "message": str(e), "synced_count": 0, "errors": [{"error": str(e)}]}
+            return {"success": False, "message": str(e), "synced_count": 0, "skipped_count": 0, "errors": [{"error": str(e)}]}
 
     # -------------------------------------------------------------------------
     # General Receipts Folder — 520 - Current Receipts / yyyy / mm
@@ -1361,11 +1367,11 @@ class ExpenseService:
         """
         try:
             if not expense.expense_date:
-                return {"success": False, "message": "No expense date — cannot determine receipts folder", "synced_count": 0, "errors": []}
+                return {"success": False, "message": "No expense date — cannot determine receipts folder", "synced_count": 0, "skipped_count": 0, "errors": []}
 
             date_parts = expense.expense_date[:10].split("-")
             if len(date_parts) != 3:
-                return {"success": False, "message": f"Invalid expense date format: {expense.expense_date}", "synced_count": 0, "errors": []}
+                return {"success": False, "message": f"Invalid expense date format: {expense.expense_date}", "synced_count": 0, "skipped_count": 0, "errors": []}
 
             year_folder = date_parts[0]   # "2026"
             month_folder = date_parts[1]  # "03"
@@ -1378,37 +1384,41 @@ class ExpenseService:
                 None,
             )
             if not shared_docs_drive:
-                return {"success": False, "message": "Could not find 'Shared Documents' drive for RogersBuildLLC site", "synced_count": 0, "errors": []}
+                return {"success": False, "message": "Could not find 'Shared Documents' drive for RogersBuildLLC site", "synced_count": 0, "skipped_count": 0, "errors": []}
 
             graph_drive_id = shared_docs_drive.drive_id
 
             # Navigate to 520 - Current Receipts
             receipts_folder_id = self._navigate_to_folder(graph_drive_id, self._RECEIPTS_FOLDER_PATH)
             if not receipts_folder_id:
-                return {"success": False, "message": "Could not navigate to '520 - Current Receipts' folder", "synced_count": 0, "errors": []}
+                return {"success": False, "message": "Could not navigate to '520 - Current Receipts' folder", "synced_count": 0, "skipped_count": 0, "errors": []}
 
             # Get-or-create yyyy folder
             year_item_id = self._get_or_create_subfolder(graph_drive_id, shared_docs_drive.public_id, receipts_folder_id, year_folder)
             if not year_item_id:
-                return {"success": False, "message": f"Could not get/create year folder '{year_folder}'", "synced_count": 0, "errors": []}
+                return {"success": False, "message": f"Could not get/create year folder '{year_folder}'", "synced_count": 0, "skipped_count": 0, "errors": []}
 
             # Get-or-create mm folder
             month_item_id = self._get_or_create_subfolder(graph_drive_id, shared_docs_drive.public_id, year_item_id, month_folder)
             if not month_item_id:
-                return {"success": False, "message": f"Could not get/create month folder '{month_folder}'", "synced_count": 0, "errors": []}
+                return {"success": False, "message": f"Could not get/create month folder '{month_folder}'", "synced_count": 0, "skipped_count": 0, "errors": []}
 
             # Upload attachments
             try:
                 storage = AzureBlobStorage()
             except Exception as e:
-                return {"success": False, "message": str(e), "synced_count": 0, "errors": [{"error": str(e)}]}
+                return {"success": False, "message": str(e), "synced_count": 0, "skipped_count": 0, "errors": [{"error": str(e)}]}
 
             vendor = self.vendor_service.read_by_id(id=expense.vendor_id) if expense.vendor_id else None
             vendor_abbreviation = (vendor.abbreviation or vendor.name or "Unknown") if vendor else "Unknown"
 
-            synced_count = 0
-            errors = []
-            uploaded_attachments = {}
+            from integrations.ms.outbox.business.service import (
+                MsOutboxService,
+                SharePointUploadTally,
+                sharepoint_upload_outcome,
+            )
+            tally = SharePointUploadTally()
+            ms_outbox = MsOutboxService()
 
             # Resolve project names for line items (for filename)
             project_cache = {}
@@ -1426,8 +1436,8 @@ class ExpenseService:
                     )
                     if not attachment_link or not attachment_link.attachment_id:
                         continue
-                    if attachment_link.attachment_id in uploaded_attachments:
-                        synced_count += 1
+                    # Same file on another line item — the tally counts files.
+                    if tally.already_enqueued(attachment_link.attachment_id):
                         continue
                     attachment = self.attachment_service.read_by_id(id=attachment_link.attachment_id)
                     if not attachment or not attachment.blob_url:
@@ -1467,13 +1477,12 @@ class ExpenseService:
                     try:
                         file_content, metadata = storage.download_file(attachment.blob_url)
                     except Exception as e:
-                        errors.append({"line_item_id": line_item.id, "error": f"Blob download failed: {str(e)}"})
+                        tally.record_error({"line_item_id": line_item.id, "error": f"Blob download failed: {str(e)}"})
                         continue
 
                     content_type = attachment.content_type or metadata.get("content_type", "application/octet-stream")
                     # Receipts-folder uploads go via outbox too.
-                    from integrations.ms.outbox.business.service import MsOutboxService
-                    queued = MsOutboxService().enqueue_sharepoint_upload(
+                    queued = ms_outbox.enqueue_sharepoint_upload(
                         entity_type="Expense",
                         entity_public_id=str(expense.public_id),
                         drive_id=shared_docs_drive.drive_id,
@@ -1483,26 +1492,26 @@ class ExpenseService:
                         blob_path=attachment.blob_url,
                         attachment_id=attachment.id,
                     )
-                    if queued is None:
-                        errors.append({"line_item_id": line_item.id, "error": "SharePoint upload enqueue refused (ALLOW_MS_WRITES=false)"})
+                    outcome = sharepoint_upload_outcome(queued)
+                    if outcome == "refused":
+                        tally.record_error({"line_item_id": line_item.id, "error": "SharePoint upload enqueue refused (ALLOW_MS_WRITES=false)"})
                         continue
 
-                    uploaded_attachments[attachment_link.attachment_id] = sharepoint_filename
-                    synced_count += 1
-                    logger.info(f"Queued receipts upload: {sharepoint_filename} (outbox {queued.public_id})")
+                    tally.record(attachment_link.attachment_id, outcome)
+                    logger.info(f"Queued receipts upload: {sharepoint_filename} (outbox {queued.public_id}, outcome={outcome})")
                 except Exception as e:
-                    errors.append({"line_item_id": line_item.id, "error": str(e)})
+                    tally.record_error({"line_item_id": line_item.id, "error": str(e)})
 
-            return {
-                "success": not errors,
-                "message": f"Uploaded {synced_count} file(s) to receipts folder ({year_folder}/{month_folder})",
-                "synced_count": synced_count,
-                "errors": errors,
-            }
+            return tally.as_dict(
+                success=not tally.errors,
+                message=tally.message(
+                    f"Uploaded {tally.synced_count} file(s) to receipts folder ({year_folder}/{month_folder})"
+                ),
+            )
 
         except Exception as e:
             logger.exception("Error uploading to general receipts folder")
-            return {"success": False, "message": str(e), "synced_count": 0, "errors": [{"error": str(e)}]}
+            return {"success": False, "message": str(e), "synced_count": 0, "skipped_count": 0, "errors": [{"error": str(e)}]}
 
     def _enqueue_box_uploads(self, expense, line_items: List, doc_kind: str) -> None:
         """

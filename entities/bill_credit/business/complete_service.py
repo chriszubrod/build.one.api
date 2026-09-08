@@ -469,15 +469,12 @@ class BillCreditCompleteService:
                     "errors": [{"error": f"Project {project_id} not found"}]
                 }
             
-            synced_count = 0
-            skipped_count = 0
-            errors = []
-            uploaded_attachment_outcomes = {}  # attachment_id -> was_skipped bool
-
             from integrations.ms.outbox.business.service import (
                 MsOutboxService,
+                SharePointUploadTally,
                 sharepoint_upload_outcome,
             )
+            tally = SharePointUploadTally()
             ms_outbox = MsOutboxService()
 
             print(f"  SharePoint sync: Processing {len(line_items)} line items for project {project_id}")
@@ -504,19 +501,15 @@ class BillCreditCompleteService:
                     print(f"      -> Found attachment, attachment_id={attachment_link.attachment_id}")
                     logger.info(f"    Found attachment link for line item {line_item.public_id}, attachment_id={attachment_link.attachment_id}")
                     
-                    # Check if already uploaded
-                    if attachment_link.attachment_id in uploaded_attachment_outcomes:
-                        logger.info(f"Attachment {attachment_link.attachment_id} already uploaded, skipping")
-                        if uploaded_attachment_outcomes[attachment_link.attachment_id]:
-                            skipped_count += 1
-                        else:
-                            synced_count += 1
+                    # Same file on another line item — the tally counts files.
+                    if tally.already_enqueued(attachment_link.attachment_id):
+                        logger.info(f"Attachment {attachment_link.attachment_id} already enqueued for this credit, skipping duplicate line item")
                         continue
                     
                     # Get attachment record
                     attachment = self.attachment_service.read_by_id(id=attachment_link.attachment_id)
                     if not attachment or not attachment.blob_url:
-                        errors.append({
+                        tally.record_error({
                             "line_item_id": line_item.id,
                             "line_item_public_id": line_item.public_id,
                             "error": "Attachment not found or missing blob_url"
@@ -608,19 +601,14 @@ class BillCreditCompleteService:
                     outcome = sharepoint_upload_outcome(queued)
                     if outcome == "refused":
                         logger.error(f"SharePoint upload enqueue refused for '{sharepoint_filename}'")
-                        errors.append({
+                        tally.record_error({
                             "line_item_id": line_item.id,
                             "line_item_public_id": line_item.public_id,
                             "error": "SharePoint upload enqueue refused (ALLOW_MS_WRITES=false or enqueue failure)"
                         })
                         continue
 
-                    was_skipped = outcome == "skipped"
-                    uploaded_attachment_outcomes[attachment_link.attachment_id] = was_skipped
-                    if was_skipped:
-                        skipped_count += 1
-                    else:
-                        synced_count += 1
+                    tally.record(attachment_link.attachment_id, outcome)
                     logger.info(
                         f"Queued SharePoint upload: '{sharepoint_filename}' "
                         f"(outbox {queued.public_id}, attachment_id={attachment.id})"
@@ -628,26 +616,17 @@ class BillCreditCompleteService:
 
                 except Exception as e:
                     logger.exception(f"Error processing line item {line_item.id}")
-                    errors.append({
+                    tally.record_error({
                         "line_item_id": line_item.id,
                         "line_item_public_id": line_item.public_id,
                         "error": f"Unexpected error: {str(e)}"
                     })
             
-            success = synced_count > 0 or skipped_count > 0 or len(errors) == 0
-            message = f"Queued {synced_count} file(s) for SharePoint upload"
-            if skipped_count > 0:
-                message += f", {skipped_count} already uploaded (skipped)"
-            if errors:
-                message += f" with {len(errors)} error(s)"
-            
-            return {
-                "success": success,
-                "message": message,
-                "synced_count": synced_count,
-                "skipped_count": skipped_count,
-                "errors": errors
-            }
+            success = tally.synced_count > 0 or tally.skipped_count > 0 or len(tally.errors) == 0
+            return tally.as_dict(
+                success=success,
+                message=tally.message(with_error_count=True),
+            )
             
         except Exception as e:
             logger.exception(f"Error uploading attachments for project {project_id}")

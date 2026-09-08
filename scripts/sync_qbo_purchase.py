@@ -160,6 +160,7 @@ def sync_qbo_to_local(
             "attachments_linked": 0,
             "excel_rows_synced": 0,
             "sharepoint_uploads_synced": 0,
+            "sharepoint_uploads_skipped": 0,
             "box_excel_batches": 0,
             "skipped_count": 0,
             "skipped_purchase_ids": [],
@@ -176,6 +177,7 @@ def sync_qbo_to_local(
     attachments_linked = 0
     excel_rows_synced = 0
     sharepoint_uploads_synced = 0
+    sharepoint_uploads_skipped = 0  # outbox says already uploaded
     box_excel_batches = 0
     synced_expenses = []     # (expense, expense_id) — collected for batched Excel sync
     attachable_service = QboAttachableService()
@@ -292,6 +294,7 @@ def sync_qbo_to_local(
                         expense_line_items_count=expense_line_counts.get(expense.id, len(proj_items)),
                     )
                     sharepoint_uploads_synced += sp_result.get("synced_count", 0)
+                    sharepoint_uploads_skipped += sp_result.get("skipped_count", 0)
                     if sp_result.get("errors"):
                         for err in sp_result["errors"]:
                             logger.warning(f"SharePoint upload error for project {proj_id}: {err}")
@@ -341,6 +344,7 @@ def sync_qbo_to_local(
         "attachments_linked": attachments_linked,
         "excel_rows_synced": excel_rows_synced,
         "sharepoint_uploads_synced": sharepoint_uploads_synced,
+        "sharepoint_uploads_skipped": sharepoint_uploads_skipped,
         "box_excel_batches": box_excel_batches,
         "skipped_count": len(outcome.skipped_ids),
         "skipped_purchase_ids": outcome.skipped_ids,
@@ -459,7 +463,8 @@ def sync_qbo_purchase(
                     f"Failed: {qbo_to_local_result.get('failed_count', 0)}, "
                     f"Attachments linked: {qbo_to_local_result['attachments_linked']}, "
                     f"Excel rows synced: {qbo_to_local_result['excel_rows_synced']}, "
-                    f"SharePoint uploads: {qbo_to_local_result['sharepoint_uploads_synced']}, "
+                    f"SharePoint uploads: {qbo_to_local_result['sharepoint_uploads_synced']} "
+                    f"(+{qbo_to_local_result['sharepoint_uploads_skipped']} already uploaded), "
                     f"Box Excel batches: {qbo_to_local_result['box_excel_batches']}")
         
         return {

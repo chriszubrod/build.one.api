@@ -1,5 +1,55 @@
 # Session Notes
 
+## U-412 — SharePoint upload counts are per FILE, not per line item (2026-09-08)
+
+Reported live: bill **#26-0183** (Siteworks, id 20370) has two line items sharing attachment
+**29670**; its completion result said "Queued 2 file(s) for SharePoint upload" against exactly
+**one** enqueued outbox row. Bill #3953 (Proctor Marble, id 20316) had two lines but only one
+linked at completion and correctly reported 1 — which is what made the pattern legible.
+
+- **Root cause.** The dedupe branch (`if attachment_link.attachment_id in uploaded_attachments`)
+  did `synced_count += 1` on the path that enqueues **nothing**. The count is what a human reads
+  to confirm a multi-line bill synced, so it overstated exactly when verification mattered most.
+- **Semantics chosen: both counters count FILES, never line items.** A shared attachment is one
+  upload and counts once. The alternative (report lines-linked *and* files-queued) was rejected:
+  no consumer wants the line count — every caller (`scripts/sync_qbo_{bill,purchase,vendorcredit}.py`,
+  `backfill_qbo_bills.py`, `InvoiceDrawPushService.push_draw`, the invoice re-sync router) only
+  sums or prints it, the web UI reads neither, and the line count is already logged.
+- **Same defect in all five upload loops, fixed in all five:** bill module folder, expense module
+  folder, expense receipts folder, bill_credit, invoice. bill_credit/invoice had it in subtler
+  form — U-253 corrected *which* counter the dedupe branch credited without asking whether it
+  should credit one at all, and a test pinned that (`skipped_count == 2` for one file). Also
+  fixed the copy in the dead `sync_attachments_to_sharepoint`. **Box and Excel paths are clean** —
+  `_enqueue_box_uploads` returns no count, and the Excel paths count rows on actual enqueue only.
+- **bill + expense gained `skipped_count`,** classifying via the existing `sharepoint_upload_outcome`,
+  so a U-221 guard skip stops being reported as a fresh upload. This closes TODO **U-221(g)** —
+  whose recorded "Blocked on `shared/api/admin.py` response shapes (U-247's boundary)" reason was
+  **stale**: that file contains no reference to these keys at all.
+- **Pass 2 pushed the fix down a level.** Three of four review lenses independently said the
+  counting contract should not live in the loops. New `SharePointUploadTally` in
+  `integrations/ms/outbox/business/service.py` (beside `sharepoint_upload_outcome`, mirroring the
+  `qbo/base/sync_outcome.py::SyncOutcome` precedent) owns the dedupe set, both counters, and the
+  message; the five loops now enqueue and tally, and touch no counter. It deliberately does NOT
+  own `success` — that predicate already means two different things across the four paths, and
+  unifying it is a behavior change (booked).
+- **Rejected at review:** counting distinct *outbox rows* instead of distinct attachments. It is
+  more precise in principle, but it requires an enqueue call per line item and leans on outbox
+  coalescing to dedupe — N redundant round trips to replace an in-loop set. Every live loop is
+  already scoped to ONE destination folder, which is what makes the attachment id a sufficient
+  key; the tally's docstring records that precondition.
+- **Invoice packet loop** now dedupes on its own id-space (a packet carries a different filename
+  from a line attachment, so sharing the tally's set could have suppressed a genuinely distinct
+  upload), and guards before the attachment read instead of after.
+- Tests: `tests/test_sharepoint_outbox_enqueue_upload.py`, now 18. Bill/expense regression tests
+  assert one shared attachment across two line items reports exactly one file, both for a fresh
+  enqueue and for a guard skip. Two pre-existing bill_credit/invoice tests that pinned the
+  inflated semantics were rewritten. `/code-review` found the new tests' `patch.multiple` was a
+  no-op (Bill/Expense reach their MS collaborators through lazy properties, unlike bill_credit's
+  eager `__init__`) — replaced with explicit backing-attribute injection.
+- **3303 pytest green. Pure Python — no SQL apply owed, no `/docs` refresh owed** (no route
+  contract changed; the `/docs` API section is still the planned LIVE one).
+
+
 ## U-411 — bill-line-item-attachment by-line-item endpoint: honest param + no driver leak (2026-09-08)
 
 Three defects were reported live against prod. **Two were real, one is refuted** — the refutation is the

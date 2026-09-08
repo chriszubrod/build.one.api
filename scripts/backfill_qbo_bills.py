@@ -294,7 +294,7 @@ def apply_backfill(rows, limit, include_null, realm_id):
             logger.exception(f"  FAILED qbo_id={qid}")
 
     # --- after-loop: per-project budget-tracker Excel + SharePoint + Box (mirrors sync_qbo_bill.py) ---
-    excel_rows = sharepoint = box_batches = 0
+    excel_rows = sharepoint = sharepoint_skipped = box_batches = 0
     if synced_bills:
         project_bill_map, bill_line_counts = {}, {}
         for bill, bill_id in synced_bills:
@@ -323,6 +323,7 @@ def apply_backfill(rows, limit, include_null, realm_id):
                         bill_line_items_count=bill_line_counts.get(bill.id, len(items)),
                     )
                     sharepoint += res.get("synced_count", 0)
+                    sharepoint_skipped += res.get("skipped_count", 0)
                 except Exception as e:
                     logger.warning(f"  SharePoint failed project {proj_id}: {e}")
 
@@ -351,6 +352,7 @@ def apply_backfill(rows, limit, include_null, realm_id):
     print(f"  attachments synced:    {attach_synced}")
     print(f"  excel rows queued:     {excel_rows}")
     print(f"  sharepoint queued:     {sharepoint}")
+    print(f"  sharepoint already up: {sharepoint_skipped}")
     print(f"  box excel batches:     {box_batches}")
     print(f"  skipped (permanent):   {skipped} {skipped_ids if skipped_ids else ''}")
     print(f"  deferred (pull race):  {deferred} {deferred_ids if deferred_ids else ''}")

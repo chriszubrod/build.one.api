@@ -1888,6 +1888,22 @@ GO
 -- consumer see the up-to-date parent totals — not the TimeEntry-submit
 -- snapshot that previously stuck around even after PMs edited line items.
 --
+-- U-424 (2026-09-08): this is now the SINGLE recompute every write path that
+-- touches ContractLaborLineItem must call. Callers:
+--   * PUT /api/v1/contract-labor/{id}/bill      (router.py)
+--   * ContractLaborService._apply_decision_to_single_cl  (reviewer approval)
+--   * dbo.AggregateTimeEntryOnSubmit            (@ReturnRow = 0)
+--
+-- ROUNDING SEMANTIC (U-424, ratified): TotalAmount is the SUM OF ALREADY-
+-- ROUNDED child Price values, NOT a re-derivation from unrounded hours×rate.
+-- A parent can therefore land a cent above the mathematically exact figure
+-- (3.0h × $62.50 × 1.35 = $253.125 → $253.13 stored per line → $675.01 across
+-- three lines where the "exact" total is $675.00). This is deliberate: the
+-- vendor is billed the sum of the line prices — bill_service.py builds both
+-- the Bill total and the PDF by summing ContractLaborLineItem.Price — so a
+-- parent computed from unrounded values would disagree with the money that
+-- is actually invoiced. The parent must equal what the bill says.
+--
 -- Recomputed fields:
 --   TotalHours  = SUM(ContractLaborLineItem.Hours) over ALL lines
 --                 (billable + non-billable — represents hours worked)
@@ -1903,12 +1919,20 @@ GO
 -- the post-recompute parent row so the API can thread the fresh row_version
 -- to the client.
 --
+-- @ReturnRow (U-424): 1 (default) preserves the existing contract for the
+-- Python callers, which fetchone() the post-recompute row. SQL callers pass
+-- 0 — a nested EXEC that emits a result set would inject an extra, unexpected
+-- result set ahead of the outer sproc's own SELECT and break the caller's
+-- cursor shape (the DML → row-returning-SELECT → fetchone() break class this
+-- file's SET NOCOUNT ON pins guard against).
+--
 -- Idempotent (CREATE OR ALTER). Safe to re-run.
 -- =============================================================================
 
 CREATE OR ALTER PROCEDURE dbo.UpdateContractLaborAggregates
 (
-    @Id BIGINT
+    @Id BIGINT,
+    @ReturnRow BIT = 1
 )
 AS
 BEGIN
@@ -1921,28 +1945,28 @@ BEGIN
     DECLARE @BillableHours     DECIMAL(18,4);
     DECLARE @BillablePreMarkup DECIMAL(18,2);
 
-    -- Total hours across all lines (worked time, billable + non-billable).
-    SELECT @TotalHours = ISNULL(SUM(ISNULL([Hours], 0)), 0)
+    -- One pass, conditional aggregation (U-424 — was three sequential scans
+    -- of the same @Id predicate). SUM ignores the NULLs an ELSE-less CASE
+    -- yields, so each column filters independently:
+    --   TotalHours        all lines (worked time, billable + non-billable)
+    --   TotalAmount       billable lines only (post-markup, billed $)
+    --   Billable*         billable lines with BOTH Hours and Rate non-null,
+    --                     so lines missing either don't pull the weighted
+    --                     average toward 0.
+    SELECT
+        @TotalHours        = ISNULL(SUM(ISNULL([Hours], 0)), 0),
+        @TotalAmount       = ISNULL(SUM(CASE WHEN [IsBillable] = 1
+                                             THEN ISNULL([Price], 0) END), 0),
+        @BillableHours     = ISNULL(SUM(CASE WHEN [IsBillable] = 1
+                                              AND [Hours] IS NOT NULL
+                                              AND [Rate]  IS NOT NULL
+                                             THEN [Hours] END), 0),
+        @BillablePreMarkup = ISNULL(SUM(CASE WHEN [IsBillable] = 1
+                                              AND [Hours] IS NOT NULL
+                                              AND [Rate]  IS NOT NULL
+                                             THEN [Hours] * [Rate] END), 0)
     FROM dbo.[ContractLaborLineItem]
     WHERE [ContractLaborId] = @Id;
-
-    -- Total billed amount (post-markup) over billable lines.
-    SELECT @TotalAmount = ISNULL(SUM(ISNULL([Price], 0)), 0)
-    FROM dbo.[ContractLaborLineItem]
-    WHERE [ContractLaborId] = @Id
-      AND [IsBillable] = 1;
-
-    -- Weighted-average rate + effective markup over billable lines with both
-    -- Hours and Rate non-null. Lines missing either are excluded from the
-    -- rate computation so they don't pull the weighted average toward 0.
-    SELECT
-        @BillableHours     = ISNULL(SUM([Hours]), 0),
-        @BillablePreMarkup = ISNULL(SUM([Hours] * [Rate]), 0)
-    FROM dbo.[ContractLaborLineItem]
-    WHERE [ContractLaborId] = @Id
-      AND [IsBillable] = 1
-      AND [Hours] IS NOT NULL
-      AND [Rate]  IS NOT NULL;
 
     SET @HourlyRate = CASE WHEN @BillableHours > 0
                            THEN @BillablePreMarkup / @BillableHours
@@ -1965,8 +1989,11 @@ BEGIN
     WHERE [Id] = @Id;
 
     -- Return the updated parent row for the caller to thread to the client.
-    SELECT *
-    FROM dbo.[ContractLabor]
-    WHERE [Id] = @Id;
+    IF ISNULL(@ReturnRow, 1) = 1
+    BEGIN
+        SELECT *
+        FROM dbo.[ContractLabor]
+        WHERE [Id] = @Id;
+    END
 END;
 GO

@@ -342,7 +342,46 @@ class ContractLaborService:
                 existing.markup,
             )
 
-        return self.repo.update_by_id(existing)
+        updated = self.repo.update_by_id(existing)
+
+        # U-424: children win when they exist. The parent-field math above is
+        # the legacy shape from before ContractLaborLineItem carried the money.
+        # It was a no-op for multi-project entries — their parent HourlyRate was
+        # left NULL — but dbo.AggregateTimeEntryOnSubmit now re-derives the
+        # parent from its children, so those entries carry a weighted-average
+        # rate and the branch above DOES fire, which would re-open the drift
+        # this unit closes.
+        #
+        # The guard is load-bearing: entries with NO line items legitimately
+        # carry parent-only money until review builds their lines
+        # (import_service.py creates them that way), and the recompute would
+        # zero them.
+        #
+        # Best-effort as a whole, including the children probe: the parent
+        # UPDATE above has already committed, so letting a read failure
+        # propagate would 500 a request whose write succeeded and invite a
+        # retry that re-applies it. recompute_aggregates isolates its own
+        # failure; this wrapper covers the probe.
+        if updated is not None and updated.id is not None:
+            from entities.contract_labor.persistence.line_item_repo import (
+                ContractLaborLineItemRepository,
+            )
+            try:
+                lines = ContractLaborLineItemRepository().read_by_contract_labor_id(
+                    contract_labor_id=updated.id,
+                )
+            except Exception:
+                logger.exception(
+                    "Failed to read ContractLabor line items after update "
+                    "(cl_id=%s); skipping the parent recompute, so parent "
+                    "totals may disagree with the line items.",
+                    updated.id,
+                )
+                lines = []
+            if lines:
+                return self.recompute_aggregates(contract_labor_id=updated.id) or updated
+
+        return updated
 
     def delete_by_public_id(self, public_id: str, *, tenant_id: int = None) -> Optional[ContractLabor]:
         """
@@ -497,7 +536,10 @@ class ContractLaborService:
              ProjectId = matched project with the supplied SCC +
              description (read-modify-write to preserve all other line
              fields).
-          4. Always: inserts a new Review row (insert-only audit trail)
+          4. On approval: recomputes the parent aggregates from the
+             children via `recompute_aggregates` (U-424) — every path
+             that mutates line items owes the parent that call.
+          5. Always: inserts a new Review row (insert-only audit trail)
              with the target ReviewStatus + raw_reply_text as comments +
              email_message_id link.
 
@@ -715,6 +757,14 @@ class ContractLaborService:
                         "apply_reviewer_decision partial-update on CL %s line %s: %s",
                         contract_labor_public_id, li.id, line_error,
                     )
+
+            # U-424: we just mutated line items, so the parent owes a
+            # recompute (see recompute_aggregates). Runs BEFORE the
+            # partial-failure raise on purpose — when some lines applied
+            # and others didn't, the parent must still match whatever
+            # actually landed.
+            self.recompute_aggregates(contract_labor_id=cl.id)
+
             if line_failures:
                 raise ValueError(
                     f"ContractLabor {contract_labor_public_id} apply partial-failure: "
@@ -826,6 +876,43 @@ class ContractLaborService:
 
         existing.status = "ready"
         return self.repo.update_by_id(existing)
+
+    def recompute_aggregates(self, *, contract_labor_id: int) -> Optional[ContractLabor]:
+        """Re-derive a ContractLabor's parent aggregates from its line items.
+
+        THE choke point for the sum-of-children invariant (U-424), in the
+        same spirit as mark_as_ready_via_review_approval below: every path
+        that mutates ContractLaborLineItem must call this, and the failure
+        policy lives here once instead of being re-decided per caller.
+        Callers today: PUT /{public_id}/bill (router), the reviewer-approval
+        path, and update_by_public_id. The fourth writer is SQL —
+        dbo.AggregateTimeEntryOnSubmit EXECs the same sproc directly, since
+        it does raw DML on the line-item table and never reaches this layer.
+
+        Recomputed: TotalHours / TotalAmount / HourlyRate / Markup. See the
+        ROUNDING SEMANTIC note on dbo.UpdateContractLaborAggregates for why
+        the total is the sum of already-rounded child prices.
+
+        Never raises. A recompute failure means stale parent totals, not a
+        failed mutation — the line items are already committed, so raising
+        would hand the caller a retryable-looking error for work that
+        succeeded. Returns the fresh parent row (carrying the post-recompute
+        row_version) or None if the recompute failed.
+
+        Does NOT guard on the CL having line items — the /bill route deletes
+        line items and legitimately wants the parent zeroed when the last one
+        goes away. Callers that must preserve parent-only money on a
+        childless row check for children themselves.
+        """
+        try:
+            return self.repo.update_aggregates(id=contract_labor_id)
+        except Exception:
+            logger.exception(
+                "Failed to recompute ContractLabor aggregates (cl_id=%s); "
+                "parent totals may disagree with the line items.",
+                contract_labor_id,
+            )
+            return None
 
     def mark_as_ready_via_review_approval(self, *, contract_labor_id: int) -> Optional[ContractLabor]:
         """

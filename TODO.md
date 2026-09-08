@@ -2,6 +2,32 @@
 
 Carry-over items from sessions. Check off as done; prune anything stale.
 
+## U-424 follow-ups (ContractLabor parent aggregates) — deferred (2026-09-08)
+
+- [ ] **`dbo.AggregateTimeEntryOnSubmit` resolves the line item to update with a scalar
+  assignment from a potentially multi-row SELECT.**
+  `SELECT @LineItemRowId = [Id] FROM ContractLaborLineItem WHERE ContractLaborId = @ParentRowId
+  AND SourceTimeEntryId = @TimeEntryId AND ProjectId = @ProjectId` silently updates only ONE row
+  if a CL ever holds two lines sharing that key. Lines created through `PUT /{id}/bill` get
+  `SourceTimeEntryId = NULL` (`CreateContractLaborLineItem` takes no such parameter), so a split
+  line and its original diverge when the source TimeEntry is re-submitted: the original is reset
+  to the whole day's hours/price while the split sibling keeps its share, double-counting the day.
+  Spotted while reading the sproc for U-424; deliberately out of that unit's scope. The parent
+  aggregate is no longer a casualty (U-424 re-derives it from the children), but the CHILDREN are
+  still wrong in this scenario, which means the BILL is wrong. Higher priority than it looks.
+- [ ] **The same sproc never deletes line items for project buckets that have disappeared.**
+  Remove all of project B's TimeLogs from a TimeEntry and re-submit: the bucket cursor upserts
+  only A, and B's ContractLaborLineItem survives with no matching TimeLog. `generate_bills`
+  already billed the orphan; post-U-424 the parent total reports it too (the parent now honestly
+  matches what the bill charges instead of masking it). Wants a DELETE for
+  `SourceTimeEntryId = @TimeEntryId AND ProjectId NOT IN (SELECT ProjectId FROM @Buckets)` —
+  but only for lines this TimeEntry owns, never PM-created splits. Same unit as the item above.
+- [ ] **`EmployeeLabor` has no equivalent recompute sproc.** U-424 made sum-of-children the single
+  parent semantic for ContractLabor via `dbo.UpdateContractLaborAggregates`, called from all four
+  write paths. `EmployeeLabor` / `EmployeeLaborLineItem` are the same shape with the same
+  divergence in `AggregateTimeEntryOnSubmit`'s parent branch, and no `UpdateEmployeeLaborAggregates`
+  exists to call. Mirror the sproc + the call sites when EmployeeLabor next gets attention.
+
 ## U-412 follow-ups (SharePoint upload file counts) — deferred (2026-09-08)
 
 - [ ] **Delete `BillService.sync_attachments_to_sharepoint` (the last non-outbox SharePoint

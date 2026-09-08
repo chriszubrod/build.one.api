@@ -487,7 +487,10 @@ NOCOUNT_PINNED_SPROCS = [
     ("UpdateContractLaborStatusByIds", CONTRACT_LABOR_BASE),
     ("DeleteContractLaborLineItemsByContractLaborId", CONTRACT_LABOR_BASE),
     ("FindContractLaborForReviewerReply", CONTRACT_LABOR_BASE),  # repo.py:518 fetchone; route router.py:235
-    ("UpdateContractLaborAggregates", CONTRACT_LABOR_BASE),  # repo.py:624 fetchone; PUT /{public_id}/bill router.py:577
+    # U-424: four callers now — repo.py fetchone via PUT /{public_id}/bill
+    # (router.py), ContractLaborService._apply_decision_to_single_cl and
+    # .update_by_public_id, and dbo.AggregateTimeEntryOnSubmit (@ReturnRow = 0).
+    ("UpdateContractLaborAggregates", CONTRACT_LABOR_BASE),
     ("ReadContractLaborDailySummary", CONTRACT_LABOR_BASE),
     # U-165: the one ACTIVE landmine the repo-wide sweep found — INSERT-or-UPDATE then a
     # separate SELECT, fetchone()'d by a LIVE routed endpoint (prod raised on every call).

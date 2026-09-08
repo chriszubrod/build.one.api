@@ -1419,8 +1419,13 @@ BEGIN
     ELSE
     BEGIN
         -- Multi-project: parent ProjectId / rate / markup / amount are
-        -- meaningless aggregates. Leave NULL — the per-project values live
-        -- on the line items.
+        -- meaningless as BUCKET aggregates. Leave NULL — the per-project
+        -- values live on the line items.
+        -- U-424: on the update path the tail recompute then re-derives the
+        -- money columns from those line items, so a multi-project parent
+        -- ends up with SUM(Price) and a billable weighted-average rate
+        -- rather than NULL. Only the INSERT path persists these NULLs, and
+        -- only until its first recompute.
         SET @ParentProjectId = NULL;
         SET @ParentRate      = NULL;
         SET @ParentMarkup    = NULL;
@@ -1511,13 +1516,16 @@ BEGIN
                 RETURN;
             END
 
+            -- TotalHours / HourlyRate / Markup / TotalAmount are deliberately
+            -- NOT set here (U-424). The recompute at the tail of this
+            -- procedure is their sole writer on the update path; assigning
+            -- them here too would be a dead store and a second ROWVERSION
+            -- bump on the same row, invalidating a client's optimistic-
+            -- concurrency token twice per submit. The INSERT branch above
+            -- still needs them — it has no row to recompute from yet.
             UPDATE dbo.[ContractLabor]
             SET [ModifiedDatetime]  = SYSUTCDATETIME(),
                 [ProjectId]         = @ParentProjectId,
-                [TotalHours]        = @ParentTotalHrs,
-                [HourlyRate]        = @ParentRate,
-                [Markup]            = @ParentMarkup,
-                [TotalAmount]       = @ParentAmount,
                 [Description]       = @ParentDesc,
                 [SourceTimeEntryId] = @TimeEntryId
             WHERE [Id] = @ParentRowId;
@@ -1659,6 +1667,29 @@ BEGIN
 
     CLOSE bucket_cur;
     DEALLOCATE bucket_cur;
+
+    -- ─── Parent aggregates: children are authoritative (U-424) ─────────────
+    -- Sole writer of the parent's money columns on the update path. Why
+    -- sum-of-children is the one parent semantic: see the U-424 block on
+    -- dbo.UpdateContractLaborAggregates in dbo.contract_labor.sql.
+    --
+    -- What lives only here — why this sproc's own bucket math was not enough:
+    -- lines a PM splits off in PUT /{id}/bill carry SourceTimeEntryId = NULL
+    -- (CreateContractLaborLineItem takes no such param), so a re-submit
+    -- rewrites only the original line yet stamped the parent with this
+    -- TimeEntry's bucket totals — leaving TotalAmount at one line's worth
+    -- while the children summed to more. That is the prod drift behind U-424.
+    --
+    -- Consequence worth knowing: Markup becomes the EFFECTIVE fraction implied
+    -- by the rounded child prices, so it can differ from the configured rate in
+    -- the 4th decimal. It is display-only; the line items carry the rate billed.
+    --
+    -- @ReturnRow = 0 suppresses the sproc's row set (see its header).
+    -- EmployeeLabor has no equivalent recompute sproc — see TODO.md.
+    IF @EmployeeId IS NULL AND @ParentRowId IS NOT NULL
+    BEGIN
+        EXEC dbo.UpdateContractLaborAggregates @Id = @ParentRowId, @ReturnRow = 0;
+    END
 
     SELECT TargetTable, TargetRowId, LineItemRowId, ProjectId,
            CONVERT(VARCHAR(10), WorkDate, 120) AS WorkDate,

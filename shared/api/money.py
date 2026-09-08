@@ -66,6 +66,15 @@ def labor_price_two_shot(
     ``build.one.web/src/shared/money.ts`` (``computeAmount`` then
     ``applyMarkup``).
 
+    Related, and deliberately NOT this function (U-424):
+    ``dbo.UpdateContractLaborAggregates`` in
+    ``entities/contract_labor/sql/dbo.contract_labor.sql`` derives a
+    ContractLabor PARENT total by summing its children's already-rounded
+    ``Price`` values, so a parent can land a cent above what this two-shot
+    would produce from the parent's own hours × rate. That is intended: the
+    vendor is billed the sum of the line prices. Do not "fix" a parent total
+    by routing it through here.
+
     A **single-shot** ``round_money(hours × rate × (1 + markup))`` can land a
     cent off — e.g. ``0.75`` h × ``40.18`` @ ``25%`` markup: two-shot
     ``37.68``, single-shot ``37.67``.

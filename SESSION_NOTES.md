@@ -1,5 +1,80 @@
 # Session Notes
 
+## U-424 — ContractLabor parent aggregates go stale (2026-09-08)
+
+`ContractLabor.TotalAmount` / `TotalHours` / `HourlyRate` / `Markup` drifted from the line items
+they summarize. Prod evidence: **CL 1289** (Selvin Cordova, 2026-08-24) carried **$590.63** — one
+line's worth — while its children summed to **$675.01**; **CL 1260** carried **$0.00** against the
+same $675.01. CL 1270 was correct only because a `PUT /bill` happened to run against it that day.
+
+- **Two writers were skipping the recompute.** `PUT /api/v1/contract-labor/{id}/bill` has always
+  called `update_aggregates` after writing line items. The reviewer-approval path
+  (`_apply_decision_to_single_cl`) mutates line items too — it stamps `SubCostCodeId` and
+  optionally `Description` on every line matching the reviewed project — and never did. Second
+  writer found while mapping: `dbo.AggregateTimeEntryOnSubmit` derives the parent from **this
+  TimeEntry's buckets alone**, so once a PM splits a day in `PUT /bill` (split siblings get
+  `SourceTimeEntryId = NULL`, since `CreateContractLaborLineItem` takes no such param) a re-submit
+  rewrites only the original line yet still stamps the parent with the bucket totals. That is
+  exactly CL 1289's signature.
+- **Blast radius is wider than the list page.** `ContractLaborPDFService` builds the client-facing
+  "Contract Labor Time Log" PDF — attached to BillLineItems and pushed to SharePoint/Box — from the
+  **parent** `total_amount` / `total_hours` / `hourly_rate` per entry, while the same PDF's header
+  shows the BillLineItem price. A stale parent makes that PDF contradict itself. Bill generation
+  itself is unaffected (`bill_service.py` sums line items), and so are the MCP tool, the bills
+  summary, and the web Edit/View pages (all derive from lines). The CL list page shows stale
+  `total_hours`.
+- **Rounding decided deliberately: sum-of-already-rounded-children is canonical.** 3.0h × $62.50 ×
+  1.35 = $253.125 → $253.13 per line, so an 8.0h day split 3/3/2 totals **$675.01** where the
+  algebra says $675.00. The vendor is billed the sum of the line prices — `bill_service.py` builds
+  both the Bill total and the PDF that way — so a parent computed from unrounded values would
+  disagree with the money actually invoiced. Ratified in the `dbo.UpdateContractLaborAggregates`
+  header, which now owns that explanation; `shared/api/money.py` cross-references it so nobody
+  "fixes" a parent total by routing it through `labor_price_two_shot`.
+- **Pass 2 turned four call sites into one named choke point.** Three of four review lenses
+  independently asked for it. New `ContractLaborService.recompute_aggregates`, sitting beside
+  `mark_as_ready_via_review_approval` and documented the same way ("every path that mutates
+  ContractLaborLineItem must call this"), owns the failure policy once: never raises, since the
+  line items are already committed and raising would hand the caller a retryable-looking error for
+  work that succeeded. `router.py` stopped reaching through `service.repo`. Behavior change worth
+  noting: `PUT /bill` no longer 500s when the recompute fails — it logs and returns the
+  pre-recompute row.
+- **The SQL fix deletes code rather than adding it.** `AggregateTimeEntryOnSubmit`'s parent UPDATE
+  no longer sets the four money columns at all — the tail `EXEC dbo.UpdateContractLaborAggregates
+  @Id = @ParentRowId, @ReturnRow = 0` is their sole writer on the update path. That removes a dead
+  store *and* a second ROWVERSION bump per submit, which was invalidating a client's optimistic-
+  concurrency token twice. The INSERT branch still sets them (no row to recompute from yet). New
+  `@ReturnRow BIT = 1` parameter suppresses the sproc's trailing `SELECT` for SQL callers — a
+  nested EXEC that emitted its row would prepend a result set to the caller's cursor, the same
+  pyodbc break class the `SET NOCOUNT ON` pins guard. Gated `ISNULL(@ReturnRow, 1) = 1` so an
+  explicit NULL still returns the row. The three separate scans inside the sproc collapsed to one
+  conditional-aggregation pass.
+- **Pass 1 caught a regression the SQL change would have introduced.** `update_by_public_id`
+  derives `total_amount` from the **parent's** hours/rate/markup. That branch used to be a no-op
+  for multi-project entries, whose parent `HourlyRate` the sproc left NULL — but the sproc now
+  derives one, so the branch would fire and clobber the children. It now defers to the line items
+  when any exist, keeping the legacy parent math only for childless rows (which `import_service`
+  legitimately creates). The children probe is failure-isolated: the parent UPDATE has already
+  committed by then.
+- **Backfill is a hand-off, not applied.** `scripts/migrations/u424_contract_labor_parent_aggregate_backfill.sql`
+  — preview / batched apply / verify, idempotent, `COMMIT` per batch, childless parents excluded by
+  an INNER JOIN (the sproc `ISNULL`s its sums to 0, so running it on a parent-only row would zero
+  it). One decision left for `/em`: `@IncludeBilled` (default 0). Per
+  `feedback_builders_never_mutate_prod_data.md`, not run from here.
+- **⚠ Deploy order is load-bearing:** `entities/contract_labor/sql/dbo.contract_labor.sql` **must**
+  be applied before `entities/time_entry/sql/dbo.time_entry.sql`. Deferred name resolution lets the
+  time-entry sproc compile against the missing `@ReturnRow`, then every iOS submit fails at runtime
+  with SQL 8145 — the U-037 break class.
+- **Coverage:** `tests/test_cl_reviewer_decision_recomputes_aggregates.py`. The fakes model the real
+  recompute (stateful line-item store + a repo whose `update_aggregates` re-derives from children),
+  so the tests fail on a wrong parent **value**, not just a missing call. Mutation-proved RED on 8
+  patches: recompute deleted, recompute moved after the partial-failure raise, `@ReturnRow` gate
+  dropped, `EXEC` removed, PUT-route recompute dropped, `has_lines` guard bypassed, the dead store
+  re-added, and the choke-point call removed. Suite 3312 green.
+- **Deferred to TODO.md** (§ U-424): the `SELECT @LineItemRowId = ...` scalar-assignment-from-
+  multi-row hazard in `AggregateTimeEntryOnSubmit` (children still go wrong there, which means the
+  *bill* goes wrong — higher priority than it looks); the missing DELETE for vanished buckets;
+  `EmployeeLabor` having no equivalent recompute sproc.
+
 ## U-412 — SharePoint upload counts are per FILE, not per line item (2026-09-08)
 
 Reported live: bill **#26-0183** (Siteworks, id 20370) has two line items sharing attachment

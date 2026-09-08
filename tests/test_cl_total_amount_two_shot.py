@@ -230,7 +230,23 @@ def test_create_total_amount_round_mode_u200_parity_fixture():
 # --- ContractLaborService.update_by_public_id ---
 
 
-def test_update_recalculates_total_amount_two_shot_on_touch():
+def _no_line_items(monkeypatch):
+    """U-424: update_by_public_id probes for children after the parent write and
+    defers to them when any exist. These two tests pin the PARENT-field math on
+    the row handed to update_by_id, so stub the probe empty and keep them on
+    that path deterministically (rather than relying on the probe's
+    failure-isolation swallowing the harness's live-DB block)."""
+    li_repo = MagicMock()
+    li_repo.read_by_contract_labor_id.return_value = []
+    monkeypatch.setattr(
+        "entities.contract_labor.persistence.line_item_repo."
+        "ContractLaborLineItemRepository",
+        lambda: li_repo,
+    )
+
+
+def test_update_recalculates_total_amount_two_shot_on_touch(monkeypatch):
+    _no_line_items(monkeypatch)
     # Stale seed: same-value seed (CANONICAL_TOTAL) cannot distinguish recalc from never touched.
     existing = _contract_labor(total_amount=STALE_TOTAL)
     updated_row: dict = {}
@@ -250,7 +266,8 @@ def test_update_recalculates_total_amount_two_shot_on_touch():
     _assert_canonical_total(updated_row["row"].total_amount)
 
 
-def test_update_does_not_clobber_total_when_hourly_rate_none():
+def test_update_does_not_clobber_total_when_hourly_rate_none(monkeypatch):
+    _no_line_items(monkeypatch)
     # 999.99 is deliberately un-producible by two-shot recalc so preservation is meaningful.
     preserved = Decimal("999.99")
     existing = _contract_labor(hourly_rate=None, total_amount=preserved)

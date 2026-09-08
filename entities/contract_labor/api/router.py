@@ -578,7 +578,13 @@ def update_contract_labor_bill(public_id: str, bill_update: ContractLaborBillUpd
         # downstream consumers see fresh totals. The recompute bumps the
         # parent row_version — return the post-recompute row to the client
         # so a subsequent action uses the fresh token.
-        recomputed = service.repo.update_aggregates(id=entry.id) or updated
+        #
+        # U-424: routed through the service choke point rather than reaching
+        # into `.repo`, so all three Python writers share one failure policy.
+        # Unlike this call's previous form, a recompute failure no longer
+        # 500s a request whose line-item writes already committed — it logs
+        # and falls back to the pre-recompute row.
+        recomputed = service.recompute_aggregates(contract_labor_id=entry.id) or updated
 
         return item_response({
             "public_id": recomputed.public_id,

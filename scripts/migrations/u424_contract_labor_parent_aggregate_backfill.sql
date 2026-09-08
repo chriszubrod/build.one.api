@@ -4,6 +4,15 @@
 -- HAND-OFF ONLY. Do not run this from a build session. Per the umbrella rule
 -- `feedback_builders_never_mutate_prod_data.md`, /em reviews and executes it.
 --
+-- ⛔ DO NOT RUN THIS THROUGH `python scripts/run_sql.py`. That helper executes
+--    every GO-separated batch in order and then DISCARDS the results
+--    (`while cursor.nextset(): pass`), so it would swallow STEP 1's preview
+--    rows AND STEP 2's per-batch PRINT progress — while still executing the
+--    apply. You would mutate prod having seen nothing. Run the steps by hand,
+--    one at a time, in a client that shows result sets and messages (Azure
+--    Data Studio / SSMS / `sqlcmd`). Note `scripts/` needs the runner's IP
+--    allowlisted on the SQL server either way.
+--
 -- WHY --------------------------------------------------------------------
 -- Until U-424, two write paths mutated ContractLaborLineItem without
 -- recomputing the parent:

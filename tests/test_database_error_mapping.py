@@ -3,7 +3,11 @@
 import pytest
 from fastapi import HTTPException
 
-from shared.api.responses import raise_database_error, raise_workflow_error
+from shared.api.responses import (
+    classify_database_error,
+    raise_database_error,
+    raise_workflow_error,
+)
 from shared.database import (
     CONCURRENCY_KEYWORDS,
     DatabaseConcurrencyError,
@@ -19,6 +23,7 @@ from shared.db_constraints import (
     UNIQUE,
     UNIQUE_MESSAGE,
     classify_constraint_violation,
+    looks_like_unique_violation,
     status_for_clean_message,
 )
 
@@ -69,9 +74,12 @@ UQ_2627_KEY_VALUE_CONTAINS_547 = (
 )
 
 
-def _odbc(sql_text: str) -> Exception:
+CONVERSION_8114 = 'Error converting data type nvarchar to uniqueidentifier. (8114)'
+
+
+def _odbc(sql_text: str, sqlstate: str = '23000') -> Exception:
     return Exception(
-        "('23000', '[23000] [Microsoft][ODBC Driver 18 for SQL Server][SQL Server]"
+        f"('{sqlstate}', '[{sqlstate}] [Microsoft][ODBC Driver 18 for SQL Server][SQL Server]"
         + sql_text
         + " (SQLExecDirectW)')"
     )
@@ -246,3 +254,24 @@ def test_status_for_clean_message_known_messages(message):
 
 def test_status_for_clean_message_unknown_returns_none():
     assert status_for_clean_message('Something went wrong') is None
+
+
+
+def test_conversion_8114_is_not_a_unique_violation():
+    """The type name 'uniqueidentifier' contains 'unique'. A bare `'unique' in lower`
+    fallback therefore classified SQL 8114 — a caller passing a non-UUID where a
+    UNIQUEIDENTIFIER parameter is bound — as a duplicate-key violation, answering 422
+    with the full ODBC string as `detail` and an error_code the iOS duplicate-claim
+    recovery acts on. Neither classifier may claim it (U-411)."""
+    error = _odbc(CONVERSION_8114, sqlstate='42000')
+    assert classify_constraint_violation(str(error)) is None
+    assert not looks_like_unique_violation(str(error))
+    assert classify_database_error(error) is None
+    assert not isinstance(map_database_error(error), DatabaseConstraintError)
+
+
+def test_genuine_unique_violations_still_match_the_phrase_test():
+    """The guard above must not have been bought by narrowing away real duplicates —
+    2627 (unique CONSTRAINT) and 2601 (unique INDEX, the iOS UX_TimeLog case)."""
+    assert looks_like_unique_violation(UQ_2627)
+    assert looks_like_unique_violation(UX_2601)

@@ -97,6 +97,24 @@ def classify_constraint_violation(text: str) -> ConstraintViolation | None:
     return None
 
 
+# Phrases that only a real unique-key/index violation carries. Deliberately NOT a
+# bare 'unique' test: SQL Server's TYPE NAME 'uniqueidentifier' contains it, so the
+# 8114 conversion error ("Error converting data type nvarchar to uniqueidentifier")
+# matched and surfaced as a 422 duplicate-key — with the raw driver text as `detail`.
+# Every genuine 2627/2601 message still matches: 2627 says "Violation of UNIQUE KEY
+# constraint '<name>'. Cannot insert duplicate key ...", 2601 "Cannot insert duplicate
+# key row in object ... with unique index '<name>'".
+_UNIQUE_PHRASES = ('duplicate key', 'unique key', 'unique constraint', 'unique index')
+
+
+def looks_like_unique_violation(text: str) -> bool:
+    """Phrase-only unique-violation test, for the handler paths that reach a
+    message carrying no parenthesized error number (see classify_constraint_violation,
+    which is number-gated and therefore keeps its looser phrase test)."""
+    lower = text.lower()
+    return any(phrase in lower for phrase in _UNIQUE_PHRASES)
+
+
 def status_for_clean_message(text: str) -> int | None:
     """Reverse lookup: if *text* is exactly one of the three clean messages,
     return its http_status, else None.

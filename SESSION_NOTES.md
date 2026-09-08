@@ -1,5 +1,42 @@
 # Session Notes
 
+## U-411 — bill-line-item-attachment by-line-item endpoint: honest param + no driver leak (2026-09-08)
+
+Three defects were reported live against prod. **Two were real, one is refuted** — the refutation is the
+load-bearing part of this note.
+
+- **Param named for what it is.** `/get/bill-line-item-attachment/by-bill-line-item/{bill_line_item_id}`
+  → `{bill_line_item_public_id}`. It was always resolved as a PUBLIC id (into `ReadBillLineItemByPublicId
+  (@PublicId UNIQUEIDENTIFIER)`), so an integer failed in the DRIVER, not at the edge. The 8114 came from
+  the *BillLineItem* lookup, not the BLIA sproc. Matches the prevailing `by-<x>/{<x>_public_id}` convention
+  (the `bill_credit_line_item_attachment` sibling already did it right). Path placeholder only — no wire change.
+- **No more raw ODBC text.** New `shared/api/responses.py::parse_public_id` (non-UUID → clean 422 +
+  `ErrorCode.VALIDATION_ERROR`, before any DB connection is opened) and `::raise_server_error` (classified
+  DB failures keep their 4xx via `raise_database_error`; `EntityNotAccessibleError` and any
+  service-chosen `HTTPException` propagate; everything else logs its traceback server-side and returns a
+  generic 500). Wired into all five handlers in this router, including the two ProcessEngine paths, where
+  a malformed id previously leaked the same driver text through `raise_workflow_error` at 400.
+- **Shared-handler trap fixed:** `raise_database_error`'s phrase fallback tested `"unique" in lower`, which
+  matches SQL Server's TYPE NAME **`uniqueidentifier`** — so the reported 8114 classified as a 422
+  `duplicate_key` still carrying the full ODBC string (and would trip iOS's duplicate-claim recovery).
+  Now `shared/db_constraints.py::looks_like_unique_violation` (`duplicate key` / `unique key` /
+  `unique constraint` / `unique index`). Every genuine 2627/2601 message still matches; the number-gated
+  `classify_constraint_violation` keeps its looser test by design.
+- **REFUTED — "returns one object, should be a list."** Probed live read-only 2026-09-08:
+  `UQ_BillLineItemAttachment_BillLineItemId` is **live in prod**, and the table holds 3931 rows across
+  3931 distinct BillLineItems — **0** line items with more than one attachment. The many-side runs the
+  other way: **215 Attachments are each linked to several BillLineItems**, which is exactly how a
+  multi-line bill shares one invoice PDF. Expense and BillCredit carry the same UNIQUE constraint and the
+  same single-item shape; only `invoice_line_item_attachment` (no constraint) returns a list — the
+  codebase is already consistent. A list response would have broken web (`BillEdit`/`BillView`/
+  `LineItemAttachment`), iOS (`BillLineItemAttachmentEndpoints.swift`) and MCP (`tools/bill.py:215`) for
+  no gain. `tests/test_u411_blia_by_line_item_contract.py` pins the constraint so removing it fails the
+  suite rather than silently invalidating the shape.
+- Tests: `tests/test_u411_blia_by_line_item_contract.py`. Full suite green. **Pure Python — no SQL apply owed.**
+- Booked in TODO.md: the identical defect in the invoice + expense attachment routers; the ~156 other
+  `detail=str(e)` handlers; and a **latent P1** — the BLIA base SQL file's `CreateBillLineItemAttachment`
+  lacks the `@CreatedByUserId` prod has, so re-applying that base file breaks attachment creation.
+
 ## U-370 — Address HTTP CRUD guards (2026-09-06)
 
 Shipped A1–A4 + B5, then B1 + B6, then B2–B4 + B7, then C1 + C2 (no board/TODO heading recut).

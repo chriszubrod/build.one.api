@@ -2,6 +2,88 @@
 
 Carry-over items from sessions. Check off as done; prune anything stale.
 
+## U-411 follow-ups (bill-line-item-attachment by-line-item endpoint) — deferred (2026-09-08)
+
+- [ ] **The same two defects sit in the invoice and expense attachment routers — one
+  follow-up unit, same shape.** `entities/invoice_line_item_attachment/api/router.py:58`
+  and `entities/expense_line_item_attachment/api/router.py:77` both name their path param
+  `{<x>_line_item_id}` while resolving it as a PUBLIC id into a `UNIQUEIDENTIFIER` sproc
+  parameter, and both end in `except Exception as e: raise HTTPException(500, detail=str(e))`
+  — so an integer id returns the same 500 carrying raw ODBC text that U-411 fixed for bill.
+  The helpers to adopt already exist: `shared/api/responses.py::parse_public_id` and
+  `::raise_server_error`. Response shapes are already correct and must NOT be touched:
+  invoice returns a list (no unique constraint on `InvoiceLineItemId`), expense returns a
+  single item (`UQ_ExpenseLineItemAttachment_ExpenseLineItemId` is live). Deliberately out
+  of U-411's scope — Chris scoped that unit to the bill router only.
+- [ ] **`detail=str(e)` leaks driver internals from ~150 other handlers — and the deeper
+  fix DELETES those handlers rather than rewriting them.** A repo-wide count during U-411
+  found **156** occurrences of `raise HTTPException(status_code=500, detail=str(e))` across
+  `entities/` + `shared/`. `raise_server_error` is the drop-in, but U-411's altitude review
+  named a better shape for the follow-up unit, in this order: (1) add an 8114 branch to
+  `shared/database.py::map_database_error` (today it falls through to
+  `DatabaseOperationError(f"Database operation failed: {error}")`, i.e. it *deliberately
+  re-embeds* the raw driver string that all 156 handlers then echo); (2) register a
+  `DatabaseError` handler in `shared/api/errors.py::install_error_handlers` (classify → 4xx,
+  else log + generic 500); (3) then **delete** the 156 `try/except` blocks instead of editing
+  them. Bonus: an exception escaping a router with NO `try/except` currently reaches
+  Starlette's `ServerErrorMiddleware` and returns plain-text `Internal Server Error` with **no
+  `error_code` sibling** — so the U-357d envelope contract is not actually held for unhandled
+  500s, and (2) repairs that too. Note `TestClient` defaults to `raise_server_exceptions=True`;
+  a global handler needs `raise_server_exceptions=False` to be exercised (precedent:
+  `tests/test_u347_qbo_sync_route_di_smoke.py:128`). Worth a guard test that fails on a new
+  `detail=str(e)`.
+- [ ] **`raise_database_error`'s `if "547" in message:` is the same bare-substring defect
+  U-411 just fixed one branch above it.** `shared/db_constraints.py::_has_error_number` exists
+  precisely because a bare number test matches "inside a hostname, a port, a timestamp, a row
+  id, or a duplicate-key VALUE" — but the FK fallback in `shared/api/responses.py` still does
+  `"547" in message`. A connection failure to a host or port containing 547 whose text also
+  carries "foreign key constraint" classifies as an FK violation and returns 422 with a clean
+  FK message. Correctness, not cleanup — needs `/code-review`, not a drive-by.
+- [ ] **Fold the loose phrase fallback into `db_constraints`, and make
+  `classify_constraint_violation` compose `looks_like_unique_violation`.** After U-411 the
+  module holds two unique-phrase tests 15 lines apart: the new strict tuple, and the inline
+  `'duplicate key' in lower or 'unique' in lower` at `classify_constraint_violation`. The
+  inline one is harmless TODAY because it is error-number-gated, which is why U-411 left it
+  (tightening it is a behavior change on the money/iOS-contract workflow path, not a
+  simplification) — but a future edit to `_UNIQUE_PHRASES` silently will not reach it.
+  Verified no coverage loss if merged: every genuine 2627 and 2601 text matches the tuple.
+  Bigger version: move the whole loose fallback out of `responses.py` into `db_constraints.py`
+  as `classify_constraint_violation_loose() -> ConstraintViolation | None`, so `responses.py`
+  holds zero SQL phrase knowledge and BOTH the workflow and router paths get the fallback
+  (only one does today). Keep detail selection in `raise_database_error` — the U-154 contract
+  needs the raw `original` for unique violations.
+- [ ] **One house rule for a malformed public id — today there are two.** U-411 chose **422**
+  (`shared/api/responses.py::parse_public_id`). `BudgetService.read_by_public_id`
+  (`entities/budget/business/service.py:252-258`) already carries the same fix one layer down
+  with the OPPOSITE outcome — it swallows the malformed id and returns `None` → **404** — so
+  `GET /get/budget/{garbage}` and `GET .../by-bill-line-item/{garbage}` answer differently.
+  Budget's version also destroys information (garbage and genuinely-absent become
+  indistinguishable, so a client bug reads as an empty result). Pick 422, delete the swallow.
+- [ ] **Make the UUID constraint un-forgettable and visible in OpenAPI.** `parse_public_id` is
+  opt-in: a route added to a converted router next month silently reverts to the driver-leak
+  behavior, and the param still publishes as `type: string` (no `format: uuid`), so generated
+  web/iOS clients and the MCP tool schema cannot reject `24838` before it leaves the device.
+  Preferred mechanism for the 156-site unit: ONE shared annotated alias, e.g.
+  `PublicIdPath = Annotated[str, BeforeValidator(_canonical_uuid)]`, used as
+  `bill_line_item_public_id: PublicIdPath` — constraint moves into the signature, still yields
+  the friendly string `detail` (pydantic only converts `ValueError`/`AssertionError`; a raised
+  `ApiError` propagates intact), and `json_schema_extra={"format": "uuid"}` documents it.
+  ⚠️ Do NOT just annotate `param: UUID`: **286** `public_id: str` path params across 68 routers
+  have zero `UUID` annotations today, and FastAPI's native 422 body is a LIST of pydantic error
+  dicts — installed clients decode `{detail: String?}`, so a list decodes to nil. Adopt the
+  alias repo-wide in one unit or not at all.
+- [ ] **⚠️ LATENT P1 — `dbo.bill_line_item_attachment.sql` is stale, and re-applying it
+  breaks attachment creation.** The base file's `CreateBillLineItemAttachment` takes only
+  `(@BillLineItemId, @AttachmentId)`, but prod's live sproc also takes `@CreatedByUserId`
+  (added by `scripts/migrations/gap2_adjacent_threading.sql:42`) and
+  `BillLineItemAttachmentRepository.create` passes it. Base files use `CREATE OR ALTER` and
+  get re-run routinely, so one re-apply drops the parameter and every attachment link
+  create fails with a pyodbc parameter error. Verified live 2026-09-08 via `sys.parameters`.
+  Fix under the standing sproc single-source conversion protocol (U-045/U-048): reconcile
+  the base file against live FIRST, port the migration body, add the entity to
+  `tests/test_sproc_single_source.py`, and watch the T-SQL batch trap on the trailing
+  FK/UNIQUE constraint blocks.
+
 ## U-410 follow-ups (login password-length floor lockout) — deferred (2026-09-08)
 
 - [ ] **A 422 on a login route is a client/server contract break and should be loud.**

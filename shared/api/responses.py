@@ -1,18 +1,24 @@
 # Python Standard Library Imports
+import logging
 from typing import Any, Optional
+from uuid import UUID
 
 # Third-party Imports
-from fastapi import status
+from fastapi import HTTPException, status
 
 # Local Imports
+from shared.access import EntityNotAccessibleError
 from shared.api.errors import ApiError, ErrorCode
 from shared.db_constraints import (
     FK_MISSING_MESSAGE,
     FK_REFERENCE_MESSAGE,
     UNIQUE,
+    looks_like_unique_violation,
     status_for_clean_message,
 )
 from shared.database import DatabaseConstraintError
+
+logger = logging.getLogger(__name__)
 
 
 def list_response(data: list[dict], count: Optional[int] = None) -> dict:
@@ -92,9 +98,12 @@ def raise_not_found(entity_name: str) -> None:
     )
 
 
-def raise_database_error(error: Exception) -> None:
-    """Map database-layer failures escaping a router to transport-correct
-    statuses instead of opaque 500s.
+def classify_database_error(error: Exception) -> Optional[ApiError]:
+    """Map a database-layer failure to its transport-correct status, or None when
+    it is not a recognized constraint violation.
+
+    Split out from `raise_database_error` so a caller can ASK whether an error is
+    classifiable without catching a raise to find out (see `raise_server_error`).
 
     Unique-key violations surface as 422 with the ORIGINAL message — the
     iOS offline-sync client keys its duplicate-claim recovery off
@@ -121,7 +130,7 @@ def raise_database_error(error: Exception) -> None:
     reached us unclassified — notably one carrying no parenthesized error number
     at all, which db_constraints deliberately declines to classify.
 
-    Anything else re-raises unchanged.
+    Anything else returns None.
     """
     if isinstance(error, DatabaseConstraintError):
         # U-154 contract preserved: unique-key violations on this path surface the
@@ -129,15 +138,18 @@ def raise_database_error(error: Exception) -> None:
         # 'duplicate'/'unique'/the constraint name. FK violations surface the clean
         # schema-free message.
         is_unique = error.violation.kind == UNIQUE
-        raise ApiError(
+        return ApiError(
             status_code=error.violation.http_status,
             detail=error.original if is_unique else error.violation.message,
             error_code=ErrorCode.DUPLICATE_KEY if is_unique else ErrorCode.FK_VIOLATION,
         )
     message = str(error)
     lower = message.lower()
-    if "duplicate key" in lower or "unique" in lower:
-        raise ApiError(
+    # Phrase test imported, not re-typed: a bare `"unique" in lower` also matched the
+    # TYPE NAME in "Error converting data type nvarchar to uniqueidentifier" (SQL 8114),
+    # turning a caller's malformed-UUID into a 422 duplicate_key echoing ODBC internals.
+    if looks_like_unique_violation(message):
+        return ApiError(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=message,
             error_code=ErrorCode.DUPLICATE_KEY,
@@ -147,15 +159,78 @@ def raise_database_error(error: Exception) -> None:
         # reworded message can't silently stop matching status_for_clean_message()
         # on the workflow path.
         if "reference constraint" in lower:
-            raise ApiError(
+            return ApiError(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail=FK_REFERENCE_MESSAGE,
                 error_code=ErrorCode.FK_VIOLATION,
             )
         if "foreign key constraint" in lower:
-            raise ApiError(
+            return ApiError(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail=FK_MISSING_MESSAGE,
                 error_code=ErrorCode.FK_VIOLATION,
             )
+    return None
+
+
+def raise_database_error(error: Exception) -> None:
+    """Raise the classified transport error for a database-layer failure, or
+    re-raise the original unchanged when it is not a recognized violation."""
+    api_error = classify_database_error(error)
+    if api_error is not None:
+        raise api_error
     raise error
+
+
+def parse_public_id(value: Any, field_name: str) -> str:
+    """Validate a public-id parameter before it reaches a UNIQUEIDENTIFIER bind.
+
+    Every `by-<x>/{<x>_public_id}` route feeds its parameter into a sproc whose
+    parameter is declared UNIQUEIDENTIFIER. A non-UUID gets that far and fails in
+    the DRIVER (SQL 8114, "Error converting data type nvarchar to
+    uniqueidentifier"), which the blanket `detail=str(e)` handlers then echo back
+    to the caller verbatim -- ODBC internals, server-side type names and all.
+    Rejecting the shape here keeps the failure a clean 422 in the same envelope
+    every other validation error uses, and never opens a DB connection.
+
+    Returns the canonical hyphenated form, so a braced or unhyphenated UUID
+    binds the same as any other.
+    """
+    try:
+        return str(UUID(str(value)))
+    except (AttributeError, TypeError, ValueError):
+        raise ApiError(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"{field_name} must be a UUID",
+            error_code=ErrorCode.VALIDATION_ERROR,
+        ) from None
+
+
+def raise_server_error(error: Exception, message: str) -> None:
+    """Terminal handler for an unexpected exception escaping a router.
+
+    A classified database failure keeps the transport-correct 4xx
+    `classify_database_error` gives it. Anything else is logged with its traceback
+    server-side and surfaces as a generic 500 carrying only `message`, so a bare
+    `HTTPException(500, detail=str(e))` can no longer hand the caller driver and
+    schema internals. (Not an unconditional promise: a unique violation still
+    returns its ORIGINAL driver message by design -- the iOS duplicate-claim
+    matcher keys on it. See classify_database_error.)
+
+    Two exception types are deliberately let through to their own handlers,
+    because a generic 500 would be WRONG, not merely coarse:
+      - `EntityNotAccessibleError` must reach entity_not_accessible_handler, which
+        answers 404 (never 403) so the URL does not confirm the entity exists to a
+        caller without UserProject access.
+      - Any `HTTPException` a service already chose (including every ApiError from
+        the raise_* helpers) is a deliberate status, not an accident.
+    """
+    if isinstance(error, (EntityNotAccessibleError, HTTPException)):
+        raise error
+    api_error = classify_database_error(error)
+    if api_error is not None:
+        raise api_error
+    # exc_info=error, not logger.exception: this helper is also called outside an
+    # `except` block, where ambient sys.exc_info() would log "NoneType: None".
+    logger.error(message, exc_info=error)
+    raise ApiError(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=message)

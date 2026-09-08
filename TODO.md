@@ -2,6 +2,24 @@
 
 Carry-over items from sessions. Check off as done; prune anything stale.
 
+## U-410 follow-ups (login password-length floor lockout) — deferred (2026-09-08)
+
+- [ ] **A 422 on a login route is a client/server contract break and should be loud.**
+  This incident was invisible server-side: FastAPI's default validation handler returned
+  422 with no log line, so two field users were locked out with nothing in App Insights
+  naming the cause — it was only diagnosable from a user's screenshot. Add a
+  `RequestValidationError` handler (or a targeted log in the login routes) that warns with
+  the failing field name — **never the value** — so a future contract drift between a
+  shipped client and the API surfaces as an alertable signal instead of a support ticket.
+- [ ] **Decide what to do about existing sub-policy passwords — a decision for Chris, not
+  a build.** U-410 lets a 6-7 char password authenticate again (correct: login must not
+  gate on a creation rule), but those accounts are still below the 8-char policy every
+  *set* path enforces. Options: leave as-is; force a change at next login for sub-policy
+  passwords; or a one-time admin-driven reset. Note `_verify_password`
+  (`entities/auth/business/service.py:57`) still carries a legacy SHA-256 fallback with
+  its own "remove after migration" TODO — the same accounts are likely the oldest ones,
+  so these two want deciding together.
+
 ## U-409 follow-ups (vendor_public_id echo on bill reads) — deferred, not scope-creeped in (2026-09-07)
 
 - [ ] **Move the echo into the read sprocs — the right-depth home.** `ReadBillsPaginated`

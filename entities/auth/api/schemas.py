@@ -18,8 +18,22 @@ class AuthUpdate(BaseModel):
 
 
 class AuthLogin(BaseModel):
+    """Credentials presented for authentication — NOT a place for password policy.
+
+    Length/complexity rules belong on the models that *set* a password
+    (``AuthCreate``, ``AuthSignup``, ``AdminSetCredentials``,
+    ``ChangePasswordRequest.new_password``). Enforcing them here rejects the
+    body before the credential check ever runs, which permanently locks out any
+    account whose stored password predates or undercuts the current policy: the
+    caller gets a 422 no retry can clear, not a 400 "Invalid credentials".
+    It also leaks whether a password is under the policy length (422 vs 400).
+    Mirrors ``ChangePasswordRequest.current_password``, which is already
+    ``min_length=1`` for exactly this reason. (U-410: an 8-char floor here vs.
+    the iOS client's 6-char gate locked field users out of the mobile app.)
+    """
+
     username: str = Field(min_length=1, max_length=255)
-    password: str = Field(min_length=8, max_length=255)
+    password: str = Field(min_length=1, max_length=255)
 
 
 class AuthSignup(BaseModel):

@@ -152,7 +152,8 @@ STEP 4 — BACKFILL THE ROWS THAT ARE ALREADY WRONG
   ⚠ ONE DECISION IS YOURS — @IncludeBilled (default 0, set the SAME value in
     both steps). The counts are now measured, so here they are:
 
-      0 = leave Status='billed' alone.  ->    6 rows. No-brainer.
+      0 = leave Status='billed' alone.  ->    6 rows — but NOT a mechanical
+          cleanup, see below.
       1 = heal historical billed rows.  ->  416 rows, net TotalAmount
           +$76,799.24. 340 of the 416 are NULL parents being populated
           (mostly Jan-Mar 2026 Cordova rows never filled in), not values that
@@ -174,7 +175,29 @@ STEP 4 — BACKFILL THE ROWS THAT ARE ALREADY WRONG
       scanning for "what we paid". 47 billed CLs have children but no billable
       child. This is the part to bless explicitly rather than bulk-apply.
 
-    My read: run 0 now; take 1 as a separate, deliberate decision.
+    ⚠ WHAT @IncludeBilled = 0 ACTUALLY DOES (inspected 2026-09-08, read-only).
+      An earlier draft of this note called it a 6-row no-brainer. It is not.
+      FIVE of the six change no money at all — only HourlyRate in the 4th
+      decimal, the effective-markup artifact documented on the sproc:
+          CL 1332  680.57 -> 680.57   rate 46.2500 -> 46.2497
+          CL 1334  479.22 -> 479.22   rate 32.5000 -> 32.5005
+          CL 1339  668.09 -> 668.09   rate 46.2500 -> 46.2503
+          CL 1340  805.79 -> 805.79   rate 62.5000 -> 62.5005
+          CL 1341  472.40 -> 472.40   rate 32.5000 -> 32.5005
+      The sixth is CL 1252 ($390.00 -> $0.00) — one of the four zeroing rows
+      listed above, and the ONLY money change in the whole = 0 set. Its single
+      line is 8h x $32.50, IsBillable=False (drywall repairs), no BillLineItem
+      yet, status 'submitted'. Zeroing it is correct under the billable-only
+      semantic and does NOT change what Wilmer Diaz is paid:
+      generate_bills_for_vendor bills non-billable lines at cost from the LINE
+      ITEMS, never from the parent.
+
+    My read: = 0 is not worth running on its own — it is five no-ops wrapped
+    around one judgment call. Decide CL 1252 on its merits; the 410-row = 1 set
+    is where the actual value is.
+
+    NOTHING WAS APPLIED FROM THE BUILD SESSION. Only the read-only STEP 1
+    preview ran. Prod is untouched and every row above is still pending.
 
 --------------------------------------------------------------------------
 ROLLBACK

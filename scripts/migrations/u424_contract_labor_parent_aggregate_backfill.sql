@@ -68,6 +68,12 @@
 --
 -- ⚠ ONE DECISION FOR /em — @IncludeBilled ---------------------------------
 -- Default 0: entries already at Status='billed' are LEFT ALONE (6 rows).
+--   ⚠ Inspected 2026-09-08: those 6 are NOT a mechanical cleanup. FIVE change
+--     no money at all — only HourlyRate in the 4th decimal (CL 1332 46.2500 ->
+--     46.2497; 1334/1340/1341 +0.0005; 1339 +0.0003), the effective-markup
+--     artifact noted above. The ONLY money change is CL 1252 ($390.00 ->
+--     $0.00), one of the four zeroing rows listed below. So the entire
+--     substance of a = 0 run is that single judgment call.
 -- Set to 1 to heal historical billed rows too (416 rows).
 --   FOR: ContractLaborPDFService.generate_pdfs_for_billed_entries builds the
 --        client time-log PDF from the PARENT TotalAmount/TotalHours/HourlyRate,

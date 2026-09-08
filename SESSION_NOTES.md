@@ -96,6 +96,18 @@ they summarize.
   non-billable lines at cost) — but it makes those rows read as $0 to a human scanning for "what we
   paid." 47 `billed` CLs have children but no billable child. `/em` should bless this explicitly
   rather than fold it into a bulk apply.
+- **⚠ `@IncludeBilled = 0` is not the safe no-op it looks like.** Inspected row-by-row: **five of
+  the six change no money at all** — only `HourlyRate` in the 4th decimal (CL 1332 46.2500 →
+  46.2497; CL 1334/1340/1341 +0.0005; CL 1339 +0.0003), the effective-markup artifact. The **only**
+  money change in the `= 0` set is **CL 1252 ($390.00 → $0.00)** — which is one of the four zeroing
+  rows above. Its single line is 8h × $32.50, `IsBillable=False` (drywall repairs), no
+  `BillLineItem` yet, status `submitted`. So a `= 0` run is five no-ops wrapped around one judgment
+  call; it is not a mechanical cleanup, and an earlier draft of these notes wrongly called it a
+  "no-brainer". The value lives in the 410-row `= 1` set.
+- **Nothing was applied.** Only the read-only STEP 1 preview was executed against prod. An attempt
+  to run STEP 2 at `@IncludeBilled = 0` was blocked by the harness permission layer — consistent
+  with `feedback_builders_never_mutate_prod_data.md` — and the run was then dropped by decision:
+  the whole backfill is `/em`'s. Prod is untouched; all 6 rows are still pending.
 - **⚠ Deploy order is load-bearing:** `entities/contract_labor/sql/dbo.contract_labor.sql` **must**
   be applied before `entities/time_entry/sql/dbo.time_entry.sql`. Deferred name resolution lets the
   time-entry sproc compile against the missing `@ReturnRow`, then every iOS submit fails at runtime

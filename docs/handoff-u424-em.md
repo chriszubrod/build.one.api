@@ -28,8 +28,22 @@ WHY
       TimeEntry's buckets alone — so once a PM splits a day in PUT /{id}/bill
       (split siblings carry SourceTimeEntryId = NULL), a re-submit rewrites
       only the original line but still stamps the parent with bucket totals.
-  Prod: CL 1289 carried $590.63 while its children summed to $675.01;
-        CL 1260 carried $0.00 against the same $675.01.
+  MEASURED (prod, read-only preview, 2026-09-08): 416 ContractLabor rows are
+  currently inconsistent with their children — 410 billed, 5 pending_review,
+  1 submitted.
+
+  EVIDENCE CORRECTION: the unit was opened on CL 1289 ($590.63 vs $675.01) and
+  CL 1260 ($0.00 vs $675.01). Those two do NOT hold up and are NOT in the drift
+  set. $675.01 is the sum of ALL their line items; UpdateContractLaborAggregates
+  sums BILLABLE lines only — pre-existing behavior, and the same semantic the
+  client PDF uses (IsBillable=false renders $0.00, excluded from Balance Due).
+  Measured now: CL 1289 parent $590.63 == billable children $590.63; CL 1260
+  $0.00 == $0.00 (both its lines non-billable); CL 1270 $675.01 == $675.01.
+  All three were modified 2026-09-08 18:39-18:59 UTC, after the original read,
+  so "never stale under this semantic" vs "healed by an intervening PUT /bill"
+  cannot be separated from row state alone. The defect and the fix are
+  unaffected — the omitted recompute is plain in the code and the 416 rows are
+  the real evidence.
   Exposure beyond the CL list page: ContractLaborPDFService builds the
   CLIENT-FACING time-log PDF (attached to BillLineItems, pushed to
   SharePoint/Box) from the PARENT totals, while that same PDF's header shows
@@ -120,7 +134,10 @@ STEP 4 — BACKFILL THE ROWS THAT ARE ALREADY WRONG
      runner's IP allowlisted on the SQL server.)
 
   STEP 1 (preview, read-only) — run alone first. Every row returned is one
-    the apply would change. Expect CL 1260 and CL 1289.
+    the apply would change. Expected counts as of 2026-09-08: 6 at
+    @IncludeBilled = 0, 416 at = 1. A materially different number means the
+    data moved since; re-read before applying. (Do NOT expect CL 1260/1289 —
+    see the evidence correction above.)
   STEP 2 (apply) — batched 500/loop, COMMIT per batch, idempotent, resumable.
     The batch predicate is the difference itself, so each batch strictly
     shrinks the set. Set-based per feedback_backfill_setbased_under_load.md.
@@ -133,15 +150,31 @@ STEP 4 — BACKFILL THE ROWS THAT ARE ALREADY WRONG
   computed by summing line items, so no invoice or vendor payment changes.
 
   ⚠ ONE DECISION IS YOURS — @IncludeBilled (default 0, set the SAME value in
-    both steps):
-      0 = leave Status='billed' rows alone.
-      1 = heal them too. FOR: generate_pdfs_for_billed_entries builds the
-          client time-log PDF from the PARENT, so billed rows with stale
-          parents still emit a wrong PDF on any regeneration. AGAINST: it
-          rewrites rows sitting behind already-issued bills. The money billed
-          does not change either way — only the parent's display copy of it.
-    My read: run with 0 first, look at how many billed rows step 1 reports at
-    @IncludeBilled = 1, and decide with that count in hand.
+    both steps). The counts are now measured, so here they are:
+
+      0 = leave Status='billed' alone.  ->    6 rows. No-brainer.
+      1 = heal historical billed rows.  ->  416 rows, net TotalAmount
+          +$76,799.24. 340 of the 416 are NULL parents being populated
+          (mostly Jan-Mar 2026 Cordova rows never filled in), not values that
+          drifted. FOR: generate_pdfs_for_billed_entries builds the client
+          time-log PDF from the PARENT, so these still emit wrong PDFs on any
+          regeneration. AGAINST: it rewrites rows behind already-issued bills.
+          The money billed does not change either way — only the parent's
+          display copy of it.
+
+    ⚠ FOUR ROWS WOULD BE ZEROED at = 1, because every one of their lines is
+      non-billable and TotalAmount counts billable lines only:
+          CL 571  billed     2026-06-04  Emilson Cordova    555.00 -> 0.00
+          CL 1252 submitted  2026-08-17  Wilmer Diaz        390.00 -> 0.00
+          CL 570  billed     2026-06-04  Ricky Moreno       390.00 -> 0.00
+          CL 496  billed     2026-03-03  Michael Jacobson    78.75 -> 0.00
+      Correct under the billable-only semantic — the contractor is still paid
+      those hours via the A/P bill, since generate_bills_for_vendor bills
+      non-billable lines at cost — but the row then reads as $0 to a human
+      scanning for "what we paid". 47 billed CLs have children but no billable
+      child. This is the part to bless explicitly rather than bulk-apply.
+
+    My read: run 0 now; take 1 as a separate, deliberate decision.
 
 --------------------------------------------------------------------------
 ROLLBACK

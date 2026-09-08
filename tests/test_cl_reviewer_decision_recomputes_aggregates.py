@@ -6,9 +6,14 @@ equal to the sum of its line items.
 approval path mutates line items too — it stamps SubCostCodeId (and
 optionally Description) on every line matching the reviewed project — but
 never recomputed, so a ContractLabor whose lines were only ever touched by a
-reviewer kept whatever parent totals it was created with. Observed in prod
-2026-09-08: CL 1289 carried TotalAmount $590.63 (one line's worth) while its
-four lines summed to $675.01; CL 1260 carried $0.00 against $675.01.
+reviewer kept whatever parent totals it was created with. A read-only preview
+against prod on 2026-09-08 found 416 ContractLabor rows inconsistent with their
+children (410 of them already billed).
+
+The fixture below is a CONSTRUCTED drift case, not a transcript of a specific
+prod row — the two CLs this unit was opened against turned out to be consistent
+under the billable-only semantic the sproc implements, so they are deliberately
+not modeled here. See the evidence correction in SESSION_NOTES.md.
 
 The fakes here model the real recompute rather than asserting
 `update_aggregates.called`, so the tests fail on a wrong parent VALUE, not just
@@ -33,11 +38,12 @@ from tests.test_sproc_single_source import (
 
 PROJECT_ID = 100
 
-# Reproduces both prod numbers at $62.50/h × 1.35 markup. The children are an
-# 8.0h day split 3.0 + 3.0 + 2.0; the two 3.0h lines each round 253.125 → 253.13,
-# so they sum to $675.01, a cent above the "exact" 8.0h figure of $675.00 — the
-# ratified semantic, not a bug (see dbo.contract_labor.sql). The stale parent is
-# a 7.0h day's worth (590.625 → $590.63), what CL 1289 was actually carrying.
+# $62.50/h × 1.35 markup, all lines billable. The children are an 8.0h day split
+# 3.0 + 3.0 + 2.0; the two 3.0h lines each round 253.125 → 253.13, so they sum to
+# $675.01, a cent above the "exact" 8.0h figure of $675.00 — the ratified
+# semantic, not a bug (see dbo.contract_labor.sql). The stale parent is a 7.0h
+# day's worth (590.625 → $590.63): a parent left behind when the day grew to 8.0h
+# across more lines, which is the shape the reviewer path used to leave.
 PROD_SHAPE_LINES = [
     (3.0, "253.13"),
     (3.0, "253.13"),
@@ -206,9 +212,10 @@ def _approve(svc, **overrides):
 
 
 def test_approval_leaves_parent_total_equal_to_sum_of_line_items(monkeypatch):
-    """The headline invariant, seeded with CL 1289's exact prod drift. CL 1260
-    carried $0.00 instead of $590.63; both stale shapes heal identically, since
-    the recompute never reads the pre-state."""
+    """The headline invariant. The seed is a stale parent left behind by a
+    reviewer approval; a NULL or $0.00 parent — the dominant real shape, 340 of
+    the 416 drifting prod rows — heals identically, since the recompute never
+    reads the pre-state."""
     lines = [_line(i, hours=h, price=p) for i, (h, p) in enumerate(PROD_SHAPE_LINES, start=1)]
     svc, repo, li_repo, parent = _harness(monkeypatch, lines=lines)
 

@@ -20,9 +20,21 @@
 --   * dbo.AggregateTimeEntryOnSubmit (a re-submit rewrote only the line it
 --     owns, then stamped the parent with THIS TimeEntry's bucket totals)
 -- so ContractLabor.TotalAmount / TotalHours / HourlyRate / Markup drifted from
--- the children. Prod, 2026-09-08: CL 1289 carried $590.63 against children
--- summing $675.01; CL 1260 carried $0.00 against $675.01. ~30+ rows were coded
--- via apply-reviewer-decision on 2026-09-08 alone.
+-- the children.
+--
+-- MEASURED SCOPE (prod, read-only preview, 2026-09-08):
+--   @IncludeBilled = 0  ->    6 rows  (5 pending_review, 1 submitted)
+--   @IncludeBilled = 1  ->  416 rows  (410 of them billed)
+-- At = 1 the net TotalAmount change is +$76,799.24, and 340 of the 416 carry a
+-- NULL parent TotalAmount today — mostly Jan-Mar 2026 rows never populated,
+-- rather than rows that drifted off a good value. Column split: TotalAmount
+-- 366, HourlyRate 329, Markup 360, TotalHours 249.
+--
+-- NOTE on the two CLs this unit was opened against (1289, 1260): they are NOT
+-- in the drift set. The $675.01 they were compared against is the sum of ALL
+-- their line items; this backfill and the sproc both sum BILLABLE lines only.
+-- Under that semantic each parent already equals its children. Do not expect
+-- them in STEP 1's output.
 --
 -- The code fix stops NEW drift. This heals the rows already wrong.
 --
@@ -55,13 +67,27 @@
 --    (bill_service.py), so no invoice or vendor payment changes.
 --
 -- ⚠ ONE DECISION FOR /em — @IncludeBilled ---------------------------------
--- Default 0: entries already at Status='billed' are LEFT ALONE.
--- Set to 1 only if you want historical billed rows healed too. For:
--- ContractLaborPDFService.generate_pdfs_for_billed_entries builds the client
--- time-log PDF from the PARENT TotalAmount/TotalHours/HourlyRate, so billed
--- rows with stale parents still emit a wrong PDF on any regeneration.
--- Against: it rewrites rows sitting behind already-issued bills. The money
--- billed does not change either way — only the parent's display copy of it.
+-- Default 0: entries already at Status='billed' are LEFT ALONE (6 rows).
+-- Set to 1 to heal historical billed rows too (416 rows).
+--   FOR: ContractLaborPDFService.generate_pdfs_for_billed_entries builds the
+--        client time-log PDF from the PARENT TotalAmount/TotalHours/HourlyRate,
+--        so billed rows with stale parents still emit a wrong PDF on any
+--        regeneration. 340 of the 416 are simply NULL parents being populated.
+--   AGAINST: it rewrites rows sitting behind already-issued bills. The money
+--        billed does not change either way — only the parent's display copy.
+--
+--   ⚠ FOUR ROWS WOULD BE ZEROED at = 1, because every one of their lines is
+--     non-billable and TotalAmount counts billable lines only:
+--         CL 571  billed     2026-06-04  Emilson Cordova    555.00 -> 0.00
+--         CL 1252 submitted  2026-08-17  Wilmer Diaz        390.00 -> 0.00
+--         CL 570  billed     2026-06-04  Ricky Moreno       390.00 -> 0.00
+--         CL 496  billed     2026-03-03  Michael Jacobson    78.75 -> 0.00
+--     That is CORRECT under the billable-only semantic — the contractor is
+--     still paid those hours through the A/P bill, since
+--     generate_bills_for_vendor bills non-billable lines at cost — but the
+--     row then reads as $0 to a human scanning for "what we paid". 47 billed
+--     CLs have children but no billable child. Bless this explicitly.
+--
 -- Set the SAME value in STEP 1 and STEP 2.
 -- =============================================================================
 
@@ -71,7 +97,9 @@ GO
 
 -- ── STEP 1 — PREVIEW (read-only). Run this ALONE first. ──────────────────
 -- Every row it returns is one STEP 2 would change. Eyeball the before/after
--- money before applying. Expect CL 1260 and CL 1289 among them.
+-- money before applying. As of 2026-09-08 this returned 6 rows at
+-- @IncludeBilled = 0 and 416 at = 1; a materially different count means the
+-- data moved since, so re-read the numbers before applying.
 
 DECLARE @IncludeBilled BIT = 0;
 

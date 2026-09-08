@@ -3,9 +3,26 @@
 ## U-424 — ContractLabor parent aggregates go stale (2026-09-08)
 
 `ContractLabor.TotalAmount` / `TotalHours` / `HourlyRate` / `Markup` drifted from the line items
-they summarize. Prod evidence: **CL 1289** (Selvin Cordova, 2026-08-24) carried **$590.63** — one
-line's worth — while its children summed to **$675.01**; **CL 1260** carried **$0.00** against the
-same $675.01. CL 1270 was correct only because a `PUT /bill` happened to run against it that day.
+they summarize.
+
+> **Evidence correction (measured against prod 2026-09-08 20:5x UTC, read-only, after the fix was
+> committed).** The unit was opened on CL 1289 (parent $590.63 vs children $675.01) and CL 1260
+> ($0.00 vs $675.01). Those two do **not** hold up: `$675.01` is the sum of **all** line items,
+> while `UpdateContractLaborAggregates` sums **billable lines only** — pre-existing behavior this
+> unit preserved, and the semantic the client-facing PDF already uses (`IsBillable=false` renders
+> $0.00 and is excluded from Balance Due). Measured now: CL 1289 parent $590.63 == billable
+> children $590.63; CL 1260 parent $0.00 == billable children $0.00 (both its lines are
+> non-billable); CL 1270 $675.01 == $675.01. All three are consistent, and none appears in the
+> backfill's preview. Caveat: all three carry `ModifiedDatetime` 2026-09-08 18:39–18:59 UTC,
+> after the original read, so "never stale under this semantic" and "was stale, healed by an
+> intervening `PUT /bill`" cannot be separated from the row state alone — CL 1260's shape
+> (TotalAmount 0.00, TotalHours 8.00, HourlyRate NULL) is exactly what the recompute emits, which
+> leans toward the latter.
+>
+> **The defect is independently real** and the fix is unaffected — the omitted recompute is plain
+> in the code, and the live preview finds **416 ContractLabor rows** currently inconsistent with
+> their children (see the backfill section below). The two headline CLs were simply weaker
+> evidence than the brief presented; the 416 are the real evidence.
 
 - **Two writers were skipping the recompute.** `PUT /api/v1/contract-labor/{id}/bill` has always
   called `update_aggregates` after writing line items. The reviewer-approval path
@@ -15,7 +32,7 @@ same $675.01. CL 1270 was correct only because a `PUT /bill` happened to run aga
   TimeEntry's buckets alone**, so once a PM splits a day in `PUT /bill` (split siblings get
   `SourceTimeEntryId = NULL`, since `CreateContractLaborLineItem` takes no such param) a re-submit
   rewrites only the original line yet still stamps the parent with the bucket totals. That is
-  exactly CL 1289's signature.
+  the drift class the 416 rows exhibit.
 - **Blast radius is wider than the list page.** `ContractLaborPDFService` builds the client-facing
   "Contract Labor Time Log" PDF — attached to BillLineItems and pushed to SharePoint/Box — from the
   **parent** `total_amount` / `total_hours` / `hourly_rate` per entry, while the same PDF's header
@@ -58,8 +75,27 @@ same $675.01. CL 1270 was correct only because a `PUT /bill` happened to run aga
 - **Backfill is a hand-off, not applied.** `scripts/migrations/u424_contract_labor_parent_aggregate_backfill.sql`
   — preview / batched apply / verify, idempotent, `COMMIT` per batch, childless parents excluded by
   an INNER JOIN (the sproc `ISNULL`s its sums to 0, so running it on a parent-only row would zero
-  it). One decision left for `/em`: `@IncludeBilled` (default 0). Per
-  `feedback_builders_never_mutate_prod_data.md`, not run from here.
+  it). Per `feedback_builders_never_mutate_prod_data.md` the apply was NOT run from here; only the
+  read-only STEP 1 preview was executed, to size the decision.
+- **Measured scope (prod, read-only, 2026-09-08):**
+
+  | `@IncludeBilled` | rows the apply would change |
+  |---|---|
+  | `0` (default) | **6** — 5 `pending_review`, 1 `submitted` |
+  | `1` | **416** — of which **410 `billed`** |
+
+  At `= 1` the net `TotalAmount` change is **+$76,799.24**, and **340 of the 416 have a NULL parent
+  `TotalAmount`** — mostly Jan–Mar 2026 Cordova rows that were never populated, not rows that
+  drifted away from a good value. Column-by-column: TotalAmount 366, HourlyRate 329, Markup 360,
+  TotalHours 249.
+- **⚠ `@IncludeBilled = 1` carries a decision the preview surfaced.** Four rows would have their
+  parent **zeroed**, because every one of their lines is non-billable: CL 571 ($555.00 → $0.00),
+  CL 1252 ($390.00 → $0.00), CL 570 ($390.00 → $0.00), CL 496 ($78.75 → $0.00). That is *correct*
+  under the billable-only semantic — `TotalAmount` is the client-billable figure, and the
+  contractor is still paid those hours through the A/P bill (`generate_bills_for_vendor` bills
+  non-billable lines at cost) — but it makes those rows read as $0 to a human scanning for "what we
+  paid." 47 `billed` CLs have children but no billable child. `/em` should bless this explicitly
+  rather than fold it into a bulk apply.
 - **⚠ Deploy order is load-bearing:** `entities/contract_labor/sql/dbo.contract_labor.sql` **must**
   be applied before `entities/time_entry/sql/dbo.time_entry.sql`. Deferred name resolution lets the
   time-entry sproc compile against the missing `@ReturnRow`, then every iOS submit fails at runtime

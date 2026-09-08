@@ -56,15 +56,28 @@ docker build -t <acr-name>.azurecr.io/buildone:latest .
 # Push
 docker push <acr-name>.azurecr.io/buildone:latest
 
-# Restart Web App to pull new image
-az webapp restart --name <webapp-name> --resource-group <resource-group>
+# Force the Web App to pull the new image.
+# Use stop + start, NOT `az webapp restart` — restart can relaunch the CACHED
+# image and still report success (it did on the 2026-09-08 U-410 deploy: correct
+# :latest tag, digest flipped in ACR, container answered 200 in 28s, old code
+# still serving). A sub-30s "up" is a cache-hit tell, not a fast deploy.
+az webapp stop  --name <webapp-name> --resource-group <resource-group>
+az webapp start --name <webapp-name> --resource-group <resource-group>
 ```
+
+**Verify with a behavioral sentinel, never a bare 200** — the old image returns 200 too.
+Capture a request whose response differs between old and new code *before* deploying, and
+re-run it after. Also confirm `:latest` and the short-sha tag resolve to the same digest.
+
+**Do not** try to force a pull with `az webapp config container set`:
+`DOCKER_REGISTRY_SERVER_PASSWORD` cannot be read back via `az webapp config appsettings list`,
+so repointing the image risks writing a blank credential and leaving the app unable to pull.
 
 ## VS Code workflow
 
 1. Open terminal in project root
 2. Run the commands above (or add a script)
-3. VS Code Azure extension can restart the app; the image push is done via CLI
+3. VS Code Azure extension's "restart" is NOT sufficient to pick up a new image — use the stop/start above; the image push is done via CLI
 
 ## Notes
 

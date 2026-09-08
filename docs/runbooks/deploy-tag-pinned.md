@@ -1,5 +1,11 @@
 # Runbook: Deploy succeeded but old code still runs (App Service tag pin)
 
+> **Related, and check it FIRST:** a correct `:latest` tag is necessary but NOT sufficient.
+> `az webapp restart` can relaunch the cached image even when the tag config is right —
+> see [deploy-stale-image-after-restart.md](deploy-stale-image-after-restart.md). If your
+> tag config already reads `:latest`, that runbook is the one you want.
+
+
 A code change is pushed to git, `az acr build` succeeds, `az webapp restart`
 succeeds, and the health endpoint returns 200 — but the running container
 is still on a previous version. New code never goes live; whatever runtime
@@ -58,13 +64,18 @@ pin, not the build.
 ## Recovery
 
 ```sh
-# 1. Repoint to :latest. Once done, future az webapp restart commands
-#    will pick up new images automatically.
+# 1. Repoint to :latest. NOTE this does NOT make future `restart` reliable —
+#    even on :latest, restart can relaunch the cached image. Deploys use
+#    stop+start (see deploy-stale-image-after-restart.md).
+#    Passing the password explicitly matters: DOCKER_REGISTRY_SERVER_PASSWORD
+#    cannot be read back from appsettings, and omitting it can blank the
+#    credential. Source it from `az acr credential show -n buildone`.
 az webapp config container set --name buildone --resource-group buildone_group \
   --container-image-name buildone-esgaducjg4d3eucf.azurecr.io/buildone:latest
 
-# 2. Restart to pull the new :latest image.
-az webapp restart --name buildone --resource-group buildone_group
+# 2. Stop+start to force the pull (NOT restart).
+az webapp stop  --name buildone --resource-group buildone_group
+az webapp start --name buildone --resource-group buildone_group
 
 # 3. Wait for the new container to come up (~30-60s) and verify the new
 #    code is running by hitting a sentinel endpoint or checking a log

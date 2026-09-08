@@ -1,5 +1,12 @@
 # Runbook: Deploy-Restart Timing Race
 
+> **⚠️ Recipe changed 2026-09-08:** code deploys now use `az webapp stop` + `az webapp start`,
+> **not** `az webapp restart` — `restart` can relaunch the cached image and report success
+> ([deploy-stale-image-after-restart.md](deploy-stale-image-after-restart.md)). The timing
+> analysis below still applies verbatim: read every "`az webapp restart`" here as "the
+> `stop`+`start` pair", and keep the same post-deploy wait before triggering dependent work.
+
+
 A new container image is pushed + an `az webapp restart` is issued, then
 work that depends on the new code is triggered before App Service has
 finished swapping containers. The work runs against the OLD code while

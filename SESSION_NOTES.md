@@ -90,7 +90,7 @@ load-bearing part of this note.
 ## U-370 — Address HTTP CRUD guards (2026-09-06)
 
 Shipped A1–A4 + B5, then B1 + B6, then B2–B4 + B7, then C1 + C2 (no board/TODO heading recut).
-- **C1:** unused-only soft-delete (`IsDeleted`); linked VendorAddress/ProjectAddress stays 422. `ReadDeletedAddressByQboIdAndRealmId` + connector refuse-duplicate (`deleted_address_holds_identity`). Street/city adopt skips tombstones. **SQL apply owed** (with B1).
+- **C1:** unused-only soft-delete (`IsDeleted`); linked VendorAddress/ProjectAddress stays 422. `ReadDeletedAddressByQboIdAndRealmId` + connector refuse-duplicate (`deleted_address_holds_identity`). Street/city adopt skips tombstones. ~~SQL apply owed~~ — **APPLIED, verified live 2026-09-08** (`OBJECT_ID('dbo.ReadDeletedAddressByQboIdAndRealmId')` non-null, `dbo.Address.IsDeleted` present) during the batch-23 pre-deploy gate.
 - **C2:** no unique index. `ReadAddressByStreetOneAndCity` is `TOP 1` + lowest `Id`.
 - Tests: `tests/test_u370_address_soft_delete.py`.
 - **B2:** keep always-US. Create/update write `country.country_name` only; dropped hasattr/isinstance + stale "finding/creating the country record" comments.
@@ -103,7 +103,7 @@ Shipped A1–A4 + B5, then B1 + B6, then B2–B4 + B7, then C1 + C2 (no board/TO
 - Pydantic `state`/`zip` max lengths match SQL (`NVARCHAR(2)`/`(5)`); city left at 100.
 - Delete wraps `raise_database_error` so in-use 547 → **422** + house `FK_REFERENCE_MESSAGE` (not 409). No junction preflight (asymmetric `read_by_address_id` APIs; 547 is the backstop).
 - Tests: `tests/test_u370_address_crud_guards.py`.
-- **B1:** `CreateAddress` / `ReadAddresses` / `ReadAddressByPublicId` / `ReadAddressByStreetOneAndCity` / `UpdateAddressById` / `DeleteAddressById` now project `QboId`/`RealmId` matching `ReadAddressById`. Additive SELECT/OUTPUT; `getattr` already safe. **SQL apply owed** (builders do not apply). Tests: `tests/test_u370_address_qbo_projection.py`.
+- **B1:** `CreateAddress` / `ReadAddresses` / `ReadAddressByPublicId` / `ReadAddressByStreetOneAndCity` / `UpdateAddressById` / `DeleteAddressById` now project `QboId`/`RealmId` matching `ReadAddressById`. Additive SELECT/OUTPUT; `getattr` already safe. ~~SQL apply owed~~ — **APPLIED, verified live 2026-09-08** (all 7 Address sprocs project both columns in prod) during the batch-23 pre-deploy gate. Tests: `tests/test_u370_address_qbo_projection.py`.
 - **B6:** refreshed `sql/dev/dbo.address.samples.sql` (source path, `United States`, QBO read/stamp samples).
 
 ## 🚀 U-363 — bill_line_item mapping retirement (family 10), DEPLOYED + DROPPED (2026-09-03, `/em`)

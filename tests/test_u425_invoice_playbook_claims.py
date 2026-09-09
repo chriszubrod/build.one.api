@@ -14,6 +14,7 @@ from __future__ import annotations
 import ast
 import re
 import sys
+from functools import lru_cache
 from pathlib import Path
 
 import pytest
@@ -138,28 +139,47 @@ def test_playbook_does_not_cite_deleted_attachable_helper(playbook: str) -> None
         )
 
 
-def _class_methods(class_name: str) -> set[str] | None:
-    """Resolve a class's method names by AST across production sources, without
-    importing it (no side effects, no circular-import risk). Returns None when
-    the class is not defined in this repo."""
+@lru_cache(maxsize=1)
+def _class_index() -> dict[str, tuple[set[str], tuple[str, ...]]]:
+    """One pass over production sources -> {class name: (own methods, bases)}.
+
+    Cached: the citation check resolves ~20 classes, and re-walking ~1.4k files
+    per class made this the slowest test in the suite.
+    """
+    index: dict[str, tuple[set[str], tuple[str, ...]]] = {}
     for py in iter_prod_python_sources():
         text = py.read_text(encoding="utf-8", errors="ignore")
-        if f"class {class_name}" not in text:
+        if "class " not in text:
             continue
         try:
             tree = ast.parse(text)
         except SyntaxError:  # pragma: no cover - prod sources parse
             continue
         for node in ast.walk(tree):
-            if isinstance(node, ast.ClassDef) and node.name == class_name:
-                names = {n.name for n in node.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
-                for base in node.bases:  # one level of inheritance is enough here
-                    if isinstance(base, ast.Name):
-                        inherited = _class_methods(base.id)
-                        if inherited:
-                            names |= inherited
-                return names
-    return None
+            if not isinstance(node, ast.ClassDef) or node.name in index:
+                continue
+            index[node.name] = (
+                {n.name for n in node.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))},
+                tuple(b.id for b in node.bases if isinstance(b, ast.Name)),
+            )
+    return index
+
+
+def _class_methods(class_name: str, _seen: frozenset[str] = frozenset()) -> set[str] | None:
+    """Method names on a class including inherited ones, or None when this repo
+    does not define the class. Resolved by AST, never by importing it."""
+    entry = _class_index().get(class_name)
+    if entry is None:
+        return None
+    own, bases = entry
+    names = set(own)
+    for base in bases:
+        if base in _seen:  # defensive: never loop on a cyclic base chain
+            continue
+        inherited = _class_methods(base, _seen | {class_name})
+        if inherited:
+            names |= inherited
+    return names
 
 
 # `SomeService().method(...)` / `SomeConnector.method(...)` — the shape the

@@ -57,11 +57,26 @@ documentation edit. Board row: `build.one.team/BOARD.md` § U-425.
   (`drain_qbo_outbox` / `drain_ms_outbox` / `drain_box_outbox`) run `schedule="0 * * * * *"` = every 60s
   (`build.one.scheduler/function_app.py:98-116`). Deliberately not edited in U-425 (scope was prompt.md +
   TODO.md); fix on the next api-conventions touch.
-- [ ] **P3 — Step 9 re-run does not replace a corrected delivered file.** The U-221 idempotency guard
-  (`integrations/box/file/business/service.py:92-121`) skips the upload when a matching non-deleted
-  `[box].[File]` row exists, so re-running Step 9 after fixing a document reports success while Box keeps the
-  stale file. Playbook now warns; a durable fix (content-hash-aware guard, or an explicit replace path) is
-  still owed.
+- [x] **WITHDRAWN (2026-09-09, U-425 consistency sweep) — "Step 9 re-run does not replace a corrected
+  delivered file" rested on a FALSE premise; the Box guard is already content-hash-aware.**
+  `integrations/box/file/business/service.py:114-124` requires folder + filename + **sha1 of the freshly
+  fetched bytes** + `attachment_id` + not-deleted, all five, before it skips. Corrected content has a
+  different sha1 (and normally a new `attachment_id`), so it re-uploads and lands as a new VERSION of the
+  same Box file through the 409 ownership-recovery path. `tests/test_fanout_idempotency_guards.py::
+  test_box_uploads_when_sha1_differs` already asserts this. The prompt.md warning has been corrected, and its
+  prescribed remedy (retire the `[box].[File]` row) was actively HAZARDOUS — that row is the 409 ownership
+  proof, so deleting it raises non-retryable `name_collision_foreign_file` and dead-letters the push. The
+  maintained bypass is `POST /sync/invoice/{public_id}/box` (force=True) or
+  `DISABLE_FANOUT_IDEMPOTENCY_GUARDS`.
+- [ ] **P3 (re-scoped from the above) — the SharePoint upload guard has NO content hash.**
+  `integrations/ms/outbox/business/service.py:611-620` keys the U-221 skip on drive_id + parent_item_id +
+  filename + blob_path + attachment_id + `status='done'` — no sha1, unlike its Box sibling. Today this is
+  latent rather than live: every content-correcting path in this repo mints a new Attachment (packet
+  regeneration `entities/invoice/api/router.py:861-883`, contract-labor regeneration
+  `entities/contract_labor/business/bill_service.py:648`), and the one same-`attachment_id` re-upload
+  (`entities/bill/business/service.py:1405-1420`) changes `blob_path` and keeps the bytes identical. Add the
+  hash for parity so a future same-identity content edit cannot silently skip. Delivery itself already
+  replaces (`conflictBehavior: replace`, `integrations/ms/outbox/business/worker.py:415`).
 
 ## U-430 — payment remittance: `--upload-sharepoint` flag + 2026 SharePoint backfill (booked 2026-09-09)
 

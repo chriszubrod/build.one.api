@@ -218,3 +218,43 @@ def test_cited_service_methods_exist(playbook: str) -> None:
     assert len(cited) - len(unresolved) >= 5, (
         f"resolved too few cited classes ({sorted(unresolved)} unresolved); the check may be vacuous"
     )
+
+ATTACHMENT_LINK_SERVICES = [
+    ("bill_line_item_attachment", "BillLineItemAttachmentService", "read_by_bill_line_item_id"),
+    ("expense_line_item_attachment", "ExpenseLineItemAttachmentService", "read_by_expense_line_item_id"),
+    ("bill_credit_line_item_attachment", "BillCreditLineItemAttachmentService", "read_by_bill_credit_line_item_id"),
+]
+
+
+@pytest.mark.parametrize("pkg,service,reader", ATTACHMENT_LINK_SERVICES)
+def test_attachment_create_dedupes_and_returns_existing(pkg: str, service: str, reader: str) -> None:
+    """A second create() on an already-linked line RETURNS THE EXISTING link — it
+    does not raise and does not replace.
+
+    U-425 shipped the opposite claim for a few hours. It matters because the
+    playbook's KI-40 remediation (trim a contaminated multi-page scan, re-link)
+    is exactly a second create: told it raises, an operator gets no error, the
+    STALE untrimmed PDF stays attached, coverage still counts 1, and the packet
+    re-ships another project's pages to the customer. If this behaviour ever
+    changes to raise-or-replace, the playbook text must change with it.
+    """
+    src = (REPO_ROOT / "entities" / pkg / "business" / "service.py").read_text(encoding="utf-8")
+    create = src[src.index("    def create("): src.index("    def read_all(")]
+    assert f"self.repo.{reader}(" in create, f"{service}.create no longer looks up the existing link"
+    assert "return existing" in create, (
+        f"{service}.create no longer returns the existing link — if it now raises or replaces, "
+        f"update CRITICAL #5 in the invoice playbook, which documents the delete-then-create sequence"
+    )
+
+
+def test_playbook_does_not_claim_attachment_create_raises(playbook: str) -> None:
+    """The corrected CRITICAL #5 must keep telling operators to delete first."""
+    assert "does NOT raise" in playbook, "playbook lost the silent-dedupe warning for attachment re-linking"
+    # Scope the replace-path assertion to the warning's own paragraph: the symbol
+    # also appears in the Delta re-run section, which would make a bare
+    # `in playbook` check pass even with CRITICAL #5's remedy deleted.
+    warn = playbook.index("does NOT raise")
+    para = playbook[warn: playbook.index("\n\n", warn)]
+    assert "delete_by_public_id" in para, (
+        "the silent-dedupe warning no longer names delete_by_public_id as the replace path"
+    )

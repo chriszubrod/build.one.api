@@ -174,6 +174,69 @@ documentation edit. Board row: `build.one.team/BOARD.md` § U-425.
   hash for parity so a future same-identity content edit cannot silently skip. Delivery itself already
   replaces (`conflictBehavior: replace`, `integrations/ms/outbox/business/worker.py:415`).
 
+## U-432 — Multi-invoice draw support: N QBO invoices -> ONE pay application packet (booked 2026-09-09)
+
+Chris's call, 2026-09-09, after SHT-25 arrived in QBO as **two** invoices for one pay application:
+"This will become more common in the future." Interim workaround for SHT-25 was to combine them back
+into one QBO invoice; that is a stopgap, not the answer. Board row: `build.one.team/BOARD.md` § U-432.
+
+**The requirement.** A single pay application (draw) may be represented by more than one QBO invoice.
+The client must receive ONE packet, one G702/G703 pair, one draw tag on the tracker, and one row in the
+reconciliation matrix, covering the union of those invoices' lines.
+
+**Why the current model cannot do it.** `dbo.Invoice` is 1:1 with a QBO invoice (`QboId`+`RealmId`), and
+`_generate_invoice_packet(public_id)` takes exactly one invoice. So two QBO invoices become two local
+invoices and two packets.
+
+**What already exists and half-works.** `DrawFinancialsService._merge_reissue_draws`
+(`entities/invoice/business/draw_financials.py:252`) DOES combine same-draw labels correctly — cost-code
+cells sum, `builders_fee` sums, subtotal is recomputed from merged cells, latest date wins. It was built
+for re-issues (`MR2-MAIN-04` + `-04-2`) but the arithmetic is exactly what a multi-invoice draw needs.
+
+**Two defects block reuse:**
+
+1. **The merge gate fails on a clean `-01`/`-02` pair, and changes behavior silently on a rename.**
+   `merge_key` (`draw_financials.py:269`) collapses a label to its base ONLY when
+   `base in labels` — i.e. only when a bare `SHT-25` invoice also exists in the set. The guard is
+   deliberate (it stops `128-2024-05` merging into an absent `128-2024`), but it means:
+   - `{SHT-25, SHT-25-02}` -> ONE draw (merges)
+   - `{SHT-25-01, SHT-25-02}` -> **TWO draws** (no merge)
+   Verified directly against `_reissue_base_label` + `merge_key` with the real labels on 2026-09-09.
+   **This is a latent silent regression on its own, independent of this unit:** a draw that renders as one
+   column today flips to two the moment a rename propagates, with no error. Worth fixing even if the
+   larger feature is deferred.
+2. **A merged draw produces an internally inconsistent packet.** G702/G703 render from the MERGED draw set
+   (`router.py:688-728`), while the cover, both TOCs and the attachment pages render from ONE invoice's
+   line items (`enrich_line_items(line_items)`, `router.py:605-651`). So a merged SHT-25 packet would show
+   AIA pages totalling $403,079.42 against itemized support of $291,273.05. Additionally
+   `build_g703_rows(..., current_label=invoice.invoice_number, ...)` (`g703.py:66`) selects the
+   "This Period" column by matching the invoice number against a draw label — a merged label (`SHT-25`)
+   will never equal a member invoice number (`SHT-25-01`), so the current-period column silently falls back.
+
+**Surfaces a real implementation must cover.**
+- A draw grouping key on `dbo.Invoice` (explicit `DrawKey`/`DrawGroupId` column beats inferring from the
+  number — inference is what defect 1 is).
+- Packet generation over a SET of invoices: cover/TOC/attachment rollup across the group.
+- G702/G703 current-period selection by draw key, not invoice number.
+- DETAILS column-H tagging with the group label, and Step 6 Direction A/B matching against the group.
+- `_mark_source_as_billed` and Step 8 verification across the group.
+- Step 10 invariant + `ComputeInvoiceDrawMatrix`: live QBO legs must sum across every invoice in the group.
+- SharePoint/Box delivery: one draw subfolder for the group, not one per invoice.
+- The invoice playbook (`entities/invoice/intelligence/prompt.md`): Step 1 inputs, Step 3 resolution and
+  the Step 10 matrix all assume one invoice per draw today.
+
+**Evidence (live QBO, 2026-09-09, read-only).** SHT-25-01 (qbo 76302, 8/31, $291,273.05, 74 lines, fee
+$37,992.14) + SHT-25-02 (qbo 76362, 9/9, $111,806.37, 6 lines, fee $14,583.44) = $403,079.42 / 80 lines /
+fee $52,575.58. Both fees are exactly 15.00% of their own cost, and 15.00% combined.
+
+- [ ] **P2 (sub-item, fixable alone) — the `base in labels` merge gate makes draw grouping rename-sensitive.**
+  Decide whether an explicit draw key replaces label inference entirely, or whether the gate should also
+  accept "two or more labels share a base and no bare base exists". Do NOT just drop the guard — it is what
+  stops `128-2024-05` merging into an absent `128-2024`.
+- [ ] **P2 — packet/AIA consistency check.** Whatever the grouping mechanism, add an assertion that the
+  packet's itemized support total equals the AIA pages' total for the same draw; today nothing catches the
+  divergence described in defect 2.
+
 ## U-430 — payment remittance: `--upload-sharepoint` flag + 2026 SharePoint backfill (booked 2026-09-09)
 
 Found while running payment `8905825417`. `scripts/generate_payment_remittance.py --upload` writes **Box only**; the

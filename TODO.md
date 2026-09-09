@@ -2,6 +2,56 @@
 
 Carry-over items from sessions. Check off as done; prune anything stale.
 
+## Time-tracking review blind spots + a write-only outbox — from the Aug 16–31 pay period (2026-09-09)
+
+Surfaced auditing 65 TimeEntries / 91 TimeLogs for 2026-08-16→31. **The four data defects below were all
+corrected at the ContractLabor layer before billing (bills reconcile to the cent), so there is no money
+impact and the historical TimeLog rows are deliberately being left as-is** — the entries are approved and
+now billed, and rewriting a billed audit trail is worth more risk than it retires. What is NOT fixed is that
+the validator cannot detect any of them, so the next period repeats it.
+
+- [ ] **P2 — `validate_completeness` has three blind spots; it caught none of the four real defects in the
+  period, while flagging 29 entries that were fine.** `entities/time_entry/business/validation.py` checks 9
+  reason codes (`no_time_logs`, `null_project`, `missing_clockout`, `overnight_shift`, `over_12_hours`,
+  `under_15_minutes`, `future_dated`, `gps_no_project`, `missing_note`). Missing: **(a) negative duration** —
+  TimeLog 1671 (TE 1201, Elmer, 8/24) stored `ClockIn 19:30 -> ClockOut 17:10`, `Duration = -2.33`, which
+  passes every existing check and silently *subtracts* from a day total; no check asserts `ClockOut > ClockIn`
+  or `Duration >= 0`. **(b) `under_15_minutes` is evaluated on TOTAL entry hours, not per log**, so a
+  micro-duration inside a normal day is invisible — TimeLog 1662 (TE 1198, Selvin, 8/24) recorded 0.02h
+  (12:00:22→12:01:18) for work its own note describes as "From 10:05 to 12:00" (~1.92h); same shape on
+  TimeLog 1649 (TE 1194, Selvin, 8/21) at 0.13h vs a noted 8:00–9:40. **(c) no overlapping-log check** —
+  TimeLogs 1619 (TB3 13:31–16:57) and 1618 (SEC 13:31:59–14:33) on TE 1169 (Selvin, 8/17) overlap, double
+  counting 1.02h across two projects. **Fix:** add `negative_duration` (high) and `overlapping_logs` (high)
+  reason codes, and make the micro-duration check per-log as well as per-entry. Cheap and purely additive —
+  the function is pure (no DB, no mutation) and already fully unit-testable. Worth also flagging when a note
+  contains an explicit time range that contradicts the clock span; all three (a)/(b) cases were only caught
+  because the worker wrote the true window in the note.
+- [ ] **P3 — `ReviewPriority` / `ReviewReasons` are stamped once and never cleared, so the list page shows
+  stale flags forever.** 29 of the period's 65 entries carry flags (10 `high`, 19 `medium`) whose reasons no
+  longer describe the data — e.g. TE 1223 and TE 1178 are stamped `no_time_logs` but have logs; TE 1171,
+  1213, 1219, 1198 are stamped `overnight_shift`/`over_12_hours` and are none of those. They were stamped by
+  the deterministic auto-submit sweep (`entities/time_entry/business/auto_submit_service.py`) while entries
+  were still incomplete mid-shift; a human then fixed the entry, submitted and approved it, and nothing ever
+  re-evaluated or cleared the stamp. Net effect on `/time-entry/list`: 10 false `high` alarms for this period
+  and zero true positives (the four real defects above are stamped `medium` or NULL). **Fix:** clear or
+  recompute `ReviewPriority`/`ReviewReasons` on the approve transition (or on any TimeLog mutation), so a
+  flag always describes current state. Consider storing the stamp datetime so a stale flag is at least
+  visibly stale until then.
+- [ ] **P2 — `[dbo].[TimeTrackingOutbox]` is write-only and grows unbounded: the enqueue is ungated while
+  the drain is pause-gated.** Measured 2026-09-09: **815 rows, ALL `pending`, 0 ever `CompletedAt`**, oldest
+  2026-06-02 — i.e. nothing has drained in the ~3 months since the feature shipped. Cause is an asymmetry,
+  not a bug in either half: `submit()` enqueues **unconditionally**
+  (`entities/time_entry/business/service.py:369-374`, best-effort try/except, no pause check), but the drain
+  `POST /admin/time-tracking/process_one` (`shared/api/admin.py:679-686`) returns
+  `{"processed": false, "paused": true}` **before claiming anything** whenever `PAUSE_TIME_TRACKING_AGENT` is
+  truthy. The kill switch was specified ON for first deploy and is evidently still on, so the scheduler's
+  `process_time_tracking` timer (`build.one.scheduler/function_app.py:298`) has been ticking against a
+  permanently-paused endpoint while the producer keeps writing. **Decide one of:** (a) unpause the
+  time_tracking_specialist agent now that there's real traffic to validate against, (b) gate the enqueue on
+  the same pause flag so a paused agent stops accruing a backlog, or (c) add a retention/prune for pending
+  rows older than N days. Whichever way, the 815-row backlog needs a decision too — draining it would run
+  the agent over 3 months of already-reviewed, already-billed entries.
+
 ## ContractLabor ready-flip gaps — surfaced repairing the Aug 16–31 pay period (2026-09-09)
 
 Both found while clearing the 2026-08-16→31 labor review. Four CLs were **fully coded but stuck in

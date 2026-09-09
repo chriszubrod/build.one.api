@@ -2,6 +2,52 @@
 
 Carry-over items from sessions. Check off as done; prune anything stale.
 
+## ContractLabor ready-flip gaps — surfaced repairing the Aug 16–31 pay period (2026-09-09)
+
+Both found while clearing the 2026-08-16→31 labor review. Four CLs were **fully coded but stuck in
+`submitted`**, therefore invisible to bill generation (`read_by_status(status="ready", …)`,
+`entities/contract_labor/business/bill_service.py:232`): 1252/1256/1257 (8/17 HP2, $945.00) and 1235
+(7/29 John Scruggs, $84.38). **All four were repaired 2026-09-09** by re-affirming each line's EXISTING
+code through `POST /contract-labor/apply-reviewer-decision` (a value-level no-op that writes the missing
+Approved Review row and flips through the sanctioned choke point) — Reviews 1745–1748, Austin (user 20).
+Verified: every `SubCostCodeId` byte-identical before/after, hours/price/IsBillable/IsOverhead/Description
+preserved, CL 1235's HA line kept its own 65.02 while only the HP2-scoped line was re-stamped. System-wide
+census after the repair: **0 fully-coded-but-not-ready CLs remain.** The two causes below are NOT fixed.
+
+- [ ] **P2 — `mark_as_ready()` validates parent-row fields the review era deliberately leaves NULL, so the
+  bulk Mark Ready UI cannot advance any review-era row.** `entities/contract_labor/business/service.py:858`
+  raises unless `vendor_id` AND `sub_cost_code_id` AND `hourly_rate` AND `total_hours` are all truthy on the
+  PARENT. But codes/rates moved to line items — `mark_as_ready_via_review_approval`'s own docstring
+  (`service.py:917-932`) states "Parent-row fields like sub_cost_code_id/hourly_rate are no longer populated
+  (line items carry those now)". Confirmed live: `ContractLabor.SubCostCodeId` is NULL on all four stuck
+  rows while every line item is correctly coded, so `mark_as_ready()` raises *"SubCostCode is required
+  before marking as ready."* Both callers are affected — `POST /{public_id}/mark-ready`
+  (`entities/contract_labor/api/router.py:612`) and `POST /bulk-mark-ready` (`router.py:633`, wired to the
+  ContractLaborList bulk action). The edit page escapes this only because `ContractLaborEdit.tsx` PUTs
+  `status='ready'` through `/{public_id}/bill` instead of calling `/mark-ready`. **Fix:** re-express the
+  validation against line items (≥1 line, every project-anchored line coded — i.e. the invariant
+  `mark_as_ready_via_review_approval` already enforces) rather than parent columns; consider collapsing the
+  two methods so there is ONE ready-flip predicate instead of a legacy one and a review-era one that
+  disagree. Note the legacy path also skips the Review row, so a UI-driven flip leaves the same audit gap
+  as item 2 — worth deciding whether `/mark-ready` should write one.
+- [ ] **P2 — a line-item write that bypasses the service layer silently strands the parent in `submitted`
+  (this is what stranded 1252/1256/1257).** Forensics: on 2026-08-26 16:22:34 exactly three
+  `ContractLaborLineItem` rows took SCC 35.00 within a 309 ms window — the ONLY CL line writes that entire
+  day. The parent `ModifiedDatetime` never moved (still 2026-08-20) and no Review row was written, which
+  rules out every API path: `PUT /{public_id}/bill` unconditionally updates the parent via
+  `update_bill_info` (`entities/contract_labor/api/router.py:508`), `apply-reviewer-decision` always inserts
+  a Review, and there is **no per-line-item write endpoint on the router**. There are no triggers on the
+  table and `dbo.UpdateContractLaborLineItemById` sets `[ModifiedDatetime] = @Now`, so the write came from a
+  script calling the repo/sproc directly. That skips all three service-layer side effects: the Review row,
+  `mark_as_ready_via_review_approval` (`service.py:917`), and `recompute_aggregates` (`service.py:880`, THE
+  choke point for the sum-of-children invariant — its own docstring says "every path that mutates
+  ContractLaborLineItem must call this"). Aggregates happened to survive here only because an SCC change
+  doesn't move money; a hours/price write on the same path would have corrupted the parent totals.
+  **Find the script and route it through `apply-reviewer-decision`** (or have it call
+  `mark_as_ready_via_review_approval` + `recompute_aggregates` after). Consider a periodic guard/test
+  asserting the census stays at zero: no `submitted`/`pending_review` CL where every project-anchored line
+  is coded. Related: the U-424 follow-ups section already tracks the parent-aggregate half of this class.
+
 ## U-425 — invoice playbook review: findings booked out (2026-09-09)
 
 `/em` review of the uncommitted `entities/invoice/intelligence/prompt.md` rewrite. Text corrections shipped in

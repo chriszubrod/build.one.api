@@ -315,3 +315,52 @@ def test_live_client_surface_cited_by_the_playbook_exists() -> None:
     ):
         src = (REPO_ROOT / "integrations" / "intuit" / "qbo" / mod / "external" / "client.py").read_text(encoding="utf-8")
         assert f"class {cls}" in src and f"def {meth}(" in src, f"{cls}.{meth} missing"
+
+def test_attachable_ref_fields_are_flat_as_the_playbook_says() -> None:
+    """The playbook now tells operators to read `ref.entity_ref_type` /
+    `ref.entity_ref_value` and warns there is NO nested `entity_ref`.
+
+    KI-49: reading the nested form silently makes every comparison evaluate
+    against None, so a realm-wide scan returns zero for any input. If the schema
+    ever gains a nested ref, the playbook's warning becomes wrong and this fails.
+    """
+    from integrations.intuit.qbo.attachable.external.schemas import QboAttachableRef
+
+    fields = QboAttachableRef.model_fields
+    assert "entity_ref_type" in fields and "entity_ref_value" in fields
+    assert "entity_ref" not in fields, (
+        "QboAttachableRef gained a nested entity_ref — CRITICAL #5's flat-field warning is now wrong"
+    )
+
+
+def test_playbook_warns_about_the_flat_attachable_ref(playbook: str) -> None:
+    """Scoped to the operative paragraph: the field names also appear in KI-49,
+    so a bare `in playbook` check passes even with the instruction itself broken.
+    """
+    anchor = playbook.index("query_all_attachables()` and inspect every relevant")
+    para = playbook[anchor: anchor + 1400]
+    assert "ref.entity_ref_type" in para, "the attachable guidance no longer names the flat type field"
+    assert "ref.entity_ref_value" in para, "the attachable guidance no longer names the flat value field"
+    assert "NO nested" in para, "the flat-field warning lost its explicit negative"
+
+
+def test_playbook_states_the_zero_result_guard(playbook: str) -> None:
+    """KI-49's transferable rule: a zero is only evidence with its coarse count."""
+    assert "A zero result must PROVE it can produce a non-zero one" in playbook
+    assert "KI-49" in playbook and "KI-50" in playbook
+
+
+def test_live_source_clients_cited_for_gap_fill_exist() -> None:
+    """Step 2c now resolves sources against LIVE QBO before calling one missing."""
+    from integrations.intuit.qbo.vendorcredit.external.client import QboVendorCreditClient
+    from integrations.intuit.qbo.purchase.external.client import QboPurchaseClient
+    from integrations.intuit.qbo.bill.external.client import QboBillClient
+
+    for cls, meth in (
+        (QboVendorCreditClient, "query_all_vendor_credits"),
+        (QboVendorCreditClient, "get_vendor_credit"),
+        (QboPurchaseClient, "query_all_purchases"),
+        (QboPurchaseClient, "get_purchase_raw"),
+        (QboBillClient, "get_bill"),
+    ):
+        assert hasattr(cls, meth), f"{cls.__name__}.{meth} is cited by the playbook but missing"

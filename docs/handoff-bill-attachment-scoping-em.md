@@ -77,9 +77,21 @@ WHY THESE TWO FIXES
      routinely, so whichever ran last won. A base re-run would have reverted
      the threading; every *LineItemAttachmentRepository.create sends
      CreatedByUserId, so the next call fails in the driver with "too many
-     arguments". BillService.create and ExpenseService.create both roll the
-     PARENT back when the attachment link fails, so that break took out every
-     Bill create carrying a PDF and every Expense create carrying a receipt.
+     arguments". That break took out every Bill create carrying a PDF and every
+     Expense create carrying a receipt.
+     CORRECTION (U-426, 2026-09-09): an earlier version of this note said both
+     services "roll the PARENT back" on link failure. ExpenseService.create does
+     — it deletes the placeholder line item FIRST, with a comment explaining that
+     a bare expense delete would 547. BillService.create does NOT: it calls
+     repo.delete_by_id(bill.id) while the placeholder BillLineItem still holds
+     FK_BillLineItem_Bill (no CASCADE, and DeleteBillById touches only the Bill
+     row), so the rollback itself trips SQL 547, is swallowed by the nested
+     except, and a Bill + orphan line item persist with NO attachment — the exact
+     invariant the block exists to enforce. Worse, every retry with the same
+     (vendor, bill_number, bill_date) then trips the duplicate check, so the bill
+     cannot be re-created via the API until someone hand-deletes rows. The
+     severity claim above is unaffected (creates fail either way); the described
+     cleanup does not happen. Booked as its own finding.
      Same class dbo.bill.sql fixed for CreateBill on 2026-07-12 — that one was
      found by incident, these three by review before they fired.
 
@@ -157,8 +169,12 @@ STEP 3 — SMOKE THE WRITE PATHS (one each, ~2 minutes)
     * Create one Bill with a PDF attachment      -> succeeds, bill persists
     * Create one Expense with a receipt          -> succeeds, expense persists
 
-  A failure here looks like a driver "too many arguments" error AND a missing
-  parent row, because both services roll the parent back on link failure.
+  A failure here looks like a driver "too many arguments" error. For EXPENSE it
+  also leaves no parent row (ExpenseService.create deletes the placeholder line
+  item, then the expense). For BILL the parent row SURVIVES along with an orphan
+  line item and no attachment — BillService.create's rollback 547s and is
+  swallowed (see the CORRECTION above). So a Bill smoke failure looks like a
+  phantom draft you must delete by hand before retrying, not a clean no-op.
 
 --------------------------------------------------------------------------
 DRIFT RISK — CHECKED AND REFUTED, NO ACTION NEEDED
@@ -173,6 +189,12 @@ DRIFT RISK — CHECKED AND REFUTED, NO ACTION NEEDED
   reverted anything. The 28 riders were rewritten with identical text.
 
   (Checked statically across every .sql in the repo. Worth re-running before
+  NOTE on refutation reliability: U-426 overturned a
+  SEPARATE refutation from the same session — I had dismissed a blob-collision
+  finding after sampling two blob paths, finding them UUID-based, and
+  generalising; two collidable paths existed that I never sampled. Treat any
+  "refuted" call in these notes as provisional unless it names the exhaustive
+  check that backs it. This one does: all 33 sprocs, every .sql file.
   any future base-file apply — normalize CREATE OR ALTER -> CREATE first if
   comparing against sys.sql_modules, or all of them falsely diff.)
 

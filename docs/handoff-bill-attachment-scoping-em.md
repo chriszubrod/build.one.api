@@ -1,5 +1,30 @@
 # Bill attachment sprocs + list scoping → /em hand-off
 
+> **STATUS 2026-09-09: COMPLETE.** SQL applied by Chris; container deployed by
+> Claude under an explicit one-time override of
+> `feedback_builders_never_mutate_prod_data.md`. Image
+> `sha256:da2321e4…` (`:latest` == `:998f9504`), previous
+> `sha256:6d47e17e…`. Admin sentinel green on both endpoints. The **non-admin**
+> half of the sentinel is still UNVERIFIED — see OPEN below. Retained as the
+> deploy record.
+
+## OPEN — the one check still owed
+
+The sentinel was run as the Claude Agent (User 33, `IsSystemAdmin=1`), which
+proves the actor now reaches the sproc and the admin bypass works. It does NOT
+prove non-admins get *filtered* — that is the half that shows the leak is
+actually closed rather than merely that admins still see everything.
+
+Run as a non-admin with `UserProject` access to exactly one project:
+
+    GET /api/v1/get/bill_line_items
+      EXPECT: only that project's lines.
+      0 rows       -> the actor is not reaching the sproc.
+      23,949 rows  -> the predicate is not applied; the leak is STILL OPEN.
+
+A read-only `sys.parameters` confirmation of the deployed sproc signatures was
+attempted and blocked by the sandbox classifier; it was not worked around.
+
 Copy the block below into an `/em` session.
 
 ```text
@@ -13,32 +38,36 @@ UNIT
            a0c1026c  Correct the documented run_sql.py invocation
   Status:  pushed to origin/master. Suite 3367 green, and each commit verified
            green independently in a detached worktree.
-  SQL:     ALL FOUR FILES ALREADY APPLIED to prod by Chris, 2026-09-09.
-  Left:    ONE prod action — the API container deploy. That is what you are
-           approving.
+  SQL:     ALL FOUR FILES APPLIED to prod by Chris, 2026-09-09.
+  Image:   DEPLOYED 2026-09-09 13:42 UTC. sha256:da2321e4...
+           (:latest == :998f9504, verified same digest; previous 6d47e17e...).
+           Container log shows a genuine restart, not a cache hit: gunicorn
+           master down 13:41:53, NEW master up 13:42:21, startup 13:42:31.
+  Left:    the non-admin sentinel (see OPEN, above the block).
 
 --------------------------------------------------------------------------
-⚠ CURRENT PROD STATE — TWO ENDPOINTS ARE RETURNING EMPTY RIGHT NOW
---------------------------------------------------------------------------
-  The SQL is in; the container still runs the OLD code. The old repo layer
-  calls ReadBillLineItems with params={}, so the new @ActorUserId /
-  @ActorIsSystemAdmin bind to their NULL defaults, and
-  dbo.UserCanAccessBill(NULL, NULL, ...) returns 0 for every row.
+THE INTERMEDIATE STATE — RESOLVED 2026-09-09 13:42 UTC
 
-  Until the container ships:
-      GET /api/v1/get/bill_line_items              -> empty list
-      GET /api/v1/get/bill-line-item-attachments   -> empty list
-  for EVERY caller, system admins included.
+  Recorded because it will recur on any deploy that adds actor params to a
+  sproc ahead of the code that passes them.
 
-  This is the fail-closed direction and it is by design — the leak these
-  commits close is shut right now, and no data is at risk. It is still a live
-  regression on two list surfaces, so the deploy is time-sensitive rather than
-  routine. Confirm whether build.one.web or the iOS app reads either endpoint
-  before deciding how fast to move.
+  Between the SQL apply and the container deploy, the old repo layer called
+  ReadBillLineItems with params={}, so the new @ActorUserId /
+  @ActorIsSystemAdmin bound to their NULL defaults and
+  dbo.UserCanAccessBill(NULL, NULL, ...) returned 0 for every row. For that
+  window BOTH list endpoints returned an empty list to EVERY caller, system
+  admins included:
+      GET /api/v1/get/bill_line_items
+      GET /api/v1/get/bill-line-item-attachments
 
-  UNAFFECTED: every other bill line-item read. by-bill, by-project, by-id and
-  by-public-id were always service-gated via assert_can_access_*; none of their
-  sprocs changed signature.
+  That is the fail-closed direction and was by design — the leak was shut for
+  the whole window and no data was at risk — but it was a live regression on
+  two list surfaces, which is why the deploy was time-sensitive rather than
+  routine. Both are serving again (23,949 / 3,937 rows to an admin).
+
+  UNAFFECTED throughout: every other bill line-item read. by-bill, by-project,
+  by-id and by-public-id were always service-gated via assert_can_access_*;
+  none of their sprocs changed signature.
 
 WHY THESE TWO FIXES
   1. CreateBillLineItemAttachment (and the Expense + Invoice siblings) each
@@ -61,7 +90,7 @@ WHY THESE TWO FIXES
      Every sibling read was already gated; these two list paths were missed.
 
 --------------------------------------------------------------------------
-STEP 1 — DEPLOY THE API IMAGE   (the only remaining prod action)
+STEP 1 — DEPLOY THE API IMAGE   [DONE 2026-09-09 13:42 UTC]
 --------------------------------------------------------------------------
   Standard flow, DEPLOY.md. Tag MUST be :latest.
 
@@ -92,12 +121,19 @@ STEP 2 — VERIFY WITH A BEHAVIORAL SENTINEL, NOT A 200
   Read-only, as Chris (User 17, IsSystemAdmin=1):
 
     GET /api/v1/get/bill_line_items
-      BEFORE deploy : data == []        (0 rows — the current broken state)
+      BEFORE deploy : data == []        (0 rows — the broken intermediate state)
       AFTER  deploy : data is NON-EMPTY (admin bypass restored)
+      MEASURED 2026-09-09: 23,949 rows. PASS.
 
     GET /api/v1/get/bill-line-item-attachments
       BEFORE deploy : data == []
       AFTER  deploy : data is NON-EMPTY
+      MEASURED 2026-09-09: 3,937 rows. PASS.
+
+  NOTE on why that is sufficient for "is the new code serving": with the SQL
+  already applied, the OLD code (which passes no actor) binds @ActorUserId /
+  @ActorIsSystemAdmin to their NULL defaults and returns ZERO rows. A non-empty
+  admin result is therefore only reachable from the new code.
 
   If either is still empty after the deploy, the container did NOT pull —
   that is the cache-hit symptom, not a SQL problem. Re-check the digest.

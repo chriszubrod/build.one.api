@@ -2,6 +2,67 @@
 
 Carry-over items from sessions. Check off as done; prune anything stale.
 
+## U-425 — invoice playbook review: findings booked out (2026-09-09)
+
+`/em` review of the uncommitted `entities/invoice/intelligence/prompt.md` rewrite. Text corrections shipped in
+that file; the items below are CODE/product work the review surfaced and deliberately did not fold into a
+documentation edit. Board row: `build.one.team/BOARD.md` § U-425.
+
+- [ ] **P1 — a source billed on one draw can be billed again on a later draw.** The playbook's standing
+  reassurance ("a future run can't double-bill because the source pid is already linked") is FALSE in current
+  code, and the claim has been withdrawn from the file. Two independent legs fail: (a)
+  `ProposeInvoiceSourceLinks` (`entities/invoice/sql/dbo.invoice.sql`) has **no exclusion for a source line
+  already linked to a different invoice** — the old `NOT EXISTS` guard is gone; (b) `IsBilled` is not durable:
+  `integrations/intuit/qbo/bill/connector/bill_line_item/business/service.py:171-175` derives
+  `is_billed = billable_status == "HasBeenBilled"` on every pull, and since Step 8 deliberately never pushes
+  `BillableStatus` back to QBO, the next watermark pull that touches the parent can reset `IsBilled` to False
+  and the charge re-enters the billable pool. Only the DETAILS H-tag and human review stand between that and a
+  duplicate client charge. **Not yet proven end-to-end on a live record** — first task is a read-only prod query
+  for sources with `IsBilled=0` that already carry an `InvoiceLineItem` reference. Fix is likely a proposer-side
+  exclusion (source already referenced by another invoice's ILI) rather than trusting the flag.
+- [ ] **P2 — `_mark_source_as_billed` has no `EmployeeLaborLineItem` branch** (`entities/invoice/business/service.py:1693`).
+  It handles the three vendor source types only, so labor lines are never flipped and the Step 10
+  "sourced lines == IsBilled sources" invariant can never pass on an invoice carrying labor. Either add the
+  branch or make the exclusion explicit in `ComputeInvoiceDrawMatrix`. Playbook now documents the exclusion.
+- [ ] **P2 — the `complete_invoice` approval card tells the human the wrong thing.**
+  `entities/invoice/intelligence/tools.py:319-326` renders "Complete invoice N (P) -- push to SharePoint + QBO"
+  on the card a human sees before approving the write. QBO push is hard-disabled server-side. The tool
+  *description* says so; the *card* does not. Fix the card text.
+- [ ] **P2 — Surface A loads the entire ~111KB playbook as its system prompt.**
+  `intelligence/agents/invoice_specialist/definition.py:13-15` reads the whole file, including Part 2, which
+  Part 0 declares non-executable by that agent. Under the default cascade ladder (Foundry rungs first,
+  `prompt_tokens` includes the full prompt every turn) the `BudgetPolicy(max_turns=12, max_tokens=150_000)`
+  budget is exhausted around turn 4-5, so `max_turns` is unreachable. Slice at the `# PART 2` marker at load
+  time. Note `model="claude-sonnet-4-6"` on that definition is ignored under `provider="cascade"`.
+- [ ] **P2 — Box packet push at generation is automatic, with no review gate.**
+  `_generate_invoice_packet` enqueues the packet to the project's Box draw folder inline whenever
+  `ALLOW_BOX_WRITES` is set (`entities/invoice/api/router.py:887-890`). There is no confirmation step between
+  building a packet and publishing it. Chris raised this 2026-09-09: he wants to review a packet before it
+  leaves the building. Proposal: make the Box push a separate explicit step so packet generation is a true
+  local preview. Pairs with the web item below.
+- [ ] **P2 — no way to view a generated packet in the web UI.** The packet is stored as an Attachment linked
+  via `InvoiceAttachment` and is already served by `GET /view/attachment/{public_id}` and
+  `GET /download/attachment/{public_id}`, but `build.one.web/src/pages/invoices/*` has no packet affordance
+  (only per-line `LineItemAttachment`). Add a "View packet" link to the invoice page — small frontend unit
+  against routes that already exist. This is what actually gives Chris the pre-publication review he asked for.
+- [ ] **P3 — `clear-removals` accepts a `force` query param it never reads.**
+  `entities/invoice/api/router.py:1105` passes `force` into `InvoiceDrawDeltaService().apply_removals`, where
+  `entities/invoice/business/delta.py:135` accepts and ignores it. Either honor it or drop it; an operator
+  passing `force=true` today gets silent no-op semantics they may believe changed behavior.
+- [ ] **P3 — `entities/invoice/business/draw_financials.py` docstrings describe a retired mechanism.**
+  Its module/class docstrings still explain cost-code resolution as a `QboItem -> ItemSubCostCode` hop and an
+  `ItemRefName` string parse; both were retired (U-292 / U-307d) in favour of dbo-native
+  `SubCostCode.QboId` / `CostCode.QboId`. The code is correct, the comments are not. Playbook corrected.
+- [ ] **P3 — `build.one.api/CLAUDE.md` states the outbox drain cadence as 30s.** All three drains
+  (`drain_qbo_outbox` / `drain_ms_outbox` / `drain_box_outbox`) run `schedule="0 * * * * *"` = every 60s
+  (`build.one.scheduler/function_app.py:98-116`). Deliberately not edited in U-425 (scope was prompt.md +
+  TODO.md); fix on the next api-conventions touch.
+- [ ] **P3 — Step 9 re-run does not replace a corrected delivered file.** The U-221 idempotency guard
+  (`integrations/box/file/business/service.py:92-121`) skips the upload when a matching non-deleted
+  `[box].[File]` row exists, so re-running Step 9 after fixing a document reports success while Box keeps the
+  stale file. Playbook now warns; a durable fix (content-hash-aware guard, or an explicit replace path) is
+  still owed.
+
 ## U-430 — payment remittance: `--upload-sharepoint` flag + 2026 SharePoint backfill (booked 2026-09-09)
 
 Found while running payment `8905825417`. `scripts/generate_payment_remittance.py --upload` writes **Box only**; the
@@ -531,7 +592,7 @@ the 2021–2025 years (proven clean — do not re-scan them into scope).
   chain outright; U-356 repointed Invoice's mechanically instead, respecting the 2026-08-22 Gate-1 call to
   keep it. /em decision: delete it (U-354 shape) or keep it dormant. Tests riding on it: `test_u239`'s invoice
   section, `test_u307b`'s item-ref tests.
-- [ ] **`entities/invoice/intelligence/prompt.md` (InvoiceAgent playbook) is stale on Invoice recovery** —
+- [x] **CLOSED by U-425 (2026-09-09) — the 2026-09-08 rewrite removed every retired-table recipe and U-425 verified the replacement text against code.** ~~`entities/invoice/intelligence/prompt.md` (InvoiceAgent playbook) is stale on Invoice recovery** —
   its manual-recovery section runs `DELETE FROM qbo.InvoiceInvoice WHERE InvoiceId = ?` directly (line ~474)
   and reads `InvoiceInvoice` mappings; both are gone once /em drops the table. Not fixed in U-356: the file
   had concurrent uncommitted WIP in another session at Gate-1 (not this unit's to sweep), and it is a large
@@ -578,7 +639,7 @@ the 2021–2025 years (proven clean — do not re-scan them into scope).
 
 ## U-314 follow-up (qbo.CustomerProject retirement) — surfaced running OVH-02, 2026-09-04
 
-- [ ] **`entities/invoice/intelligence/prompt.md` (InvoiceAgent playbook) Step 1 still queries the retired
+- [x] **CLOSED by U-425 (2026-09-09) — the 2026-09-08 rewrite removed every retired-table recipe and U-425 verified the replacement text against code.** ~~`entities/invoice/intelligence/prompt.md` (InvoiceAgent playbook) Step 1 still queries the retired
   `qbo.CustomerProject` mapping table.** Its project-resolution SQL (`JOIN qbo.CustomerProject cp ON
   cp.ProjectId = ?` → `qbo.Customer`) and the Step 1 heal recipe (`CustomerProjectConnector().create_mapping(...)`)
   are stale post-U-314: the table is dropped, `dbo.Project.QboId`/`.RealmId` is the sole identity store now
@@ -2658,7 +2719,7 @@ These were surfaced during the unit and deliberately not built:
 
 ## U-355 follow-up (qbo.BillBill mapping retirement, 2026-09-01) — deferred, non-blocking
 
-- [ ] **`entities/invoice/intelligence/prompt.md` (InvoiceAgent playbook) is now stale on Bill recovery.**
+- [x] **CLOSED by U-425 (2026-09-09) — the 2026-09-08 rewrite removed every retired-table recipe and U-425 verified the replacement text against code.** ~~`entities/invoice/intelligence/prompt.md` (InvoiceAgent playbook) is now stale on Bill recovery.**
   Its manual-recovery sections (draft-collision recovery, zombie-header recovery) contain literal
   `INSERT INTO qbo.BillBill (...)` recipes for hand-repairing a bill's QBO mapping — qbo.BillBill is
   retired (U-355); dbo.Bill.QboId/RealmId (stamped via `BillService.repo.set_qbo_identity`) is the sole
@@ -2680,7 +2741,7 @@ Design: `docs/design/u357-unified-status-review-status.md` (§9 = 24 open decisi
 
 ## U-361 follow-ups (qbo.VendorCreditLineItemBillCreditLineItem retirement + `run_line_identity_fastpath_dbo_only`, 2026-09-01) — deferred, non-blocking
 
-- [ ] **`entities/invoice/intelligence/prompt.md` (InvoiceAgent playbook) still JOINs the retired line mapping.**
+- [x] **CLOSED by U-425 (2026-09-09) — the 2026-09-08 rewrite removed every retired-table recipe and U-425 verified the replacement text against code.** ~~`entities/invoice/intelligence/prompt.md` (InvoiceAgent playbook) still JOINs the retired line mapping.**
   Its VendorCredit fingerprint-match recipe (`JOIN qbo.VendorCreditLineItemBillCreditLineItem map ON
   map.QboVendorCreditLineId = vcl.Id` → `dbo.BillCreditLineItem`) and its onboarding note ("rows exist with
   `qbo.VendorCreditLineItemBillCreditLineItem` mappings") are stale post-U-361: an agent running that SQL
@@ -2809,7 +2870,7 @@ inappropriate to fold into an emergency P0 patch:
 
 ## U-363 follow-ups (qbo.BillLineItemBillLine retirement, 2026-09-03) — deferred, non-blocking
 
-- [ ] **`entities/invoice/intelligence/prompt.md` (InvoiceAgent playbook) Step 4.1's Bill fingerprint query
+- [x] **CLOSED by U-425 (2026-09-09) — the 2026-09-08 rewrite removed every retired-table recipe and U-425 verified the replacement text against code.** ~~`entities/invoice/intelligence/prompt.md` (InvoiceAgent playbook) Step 4.1's Bill fingerprint query
   still JOINs the retired `qbo.BillLineItemBillLine` mapping.** Its "Try Bill first" fingerprint-match
   recipe (`JOIN qbo.BillLineItemBillLine map ON map.QboBillLineId = bl.Id` → `dbo.BillLineItem`) errors
   `Invalid object name 'qbo.BillLineItemBillLine'` post-DROP — confirmed live-broken running the OVH-02

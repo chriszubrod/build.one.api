@@ -8,7 +8,7 @@ from entities.bill_line_item_attachment.business.model import BillLineItemAttach
 from entities.bill_line_item_attachment.persistence.repo import BillLineItemAttachmentRepository
 from entities.bill_line_item.business.service import BillLineItemService
 from entities.attachment.business.service import AttachmentService
-from shared.authz import current_user_id
+from shared.authz import current_user_id, current_is_system_admin
 
 
 class BillLineItemAttachmentService:
@@ -63,21 +63,43 @@ class BillLineItemAttachmentService:
 
     def read_all(self) -> list[BillLineItemAttachment]:
         """
-        Read all bill line item attachments.
+        Read bill line item attachments, scoped by UserProject for non-admin
+        actors. Scoping happens in the sproc, via the parent BillLineItem's Bill.
         """
-        return self.repo.read_all()
+        return self.repo.read_all(
+            actor_user_id=current_user_id.get(),
+            actor_is_system_admin=current_is_system_admin.get(),
+        )
 
     def read_by_id(self, id: int) -> Optional[BillLineItemAttachment]:
         """
-        Read a bill line item attachment by ID.
+        Read a bill line item attachment by ID, gated on the parent Bill.
         """
-        return self.repo.read_by_id(id)
+        link = self.repo.read_by_id(id)
+        return self._gated(link)
 
     def read_by_public_id(self, public_id: str) -> Optional[BillLineItemAttachment]:
         """
-        Read a bill line item attachment by public ID.
+        Read a bill line item attachment by public ID, gated on the parent Bill.
         """
-        return self.repo.read_by_public_id(public_id)
+        link = self.repo.read_by_public_id(public_id)
+        return self._gated(link)
+
+    def _gated(
+        self, link: Optional[BillLineItemAttachment]
+    ) -> Optional[BillLineItemAttachment]:
+        """Assert the caller may see this link's parent Bill, then return it.
+
+        Single-row reads gate here rather than in the sproc — the same split
+        `read_all` (sproc-scoped) vs `read_by_*` (service-gated) that Bill and
+        BillLineItem already use. Resolving the line item goes through
+        BillLineItemService, which itself asserts on the parent Bill, so an
+        inaccessible link raises EntityNotAccessibleError → 404, never 403.
+        """
+        if link is None or link.bill_line_item_id is None:
+            return link
+        BillLineItemService().read_by_id(int(link.bill_line_item_id))
+        return link
 
     def read_by_bill_line_item_id(self, bill_line_item_public_id: str) -> Optional[BillLineItemAttachment]:
         """

@@ -99,9 +99,17 @@ class BillLineItemRepository:
             logger.error(f"Error during create bill line item: {error}")
             raise map_database_error(error)
 
-    def read_all(self) -> list[BillLineItem]:
+    def read_all(
+        self,
+        *,
+        actor_user_id: Optional[int] = None,
+        actor_is_system_admin: Optional[bool] = None,
+    ) -> list[BillLineItem]:
         """
-        Read all bill line items.
+        Read bill line items, scoped by UserProject membership for non-admin actors.
+
+        Mirrors BillRepository.read_all. The sproc fails closed: an actor of
+        (None, None) matches no rows rather than every row.
         """
         try:
             with get_connection() as conn:
@@ -109,7 +117,10 @@ class BillLineItemRepository:
                 call_procedure(
                     cursor=cursor,
                     name="ReadBillLineItems",
-                    params={},
+                    params={
+                        "ActorUserId": actor_user_id,
+                        "ActorIsSystemAdmin": _bit(actor_is_system_admin),
+                    },
                 )
                 rows = cursor.fetchall()
                 return [self._from_db(row) for row in rows if row]
@@ -354,3 +365,16 @@ class BillLineItemRepository:
                 error,
             )
             raise map_database_error(error)
+
+
+def _bit(flag: Optional[bool]) -> Optional[int]:
+    """SQL Server BIT params take 0/1, not Python bool.
+
+    Eleventh copy of this helper across entity repos (see BillRepository,
+    ProjectRepository, ExpenseRepository, ...). Kept local to match the
+    prevailing convention rather than introducing a shared primitive inside a
+    security fix; consolidation is tracked separately.
+    """
+    if flag is None:
+        return None
+    return 1 if flag else 0

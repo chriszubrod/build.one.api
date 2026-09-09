@@ -7,7 +7,7 @@ from decimal import Decimal
 
 # Local Imports
 from shared.access import assert_can_access_bill, assert_can_access_project
-from shared.authz import current_user_id
+from shared.authz import current_user_id, current_is_system_admin
 from entities.bill_line_item.business.model import BillLineItem
 from entities.bill_line_item.persistence.repo import BillLineItemRepository
 from entities.sub_cost_code.business.service import SubCostCodeService
@@ -118,9 +118,17 @@ class BillLineItemService:
 
     def read_all(self) -> list[BillLineItem]:
         """
-        Read all bill line items.
+        Read bill line items, scoped by UserProject for non-admin actors.
+
+        Mirrors BillService.read_all. Scoping happens in the sproc (a per-row
+        assert_can_access_bill would be an N-query scan); every other read on
+        this service gates via assert_can_access_* instead, because they return
+        at most one bill's worth of rows.
         """
-        return self.repo.read_all()
+        return self.repo.read_all(
+            actor_user_id=current_user_id.get(),
+            actor_is_system_admin=current_is_system_admin.get(),
+        )
 
     def read_by_id(self, id: int) -> Optional[BillLineItem]:
         """

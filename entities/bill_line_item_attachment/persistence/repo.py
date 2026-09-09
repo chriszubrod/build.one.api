@@ -78,9 +78,16 @@ class BillLineItemAttachmentRepository:
             logger.error(f"Error during create bill line item attachment: {error}")
             raise map_database_error(error)
 
-    def read_all(self) -> list[BillLineItemAttachment]:
+    def read_all(
+        self,
+        *,
+        actor_user_id: Optional[int] = None,
+        actor_is_system_admin: Optional[bool] = None,
+    ) -> list[BillLineItemAttachment]:
         """
-        Read all bill line item attachments.
+        Read bill line item attachments, scoped by UserProject membership for
+        non-admin actors. The sproc fails closed: an actor of (None, None)
+        matches no rows rather than every row.
         """
         try:
             with get_connection() as conn:
@@ -89,7 +96,10 @@ class BillLineItemAttachmentRepository:
                     call_procedure(
                         cursor=cursor,
                         name="ReadBillLineItemAttachments",
-                        params={},
+                        params={
+                            "ActorUserId": actor_user_id,
+                            "ActorIsSystemAdmin": _bit(actor_is_system_admin),
+                        },
                     )
                     rows = cursor.fetchall()
                     return [self._from_db(row) for row in rows if row]
@@ -237,3 +247,11 @@ class BillLineItemAttachmentRepository:
         except Exception as error:
             logger.error(f"Error during delete bill line item attachment by ID: {error}")
             raise map_database_error(error)
+
+
+def _bit(flag: Optional[bool]) -> Optional[int]:
+    """SQL Server BIT params take 0/1, not Python bool. Local copy per the
+    prevailing per-repo convention; consolidation tracked separately."""
+    if flag is None:
+        return None
+    return 1 if flag else 0

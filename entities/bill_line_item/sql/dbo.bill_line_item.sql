@@ -148,31 +148,48 @@ END;
 GO
 
 
+-- Scoped by UserProject membership for non-admin actors, exactly as ReadBills is
+-- (entities/bill/sql/dbo.bill.sql). This list path was the one unscoped read left on the
+-- entity — read_by_id / read_by_public_id / read_by_bill_id / read_by_project_id all gate
+-- in the service layer via assert_can_access_*, but read_all had no gate at either layer,
+-- so GET /api/v1/get/bill_line_items returned every line item's amounts, descriptions and
+-- projects to any caller holding BILLS can_read.
+--
+-- New params take = NULL defaults so an older caller (or an unapplied deploy) still binds.
+-- Note the fail-closed asymmetry that default implies: UserCanAccessBill(NULL, NULL, ...)
+-- returns 0 for every row, so a caller that omits them gets an EMPTY list, never the whole
+-- table. That is the safe direction and it matches shared/access.py's 2026-05-12 rule that
+-- a missing actor no longer bypasses.
 CREATE OR ALTER PROCEDURE ReadBillLineItems
+(
+    @ActorUserId BIGINT = NULL,
+    @ActorIsSystemAdmin BIT = NULL
+)
 AS
 BEGIN
     BEGIN TRANSACTION;
 
     SELECT
-        [Id],
-        [PublicId],
-        [RowVersion],
-        CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
-        CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
-        [BillId],
-        [SubCostCodeId],
-        [ProjectId],
-        [Description],
-        [Quantity],
-        [Rate],
-        [Amount],
-        [IsBillable],
-        [IsBilled],
-        [Markup],
-        [Price],
-        [IsDraft]
-    FROM dbo.[BillLineItem]
-    ORDER BY [CreatedDatetime] DESC;
+        bli.[Id],
+        bli.[PublicId],
+        bli.[RowVersion],
+        CONVERT(VARCHAR(19), bli.[CreatedDatetime], 120) AS [CreatedDatetime],
+        CONVERT(VARCHAR(19), bli.[ModifiedDatetime], 120) AS [ModifiedDatetime],
+        bli.[BillId],
+        bli.[SubCostCodeId],
+        bli.[ProjectId],
+        bli.[Description],
+        bli.[Quantity],
+        bli.[Rate],
+        bli.[Amount],
+        bli.[IsBillable],
+        bli.[IsBilled],
+        bli.[Markup],
+        bli.[Price],
+        bli.[IsDraft]
+    FROM dbo.[BillLineItem] bli
+    WHERE dbo.UserCanAccessBill(@ActorUserId, @ActorIsSystemAdmin, bli.[BillId]) = 1
+    ORDER BY bli.[CreatedDatetime] DESC;
 
     COMMIT TRANSACTION;
 END;

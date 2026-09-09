@@ -19,7 +19,8 @@ This file serves two executors. Identify yourself first:
 1. **Invoice ≠ Bill.** A **Bill** is a vendor's invoice TO US (parent: Vendor — we owe them). An **Invoice** is OUR invoice TO A CUSTOMER, billed against a Project (they owe us). Never conflate.
 2. **QBO is pull-only.** Never push data to QBO. The QBO push inside `complete_invoice` is hard-disabled in code.
 3. **Every billed Bill / Expense / BillCredit source MUST have a supporting attachment AND a SubCostCode.** Separately identified markup/fee lines derive support from their documented underlying charges; local EmployeeLabor lines use their labor records and have no vendor-PDF requirement. These exceptions never excuse a missing document or code on a vendor charge (CRITICAL #5/#6).
-4. **SharePoint and Box are parallel sync targets.** Every external document/workbook write has two destinations: SharePoint/MS-Excel AND the project's mapped Box folder/workbook. A run is not complete until both sides are verified (Box skips cleanly only for projects with no Box mapping — and that skip must be surfaced, not silent).
+4. **QBO LIVE is the ONLY authority for a QBO-owned fact. The `qbo.*` staging tables are NOT an audit surface.** Staging is an internal artifact of the pull: it holds whatever the scheduler last fetched, which may be minutes or hours behind the live document, and it can be internally consistent with `dbo.*` while both are stale. Agreement between staging and `dbo` proves only that the projection ran — it proves NOTHING about currency. Before you state, compare or act on any QBO-owned number (header total, line set, line amounts, item coding, document number, edit time), **read it from the QBO API**. Reading staging instead is how a run reports a confident, precisely-reconciled, and completely wrong figure. (U-425, 2026-09-09: a live SHT-25 audit read staging, found the Builder's Fee at `$0.00`, and reported ~$27K missing. Live QBO had the fee at `$37,992.14` and seven more lines — the operator had finished the invoice three minutes after the scheduler's pull. Every local number reconciled exactly to the cent and every one of them was wrong.)
+5. **SharePoint and Box are parallel sync targets.** Every external document/workbook write has two destinations: SharePoint/MS-Excel AND the project's mapped Box folder/workbook. A run is not complete until both sides are verified (Box skips cleanly only for projects with no Box mapping — and that skip must be surfaced, not silent).
 
 ---
 
@@ -137,7 +138,7 @@ For a local draft explicitly requested by the user, use the tools below. A draw 
 
 **Hard prerequisites for the AIA pages — a QBO-Manual-only (un-linked) invoice produces an empty/broken packet:**
 - **The invoice must be a linked, coded draw.** G702/G703 require the current invoice to appear in `DrawFinancialsService.coded_draws_for_project`. The Draw Request and TOCs roll up non-Manual enriched source lines. An all-Manual QBO pull has no supporting source rollup and fails packet generation with "No PDF attachments found on line items". Apply and verify source linkage/coding before treating a draw as packet-ready.
-- **The Trend spans EVERY historical pay application (U-271), not just coded draws.** Its columns come from `DrawFinancialsService.all_draws_for_project` (a superset of `coded_draws_for_project`): coded draws use the local source-linked rollup; **early/migrated draws** — all-`Manual` locally but carrying the cost-code Item hierarchy in `qbo.InvoiceLine.ItemRefName` (`"CostCode:SubCostCode"`) — are rolled up from QBO, so a project's whole draw history shows as one column-per-draw matrix. Cost-code resolution is **dbo-native**: the QBO line's Item is resolved through `dbo.SubCostCode.QboId` / `dbo.CostCode.QboId` (U-307d). Both the legacy `qbo.ItemSubCostCode` mapping hop and the later `ItemRefName`-string parse are **retired** (U-292 — never re-derive a cost code by parsing a QBO Item's display name). Any line whose Item resolves to no cost code (e.g. a split `"5% markup"` line) lands in an **"Uncoded"** row so each column still foots to its invoice total. NB `entities/invoice/business/draw_financials.py`'s own docstrings still *describe* the retired hop — they are known-stale prose (booked in TODO.md), not a place to verify behaviour. Read the resolution helpers on the QBO invoice service instead. A QBO-pull mirror of a coded draw (same date + billed total, e.g. `MR2-MAIN-05-2`) is dropped; same-draw re-issues (`MR2-MAIN-04` + `-04-2`) merge into one column. **G702/G703 deliberately still consume `coded_draws_for_project`** (they reconcile to the Budget SoV, a coded-only surface).
+- **The Trend spans EVERY historical pay application (U-271), not just coded draws.** Its columns come from `DrawFinancialsService.all_draws_for_project` (a superset of `coded_draws_for_project`): coded draws use the local source-linked rollup; **early/migrated draws** — all-`Manual` locally but carrying the cost-code Item hierarchy on the QBO line's Item ref (`"CostCode:SubCostCode"`) — are rolled up from the pulled QBO data, so a project's whole draw history shows as one column-per-draw matrix. Cost-code resolution is **dbo-native**: the QBO line's Item is resolved through `dbo.SubCostCode.QboId` / `dbo.CostCode.QboId` (U-307d). Both the legacy `qbo.ItemSubCostCode` mapping hop and the later `ItemRefName`-string parse are **retired** (U-292 — never re-derive a cost code by parsing a QBO Item's display name). Any line whose Item resolves to no cost code (e.g. a split `"5% markup"` line) lands in an **"Uncoded"** row so each column still foots to its invoice total. NB `entities/invoice/business/draw_financials.py`'s own docstrings still *describe* the retired hop — they are known-stale prose (booked in TODO.md), not a place to verify behaviour. Read the resolution helpers on the QBO invoice service instead. A QBO-pull mirror of a coded draw (same date + billed total, e.g. `MR2-MAIN-05-2`) is dropped; same-draw re-issues (`MR2-MAIN-04` + `-04-2`) merge into one column. **G702/G703 deliberately still consume `coded_draws_for_project`** (they reconcile to the Budget SoV, a coded-only surface).
 - **A live Budget SoV must exist** for the project — G703 col C (Scheduled Value) = the live Budget schedule of values via `BudgetService.variance_by_public_id`; absent it, G702/G703 are skipped.
 - **Contract fee rate and G702 headers are separate inputs.** `_resolve_builders_fee_rate` uses the highest-ID project Contract with a non-null `BuildersFeeRate`; missing/failed lookup falls back to no rate fee. The current router supplies Owner from the project's Customer/address, and leaves Architect, Contract-For, and Contract-Date blank. The standard packet endpoint accepts only the invoice ID; do not promise header overrides through that endpoint. Missing required header data needs a reviewed implementation or separate approved artifact workflow.
 
@@ -264,6 +265,8 @@ If only the project is given, propose the next number via `InvoiceService().get_
 ## CRITICAL — read these before touching SQL or external systems
 
 ### 1. Identity stores and keyspaces
+
+**Staging is pull plumbing, not evidence.** The `qbo.*` tables exist so a connector has something to project from; they are the pull's INPUT, not a record of what QBO currently says. Never verify against them, never quote a number from them, and never conclude "QBO says X" from a staging row (Shared invariant 4). Where this file still names a `qbo.*` table it is describing pull mechanics or historical incidents — not offering you a place to look something up.
 
 `qbo.*.Id` is an internal staging key, not a `dbo.*.Id` or the external QBO string ID. Current connectors store external identity directly on dbo entities as `QboId` + `RealmId`; line identity is also parent-scoped. Invoice source-link evidence lives in `dbo.InvoiceLineItemSourceProvenance`.
 
@@ -394,7 +397,22 @@ WHERE Provider = 'qbo' AND Env = 'prod'
   AND Entity IN ('bill', 'invoice', 'purchase', 'vendorcredit');
 ```
 
-A recent watermark indicates scheduler progress, not proof that this invoice and every source projected successfully. Compare the target's QBO edit time, header, line identities, and amounts with the local rows in Step 3. A watermark beyond roughly 30 minutes is a scheduler gap to surface; do not mask it with a realm-wide pull. If the required invoice/source is already current, no pull is needed.
+A recent watermark indicates scheduler progress and NOTHING about this invoice. A watermark beyond roughly 30 minutes is a scheduler gap to surface; do not mask it with a realm-wide pull.
+
+**2a-LIVE. The staleness check is mandatory and the watermark does not substitute for it.** A fresh watermark only means a tick ran — it can have run seconds BEFORE the operator finished editing. Read the live document and compare it to what you hold, every run, before any other conclusion:
+
+```python
+from integrations.intuit.qbo.invoice.external.client import QboInvoiceClient
+
+with QboInvoiceClient(realm_id=realm_id) as client:
+    live = client.get_invoice(str(qbo_invoice_id))   # external QBO id
+
+live_lines = [l for l in live.line if getattr(l, "detail_type", None) != "SubTotalLineDetail"]
+print(live.doc_number, live.txn_date, live.total_amt, len(live_lines))
+print(live.metadata.get("LastUpdatedTime"))          # authoritative edit time
+```
+
+This is a read-only GET; it needs no write gate. Compare **live total, live non-subtotal line count, and `LastUpdatedTime`** against the local invoice. If live is ahead on any of them, everything downstream is untrustworthy until an authorized scoped refresh (2b) — stop and report it as a preparation gap; do not audit, propose links, or generate anything from what you hold. Only when live and local agree is a "no pull needed" conclusion available to you.
 
 **2b. Project-scoped invoice refresh** — when the target was edited after the last pull, or the local projection needs a retry:
 
@@ -414,19 +432,31 @@ Run from the API repo. `--project` substring-matches `dbo.Project.Name`, require
 
 ## Step 3 — Verify the invoice and its source projections
 
-Resolve the target QBO invoice by DocNumber **and** CustomerRef/realm, then resolve its local counterpart by native identity:
+Resolve the LIVE QBO invoice first, then its local counterpart by native identity. **The live document is the reference; the local row is the thing being checked against it** (Shared invariant 4).
+
+```python
+# 1. LIVE — the authority. Read-only GET, no write gate required.
+from integrations.intuit.qbo.invoice.external.client import QboInvoiceClient
+
+with QboInvoiceClient(realm_id=realm_id) as client:
+    live = client.get_invoice(str(qbo_invoice_id))
+
+live_lines = [l for l in live.line if getattr(l, "detail_type", None) != "SubTotalLineDetail"]
+live_total, live_count = live.total_amt, len(live_lines)
+live_edited = live.metadata.get("LastUpdatedTime")
+```
+
+If you do not yet hold the external id, find it by document number with `client.query_invoices(...)` scoped to the project's CustomerRef and realm — not by reading a staging row.
 
 ```sql
-SELECT Id, QboId, RealmId, DocNumber, CustomerRefValue,
-       TxnDate, TotalAmt, ModifiedDatetime
-FROM qbo.Invoice
-WHERE DocNumber = ? AND CustomerRefValue = ? AND RealmId = ?;
-
+-- 2. LOCAL — the projection under test.
 SELECT Id, CAST(PublicId AS NVARCHAR(50)) AS PublicId,
-       ProjectId, QboId, RealmId, InvoiceNumber, InvoiceDate, TotalAmount
+       ProjectId, QboId, RealmId, InvoiceNumber, InvoiceDate, TotalAmount, IsDraft
 FROM dbo.Invoice
 WHERE QboId = ? AND RealmId = ?;
 ```
+
+**Reconcile live against local before anything else: total, non-subtotal line count, and txn date.** Any disagreement means the local projection is stale or incomplete — go to 2b for an authorized scoped refresh and re-read. Do not proceed on a local row that does not match live, and never resolve this by consulting `qbo.Invoice`: staging can agree with `dbo` perfectly while both trail the live document.
 
 Capture both numeric ids separately and the local invoice's PublicId. The local invoice must belong to the resolved project. Compare dates and amounts; the connector intentionally preserves a human-edited local invoice number, so a number difference alone does not justify replacement. If the native-identity lookup is empty, inspect same-project/name candidates and connector errors before creating anything. Duplicate or suffixed invoices are gaps to investigate, not instructions to delete both copies.
 
@@ -444,7 +474,7 @@ qbo_lines = QboInvoiceLineRepository().read_by_qbo_invoice_id(qbo_invoice_id=qbo
 invoice = InvoiceInvoiceConnector().sync_from_qbo_invoice(qbo_inv, qbo_lines)
 ```
 
-When **staging itself** is stale rather than the local projection, refresh that one transaction instead of running a date-window pull that sweeps other projects: fetch it with the entity's external client and upsert it through `QboInvoiceService.upsert_from_external(ext, realm_id=...)` (and the `QboBillService` / `QboPurchaseService` equivalents for sources), which matches staged lines by `qbo_line_id` and updates them in place. That touches staging only — no connector run, no `SourceType` reset — so it is the narrowest authorized preparation write available. Re-run the connector afterward.
+The connector projects FROM staging, so staging is the one place a `qbo.*` table legitimately appears in a recipe — as the pull's INPUT, never as evidence. That means **staging must itself be current before you project from it**: confirm against the live read (2a-LIVE) first, or you will faithfully project a stale document into `dbo` and every local number will reconcile perfectly to the wrong figure. When staging is behind live, refresh that one transaction instead of running a date-window pull that sweeps other projects: fetch it with the entity's external client and upsert it through `QboInvoiceService.upsert_from_external(ext, realm_id=...)` (and the `QboBillService` / `QboPurchaseService` equivalents for sources), which matches staged lines by `qbo_line_id` and updates them in place. That touches staging only — no connector run, no `SourceType` reset — so it is the narrowest authorized preparation write available. Re-run the connector afterward.
 
 Re-read the result. The parent connector catches individual line failures, so a returned header is not proof that every line projected. Native identity and provenance now allow in-place updates and re-adoption; historical “populated invoice cannot accept adds” and mapping-table reset recipes are obsolete. If retry still fails, capture the failed line/error and prepare a specific repair. Any deletion requires the exact affected rows, supporting evidence, and authorization; immediately recheck the project identity and full current invoice before executing it.
 
@@ -492,13 +522,22 @@ LEFT JOIN dbo.InvoiceLineItemSourceProvenance prov ON prov.InvoiceLineItemId = i
 WHERE ili.InvoiceId = ?
 ORDER BY prov.LineNum, ili.Id;
 
-SELECT QboLineId, LineNum, Amount, Description, ServiceDate, DetailType
-FROM qbo.InvoiceLine
-WHERE QboInvoiceId = ?
-ORDER BY LineNum;
 ```
 
-Pair lines by the target parent and `ili.QboId = qbo.InvoiceLine.QboLineId`, not insertion order. Investigate missing provenance separately: source-link proposals depend on it, and a missing provenance row can hide a line from the proposal output. Re-pulling the identified invoice can stamp it through the maintained connector.
+Take the QBO side from the **live** document, not from staging:
+
+```python
+with QboInvoiceClient(realm_id=realm_id) as client:
+    live = client.get_invoice(str(qbo_invoice_id))
+
+live_lines = {
+    str(l.id): (l.line_num, l.amount, l.description)
+    for l in live.line
+    if getattr(l, "detail_type", None) != "SubTotalLineDetail"
+}
+```
+
+Pair lines by the target parent and `ili.QboId == <live line id>`, not insertion order. Investigate missing provenance separately: source-link proposals depend on it, and a missing provenance row can hide a line from the proposal output. Re-pulling the identified invoice can stamp it through the maintained connector.
 
 A stale or absent QboId is only a candidate for investigation: QBO can regenerate line ids, and legitimate local/manual or employee-labor lines can lack them. Compare the current full QBO line set, baseline where available, provenance, source FKs, descriptions, and amounts before declaring a duplicate/removal. Never infer deletion eligibility from a missing legacy mapping or missing provenance alone. Reconcile the actual detail-line count and monetary totals, including explicit markup, discounts, credits, and any excluded QBO subtotal lines; surface every unexplained difference before Step 5.
 
@@ -842,21 +881,32 @@ Filenames match the SharePoint names plus a deterministic `-{8hex}` identity suf
 **The invariant (this is what "accurately reconciled" means):** for invoice N, the same line set — keyed by source `public_id` — must agree across all five systems, and the money must sum identically:
 
 ```
-qbo.InvoiceLine set  ==  dbo.InvoiceLineItem set  ==  H-tagged DETAILS rows (SharePoint)
+LIVE QBO line set    ==  dbo.InvoiceLineItem set  ==  H-tagged DETAILS rows (SharePoint)
                      ==  Box mirror (outbox `done`)  ==  IsBilled sources   [vendor-sourced lines only]
-SUM(qbo lines) == qbo.Invoice.TotalAmt == dbo.Invoice.TotalAmount == SUM(dbo ILI Amount)
+SUM(LIVE lines) == LIVE Invoice.TotalAmt == dbo.Invoice.TotalAmount == SUM(dbo ILI Amount)
 ```
 
-**Nothing computes the `SUM(qbo lines)` leg for you.** The matrix SQL below counts QBO lines but does not sum them, and neither `ComputeInvoiceDrawMatrix` nor the daily reconciler sums `qbo.InvoiceLine.Amount`. If you want that leg, add `(SELECT SUM(Amount) FROM qbo.InvoiceLine WHERE QboInvoiceId = ?)` yourself; otherwise state plainly in the report that it was not checked. Note also that the daily reconciler compares with `float()` at a $0.01 tolerance while `push_draw` compares exact `Decimal` — a difference the two surfaces can legitimately disagree on.
+**The two QBO legs come from the LIVE document and nothing computes them for you.** Neither `ComputeInvoiceDrawMatrix` nor the daily reconciler reads live QBO, so compute both yourself immediately before declaring the run reconciled — the invoice can have been edited while you worked (KI-44):
 
-**Money authority:** QBO/dbo is authoritative; the DETAILS worksheet total is **advisory** — it can carry small rounding (WVA-18: $84,450.02 DETAILS vs $84,450.04 QBO) and, per KI-36, can under-report a draw entirely on the AIA tabs. A worksheet-vs-QBO cent-level difference is noted, not a halt; an AIA-tab-vs-ledger difference is a KI-36 investigation.
+```python
+with QboInvoiceClient(realm_id=realm_id) as client:
+    live = client.get_invoice(str(qbo_invoice_id))
+live_lines = [l for l in live.line if getattr(l, "detail_type", None) != "SubTotalLineDetail"]
+live_count = len(live_lines)
+live_sum   = sum(Decimal(str(l.amount or 0)) for l in live_lines)
+live_total = Decimal(str(live.total_amt))
+```
+
+`live_sum == live_total == dbo.Invoice.TotalAmount == SUM(dbo ILI Amount)`, and `live_count == dbo line count`. A `qbo.*` staging count is NOT an acceptable substitute for either leg: it is what the last pull happened to fetch, so a matrix built on it can read all-green against a document that has since changed. Note also that the daily reconciler compares with `float()` at a $0.01 tolerance while `push_draw` compares exact `Decimal` — a difference the two surfaces can legitimately disagree on.
+
+**Money authority:** **LIVE QBO** is authoritative and `dbo` is authoritative only insofar as it matches it; the DETAILS worksheet total is **advisory** — it can carry small rounding (WVA-18: $84,450.02 DETAILS vs $84,450.04 QBO) and, per KI-36, can under-report a draw entirely on the AIA tabs. A worksheet-vs-QBO cent-level difference is noted, not a halt; an AIA-tab-vs-ledger difference is a KI-36 investigation.
 
 Compute the matrix inputs in one query plus the Step 6 worksheet read and a `box.Outbox` scan:
 
 ```sql
 SELECT
-  (SELECT COUNT(*)   FROM qbo.InvoiceLine     WHERE QboInvoiceId = ?) AS QboLines,
-  (SELECT TotalAmt   FROM qbo.Invoice         WHERE Id = ?)           AS QboTotal,
+  -- QboLines / QboTotal are deliberately ABSENT: take both from the LIVE read above.
+  -- Selecting them from qbo.InvoiceLine / qbo.Invoice reports the last pull, not QBO.
   (SELECT COUNT(*)   FROM dbo.InvoiceLineItem WHERE InvoiceId = ?)    AS DboLines,
   (SELECT SUM(Amount) FROM dbo.InvoiceLineItem WHERE InvoiceId = ?)   AS DboLineSum,
   (SELECT TotalAmount FROM dbo.Invoice        WHERE Id = ?)           AS DboTotal,
@@ -882,8 +932,8 @@ Present it as a pass/fail matrix — every row must pass before the run is decla
 
 | Check | Expect | Got | Pass |
 |---|---|---|---|
-| QBO lines == dbo ILIs | = | | |
-| QBO TotalAmt == dbo TotalAmount == SUM(ILI.Amount) | = (exact, Decimal) | | |
+| LIVE QBO lines == dbo ILIs | = | | |
+| LIVE TotalAmt == SUM(LIVE lines) == dbo TotalAmount == SUM(ILI.Amount) | = (exact, Decimal) | | |
 | Sourced lines == H-tagged DETAILS rows (col-Z matched) | = | | |
 | Sourced lines == IsBilled sources (EXCLUDING EmployeeLabor lines — never flipped, see Step 8) | = | | |
 | Box outbox rows for run all `done` (or project unmapped-acknowledged) | ✓ (necessary, NOT sufficient — KI-46) | | |
@@ -969,7 +1019,7 @@ A runtime error is not permission to broaden a repair. Resolve it within existin
 21. **KI-21 — Historical duplicate Projects**: keep the Step 1 duplicate-name/identity screen. The old repair that repointed `qbo.CustomerProject` is retired; current project identity is on dbo. Audit all invoice, source, user, address, and external-target references before a separately reviewed merge/deletion.
 22. **KI-22 — Historical invoice re-pull duplication**: old incidents used the mapping table as the survivor set. That table has been retired, so its anti-join DELETE recipe is invalid. Snapshot, re-pull, compare current dbo identity/provenance with the full live QBO line set, and inspect content before any scoped cleanup (Step 3 and Delta re-run). Never pair shared-LinkedTxn siblings by position alone.
 23. **KI-23 — Source line regeneration during re-sync**: a replacement source and its old invoice/attachment references need identity-aware reconciliation. Preserve the supported document and original invoice references while diagnosing; CRITICAL #6 replaces the historical mapping-table patch.
-24. **KI-24 (formerly #22) — `Cost of construction:NEED TO CATEGORIZE`** is QBO's bucket for uncategorized lines. The staging symptom (`ItemRefValue IS NULL` + that `AccountRefName`) is on the SOURCE staging tables — `qbo.PurchaseLine` / `qbo.BillLine` / `qbo.VendorCreditLine`. `qbo.InvoiceLine` has no `AccountRefName` column, so do not look for it there. Pre-empt CRITICAL #6 halts by auditing `SubCostCodeId IS NULL` whenever a Home Depot / Lowe's / Amazon-style receipt is on the invoice.
+24. **KI-24 (formerly #22) — `Cost of construction:NEED TO CATEGORIZE`** is QBO's bucket for uncategorized lines. The symptom is on the SOURCE document (Purchase / Bill / VendorCredit), never on the invoice line: an uncategorized source line has no Item ref and posts to that account. **Check it on the live source** — `QboPurchaseClient(realm_id=...).get_purchase(id)`, `QboBillClient(...).get_bill(id)`, `QboVendorCreditClient(...).get_vendor_credit(id)` — and inspect the line's `AccountBasedExpenseLineDetail` / missing Item ref. Do not diagnose this from a `qbo.*` staging row: the operator very often fixes the coding in QBO and the staging copy still shows it uncoded until the next pull, which reads as an unresolved blocker that was resolved minutes ago. Pre-empt CRITICAL #6 halts by auditing `SubCostCodeId IS NULL` whenever a Home Depot / Lowe's / Amazon-style receipt is on the invoice.
 25. **KI-25 (formerly #24) — Attachable duplicates defeat `sync_purchase_attachments_to_expense_line_items`** (BR-MAIN-24, 2026-05-28): two `qbo.Attachable` rows for the same attachable id → 0 linked. **HISTORICAL — the mechanism is gone:** `qbo.Attachable` is retired and the pull no longer stages those rows; attachments now resolve through `dbo.Attachment.QboId`/`RealmId`. Keep the entry only as the reason to verify link counts after a sync. Manual fallback (still valid): `ExpenseLineItemAttachmentService().create(...)` / `BillCreditLineItemAttachmentService().create(...)`.
 26. **KI-26 (formerly #25) — BillCredit Excel sync: existed but was BROKEN until 2026-07-07 (verify deployed)**: `BillCreditCompleteService.sync_to_excel_workbook(bill_credit, line_items, project_id)` wrote column N as a raw `Decimal` (not JSON-serializable — every Graph insert threw, so credits NEVER reached DETAILS) and as a POSITIVE value (a credit must be NEGATIVE in the ledger or the draw total overstates — HA-04: +$411.36 across 2 credits, inserted manually as negatives). Both fixed 2026-07-07 (float + negated, MS and Box row-builder in parity) — but that parity covers the **BillCredit's own completion path** only. Credit rows that reach DETAILS by another route are not guaranteed to be negated, so verify the sign of every credit row in the worksheet rather than assuming the fix covers it. On a pre-fix deployment: insert credit rows manually as negative values. (History: BR-MAIN-24's -$21,000 Visual Comfort credit, manual.)
 27. **KI-27 (formerly #26) — [FIXED 2026-07-03, verify deployed] `ExpenseService.sync_to_excel_workbook` now filters line items to the target `project_id`** — sibling lines on multi-line Expenses no longer leak (SSC2-04, 2026-06-12, was the stray-row source). On a pre-fix deployment: pre-flight multi-line Expenses and cancel strays immediately (`UPDATE ms.Outbox SET Status='cancelled' WHERE Id IN (...) AND Status IN ('pending','failed')` — the claim query takes BOTH); if the drain wins, fall back to 7e.
@@ -993,6 +1043,7 @@ A runtime error is not permission to broaden a repair. Resolve it within existin
 45. **KI-45 — [FIXED 2026-07-13, verify deployed] SharePoint rejects line-PDF uploads whose decoded URL path exceeds 400 chars** (OHR2-36: 16 contract-labor PDFs failed in `_upload_to_sharepoint` — multi-sentence CL narratives made ~330-char filenames; packet + short-named files fine; Box unaffected). `build_line_pdf_filename` now clips the description to 120 chars and hard-caps the base name at 200 (`entities/invoice/business/naming.py`) — the cap lives in the shared helper so both sides derive from the same sanitized base. They are **not** byte-identical: the Box outbox additionally appends a deterministic `-{8hex}` identity suffix. On a pre-fix deployment: expect long-named CL files to fail Step 9 with a URL-length error; recover by re-uploading with a clipped description. **Legacy skew note:** files uploaded before the fix (or via the OHR2-36 manual recovery) can have full-length Box names vs truncated SP names — cosmetic, don't chase.
 46. **KI-46 — Box DETAILS col-N values freeze at their first-written value; outbox `done` does NOT prove correct cell values** (OHR2-36: Metal Werks BLI 23244 was written to Box while its Price was NULL → N=$0 per pre-fix KI-16; after the Price fix, SharePoint's invoice sync rewrote N, but the Box invoice path only stamps column H (`stamp_draw_request`) and `apply_rows_to_details` **skips** any row whose col-Z key already exists — so Box kept $0 while SP/QBO/packet carried $18,630, a draw-total divergence the operator caught by eye: Box $375,443.12 vs SP $394,073.12). This is KI-16 × KI-36-freeze × KI-39 compounding. **Detection is the Step 10 Box VALUE read** — download the Box workbook and sum col N where H = draw; never accept `box.Outbox`=done as value verification (a frozen pre-existing row drains `done` with the wrong number). **Surgical remediation (verified OHR2-36):** `box_app_lock` → GET file meta (etag, `_is_live_human_lock` check) → PUT Box lock (`if_match=etag`) → download → `stamp_columns_by_key(bytes, "DETAILS", [(source_public_id, {13: <amount>})])` → `upload_file_version(if_match=<lock etag>)` → best-effort unlock. Fill in place by col-Z key; never `insert_rows`, never touch G702/G703 (KI-36 rules). Durable fix (Box invoice path refreshing N, or update-in-place on col-Z match) is a TODO; **systemic sweep of earlier draws for the same latent divergence has NOT been run** (compare Box-vs-SP draw totals across recent draws before trusting any older Box workbook).
 47. **KI-47 — A control character in a line description aborts the ENTIRE SharePoint upload batch** (TB3-20, 2026-08-07). `BillLineItem.Description` can carry embedded newlines — a worker's multi-line note arrives verbatim from QBO. `build_line_pdf_filename` sanitized reserved characters and capped length, but an interior `\n` survived `.strip()` + the 120-char clip, landed in the filename, and then in the Graph URL path, where httpx raises `InvalidURL("Invalid non-printable ASCII character in URL")`. At the time, that exception escaped the per-file loop in `_upload_to_sharepoint`, so **one bad description took down all 133 files** (`synced_count: 0`, `success: false`). **Both halves are now fixed:** the sanitizer strips control characters, AND the per-file loop enqueues inside its own `try/except`, so a single bad file can no longer abort the batch. Sibling of KI-45: that capped filename LENGTH, this fixes filename LEGALITY. **Fixed 2026-08-07** (`01426e5`) by adding `\x00-\x1f\x7f` to `_FILENAME_SANITIZE_RE` in `entities/invoice/business/naming.py` — in the shared helper so SP and Box names stay aligned, replacing with `_` not a space (the Box outbox collapses whitespace runs, so a space would desync the two names). Names with no control characters produce the same sanitized base on both sides (Box still adds its `-{8hex}` suffix), so no legacy skew. On a pre-fix deployment the symptom is a whole-batch Step 9 failure with a URL error naming a character position; find the culprit with `Description LIKE '%'+CHAR(10)+'%' OR ... CHAR(13) ... OR ... CHAR(9)` over the invoice's source lines.
+48. **KI-48 — Staging can be perfectly self-consistent and completely stale; only LIVE QBO settles a QBO-owned number** (SHT-25, 2026-09-09, U-425). A Phase 1 audit found all four watermarks fresh (3-12 min), `qbo.Invoice` and `dbo.Invoice` agreeing to the cent (67 lines, `$193,381.64`), complete provenance, and a Builder's Fee line of `$0.00` — and reported ~$27K of fee missing against nine prior draws that all charged 15%. **Live QBO held `$291,273.05` across 74 lines with the fee at `$37,992.14` (exactly 15.00%).** The operator created the invoice at 12:31, the scheduler pulled it at 12:34 while it was still half-entered, and he finished it at 13:10; the next tick had not run. Every local number reconciled and every one was wrong. **The watermark is not a staleness check** — it says a tick ran, not that this document was current when it ran, and an edit landing seconds after a tick is invisible to it. Run the 2a-LIVE read every time before any money conclusion, link proposal, packet, or matrix. Shared invariant 4 exists because of this.
 
 ---
 

@@ -258,3 +258,60 @@ def test_playbook_does_not_claim_attachment_create_raises(playbook: str) -> None
     assert "delete_by_public_id" in para, (
         "the silent-dedupe warning no longer names delete_by_public_id as the replace path"
     )
+
+# Staging tables the playbook must never tell an operator to READ. `qbo.Outbox`
+# and `qbo.ReconciliationIssue` are operational tables, not pulled-document
+# staging, so they stay legal.
+QBO_STAGING_TABLES = (
+    "qbo.Invoice", "qbo.InvoiceLine", "qbo.Bill", "qbo.BillLine",
+    "qbo.Purchase", "qbo.PurchaseLine", "qbo.VendorCredit", "qbo.VendorCreditLine",
+)
+
+
+def test_playbook_never_reads_qbo_staging(playbook: str) -> None:
+    """LIVE QBO is the only authority for a QBO-owned fact (Shared invariant 4).
+
+    Staging holds whatever the last pull fetched and can agree with dbo to the
+    cent while both trail the live document — U-425/KI-48, where a fresh
+    watermark plus a perfect staging-vs-dbo reconciliation produced a confident
+    and completely wrong $27K finding on SHT-25. A SQL read against a staging
+    table is the shape that produces that error, so the playbook must not
+    contain one.
+    """
+    offenders = []
+    for i, line in enumerate(playbook.splitlines(), 1):
+        stripped = line.strip()
+        # A comment may legitimately NAME a staging table in order to forbid it.
+        if stripped.startswith("--") or stripped.startswith("#"):
+            continue
+        low = line.lower()
+        if not any(kw in low for kw in ("from ", "join ", "select ")):
+            continue
+        for tbl in QBO_STAGING_TABLES:
+            if re.search(rf"(from|join)\s+{re.escape(tbl)}\b", line, re.IGNORECASE):
+                offenders.append(f"line {i}: {line.strip()[:110]}")
+    assert not offenders, (
+        "playbook reads QBO staging instead of live QBO:\n  " + "\n  ".join(offenders)
+    )
+
+
+def test_playbook_states_the_live_authority_invariant(playbook: str) -> None:
+    """The rule itself must stay stated, not just followed."""
+    assert "QBO LIVE is the ONLY authority" in playbook
+    assert "2a-LIVE" in playbook, "the mandatory live staleness check lost its anchor"
+    assert "KI-48" in playbook, "the stale-staging incident is no longer booked"
+
+
+def test_live_client_surface_cited_by_the_playbook_exists() -> None:
+    """The playbook now instructs a live read; its entry points must be real."""
+    from integrations.intuit.qbo.invoice.external.client import QboInvoiceClient
+
+    assert hasattr(QboInvoiceClient, "get_invoice")
+    assert hasattr(QboInvoiceClient, "query_invoices")
+    for mod, cls, meth in (
+        ("bill", "QboBillClient", "get_bill"),
+        ("purchase", "QboPurchaseClient", "get_purchase"),
+        ("vendorcredit", "QboVendorCreditClient", "get_vendor_credit"),
+    ):
+        src = (REPO_ROOT / "integrations" / "intuit" / "qbo" / mod / "external" / "client.py").read_text(encoding="utf-8")
+        assert f"class {cls}" in src and f"def {meth}(" in src, f"{cls}.{meth} missing"

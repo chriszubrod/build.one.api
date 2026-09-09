@@ -15,13 +15,40 @@ CREATE TABLE [dbo].[BillLineItemAttachment]
 END
 GO
 
-
+-- U-345: idempotent column-add so a from-scratch build of this file doesn't fail on the
+-- CreatedByUserId param/INSERT-list references below — live since
+-- scripts/migrations/gap2_created_by_user_id.sql / gap2_created_by_user_id_finalize.sql.
+-- No-op against the live schema (column/FK already exist there).
+IF OBJECT_ID('dbo.BillLineItemAttachment', 'U') IS NOT NULL
+   AND NOT EXISTS (SELECT 1 FROM sys.columns
+                   WHERE object_id = OBJECT_ID('dbo.BillLineItemAttachment') AND name = 'CreatedByUserId')
+BEGIN
+    ALTER TABLE [dbo].[BillLineItemAttachment] ADD [CreatedByUserId] BIGINT NOT NULL
+        CONSTRAINT [DF_BillLineItemAttachment_CreatedByUserId] DEFAULT (17);
+END
+GO
+IF OBJECT_ID('dbo.BillLineItemAttachment', 'U') IS NOT NULL
+   AND NOT EXISTS (SELECT 1 FROM sys.foreign_keys WHERE name = 'FK_BillLineItemAttachment_CreatedByUser')
+BEGIN
+    ALTER TABLE [dbo].[BillLineItemAttachment] ADD CONSTRAINT [FK_BillLineItemAttachment_CreatedByUser]
+        FOREIGN KEY ([CreatedByUserId]) REFERENCES [dbo].[User]([Id]);
+END
 GO
 
+-- CANONICAL HOME for CreateBillLineItemAttachment (standing single-source-of-truth rule).
+-- @CreatedByUserId threading came from scripts/migrations/gap2_adjacent_threading.sql; this
+-- file carried a stale 2-param duplicate until it was reconciled here. That duplicate was a
+-- live regression hazard: base files use CREATE OR ALTER and get re-run routinely, so applying
+-- this file would have reverted the sproc and broken every
+-- BillLineItemAttachmentRepository.create call (which always sends CreatedByUserId) — and with
+-- it every Bill create carrying a PDF, since BillService.create rolls the bill back when the
+-- attachment link fails. Same cleanup dbo.bill.sql did for CreateBill on 2026-07-12. Do NOT
+-- re-add a competing definition in scripts/migrations/.
 CREATE OR ALTER PROCEDURE CreateBillLineItemAttachment
 (
     @BillLineItemId BIGINT,
-    @AttachmentId BIGINT
+    @AttachmentId BIGINT,
+    @CreatedByUserId BIGINT = NULL
 )
 AS
 BEGIN
@@ -29,7 +56,7 @@ BEGIN
 
     DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();
 
-    INSERT INTO dbo.[BillLineItemAttachment] ([CreatedDatetime], [ModifiedDatetime], [BillLineItemId], [AttachmentId])
+    INSERT INTO dbo.[BillLineItemAttachment] ([CreatedDatetime], [ModifiedDatetime], [BillLineItemId], [AttachmentId], [CreatedByUserId])
     OUTPUT
         INSERTED.[Id],
         INSERTED.[PublicId],
@@ -38,7 +65,7 @@ BEGIN
         CONVERT(VARCHAR(19), INSERTED.[ModifiedDatetime], 120) AS [ModifiedDatetime],
         INSERTED.[BillLineItemId],
         INSERTED.[AttachmentId]
-    VALUES (@Now, @Now, @BillLineItemId, @AttachmentId);
+    VALUES (@Now, @Now, @BillLineItemId, @AttachmentId, COALESCE(@CreatedByUserId, 17));
 
     COMMIT TRANSACTION;
 END;
@@ -47,21 +74,31 @@ END;
 
 GO
 
+-- Scoped by UserProject membership for non-admin actors, via the parent BillLineItem's
+-- Bill — the same gap, and the same fix, as ReadBillLineItems. Fails closed: an actor of
+-- (NULL, NULL) matches no rows. The INNER JOIN also drops orphan link rows whose
+-- BillLineItem is gone, which is correct for a list surface.
 CREATE OR ALTER PROCEDURE ReadBillLineItemAttachments
+(
+    @ActorUserId BIGINT = NULL,
+    @ActorIsSystemAdmin BIT = NULL
+)
 AS
 BEGIN
     BEGIN TRANSACTION;
 
     SELECT
-        [Id],
-        [PublicId],
-        [RowVersion],
-        CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
-        CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
-        [BillLineItemId],
-        [AttachmentId]
-    FROM dbo.[BillLineItemAttachment]
-    ORDER BY [BillLineItemId] ASC, [AttachmentId] ASC;
+        blia.[Id],
+        blia.[PublicId],
+        blia.[RowVersion],
+        CONVERT(VARCHAR(19), blia.[CreatedDatetime], 120) AS [CreatedDatetime],
+        CONVERT(VARCHAR(19), blia.[ModifiedDatetime], 120) AS [ModifiedDatetime],
+        blia.[BillLineItemId],
+        blia.[AttachmentId]
+    FROM dbo.[BillLineItemAttachment] blia
+    INNER JOIN dbo.[BillLineItem] bli ON bli.[Id] = blia.[BillLineItemId]
+    WHERE dbo.UserCanAccessBill(@ActorUserId, @ActorIsSystemAdmin, bli.[BillId]) = 1
+    ORDER BY blia.[BillLineItemId] ASC, blia.[AttachmentId] ASC;
 
     COMMIT TRANSACTION;
 END;

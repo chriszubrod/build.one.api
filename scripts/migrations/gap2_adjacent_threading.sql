@@ -39,87 +39,64 @@ GO
 GO
 
 -- ===== 2. CreateBillLineItemAttachment =====
-CREATE OR ALTER PROCEDURE CreateBillLineItemAttachment
-(
-    @BillLineItemId BIGINT,
-    @AttachmentId BIGINT,
-    @CreatedByUserId BIGINT = NULL
-)
-AS
-BEGIN
-    BEGIN TRANSACTION;
-
-    DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();
-
-    INSERT INTO dbo.[BillLineItemAttachment] ([CreatedDatetime], [ModifiedDatetime], [BillLineItemId], [AttachmentId], [CreatedByUserId])
-    OUTPUT
-        INSERTED.[Id],
-        INSERTED.[PublicId],
-        INSERTED.[RowVersion],
-        CONVERT(VARCHAR(19), INSERTED.[CreatedDatetime], 120) AS [CreatedDatetime],
-        CONVERT(VARCHAR(19), INSERTED.[ModifiedDatetime], 120) AS [ModifiedDatetime],
-        INSERTED.[BillLineItemId],
-        INSERTED.[AttachmentId]
-    VALUES (@Now, @Now, @BillLineItemId, @AttachmentId, COALESCE(@CreatedByUserId, 17));
-
-    COMMIT TRANSACTION;
-END;
+-- ---------------------------------------------------------------------------
+-- SUPERSEDED — body removed, NOT the @CreatedByUserId intent.
+--
+-- Canonical definition now lives in exactly ONE place:
+--   entities/bill_line_item_attachment/sql/dbo.bill_line_item_attachment.sql
+--
+-- That base file previously carried a stale 2-param duplicate (no
+-- @CreatedByUserId). Base files use CREATE OR ALTER and are re-run routinely, so
+-- whichever of the two ran last won — and a base re-run would have reverted the
+-- threading and broken every BillLineItemAttachmentRepository.create call, and
+-- with it every Bill create carrying a PDF. The base file is now canonical and
+-- carries the U-345 idempotent CreatedByUserId column-add.
+--
+-- Re-running this file is now a no-op for CreateBillLineItemAttachment. Do NOT
+-- reintroduce a body here. (Same cleanup as CreateAttachment in block 1.)
+-- ---------------------------------------------------------------------------
 GO
 
 -- ===== 3. CreateExpenseLineItemAttachment =====
-CREATE OR ALTER PROCEDURE CreateExpenseLineItemAttachment
-(
-    @ExpenseLineItemId BIGINT,
-    @AttachmentId BIGINT,
-    @CreatedByUserId BIGINT = NULL
-)
-AS
-BEGIN
-    BEGIN TRANSACTION;
-
-    DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();
-
-    INSERT INTO dbo.[ExpenseLineItemAttachment] ([CreatedDatetime], [ModifiedDatetime], [ExpenseLineItemId], [AttachmentId], [CreatedByUserId])
-    OUTPUT
-        INSERTED.[Id],
-        INSERTED.[PublicId],
-        INSERTED.[RowVersion],
-        CONVERT(VARCHAR(19), INSERTED.[CreatedDatetime], 120) AS [CreatedDatetime],
-        CONVERT(VARCHAR(19), INSERTED.[ModifiedDatetime], 120) AS [ModifiedDatetime],
-        INSERTED.[ExpenseLineItemId],
-        INSERTED.[AttachmentId]
-    VALUES (@Now, @Now, @ExpenseLineItemId, @AttachmentId, COALESCE(@CreatedByUserId, 17));
-
-    COMMIT TRANSACTION;
-END;
+-- ---------------------------------------------------------------------------
+-- SUPERSEDED — body removed, NOT the @CreatedByUserId intent.
+--
+-- Canonical definition now lives in exactly ONE place:
+--   entities/expense_line_item_attachment/sql/dbo.expense_line_item_attachment.sql
+--
+-- That base file previously carried a stale 2-param duplicate (no
+-- @CreatedByUserId). Base files use CREATE OR ALTER and are re-run routinely, so
+-- whichever of the two ran last won — and a base re-run would have reverted the
+-- threading and broken every ExpenseLineItemAttachmentRepository.create call.
+-- That in turn broke every Expense create carrying a receipt, since
+-- ExpenseService.create rolls the expense back when the attachment link fails.
+-- The base file is now canonical and carries the U-345 idempotent
+-- CreatedByUserId column-add.
+--
+-- Re-running this file is now a no-op for CreateExpenseLineItemAttachment. Do NOT reintroduce a
+-- body here. (Same cleanup as blocks 1 and 2.)
+-- ---------------------------------------------------------------------------
 GO
 
 -- ===== 4. CreateInvoiceLineItemAttachment =====
-CREATE OR ALTER PROCEDURE CreateInvoiceLineItemAttachment
-(
-    @InvoiceLineItemId BIGINT,
-    @AttachmentId BIGINT,
-    @CreatedByUserId BIGINT = NULL
-)
-AS
-BEGIN
-    BEGIN TRANSACTION;
-
-    DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();
-
-    INSERT INTO dbo.[InvoiceLineItemAttachment] ([CreatedDatetime], [ModifiedDatetime], [InvoiceLineItemId], [AttachmentId], [CreatedByUserId])
-    OUTPUT
-        INSERTED.[Id],
-        INSERTED.[PublicId],
-        INSERTED.[RowVersion],
-        CONVERT(VARCHAR(19), INSERTED.[CreatedDatetime], 120) AS [CreatedDatetime],
-        CONVERT(VARCHAR(19), INSERTED.[ModifiedDatetime], 120) AS [ModifiedDatetime],
-        INSERTED.[InvoiceLineItemId],
-        INSERTED.[AttachmentId]
-    VALUES (@Now, @Now, @InvoiceLineItemId, @AttachmentId, COALESCE(@CreatedByUserId, 17));
-
-    COMMIT TRANSACTION;
-END;
+-- ---------------------------------------------------------------------------
+-- SUPERSEDED — body removed, NOT the @CreatedByUserId intent.
+--
+-- Canonical definition now lives in exactly ONE place:
+--   entities/invoice_line_item_attachment/sql/dbo.invoice_line_item_attachment.sql
+--
+-- That base file previously carried a stale 2-param duplicate (no
+-- @CreatedByUserId). Base files use CREATE OR ALTER and are re-run routinely, so
+-- whichever of the two ran last won — and a base re-run would have reverted the
+-- threading and broken every InvoiceLineItemAttachmentRepository.create call.
+-- Reached via POST /api/v1/create/invoice-line-item-attachment; no parent
+-- rollback here, so the failure is a broken endpoint rather than a lost row.
+-- The base file is now canonical and carries the U-345 idempotent
+-- CreatedByUserId column-add.
+--
+-- Re-running this file is now a no-op for CreateInvoiceLineItemAttachment. Do NOT reintroduce a
+-- body here. (Same cleanup as blocks 1 and 2.)
+-- ---------------------------------------------------------------------------
 GO
 
 -- ===== 5. UpsertEmailMessage (canonical = recipients version) =====

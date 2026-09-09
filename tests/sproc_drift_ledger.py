@@ -7,10 +7,11 @@ ledgered.
 """
 
 SPROC_DRIFT_LEDGER: dict[str, frozenset[str]] = {
-    "CreateBillLineItemAttachment": frozenset({
-        'entities/bill_line_item_attachment/sql/dbo.bill_line_item_attachment.sql',
-        'scripts/migrations/gap2_adjacent_threading.sql',
-    }),  # known-dup, home=entities/bill_line_item_attachment/sql/dbo.bill_line_item_attachment.sql
+    # CreateBillLineItemAttachment: RETIRED from the ledger — single-sourced into
+    # entities/bill_line_item_attachment/sql/dbo.bill_line_item_attachment.sql; the
+    # gap2_adjacent_threading.sql copy is now a pointer stub. The base file's copy was
+    # the STALE side (missing @CreatedByUserId), so a base re-run would have reverted
+    # the threading and 400'd every BillLineItemAttachmentRepository.create.
     "CreateCostCode": frozenset({
         'entities/cost_code/sql/dbo.costcode.sql',
         'scripts/migrations/gap2_reference_threading.sql',
@@ -19,14 +20,14 @@ SPROC_DRIFT_LEDGER: dict[str, frozenset[str]] = {
         'entities/customer/sql/dbo.customer.sql',
         'scripts/migrations/gap2_reference_threading.sql',
     }),  # known-dup, home=entities/customer/sql/dbo.customer.sql
-    "CreateExpenseLineItemAttachment": frozenset({
-        'entities/expense_line_item_attachment/sql/dbo.expense_line_item_attachment.sql',
-        'scripts/migrations/gap2_adjacent_threading.sql',
-    }),  # known-dup, home=entities/expense_line_item_attachment/sql/dbo.expense_line_item_attachment.sql
-    "CreateInvoiceLineItemAttachment": frozenset({
-        'entities/invoice_line_item_attachment/sql/dbo.invoice_line_item_attachment.sql',
-        'scripts/migrations/gap2_adjacent_threading.sql',
-    }),  # known-dup, home=entities/invoice_line_item_attachment/sql/dbo.invoice_line_item_attachment.sql
+    # CreateExpenseLineItemAttachment / CreateInvoiceLineItemAttachment: RETIRED from the
+    # ledger — both single-sourced into their entity base files; the
+    # gap2_adjacent_threading.sql copies are now pointer stubs (blocks 3 and 4). Same stale
+    # shape as CreateBillLineItemAttachment above: the BASE file was the stale side (missing
+    # @CreatedByUserId), so a base re-run would have reverted the threading and broken every
+    # {Expense,Invoice}LineItemAttachmentRepository.create — and, for Expense, every Expense
+    # create carrying a receipt, since ExpenseService.create rolls the expense back when the
+    # attachment link fails.
     "CreatePaymentTerm": frozenset({
         'entities/payment_term/sql/dbo.payment_term.sql',
         'scripts/migrations/gap2_reference_threading.sql',

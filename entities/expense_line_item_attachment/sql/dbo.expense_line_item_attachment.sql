@@ -18,6 +18,27 @@ CREATE TABLE [dbo].[ExpenseLineItemAttachment]
 END
 GO
 
+-- U-345: idempotent column-add so a from-scratch build of this file doesn't fail on the
+-- CreatedByUserId param/INSERT-list references below — live since
+-- scripts/migrations/gap2_created_by_user_id.sql / gap2_created_by_user_id_finalize.sql
+-- (which added the column, backfilled 17, applied DEFAULT (17), then tightened to NOT NULL).
+-- No-op against the live schema (column/FK already exist there).
+IF OBJECT_ID('dbo.ExpenseLineItemAttachment', 'U') IS NOT NULL
+   AND NOT EXISTS (SELECT 1 FROM sys.columns
+                   WHERE object_id = OBJECT_ID('dbo.ExpenseLineItemAttachment') AND name = 'CreatedByUserId')
+BEGIN
+    ALTER TABLE [dbo].[ExpenseLineItemAttachment] ADD [CreatedByUserId] BIGINT NOT NULL
+        CONSTRAINT [DF_ExpenseLineItemAttachment_CreatedByUserId] DEFAULT (17);
+END
+GO
+IF OBJECT_ID('dbo.ExpenseLineItemAttachment', 'U') IS NOT NULL
+   AND NOT EXISTS (SELECT 1 FROM sys.foreign_keys WHERE name = 'FK_ExpenseLineItemAttachment_CreatedByUser')
+BEGIN
+    ALTER TABLE [dbo].[ExpenseLineItemAttachment] ADD CONSTRAINT [FK_ExpenseLineItemAttachment_CreatedByUser]
+        FOREIGN KEY ([CreatedByUserId]) REFERENCES [dbo].[User]([Id]);
+END
+GO
+
 -- Migration: add constraints if table already exists without them
 IF OBJECT_ID('dbo.ExpenseLineItemAttachment', 'U') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sys.foreign_keys WHERE name = 'FK_ExpenseLineItemAttachment_ExpenseLineItem' AND parent_object_id = OBJECT_ID('dbo.ExpenseLineItemAttachment'))
 BEGIN
@@ -55,10 +76,21 @@ GO
 
 GO
 
+-- CANONICAL HOME for CreateExpenseLineItemAttachment (standing single-source-of-truth rule).
+-- @CreatedByUserId threading came from scripts/migrations/gap2_adjacent_threading.sql; this
+-- file carried a stale 2-param duplicate until it was reconciled here. That duplicate was a
+-- live regression hazard: base files use CREATE OR ALTER and get re-run routinely, so applying
+-- this file would have reverted the sproc and broken every
+-- ExpenseLineItemAttachmentRepository.create call (which always sends CreatedByUserId) — and
+-- with it every Expense create carrying a receipt, since ExpenseService.create rolls the
+-- expense back when the attachment link fails. Same cleanup dbo.bill.sql did for CreateBill on
+-- 2026-07-12 and dbo.bill_line_item_attachment.sql did for its own sproc. Do NOT re-add a
+-- competing definition in scripts/migrations/.
 CREATE OR ALTER PROCEDURE CreateExpenseLineItemAttachment
 (
     @ExpenseLineItemId BIGINT,
-    @AttachmentId BIGINT
+    @AttachmentId BIGINT,
+    @CreatedByUserId BIGINT = NULL
 )
 AS
 BEGIN
@@ -66,7 +98,7 @@ BEGIN
 
     DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();
 
-    INSERT INTO dbo.[ExpenseLineItemAttachment] ([CreatedDatetime], [ModifiedDatetime], [ExpenseLineItemId], [AttachmentId])
+    INSERT INTO dbo.[ExpenseLineItemAttachment] ([CreatedDatetime], [ModifiedDatetime], [ExpenseLineItemId], [AttachmentId], [CreatedByUserId])
     OUTPUT
         INSERTED.[Id],
         INSERTED.[PublicId],
@@ -75,7 +107,7 @@ BEGIN
         CONVERT(VARCHAR(19), INSERTED.[ModifiedDatetime], 120) AS [ModifiedDatetime],
         INSERTED.[ExpenseLineItemId],
         INSERTED.[AttachmentId]
-    VALUES (@Now, @Now, @ExpenseLineItemId, @AttachmentId);
+    VALUES (@Now, @Now, @ExpenseLineItemId, @AttachmentId, COALESCE(@CreatedByUserId, 17));
 
     COMMIT TRANSACTION;
 END;

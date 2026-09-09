@@ -13,13 +13,41 @@ CREATE TABLE [dbo].[InvoiceLineItemAttachment]
 END
 GO
 
-
+-- U-345: idempotent column-add so a from-scratch build of this file doesn't fail on the
+-- CreatedByUserId param/INSERT-list references below — live since
+-- scripts/migrations/gap2_created_by_user_id.sql / gap2_created_by_user_id_finalize.sql
+-- (which added the column, backfilled 17, applied DEFAULT (17), then tightened to NOT NULL).
+-- No-op against the live schema (column/FK already exist there).
+IF OBJECT_ID('dbo.InvoiceLineItemAttachment', 'U') IS NOT NULL
+   AND NOT EXISTS (SELECT 1 FROM sys.columns
+                   WHERE object_id = OBJECT_ID('dbo.InvoiceLineItemAttachment') AND name = 'CreatedByUserId')
+BEGIN
+    ALTER TABLE [dbo].[InvoiceLineItemAttachment] ADD [CreatedByUserId] BIGINT NOT NULL
+        CONSTRAINT [DF_InvoiceLineItemAttachment_CreatedByUserId] DEFAULT (17);
+END
+GO
+IF OBJECT_ID('dbo.InvoiceLineItemAttachment', 'U') IS NOT NULL
+   AND NOT EXISTS (SELECT 1 FROM sys.foreign_keys WHERE name = 'FK_InvoiceLineItemAttachment_CreatedByUser')
+BEGIN
+    ALTER TABLE [dbo].[InvoiceLineItemAttachment] ADD CONSTRAINT [FK_InvoiceLineItemAttachment_CreatedByUser]
+        FOREIGN KEY ([CreatedByUserId]) REFERENCES [dbo].[User]([Id]);
+END
 GO
 
+-- CANONICAL HOME for CreateInvoiceLineItemAttachment (standing single-source-of-truth rule).
+-- @CreatedByUserId threading came from scripts/migrations/gap2_adjacent_threading.sql; this
+-- file carried a stale 2-param duplicate until it was reconciled here. That duplicate was a
+-- live regression hazard: base files use CREATE OR ALTER and get re-run routinely, so applying
+-- this file would have reverted the sproc and broken every
+-- InvoiceLineItemAttachmentRepository.create call, which always sends CreatedByUserId. Reached
+-- via POST /api/v1/create/invoice-line-item-attachment — no parent rollback here, unlike the
+-- Bill and Expense siblings, so the failure is a broken endpoint rather than a lost parent row.
+-- Do NOT re-add a competing definition in scripts/migrations/.
 CREATE OR ALTER PROCEDURE CreateInvoiceLineItemAttachment
 (
     @InvoiceLineItemId BIGINT,
-    @AttachmentId BIGINT
+    @AttachmentId BIGINT,
+    @CreatedByUserId BIGINT = NULL
 )
 AS
 BEGIN
@@ -27,7 +55,7 @@ BEGIN
 
     DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();
 
-    INSERT INTO dbo.[InvoiceLineItemAttachment] ([CreatedDatetime], [ModifiedDatetime], [InvoiceLineItemId], [AttachmentId])
+    INSERT INTO dbo.[InvoiceLineItemAttachment] ([CreatedDatetime], [ModifiedDatetime], [InvoiceLineItemId], [AttachmentId], [CreatedByUserId])
     OUTPUT
         INSERTED.[Id],
         INSERTED.[PublicId],
@@ -36,7 +64,7 @@ BEGIN
         CONVERT(VARCHAR(19), INSERTED.[ModifiedDatetime], 120) AS [ModifiedDatetime],
         INSERTED.[InvoiceLineItemId],
         INSERTED.[AttachmentId]
-    VALUES (@Now, @Now, @InvoiceLineItemId, @AttachmentId);
+    VALUES (@Now, @Now, @InvoiceLineItemId, @AttachmentId, COALESCE(@CreatedByUserId, 17));
 
     COMMIT TRANSACTION;
 END;

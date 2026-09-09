@@ -2,6 +2,44 @@
 
 Carry-over items from sessions. Check off as done; prune anything stale.
 
+## QBO Bill write-path gaps — found re-rating a pushed bill (2026-09-09)
+
+Both surfaced changing Brayan Salina's day rate ($240 -> $250, i.e. `Vendor.HourlyRate` $30.00 -> $31.25)
+for 2026-08-16..31 AFTER his 7 bills were already completed and pushed to QBO. The re-rate itself completed
+successfully (7 bills $2,640.00 -> $2,750.00, verified live in QBO to the cent, old QBO ids gone), but only
+by working around both defects below. Neither is fixed.
+
+- [ ] **P1 — `QboBillClient.delete_bill` ALWAYS raises on a SUCCESSFUL delete, so callers see a failure for
+  work that already landed.** `integrations/intuit/qbo/bill/external/client.py:80-99` ends with
+  `return QboBillResponse(**data).bill`, but QBO's delete response body is only
+  `{"Bill": {"Id": "...", "status": "Deleted", "domain": "QBO"}}` — **no `SyncToken`**, which
+  `QboBill` requires. Pydantic raises `1 validation error for QboBillResponse / Bill.SyncToken / Field
+  required` *after* the bill is already deleted upstream. **Verified live:** the first teardown attempt
+  aborted on this error for QBO Bill 76292, and a follow-up `GET bill/76292` returned `Object Not Found` —
+  the delete had landed. The abort left a partial state (1 of 7 deleted in QBO, all 7 local bills intact,
+  local Bill 20468 pointing at a QboId that no longer existed) that had to be reconciled by hand. **Fix:**
+  parse the delete response with a permissive model (Id + status only) or don't parse it at all; return
+  success on `status == "Deleted"`. Until then any caller must treat an exception as INCONCLUSIVE and
+  confirm by GET (`Object Not Found` == deleted), which is the shape the working teardown used. Worth
+  checking the sibling `delete_*` methods on the other QBO entity clients for the same construction.
+- [ ] **P2 — nothing can update an already-pushed Bill in QBO; delete-and-recreate is the only route, and it
+  burns the QBO ids.** `BillQboConnector.sync_to_qbo_bill`
+  (`integrations/intuit/qbo/bill/connector/bill/business/service.py:448+`) short-circuits when
+  `bill.qbo_id` is set: it verifies the identity, finds the `qbo.Bill` staging row and **returns it
+  unchanged**. So re-completing or re-enqueuing `sync_bill_to_qbo` after a local amount change is a silent
+  no-op against QBO — local and QBO diverge with no error anywhere. `QboBillClient.update_bill` (sparse,
+  `client.py:69`) exists but NO service/outbox path calls it. Consequence for this unit: correcting 7 bills
+  by $110 total required deleting all 7 in QBO and re-pushing, which minted new ids (76272..76292 ->
+  76365..76377) and left 7 deleted bills in the QBO audit trail. **Fix options:** (a) add an
+  `update_bill_in_qbo` path that sends a sparse update with the current SyncToken and refreshes the
+  `qbo.Bill` staging row, dispatched by a new outbox Kind; or (b) if create-only is deliberate, make the
+  short-circuit *loud* — record a reconciliation issue when a pushed Bill's local total no longer matches
+  its `qbo.Bill.TotalAmt`, so divergence is detected instead of silent. **Also note the manual steps this
+  cost**, none of which are automated: bill delete does NOT reset its ContractLabor feeders (status stays
+  `billed`, `BillLineItemId` stays set) so they must be reset by hand before regeneration, and the
+  `qbo.Bill` staging rows for deleted bills must be dropped or reconciliation will flag cached rows for
+  bills that no longer exist upstream.
+
 ## Time-tracking review blind spots + a write-only outbox — from the Aug 16–31 pay period (2026-09-09)
 
 Surfaced auditing 65 TimeEntries / 91 TimeLogs for 2026-08-16→31. **The four data defects below were all

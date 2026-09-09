@@ -2,7 +2,7 @@
 -- "Cost of construction : NEED TO CATEGORIZE" (58999). Strict match only —
 -- do NOT loosen to NULL / NEED TO UPDATE (that wrongly sweeps item-based lines).
 --
--- Run: python scripts/run_sql.py integrations/intuit/qbo/purchase/sql/qbo.expense_coding_queue.sql
+-- Run: ./.venv/bin/python scripts/run_sql.py integrations/intuit/qbo/purchase/sql/qbo.expense_coding_queue.sql
 
 GO
 

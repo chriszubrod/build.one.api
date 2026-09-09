@@ -1611,7 +1611,7 @@ GO
 -- migration ONLY guarded by sys.columns/sys.indexes — no WorkDate
 -- backfill; legacy rows intentionally keep WorkDate NULL). Apply the
 -- whole file to prod via
--- `python scripts/run_sql.py entities/contract_labor/sql/dbo.contract_labor.sql`.
+-- `./.venv/bin/python scripts/run_sql.py entities/contract_labor/sql/dbo.contract_labor.sql`.
 -- ─────────────────────────────────────────────────────────────────────
 
 IF OBJECT_ID('dbo.ContractLaborNotification', 'U') IS NULL

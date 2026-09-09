@@ -11,7 +11,7 @@
 -- absent. Dedupe is verified first; if data is still dirty, CREATE UNIQUE INDEX
 -- must FAIL LOUDLY rather than silently no-op.
 --
--- Run: python scripts/run_sql.py scripts/migrations/u218d_qbo_staging_unique_indexes.sql
+-- Run: ./.venv/bin/python scripts/run_sql.py scripts/migrations/u218d_qbo_staging_unique_indexes.sql
 -- =========================================================================
 
 IF OBJECT_ID('qbo.Bill', 'U') IS NOT NULL AND NOT EXISTS (

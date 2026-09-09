@@ -22,7 +22,7 @@
 -- qbo.VendorVendor.QboVendorId — delete coding items explicitly before parent
 -- delete (prod already carries dangling ExpenseCodingItem rows from past pulls).
 --
--- Run: python scripts/run_sql.py scripts/migrations/u218d_qbo_staging_dedupe.sql
+-- Run: ./.venv/bin/python scripts/run_sql.py scripts/migrations/u218d_qbo_staging_dedupe.sql
 -- Apply BEFORE u218d_qbo_staging_unique_indexes.sql
 -- =========================================================================
 

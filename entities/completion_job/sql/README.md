@@ -16,5 +16,5 @@ Enforced by `tests/test_sproc_single_source.py` (the `completion_job` row).
 Apply with:
 
 ```bash
-python scripts/run_sql.py entities/completion_job/sql/dbo.completion_job.sql
+./.venv/bin/python scripts/run_sql.py entities/completion_job/sql/dbo.completion_job.sql
 ```

@@ -2,7 +2,7 @@
 -- in the 58999 NEED TO CATEGORIZE queue. Tracks claim, suggestion, confirm,
 -- and write-back lifecycle (write-back sprocs land in Phase C).
 --
--- Run: python scripts/run_sql.py entities/expense_coding_item/sql/dbo.expense_coding_item.sql
+-- Run: ./.venv/bin/python scripts/run_sql.py entities/expense_coding_item/sql/dbo.expense_coding_item.sql
 
 GO
 

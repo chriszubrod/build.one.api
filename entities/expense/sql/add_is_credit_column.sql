@@ -1,6 +1,6 @@
 -- Migration: Add IsCredit column to dbo.Expense
 -- Purpose: Distinguish CreditCardCredits (QBO Purchase with Credit=true) from regular Expenses
--- Run with: python scripts/run_sql.py entities/expense/sql/add_is_credit_column.sql
+-- Run with: ./.venv/bin/python scripts/run_sql.py entities/expense/sql/add_is_credit_column.sql
 
 -- ============================================================================
 -- 1. Add column

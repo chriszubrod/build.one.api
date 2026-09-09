@@ -127,7 +127,7 @@ Apply **in this order**, with no purchase pull in the gap:
    can insert between the two migration files.
 
 2. **`scripts/migrations/u218d_qbo_staging_dedupe.sql`** via
-   `python scripts/run_sql.py`
+   `./.venv/bin/python scripts/run_sql.py`
    - Uses an explicit doomed-Id list (not derived at apply time).
    - Pre-flight guards `RAISERROR` severity 16 on safety violations.
    - Idempotent: a second run is a clean no-op.
@@ -137,7 +137,7 @@ Apply **in this order**, with no purchase pull in the gap:
    check is mandatory.)
 
 4. **`scripts/migrations/u218d_qbo_staging_unique_indexes.sql`** via
-   `python scripts/run_sql.py` — run **back-to-back** with step 2, before
+   `./.venv/bin/python scripts/run_sql.py` — run **back-to-back** with step 2, before
    re-enabling the purchase timer.
    - Adds filtered `UQ_Qbo*_QboId_RealmId` indexes on all 8 tables.
    - Drops redundant `IX_QboReimburseCharge_QboId_RealmId` before creating

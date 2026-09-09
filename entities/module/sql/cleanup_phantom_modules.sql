@@ -4,7 +4,7 @@
 -- (anomaly, search, categorization, inbox, email_thread) or to stubs that
 -- were never migrated (contacts, copilot, tasks, classification_overrides).
 --
--- Run: python scripts/run_sql.py entities/module/sql/cleanup_phantom_modules.sql
+-- Run: ./.venv/bin/python scripts/run_sql.py entities/module/sql/cleanup_phantom_modules.sql
 --
 -- Idempotent: deletes by Name match against a value list; re-running after
 -- success finds no matching Module rows and is a no-op.

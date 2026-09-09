@@ -9,9 +9,9 @@
 -- Idempotent table + FK + index DDL for dbo.Contract. Sprocs are NOT defined here
 -- — they live ONLY in entities/contract/sql/dbo.contract.sql (single source of
 -- truth). Re-runnable safely; apply after dbo.User and dbo.Project exist.
---   python scripts/run_sql.py scripts/migrations/contract_entity.sql
+--   ./.venv/bin/python scripts/run_sql.py scripts/migrations/contract_entity.sql
 -- Then apply the canonical base file for the sprocs:
---   python scripts/run_sql.py entities/contract/sql/dbo.contract.sql
+--   ./.venv/bin/python scripts/run_sql.py entities/contract/sql/dbo.contract.sql
 -- =============================================================================
 
 IF OBJECT_ID('dbo.Contract', 'U') IS NULL

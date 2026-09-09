@@ -73,7 +73,7 @@ open on a missing sproc, so the symptom is silence, not an error:
 SELECT OBJECT_ID('ReadCompletedMsOutboxByEntity') AS sproc_id;  -- NULL = not deployed
 ```
 
-Fix: `python scripts/run_sql.py integrations/ms/outbox/sql/ms.outbox.sql`.
+Fix: `./.venv/bin/python scripts/run_sql.py integrations/ms/outbox/sql/ms.outbox.sql`.
 
 ## Recovery
 

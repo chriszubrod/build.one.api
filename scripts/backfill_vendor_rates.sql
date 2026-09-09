@@ -16,7 +16,7 @@
 -- rates that an admin may have edited via the React Vendor edit page.
 --
 -- Run via:
---   python scripts/run_sql.py scripts/backfill_vendor_rates.sql
+--   ./.venv/bin/python scripts/run_sql.py scripts/backfill_vendor_rates.sql
 --
 -- Prereq: entities/vendor/sql/migrations/002_2026_05_27_rate_columns.sql
 -- =============================================================================

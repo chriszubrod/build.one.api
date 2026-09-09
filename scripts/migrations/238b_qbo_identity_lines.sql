@@ -7,7 +7,7 @@
 -- Line-level uniqueness is scoped per parent (QBO line ids collide across
 -- different parent transactions within a realm).
 --
--- Run: python scripts/run_sql.py scripts/migrations/238b_qbo_identity_lines.sql
+-- Run: ./.venv/bin/python scripts/run_sql.py scripts/migrations/238b_qbo_identity_lines.sql
 -- =========================================================================
 
 -- dbo.BillLineItem

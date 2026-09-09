@@ -20,7 +20,7 @@
 --     - `[box].[Folder].Id`          BIGINT   — local PK, NOT exposed
 --     - `[box].[ProjectWorkbook].BoxFileId` NVARCHAR — Box's string file id
 --
---   Run: `python scripts/run_sql.py scripts/migrations/bill_external_links.sql`
+--   Run: `./.venv/bin/python scripts/run_sql.py scripts/migrations/bill_external_links.sql`
 --
 -- The canonical definition of these sprocs now lives in exactly ONE place each:
 --   dbo.ReadBillQboLinkInfo      → entities/bill/sql/dbo.bill.sql

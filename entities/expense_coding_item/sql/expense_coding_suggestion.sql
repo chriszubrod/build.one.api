@@ -1,7 +1,7 @@
 -- Expense coding suggestion read-model sprocs (U-005 Phase B).
 -- Standalone file — do NOT merge into dbo.project.sql (drift landmine).
 --
--- Run: python scripts/run_sql.py entities/expense_coding_item/sql/expense_coding_suggestion.sql
+-- Run: ./.venv/bin/python scripts/run_sql.py entities/expense_coding_item/sql/expense_coding_suggestion.sql
 
 GO
 

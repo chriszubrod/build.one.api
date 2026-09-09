@@ -1,6 +1,6 @@
 -- Migration: Backfill IsCredit on dbo.Expense from qbo.Purchase.Credit
 -- Purpose: Set IsCredit=1 for all Expenses that originated from QBO CreditCardCredits
--- Run with: python scripts/run_sql.py entities/expense/sql/backfill_is_credit.sql
+-- Run with: ./.venv/bin/python scripts/run_sql.py entities/expense/sql/backfill_is_credit.sql
 -- Run AFTER: add_is_credit_column.sql
 
 DECLARE @RowsUpdated INT;

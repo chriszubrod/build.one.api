@@ -5,7 +5,7 @@
 guarded `CREATE TABLE`, `CREATE OR ALTER` sprocs) with:
 
 ```
-python scripts/run_sql.py integrations/intuit/qbo/reimburse_charge/sql/qbo.reimburse_charge.sql
+./.venv/bin/python scripts/run_sql.py integrations/intuit/qbo/reimburse_charge/sql/qbo.reimburse_charge.sql
 ```
 
 ## Why this table exists

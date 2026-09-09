@@ -24,7 +24,7 @@ Live data confirms the analyses exactly: 154 in-scope line items (145 pending_re
 ## 2. Code Changes
 
 ### 2A. Aggregation sproc — make labor cost-only
-**New file:** `entities/time_entry/sql/migrations/012_2026_06_16_aggregate_cost_only.sql` (`CREATE OR ALTER PROCEDURE dbo.AggregateTimeEntryOnSubmit`, full body copied verbatim from deployed/009, with only the markup math changed). Run via `python scripts/run_sql.py`. **Do not edit 009 in place** — it is the historical record of the prior deployed state; add a header noting 012 supersedes 009 for markup deferral, and that the baked-markup lines it removes were introduced in 008/009.
+**New file:** `entities/time_entry/sql/migrations/012_2026_06_16_aggregate_cost_only.sql` (`CREATE OR ALTER PROCEDURE dbo.AggregateTimeEntryOnSubmit`, full body copied verbatim from deployed/009, with only the markup math changed). Run via `./.venv/bin/python scripts/run_sql.py`. **Do not edit 009 in place** — it is the historical record of the prior deployed state; add a header noting 012 supersedes 009 for markup deferral, and that the baked-markup lines it removes were introduced in 008/009.
 
 Preserve everything else identically: XOR Employee/Vendor branch, billing-period math, project bucketing + `ConcatNotes`, **parent-upsert-outside-cursor keyed on `SourceTimeEntryId`** (the 009 bug-fix), line-item key `(ParentId, SourceTimeEntryId, ProjectId)` with the NULL-project defend, `Status='billed'`/`'invoiced'` frozen-state guards, `@Results` shape, final `SELECT`. Edits (apply symmetrically in the Employee and Vendor branches):
 
@@ -82,7 +82,7 @@ EmployeeLabor never produces a Bill; it is invoiced directly, and the picker is 
 
 ## 3. Data Migration
 
-**New file:** `entities/contract_labor/sql/migrations/2026_06_16_revert_markup_to_cost_only.sql`, run via `python scripts/run_sql.py`. Single transactional, idempotent, re-runnable migration. **Two safety findings drive the SQL** (verified live): (1) recover cost via `Price/(1+Markup)`, **never** `Hours*Rate` — 8 'ready' line items (Ids 357–364, parents 498–509) store `Price = Rate*(1+Markup)` with Hours excluded (`Hours*Rate` would corrupt 240→1920); (2) recompute parent `TotalAmount` as `SUM(cost-only child Price)`, **never** parent `Hours*HourlyRate` — in 20 of 64 parents the parent's full daily hours ≠ summed billable line hours. Bill generation walks line items, so line items are authoritative.
+**New file:** `entities/contract_labor/sql/migrations/2026_06_16_revert_markup_to_cost_only.sql`, run via `./.venv/bin/python scripts/run_sql.py`. Single transactional, idempotent, re-runnable migration. **Two safety findings drive the SQL** (verified live): (1) recover cost via `Price/(1+Markup)`, **never** `Hours*Rate` — 8 'ready' line items (Ids 357–364, parents 498–509) store `Price = Rate*(1+Markup)` with Hours excluded (`Hours*Rate` would corrupt 240→1920); (2) recompute parent `TotalAmount` as `SUM(cost-only child Price)`, **never** parent `Hours*HourlyRate` — in 20 of 64 parents the parent's full daily hours ≠ summed billable line hours. Bill generation walks line items, so line items are authoritative.
 
 **STEP A — line items first** (so STEP B's SUM reads cost-only children):
 ```sql
@@ -131,8 +131,8 @@ Recommended single-cutover order:
 
 1. **Pre-flight** — run §3 PRE verification (capture baseline counts: 334 billed-markup, 154/64 in scope).
 2. **Deploy API code** (§2B–2D, §2F backend pieces) via Docker: `az acr build` then `az webapp restart`. Ship with the §2B dual-mode guard (`li.markup IS NOT NULL` ⇒ treat price as already-marked-up) so the still-mixed live data is billed correctly during the brief gap before SQL lands.
-3. **Deploy aggregator sproc** (§2A, migration 012): `python scripts/run_sql.py entities/time_entry/sql/migrations/012_2026_06_16_aggregate_cost_only.sql`. From here, new/resubmitted aggregations are cost-only.
-4. **Run data migration** (§3): `python scripts/run_sql.py entities/contract_labor/sql/migrations/2026_06_16_revert_markup_to_cost_only.sql`, then immediately run §3 POST verification.
+3. **Deploy aggregator sproc** (§2A, migration 012): `./.venv/bin/python scripts/run_sql.py entities/time_entry/sql/migrations/012_2026_06_16_aggregate_cost_only.sql`. From here, new/resubmitted aggregations are cost-only.
+4. **Run data migration** (§3): `./.venv/bin/python scripts/run_sql.py entities/contract_labor/sql/migrations/2026_06_16_revert_markup_to_cost_only.sql`, then immediately run §3 POST verification.
 5. **Deploy React** (`build.one.web` — local `npm run dev` against prod, no deployed host; merge/push the branch so the CL surfaces stop saving markup and the bill surface exposes it).
 6. **Remove the §2B dual-mode guard** in a follow-up deploy once verification confirms no `markup<>0` non-terminal rows remain — at that point all non-terminal CL is cost-only and the guard is dead code. (Keep it through one verified cycle.)
 
@@ -155,7 +155,7 @@ Steps 3 and 4 are adjacent and fast; the only "wrong billing" exposure is a `bil
 ## 6. Rollback
 
 - **Code (§2B–2F):** redeploy the previous API Docker image (`az webapp` revert/redeploy prior tag) + revert the React branch. The previous `bill_service` expects marked-up CL rows with `markup<>0`.
-- **Aggregator sproc:** re-run migration 009 (`python scripts/run_sql.py entities/time_entry/sql/migrations/009_2026_06_03_aggregate_parent_per_time_entry.sql`) — it is `CREATE OR ALTER`, restoring the markup-baking body. 012 leaves 009 untouched, so the rollback source is intact.
+- **Aggregator sproc:** re-run migration 009 (`./.venv/bin/python scripts/run_sql.py entities/time_entry/sql/migrations/009_2026_06_03_aggregate_parent_per_time_entry.sql`) — it is `CREATE OR ALTER`, restoring the markup-baking body. 012 leaves 009 untouched, so the rollback source is intact.
 - **Data:** the §3 migration is the lossy step. Reversing requires re-baking markup onto the 154 line items + 64 parents (`Price = Price * (1 + resolved_markup)`, restore `Markup`, restore parent `TotalAmount`). **Take a pre-migration snapshot of `Id, Markup, Price` for the in-scope `ContractLaborLineItem` rows and `Id, Markup, TotalAmount` for the in-scope parents** (e.g. `SELECT … INTO #cl_markup_backup_20260616`) immediately before step 4 so rollback is an exact `UPDATE … FROM backup` join, not a recompute. The frozen `billed` tier is never touched, so prod bills are safe regardless. Because 0 in-scope rows are linked to a `BillLineItem`, no Bill needs regenerating on rollback.
 
 ---

@@ -4,7 +4,7 @@
 -- HAND-OFF ONLY. Do not run this from a build session. Per the umbrella rule
 -- `feedback_builders_never_mutate_prod_data.md`, /em reviews and executes it.
 --
--- ⛔ DO NOT RUN THIS THROUGH `python scripts/run_sql.py`. That helper executes
+-- ⛔ DO NOT RUN THIS THROUGH `./.venv/bin/python scripts/run_sql.py`. That helper executes
 --    every GO-separated batch in order and then DISCARDS the results
 --    (`while cursor.nextset(): pass`), so it would swallow STEP 1's preview
 --    rows AND STEP 2's per-batch PRINT progress — while still executing the

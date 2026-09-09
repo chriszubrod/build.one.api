@@ -13,7 +13,7 @@
 --   (repeat for Customer, CostCode, SubCostCode, PaymentTerm, Address,
 --    Attachment, BillCredit)
 --
--- Run: python scripts/run_sql.py scripts/migrations/238c_qbo_identity_reference.sql
+-- Run: ./.venv/bin/python scripts/run_sql.py scripts/migrations/238c_qbo_identity_reference.sql
 -- =========================================================================
 
 -- dbo.Vendor

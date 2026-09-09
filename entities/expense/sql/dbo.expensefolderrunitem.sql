@@ -4,7 +4,7 @@
 -- more than one file's worth of work, so idle timeouts + per-file errors
 -- stop affecting the whole run.
 --
--- Run: python scripts/run_sql.py entities/expense/sql/dbo.expensefolderrunitem.sql
+-- Run: ./.venv/bin/python scripts/run_sql.py entities/expense/sql/dbo.expensefolderrunitem.sql
 
 GO
 

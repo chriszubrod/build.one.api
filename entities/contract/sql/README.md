@@ -35,7 +35,7 @@ designed.
 Applying `dbo.contract.sql` alone against a database that already has `dbo.User`
 and `dbo.Project` is sufficient; `scripts/migrations/contract_entity.sql` is the
 narrower table-only path for the standard migration runner
-(`python scripts/run_sql.py scripts/migrations/contract_entity.sql`).
+(`./.venv/bin/python scripts/run_sql.py scripts/migrations/contract_entity.sql`).
 
 ## Notes
 

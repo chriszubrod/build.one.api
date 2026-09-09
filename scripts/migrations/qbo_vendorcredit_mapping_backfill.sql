@@ -6,7 +6,7 @@
 -- fingerprint fallback (which would duplicate truly-identical lines like a 50-50 split).
 -- Conservative: count-matched credits only; skip any line already mapped (UNIQUE-safe).
 -- Idempotent. Run with:
---   python scripts/run_sql.py scripts/migrations/qbo_vendorcredit_mapping_backfill.sql
+--   ./.venv/bin/python scripts/run_sql.py scripts/migrations/qbo_vendorcredit_mapping_backfill.sql
 --
 -- U-353: already applied historically (this file's whole purpose was a one-time
 -- 2026-06-18 fix). Its FROM qbo.VendorCreditBillCredit (below) now depends on a

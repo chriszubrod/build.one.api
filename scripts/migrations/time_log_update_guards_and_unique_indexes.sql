@@ -25,7 +25,7 @@
 --    script prints the offending groups and SKIPS the index. Dedup those
 --    rows manually, then re-run this script (idempotent).
 --
--- Run with: python scripts/run_sql.py scripts/migrations/time_log_update_guards_and_unique_indexes.sql
+-- Run with: ./.venv/bin/python scripts/run_sql.py scripts/migrations/time_log_update_guards_and_unique_indexes.sql
 -- =============================================================================
 
 -- ---------------------------------------------------------------------------

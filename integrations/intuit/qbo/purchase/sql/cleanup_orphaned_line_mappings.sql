@@ -6,7 +6,7 @@
 -- ExpenseLineItem is already gone; on the next sync the QboPurchaseLine will
 -- be re-synced and a new ExpenseLineItem + mapping will be created.
 --
--- Run with: python scripts/run_sql.py integrations/intuit/qbo/purchase/sql/cleanup_orphaned_line_mappings.sql
+-- Run with: ./.venv/bin/python scripts/run_sql.py integrations/intuit/qbo/purchase/sql/cleanup_orphaned_line_mappings.sql
 
 DECLARE @deleted INT;
 

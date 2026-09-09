@@ -31,7 +31,7 @@
 -- (creates the unique indexes that prevent recurrence — they require a
 -- clean table).
 --
--- Run with: python scripts/run_sql.py scripts/cleanup.time_entry_duplicates.sql
+-- Run with: ./.venv/bin/python scripts/run_sql.py scripts/cleanup.time_entry_duplicates.sql
 -- =============================================================================
 
 DECLARE @Apply BIT = 0;   -- <<< flip to 1 to perform the merge

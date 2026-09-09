@@ -1,5 +1,5 @@
 -- Add permission columns to RoleModule table
--- Run: python scripts/run_sql.py entities/role_module/sql/add_permission_columns.sql
+-- Run: ./.venv/bin/python scripts/run_sql.py entities/role_module/sql/add_permission_columns.sql
 
 IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('dbo.RoleModule') AND name = 'CanCreate')
 BEGIN

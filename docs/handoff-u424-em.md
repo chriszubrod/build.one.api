@@ -53,7 +53,7 @@ WHY
 --------------------------------------------------------------------------
 STEP 1 — APPLY dbo.contract_labor.sql   ⚠ MUST BE FIRST
 --------------------------------------------------------------------------
-  python scripts/run_sql.py entities/contract_labor/sql/dbo.contract_labor.sql
+  ./.venv/bin/python scripts/run_sql.py entities/contract_labor/sql/dbo.contract_labor.sql
 
   Changes to dbo.UpdateContractLaborAggregates:
     * new @ReturnRow BIT = 1 — suppresses the trailing SELECT for SQL callers
@@ -79,7 +79,7 @@ STEP 1 — APPLY dbo.contract_labor.sql   ⚠ MUST BE FIRST
 --------------------------------------------------------------------------
 STEP 2 — APPLY dbo.time_entry.sql
 --------------------------------------------------------------------------
-  python scripts/run_sql.py entities/time_entry/sql/dbo.time_entry.sql
+  ./.venv/bin/python scripts/run_sql.py entities/time_entry/sql/dbo.time_entry.sql
 
   Changes to dbo.AggregateTimeEntryOnSubmit:
     * the ContractLabor parent UPDATE no longer sets TotalHours / HourlyRate /

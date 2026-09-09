@@ -8,7 +8,7 @@
 -- service now calls this), so the delete always succeeds. Mirrors the existing
 -- NullifyInvoiceLineItemsByBillLineItemId sproc. Idempotent (CREATE OR ALTER).
 --
--- Run with: python scripts/run_sql.py scripts/migrations/qbo_vendorcredit_dup_fix.sql
+-- Run with: ./.venv/bin/python scripts/run_sql.py scripts/migrations/qbo_vendorcredit_dup_fix.sql
 -- (as of U-102 this file applies NOTHING — see the stub below; the run PRINTs
 --  a SUPERSEDED line so a no-op is distinguishable from a failed apply.)
 

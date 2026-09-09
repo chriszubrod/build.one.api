@@ -57,5 +57,5 @@ email-driven intake. `integrations/ms/mail` is left in place for future use.
 uvicorn app:app --reload
 
 # Run SQL migrations
-python scripts/run_sql.py path/to/file.sql
+./.venv/bin/python scripts/run_sql.py path/to/file.sql
 ```

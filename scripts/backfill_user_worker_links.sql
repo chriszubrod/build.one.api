@@ -14,7 +14,7 @@
 -- re-run. PRINT statements report each step's outcome.
 --
 -- Run via:
---   python scripts/run_sql.py scripts/backfill_user_worker_links.sql
+--   ./.venv/bin/python scripts/run_sql.py scripts/backfill_user_worker_links.sql
 --
 -- Prereq: Phase 1 schema applied
 --   - entities/employee/sql/dbo.employee.sql

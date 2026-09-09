@@ -2,7 +2,7 @@
 -- Replaces the in-process _folder_processing_results dict which broke under
 -- -w 2 gunicorn (POST on worker A, poll on worker B → 404).
 --
--- Run: python scripts/run_sql.py entities/bill/sql/dbo.billfolderrun.sql
+-- Run: ./.venv/bin/python scripts/run_sql.py entities/bill/sql/dbo.billfolderrun.sql
 
 GO
 

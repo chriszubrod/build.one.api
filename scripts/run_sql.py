@@ -2,8 +2,17 @@
 """
 Simple script to run SQL files against the database.
 
-Usage:
-    python scripts/run_sql.py path/to/file.sql
+Usage (run from the repo root, /Users/chris/Applications/build.one/build.one.api):
+    ./.venv/bin/python scripts/run_sql.py path/to/file.sql
+
+Both halves matter:
+  - `./.venv/bin/python`, not `python` (absent on macOS) and not `python3`
+    (the system 3.9, not this project's 3.11 — the same trap
+    tests/conftest.py::pytest_configure fails fast on).
+  - Run from the repo root. config.py sets `env_file=".env"`, which
+    pydantic-settings resolves against the CURRENT WORKING DIRECTORY, so
+    invoking this from the build.one umbrella silently loads no .env and the
+    DB connection fails on empty credentials rather than on a clear path error.
 """
 import sys
 import os
@@ -64,7 +73,8 @@ def run_sql_file(file_path: str):
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        print("Usage: python scripts/run_sql.py <path_to_sql_file>")
+        print("Usage: ./.venv/bin/python scripts/run_sql.py <path_to_sql_file>")
+        print("       (run from the repo root — .env is resolved against the CWD)")
         sys.exit(1)
 
     sql_file = sys.argv[1]

@@ -6,7 +6,7 @@
 -- read_by_qbo_line_id errored on every credit line. Recreate in dbo to match
 -- Bill's convention + call_procedure. The TABLE stays in the qbo schema.
 -- Idempotent (CREATE OR ALTER). Old qbo.* copies are harmless (unused).
---   python scripts/run_sql.py scripts/migrations/qbo_vendorcredit_mapping_sprocs_dbo.sql
+--   ./.venv/bin/python scripts/run_sql.py scripts/migrations/qbo_vendorcredit_mapping_sprocs_dbo.sql
 
 --
 -- U-361: the four sproc bodies this file used to declare

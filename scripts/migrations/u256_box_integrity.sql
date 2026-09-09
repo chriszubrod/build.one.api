@@ -6,7 +6,7 @@
 --          WorkbookEntityPush freshness short-circuit before Box lock.
 -- SQL-FIRST, NOT YET APPLIED — do NOT run this file until explicitly approved
 -- for prod apply (a deploy is in flight). Self-contained: schema + sproc bodies.
--- Run with: python scripts/run_sql.py scripts/migrations/u256_box_integrity.sql
+-- Run with: ./.venv/bin/python scripts/run_sql.py scripts/migrations/u256_box_integrity.sql
 
 -- ============================================================================
 -- Part C — [box].[File] drift invalidation columns

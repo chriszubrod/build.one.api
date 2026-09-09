@@ -24,7 +24,7 @@
 -- Additive only, NOT EXISTS-guarded by constraint name, never drops or recreates
 -- a table. COMMITTED, NOT APPLIED -- prod apply is a separate, explicitly-approved
 -- deploy step (this unit's mandate is the migration file only).
--- Run with: python scripts/run_sql.py scripts/migrations/u225_qbo_mapping_fk_gaps.sql
+-- Run with: ./.venv/bin/python scripts/run_sql.py scripts/migrations/u225_qbo_mapping_fk_gaps.sql
 
 -- ============================================================================
 -- 1. qbo.BillBill

@@ -5,7 +5,7 @@
 -- entities, sourced from existing qbo.* mapping + staging tables.
 -- Purely additive — qbo.* tables and mapping rows are untouched.
 --
--- Run: python scripts/run_sql.py scripts/migrations/238a_qbo_identity_headers.sql
+-- Run: ./.venv/bin/python scripts/run_sql.py scripts/migrations/238a_qbo_identity_headers.sql
 -- =========================================================================
 
 -- dbo.Bill

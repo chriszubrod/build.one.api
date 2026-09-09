@@ -4,7 +4,7 @@
 -- VendorCreditLineItemBillCreditLineItem mapping stable so the connector can
 -- update BillCreditLineItems in place (preserving attachments + invoice FK links).
 -- Idempotent (CREATE OR ALTER). Run with:
---   python scripts/run_sql.py scripts/migrations/qbo_vendorcredit_upsert_inplace.sql
+--   ./.venv/bin/python scripts/run_sql.py scripts/migrations/qbo_vendorcredit_upsert_inplace.sql
 
 CREATE OR ALTER PROCEDURE ReadQboVendorCreditLineByVendorCreditIdAndQboLineId
 (

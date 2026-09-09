@@ -1,7 +1,7 @@
 -- Migration: Add FK constraints to Purchase mapping tables
 -- Purpose: Enforce referential integrity between mapping tables and their source/target tables.
 --          Prevents orphaned mapping rows when parent records are deleted.
--- Run with: python scripts/run_sql.py integrations/intuit/qbo/purchase/sql/add_fk_constraints_to_mapping_tables.sql
+-- Run with: ./.venv/bin/python scripts/run_sql.py integrations/intuit/qbo/purchase/sql/add_fk_constraints_to_mapping_tables.sql
 
 -- ============================================================================
 -- 1. qbo.PurchaseExpense FK constraints

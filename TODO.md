@@ -43,6 +43,65 @@ by 17 rows.
   one-off double-enqueue, BR-MAIN will not be the only tracker carrying it — the 2026-08-06 incident hit 8
   projects at once.
 
+## U-426 RE-RUN — the independent Codex review finally happened (booked 2026-09-10)
+
+U-426's whole purpose was a second opinion on a Bill review I had written, and it never got one: the Codex
+leg died on a dead pin and fell back to Claude — the same model that wrote the review being checked. With the
+pin fixed (`gpt-5.6-terra`), the review was re-run BLIND (not seeded with my 15 findings, so it could not
+anchor on them). Verdict **CHANGES-REQUESTED, 12 findings**.
+
+**The result answers U-426's question: my review was NOT sufficient alone — and neither is Codex's.**
+Codex independently confirmed 8 of mine (including the Excel enqueue-dedup one I had DEMOTED out of my final
+15), found 4 I missed, and missed ~9 of mine — including a `NameError` endpoint dead in prod since April, the
+blob-collision, and the paginated page-tearing. The union is materially better than either reviewer alone.
+
+### NEW from Codex — not in my 15
+
+- [ ] **P1 — U-434's own fix has a residual silent-loss path, and my tests PIN it.**
+  `entities/bill/api/router.py:492`. I keyed the marking on `bill_finalized`, but that answers "did we
+  finalize", not "did every durable handoff succeed". `_enqueue_qbo_sync` returns
+  `qbo_sync_queued: False` when there is no QBO auth record or the enqueue throws;
+  `complete_bill` appends to `errors` and CONTINUES, returning 207 with `bill_finalized: True`. The job is
+  then marked successful, so the QBO push never happened AND never retries — the same class of silent loss
+  U-434 removed, one layer down. **Codex's test-adequacy note names my own flaw exactly:** "The completion
+  tests explicitly treat every finalized 207 as job success, masking the no-outbox case" — i.e.
+  `test_u434_...::test_finalized_completions_mark_success[207]` pins the bug. Fixing this is U-437.
+  **Design nuance that must not be fumbled:** `ALLOW_QBO_WRITES` is checked at DRAIN (`base/client.py:101`),
+  not at enqueue, so a failed QBO enqueue is always a real failure. But `ALLOW_MS_WRITES` IS checked at
+  enqueue (`ms/outbox/business/service.py:137`) and the Bill service conflates it with a genuine failure
+  ("enqueue refused (ALLOW_MS_WRITES=false or enqueue failure)", service.py:2247/2266). Keying failure on the
+  MS legs would permanently fail every completion in a deliberately gated environment.
+
+- [ ] **P2 — completion makes inline Azure Blob and Graph calls, so a transient failure becomes a 207 with no
+  durable record.** `entities/bill/business/service.py:1432` (`_rename_invoice_blob_on_complete`) and `:2085`
+  (`create_workbook_session` / `get_excel_used_range_values`). CLAUDE.md L74 says completion pipelines enqueue
+  and never call external APIs inline; the row WRITES are correctly enqueued, but the blob move and the
+  workbook session/used-range read are synchronous round-trips inside completion with no retry or
+  dead-letter. Same root as the item above: the failure is recorded in `errors` and then marked successful.
+
+- [ ] **P2 — `apply_reviewer_decision` checks draft state outside any transition guard.**
+  `entities/bill/business/service.py:1162` reads `bill.is_draft` and `:1214` acts on it, with nothing holding
+  the state in between. Completion can finalize the Bill after that read while the reviewer decision still
+  updates the summary line and inserts a Review row — so a decision lands on a bill that is no longer a
+  draft, which the guard exists to forbid. Now cheap to fix properly: U-434 introduced `FinalizeBillById`,
+  guarded on `IsDraft = 1`, so the same predicate can gate the decision path.
+
+- [ ] **P2 — deleting the sole attachment link leaves a Bill with no PDF.**
+  `entities/bill_line_item_attachment/business/service.py:130` permits deleting the only link on a
+  single-line Bill, violating the universal-PDF invariant that `BillService.create` enforces at the other end
+  (it rolls back — or tries to — rather than allow an attachment-less Bill).
+
+### Codex CONFIRMED (already booked above, no new action)
+find-by-conversation-id unscoped leak · `create()` rollback FK 547 · InvoiceLineItem hard-delete on line
+delete · BLIA FK 547 on line delete · `can_read` on folder mutations · Excel dedupe at enqueue (which I had
+demoted) · `float()` money · line-item router 500-not-404.
+
+### Codex REFUTED one of my angles' refutations
+My phase-1 angle D dismissed `float()` in the Excel path as "exact round-trip below ~1e16". Wrong:
+`float(Decimal("99999999999999.99"))` is `99999999999999.98` — a cent lost at ~1e14. Practical exposure is nil
+at real bill magnitudes, but the stated basis was false and I repeated it. The CLAUDE.md rule bans float for
+money regardless.
+
 ## U-434 follow-on — the completion-job marking bug is a FAMILY, not a Bill bug (booked 2026-09-09)
 
 Found by U-434's Pass-2 reuse lens, which is the only leg that could have found it: Pass 1 and Codex review

@@ -18,12 +18,10 @@ from entities.bill.persistence.folder_run_repo import (
 )
 from entities.bill.persistence.repo import BillRepository
 from entities.vendor.persistence.repo import VendorRepository
-from entities.review_status.business.service import ReviewStatusService
 from shared.api.auth_user import resolve_user_id
 from shared.api.money import to_decimal_or_none
 from shared.api.responses import list_response, item_response, accepted_response, raise_workflow_error, raise_not_found
 from shared.database import get_connection
-from shared.lifecycle.resolver import attach_lifecycle
 from shared.rbac import require_module_api
 from shared.rbac_constants import Modules
 from core.workflow.api.process_engine import ProcessEngine, TriggerContext, EventType, Channel
@@ -65,49 +63,6 @@ def _resolve_vendor_public_id(vendor_id: Optional[int]) -> Optional[str]:
     if not vendor_id:
         return None
     return VendorRepository().read_public_id_by_id(vendor_id)
-
-
-def _first_review_sort_order() -> Optional[int]:
-    try:
-        first = ReviewStatusService().get_first_status()
-        return first.sort_order if first is not None else None
-    except Exception:
-        logger.exception("ReadFirstReviewStatus failed; review kind may collapse to in_review")
-        return None
-
-
-def _current_review_for_bill(bill_id: Optional[int]):
-    if not bill_id:
-        return None
-    try:
-        from entities.review.persistence.repo import ReviewRepository
-        return ReviewRepository().read_current_by_bill_id(bill_id)
-    except Exception:
-        logger.exception(
-            "ReadCurrentReviewByBillId failed; bill GET continues without review state"
-        )
-        return None
-
-
-def _bill_dict_with_lifecycle(bill, *, review=None, first_sort_order: Optional[int] = None) -> dict:
-    """Serialize a Bill and stamp derived `status` + `review_status*`.
-
-    Same attach as Expense. List already stitched Name + flags; this adds
-    canonical `status` and `review_status_kind` and extends the stitch to
-    single GETs.
-    """
-    if hasattr(bill, "to_dict"):
-        payload = bill.to_dict()
-        is_draft = bill.is_draft
-    else:
-        payload = dict(bill)
-        is_draft = payload.get("is_draft")
-    return attach_lifecycle(
-        payload,
-        is_draft=is_draft,
-        review=review,
-        first_sort_order=first_sort_order,
-    )
 
 
 @router.post("/create/bill")
@@ -229,20 +184,17 @@ async def get_bills_router(
             # ReadVendors call on this same connection, not N+1.
             vendor_ids = [b.vendor_id for b in bills if b.vendor_id]
             vendor_public_id_map = vendor_repo.read_public_ids_by_ids(vendor_ids, conn=conn) if vendor_ids else {}
-        first_sort_order = _first_review_sort_order()
-        return bills, total, project_map, review_map, vendor_public_id_map, first_sort_order
+        return bills, total, project_map, review_map, vendor_public_id_map
 
-    bills, total, project_map, review_map, vendor_public_id_map, first_sort_order = await asyncio.to_thread(_fetch)
-    bill_dicts = []
-    for bill in bills:
-        bd = _bill_dict_with_lifecycle(
-            bill,
-            review=review_map.get(bill.id),
-            first_sort_order=first_sort_order,
-        )
+    bills, total, project_map, review_map, vendor_public_id_map = await asyncio.to_thread(_fetch)
+    bill_dicts = [bill.to_dict() for bill in bills]
+    for bd in bill_dicts:
         bd["project_id"] = project_map.get(bd["id"])
+        review = review_map.get(bd["id"])
+        bd["review_status"] = review.status_name if review else None
+        bd["review_status_is_final"] = review.status_is_final if review else None
+        bd["review_status_is_declined"] = review.status_is_declined if review else None
         bd["vendor_public_id"] = vendor_public_id_map.get(bd["vendor_id"])
-        bill_dicts.append(bd)
 
     return {
         "data": bill_dicts,
@@ -264,11 +216,7 @@ async def get_bill_by_bill_number_and_vendor_router(bill_number: str, vendor_pub
     )
     if not bill:
         raise_not_found("Bill")
-    review = await asyncio.to_thread(_current_review_for_bill, bill.id)
-    first_sort_order = await asyncio.to_thread(_first_review_sort_order)
-    return item_response(
-        _bill_dict_with_lifecycle(bill, review=review, first_sort_order=first_sort_order)
-    )
+    return item_response(bill.to_dict())
 
 
 @router.get("/get/bill/{public_id}/completion-result")
@@ -391,17 +339,13 @@ async def get_bill_by_public_id_router(public_id: str, current_user: dict = Depe
         qbo_bill_url = service.get_qbo_bill_url(bill_id=bill.id)
         # Vendor PublicId echo (U-409) — see get_bills_router.
         vendor_public_id = _resolve_vendor_public_id(bill.vendor_id)
-        review = _current_review_for_bill(bill.id)
-        first_sort_order = _first_review_sort_order()
-        return bill, qbo_bill_url, vendor_public_id, review, first_sort_order
+        return bill, qbo_bill_url, vendor_public_id
 
     result = await asyncio.to_thread(_fetch)
     if not result:
         raise_not_found("Bill")
-    bill, qbo_bill_url, vendor_public_id, review, first_sort_order = result
-    payload = _bill_dict_with_lifecycle(
-        bill, review=review, first_sort_order=first_sort_order
-    )
+    bill, qbo_bill_url, vendor_public_id = result
+    payload = bill.to_dict()
     payload["qbo_bill_url"] = qbo_bill_url
     payload["vendor_public_id"] = vendor_public_id
     return item_response(payload)
@@ -415,11 +359,7 @@ def get_bill_by_id_router(id: int, current_user: dict = Depends(require_module_a
     bill = BillService().read_by_id(id=id)
     if not bill:
         raise_not_found("Bill")
-    payload = _bill_dict_with_lifecycle(
-        bill,
-        review=_current_review_for_bill(bill.id),
-        first_sort_order=_first_review_sort_order(),
-    )
+    payload = bill.to_dict()
     # Vendor PublicId echo (U-409) — this is the read iOS calls before a PUT.
     payload["vendor_public_id"] = _resolve_vendor_public_id(bill.vendor_id)
     return item_response(payload)

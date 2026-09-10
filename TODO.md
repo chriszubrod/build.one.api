@@ -3605,3 +3605,160 @@ with the already-shipped Manual-fingerprint matcher:
   OHR2-37's dbo total; a careful cleanup (they inflate a completed/billed invoice) should delete them under
   the DocNumber-collision effort. **DROP-independent** — the mapping table is already gone and these rows are
   dbo-native. `0` unstamped-dbo-lines-with-a-live-mapping existed program-wide, which is why the DROP was safe.
+
+## U-433 — Expense entity review (2026-09-09) — findings backlog
+
+Independent review of `entities/expense/`, `entities/expense_line_item/`,
+`entities/expense_line_item_attachment/` (41 files, ~5,700 lines) — the Expense analogue of U-426's
+Bill re-review. **Review-only: no code written.** Base was dirty with another session's U-357 lifecycle
+WIP (2 in-scope files); **none of the findings below are rooted in that uncommitted diff** — all are in
+committed code. Suite 3406 green at review time.
+
+**Two reviewer legs, genuinely complementary.** Codex `gpt-5.6-terra` @ `xhigh`, run **blind**
+(CHANGES-REQUESTED, 8 findings) + a Claude twin-check seeded with U-426's Bill findings (7 findings).
+Overlap was only 2 — each leg found real defects the other missed, which is the independence U-426
+could not buy. ⚠️ The brief's pinned `gpt-5.5` **404s — the account no longer has access**; the
+reconnect loop U-426 blamed on a stale models cache is a downstream symptom, not the cause.
+`engineering-manager.md`'s pin needs updating.
+
+**Headline:** the Expense *header* was hardened (`UserCanAccessExpense`, actor-scoped reads,
+`assert_can_access_expense`); **its two child entities never were**, and the completion/delete paths
+carry the same defects U-426 found in Bill — one of which (U-434) was fixed for Bill **today** and left
+unfixed for Expense.
+
+### P0
+
+- [ ] **`_run_complete_expense` marks FAILED completions as successful CompletionJobs.**
+  `entities/expense/api/router.py:333` calls `job_service.mark_success()` unconditionally. All five
+  early returns in `complete_expense` (404 not-found, 404 not-found-during-finalize, 400 vendor-missing,
+  500 finalize-retries-exhausted, 500 finalize-exception) return **before any outbox enqueue**. The
+  inline comment justifying it — *"Returned dict (any status_code incl. 207/4xx/5xx) = finalize+enqueue
+  ran"* — is **false for all five**. The reclaim watchdog therefore never re-drives them: the expense
+  sits `IsDraft=1` forever, never reaches Excel/SharePoint/Box/QBO, and the client saw a 202.
+  **Fix is near-mechanical and already proven on the sibling:** U-434 (`6276eda4`, shipped 2026-09-09)
+  fixed the identical Bill defect by discriminating on `result.get("bill_finalized")`. `complete_expense`
+  already returns `expense_finalized` in **all six** of its return dicts. U-434 does not mention Expense.
+  **No test covers this for Expense** — U-434 wrote `tests/test_u434_complete_bill_finalize_and_job_marking.py`
+  for Bill only. A regression test must be proven RED before the fix.
+
+- [ ] **The expense delete cascade destroys the receipt blob, then guarantees a 547 on the Attachment
+  delete, orphaning the row.** `entities/expense/business/service.py:524` deletes the Azure blob
+  (irreversible at the app layer — recoverable only if account-level blob soft-delete happens to be on,
+  which the code neither sets nor checks). It then deletes the `Attachment` **while the
+  `ExpenseLineItemAttachment` row still references it** (`service.py:533`), so
+  `FK_ExpenseLineItemAttachment_Attachment` (`dbo.expense_line_item_attachment.sql:15`, no cascade)
+  raises 547 **every time** — swallowed as `logger.warning` — and only then is the ELIA link deleted
+  (`service.py:541`). **The two steps are simply inverted.** Result on every expense delete carrying a
+  receipt: blob destroyed, orphan `Attachment` row pointing at a dead blob.
+  **Second, independent failure on the same path:** `FK_InvoiceLineItem_ExpenseLineItem`
+  (`dbo.invoice_line_item.sql:23`) means an expense line already billed to a client **cannot** be
+  deleted. That 547 is also swallowed, the loop continues, and the final `DeleteExpenseById` then 547s
+  to the caller — leaving the **whole Expense alive with its receipts already destroyed**, while the
+  client invoice still cites those lines. Found by both reviewer legs, by different mechanisms.
+
+- [ ] **The two Expense child entities bypass row scoping; the reads chain into a cross-tenant
+  destructive delete.** Found independently by **both** legs.
+  - `ExpenseLineItemService.read_all()` (`business/service.py:101`) is the **one ungated method in an
+    otherwise-gated family** — `read_by_id`/`read_by_public_id`/`read_by_expense_id` all call
+    `assert_can_access_expense`. `GET /get/expense_line_items` therefore returns **every** expense line
+    in the database (Description, Quantity, Rate, Amount, Markup, Price, ProjectId, IsBillable/IsBilled)
+    to any holder of module Expenses. `ReadExpenseLineItems` (`dbo.expense_line_item.sql:156`) takes no
+    actor params.
+  - `ExpenseLineItemAttachmentService` gates **nothing** — `read_all`, `read_by_id`, `read_by_public_id`
+    are all ungated (`business/service.py:73/79/85`), and `delete_by_public_id` (`:112`) inherits that
+    because it resolves through the ungated `read_by_public_id`. So a caller with Attachments +
+    `can_delete` can **delete any expense receipt link in the system**, and the ungated list hands them
+    every `public_id` needed to target it.
+  - **The Bill sibling is the exact fix template.** Post-U-428, `BillLineItemAttachmentService.read_all`
+    is sproc-scoped with actor and `read_by_id`/`read_by_public_id` go through `_gated()` — which is the
+    only reason Bill's `delete_by_public_id` is safe. `InstantWorkflowHandler` already re-raises
+    `EntityNotAccessibleError` specifically so the service can raise it; ELIA never does.
+
+### P1
+
+- [ ] **`is_draft` is settable straight from the request body, bypassing `can_complete`.**
+  `entities/expense/api/schemas.py:30` (create) and `:119` (update) expose `is_draft`; the router threads
+  it through (`router.py:110`, `:259`). A caller holding only `can_create` — or only `can_update` — can
+  put an expense in the non-draft state that `can_complete` exists to govern. Worse, it is then
+  **permanently un-completable**: `/complete/expense/{public_id}` rejects a non-draft expense with 400
+  (`router.py:365-366`), so the expense never reaches Excel/SharePoint/Box/QBO and there is no recovery
+  path through the API.
+
+- [ ] **The 3-attempt finalize retry loop is unreachable dead code.**
+  `ExpenseRepository.update_by_id` **raises** on a row-version conflict (`persistence/repo.py:228`) —
+  it never returns None. So the raise escapes the `for attempt in range(max_retries)` loop straight to
+  the outer `except`, `time.sleep(0.2)` never runs, and the `"Row version conflict after retries"`
+  branch is unreachable. The 300ms auto-save race the loop was written for is a hard failure on attempt
+  1. **Chains into the P0 above:** that 500 dict is what gets marked `mark_success`. Same defect U-426
+  found in Bill.
+
+- [ ] **A line-item conflict strands a finalized parent.** After the header is finalized, a line-item
+  ROWVERSION conflict is only appended to `line_item_errors` (`business/service.py:641-724`); exports
+  still proceed from stale data and the method returns 207. The parent is no longer draft, so the
+  completion endpoint refuses a retry (`router.py:365`) — leaving draft children, partial external
+  effects, and no API recovery.
+
+- [ ] **`SetExpenseQboIdentity` is non-atomic.** `dbo.expense.sql:560` runs a "steal" UPDATE (strips
+  `QboId`/`RealmId`/`SyncToken` from the previous owner) and then a separate "claim" UPDATE, with **zero**
+  `BEGIN TRANSACTION`/`COMMIT`/`XACT_ABORT`. A connection drop, deadlock-victim or timeout between them
+  leaves the old Expense stripped and the new one unclaimed → the QBO expense is locally unmapped → the
+  next pull creates a **duplicate local Expense**. **11 other procs in the same file wrap in
+  `BEGIN TRANSACTION`** — mostly pointless single-`SELECT` wraps — while the one proc with two dependent
+  writes that actually needs atomicity has none. Twin of U-426's `SetBillQboIdentity`.
+
+### P2
+
+- [ ] **ELIA `create` silently returns the OLD link on re-point.**
+  `entities/expense_line_item_attachment/business/service.py:58-69`: when a link already exists for the
+  line item and the caller passes a *different* attachment, it logs a warning and returns the existing
+  record. Upload a corrected receipt, keep the stale one — and the caller gets a success response. The
+  code's own log message calls it *"stale blob risk."* Twin of U-426's BLIA finding.
+
+- [ ] **Money crosses two boundaries as `float`.** The agent-tool intake schemas type money as
+  `Optional[float]` (`intelligence/tools.py:171` `total_amount`, `:217-219` `line_rate`/`line_amount`/
+  `line_markup`, `:428-429` `rate`/`amount`), so precision is lost **before** any `Decimal(str(...))`
+  downstream — this is an *intake* boundary, where wrong data enters the system unrecoverably. And
+  `float(line_item.price)` is written into the Excel/Box DETAILS row (`business/service.py:906`, `:1097`).
+  Violates the house Decimal-not-float rule. *(Codex rated P1; downgraded to P2 here because the failure
+  needs a non-float-exact value and DETAILS reconciles on `public_id`, not price — but the agent-intake
+  half should be fixed first.)*
+
+- [ ] **`GET /get/expense_line_item/{unknown-public-id}` returns 500, not 404.**
+  `entities/expense_line_item/api/router.py:69` calls `.to_dict()` on the `None` the service returns
+  (`business/service.py:121`); no not-found check, no exception mapping.
+
+### P3
+
+- [ ] **SharePoint folder create/move/delete bypass the durable outbox** (no retry, no audit record) —
+  `business/service.py:1372`, `:1420`, `business/folder_processor.py:477`, `:489` call
+  `DriveItemService` helpers inline while the normal upload paths enqueue.
+  ⚠️ **Codex rated this P1 claiming `ALLOW_MS_WRITES=false` does not block them — that claim is
+  REFUTED.** `MsGraphClient.post/patch/put/delete` each call `_enforce_write_gate()` as their first
+  statement (`integrations/ms/base/client.py:209/235/261/286`), raising `MsWriteRefusedError` unless the
+  flag is `true`. The feature gate holds; only the outbox durability/audit point stands.
+
+- [ ] **A `$0.00` receipt is displayed as having no amount.**
+  `business/folder_processor.py:285` guards with `if parsed.amount` — and `Decimal("0.00")` is falsy —
+  so the pending-file response reports `amount: null`. The house falsy-zero rule; the guard must be
+  `is not None`. (The parse at `:164` is fine — it guards a string.)
+
+### Investigated and refuted (both legs)
+
+`assert_can_access_expense` fail-open on `None` — unreachable, `ExpenseLineItem.ExpenseId` is `NOT NULL` ·
+Expense *header* reads ungated — all three gated (`read_all`/`read_paginated` actor-scoped in the sproc,
+`read_by_public_id` asserts) · completion-result cache cross-tenant leak — route resolves through the
+gated `read_by_public_id` · `/process/expense-folder*` NameError twin (U-426's Bill P1) — no such route
+on the expense router · ELI create/update/delete ungated — all three gated · `total_amount` falsy-zero in
+`update_by_public_id` — correct `is not None` guard · ELIA `read_by_expense_line_item_id` ungated —
+transitively gated via `ExpenseLineItemService` · `expense_line_item_attachment_delete` workflow
+unregistered/broken — registered in `SYNCHRONOUS_TASKS`, `rsplit("_",1)` dispatches correctly ·
+duplicate sproc definitions in the three scoped SQL dirs (the U-427 defect class) — none ·
+nullable-field clobber on public updates — services hydrate the existing row first ·
+normal Box/SharePoint upload paths ungated — gated and outboxed.
+
+### Fix units NOT assigned — grouping is Chris's call
+
+Recommend the **three P0s go first**, and that the RBAC one ships **SQL/service-before-anything** so the
+fail-closed default applies, mirroring U-428's ordering. ⚠️ **Recompute the next free unit id before
+minting** — U-434 was claimed by a concurrent session today without a board row, per the shared-registry
+collision rule.

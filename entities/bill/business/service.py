@@ -1,7 +1,6 @@
 # Python Standard Library Imports
 import logging
 import re
-import time
 from collections import defaultdict
 from decimal import Decimal
 from typing import Any, List, Optional
@@ -1068,17 +1067,8 @@ class BillService:
             existing.is_draft = is_draft
 
         # Duplicate check when completing (transitioning from draft to non-draft)
-        if is_draft is False and existing.vendor_id and existing.bill_number:
-            duplicate = self.repo.read_by_bill_number_and_vendor_id(
-                bill_number=existing.bill_number,
-                vendor_id=existing.vendor_id,
-                bill_date=existing.bill_date,
-            )
-            if duplicate and str(duplicate.public_id).upper() != str(public_id).upper():
-                raise ValueError(
-                    f"A bill with BillNumber '{existing.bill_number}' already exists for this vendor. "
-                    f"Please update the existing bill instead of creating a new one."
-                )
+        if is_draft is False:
+            self._assert_no_duplicate_on_complete(existing, public_id)
 
         # Note: SharePoint sync is performed in complete_bill when "Complete Bill" is clicked.
         # This avoids duplicate uploads when the bill is finalized.
@@ -1086,6 +1076,39 @@ class BillService:
         updated_bill = self.repo.update_by_id(existing)
         
         return updated_bill
+
+    def _assert_no_duplicate_on_complete(self, bill, public_id: str) -> None:
+        """Refuse to finalize a draft that duplicates an existing bill.
+
+        Extracted to a choke point by U-434. It used to live inline in
+        `update_by_public_id`, reachable only when a caller passed
+        `is_draft=False` — which was how `complete_bill` finalized. Now that
+        completion goes through `repo.finalize_by_id` (a bare state transition
+        that writes no fields and so cannot host this check), an un-extracted
+        guard would have been SILENTLY DROPPED from the completion path: exactly
+        the removed-invariant class a diff review cannot see, because the deleted
+        lines and the new call site are in different methods.
+
+        Both callers remain: `update_by_public_id` for the QBO-pull
+        reconciliation path (`_via_completion_pipeline=True`), and
+        `complete_bill` for the human/API path.
+
+        No-ops when vendor or bill number is absent — a draft is allowed to be
+        incomplete, and `UQ_Bill_VendorId_BillNumber_BillDate` is filtered to
+        non-NULL on both columns for the same reason.
+        """
+        if not bill.vendor_id or not bill.bill_number:
+            return
+        duplicate = self.repo.read_by_bill_number_and_vendor_id(
+            bill_number=bill.bill_number,
+            vendor_id=bill.vendor_id,
+            bill_date=bill.bill_date,
+        )
+        if duplicate and str(duplicate.public_id).upper() != str(public_id).upper():
+            raise ValueError(
+                f"A bill with BillNumber '{bill.bill_number}' already exists for this vendor. "
+                f"Please update the existing bill instead of creating a new one."
+            )
 
     def apply_reviewer_decision(
         self,
@@ -1452,84 +1475,68 @@ class BillService:
         if not bill.is_draft:
             logger.info(f"Bill {public_id} is already finalized")
         
-        # Finalize Bill (set is_draft=False)
-        # Use retry logic to handle race conditions with auto-save
+        # Finalize the Bill — ONE idempotent state transition, no retry loop.
+        #
+        # U-434. This used to build a BillUpdate from the row it had just read
+        # and push every field back through UpdateBillById, whose @RowVersion
+        # predicate made completion lose a race to BillEdit's 300ms auto-save.
+        # The 3-attempt retry loop that was meant to absorb that could never
+        # fire — BillRepository.update_by_id RAISES on a 0-row UPDATE instead of
+        # returning None, so the retry branch was unreachable and time.sleep(0.2)
+        # never executed in prod. A stray keystroke during Complete produced a
+        # hard 500, and _run_complete_bill then recorded it as job SUCCESS, so
+        # the reclaim watchdog never re-drove it: the bill sat IsDraft=1 forever
+        # and its AP never reached QBO/SharePoint/Excel/Box. Both halves fixed.
+        #
+        # repo.finalize_by_id is guarded on IsDraft = 1 rather than RowVersion,
+        # so it is idempotent and an unrelated concurrent field edit cannot
+        # block it. It returns the row whenever the Bill exists (flipped by us
+        # or already flipped) and None only when the Bill is genuinely gone.
         try:
-            
-            finalized_bill = None
-            max_retries = 3
-            
-            for attempt in range(max_retries):
-                # Re-read bill to get latest row_version (handles auto-save race condition)
-                bill = self.read_by_public_id(public_id=public_id)
-                if not bill:
-                    return {
-                        "status_code": 404,
-                        "message": "Bill not found during finalization",
-                        "bill_finalized": False,
-                        "file_uploads": {},
-                        "excel_syncs": {},
-                        "qbo_sync": {},
-                        "errors": []
-                    }
-                
-                # Get vendor to get vendor_public_id
-                vendor = None
-                if bill.vendor_id:
-                    vendor = self.vendor_service.read_by_id(id=bill.vendor_id)
-                
-                if not vendor or not vendor.public_id:
-                    return {
-                        "status_code": 400,
-                        "message": "Vendor not found for bill",
-                        "bill_finalized": False,
-                        "file_uploads": {},
-                        "excel_syncs": {},
-                        "qbo_sync": {},
-                        "errors": [{"step": "finalize_bill", "error": "Vendor not found"}]
-                    }
-                
-                # Get payment term public_id if set
-                payment_term_public_id = None
-                if bill.payment_term_id:
-                    payment_term = PaymentTermService().read_by_id(id=bill.payment_term_id)
-                    if payment_term:
-                        payment_term_public_id = payment_term.public_id
-                
-                bill_update = BillUpdate(
-                    row_version=bill.row_version,
-                    vendor_public_id=vendor.public_id,
-                    payment_term_public_id=payment_term_public_id,
-                    bill_date=bill.bill_date,
-                    due_date=bill.due_date,
-                    bill_number=bill.bill_number,
-                    total_amount=bill.total_amount,
-                    memo=bill.memo,
-                    is_draft=False
-                )
-                
-                finalized_bill = self.update_by_public_id(
-                    public_id=public_id, _via_completion_pipeline=True, **bill_update.model_dump()
-                )
-                
-                if finalized_bill:
-                    logger.info(f"Bill {public_id} finalized on attempt {attempt + 1}")
-                    break
-                else:
-                    logger.warning(f"Bill {public_id} finalize attempt {attempt + 1} failed (row_version conflict?), retrying...")
-                    if attempt < max_retries - 1:
-                        time.sleep(0.2)  # Brief delay before retry
-            
-            if not finalized_bill:
+            bill = self.read_by_public_id(public_id=public_id)
+            if not bill:
                 return {
-                    "status_code": 500,
-                    "message": "Failed to finalize bill after retries (concurrent modification)",
+                    "status_code": 404,
+                    "message": "Bill not found during finalization",
                     "bill_finalized": False,
                     "file_uploads": {},
                     "excel_syncs": {},
                     "qbo_sync": {},
-                    "errors": [{"step": "finalize_bill", "error": "Row version conflict after retries"}]
+                    "errors": [],
                 }
+
+            # Vendor is required to complete: the SharePoint/Box filename, the
+            # Excel DETAILS row and the QBO push all need it.
+            vendor = self.vendor_service.read_by_id(id=bill.vendor_id) if bill.vendor_id else None
+            if not vendor or not vendor.public_id:
+                return {
+                    "status_code": 400,
+                    "message": "Vendor not found for bill",
+                    "bill_finalized": False,
+                    "file_uploads": {},
+                    "excel_syncs": {},
+                    "qbo_sync": {},
+                    "errors": [{"step": "finalize_bill", "error": "Vendor not found"}],
+                }
+
+            # Same guard update_by_public_id applied when it owned this path.
+            # Extracted to _assert_no_duplicate_on_complete so dropping the
+            # field-write did not silently drop the duplicate check with it.
+            self._assert_no_duplicate_on_complete(bill, public_id)
+
+            finalized_bill = self.repo.finalize_by_id(id=bill.id)
+            if not finalized_bill:
+                # The Bill was deleted between the read above and the flip.
+                return {
+                    "status_code": 404,
+                    "message": "Bill not found during finalization",
+                    "bill_finalized": False,
+                    "file_uploads": {},
+                    "excel_syncs": {},
+                    "qbo_sync": {},
+                    "errors": [{"step": "finalize_bill", "error": "Bill deleted during finalization"}],
+                }
+            logger.info(f"Bill {public_id} finalized (IsDraft=0)")
         except Exception as e:
             logger.exception(f"Error finalizing bill {public_id}")
             return {
@@ -1539,9 +1546,8 @@ class BillService:
                 "file_uploads": {},
                 "excel_syncs": {},
                 "qbo_sync": {},
-                "errors": [{"step": "finalize_bill", "error": str(e)}]
+                "errors": [{"step": "finalize_bill", "error": str(e)}],
             }
-        
         # Step 2: Finalize all BillLineItems
         line_items = self.bill_line_item_service.read_by_bill_id(bill_id=bill.id)
         line_item_errors = []

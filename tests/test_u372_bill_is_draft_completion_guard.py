@@ -100,11 +100,33 @@ def _make_bill() -> SimpleNamespace:
     )
 
 
-def test_complete_bill_passes_completion_pipeline_escape_hatch():
-    """complete_bill() is the one legitimate True->False caller — prove its
-    internal call to update_by_public_id actually carries the escape hatch,
-    not just that the guard exists in isolation."""
-    service = BillService(repo=MagicMock())
+def test_complete_bill_finalizes_without_the_escape_hatch_at_all():
+    """U-434 REPLACES this test's original assertion, deliberately.
+
+    It used to prove that `complete_bill` passed `_via_completion_pipeline=True`
+    into `update_by_public_id`. U-434 removed that call: completion now goes
+    through `repo.finalize_by_id`, a bare IsDraft 1->0 transition guarded on
+    `IsDraft = 1` rather than on `@RowVersion`, because the RowVersion predicate
+    made completion lose a race to BillEdit's 300ms auto-save (and the retry
+    loop meant to absorb that was unreachable — `update_by_id` raises rather
+    than returning None).
+
+    The U-372 INVARIANT is untouched and still covered by the other tests in
+    this file: `update_by_public_id` still refuses an `is_draft` change without
+    the escape hatch, and no HTTP path can set it. What changed is that
+    completion no longer NEEDS the escape hatch — which is strictly safer,
+    leaving `BillBillConnector._apply_bill_fields` (QBO-pull reconciliation) as
+    its only remaining user.
+
+    So this test now pins the stronger property: the completion path does not
+    touch that dangerous kwarg at all.
+    """
+    repo = MagicMock()
+    repo.finalize_by_id.return_value = SimpleNamespace(
+        id=55, public_id="pub-55", is_draft=False
+    )
+    repo.read_by_bill_number_and_vendor_id.return_value = None  # no duplicate
+    service = BillService(repo=repo)
     service.read_by_public_id = MagicMock(return_value=_make_bill())
     service.vendor_service = MagicMock()
     service.vendor_service.read_by_id.return_value = SimpleNamespace(public_id="vendor-pub-1")
@@ -115,11 +137,11 @@ def test_complete_bill_passes_completion_pipeline_escape_hatch():
     service._qbo_auth_service = MagicMock(read_all=MagicMock(return_value=[]))
 
     with patch.object(BillService, "update_by_public_id") as mock_update:
-        mock_update.return_value = SimpleNamespace(id=55, public_id="pub-55", is_draft=False)
         result = service.complete_bill(public_id="pub-55")
 
-    mock_update.assert_called_once()
-    kwargs = mock_update.call_args.kwargs
-    assert kwargs["is_draft"] is False
-    assert kwargs["_via_completion_pipeline"] is True
+    repo.finalize_by_id.assert_called_once_with(id=55)
+    assert mock_update.call_count == 0, (
+        "completion must not route through update_by_public_id any more — that "
+        "reintroduces the @RowVersion race U-434 removed"
+    )
     assert result["bill_finalized"] is True

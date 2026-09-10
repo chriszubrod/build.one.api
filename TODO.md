@@ -2,6 +2,43 @@
 
 Carry-over items from sessions. Check off as done; prune anything stale.
 
+## U-434 follow-on — the completion-job marking bug is a FAMILY, not a Bill bug (booked 2026-09-09)
+
+Found by U-434's Pass-2 reuse lens, which is the only leg that could have found it: Pass 1 and Codex review
+the diff, not the codebase's other call sites, so a sibling carrying the same defect is structurally invisible
+to them. U-434 fixed Bill only. **The other three completable entities still have it.**
+
+- [ ] **P0 — `entities/expense/api/router.py:333` is Bill's bug verbatim, comment and all.**
+  `if job_public_id: job_service.mark_success(job_public_id)` unconditionally, under the same false comment
+  ("Returned dict (any status_code incl. 207/4xx/5xx) = finalize+enqueue ran; outbox retries external
+  writes"). `complete_expense` has early returns before its enqueue exactly as `complete_bill` did, so a
+  failed expense completion retires its CompletionJob and `claim_next_stuck` skips it forever — the expense
+  stays draft and its receipt never reaches SharePoint/Box/QBO while the client got a 202. Fix is the same
+  one-line discriminator U-434 used: key on the result's finalized flag, not on "a dict came back".
+- [ ] **P0 — `entities/completion_job/business/service.py:84` and `:91` do the same for BillCredit and
+  Invoice.** Both call `self.mark_success(job_public_id)` on normal return with the same comment. This is the
+  RECLAIM path, so the consequence is narrower (a reclaim that fails is marked done and not re-reclaimed) but
+  the shape is identical.
+- [ ] **P1 — the dead retry loop is also a family.** `entities/expense/business/service.py` and
+  `entities/bill_credit/business/complete_service.py` both carry the `max_retries` + `time.sleep(0.2)` shape
+  (4 grep matches each), and Expense's repo also `raise map_database_error(...)`s rather than returning None —
+  so those loops are unreachable for the same reason Bill's was, and the 300ms auto-save race is a hard 500
+  there too. Port U-434's fix: a `Finalize{Expense,BillCredit}ById` sproc guarded on `IsDraft = 1` with no
+  `@RowVersion`. Invoice is clean (0 matches).
+  **When porting, extract rather than copy a third and fourth time** — U-434 deliberately left Bill's version
+  un-generalised because a shared helper is a foundational primitive touching four prod completion paths and
+  belongs behind its own design gate (`feedback_two_phase_dispatch_design_gated.md`), not inside a hotfix.
+
+**Also owed from U-434 (accepted residual, Chris's explicit call — option 2 of 3, 2026-09-09):**
+
+- [ ] **P1 — Excel column-Z re-check at DRAIN time, not enqueue time.** U-434 makes failed completions visible
+  to the reclaim watchdog, which is the point — but `CompletionJobService.run_job`'s own docstring already
+  records that the MS Excel enqueue is not idempotent under overlap (outbox rows never coalesce, column-Z is
+  checked only at enqueue), so a reclaim can duplicate DETAILS rows and corrupt project variance/SOV. The
+  trade was taken knowingly: a silently dropped AP push is worse than a visible, correctable duplicate row.
+  This closes it properly. Touches the shared MS Excel drain worker, so it affects Bill + Expense + BillCredit
+  and needs its own unit and review.
+
 ## U-426 findings — Bill entity re-review backlog (booked 2026-09-09)
 
 15 reported findings + 8 below-cap items from U-426's independent re-review (10 finder angles + a phase-3

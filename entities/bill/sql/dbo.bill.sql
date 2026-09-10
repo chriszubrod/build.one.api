@@ -650,6 +650,77 @@ BEGIN
 END;
 GO
 
+-- ============================================================================
+-- FinalizeBillById (U-434) — the ONLY sanctioned IsDraft 1 -> 0 transition.
+-- ============================================================================
+-- Replaces complete_bill's UpdateBillById round-trip, which carried @RowVersion
+-- and therefore made finalization lose a race it has no business losing.
+--
+-- Finalization is a STATE TRANSITION, not a field edit. complete_bill built a
+-- BillUpdate from the row it had just read and wrote every field back
+-- unchanged, so the only real change was IsDraft — but the @RowVersion
+-- predicate meant BillEdit's 300ms auto-save landing in between matched 0 rows
+-- and failed the completion. (The 3-attempt retry loop written to absorb that
+-- was unreachable: BillRepository.update_by_id RAISES on a 0-row UPDATE rather
+-- than returning None, so its retry branch never ran and time.sleep(0.2) never
+-- executed in prod. U-426 finding.)
+--
+-- No @RowVersion here, deliberately. The transition is guarded by IsDraft = 1
+-- instead, which makes it IDEMPOTENT: a concurrent second Complete, or the
+-- reclaim watchdog re-driving, flips nothing and is a no-op rather than a
+-- conflict. An unrelated field edit racing this can no longer block it.
+--
+-- Contract, and why the SELECT is unconditional: the UPDATE matches 0 rows both
+-- when the bill is ALREADY finalized and when it does not exist, which the
+-- caller must distinguish. So the row is re-SELECTed regardless -- a row back
+-- means "the bill exists and is now IsDraft=0" (whoever flipped it), no row back
+-- means "no such Bill". SET NOCOUNT ON + that guaranteed terminal SELECT is the
+-- pyodbc discipline (2026-06-11): without both, fetchone() reads a row-count
+-- token as the first result set.
+--
+-- QboId/RealmId ARE projected here, unlike UpdateBillById, whose OUTPUT omits
+-- them and hands callers qbo_id=None for a QBO-linked bill (separate U-426
+-- finding, not fixed by this unit -- this sproc simply does not repeat it).
+CREATE OR ALTER PROCEDURE FinalizeBillById
+(
+    @Id BIGINT
+)
+AS
+BEGIN
+    SET NOCOUNT ON;
+    BEGIN TRANSACTION;
+
+    UPDATE dbo.[Bill]
+    SET [IsDraft] = 0,
+        [ModifiedDatetime] = SYSUTCDATETIME()
+    WHERE [Id] = @Id AND [IsDraft] = 1;
+
+    SELECT
+        [Id],
+        [PublicId],
+        [RowVersion],
+        CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
+        CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
+        [VendorId],
+        [PaymentTermId],
+        CONVERT(VARCHAR(19), [BillDate], 120) AS [BillDate],
+        CONVERT(VARCHAR(19), [DueDate], 120) AS [DueDate],
+        [BillNumber],
+        [TotalAmount],
+        [Memo],
+        [IsDraft],
+        [IntakeSource],
+        [IntakeSourceDetail],
+        [SourceEmailMessageId],
+        [QboId],
+        [RealmId]
+    FROM dbo.[Bill]
+    WHERE [Id] = @Id;
+
+    COMMIT TRANSACTION;
+END;
+GO
+
 -- =====================================================================
 -- ReadBillQboLinkInfo — bill-level (one QBO bill per dbo.Bill in practice).
 -- =====================================================================

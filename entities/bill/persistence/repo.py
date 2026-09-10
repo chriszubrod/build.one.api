@@ -458,6 +458,34 @@ class BillRepository:
             logger.error(f"Error during update bill by ID: {error}")
             raise map_database_error(error)
 
+    def finalize_by_id(self, id: int) -> Optional[Bill]:
+        """Idempotently flip IsDraft 1 -> 0. The only sanctioned finalize path.
+
+        Returns the Bill when it exists — whether this call flipped it or it was
+        already finalized — and None when no such Bill exists. That asymmetry is
+        the point: `FinalizeBillById`'s UPDATE matches 0 rows in BOTH the
+        already-finalized and the missing case, so the sproc re-SELECTs
+        unconditionally and the caller reads presence, not rowcount.
+
+        Unlike `update_by_id` this carries NO RowVersion and does NOT raise on a
+        no-op. Finalization is a state transition; an unrelated concurrent field
+        edit (the 300ms BillEdit auto-save) must not be able to fail it. See the
+        sproc's header for the full rationale (U-434).
+        """
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(
+                    cursor=cursor,
+                    name="FinalizeBillById",
+                    params={"Id": id},
+                )
+                row = cursor.fetchone()
+                return self._from_db(row) if row else None
+        except Exception as error:
+            logger.error(f"Error during finalize bill by ID {id}: {error}")
+            raise map_database_error(error)
+
     def read_paginated(
         self,
         *,

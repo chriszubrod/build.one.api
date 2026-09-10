@@ -2,6 +2,100 @@
 
 Carry-over items from sessions. Check off as done; prune anything stale.
 
+## U-442 — Remove the remaining `qbo.*` staging tables entirely (booked 2026-09-10, not scoped)
+
+Chris's call 2026-09-10. **Booked only — no scope review done yet.**
+
+**This is a NEW decision, not a missed step.** Wave-5 (`project_qbo_trust_dbo_identity_alone`, COMPLETE
+2026-08-28) dropped the identity **MAPPING** second-stores and *deliberately kept* the raw staging mirrors —
+"still written every pull tick." All 8 tables it named are confirmed gone from prod, as are `qbo.BillBill`,
+`qbo.InvoiceInvoice`, `qbo.InvoiceLineItemInvoiceLine`, `qbo.BillLineItemBillLine`,
+`qbo.VendorCreditBillCredit`. This unit goes further: retire staging itself.
+
+**21 tables live in the `qbo` schema today.** They are NOT all staging — do not treat the schema as the unit
+of removal:
+
+- **Staging mirrors (the actual target):** `Bill` 20,436 · `BillLine` 24,820 · `Invoice` 1,009 ·
+  `InvoiceLine` 30,975 · `Purchase` 12,505 · `PurchaseLine` 13,074 · `VendorCredit` 446 ·
+  `VendorCreditLine` 453 · `Customer` 212 · `Vendor` 1,199 · `Account` 252 · `Term` 6 · `CompanyInfo` 1 ·
+  `PhysicalAddress` 951 · `ReimburseCharge` 27,005
+- ⛔ **NOT staging — must survive:** `qbo.Outbox` (durable write queue), `qbo.ReconciliationIssue` (drift log,
+  20,782 rows), `qbo.Auth` (OAuth tokens), `qbo.ApiUsage` (the 500K/mo cap counter), `qbo.Client`.
+- **Already mid-retirement:** `qbo.PurchaseLineExpenseLineItem` (12,187) — lone mapping-shaped survivor, its
+  Bill-side twin is gone; see `tests/test_u364_expense_line_item_mapping_retire.py`, still referenced from ~8
+  code paths. Confirm whether it's a missed drop or an in-flight one before folding it in.
+
+**The blocker to size first:** every pull connector currently projects **FROM** staging — staging is the
+connector's INPUT, not a cache. Removing it means repointing each family (bill / invoice / purchase /
+vendorcredit / customer / vendor / account / term / company_info) to project directly from its live external
+client, plus the `upsert_from_external` seam that today writes staging. Also check readers that are not
+connectors (e.g. `identity_drift.py` spec registries, reconcile jobs, any `qbo.*` joins in reporting).
+
+**Note for whoever scopes it:** staging is currently load-bearing for diagnosis — the U-441 connector defect
+was localized *because* staging (input) could be compared against dbo (output). Losing that costs a debugging
+seam; the replacement is a live-QBO comparison, which is slower and rate-limited. Worth an explicit call.
+
+**Not started. Not scoped. No unit ID assigned on BOARD.md yet.**
+
+## U-441 — `InvoiceInvoiceConnector` silently drops (and sometimes duplicates) invoice lines (booked 2026-09-10, OL-PH-02 run)
+
+Found reconciling **OL-PH-02**. **⛔ Gate 1, nothing built.**
+
+**It is not a pull bug.** `qbo.Invoice` / `qbo.InvoiceLine` staging is complete and correct — verified
+against LIVE QBO on all four money cases. The loss happens in the connector's staging→dbo projection.
+
+**Why nothing caught it.** The connector writes the header total as the **sum of the lines it managed to
+project**, not the staged header. So the local invoice is internally consistent — N lines summing to its own
+header — and every local invariant reconciles perfectly *against the wrong number*: the Step-10 draw matrix,
+the daily reconciler's local legs, and `SUM(ILI.Amount) == Invoice.TotalAmount` all pass. Only a LIVE (or
+staging) comparison detects it. Textbook KI-48.
+
+**Scope: 14 of 993 QBO-linked invoices drift dbo-vs-staging.** Four confirmed against LIVE QBO, in **two
+distinct classes** — do not assume one fix covers both:
+
+| Class | Invoice | proj | qbo | live | dbo | gap |
+|---|---|---|---|---|---|---|
+| (a) understated | OL-PH-01 | 132 | 69600 | 10 / $120,010.52 | 9 / $107,152.25 | **+$12,858.27** |
+| (a) understated | HP-24 | 18 | 71227 | 36 / $131,328.98 | 35 / $117,258.02 | **+$14,070.96** |
+| (a) understated | KA2-07 | 55 | 68857 | 12 / $23,212.93 | 11 / $21,116.44 | **+$2,096.49** |
+| (b) **overstated** | OHR2-37 | 30 | 75290 | 97 / $271,800.48 | **112 / $506,884.14** | **−$235,083.66** |
+
+Class (a) = dbo one line short, short by exactly that line's amount ($29,025.72 combined). OL-PH-01's missing
+line is the `12%` Builder's Fee — and a pull ran 2026-08-14, long after the 2026-05-22 QBO edit, and the line
+still never landed. Class (b) is the inverse: 15 EXTRA lines, phantom/duplicate ILIs (KI-13 class), likely a
+different root cause.
+
+The remaining **10 drift on line count only with matching totals** — NOT live-verified; could be staging
+trailing a re-pull. Triage before calling them defects.
+
+**Client billing is unaffected** (invoices are QBO-first; the client is billed from QBO). Local reporting,
+draw reconciliation and the AIA/DETAILS ledger all read dbo, so those are what's wrong.
+
+**Ship:** find why a line is dropped/duplicated (the parent connector catches per-line failures, so a returned
+header is *not* proof every line projected — see `InvoiceLineItemConnector.sync_from_qbo_invoice_line`); make a
+per-line projection failure LOUD instead of silent; stop deriving the header from projected lines when the
+staged header disagrees. Then re-project the affected invoices and verify against LIVE.
+
+**P0-surface** (money/QBO) → `/em` builds directly, Codex `xhigh`.
+
+**Repro / triage query** (read-only — identifies candidates; each still needs a LIVE read to confirm direction,
+since staging is the pull's input, never truth):
+
+```sql
+SELECT i.Id, i.InvoiceNumber, i.ProjectId, i.QboId,
+       i.TotalAmount AS DboTotal, q.TotalAmt AS StagedTotal,
+       (SELECT COUNT(*) FROM dbo.InvoiceLineItem WHERE InvoiceId = i.Id) AS DboLines,
+       (SELECT COUNT(*) FROM qbo.InvoiceLine   WHERE QboInvoiceId = q.Id) AS StagedLines
+FROM dbo.Invoice i
+JOIN qbo.Invoice q ON q.QboId = i.QboId AND q.RealmId = i.RealmId
+WHERE i.QboId IS NOT NULL
+  AND ((SELECT COUNT(*) FROM dbo.InvoiceLineItem WHERE InvoiceId = i.Id)
+       <> (SELECT COUNT(*) FROM qbo.InvoiceLine WHERE QboInvoiceId = q.Id)
+       OR ISNULL(i.TotalAmount, 0) <> ISNULL(q.TotalAmt, 0));
+```
+
+**Out of scope:** U-436 (draw-audit halts on classified fee lines); U-440a/U-440b.
+
 ## BR-MAIN DETAILS worksheet — 17 duplicate SharePoint rows ($481,769.88) (booked 2026-09-09, BR-MAIN-29 run)
 
 Found during the BR-MAIN-29 draw (Step 6 read). Chris's explicit call during that run: **proceed with the

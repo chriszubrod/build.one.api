@@ -89,12 +89,55 @@ def test_run_job_billcredit_marks_success_on_normal_return_including_207():
 
     with patch(
         "entities.bill_credit.business.complete_service.BillCreditCompleteService.complete_bill_credit",
-        return_value={"status_code": 207, "message": "partial"},
+        # U-435: the mock now carries `bill_credit_finalized`, which the REAL
+        # complete_bill_credit always returns (True on the 200/207 path,
+        # complete_service.py:253+261). The old mock omitted it, so this test
+        # passed under the buggy "any dict = success" contract without ever
+        # exercising the discriminator. The 207-marks-success intent is unchanged
+        # and is what matters: a partial success DID finalize and enqueue, so the
+        # outbox legitimately owns the retries.
+        return_value={"status_code": 207, "message": "partial", "bill_credit_finalized": True},
     ):
         service.run_job(job)
 
     repo.mark_success.assert_called_once_with(public_id=job.public_id)
     repo.mark_failure.assert_not_called()
+
+
+def test_run_job_billcredit_marks_failure_when_it_never_finalized():
+    """U-435 core regression: an early return never reached the enqueue, so
+    nothing retries — marking it success retired the job and the reclaim
+    watchdog (which keys on job status) skipped it forever."""
+    repo = MagicMock()
+    service = CompletionJobService(repo=repo)
+    job = _job(entity_type="BillCredit")
+
+    with patch(
+        "entities.bill_credit.business.complete_service.BillCreditCompleteService.complete_bill_credit",
+        return_value={"status_code": 400, "message": "Vendor not found", "bill_credit_finalized": False},
+    ):
+        service.run_job(job)
+
+    repo.mark_success.assert_not_called()
+    repo.mark_failure.assert_called_once()
+
+
+def test_run_job_marks_failure_when_the_finalized_flag_is_MISSING():
+    """Fail toward visibility. A future complete_* that forgets the flag must
+    surface as a stuck job, not vanish — the silent-loss direction is the one
+    bug this unit exists to remove."""
+    repo = MagicMock()
+    service = CompletionJobService(repo=repo)
+    job = _job(entity_type="Invoice")
+
+    with patch(
+        "entities.invoice.business.service.InvoiceService.complete_invoice",
+        return_value={"status_code": 200, "message": "ok"},  # no invoice_finalized
+    ):
+        service.run_job(job)
+
+    repo.mark_success.assert_not_called()
+    repo.mark_failure.assert_called_once()
 
 
 def test_run_job_billcredit_marks_failure_on_raise():

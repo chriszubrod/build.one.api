@@ -231,8 +231,17 @@ def _run_complete_expense(public_id: str, job_public_id: str | None = None, forc
     job_service = CompletionJobService()
     try:
         expense = ExpenseService().read_by_public_id(public_id=public_id)
-        if not expense or (not force and not getattr(expense, "is_draft", True)):
-            logger.info("Complete expense skipped (already completed or missing): public_id=%s", public_id)
+        if not expense:
+            # U-435: a job pointing at an Expense that no longer exists is an
+            # anomaly, not a success. mark_failure lets the watchdog re-check and
+            # then dead-letter it at max_attempts (5) so it surfaces.
+            logger.warning("Complete expense: no such expense, marking job failed: public_id=%s", public_id)
+            if job_public_id:
+                job_service.mark_failure(job_public_id, "Expense not found")
+            return
+        if not force and not getattr(expense, "is_draft", True):
+            # Genuinely already done — an idempotent no-op, so success is correct.
+            logger.info("Complete expense skipped (already completed): public_id=%s", public_id)
             if job_public_id:
                 job_service.mark_success(job_public_id)
             return
@@ -249,9 +258,29 @@ def _run_complete_expense(public_id: str, job_public_id: str | None = None, forc
         if result.get("status_code") >= 400:
             logger.warning("Complete expense failed in background: %s", result.get("message"))
         if job_public_id:
-            # Returned dict (any status_code incl. 207/4xx/5xx) = finalize+enqueue ran;
-            # outbox retries external writes. Only raised exceptions mark job failure.
-            job_service.mark_success(job_public_id)
+            # U-435 — the marking contract, corrected (U-434's fix, ported).
+            #
+            # This called mark_success() for ANY returned dict, on the stated
+            # theory that "a returned dict = finalize+enqueue ran". False for
+            # complete_expense's early returns (404 missing, 400, 500 finalize
+            # error): they return BEFORE the finalize and before the outbox
+            # enqueue, so nothing was queued and nothing retries. Marking them
+            # successful retired the job, and claim_next_stuck keys on job status
+            # — so the reclaim watchdog skipped them forever. The expense stayed
+            # IsDraft=1 and its receipt never reached SharePoint/Box/QBO, while
+            # the client had already been handed a 202.
+            #
+            # `expense_finalized` is the correct discriminator: True on every path
+            # past the finalize (including 207 partial-success, where the outbox
+            # legitimately owns the retries) and False on exactly the early returns.
+            if result.get("expense_finalized"):
+                job_service.mark_success(job_public_id)
+            else:
+                job_service.mark_failure(
+                    job_public_id,
+                    f"completion returned {result.get('status_code')} before enqueue: "
+                    f"{result.get('message')}",
+                )
     except Exception as e:
         logger.exception("Complete expense background task failed: public_id=%s", public_id)
         failure_result = {

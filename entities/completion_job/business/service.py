@@ -41,6 +41,29 @@ class CompletionJobService:
     def mark_success(self, public_id: str) -> None:
         self._repo.mark_success(public_id=public_id)
 
+    def _mark_from_result(self, job_public_id: str, result, finalized_key: str) -> None:
+        """Mark a completion job from its result dict (U-435).
+
+        Every complete_* returns `{entity}_finalized`, which is True on every path
+        that got past the finalize — INCLUDING the 207 partial-success path, where
+        the outbox legitimately owns the retries — and False on exactly the early
+        returns that never reached the enqueue. That flag, not "a dict came back",
+        is what distinguishes work the outbox will retry from work that silently
+        never started.
+
+        Defensive on shape: a non-dict or a missing key marks FAILURE rather than
+        success, so a future complete_* that forgets the flag surfaces as a stuck
+        job instead of vanishing — failing toward visibility, which is the whole
+        point of the unit.
+        """
+        finalized = isinstance(result, dict) and bool(result.get(finalized_key))
+        if finalized:
+            self.mark_success(job_public_id)
+        else:
+            detail = result.get("message") if isinstance(result, dict) else f"non-dict result: {type(result).__name__}"
+            code = result.get("status_code") if isinstance(result, dict) else "?"
+            self.mark_failure(job_public_id, f"completion returned {code} before enqueue: {detail}")
+
     def mark_failure(self, public_id: str, last_error: Optional[str] = None, max_attempts: int = 5) -> None:
         self._repo.mark_failure(public_id=public_id, last_error=last_error, max_attempts=max_attempts)
 
@@ -78,17 +101,19 @@ class CompletionJobService:
             elif job.entity_type == "BillCredit":
                 from entities.bill_credit.business.complete_service import BillCreditCompleteService
 
-                BillCreditCompleteService().complete_bill_credit(public_id=public_id)
-                # Returned dict (any status_code incl. 207/4xx/5xx) = orchestration finished;
-                # outbox retries external writes. Only raised exceptions mark failure.
-                self.mark_success(job_public_id)
+                result = BillCreditCompleteService().complete_bill_credit(public_id=public_id)
+                # U-435: key on the finalized flag, not on "a dict came back".
+                # complete_bill_credit's early returns (404/400/500) happen BEFORE
+                # the finalize and before the outbox enqueue, so nothing was queued
+                # and nothing retries. Marking those successful retired the job and
+                # claim_next_stuck — which keys on job status — never re-drove it.
+                self._mark_from_result(job_public_id, result, "bill_credit_finalized")
             elif job.entity_type == "Invoice":
                 from entities.invoice.business.service import InvoiceService
 
-                InvoiceService().complete_invoice(public_id=public_id)
-                # Returned dict (any status_code incl. 207/4xx/5xx) = orchestration finished;
-                # outbox retries external writes. Only raised exceptions mark failure.
-                self.mark_success(job_public_id)
+                result = InvoiceService().complete_invoice(public_id=public_id)
+                # U-435: see the BillCredit branch above — same contract.
+                self._mark_from_result(job_public_id, result, "invoice_finalized")
             else:
                 logger.error("Unknown completion job entity type: %s", job.entity_type)
                 self.mark_failure(job_public_id, f"Unknown entity type: {job.entity_type}")

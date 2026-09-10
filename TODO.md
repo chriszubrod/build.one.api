@@ -8,15 +8,16 @@ Found by U-434's Pass-2 reuse lens, which is the only leg that could have found 
 the diff, not the codebase's other call sites, so a sibling carrying the same defect is structurally invisible
 to them. U-434 fixed Bill only. **The other three completable entities still have it.**
 
-- [ ] **P0 — `entities/expense/api/router.py:333` is Bill's bug verbatim, comment and all.**
+- [x] **P0 — `entities/expense/api/router.py:333` is Bill's bug verbatim, comment and all.** ✅ FIXED U-435.
   `if job_public_id: job_service.mark_success(job_public_id)` unconditionally, under the same false comment
   ("Returned dict (any status_code incl. 207/4xx/5xx) = finalize+enqueue ran; outbox retries external
   writes"). `complete_expense` has early returns before its enqueue exactly as `complete_bill` did, so a
   failed expense completion retires its CompletionJob and `claim_next_stuck` skips it forever — the expense
   stays draft and its receipt never reaches SharePoint/Box/QBO while the client got a 202. Fix is the same
   one-line discriminator U-434 used: key on the result's finalized flag, not on "a dict came back".
-- [ ] **P0 — `entities/completion_job/business/service.py:84` and `:91` do the same for BillCredit and
-  Invoice.** Both call `self.mark_success(job_public_id)` on normal return with the same comment. This is the
+- [x] **P0 — `entities/completion_job/business/service.py:84` and `:91` do the same for BillCredit and
+  Invoice.** ✅ FIXED U-435, via a shared `_mark_from_result` helper that fails toward visibility (a missing
+  flag marks FAILURE, so a future `complete_*` that forgets it surfaces as a stuck job instead of vanishing). Both call `self.mark_success(job_public_id)` on normal return with the same comment. This is the
   RECLAIM path, so the consequence is narrower (a reclaim that fails is marked done and not re-reclaimed) but
   the shape is identical.
 - [ ] **P1 — the dead retry loop is also a family.** `entities/expense/business/service.py` and

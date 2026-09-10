@@ -207,55 +207,6 @@ def _budget_sov_for_project(project_id: Optional[int]) -> list:
         return []
 
 
-def _consolidate_basic_toc_rows(rows: list[dict]) -> list[dict]:
-    """
-    Consolidate line items from the same source bill/expense into one row.
-    Groups by (source_type, parent_number, vendor_name, source_date).
-    Single-item groups: keep the item's sub cost code name and type label.
-    Multi-item groups: sub_cost_code_name = the shared SCC name if uniform else
-    "Multiple See Image", type_label from source, price=sum.
-    Manual lines (no parent_number) are never consolidated — each stays its own row.
-    """
-    from itertools import groupby
-
-    def _key(r):
-        pn = r.get("parent_number") or ""
-        if not pn:
-            # Unique per-row key so Manual lines are never merged
-            return ("__manual__", id(r), "", "")
-        return (
-            r.get("source_type", ""),
-            pn,
-            r.get("vendor_name", "") or "",
-            r.get("source_date", "") or "",
-        )
-
-    consolidated = []
-    for key, group_iter in groupby(rows, key=_key):
-        group = list(group_iter)
-        if len(group) == 1 or key[0] == "__manual__":
-            for r in group:
-                consolidated.append(dict(r, type_label=_toc_source_label(r.get("source_type", ""))))
-        else:
-            total_price = sum((_toc_signed_amount(r) or 0) for r in group)
-            first = group[0]
-            # Consolidated SCC label: the shared sub cost code name if every
-            # item in the group maps to the same one, else "Multiple See Image".
-            scc_names = {(r.get("sub_cost_code_name") or "").strip() for r in group}
-            scc_names.discard("")
-            scc_label = next(iter(scc_names)) if len(scc_names) == 1 else "Multiple See Image"
-            consolidated.append({
-                "source_date": first.get("source_date", ""),
-                "vendor_name": first.get("vendor_name", ""),
-                "parent_number": first.get("parent_number", ""),
-                "sub_cost_code_name": scc_label,
-                "source_type": first.get("source_type", ""),
-                "price": total_price,
-                "type_label": _toc_source_label(first.get("source_type", "")),
-            })
-    return consolidated
-
-
 def _build_toc_basic_pdf(rows: list[dict]) -> bytes:
     """
     Generate the basic Table of Contents PDF page.
@@ -296,10 +247,22 @@ def _build_toc_basic_pdf(rows: list[dict]) -> bytes:
         Paragraph("Description", wrap_hdr), Paragraph("Type", wrap_hdr), Paragraph("Amount", hdr_right),
     ]
 
-    consolidated = _consolidate_basic_toc_rows(rows)
+    # One row per BILLABLE LINE ITEM. This page used to consolidate every line
+    # sharing a source bill into a single summed row, which printed a
+    # parent-level roll-up: for a bill split across cost codes that sum equals
+    # the bill's own TotalAmount, so the customer read an entity total where a
+    # billed line was meant (BR-MAIN-29: Proctor 3953 printed $270,298.00 and
+    # Siteworks 26-0183 $237,776.00, both exactly their bill totals, labelled
+    # "Multiple See Image"). Each row now reflects exactly one billable line,
+    # matching the expanded TOC. The grand total is unchanged either way — the
+    # consolidation summed the same lines — so this is presentation only.
+    # Attachment page order is unaffected: the caller derives it from these same
+    # pre-sorted `rows` BEFORE this function and dedupes by attachment id, so
+    # two rows sharing one document still print that document once.
+    line_rows = [dict(r, type_label=_toc_source_label(r.get("source_type", ""))) for r in rows]
 
     table_data = [headers]
-    for r in consolidated:
+    for r in line_rows:
         amt_str = _toc_format_money(_toc_signed_amount(r))
         table_data.append([
             r.get("source_date", ""),
@@ -312,7 +275,7 @@ def _build_toc_basic_pdf(rows: list[dict]) -> bytes:
             amt_str,
         ])
 
-    grand_total = sum((_toc_signed_amount(r) or 0) for r in consolidated)
+    grand_total = sum((_toc_signed_amount(r) or 0) for r in line_rows)
     table_data.append(["", "", "", "", Paragraph("Total", bold_right), Paragraph(_toc_format_money(grand_total), bold_right)])
     n = len(table_data)
 

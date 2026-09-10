@@ -2,6 +2,47 @@
 
 Carry-over items from sessions. Check off as done; prune anything stale.
 
+## BR-MAIN DETAILS worksheet — 17 duplicate SharePoint rows ($481,769.88) (booked 2026-09-09, BR-MAIN-29 run)
+
+Found during the BR-MAIN-29 draw (Step 6 read). Chris's explicit call during that run: **proceed with the
+draw, clean the duplicates up separately** — the draw itself is unaffected, so this is deferred, not ignored.
+
+**What's there.** The SharePoint `DETAILS` sheet for BR-MAIN (project 64) carries **322 col-Z keys across
+305 distinct** — 16 duplicated keys, 17 extra rows, **$481,769.88** of duplicated col-N value. The Box
+mirror of the same sheet is clean (305/305, 0 dups), which is the expected asymmetry: Box re-reads col-Z at
+DRAIN time and skips-present, MS dedups only at write time (CRITICAL #8 / KI-39).
+
+**Every one of the 16 duplicated keys is a BR-MAIN-29 source line** — there are no unrelated pre-existing
+duplicates on this tracker. One key (Vulcan `7299645`, `9208E2CB-DFF8-444C-B0DF-0A9E2DD73F83`) appears 3x;
+the other 15 appear 2x.
+
+**Why the draw was still safe to ship.** All duplicate rows carried a blank column H, and
+`InvoiceService.sync_to_excel_workbook` builds `key_to_row` as a plain dict (`entities/invoice/business/
+service.py` ~line 573) — **last write wins**, so exactly one row per key got the `BR-MAIN-29` tag. Verified
+post-stamp: 39 tagged rows / 39 distinct col-Z keys. The draw's `SUMIFS(N:N, H:H, "BR-MAIN-29")` is correct.
+
+**What is actually wrong:** any UNFILTERED col-N total on that workbook is inflated by $481,769.88
+(whole-column total reads $68,204,969.62; true value $67,723,199.74), and SharePoint has diverged from Box
+by 17 rows.
+
+- [ ] **P1 — enumerate + surgically clear the 17 extra rows.** Detect per CRITICAL #8: read col-Z, flag any
+  key appearing >1x, keep the H-tagged row, clear the others with `clear_excel_range(drive, item,
+  'DETAILS', 'A{row}:Z{row}')` — it blanks in place and shifts nothing, so row order is irrelevant. Do it on
+  prod (reliable Graph). Do NOT swap the SharePoint workbook for the Box copy (KI-39: the two have diverged
+  and each holds rows the other lacks). Re-read col-Z afterward and confirm 305/305.
+- [ ] **P2 — establish how they got there.** The insert flurry sits in `ms.Outbox` around 2026-09-09 21:39
+  and 2026-09-10 00:06-00:34 (`Kind='insert_excel_row'`, EntityType Bill/BillBatch/ExpenseBatch, all
+  `done`). Two candidates, and the payloads will separate them: a genuine double-enqueue of the same source
+  lines, versus the CRITICAL #8 blind-insert (a writer whose `get_excel_used_range_values` dedup read failed,
+  so it never saw the existing keys). Worth knowing which, because the second one recurs on every future
+  completion run from that environment. NB this session's own runs saw `createSession succeeded but returned
+  no session ID` — the documented gate-off/non-prod signature — while the used-range read still returned 200,
+  which is the condition that actually governs (CRITICAL #8 bullet 1).
+- [ ] **P2 — sweep the other 27 mapped workbooks for the same signature.** The detect recipe is cheap
+  (download → `_sanitize_workbook_bytes` → col-Z → count). If this is the blind-insert path rather than a
+  one-off double-enqueue, BR-MAIN will not be the only tracker carrying it — the 2026-08-06 incident hit 8
+  projects at once.
+
 ## U-434 follow-on — the completion-job marking bug is a FAMILY, not a Bill bug (booked 2026-09-09)
 
 Found by U-434's Pass-2 reuse lens, which is the only leg that could have found it: Pass 1 and Codex review

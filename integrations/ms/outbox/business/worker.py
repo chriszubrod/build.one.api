@@ -10,7 +10,7 @@ from integrations.ms.base.correlation import (
     idempotency_key_context,
     set_correlation_id,
 )
-from integrations.ms.base.errors import MsGraphError
+from integrations.ms.base.errors import MsGraphError, MsServerError
 from integrations.ms.base.locking import ms_app_lock
 from integrations.ms.base.logger import get_ms_logger
 from integrations.ms.base.retry import RetryPolicy, compute_backoff_seconds
@@ -33,6 +33,29 @@ MAX_ATTEMPTS = 5
 # Cross-process drain lock.
 DRAIN_LOCK_NAME = "ms_outbox_drain"
 DRAIN_LOCK_TIMEOUT_MS = 1000
+
+# Column Z (0-based) of a DETAILS row — the line-item public_id that keys
+# reconciliation. Same key Box's `apply_rows_to_details` dedups on
+# (`DEFAULT_KEY_COL_INDEX`); kept in sync deliberately (U-440a). Not imported
+# from the Box package: `integrations/ms` and `integrations/box` are parallel,
+# independently-gated integrations and an MS drain must not import Box code.
+RECONCILIATION_KEY_COL_INDEX = 25
+
+
+def _reconciliation_key(row_values: Any) -> str:
+    """
+    Column-Z key of one worksheet/candidate row, normalized for comparison.
+
+    Returns "" for a short row, a missing cell, or a blank — i.e. "no key",
+    which callers must treat as *unprovable*, never as a match. Sheet rows and
+    candidate rows both go through here so the two sides can never drift.
+    """
+    if len(row_values) <= RECONCILIATION_KEY_COL_INDEX:
+        return ""
+    raw = row_values[RECONCILIATION_KEY_COL_INDEX]
+    if raw is None:
+        return ""
+    return str(raw).strip().lower()
 
 
 class MsOutboxWorker:
@@ -496,6 +519,106 @@ class MsOutboxWorker:
         from integrations.ms.sharepoint.external.client import _format_drive_item
         return _format_drive_item(last_json)
 
+    def _filter_rows_already_in_worksheet(
+        self,
+        row: MsOutbox,
+        payload: Dict[str, Any],
+        kind: str,
+    ) -> list:
+        """
+        Drain-time column-Z idempotency guard for the two row-WRITING kinds (U-440a).
+
+        Why this exists at DRAIN time and not only at enqueue: the writers
+        (`{Bill,Expense}Service.sync_to_excel_workbook`,
+        `BillCreditCompleteService.sync_to_excel_workbook`) read column Z and
+        decide skip-vs-insert when they ENQUEUE. The drain then replayed that
+        decision blindly, so anything that re-drove a row — a retry after a
+        partial failure, or a future stuck-claim reclaim (U-440b) — inserted a
+        SECOND copy of a line that was already in the sheet. That is the
+        2026-08-06 incident: 27 duplicate DETAILS rows across 8 client trackers.
+
+        Box has never had this exposure — `apply_rows_to_details` re-reads
+        column Z at drain and skips-present. This brings the MS side to the same
+        contract, and is the fix `entities/completion_job/business/service.py`
+        already names as the proper one for its reclaim-overlap residual.
+
+        Contract:
+          - Read fails (non-200, or 200 with no range) -> RAISE. Fail closed.
+            A blind insert on an unreadable sheet is exactly how duplicates got
+            in; a raised error retries and, after MAX_ATTEMPTS, dead-letters
+            VISIBLY.
+          - A row whose column-Z key is already present -> dropped.
+          - A row with a blank/missing column-Z key -> KEPT. It cannot be proven
+            a duplicate, and silently dropping it would lose real ledger data —
+            strictly worse than the duplicate it might create.
+
+        Returns the rows that still need writing (possibly empty).
+        """
+        from integrations.ms.sharepoint.external.client import (
+            get_excel_used_range_values,
+        )
+
+        values = payload["values"]
+        result = get_excel_used_range_values(
+            payload["drive_id"],
+            payload["item_id"],
+            payload["worksheet_name"],
+            session_id=payload.get("session_id"),
+        )
+        # Fail closed on a bad status...
+        self._raise_if_external_error(row, result)
+        # ...and on a 200 that carries no range: _raise_if_external_error only
+        # inspects status_code, and a rangeless 200 would otherwise read as
+        # "no existing keys" and let every row through as if the sheet were empty.
+        worksheet = result.get("range") if isinstance(result, dict) else None
+        if not worksheet:
+            # MsServerError, not the base MsGraphError: base `is_retryable` is
+            # False, and `_handle_ms_error` dead-letters a non-retryable on
+            # attempt 1 — which would permanently strand a legitimate ledger row
+            # on one transient rangeless read. A response-shape anomaly is
+            # server-side and retryable; after MAX_ATTEMPTS it still dead-letters
+            # VISIBLY, which is the contract this guard documents (U-440a round 2).
+            raise MsServerError(
+                f"{kind}: used-range read returned no range for worksheet "
+                f"{payload['worksheet_name']!r}; refusing to write blind"
+            )
+
+        # Both sides of the comparison MUST normalize identically — a sheet-side
+        # and candidate-side extraction that drift apart stop matching and the
+        # dedup silently stops working. One helper, used for both (Pass 2).
+        existing = {
+            key
+            for key in (_reconciliation_key(r) for r in (worksheet.get("values") or []))
+            if key
+        }
+
+        keep = []
+        skipped = 0
+        for candidate in values:
+            key = _reconciliation_key(candidate)
+            if key and key in existing:
+                skipped += 1
+                continue
+            if key:
+                # Retained keys join the seen-set so a batch that repeats a key
+                # writes it ONCE. Parity with Box's `apply_rows_to_details`,
+                # which adds to `existing_keys` as it applies (U-440a round 2).
+                existing.add(key)
+            keep.append(candidate)
+
+        if skipped:
+            logger.info(
+                "ms.outbox.excel.drain_dedup_skipped",
+                extra={
+                    "event_name": "ms.outbox.excel.drain_dedup_skipped",
+                    "outbox_id": row.id,
+                    "kind": kind,
+                    "skipped": skipped,
+                    "remaining": len(keep),
+                },
+            )
+        return keep
+
     def _handle_append_excel_row(
         self,
         row: MsOutbox,
@@ -518,11 +641,17 @@ class MsOutboxWorker:
         if missing:
             raise ValueError(f"append_excel_row payload missing fields: {missing}")
 
+        values = self._filter_rows_already_in_worksheet(
+            row, payload, KIND_APPEND_EXCEL_ROW
+        )
+        if not values:
+            return
+
         result = append_excel_rows(
             drive_id=payload["drive_id"],
             item_id=payload["item_id"],
             worksheet_name=payload["worksheet_name"],
-            values=payload["values"],
+            values=values,
             session_id=payload.get("session_id"),
         )
         self._raise_if_external_error(row, result)
@@ -550,12 +679,21 @@ class MsOutboxWorker:
         if missing:
             raise ValueError(f"insert_excel_row payload missing fields: {missing}")
 
+        # U-440a: drop rows already carrying their column-Z key in the sheet.
+        # `row_index` stays as enqueued — it is the SubCostCode-section insertion
+        # point, and writing fewer rows at that same point is still correct.
+        values = self._filter_rows_already_in_worksheet(
+            row, payload, KIND_INSERT_EXCEL_ROW
+        )
+        if not values:
+            return
+
         result = insert_excel_rows(
             drive_id=payload["drive_id"],
             item_id=payload["item_id"],
             worksheet_name=payload["worksheet_name"],
             row_index=int(payload["row_index"]),
-            values=payload["values"],
+            values=values,
             session_id=payload.get("session_id"),
         )
         self._raise_if_external_error(row, result)

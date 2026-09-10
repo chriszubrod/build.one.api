@@ -520,6 +520,49 @@ documentation edit. Board row: `build.one.team/BOARD.md` § U-425.
   hash for parity so a future same-identity content edit cannot silently skip. Delivery itself already
   replaces (`conflictBehavior: replace`, `integrations/ms/outbox/business/worker.py:415`).
 
+## U-436 — the draw audit halts on every classified markup / builder's-fee line (booked 2026-09-09)
+
+Found publishing SHT-25 live. `InvoiceDrawPushService.push_draw` refused with `status=halt`,
+`reason=audit_not_clear`; `InvoiceDrawAuditService.audit` returned `verdict=halt` on **6 gaps, all of class
+`source_link`, all severity `halt`** — and all six are the classified exceptions the playbook itself defines
+as the expected outcome. Board row: `build.one.team/BOARD.md` § U-436.
+
+**The six on SHT-25:** ili 34180 ($260.00), 34184 ($131.25), 34187 ($185.00), 34189 ($370.00), 34484
+($125.00) — all `"NN% markup for <labor narrative>"` — plus ili 34201 ($52,470.58), the Builder's Fee line,
+whose `reject_reason` is `missing_service_date`.
+
+**Why this is wrong, not just noisy.** The playbook is explicit that these lines are SUPPOSED to be
+unmatched: a markup derivative takes its support from the sibling labor line's document (Step 4, "Markup
+derivatives"; the Step 5 note that `skipped` deliberately excludes derivative Manual lines), and a Builder's
+Fee has no vendor source by construction. The audit maps *any* non-`linkable` line to a halt-severity
+`source_link` gap, so a correctly-classified line is indistinguishable from a genuinely unsupported charge.
+
+**Blast radius: every contract-labor draw.** CL invoices carry a labor line + a separate markup line per
+entry by design (see "Why the invoice is created in QBO first" — QBO posts markup as its own line). Any draw
+with CL work or a percentage fee — i.e. essentially all of them — halts. Confirmed on SHT-25, whose other
+72 lines audited perfectly clean: 0 coverage gaps, 0 double-bill pairs, 0 invoice-number pairs, 0
+foreign-project markers, 0 duplicate projects, staging fresh.
+
+**Operational consequence, and why this is P2 not P3.** The only way past it today is `force=true`, and
+per the U-425 correction that flag waives the **entire** audit verdict — coverage, double-bill and
+cross-project included. So the routine workaround for a benign, expected condition is to disable every real
+safety check on the draw. That is precisely the "never use force to hide a failed invariant" shape the
+playbook warns about, except here the invariant is the audit's own false positive. Forcing SHT-25 was only
+defensible because each waived check had been independently verified in-session first.
+
+- [ ] **P2 — classify rather than halt.** A `no_match` line that matches the derivative/fee shape should be
+  reported as an accepted exception (its own severity, e.g. `info`/`review`), not a halt. Candidate signals,
+  in preference order: the Builder's Fee QBO Item (`90 Builder's Fee:*` — already how `_resolve_builders_fee_rate`
+  and the packet's fee rollup identify it) and a markup line's shared ReimburseCharge / sibling-amount
+  relationship. Do NOT key on the word "markup" in the description alone — the playbook already warns that a
+  shared RC id or the word "markup" is insufficient on its own.
+- [ ] **P2 — make the operator's escape proportionate.** Either let the audit accept a per-line
+  acknowledgement, or give `push_draw` a narrower waiver than all-or-nothing, so clearing a known-benign
+  source_link gap does not also switch off the coverage and double-bill gates.
+- [ ] **P3 — the halt payload should name what it wants.** `audit_gate` returned an empty `{}`; the reason
+  only surfaced by calling `InvoiceDrawAuditService.audit` by hand. Echo the offending line ids + classes in
+  the halt step so an operator sees the cause without a second read.
+
 ## U-433 — retire the full-realm attachable scan: QBO CAN filter by parent (booked 2026-09-09)
 
 Chris, 2026-09-09: "We should never need to call a full-realm scan. How is it that we need to call a query of

@@ -364,3 +364,43 @@ def test_live_source_clients_cited_for_gap_fill_exist() -> None:
         (QboBillClient, "get_bill"),
     ):
         assert hasattr(cls, meth), f"{cls.__name__}.{meth} is cited by the playbook but missing"
+
+def test_playbook_requires_serialized_qbo_work(playbook: str) -> None:
+    """U-425: the per-entity applock does NOT serialize different entities, and the
+    attachable path takes no lock at all. Running two realm-scale QBO operations
+    concurrently produced a DB login timeout, four unexplained HTTP failures, and a
+    communication-link failure on a script that still exited 0."""
+    assert "Serialize QBO-heavy work INSIDE a single run" in playbook
+    anchor = playbook.index("Serialize QBO-heavy work INSIDE a single run")
+    para = playbook[anchor: anchor + 1600]
+    assert "no lock at all" in para, "the attachable-path exception lost its warning"
+    assert "an exit code of 0 from a sync script is not success" in para, (
+        "the playbook no longer warns that a sync script's exit 0 is not success"
+    )
+
+
+def test_attachable_client_has_a_direct_fetch(playbook: str) -> None:
+    """The playbook now tells operators to fetch by id rather than scan the realm."""
+    from integrations.intuit.qbo.attachable.external.client import QboAttachableClient
+
+    assert hasattr(QboAttachableClient, "get_attachable")
+    assert hasattr(QboAttachableClient, "download_attachable")
+    assert hasattr(QboAttachableClient, "query_all_attachables")
+    assert "get_attachable(id)" in playbook, "the direct-fetch guidance lost its entry point"
+    assert "proving ABSENCE" in playbook, "the scan is no longer scoped to absence proofs"
+
+
+def test_playbook_records_the_server_side_parent_filter(playbook: str) -> None:
+    """The measured finding must stay stated with its negative control, since it
+    reverses KI-28's premise and a future reader needs to know it was proven."""
+    anchor = playbook.index("Server-side parent filter")
+    para = playbook[anchor: anchor + 1500]
+    assert "AttachableRef.EntityRef.value" in para
+    assert "0 rows" in para, "the negative control (the proof it is a real filter) is gone"
+    assert "U-433" in para, "the follow-up unit reference is gone"
+    # The in-memory type guard must survive the optimisation. Assert the operative
+    # sentence, not the bare symbol — `entity_ref_type` also appears in the
+    # flat-field guidance immediately above, which would mask its removal here.
+    assert "keep the existing exact `(entity_ref_type, entity_ref_value)` check in memory" in para, (
+        "the exact-type guard is no longer required alongside the server-side filter"
+    )

@@ -474,6 +474,58 @@ documentation edit. Board row: `build.one.team/BOARD.md` § U-425.
   hash for parity so a future same-identity content edit cannot silently skip. Delivery itself already
   replaces (`conflictBehavior: replace`, `integrations/ms/outbox/business/worker.py:415`).
 
+## U-433 — retire the full-realm attachable scan: QBO CAN filter by parent (booked 2026-09-09)
+
+Chris, 2026-09-09: "We should never need to call a full-realm scan. How is it that we need to call a query of
+20k+ attachments every time?" He is right, and the premise the scan rests on is **false against today's API**.
+Board row: `build.one.team/BOARD.md` § U-433.
+
+**Current behaviour.** `QboAttachableService._query_attachables_with_fallback`
+(`integrations/intuit/qbo/attachable/business/service.py:78`) calls `client.query_all_attachables()` — every
+attachable in the realm, **21,371** as of 2026-09-09 — then filters in memory on an exact
+`(entity_ref_type, entity_ref_value)` match. Cached per service instance, so one instance amortizes across a
+run; a fresh instance pays it again. Every `sync_attachables_for_{bill,purchase,vendor_credit}` goes through it.
+
+**Why it was built that way (real incident, do not dismiss).** The retired `query_attachables_for_entity`
+built a QBO `WHERE` on `AttachableRef` and returned either a 400 or a *misleading* 200 (all rows, or empty)
+that was trusted as-is; the single-page fallback (`MAXRESULTS 1000`) silently missed any attachable past
+position 1000. Both produced false "no attachments". KI-28 records it. The scan is CORRECT — it is the cost
+that is wrong.
+
+**Measured 2026-09-09 against live QBO (read-only), filter vs full-scan ground truth:**
+
+| Probe | Result |
+|---|---|
+| `WHERE AttachableRef.EntityRef.value = '71946'` | 1 row, the right attachable, carrying a `Purchase/71946` ref |
+| `... = '75568'` / `= '75423'` | correct single attachable each (purchase + vendor credit) |
+| **`... = '999999999'` (negative control)** | **0 rows — a REAL filter, not a misleading 200** |
+| 3 parents with MULTIPLE attachables | filter returned EXACTLY the scan's set (2, 2 and 4 rows) |
+| attachable past position 5,000 | found — the original KI-28 failure mode does not reproduce |
+| entity ids referenced by >1 entity TYPE, this realm | **0** (collision risk is real in principle, absent here) |
+| `SELECT COUNT(*) FROM Attachable` | works; returns 21,371 without paging |
+
+**4/4 ground-truth comparisons matched, 0 mismatches.** Either the old query was malformed or Intuit fixed it.
+
+**Proposed shape.** Filter server-side by `AttachableRef.EntityRef.value`, then keep the EXISTING exact
+`(entity_ref_type, entity_ref_value)` in-memory check — the filter matches on value only, so the type guard
+still earns its place; it just runs over 1-4 rows instead of 21,371. Same correctness guarantee, minutes -> ~1s.
+
+- [ ] **P2 — replace the scan with the server-side filter in `_query_attachables_with_fallback`,** keeping the
+  in-memory exact-type filter and the per-instance cache for absence proofs.
+- [ ] **P2 — fall back to the scan on an implausible filtered result** (e.g. a transport error, or a row whose
+  refs do not actually contain the requested value). Never silently trust a filtered 200 — that is exactly the
+  KI-28 failure. Log which path answered.
+- [ ] **P2 — pin it with a test that compares the filter against full-scan ground truth** for a
+  multi-attachable parent and a negative control, so a regression in Intuit's behaviour fails loudly rather
+  than resurrecting false "no attachments".
+- [ ] **P3 — update KI-28 and CRITICAL #5 in `entities/invoice/intelligence/prompt.md`** once shipped; the
+  interim guidance (fetch by id; filter for lookups; scan only for absence proofs) landed 2026-09-09.
+
+**Why it matters beyond speed.** The scan is the single most expensive operation in the invoice workflow and
+the direct cause of the timeouts that dominated the 2026-09-09 session (DB login timeout, four
+`qbo.http.request.failed`, a `Communication link failure` on a script that still exited 0). It is also why
+runs must serialize QBO work at all — see the Session-conventions rule added the same day.
+
 ## U-432 — Multi-invoice draw support: N QBO invoices -> ONE pay application packet (booked 2026-09-09)
 
 Chris's call, 2026-09-09, after SHT-25 arrived in QBO as **two** invoices for one pay application:

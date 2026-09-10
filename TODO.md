@@ -2,6 +2,231 @@
 
 Carry-over items from sessions. Check off as done; prune anything stale.
 
+## U-426 findings — Bill entity re-review backlog (booked 2026-09-09)
+
+15 reported findings + 8 below-cap items from U-426's independent re-review (10 finder angles + a phase-3
+sweep). Board row: `build.one.team/BOARD.md` § U-426. Verdict CHANGES-REQUESTED; suite 3367 green (the review
+wrote no code). **Reviewer leg was DEGRADED** — the Codex `xhigh` run died in a network reconnect loop after
+emitting no verdict (stale `~/.codex` models cache, `codex_models_manager::cache: missing field
+base_instructions`; NOT a credits condition), so the fallback was Claude `/code-review` at `max`. That
+fallback reviewer is the same model that produced the original 2026-09-08 review, so this bought effort and
+breadth but NOT independence — treat these as one reviewer's findings, twice, not two opinions.
+
+**Fix units NOT yet assigned — grouping is Chris's call.** Next free id is **U-433** (U-427..U-432 taken;
+U-430/431/432 were claimed by a concurrent session mid-review, so recompute before minting any).
+Recommended first unit: the `complete_bill` pair below, on its own, ahead of everything else.
+
+### P0 — silently live in prod, and specifically hidden from the watchdog
+
+- [ ] **`_run_complete_bill` marks FAILED completions as successful CompletionJobs.**
+  `entities/bill/api/router.py:527` calls `job_service.mark_success()` for ANY dict `complete_bill` returns,
+  including five early returns (404/400/500) that fire BEFORE finalize and outbox enqueue. The inline comment
+  ("Returned dict ... = finalize+enqueue ran; outbox retries external writes") is false for all five.
+  `CompletionJobService.claim_next_stuck` keys on job status, so the reclaim watchdog skips the row forever:
+  the bill stays `IsDraft=1` permanently and AP never reaches QBO/SharePoint/Excel/Box, while the client
+  already got its 202. No dead-letter, no stuck-job report, no error surfaced. Found by 6 of 10 angles.
+- [ ] **The finalize retry loop is unreachable dead code.** `entities/bill/business/service.py:1515` —
+  `BillRepository.update_by_id` RAISES on a zero-row UPDATE (`persistence/repo.py:446-455`) and never returns
+  `None`, so the `else: ... retrying` branch can never run and `time.sleep(0.2)` has never executed in prod.
+  The 300ms BillEdit auto-save race the loop's own comment cites therefore returns 500 on attempt 1 — which
+  the item above then records as a success. One stray keystroke during Complete silently drops the completion.
+  Right-depth fix (from the altitude angle): finalization is a state transition, not a field edit — give it a
+  dedicated `FinalizeBillById` sproc keyed `WHERE Id=@Id AND IsDraft=1` with no `@RowVersion`. Idempotent, no
+  retry loop, no sleep, and a second concurrent Complete becomes a no-op instead of a conflict.
+
+### P1 — two endpoints hard-broken in prod
+
+- [ ] **`POST /process/bill-folder-single` raises NameError on 100% of calls, since April 2026.**
+  `entities/bill/api/router.py:739` (also `:898`, `:904`) writes `_folder_processing_results`, which is
+  defined nowhere in the repo — the module-level dict was deleted when run state moved to
+  `dbo.BillFolderRun` and three references survived. Proven by import: the module attribute does not exist
+  while the handler's source references it. It raises inside the request handler, before
+  `background_tasks.add_task`. Secondary: the bare `uuid4()` run_id at `:738` is never inserted into
+  `BillFolderRun`, so fixing only the NameError leaves the client polling a permanent 404. The queue-driven
+  `enqueue_bill_folder_run` -> tick -> `process_single_item` path is the one live design; consider deleting
+  this route and `_process_single_file` (a drifted near-verbatim copy) rather than repairing them.
+- [ ] **`DELETE /api/v1/delete/bill_line_item/{public_id}` 547s on any line carrying a PDF.**
+  `entities/bill_line_item/business/service.py:276` clears InvoiceLineItem rows, nulls ContractLabor links and
+  clears the legacy qbo mapping — but never deletes the `BillLineItemAttachment` row, whose
+  `FK_BillLineItemAttachment_BillLineItem` (`sql/dbo.bill_line_item_attachment.sql:264-266`) is NO ACTION.
+  `BillService.delete_by_public_id` DOES clear it, so the knowledge lives in exactly one of the two paths.
+  `build.one.web`'s BillEdit.tsx calls this per removed row, and under the universal-PDF rule every bill has
+  its summary line attached — so removing that line always fails. Fix at one choke point (or add CASCADE to
+  the link table) rather than duplicating the cleanup a third time.
+
+### P1 — data loss
+
+- [ ] **Completion blob flattening overwrites another bill's PDF and deletes the original.**
+  `entities/bill/business/service.py:1404` — `new_blob_name = blob_name.rsplit("/",1)[-1]`, then an
+  unconditional PUT (no `If-None-Match`, `shared/storage.py:151`), then `delete_file(old)`. The stripped path
+  segment is the only disambiguator. Collidable sources: `integrations/ms/mail/message/business/service.py:447`
+  stores `{message_public_id}/{filename}` (raw vendor attachment name) and
+  `entities/contract_labor/business/pdf_service.py:166` stores `contract-labor/{bill_number}/{filename}`
+  (project+vendor+date+description+SCC+price). `EmailAttachmentBridgeService.bridge` does NOT re-upload — it
+  sets `blob_url=ea.blob_uri` verbatim. Two vendors emailing `invoice.pdf` is enough: bill A's Attachment row
+  ends up serving bill B's document, A's original is gone, and the wrong PDF propagates to SharePoint, Box and
+  QBO. **NB: this finding was REFUTED in the 2026-09-08 session and that refutation was wrong** — two blob
+  paths were sampled, found UUID-based, and generalised. Also note `_parse_blob_url`'s container is discarded,
+  so the re-upload always targets the default container.
+- [ ] **`create()`'s rollback 547s, leaving an unretryable phantom bill.**
+  `entities/bill/business/service.py:431` deletes the Bill without first deleting the placeholder BillLineItem;
+  `FK_BillLineItem_Bill` has no CASCADE and `DeleteBillById` touches only the Bill row. The 547 is swallowed by
+  the nested `except`, so a Bill + orphan line item persist with NO attachment — the invariant the block exists
+  to enforce — and every retry with the same (vendor, bill_number, bill_date) trips the duplicate check, so the
+  bill cannot be re-created via the API until someone deletes rows by hand. `ExpenseService.create` gets this
+  right (deletes the placeholder first, with a comment explaining the 547). Right-depth fix: make Bill +
+  placeholder line + link ONE sproc in ONE transaction; a hand-rolled 3-table compensating delete with no
+  cascade cannot be made correct by adding more try/except. **This corrects a claim made three times on
+  2026-09-08** (the `4de54010` commit message — pushed, immutable; the /em handoff note — corrected in
+  `6065b12c`; the BOARD.md BATCH-24 row — corrected).
+- [ ] **BLIA `create()` returns the EXISTING link and discards the requested attachment.**
+  `entities/bill_line_item_attachment/business/service.py:55` never compares `existing.attachment_id` against
+  the requested `attachment_public_id`. `POST /api/v1/create/bill-line-item-attachment` is the re-point path:
+  AP uploads a corrected vendor invoice, gets 200, and the link still points at the superseded PDF. The new
+  blob is orphaned in Azure and completion pushes the OLD document to SharePoint, Box and QBO Attachable while
+  `_rename_invoice_blob_on_complete` moves the wrong blob to root. Also a TOCTOU against
+  `UQ_BillLineItemAttachment_BillLineItemId`. Fix: let the constraint enforce it — insert and map the unique
+  violation to 409, or make it an explicit upsert if re-pointing is the intended semantic.
+- [ ] **`SetBillQboIdentity` runs its theft-clear and its stamp with no transaction.**
+  `entities/bill/sql/dbo.bill.sql:677` — confirmed zero `BEGIN TRANSACTION`/`COMMIT`, while every other DML
+  sproc in the file wraps. A failure between the two UPDATEs permanently erases Bill A's QBO identity without
+  stamping Bill B; the next pull finds no dbo.Bill holding that QboId, takes the MISS branch of the dbo-only
+  identity fastpath, and creates a DUPLICATE local Bill. Secondary: when the target already holds the identity
+  the stamp matches 0 rows and emits no OUTPUT, so the `@Stolen` warning at `persistence/repo.py:653` never
+  fires and a real theft goes unlogged.
+- [ ] **(PLAUSIBLE, outside `entities/bill*`) QBO line full-replace can silently rewrite posted AP.**
+  `integrations/intuit/qbo/bill/connector/bill/business/service.py:802` — `update_has_been_billed_in_qbo` GETs
+  the fresh bill only for its SyncToken, then rebuilds EVERY line from current local state with no `Line.Id`,
+  full-replacing the posted QBO bill's lines, and never re-stamps the regenerated ids onto
+  `dbo.BillLineItem.QboId`. Triggered by INVOICE completion, not by any bill edit. A locally-deleted
+  $4,000 line (local delete issues no QBO write) means the next invoice completion drops the vendor's AP
+  balance $4,000 with no audit entry while `dbo.Bill.TotalAmount` still reads the old total. Code shape and
+  trigger path verified; a live QBO round-trip was not traced.
+
+### P1 — RBAC
+
+- [ ] **Four mutating `/process/bill-folder*` POSTs are gated on `can_read`.**
+  `entities/bill/api/router.py:579`, `:729`, `:752`, `:816` use the bare `require_module_api(Modules.BILLS)`,
+  whose `permission` defaults to `"can_read"` (`shared/rbac.py:364`), while EVERY entity endpoint in the same
+  router is explicit. A view-only AP clerk can mass-create draft Bills, upload a blob + Attachment row, or —
+  via `/process/bill-folder-move`'s name-conflict branch — reach `sp_client.delete_item` (`router.py:849`) and
+  permanently delete a PDF from the SharePoint processed folder.
+- [ ] **`GET /get/bill/find-by-conversation-id` returns bill data with no per-row access gate.**
+  `entities/bill/api/router.py:327` calls `BillRepository().find_for_reviewer_reply` directly — no
+  `assert_can_access_bill`, and `FindBillForReviewerReply` takes no `@ActorUserId` — while every other by-id
+  read on the router goes through `BillService`. The fuzzy branch needs only caller-supplied
+  `bill_number_hint` + `project_hint`, returning public_id, total_amount, vendor_name and is_draft for a bill
+  `GET /get/bill/{public_id}` would correctly 404 them on. **Same class as U-428, same router** — U-428 fixed
+  the two list reads and this third one was walked past twice.
+- [ ] **The create-time duplicate check reads AND writes bills outside the caller's scope, and leaks identity.**
+  `entities/bill/business/service.py:321` calls `repo.read_by_bill_number_and_vendor_id` directly;
+  `ReadBillByBillNumberAndVendorId` has no `@ActorUserId` (confirmed zero) and there is no
+  `assert_can_access_bill`. On a hit it MUTATES that bill via `link_source_email_message` and raises a
+  ValueError embedding its public_id and is_draft, which `raise_workflow_error` surfaces as a 409 body. A
+  subcontractor-scoped user with `can_create` learns the PublicId, draft state and existence of another
+  project's bill — and stamps their own EmailMessage onto it.
+- [ ] **The folder pre-scan 500s and echoes an internal `Bill.Id` to a user who may not see the row.**
+  `entities/bill/business/folder_processor.py:382` — `list_pending` calls
+  `read_by_bill_number_and_vendor_public_id` once per PDF purely to set an `is_duplicate` flag. That reads
+  through the UNSCOPED repo sproc and then calls `assert_can_access_bill(bill.id)`, which RAISES
+  `EntityNotAccessibleError` rather than returning None. For a PM whose source folder contains a duplicate of
+  a bill on a project they lack a UserProject row for, the exception escapes into the router's blanket
+  `except` and `GET /process/bill-folder-pending` returns 500 with `"Bill 18545 is not accessible..."`. The
+  scheduler tick path is unaffected (drain-secret sets `is_system_admin=True`).
+
+### P1/P2 — correctness
+
+- [ ] **`ReadBillsPaginated` has no deterministic tiebreaker, so the bills grid tears pages.**
+  `entities/bill/sql/dbo.bill.sql:552` — the ORDER BY is ten mutually-exclusive CASE terms, so exactly one
+  non-NULL sort key is active before OFFSET/FETCH. The sibling `ReadBills` (`:190`) DOES carry
+  `BillDate DESC, BillNumber ASC`; the paginated variant dropped it. `GET /get/bills` exposes no `sort_by`, and
+  BillDate is DATETIME2 at midnight from a date-only string, so ties are the norm (a QBO pull or folder run
+  lands dozens on one date). With 60 bills on 2026-09-01 and page_size=50, pages 1 and 2 can each return an
+  arbitrary split: one bill appears twice, another never appears, and `CountBills` still reports the correct
+  total so the grid shows no gap. **Found by the phase-3 sweep; missed by all ten angles.**
+- [ ] **An unresolvable `payment_term_public_id` silently NULLs the stored PaymentTermId.**
+  `entities/bill/business/service.py:1050` falls through to `None` on a lookup miss, and `UpdateBillById` SETs
+  `[PaymentTermId]` unconditionally (only `IsDraft` carries a `CASE WHEN` guard, one line below — the pattern
+  is right there). `vendor_public_id` two lines above RAISES on the identical miss; the asymmetry is the bug.
+  A replayed PUT referencing a since-deleted term returns 200 and AP aging loses the term silently. This is
+  the sproc-NULL-clobber class CLAUDE.md warns about.
+- [ ] **`UpdateBillById`'s OUTPUT omits QboId/RealmId, so a PUT nils the iOS cache.** `dbo.bill.sql:394`
+  emits them zero times while the sibling `UpdateBillLineItemById` emits them; `_from_db` reads both via
+  `getattr` defensively, so every Bill returned from an update carries `qbo_id=None` regardless of DB state.
+  Per the router's own `_with_vendor_public_id` docstring, iOS upserts write responses straight into Core
+  Data, overwriting every field. The QBO push path is unaffected (the outbox worker re-reads via
+  `read_by_public_id`, whose sproc does select QboId), so damage is confined to the API contract + client cache.
+- [ ] **The Excel column-Z idempotency guard is read at enqueue time, so a watchdog re-drive double-books.**
+  `entities/bill/business/service.py:2099` — the only duplicate guard is a scan of the CURRENT worksheet;
+  `MsOutboxService.enqueue_excel_insert` has no dedup key and `shared/fanout_guard.py` covers only
+  Box/SharePoint attachment pushes. If the process dies after enqueue but before `mark_success`, the reclaim
+  watchdog re-drives with `force=True`; the MS outbox has not drained, so column Z still lacks the public_ids
+  and a second identical insert is enqueued. Both drain and the project's budget-tracker DETAILS tab carries
+  the bill's cost twice, so variance/SOV read from that workbook are wrong with no error.
+
+### Below the 15-finding cap — real, deliberately not in the reported set
+
+- [ ] **`@retry_on_transient()` is inert for the two error classes it was added for.**
+  `entities/bill_line_item/persistence/repo.py:167`, `:210`, `:248`. Each body ends
+  `except Exception as error: raise map_database_error(error)`; `map_database_error`
+  (`shared/database.py:160`) replaces `args[0]` with a prose string, so `is_transient_error`'s
+  `str(error.args[0]).upper() in TRANSIENT_ERROR_CODES` branch can never match again — and the
+  `TRANSIENT_ERROR_MESSAGES` fallback contains ZERO patterns for `40001`, `deadlock`, `40613` or
+  `49918/49919/49920` (confirmed). A deadlock or Azure SQL throttle during a completion drain re-raises on the
+  first attempt with no retry, while a raw TCP drop still retries — so the guard looks alive in logs while
+  silently skipping the cases that matter.
+- [ ] **`AutoFailStaleBillFolderRuns`' first UPDATE invalidates its own second UPDATE's guard.**
+  `entities/bill/sql/dbo.billfolderrunitem.sql:368-396`. Statement 1 sets `ModifiedDatetime = @Now` on every
+  stale item it fails; statement 2 then refuses to fail the parent run because its guard is
+  `NOT EXISTS (... ModifiedDatetime > @Cutoff)`, which statement 1 just falsified. Nothing else closes the
+  run: `shared/api/admin.py:864` returns `{"processed": False}` on an empty queue WITHOUT calling
+  `check_and_complete_run`. A run abandoned by a mid-run redeploy sits `processing` with zero open items for
+  another full window, and `GET /process/bill-folder/{run_id}` withholds the `errors` array throughout — the
+  exact hanging-UI symptom the sproc's own comment says it exists to prevent.
+- [ ] **The bills search term is concatenated into `LIKE` with no `ESCAPE`.** `dbo.bill.sql:541`, `:587`
+  (`ReadBillsPaginated` and `CountBills`). Not injection — the param is bound — but `%`, `_` and `[` act as
+  wildcards. Searching for a retention memo containing `10%` matches everything and returns a
+  plausible-looking count; `[URGENT]` becomes a one-character class matching any of U/R/G/E/N/T. The
+  `Memo LIKE '%...%'` arm also forces a full NVARCHAR(MAX) scan on an effectively-`%%` term.
+- [ ] **The `update_bill` agent tool advertises an `is_draft` flip the service always rejects.**
+  `entities/bill/intelligence/tools.py:342` tells the model "Pass `false` to mark the bill committed", but
+  `BillService.update_by_public_id:1063` raises unless `_via_completion_pipeline=True`, which no HTTP caller
+  can set. The agent burns a user-approval round-trip for a guaranteed 400. `api/router.py:465` carries the
+  same now-false claim in a comment — U-372's guard landed without updating either the machine-read schema or
+  the human-read docs.
+- [ ] **~1,700 lines of dead code that reads as live.** `BillService.sync_attachments_to_sharepoint`
+  (`service.py:654-1001`, 349 lines, zero callers) is a drifted inline-upload twin of
+  `_upload_attachments_to_module_folder` that bypasses BOTH the outbox and the `ALLOW_MS_WRITES` gate and
+  carries a THIRD filename builder disagreeing with the live one on four axes (`project.name` vs
+  `abbreviation`, raw `str(price)` vs `$1,234.56`, ISO vs mm-dd-yyyy dates, no content-type extension
+  fallback). `BillExtractionMapper` (`extraction_mapper.py`, 1,026 lines) has zero callers. Both have already
+  cost reviewer time — `SESSION_NOTES.md:145` records a fix wasted on the dead copy. Delete rather than
+  optimise; `sync_attachments_to_sharepoint` is one wire-up away from pushing to SharePoint with the write
+  gate closed.
+- [ ] **`current_user.get("id")` is always None.** `entities/bill/api/router.py:442`, `:484` — the JWT payload
+  carries `user_id` (`entities/auth/business/service.py:205`), never `id`, and `shared/api/auth_user.py`
+  exists precisely because of this. `TriggerContext.user_id=None` means the Workflow audit row records
+  `created_by="system"` for every user-initiated bill UPDATE and DELETE, so the delete audit trail cannot name
+  who deleted a bill. Row-level `CreatedByUserId` is unaffected. Line 125 in the same file does it correctly.
+  **Systemic — the same pattern appears across ~25 routers, so fix it as a sweep, not a bill-local patch.**
+- [ ] **Vacuous tests.** `tests/test_bill_repo_no_shadowed_methods.py:27` asserts only that `BillRepository`
+  has no duplicate METHOD NAMES — it passes if every method body is deleted, and it is the only test file
+  named for a 675-line repo with no behavioural coverage (no ROWVERSION-conflict test, no param-binding test
+  beyond the one-directional AST sweep in `test_repo_sproc_param_contract.py`, which cannot see a sproc param
+  the repo FAILS to send). `test_completion_job_service.py:118::test_run_job_never_re_raises` contains no
+  assertion at all and passes if `run_job` is a no-op. `tests/test_u283_bill_qbo_identity_repoint.py:181`
+  asserts an unreachable contract against a mock (`_apply_bill_fields`' documented "returns None on a
+  ROWVERSION race" cannot happen — `update_by_public_id` raises), so it can never go red on a real regression.
+- [ ] **Efficiency: ~108 queries for a 12-line bill completion.** `complete_bill` walks the attachment links
+  three times (`:1393`, `:1772`, `:2746`), each per-line call costing 3 queries on 3 connections (BLI read +
+  `UserCanAccessBill` UDF + BLIA read) — a batch `read_by_bill_line_item_ids` already exists and is used by
+  `scripts/sync_qbo_bill.py:139`. Step 2 re-reads the loop-invariant parent Bill and Project once per line
+  (~8 queries each). `_build_module_filename` re-reads SubCostCode 2N times with no cache (the batch Excel
+  path already shows the fix). And both Excel paths call `MsDriveItemRepository().read_all()` to linear-scan
+  for a row `get_excel_for_project` ALREADY returned — which itself did a second `read_all()` — so a 3-project
+  bill triggers 9 full-table scans of an unbounded table. Fix `_conn_ctx`/`_bit` duplication in the same pass
+  (`shared/database.py:129` names this file by path as the copy to retire).
+
 ## QBO Bill write-path gaps — found re-rating a pushed bill (2026-09-09)
 
 Both surfaced changing Brayan Salina's day rate ($240 -> $250, i.e. `Vendor.HourlyRate` $30.00 -> $31.25)

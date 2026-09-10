@@ -5,8 +5,26 @@ from __future__ import annotations
 from collections import defaultdict
 from fastapi import HTTPException
 
+# Header wording drifts between project trackers while the COLUMN POSITION does
+# not: a 2026-09-09 survey of 10 mapped trackers found column H (the draw tag)
+# spelled "DRAW REQUEST DATE", "DRAW REQUEST" and "DRAW", and column N (the
+# billable amount) spelled "AMOUNT BILLABLE", "BILLABLE AMOUNT", "AMOUNT PAID"
+# and blank. All 10 failed `detect_header_and_columns`, so this step has never
+# completed on any of them.
+#
+# Column H's three spellings are aliased here: they are the same column in the
+# same position, and the header text is known to be misleading already (it says
+# "DATE" while the column carries the draw NUMBER — see the invoice playbook's
+# Step 6 column map).
+#
+# Column N is deliberately NOT widened past the wordings that literally say
+# BILLABLE. "AMOUNT PAID" is a different quantity, and mapping it into the
+# billable slot would reconcile client billing against amounts paid. Those
+# trackers must keep failing loudly. See TODO.md § U-437.
 _KNOWN_HEADERS = {
     "DRAW REQUEST DATE": "draw_request_date",
+    "DRAW REQUEST": "draw_request_date",
+    "DRAW": "draw_request_date",
     "DATE": "date",
     "PAYABLE TO": "payable_to",
     "INVOICE #": "invoice_num",
@@ -14,6 +32,8 @@ _KNOWN_HEADERS = {
     "SOURCE": "source",
     "CK": "source",
     "BILLABLE": "billable",
+    "AMOUNT BILLABLE": "billable",
+    "BILLABLE AMOUNT": "billable",
     "SUB COST CODE": "sub_cost_code",
 }
 

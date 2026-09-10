@@ -404,3 +404,33 @@ def test_playbook_records_the_server_side_parent_filter(playbook: str) -> None:
     assert "keep the existing exact `(entity_ref_type, entity_ref_value)` check in memory" in para, (
         "the exact-type guard is no longer required alongside the server-side filter"
     )
+
+def test_playbook_requires_quiescing_before_diagnosis(playbook: str) -> None:
+    """U-425/KI-51: three false alarms in one session, all from measuring a
+    system mid-settle and reporting the snapshot as a defect. The rule must
+    name all three quiesce conditions, or a reader will check only the easy one.
+    """
+    anchor = playbook.index("QUIESCE BEFORE YOU DIAGNOSE")
+    para = playbook[anchor: anchor + 2600]
+    assert "ms.Outbox" in para and "box.Outbox" in para, "the outbox-terminal condition lost a side"
+    assert "unchanged across two reads" in para, "the stable-version condition is gone"
+    assert "watermark has not advanced" in para, "the dbo/QBO watermark condition is gone"
+
+
+def test_playbook_requires_prior_version_diff_for_attribution(playbook: str) -> None:
+    """Comparing a live sheet to dbo shows disagreement, never causation. Both
+    stores keep history; the rule must point at it."""
+    anchor = playbook.index("diff the artifact against its own PRIOR VERSION")
+    para = playbook[anchor: anchor + 1200]
+    assert "/versions" in para, "the SharePoint version endpoint is no longer named"
+    assert "files/{id}/versions" in para, "the Box version endpoint is no longer named"
+
+
+def test_playbook_warns_about_numeric_header_normalisation(playbook: str) -> None:
+    """`08` reads back as `8` and `24.00` as `24`; a string compare turned a
+    4-row difference into 55 false mismatches."""
+    anchor = playbook.index("Compare like with like")
+    para = playbook[anchor: anchor + 1200]
+    assert "max_row" in para, "the row-measure mismatch example is gone"
+    assert "24.00" in para, "the numeric-normalisation example is gone"
+    assert "KI-51" in playbook, "the incident is no longer booked"

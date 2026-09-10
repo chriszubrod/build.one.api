@@ -43,9 +43,13 @@ to them. U-434 fixed Bill only. **The other three completable entities still hav
 
 15 reported findings + 8 below-cap items from U-426's independent re-review (10 finder angles + a phase-3
 sweep). Board row: `build.one.team/BOARD.md` § U-426. Verdict CHANGES-REQUESTED; suite 3367 green (the review
-wrote no code). **Reviewer leg was DEGRADED** — the Codex `xhigh` run died in a network reconnect loop after
-emitting no verdict (stale `~/.codex` models cache, `codex_models_manager::cache: missing field
-base_instructions`; NOT a credits condition), so the fallback was Claude `/code-review` at `max`. That
+wrote no code). **Reviewer leg was DEGRADED** — the Codex `xhigh` run emitted no verdict, so the fallback was Claude
+`/code-review` at `max`. **CAUSE CORRECTED 2026-09-10:** originally recorded here as a stale `~/.codex` models
+cache and "not credits" — both wrong. The real cause was a **dead pin**: `gpt-5.5` returns `404 ... does not
+exist or you do not have access to it`, and the client retries a 404 as `Reconnecting... 5/5` before exiting
+0, which is why it looked like flaky infrastructure. Registry re-pinned to `gpt-5.6-terra` (verified at
+`xhigh`). Codex is healthy; **U-426 can and should be re-run with a genuine second opinion**, since its
+findings below were produced by the same model that wrote the review being checked. That
 fallback reviewer is the same model that produced the original 2026-09-08 review, so this bought effort and
 breadth but NOT independence — treat these as one reviewer's findings, twice, not two opinions.
 

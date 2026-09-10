@@ -148,6 +148,53 @@ class ReviewRepository:
     def read_by_expense_id(self, expense_id: int) -> list[Review]:
         return self._read_list("ReadReviewsByExpenseId", {"ExpenseId": expense_id})
 
+    def delete_by_expense_id(self, expense_id: int) -> None:
+        """Delete all Review rows for an Expense.
+
+        Reviews are otherwise insert-only; this exists ONLY so the parent
+        Expense can be hard-deleted without tripping FK_Review_Expense.
+        """
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(
+                    cursor=cursor,
+                    name="DeleteReviewsByExpenseId",
+                    params={"ExpenseId": expense_id},
+                )
+        except Exception as error:
+            logger.error(f"Error during delete reviews by expense id {expense_id}: {error}")
+            raise map_database_error(error)
+
+    def read_current_by_expense_ids(self, expense_ids: list[int]) -> dict[int, Review]:
+        """Batch lookup of the latest Review per Expense. Returns
+        {expense_id: Review}; expenses with no Review row are absent.
+        Empty input → empty dict (no DB call).
+        """
+        if not expense_ids:
+            return {}
+        csv = ",".join(str(int(e)) for e in expense_ids if e is not None)
+        if not csv:
+            return {}
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(
+                    cursor=cursor,
+                    name="ReadCurrentReviewsByExpenseIds",
+                    params={"ExpenseIds": csv},
+                )
+                out: dict[int, Review] = {}
+                for row in cursor.fetchall():
+                    review = self._from_db(row)
+                    if review is None or review.expense_id is None:
+                        continue
+                    out[int(review.expense_id)] = review
+                return out
+        except Exception as error:
+            logger.error(f"Error during ReadCurrentReviewsByExpenseIds: {error}")
+            raise map_database_error(error)
+
     def read_by_bill_credit_id(self, bill_credit_id: int) -> list[Review]:
         return self._read_list("ReadReviewsByBillCreditId", {"BillCreditId": bill_credit_id})
 

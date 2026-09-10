@@ -202,12 +202,15 @@ def test_expense_delete_no_longer_clears_any_qbo_mapping():
 
     with patch.object(svc, "read_by_public_id", return_value=expense), patch(
         "entities.expense_line_item.business.service.ExpenseLineItemService"
-    ) as li_svc_cls, patch("shared.database.get_connection") as get_conn:
+    ) as li_svc_cls, patch("shared.database.get_connection") as get_conn, patch(
+        "entities.review.persistence.repo.ReviewRepository"
+    ) as review_repo_cls:
         li_svc_cls.return_value.read_by_expense_id.return_value = []
         result = svc.delete_by_public_id("exp-pub")
 
     assert result is expense
     mock_repo.delete_by_id.assert_called_once_with(99)
+    review_repo_cls.return_value.delete_by_expense_id.assert_called_once_with(99)
     get_conn.assert_not_called()
 
 

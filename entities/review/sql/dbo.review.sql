@@ -439,6 +439,60 @@ BEGIN
 END;
 GO
 
+-- Batch lookup: latest Review per Expense. Expense list/GET attach
+-- (U-357 Expense-first) mirrors ReadCurrentReviewsByBillIds so the
+-- list endpoint does not N+1 ReadCurrentReviewByExpenseId.
+CREATE OR ALTER PROCEDURE ReadCurrentReviewsByExpenseIds
+(
+    @ExpenseIds NVARCHAR(MAX)
+)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    ;WITH ranked AS (
+        SELECT
+            r.*,
+            ROW_NUMBER() OVER (
+                PARTITION BY r.[ExpenseId]
+                ORDER BY r.[CreatedDatetime] DESC, r.[Id] DESC
+            ) AS rn
+        FROM dbo.[vw_Review] r
+        INNER JOIN STRING_SPLIT(ISNULL(@ExpenseIds, ''), ',') s
+            ON s.value <> '' AND r.[ExpenseId] = TRY_CAST(LTRIM(RTRIM(s.value)) AS BIGINT)
+        WHERE r.[ExpenseId] IS NOT NULL
+    )
+    SELECT
+        [Id], [PublicId], [RowVersion], [CreatedDatetime], [ModifiedDatetime],
+        [ReviewStatusId], [UserId], [Comments],
+        [BillId], [ExpenseId], [BillCreditId], [InvoiceId],
+        [StatusName], [StatusSortOrder], [StatusIsFinal], [StatusIsDeclined], [StatusColor],
+        [UserFirstname], [UserLastname]
+    FROM ranked
+    WHERE rn = 1;
+END;
+GO
+
+-- Delete all Review rows for an Expense. Called by
+-- ExpenseService.delete_by_public_id so a reviewed expense can be
+-- hard-deleted without tripping FK_Review_Expense. Mirrors
+-- DeleteReviewsByBillId. 0 live Expense reviews as of the U-357a census;
+-- this exists so the first submitted review does not 547 the delete path.
+CREATE OR ALTER PROCEDURE DeleteReviewsByExpenseId
+(
+    @ExpenseId BIGINT
+)
+AS
+BEGIN
+    SET NOCOUNT ON;
+    BEGIN TRANSACTION;
+
+    DELETE FROM dbo.[Review] WHERE [ExpenseId] = @ExpenseId;
+
+    COMMIT TRANSACTION;
+END;
+GO
+
 -- Delete all Review rows for a Bill. Called by BillService.delete_by_public_id
 -- so a bill can be hard-deleted without tripping FK_Review_Bill. Reviews are
 -- otherwise insert-only (audit history); this delete path exists ONLY for the

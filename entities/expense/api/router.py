@@ -11,7 +11,10 @@ from decimal import Decimal
 # Local Imports
 from entities.expense.api.schemas import ExpenseCreate, ExpenseUpdate
 from entities.expense.business.service import ExpenseService
+from entities.review.persistence.repo import ReviewRepository
+from entities.review_status.business.service import ReviewStatusService
 from shared.api.responses import list_response, item_response, accepted_response, raise_workflow_error, raise_not_found
+from shared.lifecycle.resolver import attach_lifecycle
 from shared.rbac import require_module_api
 from shared.rbac_constants import Modules
 from core.workflow.api.process_engine import ProcessEngine, TriggerContext, EventType, Channel
@@ -30,6 +33,60 @@ def _clean_expense_completion_cache():
     expired = [k for k, v in _EXPENSE_COMPLETION_RESULT_CACHE.items() if v.get("expires_at", 0) < now]
     for k in expired:
         del _EXPENSE_COMPLETION_RESULT_CACHE[k]
+
+
+def _first_review_sort_order() -> Optional[int]:
+    first = ReviewStatusService().get_first_status()
+    return first.sort_order if first is not None else None
+
+
+def _reviews_by_expense_ids(expense_ids: list[int]) -> dict:
+    """Batch-stitch latest Review per Expense. Missing sproc (SQL apply
+    owed) or a transient DB error must not 500 the list — degrade to no
+    review state (kind `none`).
+    """
+    if not expense_ids:
+        return {}
+    try:
+        return ReviewRepository().read_current_by_expense_ids(expense_ids)
+    except Exception:
+        logger.exception(
+            "ReadCurrentReviewsByExpenseIds failed; expense list continues without review state"
+        )
+        return {}
+
+
+def _current_review_for_expense(expense_id: Optional[int]):
+    if not expense_id:
+        return None
+    try:
+        return ReviewRepository().read_current_by_expense_id(expense_id)
+    except Exception:
+        logger.exception(
+            "ReadCurrentReviewByExpenseId failed; expense GET continues without review state"
+        )
+        return None
+
+
+def _expense_dict_with_lifecycle(expense, *, review=None, first_sort_order: Optional[int] = None) -> dict:
+    """Serialize an Expense and stamp derived `status` + `review_status*`.
+
+    Review state is not a column on dbo.Expense — it lives on dbo.Review.
+    List/GET omitted it (U-357 census: 0 Expense reviews); this attach is
+    the Expense-first wire relationship, matching Bill list stitch.
+    """
+    if hasattr(expense, "to_dict"):
+        payload = expense.to_dict()
+        is_draft = expense.is_draft
+    else:
+        payload = dict(expense)
+        is_draft = payload.get("is_draft")
+    return attach_lifecycle(
+        payload,
+        is_draft=is_draft,
+        review=review,
+        first_sort_order=first_sort_order,
+    )
 
 
 @router.post("/create/expense")
@@ -110,8 +167,18 @@ def get_expenses_router(
         vendor_id=vendor_id,
         is_draft=is_draft,
     )
+    expense_ids = [e.id for e in expenses if e.id]
+    review_map = _reviews_by_expense_ids(expense_ids)
+    first_sort_order = _first_review_sort_order()
     return {
-        "data": [e.to_dict() for e in expenses],
+        "data": [
+            _expense_dict_with_lifecycle(
+                e,
+                review=review_map.get(e.id),
+                first_sort_order=first_sort_order,
+            )
+            for e in expenses
+        ],
         "count": total,
         "page": page,
         "page_size": page_size,
@@ -126,7 +193,13 @@ def get_expense_by_reference_number_and_vendor_router(reference_number: str, ven
     expense = ExpenseService().read_by_reference_number_and_vendor_public_id(reference_number=reference_number, vendor_public_id=vendor_public_id)
     if not expense:
         raise_not_found("Expense")
-    return item_response(expense.to_dict())
+    return item_response(
+        _expense_dict_with_lifecycle(
+            expense,
+            review=_current_review_for_expense(expense.id),
+            first_sort_order=_first_review_sort_order(),
+        )
+    )
 
 
 @router.get("/get/expense/{public_id}/completion-result")
@@ -154,7 +227,13 @@ def get_expense_by_public_id_router(public_id: str, current_user: dict = Depends
     expense = ExpenseService().read_by_public_id(public_id=public_id)
     if not expense:
         raise_not_found("Expense")
-    return item_response(expense.to_dict())
+    return item_response(
+        _expense_dict_with_lifecycle(
+            expense,
+            review=_current_review_for_expense(expense.id),
+            first_sort_order=_first_review_sort_order(),
+        )
+    )
 
 
 @router.put("/update/expense/{public_id}")

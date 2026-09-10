@@ -187,6 +187,10 @@ def _call_get_bills(bills, vendor_repo=None, conn=None):
         patch("entities.bill.api.router.BillService", return_value=service),
         patch("entities.bill.api.router.BillRepository", return_value=repo),
         patch("entities.review.persistence.repo.ReviewRepository", return_value=review_repo),
+        patch(
+            "entities.bill.api.router.ReviewStatusService",
+            return_value=SimpleNamespace(get_first_status=lambda: SimpleNamespace(sort_order=10)),
+        ),
     ]
     if vendor_repo is not None:
         patches.append(patch("entities.bill.api.router.VendorRepository", return_value=vendor_repo))
@@ -249,7 +253,8 @@ def test_list_preserves_every_pre_existing_field():
         assert bd[key] == value, f"pre-existing field {key!r} changed"
     assert set(bd) - set(original) == {
         "project_id", "review_status", "review_status_is_final",
-        "review_status_is_declined", "vendor_public_id",
+        "review_status_is_declined", "review_status_kind", "status",
+        "vendor_public_id",
     }
     assert set(response) == {"data", "count", "page", "page_size"}
 
@@ -265,13 +270,28 @@ def _single_vendor_conn(bill):
     return _mock_single_conn(row)
 
 
+def _lifecycle_patches(review=None):
+    review_repo = MagicMock()
+    review_repo.read_current_by_bill_id.return_value = review
+    status_svc = SimpleNamespace(
+        get_first_status=lambda: SimpleNamespace(sort_order=10),
+    )
+    return [
+        patch("entities.review.persistence.repo.ReviewRepository", return_value=review_repo),
+        patch("entities.bill.api.router.ReviewStatusService", return_value=status_svc),
+    ]
+
+
 def _call_get_by_public_id(bill):
     service = MagicMock()
     service.read_by_public_id.return_value = bill
     service.get_qbo_bill_url.return_value = None
     with patch("entities.bill.api.router.BillService", return_value=service), \
          patch("shared.database.get_connection",
-               return_value=_single_vendor_conn(bill)):
+               return_value=_single_vendor_conn(bill)), \
+         ExitStack() as stack:
+        for p in _lifecycle_patches():
+            stack.enter_context(p)
         return asyncio.run(get_bill_by_public_id_router(
             public_id=bill.public_id, current_user=USER))
 
@@ -281,7 +301,10 @@ def _call_get_by_id(bill):
     service.read_by_id.return_value = bill
     with patch("entities.bill.api.router.BillService", return_value=service), \
          patch("shared.database.get_connection",
-               return_value=_single_vendor_conn(bill)):
+               return_value=_single_vendor_conn(bill)), \
+         ExitStack() as stack:
+        for p in _lifecycle_patches():
+            stack.enter_context(p)
         return get_bill_by_id_router(id=bill.id, current_user=USER)
 
 
@@ -314,6 +337,8 @@ def test_single_reads_preserve_every_pre_existing_field(call):
     for key, value in original.items():
         assert payload[key] == value, f"pre-existing field {key!r} changed"
     assert "vendor_public_id" in payload
+    assert "status" in payload
+    assert "review_status_kind" in payload
 
 
 def test_unset_vendor_skips_the_database_entirely():
@@ -322,7 +347,10 @@ def test_unset_vendor_skips_the_database_entirely():
     service = MagicMock()
     service.read_by_id.return_value = bill
     with patch("entities.bill.api.router.BillService", return_value=service), \
-         patch("shared.database.get_connection") as fresh:
+         patch("shared.database.get_connection") as fresh, \
+         ExitStack() as stack:
+        for p in _lifecycle_patches():
+            stack.enter_context(p)
         result = get_bill_by_id_router(id=1, current_user=USER)
     fresh.assert_not_called()
     assert result["data"]["vendor_public_id"] is None

@@ -566,6 +566,29 @@ class ExpenseService:
         
         # U-354/U-365: no qbo.* mapping row to clear before the header delete —
         # dbo.Expense.QboId/RealmId die with the row.
+        # Review rows FK to Expense (FK_Review_Expense). Cascade them first
+        # so a reviewed expense does not 547. Mirrors BillService.delete.
+        # DeleteReviewsByExpenseId is new — if the sproc isn't live yet and
+        # there are no Review rows, continue so unreviewed deletes still work.
+        from entities.review.persistence.repo import ReviewRepository
+        review_repo = ReviewRepository()
+        try:
+            review_repo.delete_by_expense_id(expense_id)
+            logger.info(f"Deleted Review rows for expense {expense_id}")
+        except Exception as e:
+            try:
+                leftover = review_repo.read_by_expense_id(expense_id)
+            except Exception:
+                leftover = True
+            if leftover:
+                logger.error(f"Failed to delete Review rows for expense {expense_id}: {e}")
+                raise ValueError(
+                    f"Cannot delete expense: failed to delete Review rows for expense {expense_id}"
+                ) from e
+            logger.warning(
+                f"DeleteReviewsByExpenseId failed with no Review rows for expense {expense_id}; continuing: {e}"
+            )
+
         return self.repo.delete_by_id(existing.id)
 
     def complete_expense(self, public_id: str) -> dict:

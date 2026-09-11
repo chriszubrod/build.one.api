@@ -88,3 +88,48 @@ def labor_price_two_shot(
 
     cost = round_money(hours_d * rate_d)
     return round_money(cost * (Decimal(1) + markup_d))
+
+
+def details_ledger_amount(
+    price: Any,
+    amount: Any,
+    *,
+    is_credit: bool,
+) -> Decimal:
+    """Column-N value for a DETAILS worksheet row, signed so a credit reduces the draw.
+
+    The single seam for both halves of a ledger row's money, shared by the
+    SharePoint/MS writers (``ExpenseService.sync_to_excel_workbook`` and its
+    batch sibling) and the Box row builder
+    (``integrations/box/excel/business/row_builder.py``) so the two physical
+    copies of one logical ledger can never disagree on a value (KI-39).
+
+    **Price preferred, Amount as fallback.** QBO-pulled account-based lines
+    often carry no ``Price``; without the fallback the row lands at ``N = 0``
+    and the col-Z idempotency key then freezes it there forever — later
+    re-syncs skip it as already-present (KI-16 × KI-46: OHR2-36 carried a
+    $18,630 line as $0 in Box long after the underlying Price was corrected).
+
+    **The negation is idempotent BY DESIGN — it fires only on a positive
+    value, and must never be "simplified" to an unconditional ``-v``.** Credit
+    line amounts are stored positive today, but they are transitioning to
+    signed-negative at the write site (the U-344 pattern already underway for
+    ``BillCreditLineItem``). An unconditional flip would turn those rows
+    positive the moment they land. This is the same landmine, and the same
+    guard, as ``entities/invoice/business/cover.py::_signed_line_amount``.
+
+    Always returns a ``Decimal`` — a row with neither value carries ``0``, the
+    only thing a ledger cell can mean. Unlike ``to_decimal_or_none`` there is
+    no preserve-on-``None`` write downstream to distinguish "absent" from
+    "zero", so handing callers an ``Optional`` would only make each of them
+    re-decide the same question, and a truthiness guard on a money value is the
+    repo's most-repeated bug (``Decimal(0)`` is falsy).
+    """
+    value = to_decimal_or_none(price)
+    if value is None:
+        value = to_decimal_or_none(amount)
+    if value is None:
+        return Decimal(0)
+    if is_credit and value > 0:
+        value = -value
+    return value

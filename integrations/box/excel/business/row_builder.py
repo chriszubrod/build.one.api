@@ -4,6 +4,8 @@ from decimal import Decimal
 from typing import Any, List, Optional
 
 # Local Imports
+from shared.api.money import details_ledger_amount
+
 # All entity/service imports are lazy (inside build_details_rows) so importing
 # this module — and the outbox worker that dispatches to it — does not pull in
 # the full entity stack at import time.
@@ -142,10 +144,8 @@ def build_details_rows(
             row[10] = bill.bill_number or ""                            # K
             row[11] = li.description or ""                              # L
             row[12] = "Bill"                                            # M
-            # N: prefer Price, fall back to Amount (parity with the MS-side
-            # sync — QBO-pulled account-based lines often carry no Price).
-            row[13] = _decimal_or_zero(
-                li.price if li.price is not None else getattr(li, "amount", None)
+            row[13] = details_ledger_amount(
+                li.price, li.amount, is_credit=False,
             )                                                           # N
             row[25] = str(li.public_id) if li.public_id else ""        # Z
             rows.append(row)
@@ -165,7 +165,9 @@ def build_details_rows(
             return []
         vendor = vendor_service.read_by_id(id=expense.vendor_id) if expense.vendor_id else None
         vendor_name = (vendor.name or "") if vendor else ""
-        type_label = "Expense Credit" if getattr(expense, "is_credit", False) else "Expense"
+        # Columns M and N are two expressions of one fact — resolve it once.
+        is_credit = bool(expense.is_credit)
+        type_label = "Expense Credit" if is_credit else "Expense"
         line_items = ExpenseLineItemService().read_by_expense_id(expense_id=expense.id)
         line_items = _filter_by_project(line_items, project_id)
 
@@ -180,9 +182,8 @@ def build_details_rows(
             row[10] = expense.reference_number or ""                    # K
             row[11] = li.description or ""                              # L
             row[12] = type_label                                        # M
-            # N: prefer Price, fall back to Amount (parity with the MS-side sync).
-            row[13] = _decimal_or_zero(
-                li.price if li.price is not None else getattr(li, "amount", None)
+            row[13] = details_ledger_amount(
+                li.price, li.amount, is_credit=is_credit,
             )                                                           # N
             row[25] = str(li.public_id) if li.public_id else ""        # Z
             rows.append(row)

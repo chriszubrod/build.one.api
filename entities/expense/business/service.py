@@ -14,6 +14,7 @@ from entities.expense.persistence.repo import ExpenseRepository
 from entities.attachment.business.service import AttachmentService
 from entities.project.business.service import ProjectService
 from shared.access import assert_can_access_expense
+from shared.api.money import details_ledger_amount
 from shared.authz import current_user_id, current_is_system_admin
 from entities.vendor.business.service import VendorService
 from entities.sub_cost_code.business.service import SubCostCodeService
@@ -862,6 +863,11 @@ class ExpenseService:
             rows_to_append = []
             insert_groups = []  # (insertion_row, group_rows, sub_cost_code_number)
 
+            # Columns M and N are two expressions of one fact. Resolve it once:
+            # `is_credit` reached the type label and not the amount's sign for
+            # months, which is how a refund came to ADD to a draw total.
+            is_credit = bool(expense.is_credit)
+
             for sub_cost_code_id, subcostcode_line_items in line_items_by_subcostcode.items():
                 sub_cost_code = self.sub_cost_code_service.read_by_id(id=str(sub_cost_code_id)) if sub_cost_code_id is not None else None
                 sub_cost_code_number = (sub_cost_code.number or "") if sub_cost_code else ""
@@ -879,8 +885,11 @@ class ExpenseService:
                             vendor.name or "",                                                      # J: Vendor
                             expense.reference_number or "",                                         # K: Reference Number
                             line_item.description or "",                                            # L: Description
-                            "Expense Credit" if expense.is_credit else "Expense",                   # M: Type
-                            float(line_item.price) if line_item.price is not None else 0,           # N: Price (numeric)
+                            "Expense Credit" if is_credit else "Expense",                           # M: Type
+                            # float() because Graph rejects a Decimal payload (KI-26).
+                            float(details_ledger_amount(
+                                line_item.price, line_item.amount, is_credit=is_credit,
+                            )),                                                                     # N: Price (numeric)
                             "", "", "", "", "", "", "", "", "", "", "",                              # O-Y: Empty
                             str(line_item.public_id) if line_item.public_id else "",                # Z: Reconciliation key
                         ]
@@ -1053,6 +1062,7 @@ class ExpenseService:
             for expense, line_items in expense_line_pairs:
                 vendor = vendor_cache.get(expense.vendor_id)
                 vendor_name = (vendor.name or "") if vendor else ""
+                is_credit = bool(expense.is_credit)   # columns M and N, one fact
                 for li in line_items:
                     pid = str(li.public_id).strip() if li.public_id else ""
                     if pid and pid in existing_public_ids:
@@ -1070,8 +1080,10 @@ class ExpenseService:
                             vendor_name,                                                        # J: Vendor
                             expense.reference_number or "",                                     # K: Ref#
                             li.description or "",                                               # L: Description
-                            "Expense Credit" if expense.is_credit else "Expense",               # M: Type
-                            float(li.price) if li.price is not None else 0,                     # N: Price
+                            "Expense Credit" if is_credit else "Expense",                       # M: Type
+                            float(details_ledger_amount(
+                                li.price, li.amount, is_credit=is_credit,
+                            )),                                                                 # N: Price
                             "", "", "", "", "", "", "", "", "", "", "",                          # O-Y
                             pid,                                                                # Z: Reconciliation key
                         ]

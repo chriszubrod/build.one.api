@@ -3051,6 +3051,37 @@ Board: [U-370](../build.one.team/BOARD.md) (Ready). Review of the Address stack 
   byte-identical to the current `Attachment.BlobUrl` and 404s on pre-encoded `%3D`/`%20` path segments; a
   plain replay re-fails. Sibling of `tests/test_ms_outbox_worker_url_encoding.py`. Both need their own units.
 
+- [ ] **U-449 — one-time replay: 22 DETAIL rows / $16,209.39 missing from two Box workbooks.** Booked
+  2026-09-11 out of the U-448 sweep. **Ops action, not a code change** — held for Chris's explicit approval;
+  nothing may run without it. These are the rows the KI-29 lock dead-lettered and that no later drain healed,
+  verified absent by reading the LIVE Box workbooks (col-Z set difference), not inferred from outbox status.
+  **Replay set — 7 entities, via each entity's `_enqueue_box_excel` (which reads the CURRENT mapping):**
+  *Project 13, `BillService()._enqueue_box_excel(bill=…, project_id=13)` — 21 rows, $15,494.39:*
+  `20505` 1DB51EA0-7952-48AD-8056-AB368B19BDE1 (Wilmer Diaz, 3 rows, $4,160.00) ·
+  `20478` EA5083B8-0BF9-4E92-9856-F61B48416E94 (Emilson Cordova, 6 rows, $3,885.01) ·
+  `20475` C4259F12-59AE-4178-B2E8-7260BC57CE10 (Elmer Cordova, 6 rows, $2,925.00) ·
+  `20492` 33E7E852-7FA6-4AAE-99E0-308B13125EE6 (Selvin Cordova, 2 rows, $2,362.50) ·
+  `20512` D75AA0AB-81A8-40A6-826F-AE5E6A664C16 (Brayan Marcia, 2 rows, $2,015.63) ·
+  `20484` 35BC083D-B9D2-4F83-A727-E2B00CC2D476 (Ricardo Moreno, 2 rows, $146.25).
+  *Project 28, `ExpenseService()._enqueue_box_excel(expense=…, project_id=28)` — 1 row, $715.00:*
+  `11073` 1B2EA96B-7AD8-4CB7-AF29-AF4FAB8D973A (VaVia Nashville).
+  **Preconditions:** HP2's workbook (`2272202433598`) closed in Box; `ALLOW_BOX_WRITES=true` set **inline on
+  the process for the run only**, never persisted to `.env`; Box outbox backlog empty and no live row already
+  covering these 7 entities (both were true at booking). **After the drain:** re-download both workbooks and
+  re-verify by col-Z **and** by the KI-46 col-N VALUE read — an outbox `done` does not prove the cell is right.
+  ⛔ **Do not mass-flip `Status='pending'`** (see U-448 for the three ways
+  `scripts/retry_box_outbox_dead_letters.py` re-fails on this corpus).
+  **Urgency is forward-looking, not retrospective:** none of the 22 rows is on an issued draw (col H blank in
+  SharePoint, `IsBilled = 0`), so no client-signed AIA is currently understated — but HP2's **next** draw would
+  under-report the Box ledger by $15,494.39. Do this before HP2-11 is cut.
+  ⚠️ **The project-28 row is missing from SharePoint TOO** (KI-51's "one untagged $715 row"), so this replay
+  fixes only the Box half; the SharePoint insert is a separate manual step.
+  **Explicitly NOT in the replay set** and requiring no action: the 63 legacy `upload_box_file` rows
+  (superseded — 63 of 66 dead `attachment_id`s also carry a successful upload row), two bills that no longer
+  exist (`5678B230-…`, `FA6DB3A4-…`), and bill `054AF891-…` whose line item lives on project 32 — the
+  `project_id` filter is correctly excluding it from project 30's workbook.
+
+
 ## Invoice pull-sync follow-ups (2026-04-26)
 
 - [x] **✅ CLOSED — architecturally superseded; verified 2026-08-29.** Source-linking is now a **dedicated post-pull engine** (`entities/invoice/business/reconciliation.py:368` sets `bill_line_item_id`/`expense_line_item_id`), lineage U-177 → U-301c Tier 0c/0d provenance. The codebase deliberately keeps the QBO pull connector "dumb" (creates `Manual` ILIs) and does source-resolution in that separate engine — folding fingerprinting BACK into the pull connector would reverse that chosen separation. (The connector DID grow `_find_and_match_manual_by_fingerprint`, but that re-adopts orphan Manual ILIs to QBO lines, not to source Bill/Purchase lines.) ~~**Connector auto-linking of Manual ILIs.**~~ Original ask: Match keys: Description + Amount + ServiceDate=TxnDate + CustomerRefValue + RealmId. LineNum-align for ambiguous descriptions. Leave `Manual` only when both Bill and Purchase staging miss. **Doing this also closes the keyspace footgun from the OHR2-GUEST-09 incident** — the `qbo.Bill.Id` value would no longer surface to playbook callers, and Step 4 wouldn't need to query `qbo.*` in the first place.

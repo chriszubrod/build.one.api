@@ -3014,6 +3014,43 @@ Board: [U-370](../build.one.team/BOARD.md) (Ready). Review of the Address stack 
 - [ ] **Self-healing `apply_rows_to_details` for blank-cost-code rows (KI-36).** When an incoming row's col-Z key already exists but the EXISTING row's col B/C is blank and the incoming row now carries a code, update B/C in place instead of skipping — the current skip freezes uncoded rows forever (WVA-18 root cause; SHT-22 $4,030 live AIA under-report). Companion: a periodic sweep (reconcile job or drain-time pass) that re-codes any blank-B DETAILS row whose col-Z public_id resolves to a now-coded dbo line, and flags stale-Z rows whose public_id no longer resolves (QBO re-pull leftovers) for manual clearing. Fill-in-place only — never insert_rows; never touch G702/G703 (fullCalcOnLoad recalcs them from DETAILS).
 - [ ] **Gate Box Excel enqueue on SubCostCodeId.** `_enqueue_box_excel` (Bill/Expense/BillCredit) enqueues rows for uncoded lines that then land blank-B and freeze (KI-36). Either skip uncoded lines with a distinct log (they enqueue on a later re-sync once coded — requires the self-heal above so the re-sync isn't skipped), or hold the row until the line is coded. Decide jointly with the self-heal.
 
+- [ ] **U-448 — `BoxLockedError` burns the entire retry budget in minutes (KI-29).** Booked 2026-09-11 from a
+  read-only forensic sweep of the 132 `[box].[Outbox]` `dead_letter` rows. **60 of the 66 `update_box_excel`
+  rows died on the WOPI co-edit lock** — a human had the workbook open in Box's Excel editor. Measured
+  enqueue→`dead_letter` across all 60: **min 1.1 min · median 4.8 min · max 25.3 min**. Cause:
+  `RetryPolicy.for_writes()` (base 1s, ×2, full jitter) × `BoxOutboxWorker.MAX_ATTEMPTS = 5` contributes only
+  ~7.5s expected in-worker backoff; the rest is the 30s scheduler tick. `BoxLockedError.is_retryable = True`
+  so the row *defers* correctly — it just runs out of attempts long before a human closes a workbook. KI-29's
+  standing mitigation ("ask the user to close it before the attempts run out") asks someone to win a race they
+  cannot see.
+  **Verified blast radius (all 91 entity refs checked against the live Box workbooks, not inferred from outbox
+  status): 22 DETAIL rows / $16,209.39 absent from Box** — project 13 HP2 (21 rows, $15,494.39, six
+  `2026.08.31.HP2` contract-labor bills) and project 28 SHT (1 row, $715.00 — the row KI-51 already names).
+  69 of 91 refs self-healed, because a later drain of the same workbook re-reads column Z. **None are on an
+  issued draw** (column H blank in SharePoint, `IsBilled = 0`); the exposure is forward-looking — HP2's next
+  draw would under-report the Box ledger by $15,494.39.
+  **Fix (a), preferred — lock-aware retry budget.** Give `BoxLockedError` its own budget: don't count a lock
+  deferral against `MAX_ATTEMPTS`, or give it a much longer ceiling with a hard wall (~24h) before
+  dead-lettering. Smallest change; keeps the queue self-healing with no new job. ⚠️ **Companion requirement:**
+  a longer budget means rows legitimately sit non-terminal for hours, so the drain's visibility circuit and any
+  stuck-row alerting must distinguish *deferred-on-lock* from *stalled* — otherwise this trades a silent
+  dead-letter for a silent backlog.
+  **Fix (b) — do NOT build a third sweeper.** The re-enqueue-on-detect sweep belongs in the already-booked
+  "SP↔Box DETAILS auto-reconcile (KI-39)" item above; it is the same col-Z detection primitive.
+  ⛔ **Never remediate via `scripts/retry_box_outbox_dead_letters.py`** — it mass-flips `Status='pending'`, and
+  against this corpus it would re-fail three separate ways: project 73's dead payloads carry a stale
+  `worksheet_name: "DETAILS"` while its mapping (and its workbook tab) is now `DETAIL` and
+  `apply_rows_to_details` raises on the miss; the 63 legacy `upload_box_file` rows carry 2-digit placeholder
+  `box_folder_id`s (`"16"`/`"17"`) that do not exist in Box; and two of the bills no longer exist. Replay must
+  go through each entity's `_enqueue_box_excel`, which reads the **current** mapping.
+  **Tier when built: P0-surface** (external-write gate + durable-queue semantics over a money ledger) → `/em`
+  builds directly, Codex `xhigh`.
+  **Adjacent, NOT in this unit:** (1) the one-time replay of those 22 rows (7 entities) — an ops action, held
+  for Chris's approval; (2) 3 genuine document losses in the `upload_box_file` class (attachments 4370/proj
+  100, 4477/proj 35, 4304/proj 74 — `box.File` rows = 0, no successful sibling) whose `blob_path` is
+  byte-identical to the current `Attachment.BlobUrl` and 404s on pre-encoded `%3D`/`%20` path segments; a
+  plain replay re-fails. Sibling of `tests/test_ms_outbox_worker_url_encoding.py`. Both need their own units.
+
 ## Invoice pull-sync follow-ups (2026-04-26)
 
 - [x] **✅ CLOSED — architecturally superseded; verified 2026-08-29.** Source-linking is now a **dedicated post-pull engine** (`entities/invoice/business/reconciliation.py:368` sets `bill_line_item_id`/`expense_line_item_id`), lineage U-177 → U-301c Tier 0c/0d provenance. The codebase deliberately keeps the QBO pull connector "dumb" (creates `Manual` ILIs) and does source-resolution in that separate engine — folding fingerprinting BACK into the pull connector would reverse that chosen separation. (The connector DID grow `_find_and_match_manual_by_fingerprint`, but that re-adopts orphan Manual ILIs to QBO lines, not to source Bill/Purchase lines.) ~~**Connector auto-linking of Manual ILIs.**~~ Original ask: Match keys: Description + Amount + ServiceDate=TxnDate + CustomerRefValue + RealmId. LineNum-align for ambiguous descriptions. Leave `Manual` only when both Bill and Purchase staging miss. **Doing this also closes the keyspace footgun from the OHR2-GUEST-09 incident** — the `qbo.Bill.Id` value would no longer surface to playbook callers, and Step 4 wouldn't need to query `qbo.*` in the first place.

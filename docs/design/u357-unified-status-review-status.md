@@ -592,6 +592,50 @@ changes API-side in LS-01d/Phase 3). Publish scheduler AFTER the API endpoint ex
 | Legacy misfit rows (completed with open review; `ready` without review) | data honesty | Never fabricate approvals (§9 #16): origin `backfill` exempts them; inbox suppressed by lifecycle predicate; census sizes them. |
 | Scripts: `regenerate/fix/clean_contract_labor_*`, `verify_contract_labor_*` (prod `UPDATE` of CL 647), `backfill_box_workbook.py`, `reconcile_project.py`, `_clr_*` | manual | Rewritten or annotated in LS-04 (never blind grep-rename); `verify_*` prod mutators deleted. |
 
+## 9a. DECIDED — the lifecycle vocabulary (Chris, 2026-09-11)
+
+**The six-state vocabulary is COMMITTED for Bill:**
+`draft · submitted · in_review · approved · declined · completed`.
+
+Raised from the other direction: Chris asked whether Bill could simply adopt ContractLabor's four tabs
+(`Pending · Submitted · Ready · Billed`) and whether `IsDraft` could be renamed `Pending`. Settled against
+live prod data rather than preference.
+
+**`IsDraft` is not one state — it is a lossy projection of several.** All 42 live draft Bills:
+
+| IsDraft | latest review | bills |
+|---|---|---|
+| True  | In Review | 33 |
+| True  | Submitted | 8 |
+| True  | Declined  | 1 |
+| False | (no review) | 19,882 |
+| False | Approved  | 276 |
+| False | Submitted / In Review / Declined | 65 |
+
+Relabelling `IsDraft` to `Pending` would merge In Review, Submitted and Declined into one tab — strictly worse
+than the current two-badge UI, which exists precisely because one boolean cannot carry three states.
+
+**Labor's four tabs do not fit Bill, and the empties are the proof.** Mapped literally, `Pending` (draft with
+no review) would be permanently EMPTY, because `BillService.create` auto-writes a Submitted review row —
+creating a draft bill IS submitting it. `Ready` (approved, not yet completed) would also be empty: all 276
+approved bills are already `IsDraft=0`, since approval is followed immediately by completion. Meanwhile the
+two states holding every live draft — **In Review (33)** and **Declined (1)** — have no Labor tab at all.
+
+**The two vocabularies converge rather than compete.** Labor's four are a SUBSET:
+`pending_review→draft`, `submitted→submitted`, `ready→approved`, `billed→completed`, plus `in_review` and
+`declined`, which Bill needs as resting states and Labor folds away (its decline returns an entry to
+`pending_review`). Bill therefore shows six tabs where Labor shows four, on one shared vocabulary.
+
+**FOLLOW-ON INTENT (Chris, same conversation):** once Bill lands, converge **ContractLabor** onto this same
+six-state vocabulary. That is a separate unit and a multi-repo cutover (it is the LS-04 window in §6 Phase 4)
+— booked, not started. Note the direction of travel is now the opposite of §6's original framing: Bill is the
+pattern-setter and Labor adopts, not the reverse.
+
+**Bearing on §9 #22:** this evidence strengthens the case for A (IsDraft PERSISTED COMPUTED over Status). The
+65 completed Bills carrying an open or declined review are only expressible as a contradiction while IsDraft
+is the source of truth; computing it over Status makes that class unrepresentable rather than merely
+discouraged.
+
 ## 9. Open decisions for Chris
 
 1. Completion gate: adopt per-entity env flags `LIFECYCLE_COMPLETION_GATE_{BILL,EXPENSE,BILL_CREDIT,INVOICE}` ∈ {off, block_open_review, require_approved}, shipped `off` and flipped by /em, with steady state Bill + BillCredit = require_approved, Invoice = block_open_review until U-128, Expense = off? Recommend YES.

@@ -146,8 +146,9 @@ def test_get_by_id_finalized_is_completed():
 def _call_get_bills(bills, review_map):
     """Drive GET /get/bills with the lifecycle collaborators mocked."""
     service = MagicMock()
-    service.read_paginated.return_value = bills
-    service.count.return_value = len(bills)
+    # U-447: one call returns (page, total) — the total no longer comes from a
+    # second sproc, which is what let it describe a different snapshot.
+    service.read_paginated.return_value = (bills, len(bills))
     repo = MagicMock()
     repo.read_first_line_item_projects.return_value = {}
     review_repo = MagicMock()

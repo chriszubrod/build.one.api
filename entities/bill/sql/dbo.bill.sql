@@ -730,6 +730,12 @@ CREATE OR ALTER PROCEDURE ReadBillsPaginated
 )
 AS
 BEGIN
+    -- U-447: MANDATORY now. This sproc used to be a single bare SELECT, which
+    -- survived without it; the INSERT below emits a row-count token that would
+    -- arrive as the first "result" and make cursor.fetchall() return the wrong
+    -- thing (CLAUDE.md, pyodbc result-set discipline, 2026-06-11).
+    SET NOCOUNT ON;
+
     BEGIN TRANSACTION;
     DECLARE @Offset INT = (@PageNumber - 1) * @PageSize;
     DECLARE @SortColumn NVARCHAR(50) = CASE @SortBy
@@ -742,6 +748,35 @@ BEGIN
     END;
     DECLARE @SortDir NVARCHAR(4) = CASE WHEN UPPER(@SortDirection) = 'ASC' THEN 'ASC' ELSE 'DESC' END;
 
+    -- ======================================================================
+    -- U-447 — the page and its total now come from ONE materialized set.
+    --
+    -- They used to be two sprocs on two round trips, so a bill finalized
+    -- between them put `data` and `count` in different snapshots: a tab showing
+    -- 33 rows above a badge saying 32. Merging the two SELECTs into one sproc
+    -- would NOT have fixed that — this database runs READ_COMMITTED_SNAPSHOT,
+    -- where every STATEMENT takes its own snapshot even inside one explicit
+    -- transaction. The fix has to be a set both reads share, not a shared
+    -- transaction.
+    --
+    -- Materializing the ids also means the filter predicate — 13 lines of
+    -- search, vendor, date range, IsDraft, Status and the RBAC scoping UDF — is
+    -- evaluated ONCE per request instead of twice, and the page query drops the
+    -- Vendor join it only needed for the search.
+    --
+    -- Worst case (the Billed tab, no filter) this materializes ~20k BIGINTs,
+    -- which is cheaper than the second full scan CountBills used to do.
+    -- ======================================================================
+    -- Materializes the ROWS, not just their ids (Codex P1, 2026-09-11).
+    -- Materializing ids alone did not work: the page then re-read live
+    -- dbo.[Bill] through a JOIN, which is a NEW statement and therefore a NEW
+    -- RCSI snapshot. A bill finalized between the two steps came back under the
+    -- Draft tab displaying `completed`, and a deleted one produced `data: []`
+    -- with `count: 1` — worse than the off-by-one this unit set out to fix,
+    -- because it is visibly wrong rather than quietly wrong.
+    --
+    -- Nothing below this statement touches dbo.[Bill] again. That is the
+    -- property, and tests assert it.
     SELECT
         b.[Id],
         b.[PublicId],
@@ -762,7 +797,11 @@ BEGIN
         b.[StatusSourceRef],
         b.[IntakeSource],
         b.[IntakeSourceDetail],
-        b.[SourceEmailMessageId]
+        b.[SourceEmailMessageId],
+        -- kept raw for ORDER BY; the CONVERTed copies above are what ships
+        b.[BillDate]   AS [SortBillDate],
+        b.[DueDate]    AS [SortDueDate]
+    INTO #FilteredBills
     FROM dbo.[Bill] b
     LEFT JOIN dbo.[Vendor] v ON b.[VendorId] = v.[Id]
     WHERE
@@ -778,20 +817,35 @@ BEGIN
         AND (@EndDate IS NULL OR b.[BillDate] <= @EndDate)
         AND (@IsDraft IS NULL OR b.[IsDraft] = @IsDraft)
         AND (@Status IS NULL OR b.[Status] = @Status)
-        AND dbo.UserCanAccessBill(@ActorUserId, @ActorIsSystemAdmin, b.[Id]) = 1
+        AND dbo.UserCanAccessBill(@ActorUserId, @ActorIsSystemAdmin, b.[Id]) = 1;
+
+
+    SELECT
+        [Id], [PublicId], [RowVersion], [CreatedDatetime], [ModifiedDatetime],
+        [VendorId], [PaymentTermId], [BillDate], [DueDate], [BillNumber],
+        [TotalAmount], [Memo], [IsDraft], [Status], [StatusDatetime],
+        [StatusOrigin], [StatusSourceRef], [IntakeSource], [IntakeSourceDetail],
+        [SourceEmailMessageId]
+    FROM #FilteredBills
     ORDER BY
-        CASE WHEN @SortDir = 'ASC' AND @SortColumn = 'BillNumber' THEN b.[BillNumber] END ASC,
-        CASE WHEN @SortDir = 'DESC' AND @SortColumn = 'BillNumber' THEN b.[BillNumber] END DESC,
-        CASE WHEN @SortDir = 'ASC' AND @SortColumn = 'BillDate' THEN b.[BillDate] END ASC,
-        CASE WHEN @SortDir = 'DESC' AND @SortColumn = 'BillDate' THEN b.[BillDate] END DESC,
-        CASE WHEN @SortDir = 'ASC' AND @SortColumn = 'DueDate' THEN b.[DueDate] END ASC,
-        CASE WHEN @SortDir = 'DESC' AND @SortColumn = 'DueDate' THEN b.[DueDate] END DESC,
-        CASE WHEN @SortDir = 'ASC' AND @SortColumn = 'TotalAmount' THEN b.[TotalAmount] END ASC,
-        CASE WHEN @SortDir = 'DESC' AND @SortColumn = 'TotalAmount' THEN b.[TotalAmount] END DESC,
-        CASE WHEN @SortDir = 'ASC' AND @SortColumn = 'VendorId' THEN b.[VendorId] END ASC,
-        CASE WHEN @SortDir = 'DESC' AND @SortColumn = 'VendorId' THEN b.[VendorId] END DESC
+        CASE WHEN @SortDir = 'ASC'  AND @SortColumn = 'BillNumber'  THEN [BillNumber] END ASC,
+        CASE WHEN @SortDir = 'DESC' AND @SortColumn = 'BillNumber'  THEN [BillNumber] END DESC,
+        CASE WHEN @SortDir = 'ASC'  AND @SortColumn = 'BillDate'    THEN [SortBillDate] END ASC,
+        CASE WHEN @SortDir = 'DESC' AND @SortColumn = 'BillDate'    THEN [SortBillDate] END DESC,
+        CASE WHEN @SortDir = 'ASC'  AND @SortColumn = 'DueDate'     THEN [SortDueDate] END ASC,
+        CASE WHEN @SortDir = 'DESC' AND @SortColumn = 'DueDate'     THEN [SortDueDate] END DESC,
+        CASE WHEN @SortDir = 'ASC'  AND @SortColumn = 'TotalAmount' THEN [TotalAmount] END ASC,
+        CASE WHEN @SortDir = 'DESC' AND @SortColumn = 'TotalAmount' THEN [TotalAmount] END DESC,
+        CASE WHEN @SortDir = 'ASC'  AND @SortColumn = 'VendorId'    THEN [VendorId] END ASC,
+        CASE WHEN @SortDir = 'DESC' AND @SortColumn = 'VendorId'    THEN [VendorId] END DESC
     OFFSET @Offset ROWS
     FETCH NEXT @PageSize ROWS ONLY;
+
+    -- Same materialized set. Cannot disagree with the page above.
+    SELECT COUNT(*) AS [TotalCount] FROM #FilteredBills;
+
+    DROP TABLE #FilteredBills;
+
     COMMIT TRANSACTION;
 END;
 GO

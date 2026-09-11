@@ -549,9 +549,12 @@ class BillService:
         sort_by: str = "BillDate",
         sort_direction: str = "DESC",
         conn=None,
-    ) -> list[Bill]:
-        """
-        Read bills with pagination and filtering, scoped by UserProject.
+    ) -> tuple[list[Bill], int]:
+        """One page of bills AND the matching total (U-447).
+
+        `(rows, total)` from a single sproc execution. `count()` below still
+        exists for callers that want a total without a page, but the list route
+        no longer uses it — asking twice is what let the two disagree.
         """
         return self.repo.read_paginated(
             page_number=page_number,

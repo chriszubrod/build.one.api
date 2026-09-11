@@ -42,8 +42,9 @@ def _bill(id=1, *, is_draft=True, status=None):
 
 def _call(bills, **kwargs):
     service = MagicMock()
-    service.read_paginated.return_value = bills
-    service.count.return_value = len(bills)
+    # U-447: one call returns (page, total) — the total no longer comes from a
+    # second sproc, which is what let it describe a different snapshot.
+    service.read_paginated.return_value = (bills, len(bills))
     repo = MagicMock(); repo.read_first_line_item_projects.return_value = {}
     review_repo = MagicMock(); review_repo.read_current_by_bill_ids.return_value = {}
     vendor_repo = MagicMock(); vendor_repo.read_public_ids_by_ids.return_value = {}
@@ -64,23 +65,28 @@ def _call(bills, **kwargs):
 # ---------------------------------------------------------------------------
 
 
-def test_status_is_pushed_into_BOTH_the_page_and_the_count():
-    """THE assertion of this unit.
+def test_status_reaches_sql_and_the_count_CANNOT_use_a_different_predicate():
+    """THE assertion of this unit, strengthened by U-447.
 
-    Filtering the page without filtering the count is the specific bug the
-    stored column exists to prevent: `data` would carry 8 submitted bills while
-    `count` still said 20,266, so the tab's total and its pagination would both
-    be wrong. Both sproc calls must carry the same predicate.
+    Filtering the page but not the total is the bug the stored column exists to
+    prevent: `data` would carry 8 submitted bills while `count` still said
+    20,266. Originally two sproc calls had to be kept in step; since U-447 the
+    total comes back from the SAME call over the SAME materialized set, so
+    there is no second predicate that could drift — and no second snapshot.
     """
     _, service = _call([_bill(status="submitted")], status="submitted")
     assert service.read_paginated.call_args.kwargs["status"] == "submitted"
-    assert service.count.call_args.kwargs["status"] == "submitted"
+    assert service.read_paginated.call_count == 1
+    assert service.count.call_count == 0, (
+        "the list route must not ask for the total separately — that is the "
+        "second snapshot U-447 removed"
+    )
 
 
 def test_no_status_filters_nothing():
     _, service = _call([_bill()])
     assert service.read_paginated.call_args.kwargs["status"] is None
-    assert service.count.call_args.kwargs["status"] is None
+    assert service.count.call_count == 0
 
 
 @pytest.mark.parametrize("status", list(LIFECYCLE_STATUSES))
@@ -390,3 +396,130 @@ def test_the_backfill_cannot_break_a_from_scratch_build():
     guard = sql[sql.index("-- Guarded on the JOINED tables existing"):sql.index("EXEC sp_executesql")]
     for table in ("dbo.Review", "dbo.ReviewStatus", "dbo.BillCompletionResult"):
         assert f"OBJECT_ID('{table}', 'U') IS NOT NULL" in guard, table
+
+
+
+# ---------------------------------------------------------------------------
+# U-447 — page and total from one materialized set
+# ---------------------------------------------------------------------------
+
+
+def test_the_route_reports_the_total_the_sproc_returned_not_the_page_length():
+    """`count` must be the size of the whole filtered set, not of this page —
+    otherwise pagination breaks the moment there is more than one page."""
+    response, _ = _call([_bill(id=1), _bill(id=2)])
+    # driver returns (rows, len(rows)); override to prove the route echoes the
+    # sproc's number rather than recomputing it from the page
+    service = MagicMock()
+    service.read_paginated.return_value = ([_bill(id=1), _bill(id=2)], 4242)
+    repo = MagicMock(); repo.read_first_line_item_projects.return_value = {}
+    review_repo = MagicMock(); review_repo.read_current_by_bill_ids.return_value = {}
+    vendor_repo = MagicMock(); vendor_repo.read_public_ids_by_ids.return_value = {}
+    with patch("entities.bill.api.router.BillService", return_value=service), \
+         patch("entities.bill.api.router.BillRepository", return_value=repo), \
+         patch("entities.bill.api.router.VendorRepository", return_value=vendor_repo), \
+         patch("entities.bill.api.router.get_connection", return_value=MagicMock()), \
+         patch("entities.review.persistence.repo.ReviewRepository", return_value=review_repo):
+        response = asyncio.run(get_bills_router(
+            page=1, page_size=50, search=None, vendor_id=None,
+            is_draft=None, status=None, current_user=USER))
+    assert response["count"] == 4242
+    assert len(response["data"]) == 2
+
+
+def test_the_page_and_the_total_come_from_ONE_materialized_set():
+    """Merging the two SELECTs into one sproc would NOT have been enough: this
+    database runs READ_COMMITTED_SNAPSHOT, where every STATEMENT takes its own
+    snapshot even inside one explicit transaction. The fix has to be a set both
+    reads share — hence the temp table."""
+    from tests.sproc_text import REPO_ROOT, sproc_body
+
+    body = sproc_body(REPO_ROOT / "entities/bill/sql/dbo.bill.sql", "ReadBillsPaginated")
+    assert "INTO #FilteredBills" in body
+    assert "SELECT COUNT(*) AS [TotalCount] FROM #FilteredBills;" in body, (
+        "the total must count the SAME materialized set, not re-run the predicate"
+    )
+    assert "SET NOCOUNT ON" in body, (
+        "mandatory now: SELECT INTO emits a row-count token that would arrive "
+        "as the first result set"
+    )
+
+    # THE property, and the one my first cut failed (Codex P1). Materializing
+    # only ids left the page re-reading live dbo.[Bill] through a JOIN — a NEW
+    # statement, therefore a NEW RCSI snapshot — so a bill finalized mid-request
+    # came back under the Draft tab displaying `completed`, and a deleted one
+    # gave `data: []` with `count: 1`. Nothing after the materialize step may
+    # touch the base table.
+    after = body[body.index("INTO #FilteredBills"):]
+    after = after[after.index("WHERE"):]          # skip the materialize's own FROM
+    assert "dbo.[Bill]" not in after, (
+        "something after the materialize step re-reads live dbo.[Bill] — that is "
+        "a second snapshot, which is the entire bug this unit exists to remove"
+    )
+    assert body.count("FROM dbo.[Bill] b") == 1, "the base table is read exactly once"
+
+
+def test_the_filter_predicate_is_evaluated_once_per_request():
+    """The 13-line predicate — search, vendor, dates, IsDraft, Status and the
+    RBAC scoping UDF — used to be evaluated twice per request and maintained in
+    two sprocs. Inside ReadBillsPaginated it now appears exactly once."""
+    from tests.sproc_text import REPO_ROOT, sproc_body
+
+    body = sproc_body(REPO_ROOT / "entities/bill/sql/dbo.bill.sql", "ReadBillsPaginated")
+    assert body.count("dbo.UserCanAccessBill(") == 1
+    assert body.count("(@Status IS NULL OR b.[Status] = @Status)") == 1
+    assert body.count("LIKE '%' + @SearchTerm + '%'") == 6, "one search block, six columns"
+
+
+def test_the_repo_reads_the_total_from_the_SECOND_result_set():
+    """A mutation check found this gap: the route-level test mocks the service,
+    so nothing exercised the repo's own total logic. Replacing it with
+    `len(bills)` left the whole suite green — and would have made `count` equal
+    the page size on every request, silently capping pagination at one page.
+
+    The fixture deliberately returns a total that CANNOT be derived from the
+    page length.
+    """
+    from unittest.mock import MagicMock as MM
+
+    from entities.bill.persistence.repo import BillRepository
+
+    cursor = MM()
+    cursor.fetchall.return_value = []          # _from_db is skipped for falsy rows
+    cursor.nextset.return_value = True
+    cursor.fetchone.return_value = (4242,)
+    conn = MM(); conn.cursor.return_value = cursor
+    conn.__enter__ = MM(return_value=conn); conn.__exit__ = MM(return_value=False)
+
+    with patch("entities.bill.persistence.repo.call_procedure"):
+        rows, total = BillRepository().read_paginated(conn=conn)
+    assert total == 4242, "the total must come from the sproc, not from len(page)"
+    assert rows == []
+
+
+def test_a_missing_total_RAISES_rather_than_inventing_one():
+    """Codex P1, 2026-09-11 — this test used to assert a graceful degradation.
+
+    The obvious fallback, `total = len(bills)`, is silently wrong in exactly the
+    case that matters: page 2 of 120 matches would report `count: 50` and an
+    out-of-range page `count: 0`, capping every client's pagination at one page
+    with nothing in the logs. And the earlier version of this test could not
+    have caught that — it used an EMPTY page, where len(bills) and 0 coincide.
+
+    An absent second set means the container is newer than the sproc, which the
+    SQL-first deploy order exists to prevent. Fail loudly.
+    """
+    from unittest.mock import MagicMock as MM
+
+    from entities.bill.persistence.repo import BillRepository
+
+    cursor = MM()
+    cursor.fetchall.return_value = [None] * 50   # a FULL page, not an empty one
+    cursor.nextset.return_value = False          # old sproc: no second set
+    conn = MM(); conn.cursor.return_value = cursor
+    conn.__enter__ = MM(return_value=conn); conn.__exit__ = MM(return_value=False)
+
+    with patch("entities.bill.persistence.repo.call_procedure"):
+        with pytest.raises(Exception) as exc:
+            BillRepository().read_paginated(conn=conn)
+    assert "U-447" in str(exc.value) or "no total" in str(exc.value)

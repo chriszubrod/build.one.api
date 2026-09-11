@@ -4096,7 +4096,14 @@ collision rule.
   contains zero references to `review_status_kind`. The tabs are a separate web unit — the API
   side is now complete enough to build against.
 
-- **`data` and `count` are not a consistent snapshot** (Codex P2 on U-445). `GET /get/bills`
+- ~~**`data` and `count` are not a consistent snapshot**~~ — **CLOSED by U-447 (2026-09-11).**
+  `ReadBillsPaginated` now materializes the filtered ROWS into `#FilteredBills` and serves both
+  the page and the total from that one set; the route makes a single call. Note the fix is NOT
+  "put both SELECTs in one sproc" — this database runs READ_COMMITTED_SNAPSHOT, where every
+  STATEMENT takes its own snapshot even inside one explicit transaction, so that would have
+  looked correct and changed nothing. Original text below.
+
+- ~~(superseded)~~ (Codex P2 on U-445). `GET /get/bills`
   calls `ReadBillsPaginated` and `CountBills` as two separately-committed sproc transactions,
   so a bill finalized between them appears in `data` while `count` no longer counts it.
   **Pre-existing** — the same race has always applied to `?is_draft=` — but `?status=` makes it
@@ -4104,3 +4111,29 @@ collision rule.
   consistent read: either one sproc returning both result sets, or both calls inside one
   SNAPSHOT-isolation transaction. Its own unit; do it before the tabs ship if the badge
   mismatch would be confusing.
+
+
+## U-447 follow-up (consistent page+total, 2026-09-11) — deferred, non-blocking
+
+- **The old-container window keeps the old race** (Codex P2). SQL deploys first, so for the ~2
+  minutes before the container rolls, an old image calls the NEW sproc, consumes only result set
+  1, and then calls `CountBills` separately — exactly the two-snapshot behaviour U-447 removes.
+  Unavoidable without an atomic drain, self-limiting, and it is the PRE-EXISTING behaviour rather
+  than a regression. Verified harmless otherwise: an old container leaving the second result set
+  unconsumed does not wedge the cursor or the pooled connection (tested live against prod inside
+  a rolled-back transaction).
+
+- **The sibling list endpoints still have the race.** Expense, BillCredit, Invoice, ContractLabor
+  and TimeEntry all call `Read*Paginated` + `Count*` as two round trips. None of them have tabs
+  yet, so none of them show a count badge that can visibly disagree — but the same fix applies
+  verbatim when they get Phase-3 status filters.
+
+- **`CountBills` and `BillService.count` are now unused by the list route.** Kept deliberately:
+  `CountBills` still carries the RBAC scoping that `tests/test_list_sproc_scoping.py` guards, and
+  a caller may legitimately want a total without a page. Delete them only together with that
+  test row.
+
+- **Pagination ordering still has no tiebreak** (pre-existing, already booked above): the
+  `ORDER BY` is over a single sort column with no unique tail, so rows with equal sort keys can
+  repeat or vanish across pages. U-447 did not change it — but it is now more visible, because
+  a stable `count` makes an unstable page order easier to notice.

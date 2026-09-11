@@ -225,16 +225,12 @@ async def get_bills_router(
         review_repo = ReviewRepository()
         vendor_repo = VendorRepository()
         with get_connection() as conn:
-            bills = service.read_paginated(
+            # ONE call for both (U-447). Asking a second sproc for the total
+            # put it in a different snapshot from the page, so a bill finalized
+            # between the two made the tab's badge disagree with its rows.
+            bills, total = service.read_paginated(
                 page_number=page,
                 page_size=page_size,
-                search_term=search,
-                vendor_id=vendor_id,
-                is_draft=is_draft,
-                status=status if isinstance(status, str) else None,
-                conn=conn,
-            )
-            total = service.count(
                 search_term=search,
                 vendor_id=vendor_id,
                 is_draft=is_draft,

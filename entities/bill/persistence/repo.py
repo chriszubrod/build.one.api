@@ -506,9 +506,13 @@ class BillRepository:
         conn: Optional[pyodbc.Connection] = None,
         actor_user_id: Optional[int] = None,
         actor_is_system_admin: Optional[bool] = None,
-    ) -> list[Bill]:
-        """
-        Read bills with pagination and filtering, scoped by UserProject.
+    ) -> tuple[list[Bill], int]:
+        """Read one page of bills AND the matching total, scoped by UserProject.
+
+        Returns `(rows, total)` (U-447). The total used to come from a second
+        sproc on a second round trip, which put it in a different snapshot from
+        the page — a tab could show 33 rows above a badge reading 32. Both now
+        come from one execution over one materialized set.
         """
         try:
             with _conn_ctx(conn) as c:
@@ -533,7 +537,29 @@ class BillRepository:
                     params=params,
                 )
                 rows = cursor.fetchall()
-                return [self._from_db(row) for row in rows if row]
+                bills = [self._from_db(row) for row in rows if row]
+                # Second result set: the total over the SAME materialized set.
+                #
+                # RAISES if it is absent (Codex P1, 2026-09-11). The obvious
+                # fallback — `total = len(bills)` — is silently wrong in exactly
+                # the case that matters: page 2 of 120 matches would report
+                # `count: 50`, and an out-of-range page `count: 0`, capping
+                # every client's pagination at one page with nothing in the logs.
+                #
+                # An absent second set means the container is newer than the
+                # sproc. SQL is applied BEFORE the container precisely so that
+                # cannot happen, so reaching here means the SQL apply was rolled
+                # back or never ran — a deploy fault worth surfacing loudly
+                # rather than papering over with an invented number.
+                if not cursor.nextset():
+                    raise RuntimeError(
+                        "ReadBillsPaginated returned no total — the deployed sproc "
+                        "predates U-447. Apply entities/bill/sql/dbo.bill.sql."
+                    )
+                row = cursor.fetchone()
+                if row is None:
+                    raise RuntimeError("ReadBillsPaginated returned an empty total result set.")
+                return bills, int(row[0])
         except Exception as error:
             logger.error(f"Error during read paginated bills: {error}")
             raise map_database_error(error)

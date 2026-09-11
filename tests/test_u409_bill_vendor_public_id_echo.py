@@ -166,21 +166,18 @@ def test_seam_degrades_to_empty_on_db_error():
 # GET /get/bills
 # --------------------------------------------------------------------------
 
-def _lifecycle_patches(review=None, first_sort_order=1):
-    """Patch the U-443 lifecycle collaborators the bill reads now consult.
+def _lifecycle_patches(review=None):
+    """Patch the review lookup the bill reads consult (U-443).
 
-    Without these the review lookups attempt a real pyodbc connect (blocked by
-    conftest) — the router swallows it, so the tests would still pass, but on a
-    degraded path that no longer exercises the wiring. Patch, don't rely on the
-    swallow.
+    Since U-444 that is the ONLY lifecycle collaborator — `submitted` keys on a
+    flag carried by the Review row, so there is no per-request boundary lookup
+    left to patch. Without this the lookup would attempt a real pyodbc connect,
+    which conftest blocks, and the router now (correctly) lets that raise.
     """
     review_repo = MagicMock()
     review_repo.read_current_by_bill_id.return_value = review
-    status_service = MagicMock()
-    status_service.get_first_status.return_value = SimpleNamespace(sort_order=first_sort_order)
     return [
         patch("entities.review.persistence.repo.ReviewRepository", return_value=review_repo),
-        patch("entities.bill.api.router.ReviewStatusService", return_value=status_service),
     ]
 
 
@@ -205,7 +202,6 @@ def _call_get_bills(bills, vendor_repo=None, conn=None):
         patch("entities.bill.api.router.BillService", return_value=service),
         patch("entities.bill.api.router.BillRepository", return_value=repo),
         patch("entities.review.persistence.repo.ReviewRepository", return_value=review_repo),
-        *_lifecycle_patches()[1:],
     ]
     if vendor_repo is not None:
         patches.append(patch("entities.bill.api.router.VendorRepository", return_value=vendor_repo))

@@ -214,6 +214,40 @@ also removes the "IsDraft=0 without completion" path (`bill/api/router.py:360-36
 side effect (`BillDetailView.swift:243,293`). (5) Line-level `BillLineItem/ExpenseLineItem/BillCreditLineItem/
 InvoiceLineItem.IsDraft` mirrors and `IsBilled` are untouched (§5).
 
+> **SUPERSEDED IN PART — U-444 (2026-09-11) took the deeper fix. Read this before
+> implementing anything below.**
+>
+> §4.2 specs the rails as *policing* a position-derived `submitted`, including:
+> *"no create/update may change WHICH row is that MIN … refuse a `SortOrder` at or below the
+> current MIN and refuse deactivating the MIN row."* **That rule is deliberately NOT
+> implemented, and must not be added.** It would permanently freeze the first review stage:
+> no status could ever be added before it, which collides head-on with the Pending/Submitted/
+> Ready/Billed convergence (§9a).
+>
+> U-444 removed the position-dependency instead. `ReviewStatus.IsInitial BIT` makes all three
+> kinds flag-derived, and `ReadFirstReviewStatus` keys on the flag (it also now excludes
+> `IsFinal`, which the position version did not — an initial-and-final row made `/submit`
+> auto-approve). `SortOrder` still drives `ReadNextReviewStatus`, so reordering changes what
+> comes **next** without relabelling history.
+>
+> **Cutover:** not a universal no-op, and deliberately so. `ReadFirstReviewStatus` now excludes
+> `IsFinal`, so a configuration whose lowest active non-declined row was final changes behaviour
+> (it used to auto-approve every `/submit` — that was the bug); tied SortOrders also become
+> deterministic where `TOP 1 ORDER BY [SortOrder]` was previously unspecified. For the production
+> database it IS a no-op: the backfill and the live sproc both resolve to id 1 'Submitted',
+> verified 2026-09-11 before applying anything.
+>
+> **What U-444 DID implement from §4.2:** exactly one active `IsInitial` (¬final ∧ ¬declined) ·
+> exactly one active `IsFinal ∧ ¬IsDeclined` · exactly one active `IsDeclined` · reject
+> `IsFinal ∧ IsDeclined` · refuse deactivating or deleting a row any Review/ReviewEntry
+> references. Surfaced as `422 review_status_shape` via a message-prefix rule in
+> `shared/api/responses.py` (ProcessEngine flattens exceptions to a string, so the prefix is
+> the only structure that survives to the router).
+>
+> **Two corrections to the text below:** "any parent `ReviewStatusId`" does not exist — only
+> `Review` and `ReviewEntry` carry that column, verified against prod. And the delete rail was
+> already enforced by FK; the genuinely new rail is *deactivate*.
+
 ### 4.2 `review_status` — representation, exposure, propagation, gate, inbox, ReviewStatus policy
 
 **Representation.** Denormalized, single-writer, ledger retained. Each of the five Review parents gains

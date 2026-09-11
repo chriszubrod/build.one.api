@@ -192,6 +192,11 @@ AS
         rs.[SortOrder]  AS [StatusSortOrder],
         rs.[IsFinal]    AS [StatusIsFinal],
         rs.[IsDeclined] AS [StatusIsDeclined],
+        -- U-444. `review_status_kind = submitted` keys on THIS FLAG. It used to
+        -- key on position (StatusSortOrder == the MIN active non-declined one),
+        -- which meant two rows sharing a SortOrder both derived `submitted`,
+        -- and a new lowest row retroactively relabelled every stored one.
+        rs.[IsInitial]  AS [StatusIsInitial],
         rs.[Color]      AS [StatusColor],
         u.[Firstname]   AS [UserFirstname],
         u.[Lastname]    AS [UserLastname]
@@ -432,7 +437,7 @@ BEGIN
         [Id], [PublicId], [RowVersion], [CreatedDatetime], [ModifiedDatetime],
         [ReviewStatusId], [UserId], [Comments],
         [BillId], [ExpenseId], [BillCreditId], [InvoiceId],
-        [StatusName], [StatusSortOrder], [StatusIsFinal], [StatusIsDeclined], [StatusColor],
+        [StatusName], [StatusSortOrder], [StatusIsFinal], [StatusIsDeclined], [StatusIsInitial], [StatusColor],
         [UserFirstname], [UserLastname]
     FROM ranked
     WHERE rn = 1;

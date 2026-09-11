@@ -4029,3 +4029,43 @@ collision rule.
   through the workflow-engine serializer (`_with_vendor_public_id`, `entities/bill/api/router.py:109`)
   and so carry no `status` / `review_status_kind`. Deliberate: the clients re-read after a write.
   Revisit if a client ever branches on the write response.
+
+## U-444 follow-up (ReviewStatus shape rails + IsInitial, 2026-09-11) — deferred, non-blocking
+
+- **No web UI for `is_initial`.** `ReviewStatusCreate/Update` accept it and the API enforces the
+  rails, but `build.one.web/src/pages/review-statuses/` has no control for it and does not surface
+  the `422 review_status_shape` message. New statuses created from the UI default to
+  `is_initial=false`, which the rails accept, so the page is not broken — just incomplete. The
+  API can express the move (setting the flag TRANSFERS it, atomically, in both the sproc and the
+  service), so this is a pure front-end unit. Pick it up with the Pending/Submitted/Ready/Billed
+  convergence.
+
+- **The Python rails are bypassable by writing SQL directly** (Codex P2). `UpdateReviewStatusById`
+  enforces only the two invariants that can be checked from a single row — the strand check and
+  the IsInitial demote. The set-level rails (exactly one active final / declined / initial,
+  contradictory flags) live in `ReviewStatusService` and a direct `EXEC` skips them. Accepted:
+  the sproc is the sanctioned path and nothing else writes this table. Note it also means the
+  **old container can still make an illegal edit during the SQL-first deploy window** — a ~2
+  minute exposure on a table nobody edits.
+
+- **Concurrent repair of an ALREADY-malformed set can re-break it** (Codex P2). From a set with
+  zero active finals, two admins can each set a different row final; each validates against a
+  stale read where its own edit makes exactly one, and both succeed. Cannot happen from a VALID
+  set (one of the two is always rejected), and the strand check and IsInitial transfer are both
+  enforced in-transaction by the sproc, so the residual is narrow. If `dbo.ReviewStatus` ever
+  becomes self-service, wrap read-validate-write in `sp_getapplock`
+  (`integrations/*/base/locking.py`).
+
+- **`review_status` is still NOT in the sproc single-source list.** U-444 reconciled
+  `CreateReviewStatus` (the base file was missing `@CreatedByUserId`, which
+  `scripts/migrations/gap2_adjacent_threading.sql` added on 2026-05-07 — re-applying the stale
+  base would have dropped the param from prod and broken every create). All 8 sprocs now match
+  live. Registering the entity in `tests/test_sproc_single_source.py` — and stripping the
+  duplicate body out of the migration — would make that permanent. Not done here: the migration
+  file is shared with ~30 other entities' threading and editing it is its own unit.
+
+- **The other six LS-01a entities still derive nothing.** `shared/lifecycle/resolver.py` is now
+  fully flag-keyed and takes no per-request boundary argument, so expense / bill_credit /
+  invoice / contract_labor / employee_labor / time_entry can each adopt it with no extra DB
+  round-trip. Their Review reads need `status_is_initial` mapped the same way
+  `entities/review/persistence/repo.py` does it.

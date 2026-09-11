@@ -46,6 +46,7 @@ class ReviewStatusRepository:
                 is_final=bool(row.IsFinal),
                 is_declined=bool(row.IsDeclined),
                 is_active=bool(row.IsActive),
+                is_initial=bool(getattr(row, "IsInitial", False)),
                 color=row.Color,
             )
         except AttributeError as error:
@@ -64,6 +65,7 @@ class ReviewStatusRepository:
         is_final: bool = False,
         is_declined: bool = False,
         is_active: bool = True,
+        is_initial: bool = False,
         color: Optional[str] = None,
         created_by_user_id: Optional[int] = None,
     ) -> ReviewStatus:
@@ -83,6 +85,7 @@ class ReviewStatusRepository:
                         "IsFinal": is_final,
                         "IsDeclined": is_declined,
                         "IsActive": is_active,
+                        "IsInitial": is_initial,
                         "Color": color,
                         "CreatedByUserId": created_by_user_id,
                     },
@@ -94,6 +97,27 @@ class ReviewStatusRepository:
                 return self._from_db(row)
         except Exception as error:
             logger.error(f"Error during create review status: {error}")
+            raise map_database_error(error)
+
+    def count_references(self, id: int) -> int:
+        """How many Review / ReviewEntry rows point at this status.
+
+        Gates deactivation. A non-zero count on a row being deactivated means
+        live documents would be stranded pointing at a status that no longer
+        appears in the pipeline.
+        """
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(
+                    cursor=cursor,
+                    name="CountReviewStatusReferencesById",
+                    params={"Id": id},
+                )
+                row = cursor.fetchone()
+                return int(row.ReferenceCount) if row else 0
+        except Exception as error:
+            logger.error(f"Error during count review status references: {error}")
             raise map_database_error(error)
 
     def read_all(self) -> list[ReviewStatus]:
@@ -205,6 +229,7 @@ class ReviewStatusRepository:
                         "IsFinal": review_status.is_final,
                         "IsDeclined": review_status.is_declined,
                         "IsActive": review_status.is_active,
+                        "IsInitial": review_status.is_initial,
                         "Color": review_status.color,
                     },
                 )

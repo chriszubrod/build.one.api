@@ -33,6 +33,16 @@ class ReviewStatusCreate(BaseModel):
         default=True,
         description="Whether this status is active and available for use."
     )
+    is_initial: bool = Field(
+        default=False,
+        description=(
+                    "Whether this is the INITIAL status every submission is created at. "
+                    "Exactly one active status must carry it, and it may not "
+                    "also be final or declined. Before U-444 this was inferred "
+                    "from MIN(sort_order), which made reordering retroactively "
+                    "relabel historical reviews."
+        )
+    )
     color: Optional[str] = Field(
         default=None,
         max_length=7,
@@ -69,6 +79,16 @@ class ReviewStatusUpdate(BaseModel):
     is_active: Optional[bool] = Field(
         default=None,
         description="Whether this status is active and available for use."
+    )
+    is_initial: Optional[bool] = Field(
+        default=None,
+        description=(
+                    "Whether this is the INITIAL status every submission is created at. "
+                    "Exactly one active status must carry it, and it may not "
+                    "also be final or declined. Before U-444 this was inferred "
+                    "from MIN(sort_order), which made reordering retroactively "
+                    "relabel historical reviews."
+        )
     )
     color: Optional[str] = Field(
         default=None,

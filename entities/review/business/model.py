@@ -44,6 +44,7 @@ class Review:
     status_sort_order: Optional[int]
     status_is_final: Optional[bool]
     status_is_declined: Optional[bool]
+    status_is_initial: Optional[bool]
     status_color: Optional[str]
     user_firstname: Optional[str]
     user_lastname: Optional[str]

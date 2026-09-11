@@ -40,6 +40,7 @@ class ErrorCode:
     FK_VIOLATION = "fk_violation"  # foreign-key violation (547)
     NOT_FOUND = "not_found"
     VALIDATION_ERROR = "validation_error"  # request body/query/path failed schema validation
+    REVIEW_STATUS_SHAPE = "review_status_shape"  # edit would leave the ReviewStatus set underivable
 
 
 class ApiError(HTTPException):

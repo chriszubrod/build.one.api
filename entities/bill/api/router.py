@@ -18,7 +18,6 @@ from entities.bill.persistence.folder_run_repo import (
 )
 from entities.bill.persistence.repo import BillRepository
 from entities.vendor.persistence.repo import VendorRepository
-from entities.review_status.business.service import ReviewStatusService
 from shared.api.auth_user import resolve_user_id
 from shared.api.money import to_decimal_or_none
 from shared.api.responses import list_response, item_response, accepted_response, raise_workflow_error, raise_not_found
@@ -67,24 +66,6 @@ def _resolve_vendor_public_id(vendor_id: Optional[int]) -> Optional[str]:
     return VendorRepository().read_public_id_by_id(vendor_id)
 
 
-def _first_review_sort_order() -> Optional[int]:
-    """MIN active non-declined SortOrder — the boundary between `submitted` and
-    `in_review`. Resolved once per request and threaded down, never per row.
-
-    Call this ONLY when at least one review is actually in hand: it costs a
-    round-trip, and with no review the answer is unused. Both call shapes below
-    guard on that, which is also why letting it raise is cheap — it can only
-    fail a request whose answer genuinely depends on it.
-
-    Deliberately NOT wrapped in a try/except (Codex P2, 2026-09-11). Degrading a
-    failure to None silently collapses a `submitted` bill to `in_review`, and
-    the list path's own review lookup already raises — swallowing here would
-    make the list and the single GETs disagree about what a DB failure means.
-    """
-    first = ReviewStatusService().get_first_status()
-    return first.sort_order if first is not None else None
-
-
 def _current_review_for_bill(bill_id: Optional[int]):
     """Latest Review row for one Bill, or None when the bill has none.
 
@@ -103,7 +84,7 @@ def _current_review_for_bill(bill_id: Optional[int]):
     return ReviewRepository().read_current_by_bill_id(bill_id)
 
 
-def _bill_dict_with_lifecycle(bill, *, review=None, first_sort_order: Optional[int] = None) -> dict:
+def _bill_dict_with_lifecycle(bill, *, review=None) -> dict:
     """Serialize a Bill and stamp the derived `status` + `review_status*` block.
 
     U-443 (U-357 Phase 1). `status` is DERIVED per request from IsDraft x the
@@ -119,7 +100,6 @@ def _bill_dict_with_lifecycle(bill, *, review=None, first_sort_order: Optional[i
         bill.to_dict(),
         is_draft=bill.is_draft,
         review=review,
-        first_sort_order=first_sort_order,
     )
 
 
@@ -242,18 +222,13 @@ async def get_bills_router(
             # ReadVendors call on this same connection, not N+1.
             vendor_ids = [b.vendor_id for b in bills if b.vendor_id]
             vendor_public_id_map = vendor_repo.read_public_ids_by_ids(vendor_ids, conn=conn) if vendor_ids else {}
-        # ONE lookup for the whole page, not one per row — and none at all for
-        # a page where no bill has a review (U-443).
-        first_sort_order = _first_review_sort_order() if review_map else None
-        return bills, total, project_map, review_map, vendor_public_id_map, first_sort_order
+        return bills, total, project_map, review_map, vendor_public_id_map
 
-    bills, total, project_map, review_map, vendor_public_id_map, first_sort_order = await asyncio.to_thread(_fetch)
+    bills, total, project_map, review_map, vendor_public_id_map = await asyncio.to_thread(_fetch)
+    # U-444 made `submitted` flag-derived, so the review row carries everything
+    # the kind needs — no per-page boundary lookup, no extra round-trip.
     bill_dicts = [
-        _bill_dict_with_lifecycle(
-            bill,
-            review=review_map.get(bill.id),
-            first_sort_order=first_sort_order,
-        )
+        _bill_dict_with_lifecycle(bill, review=review_map.get(bill.id))
         for bill in bills
     ]
     for bd in bill_dicts:
@@ -280,16 +255,13 @@ async def get_bill_by_bill_number_and_vendor_router(bill_number: str, vendor_pub
         )
         if not bill:
             return None
-        review = _current_review_for_bill(bill.id)
-        return bill, review, _first_review_sort_order() if review else None
+        return bill, _current_review_for_bill(bill.id)
 
     result = await asyncio.to_thread(_fetch)
     if not result:
         raise_not_found("Bill")
-    bill, review, first_sort_order = result
-    return item_response(
-        _bill_dict_with_lifecycle(bill, review=review, first_sort_order=first_sort_order)
-    )
+    bill, review = result
+    return item_response(_bill_dict_with_lifecycle(bill, review=review))
 
 
 @router.get("/get/bill/{public_id}/completion-result")
@@ -412,20 +384,13 @@ async def get_bill_by_public_id_router(public_id: str, current_user: dict = Depe
         qbo_bill_url = service.get_qbo_bill_url(bill_id=bill.id)
         # Vendor PublicId echo (U-409) — see get_bills_router.
         vendor_public_id = _resolve_vendor_public_id(bill.vendor_id)
-        review = _current_review_for_bill(bill.id)
-        return (
-            bill,
-            qbo_bill_url,
-            vendor_public_id,
-            review,
-            _first_review_sort_order() if review else None,
-        )
+        return bill, qbo_bill_url, vendor_public_id, _current_review_for_bill(bill.id)
 
     result = await asyncio.to_thread(_fetch)
     if not result:
         raise_not_found("Bill")
-    bill, qbo_bill_url, vendor_public_id, review, first_sort_order = result
-    payload = _bill_dict_with_lifecycle(bill, review=review, first_sort_order=first_sort_order)
+    bill, qbo_bill_url, vendor_public_id, review = result
+    payload = _bill_dict_with_lifecycle(bill, review=review)
     payload["qbo_bill_url"] = qbo_bill_url
     payload["vendor_public_id"] = vendor_public_id
     return item_response(payload)
@@ -439,12 +404,7 @@ def get_bill_by_id_router(id: int, current_user: dict = Depends(require_module_a
     bill = BillService().read_by_id(id=id)
     if not bill:
         raise_not_found("Bill")
-    review = _current_review_for_bill(bill.id)
-    payload = _bill_dict_with_lifecycle(
-        bill,
-        review=review,
-        first_sort_order=_first_review_sort_order() if review else None,
-    )
+    payload = _bill_dict_with_lifecycle(bill, review=_current_review_for_bill(bill.id))
     # Vendor PublicId echo (U-409) — this is the read iOS calls before a PUT.
     payload["vendor_public_id"] = _resolve_vendor_public_id(bill.vendor_id)
     return item_response(payload)

@@ -51,6 +51,7 @@ class ReviewRepository:
                 status_sort_order=row.StatusSortOrder,
                 status_is_final=bool(row.StatusIsFinal),
                 status_is_declined=bool(row.StatusIsDeclined),
+                status_is_initial=bool(getattr(row, "StatusIsInitial", False)),
                 status_color=row.StatusColor,
                 user_firstname=row.UserFirstname,
                 user_lastname=row.UserLastname,

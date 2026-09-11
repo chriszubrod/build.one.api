@@ -63,7 +63,12 @@ def _bill(*, id=1, is_draft=True, vendor_id=10):
     )
 
 
-def _review(*, bill_id, name="Submitted", sort_order=10, is_final=False, is_declined=False):
+def _review(*, bill_id, name="Submitted", sort_order=10, is_final=False,
+            is_declined=False, is_initial=None):
+    """`is_initial` defaults to "whatever the name implies" so the many existing
+    cases below read naturally; pass it explicitly to test the flag itself."""
+    if is_initial is None:
+        is_initial = not is_final and not is_declined and sort_order == 10
     return Review(
         id=91,
         public_id="rev-1",
@@ -81,6 +86,7 @@ def _review(*, bill_id, name="Submitted", sort_order=10, is_final=False, is_decl
         status_sort_order=sort_order,
         status_is_final=is_final,
         status_is_declined=is_declined,
+        status_is_initial=is_initial,
         status_color=None,
         user_firstname=None,
         user_lastname=None,
@@ -95,12 +101,6 @@ def test_get_by_id_draft_without_review_is_draft_kind_none():
     review_repo.read_current_by_bill_id.return_value = None
     with patch("entities.bill.api.router.BillService", return_value=service), \
          patch("entities.review.persistence.repo.ReviewRepository", return_value=review_repo), \
-         patch(
-             "entities.bill.api.router.ReviewStatusService",
-             return_value=SimpleNamespace(
-                 get_first_status=lambda: SimpleNamespace(sort_order=10)
-             ),
-         ), \
          patch("entities.bill.api.router._resolve_vendor_public_id", return_value=None):
         payload = get_bill_by_id_router(id=7, current_user=USER)["data"]
     assert payload["status"] == "draft"
@@ -116,12 +116,6 @@ def test_get_by_id_submitted_review_on_draft():
     review_repo.read_current_by_bill_id.return_value = _review(bill_id=7)
     with patch("entities.bill.api.router.BillService", return_value=service), \
          patch("entities.review.persistence.repo.ReviewRepository", return_value=review_repo), \
-         patch(
-             "entities.bill.api.router.ReviewStatusService",
-             return_value=SimpleNamespace(
-                 get_first_status=lambda: SimpleNamespace(sort_order=10)
-             ),
-         ), \
          patch("entities.bill.api.router._resolve_vendor_public_id", return_value=None):
         payload = get_bill_by_id_router(id=7, current_user=USER)["data"]
     assert payload["status"] == "submitted"
@@ -137,12 +131,6 @@ def test_get_by_id_finalized_is_completed():
     review_repo.read_current_by_bill_id.return_value = None
     with patch("entities.bill.api.router.BillService", return_value=service), \
          patch("entities.review.persistence.repo.ReviewRepository", return_value=review_repo), \
-         patch(
-             "entities.bill.api.router.ReviewStatusService",
-             return_value=SimpleNamespace(
-                 get_first_status=lambda: SimpleNamespace(sort_order=10)
-             ),
-         ), \
          patch("entities.bill.api.router._resolve_vendor_public_id", return_value=None):
         payload = get_bill_by_id_router(id=7, current_user=USER)["data"]
     assert payload["status"] == "completed"
@@ -155,7 +143,7 @@ def test_get_by_id_finalized_is_completed():
 # ---------------------------------------------------------------------------
 
 
-def _call_get_bills(bills, review_map, *, status_service=None, first_sort_order=10):
+def _call_get_bills(bills, review_map):
     """Drive GET /get/bills with the lifecycle collaborators mocked."""
     service = MagicMock()
     service.read_paginated.return_value = bills
@@ -166,23 +154,16 @@ def _call_get_bills(bills, review_map, *, status_service=None, first_sort_order=
     review_repo.read_current_by_bill_ids.return_value = review_map
     vendor_repo = MagicMock()
     vendor_repo.read_public_ids_by_ids.return_value = {}
-    if status_service is None:
-        status_service = MagicMock()
-        status_service.get_first_status.return_value = SimpleNamespace(
-            sort_order=first_sort_order
-        )
-
     with patch("entities.bill.api.router.BillService", return_value=service), \
          patch("entities.bill.api.router.BillRepository", return_value=repo), \
          patch("entities.bill.api.router.VendorRepository", return_value=vendor_repo), \
          patch("entities.bill.api.router.get_connection", return_value=MagicMock()), \
-         patch("entities.review.persistence.repo.ReviewRepository", return_value=review_repo), \
-         patch("entities.bill.api.router.ReviewStatusService", return_value=status_service):
+         patch("entities.review.persistence.repo.ReviewRepository", return_value=review_repo):
         response = asyncio.run(get_bills_router(
             page=1, page_size=50, search=None, vendor_id=None,
             is_draft=None, current_user=USER,
         ))
-    return response, status_service
+    return response
 
 
 def test_list_binds_each_bill_to_its_OWN_review():
@@ -200,7 +181,7 @@ def test_list_binds_each_bill_to_its_OWN_review():
         2: _review(bill_id=2, name="Owner Review", sort_order=20),
         3: _review(bill_id=3, name="Rejected", sort_order=30, is_declined=True),
     }
-    response, _ = _call_get_bills(bills, review_map)
+    response = _call_get_bills(bills, review_map)
     by_id = {bd["id"]: bd for bd in response["data"]}
 
     assert by_id[1]["status"] == "submitted"
@@ -218,7 +199,7 @@ def test_list_binds_each_bill_to_its_OWN_review():
 def test_list_row_without_a_review_is_draft():
     """Bills with no Review row are ABSENT from the batch map, not None-valued."""
     bills = [_bill(id=1), _bill(id=2)]
-    response, _ = _call_get_bills(bills, {1: _review(bill_id=1, sort_order=10)})
+    response = _call_get_bills(bills, {1: _review(bill_id=1, sort_order=10)})
     by_id = {bd["id"]: bd for bd in response["data"]}
     assert by_id[2]["status"] == "draft"
     assert by_id[2]["review_status_kind"] == "none"
@@ -229,7 +210,7 @@ def test_list_finalized_bill_is_completed_regardless_of_its_review():
     """`completed` is keyed on IsDraft alone. A finalized bill whose review was
     never advanced past Submitted is still `completed` — we do not fabricate an
     Approved row to make the pair look tidy."""
-    response, _ = _call_get_bills(
+    response = _call_get_bills(
         [_bill(id=1, is_draft=False)],
         {1: _review(bill_id=1, name="Submitted", sort_order=10)},
     )
@@ -238,40 +219,50 @@ def test_list_finalized_bill_is_completed_regardless_of_its_review():
     assert bd["review_status_kind"] == "submitted"
 
 
-def test_list_resolves_the_first_sort_order_ONCE_for_the_whole_page():
-    """`submitted` vs `in_review` is decided against the MIN active SortOrder.
-    That is a per-request constant, so it is read once and threaded down —
-    resolving it inside the row loop would add a DB round-trip per bill on a
-    100-row page."""
-    bills = [_bill(id=i) for i in range(1, 6)]
-    review_map = {i: _review(bill_id=i, sort_order=10) for i in range(1, 6)}
-    _, status_service = _call_get_bills(bills, review_map)
-    assert status_service.get_first_status.call_count == 1
-
-
-def test_list_skips_the_boundary_lookup_when_no_bill_has_a_review():
-    """`submitted` vs `in_review` is the ONLY thing the boundary decides, so a
-    page of pure drafts must not pay a round-trip for it."""
-    _, status_service = _call_get_bills([_bill(id=1), _bill(id=2)], {})
-    status_service.get_first_status.assert_not_called()
-
-
-def test_a_failed_first_status_lookup_is_NOT_swallowed():
-    """Codex P2, 2026-09-11 — this test used to assert the opposite.
-
-    Degrading a failed boundary lookup to None silently relabels a `submitted`
-    bill as `in_review`: a wrong answer about a money document, dressed up as a
-    right one. And the page's own review lookup (`read_current_by_bill_ids`)
-    has always raised, so swallowing here would have made the two halves of the
-    same request disagree about what a DB failure means. It raises.
+def test_the_list_needs_NO_boundary_lookup_at_all():
+    """U-444. These three tests used to pin a per-page `ReadFirstReviewStatus`
+    round-trip: fetched once per page, skipped when no row had a review, and
+    NOT swallowed on failure. All of it is gone — `submitted` is now a flag on
+    the Review row itself, so the page needs nothing beyond the rows it already
+    fetched. The router no longer imports ReviewStatusService.
     """
-    status_service = MagicMock()
-    status_service.get_first_status.side_effect = RuntimeError("db down")
-    with pytest.raises(RuntimeError, match="db down"):
-        _call_get_bills(
-            [_bill(id=1)], {1: _review(bill_id=1, sort_order=10)},
-            status_service=status_service,
-        )
+    import entities.bill.api.router as bill_router
+
+    assert not hasattr(bill_router, "ReviewStatusService"), (
+        "the bill router re-acquired ReviewStatusService — the per-request "
+        "boundary lookup U-444 deleted is likely back"
+    )
+    assert not hasattr(bill_router, "_first_review_sort_order")
+
+
+def test_kind_follows_the_flag_not_the_sort_order():
+    """THE U-444 regression test, at the router.
+
+    Two active statuses share SortOrder 10; only one is the initial one. Under
+    the old position rule BOTH derived `submitted`, because the rule was
+    `sort_order == first_sort_order` and nothing forbade duplicate sort orders.
+    """
+    bills = [_bill(id=1), _bill(id=2)]
+    review_map = {
+        1: _review(bill_id=1, name="Submitted", sort_order=10, is_initial=True),
+        2: _review(bill_id=2, name="Owner Review", sort_order=10, is_initial=False),
+    }
+    response = _call_get_bills(bills, review_map)
+    by_id = {bd["id"]: bd for bd in response["data"]}
+    assert by_id[1]["review_status_kind"] == "submitted"
+    assert by_id[2]["review_status_kind"] == "in_review"
+
+
+def test_reordering_does_not_relabel_a_stored_review():
+    """The retroactive-relabel failure, pinned. A status sitting at SortOrder
+    999 is still `submitted` if it carries the flag — position is irrelevant, so
+    inserting or moving rows cannot rewrite history."""
+    response = _call_get_bills(
+        [_bill(id=1)],
+        {1: _review(bill_id=1, name="Submitted", sort_order=999, is_initial=True)},
+    )
+    assert response["data"][0]["review_status_kind"] == "submitted"
+    assert response["data"][0]["status"] == "submitted"
 
 
 # ---------------------------------------------------------------------------
@@ -279,18 +270,12 @@ def test_a_failed_first_status_lookup_is_NOT_swallowed():
 # ---------------------------------------------------------------------------
 
 
-def _patch_single(review=None, *, review_repo=None, status_service=None, first_sort_order=10):
+def _patch_single(review=None, *, review_repo=None):
     if review_repo is None:
         review_repo = MagicMock()
         review_repo.read_current_by_bill_id.return_value = review
-    if status_service is None:
-        status_service = MagicMock()
-        status_service.get_first_status.return_value = SimpleNamespace(
-            sort_order=first_sort_order
-        )
     return (
         patch("entities.review.persistence.repo.ReviewRepository", return_value=review_repo),
-        patch("entities.bill.api.router.ReviewStatusService", return_value=status_service),
         patch("entities.bill.api.router._resolve_vendor_public_id", return_value=None),
     ), review_repo
 
@@ -313,7 +298,7 @@ def test_get_by_id_maps_flags_to_kind_not_the_name(review_kwargs, expected):
     service = MagicMock()
     service.read_by_id.return_value = bill
     patches, _ = _patch_single(_review(bill_id=7, **review_kwargs))
-    with patches[0], patches[1], patches[2], \
+    with patches[0], patches[1], \
          patch("entities.bill.api.router.BillService", return_value=service):
         payload = get_bill_by_id_router(id=7, current_user=USER)["data"]
     assert payload["review_status_kind"] == expected
@@ -336,25 +321,10 @@ def test_a_failed_review_lookup_is_NOT_swallowed():
     review_repo = MagicMock()
     review_repo.read_current_by_bill_id.side_effect = RuntimeError("db down")
     patches, _ = _patch_single(review_repo=review_repo)
-    with patches[0], patches[1], patches[2], \
+    with patches[0], patches[1], \
          patch("entities.bill.api.router.BillService", return_value=service):
         with pytest.raises(RuntimeError, match="db down"):
             get_bill_by_id_router(id=7, current_user=USER)
-
-
-def test_a_bill_with_no_review_skips_the_boundary_lookup():
-    """Companion to the list's version — the hot path here is the read iOS
-    makes before every PUT, and most bills it touches have no review at all."""
-    bill = _bill(id=7)
-    service = MagicMock()
-    service.read_by_id.return_value = bill
-    status_service = MagicMock()
-    patches, _ = _patch_single(None, status_service=status_service)
-    with patches[0], patches[1], patches[2], \
-         patch("entities.bill.api.router.BillService", return_value=service):
-        payload = get_bill_by_id_router(id=7, current_user=USER)["data"]
-    status_service.get_first_status.assert_not_called()
-    assert payload["status"] == "draft"
 
 
 def test_a_bill_with_no_id_never_reaches_the_review_sproc():
@@ -365,7 +335,7 @@ def test_a_bill_with_no_id_never_reaches_the_review_sproc():
     service = MagicMock()
     service.read_by_id.return_value = bill
     patches, review_repo = _patch_single(None)
-    with patches[0], patches[1], patches[2], \
+    with patches[0], patches[1], \
          patch("entities.bill.api.router.BillService", return_value=service):
         payload = get_bill_by_id_router(id=7, current_user=USER)["data"]
     review_repo.read_current_by_bill_id.assert_not_called()
@@ -379,7 +349,7 @@ def test_by_bill_number_and_vendor_carries_the_lifecycle_block():
     service = MagicMock()
     service.read_by_bill_number_and_vendor_public_id.return_value = bill
     patches, _ = _patch_single(_review(bill_id=7, name="Approved", sort_order=40, is_final=True))
-    with patches[0], patches[1], patches[2], \
+    with patches[0], patches[1], \
          patch("entities.bill.api.router.BillService", return_value=service):
         payload = asyncio.run(get_bill_by_bill_number_and_vendor_router(
             bill_number="B-7", vendor_public_id="v-1", current_user=USER,
@@ -399,7 +369,7 @@ def test_by_public_id_carries_the_lifecycle_block_alongside_qbo_bill_url():
     service.read_by_public_id.return_value = bill
     service.get_qbo_bill_url.return_value = "https://qbo.example/bill/1"
     patches, _ = _patch_single(_review(bill_id=7, name="Owner Review", sort_order=20))
-    with patches[0], patches[1], patches[2], \
+    with patches[0], patches[1], \
          patch("entities.bill.api.router.BillService", return_value=service):
         payload = asyncio.run(get_bill_by_public_id_router(
             public_id="bill-7", current_user=USER,
@@ -424,7 +394,7 @@ def test_every_emitted_status_is_in_the_canonical_vocabulary():
         3: _review(bill_id=3, sort_order=40, is_final=True),
         4: _review(bill_id=4, sort_order=99, is_declined=True),
     }
-    response, _ = _call_get_bills(bills, review_map)
+    response = _call_get_bills(bills, review_map)
     emitted_status = {bd["status"] for bd in response["data"]}
     emitted_kind = {bd["review_status_kind"] for bd in response["data"]}
 

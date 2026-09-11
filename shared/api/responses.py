@@ -56,6 +56,28 @@ def _derive_workflow_error_code(err_lower: str) -> str | None:
     return next((code for phrase, code in _WORKFLOW_ERROR_CODES if phrase in err_lower), None)
 
 
+# Business rules that deserve a status OTHER than the 400 default, matched on an
+# exact message PREFIX rather than a loose substring. Same root cause as
+# `_WORKFLOW_ERROR_CODES` above and `status_for_clean_message` in
+# shared/db_constraints.py — ProcessEngine folds a service exception into
+# `"error": str(e)`, so a prefix the service owns is the only structure that
+# survives to the router. Prefixes live here, not in the entity, because the
+# direction of the dependency has to be entity -> shared.
+REVIEW_STATUS_SHAPE_PREFIX = "Review status configuration is invalid: "
+
+_WORKFLOW_STATUS_BY_PREFIX: tuple[tuple[str, int, str], ...] = (
+    (REVIEW_STATUS_SHAPE_PREFIX, status.HTTP_422_UNPROCESSABLE_CONTENT, ErrorCode.REVIEW_STATUS_SHAPE),
+)
+
+
+def _status_and_code_for_prefix(err: str) -> tuple[int, str] | None:
+    """422 + code for a business-rule rejection the engine flattened to a string."""
+    return next(
+        ((st, code) for prefix, st, code in _WORKFLOW_STATUS_BY_PREFIX if err.startswith(prefix)),
+        None,
+    )
+
+
 def raise_workflow_error(
     err: str,
     default_message: str,
@@ -77,8 +99,17 @@ def raise_workflow_error(
         # rule, because 409 is the status the iOS client maps to its optimistic-concurrency
         # conflict flow (which discards the queued local edit); 422 keeps it in the
         # non-discarding requestFailed bucket.
+        prefixed = _status_and_code_for_prefix(err)
         clean_status = status_for_clean_message(err)
-        if clean_status is not None:
+        if prefixed is not None:
+            # Checked FIRST: a shape rejection names rows and counts, so it can
+            # contain "already exists" and would otherwise be re-routed to 409 —
+            # the status iOS maps to its concurrency-conflict flow, which
+            # DISCARDS the local edit.
+            status_code, derived_code = prefixed
+            if error_code is None:
+                error_code = derived_code
+        elif clean_status is not None:
             status_code = clean_status
         elif any(phrase in err_lower for phrase in ("already exists", "concurrency", "row-version")):
             status_code = status.HTTP_409_CONFLICT

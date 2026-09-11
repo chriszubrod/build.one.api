@@ -22,6 +22,10 @@ class ReviewStatus:
     is_declined: Optional[bool]
     is_active: Optional[bool]
     color: Optional[str]
+    # U-444. The row `/submit` starts at, and the row `review_status_kind`
+    # resolves to `submitted`. Defaulted so existing positional construction
+    # (tests, fixtures) keeps working.
+    is_initial: Optional[bool] = False
 
     @property
     def row_version_bytes(self) -> Optional[bytes]:

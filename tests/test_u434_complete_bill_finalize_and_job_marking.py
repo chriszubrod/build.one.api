@@ -191,7 +191,18 @@ def _run(result, *, bill=..., force=False):
 
 
 def _ok(**over):
-    r = {"status_code": 200, "message": "ok", "bill_finalized": True, "errors": []}
+    # U-438: a well-formed finalized result ALWAYS reports its durable handoffs.
+    # This helper used to omit the key, and the runner's `or []` treated that as
+    # "nothing failed" — so these tests passed only because the runner failed
+    # OPEN. Codex flagged exactly that. The runner now fails closed on a missing
+    # key, and this helper matches what complete_bill really returns.
+    r = {
+        "status_code": 200,
+        "message": "ok",
+        "bill_finalized": True,
+        "durable_handoffs_failed": [],
+        "errors": [],
+    }
     r.update(over)
     return r
 
@@ -199,8 +210,53 @@ def _ok(**over):
 @pytest.mark.parametrize("status_code", [200, 207])
 def test_finalized_completions_mark_success(status_code):
     """207 is partial success — finalize+enqueue DID run, so the outbox owns the
-    retries and the job is legitimately done."""
+    retries and the job is legitimately done.
+
+    U-437 NOTE: this remains correct but is NOT sufficient on its own, and saying
+    so here is the point. Codex's independent re-review of U-426 observed that
+    "the completion tests explicitly treat every finalized 207 as job success,
+    masking the no-outbox case" — a 207 whose QBO enqueue never happened is ALSO
+    finalized, and was also marked successful. That case is covered below; this
+    test now pins only the genuinely-queued 207.
+    """
     job = _run(_ok(status_code=status_code))
+    job.mark_success.assert_called_once_with("job-1")
+    job.mark_failure.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "failed,label",
+    [
+        (["qbo"], "the money path"),
+        (["excel:12"], "a durable Excel handoff"),
+        (["sharepoint:12"], "a durable SharePoint handoff"),
+        (["qbo", "excel:12"], "several at once"),
+    ],
+)
+def test_finalized_but_handoff_never_queued_marks_FAILURE(failed, label):
+    """U-437 core regression — the residual U-434 left behind.
+
+    `bill_finalized` answers "did the header flip", not "did every durable
+    handoff succeed". A completion whose QBO enqueue never happened (no auth
+    record, or the enqueue threw) still returns 207 with bill_finalized True.
+    U-434 marked that successful, so the job retired, and because nothing was
+    ever queued NOTHING RETRIED — the same silent loss U-434 removed, one layer
+    down. Found by U-426's independent Codex re-review of my own fix.
+    """
+    job = _run(_ok(status_code=207, durable_handoffs_failed=failed))
+    job.mark_failure.assert_called_once()
+    job.mark_success.assert_not_called()
+    assert failed[0] in job.mark_failure.call_args.args[1], label
+
+
+def test_a_policy_refusal_is_NOT_a_failure():
+    """The other side of the trade, and the one that would brick prod if fumbled.
+
+    ALLOW_MS_WRITES off is a deliberately gated environment, not a fault. If a
+    policy refusal counted as a failed handoff, every completion there would fail
+    forever. Only genuine failures populate `durable_handoffs_failed`.
+    """
+    job = _run(_ok(status_code=207, durable_handoffs_failed=[]))
     job.mark_success.assert_called_once_with("job-1")
     job.mark_failure.assert_not_called()
 
@@ -264,3 +320,57 @@ def test_finalize_sproc_is_idempotent_and_pyodbc_safe():
     # already-finalized and missing are distinguishable by presence, not rowcount.
     assert body.count("SELECT") >= 1 and "FROM dbo.[Bill]" in body
     assert "[QboId]" in body, "projected here so this path doesn't repeat UpdateBillById's omission"
+
+
+# ---------------------------------------------------------------------------
+# U-437 — complete_bill must COMPUTE durable_handoffs_failed, not just carry it
+# ---------------------------------------------------------------------------
+# Added because mutation testing caught the gap: forcing the qbo leg to always
+# report failure left the whole suite green, since every runner test injects
+# `durable_handoffs_failed` ready-made. The computation itself had no coverage.
+
+
+def test_complete_bill_flags_qbo_when_the_enqueue_did_not_happen():
+    """No QBO auth record -> qbo_sync_queued False -> the handoff never queued.
+
+    This is the exact live path Codex found: `_enqueue_qbo_sync` returns
+    success/qbo_sync_queued False, `complete_bill` appends to errors and
+    CONTINUES, and the result is a finalized 207 with no outbox row.
+    """
+    svc, repo = _service()
+    svc._qbo_auth_service = MagicMock(read_all=MagicMock(return_value=[]))  # no auth
+    result = svc.complete_bill(public_id="pub-55")
+
+    assert result["bill_finalized"] is True
+    assert result["qbo_sync"]["qbo_sync_queued"] is False
+    assert "qbo" in result["durable_handoffs_failed"], (
+        "a QBO enqueue that never happened must gate the job — ALLOW_QBO_WRITES "
+        "is checked at DRAIN, so a failed enqueue is always a real failure"
+    )
+
+
+def test_complete_bill_does_not_flag_qbo_when_it_queued():
+    svc, repo = _service()
+    svc._qbo_auth_service = MagicMock(
+        read_all=MagicMock(return_value=[SimpleNamespace(realm_id="realm-1")])
+    )
+    with patch(
+        "integrations.intuit.qbo.outbox.business.service.QboOutboxService"
+    ) as MockOutbox:
+        MockOutbox.return_value.enqueue.return_value = SimpleNamespace(public_id="ob-1")
+        result = svc.complete_bill(public_id="pub-55")
+
+    assert result["qbo_sync"]["qbo_sync_queued"] is True
+    assert "qbo" not in result["durable_handoffs_failed"]
+
+
+def test_a_result_that_omits_durable_handoffs_FAILS_CLOSED():
+    """U-438: a missing key is malformed, not 'nothing failed'.
+
+    The runner used `result.get(...) or []`, so a complete_bill that forgot to
+    report its handoffs would mark success — reintroducing exactly the silent
+    loss this chain of units has been removing. Missing now fails.
+    """
+    job = _run({"status_code": 200, "message": "ok", "bill_finalized": True, "errors": []})
+    job.mark_failure.assert_called_once()
+    job.mark_success.assert_not_called()

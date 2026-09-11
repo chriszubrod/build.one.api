@@ -114,7 +114,13 @@ def _stub_bill_credit_upload_deps(service, *, enqueue_return, line_items=None):
         is_draft=False,
     )
 
-    enqueue_mock = MagicMock(return_value=enqueue_return)
+    # U-437: an Exception instance means "raise it" (genuine failure); anything
+    # else is a return value (a row = queued, None = policy refusal).
+    enqueue_mock = (
+        MagicMock(side_effect=enqueue_return)
+        if isinstance(enqueue_return, Exception)
+        else MagicMock(return_value=enqueue_return)
+    )
     with patch.multiple(_BC_MODULE, **_BC_MS_STUBS), patch(
         "integrations.ms.outbox.business.service.MsOutboxService"
     ) as ms_outbox_cls:
@@ -510,7 +516,13 @@ def _run_bill_module_folder_upload(*, enqueue_return, line_items):
         vendor_id=1,
     )
 
-    enqueue_mock = MagicMock(return_value=enqueue_return)
+    # U-437: an Exception instance means "raise it" (genuine failure); anything
+    # else is a return value (a row = queued, None = policy refusal).
+    enqueue_mock = (
+        MagicMock(side_effect=enqueue_return)
+        if isinstance(enqueue_return, Exception)
+        else MagicMock(return_value=enqueue_return)
+    )
     with patch(f"{_BILL_MODULE}.AzureBlobStorage", _storage_stub()), patch(
         "integrations.ms.outbox.business.service.MsOutboxService"
     ) as ms_outbox_cls:
@@ -563,6 +575,18 @@ def test_bill_shared_attachment_guard_skip_counts_one_file():
 
 
 def test_bill_enqueue_refused_counts_neither():
+    """U-437 CHANGED THIS DELIBERATELY: a policy refusal is no longer an error.
+
+    `enqueue_return=None` means one thing under U-437's contract — the
+    ALLOW_MS_WRITES gate is off. That is an expected state in a deliberately
+    gated environment, not a failure, and recording it as an error is what let
+    "gated" and "genuinely failed" be indistinguishable. A genuine failure now
+    RAISES MsOutboxEnqueueError (covered by the sibling test below).
+
+    Everything else this test pinned is unchanged and still asserted: refusal
+    does not memoize the attachment, so the second line retries, and neither
+    counter moves.
+    """
     result, enqueue_mock = _run_bill_module_folder_upload(
         enqueue_return=None,
         line_items=[_line_item("bli", 1), _line_item("bli", 2)],
@@ -572,7 +596,26 @@ def test_bill_enqueue_refused_counts_neither():
     assert enqueue_mock.call_count == 2
     assert result["synced_count"] == 0
     assert result["skipped_count"] == 0
-    assert len(result["errors"]) == 2
+    assert len(result["errors"]) == 0, "a policy refusal must not be recorded as an error"
+    assert result["enqueue_failed"] is False, "a policy refusal must not fail the completion job"
+
+
+def test_bill_genuine_enqueue_failure_flags_the_job():
+    """The other half: a real failure must gate the completion job.
+
+    MsOutboxEnqueueError means the durable handoff never queued and nothing will
+    retry it — the opposite of a policy refusal, and the case U-434's marking
+    silently retired.
+    """
+    from integrations.ms.outbox.business.service import MsOutboxEnqueueError
+
+    result, enqueue_mock = _run_bill_module_folder_upload(
+        enqueue_return=MsOutboxEnqueueError("no tenant_id in context"),
+        line_items=[_line_item("bli", 1)],
+    )
+
+    assert result["enqueue_failed"] is True
+    assert len(result["errors"]) == 1
 
 
 def _run_expense_module_folder_upload(*, enqueue_return, line_items):
@@ -606,7 +649,13 @@ def _run_expense_module_folder_upload(*, enqueue_return, line_items):
         is_credit=False,
     )
 
-    enqueue_mock = MagicMock(return_value=enqueue_return)
+    # U-437: an Exception instance means "raise it" (genuine failure); anything
+    # else is a return value (a row = queued, None = policy refusal).
+    enqueue_mock = (
+        MagicMock(side_effect=enqueue_return)
+        if isinstance(enqueue_return, Exception)
+        else MagicMock(return_value=enqueue_return)
+    )
     with patch(f"{_EXPENSE_MODULE}.AzureBlobStorage", _storage_stub()), patch(
         "integrations.ms.outbox.business.service.MsOutboxService"
     ) as ms_outbox_cls:
@@ -642,3 +691,74 @@ def test_expense_shared_attachment_guard_skip_counts_one_file():
     assert result["synced_count"] == 0
     assert result["skipped_count"] == 1
     assert "1 already uploaded (skipped)" in result["message"]
+
+
+# ---------------------------------------------------------------------------
+# U-437 — the enqueue signalling contract itself
+# ---------------------------------------------------------------------------
+# Added because mutation testing caught the gap: reverting the wrappers to
+# `return None` on no_tenant_id left the suite green, since the failure test
+# injects the exception via side_effect and never exercises the wrapper's own
+# path. Without this, the disambiguation U-437 depends on could silently rot.
+
+
+def test_typed_wrappers_RAISE_on_missing_tenant_rather_than_returning_none():
+    """None is reserved for the ALLOW_MS_WRITES policy refusal.
+
+    A missing tenant is a genuine failure — nothing queues and nothing retries —
+    so it must be distinguishable. Returning None for both is what let "gated"
+    and "genuinely failed" wear the same clothes, which is the conflation that
+    made U-434's marking unable to tell them apart.
+    """
+    from unittest.mock import patch as _patch
+    from integrations.ms.outbox.business.service import (
+        MsOutboxEnqueueError,
+        MsOutboxService,
+    )
+
+    svc = MsOutboxService()
+    with _patch(
+        "integrations.ms.outbox.business.service._writes_allowed", return_value=True
+    ), _patch(
+        "integrations.ms.outbox.business.service._resolve_tenant_id", return_value=None
+    ):
+        for call in (
+            lambda: svc.enqueue_sharepoint_upload(
+                entity_type="Bill", entity_public_id="p", drive_id="d",
+                parent_item_id="i", filename="f.pdf", content_type="application/pdf",
+                blob_path="b", attachment_id=1,
+            ),
+            lambda: svc.enqueue_excel_insert(
+                entity_type="Bill", entity_public_id="p", drive_id="d", item_id="i",
+                worksheet_name="w", row_index=1, values=[[]],
+            ),
+            lambda: svc.enqueue_excel_append(
+                entity_type="Bill", entity_public_id="p", drive_id="d", item_id="i",
+                worksheet_name="w", values=[[]],
+            ),
+        ):
+            try:
+                call()
+            except MsOutboxEnqueueError:
+                continue
+            raise AssertionError(
+                "a missing tenant returned instead of raising — 'gated' and "
+                "'genuinely failed' are indistinguishable again"
+            )
+
+
+def test_the_policy_gate_still_returns_none_not_an_exception():
+    """The other half of the contract: a refusal must stay a quiet None."""
+    from unittest.mock import patch as _patch
+    from integrations.ms.outbox.business.service import MsOutboxService
+
+    svc = MsOutboxService()
+    with _patch(
+        "integrations.ms.outbox.business.service._writes_allowed", return_value=False
+    ), _patch(
+        "integrations.ms.outbox.business.service._resolve_tenant_id", return_value="t-1"
+    ):
+        assert svc.enqueue(
+            kind="insert_excel_row", entity_type="Bill",
+            entity_public_id="p", tenant_id="t-1", payload={},
+        ) is None

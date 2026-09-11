@@ -50,7 +50,7 @@ def test_run_job_bill_reclaim_redrives_already_finalized_entity():
     service = CompletionJobService(repo=repo)
     job = _job(entity_type="Bill")
     bill = SimpleNamespace(is_draft=False)
-    result = {"status_code": 200, "bill_finalized": True}
+    result = {"status_code": 200, "bill_finalized": True, "durable_handoffs_failed": []}  # U-438: well-formed results report handoffs
 
     with patch("entities.bill.business.service.BillService.read_by_public_id", return_value=bill), patch(
         "entities.bill.business.service.BillService.complete_bill", return_value=result
@@ -229,7 +229,7 @@ def test_run_complete_bill_marks_success_on_207_result():
     from entities.bill.api.router import _run_complete_bill
 
     bill = SimpleNamespace(is_draft=True)
-    result = {"status_code": 207, "bill_finalized": True}
+    result = {"status_code": 207, "bill_finalized": True, "durable_handoffs_failed": []}  # U-438: well-formed results report handoffs
 
     with patch("entities.bill.business.service.BillService.read_by_public_id", return_value=bill), patch(
         "entities.bill.business.service.BillService.complete_bill", return_value=result
@@ -264,7 +264,7 @@ def test_run_complete_bill_redrives_non_draft_with_force():
     from entities.bill.api.router import _run_complete_bill
 
     bill = SimpleNamespace(is_draft=False)
-    result = {"status_code": 200, "bill_finalized": True}
+    result = {"status_code": 200, "bill_finalized": True, "durable_handoffs_failed": []}  # U-438: well-formed results report handoffs
 
     with patch("entities.bill.business.service.BillService.read_by_public_id", return_value=bill), patch(
         "entities.bill.business.service.BillService.complete_bill", return_value=result

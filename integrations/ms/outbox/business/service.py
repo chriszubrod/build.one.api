@@ -127,6 +127,28 @@ _UPLOAD_TARGET_KEYS = ("drive_id", "parent_item_id", "filename", "blob_path")
 _UPLOAD_SESSION_KEYS = ("upload_session_url", "completed_bytes", "total_bytes")
 
 
+class MsOutboxEnqueueError(RuntimeError):
+    """A durable handoff genuinely FAILED to queue (U-437).
+
+    The signalling contract for every enqueue* on this service:
+
+        returns a row   -> queued (or coalesced onto an existing row)
+        returns None    -> REFUSED BY POLICY (`ALLOW_MS_WRITES` is not "true")
+        raises          -> genuinely FAILED; nothing is queued and nothing will retry
+
+    That distinction is load-bearing for completion pipelines. A policy refusal
+    is expected in a deliberately gated environment and must NOT fail the job; a
+    genuine failure means the durable handoff never happened and the job must be
+    marked failed so the reclaim watchdog re-drives it. Conflating them either
+    bricks every completion wherever the gate is off, or silently drops work.
+
+    The generic `enqueue()` already had this shape — its only `return None` is
+    the gate branch, and `MsOutboxRepository.create` raises. The typed wrappers
+    did not: each returned None on `no_tenant_id`, a real failure wearing the
+    refusal's clothes. They now raise this instead.
+    """
+
+
 def _writes_allowed() -> bool:
     """
     Match the MsGraphClient write gate: enqueueing an outbox row for a write
@@ -435,10 +457,31 @@ class MsOutboxService:
         session_id: Optional[str] = None,
     ) -> Optional[MsOutbox]:
         """Queue an `append_excel_rows` call for background dispatch."""
+        # U-438: the POLICY GATE IS CHECKED FIRST, before anything that can fail.
+        #
+        # U-437 put the tenant lookup ahead of the gate, so `ALLOW_MS_WRITES=false`
+        # PLUS a missing/erroring MS auth raised instead of quietly refusing — and
+        # a raise fails the completion job. That inverted the very invariant the
+        # unit exists to protect: in a deliberately gated environment nothing
+        # should be queued AND nothing should fail. Caught by Codex's review of
+        # the U-437 diff.
+        #
+        # Order matters and is the whole fix: gate closed -> None (refusal),
+        # whatever the tenant state. Gate open + no tenant -> raise (real failure).
+        gate_open = _writes_allowed()
         tenant_id = _resolve_tenant_id()
-        if not tenant_id:
+        if gate_open and not tenant_id:
             logger.error("ms.outbox.enqueue_excel_append.no_tenant_id")
-            return None
+            # A genuine failure must RAISE, never return None — None is reserved
+            # for the policy refusal above.
+            raise MsOutboxEnqueueError(
+                "enqueue_excel_append: no tenant_id in context; nothing was queued"
+            )
+        # Gate CLOSED: fall through to `enqueue`, whose own gate branch emits the
+        # canonical structured `ms.outbox.row.refused` log (correlation id, kind,
+        # entity, reason) and returns None. Short-circuiting here would preserve
+        # the invariant but silently drop that telemetry — caught by
+        # test_sharepoint_writes_disabled_skips_guard_returns_none.
         return self.enqueue(
             kind=KIND_APPEND_EXCEL_ROW,
             entity_type=entity_type,
@@ -466,10 +509,31 @@ class MsOutboxService:
         session_id: Optional[str] = None,
     ) -> Optional[MsOutbox]:
         """Queue an `insert_excel_rows` call for background dispatch."""
+        # U-438: the POLICY GATE IS CHECKED FIRST, before anything that can fail.
+        #
+        # U-437 put the tenant lookup ahead of the gate, so `ALLOW_MS_WRITES=false`
+        # PLUS a missing/erroring MS auth raised instead of quietly refusing — and
+        # a raise fails the completion job. That inverted the very invariant the
+        # unit exists to protect: in a deliberately gated environment nothing
+        # should be queued AND nothing should fail. Caught by Codex's review of
+        # the U-437 diff.
+        #
+        # Order matters and is the whole fix: gate closed -> None (refusal),
+        # whatever the tenant state. Gate open + no tenant -> raise (real failure).
+        gate_open = _writes_allowed()
         tenant_id = _resolve_tenant_id()
-        if not tenant_id:
+        if gate_open and not tenant_id:
             logger.error("ms.outbox.enqueue_excel_insert.no_tenant_id")
-            return None
+            # A genuine failure must RAISE, never return None — None is reserved
+            # for the policy refusal above.
+            raise MsOutboxEnqueueError(
+                "enqueue_excel_insert: no tenant_id in context; nothing was queued"
+            )
+        # Gate CLOSED: fall through to `enqueue`, whose own gate branch emits the
+        # canonical structured `ms.outbox.row.refused` log (correlation id, kind,
+        # entity, reason) and returns None. Short-circuiting here would preserve
+        # the invariant but silently drop that telemetry — caught by
+        # test_sharepoint_writes_disabled_skips_guard_returns_none.
         return self.enqueue(
             kind=KIND_INSERT_EXCEL_ROW,
             entity_type=entity_type,
@@ -533,10 +597,31 @@ class MsOutboxService:
         `review_id` / `bill_id` are persisted on the row for audit-trail
         backtrack: "which Review row triggered this email".
         """
+        # U-438: the POLICY GATE IS CHECKED FIRST, before anything that can fail.
+        #
+        # U-437 put the tenant lookup ahead of the gate, so `ALLOW_MS_WRITES=false`
+        # PLUS a missing/erroring MS auth raised instead of quietly refusing — and
+        # a raise fails the completion job. That inverted the very invariant the
+        # unit exists to protect: in a deliberately gated environment nothing
+        # should be queued AND nothing should fail. Caught by Codex's review of
+        # the U-437 diff.
+        #
+        # Order matters and is the whole fix: gate closed -> None (refusal),
+        # whatever the tenant state. Gate open + no tenant -> raise (real failure).
+        gate_open = _writes_allowed()
         tenant_id = _resolve_tenant_id()
-        if not tenant_id:
+        if gate_open and not tenant_id:
             logger.error("ms.outbox.enqueue_send_mail.no_tenant_id")
-            return None
+            # A genuine failure must RAISE, never return None — None is reserved
+            # for the policy refusal above.
+            raise MsOutboxEnqueueError(
+                "enqueue_send_mail: no tenant_id in context; nothing was queued"
+            )
+        # Gate CLOSED: fall through to `enqueue`, whose own gate branch emits the
+        # canonical structured `ms.outbox.row.refused` log (correlation id, kind,
+        # entity, reason) and returns None. Short-circuiting here would preserve
+        # the invariant but silently drop that telemetry — caught by
+        # test_sharepoint_writes_disabled_skips_guard_returns_none.
         return self.enqueue(
             kind=KIND_SEND_MAIL,
             entity_type=entity_type,
@@ -641,10 +726,31 @@ class MsOutboxService:
                     },
                 )
 
+        # U-438: the POLICY GATE IS CHECKED FIRST, before anything that can fail.
+        #
+        # U-437 put the tenant lookup ahead of the gate, so `ALLOW_MS_WRITES=false`
+        # PLUS a missing/erroring MS auth raised instead of quietly refusing — and
+        # a raise fails the completion job. That inverted the very invariant the
+        # unit exists to protect: in a deliberately gated environment nothing
+        # should be queued AND nothing should fail. Caught by Codex's review of
+        # the U-437 diff.
+        #
+        # Order matters and is the whole fix: gate closed -> None (refusal),
+        # whatever the tenant state. Gate open + no tenant -> raise (real failure).
+        gate_open = _writes_allowed()
         tenant_id = _resolve_tenant_id()
-        if not tenant_id:
+        if gate_open and not tenant_id:
             logger.error("ms.outbox.enqueue_sharepoint_upload.no_tenant_id")
-            return None
+            # A genuine failure must RAISE, never return None — None is reserved
+            # for the policy refusal above.
+            raise MsOutboxEnqueueError(
+                "enqueue_sharepoint_upload: no tenant_id in context; nothing was queued"
+            )
+        # Gate CLOSED: fall through to `enqueue`, whose own gate branch emits the
+        # canonical structured `ms.outbox.row.refused` log (correlation id, kind,
+        # entity, reason) and returns None. Short-circuiting here would preserve
+        # the invariant but silently drop that telemetry — caught by
+        # test_sharepoint_writes_disabled_skips_guard_returns_none.
 
         return self.enqueue(
             kind=KIND_UPLOAD_SHAREPOINT_FILE,

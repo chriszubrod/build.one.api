@@ -489,8 +489,35 @@ def _run_complete_bill(public_id: str, job_public_id: str | None = None, force: 
             # path that got past the finalize (including the 207 partial-success
             # path, where the outbox legitimately owns the retries) and False on
             # exactly the five early returns.
-            if result.get("bill_finalized"):
+            # U-437: `bill_finalized` alone is NOT sufficient, and U-434 keying
+            # on it left a second silent-loss path. It answers "did the header
+            # flip", not "did every durable handoff succeed" — so a completion
+            # whose QBO enqueue never happened (no auth record, or the enqueue
+            # threw) still returned 207 with bill_finalized True and retired its
+            # job. Nothing was queued, so nothing retried. Found by U-426's
+            # independent Codex re-review, of the fix I wrote the day before.
+            #
+            # A POLICY REFUSAL is not a failure: ALLOW_MS_WRITES off means the
+            # environment is deliberately gated, and failing there would brick
+            # every completion forever. `durable_handoffs_failed` carries only
+            # genuine failures — see complete_bill's tail.
+            # U-438: fail CLOSED on a malformed result. `or []` treated a
+            # MISSING key as "nothing failed", so a future complete_bill that
+            # forgets to report its handoffs would silently mark success — the
+            # same shape of silent loss this unit removes. A finalized result
+            # must carry the key.
+            if "durable_handoffs_failed" not in (result if isinstance(result, dict) else {}):
+                failed_handoffs = ["<result did not report durable handoffs>"]
+            else:
+                failed_handoffs = result.get("durable_handoffs_failed") or []
+            if result.get("bill_finalized") and not failed_handoffs:
                 job_service.mark_success(job_public_id)
+            elif result.get("bill_finalized"):
+                job_service.mark_failure(
+                    job_public_id,
+                    f"finalized but durable handoff(s) never queued: {', '.join(failed_handoffs)} "
+                    f"— nothing will retry them",
+                )
             else:
                 job_service.mark_failure(
                     job_public_id,

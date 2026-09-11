@@ -1659,11 +1659,41 @@ class BillService:
         message = "Bill completed successfully"
         if has_errors:
             message += f" with {len(all_errors)} error(s)"
-        
+
+        # U-437: which DURABLE handoffs genuinely failed to queue.
+        #
+        # `bill_finalized` alone is the wrong thing for the job runner to key on.
+        # It answers "did the header flip", not "did every durable handoff
+        # succeed" — and U-434's marking keyed on it, so a completion whose QBO
+        # enqueue never happened still retired its CompletionJob. Nothing was
+        # queued, so nothing retried: the same silent loss U-434 removed, one
+        # layer down. Found by U-426's independent Codex re-review.
+        #
+        # POLICY REFUSAL IS NOT FAILURE. `MsOutboxService.enqueue*` returns None
+        # only when ALLOW_MS_WRITES is off (U-437 made the typed wrappers RAISE
+        # `MsOutboxEnqueueError` on a genuine failure instead of returning None,
+        # which is what made this distinction expressible at all). A deliberately
+        # gated environment must not fail every completion forever. The QBO gate
+        # differs — ALLOW_QBO_WRITES is checked at DRAIN, not at enqueue — so a
+        # QBO enqueue that did not happen is always a real failure.
+        #
+        # Box legs stay best-effort by design and are excluded: they are a
+        # mirror, and `_enqueue_box_*` already swallow their own errors.
+        durable_handoffs_failed = []
+        if not qbo_sync_result.get("qbo_sync_queued"):
+            durable_handoffs_failed.append("qbo")
+        for project_id, up in (file_upload_results or {}).items():
+            if up.get("enqueue_failed"):
+                durable_handoffs_failed.append(f"sharepoint:{project_id}")
+        for project_id, ex in (excel_sync_results or {}).items():
+            if ex.get("enqueue_failed"):
+                durable_handoffs_failed.append(f"excel:{project_id}")
+
         return {
             "status_code": status_code,
             "message": message,
             "bill_finalized": True,
+            "durable_handoffs_failed": durable_handoffs_failed,
             "file_uploads": file_upload_results,
             "excel_syncs": excel_sync_results,
             "qbo_sync": qbo_sync_result,
@@ -2028,6 +2058,7 @@ class BillService:
                 return {
                     "success": False,
                     "message": f"Excel workbook not linked for project {project_id}",
+                    "enqueue_failed": False,  # U-438: no workbook mapped for this project is a legitimate NO-OP, not a failure — flagging it would fail every completion for a project that has no tracker
                     "synced_count": 0,
                     "errors": [{"error": f"Excel workbook not linked for project {project_id}"}]
                 }
@@ -2039,6 +2070,7 @@ class BillService:
                 return {
                     "success": False,
                     "message": "Worksheet name not found in Excel mapping",
+                    "enqueue_failed": True,  # U-438: a mapping exists but is malformed — the leg was required and never queued
                     "synced_count": 0,
                     "errors": [{"error": "Worksheet name not found"}]
                 }
@@ -2054,6 +2086,7 @@ class BillService:
                 return {
                     "success": False,
                     "message": "DriveItem not found for Excel workbook",
+                    "enqueue_failed": True,  # U-438: the mapped workbook is missing — required leg, never queued
                     "synced_count": 0,
                     "errors": [{"error": "DriveItem not found"}]
                 }
@@ -2065,6 +2098,7 @@ class BillService:
                 return {
                     "success": False,
                     "message": "Drive not found for Excel workbook",
+                    "enqueue_failed": True,  # U-438: required leg, never queued
                     "synced_count": 0,
                     "errors": [{"error": "Drive not found"}]
                 }
@@ -2079,6 +2113,7 @@ class BillService:
                     "success": False,
                     "message": "Vendor not found",
                     "synced_count": 0,
+                    "enqueue_failed": True,  # U-438: the row cannot be built — required leg, never queued
                     "errors": [{"error": "Vendor not found"}]
                 }
 
@@ -2241,11 +2276,15 @@ class BillService:
                         f"(outbox {queued.public_id})"
                     )
                 else:
-                    # Queueing refused (ALLOW_MS_WRITES=false) or hard failure.
-                    errors.append({
-                        "sub_cost_code": sub_cost_code_number,
-                        "error": "Excel insert enqueue refused (ALLOW_MS_WRITES=false or enqueue failure)"
-                    })
+                    # U-437: None now means ONE thing — refused by the
+                    # ALLOW_MS_WRITES policy gate. A genuine failure raises
+                    # MsOutboxEnqueueError (caught below and recorded as a real
+                    # handoff failure). A policy refusal is expected in a gated
+                    # environment and must not fail the completion job.
+                    logger.info(
+                        "Excel insert refused by ALLOW_MS_WRITES gate (SubCostCode %s) — not a failure",
+                        sub_cost_code_number,
+                    )
 
             # Append any rows that didn't have matching SubCostCodes
             if rows_to_append:
@@ -2263,7 +2302,8 @@ class BillService:
                     synced_count += len(rows_to_append)
                     logger.info(f"Queued Excel append of {len(rows_to_append)} row(s) (outbox {queued.public_id})")
                 else:
-                    errors.append({"error": "Excel append enqueue refused (ALLOW_MS_WRITES=false or enqueue failure)"})
+                    # U-437: policy refusal, not failure — see the insert branch.
+                    logger.info("Excel append refused by ALLOW_MS_WRITES gate — not a failure")
             
             if synced_count == 0 and not errors:
                 return {
@@ -2285,10 +2325,23 @@ class BillService:
 
         except Exception as e:
             logger.exception(f"Error syncing to Excel workbook for project {project_id}")
+            # U-438: ANY exception here means this project's Excel rows were not
+            # queued, so the durable handoff did not happen and nothing will
+            # retry it.
+            #
+            # U-437 narrowed this to `isinstance(e, MsOutboxEnqueueError)`, which
+            # was wrong and is the more likely failure in practice:
+            # `MsOutboxRepository.create` raises `map_database_error(...)` — a
+            # DatabaseError, NOT the typed enqueue error — so a DB outage during
+            # enqueue left `enqueue_failed` False and the job was marked
+            # successful with nothing queued. Exception-type sniffing was the
+            # wrong instrument; "did this leg queue what it intended to" is the
+            # question. Caught by Codex's review of the U-437 diff.
             return {
                 "success": False,
                 "message": f"Error syncing to Excel: {str(e)}",
                 "synced_count": 0,
+                "enqueue_failed": True,
                 "errors": [{"error": str(e)}]
             }
         finally:
@@ -2651,6 +2704,7 @@ class BillService:
                 return {
                     "success": False,
                     "message": "Bills module not found. Create a module named 'Bills' before syncing.",
+                    "enqueue_failed": True,  # U-438: config error — required leg, never queued
                     "synced_count": 0,
                     "skipped_count": 0,
                     "errors": [{"error": "Bills module not found"}]
@@ -2668,6 +2722,7 @@ class BillService:
                 return {
                     "success": False,
                     "message": f"Module folder not linked for project {project_id}",
+                    "enqueue_failed": False,  # U-438: no folder mapped is a legitimate NO-OP for that project
                     "synced_count": 0,
                     "skipped_count": 0,
                     "errors": [{"error": f"Module folder not linked for project {project_id}"}]
@@ -2680,6 +2735,7 @@ class BillService:
                 return {
                     "success": False,
                     "message": "Module folder missing drive or item_id",
+                    "enqueue_failed": True,  # U-438: malformed mapping — required leg, never queued
                     "synced_count": 0,
                     "skipped_count": 0,
                     "errors": [{"error": "Module folder missing drive or item_id"}]
@@ -2691,6 +2747,7 @@ class BillService:
                     "success": False,
                     "message": "Drive not found",
                     "synced_count": 0,
+                    "enqueue_failed": True,  # U-438: required leg, never queued
                     "skipped_count": 0,
                     "errors": [{"error": "Drive not found"}]
                 }
@@ -2706,6 +2763,7 @@ class BillService:
                     "message": "Vendor not found",
                     "synced_count": 0,
                     "skipped_count": 0,
+                    "enqueue_failed": True,  # U-438: filename cannot be built — required leg, never queued
                     "errors": [{"error": "Vendor not found"}]
                 }
             
@@ -2715,6 +2773,7 @@ class BillService:
                 return {
                     "success": False,
                     "message": f"Project {project_id} not found",
+                    "enqueue_failed": True,  # U-438: required leg, never queued
                     "synced_count": 0,
                     "skipped_count": 0,
                     "errors": [{"error": f"Project {project_id} not found"}]
@@ -2739,6 +2798,7 @@ class BillService:
             )
             tally = SharePointUploadTally()
             ms_outbox = MsOutboxService()
+            enqueue_failed = False  # U-437: genuine enqueue failure, not a policy refusal
 
             logger.info(f"SharePoint sync: Processing {len(line_items)} line items for project {project_id}")
 
@@ -2812,12 +2872,15 @@ class BillService:
                     )
                     outcome = sharepoint_upload_outcome(queued)
                     if outcome == "refused":
-                        logger.error(f"SharePoint upload enqueue refused for '{sharepoint_filename}'")
-                        tally.record_error({
-                            "line_item_id": line_item.id,
-                            "line_item_public_id": line_item.public_id,
-                            "error": "SharePoint upload enqueue refused (ALLOW_MS_WRITES=false or enqueue failure)"
-                        })
+                        # U-437: 'refused' now means exactly one thing — the
+                        # ALLOW_MS_WRITES policy gate is off. A genuine failure
+                        # raises MsOutboxEnqueueError and is caught below. A
+                        # policy refusal is expected in a gated environment and
+                        # must not fail the completion job.
+                        logger.info(
+                            "SharePoint upload refused by ALLOW_MS_WRITES gate: '%s' — not a failure",
+                            sharepoint_filename,
+                        )
                         continue
 
                     tally.record(attachment_link.attachment_id, outcome)
@@ -2828,6 +2891,11 @@ class BillService:
                     
                 except Exception as e:
                     logger.exception(f"Error processing line item {line_item.id}")
+                    # U-438: ANY exception on this line means its upload never
+                    # queued. U-437 sniffed for MsOutboxEnqueueError, which
+                    # missed the likelier case — repo.create raises a
+                    # DatabaseError, not the typed error.
+                    enqueue_failed = True
                     tally.record_error({
                         "line_item_id": line_item.id,
                         "line_item_public_id": line_item.public_id,
@@ -2835,10 +2903,12 @@ class BillService:
                     })
             
             success = tally.synced_count > 0 or tally.skipped_count > 0 or len(tally.errors) == 0
-            return tally.as_dict(
+            result = tally.as_dict(
                 success=success,
                 message=tally.message(with_error_count=True),
             )
+            result["enqueue_failed"] = enqueue_failed  # U-437
+            return result
             
         except Exception as e:
             logger.exception(f"Error uploading attachments for project {project_id}")
@@ -2847,5 +2917,6 @@ class BillService:
                 "message": f"Error: {str(e)}",
                 "synced_count": 0,
                 "skipped_count": 0,
+                "enqueue_failed": True,  # U-438: the leg never queued
                 "errors": [{"error": str(e)}]
             }

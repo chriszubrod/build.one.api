@@ -166,6 +166,24 @@ def test_seam_degrades_to_empty_on_db_error():
 # GET /get/bills
 # --------------------------------------------------------------------------
 
+def _lifecycle_patches(review=None, first_sort_order=1):
+    """Patch the U-443 lifecycle collaborators the bill reads now consult.
+
+    Without these the review lookups attempt a real pyodbc connect (blocked by
+    conftest) — the router swallows it, so the tests would still pass, but on a
+    degraded path that no longer exercises the wiring. Patch, don't rely on the
+    swallow.
+    """
+    review_repo = MagicMock()
+    review_repo.read_current_by_bill_id.return_value = review
+    status_service = MagicMock()
+    status_service.get_first_status.return_value = SimpleNamespace(sort_order=first_sort_order)
+    return [
+        patch("entities.review.persistence.repo.ReviewRepository", return_value=review_repo),
+        patch("entities.bill.api.router.ReviewStatusService", return_value=status_service),
+    ]
+
+
 def _call_get_bills(bills, vendor_repo=None, conn=None):
     """Drive GET /get/bills with the router's collaborators mocked out.
 
@@ -187,6 +205,7 @@ def _call_get_bills(bills, vendor_repo=None, conn=None):
         patch("entities.bill.api.router.BillService", return_value=service),
         patch("entities.bill.api.router.BillRepository", return_value=repo),
         patch("entities.review.persistence.repo.ReviewRepository", return_value=review_repo),
+        *_lifecycle_patches()[1:],
     ]
     if vendor_repo is not None:
         patches.append(patch("entities.bill.api.router.VendorRepository", return_value=vendor_repo))
@@ -250,6 +269,8 @@ def test_list_preserves_every_pre_existing_field():
     assert set(bd) - set(original) == {
         "project_id", "review_status", "review_status_is_final",
         "review_status_is_declined", "vendor_public_id",
+        # U-443 (U-357 Phase 1) — derived, additive, no column behind them.
+        "status", "review_status_kind",
     }
     assert set(response) == {"data", "count", "page", "page_size"}
 
@@ -269,9 +290,14 @@ def _call_get_by_public_id(bill):
     service = MagicMock()
     service.read_by_public_id.return_value = bill
     service.get_qbo_bill_url.return_value = None
-    with patch("entities.bill.api.router.BillService", return_value=service), \
-         patch("shared.database.get_connection",
-               return_value=_single_vendor_conn(bill)):
+    with ExitStack() as stack:
+        for p in (
+            patch("entities.bill.api.router.BillService", return_value=service),
+            patch("shared.database.get_connection",
+                  return_value=_single_vendor_conn(bill)),
+            *_lifecycle_patches(),
+        ):
+            stack.enter_context(p)
         return asyncio.run(get_bill_by_public_id_router(
             public_id=bill.public_id, current_user=USER))
 
@@ -279,9 +305,14 @@ def _call_get_by_public_id(bill):
 def _call_get_by_id(bill):
     service = MagicMock()
     service.read_by_id.return_value = bill
-    with patch("entities.bill.api.router.BillService", return_value=service), \
-         patch("shared.database.get_connection",
-               return_value=_single_vendor_conn(bill)):
+    with ExitStack() as stack:
+        for p in (
+            patch("entities.bill.api.router.BillService", return_value=service),
+            patch("shared.database.get_connection",
+                  return_value=_single_vendor_conn(bill)),
+            *_lifecycle_patches(),
+        ):
+            stack.enter_context(p)
         return get_bill_by_id_router(id=bill.id, current_user=USER)
 
 
@@ -321,8 +352,11 @@ def test_unset_vendor_skips_the_database_entirely():
     bill = _bill(1, None)
     service = MagicMock()
     service.read_by_id.return_value = bill
-    with patch("entities.bill.api.router.BillService", return_value=service), \
-         patch("shared.database.get_connection") as fresh:
+    with ExitStack() as stack:
+        for p in _lifecycle_patches():
+            stack.enter_context(p)
+        stack.enter_context(patch("entities.bill.api.router.BillService", return_value=service))
+        fresh = stack.enter_context(patch("shared.database.get_connection"))
         result = get_bill_by_id_router(id=1, current_user=USER)
     fresh.assert_not_called()
     assert result["data"]["vendor_public_id"] is None

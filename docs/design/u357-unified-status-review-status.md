@@ -398,6 +398,18 @@ have a safe decoder; `/docs` has the page.
 
 ### Phase 1 — Read-model exposure + isolated consistency fixes (API additive, zero schema change)
 
+> **Progress — LS-01a is shipping one entity at a time, Bill first.**
+> **U-443 (2026-09-11) — Bill slice SHIPPED.** `shared/lifecycle/resolver.py` (pure) + the
+> `attach_lifecycle` stamp on `GET /get/bills`, `/get/bill/{public_id}`, `/get/bill/id/{id}` and
+> `/get/bill/by-bill-number-and-vendor`. **Zero SQL** — `ReadCurrentReviewByBillId` and
+> `ReadCurrentReviewsByBillIds` already existed (Wave 3 Phase D), so the generic
+> `ReadCurrentReviewsByParentIds(@ParentType, @ParentIds)` in the table below is deferred to the
+> first entity that actually needs it. `status_source` on the single GET is NOT in the Bill slice —
+> it has no consumer until Phase 3. Write paths (`POST /create/bill`, `PUT /update/bill`) still
+> return a bare `to_dict()` through the workflow-engine serializer; deliberate, since the client
+> re-reads. Web/MCP untouched — the fields are additive and cosmetic until the tabs land.
+> **Remaining in LS-01a:** expense, bill_credit, invoice, contract_labor, employee_labor, time_entry.
+
 | Unit | Repo / layer | Owner → handoffs | Content |
 |---|---|---|---|
 | **LS-01a Canonical `status` + `review_status_kind` on every list/GET (derived)** | api / `entities/review/sql` (`ReadCurrentReviewsByParentIds(@ParentType NVARCHAR(20), @ParentIds NVARCHAR(MAX))`, ROW_NUMBER over `vw_Review` per parent, STRING_SPLIT ids — the `ReadCurrentReviewsByBillIds` shape `:355-384`), routers of bill/expense/bill_credit/invoice/contract_labor/employee_labor/time_entry | Backend → DBA → MCP-eng → Frontend (types, ask-first) → Docs | `attach_lifecycle` replaces the Bill stitch (`bill/api/router.py:143-158`); documents get `status`, `review_status` (Name, kept), `review_status_kind` + the `review_status_*` block, `status_source` on single GET; ContractLabor gets `lifecycle_status` (legacy `status` untouched; overlay: disk `submitted` + declined Review → `declined`, + intermediate → `in_review`, + approved-but-deferred → `submitted` with kind `approved`, rendered "Approved — needs coding" until LS-04); EmployeeLabor `lifecycle_status`; TimeEntry `status` canonical beside `current_status`, `review_status_kind` from history (batch sproc `ReadCurrentTimeEntryStatusesByTimeEntryIds` extended with the previous row). `apply_reviewer_decision` returns the resolved block (no more `is_draft: True`, `bill/business/service.py:1289`). MCP: additive output fields, docstrings list both vocabularies. Web: optional fields on all five types; badge from `review_status_kind`. `?status=` filters are NOT added here (post-filtering a page is wrong; they arrive with the column in Phase 3). |

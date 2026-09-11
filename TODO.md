@@ -4004,3 +4004,28 @@ Recommend the **three P0s go first**, and that the RBAC one ships **SQL/service-
 fail-closed default applies, mirroring U-428's ordering. ⚠️ **Recompute the next free unit id before
 minting** — U-434 was claimed by a concurrent session today without a board row, per the shared-registry
 collision rule.
+
+## U-443 follow-up (U-357 Phase 1, Bill slice, 2026-09-11) — deferred, non-blocking
+
+- **`ReadFirstReviewStatus` is company-unscoped** — `entities/review_status/sql/dbo.review_status.sql:184`.
+  Raised by Codex (`gpt-5.6-terra` @ `xhigh`) reviewing U-443 as a P1-plausible. The sproc takes no
+  `@CompanyId` and has no `WHERE [CompanyId] = …`, yet `dbo.ReviewStatus` **does** carry a
+  `CompanyId` column (verified in prod — added by the Access-Control Phase-5-thin backfill, `DEFAULT (1)`).
+  With a second Company configured, Company B's `SortOrder` could win the `TOP 1` and Company A's
+  bills would derive `in_review` where the truth is `submitted`.
+
+  **NOT a U-443 defect, and deliberately not fixed here.** The unscoped read is pre-existing and
+  **shared with the write path**: `ReviewService.build_submit_payload` and
+  `entities/review/business/notification_service.py` both call `get_first_status()` to decide
+  "is this the initial Submit?". U-443's read model keys on the *same* boundary those writes use, so
+  scoping only the reader would make the read model disagree with the transitions that produced it.
+  The fix belongs to the sproc + all three callers at once.
+
+  **Zero impact today: prod has exactly 1 Company** (verified 2026-09-11), and per `CLAUDE.md`
+  multi-tenant filtering enforcement (Access-Control Phase 5b) is explicitly deferred until a 2nd
+  Company arrives. This item should be folded into that phase rather than run standalone.
+
+- **Write paths still return a bare `to_dict()`** — `POST /create/bill` and `PUT /update/bill` go
+  through the workflow-engine serializer (`_with_vendor_public_id`, `entities/bill/api/router.py:109`)
+  and so carry no `status` / `review_status_kind`. Deliberate: the clients re-read after a write.
+  Revisit if a client ever branches on the write response.

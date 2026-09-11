@@ -636,6 +636,34 @@ pattern-setter and Labor adopts, not the reverse.
 is the source of truth; computing it over Status makes that class unrepresentable rather than merely
 discouraged.
 
+## 9b. DECIDED — the five decisions gating Bill (Chris, 2026-09-11)
+
+U-357 is **DISPATCHED for Bill**. Only 5 of §9's 24 decisions gate the Bill lifecycle work; the other 19
+govern ContractLabor cutover, TimeEntry, permission verbs and recall/reopen, none of which Bill touches.
+They remain open.
+
+| # | Decision | Answer |
+|---|---|---|
+| 21 | Phase-3 order | **A — Bill first** as pattern-setter |
+| 22 | `IsDraft` end state | **A — PERSISTED COMPUTED over `Status`**, physically unwritable |
+| 16 | Legacy contradictions | **A — never fabricate Approved rows**; mark `StatusOrigin='backfill'`, suppress from inbox |
+| 1 | Completion gate | **YES** — per-entity env flags, shipped `off`, flipped later by `/em` |
+| 7 | QBO pull adopting an in-progress row | **A** — stamp `QboId`, leave lifecycle, record `qbo_adopted_uncompleted_local` |
+
+**#22 was the one-way door, and it was decided on a measured write surface, not a guess.** A repo-wide sweep
+(multi-line aware, `.sql` + `.py`) found `dbo.Bill.IsDraft` written in exactly **2 files, both Bill's own** —
+`dbo.bill.sql` (`UpdateBillById`, `FinalizeBillById`) and `dbo.bill_create_source_email.sql` (`CreateBill`) —
+plus **2 service-layer call sites**, both in the QBO bill connector (`:208` HIT-path update, which #7 above
+removes; `:283` MISS-path create, which Phase 3 converts). No migration, script, or other connector writes it.
+45+ READS exist and all survive untouched, which is the point of a computed column.
+
+That small surface is largely a recent gift: **U-434 (2026-09-09) made finalization a single choke point**
+(`FinalizeBillById`), so there is no sprawl of raw `IsDraft` writes left to break.
+
+**Residual risk accepted:** A is irreversible without a drop-and-backfill, and a from-scratch rebuild plus any
+future `INSERT` naming `IsDraft` must be fixed in the same unit. The sweep above is the evidence that this is
+bounded; re-run it before applying the Phase-3 SQL.
+
 ## 9. Open decisions for Chris
 
 1. Completion gate: adopt per-entity env flags `LIFECYCLE_COMPLETION_GATE_{BILL,EXPENSE,BILL_CREDIT,INVOICE}` ∈ {off, block_open_review, require_approved}, shipped `off` and flipped by /em, with steady state Bill + BillCredit = require_approved, Invoice = block_open_review until U-128, Expense = off? Recommend YES.

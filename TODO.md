@@ -3082,6 +3082,32 @@ Board: [U-370](../build.one.team/BOARD.md) (Ready). Review of the Address stack 
   `project_id` filter is correctly excluding it from project 30's workbook.
 
 
+- [ ] **U-450 — 3 Box document uploads permanently lost; the blob 404s on a pre-encoded URL.** Booked
+  2026-09-11 out of the U-448 sweep. These are the only genuine document losses in the 66-row
+  `upload_box_file` dead-letter class — the other 63 are benign (see below).
+  **The three:** attachment `4370` (project 100, Laurel Ridge, `Invoice#7-Rogers Res -1833 Laurel Ridge…`,
+  outbox `4179`) · attachment `4477` (project 35, Franklin Pike, Puente's Drywall `Invoice_811`, outbox
+  `4252`) · attachment `4304` (project 74, Dale Inc `INV41290`, outbox `6510`). Each verified truly absent:
+  `box.File` rows = 0, no successful sibling upload row, and the `dbo.Attachment` row still exists.
+  **Why a plain replay re-fails:** `LastError` is `Unexpected AzureBlobStorageError: Failed to download blob:
+  404`, and the payload `blob_path` is **byte-identical to the current `Attachment.BlobUrl`** — so the path is
+  not stale. All three are `email-attachments/` blobs whose URL carries **pre-encoded** segments (`%3D` from
+  the base64 Graph message id, `%20` in the filename). The download re-encodes an already-encoded path, so the
+  blob is looked up under a double-encoded key and 404s. Direct sibling of the bug covered by
+  `tests/test_ms_outbox_worker_url_encoding.py` — check whether the Box download path grew the same defect, or
+  never had that fix at all.
+  **Do this before any replay:** confirm the blob physically exists in the container under its decoded key.
+  If it does, the fix is the encoding seam and the replay then succeeds; if it does not, the documents are
+  genuinely gone and the recovery is a re-fetch from the source email (all three are `email-attachments/`),
+  not an outbox retry. Those are different units — establish which before proposing either.
+  **The other 63 are NOT loss and need no action.** All carry a 2-digit placeholder `box_folder_id` (`"16"` /
+  `"17"`) where every one of the 5,938 successful upload rows carries a 12-digit Box folder id, they all
+  dead-lettered in a single burst on 2026-07-03, and **63 of the 66 dead `attachment_id`s also have a
+  successful upload row** — the documents reached Box via a later, correctly-addressed enqueue. Worth a
+  separate look only to confirm the placeholder-id enqueue path is gone; one of the 63 (attachment `20688`)
+  no longer exists in `dbo.Attachment` at all.
+
+
 ## Invoice pull-sync follow-ups (2026-04-26)
 
 - [x] **✅ CLOSED — architecturally superseded; verified 2026-08-29.** Source-linking is now a **dedicated post-pull engine** (`entities/invoice/business/reconciliation.py:368` sets `bill_line_item_id`/`expense_line_item_id`), lineage U-177 → U-301c Tier 0c/0d provenance. The codebase deliberately keeps the QBO pull connector "dumb" (creates `Manual` ILIs) and does source-resolution in that separate engine — folding fingerprinting BACK into the pull connector would reverse that chosen separation. (The connector DID grow `_find_and_match_manual_by_fingerprint`, but that re-adopts orphan Manual ILIs to QBO lines, not to source Bill/Purchase lines.) ~~**Connector auto-linking of Manual ILIs.**~~ Original ask: Match keys: Description + Amount + ServiceDate=TxnDate + CustomerRefValue + RealmId. LineNum-align for ambiguous descriptions. Leave `Manual` only when both Bill and Purchase staging miss. **Doing this also closes the keyspace footgun from the OHR2-GUEST-09 incident** — the `qbo.Bill.Id` value would no longer surface to playbook callers, and Step 4 wouldn't need to query `qbo.*` in the first place.

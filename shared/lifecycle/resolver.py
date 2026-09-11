@@ -82,12 +82,21 @@ def attach_lifecycle(
     *,
     is_draft: Optional[bool],
     review,
+    stored_status: Optional[str] = None,
 ) -> dict:
     """Stamp `status` + `review_status*` onto an already-serialized dict.
 
     Mutates and returns `payload`. `review` is a Review dataclass or None.
     `review_status` stays today's meaning (admin Name, or null). Clients
     branch on `review_status_kind`, not the Name.
+
+    `stored_status` (U-445) is the entity's own `Status` column where one
+    exists. It WINS over the derived value, because it is what the `?status=`
+    filter selected on — deriving a different answer here than the WHERE clause
+    used would make a row appear under a tab it was not filtered into. The
+    derivation remains for entities that have no column yet (expense,
+    bill_credit, invoice, contract_labor) and as the value the parity check
+    compares against.
     """
     if review is None:
         kind = "none"
@@ -110,7 +119,7 @@ def attach_lifecycle(
         payload["review_status_is_final"] = getattr(review, "status_is_final", None)
         payload["review_status_is_declined"] = getattr(review, "status_is_declined", None)
 
-    payload["status"] = resolve_document_status(
+    payload["status"] = stored_status or resolve_document_status(
         is_draft=is_draft,
         review_kind=None if kind == "none" else kind,
     )

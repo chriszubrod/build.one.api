@@ -18,7 +18,13 @@ CREATE OR ALTER PROCEDURE CreateBill
     @IntakeSource NVARCHAR(20) = NULL,
     @IntakeSourceDetail NVARCHAR(100) = NULL,
     @SourceEmailMessageId BIGINT = NULL,
-    @CreatedByUserId BIGINT = NULL
+    @CreatedByUserId BIGINT = NULL,
+    -- U-445. Defaulted so every existing caller keeps working unchanged.
+    -- NULL @Status means "derive it from @IsDraft", which is what the ~20k
+    -- rows created before this unit effectively did.
+    @Status NVARCHAR(20) = NULL,
+    @StatusOrigin NVARCHAR(24) = NULL,
+    @StatusSourceRef NVARCHAR(64) = NULL
 )
 AS
 BEGIN
@@ -29,7 +35,8 @@ BEGIN
     INSERT INTO dbo.[Bill]
         ([CreatedDatetime], [ModifiedDatetime], [VendorId], [PaymentTermId],
          [BillDate], [DueDate], [BillNumber], [TotalAmount], [Memo],
-         [IsDraft], [IntakeSource], [IntakeSourceDetail], [SourceEmailMessageId],
+         [IsDraft], [Status], [StatusDatetime], [StatusOrigin], [StatusSourceRef],
+         [IntakeSource], [IntakeSourceDetail], [SourceEmailMessageId],
          [CreatedByUserId])
     OUTPUT
         INSERTED.[Id],
@@ -45,11 +52,26 @@ BEGIN
         INSERTED.[TotalAmount],
         INSERTED.[Memo],
         INSERTED.[IsDraft],
+        INSERTED.[Status],
+        INSERTED.[StatusDatetime],
+        INSERTED.[StatusOrigin],
+        INSERTED.[StatusSourceRef],
         INSERTED.[IntakeSource],
         INSERTED.[IntakeSourceDetail],
         INSERTED.[SourceEmailMessageId]
     VALUES (@Now, @Now, @VendorId, @PaymentTermId, @BillDate, @BillDate,
-            @BillNumber, @TotalAmount, @Memo, @IsDraft, @IntakeSource,
+            @BillNumber, @TotalAmount, @Memo,
+            -- IsDraft is DERIVED FROM the resolved Status, not taken from
+            -- @IsDraft, so the two cannot be handed in contradicting each other
+            -- (CK_Bill_Status_IsDraft would reject that anyway — this makes it
+            -- impossible rather than an error).
+            CASE WHEN COALESCE(@Status, CASE WHEN @IsDraft = 0 THEN 'completed' ELSE 'draft' END)
+                      = 'completed' THEN 0 ELSE 1 END,
+            COALESCE(@Status, CASE WHEN @IsDraft = 0 THEN 'completed' ELSE 'draft' END),
+            @Now,
+            COALESCE(@StatusOrigin, 'user'),
+            @StatusSourceRef,
+            @IntakeSource,
             @IntakeSourceDetail, @SourceEmailMessageId,
             COALESCE(@CreatedByUserId, 17));
 

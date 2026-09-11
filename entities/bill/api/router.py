@@ -7,6 +7,9 @@ import time
 # Third-party Imports
 from typing import Optional
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Response, status
+# Aliased because GET /get/bills takes a `status` QUERY PARAM that shadows the
+# module inside that function (CLAUDE.md: no var-shadow).
+from fastapi import status as http_status
 from fastapi.responses import JSONResponse
 
 # Local Imports
@@ -19,10 +22,11 @@ from entities.bill.persistence.folder_run_repo import (
 from entities.bill.persistence.repo import BillRepository
 from entities.vendor.persistence.repo import VendorRepository
 from shared.api.auth_user import resolve_user_id
+from shared.api.errors import ApiError, ErrorCode
 from shared.api.money import to_decimal_or_none
 from shared.api.responses import list_response, item_response, accepted_response, raise_workflow_error, raise_not_found
 from shared.database import get_connection
-from shared.lifecycle.resolver import attach_lifecycle
+from shared.lifecycle.resolver import LIFECYCLE_STATUSES, attach_lifecycle
 from shared.rbac import require_module_api
 from shared.rbac_constants import Modules
 from core.workflow.api.process_engine import ProcessEngine, TriggerContext, EventType, Channel
@@ -100,6 +104,7 @@ def _bill_dict_with_lifecycle(bill, *, review=None) -> dict:
         bill.to_dict(),
         is_draft=bill.is_draft,
         review=review,
+        stored_status=getattr(bill, "status", None),
     )
 
 
@@ -184,11 +189,35 @@ async def get_bills_router(
     search: Optional[str] = Query(default=None),
     vendor_id: Optional[int] = Query(default=None),
     is_draft: Optional[bool] = Query(default=None),
+    status: Optional[str] = Query(
+        default=None,
+        description=(
+            "Filter by lifecycle status: draft, submitted, in_review, approved, "
+            "declined or completed. Filters in SQL, so `count` stays truthful."
+        ),
+    ),
     current_user: dict = Depends(require_module_api(Modules.BILLS)),
 ):
     """
     Read bills with pagination.
+
+    `status` (U-445) filters on the stored `Bill.Status` column inside the
+    paginated sproc. That is the whole reason the column exists: U-443 derived
+    the same value per request, but post-filtering an already-paginated page
+    would have made `count` describe a different set than `data`.
     """
+    # `isinstance(str)` rather than `is not None`: under FastAPI this parameter
+    # is always `str | None`, but the route is also called directly (tests, and
+    # any in-process caller), where the unresolved `Query(None)` default arrives
+    # instead. Validating "a value we were actually given" is right in both.
+    if isinstance(status, str) and status not in LIFECYCLE_STATUSES:
+        # Rejected rather than silently returning everything — a typo'd tab
+        # quietly showing all 20k bills is worse than an error.
+        raise ApiError(
+            status_code=http_status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=f"Unknown status {status!r}. Expected one of: {', '.join(LIFECYCLE_STATUSES)}.",
+            error_code=ErrorCode.VALIDATION_ERROR,
+        )
     def _fetch():
         from entities.review.persistence.repo import ReviewRepository
         service = BillService()
@@ -202,12 +231,14 @@ async def get_bills_router(
                 search_term=search,
                 vendor_id=vendor_id,
                 is_draft=is_draft,
+                status=status if isinstance(status, str) else None,
                 conn=conn,
             )
             total = service.count(
                 search_term=search,
                 vendor_id=vendor_id,
                 is_draft=is_draft,
+                status=status if isinstance(status, str) else None,
                 conn=conn,
             )
             bill_ids = [b.id for b in bills if b.id]

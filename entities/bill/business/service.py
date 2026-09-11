@@ -545,6 +545,7 @@ class BillService:
         start_date: Optional[str] = None,
         end_date: Optional[str] = None,
         is_draft: Optional[bool] = None,
+        status: Optional[str] = None,
         sort_by: str = "BillDate",
         sort_direction: str = "DESC",
         conn=None,
@@ -560,6 +561,7 @@ class BillService:
             start_date=start_date,
             end_date=end_date,
             is_draft=is_draft,
+            status=status,
             sort_by=sort_by,
             sort_direction=sort_direction,
             actor_user_id=current_user_id.get(),
@@ -574,6 +576,7 @@ class BillService:
         start_date: Optional[str] = None,
         end_date: Optional[str] = None,
         is_draft: Optional[bool] = None,
+        status: Optional[str] = None,
         conn=None,
     ) -> int:
         """
@@ -585,6 +588,7 @@ class BillService:
             start_date=start_date,
             end_date=end_date,
             is_draft=is_draft,
+            status=status,
             actor_user_id=current_user_id.get(),
             actor_is_system_admin=current_is_system_admin.get(),
         )

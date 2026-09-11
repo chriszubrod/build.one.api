@@ -4069,3 +4069,38 @@ collision rule.
   invoice / contract_labor / employee_labor / time_entry can each adopt it with no extra DB
   round-trip. Their Review reads need `status_is_initial` mapped the same way
   `entities/review/persistence/repo.py` does it.
+
+## U-445 follow-up (Bill.Status column + ?status= filter, 2026-09-11) — deferred, non-blocking
+
+- **U-446 is the other half** and is NOT built: stop writing `IsDraft`, drop and re-add it as a
+  PERSISTED computed column, terminal lock (`422 status_locked`) on header PUT / line-item
+  mutations / non-admin DELETE, gate flags, `field_ownership`, PUT/POST ignoring `is_draft`,
+  agent prompts, MCP `search_*`. **13 SQL files across 9 entities read `Bill.IsDraft`** —
+  `budget_variance`, `expense_coding_suggestion`, `vendor`, `employee` among them — and they
+  are the reason the computed column must be exactly equivalent. They are untouched by U-445
+  because `IsDraft` is still a real written column.
+
+- **`BillService.read_paginated` and `.count` accept `conn` and silently DROP it** (they never
+  pass it to the repo, so `_conn_ctx(None)` opens a fresh connection). The list route hands
+  them the connection it already holds, so `GET /get/bills` opens two extra connections per
+  request it believes it is sharing. Pre-existing, unrelated to U-445, not fixed here because
+  changing connection plumbing mid-unit is its own blast radius. Worth a small unit.
+
+- **`?status=` is Bill-only.** Expense, BillCredit, Invoice and ContractLabor still derive
+  `status` per request with no column behind it, so they cannot be filtered the same way —
+  `attach_lifecycle` keeps the derivation for exactly that reason. Each needs its own Phase-3
+  unit (LS-03b/c/d).
+
+- **The web still does not consume any of this.** `build.one.web`'s `documentLifecycle.ts` is an
+  UNTRACKED working-tree file and `BillList.tsx` has uncommitted changes; the deployed bundle
+  contains zero references to `review_status_kind`. The tabs are a separate web unit — the API
+  side is now complete enough to build against.
+
+- **`data` and `count` are not a consistent snapshot** (Codex P2 on U-445). `GET /get/bills`
+  calls `ReadBillsPaginated` and `CountBills` as two separately-committed sproc transactions,
+  so a bill finalized between them appears in `data` while `count` no longer counts it.
+  **Pre-existing** — the same race has always applied to `?is_draft=` — but `?status=` makes it
+  far more visible, because every tab renders a count badge next to its rows. Fix is a
+  consistent read: either one sproc returning both result sets, or both calls inside one
+  SNAPSHOT-isolation transaction. Its own unit; do it before the tabs ship if the badge
+  mismatch would be confusing.

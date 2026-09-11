@@ -472,6 +472,40 @@ lifecycle source of truth. Rollback = stop the pointer write (sproc revert) with
 
 ### Phase 3 — Financial-document `Status` column, one unit per entity, **three-step swap** (Bill pattern-setter)
 
+> **REBASED — read this before implementing. U-445 (2026-09-11) split LS-03a and did NOT use the
+> three-step swap.**
+>
+> Four things this section assumes are no longer true:
+> * Completion goes through `FinalizeBillById` (U-434), **not** `UpdateBillById(@IsDraft=0)`.
+> * The defect cited as the reason for the three-step dance — *"`bill/api/router.py:417-422`
+>   marks the job success for any status code"* — was fixed and deployed by U-434/U-435.
+> * `status` and `review_status_kind` already ship on every Bill read (U-443). Phase 3 changes
+>   where `status` comes from, not the response shape.
+> * `review_status_kind` is flag-derived (U-444), so the backfill reads `IsInitial` rather than
+>   comparing sort orders.
+>
+> **LS-03a is split in two:**
+> * **U-445 — SHIPPED.** `Status`/`StatusDatetime`/`StatusOrigin`/`StatusSourceRef` +
+>   `CK_Bill_Status`, `CK_Bill_StatusOrigin`, **`CK_Bill_Status_IsDraft`**, filtered
+>   `IX_Bill_Status`, set-based backfill, `TransitionBillStatus`, dual-writing
+>   `FinalizeBillById`/`CreateBill`/`UpdateBillById`, `@Status` on list+count, `?status=` on the
+>   endpoint, and the read model switched from derived to stored. **`IsDraft` stays a real,
+>   written column.**
+> * **U-446 — NOT BUILT.** Everything the step-(c) bullet describes: stop writing `IsDraft`,
+>   drop and re-add it as a PERSISTED computed column, terminal lock (`422 status_locked`),
+>   gate flags, `field_ownership`, PUT/POST ignoring `is_draft`, agent prompts, MCP.
+>
+> **Why no three-step swap.** `CK_Bill_Status_IsDraft` makes the two columns incapable of
+> disagreeing, so an API image that has never heard of `Status` cannot write an inconsistent
+> row — the deploy window the dance existed to close does not exist while both columns are
+> really written. It reappears in U-446, which is where the dance belongs.
+>
+> **Cutover:** not a no-op in general — `?status=` is new and the read model now reports the
+> stored value. It IS a no-op for existing clients: the backfill's expression is the same one
+> `shared/lifecycle/resolver.py` evaluates, verified against prod (20,224 completed / 33
+> in_review / 8 submitted / 1 declined, matching the U-443 census exactly).
+
+
 Each of **LS-03a Bill**, **LS-03b BillCredit**, **LS-03c Expense**, **LS-03d Invoice** (serialized, Bill first —
 §9 #21; recompute any shared-registry count on rebase per `feedback_shared_registry_parallel_decrement_collision.md`)
 ships as one unit in three `/em` steps around ONE API deploy — this closes the silent-no-op completion window

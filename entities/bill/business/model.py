@@ -24,6 +24,16 @@ class Bill:
     total_amount: Optional[Decimal]
     memo: Optional[str]
     is_draft: Optional[bool]
+    # U-445 (U-357 Phase 3). The canonical lifecycle state, STORED — U-443
+    # derived it per request, which was correct but unfilterable (post-filtering
+    # a paginated page makes `count` lie). Defaulted so every existing
+    # construction site — tests, fixtures, the QBO connectors — keeps working.
+    # `is_draft` stays a real column until U-446; CK_Bill_Status_IsDraft makes
+    # the two incapable of disagreeing in the meantime.
+    status: Optional[str] = None
+    status_datetime: Optional[str] = None
+    status_origin: Optional[str] = None
+    status_source_ref: Optional[str] = None
     intake_source: Optional[str] = None        # "manual" | "agent" | "script" — set-once at create
     intake_source_detail: Optional[str] = None  # username / agent name / script name
     source_email_message_id: Optional[int] = None  # FK → EmailMessage; populated by CreateBill OUTPUT, None from existing Read sprocs

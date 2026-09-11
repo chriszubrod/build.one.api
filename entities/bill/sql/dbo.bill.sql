@@ -104,6 +104,175 @@ BEGIN
 END
 GO
 
+-- ===========================================================================
+-- U-445 (U-357 Phase 3, LS-03a-1) — the canonical `Status` column.
+--
+-- Bill had no status of its own. U-443 DERIVED one per request from
+-- `IsDraft x the latest Review row`, which was correct but unfilterable: you
+-- cannot post-filter a paginated page without making `count` lie. This is the
+-- stored column the `?status=` filter — and the Bills page tabs — need.
+--
+-- ORDER BELOW IS LOAD-BEARING. `Status` defaults to 'draft', so the moment the
+-- column exists all 20,224 completed bills read 'draft' and CK_Bill_Status_IsDraft
+-- would be violated. Columns, THEN backfill, THEN constraints — and the CHECKs
+-- go on WITH CHECK so SQL Server validates all 20,266 existing rows, which is
+-- itself the proof that the backfill was right.
+--
+-- `IsDraft` REMAINS A REAL, WRITTEN COLUMN in this unit. Retiring it (drop +
+-- re-add as PERSISTED computed) is U-446. Dual-writing is what removes the
+-- old-image deploy window entirely: CK_Bill_Status_IsDraft makes drift between
+-- the two impossible at the database level, so an API image that knows nothing
+-- about Status still cannot produce an inconsistent row.
+-- ===========================================================================
+IF OBJECT_ID('dbo.Bill', 'U') IS NOT NULL
+   AND NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('dbo.Bill') AND name = 'Status')
+BEGIN
+    ALTER TABLE [dbo].[Bill] ADD [Status] NVARCHAR(20) NOT NULL
+        CONSTRAINT [DF_Bill_Status] DEFAULT ('draft');
+END
+GO
+
+IF OBJECT_ID('dbo.Bill', 'U') IS NOT NULL
+   AND NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('dbo.Bill') AND name = 'StatusDatetime')
+BEGIN
+    ALTER TABLE [dbo].[Bill] ADD [StatusDatetime] DATETIME2(3) NULL;
+END
+GO
+
+IF OBJECT_ID('dbo.Bill', 'U') IS NOT NULL
+   AND NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('dbo.Bill') AND name = 'StatusOrigin')
+BEGIN
+    ALTER TABLE [dbo].[Bill] ADD [StatusOrigin] NVARCHAR(24) NOT NULL
+        CONSTRAINT [DF_Bill_StatusOrigin] DEFAULT ('user');
+END
+GO
+
+IF OBJECT_ID('dbo.Bill', 'U') IS NOT NULL
+   AND NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('dbo.Bill') AND name = 'StatusSourceRef')
+BEGIN
+    ALTER TABLE [dbo].[Bill] ADD [StatusSourceRef] NVARCHAR(64) NULL;
+END
+GO
+
+-- Backfill. Guarded on "no row has been stamped yet" so a re-apply of this base
+-- file (they are re-run routinely) can never overwrite live status transitions.
+-- Set-based per feedback_backfill_setbased_under_load — a per-row loop over 20k
+-- rows TCP-drops under load.
+--
+-- NB the batching here is about statement size, NOT commit granularity:
+-- scripts/run_sql.py executes every GO-batch on ONE connection and commits once
+-- at the end, so the whole file is a single transaction and a failure rolls all
+-- of it back. That is the right property for a backfill+constraint pair (no
+-- half-stamped state can survive), and resumability comes from the
+-- StatusDatetime guard across INVOCATIONS rather than within one.
+--
+-- The expression is the SAME one shared/lifecycle/resolver.py evaluates at read
+-- time (U-443, flag-keyed since U-444), so stored and derived agree by
+-- construction rather than by coincidence.
+-- Guarded on the JOINED tables existing, and executed through sp_executesql
+-- (Codex P1). dbo.[Review] carries FK_Review_Bill so it CANNOT exist before
+-- this file has run, and an IF guard alone does NOT help: SQL Server defers
+-- name resolution for stored-procedure BODIES, not for ad-hoc batches — this
+-- batch compiles as a unit, so a missing table errors at compile time before
+-- the IF is ever evaluated. Because run_sql.py commits the whole file as ONE
+-- transaction, that would roll back the entire Status schema rather than just
+-- the backfill. Same pattern as CountReviewStatusReferencesById (U-444).
+--
+-- A fresh database has nothing to backfill anyway: every Bill it goes on to
+-- create takes its Status from CreateBill.
+IF OBJECT_ID('dbo.Bill', 'U') IS NOT NULL
+   AND OBJECT_ID('dbo.Review', 'U') IS NOT NULL
+   AND OBJECT_ID('dbo.ReviewStatus', 'U') IS NOT NULL
+   AND OBJECT_ID('dbo.BillCompletionResult', 'U') IS NOT NULL
+   AND EXISTS (SELECT 1 FROM dbo.[Bill])
+   AND NOT EXISTS (SELECT 1 FROM dbo.[Bill] WHERE [StatusDatetime] IS NOT NULL)
+BEGIN
+    EXEC sp_executesql N'
+    DECLARE @Batch INT = 5000;
+    DECLARE @Done INT = 1;
+
+    WHILE @Done > 0
+    BEGIN
+        UPDATE TOP (@Batch) b
+        SET b.[Status] = CASE
+                WHEN b.[IsDraft] = 0            THEN ''completed''
+                WHEN cur.[IsDeclined] = 1       THEN ''declined''
+                WHEN cur.[IsFinal] = 1          THEN ''approved''
+                WHEN cur.[IsInitial] = 1        THEN ''submitted''
+                WHEN cur.[BillId] IS NOT NULL   THEN ''in_review''
+                ELSE ''draft''
+            END,
+            b.[StatusDatetime] = SYSUTCDATETIME(),
+            b.[StatusOrigin] = CASE
+                WHEN b.[IsDraft] = 0 AND EXISTS (
+                    SELECT 1 FROM dbo.[BillCompletionResult] r
+                    WHERE r.[BillPublicId] = b.[PublicId]
+                ) THEN ''completion''
+                WHEN b.[QboId] IS NOT NULL THEN ''qbo_pull''
+                ELSE ''backfill''
+            END,
+            b.[StatusSourceRef] = CASE
+                WHEN b.[QboId] IS NOT NULL THEN CONCAT(''qbo:'', b.[RealmId], ''/'', b.[QboId])
+                ELSE NULL
+            END
+        FROM dbo.[Bill] b
+        OUTER APPLY (
+            SELECT TOP 1 r.[BillId], rs.[IsFinal], rs.[IsDeclined], rs.[IsInitial]
+            FROM dbo.[Review] r
+            INNER JOIN dbo.[ReviewStatus] rs ON rs.[Id] = r.[ReviewStatusId]
+            WHERE r.[BillId] = b.[Id]
+            ORDER BY r.[CreatedDatetime] DESC, r.[Id] DESC
+        ) cur
+        WHERE b.[StatusDatetime] IS NULL;
+
+        SET @Done = @@ROWCOUNT;
+    END';
+END
+GO
+
+-- Constraints LAST — see the ordering note above. WITH CHECK (the default for
+-- ALTER ... ADD CONSTRAINT, stated explicitly here because it is the point)
+-- validates every existing row, so applying this file IS the parity proof.
+IF OBJECT_ID('dbo.Bill', 'U') IS NOT NULL
+   AND NOT EXISTS (SELECT 1 FROM sys.check_constraints WHERE name = 'CK_Bill_Status')
+BEGIN
+    ALTER TABLE [dbo].[Bill] WITH CHECK ADD CONSTRAINT [CK_Bill_Status]
+        CHECK ([Status] IN ('draft','submitted','in_review','approved','declined','completed'));
+END
+GO
+
+IF OBJECT_ID('dbo.Bill', 'U') IS NOT NULL
+   AND NOT EXISTS (SELECT 1 FROM sys.check_constraints WHERE name = 'CK_Bill_StatusOrigin')
+BEGIN
+    ALTER TABLE [dbo].[Bill] WITH CHECK ADD CONSTRAINT [CK_Bill_StatusOrigin]
+        CHECK ([StatusOrigin] IN ('user','completion','qbo_pull','fast_path','backfill'));
+END
+GO
+
+-- THE safety property of this unit. While both columns are really written,
+-- this makes them incapable of disagreeing — so an old API image that has
+-- never heard of Status still cannot produce an inconsistent row, and the
+-- three-step swap the design called for is not needed here.
+IF OBJECT_ID('dbo.Bill', 'U') IS NOT NULL
+   AND NOT EXISTS (SELECT 1 FROM sys.check_constraints WHERE name = 'CK_Bill_Status_IsDraft')
+BEGIN
+    ALTER TABLE [dbo].[Bill] WITH CHECK ADD CONSTRAINT [CK_Bill_Status_IsDraft]
+        CHECK ((CASE WHEN [Status] = 'completed' THEN 0 ELSE 1 END) = [IsDraft]);
+END
+GO
+
+-- Filtered: 42 of 20,266 rows are non-completed today, so this index IS the
+-- working set for every tab except Billed (which is the paginated scan it
+-- already was).
+IF OBJECT_ID('dbo.Bill', 'U') IS NOT NULL
+   AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_Bill_Status' AND object_id = OBJECT_ID('dbo.Bill'))
+BEGIN
+    CREATE NONCLUSTERED INDEX [IX_Bill_Status] ON [dbo].[Bill] ([Status])
+        INCLUDE ([IsDraft], [VendorId], [BillDate])
+        WHERE [Status] <> 'completed';
+END
+GO
+
 IF OBJECT_ID('dbo.Bill', 'U') IS NOT NULL
    AND NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('dbo.Bill') AND name = 'SyncToken')
 BEGIN
@@ -168,6 +337,10 @@ BEGIN
         b.[TotalAmount],
         b.[Memo],
         b.[IsDraft],
+        b.[Status],
+        b.[StatusDatetime],
+        b.[StatusOrigin],
+        b.[StatusSourceRef],
         b.[IntakeSource],
         b.[IntakeSourceDetail],
         b.[SourceEmailMessageId]
@@ -201,6 +374,10 @@ BEGIN
         [TotalAmount],
         [Memo],
         [IsDraft],
+        [Status],
+        [StatusDatetime],
+        [StatusOrigin],
+        [StatusSourceRef],
         [IntakeSource],
         [IntakeSourceDetail],
         [SourceEmailMessageId],
@@ -246,6 +423,10 @@ BEGIN
         b.[TotalAmount],
         b.[Memo],
         b.[IsDraft],
+        b.[Status],
+        b.[StatusDatetime],
+        b.[StatusOrigin],
+        b.[StatusSourceRef],
         b.[IntakeSource],
         b.[IntakeSourceDetail],
         b.[SourceEmailMessageId],
@@ -294,6 +475,10 @@ BEGIN
         [TotalAmount],
         [Memo],
         [IsDraft],
+        [Status],
+        [StatusDatetime],
+        [StatusOrigin],
+        [StatusSourceRef],
         [IntakeSource],
         [IntakeSourceDetail],
         [SourceEmailMessageId],
@@ -331,6 +516,10 @@ BEGIN
         [TotalAmount],
         [Memo],
         [IsDraft],
+        [Status],
+        [StatusDatetime],
+        [StatusOrigin],
+        [StatusSourceRef],
         [IntakeSource],
         [IntakeSourceDetail],
         [SourceEmailMessageId]
@@ -373,6 +562,10 @@ BEGIN
         [TotalAmount],
         [Memo],
         [IsDraft],
+        [Status],
+        [StatusDatetime],
+        [StatusOrigin],
+        [StatusSourceRef],
         [IntakeSource],
         [IntakeSourceDetail],
         [SourceEmailMessageId]
@@ -422,7 +615,26 @@ BEGIN
         [BillNumber] = @BillNumber,
         [TotalAmount] = @TotalAmount,
         [Memo] = @Memo,
-        [IsDraft] = CASE WHEN @IsDraft IS NULL THEN [IsDraft] ELSE @IsDraft END
+        -- U-445 compat translation. Callers that predate Status — an old API
+        -- image mid-deploy, the QBO pull connectors, a queued iOS PUT — still
+        -- send only @IsDraft, and CK_Bill_Status_IsDraft would reject the write
+        -- outright if Status were left behind. So:
+        --   @IsDraft = 0  ->  also move Status to 'completed'
+        --   @IsDraft = 1  ->  NEUTRALISED. Nothing un-completes a bill through
+        --                     a field update; that would silently reopen a
+        --                     document whose AP already reached QBO/Excel/Box.
+        --                     The only legitimate 1 is on a row that is already
+        --                     a draft, where it is a no-op anyway.
+        [IsDraft] = CASE WHEN @IsDraft = 0 THEN 0 ELSE [IsDraft] END,
+        [Status] = CASE
+            WHEN @IsDraft = 0 AND [Status] <> 'completed' THEN 'completed'
+            ELSE [Status] END,
+        [StatusDatetime] = CASE
+            WHEN @IsDraft = 0 AND [Status] <> 'completed' THEN @Now
+            ELSE [StatusDatetime] END,
+        [StatusOrigin] = CASE
+            WHEN @IsDraft = 0 AND [Status] <> 'completed' THEN 'completion'
+            ELSE [StatusOrigin] END
     OUTPUT
         INSERTED.[Id],
         INSERTED.[PublicId],
@@ -437,6 +649,10 @@ BEGIN
         INSERTED.[TotalAmount],
         INSERTED.[Memo],
         INSERTED.[IsDraft],
+        INSERTED.[Status],
+        INSERTED.[StatusDatetime],
+        INSERTED.[StatusOrigin],
+        INSERTED.[StatusSourceRef],
         INSERTED.[IntakeSource],
         INSERTED.[IntakeSourceDetail],
         INSERTED.[SourceEmailMessageId]
@@ -474,6 +690,10 @@ BEGIN
         DELETED.[TotalAmount],
         DELETED.[Memo],
         DELETED.[IsDraft],
+        DELETED.[Status],
+        DELETED.[StatusDatetime],
+        DELETED.[StatusOrigin],
+        DELETED.[StatusSourceRef],
         DELETED.[IntakeSource],
         DELETED.[IntakeSourceDetail],
         DELETED.[SourceEmailMessageId]
@@ -498,6 +718,11 @@ CREATE OR ALTER PROCEDURE ReadBillsPaginated
     @StartDate DATETIME2(3) = NULL,
     @EndDate DATETIME2(3) = NULL,
     @IsDraft BIT = NULL,
+    -- U-445. The canonical filter. `@IsDraft` is kept because every
+    -- existing caller still sends it; the two are consistent by
+    -- CK_Bill_Status_IsDraft, so passing both is safe rather than
+    -- contradictory.
+    @Status NVARCHAR(20) = NULL,
     @SortBy NVARCHAR(50) = 'BillDate',
     @SortDirection NVARCHAR(4) = 'DESC',
     @ActorUserId BIGINT = NULL,
@@ -531,6 +756,10 @@ BEGIN
         b.[TotalAmount],
         b.[Memo],
         b.[IsDraft],
+        b.[Status],
+        b.[StatusDatetime],
+        b.[StatusOrigin],
+        b.[StatusSourceRef],
         b.[IntakeSource],
         b.[IntakeSourceDetail],
         b.[SourceEmailMessageId]
@@ -548,6 +777,7 @@ BEGIN
         AND (@StartDate IS NULL OR b.[BillDate] >= @StartDate)
         AND (@EndDate IS NULL OR b.[BillDate] <= @EndDate)
         AND (@IsDraft IS NULL OR b.[IsDraft] = @IsDraft)
+        AND (@Status IS NULL OR b.[Status] = @Status)
         AND dbo.UserCanAccessBill(@ActorUserId, @ActorIsSystemAdmin, b.[Id]) = 1
     ORDER BY
         CASE WHEN @SortDir = 'ASC' AND @SortColumn = 'BillNumber' THEN b.[BillNumber] END ASC,
@@ -573,6 +803,11 @@ CREATE OR ALTER PROCEDURE CountBills
     @StartDate DATETIME2(3) = NULL,
     @EndDate DATETIME2(3) = NULL,
     @IsDraft BIT = NULL,
+    -- U-445. The canonical filter. `@IsDraft` is kept because every
+    -- existing caller still sends it; the two are consistent by
+    -- CK_Bill_Status_IsDraft, so passing both is safe rather than
+    -- contradictory.
+    @Status NVARCHAR(20) = NULL,
     @ActorUserId BIGINT = NULL,
     @ActorIsSystemAdmin BIT = NULL
 )
@@ -594,6 +829,7 @@ BEGIN
         AND (@StartDate IS NULL OR b.[BillDate] >= @StartDate)
         AND (@EndDate IS NULL OR b.[BillDate] <= @EndDate)
         AND (@IsDraft IS NULL OR b.[IsDraft] = @IsDraft)
+        AND (@Status IS NULL OR b.[Status] = @Status)
         AND dbo.UserCanAccessBill(@ActorUserId, @ActorIsSystemAdmin, b.[Id]) = 1;
     COMMIT TRANSACTION;
 END;
@@ -690,8 +926,14 @@ BEGIN
     SET NOCOUNT ON;
     BEGIN TRANSACTION;
 
+    -- U-445: writes BOTH columns. Not optional — CK_Bill_Status_IsDraft rejects
+    -- any row where `Status = 'completed'` and `IsDraft = 1` disagree, so an
+    -- IsDraft-only write here would now fail outright rather than drift.
     UPDATE dbo.[Bill]
     SET [IsDraft] = 0,
+        [Status] = 'completed',
+        [StatusDatetime] = SYSUTCDATETIME(),
+        [StatusOrigin] = 'completion',
         [ModifiedDatetime] = SYSUTCDATETIME()
     WHERE [Id] = @Id AND [IsDraft] = 1;
 
@@ -709,6 +951,10 @@ BEGIN
         [TotalAmount],
         [Memo],
         [IsDraft],
+        [Status],
+        [StatusDatetime],
+        [StatusOrigin],
+        [StatusSourceRef],
         [IntakeSource],
         [IntakeSourceDetail],
         [SourceEmailMessageId],
@@ -788,4 +1034,95 @@ BEGIN
          OR (@SyncToken IS NOT NULL AND ([SyncToken] IS NULL OR [SyncToken] <> @SyncToken))
       );
 END;
+GO
+
+-- ---------------------------------------------------------------------------
+-- U-445 — the one sanctioned way to move a Bill between lifecycle states.
+--
+-- `@FromStatuses` is a CSV of the states this transition is legal FROM, so the
+-- guard is expressed by the caller and enforced here atomically rather than
+-- read-then-written across a round trip. A row that no longer matches (someone
+-- else moved it, or the row version is stale) yields an EMPTY result set —
+-- this file's existing conflict contract, which `_from_db(None)` turns into
+-- None for the caller. Never ROLLBACK inside a sproc: pyodbc runs
+-- autocommit-off and an in-proc rollback raises 266 (CLAUDE.md, 2026-06-11).
+--
+-- Writes `IsDraft` too, because it is still a real column in this unit and
+-- CK_Bill_Status_IsDraft will reject the row otherwise. U-446 removes that
+-- line when IsDraft becomes computed.
+-- ---------------------------------------------------------------------------
+CREATE OR ALTER PROCEDURE TransitionBillStatus
+(
+    @Id BIGINT,
+    @RowVersion BINARY(8) = NULL,
+    @FromStatuses NVARCHAR(200),
+    @ToStatus NVARCHAR(20),
+    @ActorUserId BIGINT = NULL,
+    @Origin NVARCHAR(24) = NULL,
+    @SourceRef NVARCHAR(64) = NULL
+)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    BEGIN TRANSACTION;
+
+    DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();
+
+    UPDATE dbo.[Bill]
+    SET [Status] = @ToStatus,
+        [StatusDatetime] = @Now,
+        [StatusOrigin] = COALESCE(@Origin, 'user'),
+        [StatusSourceRef] = COALESCE(@SourceRef, [StatusSourceRef]),
+        [IsDraft] = CASE WHEN @ToStatus = 'completed' THEN 0 ELSE 1 END,
+        [ModifiedDatetime] = @Now
+    WHERE [Id] = @Id
+      AND (@RowVersion IS NULL OR [RowVersion] = @RowVersion)
+      AND [Status] IN (SELECT LTRIM(RTRIM(value)) FROM STRING_SPLIT(@FromStatuses, ','))
+      -- Idempotent by construction: a transition to the state the row is
+      -- already in matches nothing and returns the row unchanged below.
+      AND [Status] <> @ToStatus;
+
+    SELECT
+        [Id],
+        [PublicId],
+        [RowVersion],
+        CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
+        CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
+        [VendorId],
+        [PaymentTermId],
+        CONVERT(VARCHAR(19), [BillDate], 120) AS [BillDate],
+        CONVERT(VARCHAR(19), [DueDate], 120) AS [DueDate],
+        [BillNumber],
+        [TotalAmount],
+        [Memo],
+        [IsDraft],
+        [Status],
+        [StatusDatetime],
+        [StatusOrigin],
+        [StatusSourceRef],
+        [IntakeSource],
+        [IntakeSourceDetail],
+        [SourceEmailMessageId],
+        [QboId],
+        [RealmId]
+    FROM dbo.[Bill]
+    -- `= @ToStatus`, not just `= @Id` (Codex P1). An unconditional re-SELECT
+    -- returns the row even when the UPDATE matched nothing — a stale
+    -- @RowVersion, a status outside @FromStatuses — so the caller could not
+    -- tell a refused transition from a successful one.
+    --
+    -- Keying the projection on the DESTINATION makes the contract "the bill is
+    -- now in @ToStatus": a real move returns the row, a repeat transition
+    -- returns it too (idempotent success), and a guarded miss or a deleted bill
+    -- returns nothing. NB this is deliberately the OPPOSITE choice from
+    -- FinalizeBillById, which re-SELECTs unconditionally so that "no row" means
+    -- "bill gone" rather than "already finalized" (U-434) — there, the guard is
+    -- the state itself; here it is the caller's @FromStatuses.
+    WHERE [Id] = @Id AND [Status] = @ToStatus;
+
+    COMMIT TRANSACTION;
+END;
+
+
 GO

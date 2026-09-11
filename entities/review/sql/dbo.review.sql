@@ -245,6 +245,46 @@ BEGIN
         COALESCE(@CreatedByUserId, 17)
     );
 
+    -- U-445: mirror the new review state onto the parent Bill's Status column.
+    --
+    -- Without this the unit is broken for every NEW submission. `Status` used to
+    -- be DERIVED at read time (U-443), so creating a Review automatically moved
+    -- the bill; now the read model emits the STORED column, and nothing else
+    -- writes it. A bill submitted for review would sit at 'draft' forever while
+    -- `review_status_kind` said 'submitted' — invisible under `?status=submitted`
+    -- and mislabelled under `?status=draft`.
+    --
+    -- Kept in the SAME transaction as the INSERT, and in the sproc rather than
+    -- the service, so every caller mirrors: the UI, the review-reply email
+    -- agent, the CL crew flow, and scripted backfills alike.
+    --
+    -- The `[IsDraft] = 1` guard is NOT optional: reviews legitimately exist on
+    -- completed bills (39 completed-yet-'submitted' in prod on 2026-09-11), and
+    -- dragging such a bill's Status back to 'submitted' would violate
+    -- CK_Bill_Status_IsDraft and turn every such review write into a 500.
+    -- `completed` outranks any review state (U-443) — we do not reopen a
+    -- document whose AP already reached QBO/SharePoint/Excel/Box.
+    --
+    -- Precedence matches shared/lifecycle/resolver.py::review_kind_from_flags
+    -- exactly: IsDeclined -> IsFinal -> IsInitial -> in_review.
+    IF @BillId IS NOT NULL
+    BEGIN
+        UPDATE b
+        SET b.[Status] = CASE
+                WHEN rs.[IsDeclined] = 1 THEN 'declined'
+                WHEN rs.[IsFinal] = 1    THEN 'approved'
+                WHEN rs.[IsInitial] = 1  THEN 'submitted'
+                ELSE 'in_review'
+            END,
+            b.[StatusDatetime] = @Now,
+            b.[StatusOrigin] = 'user',
+            b.[ModifiedDatetime] = @Now
+        FROM dbo.[Bill] b
+        INNER JOIN dbo.[ReviewStatus] rs ON rs.[Id] = @ReviewStatusId
+        WHERE b.[Id] = @BillId
+          AND b.[IsDraft] = 1;
+    END
+
     SELECT * FROM dbo.[vw_Review] WHERE [Id] = SCOPE_IDENTITY();
 
     COMMIT TRANSACTION;

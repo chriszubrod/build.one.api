@@ -32,6 +32,13 @@ from entities.vendor.persistence.repo import VendorRepository
 
 USER = {"id": 1, "username": "tester"}
 
+# `status` is a Bill COLUMN since U-445, so it appears in to_dict() — but the
+# lifecycle stamp also owns it on the way out (stored value when present, the
+# U-443 derivation otherwise). It is therefore not "pre-existing data this
+# endpoint must echo unchanged", and is asserted in
+# tests/test_bill_lifecycle_attach.py instead.
+_LIFECYCLE_OWNED = {"status"}
+
 # Distinct, non-substring UUIDs so a swapped/constant echo can't accidentally pass.
 PID_10 = "aaaaaaaa-0000-0000-0000-00000000000a"
 PID_20 = "bbbbbbbb-0000-0000-0000-00000000000b"
@@ -261,12 +268,17 @@ def test_list_preserves_every_pre_existing_field():
     response = _call_get_bills([bill])
     bd = response["data"][0]
     for key, value in original.items():
+        if key in _LIFECYCLE_OWNED:
+            continue
         assert bd[key] == value, f"pre-existing field {key!r} changed"
     assert set(bd) - set(original) == {
         "project_id", "review_status", "review_status_is_final",
         "review_status_is_declined", "vendor_public_id",
-        # U-443 (U-357 Phase 1) — derived, additive, no column behind them.
-        "status", "review_status_kind",
+        # `review_status_kind` is still derived from the Review row. `status`
+        # is NOT in this set any more: U-443 added it as a derived field with
+        # no column behind it, and U-445 gave it a real `Bill.Status` column,
+        # so it now arrives through `to_dict()` like any other column.
+        "review_status_kind",
     }
     assert set(response) == {"data", "count", "page", "page_size"}
 
@@ -339,6 +351,8 @@ def test_single_reads_preserve_every_pre_existing_field(call):
     original = bill.to_dict()
     payload = call(bill)["data"]
     for key, value in original.items():
+        if key in _LIFECYCLE_OWNED:
+            continue
         assert payload[key] == value, f"pre-existing field {key!r} changed"
     assert "vendor_public_id" in payload
 

@@ -1,0 +1,392 @@
+"""U-445 — Bill gets a real `Status` column, and `?status=` filters on it.
+
+U-443 derived `status` per request from `IsDraft x the latest Review row`. That
+was correct but UNFILTERABLE: the list endpoint paginates in SQL and returns
+`count` from a separate COUNT sproc, so filtering the derived value in Python
+would have filtered `data` while `count` still described the unfiltered set —
+every tab showing the wrong total, and pages silently short. The column is what
+makes the filter honest, and the filter is what the Bills page tabs need.
+
+`IsDraft` REMAINS A REAL, WRITTEN COLUMN here. Retiring it — drop and re-add as
+a PERSISTED computed column, plus the terminal lock and gate flags — is U-446.
+Dual-writing is what removes the deploy window the design's three-step swap
+existed to close: `CK_Bill_Status_IsDraft` makes the two columns incapable of
+disagreeing, so an API image that has never heard of `Status` still cannot write
+an inconsistent row. That constraint is the load-bearing part of this unit.
+"""
+
+from decimal import Decimal
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
+import asyncio
+
+import pytest
+
+from entities.bill.api.router import get_bills_router
+from entities.bill.business.model import Bill
+from shared.lifecycle.resolver import LIFECYCLE_STATUSES, attach_lifecycle
+
+USER = {"id": 1, "username": "tester"}
+
+
+def _bill(id=1, *, is_draft=True, status=None):
+    return Bill(
+        id=id, public_id=f"bill-{id}", row_version="AAAA",
+        created_datetime=None, modified_datetime=None,
+        vendor_id=10, payment_term_id=None,
+        bill_date="2026-09-01", due_date="2026-09-01",
+        bill_number=f"B-{id}", total_amount=Decimal("1.00"), memo=None,
+        is_draft=is_draft, status=status,
+    )
+
+
+def _call(bills, **kwargs):
+    service = MagicMock()
+    service.read_paginated.return_value = bills
+    service.count.return_value = len(bills)
+    repo = MagicMock(); repo.read_first_line_item_projects.return_value = {}
+    review_repo = MagicMock(); review_repo.read_current_by_bill_ids.return_value = {}
+    vendor_repo = MagicMock(); vendor_repo.read_public_ids_by_ids.return_value = {}
+    with patch("entities.bill.api.router.BillService", return_value=service), \
+         patch("entities.bill.api.router.BillRepository", return_value=repo), \
+         patch("entities.bill.api.router.VendorRepository", return_value=vendor_repo), \
+         patch("entities.bill.api.router.get_connection", return_value=MagicMock()), \
+         patch("entities.review.persistence.repo.ReviewRepository", return_value=review_repo):
+        params = dict(page=1, page_size=50, search=None, vendor_id=None,
+                      is_draft=None, status=None, current_user=USER)
+        params.update(kwargs)
+        response = asyncio.run(get_bills_router(**params))
+    return response, service
+
+
+# ---------------------------------------------------------------------------
+# The filter reaches SQL — the entire point
+# ---------------------------------------------------------------------------
+
+
+def test_status_is_pushed_into_BOTH_the_page_and_the_count():
+    """THE assertion of this unit.
+
+    Filtering the page without filtering the count is the specific bug the
+    stored column exists to prevent: `data` would carry 8 submitted bills while
+    `count` still said 20,266, so the tab's total and its pagination would both
+    be wrong. Both sproc calls must carry the same predicate.
+    """
+    _, service = _call([_bill(status="submitted")], status="submitted")
+    assert service.read_paginated.call_args.kwargs["status"] == "submitted"
+    assert service.count.call_args.kwargs["status"] == "submitted"
+
+
+def test_no_status_filters_nothing():
+    _, service = _call([_bill()])
+    assert service.read_paginated.call_args.kwargs["status"] is None
+    assert service.count.call_args.kwargs["status"] is None
+
+
+@pytest.mark.parametrize("status", list(LIFECYCLE_STATUSES))
+def test_every_canonical_status_is_accepted(status):
+    _, service = _call([], status=status)
+    assert service.read_paginated.call_args.kwargs["status"] == status
+
+
+def test_an_unknown_status_is_422_not_a_silent_full_list():
+    """A typo'd tab quietly returning all 20,266 bills — as an ignored filter
+    would — is worse than an error, because nothing looks wrong."""
+    from shared.api.errors import ApiError
+
+    with pytest.raises(ApiError) as exc:
+        _call([_bill()], status="billed")
+    assert exc.value.status_code == 422
+    assert "billed" in str(exc.value.detail)
+
+
+def test_the_rejected_message_names_the_legal_values():
+    from shared.api.errors import ApiError
+
+    with pytest.raises(ApiError) as exc:
+        _call([], status="Draft")  # case matters
+    for s in LIFECYCLE_STATUSES:
+        assert s in str(exc.value.detail)
+
+
+def test_a_direct_call_without_fastapi_does_not_trip_the_guard():
+    """The route is called in-process too (tests, and any internal caller),
+    where the unresolved `Query(None)` default arrives instead of None. The
+    guard validates a value it was actually given, not the sentinel."""
+    from fastapi import Query
+
+    response, service = _call([_bill()], status=Query(default=None))
+    assert response["count"] == 1
+    assert service.read_paginated.call_args.kwargs["status"] is None
+
+
+# ---------------------------------------------------------------------------
+# Stored beats derived
+# ---------------------------------------------------------------------------
+
+
+def test_the_stored_status_WINS_over_the_derived_one():
+    """If the response derived a different answer than the WHERE clause
+    selected on, a row could appear under a tab it was never filtered into.
+    Whatever SQL matched is what the client must see."""
+    payload = attach_lifecycle({}, is_draft=True, review=None, stored_status="approved")
+    assert payload["status"] == "approved"       # stored
+    assert payload["review_status_kind"] == "none"  # still derived from the review
+
+
+def test_the_derivation_still_runs_where_no_column_exists_yet():
+    """Expense, BillCredit, Invoice and ContractLabor have no Status column
+    until their own Phase-3 units. They must keep getting a derived answer."""
+    payload = attach_lifecycle({}, is_draft=False, review=None, stored_status=None)
+    assert payload["status"] == "completed"
+
+
+def test_the_list_emits_the_stored_value():
+    response, _ = _call([_bill(id=1, is_draft=False, status="completed"),
+                         _bill(id=2, is_draft=True, status="declined")])
+    by_id = {b["id"]: b["status"] for b in response["data"]}
+    assert by_id == {1: "completed", 2: "declined"}
+
+
+def test_a_row_predating_the_backfill_still_resolves():
+    """Defensive: a Bill object built without a status (an older payload, a
+    fixture) must fall back to the derivation rather than emitting null."""
+    response, _ = _call([_bill(id=1, is_draft=False, status=None)])
+    assert response["data"][0]["status"] == "completed"
+
+
+# ---------------------------------------------------------------------------
+# The SQL contract
+# ---------------------------------------------------------------------------
+
+
+def _bill_sql():
+    from tests.sproc_text import REPO_ROOT
+    return (REPO_ROOT / "entities/bill/sql/dbo.bill.sql").read_text()
+
+
+def _unquoted(text):
+    """Collapse the doubled single-quotes that sp_executesql literals require,
+    so an assertion reads the same whether the statement is inline or wrapped."""
+    return text.replace("\'\'", "\'")
+
+
+def _executable_sql():
+    """Comments stripped. The prose in this file NAMES the constraints and the
+    ordering rule, so an un-stripped ordering assertion passes on a file whose
+    statements are in the wrong order — it matches the comment, not the DDL."""
+    return "\n".join(line.split("--")[0] for line in _bill_sql().splitlines())
+
+
+def test_the_consistency_constraint_exists_and_is_validated():
+    """CK_Bill_Status_IsDraft is what makes dual-writing safe, and WITH CHECK is
+    what makes applying this file the parity proof: SQL Server validates all
+    20,266 existing rows, so a wrong backfill fails the apply rather than
+    shipping silently."""
+    sql = _bill_sql()
+    assert "CK_Bill_Status_IsDraft" in sql
+    assert "(CASE WHEN [Status] = 'completed' THEN 0 ELSE 1 END) = [IsDraft]" in sql
+    assert sql.count("WITH CHECK ADD CONSTRAINT") == 3, (
+        "all three CHECKs must validate existing rows, not just future writes"
+    )
+
+
+def test_constraints_are_added_AFTER_the_backfill():
+    """Ordering is load-bearing: `Status` defaults to 'draft', so the instant
+    the column exists all 20,224 completed bills read 'draft' and the
+    consistency CHECK would be violated. Columns, then backfill, then CHECKs."""
+    sql = _executable_sql()
+    add_column = sql.index("ALTER TABLE [dbo].[Bill] ADD [Status]")
+    backfill = sql.index("SET b.[Status] = CASE")
+    check = sql.index("ADD CONSTRAINT [CK_Bill_Status_IsDraft]")
+    assert add_column < backfill < check, (
+        f"order is column({add_column}) -> backfill({backfill}) -> check({check})"
+    )
+
+
+def test_the_backfill_cannot_run_twice():
+    """Base files are re-applied routinely. A second run must not stamp over
+    live transitions."""
+    sql = _bill_sql()
+    assert "AND NOT EXISTS (SELECT 1 FROM dbo.[Bill] WHERE [StatusDatetime] IS NOT NULL)" in sql
+
+
+def test_the_backfill_expression_matches_the_python_resolver():
+    """Stored and derived have to agree by CONSTRUCTION, not by luck — the
+    parity check after the apply is only meaningful if the two are the same
+    rule. Both key on IsDeclined -> IsFinal -> IsInitial, in that order."""
+    sql = _unquoted(_bill_sql())
+    block = sql[sql.index("SET b.[Status] = CASE"):sql.index("b.[StatusDatetime] = SYSUTCDATETIME()")]
+    order = [block.index(f"cur.[{f}] = 1") for f in ("IsDeclined", "IsFinal", "IsInitial")]
+    assert order == sorted(order), "precedence differs from review_kind_from_flags"
+    assert "b.[IsDraft] = 0            THEN 'completed'" in block, (
+        "completed must be tested FIRST — a finalized bill is `completed` "
+        "whatever its review says (U-443)"
+    )
+
+
+def test_finalize_writes_both_columns():
+    """Not optional: with CK_Bill_Status_IsDraft in place, an IsDraft-only write
+    FAILS. This is the completion path, so it failing would break every
+    complete-bill."""
+    from tests.sproc_text import REPO_ROOT, sproc_body
+
+    body = sproc_body(REPO_ROOT / "entities/bill/sql/dbo.bill.sql", "FinalizeBillById")
+    assert "[Status] = 'completed'" in body
+    assert "[IsDraft] = 0" in body
+    assert "[StatusOrigin] = 'completion'" in body
+
+
+def test_update_translates_is_draft_for_callers_that_predate_status():
+    """The QBO pull connectors and any old API image still send only @IsDraft.
+    Without the translation the CHECK rejects their write outright."""
+    from tests.sproc_text import REPO_ROOT, sproc_body
+
+    body = sproc_body(REPO_ROOT / "entities/bill/sql/dbo.bill.sql", "UpdateBillById")
+    assert "WHEN @IsDraft = 0 AND [Status] <> 'completed' THEN 'completed'" in body
+    assert "[IsDraft] = CASE WHEN @IsDraft = 0 THEN 0 ELSE [IsDraft] END" in body, (
+        "@IsDraft = 1 must be neutralised — nothing un-completes a bill through "
+        "a field update, which would reopen a document whose AP already shipped"
+    )
+
+
+def test_the_transition_sproc_is_guarded_and_idempotent():
+    from tests.sproc_text import REPO_ROOT, sproc_body, sproc_params
+
+    base = REPO_ROOT / "entities/bill/sql/dbo.bill.sql"
+    params = sproc_params(base, "TransitionBillStatus")
+    body = sproc_body(base, "TransitionBillStatus")
+    for p in ("@FromStatuses", "@ToStatus", "@Origin", "@SourceRef", "@RowVersion"):
+        assert p in params, p
+    assert "STRING_SPLIT(@FromStatuses" in body, "the legal FROM set is enforced in SQL"
+    assert "AND [Status] <> @ToStatus" in body, "a repeat transition must be a no-op"
+    assert "SET NOCOUNT ON" in body
+    executable = "\n".join(l.split("--")[0] for l in body.splitlines()).upper()
+    assert "ROLLBACK" not in executable, "pyodbc autocommit-off: rollback raises 266"
+
+
+def test_create_derives_is_draft_from_status_rather_than_trusting_both():
+    from tests.sproc_text import REPO_ROOT, sproc_body, sproc_params
+
+    base = REPO_ROOT / "entities/bill/sql/dbo.bill_create_source_email.sql"
+    assert "@Status" in sproc_params(base, "CreateBill")
+    body = sproc_body(base, "CreateBill")
+    assert "CASE WHEN COALESCE(@Status," in body, (
+        "IsDraft must be derived from the resolved Status so a caller cannot "
+        "hand in two contradicting values"
+    )
+
+
+def test_the_status_index_is_filtered_to_the_working_set():
+    """20,224 of 20,266 bills are completed, so an unfiltered index would be
+    20k rows to serve 42. Every tab except Billed lives in the filtered one."""
+    sql = _bill_sql()
+    assert "CREATE NONCLUSTERED INDEX [IX_Bill_Status]" in sql
+    assert "WHERE [Status] <> 'completed'" in sql
+
+
+def test_list_and_count_sprocs_both_take_the_filter():
+    from tests.sproc_text import REPO_ROOT, sproc_body, sproc_params
+
+    base = REPO_ROOT / "entities/bill/sql/dbo.bill.sql"
+    for sproc in ("ReadBillsPaginated", "CountBills"):
+        assert "@Status" in sproc_params(base, sproc), sproc
+        assert "(@Status IS NULL OR b.[Status] = @Status)" in sproc_body(base, sproc), sproc
+
+
+
+# ---------------------------------------------------------------------------
+# Codex round 1 — the four defects it found
+# ---------------------------------------------------------------------------
+
+
+def test_creating_a_review_MIRRORS_the_new_state_onto_the_bill():
+    """Codex P1 — without this the unit is broken for every NEW submission.
+
+    `status` used to be DERIVED at read time (U-443), so creating a Review moved
+    the bill automatically. Now the read model emits the STORED column and
+    nothing else writes it: a bill submitted for review would sit at 'draft'
+    forever while `review_status_kind` said 'submitted' — missing from
+    `?status=submitted` and mislabelled under `?status=draft`.
+
+    Lives in the sproc, in the INSERT's own transaction, so every caller
+    mirrors: UI, the review-reply email agent, the CL crew flow, scripts.
+    """
+    from tests.sproc_text import REPO_ROOT, sproc_body
+
+    body = sproc_body(REPO_ROOT / "entities/review/sql/dbo.review.sql", "CreateReview")
+    assert "UPDATE b" in body and "dbo.[Bill] b" in body, "CreateReview must mirror into Bill"
+    assert "IF @BillId IS NOT NULL" in body
+
+    # precedence identical to review_kind_from_flags
+    order = [body.index(f"rs.[{f}] = 1") for f in ("IsDeclined", "IsFinal", "IsInitial")]
+    assert order == sorted(order)
+
+    assert "b.[IsDraft] = 1" in body, (
+        "the IsDraft=1 guard is mandatory, not cosmetic: reviews legitimately "
+        "exist on completed bills (39 in prod), and moving such a bill's Status "
+        "back would violate CK_Bill_Status_IsDraft and 500 the review write"
+    )
+    assert "COMMIT TRANSACTION" in body, "the mirror must share the INSERT's transaction"
+
+
+def test_the_mirror_never_reopens_a_completed_bill():
+    """`completed` outranks any review state (U-443). A review arriving on an
+    already-completed bill records history; it must not drag the document back
+    into the pipeline after its AP reached QBO/SharePoint/Excel/Box."""
+    from tests.sproc_text import REPO_ROOT, sproc_body
+
+    body = sproc_body(REPO_ROOT / "entities/review/sql/dbo.review.sql", "CreateReview")
+    mirror = body[body.index("IF @BillId IS NOT NULL"):]
+    assert "AND b.[IsDraft] = 1" in mirror
+    assert "'completed'" not in mirror, "the mirror must never assign completed"
+
+
+def test_the_transition_reports_a_guarded_miss_as_an_empty_result():
+    """Codex P1. An unconditional re-SELECT returns the row even when the UPDATE
+    matched nothing — a stale @RowVersion or a status outside @FromStatuses —
+    so a refused transition was indistinguishable from a successful one.
+
+    Keying the projection on the DESTINATION makes the contract "the bill is now
+    in @ToStatus": a move returns the row, a repeat returns it (idempotent
+    success), a guarded miss returns nothing.
+    """
+    from tests.sproc_text import REPO_ROOT, sproc_body
+
+    body = sproc_body(REPO_ROOT / "entities/bill/sql/dbo.bill.sql", "TransitionBillStatus")
+    assert "WHERE [Id] = @Id AND [Status] = @ToStatus;" in body, (
+        "the result-set must be keyed on the destination, not just the id"
+    )
+
+
+def test_the_backfill_orders_reviews_the_same_way_the_live_read_does():
+    """Codex P2. `ReadCurrentReviewByBillId` orders by `CreatedDatetime DESC,
+    Id DESC`. Ordering the backfill by Id alone disagrees whenever two reviews
+    were inserted out of timestamp order, storing a status the resolver would
+    never derive — permanently, because the backfill runs once."""
+    from tests.sproc_text import REPO_ROOT, sproc_body
+
+    live = sproc_body(REPO_ROOT / "entities/review/sql/dbo.review.sql",
+                      "ReadCurrentReviewByBillId")
+    assert "ORDER BY [CreatedDatetime] DESC, [Id] DESC" in live
+
+    backfill = _unquoted(_bill_sql())
+    assert "ORDER BY r.[CreatedDatetime] DESC, r.[Id] DESC" in backfill
+
+
+def test_the_backfill_cannot_break_a_from_scratch_build():
+    """Codex P1. dbo.[Review] carries FK_Review_Bill so it cannot exist before
+    this file runs. An IF guard alone does NOT help — SQL Server defers name
+    resolution for stored-procedure BODIES, not ad-hoc batches, so the batch
+    fails to COMPILE before the IF is evaluated. And run_sql.py commits the
+    whole file as one transaction, so that would roll back the entire Status
+    schema, not just the backfill.
+    """
+    sql = _bill_sql()
+    assert "EXEC sp_executesql N'" in sql, (
+        "the backfill must be dynamic — a static reference to dbo.[Review] "
+        "breaks the from-scratch build regardless of any IF guard"
+    )
+    guard = sql[sql.index("-- Guarded on the JOINED tables existing"):sql.index("EXEC sp_executesql")]
+    for table in ("dbo.Review", "dbo.ReviewStatus", "dbo.BillCompletionResult"):
+        assert f"OBJECT_ID('{table}', 'U') IS NOT NULL" in guard, table

@@ -1,5 +1,6 @@
 # Python Standard Library Imports
 import asyncio
+from datetime import date
 import logging
 import threading
 import time
@@ -189,6 +190,15 @@ async def get_bills_router(
     search: Optional[str] = Query(default=None),
     vendor_id: Optional[int] = Query(default=None),
     is_draft: Optional[bool] = Query(default=None),
+    # U-452. Already plumbed through service -> repo -> ReadBillsPaginated
+    # (@StartDate/@EndDate) since the sproc was written; only the HTTP door was
+    # shut. Inclusive bounds on BillDate, either side optional.
+    #
+    # Typed `date`, not `str` (Codex P2): FastAPI then rejects `?start_date=
+    # not-a-date` with a 422 naming the field. As a plain string it reached
+    # pyodbc's DATETIME2 bind and surfaced as a 500 with driver text.
+    start_date: Optional[date] = Query(default=None, description="Inclusive lower bound on bill_date (YYYY-MM-DD)."),
+    end_date: Optional[date] = Query(default=None, description="Inclusive upper bound on bill_date (YYYY-MM-DD)."),
     status: Optional[str] = Query(
         default=None,
         description=(
@@ -235,6 +245,8 @@ async def get_bills_router(
                 vendor_id=vendor_id,
                 is_draft=is_draft,
                 status=status if isinstance(status, str) else None,
+                start_date=start_date.isoformat() if isinstance(start_date, date) else None,
+                end_date=end_date.isoformat() if isinstance(end_date, date) else None,
                 conn=conn,
             )
             bill_ids = [b.id for b in bills if b.id]

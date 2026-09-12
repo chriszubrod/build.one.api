@@ -54,7 +54,8 @@ def _call(bills, **kwargs):
          patch("entities.bill.api.router.get_connection", return_value=MagicMock()), \
          patch("entities.review.persistence.repo.ReviewRepository", return_value=review_repo):
         params = dict(page=1, page_size=50, search=None, vendor_id=None,
-                      is_draft=None, status=None, current_user=USER)
+                      is_draft=None, status=None, start_date=None, end_date=None,
+                      current_user=USER)
         params.update(kwargs)
         response = asyncio.run(get_bills_router(**params))
     return response, service
@@ -523,3 +524,80 @@ def test_a_missing_total_RAISES_rather_than_inventing_one():
         with pytest.raises(Exception) as exc:
             BillRepository().read_paginated(conn=conn)
     assert "U-447" in str(exc.value) or "no total" in str(exc.value)
+
+
+# ---------------------------------------------------------------------------
+# U-452 — the date-range filter the Bills page needs
+# ---------------------------------------------------------------------------
+
+
+def test_malformed_dates_are_rejected_by_the_schema_not_by_pyodbc():
+    """Codex P2. As plain strings these reached pyodbc's DATETIME2 bind and came
+    back as a 500 with driver text. Typed `date`, FastAPI rejects them with a
+    422 naming the field, before any DB call."""
+    import inspect
+    from datetime import date as date_type
+
+    from entities.bill.api.router import get_bills_router
+
+    params = inspect.signature(get_bills_router).parameters
+    for name in ("start_date", "end_date"):
+        ann = params[name].annotation
+        assert date_type in getattr(ann, "__args__", (ann,)), (
+            f"{name} must be typed `date` so FastAPI validates the format"
+        )
+
+
+def test_both_date_bounds_are_converted_independently():
+    """Codex P3: only the start-only case was covered, so a regression dropping
+    an end-only bound passed."""
+    from datetime import date as date_type
+
+    for kwargs, expect in (
+        ({"start_date": date_type(2026, 1, 1)}, ("2026-01-01", None)),
+        ({"end_date": date_type(2026, 3, 31)}, (None, "2026-03-31")),
+        ({"start_date": date_type(2026, 1, 1), "end_date": date_type(2026, 3, 31)},
+         ("2026-01-01", "2026-03-31")),
+    ):
+        _, service = _call([_bill()], **kwargs)
+        kw = service.read_paginated.call_args.kwargs
+        assert (kw["start_date"], kw["end_date"]) == expect, kwargs
+
+
+def test_omitted_date_args_do_not_leak_the_query_sentinel():
+    """Codex P3 — the previous version passed `start_date=None` EXPLICITLY, so
+    removing the isinstance guards still passed it. Calling the route without
+    those arguments is what exercises the unresolved `Query(None)` default that
+    an in-process caller actually sees."""
+    service = MagicMock()
+    service.read_paginated.return_value = ([], 0)
+    repo = MagicMock(); repo.read_first_line_item_projects.return_value = {}
+    review_repo = MagicMock(); review_repo.read_current_by_bill_ids.return_value = {}
+    vendor_repo = MagicMock(); vendor_repo.read_public_ids_by_ids.return_value = {}
+    with patch("entities.bill.api.router.BillService", return_value=service), \
+         patch("entities.bill.api.router.BillRepository", return_value=repo), \
+         patch("entities.bill.api.router.VendorRepository", return_value=vendor_repo), \
+         patch("entities.bill.api.router.get_connection", return_value=MagicMock()), \
+         patch("entities.review.persistence.repo.ReviewRepository", return_value=review_repo):
+        asyncio.run(get_bills_router(current_user=USER))   # everything else defaulted
+    kw = service.read_paginated.call_args.kwargs
+    assert kw["start_date"] is None and kw["end_date"] is None
+    assert kw["status"] is None
+
+
+def test_date_bounds_reach_sql():
+    """`@StartDate`/`@EndDate` have been on ReadBillsPaginated since it was
+    written, and the repo has always threaded them — only the HTTP door was
+    shut. Filtering must happen in SQL for the same reason `status` does:
+    narrowing the page in Python would leave `count` describing the unfiltered
+    set, which is the bug U-447 removed."""
+    from datetime import date as date_type
+
+    _, service = _call([_bill()], start_date=date_type(2026, 1, 1),
+                       end_date=date_type(2026, 3, 31))
+    kw = service.read_paginated.call_args.kwargs
+    assert kw["start_date"] == "2026-01-01"
+    assert kw["end_date"] == "2026-03-31"
+
+
+

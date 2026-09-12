@@ -232,16 +232,18 @@ def test_the_backfill_expression_matches_the_python_resolver():
     )
 
 
-def test_finalize_writes_both_columns():
-    """Not optional: with CK_Bill_Status_IsDraft in place, an IsDraft-only write
-    FAILS. This is the completion path, so it failing would break every
-    complete-bill."""
+def test_finalize_writes_status_and_nothing_else():
+    """U-445 required this sproc to dual-write Status AND IsDraft, because
+    CK_Bill_Status_IsDraft would otherwise reject the row. U-446 made IsDraft a
+    computed column, so the second write became an ERROR — naming a computed
+    column on the left of a SET is refused outright, and this is the completion
+    path, so it would break every complete-bill."""
     from tests.sproc_text import REPO_ROOT, sproc_body
 
     body = sproc_body(REPO_ROOT / "entities/bill/sql/dbo.bill.sql", "FinalizeBillById")
     assert "[Status] = 'completed'" in body
-    assert "[IsDraft] = 0" in body
     assert "[StatusOrigin] = 'completion'" in body
+    assert "[IsDraft] = 0" not in body, "IsDraft is computed — it cannot be assigned"
 
 
 def test_update_translates_is_draft_for_callers_that_predate_status():
@@ -251,10 +253,12 @@ def test_update_translates_is_draft_for_callers_that_predate_status():
 
     body = sproc_body(REPO_ROOT / "entities/bill/sql/dbo.bill.sql", "UpdateBillById")
     assert "WHEN @IsDraft = 0 AND [Status] <> 'completed' THEN 'completed'" in body
-    assert "[IsDraft] = CASE WHEN @IsDraft = 0 THEN 0 ELSE [IsDraft] END" in body, (
-        "@IsDraft = 1 must be neutralised — nothing un-completes a bill through "
-        "a field update, which would reopen a document whose AP already shipped"
-    )
+    # U-446: the `[IsDraft] = CASE ...` assignment is gone — the column is
+    # computed. The `@IsDraft = 1` neutralisation U-445 wrote explicitly is now
+    # IMPLICIT and stronger: the Status CASE fires only on 0, so 1 cannot
+    # un-complete a bill whose AP already reached QBO/SharePoint/Excel/Box, and
+    # there is no longer any assignment through which it could try.
+    assert "[IsDraft] =" not in body, "IsDraft is computed — it cannot be assigned"
 
 
 def test_the_transition_sproc_is_guarded_and_idempotent():
@@ -272,16 +276,25 @@ def test_the_transition_sproc_is_guarded_and_idempotent():
     assert "ROLLBACK" not in executable, "pyodbc autocommit-off: rollback raises 266"
 
 
-def test_create_derives_is_draft_from_status_rather_than_trusting_both():
+def test_create_does_not_name_the_computed_column():
+    """An INSERT whose column list names a computed column is SQL Server error
+    271 — so this is not style, it is whether `POST /create/bill` works at all.
+    `@IsDraft` is KEPT as a parameter (older callers still bind it) but only as
+    the fallback that resolves @Status."""
     from tests.sproc_text import REPO_ROOT, sproc_body, sproc_params
 
     base = REPO_ROOT / "entities/bill/sql/dbo.bill_create_source_email.sql"
-    assert "@Status" in sproc_params(base, "CreateBill")
+    params = sproc_params(base, "CreateBill")
+    assert "@Status" in params
+    assert "@IsDraft" in params, "older callers must still bind successfully"
+
     body = sproc_body(base, "CreateBill")
-    assert "CASE WHEN COALESCE(@Status," in body, (
-        "IsDraft must be derived from the resolved Status so a caller cannot "
-        "hand in two contradicting values"
+    insert_cols = body[body.index("INSERT INTO dbo.[Bill]"):body.index("OUTPUT")]
+    executable = "\n".join(l.split("--")[0] for l in insert_cols.splitlines())
+    assert "[IsDraft]" not in executable, (
+        "the INSERT column list must not name IsDraft (error 271)"
     )
+    assert "COALESCE(@Status," in body, "@IsDraft survives only as the fallback"
 
 
 def test_the_status_index_is_filtered_to_the_working_set():
@@ -601,3 +614,209 @@ def test_date_bounds_reach_sql():
 
 
 
+
+
+
+# ---------------------------------------------------------------------------
+# U-446 — IsDraft is unwritable
+# ---------------------------------------------------------------------------
+
+
+def test_NO_sproc_assigns_IsDraft_anywhere():
+    """The pin that stops this regressing.
+
+    U-445 had four sprocs obliged to keep Status and IsDraft in step, with
+    CK_Bill_Status_IsDraft to catch the moment one forgot. U-446 deleted that
+    whole category by deriving the column — so a future edit that reintroduces
+    an assignment does not "break the constraint", it fails at execution with
+    "the column IsDraft cannot be modified". Catch it here instead.
+    """
+    from tests.sproc_text import REPO_ROOT
+
+    import re
+
+    for rel in ("entities/bill/sql/dbo.bill.sql",
+                "entities/bill/sql/dbo.bill_create_source_email.sql"):
+        sql = (REPO_ROOT / rel).read_text()
+        executable = "\n".join(l.split("--")[0] for l in sql.splitlines())
+        # Only ASSIGNMENTS are illegal. Comparisons are fine and still used:
+        # `b.[IsDraft] = @IsDraft` in the list filters, `WHERE [IsDraft] = 1` in
+        # FindBillForReviewerReply — reading a computed column is transparent.
+        set_lines = [
+            l for l in executable.splitlines()
+            if re.search(r"(SET\s+\[IsDraft\]|^\s*\[IsDraft\]\s*=)", l)
+        ]
+        assert not set_lines, f"{rel} assigns IsDraft: {set_lines}"
+        insert_lists = re.findall(r"INSERT INTO dbo\.\[Bill\](.*?)(?:OUTPUT|VALUES)",
+                                  executable, re.S)
+        for lst in insert_lists:
+            assert "[IsDraft]" not in lst, f"{rel} INSERTs into IsDraft (error 271)"
+
+
+def test_the_swap_is_idempotent_and_preserves_the_column_contract():
+    """Base files are re-applied routinely, and this one drops a column."""
+    from tests.sproc_text import REPO_ROOT
+
+    sql = (REPO_ROOT / "entities/bill/sql/dbo.bill.sql").read_text()
+    executable = "\n".join(l.split("--")[0] for l in sql.splitlines())
+
+    # guarded on "not yet computed", so a second apply is a no-op
+    assert "AND name = 'IsDraft'\n                 AND is_computed = 0" in executable
+
+    # NOT NULL is load-bearing: without it SQL Server marks a computed column
+    # NULLABLE (it will not prove a CASE total), silently widening
+    # `BIT NOT NULL` to `BIT NULL` for every reader across 9 entities.
+    assert ") PERSISTED NOT NULL;" in executable
+
+    # the system-named default must be looked up, never hardcoded
+    assert "sys.default_constraints" in executable
+    assert "DF__Bill__IsDraft" not in executable, "the auto-generated name must not be hardcoded"
+
+    # all three blockers dropped before the column
+    drop_col = executable.index("DROP COLUMN [IsDraft]")
+    for blocker in ("DROP INDEX [IX_Bill_Status]",
+                    "DROP CONSTRAINT [CK_Bill_Status_IsDraft]",
+                    "EXEC sp_executesql @DropDefaultSql"):
+        assert executable.index(blocker) < drop_col, f"{blocker} must precede the drop"
+
+    # and the index comes back without the computed column in its INCLUDE
+    after = executable[drop_col:]
+    assert "INCLUDE ([VendorId], [BillDate])" in after
+
+
+def test_nothing_anywhere_writes_Bill_IsDraft():
+    """Repo-wide guard, and the pattern is deliberately BROAD.
+
+    My own U-446 enumeration searched `INSERT INTO dbo.[Bill]` and
+    `SET [IsDraft]` — bracketed forms only — and reported the write surface
+    closed. Codex then found three writers it had missed, all spelled
+    `INSERT dbo.Bill (...)`: two spent contract-labor repair scripts and the
+    Tier-0 verification harness. Each would now fail with SQL Server error 271
+    ("cannot be specified in an INSERT list") the moment it ran.
+
+    So this matches Bill INSERTs with or without INTO, with or without brackets,
+    and Bill UPDATEs that assign the column — the shape of the mistake, not the
+    shape I happened to grep for.
+    """
+    import re
+
+    from tests.sproc_text import REPO_ROOT
+
+    SKIP_DIRS = {".venv", ".git", "__pycache__", "node_modules", "dist"}
+    # Other entities still have a REAL IsDraft column and legitimately write it.
+    OTHER = re.compile(r"Bill(Line|Credit|Folder|Payment|Completion)", re.I)
+
+    insert_bill = re.compile(
+        r"INSERT\s+(?:INTO\s+)?(?:\[?dbo\]?\.)?\[?Bill\]?\s*\((?P<cols>[^)]*)\)",
+        re.I | re.S,
+    )
+    update_bill = re.compile(
+        r"UPDATE\s+(?:TOP\s*\([^)]*\)\s*)?(?:\[?dbo\]?\.)?\[?Bill\]?\b(?P<body>.*?)"
+        r"(?:\bWHERE\b|\bOUTPUT\b|\bFROM\b|$)",
+        re.I | re.S,
+    )
+    # An ASSIGNMENT has a distinct shape: it opens a clause, so it sits at the
+    # start of a line or immediately after SET. A COMPARISON sits mid-expression
+    # (`WHEN b.[IsDraft] = 0`, `OR b.[IsDraft] = @IsDraft`) and is legal —
+    # reading a computed column is transparent, and the list filters and the
+    # U-445 backfill both still do it. An earlier version of this pattern
+    # matched `@IsDraft = 0` inside the compat CASE and flagged three of its
+    # own file's correct lines.
+    assigns_isdraft = re.compile(
+        r"(?:^|\bSET\s+)\s*(?:\w+\.)?\[?IsDraft\]?\s*=", re.I | re.M
+    )
+
+    offenders: list[str] = []
+    for path in REPO_ROOT.rglob("*"):
+        if path.is_dir() or path.suffix not in {".sql", ".py"}:
+            continue
+        if SKIP_DIRS & set(path.parts):
+            continue
+        rel = path.relative_to(REPO_ROOT).as_posix()
+        if rel.startswith("tests/"):
+            continue  # in-memory SQLite fixtures define their own dbo.Bill
+        text = path.read_text(encoding="utf-8", errors="ignore")
+        if "IsDraft" not in text:
+            continue
+        executable = "\n".join(l.split("--")[0] for l in text.splitlines())
+
+        for m in insert_bill.finditer(executable):
+            if OTHER.search(m.group(0)):
+                continue
+            if re.search(r"\[?IsDraft\]?", m.group("cols"), re.I):
+                offenders.append(f"{rel}: INSERT names IsDraft (SQL error 271)")
+
+        for m in update_bill.finditer(executable):
+            if OTHER.search(m.group(0)):
+                continue
+            for line in m.group("body").splitlines():
+                if assigns_isdraft.search(line):
+                    offenders.append(f"{rel}: UPDATE assigns IsDraft -> {line.strip()[:60]}")
+
+    assert not offenders, (
+        "Bill.IsDraft is a PERSISTED COMPUTED column since U-446 and cannot be "
+        f"written: {offenders}"
+    )
+
+
+def test_a_second_apply_does_not_resurrect_the_dropped_constraint():
+    """Codex P2. U-446 drops CK_Bill_Status_IsDraft for good — it is tautological
+    once IsDraft derives from Status. But U-445's creation block runs EARLIER in
+    the same file, and it was guarded only on "the constraint is absent". A
+    second apply therefore recreated it: legal on a persisted computed column,
+    so it came back silently, and re-validated 20,266 rows every time the file
+    was re-run.
+
+    The creation block is now additionally guarded on IsDraft still being a REAL
+    column, which is false forever after the swap.
+    """
+    from tests.sproc_text import REPO_ROOT
+
+    sql = (REPO_ROOT / "entities/bill/sql/dbo.bill.sql").read_text()
+    executable = "\n".join(l.split("--")[0] for l in sql.splitlines())
+
+    create_ck = executable.index("ADD CONSTRAINT [CK_Bill_Status_IsDraft]")
+    guard = executable[:create_ck]
+    guard = guard[guard.rindex("IF OBJECT_ID('dbo.Bill', 'U') IS NOT NULL"):]
+    assert "is_computed = 0" in guard, (
+        "the CK creation must be gated on IsDraft still being a real column, or "
+        "a re-apply brings the constraint back"
+    )
+
+    # and the drop still precedes nothing that would recreate it afterwards
+    drop_ck = executable.index("DROP CONSTRAINT [CK_Bill_Status_IsDraft]")
+    assert create_ck < drop_ck, "creation must come before the drop in file order"
+    assert "ADD CONSTRAINT [CK_Bill_Status_IsDraft]" not in executable[drop_ck:]
+
+
+def test_both_bill_sql_files_demand_an_atomic_apply():
+    """Codex P1 — there is NO safe order for these two files on their own.
+
+    `CreateBill` is homed in dbo.bill_create_source_email.sql; dbo.Bill's schema
+    lives in dbo.bill.sql. Since U-446 they are coupled:
+
+      schema first -> the still-old CreateBill names [IsDraft] in its INSERT
+                      column list, so every POST /create/bill and every
+                      bill-folder intake fails with SQL error 271.
+      create first -> the new CreateBill writes Status only while IsDraft is
+                      still REAL with DEFAULT 1, so a create-as-completed lands
+                      Status='completed' beside IsDraft=1 and
+                      CK_Bill_Status_IsDraft rejects it.
+
+    scripts/run_sql.py commits per invocation, so this cannot be expressed as a
+    file ordering — it has to be a deploy instruction, and it has to be where
+    whoever applies these will see it.
+    """
+    from tests.sproc_text import REPO_ROOT
+
+    for rel in ("entities/bill/sql/dbo.bill.sql",
+                "entities/bill/sql/dbo.bill_create_source_email.sql"):
+        head = (REPO_ROOT / rel).read_text()[:2000]
+        # Whitespace-normalised: the banner wraps, so the phrase spans a line
+        # break and comment prefix.
+        flat = " ".join(head.replace("--", " ").split())
+        assert "ONE** TRANSACTION" in flat, (
+            f"{rel} must carry the atomic-apply warning in its first 2000 chars — "
+            "a deploy warning buried mid-file is not a warning"
+        )
+        assert "271" in flat, f"{rel} must name the failure mode"

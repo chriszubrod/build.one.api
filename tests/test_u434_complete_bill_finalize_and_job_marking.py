@@ -258,7 +258,19 @@ def test_finalize_sproc_is_idempotent_and_pyodbc_safe():
         "FinalizeBillById must NOT take a RowVersion — that predicate is the "
         "race U-434 removed"
     )
-    assert "[IsDraft] = 1" in body, "the transition must be guarded on IsDraft=1 (idempotency)"
+    # The idempotency guard moved from `IsDraft = 1` to `Status <> 'completed'`
+    # in U-446, when IsDraft became a computed column derived FROM Status. The
+    # two predicates are identical by construction; reading the canonical
+    # column beats reading its derivation.
+    #
+    # Asserted against the EXECUTABLE text (Codex P3). The sproc's own comment
+    # contains this exact string, so an un-stripped check stays green if someone
+    # reverts the WHERE and leaves the prose — the fourth time that shape of
+    # false-confidence showed up in this work.
+    executable = "\n".join(line.split("--")[0] for line in body.splitlines())
+    assert "WHERE [Id] = @Id AND [Status] <> 'completed';" in executable, (
+        "the transition must still be guarded so a second completion is a no-op"
+    )
     assert "SET NOCOUNT ON" in body, "mutation sproc + trailing SELECT needs NOCOUNT (pyodbc, 2026-06-11)"
     # A DML statement followed by a SELECT: the SELECT must be unconditional so
     # already-finalized and missing are distinguishable by presence, not rowcount.

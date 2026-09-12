@@ -491,9 +491,36 @@ lifecycle source of truth. Rollback = stop the pointer write (sproc revert) with
 >   `FinalizeBillById`/`CreateBill`/`UpdateBillById`, `@Status` on list+count, `?status=` on the
 >   endpoint, and the read model switched from derived to stored. **`IsDraft` stays a real,
 >   written column.**
-> * **U-446 — NOT BUILT.** Everything the step-(c) bullet describes: stop writing `IsDraft`,
->   drop and re-add it as a PERSISTED computed column, terminal lock (`422 status_locked`),
->   gate flags, `field_ownership`, PUT/POST ignoring `is_draft`, agent prompts, MCP.
+> * **U-446 — SHIPPED (the column swap only).** `IsDraft` is now a
+>   `PERSISTED NOT NULL` computed column derived from `Status`, so it reads exactly as before
+>   everywhere and cannot be written at all. Four writers stopped assigning it (`CreateBill`,
+>   `UpdateBillById`, `FinalizeBillById`, `TransitionBillStatus`); `FinalizeBillById`'s
+>   idempotency guard moved to `Status <> 'completed'`; `CK_Bill_Status_IsDraft` is dropped for
+>   good (tautological once the column derives); `IX_Bill_Status` recreated without it.
+>   `field_ownership` gained the four Status fields for Bill only.
+>
+>   **`NOT NULL` is explicit and load-bearing** — without it SQL Server marks a computed column
+>   nullable, silently widening `BIT NOT NULL` for every reader across 9 entities.
+>
+>   **⛔ `dbo.bill.sql` and `dbo.bill_create_source_email.sql` must be applied in ONE
+>   transaction.** Neither order is safe alone: schema-first leaves the old `CreateBill` naming
+>   a computed column (SQL error 271 on every create), and create-first leaves
+>   `Status='completed'` beside a real `IsDraft=1` for `CK_Bill_Status_IsDraft` to reject. Both
+>   files carry the warning in their first lines.
+>
+>   Also fixed: three direct script writers (`_clr_create_bills.py`, `_clr_hourly_bills.py`,
+>   `verify_propose_invoice_source_links_tier0.py`) whose `INSERT dbo.Bill (…, IsDraft, …)`
+>   would each have failed with error 271. My own enumeration missed all three by grepping only
+>   bracketed forms; Codex found them.
+>
+> * **U-446b — NOT BUILT: the terminal lock.** `422 status_locked` on header PUT, line-item
+>   create/update/delete and non-admin DELETE, with the six exemptions §4.1 lists
+>   (`system_authz` callers, `SetBillQboIdentity`, QBO pull, CLI sync, CompletionJob
+>   `force=True`, idempotent re-completion, `IsBilled` flips). Split out because it is a
+>   user-visible behaviour change across three routers, not plumbing — and 422-not-409 is
+>   argued from three specific iOS files.
+> * **U-446c — NOT BUILT:** gate flags (§9 #1), the agent prompt/tool rewording, MCP
+>   `search_*`.
 >
 > **Why no three-step swap.** `CK_Bill_Status_IsDraft` makes the two columns incapable of
 > disagreeing, so an API image that has never heard of `Status` cannot write an inconsistent

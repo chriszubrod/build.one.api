@@ -1,3 +1,23 @@
+-- ===========================================================================
+-- ⛔ APPLY THIS FILE AND dbo.bill_create_source_email.sql IN **ONE**
+--    TRANSACTION. NEITHER ORDER IS SAFE ON ITS OWN (Codex P1, U-446).
+--
+--    this file first  -> IsDraft is computed, but the still-old CreateBill
+--                        (homed in the OTHER file) names it in its INSERT
+--                        column list: SQL error 271 on every POST /create/bill
+--                        and every bill-folder intake until the second apply.
+--    other file first -> the new CreateBill writes Status only, while IsDraft
+--                        is still REAL with DEFAULT 1, so a create-as-completed
+--                        lands Status='completed' beside IsDraft=1 and
+--                        CK_Bill_Status_IsDraft rejects the row.
+--
+--    CreateBill lives in a separate file because that is where it has always
+--    been homed (CLAUDE.md flags it; `bill` is not yet single-sourced), and
+--    scripts/run_sql.py commits per invocation — so applying them separately
+--    means a live window with one of the two failures above. Apply both on ONE
+--    connection with a single commit.
+-- ===========================================================================
+
 IF OBJECT_ID('dbo.Bill', 'U') IS NULL
 BEGIN
 CREATE TABLE [dbo].[Bill]
@@ -253,7 +273,16 @@ GO
 -- this makes them incapable of disagreeing — so an old API image that has
 -- never heard of Status still cannot produce an inconsistent row, and the
 -- three-step swap the design called for is not needed here.
+-- Guarded on IsDraft still being a REAL column (Codex P2). U-446 drops this
+-- constraint for good — it is tautological once IsDraft derives from Status —
+-- but this block runs EARLIER in the file, so on a second apply it saw the
+-- constraint absent and cheerfully recreated it: legal on a persisted computed
+-- column, silently contradicting "dropped for good", and re-validating 20k rows
+-- every time the file is re-run.
 IF OBJECT_ID('dbo.Bill', 'U') IS NOT NULL
+   AND EXISTS (SELECT 1 FROM sys.columns
+               WHERE object_id = OBJECT_ID('dbo.Bill') AND name = 'IsDraft'
+                 AND is_computed = 0)
    AND NOT EXISTS (SELECT 1 FROM sys.check_constraints WHERE name = 'CK_Bill_Status_IsDraft')
 BEGIN
     ALTER TABLE [dbo].[Bill] WITH CHECK ADD CONSTRAINT [CK_Bill_Status_IsDraft]
@@ -267,11 +296,106 @@ GO
 IF OBJECT_ID('dbo.Bill', 'U') IS NOT NULL
    AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_Bill_Status' AND object_id = OBJECT_ID('dbo.Bill'))
 BEGIN
+    -- U-446 dropped [IsDraft] from the INCLUDE: it is computed FROM [Status],
+    -- which is this index's key, so covering it stored a column the index
+    -- could already derive — and an INCLUDE naming it blocks the column swap.
     CREATE NONCLUSTERED INDEX [IX_Bill_Status] ON [dbo].[Bill] ([Status])
-        INCLUDE ([IsDraft], [VendorId], [BillDate])
+        INCLUDE ([VendorId], [BillDate])
         WHERE [Status] <> 'completed';
 END
 GO
+
+-- ===========================================================================
+-- U-446 — retire [IsDraft]. It becomes a PERSISTED COMPUTED column derived
+-- from [Status], so it can be READ exactly as before and can no longer be
+-- written at all.
+--
+-- WHY: U-445 dual-wrote both columns and used CK_Bill_Status_IsDraft to make
+-- them incapable of disagreeing. That closed the deploy window but left two
+-- sources of the same truth, four sprocs obliged to keep them in step, and a
+-- constraint whose whole job was to catch the moment someone forgot. Deriving
+-- the column deletes that category of bug instead of guarding it.
+--
+-- 13 SQL files across 9 entities READ Bill.IsDraft — budget_variance,
+-- expense_coding_suggestion, vendor and employee among them. None of them
+-- change: reading a computed column is transparent. Only the four WRITERS
+-- changed (CreateBill, UpdateBillById, FinalizeBillById,
+-- TransitionBillStatus), and they now write [Status] alone.
+--
+-- ORDER IS FORCED. Three objects reference the column and each blocks the
+-- drop; two of them are U-445's own:
+--   IX_Bill_Status          INCLUDEd it (U-445)     -> dropped, recreated after
+--   CK_Bill_Status_IsDraft  compared it (U-445)     -> dropped FOR GOOD, it is
+--                                                      tautological once the
+--                                                      column derives from
+--                                                      Status
+--   DF__Bill__IsDraft__*    SQL-Server-named default -> found via
+--                                                       sys.default_constraints
+--
+-- Verified before writing this: no WITH SCHEMABINDING module binds IsDraft
+-- (dbo.UserCanAccessBill is schemabound but does not reference it), so nothing
+-- else stands in the way.
+--
+-- NOTE the swap rewrites the table under a schema-modification lock, so live
+-- callers BLOCK for its duration. Measured against prod's 20,266 rows in a
+-- rolled-back rehearsal: 3.5-10s across runs. Not sub-second — an earlier
+-- draft of this comment claimed that and was wrong. Apply it when a ~10s stall
+-- on Bill reads is acceptable.
+--
+-- It also moves IsDraft to the END of the column order; every reader here binds
+-- pyodbc rows by NAME, so that is inert, but it would bite an ordinal-position
+-- consumer.
+-- ===========================================================================
+IF OBJECT_ID('dbo.Bill', 'U') IS NOT NULL
+   AND EXISTS (SELECT 1 FROM sys.columns
+               WHERE object_id = OBJECT_ID('dbo.Bill') AND name = 'IsDraft'
+                 AND is_computed = 0)
+BEGIN
+    IF EXISTS (SELECT 1 FROM sys.indexes
+               WHERE name = 'IX_Bill_Status' AND object_id = OBJECT_ID('dbo.Bill'))
+        DROP INDEX [IX_Bill_Status] ON [dbo].[Bill];
+
+    IF EXISTS (SELECT 1 FROM sys.check_constraints
+               WHERE name = 'CK_Bill_Status_IsDraft'
+                 AND parent_object_id = OBJECT_ID('dbo.Bill'))
+        ALTER TABLE [dbo].[Bill] DROP CONSTRAINT [CK_Bill_Status_IsDraft];
+
+    DECLARE @IsDraftDefault SYSNAME = (
+        SELECT dc.name
+        FROM sys.default_constraints dc
+        JOIN sys.columns c
+          ON c.object_id = dc.parent_object_id AND c.column_id = dc.parent_column_id
+        WHERE dc.parent_object_id = OBJECT_ID('dbo.Bill') AND c.name = 'IsDraft'
+    );
+    -- Built into a variable, not concatenated inside EXEC(): SQL Server does
+    -- not allow a function call in EXEC()'s argument, which a PARSEONLY check
+    -- caught before this ever reached prod.
+    IF @IsDraftDefault IS NOT NULL
+    BEGIN
+        DECLARE @DropDefaultSql NVARCHAR(400) =
+            N'ALTER TABLE [dbo].[Bill] DROP CONSTRAINT ' + QUOTENAME(@IsDraftDefault);
+        EXEC sp_executesql @DropDefaultSql;
+    END
+
+    ALTER TABLE [dbo].[Bill] DROP COLUMN [IsDraft];
+
+    -- PERSISTED so it can be indexed and is not recomputed per read.
+    --
+    -- `NOT NULL` is explicit and load-bearing. Without it SQL Server marks a
+    -- computed column NULLABLE — it will not prove a CASE expression total —
+    -- which would have quietly widened `BIT NOT NULL` to `BIT NULL` for every
+    -- reader across 9 entities. Measured in a rehearsal against prod: with the
+    -- clause, `is_nullable = 0`, matching the column being replaced exactly.
+    ALTER TABLE [dbo].[Bill] ADD [IsDraft] AS (
+        CASE WHEN [Status] = 'completed' THEN CAST(0 AS BIT) ELSE CAST(1 AS BIT) END
+    ) PERSISTED NOT NULL;
+
+    CREATE NONCLUSTERED INDEX [IX_Bill_Status] ON [dbo].[Bill] ([Status])
+        INCLUDE ([VendorId], [BillDate])
+        WHERE [Status] <> 'completed';
+END
+GO
+
 
 IF OBJECT_ID('dbo.Bill', 'U') IS NOT NULL
    AND NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('dbo.Bill') AND name = 'SyncToken')
@@ -625,7 +749,11 @@ BEGIN
         --                     document whose AP already reached QBO/Excel/Box.
         --                     The only legitimate 1 is on a row that is already
         --                     a draft, where it is a no-op anyway.
-        [IsDraft] = CASE WHEN @IsDraft = 0 THEN 0 ELSE [IsDraft] END,
+        -- U-446: no [IsDraft] assignment. It is a PERSISTED COMPUTED column
+        -- now, and naming one on the left of a SET is an error — so the compat
+        -- translation writes only Status and IsDraft follows automatically.
+        -- The `@IsDraft = 1` neutralisation U-445 needed is implicit: the CASE
+        -- below fires only on 0, so 1 cannot un-complete anything.
         [Status] = CASE
             WHEN @IsDraft = 0 AND [Status] <> 'completed' THEN 'completed'
             ELSE [Status] END,
@@ -983,13 +1111,18 @@ BEGIN
     -- U-445: writes BOTH columns. Not optional — CK_Bill_Status_IsDraft rejects
     -- any row where `Status = 'completed'` and `IsDraft = 1` disagree, so an
     -- IsDraft-only write here would now fail outright rather than drift.
+    -- U-446: writes Status ALONE. IsDraft is computed from it, so the old
+    -- dual-write is now an error rather than a belt.
+    --
+    -- The idempotency guard moved with it: `IsDraft = 1` and
+    -- `Status <> 'completed'` are the same predicate by construction, and
+    -- reading the canonical column beats reading its derivation.
     UPDATE dbo.[Bill]
-    SET [IsDraft] = 0,
-        [Status] = 'completed',
+    SET [Status] = 'completed',
         [StatusDatetime] = SYSUTCDATETIME(),
         [StatusOrigin] = 'completion',
         [ModifiedDatetime] = SYSUTCDATETIME()
-    WHERE [Id] = @Id AND [IsDraft] = 1;
+    WHERE [Id] = @Id AND [Status] <> 'completed';
 
     SELECT
         [Id],
@@ -1128,7 +1261,7 @@ BEGIN
         [StatusDatetime] = @Now,
         [StatusOrigin] = COALESCE(@Origin, 'user'),
         [StatusSourceRef] = COALESCE(@SourceRef, [StatusSourceRef]),
-        [IsDraft] = CASE WHEN @ToStatus = 'completed' THEN 0 ELSE 1 END,
+        -- U-446: IsDraft is computed from Status; this line was the dual-write.
         [ModifiedDatetime] = @Now
     WHERE [Id] = @Id
       AND (@RowVersion IS NULL OR [RowVersion] = @RowVersion)

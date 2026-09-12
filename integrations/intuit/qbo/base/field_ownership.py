@@ -256,7 +256,17 @@ BILL = FieldOwnership(
     ],
     app_owned=[
         # These only exist locally and are never sent to QBO:
-        "is_draft",            # completion gate (Bill lifecycle)
+        # U-446: `Status` is the canonical lifecycle column and is app-owned.
+        # `is_draft` is still listed because it is still READABLE — every
+        # external contract and 13 SQL files across 9 entities still speak it —
+        # but it is now a PERSISTED COMPUTED column derived from Status, so
+        # NOBODY writes it, this side included. Kept here so an ownership audit
+        # sees it rather than concluding QBO may write it.
+        "status",              # canonical lifecycle state
+        "status_datetime",
+        "status_origin",
+        "status_source_ref",
+        "is_draft",            # DERIVED from status; unwritable since U-446
         "review_status_id",    # local review workflow
         # Attachment links are app-side only; QBO attachments are a separate sync.
     ],

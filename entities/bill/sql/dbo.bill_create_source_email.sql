@@ -1,3 +1,10 @@
+-- ⛔ APPLY THIS FILE AND entities/bill/sql/dbo.bill.sql IN **ONE** TRANSACTION.
+--    CreateBill is homed here but dbo.Bill's schema lives there, and since
+--    U-446 the two are coupled: this file's INSERT omits [IsDraft] (a computed
+--    column — naming one is SQL error 271) and that file is what makes it
+--    computed. Applying either alone leaves a live window that breaks bill
+--    creation. See the banner in dbo.bill.sql for both failure modes.
+
 -- Extend CreateBill to accept @SourceEmailMessageId so the email-agent
 -- pipeline can stamp the source email FK on a draft bill at creation
 -- time. NULL is the default — manual UI / API callers don't need to
@@ -35,7 +42,10 @@ BEGIN
     INSERT INTO dbo.[Bill]
         ([CreatedDatetime], [ModifiedDatetime], [VendorId], [PaymentTermId],
          [BillDate], [DueDate], [BillNumber], [TotalAmount], [Memo],
-         [IsDraft], [Status], [StatusDatetime], [StatusOrigin], [StatusSourceRef],
+         -- U-446: [IsDraft] is gone from this list. An INSERT that names a
+         -- computed column is SQL Server error 271; `@IsDraft` is KEPT as a
+         -- no-op parameter so older callers still bind successfully.
+         [Status], [StatusDatetime], [StatusOrigin], [StatusSourceRef],
          [IntakeSource], [IntakeSourceDetail], [SourceEmailMessageId],
          [CreatedByUserId])
     OUTPUT
@@ -61,12 +71,8 @@ BEGIN
         INSERTED.[SourceEmailMessageId]
     VALUES (@Now, @Now, @VendorId, @PaymentTermId, @BillDate, @BillDate,
             @BillNumber, @TotalAmount, @Memo,
-            -- IsDraft is DERIVED FROM the resolved Status, not taken from
-            -- @IsDraft, so the two cannot be handed in contradicting each other
-            -- (CK_Bill_Status_IsDraft would reject that anyway — this makes it
-            -- impossible rather than an error).
-            CASE WHEN COALESCE(@Status, CASE WHEN @IsDraft = 0 THEN 'completed' ELSE 'draft' END)
-                      = 'completed' THEN 0 ELSE 1 END,
+            -- @IsDraft survives only as the fallback for a caller that has
+            -- not learned @Status yet. Nothing writes IsDraft itself.
             COALESCE(@Status, CASE WHEN @IsDraft = 0 THEN 'completed' ELSE 'draft' END),
             @Now,
             COALESCE(@StatusOrigin, 'user'),

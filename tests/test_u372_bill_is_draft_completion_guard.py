@@ -36,7 +36,9 @@ def _service_with_existing(is_draft: bool) -> tuple[BillService, MagicMock]:
     existing.vendor_id = None
     existing.bill_number = None
     service.read_by_public_id = MagicMock(return_value=existing)
-    service.repo.update_by_id.side_effect = lambda bill: bill
+    # U-446b added the sproc-side `allow_terminal_parent` kwarg to this repo
+    # method; this stub only cares about the Bill it echoes back.
+    service.repo.update_by_id.side_effect = lambda bill, **_: bill
     return service, existing
 
 

@@ -236,5 +236,7 @@ def test_bill_delete_no_longer_clears_any_qbo_mapping():
         result = svc.delete_by_public_id("bill-pub")
 
     assert result is bill
-    mock_repo.delete_by_id.assert_called_once_with(7)
+    mock_repo.delete_by_id.assert_called_once_with(7, allow_terminal_parent=False)
+    # U-446b: False because this test's actor is not a system admin — the
+    # cascade carries the same decision the header guard made.
     get_conn.assert_not_called()

@@ -45,4 +45,6 @@ def assert_cli_system_admin() -> None:
     program entry point.
     """
     from shared.authz.context import set_authz_context
-    set_authz_context(user_id=None, company_id=None, is_system_admin=True)
+    set_authz_context(
+        user_id=None, company_id=None, is_system_admin=True, is_system_context=True
+    )

@@ -69,7 +69,13 @@ def test_base_file_insert_list_and_values_stay_in_arity():
     insert_cols = re.search(
         r"INSERT INTO dbo\.\[BillLineItemAttachment\] \((.*?)\)", body, re.DOTALL
     )
-    values = re.search(r"VALUES \((.*)\)\s*;", body, re.DOTALL)
+    # U-446b turned the tail from `VALUES (...)` into `SELECT ... WHERE ...` so
+    # the write could carry a predicate binding it to the parent Bill that was
+    # locked and checked. Same arity contract, different shape — accept either,
+    # so this keeps testing what it was written to test.
+    values = re.search(r"VALUES \((.*)\)\s*;", body, re.DOTALL) or re.search(
+        r"\n    SELECT (.*?)\n    WHERE ", body, re.DOTALL
+    )
     assert insert_cols and values
     columns = _split_top_level(insert_cols.group(1))
     bound = _split_top_level(values.group(1))

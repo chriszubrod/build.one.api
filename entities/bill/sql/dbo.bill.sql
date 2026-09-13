@@ -719,11 +719,41 @@ CREATE OR ALTER PROCEDURE UpdateBillById
     @BillNumber NVARCHAR(50),
     @TotalAmount DECIMAL(18,2) NULL,
     @Memo NVARCHAR(MAX) NULL,
-    @IsDraft BIT = NULL
+    @IsDraft BIT = NULL,
+    @AllowTerminalParent BIT = 1
 )
 AS
 BEGIN
+    -- Required: the guard below runs before the DML, and with NOCOUNT off its
+    -- row-count token becomes the first "result" pyodbc sees (CLAUDE.md,
+    -- 2026-06-11).
+    SET NOCOUNT ON;
+
     BEGIN TRANSACTION;
+
+    -- U-446b (Codex round 3, P1). The header had the same check-then-write race
+    -- as its line items, with a nastier symptom: completion winning the race
+    -- bumps RowVersion, so the UPDATE matched zero rows and the repo reported a
+    -- ROW-VERSION CONFLICT — which `raise_workflow_error` maps to 409, the one
+    -- status installed iOS routes to its reload-and-retry path. A permanent
+    -- refusal delivered as a retryable conflict makes queued edits loop.
+    -- Naming the terminal state explicitly gets the caller 422 `status_locked`
+    -- whichever side of the race it lands on.
+    --
+    -- @AllowTerminalParent defaults PERMISSIVE for the same deploy-ordering
+    -- reason as dbo.bill_line_item.sql; the repo always passes it explicitly.
+    IF @AllowTerminalParent = 0
+    BEGIN
+        IF EXISTS (
+            SELECT 1 FROM dbo.[Bill] WITH (UPDLOCK, HOLDLOCK)
+            WHERE [Id] = @Id AND [Status] = 'completed'
+        )
+        BEGIN
+            COMMIT TRANSACTION;
+            RAISERROR('STATUS_LOCKED: a completed Bill cannot be edited.', 16, 1);
+            RETURN;
+        END
+    END
 
     DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();
 
@@ -797,11 +827,33 @@ GO
 -- Delete Bill By Id Stored Procedures
 CREATE OR ALTER PROCEDURE DeleteBillById
 (
-    @Id BIGINT
+    @Id BIGINT,
+    @AllowTerminalParent BIT = 1
 )
 AS
 BEGIN
+    -- Required: the guard below precedes the DML (CLAUDE.md, 2026-06-11).
+    SET NOCOUNT ON;
+
     BEGIN TRANSACTION;
+
+    -- U-446b (Codex round 4, P1). The service checks the status first, in a
+    -- different transaction and BEFORE a multi-step cascade; a completion
+    -- landing anywhere in between left a non-admin deleting a completed Bill's
+    -- header with nothing to stop it. Deciding again here, with the row locked,
+    -- is the only place that cannot be raced.
+    IF @AllowTerminalParent = 0
+    BEGIN
+        IF EXISTS (
+            SELECT 1 FROM dbo.[Bill] WITH (UPDLOCK, HOLDLOCK)
+            WHERE [Id] = @Id AND [Status] = 'completed'
+        )
+        BEGIN
+            COMMIT TRANSACTION;
+            RAISERROR('STATUS_LOCKED: a completed Bill cannot be deleted.', 16, 1);
+            RETURN;
+        END
+    END
 
     DELETE FROM dbo.[Bill]
     OUTPUT
@@ -1062,7 +1114,16 @@ BEGIN
         INSERTED.[Id],
         INSERTED.[PublicId],
         INSERTED.[SourceEmailMessageId]
-    WHERE [Id] = @Id AND [SourceEmailMessageId] IS NULL;
+    -- U-446b (Codex round 4, P1). The Python caller tests the status first,
+    -- but in a DIFFERENT transaction — a completion landing in between stamped
+    -- SourceEmailMessageId and ModifiedDatetime on a completed Bill. The
+    -- predicate is evaluated with the row's X lock held, so it cannot be stale.
+    -- No exemption param: the system callers who legitimately backfill
+    -- (bill-folder intake, email ingest) do so on drafts, and a completed Bill
+    -- that already shipped its AP has nothing to gain from a late dedup stamp.
+    WHERE [Id] = @Id
+      AND [SourceEmailMessageId] IS NULL
+      AND [Status] <> 'completed';
 
     COMMIT TRANSACTION;
 END;

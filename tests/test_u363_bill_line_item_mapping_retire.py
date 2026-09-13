@@ -259,7 +259,12 @@ def test_miss_stamp_failure_rolls_back_the_fresh_line_and_reraises():
     with pytest.raises(RuntimeError, match="stamp db error"):
         connector.sync_from_qbo_bill_line(19146, qbo_line, frozenset({"1"}), realm_id="realm-1")
 
-    line_svc.delete_by_public_id.assert_called_once_with("pub-77")
+    # U-446b added the terminal-lock exemption to this rollback: it deletes a
+    # line the pull itself just created, so it must not be refused when the
+    # parent Bill is already completed locally.
+    line_svc.delete_by_public_id.assert_called_once_with(
+        "pub-77", _via_internal_pipeline=True
+    )
     reconciliation_repo.create.assert_not_called()  # rollback succeeded: nothing to record
 
 
@@ -273,7 +278,12 @@ def test_miss_stamp_that_did_not_land_rolls_back_and_reraises():
     with pytest.raises(RuntimeError, match="identity stamp did not land"):
         connector.sync_from_qbo_bill_line(19146, qbo_line, frozenset({"1"}), realm_id="realm-1")
 
-    line_svc.delete_by_public_id.assert_called_once_with("pub-77")
+    # U-446b added the terminal-lock exemption to this rollback: it deletes a
+    # line the pull itself just created, so it must not be refused when the
+    # parent Bill is already completed locally.
+    line_svc.delete_by_public_id.assert_called_once_with(
+        "pub-77", _via_internal_pipeline=True
+    )
 
 
 def test_miss_rollback_failure_records_an_orphan_line_issue_and_reraises_the_original():

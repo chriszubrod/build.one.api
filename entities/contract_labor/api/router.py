@@ -24,6 +24,8 @@ from shared.rbac import require_module_api
 from shared.rbac_constants import Modules
 from core.workflow.api.process_engine import ProcessEngine, TriggerContext, EventType, Channel
 
+from shared.lifecycle.terminal_lock import StatusLockedError
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter(
@@ -827,6 +829,11 @@ async def generate_pdfs_for_bill(bill_public_id: str, current_user: dict = Depen
         pdf_service = ContractLaborPDFService()
         result = pdf_service.generate_pdfs_for_bill(bill_public_id=bill_public_id)
         return item_response(result)
+    except StatusLockedError as locked:
+        # U-446b: 422 + `status_locked`, never a 500 and never a 200 carrying
+        # `success: false`. This is a permanent refusal, and the client has to
+        # be able to tell it apart from a transient failure.
+        raise_workflow_error(str(locked), "Failed to generate PDFs for bill")
     except Exception as e:
         logger.exception("Error generating PDFs for bill")
         raise HTTPException(status_code=500, detail=str(e))

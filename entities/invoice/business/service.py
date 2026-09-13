@@ -16,6 +16,8 @@ from entities.project.business.service import ProjectService
 from entities.module.business.service import ModuleService
 from shared.api.money import to_decimal_or_none
 
+from shared.lifecycle.terminal_lock import StatusLockedError
+
 logger = logging.getLogger(__name__)
 
 
@@ -312,13 +314,26 @@ class InvoiceService:
                 att = attachment_service.read_by_id(id=inv_attachment.attachment_id) if inv_attachment.attachment_id else None
                 if inv_attachment.id:
                     self.invoice_attachment_service.delete_by_id(id=inv_attachment.id)
+                    # U-446b (Codex round 4, P1). ROW FIRST, BLOB SECOND.
+                    # A pre-check could not close this: it is a COUNT in its own
+                    # transaction, so a Bill completing between the check and
+                    # the Azure call still destroyed evidence. Letting the
+                    # guarded row delete decide means nothing is destroyed when
+                    # it refuses.
                 if att:
-                    if att.blob_url:
+                    try:
+                        removed = attachment_service.delete_by_public_id(public_id=att.public_id)
+                    except StatusLockedError:
+                        logger.info(
+                            "Kept attachment %s: it is evidence for a completed Bill",
+                            att.public_id,
+                        )
+                        removed = None
+                    if removed is not None and att.blob_url:
                         try:
                             AzureBlobStorage().delete_file(att.blob_url)
                         except Exception:
                             logger.warning(f"Failed to delete blob for attachment {att.public_id}")
-                    attachment_service.delete_by_public_id(public_id=att.public_id)
             except Exception as e:
                 logger.warning(f"Error deleting invoice attachment {inv_attachment.id}: {e}")
 
@@ -1706,6 +1721,13 @@ class InvoiceService:
                         row_version=source.row_version,
                         bill_public_id=bill_public_id,
                         is_billed=True,
+                        # U-446b: the bill this line belongs to is ALREADY
+                        # completed — you invoice completed AP — so the terminal
+                        # lock would refuse this write and break invoice
+                        # completion outright. Invoice completion runs as a real
+                        # user, so the system-caller exemption does NOT cover it;
+                        # it has to say so explicitly.
+                        _via_internal_pipeline=True,
                     )
 
         elif line_item.source_type == "ExpenseLineItem" and line_item.expense_line_item_id:
@@ -1755,6 +1777,13 @@ class InvoiceService:
                         row_version=source.row_version,
                         bill_public_id=bill.public_id,
                         is_billed=False,
+                        # U-446b: the bill this line belongs to is ALREADY
+                        # completed — you invoice completed AP — so the terminal
+                        # lock would refuse this write and break invoice
+                        # completion outright. Invoice completion runs as a real
+                        # user, so the system-caller exemption does NOT cover it;
+                        # it has to say so explicitly.
+                        _via_internal_pipeline=True,
                     )
 
         elif line_item.source_type == "ExpenseLineItem" and line_item.expense_line_item_id:

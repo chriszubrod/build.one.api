@@ -10,6 +10,7 @@ from integrations.intuit.qbo.purchase.api.schemas import QboPurchaseSync
 from integrations.intuit.qbo.purchase.business.service import QboPurchaseService
 from integrations.intuit.qbo.purchase.connector.expense.business.service import PurchaseExpenseConnector
 from entities.expense.business.service import ExpenseService
+from shared.authz import system_authz
 from shared.rbac import require_module_api
 from shared.rbac_constants import Modules
 
@@ -25,14 +26,26 @@ service = QboPurchaseService()
 def sync_qbo_purchases_router(body: QboPurchaseSync, current_user: dict = Depends(require_module_api(Modules.QBO_SYNC, "can_create"))):
     """
     Sync Purchases from QBO.
+
+    A QBO pull is a system-level operation spanning all users' rows. The
+    connector resolves existing entities via UserProject/access-scoped lookups;
+    under the requesting user's authz those reads can return None and drive
+    duplicate creation / mapping deletion. Assert system intent at the boundary
+    via the shared `system_authz()` contextmanager like the outbox worker /
+    admin drain. See feedback_outbox_authz_boundary.md.
+
+    U-446b: vendor and customer already did this; the other seven sync routes
+    did not, so the same pull behaved differently depending on which endpoint
+    drove it.
     """
-    result = service.sync_from_qbo(
-        realm_id=body.realm_id,
-        last_updated_time=body.last_updated_time,
-        start_date=body.start_date,
-        end_date=body.end_date,
-        sync_to_modules=body.sync_to_modules
-    )
+    with system_authz():
+        result = service.sync_from_qbo(
+            realm_id=body.realm_id,
+            last_updated_time=body.last_updated_time,
+            start_date=body.start_date,
+            end_date=body.end_date,
+            sync_to_modules=body.sync_to_modules
+        )
     return list_response([purchase.to_dict() for purchase in result.synced])
 
 

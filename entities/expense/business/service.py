@@ -38,6 +38,8 @@ from integrations.ms.sharepoint.drive.business.service import MsDriveService
 
 from shared.storage import AzureBlobStorage, AzureBlobStorageError
 
+from shared.lifecycle.terminal_lock import StatusLockedError
+
 logger = logging.getLogger(__name__)
 
 
@@ -518,9 +520,44 @@ class ExpenseService:
                         try:
                             # Get the attachment record
                             attachment = attachment_service.read_by_id(id=attachment_link.attachment_id)
+                            # U-446b (Codex round 5, P1). LINK, then ROW, then
+                            # BLOB — in that order, and it matters twice over.
+                            #
+                            # The link has to go FIRST because FK_ExpenseLineItemAttachment_Attachment
+                            # is NO ACTION: with the link still present the
+                            # Attachment delete fails on the FK. That was already
+                            # true before this unit, and the failure was swallowed
+                            # — so this cascade destroyed the blob and then left
+                            # the Attachment row orphaned, every time.
+                            #
+                            # The blob goes LAST because the guarded row delete is
+                            # what decides: an attachment can be a completed
+                            # Bill's evidence too (BLIA multi-split linking), and
+                            # a pre-check cannot settle that — it reads in its own
+                            # transaction, so a Bill completing in between still
+                            # destroyed the bytes. Deleting the row first means
+                            # nothing is destroyed when the guard refuses.
+                            if attachment_link.id:
+                                try:
+                                    expense_line_item_attachment_repo.delete_by_id(id=attachment_link.id)
+                                    logger.info(f"Deleted expense line item attachment {attachment_link.id}")
+                                except Exception as e:
+                                    logger.warning(f"Error deleting expense line item attachment {attachment_link.id}: {e}")
+
                             if attachment:
-                                # Delete from Azure Blob Storage if blob_url exists
-                                if attachment.blob_url and storage:
+                                removed = None
+                                try:
+                                    removed = attachment_service.delete_by_public_id(public_id=attachment.public_id)
+                                    logger.info(f"Deleted attachment {attachment.id}")
+                                except StatusLockedError:
+                                    logger.info(
+                                        "Kept attachment %s: it is evidence for a completed Bill",
+                                        attachment.public_id,
+                                    )
+                                except Exception as e:
+                                    logger.warning(f"Error deleting attachment {attachment.id}: {e}")
+
+                                if removed is not None and attachment.blob_url and storage:
                                     try:
                                         storage.delete_file(attachment.blob_url)
                                         logger.info(f"Deleted blob {attachment.blob_url} for attachment {attachment.id}")
@@ -528,21 +565,6 @@ class ExpenseService:
                                         logger.warning(f"Error deleting blob {attachment.blob_url} for attachment {attachment.id}: {e}")
                                     except Exception as e:
                                         logger.warning(f"Error deleting blob {attachment.blob_url} for attachment {attachment.id}: {e}")
-                                
-                                # Delete the Attachment record
-                                try:
-                                    attachment_service.delete_by_public_id(public_id=attachment.public_id)
-                                    logger.info(f"Deleted attachment {attachment.id}")
-                                except Exception as e:
-                                    logger.warning(f"Error deleting attachment {attachment.id}: {e}")
-                            
-                            # Delete the ExpenseLineItemAttachment record
-                            if attachment_link.id:
-                                try:
-                                    expense_line_item_attachment_repo.delete_by_id(id=attachment_link.id)
-                                    logger.info(f"Deleted expense line item attachment {attachment_link.id}")
-                                except Exception as e:
-                                    logger.warning(f"Error deleting expense line item attachment {attachment_link.id}: {e}")
                         except Exception as e:
                             logger.warning(f"Error processing attachment for line item {line_item.id}: {e}")
                 

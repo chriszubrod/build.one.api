@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from integrations.intuit.qbo.base.locking import qbo_sync_locked_route
 from integrations.intuit.qbo.vendorcredit.api.schemas import QboVendorCreditSyncRequest
 from integrations.intuit.qbo.vendorcredit.business.service import QboVendorCreditService
+from shared.authz import system_authz
 from shared.rbac import require_module_api
 from shared.rbac_constants import Modules
 from shared.api.responses import list_response, item_response
@@ -22,16 +23,28 @@ def sync_qbo_vendor_credits_router(
 ):
     """
     Sync VendorCredits from QBO to local cache and optionally to BillCredit module.
+
+    A QBO pull is a system-level operation spanning all users' rows. The
+    connector resolves existing entities via UserProject/access-scoped lookups;
+    under the requesting user's authz those reads can return None and drive
+    duplicate creation / mapping deletion. Assert system intent at the boundary
+    via the shared `system_authz()` contextmanager like the outbox worker /
+    admin drain. See feedback_outbox_authz_boundary.md.
+
+    U-446b: vendor and customer already did this; the other seven sync routes
+    did not, so the same pull behaved differently depending on which endpoint
+    drove it.
     """
     try:
         service = QboVendorCreditService()
-        result = service.sync_from_qbo(
-            realm_id=body.realm_id,
-            last_updated_time=body.last_updated_time,
-            start_date=body.start_date,
-            end_date=body.end_date,
-            sync_to_modules=body.sync_to_modules,
-        )
+        with system_authz():
+            result = service.sync_from_qbo(
+                realm_id=body.realm_id,
+                last_updated_time=body.last_updated_time,
+                start_date=body.start_date,
+                end_date=body.end_date,
+                sync_to_modules=body.sync_to_modules,
+            )
         return {
             "status": "success",
             "count": len(result.synced),

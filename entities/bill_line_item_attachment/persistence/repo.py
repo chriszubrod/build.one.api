@@ -14,6 +14,8 @@ from shared.database import (
     map_database_error,
 )
 
+from shared.lifecycle.terminal_lock import reraise_if_sproc_status_locked
+
 logger = logging.getLogger(__name__)
 
 
@@ -50,9 +52,14 @@ class BillLineItemAttachmentRepository:
             logger.error(f"Unexpected error during bill line item attachment mapping: {error}")
             raise map_database_error(error)
 
-    def create(self, *, bill_line_item_id: int, attachment_id: int, created_by_user_id: Optional[int] = None) -> BillLineItemAttachment:
+    def create(self, *, bill_line_item_id: int, attachment_id: int, created_by_user_id: Optional[int] = None, allow_terminal_parent: bool = True) -> BillLineItemAttachment:
         """
         Create a new bill line item attachment.
+
+        `allow_terminal_parent` is the sproc-side half of the U-446b terminal
+        lock and is ALWAYS passed explicitly — the sproc defaults it permissive
+        so the SQL can be applied either side of a deploy, which means an
+        omission here silently drops the guard.
         """
         try:
             with get_connection() as conn:
@@ -65,6 +72,7 @@ class BillLineItemAttachmentRepository:
                             "BillLineItemId": bill_line_item_id,
                             "AttachmentId": attachment_id,
                             "CreatedByUserId": created_by_user_id,
+                            "AllowTerminalParent": 1 if allow_terminal_parent else 0,
                         },
                     )
                     row = cursor.fetchone()
@@ -75,6 +83,9 @@ class BillLineItemAttachmentRepository:
                 finally:
                     cursor.close()
         except Exception as error:
+            reraise_if_sproc_status_locked(
+                error, what="attachments cannot be added to it"
+            )
             logger.error(f"Error during create bill line item attachment: {error}")
             raise map_database_error(error)
 
@@ -227,9 +238,35 @@ class BillLineItemAttachmentRepository:
             logger.error(f"Error counting bill line item attachments by attachment ID: {error}")
             raise map_database_error(error)
 
-    def delete_by_id(self, id: int) -> Optional[BillLineItemAttachment]:
+    def count_completed_bills_by_attachment_id(self, attachment_id: int) -> int:
+        """U-446b: how many COMPLETED Bills this Attachment is evidence for.
+
+        Non-zero means the file is frozen — the AP it documents has already
+        reached QBO, SharePoint, Excel and Box, so replacing or deleting it
+        changes what our records show without changing what any of them hold.
+        """
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                try:
+                    call_procedure(
+                        cursor=cursor,
+                        name="CountCompletedBillsByAttachmentId",
+                        params={"AttachmentId": attachment_id},
+                    )
+                    row = cursor.fetchone()
+                    return row.Count if row else 0
+                finally:
+                    cursor.close()
+        except Exception as error:
+            logger.error(f"Error counting completed bills by attachment ID: {error}")
+            raise map_database_error(error)
+
+    def delete_by_id(self, id: int, *, allow_terminal_parent: bool = True) -> Optional[BillLineItemAttachment]:
         """
         Delete a bill line item attachment by ID.
+
+        See `create` for why `allow_terminal_parent` must always be passed.
         """
         try:
             with get_connection() as conn:
@@ -238,13 +275,19 @@ class BillLineItemAttachmentRepository:
                     call_procedure(
                         cursor=cursor,
                         name="DeleteBillLineItemAttachmentById",
-                        params={"Id": id},
+                        params={
+                            "Id": id,
+                            "AllowTerminalParent": 1 if allow_terminal_parent else 0,
+                        },
                     )
                     row = cursor.fetchone()
                     return self._from_db(row) if row else None
                 finally:
                     cursor.close()
         except Exception as error:
+            reraise_if_sproc_status_locked(
+                error, what="its attachments cannot be deleted"
+            )
             logger.error(f"Error during delete bill line item attachment by ID: {error}")
             raise map_database_error(error)
 

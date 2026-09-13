@@ -12,6 +12,8 @@ from entities.invoice.persistence.repo import InvoiceRepository
 from shared.access import assert_can_access_project
 from shared.authz import current_user_id
 
+from shared.lifecycle.terminal_lock import StatusLockedError
+
 logger = logging.getLogger(__name__)
 
 
@@ -273,16 +275,25 @@ class InvoiceLineItemService:
                 pass
 
             # Then delete blob and attachment record
+            # U-446b (Codex round 4, P1): row first, blob second — see
+            # entities/invoice/business/service.py for why a pre-check cannot
+            # close this race.
             if att:
+                removed = None
                 try:
-                    if att.blob_url:
+                    removed = attachment_service.delete_by_public_id(public_id=att.public_id)
+                except StatusLockedError:
+                    logger.info(
+                        "Kept attachment %s: it is evidence for a completed Bill",
+                        att.public_id,
+                    )
+                except Exception:
+                    pass
+                if removed is not None and att.blob_url:
+                    try:
                         AzureBlobStorage().delete_file(att.blob_url)
-                except Exception:
-                    pass
-                try:
-                    attachment_service.delete_by_public_id(public_id=att.public_id)
-                except Exception:
-                    pass
+                    except Exception:
+                        pass
 
         # U-362: qbo.InvoiceLineItemInvoiceLine's CONNECTOR (mapping_repo,
         # create_mapping, the U-293b fastpath's mapping fallback) is retired —

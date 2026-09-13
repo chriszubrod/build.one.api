@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends
 from integrations.intuit.qbo.base.locking import qbo_sync_locked_route
 from integrations.intuit.qbo.company_info.api.schemas import QboCompanyInfoSync
 from integrations.intuit.qbo.company_info.business.service import QboCompanyInfoService
+from shared.authz import system_authz
 from shared.rbac import require_module_api
 from shared.rbac_constants import Modules
 from shared.api.responses import list_response, item_response
@@ -20,8 +21,20 @@ service = QboCompanyInfoService()
 def sync_qbo_company_info_router(body: QboCompanyInfoSync, current_user: dict = Depends(require_module_api(Modules.QBO_SYNC, "can_create"))):
     """
     Sync CompanyInfo from QBO.
+
+    A QBO pull is a system-level operation spanning all users' rows. The
+    connector resolves existing entities via UserProject/access-scoped lookups;
+    under the requesting user's authz those reads can return None and drive
+    duplicate creation / mapping deletion. Assert system intent at the boundary
+    via the shared `system_authz()` contextmanager like the outbox worker /
+    admin drain. See feedback_outbox_authz_boundary.md.
+
+    U-446b: vendor and customer already did this; the other seven sync routes
+    did not, so the same pull behaved differently depending on which endpoint
+    drove it.
     """
-    result = service.sync_from_qbo(realm_id=body.realm_id)
+    with system_authz():
+        result = service.sync_from_qbo(realm_id=body.realm_id)
     # Deliberate improvement: empty pull returns null item instead of AttributeError 500.
     return item_response(result.synced[0].to_dict() if result.synced else None)
 

@@ -179,6 +179,20 @@ def _enrich_payload_with_authz(payload: dict) -> dict:
                 user_public_id = user.public_id
                 is_system_admin = bool(getattr(user, "is_system_admin", False))
 
+    # An `isa` claim is honoured ONLY for an actor we actually resolved.
+    #
+    # Two paths reached here with `user_id is None` and `is_system_admin` still
+    # True off the raw claim: a `uid` that no longer resolves to a User row
+    # (deleted user, rotated PublicId) falls through the `if user:` above, and a
+    # legacy token carrying `isa` but no `uid` skips the `elif` entirely once
+    # the grace window is closed. Either way the request ran as a system admin —
+    # `@ActorIsSystemAdmin = 1` on every sproc, bypassing the UserCanAccess*
+    # UDFs — for a principal that does not exist. Failing closed here costs a
+    # deleted user nothing (they have no rows to read) and revokes the bypass
+    # the moment the actor stops resolving.
+    if user_id is None:
+        is_system_admin = False
+
     # Resolve company_id from `cid` if present and accessible. Without a
     # `cid` claim, fall back to the user's default Company only during
     # the grace window — otherwise leave it unset so downstream RBAC

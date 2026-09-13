@@ -9,6 +9,7 @@ from entities.bill_line_item_attachment.persistence.repo import BillLineItemAtta
 from entities.bill_line_item.business.service import BillLineItemService
 from entities.attachment.business.service import AttachmentService
 from shared.authz import current_user_id, current_is_system_admin
+from shared.lifecycle.terminal_lock import is_exempt
 
 
 class BillLineItemAttachmentService:
@@ -45,6 +46,14 @@ class BillLineItemAttachmentService:
         
         if not bill_line_item or not bill_line_item.id:
             raise ValueError(f"BillLineItem with public_id '{bill_line_item_public_id}' not found")
+
+        # U-446b: attachments are evidence for the AP that already shipped —
+        # a completed bill's document set is frozen with it.
+        BillLineItemService()._assert_parent_editable(
+            bill_id=getattr(bill_line_item, "bill_id", None),
+            what="attachments cannot be added to it",
+        )
+
         if not attachment or not attachment.id:
             raise ValueError(f"Attachment with public_id '{attachment_public_id}' not found")
         
@@ -59,7 +68,16 @@ class BillLineItemAttachmentService:
             return existing
         
         # No existing attachment for this BillLineItem - safe to create
-        return self.repo.create(bill_line_item_id=bill_line_item_id, attachment_id=attachment_id, created_by_user_id=current_user_id.get())
+        return self.repo.create(
+            bill_line_item_id=bill_line_item_id,
+            attachment_id=attachment_id,
+            created_by_user_id=current_user_id.get(),
+            # U-446b: the sproc re-checks the parent Bill inside the writing
+            # transaction, closing the check-then-write race the guard above
+            # cannot. Only system callers are exempt — nothing in the app
+            # legitimately attaches new evidence to a completed document.
+            allow_terminal_parent=is_exempt(),
+        )
 
     def read_all(self) -> list[BillLineItemAttachment]:
         """
@@ -126,8 +144,29 @@ class BillLineItemAttachmentService:
         """
         Delete a bill line item attachment by public ID.
         """
+        _link = self.repo.read_by_public_id(public_id=public_id)
+        if _link is not None and getattr(_link, "bill_line_item_id", None):
+            _bli = BillLineItemService().read_by_id(int(_link.bill_line_item_id))
+            if _bli is not None:
+                BillLineItemService()._assert_parent_editable(
+                    bill_id=getattr(_bli, "bill_id", None),
+                    what="its attachments cannot be deleted",
+                )
+
         # TODO: In Phase 10, validate tenant_id matches record's tenant
         existing = self.read_by_public_id(public_id=public_id)
         if existing and existing.id:
-            return self.repo.delete_by_id(existing.id)
+            deleted = self.repo.delete_by_id(
+                existing.id, allow_terminal_parent=is_exempt()
+            )
+            if deleted is None and _bli is not None:
+                # U-446b (Codex round 5, P2). The DELETE is bound to the parent
+                # the guard locked, so zero rows can mean the LINE was moved
+                # onto a bill that then completed. Without this the caller gets
+                # a bare None — "not found" — for what is really a refusal.
+                BillLineItemService()._assert_parent_editable(
+                    bill_id=getattr(_bli, "bill_id", None),
+                    what="its attachments cannot be deleted",
+                )
+            return deleted
         return None

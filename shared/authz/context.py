@@ -45,12 +45,28 @@ current_can_view_team_modules: ContextVar[frozenset] = ContextVar(
     "current_can_view_team_modules", default=frozenset()
 )
 
+# True only inside a NON-HTTP system boundary: an outbox worker, the in-process
+# scheduler, a CLI sync script, or a drain-secret admin call. This is a POSITIVE
+# marker, deliberately not inferred from the shape of the other vars.
+#
+# The shape `is_system_admin=True AND user_id is None` looks like it identifies a
+# worker, and it does not (U-446b, Codex P1 #6). `_enrich_payload_with_authz`
+# reaches `set_authz_context(user_id=None, ..., is_system_admin=True)` for an
+# ordinary HTTP request carrying a valid, unexpired admin JWT whose `uid` no
+# longer resolves to a User row — so a stale-but-signed human session forges the
+# worker signature exactly. Only this var, which no HTTP path can set and which
+# `set_authz_context` clears by default, tells the two apart.
+current_is_system_context: ContextVar[bool] = ContextVar(
+    "current_is_system_context", default=False
+)
+
 
 def set_authz_context(
     *,
     user_id: Optional[int],
     company_id: Optional[int],
     is_system_admin: bool,
+    is_system_context: bool = False,
 ) -> None:
     """
     Populate the per-request ContextVars. Called by the auth dependency
@@ -61,11 +77,18 @@ def set_authz_context(
     repopulates it after the permission cache resolves. The reset matters
     on calls that bypass the RBAC dependency (drain-secret admin routes,
     outbox workers) so a stale set from a prior request can't leak.
+
+    `is_system_context` defaults to False and is therefore CLEARED by every
+    caller that doesn't name it — including the HTTP auth dependency, which is
+    the point: the marker cannot be inherited by a request, only asserted by the
+    handful of non-HTTP boundaries that pass it explicitly. Pass it only from a
+    worker, the scheduler, a CLI entry point, or the drain-secret dependency.
     """
     current_user_id.set(user_id)
     current_company_id.set(company_id)
     current_is_system_admin.set(bool(is_system_admin))
     current_can_view_team_modules.set(frozenset())
+    current_is_system_context.set(bool(is_system_context))
 
 
 def clear_authz_context() -> None:
@@ -74,6 +97,7 @@ def clear_authz_context() -> None:
     current_company_id.set(None)
     current_is_system_admin.set(False)
     current_can_view_team_modules.set(frozenset())
+    current_is_system_context.set(False)
 
 
 @contextmanager
@@ -98,12 +122,18 @@ def system_authz() -> Iterator[None]:
     prior_cid = current_company_id.get()
     prior_isa = current_is_system_admin.get()
     prior_team = current_can_view_team_modules.get()
-    set_authz_context(user_id=None, company_id=None, is_system_admin=True)
+    prior_sys = current_is_system_context.get()
+    set_authz_context(
+        user_id=None, company_id=None, is_system_admin=True, is_system_context=True
+    )
     try:
         yield
     finally:
         set_authz_context(
-            user_id=prior_uid, company_id=prior_cid, is_system_admin=prior_isa
+            user_id=prior_uid,
+            company_id=prior_cid,
+            is_system_admin=prior_isa,
+            is_system_context=prior_sys,
         )
         current_can_view_team_modules.set(prior_team)
 

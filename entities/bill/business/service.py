@@ -10,6 +10,7 @@ from typing import Any, List, Optional
 # Local Imports
 from shared.access import assert_can_access_bill
 from shared.authz import current_user_id, current_is_system_admin
+from shared.lifecycle.terminal_lock import assert_editable, is_exempt
 # errors.py is a stdlib-only leaf — safe at module top despite this file's
 # lazy-import convention for circular service deps.
 from integrations.intuit.qbo.base.errors import QboBudgetExceededError, QboWriteRefusedError
@@ -326,7 +327,37 @@ class BillService:
                 # on SourceEmailMessageId IS NULL — won't overwrite a
                 # link to a different email.
                 link_msg = ""
-                if source_email_message_id is not None:
+                # U-446b (Codex round 2, P1). This backfill WRITES to the
+                # existing Bill — `SourceEmailMessageId` plus `ModifiedDatetime`
+                # — and `source_email_message_public_id` is client-supplied on
+                # `POST /create/bill`. Posting a duplicate of a completed Bill
+                # that has no source linked yet therefore edited a locked
+                # document and still returned the ordinary duplicate error.
+                #
+                # The side effect is SKIPPED rather than raised: the request
+                # fails as a duplicate either way, and that message tells the
+                # caller far more than a `status_locked` would.
+                #
+                # NO system-caller exemption (Codex round 5, P3). An earlier cut
+                # had one, but `LinkBillSourceEmailMessage` carries
+                # `AND [Status] <> 'completed'` — the only place the check
+                # cannot be raced — and that predicate applies to everyone. The
+                # exemption here therefore did nothing except send system
+                # callers down a path that silently wrote nothing and then
+                # reported "already has a source email linked", which is not
+                # what happened. A completed Bill has already shipped its AP;
+                # there is nothing a late dedup stamp can still protect.
+                from shared.lifecycle.terminal_lock import is_terminal
+                existing_is_locked = is_terminal(
+                    getattr(existing, "status", None),
+                    is_draft=getattr(existing, "is_draft", None),
+                )
+                if source_email_message_id is not None and existing_is_locked:
+                    link_msg = (
+                        " Existing Bill is completed, so its source-email link "
+                        "was left unchanged."
+                    )
+                elif source_email_message_id is not None:
                     try:
                         linked = self.repo.link_source_email_message(
                             bill_id=existing.id,
@@ -1039,6 +1070,18 @@ class BillService:
         existing = self.read_by_public_id(public_id=public_id)
         if not existing:
             return None
+
+        # U-446b. A completed bill's AP has already reached QBO, SharePoint,
+        # Excel and Box; editing the header afterwards moves our books without
+        # moving any of theirs. The completion pipeline is exempt — it is the
+        # thing doing the completing — via the same internal-only kwarg the
+        # is_draft guard below already uses.
+        assert_editable(
+            status=getattr(existing, "status", None),
+            is_draft=getattr(existing, "is_draft", None),
+            what="its header cannot be changed",
+            exempt=_via_completion_pipeline,
+        )
         
         existing.row_version = row_version
         
@@ -1080,7 +1123,13 @@ class BillService:
         # Note: SharePoint sync is performed in complete_bill when "Complete Bill" is clicked.
         # This avoids duplicate uploads when the bill is finalized.
 
-        updated_bill = self.repo.update_by_id(existing)
+        updated_bill = self.repo.update_by_id(
+            existing,
+            # U-446b: the sproc re-checks inside the writing transaction, so a
+            # completion that wins the race still yields 422 `status_locked`
+            # rather than the 409 a bare row-version miss would produce.
+            allow_terminal_parent=is_exempt(_via_completion_pipeline),
+        )
         
         return updated_bill
 
@@ -1323,11 +1372,37 @@ class BillService:
         - BillLineItem records
         - Bill record
         """
+        # U-446b: non-admins cannot delete a completed bill. Admins still can —
+        # deleting one whose AP already shipped is destructive, but it is the
+        # only escape hatch for a bill created in error, and §4.1 keeps it
+        # deliberately. Note this exempts on is_system_admin ALONE (unlike the
+        # header guard) precisely because a human admin is the intended actor.
         
         # Step 1: Get the bill
         existing = self.read_by_public_id(public_id=public_id)
         if not existing or not existing.id:
             return None
+
+        # U-446b (Codex round 4, P1). ONE decision, reused by every step below.
+        #
+        # The children used to be exempted unconditionally, on the reasoning
+        # that this guard had already decided. That is only true for an ADMIN.
+        # For everyone else the check above passed because the bill was a DRAFT,
+        # and a completion landing mid-cascade then met no resistance at all —
+        # a non-admin could remove a completed bill's links, lines and header
+        # without a single refusal.
+        #
+        # Carrying the same condition down means a mid-cascade completion is
+        # refused at the FIRST child, with nothing destroyed. The admin path is
+        # unchanged: they asked to delete a completed bill and may.
+        cascade_exempt = current_is_system_admin.get()
+
+        assert_editable(
+            status=getattr(existing, "status", None),
+            is_draft=getattr(existing, "is_draft", None),
+            what="it cannot be deleted",
+            exempt=cascade_exempt,
+        )
         
         bill_id = existing.id
         
@@ -1355,7 +1430,17 @@ class BillService:
                     if attachment_link and attachment_link.id:
                         # Only delete the link — leave Attachment + blob untouched
                         try:
-                            bill_line_item_attachment_repo.delete_by_id(id=attachment_link.id)
+                            bill_line_item_attachment_repo.delete_by_id(
+                                id=attachment_link.id,
+                                # U-446b: the bill-delete cascade. A system
+                                # admin deleting a completed bill is the
+                                # deliberate escape hatch (§4.1), and the
+                                # guard on THIS method already decided that —
+                                # re-refusing here would leave the row
+                                # half-deleted. Conditional, not True: see
+                                # `cascade_exempt` above.
+                                allow_terminal_parent=cascade_exempt,
+                            )
                             logger.info(f"Deleted bill line item attachment link {attachment_link.id}")
                         except Exception as e:
                             logger.warning(f"Error deleting bill line item attachment link {attachment_link.id}: {e}")
@@ -1365,11 +1450,24 @@ class BillService:
             # Step 3c: Delete the BillLineItem record (must run even if attachment cleanup failed)
             try:
                 if line_item.id and line_item.public_id:
-                    self.bill_line_item_service.delete_by_public_id(public_id=line_item.public_id)
+                    self.bill_line_item_service.delete_by_public_id(
+                        public_id=line_item.public_id,
+                        # U-446b (Codex round 3, P1). The header guard on THIS
+                        # method already made the call: a system admin may
+                        # delete a completed bill (§4.1). Without the exemption
+                        # the cascade deleted the attachment links (exempt) and
+                        # was then refused on the lines — leaving the bill
+                        # half-destroyed: evidence links gone, lines orphaned,
+                        # header still there because the FK blocks it.
+                        # Conditional, not True: see `cascade_exempt` above.
+                        _via_internal_pipeline=cascade_exempt,
+                    )
                     logger.info(f"Deleted bill line item {line_item.id}")
                 elif line_item.id:
                     from entities.bill_line_item.persistence.repo import BillLineItemRepository
-                    BillLineItemRepository().delete_by_id(id=line_item.id)
+                    BillLineItemRepository().delete_by_id(
+                        id=line_item.id, allow_terminal_parent=cascade_exempt
+                    )
                     logger.info(f"Deleted bill line item {line_item.id} (by ID, no public_id)")
             except Exception as e:
                 logger.error(f"Failed to delete bill line item {line_item.id}: {e}")
@@ -1401,7 +1499,9 @@ class BillService:
 
         # U-355/U-365: no qbo.* mapping row to clear before the header delete —
         # dbo.Bill.QboId/RealmId die with the row.
-        return self.repo.delete_by_id(existing.id)
+        return self.repo.delete_by_id(
+            existing.id, allow_terminal_parent=cascade_exempt
+        )
 
 
     def _rename_invoice_blob_on_complete(
@@ -1448,6 +1548,12 @@ class BillService:
                     blob_url=new_url,
                     filename=new_blob_name,
                     original_filename=new_blob_name,
+                    # U-446b. Step 1 of completion has ALREADY set the header to
+                    # `completed`, so by the time this rename runs its own bill
+                    # is terminal and the new attachment guard would refuse it —
+                    # the invoice blob would keep its nested name forever. This
+                    # rename IS part of completing; it says so.
+                    _via_internal_pipeline=True,
                 )
                 storage.delete_file(attachment.blob_url)
                 logger.info(f"Moved blob to root: {blob_name} -> {new_blob_name}")
@@ -1580,11 +1686,24 @@ class BillService:
                         is_billable=line_item.is_billable,
                         markup=line_item.markup,
                         price=line_item.price,
-                        is_draft=False
+                        is_draft=False,
                     )
+                    # U-446b (Codex P0). Step 1 above ALREADY set the header to
+                    # `completed`, so by the time Step 2 marks each line the
+                    # parent reads as terminal and the guard refuses it —
+                    # turning every completion that has draft lines into a 207
+                    # full of `status_locked` errors with the lines left draft.
+                    # Reclaim runs under system_authz and would have masked it.
+                    #
+                    # The flag is passed HERE and not into BillLineItemUpdate:
+                    # pydantic treats a leading-underscore name as a private
+                    # attribute, so the model silently drops it and
+                    # `model_dump()` never carries it — the exemption would be
+                    # inert while looking present at the call site.
                     self.bill_line_item_service.update_by_public_id(
                         public_id=line_item.public_id,
-                        **line_item_update.model_dump()
+                        **line_item_update.model_dump(),
+                        _via_internal_pipeline=True,
                     )
                 except Exception as e:
                     logger.error(f"Error finalizing line item {line_item.id}: {e}")

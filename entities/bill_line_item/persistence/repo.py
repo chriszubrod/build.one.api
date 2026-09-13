@@ -16,6 +16,8 @@ from shared.database import (
     retry_on_transient,
 )
 
+from shared.lifecycle.terminal_lock import reraise_if_sproc_status_locked
+
 logger = logging.getLogger(__name__)
 
 
@@ -64,9 +66,14 @@ class BillLineItemRepository:
             logger.error(f"Unexpected error during bill line item mapping: {error}")
             raise map_database_error(error)
 
-    def create(self, *, bill_id: int, sub_cost_code_id: Optional[int] = None, project_id: Optional[int] = None, description: Optional[str] = None, quantity: Optional[int] = None, rate: Optional[Decimal] = None, amount: Optional[Decimal] = None, is_billable: Optional[bool] = None, is_billed: Optional[bool] = None, markup: Optional[Decimal] = None, price: Optional[Decimal] = None, is_draft: bool = True, created_by_user_id: Optional[int] = None) -> BillLineItem:
+    def create(self, *, bill_id: int, sub_cost_code_id: Optional[int] = None, project_id: Optional[int] = None, description: Optional[str] = None, quantity: Optional[int] = None, rate: Optional[Decimal] = None, amount: Optional[Decimal] = None, is_billable: Optional[bool] = None, is_billed: Optional[bool] = None, markup: Optional[Decimal] = None, price: Optional[Decimal] = None, is_draft: bool = True, created_by_user_id: Optional[int] = None, allow_terminal_parent: bool = True) -> BillLineItem:
         """
         Create a new bill line item.
+
+        `allow_terminal_parent` is the sproc-side half of the U-446b terminal
+        lock and is ALWAYS passed explicitly — the sproc defaults it permissive
+        so the SQL can be applied either side of a deploy, which means an
+        omission here silently drops the guard.
         """
         try:
             with get_connection() as conn:
@@ -88,6 +95,7 @@ class BillLineItemRepository:
                         "Price": Decimal(str(price)) if price is not None else None,
                         "IsDraft": 1 if is_draft else 0,
                         "CreatedByUserId": created_by_user_id,
+                        "AllowTerminalParent": 1 if allow_terminal_parent else 0,
                     },
                 )
                 row = cursor.fetchone()
@@ -96,6 +104,9 @@ class BillLineItemRepository:
                     raise map_database_error(Exception("CreateBillLineItem failed"))
                 return self._from_db(row)
         except Exception as error:
+            reraise_if_sproc_status_locked(
+                error, what="line items cannot be added to it"
+            )
             logger.error(f"Error during create bill line item: {error}")
             raise map_database_error(error)
 
@@ -264,9 +275,11 @@ class BillLineItemRepository:
             logger.error(f"Error during read bill line items by project ID: {error}")
             raise map_database_error(error)
 
-    def update_by_id(self, bill_line_item: BillLineItem) -> Optional[BillLineItem]:
+    def update_by_id(self, bill_line_item: BillLineItem, *, allow_terminal_parent: bool = True) -> Optional[BillLineItem]:
         """
         Update a bill line item by ID.
+
+        See `create` for why `allow_terminal_parent` must always be passed.
         """
         try:
             with get_connection() as conn:
@@ -286,6 +299,7 @@ class BillLineItemRepository:
                     "Markup": Decimal(str(bill_line_item.markup)) if bill_line_item.markup is not None else None,
                     "Price": Decimal(str(bill_line_item.price)) if bill_line_item.price is not None else None,
                 }
+                params["AllowTerminalParent"] = 1 if allow_terminal_parent else 0
                 # Only include IsDraft if it's explicitly set (not None)
                 if bill_line_item.is_draft is not None:
                     params["IsDraft"] = 1 if bill_line_item.is_draft else 0
@@ -307,12 +321,17 @@ class BillLineItemRepository:
                     )
                 return self._from_db(row)
         except Exception as error:
+            reraise_if_sproc_status_locked(
+                error, what="its line items cannot be changed"
+            )
             logger.error(f"Error during update bill line item by ID: {error}")
             raise map_database_error(error)
 
-    def delete_by_id(self, id: int) -> Optional[BillLineItem]:
+    def delete_by_id(self, id: int, *, allow_terminal_parent: bool = True) -> Optional[BillLineItem]:
         """
         Delete a bill line item by ID.
+
+        See `create` for why `allow_terminal_parent` must always be passed.
         """
         try:
             with get_connection() as conn:
@@ -320,11 +339,17 @@ class BillLineItemRepository:
                 call_procedure(
                     cursor=cursor,
                     name="DeleteBillLineItemById",
-                    params={"Id": id},
+                    params={
+                        "Id": id,
+                        "AllowTerminalParent": 1 if allow_terminal_parent else 0,
+                    },
                 )
                 row = cursor.fetchone()
                 return self._from_db(row) if row else None
         except Exception as error:
+            reraise_if_sproc_status_locked(
+                error, what="its line items cannot be deleted"
+            )
             logger.error(f"Error during delete bill line item by ID: {error}")
             raise map_database_error(error)
 

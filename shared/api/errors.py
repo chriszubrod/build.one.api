@@ -41,6 +41,7 @@ class ErrorCode:
     NOT_FOUND = "not_found"
     VALIDATION_ERROR = "validation_error"  # request body/query/path failed schema validation
     REVIEW_STATUS_SHAPE = "review_status_shape"  # edit would leave the ReviewStatus set underivable
+    STATUS_LOCKED = "status_locked"  # document is completed; further edits refused
 
 
 class ApiError(HTTPException):

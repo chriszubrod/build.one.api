@@ -195,6 +195,12 @@ class AttachableAttachmentConnector:
             file_size=len(file_content),
             content_type=content_type,
             file_extension=file_extension,
+            # U-446b. A blob HEAL, not a user edit: the bytes came from QBO,
+            # which is the system of record for them, and the Attachment being
+            # repaired is very often evidence for a completed Bill — that is
+            # precisely when a missing blob most needs restoring. Refusing here
+            # would leave the document permanently without its PDF.
+            _via_internal_pipeline=True,
         )
         logger.info(f"Re-uploaded blob for Attachment {attachment.id} → {blob_url}")
         # Fresh bytes landed — queue text extraction (U-187). Deferred

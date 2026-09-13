@@ -13,6 +13,7 @@ from entities.project.business.service import ProjectService
 from entities.expense.business.service import ExpenseService
 from shared.access import assert_can_access_expense
 from shared.authz import current_user_id
+from shared.lifecycle.terminal_lock import StatusLockedError
 
 logger = logging.getLogger(__name__)
 
@@ -239,8 +240,40 @@ class ExpenseLineItemService:
             if attachment_link:
                 attachment_service = AttachmentService()
                 attachment = attachment_service.read_by_id(id=attachment_link.attachment_id) if attachment_link.attachment_id else None
+                # U-446b (Codex round 5, P1). LINK, then ROW, then BLOB — this
+                # cascade was missed when its four siblings were reordered.
+                #
+                # The link first because FK_ExpenseLineItemAttachment_Attachment
+                # is NO ACTION, so the Attachment delete fails while it stands.
+                # The blob last because the guarded row delete is what decides:
+                # an attachment can be a completed Bill's evidence too (BLIA
+                # multi-split linking), and destroying the bytes before asking
+                # leaves that evidence pointing at nothing.
+                try:
+                    ExpenseLineItemAttachmentRepository().delete_by_id(id=attachment_link.id)
+                except Exception as e:
+                    import logging
+                    logging.getLogger(__name__).warning(
+                        "Could not delete expense line item attachment link %s: %s",
+                        attachment_link.id, e,
+                    )
+
                 if attachment:
-                    if attachment.blob_url:
+                    removed = None
+                    try:
+                        removed = attachment_service.delete_by_public_id(public_id=attachment.public_id)
+                    except StatusLockedError:
+                        import logging
+                        logging.getLogger(__name__).info(
+                            "Kept attachment %s: it is evidence for a completed Bill",
+                            attachment.public_id,
+                        )
+                    except Exception as e:
+                        import logging
+                        logging.getLogger(__name__).warning(
+                            "Could not delete attachment record %s: %s", attachment.id, e
+                        )
+                    if removed is not None and attachment.blob_url:
                         try:
                             AzureBlobStorage().delete_file(attachment.blob_url)
                         except Exception as e:
@@ -249,20 +282,6 @@ class ExpenseLineItemService:
                                 "Could not delete blob %s for attachment %s: %s",
                                 attachment.blob_url, attachment.id, e,
                             )
-                    try:
-                        attachment_service.delete_by_public_id(public_id=attachment.public_id)
-                    except Exception as e:
-                        import logging
-                        logging.getLogger(__name__).warning(
-                            "Could not delete attachment record %s: %s", attachment.id, e
-                        )
-                try:
-                    ExpenseLineItemAttachmentRepository().delete_by_id(id=attachment_link.id)
-                except Exception as e:
-                    import logging
-                    logging.getLogger(__name__).warning(
-                        "Could not delete ExpenseLineItemAttachment %s: %s", attachment_link.id, e
-                    )
         except Exception as e:
             import logging
             logging.getLogger(__name__).warning(

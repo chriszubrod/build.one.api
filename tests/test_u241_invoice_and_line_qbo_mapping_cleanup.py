@@ -94,7 +94,7 @@ def test_bill_line_item_delete_clears_legacy_mapping_row_before_line():
     call_order = []
 
     mock_repo = Mock()
-    mock_repo.delete_by_id.side_effect = lambda *_: call_order.append("line") or line
+    mock_repo.delete_by_id.side_effect = lambda *_, **__: call_order.append("line") or line
 
     mock_cursor = Mock()
     mock_cursor.execute.side_effect = lambda *_: call_order.append("mapping")
@@ -148,7 +148,10 @@ def test_bill_line_item_delete_mapping_clear_failure_is_swallowed_line_delete_st
         result = svc.delete_by_public_id("bli-pub")
 
     assert result is line
-    mock_repo.delete_by_id.assert_called_once_with(21)
+    # U-446b: the repo now also carries `allow_terminal_parent`, the sproc-side
+    # half of the terminal lock. False here is correct — this is an ordinary
+    # user delete, so the in-transaction guard must be ON.
+    mock_repo.delete_by_id.assert_called_once_with(21, allow_terminal_parent=False)
 
 
 # --- InvoiceLineItem ---

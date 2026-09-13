@@ -14,7 +14,8 @@ from fastapi.responses import Response, StreamingResponse
 # Local Imports
 from entities.attachment.api.schemas import AttachmentCreate, AttachmentUpdate
 from entities.attachment.business.service import AttachmentService
-from shared.api.responses import list_response, item_response, raise_not_found
+from shared.api.responses import list_response, item_response, raise_not_found, raise_workflow_error
+from shared.lifecycle.terminal_lock import StatusLockedError
 from shared.rbac import require_module_api
 from shared.rbac_constants import Modules
 from shared.storage import AzureBlobStorage, AzureBlobStorageError
@@ -212,9 +213,14 @@ def update_attachment_by_public_id_router(
     result = ProcessEngine().execute_synchronous(context)
 
     if not result.get("success"):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=result.get("error", "Failed to update attachment")
+        # U-446b. Through the mapper, not a bare 400: ProcessEngine flattens a
+        # service exception to `{"error": str(e)}`, so the message prefix is the
+        # only structure that survives — and `status_locked` has to arrive as
+        # 422, never as 409 (which installed iOS routes to its reload-and-retry
+        # concurrency path). Unrecognised messages still fall through to 400,
+        # exactly as before.
+        raise_workflow_error(
+            result.get("error", ""), "Failed to update attachment"
         )
 
     return item_response(result.get("data"))
@@ -232,6 +238,8 @@ def archive_attachment_router(public_id: str, current_user: dict = Depends(requi
         return item_response(attachment.to_dict())
     except HTTPException:
         raise
+    except StatusLockedError as locked:
+        raise_workflow_error(str(locked), "Failed to archive attachment")
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -248,6 +256,8 @@ def unarchive_attachment_router(public_id: str, current_user: dict = Depends(req
         return item_response(attachment.to_dict())
     except HTTPException:
         raise
+    except StatusLockedError as locked:
+        raise_workflow_error(str(locked), "Failed to unarchive attachment")
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -262,20 +272,35 @@ def delete_attachment_by_public_id_router(public_id: str, current_user: dict = D
         if not attachment:
             raise_not_found("Attachment")
 
-        # Delete blob from Azure Storage
-        if attachment.blob_url:
+        # U-446b. ORDER INVERTED: database row first, blob second.
+        #
+        # This route used to delete from Azure first. On a completed Bill's
+        # evidence that destroyed the file and then failed the row delete on
+        # FK_BillLineItemAttachment_Attachment (NO ACTION), returning 500 — the
+        # document survived in name only. A preflight check alone did not fix
+        # it either: the check ran in its own transaction, so a completion
+        # committing between the check and the Azure call still destroyed the
+        # bytes (Codex round 3, P1).
+        #
+        # With the row deleted first, the refusal is decided by the sproc's
+        # in-transaction guard and nothing has been destroyed when it fires. The
+        # residual is an orphan blob if the Azure call then fails — recoverable,
+        # unlike the alternative.
+        deleted = service.delete_by_public_id(public_id=public_id)
+
+        if deleted is not None and attachment.blob_url:
             try:
                 storage = AzureBlobStorage()
                 storage.delete_file(attachment.blob_url)
             except AzureBlobStorageError as e:
                 logger.warning(f"Failed to delete blob: {e}")
-                # Continue with database deletion even if blob deletion fails
+                # The row is already gone; an orphan blob is the safe residual.
 
-        # Delete from database
-        deleted = service.delete_by_public_id(public_id=public_id)
         return item_response(deleted.to_dict() if deleted else {})
     except HTTPException:
         raise
+    except StatusLockedError as locked:
+        raise_workflow_error(str(locked), "Failed to delete attachment")
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

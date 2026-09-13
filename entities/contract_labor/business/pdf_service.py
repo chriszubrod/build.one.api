@@ -25,6 +25,8 @@ from entities.project.business.service import ProjectService
 from entities.sub_cost_code.business.service import SubCostCodeService
 from shared.storage import AzureBlobStorage
 
+from shared.lifecycle.terminal_lock import StatusLockedError, assert_editable
+
 logger = logging.getLogger(__name__)
 
 
@@ -93,6 +95,20 @@ class ContractLaborPDFService:
                     "errors": ["Vendor not found"],
                 }
             
+            # U-446b. PREFLIGHT the terminal lock here, before a single byte
+            # reaches blob storage.
+            #
+            # The link create at the bottom of the loop is guarded, so a
+            # completed Bill was already refused — but only AFTER this method
+            # had uploaded the PDF and created its Attachment row, leaving an
+            # orphan blob and an orphan Attachment behind on every attempt. The
+            # guard has to run before the side effects, not after them.
+            assert_editable(
+                status=getattr(bill, "status", None),
+                is_draft=getattr(bill, "is_draft", None),
+                what="time-log PDFs cannot be generated for it",
+            )
+
             # Get line items
             line_items = self.bill_line_item_service.read_by_bill_id(bill_id=bill.id)
             
@@ -193,6 +209,13 @@ class ContractLaborPDFService:
                     pdfs_generated += 1
                     logger.info(f"Generated PDF for line item {line_item.id}: {filename}")
                     
+                except StatusLockedError:
+                    # The preflight above already refused a completed Bill, so
+                    # reaching here means it was completed mid-loop. Same
+                    # reasoning: a lock is not a per-line error to collect, and
+                    # continuing would keep uploading blobs for the rest of the
+                    # lines against a document that is now closed.
+                    raise
                 except Exception as e:
                     logger.exception(f"Error generating PDF for line item {line_item.id}")
                     errors.append(f"Line item {line_item.public_id}: {str(e)}")
@@ -209,6 +232,12 @@ class ContractLaborPDFService:
                 "errors": errors,
             }
             
+        except StatusLockedError:
+            # U-446b: must NOT be folded into the `errors` array. Swallowed here
+            # the endpoint answers 200 + `success: false`, which is not the
+            # documented contract (422 + `status_locked`) and which every
+            # client reads as "nothing to retry, nothing went wrong".
+            raise
         except Exception as e:
             logger.exception("Error generating PDFs for bill")
             return {
@@ -502,7 +531,20 @@ class ContractLaborPDFService:
             for bill_id in bill_ids:
                 bill = self.bill_service.read_by_id(id=bill_id)
                 if bill and bill.public_id:
-                    result = self.generate_pdfs_for_bill(bill_public_id=bill.public_id)
+                    try:
+                        result = self.generate_pdfs_for_bill(bill_public_id=bill.public_id)
+                    except StatusLockedError as locked:
+                        # U-446b. A sweep over many bills must not abort because
+                        # ONE of them is completed — the single-bill endpoint
+                        # raises so the caller gets a 422, but here the right
+                        # answer is to skip it and keep going. Recorded, not
+                        # silent: a bill that can never get its time log is
+                        # something the operator needs to see.
+                        logger.info(
+                            "contract_labor.pdf.skipped_completed bill=%s", bill.public_id
+                        )
+                        all_errors.append(f"Bill {bill.public_id}: {locked.reason}")
+                        continue
                     total_pdfs += result["pdfs_generated"]
                     all_errors.extend(result["errors"])
             

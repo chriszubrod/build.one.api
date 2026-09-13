@@ -33,6 +33,14 @@ from integrations.intuit.qbo.reconciliation.persistence.repo import Reconciliati
 logger = logging.getLogger(__name__)
 
 
+# U-446b. A QBO pull is a PROJECTION of what QuickBooks already holds, so it
+# must land on a completed Bill — refusing it would leave the local record
+# permanently disagreeing with the system that owns the money. The three
+# mutations below therefore declare the exemption explicitly, the same way
+# invoice completion's `is_billed` flip does. Context is not enough: the
+# scheduler drives this through the drain (system context), but
+# `POST /sync/qbo-bills` drives the identical code as a real, human-authenticated
+# user (Codex P1 #4).
 class BillLineItemConnector:
     """
     Connector service for synchronization between QboBillLine and BillLineItem modules.
@@ -231,6 +239,7 @@ class BillLineItemConnector:
                 price=price,
                 is_draft=False,
                 row_version=direct.row_version,
+                _via_internal_pipeline=True,
             )
             if updated is None:
                 # ROWVERSION race: a concurrent writer touched this exact
@@ -316,6 +325,7 @@ class BillLineItemConnector:
                 markup=markup,
                 price=price,
                 is_draft=False,
+                _via_internal_pipeline=True,
             )
 
         def _stamp_line_identity(candidate: BillLineItem) -> Optional[BillLineItem]:
@@ -344,7 +354,7 @@ class BillLineItemConnector:
             """
             rollback_orphan_header(
                 delete_header=lambda: self.bill_line_item_service.delete_by_public_id(
-                    candidate.public_id
+                    candidate.public_id, _via_internal_pipeline=True
                 ),
                 delete_mapping=lambda: None,
                 entity_label="BillLineItem",

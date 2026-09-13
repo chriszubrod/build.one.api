@@ -178,13 +178,13 @@ def _wire_refusal_path(
     if read_lines is not None:
         svc.line_item_repo.read_by_contract_labor_id = read_lines
     if delete_bli_calls is None:
-        delete_by_id = lambda bli_id: None
+        delete_by_id = lambda bli_id, **_: None
     else:
-        delete_by_id = lambda bli_id: delete_bli_calls.append(bli_id)
+        delete_by_id = lambda bli_id, **_: delete_bli_calls.append(bli_id)
     svc.bill_service = types.SimpleNamespace(
         repo=types.SimpleNamespace(
             read_by_bill_number_and_vendor_id=lambda bill_number, vendor_id: existing_bill,
-            update_by_id=lambda b: (update_calls.append(b), b)[1],
+            update_by_id=lambda b, **_: (update_calls.append(b), b)[1],
         ),
         create=lambda **kwargs: pytest.fail("should not create"),
     )
@@ -374,7 +374,7 @@ def test_mixed_vendor_one_create_one_refused(monkeypatch):
     svc.bill_service = types.SimpleNamespace(
         repo=types.SimpleNamespace(
             read_by_bill_number_and_vendor_id=lookup_bill,
-            update_by_id=lambda b: (update_calls.append(b), b)[1],
+            update_by_id=lambda b, **_: (update_calls.append(b), b)[1],
         ),
         create=lambda **kwargs: (created_bills.append(kwargs), new_bill)[1],
         delete_by_public_id=lambda pid: None,
@@ -383,7 +383,7 @@ def test_mixed_vendor_one_create_one_refused(monkeypatch):
     svc.bill_line_item_service = types.SimpleNamespace(
         read_by_bill_id=lambda bill_id: [existing_bli] if bill_id == 501 else [],
         create=lambda **kwargs: new_bli,
-        repo=types.SimpleNamespace(delete_by_id=lambda bli_id: None),
+        repo=types.SimpleNamespace(delete_by_id=lambda bli_id, **_: None),
     )
     svc.cl_repo = types.SimpleNamespace(
         read_by_vendor_id=lambda vid: [billed_cl],
@@ -453,7 +453,7 @@ def test_repair_flow_edit_path_rebuilds_when_no_billed_references(monkeypatch):
     svc.bill_service = types.SimpleNamespace(
         repo=types.SimpleNamespace(
             read_by_bill_number_and_vendor_id=lambda bill_number, vendor_id: existing_bill,
-            update_by_id=lambda b: (update_calls.append(b), b)[1],
+            update_by_id=lambda b, **_: (update_calls.append(b), b)[1],
         ),
         create=lambda **kwargs: pytest.fail("should not create"),
     )
@@ -462,7 +462,7 @@ def test_repair_flow_edit_path_rebuilds_when_no_billed_references(monkeypatch):
         read_by_bill_id=lambda bill_id: [existing_bli],
         create=lambda **kwargs: (create_bli_calls.append(kwargs), new_bli)[1],
         repo=types.SimpleNamespace(
-            delete_by_id=lambda bli_id: delete_bli_calls.append(bli_id)
+            delete_by_id=lambda bli_id, **_: delete_bli_calls.append(bli_id)
         ),
     )
     svc.cl_repo = types.SimpleNamespace(
@@ -515,7 +515,7 @@ def test_billing_period_skips_off_period_group(monkeypatch):
     svc.bill_line_item_service = types.SimpleNamespace(
         read_by_bill_id=lambda bill_id: [],
         create=lambda **kwargs: new_bli,
-        repo=types.SimpleNamespace(delete_by_id=lambda bli_id: None),
+        repo=types.SimpleNamespace(delete_by_id=lambda bli_id, **_: None),
     )
     svc.cl_repo = types.SimpleNamespace(
         read_by_vendor_id=lambda vid: [],
@@ -575,7 +575,7 @@ def test_period_fallback_derives_from_work_date_not_billing_period_start(monkeyp
     svc.bill_line_item_service = types.SimpleNamespace(
         read_by_bill_id=lambda bill_id: [],
         create=lambda **kwargs: new_bli,
-        repo=types.SimpleNamespace(delete_by_id=lambda bli_id: None),
+        repo=types.SimpleNamespace(delete_by_id=lambda bli_id, **_: None),
     )
     svc.cl_repo = types.SimpleNamespace(
         read_by_vendor_id=lambda vid: [],

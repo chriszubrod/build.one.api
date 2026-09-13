@@ -7,6 +7,12 @@ from decimal import Decimal
 
 # Local Imports
 from shared.access import assert_can_access_bill, assert_can_access_project
+from shared.database import DatabaseConcurrencyError
+from shared.lifecycle.terminal_lock import (
+    StatusLockedError,
+    assert_editable,
+    is_exempt,
+)
 from shared.authz import current_user_id, current_is_system_admin
 from entities.bill_line_item.business.model import BillLineItem
 from entities.bill_line_item.persistence.repo import BillLineItemRepository
@@ -75,10 +81,64 @@ class BillLineItemService:
         """Initialize the BillLineItemService."""
         self.repo = repo or BillLineItemRepository()
 
-    def create(self, *, tenant_id: int = None, bill_public_id: str, sub_cost_code_id: Optional[int] = None, project_public_id: Optional[str] = None, description: Optional[str] = None, quantity: Optional[int] = None, rate: Optional[Decimal] = None, amount: Optional[Decimal] = None, is_billable: Optional[bool] = None, is_billed: Optional[bool] = None, markup: Optional[Decimal] = None, price: Optional[Decimal] = None, is_draft: bool = True) -> BillLineItem:
+
+    def _assert_parent_editable(self, *, bill_id=None, bill_public_id=None,
+                                what: str, exempt: bool = False) -> None:
+        """U-446b: a completed bill's line items are frozen with it.
+
+        Reads the parent rather than trusting the caller — the line item itself
+        carries no lifecycle state. Exempt callers skip the read entirely, which
+        matters because invoice completion touches these in a loop.
+        """
+        if exempt:
+            return
+        if bill_id is None and bill_public_id is None:
+            # Nothing identifies the parent (a partially-populated object).
+            # Fail OPEN, for the same reason terminal_lock.is_terminal does:
+            # this is a lifecycle guard, not authorization, and blocking here
+            # would break callers holding a partial row.
+            return
+        from shared.lifecycle.terminal_lock import is_system_caller
+        if is_system_caller():
+            return
+        from entities.bill.business.service import BillService
+        svc = BillService()
+        parent = (svc.read_by_id(id=bill_id) if bill_id is not None
+                  else svc.read_by_public_id(public_id=bill_public_id))
+        if parent is None:
+            return
+        assert_editable(
+            status=getattr(parent, "status", None),
+            is_draft=getattr(parent, "is_draft", None),
+            what=what,
+        )
+
+    def _reassert_after_a_lost_write(self, *, bill_id, bill_public_id=None, what, exempt):
+        """U-446b (Codex round 4, P2). Turn a lost reparent race into 422.
+
+        The in-transaction guards make a wrong write IMPOSSIBLE, but they make
+        it impossible by matching zero rows — so a caller that lost the race
+        sees "not found", a row-version 409, or a bare repo failure, none of
+        which is the `status_locked` this unit promises. 409 is the worst of the
+        three: installed iOS routes it to reload-and-retry, so a permanent
+        refusal delivered that way loops.
+
+        Re-reading the parent on the FAILURE PATH ONLY costs nothing in the
+        normal case and names what actually happened.
+        """
+        self._assert_parent_editable(
+            bill_id=bill_id, bill_public_id=bill_public_id, what=what, exempt=exempt
+        )
+
+    def create(self, *, tenant_id: int = None, bill_public_id: str, sub_cost_code_id: Optional[int] = None, project_public_id: Optional[str] = None, description: Optional[str] = None, quantity: Optional[int] = None, rate: Optional[Decimal] = None, amount: Optional[Decimal] = None, is_billable: Optional[bool] = None, is_billed: Optional[bool] = None, markup: Optional[Decimal] = None, price: Optional[Decimal] = None, is_draft: bool = True, _via_internal_pipeline: bool = False) -> BillLineItem:
         """
         Create a new bill line item.
         """
+        self._assert_parent_editable(
+            bill_public_id=bill_public_id,
+            what="line items cannot be added to it",
+            exempt=_via_internal_pipeline,
+        )
         # TODO: In Phase 10, use tenant_id for tenant isolation
         # Validate Bill exists and get internal ID
         bill = BillService().read_by_public_id(public_id=bill_public_id)
@@ -101,6 +161,11 @@ class BillLineItemService:
             project_id = project.id
         
         return self.repo.create(
+            # U-446b: the sproc re-checks the parent INSIDE the writing
+            # transaction, closing the check-then-write race the Python guard
+            # above cannot. Always passed explicitly — the sproc's default is
+            # permissive so the SQL is safe to apply either side of a deploy.
+            allow_terminal_parent=is_exempt(_via_internal_pipeline),
             bill_id=bill.id,
             sub_cost_code_id=sub_cost_code_id,
             project_id=project_id,
@@ -215,12 +280,31 @@ class BillLineItemService:
         markup: float = None,
         price: float = None,
         is_draft: bool = None,
+        _via_internal_pipeline: bool = False,
     ) -> Optional[BillLineItem]:
         """
         Update a bill line item by public ID.
         """
         # TODO: In Phase 10, validate tenant_id matches record's tenant
         existing = self.read_by_public_id(public_id=public_id)
+        if existing is not None:
+            # The CURRENT parent...
+            self._assert_parent_editable(
+                bill_id=getattr(existing, "bill_id", None),
+                what="its line items cannot be changed",
+                exempt=_via_internal_pipeline,
+            )
+            # ...AND the TARGET parent, when the caller is re-pointing the line
+            # (Codex P0). Checking only the current one let anyone MOVE a line
+            # onto a completed bill by PUTting it with that bill's public id:
+            # the destination was read for existence and access, but never for
+            # lifecycle, so the completed bill silently gained a line.
+            if bill_public_id is not None:
+                self._assert_parent_editable(
+                    bill_public_id=bill_public_id,
+                    what="line items cannot be moved onto it",
+                    exempt=_via_internal_pipeline,
+                )
         if not existing:
             return None
 
@@ -270,14 +354,40 @@ class BillLineItemService:
         if is_draft is not None:
             existing.is_draft = is_draft
 
-        return self.repo.update_by_id(existing)
+        try:
+            return self.repo.update_by_id(
+                existing, allow_terminal_parent=is_exempt(_via_internal_pipeline)
+            )
+        except StatusLockedError:
+            raise
+        except DatabaseConcurrencyError:
+            # NARROW on purpose (Codex round 5, P2). Re-asserting on ANY
+            # exception meant a deadlock victim, a dropped connection or a
+            # serialization failure came back as `status_locked` whenever the
+            # bill happened to complete in the meantime — a transient fault
+            # relabelled as a permanent refusal, which is the wrong thing for
+            # the client to act on. Only a concurrency/zero-row outcome is what
+            # a lost terminal race actually looks like.
+            self._reassert_after_a_lost_write(
+                bill_id=getattr(existing, "bill_id", None),
+                bill_public_id=bill_public_id,
+                what="its line items cannot be changed",
+                exempt=_via_internal_pipeline,
+            )
+            raise
 
-    def delete_by_public_id(self, public_id: str, *, tenant_id: int = None) -> Optional[BillLineItem]:
+    def delete_by_public_id(self, public_id: str, *, tenant_id: int = None, _via_internal_pipeline: bool = False) -> Optional[BillLineItem]:
         """
         Delete a bill line item by public ID.
         """
         # TODO: In Phase 10, validate tenant_id matches record's tenant
         existing = self.read_by_public_id(public_id=public_id)
+        if existing is not None:
+            self._assert_parent_editable(
+                bill_id=getattr(existing, "bill_id", None),
+                what="its line items cannot be deleted",
+                exempt=_via_internal_pipeline,
+            )
         if existing:
             from entities.invoice_line_item.persistence.repo import InvoiceLineItemRepository
             from entities.contract_labor.persistence.repo import ContractLaborRepository
@@ -297,5 +407,16 @@ class BillLineItemService:
             # this comment's prior claim: that FK did not exist when this delete
             # path was first written, but it does now.
             _clear_legacy_bill_line_item_bill_line_mapping(existing.id)
-            return self.repo.delete_by_id(existing.id)
+            deleted = self.repo.delete_by_id(
+                existing.id, allow_terminal_parent=is_exempt(_via_internal_pipeline)
+            )
+            if deleted is None:
+                # The DELETE is bound to the parent the guard locked, so zero
+                # rows can mean the line was MOVED onto a bill that completed.
+                self._reassert_after_a_lost_write(
+                    bill_id=getattr(existing, "bill_id", None),
+                    what="its line items cannot be deleted",
+                    exempt=_via_internal_pipeline,
+                )
+            return deleted
         return None

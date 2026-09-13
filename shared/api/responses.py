@@ -65,8 +65,15 @@ def _derive_workflow_error_code(err_lower: str) -> str | None:
 # direction of the dependency has to be entity -> shared.
 REVIEW_STATUS_SHAPE_PREFIX = "Review status configuration is invalid: "
 
+# U-446b. 422, emphatically NOT 409: installed iOS routes 409 to its per-service
+# CONFLICT path (reload-and-retry, built for optimistic-concurrency collisions)
+# while classifying other 4xx as terminal — so a permanent lock answered with
+# 409 makes a queued edit loop or get discarded through the wrong path.
+STATUS_LOCKED_PREFIX = "This document is completed and can no longer be edited: "
+
 _WORKFLOW_STATUS_BY_PREFIX: tuple[tuple[str, int, str], ...] = (
     (REVIEW_STATUS_SHAPE_PREFIX, status.HTTP_422_UNPROCESSABLE_CONTENT, ErrorCode.REVIEW_STATUS_SHAPE),
+    (STATUS_LOCKED_PREFIX, status.HTTP_422_UNPROCESSABLE_CONTENT, ErrorCode.STATUS_LOCKED),
 )
 
 

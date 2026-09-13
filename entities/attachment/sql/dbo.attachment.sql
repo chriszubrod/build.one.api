@@ -399,11 +399,54 @@ CREATE OR ALTER PROCEDURE UpdateAttachmentById
     @IsArchived BIT,
     @Status NVARCHAR(20),
     @ExpirationDate DATETIME2(3),
-    @StorageTier NVARCHAR(20)
+    @StorageTier NVARCHAR(20),
+    @AllowTerminalParent BIT = 1
 )
 AS
 BEGIN
+    -- Required: the guard below runs before the DML, so with NOCOUNT off its
+    -- row-count token becomes the first result pyodbc sees (CLAUDE.md).
+    SET NOCOUNT ON;
+
     BEGIN TRANSACTION;
+
+    IF @AllowTerminalParent = 0
+    BEGIN
+        -- U-446b (Codex round 3, P1). The Python guard asks this same question
+        -- in a SEPARATE transaction: it can see zero completed parents, the
+        -- completion can commit, and the write then lands on frozen evidence.
+        -- UPDLOCK+HOLDLOCK here reads past the RCSI snapshot and holds to the
+        -- commit, so this and FinalizeBillById serialize.
+        --
+        -- @AllowTerminalParent defaults PERMISSIVE for the same deploy-ordering
+        -- reason as dbo.bill_line_item.sql; the repo always passes it.
+        -- Serialize on the ATTACHMENT row first (Codex round 4, P1).
+        -- Locking only the Bills that are linked RIGHT NOW is not enough: a
+        -- second transaction can link this same file to another DRAFT Bill and
+        -- complete it while we are in flight, and adding a BLIA row does not
+        -- touch Attachment.RowVersion, so nothing else would notice.
+        -- CreateBillLineItemAttachment takes this same lock, so a new link
+        -- cannot appear between this guard and the write below.
+        --
+        -- It doubles as the first lock every attachment-side writer takes,
+        -- which gives them a common ordering point.
+        DECLARE @Locked BIT;
+        SELECT @Locked = 1 FROM dbo.[Attachment] WITH (UPDLOCK, HOLDLOCK)
+        WHERE [Id] = @Id;
+
+        IF EXISTS (
+            SELECT 1
+            FROM dbo.[BillLineItemAttachment] blia
+            INNER JOIN dbo.[BillLineItem] li ON li.[Id] = blia.[BillLineItemId]
+            INNER JOIN dbo.[Bill] b WITH (UPDLOCK, HOLDLOCK) ON b.[Id] = li.[BillId]
+            WHERE blia.[AttachmentId] = @Id AND b.[Status] = 'completed'
+        )
+        BEGIN
+            COMMIT TRANSACTION;
+            RAISERROR('STATUS_LOCKED: this file is evidence for a completed Bill.', 16, 1);
+            RETURN;
+        END
+    END
 
     DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();
 
@@ -457,11 +500,54 @@ GO
 
 CREATE OR ALTER PROCEDURE DeleteAttachmentById
 (
-    @Id BIGINT
+    @Id BIGINT,
+    @AllowTerminalParent BIT = 1
 )
 AS
 BEGIN
+    -- Required: the guard below runs before the DML, so with NOCOUNT off its
+    -- row-count token becomes the first result pyodbc sees (CLAUDE.md).
+    SET NOCOUNT ON;
+
     BEGIN TRANSACTION;
+
+    IF @AllowTerminalParent = 0
+    BEGIN
+        -- U-446b (Codex round 3, P1). The Python guard asks this same question
+        -- in a SEPARATE transaction: it can see zero completed parents, the
+        -- completion can commit, and the write then lands on frozen evidence.
+        -- UPDLOCK+HOLDLOCK here reads past the RCSI snapshot and holds to the
+        -- commit, so this and FinalizeBillById serialize.
+        --
+        -- @AllowTerminalParent defaults PERMISSIVE for the same deploy-ordering
+        -- reason as dbo.bill_line_item.sql; the repo always passes it.
+        -- Serialize on the ATTACHMENT row first (Codex round 4, P1).
+        -- Locking only the Bills that are linked RIGHT NOW is not enough: a
+        -- second transaction can link this same file to another DRAFT Bill and
+        -- complete it while we are in flight, and adding a BLIA row does not
+        -- touch Attachment.RowVersion, so nothing else would notice.
+        -- CreateBillLineItemAttachment takes this same lock, so a new link
+        -- cannot appear between this guard and the write below.
+        --
+        -- It doubles as the first lock every attachment-side writer takes,
+        -- which gives them a common ordering point.
+        DECLARE @Locked BIT;
+        SELECT @Locked = 1 FROM dbo.[Attachment] WITH (UPDLOCK, HOLDLOCK)
+        WHERE [Id] = @Id;
+
+        IF EXISTS (
+            SELECT 1
+            FROM dbo.[BillLineItemAttachment] blia
+            INNER JOIN dbo.[BillLineItem] li ON li.[Id] = blia.[BillLineItemId]
+            INNER JOIN dbo.[Bill] b WITH (UPDLOCK, HOLDLOCK) ON b.[Id] = li.[BillId]
+            WHERE blia.[AttachmentId] = @Id AND b.[Status] = 'completed'
+        )
+        BEGIN
+            COMMIT TRANSACTION;
+            RAISERROR('STATUS_LOCKED: this file is evidence for a completed Bill.', 16, 1);
+            RETURN;
+        END
+    END
 
     DELETE FROM dbo.[Attachment]
     OUTPUT

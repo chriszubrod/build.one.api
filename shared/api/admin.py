@@ -80,7 +80,9 @@ async def _require_drain_secret(x_drain_secret: Optional[str] = Header(default=N
     # to be reachable post-002 migration — every legitimate cross-user
     # read either runs as a system admin user (JWT with isa=true), an
     # actual admin (also isa=true), or as a drain-secret call (this path).
-    set_authz_context(user_id=None, company_id=None, is_system_admin=True)
+    set_authz_context(
+        user_id=None, company_id=None, is_system_admin=True, is_system_context=True
+    )
 
 
 async def _timed(job_name: str, sync_fn) -> dict[str, Any]:

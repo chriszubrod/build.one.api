@@ -476,7 +476,16 @@ class ContractLaborBillService:
                     bill.due_date = due_date
                     bill.total_amount = total_amount_cost
                     bill.memo = memo
-                    bill = self.bill_service.repo.update_by_id(bill)
+                    # U-446b (Codex round 4, P3). Direct repo call, so it
+                    # skips the service guard AND would silently take the
+                    # sproc's permissive default. The CL rebuild edits DRAFT
+                    # bills, so the guard belongs ON — the stale row version
+                    # already blocks a post-completion write, but it surfaces as
+                    # a row-version conflict folded into a 200 error payload,
+                    # which tells the operator nothing about why.
+                    bill = self.bill_service.repo.update_by_id(
+                        bill, allow_terminal_parent=False
+                    )
                     if not bill:
                         result["errors"].append(f"Row version conflict updating bill {invoice_number}")
                         continue
@@ -503,7 +512,15 @@ class ContractLaborBillService:
                         for cl_entry in cl_refs:
                             cl_entry.bill_line_item_id = None
                             self.cl_repo.update_by_id(cl_entry)
-                        self.bill_line_item_service.repo.delete_by_id(bli.id)
+                        # U-446b (Codex round 3, P1). Going straight to the
+                        # repo skips the service guard AND silently takes the
+                        # sproc's permissive default — the CL rebuild could
+                        # therefore delete a line off a bill that completed
+                        # between its draft check and this call. It is a
+                        # rebuild of DRAFT bills, so the guard belongs ON.
+                        self.bill_line_item_service.repo.delete_by_id(
+                            bli.id, allow_terminal_parent=False
+                        )
                     # Deferred: orphan Attachment records + their blobs.
                     # Purged only after successful new-attachment creation
                     # below (search for "orphan_attachment_ids" purge).

@@ -12,6 +12,8 @@ from entities.vendor.business.service import VendorService
 from shared.access import assert_can_access_bill_credit
 from shared.authz import current_user_id, current_is_system_admin
 
+from shared.lifecycle.terminal_lock import StatusLockedError
+
 logger = logging.getLogger(__name__)
 
 
@@ -271,9 +273,44 @@ class BillCreditService:
                         try:
                             # Get the attachment record
                             attachment = attachment_service.read_by_id(id=attachment_link.attachment_id)
+                            # U-446b (Codex round 5, P1). LINK, then ROW, then
+                            # BLOB — in that order, and it matters twice over.
+                            #
+                            # The link has to go FIRST because FK_BillCreditLineItemAttachment_Attachment
+                            # is NO ACTION: with the link still present the
+                            # Attachment delete fails on the FK. That was already
+                            # true before this unit, and the failure was swallowed
+                            # — so this cascade destroyed the blob and then left
+                            # the Attachment row orphaned, every time.
+                            #
+                            # The blob goes LAST because the guarded row delete is
+                            # what decides: an attachment can be a completed
+                            # Bill's evidence too (BLIA multi-split linking), and
+                            # a pre-check cannot settle that — it reads in its own
+                            # transaction, so a Bill completing in between still
+                            # destroyed the bytes. Deleting the row first means
+                            # nothing is destroyed when the guard refuses.
+                            if attachment_link.id:
+                                try:
+                                    bill_credit_line_item_attachment_repo.delete_by_id(id=attachment_link.id)
+                                    logger.info(f"Deleted bill credit line item attachment {attachment_link.id}")
+                                except Exception as e:
+                                    logger.warning(f"Error deleting bill credit line item attachment {attachment_link.id}: {e}")
+
                             if attachment:
-                                # Delete from Azure Blob Storage if blob_url exists
-                                if attachment.blob_url and storage:
+                                removed = None
+                                try:
+                                    removed = attachment_service.delete_by_public_id(public_id=attachment.public_id)
+                                    logger.info(f"Deleted attachment {attachment.id}")
+                                except StatusLockedError:
+                                    logger.info(
+                                        "Kept attachment %s: it is evidence for a completed Bill",
+                                        attachment.public_id,
+                                    )
+                                except Exception as e:
+                                    logger.warning(f"Error deleting attachment {attachment.id}: {e}")
+
+                                if removed is not None and attachment.blob_url and storage:
                                     try:
                                         storage.delete_file(attachment.blob_url)
                                         logger.info(f"Deleted blob {attachment.blob_url} for attachment {attachment.id}")
@@ -281,21 +318,6 @@ class BillCreditService:
                                         logger.warning(f"Error deleting blob {attachment.blob_url} for attachment {attachment.id}: {e}")
                                     except Exception as e:
                                         logger.warning(f"Error deleting blob {attachment.blob_url} for attachment {attachment.id}: {e}")
-                                
-                                # Delete the Attachment record
-                                try:
-                                    attachment_service.delete_by_public_id(public_id=attachment.public_id)
-                                    logger.info(f"Deleted attachment {attachment.id}")
-                                except Exception as e:
-                                    logger.warning(f"Error deleting attachment {attachment.id}: {e}")
-                            
-                            # Delete the BillCreditLineItemAttachment record
-                            if attachment_link.id:
-                                try:
-                                    bill_credit_line_item_attachment_repo.delete_by_id(id=attachment_link.id)
-                                    logger.info(f"Deleted bill credit line item attachment {attachment_link.id}")
-                                except Exception as e:
-                                    logger.warning(f"Error deleting bill credit line item attachment {attachment_link.id}: {e}")
                         except Exception as e:
                             logger.warning(f"Error processing attachment for line item {line_item.id}: {e}")
                 

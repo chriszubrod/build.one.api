@@ -160,7 +160,9 @@ def main() -> int:
     args = parser.parse_args()
 
     kinds = tuple(args.kind) if args.kind else VALID_KINDS
-    set_authz_context(user_id=None, company_id=None, is_system_admin=True)
+    set_authz_context(
+        user_id=None, company_id=None, is_system_admin=True, is_system_context=True
+    )
 
     # Lazy imports — keep import cost low for dry-run / help.
     from integrations.box.excel.business.mapping_service import (

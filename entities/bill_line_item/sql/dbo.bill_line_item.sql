@@ -100,6 +100,64 @@ GO
 
 
 
+-- ===========================================================================
+-- U-446b — the terminal lock's IN-TRANSACTION half (Codex P1 #5, the TOCTOU).
+--
+-- The Python guard in shared/lifecycle/terminal_lock.py reads the parent Bill
+-- in one transaction and writes the child row in another. Under RCSI every
+-- statement takes its own snapshot, so a line edit that races a completion
+-- passes the guard against a `draft` snapshot and then commits AFTER the bill
+-- finalizes. Only a predicate inside the writing transaction closes that.
+--
+-- Shape, in all three mutation sprocs below:
+--     SELECT ... FROM dbo.[Bill] WITH (UPDLOCK, HOLDLOCK) WHERE [Id] IN (...)
+-- UPDLOCK is the point: a plain SELECT would read the same stale RCSI snapshot
+-- the Python guard did. The U lock conflicts with FinalizeBillById's UPDATE, so
+-- the two serialize — whichever gets there second sees the other's outcome.
+--
+-- LOCK ORDER. Only ONE table is locked by these guards — dbo.Bill. The reads of
+-- BillLineItem / BillLineItemAttachment that resolve the parent take no locks
+-- (RCSI snapshot reads), so the order that matters is: every guarded statement
+-- takes its U lock on Bill BEFORE the DML takes its X lock on the child row,
+-- matching what completion itself does (Step 1 header, Step 2 lines). The bill
+-- CASCADE delete is not a counter-example: it runs each child delete in its own
+-- transaction, so it never holds a child lock while reaching for Bill.
+--
+-- Where two Bills are involved (a line being MOVED) they are locked LOW id
+-- first, then HIGH — see UpdateBillLineItemById. A single `IN (@a, @b)` seek
+-- looked equivalent but guarantees no acquisition order, which would let two
+-- opposite moves deadlock.
+--
+-- Those snapshot reads DO mean the parent resolved before the lock can be
+-- stale, so each write is additionally bound to the parent it locked — see the
+-- `[BillId] = @ParentBillId` predicate on the DELETE.
+--
+-- On refusal: COMMIT the untouched transaction, THEN RAISERROR. Never ROLLBACK
+-- inside a sproc — pyodbc runs autocommit-off, so an in-proc rollback zeroes the
+-- implicit outer transaction and SQL Server raises error 266 (CLAUDE.md, the
+-- 2026-06-11 result-set discipline). The `STATUS_LOCKED:` prefix is what
+-- BillLineItemRepository turns back into a StatusLockedError.
+--
+-- ⚠ @AllowTerminalParent DEFAULTS TO 1 — PERMISSIVE — ON PURPOSE.
+-- This is the only default that makes the SQL safe to apply in EITHER order
+-- relative to the code deploy. With a `= 0` default, applying this file while
+-- the previous image is still serving would refuse completion's own Step-2 line
+-- finalize (old code passes no such param), turning every completion that has
+-- draft lines into a 207 until the deploy landed — and the reclaim watchdog
+-- could not heal it either. The repo layer ALWAYS passes an explicit 0 or 1;
+-- tests/test_u446b_terminal_lock.py pins that, because this default means a
+-- call site that forgets the param silently loses this layer. The Python guard
+-- remains the primary; this is defence in depth against the race alone.
+--
+-- IT IS A DEPLOYMENT BRIDGE, NOT THE STEADY STATE (Codex round 3). Omission is
+-- not hypothetical: the Contract-Labor rebuild reached
+-- `BillLineItemRepository.delete_by_id` directly and silently inherited the
+-- permissive default until this unit made it explicit. Once no pre-U-446b image
+-- can still be serving, flip the default to 0 and let a missing param fail
+-- closed. Booked as its own unit; until then the repo-layer pin in
+-- tests/test_u446b_terminal_lock.py is what keeps this honest.
+-- ===========================================================================
+
 CREATE OR ALTER PROCEDURE CreateBillLineItem
 (
     @BillId BIGINT,
@@ -114,11 +172,36 @@ CREATE OR ALTER PROCEDURE CreateBillLineItem
     @Markup DECIMAL(18,4) NULL,
     @Price DECIMAL(18,2) NULL,
     @IsDraft BIT = 1,
-    @CreatedByUserId BIGINT = NULL
+    @CreatedByUserId BIGINT = NULL,
+    @AllowTerminalParent BIT = 1
 )
 AS
 BEGIN
+    -- SET NOCOUNT ON is REQUIRED now, not cosmetic (CLAUDE.md, 2026-06-11).
+    -- The guard below runs assignment SELECTs before the DML; with NOCOUNT off
+    -- each emits a row-count token that pyodbc surfaces as the FIRST "result",
+    -- and cursor.fetchone() then raises "No results. Previous SQL was not a
+    -- query" instead of returning the OUTPUT row. Single-statement
+    -- INSERT/UPDATE ... OUTPUT sprocs survive without it by accident; this one
+    -- is no longer single-statement.
+    SET NOCOUNT ON;
+
     BEGIN TRANSACTION;
+
+    IF @AllowTerminalParent = 0
+    BEGIN
+        DECLARE @LockedParents INT;
+        SELECT @LockedParents = COUNT(*)
+        FROM dbo.[Bill] WITH (UPDLOCK, HOLDLOCK)
+        WHERE [Id] = @BillId AND [Status] = 'completed';
+
+        IF @LockedParents > 0
+        BEGIN
+            COMMIT TRANSACTION;
+            RAISERROR('STATUS_LOCKED: line items cannot be added to a completed Bill.', 16, 1);
+            RETURN;
+        END
+    END
 
     DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();
 
@@ -329,11 +412,63 @@ CREATE OR ALTER PROCEDURE UpdateBillLineItemById
     @IsBilled BIT NULL,
     @Markup DECIMAL(18,4) NULL,
     @Price DECIMAL(18,2) NULL,
-    @IsDraft BIT = NULL
+    @IsDraft BIT = NULL,
+    @AllowTerminalParent BIT = 1
 )
 AS
 BEGIN
+    -- SET NOCOUNT ON is REQUIRED now, not cosmetic (CLAUDE.md, 2026-06-11).
+    -- The guard below runs assignment SELECTs before the DML; with NOCOUNT off
+    -- each emits a row-count token that pyodbc surfaces as the FIRST "result",
+    -- and cursor.fetchone() then raises "No results. Previous SQL was not a
+    -- query" instead of returning the OUTPUT row. Single-statement
+    -- INSERT/UPDATE ... OUTPUT sprocs survive without it by accident; this one
+    -- is no longer single-statement.
+    SET NOCOUNT ON;
+
     BEGIN TRANSACTION;
+
+    IF @AllowTerminalParent = 0
+    BEGIN
+        -- BOTH parents: the one the line is on now, and the one it is being
+        -- moved to. Guarding only the current parent let a line be re-pointed
+        -- ONTO a completed Bill (the same hole the Python layer had).
+        -- @CurrentBillId is read without a lock and then locked via the IN
+        -- below; if it were re-pointed concurrently that write took this same
+        -- guard on both of ITS parents, so the pair stays serialized.
+        DECLARE @CurrentBillId BIGINT;
+        SELECT @CurrentBillId = [BillId] FROM dbo.[BillLineItem] WHERE [Id] = @Id;
+
+        -- Acquired LOW id first, then HIGH, always. `IN (@a, @b)` looked
+        -- equivalent but guarantees no acquisition order (Codex round 3, P2):
+        -- two moves in opposite directions, A->B and B->A, could take the two U
+        -- locks in opposing order and deadlock. Ascending id is a total order,
+        -- so every writer queues the same way. When the two ids are equal (an
+        -- ordinary edit, not a move) the second seek re-locks the row it
+        -- already holds, which is free.
+        DECLARE @LoBillId BIGINT = CASE WHEN @CurrentBillId IS NULL THEN @BillId
+                                        WHEN @CurrentBillId <= @BillId THEN @CurrentBillId
+                                        ELSE @BillId END;
+        DECLARE @HiBillId BIGINT = CASE WHEN @CurrentBillId IS NULL THEN @BillId
+                                        WHEN @CurrentBillId <= @BillId THEN @BillId
+                                        ELSE @CurrentBillId END;
+
+        DECLARE @LockedParents INT = 0;
+        SELECT @LockedParents = @LockedParents + COUNT(*)
+        FROM dbo.[Bill] WITH (UPDLOCK, HOLDLOCK)
+        WHERE [Id] = @LoBillId AND [Status] = 'completed';
+
+        SELECT @LockedParents = @LockedParents + COUNT(*)
+        FROM dbo.[Bill] WITH (UPDLOCK, HOLDLOCK)
+        WHERE [Id] = @HiBillId AND [Id] <> @LoBillId AND [Status] = 'completed';
+
+        IF @LockedParents > 0
+        BEGIN
+            COMMIT TRANSACTION;
+            RAISERROR('STATUS_LOCKED: the line items of a completed Bill cannot be changed.', 16, 1);
+            RETURN;
+        END
+    END
 
     DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();
 
@@ -384,12 +519,48 @@ GO
 
 CREATE OR ALTER PROCEDURE DeleteBillLineItemById
 (
-    @Id BIGINT
+    @Id BIGINT,
+    @AllowTerminalParent BIT = 1
 )
 AS
 BEGIN
+    -- SET NOCOUNT ON is REQUIRED now, not cosmetic (CLAUDE.md, 2026-06-11).
+    -- The guard below runs assignment SELECTs before the DML; with NOCOUNT off
+    -- each emits a row-count token that pyodbc surfaces as the FIRST "result",
+    -- and cursor.fetchone() then raises "No results. Previous SQL was not a
+    -- query" instead of returning the OUTPUT row. Single-statement
+    -- INSERT/UPDATE ... OUTPUT sprocs survive without it by accident; this one
+    -- is no longer single-statement.
+    SET NOCOUNT ON;
+
     BEGIN TRANSACTION;
 
+    IF @AllowTerminalParent = 0
+    BEGIN
+        DECLARE @ParentBillId BIGINT;
+        SELECT @ParentBillId = [BillId] FROM dbo.[BillLineItem] WHERE [Id] = @Id;
+
+        DECLARE @LockedParents INT;
+        SELECT @LockedParents = COUNT(*)
+        FROM dbo.[Bill] WITH (UPDLOCK, HOLDLOCK)
+        WHERE [Id] = @ParentBillId AND [Status] = 'completed';
+
+        IF @LockedParents > 0
+        BEGIN
+            COMMIT TRANSACTION;
+            RAISERROR('STATUS_LOCKED: the line items of a completed Bill cannot be deleted.', 16, 1);
+            RETURN;
+        END
+    END
+
+    -- The `[BillId] = @ParentBillId` half is what makes the guard above
+    -- authoritative (Codex round 3, P1). @ParentBillId is resolved by a
+    -- snapshot read, so between that read and here the line could have been
+    -- MOVED to another Bill which then completed — the guard would have
+    -- checked the old parent and this DELETE would have removed a line from a
+    -- completed one. Binding the DELETE to the parent we actually locked makes
+    -- that impossible: if the line moved, zero rows match and the caller gets
+    -- "not found" instead of a wrong deletion.
     DELETE FROM dbo.[BillLineItem]
     OUTPUT
         DELETED.[Id],
@@ -409,7 +580,8 @@ BEGIN
         DELETED.[Markup],
         DELETED.[Price],
         DELETED.[IsDraft]
-    WHERE [Id] = @Id;
+    WHERE [Id] = @Id
+      AND (@AllowTerminalParent = 1 OR [BillId] = @ParentBillId);
 
     COMMIT TRANSACTION;
 END;

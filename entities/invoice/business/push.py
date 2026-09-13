@@ -175,10 +175,19 @@ def _ki16_ensure_price_on_parent_lines(parent_kind: str, parent_line_items: list
     for li in parent_line_items:
         if li.price is not None or li.amount is None:
             continue
+        kwargs = {}
+        if parent_kind == "Bill":
+            # U-446b: this repairs a null price on the lines of an ALREADY
+            # COMPLETED bill (you invoice completed AP), and invoice push runs
+            # as a real user — it declares no system intent — so the terminal
+            # lock would refuse the write and break the draw push. KI-16 repair
+            # is legitimate on a completed document; say so explicitly.
+            kwargs["_via_internal_pipeline"] = True
         svc.update_by_public_id(
             public_id=str(li.public_id),
             row_version=li.row_version,
             price=float(li.amount),
+            **kwargs,
         )
 
 

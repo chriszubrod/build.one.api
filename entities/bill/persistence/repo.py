@@ -18,6 +18,8 @@ from shared.database import (
     map_database_error,
 )
 
+from shared.lifecycle.terminal_lock import reraise_if_sproc_status_locked
+
 logger = logging.getLogger(__name__)
 
 
@@ -419,9 +421,14 @@ class BillRepository:
             logger.error(f"Error linking Bill.SourceEmailMessageId: {error}")
             raise map_database_error(error)
 
-    def update_by_id(self, bill: Bill) -> Optional[Bill]:
+    def update_by_id(self, bill: Bill, *, allow_terminal_parent: bool = True) -> Optional[Bill]:
         """
         Update a bill by ID.
+
+        `allow_terminal_parent` is the sproc-side half of the U-446b terminal
+        lock. Always pass it explicitly: the sproc defaults it permissive so the
+        SQL is safe to apply either side of a deploy, so an omission here drops
+        the guard with no error to notice.
         """
         try:
             with get_connection() as conn:
@@ -437,6 +444,7 @@ class BillRepository:
                     "TotalAmount": Decimal(str(bill.total_amount)) if bill.total_amount is not None else None,
                     "Memo": bill.memo,
                 }
+                params["AllowTerminalParent"] = 1 if allow_terminal_parent else 0
                 # Only include IsDraft if it's explicitly set (not None)
                 if bill.is_draft is not None:
                     params["IsDraft"] = 1 if bill.is_draft else 0
@@ -459,6 +467,7 @@ class BillRepository:
                     )
                 return self._from_db(row)
         except Exception as error:
+            reraise_if_sproc_status_locked(error, what="its header cannot be changed")
             logger.error(f"Error during update bill by ID: {error}")
             raise map_database_error(error)
 
@@ -604,9 +613,11 @@ class BillRepository:
             logger.error(f"Error during count bills: {error}")
             raise map_database_error(error)
 
-    def delete_by_id(self, id: int) -> Optional[Bill]:
+    def delete_by_id(self, id: int, *, allow_terminal_parent: bool = True) -> Optional[Bill]:
         """
         Delete a bill by ID.
+
+        See `update_by_id` for why the flag is always passed explicitly.
         """
         try:
             with get_connection() as conn:
@@ -614,11 +625,15 @@ class BillRepository:
                 call_procedure(
                     cursor=cursor,
                     name="DeleteBillById",
-                    params={"Id": id},
+                    params={
+                        "Id": id,
+                        "AllowTerminalParent": 1 if allow_terminal_parent else 0,
+                    },
                 )
                 row = cursor.fetchone()
                 return self._from_db(row) if row else None
         except Exception as error:
+            reraise_if_sproc_status_locked(error, what="it cannot be deleted")
             logger.error(f"Error during delete bill by ID: {error}")
             raise map_database_error(error)
 

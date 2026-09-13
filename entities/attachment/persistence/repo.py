@@ -14,6 +14,8 @@ from shared.database import (
     map_database_error,
 )
 
+from shared.lifecycle.terminal_lock import reraise_if_sproc_status_locked
+
 logger = logging.getLogger(__name__)
 
 
@@ -286,9 +288,13 @@ class AttachmentRepository:
             logger.error(f"Error during read attachment by hash: {error}")
             raise map_database_error(error)
 
-    def update_by_id(self, attachment: Attachment) -> Optional[Attachment]:
+    def update_by_id(self, attachment: Attachment, *, allow_terminal_parent: bool = True) -> Optional[Attachment]:
         """
         Update an attachment by ID.
+
+        `allow_terminal_parent` is the sproc-side half of the U-446b terminal
+        lock; always pass it explicitly (the sproc default is permissive so the
+        SQL can be applied either side of a deploy).
         """
         try:
             with get_connection() as conn:
@@ -311,6 +317,7 @@ class AttachmentRepository:
                         "Status": attachment.status,
                         "ExpirationDate": attachment.expiration_date,
                         "StorageTier": attachment.storage_tier,
+                        "AllowTerminalParent": 1 if allow_terminal_parent else 0,
                     }
                     call_procedure(
                         cursor=cursor,
@@ -322,12 +329,15 @@ class AttachmentRepository:
                 finally:
                     cursor.close()
         except Exception as error:
+            reraise_if_sproc_status_locked(error, what="its attachments cannot be changed")
             logger.error(f"Error during update attachment by ID: {error}")
             raise map_database_error(error)
 
-    def delete_by_id(self, id: int) -> Optional[Attachment]:
+    def delete_by_id(self, id: int, *, allow_terminal_parent: bool = True) -> Optional[Attachment]:
         """
         Delete an attachment by ID.
+
+        See `update_by_id` for why the flag is always passed explicitly.
         """
         try:
             with get_connection() as conn:
@@ -336,13 +346,17 @@ class AttachmentRepository:
                     call_procedure(
                         cursor=cursor,
                         name="DeleteAttachmentById",
-                        params={"Id": id},
+                        params={
+                            "Id": id,
+                            "AllowTerminalParent": 1 if allow_terminal_parent else 0,
+                        },
                     )
                     row = cursor.fetchone()
                     return self._from_db(row) if row else None
                 finally:
                     cursor.close()
         except Exception as error:
+            reraise_if_sproc_status_locked(error, what="its attachments cannot be deleted")
             logger.error(f"Error during delete attachment by ID: {error}")
             raise map_database_error(error)
 

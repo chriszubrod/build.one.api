@@ -34,7 +34,7 @@ Tools self-register on import.
 from typing import Optional
 from urllib.parse import quote, urlencode
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from intelligence.tools.base import Tool, ToolContext, ToolResult
 from intelligence.tools.registry import register
@@ -64,17 +64,55 @@ class _SearchArgs(BaseModel):
             "Vendor read; do not surface this id in user text."
         ),
     )
+    status: Optional[str] = Field(
+        default=None,
+        description=(
+            "Optional filter on ONE canonical lifecycle status: draft, "
+            "submitted, in_review, approved, declined or completed. Prefer "
+            "this over `is_draft` whenever the question is about WHERE a "
+            "bill is — awaiting a reviewer, declined, approved but not yet "
+            "posted. Filtered in SQL, so `count` stays truthful."
+        ),
+    )
     is_draft: Optional[bool] = Field(
         default=None,
         description=(
-            "Optional filter: true returns only draft (uncommitted) "
-            "bills; false returns only completed bills; omit for all."
+            "Optional coarse filter: true returns every bill that is NOT "
+            "completed — draft, submitted, in_review, approved and declined "
+            "alike — and false returns only completed ones. It is a "
+            "finished/unfinished split, NOT a 'drafts' filter: `is_draft` is "
+            "a computed column over `status` (U-446). Use `status` when you "
+            "mean one specific state."
         ),
     )
     limit: int = Field(
         default=10,
         description="Max bills to return (1-100). Start small.",
     )
+
+
+    @model_validator(mode="after")
+    def _status_and_is_draft_must_agree(self):
+        """Refuse a pair that can only ever return nothing (U-446d, Codex P1).
+
+        The sproc ANDs the two predicates, and `is_draft` IS
+        `status != 'completed'` — so `status='completed'` with `is_draft=True`,
+        or any non-completed status with `is_draft=False`, is a contradiction
+        that yields an empty page and `count: 0`. An agent reads that as "there
+        are none", which is the worst possible failure: confidently wrong, with
+        no error to notice. Erroring here turns it into something the model can
+        see and correct.
+        """
+        if self.status is None or self.is_draft is None:
+            return self
+        implied = self.status != "completed"
+        if implied != self.is_draft:
+            raise ValueError(
+                f"status={self.status!r} and is_draft={self.is_draft} "
+                f"contradict: is_draft is status != 'completed', so this pair "
+                f"matches nothing. Drop is_draft and filter on status alone."
+            )
+        return self
 
 
 class _ByBillNumberArgs(BaseModel):
@@ -93,6 +131,8 @@ async def _search_bills(args: dict, ctx: ToolContext) -> ToolResult:
         qs["search"] = parsed.query
     if parsed.vendor_id is not None:
         qs["vendor_id"] = parsed.vendor_id
+    if parsed.status is not None:
+        qs["status"] = parsed.status
     if parsed.is_draft is not None:
         qs["is_draft"] = "true" if parsed.is_draft else "false"
     return await ctx.call_api("GET", f"/api/v1/get/bills?{urlencode(qs)}")
@@ -104,10 +144,15 @@ search_bills = Tool(
         "Find bills via server-side search + filters. Bill is too "
         "large (~18K rows) to ever list in full — this is the only "
         "read-many tool. Combine `query` (substring on bill_number / "
-        "memo), `vendor_id` (specific vendor's bills), and `is_draft` "
+        "memo), `vendor_id` (specific vendor's bills), and `status` "
         "to narrow as needed. Use `vendor_id` from a prior Vendor "
         "read for 'all bills from X' queries; use `query` for 'bill "
-        "containing 1234' queries; use both for precision."
+        "containing 1234' queries; use both for precision. "
+        "A bill occupies exactly one of six canonical states: draft, "
+        "submitted, in_review, approved, declined, completed. Filter on "
+        "`status` for any of them individually — `is_draft=true` lumps the "
+        "first five together and cannot answer 'what is waiting on a "
+        "reviewer'."
     ),
     input_schema=input_schema_from(_SearchArgs),
     handler=_search_bills,
@@ -191,14 +236,20 @@ class CreateBillArgs(BaseModel):
         default=None,
         description="Optional UUID of a payment term.",
     )
-    is_draft: Optional[bool] = Field(
-        default=True,
-        description=(
-            "Defaults to true. The agent layer should rarely need to "
-            "set this — bills get finalized later via `complete_bill` "
-            "after line items are added."
-        ),
-    )
+    # ⛔ `is_draft` is NOT exposed to agents on CREATE (U-446d, Codex P0).
+    #
+    # `CreateBill` writes `COALESCE(@Status, CASE WHEN @IsDraft = 0 THEN
+    # 'completed' ELSE 'draft' END)`, so `is_draft=false` here mints a bill
+    # ALREADY in the terminal state, skipping the completion pipeline
+    # entirely: nothing uploads to SharePoint, nothing syncs to Excel, nothing
+    # pushes to QBO — and `complete_bill` then refuses it as already complete,
+    # so there is no route back. The row is terminal, locked by U-446b, and
+    # permanently unsynced.
+    #
+    # The router defaults to draft when the field is absent, so omitting it is
+    # both the correct and the only agent behaviour. The HTTP API keeps the
+    # parameter for the QBO pull, which legitimately creates rows born
+    # completed.
     source_email_message_public_id: Optional[str] = Field(
         default=None,
         description=(
@@ -339,15 +390,15 @@ class UpdateBillArgs(BaseModel):
         ),
     )
     memo: Optional[str] = Field(default=None)
-    is_draft: Optional[bool] = Field(
-        default=None,
-        description=(
-            "Pass `false` to mark the bill committed (NOT the same as "
-            "completing — `complete_bill` is the proper workflow for "
-            "finalizing + pushing to QBO/SharePoint/Excel). Leave "
-            "unset to preserve the current draft state."
-        ),
-    )
+    # ⛔ `is_draft` is NOT exposed to agents on UPDATE (U-446d, Codex P1).
+    #
+    # It used to read "pass `false` to mark the bill committed". That call
+    # cannot succeed: `BillService.update_by_public_id` raises when `is_draft`
+    # differs from the stored value and the caller is not the completion
+    # pipeline, and since U-446 the column is computed and unwritable anyway.
+    # Advertising it taught the agent to make a guaranteed-failing call and to
+    # believe a second route to `completed` existed. `complete_bill` is the
+    # route.
 
 
 async def _update_bill(args: dict, ctx: ToolContext) -> ToolResult:
@@ -367,7 +418,9 @@ update_bill = Tool(
     name="update_bill",
     description=(
         "Modify an existing bill's PARENT fields (vendor, dates, "
-        "number, memo, draft state). Line items are NOT changed by "
+        "number, memo). Lifecycle state is NOT one of them — it moves "
+        "only via the review workflow and `complete_bill`. Line items "
+        "are NOT changed by "
         "this tool — that's a separate v2 workflow. REQUIRES USER "
         "APPROVAL. Read the record first to get all required fields "
         "and `row_version`. Be explicit in prose about what's "
@@ -457,14 +510,17 @@ def _summarize_complete_bill(args: dict) -> str:
 complete_bill = Tool(
     name="complete_bill",
     description=(
-        "Finalize a draft bill: locks IsDraft=false locally, then "
-        "enqueues SharePoint attachment upload + Excel workbook sync "
-        "+ QBO push via the outbox. REQUIRES USER APPROVAL. Use this "
-        "for the 'mark this bill ready / push it to QBO' workflow — "
-        "do NOT just flip `is_draft` via update_bill, that skips the "
-        "external sync side effects. The tool returns immediately "
-        "(202-style); the actual external pushes drain asynchronously "
-        "within ~5-30s."
+        "Move a bill to the terminal `completed` state and trigger its "
+        "AP fan-out — SharePoint attachment upload, Excel workbook sync "
+        "and the QBO push. REQUIRES USER APPROVAL. This is the only "
+        "route to `completed` that an agent has: `is_draft` is a "
+        "computed column over `status` (U-446) and is not exposed on "
+        "`create_bill` or `update_bill`. `completed` is terminal — "
+        "afterwards, header edits, line-item changes and attachment "
+        "mutations are refused with 422 `status_locked` (U-446b), so "
+        "say so before completing if the user may still want to edit. "
+        "The tool returns immediately (202-style); the external work "
+        "lands asynchronously within ~5-30s."
     ),
     input_schema=input_schema_from(CompleteBillArgs),
     handler=_complete_bill,

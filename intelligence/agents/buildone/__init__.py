@@ -105,11 +105,14 @@ _register_tool(make_delegation_tool(
     target_agent="bill_specialist",
     description=(
         "Hand a Bill task off to the Bill specialist agent. Use for "
-        "bill lookups (by vendor, number, or filter), reads, draft "
-        "creation (parent record only — no line items), updates to "
+        "bill lookups (by vendor, number, or lifecycle status), reads, "
+        "draft creation (parent record only — no line items), updates to "
         "parent fields, deletes, and the workflow `complete` action "
-        "that finalizes a draft bill and pushes it to QBO + SharePoint "
-        "+ Excel. The bill catalog is large (~18K rows) so the "
+        "that moves a bill to the terminal `completed` state and pushes "
+        "it to QBO + SharePoint + Excel. A bill is in exactly one of "
+        "draft / submitted / in_review / approved / declined / completed; "
+        "route any 'what is waiting on a reviewer' question here. The "
+        "bill catalog is large (~18K rows) so the "
         "specialist works search-first. The specialist does NOT edit "
         "line items — tell the user to use the UI for that today."
     ),

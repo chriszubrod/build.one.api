@@ -652,9 +652,49 @@ lifecycle source of truth. Rollback = stop the pointer write (sproc revert) with
 >   2 live bills would 547. False — `DeleteReviewsByBillId` clears it behind an `OBJECT_ID`
 >   guard, which the Python cascade called.
 >
-> * **U-446d — NOT BUILT** (was U-446c until the collision above): gate flags (§9 #1), the agent
->   prompt/tool rewording, MCP `search_*`. `COMPLETION_GATE` is confirmed absent from the
->   codebase — LS-00c specified it in `shared/lifecycle` and it was never written.
+> * **U-446d — vocabulary + MCP halves BUILT 2026-09-14; gate flags still NOT BUILT** (was U-446c
+>   until the collision above). `COMPLETION_GATE` is confirmed absent from the codebase — LS-00c
+>   specified it in `shared/lifecycle` and it was never written; **the gate-flag half stays parked**
+>   pending the open question of whether `require_approved` is realistic when it would refuse ~80%
+>   of today's human completions.
+>
+>   **Shipped:** `search_bills` gained a `status` filter in BOTH the API agent tool and the MCP
+>   server, forwarded as `?status=` (U-445's endpoint filter, which validates against
+>   `LIFECYCLE_STATUSES` and answers 422 naming the six values — so a model that guesses corrects
+>   itself). The `bill_specialist` prompt gained a lifecycle vocabulary section; the orchestrator's
+>   Bill routing names the six states.
+>
+>   **⚠ SCOPE WAS NARROWER THAN BOOKED, on purpose.** The unit was booked as "reword 16 agent
+>   prompt/tool files". The real count is 14, and only **4** were touched:
+>   * Only **Bill** can speak this vocabulary — `?status=` and the lifecycle block ship for Bill
+>     alone. Expense, BillCredit and Invoice are LS-01a/LS-03b/c/d and NOT BUILT, so advertising a
+>     `status` filter their endpoints would silently ignore is worse than none: the model believes
+>     it narrowed the page and reasons over an unnarrowed one. Tests pin their absence, and one
+>     test fails the moment another entity's router gains `?status=`, as the prompt to bring its
+>     agent surfaces along.
+>   * **`Vendor.is_draft` is an unrelated field** — a real, writable boolean meaning "incomplete
+>     vendor record". A blind rewording of everything matching `is_draft` would have corrupted it.
+>
+>   **Two live agent hazards were found and closed while rewording (Codex P0/P1), both predating
+>   the unit:**
+>   1. `create_bill` exposed `is_draft`. `CreateBill` writes
+>      `COALESCE(@Status, CASE WHEN @IsDraft = 0 THEN 'completed' ELSE 'draft' END)`, so an agent
+>      passing `false` minted a bill **already terminal** — no SharePoint, no Excel, no QBO — which
+>      `complete_bill` then refuses as already complete. Unreachable and permanently unsynced.
+>      The field is no longer offered to agents.
+>   2. `update_bill` exposed `is_draft` telling the agent to "pass `false` to mark the bill
+>      committed" — a call that cannot succeed (the service raises on a changed value; the column is
+>      computed since U-446). Removed.
+>
+>   Also: `status` and `is_draft` are ANDed in SQL and `is_draft` IS `status != 'completed'`, so a
+>   contradictory pair returned an empty page that an agent reads as "there are none". The search
+>   args now refuse such a pair with a message; an agreeing pair still passes. And MCP's
+>   `search_bills` gained `total_matching` (the API envelope's server-side total) because `count`
+>   means "rows on this page" across all ten MCP search tools — 33 in_review bills were being
+>   reported as 20.
+>
+>   Verification: 3,809 API tests + 153 MCP tests green; **31 mutations, 31 killed**. Codex: two
+>   passes.
 >
 > **Why no three-step swap.** `CK_Bill_Status_IsDraft` makes the two columns incapable of
 > disagreeing, so an API image that has never heard of `Status` cannot write an inconsistent

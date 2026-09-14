@@ -509,10 +509,36 @@ have a safe decoder; `/docs` has the page.
 > "Claude Agent" as the submitter — a worse, user-visible regression than the audit misattribution
 > the change was meant to fix. Found by Codex review before it shipped.
 >
-> **BOOKED as one unit (not yet built):** re-point `Review.UserId` on system-authored rows to the
-> system actor **together with** the `dbo.inbox_tasks.sql` change that reads the submitter off the
-> **initial** row instead of the latest. Neither half is shippable alone. The inbox sproc belongs to
-> LS-01b, so this is that unit's natural home.
+> **✅ BUILT as U-453 (2026-09-14) — shipped as ONE unit, both halves.** `Review.UserId` on the
+> system-authored advance now carries the system actor, AND `dbo.inbox_tasks.sql` resolves the
+> submitter from the latest **initial** review row. It did NOT wait for LS-01b: sequential edits to
+> a whole-file-guarded base file are safe here (the drift incidents in this repo came from
+> migrations duplicating sproc bodies, not from this), and the timeline bug was live.
+>
+> **What the inbox change actually is:** both `ReadInboxTasks` and `ReadInboxTaskCounts` gained a
+> `Keyed` CTE holding ONE shared `[ParentKey]` expression and a `Submitter` CTE
+> (`WHERE [StatusIsInitial] = 1`, newest first, LEFT JOINed). `Pending` now projects explicit
+> columns and **deliberately does not carry the latest row's actor at all** — keeping it beside
+> `[SubmitterId]` left the wrong column one autocomplete from re-introducing the bug, and since the
+> latest actor is now usually the system actor the mistake would have read as "submitted by Claude
+> Agent" rather than as an error.
+>
+> The `[ParentKey]` CASE also gained its missing **ContractLabor** branch. All 652 CL review rows
+> previously keyed to NULL and shared one partition; harmless only because no arm emits CL.
+>
+> **Proved against prod, rolled back:** the new sprocs alone are a no-op (42 (user × admin × scope)
+> combinations identical, 43/106/2 rows). With a system-owned advance inserted, the probe bill stays
+> in its submitter's sent box under the NEW sprocs (43 rows, `SubmitterId` 17) and **VANISHES** under
+> the old ones (42 rows) — the regression LS-01c′ predicted, demonstrated rather than argued.
+>
+> **⚠ Dependency now load-bearing on an unattended path:** the advance names User 33, and
+> `FK_Review_User` plus `vw_Review`'s INNER JOIN mean a database without that row fails the write
+> (swallowed by the best-effort handler, leaving the document at Submitted). Prod has it and 308
+> Review rows already reference it, but **no seed creates it** — a fresh environment must.
+>
+> **⚠ Also load-bearing:** `ReviewStatusService._assert_shape` keeping exactly one active
+> `IsInitial` status. The flag is read live through `vw_Review`, not stored per row, so re-flagging
+> it retroactively re-attributes every open task and clearing it everywhere empties every sent box.
 >
 > **What LS-01c′ DID ship:**
 > - `SYSTEM_ACTOR_USER_ID = 33` in `shared/authz/context.py` — a named constant, deliberately NOT

@@ -22,8 +22,13 @@
 --                               access-control layer already enforces this for
 --                               list endpoints, so we mirror that shape here —
 --                               nobody sees rows they can't already access.
---   * scope='mine_submitted' => current user submitted the latest review
---                               (Review.UserId match). For "sent box" surfaces.
+--   * scope='mine_submitted' => current user SUBMITTED this document -- i.e. is
+--                               the actor on its most recent review row at the
+--                               INITIAL status (U-453). It used to mean "wrote
+--                               the latest review row of any kind", which read
+--                               as the submitter only while the system's
+--                               auto-advance row carried the submitter's id.
+--                               For "sent box" surfaces.
 --
 -- System admin (@IsSystemAdmin=1) bypasses all scope filtering — they see
 -- everything pending regardless of UserProject membership.
@@ -58,33 +63,107 @@ BEGIN
     IF @StatusPublicId IS NOT NULL
         SELECT @StatusId = [Id] FROM dbo.[ReviewStatus] WHERE [PublicId] = @StatusPublicId;
 
-    ;WITH LatestReview AS (
+    ;WITH Keyed AS (
+    -- U-453. ONE partition key, defined ONCE, and the submitter resolved from
+    -- the latest INITIAL review row rather than from whatever row happens to be
+    -- newest.
+    --
+    -- Why: `Pending` is `LatestReview WHERE rn = 1`, and it used to alias that
+    -- row's [UserId] as [SubmitterId] -- so "who submitted this" was really
+    -- "who touched it last". That was accidentally correct only while the
+    -- system's auto-advance row carried the submitter's id. U-453 re-points
+    -- that row at the system actor (a bill moved into review by the pipeline
+    -- was NOT moved by its submitter), which makes the old shape wrong: all 33
+    -- in_review bills would have dropped out of their submitter's
+    -- `mine_submitted` scope and rendered "Claude Agent" as the submitter.
+    --
+    -- The ContractLabor branch is new. Without it every CL review row keyed to
+    -- NULL, so all 652 of them shared ONE partition and exactly one row
+    -- survived `rn = 1`. Harmless today -- the Rows/Tagged arms below have no
+    -- ContractLabor arm, so CL never surfaces either way -- but it is a trap
+    -- armed for whoever adds one, and this is the only place it can be fixed.
         SELECT
             r.[Id], r.[PublicId],
             r.[BillId], r.[ExpenseId], r.[BillCreditId], r.[InvoiceId],
             r.[ReviewStatusId], r.[StatusName], r.[StatusColor],
             r.[StatusSortOrder], r.[StatusIsFinal], r.[StatusIsDeclined],
+            r.[StatusIsInitial],
             r.[UserId], r.[UserFirstname], r.[UserLastname],
             r.[CreatedDatetime],
-            ROW_NUMBER() OVER (
-                PARTITION BY
-                    CASE
-                        WHEN r.[BillId]       IS NOT NULL THEN CONCAT(N'B', r.[BillId])
-                        WHEN r.[ExpenseId]    IS NOT NULL THEN CONCAT(N'E', r.[ExpenseId])
-                        WHEN r.[BillCreditId] IS NOT NULL THEN CONCAT(N'C', r.[BillCreditId])
-                        WHEN r.[InvoiceId]    IS NOT NULL THEN CONCAT(N'I', r.[InvoiceId])
-                    END
-                ORDER BY r.[CreatedDatetime] DESC, r.[Id] DESC
-            ) AS rn
+            CASE
+                WHEN r.[BillId]          IS NOT NULL THEN CONCAT(N'B', r.[BillId])
+                WHEN r.[ExpenseId]       IS NOT NULL THEN CONCAT(N'E', r.[ExpenseId])
+                WHEN r.[BillCreditId]    IS NOT NULL THEN CONCAT(N'C', r.[BillCreditId])
+                WHEN r.[InvoiceId]       IS NOT NULL THEN CONCAT(N'I', r.[InvoiceId])
+                WHEN r.[ContractLaborId] IS NOT NULL THEN CONCAT(N'L', r.[ContractLaborId])
+            END AS [ParentKey]
         FROM dbo.[vw_Review] r
     ),
+    LatestReview AS (
+        SELECT *,
+            ROW_NUMBER() OVER (
+                PARTITION BY [ParentKey]
+                ORDER BY [CreatedDatetime] DESC, [Id] DESC
+            ) AS rn
+        FROM Keyed
+    ),
+    Submitter AS (
+        -- The most recent row at the INITIAL status. "Most recent" matters
+        -- because a declined document is edited in place and resubmitted: the
+        -- live submission is the last one, and its author is who is waiting on
+        -- an answer.
+        --
+        -- [IsInitial] is read LIVE off dbo.ReviewStatus through vw_Review, not
+        -- stored per row, so re-flagging it retroactively re-attributes every
+        -- open task; clearing it from every status empties every sent box.
+        -- `ReviewStatusService._assert_shape` is what keeps exactly one active
+        -- initial status in place -- that guard is load-bearing for this CTE.
+        --
+        -- [IsActive] is deliberately NOT filtered: a submission made at a
+        -- since-retired status is still the submission that happened.
+        SELECT
+            [ParentKey], [UserId], [UserFirstname], [UserLastname],
+            ROW_NUMBER() OVER (
+                PARTITION BY [ParentKey]
+                ORDER BY [CreatedDatetime] DESC, [Id] DESC
+            ) AS rn
+        FROM Keyed
+        WHERE [StatusIsInitial] = 1
+    ),
     Pending AS (
-        SELECT *
-        FROM LatestReview
-        WHERE rn = 1
-          AND [StatusIsFinal]    = 0
-          AND [StatusIsDeclined] = 0
-          AND (@StatusId IS NULL OR [ReviewStatusId] = @StatusId)
+        -- Columns are projected EXPLICITLY, and the latest row's own actor
+        -- ([UserId]/[UserFirstname]/[UserLastname]) is deliberately NOT among
+        -- them. Carrying it alongside [SubmitterId] would leave the wrong
+        -- column one autocomplete away from re-introducing the exact bug this
+        -- unit fixes -- and it is now usually the system actor, so the mistake
+        -- would look like "submitted by Claude Agent" rather than like an
+        -- error. Nothing downstream needs it; add it back deliberately if
+        -- something ever does.
+        --
+        -- LEFT JOIN, not INNER. A document whose review rows are all
+        -- non-initial -- reachable by re-flagging [IsInitial] onto a different
+        -- status after rows exist -- keeps its place in the `mine` and `all`
+        -- scopes with a NULL submitter, instead of disappearing from the inbox
+        -- entirely. NOTE it does drop out of `mine_submitted` for everyone,
+        -- since NULL never equals @CurrentUserId; that is the honest answer
+        -- (nobody's submission is on file) and it is strictly better than the
+        -- row vanishing from every scope.
+        SELECT
+            L.[Id], L.[PublicId],
+            L.[BillId], L.[ExpenseId], L.[BillCreditId], L.[InvoiceId],
+            L.[ReviewStatusId], L.[StatusName], L.[StatusColor],
+            L.[StatusSortOrder], L.[StatusIsFinal], L.[StatusIsDeclined],
+            L.[CreatedDatetime],
+            S.[UserId]        AS [SubmitterId],
+            S.[UserFirstname] AS [SubmitterFirstname],
+            S.[UserLastname]  AS [SubmitterLastname]
+        FROM LatestReview L
+        LEFT JOIN Submitter S
+            ON S.[ParentKey] = L.[ParentKey] AND S.rn = 1
+        WHERE L.rn = 1
+          AND L.[StatusIsFinal]    = 0
+          AND L.[StatusIsDeclined] = 0
+          AND (@StatusId IS NULL OR L.[ReviewStatusId] = @StatusId)
     ),
     Rows AS (
         -- =================================================================
@@ -106,9 +185,9 @@ BEGIN
             P.[StatusSortOrder]       AS [StatusSortOrder],
             P.[StatusIsFinal]         AS [StatusIsFinal],
             P.[StatusIsDeclined]      AS [StatusIsDeclined],
-            P.[UserId]                AS [SubmitterId],
-            P.[UserFirstname]         AS [SubmitterFirstname],
-            P.[UserLastname]          AS [SubmitterLastname],
+            P.[SubmitterId],
+            P.[SubmitterFirstname],
+            P.[SubmitterLastname],
             P.[CreatedDatetime]       AS [LastActivityAt],
             CASE WHEN EXISTS (
                 SELECT 1
@@ -123,7 +202,7 @@ BEGIN
         WHERE (@EntityType IS NULL OR @EntityType = N'Bill')
           AND (
             @IsSystemAdmin = 1
-            OR (@Scope = N'mine_submitted' AND P.[UserId] = @CurrentUserId)
+            OR (@Scope = N'mine_submitted' AND P.[SubmitterId] = @CurrentUserId)
             OR (@Scope = N'mine' AND EXISTS (
                 SELECT 1
                 FROM dbo.[BillLineItem] BLI
@@ -153,7 +232,7 @@ BEGIN
             E.[TotalAmount],
             P.[Id], P.[PublicId], P.[ReviewStatusId], P.[StatusName], P.[StatusColor],
             P.[StatusSortOrder], P.[StatusIsFinal], P.[StatusIsDeclined],
-            P.[UserId], P.[UserFirstname], P.[UserLastname],
+            P.[SubmitterId], P.[SubmitterFirstname], P.[SubmitterLastname],
             P.[CreatedDatetime],
             CASE WHEN EXISTS (
                 SELECT 1
@@ -168,7 +247,7 @@ BEGIN
         WHERE (@EntityType IS NULL OR @EntityType = N'Expense')
           AND (
             @IsSystemAdmin = 1
-            OR (@Scope = N'mine_submitted' AND P.[UserId] = @CurrentUserId)
+            OR (@Scope = N'mine_submitted' AND P.[SubmitterId] = @CurrentUserId)
             OR (@Scope = N'mine' AND EXISTS (
                 SELECT 1
                 FROM dbo.[ExpenseLineItem] ELI
@@ -198,7 +277,7 @@ BEGIN
             BC.[TotalAmount],
             P.[Id], P.[PublicId], P.[ReviewStatusId], P.[StatusName], P.[StatusColor],
             P.[StatusSortOrder], P.[StatusIsFinal], P.[StatusIsDeclined],
-            P.[UserId], P.[UserFirstname], P.[UserLastname],
+            P.[SubmitterId], P.[SubmitterFirstname], P.[SubmitterLastname],
             P.[CreatedDatetime],
             CASE WHEN EXISTS (
                 SELECT 1
@@ -213,7 +292,7 @@ BEGIN
         WHERE (@EntityType IS NULL OR @EntityType = N'BillCredit')
           AND (
             @IsSystemAdmin = 1
-            OR (@Scope = N'mine_submitted' AND P.[UserId] = @CurrentUserId)
+            OR (@Scope = N'mine_submitted' AND P.[SubmitterId] = @CurrentUserId)
             OR (@Scope = N'mine' AND EXISTS (
                 SELECT 1
                 FROM dbo.[BillCreditLineItem] BCLI
@@ -243,7 +322,7 @@ BEGIN
             I.[TotalAmount],
             P.[Id], P.[PublicId], P.[ReviewStatusId], P.[StatusName], P.[StatusColor],
             P.[StatusSortOrder], P.[StatusIsFinal], P.[StatusIsDeclined],
-            P.[UserId], P.[UserFirstname], P.[UserLastname],
+            P.[SubmitterId], P.[SubmitterFirstname], P.[SubmitterLastname],
             P.[CreatedDatetime],
             CASE WHEN EXISTS (
                 SELECT 1
@@ -258,7 +337,7 @@ BEGIN
         WHERE (@EntityType IS NULL OR @EntityType = N'Invoice')
           AND (
             @IsSystemAdmin = 1
-            OR (@Scope = N'mine_submitted' AND P.[UserId] = @CurrentUserId)
+            OR (@Scope = N'mine_submitted' AND P.[SubmitterId] = @CurrentUserId)
             OR (@Scope = N'mine' AND EXISTS (
                 SELECT 1
                 FROM dbo.[UserProject] UP
@@ -295,28 +374,52 @@ AS
 BEGIN
     SET NOCOUNT ON;
 
-    ;WITH LatestReview AS (
+    ;WITH Keyed AS (
+        -- Mirror of ReadInboxTasks' Keyed/Submitter/Pending shape (U-453) --
+        -- the list and the badge counts must agree on who submitted a document
+        -- or they diverge, which is the class of bug this sproc exists to make
+        -- impossible.
         SELECT
             r.[Id],
             r.[BillId], r.[ExpenseId], r.[BillCreditId], r.[InvoiceId],
-            r.[StatusIsFinal], r.[StatusIsDeclined],
+            r.[StatusIsFinal], r.[StatusIsDeclined], r.[StatusIsInitial],
             r.[UserId], r.[CreatedDatetime],
-            ROW_NUMBER() OVER (
-                PARTITION BY
-                    CASE
-                        WHEN r.[BillId]       IS NOT NULL THEN CONCAT(N'B', r.[BillId])
-                        WHEN r.[ExpenseId]    IS NOT NULL THEN CONCAT(N'E', r.[ExpenseId])
-                        WHEN r.[BillCreditId] IS NOT NULL THEN CONCAT(N'C', r.[BillCreditId])
-                        WHEN r.[InvoiceId]    IS NOT NULL THEN CONCAT(N'I', r.[InvoiceId])
-                    END
-                ORDER BY r.[CreatedDatetime] DESC, r.[Id] DESC
-            ) AS rn
+            CASE
+                WHEN r.[BillId]          IS NOT NULL THEN CONCAT(N'B', r.[BillId])
+                WHEN r.[ExpenseId]       IS NOT NULL THEN CONCAT(N'E', r.[ExpenseId])
+                WHEN r.[BillCreditId]    IS NOT NULL THEN CONCAT(N'C', r.[BillCreditId])
+                WHEN r.[InvoiceId]       IS NOT NULL THEN CONCAT(N'I', r.[InvoiceId])
+                WHEN r.[ContractLaborId] IS NOT NULL THEN CONCAT(N'L', r.[ContractLaborId])
+            END AS [ParentKey]
         FROM dbo.[vw_Review] r
     ),
+    LatestReview AS (
+        SELECT *,
+            ROW_NUMBER() OVER (
+                PARTITION BY [ParentKey]
+                ORDER BY [CreatedDatetime] DESC, [Id] DESC
+            ) AS rn
+        FROM Keyed
+    ),
+    Submitter AS (
+        SELECT
+            [ParentKey], [UserId],
+            ROW_NUMBER() OVER (
+                PARTITION BY [ParentKey]
+                ORDER BY [CreatedDatetime] DESC, [Id] DESC
+            ) AS rn
+        FROM Keyed
+        WHERE [StatusIsInitial] = 1
+    ),
     Pending AS (
-        SELECT *
-        FROM LatestReview
-        WHERE rn = 1 AND [StatusIsFinal] = 0 AND [StatusIsDeclined] = 0
+        -- Explicit columns, latest-row actor omitted -- see ReadInboxTasks.
+        SELECT
+            L.[BillId], L.[ExpenseId], L.[BillCreditId], L.[InvoiceId],
+            S.[UserId] AS [SubmitterId]
+        FROM LatestReview L
+        LEFT JOIN Submitter S
+            ON S.[ParentKey] = L.[ParentKey] AND S.rn = 1
+        WHERE L.rn = 1 AND L.[StatusIsFinal] = 0 AND L.[StatusIsDeclined] = 0
     ),
     Tagged AS (
         SELECT
@@ -333,7 +436,7 @@ BEGIN
                 INNER JOIN dbo.[UserProject] UP ON UP.[ProjectId] = BLI.[ProjectId] AND UP.[UserId] = @CurrentUserId
                 WHERE BLI.[BillId] = P.[BillId]
             ) THEN 1 ELSE 0 END AS [Total],
-            CASE WHEN P.[UserId] = @CurrentUserId THEN 1 ELSE 0 END AS [MineSubmitted]
+            CASE WHEN P.[SubmitterId] = @CurrentUserId THEN 1 ELSE 0 END AS [MineSubmitted]
         FROM Pending P WHERE P.[BillId] IS NOT NULL
 
         UNION ALL
@@ -351,7 +454,7 @@ BEGIN
                 INNER JOIN dbo.[UserProject] UP ON UP.[ProjectId] = ELI.[ProjectId] AND UP.[UserId] = @CurrentUserId
                 WHERE ELI.[ExpenseId] = P.[ExpenseId]
             ) THEN 1 ELSE 0 END,
-            CASE WHEN P.[UserId] = @CurrentUserId THEN 1 ELSE 0 END
+            CASE WHEN P.[SubmitterId] = @CurrentUserId THEN 1 ELSE 0 END
         FROM Pending P
         INNER JOIN dbo.[Expense] E ON E.[Id] = P.[ExpenseId]
         WHERE P.[ExpenseId] IS NOT NULL
@@ -371,7 +474,7 @@ BEGIN
                 INNER JOIN dbo.[UserProject] UP ON UP.[ProjectId] = BCLI.[ProjectId] AND UP.[UserId] = @CurrentUserId
                 WHERE BCLI.[BillCreditId] = P.[BillCreditId]
             ) THEN 1 ELSE 0 END,
-            CASE WHEN P.[UserId] = @CurrentUserId THEN 1 ELSE 0 END
+            CASE WHEN P.[SubmitterId] = @CurrentUserId THEN 1 ELSE 0 END
         FROM Pending P WHERE P.[BillCreditId] IS NOT NULL
 
         UNION ALL
@@ -387,7 +490,7 @@ BEGIN
                 SELECT 1 FROM dbo.[UserProject] UP
                 WHERE UP.[ProjectId] = I.[ProjectId] AND UP.[UserId] = @CurrentUserId
             ) THEN 1 ELSE 0 END,
-            CASE WHEN P.[UserId] = @CurrentUserId THEN 1 ELSE 0 END
+            CASE WHEN P.[SubmitterId] = @CurrentUserId THEN 1 ELSE 0 END
         FROM Pending P
         INNER JOIN dbo.[Invoice] I ON I.[Id] = P.[InvoiceId]
         WHERE P.[InvoiceId] IS NOT NULL

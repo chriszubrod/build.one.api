@@ -86,30 +86,47 @@ def _advance(*, statuses=None, next_status=..., review_status_id=1, submitter_id
 # ---------------------------------------------------------------------------
 
 
-def test_user_id_STAYS_the_submitter_because_the_inbox_reads_it():
-    """The fix that was NOT made, pinned so nobody makes it.
+def test_the_system_not_the_submitter_owns_the_advance():
+    """SUPERSEDED BY U-453 — and the history matters, so it is kept here.
 
-    The U-357 design says to re-attribute this row to the system user, and that
-    instruction is wrong. `dbo.Review.UserId` on the LATEST row is load-bearing
-    as "who submitted this": `dbo.inbox_tasks.sql`'s Pending CTE is
-    `LatestReview WHERE rn = 1`, aliases `P.[UserId] AS [SubmitterId]`, filters
-    the `mine_submitted` scope on `P.[UserId] = @CurrentUserId` (:126) and
-    counts `[MineSubmitted]` the same way (:336).
+    LS-01c′ asserted the OPPOSITE: that `user_id` must stay `review.user_id`.
+    That was correct at the time. `dbo.inbox_tasks.sql` read "who submitted
+    this" off the LATEST review row, so attributing the system's auto-advance
+    to the system actor would have dropped all 33 in_review bills out of their
+    submitter's `mine_submitted` scope and rendered "Claude Agent" as the
+    submitter — a worse, user-visible regression than the misattribution it
+    fixed. The U-357 design instructed the change anyway; the design was wrong
+    as written, and Codex caught it before it shipped.
 
-    Writing the system actor here makes a submitter's own bill vanish from
-    their sent box and renders "Claude Agent" as the submitter — a worse,
-    user-visible regression than the audit misattribution this unit fixes.
-    Re-pointing UserId means teaching the inbox to read the submitter off the
-    INITIAL row, which is a SQL change to a sproc LS-01b owns. The two must
-    ship as one unit.
+    U-453 earned the change by fixing the inbox FIRST: `Pending` now resolves
+    the submitter from the latest INITIAL review row through its `Submitter`
+    CTE. Both halves shipped in one unit because neither is correct alone —
+    which is exactly what the superseded assertion was protecting.
     """
     _, review_service = _advance(submitter_id=27)
     kwargs = review_service.create.call_args.kwargs
-    assert kwargs["user_id"] == 27
-    assert kwargs["user_id"] != SYSTEM_ACTOR_USER_ID, (
-        "re-attributing UserId breaks the mine_submitted inbox scope — see the "
-        "docstring; this needs the inbox SQL change in the same unit"
+    assert kwargs["user_id"] == SYSTEM_ACTOR_USER_ID
+    assert kwargs["user_id"] != 27, "the submitter did not move their own bill"
+
+
+def test_the_inbox_resolves_the_submitter_independently_of_this_row():
+    """The other half, pinned from this side too.
+
+    If the SQL is ever reverted to reading the latest row while this keeps
+    writing the system actor, every in_review bill silently leaves its
+    submitter's sent box. Asserting it here means a revert of EITHER half is
+    caught by BOTH test files.
+    """
+    from pathlib import Path as _P
+
+    sql = _P(__file__).resolve().parents[1] / "entities/review/sql/dbo.inbox_tasks.sql"
+    body = sql.read_text()
+    executable = "\n".join(l.split("--")[0] for l in body.splitlines())
+    assert executable.count("Submitter AS (") == 2, (
+        "both inbox sprocs must resolve the submitter from the initial row"
     )
+    assert "P.[SubmitterId] = @CurrentUserId" in executable
+    assert "P.[UserId] = @CurrentUserId" not in executable.replace("UP.[UserId]", "")
 
 
 def test_created_by_is_passed_explicitly_not_left_to_the_contextvar():

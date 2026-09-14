@@ -338,28 +338,32 @@ class ReviewNotificationService:
 
             ReviewService().create(
                 review_status_id=in_review.id,
-                # ⛔ `user_id` STAYS THE SUBMITTER. Do not "fix" this to the
-                # system actor — and note the U-357 design says to, which is
-                # wrong as written (LS-01c′, Codex P1).
+                # THE SYSTEM advanced this, not the submitter (U-453).
                 #
-                # `dbo.Review.UserId` on the LATEST row is load-bearing as "who
-                # submitted this": `dbo.inbox_tasks.sql`'s Pending CTE is
-                # `LatestReview WHERE rn = 1`, aliases `P.[UserId] AS
-                # [SubmitterId]`, filters the `mine_submitted` scope on
-                # `P.[UserId] = @CurrentUserId` (:126) and counts
-                # `[MineSubmitted]` the same way (:336). Writing the system
-                # actor here drops the submitter's own bill out of their sent
-                # box and relabels it "Claude Agent" — a worse, user-visible
-                # regression than the misattribution being fixed. Re-pointing
-                # UserId requires teaching the inbox to read the submitter off
-                # the INITIAL row, a SQL change to a sproc LS-01b owns; the two
-                # must ship as ONE unit.
-                user_id=review.user_id,
-                # `created_by_user_id` IS safe to correct here — it is the
-                # audit subject and no workflow reads it. This path runs with
-                # no authz subject, so without it the sproc's
-                # COALESCE(@CreatedByUserId, 17) credits Christopher for work
-                # the pipeline did.
+                # LS-01c′ deliberately left this as `review.user_id` because
+                # `dbo.inbox_tasks.sql` read "who submitted this" off the
+                # LATEST review row — so writing the system actor here would
+                # have dropped every in_review bill out of its submitter's
+                # `mine_submitted` scope and rendered "Claude Agent" as the
+                # submitter. U-453 fixed the inbox first: `Pending` now
+                # resolves the submitter from the latest INITIAL row via its
+                # `Submitter` CTE, which is the row that actually represents a
+                # submission. The two halves shipped together because neither
+                # is correct alone.
+                #
+                # What this buys: `ReviewTimeline` (BillEdit.tsx:575) renders
+                # the actor per row, so the "In Review" entry stops claiming
+                # the submitter moved their own bill along.
+                user_id=SYSTEM_ACTOR_USER_ID,
+                # Same actor as the audit subject here — both are the
+                # pipeline. Passing it explicitly matters because
+                # `ReviewService.create` otherwise falls back to
+                # `current_user_id`, and THIS path runs with no authz subject:
+                # the ContextVar is None, so the sproc's
+                # COALESCE(@CreatedByUserId, 17) credits Christopher. (On a
+                # path that DOES have a subject the fallback would credit that
+                # user, not Christopher — the 17 only appears when nobody is
+                # set.)
                 created_by_user_id=SYSTEM_ACTOR_USER_ID,
                 comments=None,
                 bill_id=bill.id,

@@ -75,6 +75,14 @@ current_is_system_context: ContextVar[bool] = ContextVar(
 # on every worker write across ~30 entities at once; that is a foundational
 # change needing its own design gate. Call sites that know they are writing a
 # system-authored row pass this constant explicitly instead.
+# ⚠ This id must EXIST as a `dbo.User` row. `dbo.Review.UserId` carries
+# `FK_Review_User`, and `vw_Review` INNER JOINs User — so on a database without
+# it, any write naming this actor fails the FK and (for the notification
+# pipeline, whose advance is best-effort) is swallowed, leaving the document at
+# "Submitted" after its reviewers were already emailed. Prod has User 33
+# ("Claude Agent", IsAgent=1) and 308 Review rows already reference it, so this
+# is a fresh-database / test-fixture concern rather than a prod one — but there
+# is no seed that creates it, so a new environment has to.
 SYSTEM_ACTOR_USER_ID = 33
 
 

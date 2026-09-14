@@ -1,6 +1,6 @@
 # U-357 — Unified lifecycle `status` + `review_status` on every workflow entity (DESIGN / SCOPING)
 
-**Status:** design/scoping, awaiting Chris's decisions (§9) and `/em` dispatch. **STOP — nothing is built,
+**Status:** DISPATCHED for Bill (§9b). **Bill's Phase-3 slice is SHIPPED AND DEPLOYED** — U-445, U-446, U-446b, U-446c (see LS-03a). Everything else below is still design/scoping, awaiting Chris's remaining decisions (§9). **STOP — nothing else is built,
 no SQL is applied, no deploy is sequenced by this document.** Every unit below is a proposal until `/em`
 promotes it; every SQL step is `/em`-applied (builders never touch prod).
 **Unit id:** **U-357 — confirmed by `/em` 2026-09-01.** The U-349 Wave-C session had booked its line-item design
@@ -513,14 +513,54 @@ lifecycle source of truth. Rollback = stop the pointer write (sproc revert) with
 >   would each have failed with error 271. My own enumeration missed all three by grepping only
 >   bracketed forms; Codex found them.
 >
-> * **U-446b — NOT BUILT: the terminal lock.** `422 status_locked` on header PUT, line-item
->   create/update/delete and non-admin DELETE, with the six exemptions §4.1 lists
->   (`system_authz` callers, `SetBillQboIdentity`, QBO pull, CLI sync, CompletionJob
->   `force=True`, idempotent re-completion, `IsBilled` flips). Split out because it is a
->   user-visible behaviour change across three routers, not plumbing — and 422-not-409 is
->   argued from three specific iOS files.
-> * **U-446c — NOT BUILT:** gate flags (§9 #1), the agent prompt/tool rewording, MCP
->   `search_*`.
+> * **U-446b — SHIPPED + DEPLOYED `123e4bcf` (2026-09-13): the terminal lock.** `422
+>   status_locked` on header PUT, line-item create/update/delete, attachment mutations and
+>   non-admin DELETE, with the §4.1 exemptions. TWO layers, not one: the Python guard refuses
+>   early with a message naming what was attempted, and every mutation sproc re-checks the
+>   parent under `UPDLOCK, HOLDLOCK` INSIDE the writing transaction — the Python-only guard
+>   reads an RCSI snapshot and is therefore raceable on its own. 422-not-409 is argued from
+>   three specific iOS files.
+>
+>   Two design corrections came out of building it. **The system-caller signature
+>   (`is_system_admin AND user_id is None`) is FORGEABLE** — an unexpired admin JWT whose `uid`
+>   no longer resolves reaches exactly that pair through `_enrich_payload_with_authz`, so the
+>   exemption now keys on a positive `current_is_system_context` marker that
+>   `set_authz_context` clears by default; the auth layer also fails closed (no resolved actor,
+>   no system-admin), which closed a full RBAC bypass wider than this lock. And **the contract
+>   is not absolute**: QBO projection/repair and a named set of operational-metadata writers
+>   (identity stamps, extraction, categorisation, download counts) write to completed documents
+>   by design, and `shared/lifecycle/terminal_lock.py` now names them rather than leaving them
+>   unguarded-by-omission.
+>
+> * **U-446c — SHIPPED + DEPLOYED `e2150fe8` (2026-09-13): atomic delete cascades, fail-closed
+>   default, ordered attachment locks.** ⚠ **ID COLLISION — this id was already earmarked below
+>   for the gate-flag work, which has been rebadged U-446d.** The collision is recorded rather
+>   than rewritten because the id is in the shipped commit trailer.
+>
+>   `DeleteBillCascadeById` / `DeleteBillLineItemCascadeById` hold the parent lock across the
+>   whole cascade (the Python version ran N transactions, so a completion landing mid-cascade
+>   was refused at whichever step it reached, leaving the earlier ones committed);
+>   `@AllowTerminalParent` flipped `= 1` → `= 0`; the attachment sprocs lock their Bills in
+>   ascending id order with set validation.
+>
+>   **The deepest fix was none of those three:** `@AllowTerminalParent` was gating the LOCK as
+>   well as the refusal in every guarded sproc, so an exempt writer took no lock at all and
+>   serialized against nothing — which made any re-check inside a cascade unsound however it was
+>   written. All nine now LOCK UNCONDITIONALLY, REFUSE CONDITIONALLY.
+>
+>   **Three live bugs fixed on the way**, each verified against prod rather than inferred:
+>   `DELETE /delete/bill_line_item/{id}` failed with **547** for any line carrying an attachment;
+>   the first cascade draft lost `DeleteInvoiceLineItemsByBillLineItemId`'s two NO ACTION
+>   children (~30k provenance rows); and `TransitionBillStatus` could **reopen a completed Bill**
+>   when passed `@FromStatuses='completed'`.
+>
+>   **Correction to this unit's own Gate 1:** it claimed `ReviewEntry` was never cleared and that
+>   2 live bills would 547. False — `DeleteReviewsByBillId` clears it behind an `OBJECT_ID`
+>   guard, which the Python cascade called.
+>
+> * **U-446d — NOT BUILT** (was U-446c until the collision above): gate flags (§9 #1), the agent
+>   prompt/tool rewording, MCP `search_*`. `COMPLETION_GATE` is confirmed absent from the
+>   codebase — LS-00c specified it in `shared/lifecycle` and it was never written.
 >
 > **Why no three-step swap.** `CK_Bill_Status_IsDraft` makes the two columns incapable of
 > disagreeing, so an API image that has never heard of `Status` cannot write an inconsistent

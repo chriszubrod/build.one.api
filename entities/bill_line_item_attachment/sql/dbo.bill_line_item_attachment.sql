@@ -45,14 +45,14 @@ GO
 -- attachment link fails. Same cleanup dbo.bill.sql did for CreateBill on 2026-07-12. Do NOT
 -- re-add a competing definition in scripts/migrations/.
 -- U-446b: the in-transaction half of the terminal lock, same shape and same
--- ⚠ permissive-default rationale as entities/bill_line_item/sql/dbo.bill_line_item.sql.
+-- fail-closed-default rationale as entities/bill_line_item/sql/dbo.bill_line_item.sql.
 -- Attaching evidence to a completed Bill is as much an edit as changing a line.
 CREATE OR ALTER PROCEDURE CreateBillLineItemAttachment
 (
     @BillLineItemId BIGINT,
     @AttachmentId BIGINT,
     @CreatedByUserId BIGINT = NULL,
-    @AllowTerminalParent BIT = 1
+    @AllowTerminalParent BIT = 0
 )
 AS
 BEGIN
@@ -65,7 +65,10 @@ BEGIN
 
     DECLARE @ParentBillId BIGINT;
 
-    IF @AllowTerminalParent = 0
+    -- LOCK UNCONDITIONALLY, REFUSE CONDITIONALLY (U-446c, Codex). An exempt
+    -- writer that skips the lock is invisible to every other transaction, so
+    -- the serialization the guards rest on vanishes for exactly the callers
+    -- that mutate most.
     BEGIN
         -- Take the ATTACHMENT lock first, in the same order the attachment
         -- sprocs do (Codex round 4, P1). Without it, linking this file to a
@@ -83,7 +86,7 @@ BEGIN
         INNER JOIN dbo.[Bill] b WITH (UPDLOCK, HOLDLOCK) ON b.[Id] = li.[BillId]
         WHERE li.[Id] = @BillLineItemId;
 
-        IF EXISTS (
+        IF @AllowTerminalParent = 0 AND EXISTS (
             SELECT 1 FROM dbo.[Bill] WHERE [Id] = @ParentBillId AND [Status] = 'completed'
         )
         BEGIN
@@ -237,7 +240,7 @@ GO
 CREATE OR ALTER PROCEDURE DeleteBillLineItemAttachmentById
 (
     @Id BIGINT,
-    @AllowTerminalParent BIT = 1
+    @AllowTerminalParent BIT = 0
 )
 AS
 BEGIN
@@ -250,7 +253,10 @@ BEGIN
 
     DECLARE @ParentBillId BIGINT;
 
-    IF @AllowTerminalParent = 0
+    -- LOCK UNCONDITIONALLY, REFUSE CONDITIONALLY (U-446c, Codex). An exempt
+    -- writer that skips the lock is invisible to every other transaction, so
+    -- the serialization the guards rest on vanishes for exactly the callers
+    -- that mutate most.
     BEGIN
         SELECT @ParentBillId = b.[Id]
         FROM dbo.[BillLineItemAttachment] blia
@@ -258,7 +264,7 @@ BEGIN
         INNER JOIN dbo.[Bill] b WITH (UPDLOCK, HOLDLOCK) ON b.[Id] = li.[BillId]
         WHERE blia.[Id] = @Id;
 
-        IF EXISTS (
+        IF @AllowTerminalParent = 0 AND EXISTS (
             SELECT 1 FROM dbo.[Bill] WHERE [Id] = @ParentBillId AND [Status] = 'completed'
         )
         BEGIN

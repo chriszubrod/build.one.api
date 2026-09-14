@@ -71,9 +71,9 @@ class BillLineItemRepository:
         Create a new bill line item.
 
         `allow_terminal_parent` is the sproc-side half of the U-446b terminal
-        lock and is ALWAYS passed explicitly — the sproc defaults it permissive
-        so the SQL can be applied either side of a deploy, which means an
-        omission here silently drops the guard.
+        lock and is ALWAYS passed explicitly. The sproc default is fail-closed
+        since U-446c, so an omission refuses the write instead of silently
+        dropping the guard.
         """
         try:
             with get_connection() as conn:
@@ -325,6 +325,38 @@ class BillLineItemRepository:
                 error, what="its line items cannot be changed"
             )
             logger.error(f"Error during update bill line item by ID: {error}")
+            raise map_database_error(error)
+
+    def delete_cascade_by_id(self, id: int, *, allow_terminal_parent: bool) -> Optional[BillLineItem]:
+        """U-446c: delete a BillLineItem and its dependent rows in ONE transaction.
+
+        Replaces the Python sequence that committed invoice-line cleanup and the
+        ContractLabor FK clear BEFORE the guarded line delete — so a completion
+        landing in that gap produced `status_locked` after those rows were
+        already gone. Also clears the BillLineItemAttachment link, which the
+        Python path never did (NO ACTION FK, so that delete used to 547).
+
+        Returns the deleted line, or None when it does not exist or was moved to
+        another Bill mid-flight.
+        """
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(
+                    cursor=cursor,
+                    name="DeleteBillLineItemCascadeById",
+                    params={
+                        "Id": id,
+                        "AllowTerminalParent": 1 if allow_terminal_parent else 0,
+                    },
+                )
+                row = cursor.fetchone()
+                return self._from_db(row) if row else None
+        except Exception as error:
+            reraise_if_sproc_status_locked(
+                error, what="its line items cannot be deleted"
+            )
+            logger.error(f"Error during cascade delete of bill line item: {error}")
             raise map_database_error(error)
 
     def delete_by_id(self, id: int, *, allow_terminal_parent: bool = True) -> Optional[BillLineItem]:

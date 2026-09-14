@@ -720,7 +720,7 @@ CREATE OR ALTER PROCEDURE UpdateBillById
     @TotalAmount DECIMAL(18,2) NULL,
     @Memo NVARCHAR(MAX) NULL,
     @IsDraft BIT = NULL,
-    @AllowTerminalParent BIT = 1
+    @AllowTerminalParent BIT = 0
 )
 AS
 BEGIN
@@ -740,19 +740,22 @@ BEGIN
     -- Naming the terminal state explicitly gets the caller 422 `status_locked`
     -- whichever side of the race it lands on.
     --
-    -- @AllowTerminalParent defaults PERMISSIVE for the same deploy-ordering
-    -- reason as dbo.bill_line_item.sql; the repo always passes it explicitly.
-    IF @AllowTerminalParent = 0
+    -- @AllowTerminalParent is fail-closed (= 0) since U-446c; the repo passes
+    -- it explicitly regardless. See dbo.bill_line_item.sql.
+    -- LOCK UNCONDITIONALLY, REFUSE CONDITIONALLY (U-446c, Codex). An exempt
+    -- writer that skips the lock is invisible to every other transaction, so
+    -- the serialization the guards rest on vanishes for exactly the callers
+    -- that mutate most.
+    DECLARE @LockedCompleted INT;
+    SELECT @LockedCompleted = COUNT(*)
+    FROM dbo.[Bill] WITH (UPDLOCK, HOLDLOCK)
+    WHERE [Id] = @Id AND [Status] = 'completed';
+
+    IF @AllowTerminalParent = 0 AND @LockedCompleted > 0
     BEGIN
-        IF EXISTS (
-            SELECT 1 FROM dbo.[Bill] WITH (UPDLOCK, HOLDLOCK)
-            WHERE [Id] = @Id AND [Status] = 'completed'
-        )
-        BEGIN
-            COMMIT TRANSACTION;
-            RAISERROR('STATUS_LOCKED: a completed Bill cannot be edited.', 16, 1);
-            RETURN;
-        END
+        COMMIT TRANSACTION;
+        RAISERROR('STATUS_LOCKED: a completed Bill cannot be edited.', 16, 1);
+        RETURN;
     END
 
     DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();
@@ -824,11 +827,164 @@ GO
 
 
 
+-- ===========================================================================
+-- U-446c — DELETING A BILL IS ONE TRANSACTION.
+--
+-- The Python cascade it replaces ran N transactions: attachment links, then
+-- each line item (with its own dependent cleanup), then Review rows, then the
+-- header. U-446b made every step refuse a completed parent and made them all
+-- carry the same decision, so a completion landing mid-cascade WAS refused —
+-- but at whichever step it reached, leaving the earlier steps committed. The
+-- outcome was a partially deleted document rather than a wrongly deleted one,
+-- and it applied to ordinary draft deletes racing a completion, not just the
+-- admin escape hatch. One transaction is the only thing that fixes that.
+--
+-- This is possible at all because the cascade makes NO external calls: the
+-- Attachment rows and their Azure blobs are deliberately LEFT ALONE (only the
+-- link rows go), so there is nothing that has to live outside the transaction.
+--
+-- FK ORDER, verified against sys.foreign_keys rather than assumed:
+--   BillLineItemAttachment  -> BillLineItem   NO_ACTION  (must be cleared)
+--   InvoiceLineItem         -> BillLineItem   NO_ACTION  (must be cleared)
+--   ContractLabor           -> BillLineItem   NO_ACTION  (must be NULLed)
+--   ContractLaborLineItem   -> BillLineItem   SET_NULL   (automatic — no step)
+--   BillLineItem            -> Bill           NO_ACTION
+--   Review                  -> Bill           NO_ACTION
+--   ReviewEntry             -> Bill           NO_ACTION  (see note below)
+--   MsMessageBill           -> Bill           CASCADE    (automatic — no step)
+--
+-- ReviewEntry is deleted here because DeleteReviewsByBillId — the sproc the
+-- Python cascade called, and which this replaces — does exactly that behind its
+-- own OBJECT_ID guard. Not a bug fix: an earlier read of this unit claimed the
+-- Python cascade left ReviewEntry behind and that 2 live bills would 547 on
+-- delete. That was WRONG, inferred from sys.foreign_keys without reading what
+-- ReviewRepository.delete_by_bill_id actually ran. Both DELETEs are kept
+-- together here so this sproc preserves that behaviour rather than losing it.
+--
+-- The MsMessageBill step the Python cascade ran is dropped: its FK is CASCADE,
+-- so the row goes with the header on its own.
+-- ===========================================================================
+CREATE OR ALTER PROCEDURE DeleteBillCascadeById
+(
+    @Id BIGINT,
+    @AllowTerminalParent BIT = 0
+)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    BEGIN TRANSACTION;
+
+    -- Lock the header FIRST and hold it for the whole cascade. Every child
+    -- write below is therefore serialized against FinalizeBillById: a
+    -- completion either lands entirely before this (and is refused) or waits
+    -- until the delete has finished. `Status` is NOT NULL on the table, so a
+    -- NULL here means the row does not exist.
+    DECLARE @Status NVARCHAR(20) = NULL;
+    SELECT @Status = [Status]
+    FROM dbo.[Bill] WITH (UPDLOCK, HOLDLOCK)
+    WHERE [Id] = @Id;
+
+    -- No early RETURN for a missing Bill. Every statement below is naturally a
+    -- no-op when nothing matches, and the final DELETE's OUTPUT clause then
+    -- yields an EMPTY result set — which is what the repo needs to return None.
+    -- A bare `RETURN` here produced NO result set at all, and pyodbc's
+    -- fetchone() raises "No results. Previous SQL was not a query" on that
+    -- (CLAUDE.md's 2026-06-11 discipline). Reachable: the service reads the
+    -- bill first, but it can be deleted concurrently in between.
+    IF @AllowTerminalParent = 0 AND @Status = 'completed'
+    BEGIN
+        COMMIT TRANSACTION;
+        RAISERROR('STATUS_LOCKED: a completed Bill cannot be deleted.', 16, 1);
+        RETURN;
+    END
+
+    -- Children, innermost FK first. Attachment ROWS and their blobs survive on
+    -- purpose — only the link goes.
+    DELETE FROM dbo.[BillLineItemAttachment]
+    WHERE [BillLineItemId] IN (SELECT [Id] FROM dbo.[BillLineItem] WHERE [BillId] = @Id);
+
+    -- InvoiceLineItem has TWO NO ACTION children of its own — this is what
+    -- DeleteInvoiceLineItemsByBillLineItemId (the sproc behind the repo call
+    -- this cascade replaced) does, and dropping it cost a 547 on the first
+    -- rehearsal against real data. InvoiceLineItemAttachment is empty today;
+    -- InvoiceLineItemSourceProvenance has ~30k rows.
+    DELETE ila
+    FROM dbo.[InvoiceLineItemAttachment] ila
+    JOIN dbo.[InvoiceLineItem] ili ON ili.[Id] = ila.[InvoiceLineItemId]
+    WHERE ili.[BillLineItemId] IN (SELECT [Id] FROM dbo.[BillLineItem] WHERE [BillId] = @Id);
+
+    DELETE prov
+    FROM dbo.[InvoiceLineItemSourceProvenance] prov
+    JOIN dbo.[InvoiceLineItem] ili ON ili.[Id] = prov.[InvoiceLineItemId]
+    WHERE ili.[BillLineItemId] IN (SELECT [Id] FROM dbo.[BillLineItem] WHERE [BillId] = @Id);
+
+    DELETE FROM dbo.[InvoiceLineItem]
+    WHERE [BillLineItemId] IN (SELECT [Id] FROM dbo.[BillLineItem] WHERE [BillId] = @Id);
+
+    UPDATE dbo.[ContractLabor]
+    SET [BillLineItemId] = NULL,
+        [ModifiedDatetime] = SYSUTCDATETIME()
+    WHERE [BillLineItemId] IN (SELECT [Id] FROM dbo.[BillLineItem] WHERE [BillId] = @Id);
+
+
+    -- U-363 deploy-gap bridge, moved here from Python (U-446c). qbo.
+    -- BillLineItemBillLine is ALREADY DROPPED in prod, but its FK to
+    -- BillLineItem was NO ACTION, so wherever the table still exists a line
+    -- delete would 547 without this. The OBJECT_ID guard makes it a plain SQL
+    -- no-op once dropped — deferred name resolution means the body compiles
+    -- against a missing table, it just must never be REACHED. Delete this block
+    -- when the table is dropped everywhere (U-365 did exactly that for the 4
+    -- header mapping tables).
+    IF OBJECT_ID('qbo.BillLineItemBillLine') IS NOT NULL
+        DELETE FROM qbo.[BillLineItemBillLine]
+        WHERE [BillLineItemId] IN (SELECT [Id] FROM dbo.[BillLineItem] WHERE [BillId] = @Id);
+
+    DELETE FROM dbo.[BillLineItem] WHERE [BillId] = @Id;
+
+    -- ReviewEntry is DECOMMISSIONED and guarded exactly as DeleteReviewsByBillId
+    -- guards it (Codex P2). Dropping the guard would turn this sproc from a
+    -- no-op into a hard runtime failure the day that table is dropped.
+    IF OBJECT_ID('dbo.ReviewEntry', 'U') IS NOT NULL
+        DELETE FROM dbo.[ReviewEntry] WHERE [BillId] = @Id;
+
+    DELETE FROM dbo.[Review] WHERE [BillId] = @Id;
+
+    DELETE FROM dbo.[Bill]
+    OUTPUT
+        DELETED.[Id],
+        DELETED.[PublicId],
+        DELETED.[RowVersion],
+        CONVERT(VARCHAR(19), DELETED.[CreatedDatetime], 120) AS [CreatedDatetime],
+        CONVERT(VARCHAR(19), DELETED.[ModifiedDatetime], 120) AS [ModifiedDatetime],
+        DELETED.[VendorId],
+        DELETED.[PaymentTermId],
+        CONVERT(VARCHAR(19), DELETED.[BillDate], 120) AS [BillDate],
+        CONVERT(VARCHAR(19), DELETED.[DueDate], 120) AS [DueDate],
+        DELETED.[BillNumber],
+        DELETED.[TotalAmount],
+        DELETED.[Memo],
+        DELETED.[IsDraft],
+        DELETED.[Status],
+        DELETED.[StatusDatetime],
+        DELETED.[StatusOrigin],
+        DELETED.[StatusSourceRef],
+        DELETED.[IntakeSource],
+        DELETED.[IntakeSourceDetail],
+        DELETED.[SourceEmailMessageId]
+    WHERE [Id] = @Id;
+
+    COMMIT TRANSACTION;
+END;
+GO
+
+
+
 -- Delete Bill By Id Stored Procedures
 CREATE OR ALTER PROCEDURE DeleteBillById
 (
     @Id BIGINT,
-    @AllowTerminalParent BIT = 1
+    @AllowTerminalParent BIT = 0
 )
 AS
 BEGIN
@@ -842,17 +998,20 @@ BEGIN
     -- landing anywhere in between left a non-admin deleting a completed Bill's
     -- header with nothing to stop it. Deciding again here, with the row locked,
     -- is the only place that cannot be raced.
-    IF @AllowTerminalParent = 0
+    -- LOCK UNCONDITIONALLY, REFUSE CONDITIONALLY (U-446c, Codex). An exempt
+    -- writer that skips the lock is invisible to every other transaction, so
+    -- the serialization the guards rest on vanishes for exactly the callers
+    -- that mutate most.
+    DECLARE @LockedCompleted INT;
+    SELECT @LockedCompleted = COUNT(*)
+    FROM dbo.[Bill] WITH (UPDLOCK, HOLDLOCK)
+    WHERE [Id] = @Id AND [Status] = 'completed';
+
+    IF @AllowTerminalParent = 0 AND @LockedCompleted > 0
     BEGIN
-        IF EXISTS (
-            SELECT 1 FROM dbo.[Bill] WITH (UPDLOCK, HOLDLOCK)
-            WHERE [Id] = @Id AND [Status] = 'completed'
-        )
-        BEGIN
-            COMMIT TRANSACTION;
-            RAISERROR('STATUS_LOCKED: a completed Bill cannot be deleted.', 16, 1);
-            RETURN;
-        END
+        COMMIT TRANSACTION;
+        RAISERROR('STATUS_LOCKED: a completed Bill cannot be deleted.', 16, 1);
+        RETURN;
     END
 
     DELETE FROM dbo.[Bill]
@@ -1329,7 +1488,15 @@ BEGIN
       AND [Status] IN (SELECT LTRIM(RTRIM(value)) FROM STRING_SPLIT(@FromStatuses, ','))
       -- Idempotent by construction: a transition to the state the row is
       -- already in matches nothing and returns the row unchanged below.
-      AND [Status] <> @ToStatus;
+      AND [Status] <> @ToStatus
+      -- U-446c (Codex P1). `completed` is TERMINAL: this sproc takes its
+      -- allowed source states from the CALLER, so passing
+      -- @FromStatuses = 'completed' would reopen a finalised Bill — undoing a
+      -- state whose AP has already reached QBO, SharePoint, Excel and Box. No
+      -- repository calls it that way today; the fence makes it uncallable that
+      -- way at all. Completion itself goes through FinalizeBillById, which does
+      -- not use this path.
+      AND [Status] <> 'completed';
 
     SELECT
         [Id],

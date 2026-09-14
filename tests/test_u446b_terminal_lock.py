@@ -551,12 +551,12 @@ def test_each_mutator_still_lets_an_exempt_internal_pipeline_through(method, kwa
 
 
 def _bill_service_for_delete(bill):
+    """U-446c: the cascade is one sproc call, so there is nothing else to stub."""
     from entities.bill.business.service import BillService
 
     svc = BillService(repo=MagicMock())
     svc.read_by_public_id = MagicMock(return_value=bill)
-    svc.bill_line_item_service = MagicMock()
-    svc.bill_line_item_service.read_by_bill_id.return_value = []
+    svc.repo.delete_cascade_by_id.return_value = bill
     return svc
 
 
@@ -569,7 +569,7 @@ def test_an_ordinary_user_cannot_delete_a_completed_bill():
     svc = _bill_service_for_delete(_bill())
     with pytest.raises(StatusLockedError, match="cannot be deleted"):
         svc.delete_by_public_id(public_id="bill-55")
-    svc.repo.delete_by_id.assert_not_called()
+    svc.repo.delete_cascade_by_id.assert_not_called()
 
 
 def test_a_system_admin_may_still_delete_a_completed_bill():
@@ -579,27 +579,15 @@ def test_a_system_admin_may_still_delete_a_completed_bill():
     is the intended actor."""
     set_authz_context(user_id=17, company_id=1, is_system_admin=True)
     svc = _bill_service_for_delete(_bill())
-    with patch("entities.review.persistence.repo.ReviewRepository"), \
-         patch(
-             "integrations.ms.mail.message.connector.bill.persistence.repo."
-             "MsMessageBillRepository"
-         ), \
-         patch("entities.bill.business.service.AzureBlobStorage"):
-        svc.delete_by_public_id(public_id="bill-55")
-    svc.repo.delete_by_id.assert_called_once()
+    svc.delete_by_public_id(public_id="bill-55")
+    svc.repo.delete_cascade_by_id.assert_called_once()
 
 
 def test_a_draft_bill_is_deletable_by_anyone_who_can_reach_it():
     set_authz_context(user_id=20, company_id=1, is_system_admin=False)
     svc = _bill_service_for_delete(_bill(status="in_review", is_draft=True))
-    with patch("entities.review.persistence.repo.ReviewRepository"), \
-         patch(
-             "integrations.ms.mail.message.connector.bill.persistence.repo."
-             "MsMessageBillRepository"
-         ), \
-         patch("entities.bill.business.service.AzureBlobStorage"):
-        svc.delete_by_public_id(public_id="bill-55")
-    svc.repo.delete_by_id.assert_called_once()
+    svc.delete_by_public_id(public_id="bill-55")
+    svc.repo.delete_cascade_by_id.assert_called_once()
 
 
 # ---------------------------------------------------------------------------
@@ -943,21 +931,29 @@ def test_every_guarded_sproc_sets_nocount(sql_rel, proc):
 
 
 @pytest.mark.parametrize("sql_rel,proc", _GUARDED_SPROCS)
-def test_the_new_param_is_optional_so_the_sql_applies_in_either_order(sql_rel, proc):
-    """Deployment safety, and a deliberate trade.
+def test_the_new_param_is_optional_and_now_fails_CLOSED(sql_rel, proc):
+    """U-446c flipped the default from `= 1` to `= 0`.
 
-    The default is PERMISSIVE (`= 1`). With `= 0`, applying this SQL while the
-    previous image is still serving would refuse completion's own Step-2 line
-    finalize — old code passes no such param — turning every completion that has
-    draft lines into a 207 until the deploy landed, with the reclaim watchdog
-    unable to heal it either. The cost is that a call site which forgets the
-    param silently loses this layer, which is exactly what the next test pins.
+    U-446b shipped it permissive deliberately: that was the only default that
+    made the SQL safe to apply either side of ITS OWN deploy, because `= 0`
+    would have refused completion's own Step-2 line finalize while the previous
+    image was still serving — turning every completion with draft lines into a
+    207 until the deploy landed, unhealable by the reclaim watchdog. The cost
+    was that a call site which forgot the param silently lost the guard.
+
+    That window is closed — U-446b is live and every caller passes the param —
+    so the trapdoor is gone: an omission now refuses the write instead of
+    quietly skipping the check. The param stays OPTIONAL so the signature is
+    still additive for any caller that binds positionally.
     """
     from tests.sproc_text import REPO_ROOT, sproc_params
 
     params = sproc_params(REPO_ROOT / sql_rel, proc)
-    assert "@AllowTerminalParent BIT = 1" in params, (
-        f"{proc}: the param must be optional AND default permissive"
+    assert "@AllowTerminalParent BIT = 0" in params, (
+        f"{proc}: the param must be optional AND fail closed"
+    )
+    assert "@AllowTerminalParent BIT = 1" not in params, (
+        f"{proc}: a permissive default is a silent trapdoor — U-446c removed it"
     )
 
 
@@ -1601,8 +1597,12 @@ def test_the_bill_cascade_carries_ONE_conditional_decision_not_a_blanket_exempti
         for kw in n.keywords
         if kw.arg in ("_via_internal_pipeline", "allow_terminal_parent", "exempt")
     ]
-    assert len(flags) >= 5, (
-        f"expected the header guard + every cascade step to carry a flag, "
+    # U-446c collapsed the cascade into ONE sproc call, so there are now exactly
+    # two flag sites — the early Python refusal and the call that carries the
+    # same decision into the transaction. Fewer places to get wrong is the
+    # point; what still matters is that neither of them is a hardcoded True.
+    assert len(flags) == 2, (
+        f"expected the header guard + the cascade call to carry a flag, "
         f"found {len(flags)}"
     )
     blanket = [
@@ -1874,13 +1874,12 @@ def test_a_lost_reparent_race_surfaces_as_422_not_409_or_404():
     set_authz_context(user_id=20, company_id=1, is_system_admin=False)
     svc = BillLineItemService(repo=MagicMock())
     svc.read_by_public_id = MagicMock(return_value=_line())
-    svc.repo.delete_by_id.return_value = None  # bound DELETE matched nothing
+    svc.repo.delete_cascade_by_id.return_value = None  # bound DELETE matched nothing
 
     with patch("entities.bill.business.service.BillService") as MockBill, \
          patch("entities.bill_line_item.business.service.BillService") as MockBill2, \
          patch("entities.invoice_line_item.persistence.repo.InvoiceLineItemRepository"), \
-         patch("entities.contract_labor.persistence.repo.ContractLaborRepository") as MockCl, \
-         patch("entities.bill_line_item.business.service._clear_legacy_bill_line_item_bill_line_mapping"):
+         patch("entities.contract_labor.persistence.repo.ContractLaborRepository") as MockCl:
         MockCl.return_value.read_by_bill_line_item_id.return_value = []
         # the guard passed on the way in (draft), then the parent completed
         draft, done = _bill(status="in_review", is_draft=True), _bill()

@@ -23,55 +23,6 @@ from entities.bill.business.service import BillService
 logger = logging.getLogger(__name__)
 
 
-def _clear_legacy_bill_line_item_bill_line_mapping(bill_line_item_id: int) -> None:
-    """U-363 deploy-gap bridge for BillLineItemService.delete_by_public_id — see
-    its call site. Raw SQL, not a repo/model (both retired in this unit):
-    deletes any row in the (soon-to-be-dropped) qbo.BillLineItemBillLine table
-    that still points at this BillLineItem, so its NO ACTION FK
-    (FK_BillLineItemBillLine_BillLineItem, live since
-    scripts/migrations/u225_qbo_mapping_fk_gaps.sql) never blocks the line
-    delete below. Mirrors InvoiceLineItemService's U-362
-    _clear_legacy_invoice_line_item_invoice_line_mapping bridge exactly (same
-    OBJECT_ID-guard idiom — table-already-dropped becomes a plain SQL no-op,
-    not a caught Python exception). Once /em applies the DROP for this table,
-    this whole function becomes a permanent no-op and should be deleted (see
-    U-365, which did exactly that for the 4 header mapping tables)."""
-    from shared.database import get_connection
-
-    try:
-        with get_connection() as conn:
-            conn.cursor().execute(
-                "IF OBJECT_ID('qbo.BillLineItemBillLine', 'U') IS NOT NULL "
-                "DELETE FROM [qbo].[BillLineItemBillLine] WHERE [BillLineItemId] = ?",
-                (bill_line_item_id,),
-            )
-    except Exception as e:
-        # Only reachable now for a genuine unexpected failure (connection reset,
-        # deadlock, permissions) — table-missing no longer raises at all. Logged,
-        # not raised: best-effort only. The real safety net is the FK itself — if
-        # a mapping row really does still exist and this failed to clear it, the
-        # line delete below 547s anyway (fail-safe, not fail-silent-corruption).
-        logger.warning(
-            f"Could not clear legacy qbo.BillLineItemBillLine mapping for "
-            f"BillLineItem {bill_line_item_id}: {e}"
-        )
-
-
-# ---------------------------------------------------------------------------
-# Box deep-link URL builders.
-# ---------------------------------------------------------------------------
-# Kept at module scope (pure, stateless) so they can be unit-tested + shared
-# without dragging in the rest of the service. The Box web app accepts a bare
-# folder/file id under the canonical paths below; no auth bounce, no realm.
-
-def _build_box_folder_url(box_folder_id: str) -> str:
-    return f"https://app.box.com/folder/{box_folder_id}"
-
-
-def _build_box_file_url(box_file_id: str) -> str:
-    return f"https://app.box.com/file/{box_file_id}"
-
-
 class BillLineItemService:
     """
     Service for BillLineItem entity business operations.
@@ -163,8 +114,8 @@ class BillLineItemService:
         return self.repo.create(
             # U-446b: the sproc re-checks the parent INSIDE the writing
             # transaction, closing the check-then-write race the Python guard
-            # above cannot. Always passed explicitly — the sproc's default is
-            # permissive so the SQL is safe to apply either side of a deploy.
+            # above cannot. Always passed explicitly, though the sproc default is
+            # fail-closed since U-446c.
             allow_terminal_parent=is_exempt(_via_internal_pipeline),
             bill_id=bill.id,
             sub_cost_code_id=sub_cost_code_id,
@@ -389,25 +340,18 @@ class BillLineItemService:
                 exempt=_via_internal_pipeline,
             )
         if existing:
-            from entities.invoice_line_item.persistence.repo import InvoiceLineItemRepository
-            from entities.contract_labor.persistence.repo import ContractLaborRepository
-            InvoiceLineItemRepository().delete_by_bill_line_item_id(existing.id)
-            cl_repo = ContractLaborRepository()
-            for cl_entry in cl_repo.read_by_bill_line_item_id(existing.id):
-                cl_entry.bill_line_item_id = None
-                cl_repo.update_by_id(cl_entry)
-            # U-363: qbo.BillLineItemBillLine's CONNECTOR (mapping_repo,
-            # create_mapping, the legacy fastpath's mapping fallback) is retired
-            # — dbo.BillLineItem.QboId/RealmId (U-238b) is the sole identity store
-            # going forward. The TABLE itself is not dropped by this unit (that's
-            # a separate /em-run post-deploy step), and it carries a live NO
-            # ACTION FK onto this one (FK_BillLineItemBillLine_BillLineItem,
-            # added by scripts/migrations/u225_qbo_mapping_fk_gaps.sql) — so a
-            # still-mapped row's delete WOULD 547 without this bridge. Correcting
-            # this comment's prior claim: that FK did not exist when this delete
-            # path was first written, but it does now.
-            _clear_legacy_bill_line_item_bill_line_mapping(existing.id)
-            deleted = self.repo.delete_by_id(
+            # U-446c: ONE transaction. Every dependent row this used to clear in
+            # its own committed statement — the invoice lines, the ContractLabor
+            # FK, the legacy qbo mapping — now goes inside the same transaction
+            # as the line delete, with the parent Bill locked throughout. Before
+            # this, a completion landing after the cleanup committed produced
+            # `status_locked` on a line whose dependents were already gone.
+            #
+            # The sproc also clears the BillLineItemAttachment link, which this
+            # path never did: that FK is NO ACTION, so deleting a line that
+            # still had its attachment link failed with 547. Only the bill-level
+            # cascade cleared it first, which is why the bug only bit here.
+            deleted = self.repo.delete_cascade_by_id(
                 existing.id, allow_terminal_parent=is_exempt(_via_internal_pipeline)
             )
             if deleted is None:

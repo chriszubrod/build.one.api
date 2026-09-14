@@ -1349,28 +1349,22 @@ class BillService:
 
     def delete_by_public_id(self, public_id: str, *, tenant_id: int = None) -> Optional[Bill]:
         """
-        Delete a bill by public ID with cascading deletes.
-        
-        TODO: In Phase 10, validate tenant_id matches record's tenant
-        
-        Process:
-        1. Get the bill by public_id
-        2. Get all BillLineItems for this bill
-        3. For each BillLineItem:
-           a. Get its BillLineItemAttachment (1-1 relationship)
-           b. If attachment exists:
-              - Get the Attachment record
-              - Delete the file from Azure Blob Storage (if blob_url exists)
-              - Delete the Attachment record from database
-              - Delete the BillLineItemAttachment record
-           c. Delete the BillLineItem record
-        4. Delete the Bill record
-        
-        This will cascade delete:
-        - BillLineItemAttachment records
-        - Attachment records (and files from Azure Blob Storage)
-        - BillLineItem records
-        - Bill record
+        Delete a bill and every row that FKs to it, in ONE database transaction.
+
+        Cascades (all inside `DeleteBillCascadeById`, header locked throughout):
+          BillLineItemAttachment links -> InvoiceLineItem rows ->
+          ContractLabor.BillLineItemId cleared -> legacy qbo mapping ->
+          BillLineItem rows -> ReviewEntry -> Review -> the Bill itself.
+          MsMessageBill goes automatically (its FK is CASCADE);
+          ContractLaborLineItem likewise (SET_NULL).
+
+        Attachment ROWS and their Azure blobs are deliberately LEFT ALONE — only
+        the link rows go. That is what keeps this free of external calls, and so
+        able to be one transaction.
+
+        Returns the deleted Bill, or None if no such Bill exists. Raises
+        StatusLockedError when the bill is completed and the caller is not a
+        system admin (§4.1 keeps that escape hatch for admins deliberately).
         """
         # U-446b: non-admins cannot delete a completed bill. Admins still can —
         # deleting one whose AP already shipped is destructive, but it is the
@@ -1404,104 +1398,34 @@ class BillService:
             exempt=cascade_exempt,
         )
         
-        bill_id = existing.id
-        
-        # Step 2: Get all BillLineItems for this bill
-        bill_line_items = self.bill_line_item_service.read_by_bill_id(bill_id=bill_id)
-
-        # Step 3: Delete each BillLineItem and its associated attachments
-        bill_line_item_attachment_repo = BillLineItemAttachmentRepository()
-        
-        # Initialize storage once (may fail if config is missing, handle gracefully)
-        storage = None
-        try:
-            storage = AzureBlobStorage()
-        except Exception as e:
-            logger.warning(f"Could not initialize Azure Blob Storage for file deletion: {e}")
-        
-        for line_item in bill_line_items:
-            # Step 3a+3b: Clean up attachments (non-fatal — line item delete must still run)
-            try:
-                if line_item.public_id:
-                    attachment_link = self.bill_line_item_attachment_service.read_by_bill_line_item_id(
-                        bill_line_item_public_id=line_item.public_id
-                    )
-
-                    if attachment_link and attachment_link.id:
-                        # Only delete the link — leave Attachment + blob untouched
-                        try:
-                            bill_line_item_attachment_repo.delete_by_id(
-                                id=attachment_link.id,
-                                # U-446b: the bill-delete cascade. A system
-                                # admin deleting a completed bill is the
-                                # deliberate escape hatch (§4.1), and the
-                                # guard on THIS method already decided that —
-                                # re-refusing here would leave the row
-                                # half-deleted. Conditional, not True: see
-                                # `cascade_exempt` above.
-                                allow_terminal_parent=cascade_exempt,
-                            )
-                            logger.info(f"Deleted bill line item attachment link {attachment_link.id}")
-                        except Exception as e:
-                            logger.warning(f"Error deleting bill line item attachment link {attachment_link.id}: {e}")
-            except Exception as e:
-                logger.warning(f"Error cleaning up attachments for line item {line_item.id}: {e}")
-
-            # Step 3c: Delete the BillLineItem record (must run even if attachment cleanup failed)
-            try:
-                if line_item.id and line_item.public_id:
-                    self.bill_line_item_service.delete_by_public_id(
-                        public_id=line_item.public_id,
-                        # U-446b (Codex round 3, P1). The header guard on THIS
-                        # method already made the call: a system admin may
-                        # delete a completed bill (§4.1). Without the exemption
-                        # the cascade deleted the attachment links (exempt) and
-                        # was then refused on the lines — leaving the bill
-                        # half-destroyed: evidence links gone, lines orphaned,
-                        # header still there because the FK blocks it.
-                        # Conditional, not True: see `cascade_exempt` above.
-                        _via_internal_pipeline=cascade_exempt,
-                    )
-                    logger.info(f"Deleted bill line item {line_item.id}")
-                elif line_item.id:
-                    from entities.bill_line_item.persistence.repo import BillLineItemRepository
-                    BillLineItemRepository().delete_by_id(
-                        id=line_item.id, allow_terminal_parent=cascade_exempt
-                    )
-                    logger.info(f"Deleted bill line item {line_item.id} (by ID, no public_id)")
-            except Exception as e:
-                logger.error(f"Failed to delete bill line item {line_item.id}: {e}")
-                raise ValueError(f"Cannot delete bill: failed to delete line item {line_item.id}") from e
-
-        # Step 3.5: Clear remaining child rows that FK to Bill, otherwise the
-        # final DELETE trips a REFERENCE constraint (e.g. FK_Review_Bill).
-        # Review rows are insert-only audit history everywhere else; this is
-        # the one path that removes them — when the parent Bill is deleted.
-        try:
-            from entities.review.persistence.repo import ReviewRepository
-            ReviewRepository().delete_by_bill_id(bill_id)
-            logger.info(f"Deleted Review rows for bill {bill_id}")
-        except Exception as e:
-            logger.error(f"Failed to delete Review rows for bill {bill_id}: {e}")
-            raise ValueError(f"Cannot delete bill: failed to delete Review rows for bill {bill_id}") from e
-
-        # MsMessageBill links (email-message ↔ bill) also FK to Bill.
-        try:
-            from integrations.ms.mail.message.connector.bill.persistence.repo import MsMessageBillRepository
-            ms_message_bill_repo = MsMessageBillRepository()
-            for link in ms_message_bill_repo.read_by_bill_id(bill_id):
-                if link.public_id:
-                    ms_message_bill_repo.delete_by_public_id(public_id=link.public_id)
-            logger.info(f"Deleted MsMessageBill links for bill {bill_id}")
-        except Exception as e:
-            logger.error(f"Failed to delete MsMessageBill links for bill {bill_id}: {e}")
-            raise ValueError(f"Cannot delete bill: failed to delete MsMessageBill links for bill {bill_id}") from e
-
-        # U-355/U-365: no qbo.* mapping row to clear before the header delete —
-        # dbo.Bill.QboId/RealmId die with the row.
-        return self.repo.delete_by_id(
+        # U-446c: ONE transaction, in the database.
+        #
+        # This used to be ~90 lines running N separate transactions —
+        # attachment links, then each line item (with its own dependent
+        # cleanup), then Review rows, then MsMessageBill links, then the header.
+        # U-446b made every step refuse a completed parent and gave them all the
+        # same decision, so a completion landing mid-cascade WAS refused — but
+        # at whichever step it reached, with the earlier steps already
+        # committed. That is a partially deleted document, and it applied to
+        # ordinary draft deletes racing a completion, not just the admin escape
+        # hatch. Holding the header lock across the whole cascade is the only
+        # thing that fixes it.
+        #
+        # Two things the old shape carried that this drops:
+        #   * The MsMessageBill step was redundant twice over — that FK is
+        #     CASCADE, and the table is empty.
+        #   * `storage = AzureBlobStorage()` was initialised and never used;
+        #     this cascade deliberately leaves Attachment rows and their blobs
+        #     alone, and now makes no external calls at all.
+        #
+        # Review AND ReviewEntry are both deleted inside the sproc, matching
+        # what DeleteReviewsByBillId did for the call this replaces.
+        deleted = self.repo.delete_cascade_by_id(
             existing.id, allow_terminal_parent=cascade_exempt
         )
+        if deleted is not None:
+            logger.info(f"Deleted bill {existing.id} and its dependent rows")
+        return deleted
 
 
     def _rename_invoice_blob_on_complete(

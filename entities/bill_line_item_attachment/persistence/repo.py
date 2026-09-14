@@ -57,9 +57,9 @@ class BillLineItemAttachmentRepository:
         Create a new bill line item attachment.
 
         `allow_terminal_parent` is the sproc-side half of the U-446b terminal
-        lock and is ALWAYS passed explicitly — the sproc defaults it permissive
-        so the SQL can be applied either side of a deploy, which means an
-        omission here silently drops the guard.
+        lock and is ALWAYS passed explicitly. The sproc default is fail-closed
+        since U-446c, so an omission refuses the write instead of silently
+        dropping the guard.
         """
         try:
             with get_connection() as conn:

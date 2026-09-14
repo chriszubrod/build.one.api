@@ -221,22 +221,22 @@ def test_bill_delete_no_longer_clears_any_qbo_mapping():
     bill = SimpleNamespace(id=7, public_id="bill-pub")
 
     mock_repo = Mock()
-    mock_repo.delete_by_id.return_value = bill
+    # U-446c: the whole cascade is one sproc call now — Review rows,
+    # MsMessageBill links and the per-line cleanup all moved into
+    # DeleteBillCascadeById, so the service touches no other repo.
+    mock_repo.delete_cascade_by_id.return_value = bill
 
     svc = BillService(repo=mock_repo)
-    svc.bill_line_item_service.read_by_bill_id = Mock(return_value=[])
 
     with patch.object(svc, "read_by_public_id", return_value=bill), patch(
-        "entities.review.persistence.repo.ReviewRepository"
-    ) as review_repo_cls, patch(
-        "integrations.ms.mail.message.connector.bill.persistence.repo.MsMessageBillRepository"
-    ) as ms_msg_repo_cls, patch("shared.database.get_connection") as get_conn:
-        review_repo_cls.return_value.delete_by_bill_id = Mock()
-        ms_msg_repo_cls.return_value.read_by_bill_id.return_value = []
+        "shared.database.get_connection"
+    ) as get_conn:
         result = svc.delete_by_public_id("bill-pub")
 
     assert result is bill
-    mock_repo.delete_by_id.assert_called_once_with(7, allow_terminal_parent=False)
-    # U-446b: False because this test's actor is not a system admin — the
-    # cascade carries the same decision the header guard made.
+    # False because this test's actor is not a system admin — the cascade
+    # carries the same decision the header guard made.
+    mock_repo.delete_cascade_by_id.assert_called_once_with(
+        7, allow_terminal_parent=False
+    )
     get_conn.assert_not_called()

@@ -293,8 +293,8 @@ class AttachmentRepository:
         Update an attachment by ID.
 
         `allow_terminal_parent` is the sproc-side half of the U-446b terminal
-        lock; always pass it explicitly (the sproc default is permissive so the
-        SQL can be applied either side of a deploy).
+        lock; always pass it explicitly (the sproc default is fail-closed since
+        U-446c, so an omission refuses rather than silently skipping).
         """
         try:
             with get_connection() as conn:

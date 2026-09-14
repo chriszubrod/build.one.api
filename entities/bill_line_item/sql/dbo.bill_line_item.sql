@@ -138,24 +138,24 @@ GO
 -- 2026-06-11 result-set discipline). The `STATUS_LOCKED:` prefix is what
 -- BillLineItemRepository turns back into a StatusLockedError.
 --
--- ⚠ @AllowTerminalParent DEFAULTS TO 1 — PERMISSIVE — ON PURPOSE.
--- This is the only default that makes the SQL safe to apply in EITHER order
--- relative to the code deploy. With a `= 0` default, applying this file while
--- the previous image is still serving would refuse completion's own Step-2 line
--- finalize (old code passes no such param), turning every completion that has
--- draft lines into a 207 until the deploy landed — and the reclaim watchdog
--- could not heal it either. The repo layer ALWAYS passes an explicit 0 or 1;
--- tests/test_u446b_terminal_lock.py pins that, because this default means a
--- call site that forgets the param silently loses this layer. The Python guard
--- remains the primary; this is defence in depth against the race alone.
+-- @AllowTerminalParent DEFAULTS TO 0 — FAIL-CLOSED (U-446c).
+-- A call site that forgets the param now gets the guard, instead of silently
+-- losing this layer with nothing to notice.
 --
--- IT IS A DEPLOYMENT BRIDGE, NOT THE STEADY STATE (Codex round 3). Omission is
--- not hypothetical: the Contract-Labor rebuild reached
--- `BillLineItemRepository.delete_by_id` directly and silently inherited the
--- permissive default until this unit made it explicit. Once no pre-U-446b image
--- can still be serving, flip the default to 0 and let a missing param fail
--- closed. Booked as its own unit; until then the repo-layer pin in
--- tests/test_u446b_terminal_lock.py is what keeps this honest.
+-- U-446b shipped it as `= 1` deliberately: that was the only default that made
+-- the SQL safe to apply in EITHER order relative to its own deploy, because a
+-- `= 0` default would have refused completion's own Step-2 line finalize while
+-- the previous image was still serving — turning every completion with draft
+-- lines into a 207 until the deploy landed, unhealable by the reclaim watchdog.
+-- That window is closed: U-446b is live, every caller passes the param
+-- explicitly, and no pre-U-446b image can still be serving.
+--
+-- The bridge was not hypothetical while it stood — the Contract-Labor rebuild
+-- reached `BillLineItemRepository.delete_by_id` directly and silently inherited
+-- the permissive default until U-446b made it explicit. The repo-layer pin in
+-- tests/test_u446b_terminal_lock.py stays regardless: passing it explicitly is
+-- still the contract, the default is just no longer a trapdoor.
+-- The Python guard remains the primary; this is defence in depth.
 -- ===========================================================================
 
 CREATE OR ALTER PROCEDURE CreateBillLineItem
@@ -173,7 +173,7 @@ CREATE OR ALTER PROCEDURE CreateBillLineItem
     @Price DECIMAL(18,2) NULL,
     @IsDraft BIT = 1,
     @CreatedByUserId BIGINT = NULL,
-    @AllowTerminalParent BIT = 1
+    @AllowTerminalParent BIT = 0
 )
 AS
 BEGIN
@@ -188,19 +188,22 @@ BEGIN
 
     BEGIN TRANSACTION;
 
-    IF @AllowTerminalParent = 0
-    BEGIN
-        DECLARE @LockedParents INT;
-        SELECT @LockedParents = COUNT(*)
-        FROM dbo.[Bill] WITH (UPDLOCK, HOLDLOCK)
-        WHERE [Id] = @BillId AND [Status] = 'completed';
+    -- LOCK UNCONDITIONALLY, REFUSE CONDITIONALLY (U-446c, Codex).
+    -- @AllowTerminalParent says whether this caller may WRITE to a completed
+    -- parent. It must not decide whether to take the lock: an exempt writer
+    -- that skips it is invisible to every other transaction, so a cascade
+    -- holding this Bill no longer blocks it and the serialization the guards
+    -- depend on silently disappears for exactly the callers that mutate most.
+    DECLARE @LockedParents INT;
+    SELECT @LockedParents = COUNT(*)
+    FROM dbo.[Bill] WITH (UPDLOCK, HOLDLOCK)
+    WHERE [Id] = @BillId AND [Status] = 'completed';
 
-        IF @LockedParents > 0
-        BEGIN
-            COMMIT TRANSACTION;
-            RAISERROR('STATUS_LOCKED: line items cannot be added to a completed Bill.', 16, 1);
-            RETURN;
-        END
+    IF @AllowTerminalParent = 0 AND @LockedParents > 0
+    BEGIN
+        COMMIT TRANSACTION;
+        RAISERROR('STATUS_LOCKED: line items cannot be added to a completed Bill.', 16, 1);
+        RETURN;
     END
 
     DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();
@@ -413,7 +416,7 @@ CREATE OR ALTER PROCEDURE UpdateBillLineItemById
     @Markup DECIMAL(18,4) NULL,
     @Price DECIMAL(18,2) NULL,
     @IsDraft BIT = NULL,
-    @AllowTerminalParent BIT = 1
+    @AllowTerminalParent BIT = 0
 )
 AS
 BEGIN
@@ -428,14 +431,14 @@ BEGIN
 
     BEGIN TRANSACTION;
 
-    IF @AllowTerminalParent = 0
+    -- LOCK UNCONDITIONALLY, REFUSE CONDITIONALLY (U-446c, Codex). This sproc is
+    -- THE mover: a cascade holding a Bill relies on a reparent blocking here.
+    -- When the lock was inside the exempt check, an exempt move took no lock at
+    -- all and could reparent a line out from under a cascade mid-cleanup.
     BEGIN
         -- BOTH parents: the one the line is on now, and the one it is being
         -- moved to. Guarding only the current parent let a line be re-pointed
         -- ONTO a completed Bill (the same hole the Python layer had).
-        -- @CurrentBillId is read without a lock and then locked via the IN
-        -- below; if it were re-pointed concurrently that write took this same
-        -- guard on both of ITS parents, so the pair stays serialized.
         DECLARE @CurrentBillId BIGINT;
         SELECT @CurrentBillId = [BillId] FROM dbo.[BillLineItem] WHERE [Id] = @Id;
 
@@ -462,7 +465,7 @@ BEGIN
         FROM dbo.[Bill] WITH (UPDLOCK, HOLDLOCK)
         WHERE [Id] = @HiBillId AND [Id] <> @LoBillId AND [Status] = 'completed';
 
-        IF @LockedParents > 0
+        IF @AllowTerminalParent = 0 AND @LockedParents > 0
         BEGIN
             COMMIT TRANSACTION;
             RAISERROR('STATUS_LOCKED: the line items of a completed Bill cannot be changed.', 16, 1);
@@ -517,10 +520,143 @@ GO
 
 
 
+-- ===========================================================================
+-- U-446c — DELETING A LINE ITEM IS ONE TRANSACTION.
+--
+-- Supersedes DeleteBillLineItemById for the service path. The Python cascade
+-- it replaces committed its dependent cleanup (invoice lines, ContractLabor FK
+-- clear) in SEPARATE transactions BEFORE the guarded line delete — so a
+-- completion landing in that gap produced `status_locked` AFTER those rows were
+-- already gone. Holding the parent lock across the whole thing is the fix.
+--
+-- ALSO CLOSES A LATENT 547: the Python path never cleared
+-- BillLineItemAttachment, whose FK to BillLineItem is NO ACTION (4,003 live
+-- link rows). Deleting a line that still had its attachment link failed. The
+-- bill-level cascade cleared it first, which is why this only bit the
+-- standalone path. Attachment ROWS and blobs are left alone — only the link.
+--
+-- ContractLaborLineItem is SET_NULL and needs no step.
+-- ===========================================================================
+CREATE OR ALTER PROCEDURE DeleteBillLineItemCascadeById
+(
+    @Id BIGINT,
+    @AllowTerminalParent BIT = 0
+)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    BEGIN TRANSACTION;
+
+    DECLARE @ParentBillId BIGINT = NULL;
+    SELECT @ParentBillId = [BillId] FROM dbo.[BillLineItem] WHERE [Id] = @Id;
+
+    -- No early RETURN when the line is missing: @ParentBillId stays NULL, every
+    -- statement below matches nothing, and the final DELETE's OUTPUT yields an
+    -- EMPTY result set. A bare RETURN produced NO result set, on which pyodbc's
+    -- fetchone() raises "No results. Previous SQL was not a query".
+    -- Lock the parent and HOLD it for the cascade, whether or not the caller is
+    -- exempt: the lock is what serializes this against FinalizeBillById, and an
+    -- exempt caller still must not interleave with a completion.
+    DECLARE @ParentStatus NVARCHAR(20) = NULL;
+    SELECT @ParentStatus = [Status]
+    FROM dbo.[Bill] WITH (UPDLOCK, HOLDLOCK)
+    WHERE [Id] = @ParentBillId;
+
+    IF @AllowTerminalParent = 0 AND @ParentStatus = 'completed'
+    BEGIN
+        COMMIT TRANSACTION;
+        RAISERROR('STATUS_LOCKED: the line items of a completed Bill cannot be deleted.', 16, 1);
+        RETURN;
+    END
+
+    -- RE-READ UNDER THE LOCK before destroying anything (Codex P0).
+    -- @ParentBillId came from a snapshot read, so the line could have been
+    -- MOVED between that read and the lock above. Only the final DELETE was
+    -- bound to the locked parent, so the child cleanup below would have
+    -- destroyed links, invoice rows and provenance belonging to a line that now
+    -- lives on a DIFFERENT bill — possibly a completed one — while the delete
+    -- itself matched nothing and the caller saw a bare "not found".
+    --
+    -- One re-check is enough: once this transaction holds the lock on
+    -- @ParentBillId AND the line is confirmed to be on it, the line cannot move
+    -- again, because any mover must take that same lock (UpdateBillLineItemById
+    -- locks both the current and target parent).
+    DECLARE @StillOnLockedParent BIT = 0;
+    SELECT @StillOnLockedParent = 1
+    FROM dbo.[BillLineItem]
+    WHERE [Id] = @Id AND [BillId] = @ParentBillId;
+
+    IF @StillOnLockedParent = 1
+    BEGIN
+        DELETE FROM dbo.[BillLineItemAttachment] WHERE [BillLineItemId] = @Id;
+
+        -- InvoiceLineItem has TWO NO ACTION children of its own — this is what
+        -- DeleteInvoiceLineItemsByBillLineItemId (the sproc behind the repo
+        -- call this cascade replaced) does, and dropping it cost a 547 on the
+        -- first rehearsal against real data. InvoiceLineItemAttachment is empty
+        -- today; InvoiceLineItemSourceProvenance has ~30k rows.
+        DELETE ila
+        FROM dbo.[InvoiceLineItemAttachment] ila
+        JOIN dbo.[InvoiceLineItem] ili ON ili.[Id] = ila.[InvoiceLineItemId]
+        WHERE ili.[BillLineItemId] = @Id;
+
+        DELETE prov
+        FROM dbo.[InvoiceLineItemSourceProvenance] prov
+        JOIN dbo.[InvoiceLineItem] ili ON ili.[Id] = prov.[InvoiceLineItemId]
+        WHERE ili.[BillLineItemId] = @Id;
+
+        DELETE FROM dbo.[InvoiceLineItem] WHERE [BillLineItemId] = @Id;
+
+        UPDATE dbo.[ContractLabor]
+        SET [BillLineItemId] = NULL,
+            [ModifiedDatetime] = SYSUTCDATETIME()
+        WHERE [BillLineItemId] = @Id;
+
+        -- U-363 deploy-gap bridge, moved here from Python (U-446c). qbo.
+        -- BillLineItemBillLine is ALREADY DROPPED in prod, but its FK to
+        -- BillLineItem was NO ACTION, so wherever the table still exists a line
+        -- delete would 547 without this. The OBJECT_ID guard makes the dropped
+        -- case a plain no-op — deferred name resolution lets the body compile
+        -- against a missing table, it just must never be REACHED.
+        IF OBJECT_ID('qbo.BillLineItemBillLine') IS NOT NULL
+            DELETE FROM qbo.[BillLineItemBillLine] WHERE [BillLineItemId] = @Id;
+    END
+
+    -- Bound to the parent we locked: if the line was MOVED between the snapshot
+    -- read above and here, zero rows match and the caller gets "not found"
+    -- rather than a deletion off a bill this transaction never checked.
+    DELETE FROM dbo.[BillLineItem]
+    OUTPUT
+        DELETED.[Id],
+        DELETED.[PublicId],
+        DELETED.[RowVersion],
+        CONVERT(VARCHAR(19), DELETED.[CreatedDatetime], 120) AS [CreatedDatetime],
+        CONVERT(VARCHAR(19), DELETED.[ModifiedDatetime], 120) AS [ModifiedDatetime],
+        DELETED.[BillId],
+        DELETED.[SubCostCodeId],
+        DELETED.[ProjectId],
+        DELETED.[Description],
+        DELETED.[Quantity],
+        DELETED.[Rate],
+        DELETED.[Amount],
+        DELETED.[IsBillable],
+        DELETED.[IsBilled],
+        DELETED.[Markup],
+        DELETED.[Price],
+        DELETED.[IsDraft]
+    WHERE [Id] = @Id AND [BillId] = @ParentBillId;
+
+    COMMIT TRANSACTION;
+END;
+GO
+
+
+
 CREATE OR ALTER PROCEDURE DeleteBillLineItemById
 (
     @Id BIGINT,
-    @AllowTerminalParent BIT = 1
+    @AllowTerminalParent BIT = 0
 )
 AS
 BEGIN
@@ -535,22 +671,20 @@ BEGIN
 
     BEGIN TRANSACTION;
 
-    IF @AllowTerminalParent = 0
+    -- LOCK UNCONDITIONALLY, REFUSE CONDITIONALLY (U-446c, Codex).
+    DECLARE @ParentBillId BIGINT;
+    SELECT @ParentBillId = [BillId] FROM dbo.[BillLineItem] WHERE [Id] = @Id;
+
+    DECLARE @LockedParents INT;
+    SELECT @LockedParents = COUNT(*)
+    FROM dbo.[Bill] WITH (UPDLOCK, HOLDLOCK)
+    WHERE [Id] = @ParentBillId AND [Status] = 'completed';
+
+    IF @AllowTerminalParent = 0 AND @LockedParents > 0
     BEGIN
-        DECLARE @ParentBillId BIGINT;
-        SELECT @ParentBillId = [BillId] FROM dbo.[BillLineItem] WHERE [Id] = @Id;
-
-        DECLARE @LockedParents INT;
-        SELECT @LockedParents = COUNT(*)
-        FROM dbo.[Bill] WITH (UPDLOCK, HOLDLOCK)
-        WHERE [Id] = @ParentBillId AND [Status] = 'completed';
-
-        IF @LockedParents > 0
-        BEGIN
-            COMMIT TRANSACTION;
-            RAISERROR('STATUS_LOCKED: the line items of a completed Bill cannot be deleted.', 16, 1);
-            RETURN;
-        END
+        COMMIT TRANSACTION;
+        RAISERROR('STATUS_LOCKED: the line items of a completed Bill cannot be deleted.', 16, 1);
+        RETURN;
     END
 
     -- The `[BillId] = @ParentBillId` half is what makes the guard above

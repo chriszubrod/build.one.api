@@ -68,6 +68,19 @@ The lock governs edits made BY PEOPLE. It deliberately does not govern:
     blob-heal: a completed Bill whose PDF went missing is exactly the document
     that most needs it back.
   * COMPLETION ITSELF, and invoice completion's `is_billed` flips.
+  * OPERATIONAL METADATA that says nothing about what the document IS, written
+    by background workers that must keep running over finalised documents:
+    `Set{Bill,BillLineItem,Attachment}QboIdentity` (the QBO identity stamp),
+    `UpdateAttachmentExtraction`, `Update/ConfirmAttachmentCategorization`,
+    and `increment_download_count`. These are NAMED here rather than left
+    unguarded-by-omission (Codex, U-446c): an exemption nobody wrote down is
+    indistinguishable from a hole to the next reader, and each of these was
+    independently re-discovered as a "bypass" precisely because the list did
+    not exist.
+
+    The line is what the row MEANS versus how it is indexed: blob_url,
+    filename, content type, category, archive state, existence and money are
+    locked; a download counter, an extraction status and an external id are not.
 
 Those are the exemptions listed below, and they are the contract, not holes in
 it. The line is: a system or internal-pipeline caller may bring the local record

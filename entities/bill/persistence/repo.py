@@ -426,9 +426,9 @@ class BillRepository:
         Update a bill by ID.
 
         `allow_terminal_parent` is the sproc-side half of the U-446b terminal
-        lock. Always pass it explicitly: the sproc defaults it permissive so the
-        SQL is safe to apply either side of a deploy, so an omission here drops
-        the guard with no error to notice.
+        lock. Always pass it explicitly. The sproc default is fail-closed since
+        U-446c, so an omission now refuses the write rather than silently
+        dropping the guard — but naming it is still the contract.
         """
         try:
             with get_connection() as conn:
@@ -611,6 +611,35 @@ class BillRepository:
                 return row.TotalCount if row else 0
         except Exception as error:
             logger.error(f"Error during count bills: {error}")
+            raise map_database_error(error)
+
+    def delete_cascade_by_id(self, id: int, *, allow_terminal_parent: bool) -> Optional[Bill]:
+        """U-446c: delete a Bill and every row that FKs to it, in ONE transaction.
+
+        Replaces the multi-transaction Python cascade. The sproc locks the
+        header for the whole thing, so a completion landing mid-cascade either
+        loses the race entirely or is refused with nothing destroyed — where the
+        old shape refused at whichever step it reached and left the earlier ones
+        committed.
+
+        Returns the deleted Bill, or None when no such Bill exists.
+        """
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(
+                    cursor=cursor,
+                    name="DeleteBillCascadeById",
+                    params={
+                        "Id": id,
+                        "AllowTerminalParent": 1 if allow_terminal_parent else 0,
+                    },
+                )
+                row = cursor.fetchone()
+                return self._from_db(row) if row else None
+        except Exception as error:
+            reraise_if_sproc_status_locked(error, what="it cannot be deleted")
+            logger.error(f"Error during cascade delete of bill: {error}")
             raise map_database_error(error)
 
     def delete_by_id(self, id: int, *, allow_terminal_parent: bool = True) -> Optional[Bill]:

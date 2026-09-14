@@ -766,11 +766,22 @@ END;
 GO
 
 
+-- U-446c (Codex P0): this writes dbo.BillLineItem and so belongs to the
+-- terminal-lock protocol — LOCK UNCONDITIONALLY, REFUSE CONDITIONALLY, exactly
+-- as the other guarded sprocs do. Its only caller is invoice reconciliation,
+-- which runs under system context and is therefore exempt; the guard exists so
+-- a future non-system caller cannot quietly acquire the same reach.
+--
+-- Severity was bounded even before this: `WHERE [ProjectId] IS NULL` makes it a
+-- one-way fill, so it could never CHANGE a cost allocation, only supply one
+-- that was missing. That is repair, which the lock's contract permits — but it
+-- permits it EXPLICITLY, not by omission.
 CREATE OR ALTER PROCEDURE BackfillLinkedSourceProjectId
 (
     @SourceType NVARCHAR(50),
     @Id BIGINT,
-    @ProjectId BIGINT
+    @ProjectId BIGINT,
+    @AllowTerminalParent BIT = 0
 )
 AS
 BEGIN
@@ -778,6 +789,18 @@ BEGIN
 
     IF @SourceType = N'BillLineItem'
     BEGIN
+        DECLARE @LockedCompleted INT;
+        SELECT @LockedCompleted = COUNT(*)
+        FROM dbo.[BillLineItem] li
+        INNER JOIN dbo.[Bill] b WITH (UPDLOCK, HOLDLOCK) ON b.[Id] = li.[BillId]
+        WHERE li.[Id] = @Id AND b.[Status] = 'completed';
+
+        IF @AllowTerminalParent = 0 AND @LockedCompleted > 0
+        BEGIN
+            RAISERROR('STATUS_LOCKED: the line items of a completed Bill cannot be changed.', 16, 1);
+            RETURN;
+        END
+
         UPDATE dbo.[BillLineItem]
         SET [ProjectId] = @ProjectId,
             [ModifiedDatetime] = SYSUTCDATETIME()

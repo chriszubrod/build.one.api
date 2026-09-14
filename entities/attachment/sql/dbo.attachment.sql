@@ -400,7 +400,7 @@ CREATE OR ALTER PROCEDURE UpdateAttachmentById
     @Status NVARCHAR(20),
     @ExpirationDate DATETIME2(3),
     @StorageTier NVARCHAR(20),
-    @AllowTerminalParent BIT = 1
+    @AllowTerminalParent BIT = 0
 )
 AS
 BEGIN
@@ -410,7 +410,10 @@ BEGIN
 
     BEGIN TRANSACTION;
 
-    IF @AllowTerminalParent = 0
+    -- LOCK UNCONDITIONALLY, REFUSE CONDITIONALLY (U-446c, Codex). An exempt
+    -- writer that skips the walk takes no Bill locks at all and is invisible to
+    -- every other transaction, so the serialization the guards rest on vanishes
+    -- for exactly the callers that mutate most.
     BEGIN
         -- U-446b (Codex round 3, P1). The Python guard asks this same question
         -- in a SEPARATE transaction: it can see zero completed parents, the
@@ -418,8 +421,8 @@ BEGIN
         -- UPDLOCK+HOLDLOCK here reads past the RCSI snapshot and holds to the
         -- commit, so this and FinalizeBillById serialize.
         --
-        -- @AllowTerminalParent defaults PERMISSIVE for the same deploy-ordering
-        -- reason as dbo.bill_line_item.sql; the repo always passes it.
+        -- @AllowTerminalParent is fail-closed (= 0) since U-446c; the repo
+        -- passes it explicitly regardless. See dbo.bill_line_item.sql.
         -- Serialize on the ATTACHMENT row first (Codex round 4, P1).
         -- Locking only the Bills that are linked RIGHT NOW is not enough: a
         -- second transaction can link this same file to another DRAFT Bill and
@@ -434,13 +437,91 @@ BEGIN
         SELECT @Locked = 1 FROM dbo.[Attachment] WITH (UPDLOCK, HOLDLOCK)
         WHERE [Id] = @Id;
 
-        IF EXISTS (
-            SELECT 1
-            FROM dbo.[BillLineItemAttachment] blia
-            INNER JOIN dbo.[BillLineItem] li ON li.[Id] = blia.[BillLineItemId]
-            INNER JOIN dbo.[Bill] b WITH (UPDLOCK, HOLDLOCK) ON b.[Id] = li.[BillId]
-            WHERE blia.[AttachmentId] = @Id AND b.[Status] = 'completed'
-        )
+        -- LOCK EVERY LINKED BILL, ASCENDING, THEN VALIDATE THE SET (U-446c).
+        --
+        -- Ordering alone is not enough, and getting that wrong was this unit's
+        -- own P0. The join this replaces locked every linked Bill in ONE
+        -- statement, which gave no acquisition order (two attachment writers
+        -- sharing Bills could deadlock) but DID give set stability: a single
+        -- statement locks every row it scans. A plain ascending walk buys the
+        -- order and loses the stability — move a line from Bill 30 to Bill 5
+        -- after 10 is locked, complete Bill 5, and `> @PrevBillId` skips it.
+        --
+        -- So: walk ascending (a total order every writer agrees on, the same
+        -- reasoning as UpdateBillLineItemById's low->high pair), then check that
+        -- every currently-linked Bill is one we hold. If the set moved under us,
+        -- walk again — each pass locks strictly more, and a Bill we hold can no
+        -- longer be moved away from, so it converges. New LINKS cannot appear at
+        -- all: CreateBillLineItemAttachment takes the Attachment lock above.
+        --
+        -- In practice the outer loop runs once and the inner loop once (6 of
+        -- 3,605 linked attachments span more than one Bill, max 2).
+        DECLARE @LockedBills TABLE ([BillId] BIGINT PRIMARY KEY);
+        DECLARE @PrevBillId BIGINT, @NextBillId BIGINT, @Passes INT = 0;
+
+        WHILE 1 = 1
+        BEGIN
+            SET @Passes = @Passes + 1;
+            SET @PrevBillId = -1;
+
+            WHILE 1 = 1
+            BEGIN
+                SET @NextBillId = NULL;
+
+                SELECT TOP 1 @NextBillId = li.[BillId]
+                FROM dbo.[BillLineItemAttachment] blia
+                INNER JOIN dbo.[BillLineItem] li ON li.[Id] = blia.[BillLineItemId]
+                WHERE blia.[AttachmentId] = @Id AND li.[BillId] > @PrevBillId
+                ORDER BY li.[BillId];
+
+                IF @NextBillId IS NULL BREAK;
+
+                SELECT @Locked = 1 FROM dbo.[Bill] WITH (UPDLOCK, HOLDLOCK)
+                WHERE [Id] = @NextBillId;
+
+                IF NOT EXISTS (SELECT 1 FROM @LockedBills WHERE [BillId] = @NextBillId)
+                    INSERT INTO @LockedBills ([BillId]) VALUES (@NextBillId);
+
+                SET @PrevBillId = @NextBillId;
+            END
+
+            IF NOT EXISTS (
+                SELECT li.[BillId]
+                FROM dbo.[BillLineItemAttachment] blia
+                INNER JOIN dbo.[BillLineItem] li ON li.[Id] = blia.[BillLineItemId]
+                WHERE blia.[AttachmentId] = @Id
+                EXCEPT
+                SELECT [BillId] FROM @LockedBills
+            ) BREAK;
+
+            IF @Passes >= 5
+            BEGIN
+                COMMIT TRANSACTION;
+                -- Deliberately NOT the STATUS_LOCKED sentinel: this is a
+                -- transient failure to stabilise, not a permanent refusal, and
+                -- must not reach the client as 422 `status_locked`.
+                RAISERROR('This file''s linked Bills kept changing; please retry.', 16, 1);
+                RETURN;
+            END
+        END
+
+        -- Decide over Bills that are STILL LINKED, intersected with the ones we
+        -- actually hold (Codex P1). @LockedBills is a coverage SUPERSET: the
+        -- validation above proves `linked ⊆ locked`, not equality, so a Bill
+        -- whose last link was removed while we walked stays in the set. Testing
+        -- the raw set would then refuse 422 `status_locked` for a Bill this
+        -- attachment is no longer evidence for — a permanent answer to a
+        -- transient state, which a retry would contradict.
+        DECLARE @LockedCompleted INT = 0;
+        SELECT @LockedCompleted = COUNT(DISTINCT b.[Id])
+        FROM dbo.[Bill] b
+        INNER JOIN @LockedBills l ON l.[BillId] = b.[Id]
+        INNER JOIN dbo.[BillLineItem] li ON li.[BillId] = b.[Id]
+        INNER JOIN dbo.[BillLineItemAttachment] blia
+                ON blia.[BillLineItemId] = li.[Id] AND blia.[AttachmentId] = @Id
+        WHERE b.[Status] = 'completed';
+
+        IF @AllowTerminalParent = 0 AND @LockedCompleted > 0
         BEGIN
             COMMIT TRANSACTION;
             RAISERROR('STATUS_LOCKED: this file is evidence for a completed Bill.', 16, 1);
@@ -501,7 +582,7 @@ GO
 CREATE OR ALTER PROCEDURE DeleteAttachmentById
 (
     @Id BIGINT,
-    @AllowTerminalParent BIT = 1
+    @AllowTerminalParent BIT = 0
 )
 AS
 BEGIN
@@ -511,7 +592,10 @@ BEGIN
 
     BEGIN TRANSACTION;
 
-    IF @AllowTerminalParent = 0
+    -- LOCK UNCONDITIONALLY, REFUSE CONDITIONALLY (U-446c, Codex). An exempt
+    -- writer that skips the walk takes no Bill locks at all and is invisible to
+    -- every other transaction, so the serialization the guards rest on vanishes
+    -- for exactly the callers that mutate most.
     BEGIN
         -- U-446b (Codex round 3, P1). The Python guard asks this same question
         -- in a SEPARATE transaction: it can see zero completed parents, the
@@ -519,8 +603,8 @@ BEGIN
         -- UPDLOCK+HOLDLOCK here reads past the RCSI snapshot and holds to the
         -- commit, so this and FinalizeBillById serialize.
         --
-        -- @AllowTerminalParent defaults PERMISSIVE for the same deploy-ordering
-        -- reason as dbo.bill_line_item.sql; the repo always passes it.
+        -- @AllowTerminalParent is fail-closed (= 0) since U-446c; the repo
+        -- passes it explicitly regardless. See dbo.bill_line_item.sql.
         -- Serialize on the ATTACHMENT row first (Codex round 4, P1).
         -- Locking only the Bills that are linked RIGHT NOW is not enough: a
         -- second transaction can link this same file to another DRAFT Bill and
@@ -535,13 +619,91 @@ BEGIN
         SELECT @Locked = 1 FROM dbo.[Attachment] WITH (UPDLOCK, HOLDLOCK)
         WHERE [Id] = @Id;
 
-        IF EXISTS (
-            SELECT 1
-            FROM dbo.[BillLineItemAttachment] blia
-            INNER JOIN dbo.[BillLineItem] li ON li.[Id] = blia.[BillLineItemId]
-            INNER JOIN dbo.[Bill] b WITH (UPDLOCK, HOLDLOCK) ON b.[Id] = li.[BillId]
-            WHERE blia.[AttachmentId] = @Id AND b.[Status] = 'completed'
-        )
+        -- LOCK EVERY LINKED BILL, ASCENDING, THEN VALIDATE THE SET (U-446c).
+        --
+        -- Ordering alone is not enough, and getting that wrong was this unit's
+        -- own P0. The join this replaces locked every linked Bill in ONE
+        -- statement, which gave no acquisition order (two attachment writers
+        -- sharing Bills could deadlock) but DID give set stability: a single
+        -- statement locks every row it scans. A plain ascending walk buys the
+        -- order and loses the stability — move a line from Bill 30 to Bill 5
+        -- after 10 is locked, complete Bill 5, and `> @PrevBillId` skips it.
+        --
+        -- So: walk ascending (a total order every writer agrees on, the same
+        -- reasoning as UpdateBillLineItemById's low->high pair), then check that
+        -- every currently-linked Bill is one we hold. If the set moved under us,
+        -- walk again — each pass locks strictly more, and a Bill we hold can no
+        -- longer be moved away from, so it converges. New LINKS cannot appear at
+        -- all: CreateBillLineItemAttachment takes the Attachment lock above.
+        --
+        -- In practice the outer loop runs once and the inner loop once (6 of
+        -- 3,605 linked attachments span more than one Bill, max 2).
+        DECLARE @LockedBills TABLE ([BillId] BIGINT PRIMARY KEY);
+        DECLARE @PrevBillId BIGINT, @NextBillId BIGINT, @Passes INT = 0;
+
+        WHILE 1 = 1
+        BEGIN
+            SET @Passes = @Passes + 1;
+            SET @PrevBillId = -1;
+
+            WHILE 1 = 1
+            BEGIN
+                SET @NextBillId = NULL;
+
+                SELECT TOP 1 @NextBillId = li.[BillId]
+                FROM dbo.[BillLineItemAttachment] blia
+                INNER JOIN dbo.[BillLineItem] li ON li.[Id] = blia.[BillLineItemId]
+                WHERE blia.[AttachmentId] = @Id AND li.[BillId] > @PrevBillId
+                ORDER BY li.[BillId];
+
+                IF @NextBillId IS NULL BREAK;
+
+                SELECT @Locked = 1 FROM dbo.[Bill] WITH (UPDLOCK, HOLDLOCK)
+                WHERE [Id] = @NextBillId;
+
+                IF NOT EXISTS (SELECT 1 FROM @LockedBills WHERE [BillId] = @NextBillId)
+                    INSERT INTO @LockedBills ([BillId]) VALUES (@NextBillId);
+
+                SET @PrevBillId = @NextBillId;
+            END
+
+            IF NOT EXISTS (
+                SELECT li.[BillId]
+                FROM dbo.[BillLineItemAttachment] blia
+                INNER JOIN dbo.[BillLineItem] li ON li.[Id] = blia.[BillLineItemId]
+                WHERE blia.[AttachmentId] = @Id
+                EXCEPT
+                SELECT [BillId] FROM @LockedBills
+            ) BREAK;
+
+            IF @Passes >= 5
+            BEGIN
+                COMMIT TRANSACTION;
+                -- Deliberately NOT the STATUS_LOCKED sentinel: this is a
+                -- transient failure to stabilise, not a permanent refusal, and
+                -- must not reach the client as 422 `status_locked`.
+                RAISERROR('This file''s linked Bills kept changing; please retry.', 16, 1);
+                RETURN;
+            END
+        END
+
+        -- Decide over Bills that are STILL LINKED, intersected with the ones we
+        -- actually hold (Codex P1). @LockedBills is a coverage SUPERSET: the
+        -- validation above proves `linked ⊆ locked`, not equality, so a Bill
+        -- whose last link was removed while we walked stays in the set. Testing
+        -- the raw set would then refuse 422 `status_locked` for a Bill this
+        -- attachment is no longer evidence for — a permanent answer to a
+        -- transient state, which a retry would contradict.
+        DECLARE @LockedCompleted INT = 0;
+        SELECT @LockedCompleted = COUNT(DISTINCT b.[Id])
+        FROM dbo.[Bill] b
+        INNER JOIN @LockedBills l ON l.[BillId] = b.[Id]
+        INNER JOIN dbo.[BillLineItem] li ON li.[BillId] = b.[Id]
+        INNER JOIN dbo.[BillLineItemAttachment] blia
+                ON blia.[BillLineItemId] = li.[Id] AND blia.[AttachmentId] = @Id
+        WHERE b.[Status] = 'completed';
+
+        IF @AllowTerminalParent = 0 AND @LockedCompleted > 0
         BEGIN
             COMMIT TRANSACTION;
             RAISERROR('STATUS_LOCKED: this file is evidence for a completed Bill.', 16, 1);

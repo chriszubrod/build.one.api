@@ -15,6 +15,8 @@ from shared.database import (
     map_database_error,
 )
 
+from shared.lifecycle.terminal_lock import is_exempt
+
 logger = logging.getLogger(__name__)
 
 
@@ -761,6 +763,10 @@ class InvoiceRepository:
                         "SourceType": source_type,
                         "Id": source_line_item_id,
                         "ProjectId": project_id,
+                        # U-446c: reconciliation runs under system context, so
+                        # this is exempt — named explicitly rather than relying
+                        # on the sproc default, per the standing rule.
+                        "AllowTerminalParent": 1 if is_exempt() else 0,
                     },
                 )
         except Exception as error:

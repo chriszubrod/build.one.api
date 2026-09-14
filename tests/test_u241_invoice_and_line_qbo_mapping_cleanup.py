@@ -65,93 +65,74 @@ def test_bill_line_item_delete_no_longer_uses_the_shared_restore_helper():
     line = SimpleNamespace(id=21, public_id="bli-pub")
 
     mock_repo = Mock()
-    mock_repo.delete_by_id.return_value = line
+    # U-446c: the dependent cleanup moved into DeleteBillLineItemCascadeById, so
+    # the service makes ONE repo call instead of four separate ones.
+    mock_repo.delete_cascade_by_id.return_value = line
 
     svc = BillLineItemService(repo=mock_repo)
 
     with patch.object(svc, "read_by_public_id", return_value=line), patch(
-        "entities.invoice_line_item.persistence.repo.InvoiceLineItemRepository"
-    ) as ili_repo_cls, patch(
-        "entities.contract_labor.persistence.repo.ContractLaborRepository"
-    ) as cl_repo_cls, patch(
         "integrations.intuit.qbo.base.mapping_cleanup.delete_own_qbo_mapping_before_header"
-    ) as legacy_helper, patch(
-        "shared.database.get_connection"
-    ):
-        ili_repo_cls.return_value.delete_by_bill_line_item_id = Mock()
-        cl_repo_cls.return_value.read_by_bill_line_item_id.return_value = []
+    ) as legacy_helper:
         result = svc.delete_by_public_id("bli-pub")
 
     assert result is line
     legacy_helper.assert_not_called()
+    mock_repo.delete_cascade_by_id.assert_called_once_with(
+        21, allow_terminal_parent=False
+    )
 
 
 def test_bill_line_item_delete_clears_legacy_mapping_row_before_line():
-    """U-363 deploy-gap bridge: the OBJECT_ID-guarded raw-SQL clear must run
-    BEFORE the line delete, or a still-mapped row's delete 547s against the
-    live FK_BillLineItemBillLine_BillLineItem constraint."""
-    line = SimpleNamespace(id=21, public_id="bli-pub")
-    call_order = []
+    """U-363 deploy-gap bridge: the OBJECT_ID-guarded clear must run BEFORE the
+    line delete, or a still-mapped row's delete 547s against the live
+    FK_BillLineItemBillLine_BillLineItem constraint.
 
-    mock_repo = Mock()
-    mock_repo.delete_by_id.side_effect = lambda *_, **__: call_order.append("line") or line
+    U-446c moved this from Python into `DeleteBillLineItemCascadeById`, so the
+    invariant is now a property of the sproc — and a stronger one: the clear and
+    the delete are in the SAME transaction, where before they were two, and a
+    completion landing between them left the mapping cleared on a line that was
+    then refused.
+    """
+    from tests.sproc_text import REPO_ROOT, sproc_body
 
-    mock_cursor = Mock()
-    mock_cursor.execute.side_effect = lambda *_: call_order.append("mapping")
-    mock_conn = Mock()
-    mock_conn.__enter__ = Mock(return_value=mock_conn)
-    mock_conn.__exit__ = Mock(return_value=False)
-    mock_conn.cursor.return_value = mock_cursor
+    body = sproc_body(
+        REPO_ROOT / "entities/bill_line_item/sql/dbo.bill_line_item.sql",
+        "DeleteBillLineItemCascadeById",
+    )
+    executable = "\n".join(l.split("--")[0] for l in body.splitlines())
 
-    svc = BillLineItemService(repo=mock_repo)
-
-    with patch.object(svc, "read_by_public_id", return_value=line), patch(
-        "entities.invoice_line_item.persistence.repo.InvoiceLineItemRepository"
-    ) as ili_repo_cls, patch(
-        "entities.contract_labor.persistence.repo.ContractLaborRepository"
-    ) as cl_repo_cls, patch(
-        "shared.database.get_connection", return_value=mock_conn,
-    ):
-        ili_repo_cls.return_value.delete_by_bill_line_item_id = Mock()
-        cl_repo_cls.return_value.read_by_bill_line_item_id.return_value = []
-        result = svc.delete_by_public_id("bli-pub")
-
-    assert call_order == ["mapping", "line"]
-    assert result is line
-    sql_text = mock_cursor.execute.call_args.args[0]
-    assert "OBJECT_ID" in sql_text
-    assert "qbo.BillLineItemBillLine" in sql_text or "[BillLineItemBillLine]" in sql_text
-    assert mock_cursor.execute.call_args.args[1] == (21,)
+    assert "OBJECT_ID('qbo.BillLineItemBillLine')" in executable, (
+        "the guard is what makes an already-dropped table a plain no-op"
+    )
+    assert executable.index("qbo.[BillLineItemBillLine]") < executable.index(
+        "DELETE FROM dbo.[BillLineItem]"
+    ), "the mapping must be cleared before the line it points at"
 
 
-def test_bill_line_item_delete_mapping_clear_failure_is_swallowed_line_delete_still_runs():
-    """Best-effort: a failure clearing the (possibly already-dropped) mapping
-    row must never block the line delete itself — the FK is the real safety
-    net (a genuinely still-mapped row 547s on the line delete instead)."""
-    line = SimpleNamespace(id=21, public_id="bli-pub")
+def test_bill_line_item_delete_no_longer_swallows_a_mapping_clear_failure():
+    """Deliberately INVERTED by U-446c, and worth stating plainly.
 
-    mock_repo = Mock()
-    mock_repo.delete_by_id.return_value = line
+    The old shape cleared the mapping on its own connection and swallowed any
+    failure, on the reasoning that "the FK is the real safety net — a genuinely
+    still-mapped row 547s on the line delete instead". That reasoning conceded
+    the point: swallowing bought nothing, because the very next statement failed
+    anyway, just less legibly.
 
-    svc = BillLineItemService(repo=mock_repo)
+    Now it is one transaction, so a real failure rolls the whole delete back and
+    nothing is half-done. The already-dropped case — the only one the swallow
+    actually protected — is handled by the OBJECT_ID guard, which never raises.
+    """
+    import inspect
 
-    with patch.object(svc, "read_by_public_id", return_value=line), patch(
-        "entities.invoice_line_item.persistence.repo.InvoiceLineItemRepository"
-    ) as ili_repo_cls, patch(
-        "entities.contract_labor.persistence.repo.ContractLaborRepository"
-    ) as cl_repo_cls, patch(
-        "shared.database.get_connection",
-        side_effect=RuntimeError("connection reset"),
-    ):
-        ili_repo_cls.return_value.delete_by_bill_line_item_id = Mock()
-        cl_repo_cls.return_value.read_by_bill_line_item_id.return_value = []
-        result = svc.delete_by_public_id("bli-pub")
+    from entities.bill_line_item.business.service import BillLineItemService
 
-    assert result is line
-    # U-446b: the repo now also carries `allow_terminal_parent`, the sproc-side
-    # half of the terminal lock. False here is correct — this is an ordinary
-    # user delete, so the in-transaction guard must be ON.
-    mock_repo.delete_by_id.assert_called_once_with(21, allow_terminal_parent=False)
+    src = inspect.getsource(BillLineItemService.delete_by_public_id)
+    assert "get_connection" not in src, (
+        "the cascade must not open its own connection any more — that was the "
+        "separate transaction this unit removed"
+    )
+    assert "delete_cascade_by_id" in src
 
 
 # --- InvoiceLineItem ---

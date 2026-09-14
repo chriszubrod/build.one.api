@@ -477,8 +477,8 @@ class ContractLaborBillService:
                     bill.total_amount = total_amount_cost
                     bill.memo = memo
                     # U-446b (Codex round 4, P3). Direct repo call, so it
-                    # skips the service guard AND would silently take the
-                    # sproc's permissive default. The CL rebuild edits DRAFT
+                    # skips the service guard, so it names the flag rather
+                    # than leaning on the sproc default. The CL rebuild edits DRAFT
                     # bills, so the guard belongs ON — the stale row version
                     # already blocks a post-completion write, but it surfaces as
                     # a row-version conflict folded into a 200 error payload,
@@ -513,8 +513,8 @@ class ContractLaborBillService:
                             cl_entry.bill_line_item_id = None
                             self.cl_repo.update_by_id(cl_entry)
                         # U-446b (Codex round 3, P1). Going straight to the
-                        # repo skips the service guard AND silently takes the
-                        # sproc's permissive default — the CL rebuild could
+                        # repo skips the service guard, so it names the flag
+                        # rather than leaning on the default — the CL rebuild could
                         # therefore delete a line off a bill that completed
                         # between its draft check and this call. It is a
                         # rebuild of DRAFT bills, so the guard belongs ON.

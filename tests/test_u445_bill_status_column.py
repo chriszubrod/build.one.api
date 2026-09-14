@@ -357,7 +357,13 @@ def test_the_mirror_never_reopens_a_completed_bill():
     from tests.sproc_text import REPO_ROOT, sproc_body
 
     body = sproc_body(REPO_ROOT / "entities/review/sql/dbo.review.sql", "CreateReview")
-    mirror = body[body.index("IF @BillId IS NOT NULL"):]
+    # Anchor on the mirror's own UPDATE, not on the first `IF @BillId IS NOT
+    # NULL` in the sproc (U-454). U-454 added a pre-INSERT terminal guard that
+    # opens with the same line, so the old slice swallowed it and then tripped
+    # on the `'completed'` that guard legitimately READS in ContractLabor's
+    # predicate. Slicing from the UPDATE keeps this test about what the mirror
+    # ASSIGNS, which is what it was always checking.
+    mirror = body[body.index("UPDATE b"):]
     assert "AND b.[IsDraft] = 1" in mirror
     assert "'completed'" not in mirror, "the mirror must never assign completed"
 

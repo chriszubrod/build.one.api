@@ -35,13 +35,18 @@ Live ReviewStatus configuration this was written against:
     Submitted 10 (initial) | In Review 20 | Approved 30 (final) | Declined 100
 """
 
+import inspect
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from entities.review.business.notification_service import ReviewNotificationService
-from shared.authz import SYSTEM_ACTOR_USER_ID
+from shared.authz import SYSTEM_ACTOR_USERNAME
+
+# The prod value, used only as a stub — the code under test must never
+# hard-code it (that was the Codex P1 this unit fixed).
+SYSTEM_ACTOR_ID_FOR_TESTS = 33
 
 
 def _status(id, name, sort_order, *, is_final=False, is_declined=False, is_active=True):
@@ -73,10 +78,18 @@ def _advance(*, statuses=None, next_status=..., review_status_id=1, submitter_id
     bill = SimpleNamespace(id=55, public_id="pub-55")
     review = SimpleNamespace(id=9, user_id=submitter_id, review_status_id=review_status_id)
 
+    # The actor is resolved from the database by username now (U-453), and
+    # this harness blocks live connections by design — so stub the lookup
+    # rather than the connection. Patched on `shared.authz` because the
+    # import inside `_advance_to_in_review` is lazy: it resolves the
+    # attribute on the package at call time, so the module under test never
+    # holds a binding of its own.
     with patch("entities.review_status.business.service.ReviewStatusService",
                return_value=status_service), \
          patch("entities.review.business.service.ReviewService",
-               return_value=review_service):
+               return_value=review_service), \
+         patch("shared.authz.system_actor_user_id",
+               return_value=SYSTEM_ACTOR_ID_FOR_TESTS):
         ReviewNotificationService()._advance_to_in_review(bill=bill, review=review)
     return status_service, review_service
 
@@ -105,7 +118,7 @@ def test_the_system_not_the_submitter_owns_the_advance():
     """
     _, review_service = _advance(submitter_id=27)
     kwargs = review_service.create.call_args.kwargs
-    assert kwargs["user_id"] == SYSTEM_ACTOR_USER_ID
+    assert kwargs["user_id"] == SYSTEM_ACTOR_ID_FOR_TESTS
     assert kwargs["user_id"] != 27, "the submitter did not move their own bill"
 
 
@@ -136,24 +149,37 @@ def test_created_by_is_passed_explicitly_not_left_to_the_contextvar():
     system actor."""
     _, review_service = _advance()
     kwargs = review_service.create.call_args.kwargs
-    assert kwargs["created_by_user_id"] == SYSTEM_ACTOR_USER_ID
+    assert kwargs["created_by_user_id"] == SYSTEM_ACTOR_ID_FOR_TESTS
 
 
-def test_the_system_actor_is_a_named_constant_not_a_literal():
-    import inspect
+def test_the_advance_uses_the_resolved_actor_not_a_literal():
+    """SUPERSEDED — this asserted a named CONSTANT. A constant was the problem:
+    `SYSTEM_ACTOR_USER_ID = 33` is right in prod and potentially a human
+    elsewhere, because the seed assigns the id with SCOPE_IDENTITY()."""
     src = inspect.getsource(ReviewNotificationService._advance_to_in_review)
     executable = "\n".join(l.split("#")[0] for l in src.splitlines())
-    assert "created_by_user_id=SYSTEM_ACTOR_USER_ID" in executable.replace(" ", "").replace(
-        "created_by_user_id=SYSTEM_ACTOR_USER_ID", "created_by_user_id=SYSTEM_ACTOR_USER_ID"
-    ) or "SYSTEM_ACTOR_USER_ID" in executable
+    assert "system_actor_user_id()" in executable
     assert "=33" not in executable.replace(" ", ""), "no bare literal"
 
 
-def test_the_constant_points_at_the_agent_user_not_a_person():
-    """User 33 is "Claude Agent" (IsAgent=1). If this ever became 17 the fix
-    would silently become the bug it replaced."""
-    assert SYSTEM_ACTOR_USER_ID == 33
-    assert SYSTEM_ACTOR_USER_ID != 17
+def test_the_system_actor_is_resolved_by_username_not_by_a_hard_coded_id():
+    """SUPERSEDED — this used to assert `SYSTEM_ACTOR_USER_ID == 33`, and Codex
+    was right that pinning it was pinning the bug.
+
+    The seed creates the row with `SCOPE_IDENTITY()`, so the id depends on
+    insertion order: in another database 33 may not exist, or may belong to a
+    HUMAN — silently attributing machine work to a person in an audit trail
+    that `vw_Review` renders by name. The actor is now resolved by its stable
+    username, and the assertion is about the mechanism, not the number.
+    """
+    import shared.authz.context as ctx
+
+    assert SYSTEM_ACTOR_USERNAME == "claude_agent"
+    src = inspect.getsource(ctx.system_actor_user_id)
+    assert "a.[Username] = ?" in src, "it must resolve by username"
+    assert "raise LookupError" in src, (
+        "and fail CLOSED on attribution rather than guessing an id"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -274,11 +300,11 @@ def test_an_explicit_created_by_overrides_the_request_subject():
     try:
         svc.create(
             review_status_id=1, user_id=20, bill_id=55,
-            created_by_user_id=SYSTEM_ACTOR_USER_ID,
+            created_by_user_id=SYSTEM_ACTOR_ID_FOR_TESTS,
         )
     finally:
         current_user_id.reset(token)
-    assert svc.repo.create.call_args.kwargs["created_by_user_id"] == SYSTEM_ACTOR_USER_ID
+    assert svc.repo.create.call_args.kwargs["created_by_user_id"] == SYSTEM_ACTOR_ID_FOR_TESTS
 
 
 def test_an_explicit_zero_is_not_swallowed_by_a_truthiness_test():

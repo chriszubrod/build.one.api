@@ -447,7 +447,7 @@ have a safe decoder; `/docs` has the page.
 | Unit | Repo / layer | Owner → handoffs | Content |
 |---|---|---|---|
 | **LS-01a Canonical `status` + `review_status_kind` on every list/GET (derived)** | api / `entities/review/sql` (`ReadCurrentReviewsByParentIds(@ParentType NVARCHAR(20), @ParentIds NVARCHAR(MAX))`, ROW_NUMBER over `vw_Review` per parent, STRING_SPLIT ids — the `ReadCurrentReviewsByBillIds` shape `:355-384`), routers of bill/expense/bill_credit/invoice/contract_labor/employee_labor/time_entry | Backend → DBA → MCP-eng → Frontend (types, ask-first) → Docs | `attach_lifecycle` replaces the Bill stitch (`bill/api/router.py:143-158`); documents get `status`, `review_status` (Name, kept), `review_status_kind` + the `review_status_*` block, `status_source` on single GET; ContractLabor gets `lifecycle_status` (legacy `status` untouched; overlay: disk `submitted` + declined Review → `declined`, + intermediate → `in_review`, + approved-but-deferred → `submitted` with kind `approved`, rendered "Approved — needs coding" until LS-04); EmployeeLabor `lifecycle_status`; TimeEntry `status` canonical beside `current_status`, `review_status_kind` from history (batch sproc `ReadCurrentTimeEntryStatusesByTimeEntryIds` extended with the previous row). `apply_reviewer_decision` returns the resolved block (no more `is_draft: True`, `bill/business/service.py:1289`). MCP: additive output fields, docstrings list both vocabularies. Web: optional fields on all five types; badge from `review_status_kind`. `?status=` filters are NOT added here (post-filtering a page is wrong; they arrive with the column in Phase 3). |
-| **LS-01b Inbox lifecycle suppression + review-refused-on-finalized** | api / `dbo.inbox_tasks.sql` (whole-file guarded) + `review/business/service.py` | Backend → DBA | `ReadInboxTasks` adds `B.[IsDraft]=1` (E./BC./I.) per branch (parent joins exist: B :121, E :166, BC :211, I :255); `ReadInboxTaskCounts` first needs NEW parent joins on its Bill and BillCredit arms (today only Expense :356 and Invoice :392 join the parent) or list and badge counts diverge; `build_submit/advance/decline_payload` refuse when the parent is finalized (422 `status_locked`); `ReviewTimeline` hides actions on finalized parents (web, ask-first). |
+| **LS-01b Inbox lifecycle suppression + review-refused-on-finalized** — ✅ **BUILT as U-454, 2026-09-14** (API half; the `ReviewTimeline` web change stays ask-first and is NOT built) | api / `dbo.inbox_tasks.sql` (whole-file guarded) + `review/business/service.py` | Backend → DBA | `ReadInboxTasks` adds `B.[IsDraft]=1` (E./BC./I.) per branch (parent joins exist: B :121, E :166, BC :211, I :255); `ReadInboxTaskCounts` first needs NEW parent joins on its Bill and BillCredit arms (today only Expense :356 and Invoice :392 join the parent) or list and badge counts diverge; `build_submit/advance/decline_payload` refuse when the parent is finalized (422 `status_locked`); `ReviewTimeline` hides actions on finalized parents (web, ask-first). |
 | **LS-01c Review-service hygiene** | api / `entities/review`, `entities/review_status` | Backend → Frontend (U-155 form 422 copy) | `ReviewStatusService` shape guard rails (§4.2); notification auto-advance via `get_next_status` under User 33 (`notification_service.py:273,285`); Bill + CL `apply_reviewer_decision` routed through `ReviewService.create` (a duplicate reply at the same kind returns `Outcome='noop'` and the caller treats it as success — today's duplicate audit rows, `bill/business/service.py:1265-1268`, stop; a genuinely illegal edge is a 409 the email agent must surface, never retry; hooks uniform). |
 | **LS-01d QBO pull stops writing `is_draft` on UPDATE** — ✅ **BUILT 2026-09-14** (see the shipped note below the table) | api / `integrations/intuit/qbo/{bill,purchase,invoice,vendorcredit}/connector/**` + `base/field_ownership.py` + `reconciliation/business/service.py` | Backend → **Integrations + Security** → Scheduler (observe one pull cycle + one daily reconcile) | Drop `is_draft=False` from every UPDATE kwargs (`bill/connector/bill/business/service.py:208`; `purchase/connector/expense/business/service.py:151`; `invoice/connector/invoice/business/service.py:205` — the HIT-path update ONLY; `:410` is the MISS-path CREATE and stays until Phase 3; line connectors' update branches) — the `CASE WHEN @IsDraft IS NULL` guards then preserve local state (the `preserve_human_edited_ref` precedent applied by omission); CREATE paths unchanged until Phase 3. `field_ownership`: drop the phantom `review_status_id` (:260,:319), keep `is_draft` app-owned with the rule "written by pull on create only". Adopt of a locally in-progress row: stamp `QboId`, leave lifecycle, record non-critical `[qbo].[ReconciliationIssue] qbo_adopted_uncompleted_local` (§9 #7) — the Invoice adopt already routes through the shared `base/identity_fastpath.py::stamp_dbo_identity_with_lock` since U-356 (`_adopt_invoice_identity` :513), so the issue is recorded inside that shared helper: a shared-primitive change → two-phase dispatch. **Behaviour change to state:** a locally drafted invoice later adopted by the pull now stays `IsDraft=1` and drops out of budget-variance "Drawn" (`dbo.budget_variance.sql:174,283`) until completed locally — the `qbo_linked_not_completed` invariant must feed the budget watchdog. Daily QBO reconcile gains warning-severity `qbo_linked_not_completed` (`QboId IS NOT NULL AND IsDraft = 1`). LS-00c's xfail test goes green. |
 
@@ -536,12 +536,42 @@ have a safe decoder; `/docs` has the page.
 > (swallowed by the best-effort handler, leaving the document at Submitted). Prod has it and 308
 > Review rows already reference it, but **no seed creates it** — a fresh environment must.
 >
+> **⚠ CODEX REVIEW ARRIVED LATE (credits were exhausted at build time) AND FOUND TWO P1s.** One is
+> fixed; one is BOOKED and is a real, accepted residual:
+>
+> 1. **FIXED — the system actor was a hard-coded id.** `SYSTEM_ACTOR_USER_ID = 33` is correct in prod
+>    and unsafe anywhere else: `seed.claude_agent.sql` creates the row with `SCOPE_IDENTITY()`, so in
+>    another database id 33 may not exist — or may belong to a **human**, silently attributing machine
+>    work to a person in an audit trail `vw_Review` renders by name. Replaced with
+>    `system_actor_user_id()`, resolving the stable `claude_agent` username once per process and
+>    RAISING rather than guessing if it is absent (the caller is best-effort and logs the miss, which
+>    beats recording the wrong actor).
+>
+> 2. **⚠ BOOKED, NOT FIXED — "submitter" is derived from a MUTABLE flag.** The `Submitter` CTE selects
+>    on the CURRENT `IsInitial`, and `UpdateReviewStatus` explicitly clears that flag from every other
+>    status when the initial role is transferred
+>    (`dbo.review_status.sql`: `UPDATE … SET [IsInitial] = 0 WHERE [IsInitial] = 1 AND [Id] <> @Id`).
+>    So an admin moving the initial role orphans every historical submission: sent-box rows disappear
+>    and `MineSubmitted` decrements, silently. U-453 traded a STABLE-but-wrong source (the latest
+>    row's actor) for a CORRECT-but-mutable one. `_assert_shape` guarantees one *currently active*
+>    initial status; it cannot preserve history. **The real fix is to persist a submission marker on
+>    `dbo.Review` at insert time — a schema change, and its own unit.** Until then this is exposed
+>    only to an admin reconfiguring ReviewStatus, which has not happened (4 statuses, stable).
+>
+> **Also surfaced, PRE-EXISTING and not introduced here:** for a system admin the `mine_submitted`
+> LIST returns every pending task (the arms carry `@IsSystemAdmin = 1 OR …`) while `MineSubmitted`
+> counts only their own rows — verified live: admin list 111 vs count 44. U-453's "list and badge
+> agree" claim was verified only for the `all`/`Total` pairing and does not extend to this one.
+
 > **⚠ Also load-bearing:** `ReviewStatusService._assert_shape` keeping exactly one active
 > `IsInitial` status. The flag is read live through `vw_Review`, not stored per row, so re-flagging
 > it retroactively re-attributes every open task and clearing it everywhere empties every sent box.
 >
 > **What LS-01c′ DID ship:**
-> - `SYSTEM_ACTOR_USER_ID = 33` in `shared/authz/context.py` — a named constant, deliberately NOT
+> - `SYSTEM_ACTOR_USER_ID = 33` in `shared/authz/context.py` — a named constant (⚠ **replaced in
+>   U-453 by `system_actor_user_id()`, which resolves it by username**; the hard-coded id is right in
+>   prod and potentially a HUMAN elsewhere, since the seed assigns it with `SCOPE_IDENTITY()`),
+>   deliberately NOT
 >   applied by changing `system_authz()` (which leaves `current_user_id` None). Doing that would move
 >   `CreatedByUserId` on every worker write across ~30 entities at once: a foundational change owing
 >   its own design gate.
@@ -570,6 +600,59 @@ have a safe decoder; `/docs` has the page.
 >
 > **NOT in LS-01c′** (folds into LS-02a, as scoped): routing Bill + CL `apply_reviewer_decision`
 > through `ReviewService.create`, and the `Outcome='noop'` duplicate-reply contract.
+
+> **U-454 (LS-01b) — BUILT 2026-09-14. Measured, not estimated: the inbox was 62% finished work.**
+>
+> Of 111 tasks in the admin view, **69 sat on already-completed documents** — 64 Bills and all 5
+> Invoices. And because the payload builders validated only the REVIEW's state, never the parent's,
+> every one of those 64 completed Bills could still be advanced or **declined**, after its money had
+> already reached QBO/SharePoint/Excel/Box. U-446b locked *edits* to a completed Bill; it never
+> covered the review transitions.
+>
+> **SQL.** All four `ReadInboxTasks` arms gained `AND <alias>.[IsDraft] = 1`. `ReadInboxTaskCounts`
+> needed structural work first: its **Bill and BillCredit arms had no parent join at all**
+> (`FROM Pending P WHERE P.[BillId] IS NOT NULL`), so filtering only the list would have left the
+> badge counting 64 documents the list no longer showed. `IsDraft`, not `Status <> 'completed'` —
+> identical on Bill (computed) and the only one that exists on Expense/BillCredit/Invoice.
+>
+> **Python.** `_resolve_parent_id` split so `_resolve_parent` returns the row it already had; the
+> three builders call `_assert_parent_open`. `entities/review/api/router.py::_do_action` gained an
+> `except StatusLockedError` clause — without it the error, a `PermissionError`, sailed past both
+> handlers as an unhandled 500.
+>
+> **⚠ THE PREFLIGHT WAS NOT ENOUGH, and Codex caught it.** A service-layer check reads an RCSI
+> snapshot: a completion committing between the check and the INSERT still landed a review on a
+> completed parent — and U-454's own inbox filter then **hid the resulting task**. Direct callers
+> (notably `BillService.apply_reviewer_decision`, which writes via `ReviewRepository` and bypasses
+> the service entirely) skipped it outright. So `CreateReview` now takes `UPDLOCK, HOLDLOCK` on the
+> parent BEFORE the INSERT, in the same transaction, and refuses with the `STATUS_LOCKED:` token —
+> the same two-layer shape U-446b established. `@AllowTerminalParent BIT = 0`, fail-closed per
+> U-446c.
+>
+> **ContractLabor is guarded by TRANSLATION, not exemption** (Codex, second pass). The first cut
+> skipped CL because `is_terminal` would compare its `billed` against `completed`, return False and
+> fail open. A different vocabulary is a reason to write a different predicate, not to leave 1,193
+> rows unguarded: the SQL matches `[Status] IN ('billed', 'completed')` — both spellings, so the
+> guard survives `2026_07_02_unify_labor_status_vocab.sql` untouched — and the Python maps the same
+> pair onto the canonical state.
+>
+> **No blanket system exemption** (Codex, second pass). The first cut wired `is_exempt()` by analogy
+> with the other terminal-lock guards; there is no outbox/scheduler/CLI writer that needs to amend a
+> completed document's review, so that was a bypass with no beneficiary. The sproc keeps the
+> parameter, unwired, for a future named caller.
+>
+> **Rehearsed against prod, rolled back:** inbox 111 → 42, every removed parent finished; list ==
+> badge `Total` for all 12 (user × admin) combinations; `CreateReview` refuses a completed Bill,
+> writes on an open one, and refuses CL at `billed` while allowing `ready`/`pending_review`/
+> `submitted`.
+>
+> **Three EXISTING tests were fragile and were repaired** — not defects of this unit, but it exposed
+> them: U-446c's two SQL scans read RAW text, so a sproc whose *comment* quoted
+> `@AllowTerminalParent BIT = 1` was reported as a permissive default; and U-445's mirror test sliced
+> from the first `IF @BillId IS NOT NULL`, which is now this unit's guard.
+>
+> Codex: three passes — "P1 + P2 + 3×P3" → "one P1 and one P2 remain" → **"P1 and P2 are closed;
+> I found no remaining path that can write a Review on a known completed parent."**
 
 **Deploy order:** LS-01a SQL (`/em`) → API → MCP → web (ask-first; cosmetic until then) ; LS-01b SQL → API ;
 LS-01c API ; LS-01d API (verify one scheduler pull cycle, one reconcile). Units are independent of each other.

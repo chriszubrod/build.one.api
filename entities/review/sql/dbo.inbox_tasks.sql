@@ -200,6 +200,18 @@ BEGIN
         INNER JOIN dbo.[Bill]   B ON B.[Id]      = P.[BillId]
         LEFT  JOIN dbo.[Vendor] V ON V.[Id]      = B.[VendorId]
         WHERE (@EntityType IS NULL OR @EntityType = N'Bill')
+          -- U-454: the parent must still be OPEN. A finished document's review
+          -- is moot -- its money has already reached QBO/SharePoint/Excel/Box --
+          -- and leaving those tasks in the queue made the inbox majority noise:
+          -- 69 of 111 live tasks (64 Bills + all 5 Invoices) sat on documents
+          -- that were already completed.
+          --
+          -- `IsDraft = 1`, not `Status <> 'completed'`: on Bill the two are the
+          -- same predicate by construction (IsDraft is PERSISTED COMPUTED over
+          -- Status since U-446), and IsDraft is the only one that exists on
+          -- Expense/BillCredit/Invoice, whose Status columns are LS-03b/c/d and
+          -- NOT BUILT.
+          AND B.[IsDraft] = 1
           AND (
             @IsSystemAdmin = 1
             OR (@Scope = N'mine_submitted' AND P.[SubmitterId] = @CurrentUserId)
@@ -245,6 +257,18 @@ BEGIN
         INNER JOIN dbo.[Expense] E ON E.[Id] = P.[ExpenseId]
         LEFT  JOIN dbo.[Vendor]  V ON V.[Id] = E.[VendorId]
         WHERE (@EntityType IS NULL OR @EntityType = N'Expense')
+          -- U-454: the parent must still be OPEN. A finished document's review
+          -- is moot -- its money has already reached QBO/SharePoint/Excel/Box --
+          -- and leaving those tasks in the queue made the inbox majority noise:
+          -- 69 of 111 live tasks (64 Bills + all 5 Invoices) sat on documents
+          -- that were already completed.
+          --
+          -- `IsDraft = 1`, not `Status <> 'completed'`: on Bill the two are the
+          -- same predicate by construction (IsDraft is PERSISTED COMPUTED over
+          -- Status since U-446), and IsDraft is the only one that exists on
+          -- Expense/BillCredit/Invoice, whose Status columns are LS-03b/c/d and
+          -- NOT BUILT.
+          AND E.[IsDraft] = 1
           AND (
             @IsSystemAdmin = 1
             OR (@Scope = N'mine_submitted' AND P.[SubmitterId] = @CurrentUserId)
@@ -290,6 +314,18 @@ BEGIN
         INNER JOIN dbo.[BillCredit] BC ON BC.[Id] = P.[BillCreditId]
         LEFT  JOIN dbo.[Vendor]     V  ON V.[Id]  = BC.[VendorId]
         WHERE (@EntityType IS NULL OR @EntityType = N'BillCredit')
+          -- U-454: the parent must still be OPEN. A finished document's review
+          -- is moot -- its money has already reached QBO/SharePoint/Excel/Box --
+          -- and leaving those tasks in the queue made the inbox majority noise:
+          -- 69 of 111 live tasks (64 Bills + all 5 Invoices) sat on documents
+          -- that were already completed.
+          --
+          -- `IsDraft = 1`, not `Status <> 'completed'`: on Bill the two are the
+          -- same predicate by construction (IsDraft is PERSISTED COMPUTED over
+          -- Status since U-446), and IsDraft is the only one that exists on
+          -- Expense/BillCredit/Invoice, whose Status columns are LS-03b/c/d and
+          -- NOT BUILT.
+          AND BC.[IsDraft] = 1
           AND (
             @IsSystemAdmin = 1
             OR (@Scope = N'mine_submitted' AND P.[SubmitterId] = @CurrentUserId)
@@ -335,6 +371,18 @@ BEGIN
         INNER JOIN dbo.[Project]  Pr ON Pr.[Id] = I.[ProjectId]
         LEFT  JOIN dbo.[Customer] C  ON C.[Id]  = Pr.[CustomerId]
         WHERE (@EntityType IS NULL OR @EntityType = N'Invoice')
+          -- U-454: the parent must still be OPEN. A finished document's review
+          -- is moot -- its money has already reached QBO/SharePoint/Excel/Box --
+          -- and leaving those tasks in the queue made the inbox majority noise:
+          -- 69 of 111 live tasks (64 Bills + all 5 Invoices) sat on documents
+          -- that were already completed.
+          --
+          -- `IsDraft = 1`, not `Status <> 'completed'`: on Bill the two are the
+          -- same predicate by construction (IsDraft is PERSISTED COMPUTED over
+          -- Status since U-446), and IsDraft is the only one that exists on
+          -- Expense/BillCredit/Invoice, whose Status columns are LS-03b/c/d and
+          -- NOT BUILT.
+          AND I.[IsDraft] = 1
           AND (
             @IsSystemAdmin = 1
             OR (@Scope = N'mine_submitted' AND P.[SubmitterId] = @CurrentUserId)
@@ -437,7 +485,15 @@ BEGIN
                 WHERE BLI.[BillId] = P.[BillId]
             ) THEN 1 ELSE 0 END AS [Total],
             CASE WHEN P.[SubmitterId] = @CurrentUserId THEN 1 ELSE 0 END AS [MineSubmitted]
-        FROM Pending P WHERE P.[BillId] IS NOT NULL
+        FROM Pending P
+        INNER JOIN dbo.[Bill] B ON B.[Id] = P.[BillId]
+        -- U-454: same open-parent predicate as ReadInboxTasks. The Bill and
+        -- BillCredit arms had NO parent join at all -- they read straight off
+        -- Pending -- so without adding one here the badge would keep counting
+        -- the 64 finished Bills the list no longer shows, and the two surfaces
+        -- would disagree. That divergence is precisely what this sproc exists
+        -- to prevent.
+        WHERE P.[BillId] IS NOT NULL AND B.[IsDraft] = 1
 
         UNION ALL
         SELECT
@@ -457,7 +513,7 @@ BEGIN
             CASE WHEN P.[SubmitterId] = @CurrentUserId THEN 1 ELSE 0 END
         FROM Pending P
         INNER JOIN dbo.[Expense] E ON E.[Id] = P.[ExpenseId]
-        WHERE P.[ExpenseId] IS NOT NULL
+        WHERE P.[ExpenseId] IS NOT NULL AND E.[IsDraft] = 1
 
         UNION ALL
         SELECT
@@ -475,7 +531,15 @@ BEGIN
                 WHERE BCLI.[BillCreditId] = P.[BillCreditId]
             ) THEN 1 ELSE 0 END,
             CASE WHEN P.[SubmitterId] = @CurrentUserId THEN 1 ELSE 0 END
-        FROM Pending P WHERE P.[BillCreditId] IS NOT NULL
+        FROM Pending P
+        INNER JOIN dbo.[BillCredit] BC ON BC.[Id] = P.[BillCreditId]
+        -- U-454: same open-parent predicate as ReadInboxTasks. The Bill and
+        -- BillCredit arms had NO parent join at all -- they read straight off
+        -- Pending -- so without adding one here the badge would keep counting
+        -- the 64 finished Bills the list no longer shows, and the two surfaces
+        -- would disagree. That divergence is precisely what this sproc exists
+        -- to prevent.
+        WHERE P.[BillCreditId] IS NOT NULL AND BC.[IsDraft] = 1
 
         UNION ALL
         SELECT
@@ -493,7 +557,7 @@ BEGIN
             CASE WHEN P.[SubmitterId] = @CurrentUserId THEN 1 ELSE 0 END
         FROM Pending P
         INNER JOIN dbo.[Invoice] I ON I.[Id] = P.[InvoiceId]
-        WHERE P.[InvoiceId] IS NOT NULL
+        WHERE P.[InvoiceId] IS NOT NULL AND I.[IsDraft] = 1
     )
     SELECT
         [EntityType],

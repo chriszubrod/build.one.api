@@ -34,7 +34,7 @@ from pathlib import Path
 
 import pytest
 
-from shared.authz import SYSTEM_ACTOR_USER_ID
+from shared.authz import SYSTEM_ACTOR_USERNAME
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 INBOX_SQL = REPO_ROOT / "entities/review/sql/dbo.inbox_tasks.sql"
@@ -211,9 +211,13 @@ def test_the_auto_advance_is_attributed_to_the_system_actor():
 
     src = inspect.getsource(ReviewNotificationService._advance_to_in_review)
     executable = "\n".join(l.split("#")[0] for l in src.splitlines())
-    assert "user_id=SYSTEM_ACTOR_USER_ID" in executable
+    assert "user_id=actor" in executable
     assert "user_id=review.user_id" not in executable
-    assert SYSTEM_ACTOR_USER_ID == 33
+    assert "system_actor_user_id()" in executable, (
+        "resolved by username at runtime — a hard-coded id is correct in prod "
+        "and potentially a HUMAN in any other database (Codex P1)"
+    )
+    assert SYSTEM_ACTOR_USERNAME == "claude_agent"
 
 
 # ---------------------------------------------------------------------------
@@ -240,7 +244,7 @@ def test_neither_half_can_ship_without_the_other():
     )
     sql = _executable(INBOX_SQL)
 
-    python_writes_system_actor = "user_id=SYSTEM_ACTOR_USER_ID" in py
+    python_writes_system_actor = "user_id=actor" in py
     sql_reads_initial_row = sql.count("Submitter AS (") == 2
 
     assert python_writes_system_actor == sql_reads_initial_row, (

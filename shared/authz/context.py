@@ -75,15 +75,49 @@ current_is_system_context: ContextVar[bool] = ContextVar(
 # on every worker write across ~30 entities at once; that is a foundational
 # change needing its own design gate. Call sites that know they are writing a
 # system-authored row pass this constant explicitly instead.
-# ⚠ This id must EXIST as a `dbo.User` row. `dbo.Review.UserId` carries
-# `FK_Review_User`, and `vw_Review` INNER JOINs User — so on a database without
-# it, any write naming this actor fails the FK and (for the notification
-# pipeline, whose advance is best-effort) is swallowed, leaving the document at
-# "Submitted" after its reviewers were already emailed. Prod has User 33
-# ("Claude Agent", IsAgent=1) and 308 Review rows already reference it, so this
-# is a fresh-database / test-fixture concern rather than a prod one — but there
-# is no seed that creates it, so a new environment has to.
-SYSTEM_ACTOR_USER_ID = 33
+# The User row that owns work the SYSTEM performs on a human's behalf — a
+# scheduler tick, an outbox worker, a pipeline auto-advance. Resolved by its
+# stable USERNAME, never by a hard-coded id.
+#
+# U-453 first wrote `SYSTEM_ACTOR_USER_ID = 33`, which is correct in prod and
+# unsafe everywhere else: `intelligence/persistence/sql/seed.claude_agent.sql`
+# creates the row with `SCOPE_IDENTITY()`, so the id it lands on depends on
+# insertion order. In another database id 33 may not exist — or, worse, may
+# belong to a HUMAN, silently attributing machine work to a person in an audit
+# trail. `dbo.Review.UserId` is FK-constrained and `vw_Review` INNER JOINs
+# User, so the wrong answer is either a swallowed failure or a wrong name on
+# the timeline.
+#
+# Fails CLOSED on attribution: if the username cannot be resolved this raises
+# rather than guessing. Callers that write audit rows are best-effort and log
+# the miss, which is strictly better than recording the wrong actor.
+SYSTEM_ACTOR_USERNAME = "claude_agent"
+
+_system_actor_user_id: Optional[int] = None
+
+
+def system_actor_user_id() -> int:
+    """`dbo.User.Id` of the system actor, resolved once per process."""
+    global _system_actor_user_id
+    if _system_actor_user_id is None:
+        from shared.database import get_connection
+
+        with get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT u.[Id] FROM dbo.[User] u "
+                "INNER JOIN dbo.[Auth] a ON a.[UserId] = u.[Id] "
+                "WHERE a.[Username] = ?",
+                SYSTEM_ACTOR_USERNAME,
+            )
+            row = cursor.fetchone()
+        if not row:
+            raise LookupError(
+                f"system actor {SYSTEM_ACTOR_USERNAME!r} is not provisioned in "
+                "this database; run intelligence/persistence/sql/seed.claude_agent.sql"
+            )
+        _system_actor_user_id = int(row[0])
+    return _system_actor_user_id
 
 
 def set_authz_context(

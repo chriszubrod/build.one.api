@@ -9,6 +9,7 @@ from entities.review.business.model import ParentType, Review
 from entities.review.persistence.repo import ReviewRepository
 from entities.review_status.business.service import ReviewStatusService
 from shared.authz import current_user_id
+from shared.lifecycle.terminal_lock import assert_editable
 
 logger = logging.getLogger(__name__)
 
@@ -87,8 +88,8 @@ class ReviewService:
         ContextVar is wrong: a pipeline writing a row on its own initiative
         runs under `system_authz()`, which leaves the subject None, and the
         sproc's `COALESCE(@CreatedByUserId, 17)` then credits Christopher for
-        machine work. `SYSTEM_ACTOR_USER_ID` is the honest value there
-        (LS-01c′).
+        machine work. `system_actor_user_id()` is the honest value there
+        (LS-01c′, resolved by username since U-453).
         """
         review = self.repo.create(
             review_status_id=review_status_id,
@@ -105,6 +106,15 @@ class ReviewService:
                 if created_by_user_id is not None
                 else current_user_id.get()
             ),
+            # NO blanket system exemption here (Codex P2). `CreateReview` keeps
+            # its `@AllowTerminalParent` parameter so a future caller CAN opt in
+            # explicitly and by name, but nothing passes it today: there is no
+            # outbox, scheduler or CLI path that needs to amend a completed
+            # document's review, and the one direct writer
+            # (`BillService.apply_reviewer_decision`) refuses completed Bills
+            # itself. Wiring `is_exempt()` here would have turned every
+            # `system_authz()` context into a bypass of the very invariant this
+            # unit exists to establish — a hole with no beneficiary.
         )
 
         # Auto-mirror: when a ContractLabor review hits an approved final
@@ -265,6 +275,36 @@ class ReviewService:
     # for the router to feed into ProcessEngine. They do NOT write to the DB.
     # =========================================================================
 
+    # Every parent type is guarded. ContractLabor needs a translation rather
+    # than an exemption: it speaks pending_review / ready / billed, so
+    # `is_terminal` would compare 'billed' against 'completed', return False and
+    # fail OPEN — a guard that looks applied and is not (Codex P1). Mapping its
+    # terminal spellings onto the canonical one makes the same helper correct
+    # for it. Both spellings are accepted because
+    # `2026_07_02_unify_labor_status_vocab.sql` rewrites 'billed' to 'completed'
+    # at the LS-04 cutover.
+    _CONTRACT_LABOR_TERMINAL = ("billed", "completed")
+
+    def _assert_parent_open(self, parent_type: str, parent, *, what: str) -> None:
+        """Refuse a review transition on a document that is already finished.
+
+        U-446b locked EDITS to a completed Bill but never covered the review
+        transitions, so a reviewer could still approve — or decline — a bill
+        whose money had already reached QBO, SharePoint, Excel and Box.
+        Measured when this shipped: 64 completed Bills and all 5 Invoices in the
+        task inbox were still carrying open, actionable reviews.
+
+        Raises `StatusLockedError`, which the router surfaces as 422
+        `status_locked` (not 409 — installed iOS routes 409 to its
+        reload-and-retry path and would spin).
+        """
+        status = getattr(parent, "status", None)
+        is_draft = getattr(parent, "is_draft", None)
+        if parent_type == ParentType.CONTRACT_LABOR:
+            status = "completed" if status in self._CONTRACT_LABOR_TERMINAL else status
+            is_draft = None  # ContractLabor has no IsDraft column at all
+        assert_editable(status=status, is_draft=is_draft, what=what)
+
     def build_submit_payload(
         self,
         *,
@@ -273,7 +313,9 @@ class ReviewService:
         user_id: int,
         comments: Optional[str] = None,
     ) -> dict:
-        parent_id = self._resolve_parent_id(parent_type, parent_public_id)
+        parent = self._resolve_parent(parent_type, parent_public_id)
+        self._assert_parent_open(parent_type, parent, what="it cannot be submitted for review once completed")
+        parent_id = parent.id
         current = self._get_current_by_id(parent_type, parent_id)
 
         if current is not None and not current.status_is_declined:
@@ -307,7 +349,9 @@ class ReviewService:
         user_id: int,
         comments: Optional[str] = None,
     ) -> dict:
-        parent_id = self._resolve_parent_id(parent_type, parent_public_id)
+        parent = self._resolve_parent(parent_type, parent_public_id)
+        self._assert_parent_open(parent_type, parent, what="its review cannot be advanced once completed")
+        parent_id = parent.id
         current = self._get_current_by_id(parent_type, parent_id)
 
         if current is None:
@@ -346,7 +390,9 @@ class ReviewService:
         target_status_public_id: Optional[str] = None,
         comments: Optional[str] = None,
     ) -> dict:
-        parent_id = self._resolve_parent_id(parent_type, parent_public_id)
+        parent = self._resolve_parent(parent_type, parent_public_id)
+        self._assert_parent_open(parent_type, parent, what="its review cannot be declined once completed")
+        parent_id = parent.id
         current = self._get_current_by_id(parent_type, parent_id)
 
         if current is None:
@@ -377,9 +423,16 @@ class ReviewService:
     # =========================================================================
 
     def _resolve_parent_id(self, parent_type: str, parent_public_id: str) -> int:
-        """
-        Translate a parent's public_id (UNIQUEIDENTIFIER) to its internal id
-        (BIGINT). Lazy imports to avoid circular dependencies.
+        """The parent's internal id (BIGINT) from its public_id."""
+        return self._resolve_parent(parent_type, parent_public_id).id
+
+    def _resolve_parent(self, parent_type: str, parent_public_id: str):
+        """The parent ROW itself.
+
+        Split out of `_resolve_parent_id` in U-454 so the transition guard can
+        read the parent's lifecycle without paying for a second fetch — this
+        method already had the whole row in hand and was throwing it away.
+        Lazy imports to avoid circular dependencies.
         """
         if parent_type == ParentType.BILL:
             from entities.bill.business.service import BillService
@@ -403,7 +456,7 @@ class ReviewService:
             raise ParentNotFoundError(
                 f"{parent_type} with public_id {parent_public_id} not found."
             )
-        return existing.id
+        return existing
 
     def _get_current_by_id(self, parent_type: str, parent_id: int) -> Optional[Review]:
         if parent_type == ParentType.BILL:

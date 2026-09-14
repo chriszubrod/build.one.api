@@ -438,7 +438,14 @@ def test_no_guarded_sproc_anywhere_still_defaults_permissive():
 
     permissive, guarded = [], []
     for path in sorted((REPO_ROOT / "entities").rglob("dbo.*.sql")):
-        text = path.read_text(encoding="utf-8")
+        raw = path.read_text(encoding="utf-8")
+        # Strip `--` comments before scanning (U-454). These read RAW text, so
+        # a sproc whose COMMENT quotes the permissive form -- while explaining
+        # why it must never be used -- was reported as a permissive default.
+        # Prose cannot skip a guard; only executable SQL can. Splitting per
+        # line preserves the line structure, so reported line numbers stay
+        # correct.
+        text = "\n".join(line.split("--")[0] for line in raw.splitlines())
         if "@AllowTerminalParent" not in text:
             continue
         for m in re.finditer(r"@AllowTerminalParent\s+BIT\s*=\s*([01])", text):
@@ -511,7 +518,14 @@ def test_every_guard_LOCKS_unconditionally_and_only_REFUSES_conditionally():
 
     offenders = []
     for path in sorted((REPO_ROOT / "entities").rglob("dbo.*.sql")):
-        text = path.read_text(encoding="utf-8")
+        raw = path.read_text(encoding="utf-8")
+        # Strip `--` comments before scanning (U-454). These read RAW text, so
+        # a sproc whose COMMENT quotes the permissive form -- while explaining
+        # why it must never be used -- was reported as a permissive default.
+        # Prose cannot skip a guard; only executable SQL can. Splitting per
+        # line preserves the line structure, so reported line numbers stay
+        # correct.
+        text = "\n".join(line.split("--")[0] for line in raw.splitlines())
         if "@AllowTerminalParent" not in text:
             continue
         for n, line in enumerate(text.splitlines(), 1):

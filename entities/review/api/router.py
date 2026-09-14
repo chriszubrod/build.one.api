@@ -27,6 +27,7 @@ from shared.api.responses import (
     list_response,
     raise_workflow_error,
 )
+from shared.lifecycle.terminal_lock import StatusLockedError
 from shared.rbac import require_module_api
 from shared.rbac_constants import Modules
 
@@ -94,6 +95,17 @@ def _do_action(
             raise ValueError(f"Unknown review action: {action}")
     except ParentNotFoundError as e:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
+    except StatusLockedError as locked:
+        # 422 `status_locked`, resolved by the message-PREFIX registry in
+        # shared/api/responses.py — NOT the 409 below (U-454).
+        #
+        # StatusLockedError subclasses PermissionError, so without this clause
+        # it sailed past both handlers and surfaced as an unhandled 500. And it
+        # must not be folded into the ReviewTransitionError arm either:
+        # installed iOS routes 409 to its reload-and-retry CONFLICT path, so a
+        # completed parent would make the client spin on a refusal that will
+        # never change. 409 means "try again"; this means "never again".
+        raise_workflow_error(str(locked), f"Failed to {action} review")
     except ReviewTransitionError as e:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
 

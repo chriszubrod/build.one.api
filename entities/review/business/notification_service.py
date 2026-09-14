@@ -281,9 +281,14 @@ class ReviewNotificationService:
         would not un-send the email.
         """
         try:
-            from shared.authz import SYSTEM_ACTOR_USER_ID
+            from shared.authz import system_actor_user_id
             from entities.review.business.service import ReviewService
             from entities.review_status.business.service import ReviewStatusService
+
+            # Resolved by username, not hard-coded (U-453, Codex P1). Raises
+            # rather than guessing; the handler below logs the miss, which
+            # beats attributing machine work to whoever happens to hold an id.
+            actor = system_actor_user_id()
 
             status_service = ReviewStatusService()
             statuses = status_service.read_all()
@@ -354,7 +359,7 @@ class ReviewNotificationService:
                 # What this buys: `ReviewTimeline` (BillEdit.tsx:575) renders
                 # the actor per row, so the "In Review" entry stops claiming
                 # the submitter moved their own bill along.
-                user_id=SYSTEM_ACTOR_USER_ID,
+                user_id=actor,
                 # Same actor as the audit subject here — both are the
                 # pipeline. Passing it explicitly matters because
                 # `ReviewService.create` otherwise falls back to
@@ -364,7 +369,7 @@ class ReviewNotificationService:
                 # path that DOES have a subject the fallback would credit that
                 # user, not Christopher — the 17 only appears when nobody is
                 # set.)
-                created_by_user_id=SYSTEM_ACTOR_USER_ID,
+                created_by_user_id=actor,
                 comments=None,
                 bill_id=bill.id,
                 # The BCC archive (sent back into invoice@) lands via

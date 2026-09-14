@@ -8,6 +8,7 @@ import pyodbc
 
 # Local Imports
 from entities.review.business.model import Review
+from shared.lifecycle.terminal_lock import reraise_if_sproc_status_locked
 from shared.database import (
     call_procedure,
     get_connection,
@@ -77,6 +78,7 @@ class ReviewRepository:
         contract_labor_id: Optional[int] = None,
         email_message_id: Optional[int] = None,
         created_by_user_id: Optional[int] = None,
+        allow_terminal_parent: bool = False,
     ) -> Review:
         try:
             with get_connection() as conn:
@@ -95,6 +97,7 @@ class ReviewRepository:
                         "ContractLaborId": contract_labor_id,
                         "EmailMessageId": email_message_id,
                         "CreatedByUserId": created_by_user_id,
+                        "AllowTerminalParent": allow_terminal_parent,
                     },
                 )
                 row = cursor.fetchone()
@@ -103,6 +106,15 @@ class ReviewRepository:
                     raise map_database_error(Exception("CreateReview failed"))
                 return self._from_db(row)
         except Exception as error:
+            # U-454: the sproc refuses a review transition on a finished
+            # document by RAISERROR-ing the STATUS_LOCKED token. Translate it
+            # back into the typed error BEFORE map_database_error, which would
+            # otherwise flatten it into a generic 500 -- indistinguishable from
+            # a real database fault and routed nowhere near the `status_locked`
+            # contract.
+            reraise_if_sproc_status_locked(
+                error, what="its review cannot be changed once the document is completed"
+            )
             logger.error(f"Error during create review: {error}")
             raise map_database_error(error)
 

@@ -221,7 +221,11 @@ CREATE OR ALTER PROCEDURE CreateReview
     @InvoiceId       BIGINT = NULL,
     @ContractLaborId BIGINT = NULL,
     @EmailMessageId  BIGINT = NULL,
-    @CreatedByUserId BIGINT = NULL
+    @CreatedByUserId BIGINT = NULL,
+    -- U-454. Defaults to 0 = REFUSE, per U-446c: `@AllowTerminalParent BIT = 1`
+    -- meant every caller that had not been taught about the lock silently
+    -- skipped it, so the guard protected only the paths that already knew.
+    @AllowTerminalParent BIT = 0
 )
 AS
 BEGIN
@@ -229,6 +233,56 @@ BEGIN
     BEGIN TRANSACTION;
 
     DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();
+
+    -- U-454: refuse a review transition on a document that is already finished,
+    -- INSIDE the writing transaction.
+    --
+    -- The service layer checks this too, and that check is not enough on its
+    -- own: RCSI means a plain SELECT reads a snapshot, so a completion
+    -- committing between the service's read and this INSERT still lands a new
+    -- review row on a completed parent -- and U-454's own inbox filter then
+    -- HIDES the resulting task. Same two-layer shape U-446b established for the
+    -- Bill mutation sprocs.
+    --
+    -- LOCK UNCONDITIONALLY, REFUSE CONDITIONALLY (U-446c). The UPDLOCK is taken
+    -- whether or not this caller is exempt: gating the lock itself on the
+    -- exemption makes an exempt writer invisible to concurrent transactions,
+    -- which is the subtler half of the same bug.
+    --
+    -- ContractLabor has no [IsDraft] column and speaks its own vocabulary, so
+    -- it gets its own predicate rather than being skipped. Its terminal state
+    -- is 'billed' today; `2026_07_02_unify_labor_status_vocab.sql` maps that to
+    -- 'completed' at the LS-04 cutover, so BOTH spellings are accepted and this
+    -- guard survives the migration without a second edit. (A "different
+    -- vocabulary" is a reason to write a different predicate, not a reason to
+    -- leave the entity unguarded -- Codex P1.)
+    DECLARE @LockedFinished INT = 0;
+
+    IF @BillId IS NOT NULL
+        SELECT @LockedFinished = COUNT(*) FROM dbo.[Bill] WITH (UPDLOCK, HOLDLOCK)
+        WHERE [Id] = @BillId AND [IsDraft] = 0;
+    ELSE IF @ExpenseId IS NOT NULL
+        SELECT @LockedFinished = COUNT(*) FROM dbo.[Expense] WITH (UPDLOCK, HOLDLOCK)
+        WHERE [Id] = @ExpenseId AND [IsDraft] = 0;
+    ELSE IF @BillCreditId IS NOT NULL
+        SELECT @LockedFinished = COUNT(*) FROM dbo.[BillCredit] WITH (UPDLOCK, HOLDLOCK)
+        WHERE [Id] = @BillCreditId AND [IsDraft] = 0;
+    ELSE IF @InvoiceId IS NOT NULL
+        SELECT @LockedFinished = COUNT(*) FROM dbo.[Invoice] WITH (UPDLOCK, HOLDLOCK)
+        WHERE [Id] = @InvoiceId AND [IsDraft] = 0;
+    ELSE IF @ContractLaborId IS NOT NULL
+        SELECT @LockedFinished = COUNT(*) FROM dbo.[ContractLabor] WITH (UPDLOCK, HOLDLOCK)
+        WHERE [Id] = @ContractLaborId AND [Status] IN ('billed', 'completed');
+
+    IF @AllowTerminalParent = 0 AND @LockedFinished > 0
+    BEGIN
+        -- COMMIT then RAISERROR, never ROLLBACK inside a sproc: pyodbc runs
+        -- autocommit-off, so an in-proc rollback zeroes the implicit outer
+        -- transaction and SQL Server raises error 266 instead of this message.
+        COMMIT TRANSACTION;
+        RAISERROR('STATUS_LOCKED: its review cannot be changed once the document is completed.', 16, 1);
+        RETURN;
+    END
 
     INSERT INTO dbo.[Review] (
         [CreatedDatetime], [ModifiedDatetime],

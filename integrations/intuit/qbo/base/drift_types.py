@@ -20,6 +20,7 @@ DRIFT_DUPLICATE_MAPPING = "duplicate_mapping"
 DRIFT_QBO_VOIDED = "qbo_voided"
 DRIFT_INVOICE_DRAW_MISMATCH = "invoice_draw_mismatch"
 DRIFT_BILLABLE_STATUS_DRIFT = "billable_status_drift"
+DRIFT_QBO_LINKED_NOT_COMPLETED = "qbo_linked_not_completed"
 
 # --- Per-connector mapping-issue recorder ---
 DRIFT_ORPHANED_BILL_BILL_MAPPING = "orphaned_bill_bill_mapping"

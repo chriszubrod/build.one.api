@@ -175,7 +175,9 @@ def test_bill_dbo_only_hit_passes_completion_pipeline_escape_hatch():
     connector.sync_from_qbo_bill(qbo_bill, _ONE_LINE)
 
     kwargs = bill_service.update_by_public_id.call_args.kwargs
-    assert kwargs["is_draft"] is False
+    # LS-01d: the QBO pull no longer sends `is_draft` on the UPDATE path — it
+    # must not clobber local lifecycle. CREATE paths still set it.
+    assert "is_draft" not in kwargs
     assert kwargs["_via_completion_pipeline"] is True
 
 

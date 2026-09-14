@@ -257,7 +257,6 @@ class PurchaseLineExpenseLineItemConnector:
                 is_billed=is_billed,
                 markup=update_markup,
                 price=price,
-                is_draft=False,
             )
             if updated is None:
                 # ROWVERSION race: a concurrent writer touched this exact

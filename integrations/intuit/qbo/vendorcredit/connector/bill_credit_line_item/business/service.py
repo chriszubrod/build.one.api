@@ -168,7 +168,6 @@ class VendorCreditLineItemConnector:
                 is_billable=is_billable,
                 is_billed=is_billed,
                 billable_amount=billable_amount,
-                is_draft=False,
             )
             if updated is None:
                 logger.error(

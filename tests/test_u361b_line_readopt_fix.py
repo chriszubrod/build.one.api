@@ -70,7 +70,11 @@ class _FakeBillCreditLineItemService:
 
     def update_by_public_id(self, public_id, *, row_version, sub_cost_code_id, project_public_id,
                              description, quantity, unit_price, amount, is_billable, is_billed,
-                             billable_amount, is_draft):
+                             billable_amount):
+        # NO `is_draft` (LS-01d). The pull's UPDATE path no longer owns the
+        # lifecycle field, and this signature is the pin: re-adding the kwarg
+        # to the connector raises TypeError here rather than silently
+        # re-completing a draft line on every 15-minute tick.
         row_id = next(i for i, r in self._rows.items() if r.public_id == public_id)
         existing = self._rows[row_id]
         if existing.row_version != row_version:
@@ -78,7 +82,7 @@ class _FakeBillCreditLineItemService:
         updated = SimpleNamespace(
             **{**vars(existing), "description": description, "quantity": quantity,
                "unit_price": unit_price, "amount": amount, "is_billable": is_billable,
-               "is_billed": is_billed, "billable_amount": billable_amount, "is_draft": is_draft,
+               "is_billed": is_billed, "billable_amount": billable_amount,
                "row_version": f"{existing.row_version}+"},
         )
         self._rows[row_id] = updated

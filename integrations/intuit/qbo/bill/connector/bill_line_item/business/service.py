@@ -237,8 +237,10 @@ class BillLineItemConnector:
                 is_billed=is_billed,
                 markup=markup,
                 price=price,
-                is_draft=False,
                 row_version=direct.row_version,
+                # `_via_internal_pipeline=True` must survive the is_draft drop
+                # for the same reason as the header connector — it is the
+                # terminal-lock exemption, not a completion marker.
                 _via_internal_pipeline=True,
             )
             if updated is None:

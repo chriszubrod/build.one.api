@@ -355,6 +355,11 @@ def test_scheduler_reconcile_bills_runs_under_system_authz():
         def reconcile_vendor_credits(self, *, realm_id: str) -> None:
             admin_seen.append(current_is_system_admin.get())
 
+        def reconcile_lifecycle_linkage(self, *, realm_id: str) -> None:
+            # LS-01d added this to the daily reconcile list; it must run under
+            # system authz like its siblings.
+            admin_seen.append(current_is_system_admin.get())
+
     sync_fn = _capture_scheduler_sync_fn(_register_qbo_reconcile_jobs, "qbo_reconcile_bills")
 
     fake_auth = SimpleNamespace(realm_id="realm-1")
@@ -368,7 +373,11 @@ def test_scheduler_reconcile_bills_runs_under_system_authz():
         set_authz_context(user_id=1, company_id=1, is_system_admin=False)
         sync_fn()
 
-    assert admin_seen == [True, True, True]
+    # Four reconciles in the daily QBO list as of LS-01d (bills, purchases,
+    # vendor credits, lifecycle linkage). The exact count is asserted on
+    # purpose: a reconcile silently dropped from the list is exactly the kind
+    # of regression this test exists to catch.
+    assert admin_seen == [True, True, True, True]
     assert current_is_system_admin.get() is False
 
 

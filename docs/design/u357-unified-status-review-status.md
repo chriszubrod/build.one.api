@@ -449,7 +449,53 @@ have a safe decoder; `/docs` has the page.
 | **LS-01a Canonical `status` + `review_status_kind` on every list/GET (derived)** | api / `entities/review/sql` (`ReadCurrentReviewsByParentIds(@ParentType NVARCHAR(20), @ParentIds NVARCHAR(MAX))`, ROW_NUMBER over `vw_Review` per parent, STRING_SPLIT ids — the `ReadCurrentReviewsByBillIds` shape `:355-384`), routers of bill/expense/bill_credit/invoice/contract_labor/employee_labor/time_entry | Backend → DBA → MCP-eng → Frontend (types, ask-first) → Docs | `attach_lifecycle` replaces the Bill stitch (`bill/api/router.py:143-158`); documents get `status`, `review_status` (Name, kept), `review_status_kind` + the `review_status_*` block, `status_source` on single GET; ContractLabor gets `lifecycle_status` (legacy `status` untouched; overlay: disk `submitted` + declined Review → `declined`, + intermediate → `in_review`, + approved-but-deferred → `submitted` with kind `approved`, rendered "Approved — needs coding" until LS-04); EmployeeLabor `lifecycle_status`; TimeEntry `status` canonical beside `current_status`, `review_status_kind` from history (batch sproc `ReadCurrentTimeEntryStatusesByTimeEntryIds` extended with the previous row). `apply_reviewer_decision` returns the resolved block (no more `is_draft: True`, `bill/business/service.py:1289`). MCP: additive output fields, docstrings list both vocabularies. Web: optional fields on all five types; badge from `review_status_kind`. `?status=` filters are NOT added here (post-filtering a page is wrong; they arrive with the column in Phase 3). |
 | **LS-01b Inbox lifecycle suppression + review-refused-on-finalized** | api / `dbo.inbox_tasks.sql` (whole-file guarded) + `review/business/service.py` | Backend → DBA | `ReadInboxTasks` adds `B.[IsDraft]=1` (E./BC./I.) per branch (parent joins exist: B :121, E :166, BC :211, I :255); `ReadInboxTaskCounts` first needs NEW parent joins on its Bill and BillCredit arms (today only Expense :356 and Invoice :392 join the parent) or list and badge counts diverge; `build_submit/advance/decline_payload` refuse when the parent is finalized (422 `status_locked`); `ReviewTimeline` hides actions on finalized parents (web, ask-first). |
 | **LS-01c Review-service hygiene** | api / `entities/review`, `entities/review_status` | Backend → Frontend (U-155 form 422 copy) | `ReviewStatusService` shape guard rails (§4.2); notification auto-advance via `get_next_status` under User 33 (`notification_service.py:273,285`); Bill + CL `apply_reviewer_decision` routed through `ReviewService.create` (a duplicate reply at the same kind returns `Outcome='noop'` and the caller treats it as success — today's duplicate audit rows, `bill/business/service.py:1265-1268`, stop; a genuinely illegal edge is a 409 the email agent must surface, never retry; hooks uniform). |
-| **LS-01d QBO pull stops writing `is_draft` on UPDATE** | api / `integrations/intuit/qbo/{bill,purchase,invoice,vendorcredit}/connector/**` + `base/field_ownership.py` + `reconciliation/business/service.py` | Backend → **Integrations + Security** → Scheduler (observe one pull cycle + one daily reconcile) | Drop `is_draft=False` from every UPDATE kwargs (`bill/connector/bill/business/service.py:208`; `purchase/connector/expense/business/service.py:151`; `invoice/connector/invoice/business/service.py:205` — the HIT-path update ONLY; `:410` is the MISS-path CREATE and stays until Phase 3; line connectors' update branches) — the `CASE WHEN @IsDraft IS NULL` guards then preserve local state (the `preserve_human_edited_ref` precedent applied by omission); CREATE paths unchanged until Phase 3. `field_ownership`: drop the phantom `review_status_id` (:260,:319), keep `is_draft` app-owned with the rule "written by pull on create only". Adopt of a locally in-progress row: stamp `QboId`, leave lifecycle, record non-critical `[qbo].[ReconciliationIssue] qbo_adopted_uncompleted_local` (§9 #7) — the Invoice adopt already routes through the shared `base/identity_fastpath.py::stamp_dbo_identity_with_lock` since U-356 (`_adopt_invoice_identity` :513), so the issue is recorded inside that shared helper: a shared-primitive change → two-phase dispatch. **Behaviour change to state:** a locally drafted invoice later adopted by the pull now stays `IsDraft=1` and drops out of budget-variance "Drawn" (`dbo.budget_variance.sql:174,283`) until completed locally — the `qbo_linked_not_completed` invariant must feed the budget watchdog. Daily QBO reconcile gains warning-severity `qbo_linked_not_completed` (`QboId IS NOT NULL AND IsDraft = 1`). LS-00c's xfail test goes green. |
+| **LS-01d QBO pull stops writing `is_draft` on UPDATE** — ✅ **BUILT 2026-09-14** (see the shipped note below the table) | api / `integrations/intuit/qbo/{bill,purchase,invoice,vendorcredit}/connector/**` + `base/field_ownership.py` + `reconciliation/business/service.py` | Backend → **Integrations + Security** → Scheduler (observe one pull cycle + one daily reconcile) | Drop `is_draft=False` from every UPDATE kwargs (`bill/connector/bill/business/service.py:208`; `purchase/connector/expense/business/service.py:151`; `invoice/connector/invoice/business/service.py:205` — the HIT-path update ONLY; `:410` is the MISS-path CREATE and stays until Phase 3; line connectors' update branches) — the `CASE WHEN @IsDraft IS NULL` guards then preserve local state (the `preserve_human_edited_ref` precedent applied by omission); CREATE paths unchanged until Phase 3. `field_ownership`: drop the phantom `review_status_id` (:260,:319), keep `is_draft` app-owned with the rule "written by pull on create only". Adopt of a locally in-progress row: stamp `QboId`, leave lifecycle, record non-critical `[qbo].[ReconciliationIssue] qbo_adopted_uncompleted_local` (§9 #7) — the Invoice adopt already routes through the shared `base/identity_fastpath.py::stamp_dbo_identity_with_lock` since U-356 (`_adopt_invoice_identity` :513), so the issue is recorded inside that shared helper: a shared-primitive change → two-phase dispatch. **Behaviour change to state:** a locally drafted invoice later adopted by the pull now stays `IsDraft=1` and drops out of budget-variance "Drawn" (`dbo.budget_variance.sql:174,283`) until completed locally — the `qbo_linked_not_completed` invariant must feed the budget watchdog. Daily QBO reconcile gains warning-severity `qbo_linked_not_completed` (`QboId IS NOT NULL AND IsDraft = 1`). LS-00c's xfail test goes green. |
+
+> **LS-01d — SHIPPED 2026-09-14. What was built, and the two places it differs from the spec above.**
+>
+> Built as specced: `is_draft` dropped from every pull-connector UPDATE (bill, bill_line_item,
+> expense, expense_line_item, invoice, invoice_line_item, bill_credit_line_item); all 9 CREATE
+> sites retained; `field_ownership`'s phantom `review_status_id` removed from BILL and PURCHASE
+> (verified against the live schema — the only `ReviewStatus*` columns are on `dbo.Review` and
+> `dbo.ReviewEntry`); new `qbo_linked_not_completed` drift type + `reconcile_lifecycle_linkage`
+> registered in the daily scheduler list and the admin dispatch list.
+>
+> **Difference 1 — severity.** The spec said "warning-severity"; `SEVERITY_BY_DRIFT`'s vocabulary
+> is `low`/`medium`/`high`, and this maps to **`medium`**. Not `low`: `low` reads as "the service
+> repairs this", and there is deliberately no auto-fix — completing a document fans AP out to
+> QBO/SharePoint/Excel/Box and is a human decision.
+>
+> **Difference 2 — the adopt path is NOT in this unit.** The spec's
+> `qbo_adopted_uncompleted_local` issue would be recorded inside
+> `base/identity_fastpath.py::stamp_dbo_identity_with_lock`, which the spec itself flags as a
+> **shared primitive → two-phase dispatch**: it needs its own design gate before code. Deferred
+> deliberately, not forgotten. The `qbo_linked_not_completed` detector covers the same ground as a
+> daily sweep in the meantime — it just names the state rather than the moment it was entered.
+>
+> **Two things the removal changed that the spec did not anticipate:**
+>
+> 1. `_via_completion_pipeline=True` / `_via_internal_pipeline=True` on the two Bill-side update
+>    calls are **NOT part of the removal**. They sit on the same call and read like the same idea;
+>    they are the opposite. Since U-446b they are the terminal-lock exemption — what lets a routine
+>    QBO field mirror land on an already-completed Bill. 20,219 of 20,223 QBO-linked bills are
+>    completed, so removing them alongside the kwarg would raise `StatusLockedError` on nearly every
+>    pull update and break the unattended 15-minute job wholesale. Pinned by test.
+> 2. `BillService.update_by_public_id`'s `if is_draft is False:` duplicate-check branch became
+>    **unreachable** and was deleted. No caller can now produce `is_draft is False` there: the pull
+>    stopped sending it, and for everyone else `is_draft=False` on a draft raises above while on a
+>    completed Bill `assert_editable` refuses first (`IsDraft=0` is computed from
+>    `Status='completed'`, so they are one condition). The guard is not lost — `complete_bill`
+>    calls `_assert_no_duplicate_on_complete` directly, and that is the only path that still
+>    finalizes anything. U-434's docstring naming two callers was corrected to one.
+>
+> **Residual, booked not fixed:** the pull's `preserve_human_edited_ref` upgrade of a
+> `QBO-<id>` placeholder to a real doc_number is no longer refused when it collides with another
+> local bill's `(vendor, bill_number)` at a different `BillDate`.
+> `UQ_Bill_VendorId_BillNumber_BillDate` still catches the same-date case. Before LS-01d the
+> collision raised `ValueError`, which the pull treats as a **permanent skip** — the QBO bill would
+> never sync again. Trading "never syncs" for "two bills share a number on different dates" is the
+> better failure, and bolting a guard named `_on_complete` onto a path that no longer completes
+> anything is the wrong altitude for the fix.
 
 **Deploy order:** LS-01a SQL (`/em`) → API → MCP → web (ask-first; cosmetic until then) ; LS-01b SQL → API ;
 LS-01c API ; LS-01d API (verify one scheduler pull cycle, one reconcile). Units are independent of each other.

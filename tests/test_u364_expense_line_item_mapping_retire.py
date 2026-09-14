@@ -148,7 +148,9 @@ def test_hit_updates_in_place_and_does_not_restamp_a_realm_complete_row():
     assert line_svc.update_by_public_id.call_args.args == ("pub-55",)
     kw = line_svc.update_by_public_id.call_args.kwargs
     assert kw["row_version"] == "rv-55"
-    assert kw["is_draft"] is False
+    # LS-01d: the QBO pull no longer sends `is_draft` on the UPDATE path — it
+    # must not clobber local lifecycle. CREATE paths still set it.
+    assert "is_draft" not in kw
     assert kw["quantity"] == Decimal("1")
     assert kw["rate"] == Decimal("50")
     assert kw["markup"] == Decimal("0")

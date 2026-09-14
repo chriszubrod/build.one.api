@@ -144,7 +144,9 @@ def test_hit_updates_in_place_and_does_not_restamp_a_realm_complete_row():
     ili_svc.update_by_public_id.assert_called_once()
     assert ili_svc.update_by_public_id.call_args.args == ("pub-55",)
     assert ili_svc.update_by_public_id.call_args.kwargs["row_version"] == "rv-55"
-    assert ili_svc.update_by_public_id.call_args.kwargs["is_draft"] is False
+    # LS-01d: the QBO pull no longer sends `is_draft` on the UPDATE path — it
+    # must not clobber local lifecycle. CREATE paths still set it.
+    assert "is_draft" not in ili_svc.update_by_public_id.call_args.kwargs
     ili_svc.create.assert_not_called()
     ili_svc.repo.set_qbo_identity.assert_not_called()
     invoice_service._reset_source_as_unbilled.assert_not_called()

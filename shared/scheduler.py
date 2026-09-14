@@ -292,6 +292,10 @@ def _register_qbo_reconcile_jobs(scheduler) -> None:
                 ("bill", svc.reconcile_bills),
                 ("purchase", svc.reconcile_purchases),
                 ("vendor_credit", svc.reconcile_vendor_credits),
+                # LS-01d: read-only, never auto-fixes. Flags documents QBO knows
+                # about that never completed locally — a condition the pull used
+                # to paper over by force-completing them.
+                ("lifecycle_linkage", svc.reconcile_lifecycle_linkage),
             ):
                 try:
                     fn(realm_id=auth.realm_id)

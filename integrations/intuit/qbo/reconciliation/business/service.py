@@ -9,6 +9,7 @@ from typing import Optional
 from shared.authz.context import current_is_system_admin, current_user_id, system_authz
 from integrations.intuit.qbo.base.drift_types import (
     DRIFT_BILLABLE_STATUS_DRIFT,
+    DRIFT_QBO_LINKED_NOT_COMPLETED,
     DRIFT_DUPLICATE_MAPPING,
     DRIFT_FIELD_MISMATCH,
     DRIFT_INVOICE_DRAW_MISMATCH,
@@ -42,6 +43,12 @@ SEVERITY_BY_DRIFT = {
     DRIFT_QBO_VOIDED: "low",
     DRIFT_INVOICE_DRAW_MISMATCH: "medium",
     DRIFT_BILLABLE_STATUS_DRIFT: "medium",
+    # LS-01d. The design called this "warning" severity, which is not in this
+    # vocabulary (low/medium/high). `medium` is the honest mapping: it is
+    # flagged for an operator and has NO auto-fix — `low` would claim the
+    # service repairs it, which it must not. Completing a Bill is a human
+    # decision with an AP fan-out behind it; a reconciler must never make it.
+    DRIFT_QBO_LINKED_NOT_COMPLETED: "medium",
 }
 
 # Counter keys rolled up from each detector into a reconcile run summary.
@@ -535,6 +542,138 @@ class ReconciliationService:
             },
         )
         return {"run_id": run_id, **counts}
+
+    # Per-entity scan cap for reconcile_lifecycle_linkage. The invariant is
+    # expected to hold for single digits of rows (4 at ship); a result at the
+    # cap means something systemic broke, and the right response is a bounded
+    # scan plus a loud `capped` signal, not an unbounded fetchall + one
+    # issue-write connection per row.
+    LIFECYCLE_LINKAGE_SCAN_CAP = 500
+
+    def reconcile_lifecycle_linkage(self, realm_id: str) -> dict:
+        """LS-01d — flag rows that QBO knows about but that never completed locally.
+
+        The invariant is `QboId IS NOT NULL AND IsDraft = 1`, scoped to one
+        realm. It only became meaningful once the pull STOPPED forcing
+        completion: before LS-01d the HIT-path update sent `is_draft=False`,
+        which on Bill drove `Status='completed'` outright (`UpdateBillById`'s
+        `WHEN @IsDraft = 0 AND [Status] <> 'completed'` branch), so this
+        condition was continuously papered over rather than observed.
+
+        Read-only and never auto-fixed: completing a document enqueues its AP to
+        QBO, SharePoint, Excel and Box. That is a human decision.
+
+        REALM-SCOPED (Codex P1). A QBO id is unique only WITHIN a realm, so an
+        unscoped scan would record an old-realm document's issue against the
+        realm being reconciled and point an operator at a QBO document that is
+        not the one named. Rows whose `RealmId` is NULL are counted as
+        `unscoped` and NOT flagged — we genuinely do not know which realm they
+        belong to, and guessing is what this fix exists to prevent.
+
+        DEDUPED against still-open issues via
+        `_unresolved_keys(DRIFT_QBO_LINKED_NOT_COMPLETED)` (Codex P2), like
+        every other detector here. Without it a single unresolved draft mints
+        one fresh issue per daily run forever, and acknowledging it suppresses
+        nothing.
+
+        Measured at 4 rows (all Bill) when this shipped — deliberately quiet. It
+        earns its keep going forward, as the signal that a pull adopted a
+        document nobody ever finished locally.
+        """
+        from shared.database import get_connection
+        from integrations.intuit.qbo.base.ids import normalize_qbo_id
+
+        run_id = str(uuid.uuid4())
+        cap = self.LIFECYCLE_LINKAGE_SCAN_CAP
+        counts = dict.fromkeys(RECONCILE_COUNT_KEYS, 0)
+        checked: dict[str, int] = {}
+        unscoped: dict[str, int] = {}
+        capped: list[str] = []
+
+        dedup_keys = self._unresolved_keys(DRIFT_QBO_LINKED_NOT_COMPLETED)
+
+        # (entity label, table) — each has a real or computed IsDraft, a QboId
+        # and a RealmId.
+        for entity_type, table in (
+            ("Bill", "dbo.[Bill]"),
+            ("Expense", "dbo.[Expense]"),
+            ("Invoice", "dbo.[Invoice]"),
+            ("BillCredit", "dbo.[BillCredit]"),
+        ):
+            try:
+                with get_connection() as conn:
+                    cursor = conn.cursor()
+                    cursor.execute(
+                        f"SELECT TOP (?) [PublicId], [QboId] FROM {table} "
+                        "WHERE [QboId] IS NOT NULL AND [IsDraft] = 1 "
+                        "AND [RealmId] = ?",
+                        cap, realm_id,
+                    )
+                    rows = cursor.fetchall()
+                    # Counted, never flagged: a NULL realm cannot be attributed.
+                    cursor.execute(
+                        f"SELECT COUNT(*) FROM {table} "
+                        "WHERE [QboId] IS NOT NULL AND [IsDraft] = 1 "
+                        "AND [RealmId] IS NULL"
+                    )
+                    unscoped[entity_type] = cursor.fetchone()[0]
+            except Exception:
+                counts["errors"] += 1
+                logger.exception(
+                    "qbo.reconcile.lifecycle_linkage.failed entity=%s", entity_type
+                )
+                continue
+
+            checked[entity_type] = len(rows)
+            if len(rows) == cap:
+                capped.append(entity_type)
+                logger.error(
+                    "qbo.reconcile.lifecycle_linkage.capped entity=%s cap=%s "
+                    "— scan truncated; the remainder is NOT flagged this run",
+                    entity_type, cap,
+                )
+
+            for public_id, raw_qbo_id in rows:
+                qbo_id = normalize_qbo_id(raw_qbo_id)
+                if not qbo_id:
+                    continue
+                # flagged_deduped is a SUBSET of flagged: a re-seen row was
+                # really detected; only its duplicate issue-write is suppressed.
+                counts["flagged"] += 1
+                key = (realm_id, entity_type, qbo_id)
+                if key in dedup_keys:
+                    counts["flagged_deduped"] += 1
+                    continue
+                # A failed write must NOT suppress a later retry — only a row
+                # that really exists justifies suppression.
+                if self._record_issue(
+                    drift_type=DRIFT_QBO_LINKED_NOT_COMPLETED,
+                    action="flagged",
+                    entity_type=entity_type,
+                    entity_public_id=str(public_id),
+                    qbo_id=qbo_id,
+                    realm_id=realm_id,
+                    details=(
+                        f"{entity_type} is linked to QBO ({qbo_id}) but never "
+                        "completed locally. Not auto-fixable: completion fans out "
+                        "AP to QBO/SharePoint/Excel/Box and is a human decision."
+                    ),
+                    reconcile_run_id=run_id,
+                ):
+                    dedup_keys.add(key)
+
+        logger.info(
+            "qbo.reconcile.lifecycle_linkage run=%s counts=%s checked=%s "
+            "unscoped=%s capped=%s",
+            run_id, counts, checked, unscoped, capped,
+        )
+        return {
+            "reconcile_run_id": run_id,
+            **counts,
+            "checked": checked,
+            "unscoped": unscoped,
+            "capped": capped,
+        }
 
     def reconcile_billable_status_drift(self, realm_id: str) -> dict:
         """

@@ -148,7 +148,6 @@ class PurchaseExpenseConnector:
                 reference_number=effective_ref,
                 total_amount=total_amount,
                 memo=memo,
-                is_draft=False,
                 is_credit=qbo_purchase.credit or False,
             )
             if updated is None:

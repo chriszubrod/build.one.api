@@ -205,8 +205,14 @@ class BillBillConnector:
                 bill_number=effective_bill_number,
                 total_amount=total_amount,
                 memo=memo,
-                is_draft=False,
                 row_version=direct.row_version,
+                # ⛔ `_via_completion_pipeline=True` MUST SURVIVE the is_draft
+                # drop (LS-01d). It is no longer marking a completion — it is
+                # the terminal-lock exemption that lets a QBO field update land
+                # on an already-completed Bill. 20,219 of 20,223 QBO-linked
+                # bills ARE completed, so removing this alongside the kwarg
+                # would raise StatusLockedError on virtually every routine pull
+                # update and break the unattended 15-minute job wholesale.
                 _via_completion_pipeline=True,
             )
             if updated is None:

@@ -498,6 +498,7 @@ async def reconcile_qbo_router():
             ("purchase", service.reconcile_purchases),
             ("vendor_credit", service.reconcile_vendor_credits),
             ("invoice_draw", service.reconcile_invoice_draws),
+            ("lifecycle_linkage", service.reconcile_lifecycle_linkage),
             ("billable_status_drift", service.reconcile_billable_status_drift),
         ):
             try:

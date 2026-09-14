@@ -1060,11 +1060,21 @@ class BillService:
         This method backs `PUT /api/v1/update/bill/{public_id}` — reachable
         from web, iOS, and the `update_bill` agent tool — and a caller-driven
         `is_draft` flip here would commit the completion state locally
-        without running `complete_bill`'s SharePoint/Excel/QBO push. Only
-        `complete_bill()` and `BillBillConnector._apply_bill_fields` (QBO-pull
-        reconciliation) may change it, by passing `_via_completion_pipeline=True`
-        — an internal-only kwarg, structurally unreachable from any HTTP caller
-        since the router's payload never includes it.
+        without running `complete_bill`'s SharePoint/Excel/QBO push.
+
+        `_via_completion_pipeline=True` is NO LONGER a lifecycle-authority
+        bypass (LS-01d). The QBO pull used to pass `is_draft=False` under it on
+        every HIT-path update, which force-completed any draft the unattended
+        15-minute job touched; that kwarg is gone from the pull. What the flag
+        means NOW, and all it means, is: exempt this write from the U-446b
+        terminal lock, so a routine QBO field mirror can land on an
+        already-completed Bill. It grants no authority to move the lifecycle.
+
+        Nothing in the codebase passes `is_draft` here any more. The only
+        remaining lifecycle transition is `complete_bill()` →
+        `repo.finalize_by_id`. The kwarg is internal-only and structurally
+        unreachable from any HTTP caller, since the router's payload never
+        includes it.
         """
         # TODO: In Phase 10, validate tenant_id matches record's tenant
         existing = self.read_by_public_id(public_id=public_id)
@@ -1116,9 +1126,18 @@ class BillService:
                 )
             existing.is_draft = is_draft
 
-        # Duplicate check when completing (transitioning from draft to non-draft)
-        if is_draft is False:
-            self._assert_no_duplicate_on_complete(existing, public_id)
+        # LS-01d removed the duplicate-check-on-complete branch that lived here.
+        # It ran only under `is_draft is False`, which after LS-01d no caller
+        # can produce: the QBO pull no longer sends the kwarg, and for every
+        # other caller `is_draft=False` on a draft raises above, while on an
+        # already-completed Bill `assert_editable` refuses first (IsDraft=0 is
+        # computed from Status='completed', so the two are the same condition).
+        # Keeping dead code that looks like a live guard is worse than not
+        # having it — a reader would trust a check that cannot run.
+        #
+        # The guard itself is NOT lost: `complete_bill()` calls
+        # `_assert_no_duplicate_on_complete` directly, which is the only path
+        # that still finalizes anything.
 
         # Note: SharePoint sync is performed in complete_bill when "Complete Bill" is clicked.
         # This avoids duplicate uploads when the bill is finalized.
@@ -1145,9 +1164,11 @@ class BillService:
         the removed-invariant class a diff review cannot see, because the deleted
         lines and the new call site are in different methods.
 
-        Both callers remain: `update_by_public_id` for the QBO-pull
-        reconciliation path (`_via_completion_pipeline=True`), and
-        `complete_bill` for the human/API path.
+        ONE caller remains: `complete_bill`, the human/API path. LS-01d
+        removed the other. `update_by_public_id` used to reach this under
+        `is_draft is False`, which only the QBO pull produced; the pull no
+        longer sends `is_draft` at all, so that branch became unreachable and
+        was deleted rather than left standing as a guard that cannot fire.
 
         No-ops when vendor or bill number is absent — a draft is allowed to be
         incomplete, and `UQ_Bill_VendorId_BillNumber_BillDate` is filtered to

@@ -267,7 +267,11 @@ BILL = FieldOwnership(
         "status_origin",
         "status_source_ref",
         "is_draft",            # DERIVED from status; unwritable since U-446
-        "review_status_id",    # local review workflow
+        # `review_status_id` was listed here and DOES NOT EXIST on dbo.Bill
+        # (verified: the only ReviewStatus* columns in the database are on
+        # dbo.Review and dbo.ReviewEntry). A phantom in an ownership
+        # registry is worse than an omission — it reads as a considered
+        # decision about a field nobody can write. Removed in LS-01d.
         # Attachment links are app-side only; QBO attachments are a separate sync.
     ],
     both_editable=[
@@ -290,7 +294,7 @@ INVOICE = FieldOwnership(
         "line_items",          # managed via InvoiceLineItem connector
     ],
     app_owned=[
-        "is_draft",
+        "is_draft",            # app-owned; written by the pull on CREATE ONLY (LS-01d)
         # Invoice workflow state is entirely app-driven; QBO doesn't track
         # the invoice review/approval pipeline.
     ],
@@ -325,8 +329,8 @@ PURCHASE = FieldOwnership(
         "is_billed",
     ],
     app_owned=[
-        "is_draft",
-        "review_status_id",
+        "is_draft",            # app-owned; written by the pull on CREATE ONLY (LS-01d)
+        # `review_status_id` removed in LS-01d — phantom, see the Bill block.
     ],
     both_editable=[
         # DocNumber in QBO (reference_number locally); human-editable. Pull resolves
@@ -357,7 +361,7 @@ VENDOR = FieldOwnership(
         "abbreviation",
         "vendor_type_id",
         "taxpayer_id",
-        "is_draft",
+        "is_draft",            # app-owned; written by the pull on CREATE ONLY (LS-01d)
         "is_deleted",
         "is_contract_labor",
         "notes",
@@ -399,7 +403,7 @@ VENDOR_CREDIT = FieldOwnership(
         "line_items",
     ],
     app_owned=[
-        "is_draft",
+        "is_draft",            # app-owned; written by the pull on CREATE ONLY (LS-01d)
     ],
     both_editable=[
         # DocNumber in QBO; human-editable locally. Pull resolves the conflict via

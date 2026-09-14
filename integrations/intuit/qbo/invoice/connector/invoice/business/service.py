@@ -196,7 +196,6 @@ class InvoiceInvoiceConnector:
                 invoice_number=effective_invoice_number,
                 total_amount=Decimal(str(total_amount)) if total_amount is not None else None,
                 memo=memo,
-                is_draft=False,
             )
             if updated is None:
                 logger.error(

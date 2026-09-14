@@ -231,7 +231,6 @@ class InvoiceLineItemConnector:
                 amount=Decimal(str(amount)) if amount is not None else None,
                 markup=Decimal(str(markup)) if markup is not None else None,
                 price=Decimal(str(price)) if price is not None else None,
-                is_draft=False,
             )
             if updated is None:
                 # ROWVERSION race: a concurrent writer touched this exact

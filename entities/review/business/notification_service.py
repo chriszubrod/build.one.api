@@ -259,30 +259,108 @@ class ReviewNotificationService:
             (attachment_payload or {}).get("name") or "(none)",
         )
 
-        # 7. Advance the Review state to "In Review" once the
-        # notification has been enqueued to at least one PM/Owner (TO or
-        # CC populated — BCC-only doesn't count). Best-effort; on failure
-        # the bill stays at "Submitted" and no other side effects fire.
+        # 7. Advance the Review state once the notification has been enqueued
+        # to at least one PM/Owner (TO or CC populated — BCC-only doesn't
+        # count). Best-effort; on failure the bill stays at "Submitted" and no
+        # other side effects fire.
         if not (to_with_email or cc_with_email):
             return
+        self._advance_to_in_review(bill=bill, review=review)
+
+    def _advance_to_in_review(self, *, bill, review) -> None:
+        """Write the system's own "moved into review" Review row.
+
+        Extracted from `_do_enqueue`'s step 7 in LS-01c′. It was the tail of a
+        250-line method that first has to resolve recipients, build an HTML
+        body, base64 a PDF and enqueue an outbox row — so the status-resolution
+        and attribution rules below had no reachable test seam at all, which is
+        why both of the bugs they fix survived this long.
+
+        Never raises: a failure here leaves the bill at "Submitted" with the
+        notification already sent, which is recoverable by a human. Raising
+        would not un-send the email.
+        """
         try:
+            from shared.authz import SYSTEM_ACTOR_USER_ID
             from entities.review.business.service import ReviewService
             from entities.review_status.business.service import ReviewStatusService
-            statuses = ReviewStatusService().read_all()
-            in_review = next(
-                (s for s in statuses if s.sort_order > 10 and not s.is_final and not s.is_declined),
-                None,
+
+            status_service = ReviewStatusService()
+            statuses = status_service.read_all()
+
+            # Where the review actually IS, not where a literal assumed it was.
+            # The old code hardcoded `sort_order > 10` — correct only while
+            # "Submitted" happens to sit at 10.
+            current = next(
+                (s for s in statuses if s.id == review.review_status_id), None
+            )
+            if current is None:
+                logger.info(
+                    "review_notification.current_status_unresolved bill_public_id=%s "
+                    "review_status_id=%s",
+                    bill.public_id, review.review_status_id,
+                )
+                return
+
+            # `get_next_intermediate_status`: the next ACTIVE, NON-DECLINED,
+            # NON-FINAL status after where this review actually is, resolved
+            # deterministically by (sort_order, id).
+            #
+            # Three things the replaced list-comprehension got wrong: it keyed
+            # off the literal 10, it never filtered `is_active` (a retired
+            # status was selectable), and it broke ties arbitrarily —
+            # `ReadReviewStatuses` orders by SortOrder but carries no `Id`
+            # tie-breaker, so `next(...)` over two candidates sharing a
+            # SortOrder picked whichever the engine returned first.
+            #
+            # And one thing the OBVIOUS fix would have gotten wrong (Codex P1):
+            # `get_next_status` cannot express "non-final", so pairing it with
+            # a refuse-if-final check STRANDS the review at "Submitted" — after
+            # its reviewers were already emailed — whenever a final status ties
+            # on sort_order with a valid non-final one. `dbo.ReviewStatus` has
+            # no unique index on SortOrder and `_assert_shape` does not require
+            # one. Asking for the right thing beats asking for the near thing
+            # and vetoing bad answers.
+            # `statuses` is the snapshot already read above: one read, one
+            # snapshot. Letting the selector re-read would put `current` and
+            # its candidate on two different snapshots (Codex P2).
+            in_review = status_service.get_next_intermediate_status(
+                current.sort_order, statuses=statuses
             )
             if in_review is None:
                 logger.info(
                     "review_notification.in_review_status_missing bill_public_id=%s "
-                    "no non-final non-declined sort>10 ReviewStatus configured",
-                    bill.public_id,
+                    "no active non-declined non-final ReviewStatus after "
+                    "sort_order=%s",
+                    bill.public_id, current.sort_order,
                 )
                 return
+
             ReviewService().create(
                 review_status_id=in_review.id,
+                # ⛔ `user_id` STAYS THE SUBMITTER. Do not "fix" this to the
+                # system actor — and note the U-357 design says to, which is
+                # wrong as written (LS-01c′, Codex P1).
+                #
+                # `dbo.Review.UserId` on the LATEST row is load-bearing as "who
+                # submitted this": `dbo.inbox_tasks.sql`'s Pending CTE is
+                # `LatestReview WHERE rn = 1`, aliases `P.[UserId] AS
+                # [SubmitterId]`, filters the `mine_submitted` scope on
+                # `P.[UserId] = @CurrentUserId` (:126) and counts
+                # `[MineSubmitted]` the same way (:336). Writing the system
+                # actor here drops the submitter's own bill out of their sent
+                # box and relabels it "Claude Agent" — a worse, user-visible
+                # regression than the misattribution being fixed. Re-pointing
+                # UserId requires teaching the inbox to read the submitter off
+                # the INITIAL row, a SQL change to a sproc LS-01b owns; the two
+                # must ship as ONE unit.
                 user_id=review.user_id,
+                # `created_by_user_id` IS safe to correct here — it is the
+                # audit subject and no workflow reads it. This path runs with
+                # no authz subject, so without it the sproc's
+                # COALESCE(@CreatedByUserId, 17) credits Christopher for work
+                # the pipeline did.
+                created_by_user_id=SYSTEM_ACTOR_USER_ID,
                 comments=None,
                 bill_id=bill.id,
                 # The BCC archive (sent back into invoice@) lands via

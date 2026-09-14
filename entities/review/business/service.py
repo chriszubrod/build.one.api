@@ -74,7 +74,22 @@ class ReviewService:
         invoice_id: Optional[int] = None,
         contract_labor_id: Optional[int] = None,
         email_message_id: Optional[int] = None,
+        created_by_user_id: Optional[int] = None,
     ) -> Review:
+        """Write one Review row.
+
+        `user_id` is the ACTOR the row is attributed to — whose decision or
+        submission this represents. `created_by_user_id` is the audit subject
+        (`dbo.Review.CreatedByUserId`) and defaults to the request's
+        `current_user_id`, which is right for every human-originated call.
+
+        Pass `created_by_user_id` explicitly only when the caller KNOWS the
+        ContextVar is wrong: a pipeline writing a row on its own initiative
+        runs under `system_authz()`, which leaves the subject None, and the
+        sproc's `COALESCE(@CreatedByUserId, 17)` then credits Christopher for
+        machine work. `SYSTEM_ACTOR_USER_ID` is the honest value there
+        (LS-01c′).
+        """
         review = self.repo.create(
             review_status_id=review_status_id,
             user_id=user_id,
@@ -85,7 +100,11 @@ class ReviewService:
             invoice_id=invoice_id,
             contract_labor_id=contract_labor_id,
             email_message_id=email_message_id,
-            created_by_user_id=current_user_id.get(),
+            created_by_user_id=(
+                created_by_user_id
+                if created_by_user_id is not None
+                else current_user_id.get()
+            ),
         )
 
         # Auto-mirror: when a ContractLabor review hits an approved final

@@ -6,6 +6,7 @@ auth middleware but no enforcement reads them yet. Phase 2 wires the
 permission resolver and Phase 3 wires row-scope filtering on top.
 """
 from shared.authz.context import (
+    SYSTEM_ACTOR_USER_ID,
     current_user_id,
     current_company_id,
     current_is_system_admin,
@@ -23,6 +24,7 @@ from shared.authz.row_scope import (
 )
 
 __all__ = [
+    "SYSTEM_ACTOR_USER_ID",
     "current_user_id",
     "current_company_id",
     "current_is_system_admin",

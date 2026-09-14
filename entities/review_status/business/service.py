@@ -190,8 +190,62 @@ class ReviewStatusService:
     def get_next_status(self, current_sort_order: int) -> Optional[ReviewStatus]:
         """
         Get the next active, non-declined review status after the given sort order.
+
+        May return a FINAL status — that is correct for the manual `/advance`
+        path, which legitimately moves a review into "Approved". A caller that
+        must not land on a terminal state wants
+        `get_next_intermediate_status` instead.
         """
         return self.repo.read_next(current_sort_order)
+
+    def get_next_intermediate_status(
+        self, current_sort_order: int, *, statuses: Optional[list] = None
+    ) -> Optional[ReviewStatus]:
+        """The next ACTIVE, NON-DECLINED, NON-FINAL status after `current_sort_order`.
+
+        "Intermediate" is the design's own word for a status that is neither
+        the first, the final, nor the declined one — the states an automated
+        pipeline may move a review INTO on its own authority. Nothing may
+        auto-advance into a terminal state: completion fans AP out to
+        QBO/SharePoint/Excel/Box and is a human decision.
+
+        Why this is not `get_next_status` plus a final-check at the call site
+        (LS-01c′, Codex P1): `ReadNextReviewStatus` is `TOP 1 ... WHERE
+        SortOrder > @Current AND IsDeclined = 0 AND IsActive = 1 ORDER BY
+        SortOrder` — it cannot express "non-final", and its ORDER BY has no
+        tie-breaker. `dbo.ReviewStatus` has no unique index on SortOrder and
+        `_assert_shape` does not require one, so an active non-final "In
+        Review" and an active final "Approved" may both sit at 20. The sproc
+        then returns either one, and a caller that merely REFUSES a final
+        answer strands the review at "Submitted" — after its reviewers were
+        already emailed — instead of using the perfectly valid non-final
+        candidate sitting at the same sort order.
+
+        Resolved in Python over the full status list with an explicit
+        `(sort_order, id)` sort so the answer is deterministic even on a tie.
+        `ReadReviewStatuses` does order by `SortOrder`, but it has no `Id`
+        tie-breaker, so on a tie the row it returns first is engine-dependent.
+
+        `statuses` lets a caller that has ALREADY read the list pass its own
+        snapshot (Codex P2). Without it this method issues a second
+        `read_all()` — a separate connection and a separate snapshot — so a
+        concurrent status edit between the two reads could have the candidate
+        resolved against a stale `current_sort_order`. It is also simply a
+        wasted round trip. There is no cache behind `read_all`; the repo opens
+        a connection and fetches every row on each call.
+        """
+        rows = self.repo.read_all() if statuses is None else statuses
+        candidates = [
+            s
+            for s in rows
+            if s.sort_order > current_sort_order
+            and s.is_active
+            and not s.is_declined
+            and not s.is_final
+        ]
+        if not candidates:
+            return None
+        return sorted(candidates, key=lambda s: (s.sort_order, s.id))[0]
 
     def get_first_status(self) -> Optional[ReviewStatus]:
         """

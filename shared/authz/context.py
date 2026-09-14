@@ -61,6 +61,23 @@ current_is_system_context: ContextVar[bool] = ContextVar(
 )
 
 
+# The User row that owns work the SYSTEM performs on a human's behalf — a
+# scheduler tick, an outbox worker, a pipeline auto-advance. User 33 is
+# "Claude Agent" (IsAgent=1, IsSystemAdmin=1); it exists precisely so that
+# machine-originated rows are attributable to something other than a person.
+#
+# This is deliberately NOT what `system_authz()` sets `current_user_id` to.
+# That contextmanager leaves the subject None, so `CreatedByUserId` falls to
+# the sprocs' `COALESCE(@CreatedByUserId, 17)` default and machine work is
+# recorded as Christopher — 73 Review rows in prod carry exactly that
+# misattribution today (61 Submitted + 12 In Review whose real actor was the
+# Bill Agent, User 27). Changing `system_authz()` would move CreatedByUserId
+# on every worker write across ~30 entities at once; that is a foundational
+# change needing its own design gate. Call sites that know they are writing a
+# system-authored row pass this constant explicitly instead.
+SYSTEM_ACTOR_USER_ID = 33
+
+
 def set_authz_context(
     *,
     user_id: Optional[int],

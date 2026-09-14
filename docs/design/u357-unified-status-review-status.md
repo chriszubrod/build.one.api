@@ -497,6 +497,54 @@ have a safe decoder; `/docs` has the page.
 > better failure, and bolting a guard named `_on_complete` onto a path that no longer completes
 > anything is the wrong altitude for the fix.
 
+> **LS-01c′ — BUILT 2026-09-14 (attribution + status-selection half only). ⚠ THIS DESIGN IS WRONG ON ONE POINT.**
+>
+> §Vocabulary's `in_review` row and the LS-01c dispatch row both instruct that the Bill auto-advance
+> Review row be **"re-attributed to the system user (User 33)"**. **Do not do this on its own.**
+> `dbo.Review.UserId` on the LATEST row is load-bearing as *who submitted this*:
+> `dbo.inbox_tasks.sql`'s `Pending` CTE is `LatestReview WHERE rn = 1`, and it aliases
+> `P.[UserId] AS [SubmitterId]`, filters the `mine_submitted` scope on
+> `P.[UserId] = @CurrentUserId` (:126), and computes `[MineSubmitted]` the same way (:336).
+> Writing User 33 there makes a submitter's own bill **vanish from their sent box** and renders
+> "Claude Agent" as the submitter — a worse, user-visible regression than the audit misattribution
+> the change was meant to fix. Found by Codex review before it shipped.
+>
+> **BOOKED as one unit (not yet built):** re-point `Review.UserId` on system-authored rows to the
+> system actor **together with** the `dbo.inbox_tasks.sql` change that reads the submitter off the
+> **initial** row instead of the latest. Neither half is shippable alone. The inbox sproc belongs to
+> LS-01b, so this is that unit's natural home.
+>
+> **What LS-01c′ DID ship:**
+> - `SYSTEM_ACTOR_USER_ID = 33` in `shared/authz/context.py` — a named constant, deliberately NOT
+>   applied by changing `system_authz()` (which leaves `current_user_id` None). Doing that would move
+>   `CreatedByUserId` on every worker write across ~30 entities at once: a foundational change owing
+>   its own design gate.
+> - `ReviewService.create` gains an optional `created_by_user_id` that overrides the ContextVar
+>   (`is not None`, never truthiness).
+> - **Both** Review-writing call sites now name their audit subject: the Bill auto-submit passes the
+>   submitter (`user_id`), the notification auto-advance passes the system actor. Measured in prod at
+>   build time: **73 rows** carried the `COALESCE(@CreatedByUserId, 17)` fallback — 61 Submitted + 12
+>   In Review whose real actor was the Bill Agent (User 27), all credited to Christopher. The 61 were
+>   the auto-submit site, which the first cut of this unit missed entirely (Codex P1).
+> - The auto-advance was **extracted** out of the 250-line `_do_enqueue` into
+>   `_advance_to_in_review` — it previously had no reachable test seam at all, which is why both of
+>   its bugs survived this long.
+> - Status selection moved off the `sort_order > 10` literal onto a **new** primitive
+>   `ReviewStatusService.get_next_intermediate_status` (next ACTIVE, NON-DECLINED, **NON-FINAL**,
+>   deterministic by `(sort_order, id)`). The design said to use `get_next_status`; that is the
+>   *near* fix and is unsafe here. `ReadNextReviewStatus` is
+>   `TOP 1 … WHERE SortOrder > @Current AND IsDeclined = 0 AND IsActive = 1 ORDER BY SortOrder` — it
+>   cannot express "non-final" and its ORDER BY has no `Id` tie-breaker, and `dbo.ReviewStatus` has
+>   **no unique index on SortOrder** (nothing enforces one). So an active non-final "In Review" and
+>   an active final "Approved" may both sit at 20: a call site that merely *vetoes* a final answer
+>   strands the review at "Submitted" after its reviewers were already emailed. `get_next_status` is
+>   left untouched — the manual `/advance` path moves a review into a final state on purpose. The
+>   selector takes the caller's already-read status list so `current` and its candidate resolve
+>   against ONE snapshot (`read_all` is uncached — a second call is a second connection).
+>
+> **NOT in LS-01c′** (folds into LS-02a, as scoped): routing Bill + CL `apply_reviewer_decision`
+> through `ReviewService.create`, and the `Outcome='noop'` duplicate-reply contract.
+
 **Deploy order:** LS-01a SQL (`/em`) → API → MCP → web (ask-first; cosmetic until then) ; LS-01b SQL → API ;
 LS-01c API ; LS-01d API (verify one scheduler pull cycle, one reconcile). Units are independent of each other.
 **State after Phase 1:** every in-scope entity speaks canonical `status`/`review_status_kind` on the wire; the

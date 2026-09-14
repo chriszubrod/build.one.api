@@ -525,6 +525,16 @@ class BillService:
                     ReviewService().create(
                         review_status_id=first_status.id,
                         user_id=user_id,
+                        # The submitter is also the audit subject (LS-01c′,
+                        # Codex P1). Without this the ContextVar is consulted,
+                        # and on the agent path it is None — so the sproc's
+                        # COALESCE(@CreatedByUserId, 17) credits Christopher
+                        # for a bill the Bill Agent (User 27) submitted. 61 of
+                        # the 73 misattributed Review rows measured in prod are
+                        # this exact call. On the human web path `user_id` and
+                        # the ContextVar are the same value, so nothing there
+                        # changes.
+                        created_by_user_id=user_id,
                         comments=None,
                         bill_id=bill.id,
                         # Wave 3 Phase E: link the Submitted row back to

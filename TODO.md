@@ -463,6 +463,36 @@ Recommended first unit: the `complete_bill` pair below, on its own, ahead of eve
   bill triggers 9 full-table scans of an unbounded table. Fix `_conn_ctx`/`_bit` duplication in the same pass
   (`shared/database.py:129` names this file by path as the copy to retire).
 
+## Manually-created Bills: SubCostCode + Qty/Rate traps (2026-09-14)
+
+Found creating two day-rate adjustment bills by hand (Elmer $130.00, Ricardo $195.00, BillNumber `2026.08.31`,
+non-project overhead coded 65.02) so A/P would match the remittance amounts actually paid. Both are now live
+and PAID in QBO (76481/76482, each linked to a BillPaymentCheck), so neither can be retrofitted — the notes
+below are for the NEXT hand-built bill.
+
+- [ ] **P1 — the "every line needs a SubCostCode" rule is enforced only at QBO PUSH time, by which point
+  completion has LOCKED the line items — so a bill created without one can never be repaired, only deleted
+  and rebuilt.** Sequence that produced it: create bill (draft) -> add line with `sub_cost_code_id=None`
+  -> `POST /complete/bill/{public_id}` (202, finalizes fine) -> the `sync_bill_to_qbo` outbox row
+  **dead-letters** with `Unexpected ValueError: BillLineItem 25023 has no sub_cost_code_id. All line items
+  require a SubCostCode for QBO sync.` Attempting to fix it then returns
+  `422 {"detail":"This document is completed and can no longer be edited: its line items cannot be changed",
+  "error_code":"status_locked"}`. Net: a finalized bill that is permanently un-pushable; the only recovery is
+  DELETE + rebuild (safe only while unpaid — see the P3 note). **Fix:** validate the SubCostCode requirement
+  in `BillService.complete_bill` (or at line-item create) so it fails while the bill is still editable,
+  instead of surfacing as an async dead-letter after the edit window has closed. **Trap for anyone copying an
+  existing bill as a template:** the natural precedents here (bills 20391/20392, the PTO bills) carry
+  `SubCostCodeId = NULL` and ARE in QBO — but they were **pulled FROM QBO, not pushed**, so they never faced
+  this validation. Do not infer "no SCC is fine" from a pulled bill.
+- [ ] **P3 — hand-built bill lines must carry `Quantity` and `Rate`, not just `Amount`.** Chris's standing
+  convention (confirmed 2026-09-14) is the one `generate_bills_for_vendor` already emits: **`Quantity = 1`,
+  `Rate` = the line total, `Amount` = the same total** (e.g. BLI 24993 = qty `1.0000` x rate `125.0000` =
+  amount `125.00`). The two adjustment bills above were created with `Quantity`/`Rate` NULL (copying the
+  pulled PTO precedent, which has both NULL) and shipped that way; they are paid, so they stay as-is.
+  Populate both fields on any future manually-created line. Note the semantic alternative (Elmer's $130.00 as
+  `4 x $32.50`, Ricardo's $195.00 as `6 x $32.50` — both land exactly on the amount) was considered and
+  **rejected** in favour of matching the app's own output.
+
 ## QBO Bill write-path gaps — found re-rating a pushed bill (2026-09-09)
 
 Both surfaced changing Brayan Salina's day rate ($240 -> $250, i.e. `Vendor.HourlyRate` $30.00 -> $31.25)
@@ -3013,6 +3043,14 @@ Board: [U-370](../build.one.team/BOARD.md) (Ready). Review of the Address stack 
 - [ ] **One-time sweep: SP↔Box draw-total divergence across existing draws (KI-46 latent class).** Any draw whose bill rows were written to Box while Price was NULL (pre KI-16 fix, 2026-07-03) may carry the same frozen-$0 divergence OHR2-36 hit. Sweep every `[box].[ProjectWorkbook]`-mapped project: per draw tag in col H, compare Box SUM(N) vs SharePoint SUM(N); report divergent (project, draw, col-Z) rows for surgical fill. Declined during the OHR2-36 session — still outstanding. (The durable periodic version is the KI-39 auto-reconcile item above.)
 - [ ] **Self-healing `apply_rows_to_details` for blank-cost-code rows (KI-36).** When an incoming row's col-Z key already exists but the EXISTING row's col B/C is blank and the incoming row now carries a code, update B/C in place instead of skipping — the current skip freezes uncoded rows forever (WVA-18 root cause; SHT-22 $4,030 live AIA under-report). Companion: a periodic sweep (reconcile job or drain-time pass) that re-codes any blank-B DETAILS row whose col-Z public_id resolves to a now-coded dbo line, and flags stale-Z rows whose public_id no longer resolves (QBO re-pull leftovers) for manual clearing. Fill-in-place only — never insert_rows; never touch G702/G703 (fullCalcOnLoad recalcs them from DETAILS).
 - [ ] **Gate Box Excel enqueue on SubCostCodeId.** `_enqueue_box_excel` (Bill/Expense/BillCredit) enqueues rows for uncoded lines that then land blank-B and freeze (KI-36). Either skip uncoded lines with a distinct log (they enqueue on a later re-sync once coded — requires the self-heal above so the re-sync isn't skipped), or hold the row until the line is coded. Decide jointly with the self-heal.
+
+- [ ] **P1 — `sync_bill_credits_batch_to_excel` writes column N POSITIVE; the single-credit path negates. The two disagree today, in prod.** Found 2026-09-11 by the `/simplify` reuse pass over the Expense credit-sign fix, then confirmed against the code and the data. `entities/bill_credit/business/complete_service.py:770` (`sync_to_excel_workbook`, the BillCredit's own completion) writes `-float(line_item.amount)`; **`:994` (`sync_bill_credits_batch_to_excel`) writes `float(li.amount)` — unnegated**. That batch path is the one the **QBO vendor-credit pull** calls (`scripts/sync_qbo_vendorcredit.py:357`), so every pulled VendorCredit lands in DETAILS as a POSITIVE row and **adds** to whatever draw later tags it, instead of reducing it. This is KI-26's HA-04 overstatement ($411.36 across 2 credits) reopened in the sibling path. Exposure to size before fixing: **429 QBO-pulled BillCredit lines carrying a ProjectId, $1,796,562.74 gross**, across ≥12 projects (HE12 28 lines/$127.6K, OHR2 19/$130.9K, TB3 18/$59.3K, HE7 16/$228.5K, SHT 15/$22.5K, 250 lines on projects with no Abbreviation). Not every one reached a workbook or a draw — **audit which are H-tagged before concluding anything about a signed draw.** Fix is the same seam: `details_ledger_amount(li.price, li.amount, is_credit=True)` at both sites. Pair with the freeze-heal item below, since already-written rows will not self-correct.
+
+- [ ] **Route the two remaining BillCredit column-N sites through `details_ledger_amount` (U-344 double-negate landmine).** Booked 2026-09-11 alongside the Expense credit-sign fix (which added the shared seam in `shared/api/money.py` and wired the three Expense sites plus the Box bill branch). `integrations/box/excel/business/row_builder.py:229` and `entities/bill_credit/business/complete_service.py:770` write `-float(line_item.amount)` — an **unconditional** negate. U-344 is moving `BillCreditLineItem.Amount`/`Price` to signed-negative at the write site; `entities/invoice/business/cover.py::_signed_line_amount` already carries the matching `if v > 0` guard and an explicit "do NOT simplify to an unconditional negate" note for exactly this reason. The moment a relabeled or newly written credit line arrives at `-411.36`, both sites yield `+411.36`. The swap is **behavior-identical today** (rows are stored positive) and immune afterwards. Held out of the Expense unit to keep that diff inside one entity; do it before U-344's write-site change lands, not after. Fold into the P1 above — same two files, same seam.
+
+- [ ] **Unify the nine DETAILS column-N builders behind one row builder.** All four `/simplify` angles converged on this independently (2026-09-11). The nine sites: MS `entities/bill/business/service.py:2187` + `:2397`, `entities/expense/business/service.py` ×2, `entities/bill_credit/business/complete_service.py:770` + `:994`; Box `row_builder.py` ×3. `build_details_rows`' own docstring admits it is a clone of the MS builders ("mirroring each entity's existing sync_to_excel_workbook row build"), and the spread has already produced three live divergences: bill's Price→Amount fallback hand-rolled twice in two different syntaxes, the Expense credit-sign bug fixed here, and the BillCredit sign disagreement above. Every future DETAILS column rule must otherwise be re-landed in up to nine places, and each miss is invisible to an outbox `done` status (KI-46). **Preferred shape:** promote `build_details_rows` to a transport-neutral shared row builder returning `Decimal` rows; have MS's `sync_to_excel_workbook` and its batch siblings consume it and coerce to `float` once at the Graph boundary (`values=group_rows`) rather than per cell — the float/Decimal split (KI-26) is a serialization concern at the edge, not a reason for two builders.
+
+- [ ] **Heal already-frozen credit rows in DETAILS (both workbooks).** The credit-sign fix is write-time only: `ExpenseService.sync_to_excel_workbook` skips line items whose col-Z key is already in the sheet and `apply_rows_to_details` skips-present, so every credit row written positive **before** the fix stays positive forever while the invoice path stamps only column H (KI-46's freeze, applied to sign rather than value). Found on MR2-MAIN-10: ELI 12696 (sauna refund) sits at `N=+5690` in SharePoint row 1116 and Box row 1119. Needs (a) a one-time sweep — for every DETAILS row whose col-Z resolves to an `Expense.IsCredit` line (or a BillCredit line) with a positive col N, correct it in place (`stamp_columns_by_key` on Box, range PATCH on SharePoint; never `insert_rows`, never touch G702/G703), and (b) a decision on whether `apply_rows_to_details` should update-in-place on a col-Z match rather than skip, which is the same self-heal already booked above for blank cost codes. Pairs with the KI-46 systemic Box-vs-SP draw-total sweep, still not run.
 
 - [ ] **U-448 — `BoxLockedError` burns the entire retry budget in minutes (KI-29).** Booked 2026-09-11 from a
   read-only forensic sweep of the 132 `[box].[Outbox]` `dead_letter` rows. **60 of the 66 `update_box_excel`

@@ -338,9 +338,18 @@ def test_creating_a_review_MIRRORS_the_new_state_onto_the_bill():
     assert "UPDATE b" in body and "dbo.[Bill] b" in body, "CreateReview must mirror into Bill"
     assert "IF @BillId IS NOT NULL" in body
 
-    # precedence identical to review_kind_from_flags
-    order = [body.index(f"rs.[{f}] = 1") for f in ("IsDeclined", "IsFinal", "IsInitial")]
-    assert order == sorted(order)
+    # SUPERSEDED BY U-455: the mirror no longer carries its own precedence
+    # CASE. It assigns the [ReviewKind] the sproc has already stamped, so the
+    # Review row and the Bill Status cannot disagree — two reads of
+    # dbo.ReviewStatus were two RCSI snapshots, and a role transfer between
+    # them could have stamped `submitted` while setting the Bill `in_review`.
+    # The precedence now exists once, in the stamping SELECT, and
+    # tests/test_u455_review_kind_frozen.py owns asserting it.
+    executable = "\n".join(l.split("--")[0] for l in body.splitlines())
+    mirror = executable[executable.index("UPDATE b"):]
+    assert "SET b.[Status] = @ReviewKind" in mirror
+    for flag in ("IsDeclined", "IsFinal", "IsInitial"):
+        assert flag not in mirror, f"the mirror must not re-read {flag}"
 
     assert "b.[IsDraft] = 1" in body, (
         "the IsDraft=1 guard is mandatory, not cosmetic: reviews legitimately "

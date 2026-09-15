@@ -101,6 +101,217 @@ END
 GO
 
 -- =========================================================================
+-- U-455: [ReviewKind] -- the review's kind, FROZEN at insert
+-- =========================================================================
+--
+-- The kind was derived at READ time from the ReviewStatus flags
+-- (`shared/lifecycle/resolver.py::review_kind_from_flags`), which makes stored
+-- history a function of current configuration. `UpdateReviewStatus` clears
+-- [IsInitial] from every other status when the initial role is transferred
+-- (`dbo.review_status.sql`: `UPDATE ... SET [IsInitial] = 0 WHERE [IsInitial] = 1
+-- AND [Id] <> @Id`), so moving that flag silently relabels all 764 stored
+-- `submitted` rows as `in_review` on the wire, and orphans every historical
+-- submission from the inbox's submitter resolution (U-453's residual).
+--
+-- U-444 fixed the same class once already, moving the boundary from POSITION
+-- (SortOrder) to a FLAG. That removed one failure mode and left the other: a
+-- flag is still current config, and history must not be.
+--
+-- ⏳ THE BACKFILL BELOW IS ONLY CORRECT WHILE THE FLAGS ARE UNMOVED. It derives
+-- each row's kind from the status's CURRENT flags, which is exactly what the
+-- read path does today -- so it reproduces today's answers precisely. Once an
+-- admin moves a flag the true history is unrecoverable, which is why this
+-- column is being added now rather than when it is next convenient.
+--
+-- Precedence is IsDeclined -> IsFinal -> IsInitial -> in_review, matching
+-- `review_kind_from_flags` exactly. Kept in lockstep by
+-- tests/test_u455_review_kind_frozen.py, which proves the SQL and the Python
+-- agree across all 16 flag combinations.
+
+-- ⚠ APPLY THIS AT A QUIET MOMENT. Holding TABLOCKX on dbo.ReviewStatus while
+--    `ALTER TABLE dbo.Review` runs can DEADLOCK against a concurrent review
+--    creation: that insert holds dbo.Review's lock and then waits on FK
+--    validation against dbo.ReviewStatus, while this migration holds
+--    ReviewStatus and waits for Review. (`UpdateReviewStatusById` orders
+--    ReviewStatus -> Review, so a role transfer is NOT the reverse-order case;
+--    a plain `CreateReview` is.)
+--
+--    Not a correctness problem: the whole file runs in one transaction, so if
+--    this side is chosen as the deadlock victim EVERYTHING unwinds -- column,
+--    backfills, constraint -- and it can simply be re-run. The window is ~5s.
+--
+-- 0. FENCE dbo.ReviewStatus for the WHOLE migration, before the column exists.
+--
+--    Taking the lock at the first backfill was not early enough (Codex): the
+--    window opens the moment the column is added, and a role transfer
+--    committing between the ADD and the backfill's snapshot stamps every
+--    pre-existing row from the NEW flags -- permanently, with no NULL left for
+--    the re-sweep or the RAISERROR to catch.
+--
+--    And the dependency on the runner is now CHECKED rather than assumed. An
+--    earlier version of this file claimed taking the lock in both backfill
+--    blocks made it "runner-independent". That was WRONG: HOLDLOCK lasts only
+--    for the enclosing transaction, so under an autocommitting runner the
+--    locking SELECT and the UPDATE that follows it are separate transactions
+--    and the fence is released between them. It works because
+--    `scripts/run_sql.py` uses ONE connection with autocommit off
+--    (@@TRANCOUNT = 1 for the whole file, verified) -- so this asserts exactly
+--    that, and refuses to proceed otherwise rather than silently backfilling
+--    unfenced.
+IF OBJECT_ID('dbo.ReviewStatus', 'U') IS NOT NULL
+BEGIN
+    IF @@TRANCOUNT = 0
+        RAISERROR('U-455: dbo.review.sql must be applied inside a transaction (scripts/run_sql.py does this). Without one the ReviewStatus fence is released between statements and the backfill can stamp rows from flags that changed mid-migration.', 16, 1);
+
+    DECLARE @statuses_fenced INT;
+    SELECT @statuses_fenced = COUNT(*)
+    FROM dbo.[ReviewStatus] WITH (TABLOCKX, HOLDLOCK);
+END
+GO
+
+-- 1. add it NULLable (no DEFAULT: there is no safe default -- 'in_review' would
+--    silently mislabel every submission the backfill has not reached yet)
+IF OBJECT_ID('dbo.Review', 'U') IS NOT NULL
+   AND COL_LENGTH('dbo.Review', 'ReviewKind') IS NULL
+BEGIN
+    ALTER TABLE [dbo].[Review] ADD [ReviewKind] NVARCHAR(20) NULL;
+END
+GO
+
+-- 2. backfill from the status flags as they stand
+IF OBJECT_ID('dbo.Review', 'U') IS NOT NULL
+   AND COL_LENGTH('dbo.Review', 'ReviewKind') IS NOT NULL
+BEGIN
+    -- ⛔ LOCK dbo.ReviewStatus FIRST, and hold it (U-455, Codex P1).
+    --
+    -- The backfill derives each row's historical kind from the status's CURRENT
+    -- flags. `UpdateReviewStatusById` can transfer IsInitial / IsFinal /
+    -- IsDeclined at any moment, and if such a transfer commits between the
+    -- column-add and this UPDATE's snapshot, every pre-existing row is stamped
+    -- from the NEW flags -- permanently, and with NO NULL left behind for the
+    -- re-sweep or the RAISERROR to notice. The migration would report success
+    -- having written exactly the corruption it exists to prevent.
+    --
+    -- TABLOCKX + HOLDLOCK: an exclusive table lock held to the end of the
+    -- transaction, so a concurrent role transfer either committed BEFORE this
+    -- migration began (already-lost history, and not something a migration can
+    -- fix) or waits until it is done. dbo.ReviewStatus is four rows and the
+    -- backfill touches 1,700, so the block is momentary.
+    --
+    -- Re-asserted here as well as at step 0. Redundant under the real runner
+    -- (one transaction, so step 0's fence is still held) and deliberately kept:
+    -- it costs nothing on a 4-row table and makes each block legible on its own.
+    -- It does NOT make the file runner-independent -- HOLDLOCK lives only as
+    -- long as the enclosing transaction, which is why step 0 asserts
+    -- @@TRANCOUNT rather than hoping.
+    DECLARE @statuses_locked INT;
+    SELECT @statuses_locked = COUNT(*)
+    FROM dbo.[ReviewStatus] WITH (TABLOCKX, HOLDLOCK);
+
+    UPDATE r
+    SET r.[ReviewKind] =
+        CASE
+            WHEN rs.[IsDeclined] = 1 THEN N'declined'
+            WHEN rs.[IsFinal]    = 1 THEN N'approved'
+            WHEN rs.[IsInitial]  = 1 THEN N'submitted'
+            ELSE N'in_review'
+        END
+    FROM dbo.[Review] r
+    INNER JOIN dbo.[ReviewStatus] rs ON rs.[Id] = r.[ReviewStatusId]
+    WHERE r.[ReviewKind] IS NULL;
+END
+GO
+
+-- 3. re-backfill, then make it NOT NULL -- or FAIL LOUDLY.
+--
+--    The window this closes (Codex P1): the column is added NULLable here, but
+--    the writer that stamps it -- `CreateReview` -- is not replaced until much
+--    later in this same file. A review created in between is inserted by the
+--    OLD sproc and lands NULL. The first version of this step simply SKIPPED
+--    when it saw a NULL, so the deploy reported success and left rows that
+--    silently fall back to live-flag derivation; a later re-apply would then
+--    "backfill" them from whatever the flags say THEN, which is precisely the
+--    historical corruption this unit exists to prevent.
+--
+--    So: sweep again (catching anything inserted since step 2), and if a NULL
+--    still survives that, RAISERROR. A migration that cannot establish its
+--    invariant must fail, not shrug.
+--
+--    Failing is SAFE here, not half-destructive: `scripts/run_sql.py` runs every
+--    batch of this file on ONE connection and re-raises on the first error, and
+--    `shared/database.get_connection` rolls back on any exception. SQL Server's
+--    DDL is transactional, so the column-add, both backfills and the ALTER all
+--    unwind together -- the database is left exactly as it was, and the operator
+--    sees why.
+IF OBJECT_ID('dbo.Review', 'U') IS NOT NULL
+   AND EXISTS (SELECT 1 FROM sys.columns
+               WHERE object_id = OBJECT_ID('dbo.Review')
+                 AND name = 'ReviewKind' AND is_nullable = 1)
+BEGIN
+    -- ⛔ LOCK dbo.ReviewStatus FIRST, and hold it (U-455, Codex P1).
+    --
+    -- The backfill derives each row's historical kind from the status's CURRENT
+    -- flags. `UpdateReviewStatusById` can transfer IsInitial / IsFinal /
+    -- IsDeclined at any moment, and if such a transfer commits between the
+    -- column-add and this UPDATE's snapshot, every pre-existing row is stamped
+    -- from the NEW flags -- permanently, and with NO NULL left behind for the
+    -- re-sweep or the RAISERROR to notice. The migration would report success
+    -- having written exactly the corruption it exists to prevent.
+    --
+    -- TABLOCKX + HOLDLOCK: an exclusive table lock held to the end of the
+    -- transaction, so a concurrent role transfer either committed BEFORE this
+    -- migration began (already-lost history, and not something a migration can
+    -- fix) or waits until it is done. dbo.ReviewStatus is four rows and the
+    -- backfill touches 1,700, so the block is momentary.
+    --
+    -- Re-asserted here as well as at step 0. Redundant under the real runner
+    -- (one transaction, so step 0's fence is still held) and deliberately kept:
+    -- it costs nothing on a 4-row table and makes each block legible on its own.
+    -- It does NOT make the file runner-independent -- HOLDLOCK lives only as
+    -- long as the enclosing transaction, which is why step 0 asserts
+    -- @@TRANCOUNT rather than hoping.
+    DECLARE @statuses_locked_resweep INT;
+    SELECT @statuses_locked_resweep = COUNT(*)
+    FROM dbo.[ReviewStatus] WITH (TABLOCKX, HOLDLOCK);
+
+    UPDATE r
+    SET r.[ReviewKind] =
+        CASE
+            WHEN rs.[IsDeclined] = 1 THEN N'declined'
+            WHEN rs.[IsFinal]    = 1 THEN N'approved'
+            WHEN rs.[IsInitial]  = 1 THEN N'submitted'
+            ELSE N'in_review'
+        END
+    FROM dbo.[Review] r
+    INNER JOIN dbo.[ReviewStatus] rs ON rs.[Id] = r.[ReviewStatusId]
+    WHERE r.[ReviewKind] IS NULL;
+
+    IF EXISTS (SELECT 1 FROM dbo.[Review] WHERE [ReviewKind] IS NULL)
+        RAISERROR('U-455: [Review].[ReviewKind] still has NULL rows after two backfill passes; refusing to continue rather than leaving history derived from live config.', 16, 1);
+    ELSE
+        ALTER TABLE [dbo].[Review] ALTER COLUMN [ReviewKind] NVARCHAR(20) NOT NULL;
+END
+GO
+
+-- 4. and constrain it to the row-level vocabulary. `none` is deliberately
+--    absent: it is REVIEW_STATUS_KINDS' answer for a document with NO review
+--    row, which by construction cannot be a row in this table.
+IF OBJECT_ID('dbo.Review', 'U') IS NOT NULL
+   AND COL_LENGTH('dbo.Review', 'ReviewKind') IS NOT NULL
+   AND NOT EXISTS (SELECT 1 FROM sys.check_constraints WHERE name = 'CK_Review_ReviewKind')
+BEGIN
+    -- `IS NOT NULL` is not redundant with the column's NOT NULL: a CHECK
+    -- evaluates `NULL IN (...)` as UNKNOWN, which PASSES. Stating it means the
+    -- constraint alone rejects a NULL even if the column constraint were ever
+    -- relaxed.
+    ALTER TABLE [dbo].[Review] ADD CONSTRAINT [CK_Review_ReviewKind]
+        CHECK ([ReviewKind] IS NOT NULL
+               AND [ReviewKind] IN (N'submitted', N'in_review', N'approved', N'declined'));
+END
+GO
+
+
+-- =========================================================================
 -- Indexes (filtered, one per parent FK)
 -- =========================================================================
 
@@ -196,6 +407,14 @@ AS
         -- key on position (StatusSortOrder == the MIN active non-declined one),
         -- which meant two rows sharing a SortOrder both derived `submitted`,
         -- and a new lowest row retroactively relabelled every stored one.
+        r.[ReviewKind],
+        -- U-455: [ReviewKind] above is the FROZEN answer, stamped at insert.
+        -- The Status* flags below are the status's CURRENT configuration and
+        -- are kept for callers that legitimately want today's shape (the
+        -- inbox's non-final / non-declined Pending filter, the status admin
+        -- UI). Do NOT re-derive a row's kind from them -- that is the bug
+        -- U-455 fixed, and it reads identically until the day someone moves a
+        -- flag.
         rs.[IsInitial]  AS [StatusIsInitial],
         rs.[Color]      AS [StatusColor],
         u.[Firstname]   AS [UserFirstname],
@@ -284,19 +503,49 @@ BEGIN
         RETURN;
     END
 
+    -- U-455: freeze the kind at insert. Resolved HERE rather than in the
+    -- service so every caller mirrors -- the UI, the review-reply email agent,
+    -- the CL crew flow and scripted backfills alike -- exactly as the Bill
+    -- Status mirror below is.
+    --
+    -- Precedence matches shared/lifecycle/resolver.py::review_kind_from_flags
+    -- exactly: IsDeclined -> IsFinal -> IsInitial -> in_review.
+    DECLARE @ReviewKind NVARCHAR(20);
+
+    SELECT @ReviewKind =
+        CASE
+            WHEN rs.[IsDeclined] = 1 THEN N'declined'
+            WHEN rs.[IsFinal]    = 1 THEN N'approved'
+            WHEN rs.[IsInitial]  = 1 THEN N'submitted'
+            ELSE N'in_review'
+        END
+    FROM dbo.[ReviewStatus] rs
+    WHERE rs.[Id] = @ReviewStatusId;
+
+    IF @ReviewKind IS NULL
+    BEGIN
+        -- FK_Review_ReviewStatus would reject this anyway; failing here names
+        -- the cause instead of surfacing a constraint violation.
+        COMMIT TRANSACTION;
+        RAISERROR('CreateReview: ReviewStatusId %I64d does not exist.', 16, 1, @ReviewStatusId);
+        RETURN;
+    END
+
     INSERT INTO dbo.[Review] (
         [CreatedDatetime], [ModifiedDatetime],
         [ReviewStatusId], [UserId], [Comments],
         [BillId], [ExpenseId], [BillCreditId], [InvoiceId], [ContractLaborId],
         [EmailMessageId],
-        [CreatedByUserId]
+        [CreatedByUserId],
+        [ReviewKind]
     )
     VALUES (
         @Now, @Now,
         @ReviewStatusId, @UserId, @Comments,
         @BillId, @ExpenseId, @BillCreditId, @InvoiceId, @ContractLaborId,
         @EmailMessageId,
-        COALESCE(@CreatedByUserId, 17)
+        COALESCE(@CreatedByUserId, 17),
+        @ReviewKind
     );
 
     -- U-445: mirror the new review state onto the parent Bill's Status column.
@@ -319,22 +568,20 @@ BEGIN
     -- `completed` outranks any review state (U-443) — we do not reopen a
     -- document whose AP already reached QBO/SharePoint/Excel/Box.
     --
-    -- Precedence matches shared/lifecycle/resolver.py::review_kind_from_flags
-    -- exactly: IsDeclined -> IsFinal -> IsInitial -> in_review.
+    -- The mirror reuses @ReviewKind rather than re-reading the flags (U-455,
+    -- Codex P1). Two separate reads of dbo.ReviewStatus in one sproc are two
+    -- separate RCSI snapshots: a role transfer landing between them could stamp
+    -- the Review `submitted` while setting the Bill to `in_review`. One read,
+    -- one answer, and the two can no longer disagree -- which also makes the
+    -- precedence impossible to duplicate wrongly, since it now exists once.
     IF @BillId IS NOT NULL
     BEGIN
         UPDATE b
-        SET b.[Status] = CASE
-                WHEN rs.[IsDeclined] = 1 THEN 'declined'
-                WHEN rs.[IsFinal] = 1    THEN 'approved'
-                WHEN rs.[IsInitial] = 1  THEN 'submitted'
-                ELSE 'in_review'
-            END,
+        SET b.[Status] = @ReviewKind,
             b.[StatusDatetime] = @Now,
             b.[StatusOrigin] = 'user',
             b.[ModifiedDatetime] = @Now
         FROM dbo.[Bill] b
-        INNER JOIN dbo.[ReviewStatus] rs ON rs.[Id] = @ReviewStatusId
         WHERE b.[Id] = @BillId
           AND b.[IsDraft] = 1;
     END
@@ -532,6 +779,12 @@ BEGIN
         [ReviewStatusId], [UserId], [Comments],
         [BillId], [ExpenseId], [BillCreditId], [InvoiceId],
         [StatusName], [StatusSortOrder], [StatusIsFinal], [StatusIsDeclined], [StatusIsInitial], [StatusColor],
+        -- U-455. This is the ONLY vw_Review reader with an explicit column
+        -- list -- every other one is `SELECT *` and picks the column up for
+        -- free. Omitting it here made the Bill LIST re-derive the kind from
+        -- live flags while every single GET used the frozen value: the unit
+        -- silently inert on its busiest consumer. Codex P1.
+        [ReviewKind],
         [UserFirstname], [UserLastname]
     FROM ranked
     WHERE rn = 1;

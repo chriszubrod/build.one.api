@@ -105,7 +105,23 @@ def attach_lifecycle(
         payload["review_status_is_final"] = None
         payload["review_status_is_declined"] = None
     else:
-        kind = review_kind_from_flags(
+        # U-455: prefer the kind FROZEN on the row; derive only as a fallback.
+        #
+        # Deriving from the status's flags makes stored history a function of
+        # current configuration: `UpdateReviewStatus` clears [IsInitial] from
+        # every other status when the initial role moves, which silently
+        # relabelled all 764 stored `submitted` rows as `in_review` on the wire
+        # and orphaned every historical submission from the inbox's submitter
+        # resolution. U-444 fixed the POSITIONAL form of this once already; a
+        # flag is still current config, and history must not be.
+        #
+        # The fallback is not dead code: `attach_lifecycle` is pure logic and
+        # takes whatever object a caller hands it, so a partially-populated
+        # Review (or one read through a path that predates the column) still
+        # resolves rather than reporting None. Parity was proven over all 1,700
+        # live rows at cutover — stored and derived agreed exactly — so the
+        # fallback returns the same answer it always did.
+        kind = getattr(review, "review_kind", None) or review_kind_from_flags(
             is_declined=getattr(review, "status_is_declined", None),
             is_final=getattr(review, "status_is_final", None),
             is_initial=getattr(review, "status_is_initial", None),

@@ -547,7 +547,7 @@ have a safe decoder; `/docs` has the page.
 >    RAISING rather than guessing if it is absent (the caller is best-effort and logs the miss, which
 >    beats recording the wrong actor).
 >
-> 2. **⚠ BOOKED, NOT FIXED — "submitter" is derived from a MUTABLE flag.** The `Submitter` CTE selects
+> 2. **✅ FIXED BY U-455 (2026-09-15) — original finding kept for the record. "submitter" was derived from a MUTABLE flag.** The `Submitter` CTE selected
 >    on the CURRENT `IsInitial`, and `UpdateReviewStatus` explicitly clears that flag from every other
 >    status when the initial role is transferred
 >    (`dbo.review_status.sql`: `UPDATE … SET [IsInitial] = 0 WHERE [IsInitial] = 1 AND [Id] <> @Id`).
@@ -653,6 +653,50 @@ have a safe decoder; `/docs` has the page.
 >
 > Codex: three passes — "P1 + P2 + 3×P3" → "one P1 and one P2 remain" → **"P1 and P2 are closed;
 > I found no remaining path that can write a Review on a known completed parent."**
+
+> **U-455 — SHIPPED 2026-09-15. A review's KIND is frozen at insert.**
+>
+> Scoped up from the booked "submission marker" on purpose: a marker bit would have fixed the inbox
+> and left `review_status_kind` deriving from live flags on EVERY read. Same class, one column.
+> `dbo.Review.[ReviewKind] NVARCHAR(20) NOT NULL` + `CK_Review_ReviewKind`, stamped by
+> `CreateReview`, exposed by `vw_Review`, preferred by `attach_lifecycle` (falling back to the flag
+> derivation), and keyed on by both inbox `Submitter` CTEs.
+>
+> **Measured, transferring the initial role from "Submitted" to "In Review":** the shipped code
+> nulled the submitter on **8 of 42** inbox tasks — those bills have no row at the relocated flag's
+> status, so they stay in `all` and drop out of `mine_submitted` for everyone. The task COUNT is
+> unchanged either way, which is why a count-based check cannot see it. U-455: 0 changed, 0 nulled.
+>
+> **Four Codex passes; it rejected the unit three times and every objection was real:**
+> 1. **The batch reader dropped the frozen value.** `ReadCurrentReviewsByBillIds` is the ONLY
+>    vw_Review reader with an explicit column list; omitting `[ReviewKind]` left the Bill LIST
+>    re-deriving from live flags while single GETs used the frozen value — inert on its busiest
+>    consumer.
+> 2. **The migration could finish with unstamped rows.** The column is added NULLable but the
+>    stamping writer is replaced later in the same file, and the NOT NULL step merely SKIPPED on
+>    seeing a NULL — reporting success. It now re-sweeps and RAISERRORs.
+> 3. **`CreateReview` read the flags twice** (stamp, then Bill mirror), so a role transfer between
+>    them could stamp `submitted` while setting the Bill `in_review`. The mirror reuses
+>    `@ReviewKind`; the precedence CASE it carried is gone.
+> 4. **The backfill read the flags unfenced.** Fixed TWICE: the first attempt fenced at the backfill
+>    (too late — the window opens at the column-add) and claimed to be "runner-independent", which
+>    was **false** (`HOLDLOCK` is transaction-scoped). The fence now runs in the file's FIRST batch,
+>    and the file ASSERTS `@@TRANCOUNT > 0` instead of assuming it.
+>
+> **Proved against prod, rolled back:** 41 batches in 5.0s; 0 NULL kinds; parity — stored ==
+> `review_kind_from_flags(...)` — over all 1,700 rows with ZERO mismatches; 36 inbox combinations
+> identical; and a real TWO-CONNECTION race where a concurrent role transfer fails with SQL 1222,
+> blocked from batch 1.
+>
+> **⚠ APPLY AT A QUIET MOMENT** (stated in the file): holding `TABLOCKX` on ReviewStatus while
+> `ALTER TABLE Review` runs can deadlock with a concurrent review CREATION (which holds Review, then
+> waits on FK validation against ReviewStatus). Not a correctness risk — one transaction, so the
+> victim unwinds completely and re-runs — but worth the wait.
+>
+> **NOT frozen, deliberately:** the inbox's Pending filter still uses live
+> `StatusIsFinal`/`StatusIsDeclined`. "Is this pending" is a question about the workflow as
+> configured NOW; freezing it would mean a reconfigured workflow never reaches its own documents.
+> A product decision, booked rather than settled — and a test FAILS if anyone silently switches it.
 
 **Deploy order:** LS-01a SQL (`/em`) → API → MCP → web (ask-first; cosmetic until then) ; LS-01b SQL → API ;
 LS-01c API ; LS-01d API (verify one scheduler pull cycle, one reconcile). Units are independent of each other.

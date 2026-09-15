@@ -62,9 +62,13 @@ def test_both_inbox_sprocs_resolve_the_submitter_from_the_initial_row():
         "ReadInboxTasks and ReadInboxTaskCounts must BOTH resolve it — the list "
         "and the badge count diverging is the bug this sproc exists to prevent"
     )
-    assert sql.count("WHERE [StatusIsInitial] = 1") == 2, (
-        "the submitter is the actor on a row at the INITIAL status, not on "
-        "whatever row is newest"
+    # U-455 froze the basis: `[StatusIsInitial] = 1` read the status's LIVE
+    # flag, so transferring the initial role nulled the submitter on 8 of 42
+    # live tasks. The row is still "a submission" — it is now identified by the
+    # kind stamped at insert rather than by current configuration.
+    assert sql.count("WHERE [ReviewKind] = N'submitted'") == 2, (
+        "the submitter is the actor on a row that WAS a submission, not on "
+        "whatever row is newest — and not on what the flags say today"
     )
 
 
@@ -122,14 +126,20 @@ def test_the_submitter_predicate_selects_initial_rows_not_their_absence():
     the submitter whoever last reviewed it — the same class of bug, silently.
     """
     sql = _executable(INBOX_SQL)
-    assert "WHERE [StatusIsInitial] = 0" not in sql
-    assert sql.count("WHERE [StatusIsInitial] = 1") == 2
-    # and the flag must be the ONLY thing selecting the submitter row — an
-    # added SortOrder predicate would reintroduce the positional keying U-444
-    # removed.
+    # SUPERSEDED BY U-455 — this asserted `[StatusIsInitial] = 1` and guarded
+    # its inversion. The inversion risk is now expressed in the kind's own
+    # vocabulary: selecting any value other than 'submitted' would make the
+    # submitter whoever last did something else.
+    assert sql.count("WHERE [ReviewKind] = N'submitted'") == 2
+    for bad in ("N'in_review'", "N'approved'", "N'declined'"):
+        assert f"WHERE [ReviewKind] = {bad}" not in sql
+    # and neither position nor the live flag may creep back in as the basis
     for block in re.findall(r"Submitter AS \((.*?)\n    \),", sql, re.S):
         assert "SortOrder" not in block, (
-            "submitter selection must key on the IsInitial flag, not position"
+            "U-444 removed positional keying; it must not return"
+        )
+        assert "StatusIsInitial" not in block, (
+            "U-455 removed the live-flag basis; it must not return"
         )
 
 

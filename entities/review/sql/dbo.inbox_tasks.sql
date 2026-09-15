@@ -87,7 +87,7 @@ BEGIN
             r.[BillId], r.[ExpenseId], r.[BillCreditId], r.[InvoiceId],
             r.[ReviewStatusId], r.[StatusName], r.[StatusColor],
             r.[StatusSortOrder], r.[StatusIsFinal], r.[StatusIsDeclined],
-            r.[StatusIsInitial],
+            r.[StatusIsInitial], r.[ReviewKind],
             r.[UserId], r.[UserFirstname], r.[UserLastname],
             r.[CreatedDatetime],
             CASE
@@ -113,14 +113,17 @@ BEGIN
         -- live submission is the last one, and its author is who is waiting on
         -- an answer.
         --
-        -- [IsInitial] is read LIVE off dbo.ReviewStatus through vw_Review, not
-        -- stored per row, so re-flagging it retroactively re-attributes every
-        -- open task; clearing it from every status empties every sent box.
-        -- `ReviewStatusService._assert_shape` is what keeps exactly one active
-        -- initial status in place -- that guard is load-bearing for this CTE.
+        -- Keys on [ReviewKind], FROZEN at insert (U-455) -- not on the
+        -- status's live [IsInitial] flag.
         --
-        -- [IsActive] is deliberately NOT filtered: a submission made at a
-        -- since-retired status is still the submission that happened.
+        -- That flag is current configuration: `UpdateReviewStatus` clears it
+        -- from every other status when the initial role is transferred, so
+        -- moving it silently orphaned every historical submission here. Sent-box
+        -- rows vanished and [MineSubmitted] decremented, with nothing to notice.
+        -- U-453 shipped that exposure knowingly and booked it; this is the fix.
+        --
+        -- The frozen value cannot be un-made by reconfiguring statuses, which is
+        -- the whole point: a submission that happened, happened.
         SELECT
             [ParentKey], [UserId], [UserFirstname], [UserLastname],
             ROW_NUMBER() OVER (
@@ -128,7 +131,7 @@ BEGIN
                 ORDER BY [CreatedDatetime] DESC, [Id] DESC
             ) AS rn
         FROM Keyed
-        WHERE [StatusIsInitial] = 1
+        WHERE [ReviewKind] = N'submitted'
     ),
     Pending AS (
         -- Columns are projected EXPLICITLY, and the latest row's own actor
@@ -140,11 +143,14 @@ BEGIN
         -- error. Nothing downstream needs it; add it back deliberately if
         -- something ever does.
         --
-        -- LEFT JOIN, not INNER. A document whose review rows are all
-        -- non-initial -- reachable by re-flagging [IsInitial] onto a different
-        -- status after rows exist -- keeps its place in the `mine` and `all`
-        -- scopes with a NULL submitter, instead of disappearing from the inbox
-        -- entirely. NOTE it does drop out of `mine_submitted` for everyone,
+        -- LEFT JOIN, not INNER. Since U-455 the submitter comes from the
+        -- FROZEN [ReviewKind], so re-flagging statuses can no longer orphan a
+        -- submission -- that was the whole point. What remains reachable is a
+        -- document whose review rows were never submissions at all (rows written
+        -- directly at an intermediate status). Such a document keeps its place
+        -- in the `mine` and `all` scopes with a NULL submitter, instead of
+        -- disappearing from the inbox entirely. NOTE it does drop out of
+        -- `mine_submitted` for everyone,
         -- since NULL never equals @CurrentUserId; that is the honest answer
         -- (nobody's submission is on file) and it is strictly better than the
         -- row vanishing from every scope.
@@ -161,6 +167,17 @@ BEGIN
         LEFT JOIN Submitter S
             ON S.[ParentKey] = L.[ParentKey] AND S.rn = 1
         WHERE L.rn = 1
+          -- ⚠ These two are the status's LIVE flags, deliberately NOT the
+          -- frozen [ReviewKind] (U-455, Codex P1). "Is this review still
+          -- pending" is a question about the workflow as configured NOW: if an
+          -- admin makes a status non-final, reviews resting there arguably
+          -- SHOULD requeue. Freezing them would mean a reconfigured workflow
+          -- never reaches its own documents.
+          --
+          -- That is a product decision, not an oversight, and it is BOOKED
+          -- rather than settled here -- so the "history must not be current
+          -- config" rule this unit establishes applies to a row's KIND, and
+          -- not (yet) to whether it is pending.
           AND L.[StatusIsFinal]    = 0
           AND L.[StatusIsDeclined] = 0
           AND (@StatusId IS NULL OR L.[ReviewStatusId] = @StatusId)
@@ -430,7 +447,7 @@ BEGIN
         SELECT
             r.[Id],
             r.[BillId], r.[ExpenseId], r.[BillCreditId], r.[InvoiceId],
-            r.[StatusIsFinal], r.[StatusIsDeclined], r.[StatusIsInitial],
+            r.[StatusIsFinal], r.[StatusIsDeclined], r.[ReviewKind],
             r.[UserId], r.[CreatedDatetime],
             CASE
                 WHEN r.[BillId]          IS NOT NULL THEN CONCAT(N'B', r.[BillId])
@@ -457,7 +474,7 @@ BEGIN
                 ORDER BY [CreatedDatetime] DESC, [Id] DESC
             ) AS rn
         FROM Keyed
-        WHERE [StatusIsInitial] = 1
+        WHERE [ReviewKind] = N'submitted'
     ),
     Pending AS (
         -- Explicit columns, latest-row actor omitted -- see ReadInboxTasks.

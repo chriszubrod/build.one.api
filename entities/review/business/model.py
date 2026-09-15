@@ -49,6 +49,14 @@ class Review:
     user_firstname: Optional[str]
     user_lastname: Optional[str]
     contract_labor_id: Optional[int] = None
+    # U-455: the kind FROZEN at insert. The `status_is_*` flags above are the
+    # status's CURRENT configuration; this is what was true when the row was
+    # written. Read THIS for a row's kind, never re-derive from those.
+    #
+    # Defaulted and placed here because the dataclass's non-defaulted fields
+    # must come first — not because it is optional in practice: the column is
+    # NOT NULL and every row carries it.
+    review_kind: Optional[str] = None
     # FK back to the EmailMessage that triggered this Review state
     # transition (vendor invoice / forward archive / PM reply). NULL
     # when the transition was triggered by a non-email path (manual UI).

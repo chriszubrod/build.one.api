@@ -343,32 +343,37 @@ class ReviewNotificationService:
 
             ReviewService().create(
                 review_status_id=in_review.id,
-                # THE SYSTEM advanced this, not the submitter (U-453).
+                # ACTOR = the submitter; AUDIT SUBJECT = the pipeline.
                 #
-                # LS-01c′ deliberately left this as `review.user_id` because
-                # `dbo.inbox_tasks.sql` read "who submitted this" off the
-                # LATEST review row — so writing the system actor here would
-                # have dropped every in_review bill out of its submitter's
-                # `mine_submitted` scope and rendered "Claude Agent" as the
-                # submitter. U-453 fixed the inbox first: `Pending` now
-                # resolves the submitter from the latest INITIAL row via its
-                # `Submitter` CTE, which is the row that actually represents a
-                # submission. The two halves shipped together because neither
-                # is correct alone.
+                # `dbo.Review` carries both, and U-463 stopped conflating them.
+                # `user_id` is "whose decision or submission this represents"
+                # and is what `ReviewTimeline` renders; `CreatedByUserId` is
+                # "who wrote the row".
                 #
-                # What this buys: `ReviewTimeline` (BillEdit.tsx:575) renders
-                # the actor per row, so the "In Review" entry stops claiming
-                # the submitter moved their own bill along.
-                user_id=actor,
-                # Same actor as the audit subject here — both are the
-                # pipeline. Passing it explicitly matters because
+                # LS-01c′ set BOTH to the system actor, reasoning that the
+                # machine advanced the state so crediting a human would be a
+                # lie. True about the row, wrong about the experience: a person
+                # clicked "Submit for Review", and every bill they submitted
+                # then read "In Review · by Claude Agent" at the top of its
+                # timeline. Reported 2026-09-15.
+                #
+                # Splitting the two keeps both facts. The timeline names the
+                # person who acted; the audit column still records that the
+                # notification pipeline wrote the row, so "did a human move this
+                # or did the system?" stays answerable in SQL.
+                #
+                # Safe because U-453 already decoupled the inbox: its
+                # `Submitter` CTE resolves the submitter from the latest INITIAL
+                # row via the FROZEN [ReviewKind] (U-455), joined independently
+                # of the latest row — so this cannot drag in_review bills out of
+                # their submitter's `mine_submitted` scope, which is the exact
+                # P1 that forced LS-01c′ and U-453 to ship together.
+                user_id=review.user_id,
+                # Still the pipeline, and still passed EXPLICITLY:
                 # `ReviewService.create` otherwise falls back to
-                # `current_user_id`, and THIS path runs with no authz subject:
-                # the ContextVar is None, so the sproc's
-                # COALESCE(@CreatedByUserId, 17) credits Christopher. (On a
-                # path that DOES have a subject the fallback would credit that
-                # user, not Christopher — the 17 only appears when nobody is
-                # set.)
+                # `current_user_id`, and this path runs with no authz subject,
+                # so the sproc's COALESCE(@CreatedByUserId, 17) would credit
+                # Christopher for machine work.
                 created_by_user_id=actor,
                 comments=None,
                 bill_id=bill.id,

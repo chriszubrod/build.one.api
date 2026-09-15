@@ -99,27 +99,39 @@ def _advance(*, statuses=None, next_status=..., review_status_id=1, submitter_id
 # ---------------------------------------------------------------------------
 
 
-def test_the_system_not_the_submitter_owns_the_advance():
-    """SUPERSEDED BY U-453 — and the history matters, so it is kept here.
+def test_the_submitter_owns_the_advance_and_the_system_owns_the_ROW():
+    """SUPERSEDED TWICE. The history is the point, so all three turns stay here.
 
-    LS-01c′ asserted the OPPOSITE: that `user_id` must stay `review.user_id`.
-    That was correct at the time. `dbo.inbox_tasks.sql` read "who submitted
-    this" off the LATEST review row, so attributing the system's auto-advance
-    to the system actor would have dropped all 33 in_review bills out of their
-    submitter's `mine_submitted` scope and rendered "Claude Agent" as the
-    submitter — a worse, user-visible regression than the misattribution it
-    fixed. The U-357 design instructed the change anyway; the design was wrong
-    as written, and Codex caught it before it shipped.
+    LS-01c′ asserted `user_id` must stay `review.user_id`. Correct at the time:
+    `dbo.inbox_tasks.sql` read "who submitted this" off the LATEST review row,
+    so attributing the auto-advance to the system actor would have dropped all
+    33 in_review bills out of their submitter's `mine_submitted` scope and
+    rendered "Claude Agent" as the submitter. The U-357 design instructed the
+    change anyway; the design was wrong as written, and Codex caught it.
 
-    U-453 earned the change by fixing the inbox FIRST: `Pending` now resolves
-    the submitter from the latest INITIAL review row through its `Submitter`
-    CTE. Both halves shipped in one unit because neither is correct alone —
-    which is exactly what the superseded assertion was protecting.
+    U-453 earned the change by fixing the inbox FIRST — `Pending` resolves the
+    submitter from the latest INITIAL row — then flipped `user_id` to the system
+    actor, on the reasoning that the machine advanced the state.
+
+    U-463 splits the two facts instead of choosing between them. That reasoning
+    was true about the ROW and wrong about the EXPERIENCE: a person clicked
+    "Submit for Review", and their bill's timeline then read "In Review · by
+    Claude Agent". `dbo.Review` carries an ACTOR (`user_id`, what the timeline
+    renders) and an AUDIT SUBJECT (`CreatedByUserId`, who wrote the row). The
+    actor is the submitter; the subject is the pipeline. Nothing is lost.
+
+    Safe because U-453's inbox fix stands: the submitter is resolved from the
+    frozen INITIAL row regardless of what the latest row says.
     """
     _, review_service = _advance(submitter_id=27)
     kwargs = review_service.create.call_args.kwargs
-    assert kwargs["user_id"] == SYSTEM_ACTOR_ID_FOR_TESTS
-    assert kwargs["user_id"] != 27, "the submitter did not move their own bill"
+    assert kwargs["user_id"] == 27, (
+        "the timeline must name the person who submitted, not the pipeline"
+    )
+    assert kwargs["created_by_user_id"] == SYSTEM_ACTOR_ID_FOR_TESTS, (
+        "the audit subject must still record that the pipeline wrote the row — "
+        "losing that is how 'did a human move this?' stops being answerable"
+    )
 
 
 def test_the_inbox_resolves_the_submitter_independently_of_this_row():

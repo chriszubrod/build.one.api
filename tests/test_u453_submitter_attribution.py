@@ -214,15 +214,31 @@ def test_the_partition_key_is_defined_once_per_sproc():
 # ---------------------------------------------------------------------------
 
 
-def test_the_auto_advance_is_attributed_to_the_system_actor():
+def test_the_advance_names_the_submitter_but_still_records_the_pipeline():
+    """U-463 split the actor from the audit subject.
+
+    U-453 set BOTH to the system actor. `user_id` is what `ReviewTimeline`
+    renders, so every bill a person submitted read "In Review · by Claude Agent"
+    at the top of its timeline (reported 2026-09-15). The actor is now the
+    submitter; `CreatedByUserId` still records the pipeline, so the machine
+    provenance survives in SQL.
+
+    `system_actor_user_id()` must STILL be resolved by username — a hard-coded
+    id is correct in prod and potentially a HUMAN in any other database
+    (U-453, Codex P1). That reasoning is unchanged by the split.
+    """
     import inspect
 
     from entities.review.business.notification_service import ReviewNotificationService
 
     src = inspect.getsource(ReviewNotificationService._advance_to_in_review)
     executable = "\n".join(l.split("#")[0] for l in src.splitlines())
-    assert "user_id=actor" in executable
-    assert "user_id=review.user_id" not in executable
+    assert "user_id=review.user_id" in executable, (
+        "the timeline must name the submitter, not the pipeline"
+    )
+    assert "created_by_user_id=actor" in executable, (
+        "the audit subject must still be the pipeline"
+    )
     assert "system_actor_user_id()" in executable, (
         "resolved by username at runtime — a hard-coded id is correct in prod "
         "and potentially a HUMAN in any other database (Codex P1)"
@@ -235,14 +251,27 @@ def test_the_auto_advance_is_attributed_to_the_system_actor():
 # ---------------------------------------------------------------------------
 
 
-def test_neither_half_can_ship_without_the_other():
-    """The unit's whole premise, asserted as one statement.
+def test_the_inbox_resolves_the_submitter_from_the_INITIAL_row():
+    """U-453's durable half, restated after U-463 changed the other one.
 
-    Python writing the system actor while the SQL reads the latest row = every
-    in_review bill leaves its submitter's sent box (proved against prod: 43 ->
-    42, probe bill gone). SQL reading the initial row while Python writes the
-    submitter = merely redundant, but it silently un-guards the first case. So
-    a revert of EITHER half must fail, and it fails here.
+    ORIGINALLY this was a COUPLING test: Python writing the system actor to
+    `user_id` was only safe if the SQL had stopped reading "who submitted this"
+    off the LATEST review row. Both halves had to move together, so the spec
+    asserted they were either both present or both absent.
+
+    U-463 made Python write the SUBMITTER to `user_id` again (the pipeline keeps
+    `CreatedByUserId`), so that coupling is moot in one direction. The SQL half
+    is not: resolving the submitter from the frozen INITIAL row is correct no
+    matter what the latest row holds, and it is what keeps `mine_submitted`
+    right if anyone ever flips the actor back. So it is asserted on its own.
+
+    ⚠ THE SUBSTRING TRAP, hit for real on 2026-09-15. The original check was
+    `"user_id=actor" in py`. After U-463 the module contains
+    `created_by_user_id=actor` — which CONTAINS that substring — so the test
+    went on passing while believing the exact opposite of what the code did.
+    Fourth time this shape has appeared in this workstream (`P.[UserId]` inside
+    `UP.[UserId]`; `CreateReview` inside `CreateReviewStatus`; `ParentType.BILL`
+    inside `ParentType.BILL_CREDIT`). Anchor the match.
     """
     import inspect
 
@@ -254,13 +283,17 @@ def test_neither_half_can_ship_without_the_other():
     )
     sql = _executable(INBOX_SQL)
 
-    python_writes_system_actor = "user_id=actor" in py
-    sql_reads_initial_row = sql.count("Submitter AS (") == 2
-
-    assert python_writes_system_actor == sql_reads_initial_row, (
-        "one half of U-453 has been reverted without the other. Python writing "
-        "the system actor needs the SQL that resolves the submitter from the "
-        "initial row; without it, every in_review bill silently drops out of "
-        "its submitter's mine_submitted scope."
+    assert sql.count("Submitter AS (") == 2, (
+        "the inbox no longer resolves the submitter from the initial row — "
+        "every in_review bill would fall back to whoever owns the LATEST row"
     )
-    assert python_writes_system_actor, "both halves must be present, not both absent"
+
+    # Anchored to the start of the argument, so `created_by_user_id=` cannot
+    # satisfy it. This is the assertion the substring trap defeated.
+    actor_lines = [l.strip() for l in py.splitlines() if re.match(r"^\s*user_id=", l)]
+    assert actor_lines == ["user_id=review.user_id,"], (
+        f"the advance's ACTOR is not the submitter: {actor_lines}"
+    )
+    assert re.search(r"^\s*created_by_user_id=actor,", py, re.M), (
+        "the audit subject must still be the pipeline"
+    )

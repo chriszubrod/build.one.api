@@ -4318,3 +4318,71 @@ Shipped `931583a5` / BATCH-35. These three now emit `status` + `review_status_ki
   concurrent web session is building the Expense equivalent (`expenseLifecycle.ts`,
   `ExpenseList.tsx`, `ExpenseView.tsx` — uncommitted at the time of this entry). BillCredit and
   Invoice have no web consumer yet. The API side is now complete for four entities.
+
+---
+
+## U-458 → U-464 follow-ups (2026-09-15) — deferred, non-blocking
+
+Shipped in BATCH-36. Everything below is deliberately NOT in those units.
+
+- [ ] **`require_approved` is not enableable, and the design says otherwise.**
+  Measured against prod before flipping anything: it would refuse **99–100%** of
+  completions on every entity (Bill 19,953/20,229; Expense 11,740/11,740;
+  BillCredit 446/446; Invoice 993/1,006), because most documents never carry a
+  review at all. The U-357 design's recommended steady state (§9 #1 — Bill and
+  BillCredit → `require_approved`) does not survive contact with the data. Either
+  the workflow changes so documents routinely get reviewed, or the recommendation
+  does. **`block_open_review` is live on Bill and Invoice** and is nearly free —
+  it would have refused 70 documents ever, all of them completed while a review
+  sat open.
+
+- [ ] **`require_approved` is only as strong as the weakest writer of an
+  approval**, and two writers are weaker than `can_approve`:
+  `POST /advance/review/*` requires only `can_submit` and advancing from the last
+  intermediate status lands on approved (design §4.2 specifies `can_approve`;
+  unification is LS-06c); and `POST /bill/{id}/apply-reviewer-decision` requires
+  only `can_update`. U-459 bound the API caller to the asserted reviewer, but the
+  permission asymmetry stands. A startup WARNING names all of this the moment
+  anyone sets `require_approved` — that warning is the only thing that reaches the
+  person flipping a flag that needs no deploy.
+
+- [ ] **The gate is a preflight, not a write boundary.** The route checks, the
+  CompletionJob worker finalizes later, and reclaim re-drives under `system_authz`
+  without re-evaluating. A review can change in the gap. LS-02a moves enforcement
+  into the write transaction; until then the window is real but narrow, and
+  `block_open_review` (unlike `require_approved`) cannot be defeated by forging an
+  approval — nobody can forge "no decision is pending".
+
+- [ ] **`apply-reviewer-decision` does not verify the EMAIL.** U-459 binds the API
+  caller; the agent still asserts whatever it parsed from a reply.
+  `reviewer_email_message_public_id` carries a provenance chain that nothing
+  enforces. Its own unit.
+
+- [ ] **`POST /ensure-expense-from-qbo-purchase/{id}`** is callable by a
+  `QBO_SYNC.can_create` user, does not enter `system_authz`, and its connector
+  creates Expenses with `is_draft=False` — a create-as-completed path that
+  survives U-458's edge closure. Pre-existing; found by Codex reviewing U-458.
+
+- [ ] **18 `in_review` rows on INVOICE parents carry the system actor.** U-463's
+  backfill is scoped to Bill, because `_advance_to_in_review` is bill-specific and
+  those rows came from a path I did not trace. Establish where they came from
+  before moving audit rows.
+
+- [ ] **`ExpenseEdit`, `BillCreditEdit`, `InvoiceEdit` and `TimeEntryView` share
+  the seed-once-never-reset form shape** that U-462 fixed for Bill. `TimeEntryView`
+  differs: it already rebases via a hydrate effect keyed on `entry?.row_version`,
+  so there are now THREE mechanisms for one invariant across four pages and
+  nothing records which is canonical. Note `src/pages/expenses/**` is in
+  `tsconfig.app.json`'s exclude list, so it is not even type-checked.
+
+- [ ] **Five units shipped with no adversarial review** — U-461, U-464, U-463,
+  U-462 and the web half of U-463. Codex ran out of credits mid-session. They rest
+  on mutation coverage alone. `/code-review` caught two P0s in U-460 that would
+  otherwise have shipped, so a retrospective pass is worth booking rather than
+  assuming.
+
+- [ ] **`run_sql.py` swallows `PRINT` and `SELECT` output**, so a dry-run preview
+  written INTO a migration is invisible through the sanctioned runner. U-463's
+  backfill preview had to be re-run as a separate read-only query to see its
+  numbers. Either teach the runner to surface result sets, or stop writing
+  previews into migrations and ship them as paired read-only scripts.

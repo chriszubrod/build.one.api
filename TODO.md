@@ -4227,6 +4227,8 @@ collision rule.
   UNTRACKED working-tree file and `BillList.tsx` has uncommitted changes; the deployed bundle
   contains zero references to `review_status_kind`. The tabs are a separate web unit — the API
   side is now complete enough to build against.
+  _[SUPERSEDED 2026-09-15: that web unit shipped — `documentLifecycle.ts` is tracked in `a321f76`
+  with lifecycle tabs live on the Bills page. See the U-457 follow-up below.]_
 
 - ~~**`data` and `count` are not a consistent snapshot**~~ — **CLOSED by U-447 (2026-09-11).**
   `ReadBillsPaginated` now materializes the filtered ROWS into `#FilteredBills` and serves both
@@ -4269,3 +4271,50 @@ collision rule.
   `ORDER BY` is over a single sort column with no unique tail, so rows with equal sort keys can
   repeat or vanish across pages. U-447 did not change it — but it is now more visible, because
   a stable `count` makes an unstable page order easier to notice.
+
+---
+
+## U-457 follow-up (LS-01a for Expense, BillCredit, Invoice, 2026-09-15) — deferred, non-blocking
+
+Shipped `931583a5` / BATCH-35. These three now emit `status` + `review_status_kind` +
+`review_status` on list, single GET, and (after Codex's P1) the by-number alternate lookups.
+
+- **`?status=` is still NOT built for these three.** They now DERIVE the status per request but
+  have no stored Status column, so they still cannot be filtered. That remains **LS-03b/c/d**
+  and is the other half of what Bill got in U-445/U-446. `tests/test_u457_*` FAILS if anyone
+  adds the query param without a column behind it — post-filtering a paginated page would make
+  `count` lie.
+
+- **ContractLabor is still outside the lifecycle entirely.** It has `Status`
+  (`pending_review`/`ready`/`billed`) and **no `IsDraft`**, so `attach_lifecycle` does not apply
+  to it unchanged. Its vocabulary is genuinely different — the U-454 lesson was that a different
+  vocabulary is a reason to write a different predicate, not a reason to skip the entity. Its
+  LS-01a is a separate unit with a separate shape. Same for EmployeeLabor and TimeEntry.
+
+- **Agent tools are a consumer surface that repo-level greps miss.** `entities/*/intelligence/tools.py`
+  call the API's own routes over HTTP. A search of `build.one.web/` and `build.one.mcp/` for
+  consumers of a route returns nothing and **looks like "this route is dead"** — that false
+  negative is what made both Codex P1s possible. When changing a response contract, grep
+  `entities/*/intelligence/` too. Worth a cheap test that enumerates routes referenced by agent
+  tools and asserts they carry whatever the sibling `public_id` route carries.
+
+- **`_current_review_for_*` RAISES on a DB failure, on all four entities.** Deliberate (it was
+  U-443's own Codex P1): swallowing it returns None, which is indistinguishable from "never
+  submitted", so a document sitting in someone's review queue would render `draft` during a blip
+  — a wrong answer about a money document dressed up as a right one. The consequence is that the
+  two agent-tool by-number routes can now 500 where they previously returned a document. Accepted;
+  Codex re-reviewed and agreed it matches Bill. Revisit only with a real availability complaint.
+
+- **Expense and BillCredit have ZERO Review rows in prod** (Invoice has 49, Bill 1,000). For those
+  two the block currently resolves to `kind: none` with `status` derived from `IsDraft` alone.
+  That is still strictly more than they emitted before, but it means the review half of their
+  slice is **unexercised by live data** — the first real Expense/BillCredit review will be the
+  first production exercise of that path.
+
+- **The web consumes this for Bill only.** ⚠ The U-445 note above ("the deployed bundle contains
+  zero references to `review_status_kind`", "`documentLifecycle.ts` is an UNTRACKED working-tree
+  file") is **STALE as of 2026-09-15** — that file is tracked and shipped (`a321f76`, lifecycle
+  status tabs on the Bills page), alongside `BillListTabs.test.tsx` and `types/api.ts`. A
+  concurrent web session is building the Expense equivalent (`expenseLifecycle.ts`,
+  `ExpenseList.tsx`, `ExpenseView.tsx` — uncommitted at the time of this entry). BillCredit and
+  Invoice have no web consumer yet. The API side is now complete for four entities.

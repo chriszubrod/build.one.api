@@ -12,6 +12,7 @@ from decimal import Decimal
 from entities.expense.api.schemas import ExpenseCreate, ExpenseUpdate
 from entities.expense.business.service import ExpenseService
 from shared.api.responses import list_response, item_response, accepted_response, raise_workflow_error, raise_not_found
+from shared.lifecycle.resolver import attach_lifecycle
 from shared.rbac import require_module_api
 from shared.rbac_constants import Modules
 from core.workflow.api.process_engine import ProcessEngine, TriggerContext, EventType, Channel
@@ -80,6 +81,43 @@ def create_expense_router(body: ExpenseCreate, current_user: dict = Depends(requ
     return item_response(result.get("data"))
 
 
+def _current_review_for_expense(expense_id):
+    """Latest Review row for one Expense, or None when it has none.
+
+    RAISES on a DB failure, deliberately — mirroring Bill's helper and the
+    Codex finding behind it (2026-09-11). Swallowing it and returning None is
+    indistinguishable from "never submitted", so an expense sitting in
+    someone's review queue would render as `draft` / `review_status: null`
+    during a blip: a wrong answer about a money document dressed up as a right
+    one. The expense row itself came from this same database microseconds
+    earlier, so the availability a swallow buys is ~zero.
+    """
+    if not expense_id:
+        return None
+    from entities.review.persistence.repo import ReviewRepository
+    return ReviewRepository().read_current_by_expense_id(expense_id)
+
+
+def _expense_dict_with_lifecycle(expense, *, review=None) -> dict:
+    """Serialize an Expense and stamp the derived `status` + `review_status*`.
+
+    U-457, the same derived slice Bill has had since U-443. `status` is DERIVED
+    per request from IsDraft x the latest Review — Expense has no Status column
+    (that is LS-03c, not built), which is exactly why this phase adds no
+    `?status=` filter: post-filtering a paginated page would make `count` lie.
+
+    Expense inherits U-455's frozen `ReviewKind` from day one, so its kind is
+    stable against a ReviewStatus reconfiguration without repeating Bill's
+    history.
+    """
+    return attach_lifecycle(
+        expense.to_dict(),
+        is_draft=expense.is_draft,
+        review=review,
+        stored_status=getattr(expense, "status", None),
+    )
+
+
 @router.get("/get/expenses")
 def get_expenses_router(
     page: int = Query(default=1, ge=1),
@@ -110,8 +148,16 @@ def get_expenses_router(
         vendor_id=vendor_id,
         is_draft=is_draft,
     )
+    # ONE lookup for the whole page (U-457). Resolving per row is the N+1 that
+    # Bill's slice avoided and pinned; the batch sproc exists for this.
+    from entities.review.persistence.repo import ReviewRepository
+    expense_ids = [e.id for e in expenses if e.id is not None]
+    review_map = ReviewRepository().read_current_by_expense_ids(expense_ids) if expense_ids else {}
     return {
-        "data": [e.to_dict() for e in expenses],
+        "data": [
+            _expense_dict_with_lifecycle(e, review=review_map.get(e.id))
+            for e in expenses
+        ],
         "count": total,
         "page": page,
         "page_size": page_size,
@@ -126,7 +172,9 @@ def get_expense_by_reference_number_and_vendor_router(reference_number: str, ven
     expense = ExpenseService().read_by_reference_number_and_vendor_public_id(reference_number=reference_number, vendor_public_id=vendor_public_id)
     if not expense:
         raise_not_found("Expense")
-    return item_response(expense.to_dict())
+    return item_response(
+        _expense_dict_with_lifecycle(expense, review=_current_review_for_expense(expense.id))
+    )
 
 
 @router.get("/get/expense/{public_id}/completion-result")
@@ -154,7 +202,9 @@ def get_expense_by_public_id_router(public_id: str, current_user: dict = Depends
     expense = ExpenseService().read_by_public_id(public_id=public_id)
     if not expense:
         raise_not_found("Expense")
-    return item_response(expense.to_dict())
+    return item_response(
+        _expense_dict_with_lifecycle(expense, review=_current_review_for_expense(expense.id))
+    )
 
 
 @router.put("/update/expense/{public_id}")

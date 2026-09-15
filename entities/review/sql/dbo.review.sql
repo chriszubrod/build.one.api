@@ -779,11 +779,119 @@ BEGIN
         [ReviewStatusId], [UserId], [Comments],
         [BillId], [ExpenseId], [BillCreditId], [InvoiceId],
         [StatusName], [StatusSortOrder], [StatusIsFinal], [StatusIsDeclined], [StatusIsInitial], [StatusColor],
-        -- U-455. This is the ONLY vw_Review reader with an explicit column
-        -- list -- every other one is `SELECT *` and picks the column up for
-        -- free. Omitting it here made the Bill LIST re-derive the kind from
-        -- live flags while every single GET used the frozen value: the unit
-        -- silently inert on its busiest consumer. Codex P1.
+        -- U-455/U-457. The four batch readers are the only vw_Review readers
+        -- with explicit column lists -- every other one is `SELECT *` and picks
+        -- this column up for free. Omitting it made the Bill LIST re-derive the
+        -- kind from live flags while every single GET used the frozen value:
+        -- the unit silently inert on its busiest consumer (Codex P1). The
+        -- generic scan in tests/test_u455_review_kind_frozen.py now fails any
+        -- explicit projection that drops it, which is what keeps the three
+        -- siblings below honest.
+        [ReviewKind],
+        [UserFirstname], [UserLastname]
+    FROM ranked
+    WHERE rn = 1;
+END;
+GO
+
+-- U-457: the batch current-review reader for Expense, mirroring
+-- ReadCurrentReviewsByBillIds exactly. Without it the Expense LIST would
+-- resolve one review per row -- the N+1 that Bill's slice avoided and pinned.
+CREATE OR ALTER PROCEDURE ReadCurrentReviewsByExpenseIds
+(
+    @ExpenseIds NVARCHAR(MAX)
+)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    ;WITH ranked AS (
+        SELECT
+            r.*,
+            ROW_NUMBER() OVER (
+                PARTITION BY r.[ExpenseId]
+                ORDER BY r.[CreatedDatetime] DESC, r.[Id] DESC
+            ) AS rn
+        FROM dbo.[vw_Review] r
+        INNER JOIN STRING_SPLIT(ISNULL(@ExpenseIds, ''), ',') s
+            ON s.value <> '' AND r.[ExpenseId] = TRY_CAST(LTRIM(RTRIM(s.value)) AS BIGINT)
+        WHERE r.[ExpenseId] IS NOT NULL
+    )
+    SELECT
+        [Id], [PublicId], [RowVersion], [CreatedDatetime], [ModifiedDatetime],
+        [ReviewStatusId], [UserId], [Comments],
+        [BillId], [ExpenseId], [BillCreditId], [InvoiceId],
+        [StatusName], [StatusSortOrder], [StatusIsFinal], [StatusIsDeclined], [StatusIsInitial], [StatusColor],
+        [ReviewKind],
+        [UserFirstname], [UserLastname]
+    FROM ranked
+    WHERE rn = 1;
+END;
+GO
+
+-- U-457: the batch current-review reader for BillCredit, mirroring
+-- ReadCurrentReviewsByBillIds exactly. Without it the BillCredit LIST would
+-- resolve one review per row -- the N+1 that Bill's slice avoided and pinned.
+CREATE OR ALTER PROCEDURE ReadCurrentReviewsByBillCreditIds
+(
+    @BillCreditIds NVARCHAR(MAX)
+)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    ;WITH ranked AS (
+        SELECT
+            r.*,
+            ROW_NUMBER() OVER (
+                PARTITION BY r.[BillCreditId]
+                ORDER BY r.[CreatedDatetime] DESC, r.[Id] DESC
+            ) AS rn
+        FROM dbo.[vw_Review] r
+        INNER JOIN STRING_SPLIT(ISNULL(@BillCreditIds, ''), ',') s
+            ON s.value <> '' AND r.[BillCreditId] = TRY_CAST(LTRIM(RTRIM(s.value)) AS BIGINT)
+        WHERE r.[BillCreditId] IS NOT NULL
+    )
+    SELECT
+        [Id], [PublicId], [RowVersion], [CreatedDatetime], [ModifiedDatetime],
+        [ReviewStatusId], [UserId], [Comments],
+        [BillId], [ExpenseId], [BillCreditId], [InvoiceId],
+        [StatusName], [StatusSortOrder], [StatusIsFinal], [StatusIsDeclined], [StatusIsInitial], [StatusColor],
+        [ReviewKind],
+        [UserFirstname], [UserLastname]
+    FROM ranked
+    WHERE rn = 1;
+END;
+GO
+
+-- U-457: the batch current-review reader for Invoice, mirroring
+-- ReadCurrentReviewsByBillIds exactly. Without it the Invoice LIST would
+-- resolve one review per row -- the N+1 that Bill's slice avoided and pinned.
+CREATE OR ALTER PROCEDURE ReadCurrentReviewsByInvoiceIds
+(
+    @InvoiceIds NVARCHAR(MAX)
+)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    ;WITH ranked AS (
+        SELECT
+            r.*,
+            ROW_NUMBER() OVER (
+                PARTITION BY r.[InvoiceId]
+                ORDER BY r.[CreatedDatetime] DESC, r.[Id] DESC
+            ) AS rn
+        FROM dbo.[vw_Review] r
+        INNER JOIN STRING_SPLIT(ISNULL(@InvoiceIds, ''), ',') s
+            ON s.value <> '' AND r.[InvoiceId] = TRY_CAST(LTRIM(RTRIM(s.value)) AS BIGINT)
+        WHERE r.[InvoiceId] IS NOT NULL
+    )
+    SELECT
+        [Id], [PublicId], [RowVersion], [CreatedDatetime], [ModifiedDatetime],
+        [ReviewStatusId], [UserId], [Comments],
+        [BillId], [ExpenseId], [BillCreditId], [InvoiceId],
+        [StatusName], [StatusSortOrder], [StatusIsFinal], [StatusIsDeclined], [StatusIsInitial], [StatusColor],
         [ReviewKind],
         [UserFirstname], [UserLastname]
     FROM ranked

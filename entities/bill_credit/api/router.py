@@ -9,6 +9,7 @@ from entities.bill_credit.api.schemas import BillCreditCreate, BillCreditUpdate
 from shared.api.money import to_decimal_or_none
 from entities.bill_credit.business.service import BillCreditService
 from entities.bill_credit.business.complete_service import BillCreditCompleteService
+from shared.lifecycle.resolver import attach_lifecycle
 from shared.rbac import require_module_api
 from shared.rbac_constants import Modules
 from core.workflow.api.process_engine import ProcessEngine, TriggerContext, EventType, Channel
@@ -48,6 +49,36 @@ def create_bill_credit_router(body: BillCreditCreate, current_user: dict = Depen
     return item_response(result.get("data"))
 
 
+def _current_review_for_bill_credit(bill_credit_id):
+    """Latest Review row for one BillCredit, or None when it has none.
+
+    RAISES on a DB failure, deliberately — mirroring Bill's helper and the
+    Codex finding behind it. Swallowing it is indistinguishable from "never
+    submitted", so a credit sitting in a review queue would render as `draft` /
+    `review_status: null` during a blip.
+    """
+    if not bill_credit_id:
+        return None
+    from entities.review.persistence.repo import ReviewRepository
+    return ReviewRepository().read_current_by_bill_credit_id(bill_credit_id)
+
+
+def _bill_credit_dict_with_lifecycle(bill_credit, *, review=None) -> dict:
+    """Serialize a BillCredit and stamp the derived `status` + `review_status*`.
+
+    U-457. DERIVED per request from IsDraft x the latest Review — BillCredit has
+    no Status column (LS-03b, not built), which is why this phase adds no
+    `?status=` filter: post-filtering a paginated page would make `count` lie.
+    Inherits U-455's frozen `ReviewKind` from day one.
+    """
+    return attach_lifecycle(
+        bill_credit.to_dict(),
+        is_draft=bill_credit.is_draft,
+        review=review,
+        stored_status=getattr(bill_credit, "status", None),
+    )
+
+
 @router.get("/get/bill-credits")
 def get_bill_credits_router(
     page: int = Query(default=1, ge=1),
@@ -79,8 +110,16 @@ def get_bill_credits_router(
         vendor_id=vendor_id,
         is_draft=is_draft,
     )
+    # ONE lookup for the whole page (U-457) — resolving per row is the N+1
+    # Bill's slice avoided and pinned.
+    from entities.review.persistence.repo import ReviewRepository
+    bc_ids = [bc.id for bc in bill_credits if bc.id is not None]
+    review_map = ReviewRepository().read_current_by_bill_credit_ids(bc_ids) if bc_ids else {}
     return {
-        "data": [bc.to_dict() for bc in bill_credits],
+        "data": [
+            _bill_credit_dict_with_lifecycle(bc, review=review_map.get(bc.id))
+            for bc in bill_credits
+        ],
         "count": total,
         "page": page,
         "page_size": page_size,
@@ -94,7 +133,11 @@ def get_bill_credit_by_credit_number_and_vendor_router(credit_number: str, vendo
     """
     bill_credit = BillCreditService().read_by_credit_number_and_vendor_public_id(credit_number=credit_number, vendor_public_id=vendor_public_id)
     if bill_credit:
-        return item_response(bill_credit.to_dict())
+        return item_response(
+            _bill_credit_dict_with_lifecycle(
+                bill_credit, review=_current_review_for_bill_credit(bill_credit.id)
+            )
+        )
     return None
 
 
@@ -106,7 +149,11 @@ def get_bill_credit_by_public_id_router(public_id: str, current_user: dict = Dep
     bill_credit = BillCreditService().read_by_public_id(public_id=public_id)
     if not bill_credit:
         raise_not_found("Bill credit")
-    return item_response(bill_credit.to_dict())
+    return item_response(
+        _bill_credit_dict_with_lifecycle(
+            bill_credit, review=_current_review_for_bill_credit(bill_credit.id)
+        )
+    )
 
 
 @router.put("/update/bill-credit/{public_id}")

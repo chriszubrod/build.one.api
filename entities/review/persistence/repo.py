@@ -245,6 +245,90 @@ class ReviewRepository:
     # Internals
     # ---------------------------------------------------------------------
 
+
+    def read_current_by_expense_ids(self, expense_ids: list[int]) -> dict[int, Review]:
+        """Batch sibling of `read_current_by_bill_ids` for Expense (U-457).
+
+        One round trip for a whole page. Without it the Expense list resolves a
+        review per row — the N+1 Bill's slice avoided and pinned.
+        """
+        if not expense_ids:
+            return {}
+        csv = ",".join(str(int(x)) for x in expense_ids if x is not None)
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(
+                    cursor=cursor,
+                    name="ReadCurrentReviewsByExpenseIds",
+                    params={"ExpenseIds": csv},
+                )
+                out: dict[int, Review] = {}
+                for row in cursor.fetchall():
+                    review = self._from_db(row)
+                    if review is None or review.expense_id is None:
+                        continue
+                    out[int(review.expense_id)] = review
+                return out
+        except Exception as error:
+            logger.error("Error during read current reviews by expense ids: %s", error)
+            raise map_database_error(error)
+
+    def read_current_by_bill_credit_ids(self, bill_credit_ids: list[int]) -> dict[int, Review]:
+        """Batch sibling of `read_current_by_bill_ids` for BillCredit (U-457).
+
+        One round trip for a whole page. Without it the BillCredit list resolves a
+        review per row — the N+1 Bill's slice avoided and pinned.
+        """
+        if not bill_credit_ids:
+            return {}
+        csv = ",".join(str(int(x)) for x in bill_credit_ids if x is not None)
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(
+                    cursor=cursor,
+                    name="ReadCurrentReviewsByBillCreditIds",
+                    params={"BillCreditIds": csv},
+                )
+                out: dict[int, Review] = {}
+                for row in cursor.fetchall():
+                    review = self._from_db(row)
+                    if review is None or review.bill_credit_id is None:
+                        continue
+                    out[int(review.bill_credit_id)] = review
+                return out
+        except Exception as error:
+            logger.error("Error during read current reviews by bill_credit ids: %s", error)
+            raise map_database_error(error)
+
+    def read_current_by_invoice_ids(self, invoice_ids: list[int]) -> dict[int, Review]:
+        """Batch sibling of `read_current_by_bill_ids` for Invoice (U-457).
+
+        One round trip for a whole page. Without it the Invoice list resolves a
+        review per row — the N+1 Bill's slice avoided and pinned.
+        """
+        if not invoice_ids:
+            return {}
+        csv = ",".join(str(int(x)) for x in invoice_ids if x is not None)
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(
+                    cursor=cursor,
+                    name="ReadCurrentReviewsByInvoiceIds",
+                    params={"InvoiceIds": csv},
+                )
+                out: dict[int, Review] = {}
+                for row in cursor.fetchall():
+                    review = self._from_db(row)
+                    if review is None or review.invoice_id is None:
+                        continue
+                    out[int(review.invoice_id)] = review
+                return out
+        except Exception as error:
+            logger.error("Error during read current reviews by invoice ids: %s", error)
+            raise map_database_error(error)
     def _read_list(self, sproc: str, params: dict) -> list[Review]:
         try:
             with get_connection() as conn:

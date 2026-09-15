@@ -16,6 +16,7 @@ from entities.invoice.business.service import InvoiceService
 from shared.api.money import to_decimal_or_none
 from shared.api.responses import list_response, item_response, raise_not_found
 from shared.pdf_utils import fit_page_to_letter
+from shared.lifecycle.resolver import attach_lifecycle
 from shared.rbac import require_module_api
 from shared.rbac_constants import Modules
 
@@ -469,6 +470,36 @@ def create_invoice_router(body: InvoiceCreate, current_user: dict = Depends(requ
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 
 
+def _current_review_for_invoice(invoice_id):
+    """Latest Review row for one Invoice, or None when it has none.
+
+    RAISES on a DB failure, deliberately — mirroring Bill's helper and the
+    Codex finding behind it. Swallowing it is indistinguishable from "never
+    submitted", so an invoice in a review queue would render as `draft` /
+    `review_status: null` during a blip.
+    """
+    if not invoice_id:
+        return None
+    from entities.review.persistence.repo import ReviewRepository
+    return ReviewRepository().read_current_by_invoice_id(invoice_id)
+
+
+def _invoice_dict_with_lifecycle(invoice, *, review=None) -> dict:
+    """Serialize an Invoice and stamp the derived `status` + `review_status*`.
+
+    U-457. DERIVED per request from IsDraft x the latest Review — Invoice has no
+    Status column (LS-03d, not built), which is why this phase adds no
+    `?status=` filter: post-filtering a paginated page would make `count` lie.
+    Inherits U-455's frozen `ReviewKind` from day one.
+    """
+    return attach_lifecycle(
+        invoice.to_dict(),
+        is_draft=invoice.is_draft,
+        review=review,
+        stored_status=getattr(invoice, "status", None),
+    )
+
+
 @router.get("/get/invoices")
 def get_invoices_router(
     page: int = Query(default=1, ge=1),
@@ -499,8 +530,16 @@ def get_invoices_router(
         project_id=project_id,
         is_draft=is_draft,
     )
+    # ONE lookup for the whole page (U-457) — resolving per row is the N+1
+    # Bill's slice avoided and pinned.
+    from entities.review.persistence.repo import ReviewRepository
+    invoice_ids = [inv.id for inv in invoices if inv.id is not None]
+    review_map = ReviewRepository().read_current_by_invoice_ids(invoice_ids) if invoice_ids else {}
     return {
-        "data": [inv.to_dict() for inv in invoices],
+        "data": [
+            _invoice_dict_with_lifecycle(inv, review=review_map.get(inv.id))
+            for inv in invoices
+        ],
         "count": total,
         "page": page,
         "page_size": page_size,
@@ -1087,7 +1126,9 @@ def get_invoice_by_public_id_router(public_id: str, current_user: dict = Depends
     invoice = InvoiceService().read_by_public_id(public_id=public_id)
     if not invoice:
         raise_not_found("Invoice")
-    return item_response(invoice.to_dict())
+    return item_response(
+        _invoice_dict_with_lifecycle(invoice, review=_current_review_for_invoice(invoice.id))
+    )
 
 
 @router.put("/update/invoice/{public_id}")

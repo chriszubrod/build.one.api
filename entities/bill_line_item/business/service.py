@@ -23,6 +23,14 @@ from entities.bill.business.service import BillService
 logger = logging.getLogger(__name__)
 
 
+def _build_box_folder_url(box_folder_id: str) -> str:
+    return f"https://app.box.com/folder/{box_folder_id}"
+
+
+def _build_box_file_url(box_file_id: str) -> str:
+    return f"https://app.box.com/file/{box_file_id}"
+
+
 class BillLineItemService:
     """
     Service for BillLineItem entity business operations.

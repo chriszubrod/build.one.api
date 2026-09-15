@@ -18,6 +18,8 @@ from shared.access import (
 from shared.api.money import labor_price_two_shot
 from shared.authz import current_user_id, current_is_system_admin
 
+from shared.authz.delegation import assert_may_act_as
+
 logger = logging.getLogger(__name__)
 
 CANNOT_DELETE_BILLED_ENTRIES = "Cannot delete billed entries"
@@ -625,6 +627,24 @@ class ContractLaborService:
                 f"ContractLabor {contract_labor_public_id} on project "
                 f"{project_public_id} (must be Project Manager or Owner)."
             )
+
+        # U-459 — bind the asserted reviewer to the authenticated caller.
+        #
+        # Everything above authorizes the EMAIL (it must belong to a PM/Owner on
+        # this document). Nothing authorized the CALLER, so any user holding
+        # `can_update` on the module could POST a decision attributed to their
+        # Project Manager. Delegation is legitimate here — it is how the agent
+        # applies an emailed reply — so the rule is "act as yourself unless you
+        # are a delegated actor", not "act as yourself".
+        delegated = assert_may_act_as(
+            asserted_user_id=reviewer_user_id,
+            what="apply a reviewer decision",
+        )
+        logger.info(
+            "U-459: reviewer decision on %s applied %s (reviewer user_id=%s)",
+            "contract labor", "BY THE AGENT ON THEIR BEHALF" if delegated else "BY THE REVIEWER THEMSELVES",
+            reviewer_user_id,
+        )
 
         # ── Approval prework: resolve SCC + load line items ──────────
         # Validate the SCC + collect target line items BEFORE writing the

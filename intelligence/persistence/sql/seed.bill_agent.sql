@@ -32,13 +32,36 @@ WHERE a.Username = @Username;
 
 IF @UserId IS NULL
 BEGIN
-    INSERT INTO dbo.[User] (CreatedDatetime, ModifiedDatetime, Firstname, Lastname)
-    VALUES (@Now, @Now, 'Agent', 'Bill');
+    INSERT INTO dbo.[User] (CreatedDatetime, ModifiedDatetime, Firstname, Lastname, IsAgent)
+    VALUES (@Now, @Now, 'Agent', 'Bill', 1);
     SET @UserId = SCOPE_IDENTITY();
     PRINT CONCAT('  bill_agent: user created (id=', @UserId, ')');
 END
 ELSE
     PRINT CONCAT('  bill_agent: user exists (id=', @UserId, ')');
+
+-- U-459 — bill_agent MUST carry IsAgent = 1.
+--
+-- This seed originally created the user with only Firstname/Lastname, unlike
+-- seed.contract_labor_agent.sql / seed.claude_agent.sql which set the flag. The
+-- omission was invisible until U-459 made `IsAgent` load-bearing: the guard on
+-- POST /bill/{id}/apply-reviewer-decision lets the AGENT act in a reviewer's
+-- name and refuses everyone else, so an unflagged bill_agent would have had its
+-- reviewer-reply automation refused with 403.
+--
+-- Written as an UNCONDITIONAL update, not inside the INSERT branch above: the
+-- prod row already EXISTS and was created without the flag, so an insert-only
+-- fix would heal fresh installs and leave production broken. Idempotent — safe
+-- to re-run, and a no-op once the flag is set.
+--
+-- ⚠ DEPLOY ORDER: apply this BEFORE shipping the container that carries U-459.
+-- The reverse order leaves the Bill reviewer-reply flow 403-ing in between.
+UPDATE dbo.[User]
+   SET IsAgent = 1,
+       ModifiedDatetime = @Now
+ WHERE Id = @UserId
+   AND (IsAgent IS NULL OR IsAgent = 0);
+PRINT CONCAT('  bill_agent: IsAgent ensured (id=', @UserId, ')');
 
 IF EXISTS (SELECT 1 FROM dbo.Auth WHERE Username = @Username)
 BEGIN

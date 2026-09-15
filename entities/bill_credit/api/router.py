@@ -12,6 +12,8 @@ from entities.bill_credit.business.complete_service import BillCreditCompleteSer
 from shared.lifecycle.resolver import attach_lifecycle
 from shared.rbac import require_module_api
 from shared.rbac_constants import Modules
+from entities.review.business.completion import gate_completion
+from entities.review.business.model import ParentType
 from core.workflow.api.process_engine import ProcessEngine, TriggerContext, EventType, Channel
 from shared.api.responses import list_response, item_response, raise_workflow_error, raise_not_found
 
@@ -36,7 +38,11 @@ def create_bill_credit_router(body: BillCreditCreate, current_user: dict = Depen
             "credit_number": body.credit_number,
             "total_amount": to_decimal_or_none(body.total_amount),
             "memo": body.memo,
-            "is_draft": body.is_draft if body.is_draft is not None else True,
+            # U-458: always True. Design §4.2 — create-as-completed is system_authz
+            # only; the QBO pull connectors and CLI sync reach it through the SERVICE
+            # layer, which keeps its parameter. An external caller can no longer mint
+            # an already-completed document that skipped completion entirely.
+            "is_draft": True,
         },
         workflow_type="bill_credit_create",
     )
@@ -176,7 +182,15 @@ def update_bill_credit_by_public_id_router(public_id: str, body: BillCreditUpdat
             "credit_number": body.credit_number,
             "total_amount": to_decimal_or_none(body.total_amount),
             "memo": body.memo,
-            "is_draft": body.is_draft,
+            # U-458: the UPDATE path no longer carries is_draft. Passing None
+            # makes the sproc's `CASE WHEN @IsDraft IS NULL` preserve the stored
+            # value. Completing is `POST /complete/*` ONLY — which is where the
+            # lifecycle gate lives. Letting `can_update` flip this field was a
+            # gate bypass (Codex P0): it marked the document completed without
+            # `can_complete` and without any review check. Bill has been immune
+            # since U-446 made its IsDraft a computed column; this is the same
+            # property enforced at the edge for the three that still write it.
+            "is_draft": None,
         },
         workflow_type="bill_credit_update",
     )
@@ -225,6 +239,15 @@ def complete_bill_credit_router(public_id: str, current_user: dict = Depends(req
         raise_not_found("Bill credit")
     if not getattr(bill_credit, "is_draft", True):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Bill credit is already completed")
+
+    # U-458 completion gate — see the note on the Bill route. Ships `off`.
+    gate_completion(
+        parent_type=ParentType.BILL_CREDIT,
+        parent_public_id=public_id,
+        module_name=Modules.BILL_CREDITS,
+        current_user=current_user,
+        resolve_review=lambda: _current_review_for_bill_credit(bill_credit.id),
+    )
 
     from entities.completion_job.business.service import CompletionJobService
 

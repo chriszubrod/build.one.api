@@ -17,6 +17,9 @@ from shared.rbac import require_module_api
 from shared.rbac_constants import Modules
 from core.workflow.api.process_engine import ProcessEngine, TriggerContext, EventType, Channel
 
+from entities.review.business.completion import gate_completion
+from entities.review.business.model import ParentType
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1", tags=["api", "expense"])
@@ -51,7 +54,11 @@ def create_expense_router(body: ExpenseCreate, current_user: dict = Depends(requ
             "reference_number": body.reference_number,
             "total_amount": Decimal(str(body.total_amount)) if body.total_amount is not None else None,
             "memo": body.memo,
-            "is_draft": body.is_draft if body.is_draft is not None else True,
+            # U-458: always True. Design §4.2 — create-as-completed is system_authz
+            # only; the QBO pull connectors and CLI sync reach it through the SERVICE
+            # layer, which keeps its parameter. An external caller can no longer mint
+            # an already-completed document that skipped completion entirely.
+            "is_draft": True,
             # Was previously dropped here — is_credit silently defaulted to False
             # so refunds created via the API/agent never stuck. Now threaded.
             "is_credit": body.is_credit if body.is_credit is not None else False,
@@ -227,7 +234,15 @@ def update_expense_by_public_id_router(public_id: str, body: ExpenseUpdate, curr
             "reference_number": body.reference_number,
             "total_amount": Decimal(str(body.total_amount)) if body.total_amount is not None else None,
             "memo": body.memo,
-            "is_draft": body.is_draft,
+            # U-458: the UPDATE path no longer carries is_draft. Passing None
+            # makes the sproc's `CASE WHEN @IsDraft IS NULL` preserve the stored
+            # value. Completing is `POST /complete/*` ONLY — which is where the
+            # lifecycle gate lives. Letting `can_update` flip this field was a
+            # gate bypass (Codex P0): it marked the document completed without
+            # `can_complete` and without any review check. Bill has been immune
+            # since U-446 made its IsDraft a computed column; this is the same
+            # property enforced at the edge for the three that still write it.
+            "is_draft": None,
             # Was dropped here too (same bug-class as the create path). The
             # service applies is_credit only when not None, so an unchanged
             # PUT (is_credit=None) is a no-op — but a toggle now sticks.
@@ -364,6 +379,15 @@ def complete_expense_router(
         raise_not_found("Expense")
     if not getattr(expense, "is_draft", True):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Expense is already completed")
+
+    # U-458 completion gate — see the note on the Bill route. Ships `off`.
+    gate_completion(
+        parent_type=ParentType.EXPENSE,
+        parent_public_id=public_id,
+        module_name=Modules.EXPENSES,
+        current_user=current_user,
+        resolve_review=lambda: _current_review_for_expense(expense.id),
+    )
 
     from entities.completion_job.business.service import CompletionJobService
 

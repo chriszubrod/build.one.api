@@ -399,3 +399,20 @@ def test_update_by_public_id_keeps_parent_math_when_there_are_no_line_items(monk
 
     assert repo.calls == []
     assert parent.total_amount == 675.00  # round(8.0*62.50,2) * 1.35
+
+
+@pytest.fixture(autouse=True)
+def _agent_caller():
+    """U-459: `apply_reviewer_decision` now binds the asserted reviewer to the
+    authenticated caller, so it needs a caller identity.
+
+    These tests are about aggregate/consolidation behaviour, not authorization —
+    they run as the AGENT, which is what invokes this path in production (the
+    `bill_specialist` / `contract_labor_specialist` tools applying an emailed
+    PM reply). Before U-459 the service accepted no caller at all, which is
+    exactly the hole: any `can_update` user could assert a PM's identity.
+    """
+    from shared.authz.context import system_authz
+
+    with system_authz():
+        yield

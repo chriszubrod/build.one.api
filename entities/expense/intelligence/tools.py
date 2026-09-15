@@ -176,13 +176,9 @@ class CreateExpenseArgs(BaseModel):
         ),
     )
     memo: Optional[str] = Field(default=None, description="Optional memo.")
-    is_draft: Optional[bool] = Field(
-        default=True,
-        description=(
-            "Defaults to true. Expenses get finalized later via "
-            "`complete_expense`."
-        ),
-    )
+    # is_draft REMOVED (U-458). The handler already hard-coded True in the
+    # payload, so this field was an advertised lever that did nothing — and
+    # design §4.2 makes create-as-completed system_authz only regardless.
     is_credit: Optional[bool] = Field(
         default=False,
         description=(
@@ -271,14 +267,10 @@ class UpdateExpenseArgs(BaseModel):
     reference_number: str = Field(description="Reference number (<=50 chars).")
     total_amount: Optional[float] = Field(default=None)
     memo: Optional[str] = Field(default=None)
-    is_draft: Optional[bool] = Field(
-        default=None,
-        description=(
-            "Pass `false` to mark committed (NOT the same as completing "
-            "— `complete_expense` is the proper workflow). Leave unset "
-            "to preserve."
-        ),
-    )
+    # is_draft REMOVED (U-458). It was a writable field here while the agent
+    # prompt told agents not to use it — an instruction where an enforcement
+    # belonged, and the same class as the U-446d P0 on create_bill. Completing
+    # is the complete_* tool, which goes through the lifecycle gate.
     is_credit: Optional[bool] = Field(
         default=None,
         description=(

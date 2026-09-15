@@ -27,10 +27,14 @@ class ExpenseCreate(BaseModel):
         default=None,
         description="The memo of the expense."
     )
-    is_draft: Optional[bool] = Field(
-        default=True,
-        description="Whether the expense is a draft."
-    )
+    # is_draft REMOVED (U-458). Design §4.2: create-as-completed is accepted
+    # "ONLY under system_authz" (the QBO pull connectors and CLI sync, which
+    # call the SERVICE layer and keep their parameter). Exposing it here let
+    # a can_create caller mint an already-completed document that never went
+    # through completion — so its AP never reached QBO/SharePoint/Excel/Box,
+    # and no lifecycle gate ever saw it. Same class as the U-446d P0 on
+    # create_bill. Pydantic ignores unknown fields, so a client still
+    # sending it gets a 200 and the value is ignored.
     is_credit: Optional[bool] = Field(
         default=False,
         description="Whether the expense is a credit card credit (refund)."
@@ -116,10 +120,10 @@ class ExpenseUpdate(BaseModel):
         default=None,
         description="The memo of the expense."
     )
-    is_draft: Optional[bool] = Field(
-        default=None,
-        description="Whether the expense is a draft."
-    )
+    # is_draft REMOVED (U-458). Completing is POST /complete/* only, which is
+    # where the lifecycle gate lives. Pydantic ignores unknown fields, so a
+    # client that still sends it (build.one.web echoes the stored value on
+    # every save) gets a 200 and the field is ignored — not a 422.
     is_credit: Optional[bool] = Field(
         default=None,
         description="Whether the expense is a credit card credit (refund)."

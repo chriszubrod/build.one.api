@@ -134,6 +134,17 @@ from integrations.intuit.qbo.report.api.router import router as qbo_report_api_r
 
 logger = logging.getLogger(__name__)
 
+# U-458 — fail fast on a malformed lifecycle completion gate.
+#
+# Validated HERE, at import, rather than at request time. A typo in
+# LIFECYCLE_COMPLETION_GATE_* would otherwise either silently disable a money
+# control (if it fell back to `off`) or halt AP mid-request with an error that
+# reads like a completion bug (if it failed closed). Refusing to start is loud,
+# immediate, and attributable to the deploy that caused it.
+from shared.lifecycle.completion_gate import assert_completion_gates_valid
+
+assert_completion_gates_valid()
+
 app = FastAPI()
 
 

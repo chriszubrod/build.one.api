@@ -852,3 +852,20 @@ def test_sql_file_has_no_workdate_backfill_update_on_contract_labor_notification
         "Executable SQL must not UPDATE ContractLaborNotification.WorkDate "
         "(legacy NULL WorkDate rows must not become consolidated claims)."
     )
+
+
+@pytest.fixture(autouse=True)
+def _agent_caller():
+    """U-459: `apply_reviewer_decision` now binds the asserted reviewer to the
+    authenticated caller, so it needs a caller identity.
+
+    These tests are about aggregate/consolidation behaviour, not authorization —
+    they run as the AGENT, which is what invokes this path in production (the
+    `bill_specialist` / `contract_labor_specialist` tools applying an emailed
+    PM reply). Before U-459 the service accepted no caller at all, which is
+    exactly the hole: any `can_update` user could assert a PM's identity.
+    """
+    from shared.authz.context import system_authz
+
+    with system_authz():
+        yield

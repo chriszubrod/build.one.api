@@ -260,6 +260,40 @@ class ReviewStatusService:
         all_statuses = self.repo.read_all()
         return [s for s in all_statuses if s.is_declined and s.is_active]
 
+    def get_approved_status(self) -> Optional[ReviewStatus]:
+        """The single active FINAL, non-declined status — i.e. "approved".
+
+        `_assert_shape` guarantees there is exactly one of these, so this cannot
+        be ambiguous the way `get_declined_statuses` can (which is why that one
+        returns a list and makes its caller decide). Returns None only when the
+        set is empty or entirely inactive, which `_assert_shape` also rejects on
+        the write path — so None here means the table predates the rails, and
+        the caller must refuse rather than guess.
+
+        First caller: U-458's approver fast-path, which records this status
+        directly instead of stepping through `get_next_status`.
+        """
+        finals = [
+            s for s in self.repo.read_all()
+            if s.is_active and s.is_final and not s.is_declined
+        ]
+        if len(finals) == 1:
+            return finals[0]
+        if not finals:
+            return None
+        # MORE than one. `_assert_shape` rejects this on the write path, but it
+        # can still exist in data that predates the rails — and picking the
+        # first would stamp an ARBITRARY status onto an approval audit row,
+        # chosen by whatever order the sproc happened to return (Codex P1,
+        # 2026-09-15: "SQL ordering is not a uniqueness guarantee"). Refusing is
+        # the only answer that cannot be silently wrong about which approval
+        # was recorded.
+        raise ReviewStatusShapeError(
+            f"{len(finals)} active final review statuses are configured "
+            f"({', '.join(sorted(s.name for s in finals))}); exactly one is required "
+            "before an approval can be recorded."
+        )
+
     def update_by_public_id(
         self,
         public_id: str,

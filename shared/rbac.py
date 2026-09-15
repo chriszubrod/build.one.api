@@ -310,14 +310,18 @@ def invalidate_all_caches() -> None:
 # Core enforcement
 # ---------------------------------------------------------------------------
 
-def _enforce_module_permission(
+def _module_permission_denial(
     current_user: dict,
     module_name: str,
     permission: str,
-) -> None:
-    """
-    Check whether the user has the specified permission on the given module.
-    Raises HTTPException(403) on denial.
+) -> Optional[str]:
+    """The reason this user may NOT use `permission` on `module_name`, or None.
+
+    One decision, two consumers: `_enforce_module_permission` turns a reason into
+    its 403, and `has_module_permission` turns it into a bool. U-458 needed the
+    boolean form (the completion gate asks "could this actor also approve?"
+    without wanting to 403 them for the answer), and a hand-copied second copy of
+    this logic is exactly how the two drift apart.
     """
     if permission not in VALID_PERMISSIONS:
         raise ValueError(
@@ -329,32 +333,51 @@ def _enforce_module_permission(
 
     # System-admin bypass — short-circuit before any module lookup.
     if perms is SYSTEM_ADMIN_GRANT:
-        return
+        return None
 
     # No role assigned + no UserModule grant
     if perms is None:
-        raise HTTPException(
-            status_code=403,
-            detail="Access denied — no role assigned.",
-        )
+        return "Access denied — no role assigned."
 
     # Module not assigned to role
     role_module = perms.get(module_name) if isinstance(perms, dict) else None
     if not role_module:
-        raise HTTPException(
-            status_code=403,
-            detail="Access denied — module not assigned to your role.",
-        )
+        return "Access denied — module not assigned to your role."
 
     # Permission not granted
     if not getattr(role_module, permission, False):
-        raise HTTPException(
-            status_code=403,
-            detail=(
-                f"Access denied — your role does not have "
-                f"'{permission}' permission on '{module_name}'."
-            ),
+        return (
+            f"Access denied — your role does not have "
+            f"'{permission}' permission on '{module_name}'."
         )
+    return None
+
+
+def has_module_permission(
+    current_user: dict,
+    module_name: str,
+    permission: str,
+) -> bool:
+    """Non-raising sibling of `_enforce_module_permission`.
+
+    For asking whether an actor *could* do something, when the answer being "no"
+    is not itself an error — the U-458 approver fast-path is the first caller.
+    """
+    return _module_permission_denial(current_user, module_name, permission) is None
+
+
+def _enforce_module_permission(
+    current_user: dict,
+    module_name: str,
+    permission: str,
+) -> None:
+    """
+    Check whether the user has the specified permission on the given module.
+    Raises HTTPException(403) on denial.
+    """
+    denial = _module_permission_denial(current_user, module_name, permission)
+    if denial is not None:
+        raise HTTPException(status_code=403, detail=denial)
 
 
 # ---------------------------------------------------------------------------

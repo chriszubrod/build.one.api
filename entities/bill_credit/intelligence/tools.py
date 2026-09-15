@@ -183,13 +183,9 @@ class CreateBillCreditArgs(BaseModel):
         ),
     )
     memo: Optional[str] = Field(default=None, description="Optional memo.")
-    is_draft: Optional[bool] = Field(
-        default=True,
-        description=(
-            "Defaults to true. The agent should rarely override — "
-            "credits get finalized later via `complete_bill_credit`."
-        ),
-    )
+    # is_draft REMOVED (U-458). The handler already hard-coded True in the
+    # payload, so this field was an advertised lever that did nothing — and
+    # design §4.2 makes create-as-completed system_authz only regardless.
 
 
 async def _create_bill_credit(args: dict, ctx: ToolContext) -> ToolResult:
@@ -250,14 +246,10 @@ class UpdateBillCreditArgs(BaseModel):
         ),
     )
     memo: Optional[str] = Field(default=None)
-    is_draft: Optional[bool] = Field(
-        default=None,
-        description=(
-            "Pass `false` to mark the credit committed (NOT the same "
-            "as completing — `complete_bill_credit` is the proper "
-            "workflow for finalizing). Leave unset to preserve."
-        ),
-    )
+    # is_draft REMOVED (U-458). It was a writable field here while the agent
+    # prompt told agents not to use it — an instruction where an enforcement
+    # belonged, and the same class as the U-446d P0 on create_bill. Completing
+    # is the complete_* tool, which goes through the lifecycle gate.
 
 
 async def _update_bill_credit(args: dict, ctx: ToolContext) -> ToolResult:

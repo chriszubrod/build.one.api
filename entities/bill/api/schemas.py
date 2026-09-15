@@ -34,10 +34,14 @@ class BillCreate(BaseModel):
         default=None,
         description="The memo of the bill."
     )
-    is_draft: Optional[bool] = Field(
-        default=True,
-        description="Whether the bill is a draft."
-    )
+    # is_draft REMOVED (U-458). Design §4.2: create-as-completed is accepted
+    # "ONLY under system_authz" (the QBO pull connectors and CLI sync, which
+    # call the SERVICE layer and keep their parameter). Exposing it here let
+    # a can_create caller mint an already-completed document that never went
+    # through completion — so its AP never reached QBO/SharePoint/Excel/Box,
+    # and no lifecycle gate ever saw it. Same class as the U-446d P0 on
+    # create_bill. Pydantic ignores unknown fields, so a client still
+    # sending it gets a 200 and the value is ignored.
     attachment_public_id: str = Field(
         description=(
             "REQUIRED. UUID of an Attachment row (must be a PDF) that the "
@@ -138,7 +142,7 @@ class BillUpdate(BaseModel):
         default=None,
         description="The memo of the bill."
     )
-    is_draft: Optional[bool] = Field(
-        default=None,
-        description="Whether the bill is a draft."
-    )
+    # is_draft REMOVED (U-458). Completing is POST /complete/bill only.
+    # Bill was NOT immune via its computed column: UpdateBillById translates
+    # @IsDraft = 0 into Status = 'completed'. Pydantic ignores unknown fields,
+    # so a client still sending it gets a 200 and the value is ignored.

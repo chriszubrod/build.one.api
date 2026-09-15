@@ -381,6 +381,83 @@ class ReviewService:
             comments=comments,
         )
 
+    def build_fast_path_approval_payload(
+        self,
+        *,
+        parent_type: str,
+        parent_public_id: str,
+        user_id: int,
+        comments: Optional[str] = None,
+    ) -> Optional[dict]:
+        """U-458 approver fast-path: record an Approved row in ONE step.
+
+        `build_advance_payload` steps to the *next* status, which under a
+        three-status workflow (submitted -> in_review -> approved) lands on
+        `in_review` — not what a `require_approved` gate needs. This jumps
+        straight to the single active final status.
+
+        Returns **None when the document is already approved**, which is what
+        makes a retried completion idempotent: the second caller sees `approved`
+        and records nothing. That matters because the Bill completion route
+        COALESCES concurrent jobs (`if job.was_created`), so the same completion
+        can be requested twice.
+
+        RESIDUAL, deliberately not closed here: two callers that BOTH observe a
+        non-approved state before either commits will each insert an Approved
+        row. `CreateReview` takes `UPDLOCK, HOLDLOCK` on the parent (U-454) so
+        they serialise, but it has no same-kind dedup, so the second insert
+        still lands. **LS-02a is specified to make a same-kind duplicate a
+        `noop`** and closes this properly at the only layer that can — inside
+        the write's own transaction. Until then the window is one round trip
+        wide, on a path that is dormant (`require_approved` ships off) and whose
+        worst outcome is a redundant audit row, not a wrong lifecycle.
+        """
+        parent = self._resolve_parent(parent_type, parent_public_id)
+        self._assert_parent_open(
+            parent_type, parent, what="it cannot be approved once completed"
+        )
+        parent_id = parent.id
+        current = self._get_current_by_id(parent_type, parent_id)
+
+        # Reads the FROZEN `review_kind` (U-455), NOT `status_is_final` /
+        # `status_is_declined`.
+        #
+        # An earlier version of this method read those live flags and carried a
+        # comment claiming it used frozen semantics — the comment asserted the
+        # opposite of the code (Codex P0, 2026-09-15). The flags are joined from
+        # `dbo.ReviewStatus` and `UpdateReviewStatusById` rewrites them when the
+        # final/initial role moves, so an old row frozen `in_review` can read
+        # live-final: this method would have returned None and completion would
+        # have proceeded with NO Approved row recorded. The mirror case is worse
+        # — a historical decline whose live declined flag has moved would be
+        # silently overwritten with an approval.
+        #
+        # That is precisely the class U-455 exists to prevent, reintroduced one
+        # layer down.
+        kind = getattr(current, "review_kind", None) if current is not None else None
+
+        if kind == "approved":
+            return None
+
+        if kind == "declined":
+            raise ReviewTransitionError(
+                "Cannot approve: review is declined. Resubmit before approving."
+            )
+
+        approved = self.review_status_service.get_approved_status()
+        if approved is None:
+            raise ReviewTransitionError(
+                "No final review status is configured; cannot approve."
+            )
+
+        return self._build_payload(
+            parent_type=parent_type,
+            parent_id=parent_id,
+            review_status_id=approved.id,
+            user_id=user_id,
+            comments=comments,
+        )
+
     def build_decline_payload(
         self,
         *,

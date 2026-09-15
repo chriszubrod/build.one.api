@@ -42,6 +42,15 @@ class ErrorCode:
     VALIDATION_ERROR = "validation_error"  # request body/query/path failed schema validation
     REVIEW_STATUS_SHAPE = "review_status_shape"  # edit would leave the ReviewStatus set underivable
     STATUS_LOCKED = "status_locked"  # document is completed; further edits refused
+    # U-458 completion gate. All three are 422 (never 409 — see the
+    # STATUS_LOCKED_PREFIX note in shared/api/responses.py for why).
+    REVIEW_OPEN = "review_open"  # gate=block_open_review, still submitted/in_review
+    REVIEW_DECLINED = "review_declined"  # gate=block_open_review, was declined
+    REVIEW_NOT_APPROVED = "review_not_approved"  # gate=require_approved, not approved
+    REVIEW_STATE_UNKNOWN = "review_state_unknown"  # review row carries an unrecognised kind
+    # U-459. 403: the caller asserted a different person's identity without
+    # delegation rights (the agent fleet / a system context).
+    IDENTITY_ASSERTION_REFUSED = "identity_assertion_refused"
 
 
 class ApiError(HTTPException):

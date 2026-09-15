@@ -46,6 +46,24 @@ END
 ELSE
     PRINT CONCAT('  contract_labor_agent: user exists (id=', @UserId, ')');
 
+-- U-459 — ensure IsAgent = 1 on an EXISTING row too.
+--
+-- The INSERT above already sets it, so a user created by this seed is correct.
+-- But the flag is only reachable through that branch: a row created before it
+-- was added stays unflagged however often the seed is re-run. U-459 makes
+-- `IsAgent` load-bearing (it is what lets the agent apply a reviewer's emailed
+-- decision in their name), so "probably already correct" is not good enough —
+-- and this host cannot read prod to check. Idempotent; a no-op when already set.
+--
+-- The sibling seed.bill_agent.sql had the same shape AND never set the flag at
+-- all, which is the defect this pair of comments exists to prevent recurring.
+UPDATE dbo.[User]
+   SET IsAgent = 1,
+       ModifiedDatetime = @Now
+ WHERE Id = @UserId
+   AND (IsAgent IS NULL OR IsAgent = 0);
+PRINT CONCAT('  contract_labor_agent: IsAgent ensured (id=', @UserId, ')');
+
 IF EXISTS (SELECT 1 FROM dbo.Auth WHERE Username = @Username)
 BEGIN
     UPDATE dbo.Auth

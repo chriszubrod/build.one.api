@@ -19,6 +19,8 @@ from shared.pdf_utils import fit_page_to_letter
 from shared.lifecycle.resolver import attach_lifecycle
 from shared.rbac import require_module_api
 from shared.rbac_constants import Modules
+from entities.review.business.completion import gate_completion
+from entities.review.business.model import ParentType
 
 logger = logging.getLogger(__name__)
 
@@ -463,7 +465,11 @@ def create_invoice_router(body: InvoiceCreate, current_user: dict = Depends(requ
             invoice_number=body.invoice_number,
             total_amount=to_decimal_or_none(body.total_amount),
             memo=body.memo,
-            is_draft=body.is_draft if body.is_draft is not None else True,
+            # U-458: always True. Design §4.2 — create-as-completed is system_authz
+            # only; the QBO pull connectors and CLI sync reach it through the SERVICE
+            # layer, which keeps its parameter. An external caller can no longer mint
+            # an already-completed document that skipped completion entirely.
+            is_draft=True,
         )
         return item_response(invoice.to_dict())
     except ValueError as e:
@@ -1144,7 +1150,15 @@ def update_invoice_by_public_id_router(public_id: str, body: InvoiceUpdate, curr
             invoice_number=body.invoice_number,
             total_amount=to_decimal_or_none(body.total_amount),
             memo=body.memo,
-            is_draft=body.is_draft,
+        # U-458: the UPDATE path no longer carries is_draft. Passing None
+        # makes the sproc's `CASE WHEN @IsDraft IS NULL` preserve the stored
+        # value. Completing is `POST /complete/*` ONLY — which is where the
+        # lifecycle gate lives. Letting `can_update` flip this field was a
+        # gate bypass (Codex P0): it marked the document completed without
+        # `can_complete` and without any review check. Bill has been immune
+        # since U-446 made its IsDraft a computed column; this is the same
+        # property enforced at the edge for the three that still write it.
+            is_draft=None,
         )
         if not invoice:
             raise_not_found("Invoice")
@@ -1173,6 +1187,18 @@ def complete_invoice_router(public_id: str, current_user: dict = Depends(require
     invoice = service.read_by_public_id(public_id=public_id)
     if not invoice:
         raise_not_found("Invoice")
+
+    # U-458 completion gate — see the note on the Bill route. Ships `off`.
+    # NB Invoice has no already-completed check of its own (unlike the other
+    # three); U-458 does not add one — that asymmetry is pre-existing and is its
+    # own unit.
+    gate_completion(
+        parent_type=ParentType.INVOICE,
+        parent_public_id=public_id,
+        module_name=Modules.INVOICES,
+        current_user=current_user,
+        resolve_review=lambda: _current_review_for_invoice(invoice.id),
+    )
 
     from entities.completion_job.business.service import CompletionJobService
 

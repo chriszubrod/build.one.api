@@ -32,6 +32,9 @@ from shared.rbac import require_module_api
 from shared.rbac_constants import Modules
 from core.workflow.api.process_engine import ProcessEngine, TriggerContext, EventType, Channel
 
+from entities.review.business.completion import gate_completion
+from entities.review.business.model import ParentType
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1", tags=["api", "bill"])
@@ -120,7 +123,11 @@ async def create_bill_router(
     Routes through the workflow engine for audit logging and state tracking.
     Completion (SharePoint, Excel, QBO) runs only via POST /complete/bill/{public_id}.
     """
-    is_draft = body.is_draft if body.is_draft is not None else True
+    # U-458: always True. Design §4.2 — create-as-completed is system_authz
+    # only; the QBO pull connectors and CLI sync reach it through the SERVICE
+    # layer, which keeps its parameter. An external caller can no longer mint
+    # an already-completed document that skipped completion entirely.
+    is_draft = True
     user_id = resolve_user_id(current_user)
 
     # Derive intake source from the caller's username. Agent users are
@@ -474,7 +481,14 @@ async def update_bill_by_public_id_router(
             "bill_number": body.bill_number,
             "total_amount": to_decimal_or_none(body.total_amount),
             "memo": body.memo,
-            "is_draft": body.is_draft,
+            # U-458: not forwarded. `UpdateBillById` maps @IsDraft = 0 to
+            # Status = 'completed' (the U-445 compat translation, kept for the
+            # QBO pull connectors and queued iOS PUTs — which call the SERVICE
+            # directly, not this route). Bill's computed IsDraft column blocks a
+            # direct write but NOT that translation, so this route was the same
+            # gate bypass as the other three, on the busiest entity. An earlier
+            # note in this unit wrongly called Bill "immune" — it was not.
+            "is_draft": None,
         },
         workflow_type="bill_update",
     )
@@ -604,6 +618,18 @@ def complete_bill_router(
         raise_not_found("Bill")
     if not getattr(bill, "is_draft", True):
         raise HTTPException(status_code=400, detail="Bill is already completed")
+
+    # U-458 completion gate. No-op while LIFECYCLE_COMPLETION_GATE_BILL is unset
+    # or `off` (the shipped default) — it returns before resolving the review.
+    # Placed AFTER the already-completed check and BEFORE the enqueue so a
+    # refusal leaves no CompletionJob row behind.
+    gate_completion(
+        parent_type=ParentType.BILL,
+        parent_public_id=public_id,
+        module_name=Modules.BILLS,
+        current_user=current_user,
+        resolve_review=lambda: _current_review_for_bill(bill.id),
+    )
 
     from entities.completion_job.business.service import CompletionJobService
 

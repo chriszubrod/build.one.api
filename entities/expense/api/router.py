@@ -1,18 +1,21 @@
 # Python Standard Library Imports
 import logging
 import time
+from datetime import date
 from typing import Optional
 
 # Third-party Imports
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
+from fastapi import status as http_status
 from fastapi.responses import JSONResponse
 from decimal import Decimal
 
 # Local Imports
 from entities.expense.api.schemas import ExpenseCreate, ExpenseUpdate
 from entities.expense.business.service import ExpenseService
+from shared.api.errors import ApiError, ErrorCode
 from shared.api.responses import list_response, item_response, accepted_response, raise_workflow_error, raise_not_found
-from shared.lifecycle.resolver import attach_lifecycle
+from shared.lifecycle.resolver import LIFECYCLE_STATUSES, attach_lifecycle
 from shared.rbac import require_module_api
 from shared.rbac_constants import Modules
 from core.workflow.api.process_engine import ProcessEngine, TriggerContext, EventType, Channel
@@ -106,16 +109,12 @@ def _current_review_for_expense(expense_id):
 
 
 def _expense_dict_with_lifecycle(expense, *, review=None) -> dict:
-    """Serialize an Expense and stamp the derived `status` + `review_status*`.
+    """Serialize an Expense and stamp `status` + `review_status*`.
 
-    U-457, the same derived slice Bill has had since U-443. `status` is DERIVED
-    per request from IsDraft x the latest Review — Expense has no Status column
-    (that is LS-03c, not built), which is exactly why this phase adds no
-    `?status=` filter: post-filtering a paginated page would make `count` lie.
-
-    Expense inherits U-455's frozen `ReviewKind` from day one, so its kind is
-    stable against a ReviewStatus reconfiguration without repeating Bill's
-    history.
+    U-467: `status` is the STORED `Expense.Status` column where one exists
+    (it WINS over the derived value, because it is what the `?status=` filter
+    selected on). The derivation remains as the fallback for a row predating
+    the backfill and as the value the parity check compares against.
     """
     return attach_lifecycle(
         expense.to_dict(),
@@ -132,28 +131,41 @@ def get_expenses_router(
     search: Optional[str] = Query(default=None),
     vendor_id: Optional[int] = Query(default=None),
     is_draft: Optional[bool] = Query(default=None),
+    start_date: Optional[date] = Query(default=None, description="Inclusive lower bound on expense_date (YYYY-MM-DD)."),
+    end_date: Optional[date] = Query(default=None, description="Inclusive upper bound on expense_date (YYYY-MM-DD)."),
+    status: Optional[str] = Query(
+        default=None,
+        description=(
+            "Filter by lifecycle status: draft, submitted, in_review, approved, "
+            "declined or completed. Filters in SQL, so `count` stays truthful."
+        ),
+    ),
     current_user: dict = Depends(require_module_api(Modules.EXPENSES)),
 ):
     """
     Read expenses with pagination + filters.
 
-    Mirrors `GET /get/bills` so agent tooling can search consistently
-    across transactional entities. Service layer (`read_paginated` +
-    `count`) was already in place; this route just wires the filters
-    through. Backwards-compatible — bare GET still works.
+    `status` (U-467) filters on the stored `Expense.Status` column inside the
+    paginated sproc. That is the whole reason the column exists: U-457 derived
+    the same value per request, but post-filtering an already-paginated page
+    would have made `count` describe a different set than `data`.
     """
+    if isinstance(status, str) and status not in LIFECYCLE_STATUSES:
+        raise ApiError(
+            status_code=http_status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=f"Unknown status {status!r}. Expected one of: {', '.join(LIFECYCLE_STATUSES)}.",
+            error_code=ErrorCode.VALIDATION_ERROR,
+        )
     service = ExpenseService()
-    expenses = service.read_paginated(
+    expenses, total = service.read_paginated(
         page_number=page,
         page_size=page_size,
         search_term=search,
         vendor_id=vendor_id,
         is_draft=is_draft,
-    )
-    total = service.count(
-        search_term=search,
-        vendor_id=vendor_id,
-        is_draft=is_draft,
+        status=status if isinstance(status, str) else None,
+        start_date=start_date.isoformat() if isinstance(start_date, date) else None,
+        end_date=end_date.isoformat() if isinstance(end_date, date) else None,
     )
     # ONE lookup for the whole page (U-457). Resolving per row is the N+1 that
     # Bill's slice avoided and pinned; the batch sproc exists for this.
@@ -378,7 +390,7 @@ def complete_expense_router(
     if not expense:
         raise_not_found("Expense")
     if not getattr(expense, "is_draft", True):
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Expense is already completed")
+        raise HTTPException(status_code=http_status.HTTP_400_BAD_REQUEST, detail="Expense is already completed")
 
     # U-458 completion gate — see the note on the Bill route. Ships `off`.
     gate_completion(
@@ -396,6 +408,6 @@ def complete_expense_router(
         background_tasks.add_task(_run_complete_expense, public_id, job.public_id)
     # Coalesced job: completion already in flight; crash recovery is via reclaim watchdog.
     return JSONResponse(
-        status_code=status.HTTP_202_ACCEPTED,
+        status_code=http_status.HTTP_202_ACCEPTED,
         content=accepted_response(public_id, "expense_public_id"),
     )

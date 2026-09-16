@@ -1,7 +1,6 @@
 # Python Standard Library Imports
 import logging
 import re
-import time
 from collections import defaultdict
 from decimal import Decimal
 from typing import Any, List, Optional
@@ -124,7 +123,10 @@ class ExpenseService:
                line_markup: Optional[Decimal] = None, line_price: Optional[Decimal] = None,
                line_is_billable: Optional[bool] = None,
                line_sub_cost_code_id: Optional[int] = None,
-               line_project_public_id: Optional[str] = None) -> Expense:
+               line_project_public_id: Optional[str] = None,
+               status: Optional[str] = None,
+               status_origin: Optional[str] = None,
+               status_source_ref: Optional[str] = None) -> Expense:
         """
         Create a new expense.
 
@@ -214,6 +216,9 @@ class ExpenseService:
             is_credit=is_credit,
             source_email_message_id=source_email_message_id,
             created_by_user_id=current_user_id.get(),
+            status=status,
+            status_origin=status_origin,
+            status_source_ref=status_source_ref,
         )
 
         # When a receipt was supplied, hang it off a placeholder ExpenseLineItem
@@ -339,10 +344,14 @@ class ExpenseService:
         start_date: Optional[str] = None,
         end_date: Optional[str] = None,
         is_draft: Optional[bool] = None,
+        status: Optional[str] = None,
         sort_by: str = "ExpenseDate",
         sort_direction: str = "DESC",
-    ) -> list[Expense]:
-        """Read expenses with pagination + filters, scoped by UserProject."""
+    ) -> tuple[list[Expense], int]:
+        """Read expenses with pagination + filters, scoped by UserProject.
+
+        Returns `(rows, total)` from one sproc execution (U-447, ported U-467).
+        """
         return self.repo.read_paginated(
             page_number=page_number,
             page_size=page_size,
@@ -351,6 +360,7 @@ class ExpenseService:
             start_date=start_date,
             end_date=end_date,
             is_draft=is_draft,
+            status=status,
             sort_by=sort_by,
             sort_direction=sort_direction,
             actor_user_id=current_user_id.get(),
@@ -365,6 +375,7 @@ class ExpenseService:
         start_date: Optional[str] = None,
         end_date: Optional[str] = None,
         is_draft: Optional[bool] = None,
+        status: Optional[str] = None,
     ) -> int:
         """Count expenses matching filter criteria, scoped by UserProject."""
         return self.repo.count(
@@ -373,6 +384,7 @@ class ExpenseService:
             start_date=start_date,
             end_date=end_date,
             is_draft=is_draft,
+            status=status,
             actor_user_id=current_user_id.get(),
             actor_is_system_admin=current_is_system_admin.get(),
         )
@@ -611,63 +623,63 @@ class ExpenseService:
         if not expense.is_draft:
             logger.info(f"Expense {public_id} is already finalized")
 
-        # Step 1: Finalize Expense
+        # Finalize the Expense — ONE idempotent state transition, no retry loop.
+        #
+        # U-467 (U-434 shape). This used to build an ExpenseUpdate from the row
+        # it had just read and push every field back through UpdateExpenseById,
+        # whose @RowVersion predicate made completion lose a race to a concurrent
+        # edit. The 3-attempt retry loop that was meant to absorb that could
+        # never fire — ExpenseRepository.update_by_id RAISES on a 0-row UPDATE
+        # instead of returning None, so the retry branch was unreachable and
+        # time.sleep(0.2) never executed in prod.
+        #
+        # repo.finalize_by_id is guarded on Status <> 'completed' rather than
+        # RowVersion, so it is idempotent and an unrelated concurrent field edit
+        # cannot block it. It returns the row whenever the Expense exists
+        # (flipped by us or already flipped) and None only when the Expense is
+        # genuinely gone.
         try:
-            finalized_expense = None
-            max_retries = 3
-            for attempt in range(max_retries):
-                expense = self.read_by_public_id(public_id=public_id)
-                if not expense:
-                    return {
-                        "status_code": 404,
-                        "message": "Expense not found during finalization",
-                        "expense_finalized": False,
-                        "file_uploads": {},
-                        "excel_syncs": {},
-                        "qbo_sync": {},
-                        "errors": [],
-                    }
-                vendor = self.vendor_service.read_by_id(id=expense.vendor_id) if expense.vendor_id else None
-                if not vendor or not vendor.public_id:
-                    return {
-                        "status_code": 400,
-                        "message": "Vendor not found for expense",
-                        "expense_finalized": False,
-                        "file_uploads": {},
-                        "excel_syncs": {},
-                        "qbo_sync": {},
-                        "errors": [{"step": "finalize_expense", "error": "Vendor not found"}],
-                    }
-                finalized_expense = self.update_by_public_id(
-                    public_id=public_id,
-                    row_version=expense.row_version,
-                    vendor_public_id=vendor.public_id,
-                    expense_date=expense.expense_date,
-                    reference_number=expense.reference_number,
-                    total_amount=Decimal(str(expense.total_amount)) if expense.total_amount is not None else None,
-                    memo=expense.memo,
-                    is_draft=False,
-                )
-                if finalized_expense:
-                    logger.info(f"Expense {public_id} finalized on attempt {attempt + 1}")
-                    break
-                if attempt < max_retries - 1:
-                    time.sleep(0.2)
-            if not finalized_expense:
+            expense = self.read_by_public_id(public_id=public_id)
+            if not expense:
                 return {
-                    "status_code": 500,
-                    "message": "Failed to finalize expense after retries",
+                    "status_code": 404,
+                    "message": "Expense not found during finalization",
                     "expense_finalized": False,
                     "file_uploads": {},
                     "excel_syncs": {},
                     "qbo_sync": {},
-                    "errors": [{"step": "finalize_expense", "error": "Row version conflict after retries"}],
+                    "errors": [],
                 }
+
+            vendor = self.vendor_service.read_by_id(id=expense.vendor_id) if expense.vendor_id else None
+            if not vendor or not vendor.public_id:
+                return {
+                    "status_code": 400,
+                    "message": "Vendor not found for expense",
+                    "expense_finalized": False,
+                    "file_uploads": {},
+                    "excel_syncs": {},
+                    "qbo_sync": {},
+                    "errors": [{"step": "finalize_expense", "error": "Vendor not found"}],
+                }
+
+            finalized = self.repo.finalize_by_id(id=expense.id)
+            if not finalized:
+                return {
+                    "status_code": 404,
+                    "message": "Expense deleted during finalization",
+                    "expense_finalized": False,
+                    "file_uploads": {},
+                    "excel_syncs": {},
+                    "qbo_sync": {},
+                    "errors": [{"step": "finalize_expense", "error": "Expense deleted during finalization"}],
+                }
+            logger.info(f"Expense {public_id} finalized (Status=completed)")
         except Exception as e:
             logger.exception(f"Error finalizing expense {public_id}")
             return {
                 "status_code": 500,
-                "message": str(e),
+                "message": f"Error finalizing expense: {e}",
                 "expense_finalized": False,
                 "file_uploads": {},
                 "excel_syncs": {},

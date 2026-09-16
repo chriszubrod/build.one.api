@@ -329,12 +329,13 @@ def sync_qbo_to_local(
                 except Exception as box_e:
                     logger.warning(f"Could not enqueue Box Excel batch for project {proj_id}: {box_e}")
 
-    # Auto-complete intentionally removed (QBO-pull Step 7 cleanup). The projection sets
-    # is_draft=False, so pulled expenses already arrive final. Calling complete_expense()
-    # here would (a) push the expense BACK to QBO — circular, since it came from QBO — and
-    # (b) double every doc/tracker side-effect this pull now drives directly (SharePoint /
-    # MS-Excel / Box, Steps 4-6). The old loop always short-circuited on `not exp.is_draft`,
-    # so removing it is behavior-identical. Kept at 0 for the result-dict contract.
+    # Auto-complete intentionally removed (QBO-pull Step 7 cleanup). The projection
+    # lands status='completed' / origin qbo_pull, so pulled expenses already arrive
+    # final. Calling complete_expense() here would (a) push the expense BACK to QBO
+    # — circular, since it came from QBO — and (b) double every doc/tracker side-
+    # effect this pull now drives directly (SharePoint / MS-Excel / Box, Steps 4-6).
+    # The old loop always short-circuited on `not exp.is_draft`, so removing it is
+    # behavior-identical. Kept at 0 for the result-dict contract.
     expenses_completed = 0
 
     return {

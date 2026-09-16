@@ -2,6 +2,147 @@
 
 Carry-over items from sessions. Check off as done; prune anything stale.
 
+## U-467 mapping findings — booked out of the Expense-parity Gate-1 session (2026-09-16)
+
+`/em` mapped Bill→Expense lifecycle parity and scoped four serialized units (U-467 api column → U-468 api
+lock/cascade → U-469 api+mcp agent vocabulary → U-470 web layout). U-467 is **Gate-1 APPROVED, not built** —
+its full dispatch packet, census and resolved scout disagreements live in **`docs/handoff-u467-em.md`**, not
+here. These are the items found while mapping that are **out of all four units' scope**.
+
+- [ ] 🔴 **P1 — every QBO-born Bill since U-445 carries the WRONG `StatusOrigin`.** U-445 gave `CreateBill`
+  `@Status` / `@StatusOrigin` / `@StatusSourceRef` (`entities/bill/sql/dbo.bill_create_source_email.sql`), but
+  **nothing binds them**: `BillService.create` has no status kwarg, `BillRepository.create` sends only
+  `IsDraft`, and the connector's `_create_bill` still passes `is_draft=False`. So a pulled Bill lands
+  `StatusOrigin='user'` with a NULL `StatusSourceRef` via the `COALESCE` fallback, and cannot be told apart
+  from a human create. ⚠️ **`docs/design/u357-unified-status-review-status.md:64` asserts the Bill connector
+  already writes `qbo_pull` — that is FALSE against code**, so a reviewer using the design as the oracle will
+  "verify" parity that does not exist. Fix = the same three-layer change U-467 makes for Expense, plus an
+  `/em`-applied one-off `UPDATE` for rows with `QboId IS NOT NULL AND StatusOrigin='user' AND StatusDatetime >=
+  <U-445 deploy>`. U-467 corrects the doc line; it does not fix Bill.
+
+- [ ] 🟡 **P2 — Expense completion results are process-local; Bill's are durable.**
+  `_EXPENSE_COMPLETION_RESULT_CACHE` (`entities/expense/api/router.py:28-36`) is an in-memory dict, while Bill
+  persists to `dbo.BillCompletionResult` and reads it back through `BillRepository.get_completion_result`. The
+  API runs `-w 2`, so `GET /get/expense/{id}/completion-result` can hit the worker that did **not** run the job
+  and answer 404 for a completion that succeeded. Port = new `dbo.expense_completion_result.sql` (table +
+  Upsert/Get sprocs) + repo methods + the route + a write in `_run_complete_expense`. Changes 404 semantics
+  from TTL-expiry to never-ran. Deliberately left out of U-467 — it is not a lifecycle-column concern.
+
+- [ ] 🟡 **P2 — `dbo.expense.sql`'s drift header is half wrong and nothing pins it.** Bullet 1 is true (the
+  `CREATE TABLE` omits `IsCredit`, `SourceEmailMessageId`, `CompanyId`, `CreatedByUserId` — all four live in
+  prod). **Bullet 2 is FALSE**: it claims the list sprocs lack `@ActorUserId`/`@ActorIsSystemAdmin`, but U-089
+  (`7aaea458`) and U-100 (`29ebf807`) reconciled them and `tests/test_list_sproc_scoping.py:35-37` pins their
+  presence. A stale DO-NOT-RERUN warning on a file that **is** re-runnable teaches the next session the wrong
+  thing. U-467 rewrites the header; **no test asserts its content** — worth one.
+
+- [ ] 🟡 **P2 — `scripts/verify_propose_invoice_source_links_tier0.py` has an untested raw `INSERT INTO
+  dbo.Expense` naming `IsDraft`** (`:169-178`). It becomes SQL error 271 the moment U-467's computed column
+  lands. U-446 hit the identical shape in `new_bill()` in the **same file** and fixed it; the Expense twin was
+  missed then. U-467 fixes it, but the class stands: **raw-SQL fixture scripts are invisible to the repo's
+  sproc/param contract tests**, so the next computed-column swap will hit a third one.
+
+- [ ] 🟢 **P3 — `tests/test_u445_bill_status_column.py`'s writer-scan is the only guard of its kind.** It is
+  what proves nothing anywhere writes `Bill.IsDraft`. There is no equivalent for any other entity until U-467
+  clones it for Expense. BillCredit (LS-03b) and Invoice (LS-03d) will each need one; consider extracting a
+  shared parametrized scan rather than a fourth copy — verbatim copy-paste across entities is exactly how the
+  completion-job marking bug (U-435) reached four entities.
+
+- **Already booked, re-confirmed here, no new action:** `POST /ensure-expense-from-qbo-purchase/{id}` remains a
+  create-as-completed path reachable by a `QBO_SYNC.can_create` human without entering `system_authz` (see the
+  U-458→U-464 follow-up section). U-467 changes what that path writes (`status='completed'`, origin
+  `qbo_pull`) but does **not** close the authz gap — the wrap-vs-refuse decision is its own unit.
+
+## U-467 review-pass findings — booked from the build session (2026-09-16)
+
+Found by the F2 review / Pass-2 quality passes while building U-467. None are fixed there except
+where noted. **The unifying theme: porting Bill's shape faithfully also ports Bill's warts.** Four
+separate instances below. BillCredit (LS-03b) and Invoice (LS-03d) are booked to receive the same
+port — each faithful copy propagates these again.
+
+- [ ] 🔴 **P1 — Bill's `Status` backfill derives review kind from LIVE `ReviewStatus` flags; the read
+  path prefers the FROZEN `Review.[ReviewKind]`.** `shared/lifecycle/resolver.py` does
+  `kind = getattr(review, "review_kind", None) or review_kind_from_flags(...)` — frozen first. U-455's
+  own backfill RAISERRORs rather than "leaving history derived from live config", so this is a stated
+  invariant, and `dbo.bill.sql`'s backfill violates it. A Bill whose latest Review was written
+  `submitted`, on a `ReviewStatus` that later had `IsInitial` cleared by `UpdateReviewStatus`, carries a
+  stored `Status` contradicting the `review_status_kind` the API reports for the same row. **Bill's rows
+  are already backfilled and the backfill is one-shot (guarded on `StatusDatetime IS NULL`), so
+  re-applying repairs nothing** — this needs a data-repair `UPDATE`, not just a code fix. U-467 fixed the
+  Expense copy (`COALESCE(r.[ReviewKind], <flag CASE>)`); Bill is untouched and live-wrong.
+
+- [ ] 🔴 **P1 — Bill's "nothing anywhere writes `IsDraft`" guard is BLIND to aliased UPDATEs, and a live
+  write site has that exact shape.** Mutation-proved during U-467's Pass 2: mutating the Bill mirror in
+  `entities/review/sql/dbo.review.sql:597` (`UPDATE b … FROM dbo.[Bill] b`) to assign `IsDraft` is caught
+  by Expense's regex and **missed entirely by Bill's** (`tests/test_u445_bill_status_column.py:703-775`).
+  U-467 hardened the Expense copy with an aliased-UPDATE arm; the hardening cannot reach the original
+  because the ~70-line scanner is cloned per entity. Port the alias arm to `test_u445` — or do it as part
+  of the shared-contract unit below, which subsumes it.
+
+- [ ] 🟡 **P2 — `ExpenseService.count` / `ExpenseRepository.count` / `CountExpenses` have ZERO callers.**
+  The list route was the only one and U-467's single-snapshot change removed it. Verified across
+  `entities/`, `core/`, `integrations/`, `scripts/`, `entities/expense/intelligence/tools.py`,
+  build.one.web and build.one.mcp. ⚠️ `docs/handoff-u467-em.md:190` justifies keeping `CountExpenses` with
+  "(other callers)" — **that claim is false**. U-467 nonetheless added `@Status` to the dead sproc and
+  `status`/`conn` to the dead methods, so the `@Status` predicate now exists in two places that must stay
+  in sync, one unreachable. Same pre-existing hole on Bill (`entities/bill/business/service.py:617`).
+  Decide once for both: delete the chain, or document it as a retained surface.
+
+- [ ] 🟡 **P2 — `complete_expense` / `complete_bill` both re-read the row for a retry loop that no longer
+  exists.** `entities/expense/business/service.py:642` re-reads what line 611 already bound, with nothing
+  mutating in between. The inner read was load-bearing only while the loop needed a fresh `RowVersion` per
+  attempt; `finalize_by_id` carries none. Costs two extra round trips per completion (`read_by_public_id`
+  plus `assert_can_access_expense`, which opens its own connection) and leaves two 404 paths with
+  different messages for one condition. Bill's `complete_bill` (`service.py:1539`) is the clone source and
+  has it too — fix together, not unilaterally.
+
+- [ ] 🟡 **P2 — `IX_Expense_Status` is created, dropped, and rebuilt byte-identically inside one
+  transaction.** `entities/expense/sql/dbo.expense.sql:301-307 / 347-349 / 386-388`. The header justifies
+  the drop as "blocks the drop of `IsDraft`" — **inherited reasoning that does not apply to Expense**:
+  Bill's index genuinely `INCLUDE`d `IsDraft` in the deployed U-445 image, Expense's never names it (the
+  file's own comment says "Do not INCLUDE [IsDraft]"). Costs a second full filtered-index build over
+  11,753 rows under the schema-modification lock the apply already holds. Not fixed in U-467 — it is a
+  structural change to a mutation-verified P0 apply file, and belongs with the Bill-side cleanup.
+
+- [ ] 🟡 **P2 — list-endpoint efficiency, both entities.** (a) `ReadExpensesPaginated` runs three
+  `CONVERT(VARCHAR(19), …)` per row and stores a duplicate `SortExpenseDate` inside
+  `SELECT … INTO #FilteredExpenses`, so they execute over the whole filtered set (~11.7k on the unfiltered
+  page) instead of the ~50-row page — move them to the page projection and the duplicate column
+  disappears. (b) `SELECT COUNT(*) FROM #FilteredExpenses` is a third full pass over the widest object in
+  the request; `DECLARE @Total INT = @@ROWCOUNT` right after the materialize is free and makes the
+  cannot-disagree guarantee stronger. Both are the U-447 template, so `dbo.bill.sql` carries them too
+  (`SortBillDate`/`SortDueDate`) — change across both or neither.
+
+- [ ] 🟢 **P3 — extract a shared lifecycle SQL/test contract BEFORE LS-03b.** Measured during U-467: after
+  `Bill`→`Expense` substitution the column-add block (23 executable lines) and the
+  constraints+index+swap block (65 lines) are **character-for-character identical**, and 38 of 65 test
+  functions match name-for-name. Do **not** generalize the DDL (a dynamic-SQL `EnsureLifecycleStatusColumns`
+  would void every literal-text pin and hide the `ALTER` a reviewer must read). **Extract the
+  verification**: a `tests/lifecycle_sql_contract.py` exporting the ~15 structural assertions (ordering,
+  re-apply guard, `WITH CHECK` count, `CK_*_Status` == `LIFECYCLE_STATUSES`, filtered-index shape, swap
+  idempotence, blocker-precedes-drop, second-apply resurrection, atomic-apply banner, list+count `@Status`
+  pins) plus the parameterized `IsDraft`-writer scanner. Evidence the copies already drift: `test_u445` and
+  `test_u467` both define `test_the_backfill_expression_matches_the_python_resolver` **under the same name,
+  certifying two different rules**. Sequence it so BillCredit is the first CONSUMER of the shared contract
+  rather than the third to re-derive it. Also folds in `normalize_status_filter` (the `?status=` 422 triple
+  is copy-pasted between the two routers, and the Expense copy dropped the rationale comment), a
+  `STORED_STATUS_PARENTS` registry (the "which entities have a stored Status" fact is written in prose in
+  ~15 places and is already stale at `entities/bill/api/router.py:99`), and `fetch_total_result_set` in
+  `shared/database.py`.
+
+- [ ] 🟢 **P3 — `/security-review` reviews NOTHING on uncommitted work.** It builds its diff from branch
+  COMMITS, so on a unit that is staged-but-not-committed — i.e. every unit at Pass-3 time in the `/em`
+  pipeline — it returns `FILES MODIFIED: (empty)` / `DIFF CONTENT: (empty)` and would emit a clean report
+  over nothing. Confirmed on U-467 2026-09-16: `git add -N` was done and `git diff HEAD --stat` was
+  non-empty (25 files), and the skill STILL saw nothing. The existing `git add -N` guard in
+  `engineering-manager.md` catches the new-files case but **not** this one. Fix the brief: either commit
+  before Pass 3, or hand a security reviewer an explicit diff file the way step 3 does for Codex (what
+  U-467 did). A P0 unit silently skipping its security pass is the exact failure the step exists to prevent.
+
+- [ ] 🟢 **P3 — `TransitionExpenseStatus` / `TransitionBillStatus` have no Python caller.** 75 lines of new
+  SQL each, pinned by three tests, exercised by nothing — including a reopen fence guarding a call that
+  does not exist. Deliberate Gate-1 parity calls, not defects; booked so the pins have a horizon. Land the
+  consumer with the Expense submit/approve/decline transitions (U-469) or retire them.
+
 ## U-442 — Remove the remaining `qbo.*` staging tables entirely (booked 2026-09-10, not scoped)
 
 Chris's call 2026-09-10. **Booked only — no scope review done yet.**
@@ -4309,8 +4450,9 @@ Shipped in BATCH-36. Everything below is deliberately NOT in those units.
 
 - [ ] **`POST /ensure-expense-from-qbo-purchase/{id}`** is callable by a
   `QBO_SYNC.can_create` user, does not enter `system_authz`, and its connector
-  creates Expenses with `is_draft=False` — a create-as-completed path that
-  survives U-458's edge closure. Pre-existing; found by Codex reviewing U-458.
+  now lands `status='completed'` / origin `qbo_pull` (U-467) — a create-as-
+  completed path that survives U-458's edge closure. The authz gap stays
+  booked; the wrap-vs-refuse decision is its own unit.
 
 - [ ] **18 `in_review` rows on INVOICE parents carry the system actor.** U-463's
   backfill is scoped to Bill, because `_advance_to_in_review` is bill-specific and

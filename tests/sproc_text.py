@@ -18,6 +18,17 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
+def strip_sql_comments(text: str) -> str:
+    """Strip `--` line comments so a pin cannot be satisfied by a remark.
+
+    The canonical home for this. It was open-coded ~24 times across the suite
+    before U-467; call this instead of re-inlining the generator expression, so
+    hardening it (it currently cuts at the first `--`, including one inside a
+    string literal) is a one-file change rather than a 24-site sweep.
+    """
+    return "\n".join(line.split("--")[0] for line in text.splitlines())
+
+
 def sproc_body(sql_path: Path, name: str) -> str:
     """Return the text of `name`'s definition, from CREATE up to the next GO.
 
@@ -37,13 +48,16 @@ def sproc_body(sql_path: Path, name: str) -> str:
 def sproc_params(sql_path: Path, name: str) -> str:
     """Return ONLY the declared parameter list, between the name and `AS`.
 
+    Line comments are stripped so a `-- @Foo` remark cannot satisfy a
+    declaration pin (the regression `sproc_params` exists to catch).
+
     See the module docstring for why this is not interchangeable with
     `sproc_body`.
     """
     body = sproc_body(sql_path, name)
     match = re.search(r"\((.*?)\)\s*AS\b", body, re.DOTALL)
     assert match is not None, f"{name} has no parameter list in {sql_path.name}"
-    return match.group(1)
+    return strip_sql_comments(match.group(1))
 
 
 def split_top_level(items: str) -> list[str]:

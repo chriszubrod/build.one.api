@@ -94,8 +94,8 @@ def attach_lifecycle(
     exists. It WINS over the derived value, because it is what the `?status=`
     filter selected on — deriving a different answer here than the WHERE clause
     used would make a row appear under a tab it was not filtered into. The
-    derivation remains for entities that have no column yet (expense,
-    bill_credit, invoice, contract_labor) and as the value the parity check
+    derivation remains for entities that have no column yet (bill_credit,
+    invoice, contract_labor) and as the value the parity check
     compares against.
     """
     if review is None:

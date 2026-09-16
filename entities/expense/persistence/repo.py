@@ -12,6 +12,7 @@ import pyodbc
 from entities.expense.business.model import Expense
 from shared.database import (
     call_procedure,
+    conn_ctx,
     get_connection,
     map_database_error,
 )
@@ -56,6 +57,10 @@ class ExpenseRepository:
                 memo=getattr(row, "Memo", None),
                 is_draft=bool(getattr(row, "IsDraft", False)) if getattr(row, "IsDraft", None) is not None else None,
                 is_credit=bool(getattr(row, "IsCredit", False)) if getattr(row, "IsCredit", None) is not None else None,
+                status=getattr(row, "Status", None),
+                status_datetime=getattr(row, "StatusDatetime", None),
+                status_origin=getattr(row, "StatusOrigin", None),
+                status_source_ref=getattr(row, "StatusSourceRef", None),
                 # getattr-guarded: read sprocs that don't yet project this
                 # column simply yield None (no AttributeError).
                 source_email_message_id=getattr(row, "SourceEmailMessageId", None),
@@ -69,7 +74,7 @@ class ExpenseRepository:
             logger.error(f"Unexpected error during expense mapping: {error}")
             raise map_database_error(error)
 
-    def create(self, *, tenant_id: int = 1, vendor_id: Optional[int] = None, expense_date: Optional[str] = None, reference_number: Optional[str] = None, total_amount: Optional[Decimal] = None, memo: Optional[str] = None, is_draft: bool = True, is_credit: bool = False, source_email_message_id: Optional[int] = None, created_by_user_id: Optional[int] = None) -> Expense:
+    def create(self, *, tenant_id: int = 1, vendor_id: Optional[int] = None, expense_date: Optional[str] = None, reference_number: Optional[str] = None, total_amount: Optional[Decimal] = None, memo: Optional[str] = None, is_draft: bool = True, is_credit: bool = False, source_email_message_id: Optional[int] = None, created_by_user_id: Optional[int] = None, status: Optional[str] = None, status_origin: Optional[str] = None, status_source_ref: Optional[str] = None) -> Expense:
         """
         Create a new expense.
 
@@ -100,6 +105,9 @@ class ExpenseRepository:
                         "IsCredit": 1 if is_credit else 0,
                         "SourceEmailMessageId": source_email_message_id,
                         "CreatedByUserId": created_by_user_id,
+                        "Status": status,
+                        "StatusOrigin": status_origin,
+                        "StatusSourceRef": status_source_ref,
                     },
                 )
                 row = cursor.fetchone()
@@ -235,6 +243,33 @@ class ExpenseRepository:
             logger.error(f"Error during update expense by ID: {error}")
             raise map_database_error(error)
 
+    def finalize_by_id(self, id: int) -> Optional[Expense]:
+        """Idempotently flip Status to completed. The only sanctioned finalize path.
+
+        Returns the Expense when it exists — whether this call flipped it or it
+        was already finalized — and None when no such Expense exists. That
+        asymmetry is the point: `FinalizeExpenseById`'s UPDATE matches 0 rows
+        in BOTH the already-finalized and the missing case, so the sproc
+        re-SELECTs unconditionally and the caller reads presence, not rowcount.
+
+        Unlike `update_by_id` this carries NO RowVersion and does NOT raise on a
+        no-op. Finalization is a state transition; an unrelated concurrent field
+        edit must not be able to fail it. See the sproc's header (U-467).
+        """
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(
+                    cursor=cursor,
+                    name="FinalizeExpenseById",
+                    params={"Id": id},
+                )
+                row = cursor.fetchone()
+                return self._from_db(row) if row else None
+        except Exception as error:
+            logger.error(f"Error during finalize expense by ID {id}: {error}")
+            raise map_database_error(error)
+
     def read_paginated(
         self,
         *,
@@ -245,15 +280,23 @@ class ExpenseRepository:
         start_date: Optional[str] = None,
         end_date: Optional[str] = None,
         is_draft: Optional[bool] = None,
+        status: Optional[str] = None,
         sort_by: str = "ExpenseDate",
         sort_direction: str = "DESC",
+        conn: Optional[pyodbc.Connection] = None,
         actor_user_id: Optional[int] = None,
         actor_is_system_admin: Optional[bool] = None,
-    ) -> list[Expense]:
-        """Read expenses with pagination + filters, scoped by UserProject."""
+    ) -> tuple[list[Expense], int]:
+        """Read one page of expenses AND the matching total, scoped by UserProject.
+
+        Returns `(rows, total)` (U-447, ported U-467). The total used to come
+        from a second sproc on a second round trip, which put it in a different
+        snapshot from the page. Both now come from one execution over one
+        materialized set.
+        """
         try:
-            with get_connection() as conn:
-                cursor = conn.cursor()
+            with conn_ctx(conn) as c:
+                cursor = c.cursor()
                 params = {
                     "PageNumber": page_number,
                     "PageSize": page_size,
@@ -262,6 +305,7 @@ class ExpenseRepository:
                     "StartDate": start_date,
                     "EndDate": end_date,
                     "IsDraft": 1 if is_draft else (0 if is_draft is False else None),
+                    "Status": status,
                     "SortBy": sort_by,
                     "SortDirection": sort_direction,
                     "ActorUserId": actor_user_id,
@@ -273,7 +317,23 @@ class ExpenseRepository:
                     params=params,
                 )
                 rows = cursor.fetchall()
-                return [self._from_db(row) for row in rows if row]
+                expenses = [self._from_db(row) for row in rows if row]
+                # Second result set: the total over the SAME materialized set.
+                #
+                # RAISES if it is absent (Codex P1). The obvious fallback —
+                # `total = len(expenses)` — is silently wrong in exactly the
+                # case that matters: page 2 of 120 matches would report
+                # `count: 50`, and an out-of-range page `count: 0`, capping
+                # every client's pagination at one page with nothing in the logs.
+                if not cursor.nextset():
+                    raise RuntimeError(
+                        "ReadExpensesPaginated returned no total — the deployed sproc "
+                        "predates U-447. Apply entities/expense/sql/dbo.expense.sql."
+                    )
+                row = cursor.fetchone()
+                if row is None:
+                    raise RuntimeError("ReadExpensesPaginated returned an empty total result set.")
+                return expenses, int(row[0])
         except Exception as error:
             logger.error(f"Error during read paginated expenses: {error}")
             raise map_database_error(error)
@@ -286,19 +346,22 @@ class ExpenseRepository:
         start_date: Optional[str] = None,
         end_date: Optional[str] = None,
         is_draft: Optional[bool] = None,
+        status: Optional[str] = None,
+        conn: Optional[pyodbc.Connection] = None,
         actor_user_id: Optional[int] = None,
         actor_is_system_admin: Optional[bool] = None,
     ) -> int:
         """Count expenses matching filter criteria, scoped by UserProject."""
         try:
-            with get_connection() as conn:
-                cursor = conn.cursor()
+            with conn_ctx(conn) as c:
+                cursor = c.cursor()
                 params = {
                     "SearchTerm": search_term,
                     "VendorId": vendor_id,
                     "StartDate": start_date,
                     "EndDate": end_date,
                     "IsDraft": 1 if is_draft else (0 if is_draft is False else None),
+                    "Status": status,
                     "ActorUserId": actor_user_id,
                     "ActorIsSystemAdmin": _bit(actor_is_system_admin),
                 }

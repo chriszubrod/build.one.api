@@ -15,13 +15,15 @@ What was NOT free: a BATCH current-review reader per entity. Only
 review per row. That N+1 is the mistake Bill's slice avoided and pinned, and it
 is the actual content of this unit.
 
-NOT IN SCOPE: `?status=` filtering. That needs a stored Status column, which is
-LS-03b/c/d and not built — and post-filtering a paginated page would make
-`count` lie. This is the DERIVED read-model slice only.
+`?status=` filtering landed for Expense in U-467 (stored Status column +
+single-snapshot page+total). BillCredit and Invoice still have no column —
+post-filtering a paginated page would make `count` lie, so those two stay
+derived-only.
 
 Live shape at ship time: Invoice has 49 review rows; Expense and BillCredit have
 ZERO. For those two the block resolves to `kind: none` with `status` derived
-from IsDraft alone, which is still strictly more than they emitted before.
+from IsDraft alone (Expense: stored Status after U-467), which is still strictly
+more than they emitted before.
 """
 
 import inspect
@@ -185,8 +187,11 @@ def _drive_list(module, service_attr, route_name, filter_kw, batch, review_map):
         SimpleNamespace(id=202, is_draft=True, to_dict=lambda: {"public_id": "row-202"}),
     ]
     svc = MagicMock()
-    svc.read_paginated.return_value = rows
-    svc.count.return_value = 2
+    if service_attr == "ExpenseService":
+        svc.read_paginated.return_value = (rows, len(rows))
+    else:
+        svc.read_paginated.return_value = rows
+        svc.count.return_value = 2
     with patch.object(mod, service_attr, return_value=svc), \
          patch("entities.review.persistence.repo.ReviewRepository") as Repo:
         getattr(Repo.return_value, batch).return_value = review_map
@@ -241,8 +246,11 @@ def test_the_list_asks_the_batch_reader_for_exactly_the_page_ids(
     rows = [SimpleNamespace(id=101, is_draft=True, to_dict=lambda: {}),
             SimpleNamespace(id=202, is_draft=True, to_dict=lambda: {})]
     svc = MagicMock()
-    svc.read_paginated.return_value = rows
-    svc.count.return_value = 2
+    if service_attr == "ExpenseService":
+        svc.read_paginated.return_value = (rows, len(rows))
+    else:
+        svc.read_paginated.return_value = rows
+        svc.count.return_value = 2
     with patch.object(mod, service_attr, return_value=svc), \
          patch("entities.review.persistence.repo.ReviewRepository") as Repo:
         reader = getattr(Repo.return_value, batch)
@@ -362,11 +370,14 @@ def test_a_document_with_no_id_never_reaches_the_review_sproc(
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("module,prefix,id_kw,entity,batch", ENTITIES)
+@pytest.mark.parametrize(
+    "module,prefix,id_kw,entity,batch",
+    [row for row in ENTITIES if row[3] != "Expense"],
+)
 def test_no_status_filter_is_added_in_this_phase(module, prefix, id_kw, entity, batch):
-    """`?status=` needs the stored Status column (LS-03b/c/d, not built), and
-    post-filtering a paginated page would make `count` lie. Adding it here
-    would be a filter with nothing behind it."""
+    """`?status=` needs the stored Status column (LS-03b/d, not built), and
+    post-filtering a paginated page would make `count` lie. Expense gained
+    the filter in U-467; BillCredit and Invoice have not."""
     import importlib
 
     mod = importlib.import_module(module)

@@ -168,10 +168,15 @@ def verify() -> int:
             def new_expense(qbo_id: str, realm_id: str = REALM) -> int:
                 cur.execute(
                     """
+                    -- U-467: names Status, not IsDraft. IsDraft is a PERSISTED
+                    -- COMPUTED column now, and an INSERT that names one is
+                    -- SQL Server error 271 — this harness would simply stop
+                    -- working. 'completed' is the equivalent of the IsDraft=0
+                    -- these fixtures used.
                     INSERT INTO dbo.Expense
-                        (VendorId, ExpenseDate, ReferenceNumber, QboId, RealmId, IsDraft, CreatedDatetime)
+                        (VendorId, ExpenseDate, ReferenceNumber, QboId, RealmId, Status, CreatedDatetime)
                     OUTPUT INSERTED.Id
-                    VALUES (?, SYSDATETIME(), 'U301C-VERIFY-EXP-REF', ?, ?, 0, SYSDATETIME())
+                    VALUES (?, SYSDATETIME(), 'U301C-VERIFY-EXP-REF', ?, ?, 'completed', SYSDATETIME())
                     """,
                     vendor_id, qbo_id, realm_id,
                 )

@@ -276,9 +276,9 @@ def test_only_completed_is_terminal():
 
 
 def test_it_falls_back_to_is_draft_for_entities_without_a_status_column():
-    """Expense, BillCredit and Invoice have no Status column until their own
+    """BillCredit and Invoice have no Status column until their own
     Phase-3 units land, so the helper can be reused there without being wrong in
-    the meantime."""
+    the meantime. Expense gained a stored column in U-467."""
     set_authz_context(user_id=20, company_id=1, is_system_admin=False)
     assert_editable(status=None, is_draft=True, what="x")      # draft -> editable
     with pytest.raises(StatusLockedError):

@@ -23,6 +23,16 @@ class Expense:
     memo: Optional[str]
     is_draft: Optional[bool]
     is_credit: Optional[bool]
+    # U-467 (U-357 Phase 3, LS-03c). The canonical lifecycle state, STORED —
+    # U-457 derived it per request, which was correct but unfilterable
+    # (post-filtering a paginated page makes `count` lie). Defaulted so every
+    # existing construction site — tests, fixtures, the QBO connectors — keeps
+    # working. `is_draft` stays readable; it is a PERSISTED COMPUTED column
+    # over Status.
+    status: Optional[str] = None
+    status_datetime: Optional[str] = None
+    status_origin: Optional[str] = None
+    status_source_ref: Optional[str] = None
     # FK back to dbo.EmailMessage when this expense was created from a receipt
     # email (receipt-intake pipeline). NULL for manual / QBO-pulled expenses.
     source_email_message_id: Optional[int] = None

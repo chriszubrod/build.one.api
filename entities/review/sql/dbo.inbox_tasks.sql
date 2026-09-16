@@ -225,9 +225,9 @@ BEGIN
           --
           -- `IsDraft = 1`, not `Status <> 'completed'`: on Bill the two are the
           -- same predicate by construction (IsDraft is PERSISTED COMPUTED over
-          -- Status since U-446), and IsDraft is the only one that exists on
-          -- Expense/BillCredit/Invoice, whose Status columns are LS-03b/c/d and
-          -- NOT BUILT.
+          -- Status since U-446; Expense too since U-467). BillCredit and
+          -- Invoice still have only IsDraft (LS-03b/d, not built). This arm
+          -- stays on IsDraft so the four parents share one predicate.
           AND B.[IsDraft] = 1
           AND (
             @IsSystemAdmin = 1
@@ -282,9 +282,9 @@ BEGIN
           --
           -- `IsDraft = 1`, not `Status <> 'completed'`: on Bill the two are the
           -- same predicate by construction (IsDraft is PERSISTED COMPUTED over
-          -- Status since U-446), and IsDraft is the only one that exists on
-          -- Expense/BillCredit/Invoice, whose Status columns are LS-03b/c/d and
-          -- NOT BUILT.
+          -- Status since U-446; Expense too since U-467). BillCredit and
+          -- Invoice still have only IsDraft (LS-03b/d, not built). This arm
+          -- stays on IsDraft so the four parents share one predicate.
           AND E.[IsDraft] = 1
           AND (
             @IsSystemAdmin = 1
@@ -339,9 +339,9 @@ BEGIN
           --
           -- `IsDraft = 1`, not `Status <> 'completed'`: on Bill the two are the
           -- same predicate by construction (IsDraft is PERSISTED COMPUTED over
-          -- Status since U-446), and IsDraft is the only one that exists on
-          -- Expense/BillCredit/Invoice, whose Status columns are LS-03b/c/d and
-          -- NOT BUILT.
+          -- Status since U-446; Expense too since U-467). BillCredit and
+          -- Invoice still have only IsDraft (LS-03b/d, not built). This arm
+          -- stays on IsDraft so the four parents share one predicate.
           AND BC.[IsDraft] = 1
           AND (
             @IsSystemAdmin = 1
@@ -396,9 +396,9 @@ BEGIN
           --
           -- `IsDraft = 1`, not `Status <> 'completed'`: on Bill the two are the
           -- same predicate by construction (IsDraft is PERSISTED COMPUTED over
-          -- Status since U-446), and IsDraft is the only one that exists on
-          -- Expense/BillCredit/Invoice, whose Status columns are LS-03b/c/d and
-          -- NOT BUILT.
+          -- Status since U-446; Expense too since U-467). BillCredit and
+          -- Invoice still have only IsDraft (LS-03b/d, not built). This arm
+          -- stays on IsDraft so the four parents share one predicate.
           AND I.[IsDraft] = 1
           AND (
             @IsSystemAdmin = 1

@@ -60,9 +60,10 @@ def test_every_list_arm_requires_an_open_parent(entity, alias):
 
 
 def test_the_predicate_is_is_draft_not_a_status_comparison():
-    """Expense, BillCredit and Invoice have NO Status column — LS-03b/c/d are
-    not built. A `Status <> 'completed'` predicate would be correct on Bill and
-    an invalid-column error on the other three."""
+    """BillCredit and Invoice have NO Status column — LS-03b/d are
+    not built. Expense now has Status (U-467) but this inbox arm stays on
+    IsDraft so the four parents share one predicate. A Status comparison
+    must not appear in this file."""
     sql = _executable(INBOX_SQL)
     assert "[Status] <> 'completed'" not in sql
     assert "[Status] != 'completed'" not in sql
@@ -158,7 +159,7 @@ def test_contract_labor_is_guarded_by_translation_not_by_exemption():
 
 
 def test_the_guard_reads_both_lifecycle_shapes():
-    """Only Bill has `status`; Expense/BillCredit/Invoice have only `is_draft`;
+    """Bill and Expense have `status`; BillCredit/Invoice have only `is_draft`;
     ContractLabor has only `status`, in its own vocabulary. Reading just one of
     the two would make the guard a silent no-op on most of the fleet."""
     from entities.review.business.service import ReviewService

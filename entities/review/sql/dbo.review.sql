@@ -574,6 +574,24 @@ BEGIN
     -- the Review `submitted` while setting the Bill to `in_review`. One read,
     -- one answer, and the two can no longer disagree -- which also makes the
     -- precedence impossible to duplicate wrongly, since it now exists once.
+    --
+    -- U-467: Expense Status mirror. Couples dbo.review.sql to dbo.expense.sql
+    -- for a one-transaction apply (schema first leaves a window where Expense
+    -- stores Status but this sproc does not stamp it; review first fails with
+    -- error 207). Same shape as the Bill mirror below: assign the frozen
+    -- @ReviewKind onto an OPEN expense only.
+    IF @ExpenseId IS NOT NULL
+    BEGIN
+        UPDATE e
+        SET e.[Status] = @ReviewKind,
+            e.[StatusDatetime] = @Now,
+            e.[StatusOrigin] = 'user',
+            e.[ModifiedDatetime] = @Now
+        FROM dbo.[Expense] e
+        WHERE e.[Id] = @ExpenseId
+          AND e.[IsDraft] = 1;
+    END
+
     IF @BillId IS NOT NULL
     BEGIN
         UPDATE b

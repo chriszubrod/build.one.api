@@ -200,14 +200,21 @@ class PurchaseExpenseConnector:
         pre-U-354 legacy CREATE step exactly.
         """
         logger.info(f"Creating new Expense from QboPurchase {qbo_purchase.id}: reference_number={reference_number}")
+        realm_id = qbo_purchase.realm_id
+        qbo_id = qbo_purchase.qbo_id
+        status_source_ref = (
+            f"qbo:{realm_id}/{qbo_id}" if realm_id and qbo_id else None
+        )
         return self.expense_service.create(
             vendor_public_id=vendor_public_id,
             expense_date=qbo_purchase.txn_date,
             reference_number=reference_number,
             total_amount=qbo_purchase.total_amt,
             memo=qbo_purchase.private_note,
-            is_draft=False,
             is_credit=qbo_purchase.credit or False,
+            status="completed",
+            status_origin="qbo_pull",
+            status_source_ref=status_source_ref,
         )
 
     def _stamp_expense_identity(

@@ -142,8 +142,9 @@ def test_the_stored_status_WINS_over_the_derived_one():
 
 
 def test_the_derivation_still_runs_where_no_column_exists_yet():
-    """Expense, BillCredit, Invoice and ContractLabor have no Status column
-    until their own Phase-3 units. They must keep getting a derived answer."""
+    """BillCredit, Invoice and ContractLabor have no Status column
+    until their own Phase-3 units. They must keep getting a derived answer.
+    Expense gained a stored column in U-467."""
     payload = attach_lifecycle({}, is_draft=False, review=None, stored_status=None)
     assert payload["status"] == "completed"
 

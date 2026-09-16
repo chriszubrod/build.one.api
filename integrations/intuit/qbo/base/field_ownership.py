@@ -329,7 +329,17 @@ PURCHASE = FieldOwnership(
         "is_billed",
     ],
     app_owned=[
-        "is_draft",            # app-owned; written by the pull on CREATE ONLY (LS-01d)
+        # U-467: `Status` is the canonical lifecycle column and is app-owned.
+        # `is_draft` is still listed because it is still READABLE — every
+        # external contract still speaks it — but it is now a PERSISTED
+        # COMPUTED column derived from Status, so NOBODY writes it, this side
+        # included. Kept here so an ownership audit sees it rather than
+        # concluding QBO may write it.
+        "status",              # canonical lifecycle state
+        "status_datetime",
+        "status_origin",
+        "status_source_ref",
+        "is_draft",            # DERIVED from status; unwritable since U-467
         # `review_status_id` removed in LS-01d — phantom, see the Bill block.
     ],
     both_editable=[

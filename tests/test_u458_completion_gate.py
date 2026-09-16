@@ -747,15 +747,15 @@ def test_get_approved_status_REFUSES_when_two_finals_are_configured():
 #      the U-446d P0 on `create_bill`.
 #
 # Bill was never exposed: U-446 made its `IsDraft` a PERSISTED COMPUTED column
-# over `Status`, so it is not writable at all. These tests hold the other three
-# to the same property at the edge.
+# over `Status`, so it is not writable at all. Expense joined it in U-467.
+# These tests hold BillCredit and Invoice to the same property at the edge.
 #
-# NOT closed here, and booked: completion itself still writes `is_draft=False`
-# through the service layer for all three, so an INTERNAL caller could still
-# flip it. The structural fix is a `Finalize*ById` transition sproc per entity
-# (what U-434 gave Bill) — which arrives with LS-03b/c/d, when these three get a
-# real Status column and IsDraft becomes computed. The threat model closed here
-# is external callers: `can_update` users and agents.
+# NOT closed here, and booked: BillCredit and Invoice completion still write
+# `is_draft=False` through the service layer, so an INTERNAL caller could still
+# flip it. Expense completion now goes through `FinalizeExpenseById` (U-467).
+# The structural fix for the remaining two is a `Finalize*ById` transition
+# sproc per entity (what U-434 gave Bill) — which arrives with LS-03b/d.
+# The threat model closed here is external callers: `can_update` users and agents.
 
 BYPASS_SURFACES = [
     ("entities.bill.api.schemas", "BillUpdate", "entities.bill.intelligence.tools", "UpdateBillArgs"),

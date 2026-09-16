@@ -241,9 +241,11 @@ def test_vendor_is_draft_is_left_alone_because_it_is_a_different_field():
     ],
 )
 def test_sibling_search_tools_do_not_advertise_a_status_filter_yet(module_path, args_class):
-    """Their endpoints have no `?status=` (LS-03b/c not built). A filter the API
-    silently ignores is worse than an absent one: the model would believe it had
-    narrowed the result set and then reason over a full page."""
+    """Expense's list endpoint gained `?status=` in U-467; the agent `_SearchArgs`
+    half is U-469 and is deliberately not built here. BillCredit's endpoint has
+    no `?status=` (LS-03b not built). A filter the API silently ignores is worse
+    than an absent one: the model would believe it had narrowed the result set
+    and then reason over a full page."""
     import importlib
 
     mod = importlib.import_module(module_path)
@@ -253,7 +255,7 @@ def test_sibling_search_tools_do_not_advertise_a_status_filter_yet(module_path, 
     assert "status" not in model.model_fields
 
 
-def test_only_bill_exposes_the_status_query_param_today():
+def test_bill_and_expense_expose_the_status_query_param_today():
     """The guard behind the scope decision above. If another entity's router
     gains `?status=`, this test fails and its agent surfaces should be brought
     onto the vocabulary in the same unit."""
@@ -266,9 +268,10 @@ def test_only_bill_exposes_the_status_query_param_today():
         executable = "\n".join(l.split("#")[0] for l in src.splitlines())
         if re.search(r"^\s+status: Optional\[str\] = Query\(", executable, re.M):
             with_status.append(entity)
-    assert with_status == ["bill"], (
+    assert with_status == ["bill", "expense"], (
         f"entities exposing ?status= changed to {with_status} — bring their "
-        "agent prompts and tools onto the six-state vocabulary too"
+        "agent prompts and tools onto the six-state vocabulary too (Expense "
+        "agent half is U-469)"
     )
 
 

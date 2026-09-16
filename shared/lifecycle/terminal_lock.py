@@ -173,7 +173,7 @@ def is_terminal(status: Optional[str], *, is_draft: Optional[bool] = None) -> bo
     """Whether a document is in its terminal state.
 
     Prefers the canonical `status`; falls back to `is_draft` for the entities
-    whose Phase-3 unit has not landed yet (expense, bill_credit, invoice), so
+    whose Phase-3 unit has not landed yet (bill_credit, invoice), so
     this helper can be reused there without being wrong in the meantime.
     """
     if status is not None:

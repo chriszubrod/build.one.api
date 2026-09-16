@@ -21,6 +21,9 @@ read the connectors' own ASTs:
 2. CREATE calls still do — a pulled document is born complete, because QBO is
    the system of record for a document that already exists there. Blanket-
    removing the kwarg would have flipped 20k+ historical bills to draft.
+   Expense's header connector (U-467) passes `status='completed'` instead of
+   `is_draft`; every other connector still passes `is_draft`. Either form
+   is the "born complete" contract.
 3. The two Bill-side terminal-lock exemptions SURVIVE the removal. They sat on
    the same call as the dropped kwarg and read like part of the same idea; they
    are not. 20,219 of 20,223 QBO-linked bills are completed, so dropping the
@@ -112,25 +115,70 @@ def test_no_update_call_hides_its_arguments_behind_a_splat(path):
     )
 
 
-def test_every_entity_create_site_still_passes_is_draft():
+def test_every_entity_create_site_still_passes_is_draft_or_status_completed():
     """The other half of the contract, and the reason a blanket removal is wrong.
 
     A document pulled from QBO already exists there — it is born complete.
     Pinned per connector rather than as a total (Codex P2): a bare count stays
     green when one site loses the kwarg and an unrelated `.create()` gains it,
     and it silently excused Vendor, whose create is in its own connector.
-    """
-    by_path = {}
-    for path in CONNECTORS:
-        for call, name in _calls(path):
-            if name == "create" and "is_draft" in _kwargs(call):
-                by_path.setdefault(path, []).append(call.lineno)
 
-    missing = [p for p in CONNECTORS if p not in by_path]
+    Each create site must carry EITHER `is_draft` OR `status` whose AST value
+    is the Constant `'completed'` — Expense's header connector switched to
+    the latter in U-467.
+    """
+    missing = []
+    for path in CONNECTORS:
+        ok = False
+        for call, name in _calls(path):
+            if name != "create":
+                continue
+            kws = {kw.arg: kw.value for kw in call.keywords if kw.arg is not None}
+            if "is_draft" in kws:
+                ok = True
+                break
+            status_node = kws.get("status")
+            if isinstance(status_node, ast.Constant) and status_node.value == "completed":
+                ok = True
+                break
+        if not ok:
+            missing.append(path)
     assert missing == [], (
-        "these connectors no longer pass is_draft on CREATE — a pulled document "
-        f"would be born as a local draft: {missing}"
+        "these connectors no longer pass is_draft OR status='completed' on "
+        f"CREATE — a pulled document would be born as a local draft: {missing}"
     )
+
+
+def test_expense_header_connector_create_lands_status_not_is_draft():
+    """U-467: the Purchase header connector binds the status triple and does
+    not pass is_draft. Line items are a separate real column and stay on
+    is_draft (out of scope).
+    """
+    path = "integrations/intuit/qbo/purchase/connector/expense/business/service.py"
+    creates = []
+    for call, name in _calls(path):
+        if name != "create":
+            continue
+        # Only the header create (`self.expense_service.create`). The same
+        # file also calls `expense_line_item_attachment_service.create` to
+        # hang a receipt off a line — that is not a lifecycle write.
+        owner = call.func.value
+        owner_name = owner.attr if isinstance(owner, ast.Attribute) else getattr(owner, "id", None)
+        if owner_name == "expense_service":
+            creates.append(call)
+    assert creates, f"{path} has no expense_service.create() call"
+    for call in creates:
+        kws = {kw.arg: kw.value for kw in call.keywords if kw.arg is not None}
+        status_node = kws.get("status")
+        origin_node = kws.get("status_origin")
+        assert isinstance(status_node, ast.Constant) and status_node.value == "completed", (
+            "Expense header create must pass status='completed'"
+        )
+        assert isinstance(origin_node, ast.Constant) and origin_node.value == "qbo_pull", (
+            "Expense header create must pass status_origin='qbo_pull'"
+        )
+        assert "status_source_ref" in kws, "Expense header create must pass status_source_ref"
+        assert "is_draft" not in kws, "Expense header create must not pass is_draft"
 
 
 # ---------------------------------------------------------------------------

@@ -11,7 +11,13 @@ from shared.authz import current_user_id
 from shared.rbac import require_module_api
 from shared.rbac_constants import Modules
 from core.workflow.api.process_engine import ProcessEngine, TriggerContext, EventType, Channel
-from shared.api.responses import list_response, item_response, raise_not_found, raise_workflow_error
+from shared.api.responses import (
+    list_response,
+    item_response,
+    parse_public_id,
+    raise_not_found,
+    raise_workflow_error,
+)
 
 router = APIRouter(prefix="/api/v1", tags=["api", "user"])
 
@@ -87,10 +93,10 @@ def get_my_user_router(current_user: dict = Depends(get_current_user_api)):
     """
     user_id = current_user_id.get()
     if user_id is None:
-        raise_not_found("User", "me")
+        raise_not_found("User")
     user = UserService().read_by_id(id=user_id)
     if not user:
-        raise_not_found("User", "me")
+        raise_not_found("User")
     return item_response(user.to_dict())
 
 
@@ -99,7 +105,10 @@ def get_user_by_public_id_router(public_id: str, current_user: dict = Depends(re
     """
     Read a user by public ID.
     """
+    public_id = parse_public_id(public_id, "public_id")
     user = UserService().read_by_public_id(public_id=public_id)
+    if not user:
+        raise_not_found("User")
     return item_response(user.to_dict())
 
 

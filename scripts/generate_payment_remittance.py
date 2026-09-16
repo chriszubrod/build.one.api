@@ -21,8 +21,24 @@ Usage:
     ALLOW_BOX_WRITES=true BOX_AS_USER_ID=31760447449 \
         .venv/bin/python scripts/generate_payment_remittance.py 9361486213 --upload
 
-Read-only against QBO and the local DB; the ONLY external write is the Box
-upload, gated behind --upload AND ALLOW_BOX_WRITES=true.
+    # file to BOTH surfaces (Box + the SharePoint mirror) in one run
+    ALLOW_BOX_WRITES=true ALLOW_MS_WRITES=true BOX_AS_USER_ID=31760447449 \
+        .venv/bin/python scripts/generate_payment_remittance.py 9361486213 \
+        --upload --upload-sharepoint
+
+    # reconcile a year: list what SharePoint is missing (dry run), then upload
+    .venv/bin/python scripts/generate_payment_remittance.py --backfill-sharepoint 2026
+    ALLOW_MS_WRITES=true BOX_AS_USER_ID=31760447449 \
+        .venv/bin/python scripts/generate_payment_remittance.py \
+        --backfill-sharepoint 2026 --apply
+
+`--upload` stays Box-ONLY on purpose: every historical invocation in SESSION_NOTES
+assumes that meaning, so widening it would silently turn replayed commands into
+double-writes. Ask for SharePoint explicitly with --upload-sharepoint.
+
+Read-only against QBO and the local DB. External writes are the Box upload
+(--upload + ALLOW_BOX_WRITES=true) and the SharePoint upload (--upload-sharepoint
+or --backfill-sharepoint --apply, + ALLOW_MS_WRITES=true); all default off.
 """
 # Standard Library
 import argparse
@@ -34,7 +50,7 @@ import re
 import sys
 from datetime import datetime
 from decimal import Decimal, ROUND_HALF_UP
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
@@ -51,6 +67,7 @@ from integrations.intuit.qbo.auth.business.service import QboAuthService
 from integrations.intuit.qbo.base.client import QboHttpClient
 from integrations.box.base.client import BoxHttpClient
 from integrations.box.base.errors import BoxConflictError
+from integrations.ms.sharepoint.external import client as sp_client
 from entities.vendor.business.service import VendorService
 from integrations.intuit.qbo.base.identity_consistency import verify_identity_dbo_only
 
@@ -60,6 +77,13 @@ BOX_PATH_SEGMENTS = ["02 - Accounts Payable", "535 - Rogers Build - Check Stubs"
 COMPANY_FALLBACK = "Rogers Build, Inc."
 METHOD_LABEL = "ACH"  # business pays via ACH even though QBO books PayType=Check
 REMITTANCE_BCC = "invoice@rogersbuild.com"  # always BCC'd on vendor remittance drafts
+
+# SharePoint mirror of the Box check-stubs tree. Same filenames, same year folders.
+# Anchor is the drive id (stable); every folder below it is walked BY NAME so a
+# reorganisation fails loudly here instead of writing into the wrong folder.
+SP_DRIVE_ID = "b!ORGYF05isEixyjaiGrjpY8og4Bos92VGmN9aSns5dDZlsBbazGm1R72YjQfn3bmj"
+SP_PATH_SEGMENTS = ["General", "999 - Accounting", "02 - Accounts Payable",
+                    "535 - Rogers Build - Check Stubs"]
 CENTS = Decimal("0.01")
 
 
@@ -354,11 +378,12 @@ def upload_or_version(client: BoxHttpClient, folder_id: str, filename: str, data
         return "versioned"
 
 
-def _vendor_from_filename(name: str) -> Optional[str]:
-    """Pull the vendor segment out of '{date} - BILL PAYMENT - {doc} - {vendor} - {total}.pdf'.
+def parse_remittance_filename(name: str) -> Optional[Dict[str, str]]:
+    """Split '{date} - BILL PAYMENT - {doc} - {vendor} - {total}.pdf' into its parts.
 
     Returns None when the name doesn't follow the convention. Joins on ' - ' so a
     vendor that itself contains ' - ' survives (none do today, but be safe).
+    Sole parser for this convention — every caller keys off this one shape.
     """
     if " - BILL PAYMENT - " not in name:
         return None
@@ -366,7 +391,197 @@ def _vendor_from_filename(name: str) -> Optional[str]:
     parts = stem.split(" - ")
     if len(parts) < 5:  # [date, 'BILL PAYMENT', doc, *vendor, total]
         return None
-    return " - ".join(parts[3:-1])
+    return {
+        "date": parts[0],
+        "doc_number": parts[2],
+        "vendor": " - ".join(parts[3:-1]),
+        "total": parts[-1],
+    }
+
+
+def _vendor_from_filename(name: str) -> Optional[str]:
+    """Vendor segment of a convention-named remittance file, else None."""
+    parsed = parse_remittance_filename(name)
+    return parsed["vendor"] if parsed else None
+
+
+def _norm_vendor(vendor: str) -> str:
+    """Lowercase, alphanumeric-only. Punctuation and case ONLY.
+
+    Collapses 'B. Christopher & Co., LLC' and 'B. Christopher & Co, LLC' onto one
+    string, and nothing more. An earlier version also dropped a leading 'the',
+    which quietly made 'Acme' equal 'The Acme' — a word-level judgement that
+    belongs in the reviewed alias map, not in normalization. Every difference
+    beyond punctuation and case must be listed in `SP_VENDOR_ALIASES` to suppress
+    an upload, so the guarantee this function supports stays literally true.
+    """
+    return "".join(ch for ch in vendor.lower() if ch.isalnum())
+
+
+# Human-reviewed equivalences between the pre-script SharePoint vendor names and
+# the QBO names this script writes. Derived 2026-09-15 by listing every Box file
+# that shares (payment number, total) with a SharePoint file whose normalized
+# vendor differs, then confirming each pair by eye. EXPLICIT on purpose: an
+# earlier draft matched on "one name is a prefix of the other", which also makes
+# 'Acme' equal 'Acme Construction' — a rule that can declare a remittance already
+# filed when it is not, and silently drop a payment document. Nothing but a pair
+# listed here suppresses an upload; every other difference uploads.
+SP_VENDOR_ALIASES = frozenset({
+    frozenset({"cobrallc", "cobra"}),
+    frozenset({"fergusonenterprisesllc", "ferguson"}),
+    frozenset({"garmanengineeringllc", "garmanengineering"}),
+    frozenset({"hartleybotanicinc", "hartleybotanic"}),
+    frozenset({"idealmillworkhardware", "idealmillwork"}),
+    frozenset({"jonesstoneco", "jonesstone"}),
+    frozenset({"mobilematerialsnashville", "mobilematerials"}),
+    frozenset({"thestructurecompanyofnashvillellc", "structurecompanyofnashville"}),
+})
+
+
+def same_remittance(name_a: str, name_b: str) -> bool:
+    """True when two filenames denote the SAME remittance document.
+
+    Payment number and total must match exactly, and the normalized vendor must
+    either be identical or be a reviewed pair in `SP_VENDOR_ALIASES`.
+
+    The bias is deliberate and one-directional: an unrecognised difference means
+    "not the same", so the file uploads. A false duplicate is visible and
+    deletable; a document that is never filed is neither. That is why there is no
+    fuzzy fallback here — two different vendors in one payment can be paid the
+    identical amount (payment 2502356724 pays Elmer Cordova and Wilmer Diaz
+    $3,380.00 each, on the same date), so any rule loose enough to join short and
+    long spellings by shape alone is also loose enough to merge two real vendors.
+
+    The DATE is not compared: the same remittance is sometimes filed under a
+    different date (payment 9361486213's B. Christopher pair, 06.12 vs 06.18).
+    """
+    a, b = parse_remittance_filename(name_a), parse_remittance_filename(name_b)
+    if not a or not b:
+        return False
+    if (a["doc_number"], a["total"]) != (b["doc_number"], b["total"]):
+        return False
+    va, vb = _norm_vendor(a["vendor"]), _norm_vendor(b["vendor"])
+    return va == vb or frozenset({va, vb}) in SP_VENDOR_ALIASES
+
+
+def needs_sharepoint_upload(filename: str, existing_names: Iterable[str]) -> bool:
+    """True when no file already in the destination is this same remittance.
+
+    Exact filename match wins first; otherwise `same_remittance` decides. A name
+    that doesn't parse falls back to exact-name comparison only (never fuzzy).
+    """
+    existing = list(existing_names)
+    if filename in existing:
+        return False
+    if parse_remittance_filename(filename) is None:
+        return True
+    return not any(same_remittance(filename, n) for n in existing)
+
+
+def find_possible_twins(candidates: Iterable[str],
+                        existing_names: Iterable[str]) -> List[Tuple[str, str]]:
+    """(candidate, existing) pairs sharing payment number + total but NOT vendor.
+
+    These WILL be uploaded — refusing to file a document on an amount collision is
+    the worse error — but each pair is worth a human glance, because the shape
+    covers both the benign case (two vendors genuinely paid the same amount) and a
+    vendor spelled differently enough to be missing from `SP_VENDOR_ALIASES`, which
+    would make the upload a duplicate.
+    """
+    by_doc_total: Dict[Tuple[str, str], List[str]] = {}
+    for name in existing_names:
+        parsed = parse_remittance_filename(name)
+        if parsed:
+            by_doc_total.setdefault((parsed["doc_number"], parsed["total"]), []).append(name)
+    pairs: List[Tuple[str, str]] = []
+    for cand in candidates:
+        parsed = parse_remittance_filename(cand)
+        if not parsed:
+            continue
+        for other in by_doc_total.get((parsed["doc_number"], parsed["total"]), []):
+            if not same_remittance(cand, other):
+                pairs.append((cand, other))
+    return pairs
+
+
+# ---------------------------------------------------------------------------- #
+# SharePoint (mirror of the Box check-stubs tree)
+# ---------------------------------------------------------------------------- #
+def _sp_file_names(drive_id: str, folder_id: str) -> List[str]:
+    """Names of the FILES in a folder.
+
+    Folders are excluded deliberately: a folder that happens to share a PDF's name
+    would otherwise satisfy the exact-name dedupe and suppress the upload, leaving
+    the document unfiled.
+    """
+    return [i["name"] for i in _sp_children(drive_id, folder_id)
+            if i.get("item_type") == "file" and i.get("name")]
+
+
+def _sp_children(drive_id: str, item_id: Optional[str]) -> List[Dict[str, Any]]:
+    """Children of a drive folder (root when item_id is None).
+
+    Raises on a non-200. The client swallows Graph errors into an EMPTY `items`
+    list, which is indistinguishable from a genuinely empty folder — and an empty
+    listing read as 'nothing is there yet' would defeat every dedupe check below
+    and duplicate the whole folder. Absence of evidence is not evidence here.
+    """
+    res = (sp_client.list_drive_root_children(drive_id) if item_id is None
+           else sp_client.list_drive_item_children(drive_id, item_id))
+    if res.get("status_code") != 200:
+        raise SystemExit(f"SharePoint listing failed ({res.get('status_code')}): {res.get('message')}")
+    if res.get("truncated"):
+        # A partial listing arrives as a normal 200. Treating it as the whole
+        # folder would let dedupe miss a file that IS there, and the Graph path
+        # PUT replaces rather than fails — so stop instead of guessing.
+        raise SystemExit("SharePoint listing was truncated (pagination cap or repeated "
+                         "nextLink) — refusing to dedupe against a partial folder listing.")
+    return res.get("items") or []
+
+
+def resolve_sp_year_folder(drive_id: str, year: str, create: bool) -> str:
+    """Walk to '<segments>/<year>' by name, optionally creating the year folder."""
+    cur: Optional[str] = None
+    for seg in SP_PATH_SEGMENTS:
+        match = next((k for k in _sp_children(drive_id, cur)
+                      if k.get("item_type") == "folder" and k.get("name") == seg), None)
+        if not match:
+            raise SystemExit(f"SharePoint path segment not found: {seg!r}")
+        cur = match["item_id"]
+    yr = next((k for k in _sp_children(drive_id, cur)
+               if k.get("item_type") == "folder" and k.get("name") == year), None)
+    if yr:
+        return yr["item_id"]
+    if not create:
+        raise SystemExit(f"SharePoint year folder {year!r} missing and create disabled.")
+    res = sp_client.create_folder(drive_id, cur, year)
+    if res.get("status_code") not in (200, 201) or not res.get("item"):
+        raise SystemExit(f"Could not create SharePoint year folder {year!r}: {res.get('message')}")
+    return res["item"]["item_id"]
+
+
+def sp_folder_for_year(cache: Dict[str, str], drive_id: str, year: str) -> str:
+    """Year folder id, memoised PER YEAR.
+
+    One payment number can return BillPayments with different TxnDates (payment
+    8280187478 carries both 2026.03.20 and 2026.03.23), so a single cached folder
+    would file every later vendor into the first vendor's year while logging its
+    own — a misfiled financial document that looks correct in the log.
+    """
+    if year not in cache:
+        cache[year] = resolve_sp_year_folder(drive_id, year, create=True)
+    return cache[year]
+
+
+def upload_to_sharepoint(drive_id: str, folder_id: str, filename: str, data: bytes) -> str:
+    """Upload one remittance PDF. Gated by ALLOW_MS_WRITES inside the Graph client."""
+    if len(data) >= 4 * 1024 * 1024:  # simple PUT ceiling; remittances are ~2-3KB
+        raise SystemExit(f"{filename!r} is {len(data)} bytes — too large for a simple upload.")
+    res = sp_client.upload_small_file(drive_id, folder_id, filename, data,
+                                      content_type="application/pdf")
+    if res.get("status_code") not in (200, 201):
+        raise SystemExit(f"SharePoint upload failed for {filename!r}: {res.get('message')}")
+    return "uploaded"
 
 
 def find_existing_for_payment(client: BoxHttpClient, folder_id: str,
@@ -530,9 +745,71 @@ def parse_email_overrides(values: Optional[List[str]]) -> Dict[str, List[str]]:
 # ---------------------------------------------------------------------------- #
 # Main
 # ---------------------------------------------------------------------------- #
+def run_sharepoint_backfill(year: str, apply: bool) -> None:
+    """Copy every Box check-stub for `year` that SharePoint is missing.
+
+    Reads both surfaces live, decides per file with `needs_sharepoint_upload`, and
+    prints the plan. Dry-run unless `apply` — the default is deliberately inert so
+    the file list can be reviewed before any prod write. Bytes come from Box (the
+    surface that has them); nothing is re-rendered, so a backfilled PDF is the
+    exact file already filed in Box.
+    """
+    assert_cli_system_admin()
+    box = BoxHttpClient()
+    try:
+        box_year_folder = resolve_year_folder(box, year, create=False)
+        box_files = {k["name"]: k["id"]
+                     for k in _box_items(box, box_year_folder) if k["type"] == "file"}
+
+        sp_folder = resolve_sp_year_folder(SP_DRIVE_ID, year, create=False)
+        sp_names = _sp_file_names(SP_DRIVE_ID, sp_folder)
+
+        missing = sorted(n for n in box_files if needs_sharepoint_upload(n, sp_names))
+        twins = find_possible_twins(missing, sp_names)
+
+        print(f"Box {year}: {len(box_files)} file(s)   SharePoint {year}: {len(sp_names)} file(s)")
+        print(f"Missing from SharePoint: {len(missing)}\n")
+        for n in missing:
+            print(f"  {n}")
+        if twins:
+            print(f"\n⚠ {len(twins)} possible twin(s) — same (payment#, total) as an existing "
+                  f"SharePoint file under an unrecognized vendor name. Uploading these may "
+                  f"duplicate; skipping them may lose a document. Review before --apply:")
+            for cand, other in twins:
+                print(f"  CANDIDATE {cand}\n  EXISTING  {other}\n")
+        if not missing:
+            print("\nNothing to do.")
+            return
+        if not apply:
+            print(f"\nDRY RUN — nothing written. Re-run with --apply to upload "
+                  f"{len(missing)} file(s) to SharePoint {year}/.")
+            return
+
+        print(f"\nAPPLYING — uploading {len(missing)} file(s)...")
+        done = skipped = 0
+        for n in missing:
+            # Re-check per file, not once for the batch: the plan above was built
+            # from a single listing, and an upload of 157 files is long enough for
+            # another session to file one midway. The Graph path PUT is
+            # upload-OR-REPLACE, so a stale plan would overwrite rather than fail.
+            if not needs_sharepoint_upload(n, _sp_file_names(SP_DRIVE_ID, sp_folder)):
+                skipped += 1
+                print(f"  [skip] filed by someone else since the plan: {n}")
+                continue
+            data = box.download_file(box_files[n])
+            upload_to_sharepoint(SP_DRIVE_ID, sp_folder, n, data)
+            done += 1
+            print(f"  [{done}/{len(missing)}] {n}")
+        print(f"\nUploaded {done} file(s) to SharePoint {year}/"
+              + (f" ({skipped} already filed by another writer)." if skipped else "."))
+    finally:
+        box.close()
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description="Generate (and optionally upload) payment remittance PDFs from a QBO BillPayment.")
-    ap.add_argument("doc_number", help="QBO BillPayment.DocNumber (the payment/ACH number)")
+    ap.add_argument("doc_number", nargs="?",
+                    help="QBO BillPayment.DocNumber (the payment/ACH number). Omit only with --backfill-sharepoint.")
     ap.add_argument("--out-dir", default=os.path.join(os.path.dirname(os.path.abspath(__file__)), "_remittance_out"),
                     help="Local folder for generated PDFs (default: %(default)s)")
     ap.add_argument("--upload", action="store_true", help="Upload each PDF to Box (prod write; needs ALLOW_BOX_WRITES=true).")
@@ -541,7 +818,22 @@ def main() -> None:
     ap.add_argument("--email", action="append", metavar="QBOID=addr[,addr2]",
                     help="Supply email(s) for a vendor missing one (repeatable). e.g. --email 767=ap@bemac.com")
     ap.add_argument("--vendors", help="Comma-separated QBO vendor ids to limit processing to (e.g. 767,139).")
+    ap.add_argument("--upload-sharepoint", action="store_true",
+                    help="Also upload each PDF to the SharePoint check-stubs mirror "
+                         "(prod write; needs ALLOW_MS_WRITES=true). Independent of --upload, "
+                         "which stays Box-only.")
+    ap.add_argument("--backfill-sharepoint", metavar="YEAR",
+                    help="Reconcile mode: copy every Box check-stub for YEAR that SharePoint "
+                         "is missing. Dry-run unless --apply is also given. No doc_number needed.")
+    ap.add_argument("--apply", action="store_true",
+                    help="With --backfill-sharepoint, actually upload (default is dry-run).")
     args = ap.parse_args()
+
+    if args.backfill_sharepoint:
+        run_sharepoint_backfill(args.backfill_sharepoint, apply=args.apply)
+        return
+    if not args.doc_number:
+        ap.error("doc_number is required unless --backfill-sharepoint YEAR is given")
 
     overrides = parse_email_overrides(args.email)
     vendor_filter = {v.strip() for v in args.vendors.split(",")} if args.vendors else None
@@ -558,6 +850,7 @@ def main() -> None:
 
     box = BoxHttpClient() if args.upload else None
     year_folder: Optional[str] = None
+    sp_folders: Dict[str, str] = {}   # keyed by year: one batch can span years
     needs_email: List[Dict[str, Any]] = []
 
     for p in payments:
@@ -595,6 +888,21 @@ def main() -> None:
                           f"-> {', '.join(emails)} (source: {source})")
                 except Exception as ex:
                     print(f"    EMAIL: draft FAILED ({type(ex).__name__}: {ex})")
+
+        if args.upload_sharepoint:
+            sp_year = (p["txn_date"] or "")[:4]
+            sp_folder = sp_folder_for_year(sp_folders, SP_DRIVE_ID, sp_year)
+            # Re-list immediately before writing: another session may have just filed it.
+            sp_names = _sp_file_names(SP_DRIVE_ID, sp_folder)
+            if needs_sharepoint_upload(filename, sp_names):
+                for cand, other in find_possible_twins([filename], sp_names):
+                    print(f"    SP REVIEW: {cand!r} shares (payment#, total) with existing "
+                          f"{other!r} under an unrecognized vendor name — uploading anyway; "
+                          f"confirm it is not a duplicate.")
+                upload_to_sharepoint(SP_DRIVE_ID, sp_folder, filename, pdf)
+                print(f"    SP: uploaded in {sp_year}/ (folder {sp_folder})")
+            else:
+                print(f"    SP: already present in {sp_year}/ — skipped")
 
         if not args.upload:
             continue

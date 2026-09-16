@@ -861,87 +861,36 @@ fee $52,575.58. Both fees are exactly 15.00% of their own cost, and 15.00% combi
   packet's itemized support total equals the AIA pages' total for the same draw; today nothing catches the
   divergence described in defect 2.
 
-## U-430 — payment remittance: `--upload-sharepoint` flag + 2026 SharePoint backfill (booked 2026-09-09)
+## U-430 follow-ups (remittance SharePoint mirror) — deferred, not scope-creeped in (2026-09-15)
 
-Found while running payment `8905825417`. `scripts/generate_payment_remittance.py --upload` writes **Box only**; the
-SharePoint check-stub mirror gets nothing, so the SharePoint half of every batch has been a hand-run inline upload.
-Board row: `build.one.team/BOARD.md` § U-430 (Ready / queued).
+U-430 shipped `--upload-sharepoint` + `--backfill-sharepoint YEAR` on
+`scripts/generate_payment_remittance.py`. **The 157-file 2026 backfill is BUILT AND DRY-RUN VERIFIED but
+NOT RUN** — it is a prod write to SharePoint and needs its own explicit go-ahead:
+`ALLOW_MS_WRITES=true BOX_AS_USER_ID=31760447449 .venv/bin/python scripts/generate_payment_remittance.py --backfill-sharepoint 2026 --apply`
 
-### Ship 1 — `--upload-sharepoint`
-
-- [ ] Add `--upload-sharepoint` to `scripts/generate_payment_remittance.py`, mirroring the Box path: find-or-create the
-      `<year>` folder (Box analog: `resolve_year_folder`), then `upload_small_file`. PDFs are 2–3 KB; the 4 MB
-      small-upload cap is not a concern.
-- [ ] Decide **deliberately** whether `--upload` should start implying both surfaces. Today it means Box-only, and that
-      meaning is load-bearing for muscle memory and for every prior invocation recorded in `SESSION_NOTES.md`. A silent
-      widening turns old commands into double-writes.
-- [ ] Share one dedupe helper across both destinations. The Box side already compares on financial substance
-      (`find_existing_for_payment` + the `_norm` currency-normalizing comparison) — SharePoint needs the same, not a
-      filename equality check. See Ship 2 for why.
-
-**Destination — verified live 2026-09-09, recorded in no repo file before this entry:**
-
-| Thing | Value |
-|---|---|
-| Site | `Rogers Build, Inc` (`MsSiteService` id 2) |
-| Drive | `Documents` = `b!ORGYF05isEixyjaiGrjpY8og4Bos92VGmN9aSns5dDZlsBbazGm1R72YjQfn3bmj` |
-| Path | `General / 999 - Accounting / 02 - Accounts Payable / 535 - Rogers Build - Check Stubs / <year>` |
-| `535 - …Check Stubs` item id | `017ZKYN56XDKAFMHSQBNFI2MFPEEAWW6TK` |
-| `2026` item id | `017ZKYN5YDTJFIUH664JGJVATYWMKL5NC5` |
-| Gate | `ALLOW_MS_WRITES=true` |
-
-```python
-from integrations.ms.sharepoint.external import client as sp
-sp.upload_small_file(DRIVE, YEAR_FOLDER_ITEM_ID, filename, pdf_bytes, content_type="application/pdf")
-```
-
-### Ship 2 — backfill the 2026 gap (157 files)
-
-Scope is **measured, not estimated** (full per-year set-diff, 2026-09-09):
-
-| Year | Box | SharePoint | Drift |
-|---|---|---|---|
-| 2021–2025 | 59 / 1008 / 201 / 646 / 939 | identical | **0 — all five years in sync** |
-| 2026 | 435 | 308 | Box-only 166, **SP-only 39** |
-
-The entire gap is 2026 and it begins **2026-06-12** — the exact TxnDate of the script's first batch (`9361486213`).
-The script itself opened the gap by writing Box-only where humans had been writing both.
-
-- [ ] **Do NOT back-fill on filename equality.** Re-keying on `(date, payment#, amount)` — the parts that do not drift —
-      shows **9 of the 166 are already in SharePoint under the pre-script short vendor name**. A name-match backfill
-      uploads all 9 a second time under a different spelling. The 9 pairs (Box name → existing SP name):
-
-      Ideal Millwork & Hardware            -> Ideal Millwork                  (7431774292, $9,170.76)
-      Mobile Materials Nashville           -> Mobile Materials                (7431774292, $1,706.61)
-      The Structure Company of Nashville…  -> Structure Company of Nashville  (7431774292, $22,335.00)
-      Ferguson Enterprises LLC             -> Ferguson                        (2723064898, $34,150.69)
-      Garman Engineering LLC               -> Garman Engineering              (2723064898, $2,450.00)
-      Cobra, LLC                           -> Cobra                           (1111457925, $5,757.25)
-      Hartley Botanic Inc.                 -> Hartley Botanic                 (1111457925, $11,015.90)
-      Ideal Millwork & Hardware            -> Ideal Millwork                  (1111457925, $17,516.96)
-      Jones Stone Co.                      -> Jones Stone                     (1111457925, $28,016.88)
-
-- [ ] **True backfill set = 157 files, dated 2026.06.12 .. 2026.09.04.** Dedupe on the triple, never on the name.
-- [ ] For the 9 name variants: decide rename-in-place vs leave-both. Standing precedent (B. Christopher, umbrella memory
-      `project_payment_remittance`) was **keep both**. **Delete nothing without Chris.**
-- [ ] Leave `2026.06.10 - BILL PAYMENT - 100675 - 100678.pdf` alone — a check *range*, no vendor or amount, no Box twin.
-- [ ] The backfill is a **prod write to SharePoint**. Per `feedback_builders_never_mutate_prod_data.md` the builder
-      proposes the exact file list and hands it over; the run is `/em`'s call. Run it in ONE guarded pass that re-lists
-      the year folder immediately before writing and skips anything already present by triple-key.
-
-Regenerate the list (read-only) — Box side needs `BOX_AS_USER_ID=31760447449`:
-
-```python
-# walk Box 388262075849 -> "02 - Accounts Payable" -> "535 - Rogers Build - Check Stubs" -> "2026"
-# list SP 017ZKYN5YDTJFIUH664JGJVATYWMKL5NC5
-# key = re.match(r"^(\d{4}\.\d{2}\.\d{2}) - BILL PAYMENT - (.+?) - (.+?) - (\$[\d,]+\.\d{2})\.pdf$")
-#       -> (date, doc_number, amount)   # group 3 (vendor) is the part that drifts — exclude it
-# backfill = [n for n in box_names - sp_names if key(n) not in {key(m) for m in sp_names}]
-```
-
-**Out of scope:** the deferred nightly scheduler job (still parked); any Box-side write; renaming existing Box files;
-the 2021–2025 years (proven clean — do not re-scan them into scope).
-
+- [ ] **Run the 2026 backfill** (157 files, 2026.06.12 .. 2026.09.04). Dry-run reports 0 ambiguous twins.
+      Re-run the dry-run first — the plan is rebuilt live each time, so it self-corrects if anything moved.
+- [ ] **`resolve_year_folder` (Box) has the SAME year-cache bug U-430 fixed on the SharePoint side.**
+      `main()` memoises `year_folder` once for the whole batch, so if one `DocNumber` ever returns
+      BillPayments spanning two years (payment `8280187478` already carries both 2026.03.20 and 2026.03.23),
+      every later vendor is filed into the FIRST year's Box folder while the log prints its own year.
+      Fix is the `sp_folder_for_year` shape, applied to Box. Left alone here because it changes long-proven
+      Box behavior and U-430's scope was the SharePoint mirror — but it is a live misfiling risk, not latent.
+- [ ] **Two vendor normalizers now exist in one file.** `find_existing_for_payment` (Box) has a private
+      `norm()` that is `_norm_vendor` minus nothing — same alnum-lowercase rule. Collapsing them is a
+      behavior change on the Box path (Box compares vendors EXACTLY and deliberately so, per its docstring
+      about 'Weston Parker' vs 'Weston Parker (Expense)'), so it was not folded in under a quality pass.
+      Decide whether Box should adopt `SP_VENDOR_ALIASES` too, or stay strict.
+- [ ] **`upload_small_file` has no create-only conflict behavior.** The Graph path PUT is upload-OR-REPLACE,
+      so the backfill's per-file recheck narrows but cannot close the window. Accepted for a single-operator
+      script whose filenames encode date+payment+vendor+amount (a name collision implies the same document);
+      Codex accepted the residual explicitly. If this ever runs unattended, add
+      `@microsoft.graph.conflictBehavior: fail` and re-evaluate on 409.
+- [ ] **`SP_VENDOR_ALIASES` is a point-in-time list** of 8 reviewed pairs derived from the live 2026 folders.
+      It only ever suppresses an upload, so a missing entry causes a visible duplicate, never a lost
+      document — but if a new pre-script spelling surfaces, add it rather than loosening the predicate.
+      Two earlier attempts at a general rule (prefix-compatibility, then article-stripping) both turned out
+      to silently merge distinct vendors; the explicit map is the deliberate replacement.
 
 ## U-424 follow-ups (ContractLabor parent aggregates) — deferred (2026-09-08)
 

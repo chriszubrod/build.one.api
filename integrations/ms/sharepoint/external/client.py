@@ -33,8 +33,18 @@ def _strip_base(absolute_url: str) -> str:
     return absolute_url
 
 
-def _collect_paginated_drive_items(client: MsGraphClient, initial_path: str, *, operation_name: str) -> list[dict]:
-    """Follow @odata.nextLink until all drive children pages are loaded."""
+def _collect_paginated_drive_items(
+    client: MsGraphClient, initial_path: str, *, operation_name: str
+) -> tuple[list[dict], bool]:
+    """Follow @odata.nextLink until all drive children pages are loaded.
+
+    Returns (items, truncated). `truncated` is True when pagination stopped early
+    — page cap reached, or a repeated nextLink — so the items are a PARTIAL view
+    of the folder. Callers that treat "not in this listing" as "not present"
+    (dedupe before an upload-or-replace PUT, for example) must fail closed on it;
+    callers that only display or scan children can ignore it, which is why it is
+    reported alongside the items rather than raised.
+    """
     raw_items: list[dict] = []
     next_link: Optional[str] = None
     path = initial_path
@@ -49,7 +59,7 @@ def _collect_paginated_drive_items(client: MsGraphClient, initial_path: str, *, 
                     "%s: repeated @odata.nextLink detected, stopping pagination",
                     operation_name,
                 )
-                break
+                return raw_items, True
             seen_next_links.add(next_link)
             data = client.get(
                 _strip_base(next_link),
@@ -69,8 +79,9 @@ def _collect_paginated_drive_items(client: MsGraphClient, initial_path: str, *, 
             operation_name,
             max_pages,
         )
+        return raw_items, True
 
-    return raw_items
+    return raw_items, False
 
 
 def _format_drive_item(item: dict) -> dict:
@@ -344,7 +355,7 @@ def list_drive_root_children(drive_id: str) -> dict:
     """List items at the root of a drive."""
     try:
         with MsGraphClient() as client:
-            raw_items = _collect_paginated_drive_items(
+            raw_items, truncated = _collect_paginated_drive_items(
                 client,
                 f"drives/{drive_id}/root/children",
                 operation_name="driveitem.list_root",
@@ -354,6 +365,7 @@ def list_drive_root_children(drive_id: str) -> dict:
             "message": f"Found {len(items)} items",
             "status_code": 200,
             "items": items,
+            "truncated": truncated,
         }
     except MsGraphError as e:
         logger.error(f"Error listing drive root children for {drive_id}: {e}")
@@ -364,7 +376,7 @@ def list_drive_item_children(drive_id: str, item_id: str) -> dict:
     """List children of a specific folder in a drive."""
     try:
         with MsGraphClient() as client:
-            raw_items = _collect_paginated_drive_items(
+            raw_items, truncated = _collect_paginated_drive_items(
                 client,
                 f"drives/{drive_id}/items/{item_id}/children",
                 operation_name="driveitem.list_children",
@@ -374,6 +386,7 @@ def list_drive_item_children(drive_id: str, item_id: str) -> dict:
             "message": f"Found {len(items)} items",
             "status_code": 200,
             "items": items,
+            "truncated": truncated,
         }
     except MsGraphError as e:
         logger.error(f"Error listing drive item children for {item_id}: {e}")

@@ -2,6 +2,11 @@
 
 Carry-over items from sessions. Check off as done; prune anything stale.
 
+## U-463 backfill — WRONG-CYCLE attribution risk (2026-09-16, Codex Pass-1 retrospective)
+
+- [ ] 🟡 **`scripts/migrations/u463_reattribute_in_review_to_submitter.sql` can credit the wrong submitter — 21 prod rows already moved.** The migration picks the latest `submitted` row by TIMESTAMP alone (`OUTER APPLY ... TOP 1 ... ORDER BY CreatedDatetime DESC, Id DESC WHERE CreatedDatetime <= r.CreatedDatetime`). But `_advance_to_in_review` attributes to the `review` object it was HANDED, and the pipeline does slow work first (recipient resolution, HTML render, PDF, outbox enqueue). So: Alice submits → declined → Bob resubmits → Alice's lagging pipeline finally writes its `in_review` row, which now timestamps AFTER Bob's submission → the migration credits **Bob** for Alice's cycle. Idempotency (`WHERE UserId <> <submitter>`) then preserves the wrong value on re-run. Two things owed: (1) **audit the 21 rows already re-attributed in production** against their true cycle — `dbo.Review` retains `CreatedByUserId` and the row ordering to reconstruct it; (2) replace the timestamp inference with the actual cycle linkage before this pattern is reused for the 18 Invoice rows left out of scope. Also: `DATETIME2(3)` ties are possible and the tie-break omits `Id`. Surfaced by the retrospective `/review` of U-461..U-465, which shipped without an adversarial pass (Codex out of credits). Web half booked in `build.one.web/TODO.md`.
+
+
 ## U-467 mapping findings — booked out of the Expense-parity Gate-1 session (2026-09-16)
 
 `/em` mapped Bill→Expense lifecycle parity and scoped four serialized units (U-467 api column → U-468 api

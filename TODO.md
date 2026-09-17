@@ -8,6 +8,46 @@ Carry-over items from sessions. Check off as done; prune anything stale.
 - [ ] 🟡 **The U-463 cycle rule is still latently wrong — guard it before it is reused for Invoice.** The migration picks the latest `submitted` row by TIMESTAMP alone (`OUTER APPLY ... TOP 1 ... ORDER BY CreatedDatetime DESC, Id DESC WHERE CreatedDatetime <= r.CreatedDatetime`). But `_advance_to_in_review` attributes to the `review` object it was HANDED, and the pipeline does slow work first (recipient resolution, HTML render, PDF, outbox enqueue). So: Alice submits → declined → Bob resubmits → Alice's lagging pipeline finally writes its `in_review` row, which now timestamps AFTER Bob's submission → the migration credits **Bob** for Alice's cycle. Idempotency (`WHERE UserId <> <submitter>`) then preserves the wrong value on re-run. **Owed** (the audit half is DONE — see the closed item above): replace the timestamp inference before this pattern is reused for the 18 Invoice rows left out of scope. **Cheapest correct fix, given the audit's numbers:** only 1 of 408 bills has a resubmit cycle, so the rule does not need rebuilding — add a guard that REFUSES (or flags for manual review) any candidate whose parent has >1 `submitted` row, and the remaining 99.8% stay trivially safe. The exact linkage, if a full fix is ever wanted, is `ms.Outbox` `Kind='send_mail'` → `Payload.review_id`, written in the same `_do_enqueue` call ~0.5–3s before the `in_review` row; note it is only populated from ~2026-08-11 onward (older rows carry `"review_id": null`). Also: `DATETIME2(3)` ties are possible and the tie-break omits `Id`. Surfaced by the retrospective `/review` of U-461..U-465, which shipped without an adversarial pass (Codex out of credits). Web half booked in `build.one.web/TODO.md`.
 
 
+## U-476 spillover — server-side gaps behind the Expense receipt fix (booked 2026-09-17)
+
+U-476 (web) stopped an Expense's receipt PDF being permanently destroyed when the user removed the line
+item holding it. **That protection is entirely client-side.** These are the API-side items it surfaced.
+
+- [ ] 🔴 **P1 — the line-item cascade is the actual defect; the web guard is at the wrong layer.**
+  `DELETE /api/v1/delete/expense_line_item/{public_id}` → `ExpenseLineItemService.delete_by_public_id`
+  deletes the ELIA link, then the `Attachment` row, then `AzureBlobStorage().delete_file(blob_url)`.
+  Irreversible. Nothing server-side asks whether that line holds the expense's only receipt. The completed-
+  document lock does not help: it fires only for terminal parents, and this page edits drafts only.
+  Right-depth fix: refuse with 409 when the line holds the sole link, or re-home/detach inside the same
+  transaction. **Mitigating fact, measured:** `ExpenseEdit.tsx` is the ONLY caller of that endpoint
+  anywhere — no MCP tool, no iOS call, no in-repo agent tool — so the client guard covers 100% of today's
+  traffic. It is defence-in-depth that currently works, not a control. A second client would bypass it.
+  ⚠️ Note the DB is on our side here: `FK_ExpenseLineItemAttachment_Attachment` is NO ACTION, so once the
+  link exists on a surviving line the cascade's Attachment delete raises 547, is swallowed, and the blob
+  survives. The re-homing works even across a network gap — by constraint, not by the cascade's design.
+- [ ] 🔴 **P1 — unscoped attachment read surface (pre-existing, found while reviewing U-476).**
+  `AttachmentService.read_all` / `read_by_public_id` / `read_by_id` apply **no actor scoping** — the repo
+  call passes `params={}`. `GET /get/attachments` and `GET /view/attachment/{public_id}` are gated on the
+  ATTACHMENTS module alone. A PM with `ATTACHMENTS can_read` and `UserProject` access to ONE project can
+  list every attachment row in the tenant (public_id + blob_url) and stream any of them — every vendor
+  invoice, W-9 and COI in the business. Compounding: `ExpenseLineItemAttachmentService.create` validates
+  the LINE ITEM's scope but resolves the attachment through the unscoped read, so an arbitrary attachment
+  can be linked onto a line the caller does own. **Not introduced or worsened by U-476** — the new code
+  only ever handles a link it could already read. Its own unit.
+- [ ] 🟡 **P2 — bare `detail=str(e)` leaks an internal id into the UI.** The catch-all in the ELIA and
+  attachment routers returns `EntityNotAccessibleError` as a **500** carrying "Expense {internal id} is not
+  accessible to the current actor", because that error is not an `HTTPException` and never reaches the
+  app-level 404 masker. U-476 pipes those messages into the page's save-error banner. Low impact (it is
+  the id of the expense the user was already editing, and the same routers already surfaced it via
+  `LineItemAttachment`), but the shape is wrong in two routers.
+- [ ] 🟢 **P3 — no by-parent ELIA list route.** `GET /get/expense-line-item-attachments` is `read_all()` —
+  an unbounded full-table read, unusable as a batch. A `by-expense/{id}` route would collapse the web
+  helper's per-line lookups (one per removed line plus one per survivor, serial over a WAN) into ONE call.
+- [ ] 🟢 **P3 — comment corrected in passing:** the web code believed `ExpenseLineItemAttachment.AttachmentId`
+  was nullable and guarded against it. It is `BIGINT NOT NULL`. That guard is dead for real server data —
+  which is fortunate, because its branch skipped preservation and fell through to the destructive delete.
+  It was the one fail-open shape in the design, and it is unreachable.
+
 ## U-467 mapping findings — booked out of the Expense-parity Gate-1 session (2026-09-16)
 
 `/em` mapped Bill→Expense lifecycle parity and scoped four serialized units (U-467 api column → U-468 api

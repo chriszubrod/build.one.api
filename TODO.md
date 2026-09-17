@@ -703,7 +703,14 @@ Recommended first unit: the `complete_bill` pair below, on its own, ahead of eve
 
 ### P1 — two endpoints hard-broken in prod
 
-- [ ] **`POST /process/bill-folder-single` raises NameError on 100% of calls, since April 2026.**
+- [x] **✅ CLOSED by U-478 (2026-09-17) — route deleted, not repaired.** `POST /process/bill-folder-single`
+  wrote `_folder_processing_results` (undefined since run state moved to `dbo.BillFolderRun`) and NameError'd
+  on 100% of calls, inside the handler, before `background_tasks.add_task`. Repairing it would have meant a
+  second processing path (dict + BillFolderRun row + a status route that never existed) in parallel with the
+  live queue; the in-process dict also carried the `-w 2` cross-worker bug. Live single-file processing is
+  already `enqueue_bill_folder_run` → tick → `BillFolderProcessor.process_single_item`. `_run_single_file_processing`
+  (a drifted near-verbatim copy of `_process_single_file`) was deleted with the route. Original below.
+  ~~**`POST /process/bill-folder-single` raises NameError on 100% of calls, since April 2026.**
   `entities/bill/api/router.py:739` (also `:898`, `:904`) writes `_folder_processing_results`, which is
   defined nowhere in the repo — the module-level dict was deleted when run state moved to
   `dbo.BillFolderRun` and three references survived. Proven by import: the module attribute does not exist
@@ -711,7 +718,7 @@ Recommended first unit: the `complete_bill` pair below, on its own, ahead of eve
   `background_tasks.add_task`. Secondary: the bare `uuid4()` run_id at `:738` is never inserted into
   `BillFolderRun`, so fixing only the NameError leaves the client polling a permanent 404. The queue-driven
   `enqueue_bill_folder_run` -> tick -> `process_single_item` path is the one live design; consider deleting
-  this route and `_process_single_file` (a drifted near-verbatim copy) rather than repairing them.
+  this route and `_process_single_file` (a drifted near-verbatim copy) rather than repairing them.~~
 - [ ] **`DELETE /api/v1/delete/bill_line_item/{public_id}` 547s on any line carrying a PDF.**
   `entities/bill_line_item/business/service.py:276` clears InvoiceLineItem rows, nulls ContractLabor links and
   clears the legacy qbo mapping — but never deletes the `BillLineItemAttachment` row, whose
@@ -772,12 +779,15 @@ Recommended first unit: the `complete_bill` pair below, on its own, ahead of eve
 
 ### P1 — RBAC
 
-- [ ] **Four mutating `/process/bill-folder*` POSTs are gated on `can_read`.**
-  `entities/bill/api/router.py:579`, `:729`, `:752`, `:816` use the bare `require_module_api(Modules.BILLS)`,
+- [ ] **Mutating `/process/bill-folder*` POSTs gated on `can_read` (U-478 closed the `-move` half only).**
+  `POST /process/bill-folder` (`process_bill_folder_router`) still uses the bare `require_module_api(Modules.BILLS)`,
   whose `permission` defaults to `"can_read"` (`shared/rbac.py:364`), while EVERY entity endpoint in the same
-  router is explicit. A view-only AP clerk can mass-create draft Bills, upload a blob + Attachment row, or —
-  via `/process/bill-folder-move`'s name-conflict branch — reach `sp_client.delete_item` (`router.py:849`) and
-  permanently delete a PDF from the SharePoint processed folder.
+  router is explicit. A view-only AP clerk can still mass-create draft Bills via the live queue path.
+  **U-478 (2026-09-17) closed the `-move` clause by deleting the route**, so its name-conflict branch can no
+  longer reach `sp_client.delete_item` and a view-only clerk cannot permanently delete a PDF from the
+  SharePoint processed folder. A route that does not exist cannot be misconfigured later. `-single` and
+  `-prepare` (the other two of the original four POSTs; `-prepare` was the blob+Attachment upload) were
+  deleted with it. The remaining live mutating POST is this one.
 - [ ] **`GET /get/bill/find-by-conversation-id` returns bill data with no per-row access gate.**
   `entities/bill/api/router.py:327` calls `BillRepository().find_for_reviewer_reply` directly — no
   `assert_can_access_bill`, and `FindBillForReviewerReply` takes no `@ActorUserId` — while every other by-id
@@ -792,14 +802,17 @@ Recommended first unit: the `complete_bill` pair below, on its own, ahead of eve
   ValueError embedding its public_id and is_draft, which `raise_workflow_error` surfaces as a 409 body. A
   subcontractor-scoped user with `can_create` learns the PublicId, draft state and existence of another
   project's bill — and stamps their own EmailMessage onto it.
-- [ ] **The folder pre-scan 500s and echoes an internal `Bill.Id` to a user who may not see the row.**
+- [x] **✅ CLOSED by U-478 (2026-09-17) — `GET /process/bill-folder-pending` deleted.** The
+  `list_pending` `EntityNotAccessibleError` → 500 path has no HTTP surface left. `list_pending` itself is
+  unchanged (scheduler tick never called it; drain-secret sets `is_system_admin=True`). Original below.
+  ~~**The folder pre-scan 500s and echoes an internal `Bill.Id` to a user who may not see the row.**
   `entities/bill/business/folder_processor.py:382` — `list_pending` calls
   `read_by_bill_number_and_vendor_public_id` once per PDF purely to set an `is_duplicate` flag. That reads
   through the UNSCOPED repo sproc and then calls `assert_can_access_bill(bill.id)`, which RAISES
   `EntityNotAccessibleError` rather than returning None. For a PM whose source folder contains a duplicate of
   a bill on a project they lack a UserProject row for, the exception escapes into the router's blanket
   `except` and `GET /process/bill-folder-pending` returns 500 with `"Bill 18545 is not accessible..."`. The
-  scheduler tick path is unaffected (drain-secret sets `is_system_admin=True`).
+  scheduler tick path is unaffected (drain-secret sets `is_system_admin=True`).~~
 
 ### P1/P2 — correctness
 
@@ -3556,7 +3569,8 @@ Board: [U-370](../build.one.team/BOARD.md) (Ready). Review of the Address stack 
 - [x] **Scheduled folder pickup** (API `5c2f6d9` + scheduler `54702bc`, 2026-04-26). Files dropped in `/source` are auto-enqueued by the scheduler's `enumerate_bill_folder` timer (every 5 min) via `POST /api/v1/admin/bill-folder/enumerate`. Hour-window dedup on item_ids prevents stuck files from churning a fresh queue row every tick. Drain timer (`process_bill_folder`) handles the actual processing.
 - [x] **`_move_file_to_processed` silent-failure bug** (API `5c2f6d9`, 2026-04-26). Helper now raises on unrecoverable failure (post-conflict-retry path included); silent `try/except` wrappers in `process_single_item` removed. Move failures land in `BillFolderRunItem.LastError` and surface in the run's errors view instead of leaving PDFs stranded in `/source`.
 - [ ] **Diagnose what's wrong with the SP move call.** With raise-on-failure live, the next 5-min enumerate-tick should surface the real reason the 61 stuck files won't move (permissions? locked files? something with the post-conflict retry?). Watch the `BillFolderRunItem.LastError` column on the next failed batch and fix accordingly. Once root cause is known, manually clear the stuck rows.
-- [ ] **`_run_single_file_processing` still uses the in-process dict** and has the same cross-worker `-w 2` bug the bulk Process Folder flow had before today's refactor. Route is `POST /api/v1/process/bill-folder-single` in `entities/bill/api/router.py`. Fix by routing it through the same `BillFolderRunItem` table + tick pattern (one ad-hoc `BillFolderRun` with one item in it) — or by replacing with a direct synchronous call since it's already single-file. Low urgency (users rarely hit it), but it will silently 404 the polling loop when workers disagree.
+- [x] **✅ CLOSED by U-478 (2026-09-17) — `_run_single_file_processing` and `POST /process/bill-folder-single` deleted.** Live single-file processing is the queue (`BillFolderRunItem` + tick). Original ask to route the helper through the table is moot.
+  ~~**`_run_single_file_processing` still uses the in-process dict** and has the same cross-worker `-w 2` bug the bulk Process Folder flow had before today's refactor. Route is `POST /api/v1/process/bill-folder-single` in `entities/bill/api/router.py`. Fix by routing it through the same `BillFolderRunItem` table + tick pattern (one ad-hoc `BillFolderRun` with one item in it) — or by replacing with a direct synchronous call since it's already single-file. Low urgency (users rarely hit it), but it will silently 404 the polling loop when workers disagree.~~
 - [ ] **If we add a third feature that needs the one-file-per-tick pattern**, generalize into `[tasks].[Run]` / `[tasks].[RunItem]` + a `TaskQueueService` so we stop duplicating sprocs. Pattern captured in `project_one_file_per_tick.md` memory.
 
 ## Observability / Ops

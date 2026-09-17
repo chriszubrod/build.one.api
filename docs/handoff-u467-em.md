@@ -20,8 +20,8 @@ Scoped by `/em` as **four serialized units**. U-467 is the first and the only on
 
 | Unit | Repo | Scope | State |
 |---|---|---|---|
-| **U-467** | api | `Status` column + backfill + CKs + index + computed `IsDraft` + `FinalizeExpenseById` + `TransitionExpenseStatus` + `?status=`/date-range + U-447 single-snapshot + `CreateReview` mirror + Purchase-connector origin | **Gate 1 APPROVED — build this** |
-| U-468 | api | Terminal lock (422 `status_locked`) + atomic delete cascade + `DeleteReviewsByExpenseId` (U-446b/U-446c slice; also closes 3 open U-433 findings) | Ready, not opened |
+| **U-467** | api | `Status` column + backfill + CKs + index + computed `IsDraft` + `FinalizeExpenseById` + `TransitionExpenseStatus` + `?status=`/date-range + U-447 single-snapshot + `CreateReview` mirror + Purchase-connector origin | **SHIPPED** (`c429605a`, applied in prod) |
+| U-468 | api | Terminal lock (422 `status_locked`, two-layer) + atomic `DeleteExpenseCascadeById` (NO `DeleteReviewsByExpenseId` — see that sproc's header for why it cannot ship) + in-transaction invoiced-citation refusal (NOT a lock-free pre-check — that shape was reverted) + attachment-file lock + child row scoping | Built this session (not committed) |
 | U-469 | api | Agent/MCP lifecycle vocabulary for Expense (U-446d slice) | Ready, not opened |
 | U-470 | web | Bills card layout + six status tabs + filters + pagination + badges + View attachment section | Ready, blocked on U-467 |
 

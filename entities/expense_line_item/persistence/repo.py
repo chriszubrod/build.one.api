@@ -14,6 +14,7 @@ from shared.database import (
     get_connection,
     map_database_error,
 )
+from shared.lifecycle.terminal_lock import reraise_if_sproc_status_locked
 
 logger = logging.getLogger(__name__)
 
@@ -63,7 +64,7 @@ class ExpenseLineItemRepository:
             logger.error(f"Unexpected error during expense line item mapping: {error}")
             raise map_database_error(error)
 
-    def create(self, *, expense_id: int, sub_cost_code_id: Optional[int] = None, project_id: Optional[int] = None, description: Optional[str] = None, quantity: Optional[int] = None, rate: Optional[Decimal] = None, amount: Optional[Decimal] = None, is_billable: Optional[bool] = None, is_billed: Optional[bool] = None, markup: Optional[Decimal] = None, price: Optional[Decimal] = None, is_draft: bool = True, created_by_user_id: Optional[int] = None) -> ExpenseLineItem:
+    def create(self, *, expense_id: int, sub_cost_code_id: Optional[int] = None, project_id: Optional[int] = None, description: Optional[str] = None, quantity: Optional[int] = None, rate: Optional[Decimal] = None, amount: Optional[Decimal] = None, is_billable: Optional[bool] = None, is_billed: Optional[bool] = None, markup: Optional[Decimal] = None, price: Optional[Decimal] = None, is_draft: bool = True, created_by_user_id: Optional[int] = None, allow_terminal_parent: bool = True) -> ExpenseLineItem:
         """
         Create a new expense line item.
         """
@@ -87,6 +88,7 @@ class ExpenseLineItemRepository:
                         "Price": Decimal(str(price)) if price is not None else None,
                         "IsDraft": 1 if is_draft else 0,
                         "CreatedByUserId": created_by_user_id,
+                        "AllowTerminalParent": 1 if allow_terminal_parent else 0,
                     },
                 )
                 row = cursor.fetchone()
@@ -95,12 +97,23 @@ class ExpenseLineItemRepository:
                     raise map_database_error(Exception("CreateExpenseLineItem failed"))
                 return self._from_db(row)
         except Exception as error:
+            reraise_if_sproc_status_locked(
+                error, what="line items cannot be added to it"
+            )
             logger.error(f"Error during create expense line item: {error}")
             raise map_database_error(error)
 
-    def read_all(self) -> list[ExpenseLineItem]:
+    def read_all(
+        self,
+        *,
+        actor_user_id: Optional[int] = None,
+        actor_is_system_admin: Optional[bool] = None,
+    ) -> list[ExpenseLineItem]:
         """
-        Read all expense line items.
+        Read expense line items, scoped by UserProject membership for non-admin actors.
+
+        Mirrors BillLineItemRepository.read_all. The sproc fails closed: an
+        actor of (None, None) matches no rows rather than every row.
         """
         try:
             with get_connection() as conn:
@@ -108,7 +121,10 @@ class ExpenseLineItemRepository:
                 call_procedure(
                     cursor=cursor,
                     name="ReadExpenseLineItems",
-                    params={},
+                    params={
+                        "ActorUserId": actor_user_id,
+                        "ActorIsSystemAdmin": _bit(actor_is_system_admin),
+                    },
                 )
                 rows = cursor.fetchall()
                 return [self._from_db(row) for row in rows if row]
@@ -194,7 +210,7 @@ class ExpenseLineItemRepository:
             logger.error(f"Error during read expense line item by QBO identity: {error}")
             raise map_database_error(error)
 
-    def update_by_id(self, expense_line_item: ExpenseLineItem) -> Optional[ExpenseLineItem]:
+    def update_by_id(self, expense_line_item: ExpenseLineItem, *, allow_terminal_parent: bool = True) -> Optional[ExpenseLineItem]:
         """
         Update an expense line item by ID.
         """
@@ -216,6 +232,7 @@ class ExpenseLineItemRepository:
                     "Markup": Decimal(str(expense_line_item.markup)) if expense_line_item.markup is not None else None,
                     "Price": Decimal(str(expense_line_item.price)) if expense_line_item.price is not None else None,
                 }
+                params["AllowTerminalParent"] = 1 if allow_terminal_parent else 0
                 # Only include IsDraft if it's explicitly set (not None)
                 if expense_line_item.is_draft is not None:
                     params["IsDraft"] = 1 if expense_line_item.is_draft else 0
@@ -237,10 +254,13 @@ class ExpenseLineItemRepository:
                     )
                 return self._from_db(row)
         except Exception as error:
+            reraise_if_sproc_status_locked(
+                error, what="its line items cannot be changed"
+            )
             logger.error(f"Error during update expense line item by ID: {error}")
             raise map_database_error(error)
 
-    def delete_by_id(self, id: int) -> Optional[ExpenseLineItem]:
+    def delete_by_id(self, id: int, *, allow_terminal_parent: bool = True) -> Optional[ExpenseLineItem]:
         """
         Delete an expense line item by ID.
         """
@@ -250,11 +270,17 @@ class ExpenseLineItemRepository:
                 call_procedure(
                     cursor=cursor,
                     name="DeleteExpenseLineItemById",
-                    params={"Id": id},
+                    params={
+                        "Id": id,
+                        "AllowTerminalParent": 1 if allow_terminal_parent else 0,
+                    },
                 )
                 row = cursor.fetchone()
                 return self._from_db(row) if row else None
         except Exception as error:
+            reraise_if_sproc_status_locked(
+                error, what="its line items cannot be deleted"
+            )
             logger.error(f"Error during delete expense line item by ID: {error}")
             raise map_database_error(error)
 
@@ -295,3 +321,11 @@ class ExpenseLineItemRepository:
                 error,
             )
             raise map_database_error(error)
+
+
+def _bit(flag: Optional[bool]) -> Optional[int]:
+    """SQL Server BIT params take 0/1, not Python bool. Local copy per the
+    prevailing per-repo convention; consolidation tracked separately."""
+    if flag is None:
+        return None
+    return 1 if flag else 0

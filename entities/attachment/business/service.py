@@ -183,8 +183,9 @@ class AttachmentService:
         """
         return self.repo.read_by_qbo_identity(qbo_id, realm_id)
 
-    def is_evidence_for_a_completed_bill(self, attachment) -> bool:
-        """U-446b: whether this file is frozen as a completed Bill's evidence.
+    def is_evidence_for_a_completed_parent(self, attachment) -> bool:
+        """U-446b/U-468: whether this file is frozen as a completed Bill's or
+        Expense's evidence.
 
         Public because the CASCADE deleters need to ask BEFORE they touch Azure.
         They delete the blob first and the row second, so the guard on
@@ -192,7 +193,8 @@ class AttachmentService:
         leaves the bytes destroyed and the row intact (Codex round 3, P1). An
         attachment reaches a Bill through BLIA multi-split linking, so a
         receipt cascaded away by its Expense can be a completed Bill's evidence
-        too.
+        too — and the reverse: a file linked only to a completed Expense was
+        never counted by the Bill-only check.
         """
         if is_system_caller():
             return False
@@ -202,28 +204,36 @@ class AttachmentService:
         from entities.bill_line_item_attachment.persistence.repo import (
             BillLineItemAttachmentRepository,
         )
+        from entities.expense_line_item_attachment.persistence.repo import (
+            ExpenseLineItemAttachmentRepository,
+        )
+        if BillLineItemAttachmentRepository().count_completed_bills_by_attachment_id(
+            attachment_id
+        ):
+            return True
         return bool(
-            BillLineItemAttachmentRepository().count_completed_bills_by_attachment_id(
+            ExpenseLineItemAttachmentRepository().count_completed_expenses_by_attachment_id(
                 attachment_id
             )
         )
 
-    def _assert_not_evidence_for_a_completed_bill(
+    def _assert_not_evidence_for_a_completed_parent(
         self, attachment, *, what: str, exempt: bool = False
     ) -> None:
-        """U-446b: a completed Bill's evidence file is frozen with it.
+        """U-446b/U-468: a completed Bill's or Expense's evidence file is frozen
+        with it.
 
         The lock already refused edits to the LINK row
-        (BillLineItemAttachment). This is the file that link points at — the
-        PDF the AP was approved from — and it was reachable through the generic
-        attachment routes with nothing but ATTACHMENTS permissions. Replacing
-        its `blob_url`, renaming it, archiving it or deleting it all change what
-        our books can show without changing what QBO, SharePoint, Excel and Box
-        already received.
+        (BillLineItemAttachment / ExpenseLineItemAttachment). This is the file
+        that link points at — the PDF the AP was approved from — and it was
+        reachable through the generic attachment routes with nothing but
+        ATTACHMENTS permissions. Replacing its `blob_url`, renaming it,
+        archiving it or deleting it all change what our books can show without
+        changing what QBO, SharePoint, Excel and Box already received.
 
-        Costs one COUNT per attachment mutation. These are not hot paths — the
-        only high-frequency writer is completion's own blob rename, which is
-        exempt and skips the query entirely.
+        Costs up to two COUNTs per attachment mutation. These are not hot
+        paths — the only high-frequency writer is completion's own blob rename,
+        which is exempt and skips the query entirely.
 
         DELIBERATELY NOT GUARDED (Codex round 3, P3): operational metadata that
         says nothing about what the document IS —
@@ -236,7 +246,7 @@ class AttachmentService:
         """
         if exempt:
             return
-        if self.is_evidence_for_a_completed_bill(attachment):
+        if self.is_evidence_for_a_completed_parent(attachment):
             raise StatusLockedError(what)
 
     def update_by_public_id(
@@ -269,7 +279,7 @@ class AttachmentService:
         if not existing:
             return None
 
-        self._assert_not_evidence_for_a_completed_bill(
+        self._assert_not_evidence_for_a_completed_parent(
             existing,
             what="its attachments cannot be changed",
             exempt=_via_internal_pipeline,
@@ -319,7 +329,7 @@ class AttachmentService:
         if not existing:
             return None
 
-        self._assert_not_evidence_for_a_completed_bill(
+        self._assert_not_evidence_for_a_completed_parent(
             existing,
             what="its attachments cannot be archived",
             exempt=_via_internal_pipeline,
@@ -338,7 +348,7 @@ class AttachmentService:
         if not existing:
             return None
 
-        self._assert_not_evidence_for_a_completed_bill(
+        self._assert_not_evidence_for_a_completed_parent(
             existing,
             what="its attachments cannot be unarchived",
             exempt=_via_internal_pipeline,
@@ -356,7 +366,7 @@ class AttachmentService:
         # TODO: In Phase 10, validate tenant_id matches record's tenant
         existing = self.read_by_public_id(public_id=public_id)
         if existing:
-            self._assert_not_evidence_for_a_completed_bill(
+            self._assert_not_evidence_for_a_completed_parent(
                 existing,
                 what="its attachments cannot be deleted",
                 exempt=_via_internal_pipeline,

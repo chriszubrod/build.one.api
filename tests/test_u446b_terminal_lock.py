@@ -77,6 +77,23 @@ def test_invoice_completion_may_still_flip_is_billed_on_a_completed_bill():
     MockBill.return_value.read_by_id.assert_not_called()
 
 
+def test_invoice_completion_may_still_flip_is_billed_on_a_completed_expense():
+    """You invoice COMPLETED AP, so every line invoice completion marks belongs
+    to a locked expense. Without the explicit exemption this guard would refuse
+    the write and break invoice completion of expenses outright."""
+    from entities.expense_line_item.business.service import ExpenseLineItemService
+
+    svc = ExpenseLineItemService()
+    with patch.object(svc, "_assert_parent_editable", wraps=svc._assert_parent_editable) as guard, \
+         patch("entities.expense.business.service.ExpenseService") as MockExp:
+        MockExp.return_value.read_by_id.return_value = SimpleNamespace(
+            id=99, public_id="exp-1", status="completed", is_draft=False
+        )
+        svc._assert_parent_editable(expense_id=99, what="x", exempt=True)
+    assert guard.called
+    MockExp.return_value.read_by_id.assert_not_called()
+
+
 def _bli_mutations_missing_the_exemption(path):
     """Calls onto a BillLineItem service's guarded mutators that are NOT exempt.
 
@@ -94,11 +111,15 @@ def _bli_mutations_missing_the_exemption(path):
         if node.func.attr not in {"create", "update_by_public_id", "delete_by_public_id"}:
             continue
         names = {kw.arg for kw in node.keywords}
-        # A BILL-parent line write. The sibling branches in this same loop
-        # write Expense / BillCredit / InvoiceLineItem lines and must NOT be
-        # exempt — those entities have no terminal lock yet, so handing them
-        # one would be a bypass waiting for their Phase-3 unit to land.
-        if "bill_public_id" not in names or not names & {"is_billed", "price"}:
+        # A BILL-parent or EXPENSE-parent line write. Sibling branches in this
+        # same loop write BillCredit / InvoiceLineItem lines and must NOT be
+        # exempt — those entities have no terminal lock yet. Expense joined
+        # the lock in U-468; both is_billed writes are pinned here (dropping
+        # `_via_internal_pipeline=True` from either Expense branch must go
+        # red — a `bill_public_id`-only filter cannot see them).
+        if not names & {"bill_public_id", "expense_public_id"}:
+            continue
+        if not names & {"is_billed", "price"}:
             continue
         if not any(
             kw.arg == "_via_internal_pipeline"
@@ -142,9 +163,10 @@ def test_the_draw_push_backfill_actually_reaches_the_mutator_exempted():
     )
 
 
-def test_the_draw_push_does_NOT_exempt_expense_parents():
-    """Expense has no terminal lock yet — handing it a Bill-shaped exemption
-    would be a bypass waiting for that unit to land."""
+def test_the_draw_push_exempts_expense_parents_now_that_they_are_locked():
+    """U-468 landed Expense's terminal lock. KI-16 repairs prices on COMPLETED
+    expenses the same way it does on bills; without the exemption the draw
+    push would 422 on every invoiced expense whose Price was null."""
     from entities.invoice.business.push import _ki16_ensure_price_on_parent_lines
 
     line = SimpleNamespace(public_id="eli-1", row_version="AAAA", price=None, amount=10)
@@ -154,7 +176,9 @@ def test_the_draw_push_does_NOT_exempt_expense_parents():
         _ki16_ensure_price_on_parent_lines("Expense", [line])
 
     kwargs = MockSvc.return_value.update_by_public_id.call_args.kwargs
-    assert "_via_internal_pipeline" not in kwargs
+    assert kwargs.get("_via_internal_pipeline") is True, (
+        f"KI-16 repairs prices on COMPLETED expenses; got {sorted(kwargs)}"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1100,7 +1124,7 @@ def test_an_exempt_caller_sends_1():
 # ---------------------------------------------------------------------------
 
 
-def _attachment_service(completed_parents: int):
+def _attachment_service(completed_parents: int, completed_expenses: int = 0):
     from entities.attachment.business.service import AttachmentService
 
     set_authz_context(user_id=20, company_id=1, is_system_admin=False)
@@ -1111,12 +1135,29 @@ def _attachment_service(completed_parents: int):
             filename="x.pdf", is_archived=False,
         )
     )
-    patcher = patch(
-        "entities.bill_line_item_attachment.persistence.repo.BillLineItemAttachmentRepository"
+    patchers = [
+        patch(
+            "entities.bill_line_item_attachment.persistence.repo.BillLineItemAttachmentRepository"
+        ),
+        patch(
+            "entities.expense_line_item_attachment.persistence.repo.ExpenseLineItemAttachmentRepository"
+        ),
+    ]
+    MockBillRepo = patchers[0].start()
+    MockExpRepo = patchers[1].start()
+    MockBillRepo.return_value.count_completed_bills_by_attachment_id.return_value = (
+        completed_parents
     )
-    MockRepo = patcher.start()
-    MockRepo.return_value.count_completed_bills_by_attachment_id.return_value = completed_parents
-    return svc, patcher
+    MockExpRepo.return_value.count_completed_expenses_by_attachment_id.return_value = (
+        completed_expenses
+    )
+
+    class _Stop:
+        def stop(self):
+            for p in patchers:
+                p.stop()
+
+    return svc, _Stop()
 
 
 @pytest.mark.parametrize(
@@ -1155,8 +1196,10 @@ def test_a_completed_bills_evidence_file_cannot_be_touched(method, kwargs):
     ],
 )
 def test_an_attachment_on_no_completed_bill_stays_freely_editable(method, kwargs):
-    """Most attachments are not bill evidence at all — expense receipts, invoice
-    packets, contract-labor logs. Over-blocking here would break all of them."""
+    """Most attachments are not completed-parent evidence at all — draft
+    receipts, invoice packets, contract-labor logs. Over-blocking here would
+    break all of them. A completed Expense's receipt is frozen separately
+    (U-468); this case is zero completed Bills AND zero completed Expenses."""
     svc, patcher = _attachment_service(completed_parents=0)
     try:
         getattr(svc, method)(**kwargs)  # must not raise
@@ -1917,7 +1960,6 @@ def test_a_normal_repo_failure_is_not_relabelled_as_status_locked():
 @pytest.mark.parametrize(
     "rel,func",
     [
-        ("entities/expense/business/service.py", "delete_by_public_id"),
         ("entities/bill_credit/business/service.py", "delete_by_public_id"),
         ("entities/expense_line_item/business/service.py", "delete_by_public_id"),
     ],
@@ -2040,7 +2082,12 @@ def test_the_expense_line_item_cascade_orders_its_deletes_for_real():
         "entities.expense_line_item_attachment.persistence.repo.ExpenseLineItemAttachmentRepository"
     ) as MockLinkRepo, patch(
         "entities.attachment.business.service.AttachmentService"
-    ) as MockAtt, patch("shared.storage.AzureBlobStorage") as MockStorage:
+    ) as MockAtt, patch("shared.storage.AzureBlobStorage") as MockStorage, patch(
+        "entities.expense.business.service.ExpenseService"
+    ) as MockExp:
+        MockExp.return_value.read_by_id.return_value = SimpleNamespace(
+            status="draft", is_draft=True
+        )
         MockLinkRepo.return_value.read_by_expense_line_item_id.return_value = SimpleNamespace(
             id=5, attachment_id=9
         )
@@ -2071,7 +2118,12 @@ def test_the_expense_line_item_cascade_keeps_frozen_evidence():
         "entities.expense_line_item_attachment.persistence.repo.ExpenseLineItemAttachmentRepository"
     ) as MockLinkRepo, patch(
         "entities.attachment.business.service.AttachmentService"
-    ) as MockAtt, patch("shared.storage.AzureBlobStorage") as MockStorage:
+    ) as MockAtt, patch("shared.storage.AzureBlobStorage") as MockStorage, patch(
+        "entities.expense.business.service.ExpenseService"
+    ) as MockExp:
+        MockExp.return_value.read_by_id.return_value = SimpleNamespace(
+            status="draft", is_draft=True
+        )
         MockLinkRepo.return_value.read_by_expense_line_item_id.return_value = SimpleNamespace(
             id=5, attachment_id=9
         )

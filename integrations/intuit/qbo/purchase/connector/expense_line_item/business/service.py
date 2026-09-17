@@ -257,6 +257,7 @@ class PurchaseLineExpenseLineItemConnector:
                 is_billed=is_billed,
                 markup=update_markup,
                 price=price,
+                _via_internal_pipeline=True,
             )
             if updated is None:
                 # ROWVERSION race: a concurrent writer touched this exact
@@ -356,6 +357,7 @@ class PurchaseLineExpenseLineItemConnector:
                 markup=default_markup,
                 price=price,
                 is_draft=False,
+                _via_internal_pipeline=True,
             )
 
         def _stamp_line_identity(candidate: ExpenseLineItem) -> Optional[ExpenseLineItem]:
@@ -384,7 +386,7 @@ class PurchaseLineExpenseLineItemConnector:
             """
             rollback_orphan_header(
                 delete_header=lambda: self.expense_line_item_service.delete_by_public_id(
-                    candidate.public_id
+                    candidate.public_id, _via_internal_pipeline=True
                 ),
                 delete_mapping=lambda: None,
                 entity_label="ExpenseLineItem",

@@ -90,11 +90,38 @@ CREATE OR ALTER PROCEDURE CreateExpenseLineItemAttachment
 (
     @ExpenseLineItemId BIGINT,
     @AttachmentId BIGINT,
-    @CreatedByUserId BIGINT = NULL
+    @CreatedByUserId BIGINT = NULL,
+    @AllowTerminalParent BIT = 0
 )
 AS
 BEGIN
+    SET NOCOUNT ON;
+
     BEGIN TRANSACTION;
+
+    DECLARE @ParentExpenseId BIGINT;
+
+    -- LOCK UNCONDITIONALLY, REFUSE CONDITIONALLY (U-446c, ported U-468).
+    BEGIN
+        -- Take the ATTACHMENT lock first, matching the Bill sibling's order.
+        DECLARE @LockedAttachment BIT;
+        SELECT @LockedAttachment = 1 FROM dbo.[Attachment] WITH (UPDLOCK, HOLDLOCK)
+        WHERE [Id] = @AttachmentId;
+
+        SELECT @ParentExpenseId = e.[Id]
+        FROM dbo.[ExpenseLineItem] li
+        INNER JOIN dbo.[Expense] e WITH (UPDLOCK, HOLDLOCK) ON e.[Id] = li.[ExpenseId]
+        WHERE li.[Id] = @ExpenseLineItemId;
+
+        IF @AllowTerminalParent = 0 AND EXISTS (
+            SELECT 1 FROM dbo.[Expense] WHERE [Id] = @ParentExpenseId AND [Status] = 'completed'
+        )
+        BEGIN
+            COMMIT TRANSACTION;
+            RAISERROR('STATUS_LOCKED: attachments cannot be added to a completed Expense.', 16, 1);
+            RETURN;
+        END
+    END
 
     DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();
 
@@ -107,7 +134,12 @@ BEGIN
         CONVERT(VARCHAR(19), INSERTED.[ModifiedDatetime], 120) AS [ModifiedDatetime],
         INSERTED.[ExpenseLineItemId],
         INSERTED.[AttachmentId]
-    VALUES (@Now, @Now, @ExpenseLineItemId, @AttachmentId, COALESCE(@CreatedByUserId, 17));
+    SELECT @Now, @Now, @ExpenseLineItemId, @AttachmentId, COALESCE(@CreatedByUserId, 17)
+    WHERE @AllowTerminalParent = 1
+       OR EXISTS (
+            SELECT 1 FROM dbo.[ExpenseLineItem] li
+            WHERE li.[Id] = @ExpenseLineItemId AND li.[ExpenseId] = @ParentExpenseId
+          );
 
     COMMIT TRANSACTION;
 END;
@@ -116,21 +148,30 @@ GO
 
 GO
 
+-- Scoped by UserProject membership for non-admin actors, via the parent
+-- ExpenseLineItem's Expense — the same gap, and the same fix, as
+-- ReadExpenseLineItems. Fails closed: an actor of (NULL, NULL) matches no rows.
 CREATE OR ALTER PROCEDURE ReadExpenseLineItemAttachments
+(
+    @ActorUserId BIGINT = NULL,
+    @ActorIsSystemAdmin BIT = NULL
+)
 AS
 BEGIN
     BEGIN TRANSACTION;
 
     SELECT
-        [Id],
-        [PublicId],
-        [RowVersion],
-        CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
-        CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
-        [ExpenseLineItemId],
-        [AttachmentId]
-    FROM dbo.[ExpenseLineItemAttachment]
-    ORDER BY [ExpenseLineItemId] ASC, [AttachmentId] ASC;
+        elia.[Id],
+        elia.[PublicId],
+        elia.[RowVersion],
+        CONVERT(VARCHAR(19), elia.[CreatedDatetime], 120) AS [CreatedDatetime],
+        CONVERT(VARCHAR(19), elia.[ModifiedDatetime], 120) AS [ModifiedDatetime],
+        elia.[ExpenseLineItemId],
+        elia.[AttachmentId]
+    FROM dbo.[ExpenseLineItemAttachment] elia
+    INNER JOIN dbo.[ExpenseLineItem] eli ON eli.[Id] = elia.[ExpenseLineItemId]
+    WHERE dbo.UserCanAccessExpense(@ActorUserId, @ActorIsSystemAdmin, eli.[ExpenseId]) = 1
+    ORDER BY elia.[ExpenseLineItemId] ASC, elia.[AttachmentId] ASC;
 
     COMMIT TRANSACTION;
 END;
@@ -257,11 +298,34 @@ GO
 
 CREATE OR ALTER PROCEDURE DeleteExpenseLineItemAttachmentById
 (
-    @Id BIGINT
+    @Id BIGINT,
+    @AllowTerminalParent BIT = 0
 )
 AS
 BEGIN
+    SET NOCOUNT ON;
+
     BEGIN TRANSACTION;
+
+    DECLARE @ParentExpenseId BIGINT;
+
+    -- LOCK UNCONDITIONALLY, REFUSE CONDITIONALLY (U-446c, ported U-468).
+    BEGIN
+        SELECT @ParentExpenseId = e.[Id]
+        FROM dbo.[ExpenseLineItemAttachment] elia
+        INNER JOIN dbo.[ExpenseLineItem] li ON li.[Id] = elia.[ExpenseLineItemId]
+        INNER JOIN dbo.[Expense] e WITH (UPDLOCK, HOLDLOCK) ON e.[Id] = li.[ExpenseId]
+        WHERE elia.[Id] = @Id;
+
+        IF @AllowTerminalParent = 0 AND EXISTS (
+            SELECT 1 FROM dbo.[Expense] WHERE [Id] = @ParentExpenseId AND [Status] = 'completed'
+        )
+        BEGIN
+            COMMIT TRANSACTION;
+            RAISERROR('STATUS_LOCKED: the attachments of a completed Expense cannot be deleted.', 16, 1);
+            RETURN;
+        END
+    END
 
     DELETE FROM dbo.[ExpenseLineItemAttachment]
     OUTPUT
@@ -272,8 +336,43 @@ BEGIN
         CONVERT(VARCHAR(19), DELETED.[ModifiedDatetime], 120) AS [ModifiedDatetime],
         DELETED.[ExpenseLineItemId],
         DELETED.[AttachmentId]
-    WHERE [Id] = @Id;
+    WHERE [Id] = @Id
+      AND (@AllowTerminalParent = 1
+           OR EXISTS (
+                SELECT 1 FROM dbo.[ExpenseLineItem] li
+                WHERE li.[Id] = dbo.[ExpenseLineItemAttachment].[ExpenseLineItemId]
+                  AND li.[ExpenseId] = @ParentExpenseId
+              ));
 
     COMMIT TRANSACTION;
+END;
+GO
+
+
+-- U-468. "Is this Attachment evidence for a completed Expense?"
+--
+-- The terminal lock guards the LINK row (ExpenseLineItemAttachment), but the
+-- Attachment it points at was still freely mutable through the generic
+-- `/update/attachment/{id}` and `/delete/attachment/{id}` routes: a caller
+-- holding ATTACHMENTS.can_update could repoint `BlobUrl`, rename the file, or
+-- archive it — the Bill-only COUNT and the Bill-only in-transaction walk both
+-- saw zero completed Bills and let the write land.
+--
+-- One scalar answers it. COUNT(DISTINCT) because an Attachment may be linked
+-- to several line items, and any single completed parent is enough to freeze it.
+CREATE OR ALTER PROCEDURE CountCompletedExpensesByAttachmentId
+(
+    @AttachmentId BIGINT
+)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    SELECT COUNT(DISTINCT e.[Id]) AS [Count]
+    FROM dbo.[ExpenseLineItemAttachment] elia
+    INNER JOIN dbo.[ExpenseLineItem] li ON li.[Id] = elia.[ExpenseLineItemId]
+    INNER JOIN dbo.[Expense] e ON e.[Id] = li.[ExpenseId]
+    WHERE elia.[AttachmentId] = @AttachmentId
+      AND e.[Status] = 'completed';
 END;
 GO

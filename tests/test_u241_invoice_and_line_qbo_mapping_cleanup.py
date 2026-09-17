@@ -272,7 +272,7 @@ def test_expense_line_item_delete_clears_legacy_mapping_row_before_line():
     call_order = []
 
     mock_repo = Mock()
-    mock_repo.delete_by_id.side_effect = lambda *_: call_order.append("line") or line
+    mock_repo.delete_by_id.side_effect = lambda *a, **k: call_order.append("line") or line
 
     mock_cursor = Mock()
     mock_cursor.execute.side_effect = lambda *_: call_order.append("mapping")
@@ -320,4 +320,4 @@ def test_expense_line_item_delete_mapping_clear_failure_is_swallowed_line_delete
         result = svc.delete_by_public_id("eli-pub")
 
     assert result is line
-    mock_repo.delete_by_id.assert_called_once_with(41)
+    mock_repo.delete_by_id.assert_called_once_with(41, allow_terminal_parent=False)

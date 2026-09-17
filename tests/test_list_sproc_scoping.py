@@ -41,6 +41,8 @@ SCOPED_LIST_SPROCS = [
     ("ReadInvoices", "entities/invoice/sql/dbo.invoice.sql", "UserCanAccessProject"),
     ("ReadInvoicesPaginated", "entities/invoice/sql/dbo.invoice.sql", "UserCanAccessProject"),
     ("CountInvoices", "entities/invoice/sql/dbo.invoice.sql", "UserCanAccessProject"),
+    ("ReadExpenseLineItems", "entities/expense_line_item/sql/dbo.expense_line_item.sql", "UserCanAccessExpense"),
+    ("ReadExpenseLineItemAttachments", "entities/expense_line_item_attachment/sql/dbo.expense_line_item_attachment.sql", "UserCanAccessExpense"),
 ]
 
 

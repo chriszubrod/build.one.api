@@ -196,18 +196,22 @@ def test_expense_delete_no_longer_clears_any_qbo_mapping():
     expense = SimpleNamespace(id=99, public_id="exp-pub")
 
     mock_repo = Mock()
-    mock_repo.delete_by_id.return_value = expense
+    # U-468: the whole cascade is one sproc call now — Review rows and the
+    # per-line cleanup all moved into DeleteExpenseCascadeById, so the service
+    # touches no other repo.
+    mock_repo.delete_cascade_by_id.return_value = expense
 
     svc = ExpenseService(repo=mock_repo)
 
     with patch.object(svc, "read_by_public_id", return_value=expense), patch(
-        "entities.expense_line_item.business.service.ExpenseLineItemService"
-    ) as li_svc_cls, patch("shared.database.get_connection") as get_conn:
-        li_svc_cls.return_value.read_by_expense_id.return_value = []
+        "shared.database.get_connection"
+    ) as get_conn:
         result = svc.delete_by_public_id("exp-pub")
 
     assert result is expense
-    mock_repo.delete_by_id.assert_called_once_with(99)
+    mock_repo.delete_cascade_by_id.assert_called_once_with(
+        99, allow_terminal_parent=False
+    )
     get_conn.assert_not_called()
 
 

@@ -16,6 +16,7 @@ from shared.database import (
     get_connection,
     map_database_error,
 )
+from shared.lifecycle.terminal_lock import reraise_if_sproc_status_locked
 
 logger = logging.getLogger(__name__)
 
@@ -200,9 +201,15 @@ class ExpenseRepository:
             logger.error(f"Error during read expense by reference number and vendor ID: {error}")
             raise map_database_error(error)
 
-    def update_by_id(self, expense: Expense) -> Optional[Expense]:
+    def update_by_id(self, expense: Expense, *, allow_terminal_parent: bool = True) -> Optional[Expense]:
         """
         Update an expense by ID.
+
+        `allow_terminal_parent` is the sproc-side half of the U-468 terminal
+        lock. Always pass it explicitly. The REPO default is True, so an
+        omitted kwarg sends 1 and bypasses both the Python guard and the
+        sproc's fail-closed default. The sproc itself defaults to 0; the trap
+        is this Python default, not the sproc's.
         """
         try:
             with get_connection() as conn:
@@ -216,6 +223,7 @@ class ExpenseRepository:
                     "TotalAmount": Decimal(str(expense.total_amount)) if expense.total_amount is not None else None,
                     "Memo": expense.memo,
                 }
+                params["AllowTerminalParent"] = 1 if allow_terminal_parent else 0
                 # Only include IsDraft/IsCredit if explicitly set (not None) — sproc uses CASE WHEN guard
                 if expense.is_draft is not None:
                     params["IsDraft"] = 1 if expense.is_draft else 0
@@ -240,6 +248,7 @@ class ExpenseRepository:
                     )
                 return self._from_db(row)
         except Exception as error:
+            reraise_if_sproc_status_locked(error, what="its header cannot be changed")
             logger.error(f"Error during update expense by ID: {error}")
             raise map_database_error(error)
 
@@ -376,9 +385,11 @@ class ExpenseRepository:
             logger.error(f"Error during count expenses: {error}")
             raise map_database_error(error)
 
-    def delete_by_id(self, id: int) -> Optional[Expense]:
+    def delete_by_id(self, id: int, *, allow_terminal_parent: bool = True) -> Optional[Expense]:
         """
         Delete an expense by ID.
+
+        See `update_by_id` for why the flag is always passed explicitly.
         """
         try:
             with get_connection() as conn:
@@ -386,12 +397,55 @@ class ExpenseRepository:
                 call_procedure(
                     cursor=cursor,
                     name="DeleteExpenseById",
-                    params={"Id": id},
+                    params={
+                        "Id": id,
+                        "AllowTerminalParent": 1 if allow_terminal_parent else 0,
+                    },
                 )
                 row = cursor.fetchone()
                 return self._from_db(row) if row else None
         except Exception as error:
+            reraise_if_sproc_status_locked(error, what="it cannot be deleted")
             logger.error(f"Error during delete expense by ID: {error}")
+            raise map_database_error(error)
+
+    def delete_cascade_by_id(self, id: int, *, allow_terminal_parent: bool) -> Optional[Expense]:
+        """U-468: delete an Expense and every row that FKs to it, in ONE transaction.
+
+        Replaces the multi-transaction Python cascade. The sproc locks the
+        header for the whole thing, so a completion landing mid-cascade either
+        loses the race entirely or is refused with nothing destroyed — where the
+        old shape refused at whichever step it reached and left the earlier ones
+        committed. An invoiced citation is refused the same way, inside the
+        lock, rather than by a lock-free pre-check on its own connection.
+
+        Returns the deleted Expense, or None when no such Expense exists.
+        """
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(
+                    cursor=cursor,
+                    name="DeleteExpenseCascadeById",
+                    params={
+                        "Id": id,
+                        "AllowTerminalParent": 1 if allow_terminal_parent else 0,
+                    },
+                )
+                row = cursor.fetchone()
+                return self._from_db(row) if row else None
+        except Exception as error:
+            reraise_if_sproc_status_locked(error, what="it cannot be deleted")
+            text = str(error)
+            marker = "Cannot delete this expense:"
+            idx = text.find(marker)
+            if idx != -1:
+                msg = text[idx:]
+                cut = msg.find(" (")
+                if cut != -1:
+                    msg = msg[:cut]
+                raise ValueError(msg) from error
+            logger.error(f"Error during cascade delete of expense: {error}")
             raise map_database_error(error)
 
     def read_by_qbo_identity(

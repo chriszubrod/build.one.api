@@ -527,6 +527,77 @@ BEGIN
             RAISERROR('STATUS_LOCKED: this file is evidence for a completed Bill.', 16, 1);
             RETURN;
         END
+
+        -- U-468: the same walk for Expenses. An attachment can be a completed
+        -- Expense's receipt without being linked to any Bill; the Bill walk
+        -- above would then count zero and the write would land on frozen AP
+        -- evidence. Bills first, then Expenses — a total order every writer
+        -- that takes both agrees on. CreateExpenseLineItemAttachment takes
+        -- the Attachment lock above, so new Expense links cannot appear
+        -- between this guard and the write.
+        DECLARE @LockedExpenses TABLE ([ExpenseId] BIGINT PRIMARY KEY);
+        DECLARE @PrevExpenseId BIGINT, @NextExpenseId BIGINT, @ExpensePasses INT = 0;
+
+        WHILE 1 = 1
+        BEGIN
+            SET @ExpensePasses = @ExpensePasses + 1;
+            SET @PrevExpenseId = -1;
+
+            WHILE 1 = 1
+            BEGIN
+                SET @NextExpenseId = NULL;
+
+                SELECT TOP 1 @NextExpenseId = li.[ExpenseId]
+                FROM dbo.[ExpenseLineItemAttachment] elia
+                INNER JOIN dbo.[ExpenseLineItem] li ON li.[Id] = elia.[ExpenseLineItemId]
+                WHERE elia.[AttachmentId] = @Id AND li.[ExpenseId] > @PrevExpenseId
+                ORDER BY li.[ExpenseId];
+
+                IF @NextExpenseId IS NULL BREAK;
+
+                SELECT @Locked = 1 FROM dbo.[Expense] WITH (UPDLOCK, HOLDLOCK)
+                WHERE [Id] = @NextExpenseId;
+
+                IF NOT EXISTS (SELECT 1 FROM @LockedExpenses WHERE [ExpenseId] = @NextExpenseId)
+                    INSERT INTO @LockedExpenses ([ExpenseId]) VALUES (@NextExpenseId);
+
+                SET @PrevExpenseId = @NextExpenseId;
+            END
+
+            IF NOT EXISTS (
+                SELECT li.[ExpenseId]
+                FROM dbo.[ExpenseLineItemAttachment] elia
+                INNER JOIN dbo.[ExpenseLineItem] li ON li.[Id] = elia.[ExpenseLineItemId]
+                WHERE elia.[AttachmentId] = @Id
+                EXCEPT
+                SELECT [ExpenseId] FROM @LockedExpenses
+            ) BREAK;
+
+            IF @ExpensePasses >= 5
+            BEGIN
+                COMMIT TRANSACTION;
+                -- Deliberately NOT the STATUS_LOCKED sentinel: this is a
+                -- transient failure to stabilise, not a permanent refusal.
+                RAISERROR('This file''s linked Expenses kept changing; please retry.', 16, 1);
+                RETURN;
+            END
+        END
+
+        DECLARE @LockedCompletedExpenses INT = 0;
+        SELECT @LockedCompletedExpenses = COUNT(DISTINCT e.[Id])
+        FROM dbo.[Expense] e
+        INNER JOIN @LockedExpenses l ON l.[ExpenseId] = e.[Id]
+        INNER JOIN dbo.[ExpenseLineItem] li ON li.[ExpenseId] = e.[Id]
+        INNER JOIN dbo.[ExpenseLineItemAttachment] elia
+                ON elia.[ExpenseLineItemId] = li.[Id] AND elia.[AttachmentId] = @Id
+        WHERE e.[Status] = 'completed';
+
+        IF @AllowTerminalParent = 0 AND @LockedCompletedExpenses > 0
+        BEGIN
+            COMMIT TRANSACTION;
+            RAISERROR('STATUS_LOCKED: this file is evidence for a completed Expense.', 16, 1);
+            RETURN;
+        END
     END
 
     DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();
@@ -707,6 +778,77 @@ BEGIN
         BEGIN
             COMMIT TRANSACTION;
             RAISERROR('STATUS_LOCKED: this file is evidence for a completed Bill.', 16, 1);
+            RETURN;
+        END
+
+        -- U-468: the same walk for Expenses. An attachment can be a completed
+        -- Expense's receipt without being linked to any Bill; the Bill walk
+        -- above would then count zero and the write would land on frozen AP
+        -- evidence. Bills first, then Expenses — a total order every writer
+        -- that takes both agrees on. CreateExpenseLineItemAttachment takes
+        -- the Attachment lock above, so new Expense links cannot appear
+        -- between this guard and the write.
+        DECLARE @LockedExpenses TABLE ([ExpenseId] BIGINT PRIMARY KEY);
+        DECLARE @PrevExpenseId BIGINT, @NextExpenseId BIGINT, @ExpensePasses INT = 0;
+
+        WHILE 1 = 1
+        BEGIN
+            SET @ExpensePasses = @ExpensePasses + 1;
+            SET @PrevExpenseId = -1;
+
+            WHILE 1 = 1
+            BEGIN
+                SET @NextExpenseId = NULL;
+
+                SELECT TOP 1 @NextExpenseId = li.[ExpenseId]
+                FROM dbo.[ExpenseLineItemAttachment] elia
+                INNER JOIN dbo.[ExpenseLineItem] li ON li.[Id] = elia.[ExpenseLineItemId]
+                WHERE elia.[AttachmentId] = @Id AND li.[ExpenseId] > @PrevExpenseId
+                ORDER BY li.[ExpenseId];
+
+                IF @NextExpenseId IS NULL BREAK;
+
+                SELECT @Locked = 1 FROM dbo.[Expense] WITH (UPDLOCK, HOLDLOCK)
+                WHERE [Id] = @NextExpenseId;
+
+                IF NOT EXISTS (SELECT 1 FROM @LockedExpenses WHERE [ExpenseId] = @NextExpenseId)
+                    INSERT INTO @LockedExpenses ([ExpenseId]) VALUES (@NextExpenseId);
+
+                SET @PrevExpenseId = @NextExpenseId;
+            END
+
+            IF NOT EXISTS (
+                SELECT li.[ExpenseId]
+                FROM dbo.[ExpenseLineItemAttachment] elia
+                INNER JOIN dbo.[ExpenseLineItem] li ON li.[Id] = elia.[ExpenseLineItemId]
+                WHERE elia.[AttachmentId] = @Id
+                EXCEPT
+                SELECT [ExpenseId] FROM @LockedExpenses
+            ) BREAK;
+
+            IF @ExpensePasses >= 5
+            BEGIN
+                COMMIT TRANSACTION;
+                -- Deliberately NOT the STATUS_LOCKED sentinel: this is a
+                -- transient failure to stabilise, not a permanent refusal.
+                RAISERROR('This file''s linked Expenses kept changing; please retry.', 16, 1);
+                RETURN;
+            END
+        END
+
+        DECLARE @LockedCompletedExpenses INT = 0;
+        SELECT @LockedCompletedExpenses = COUNT(DISTINCT e.[Id])
+        FROM dbo.[Expense] e
+        INNER JOIN @LockedExpenses l ON l.[ExpenseId] = e.[Id]
+        INNER JOIN dbo.[ExpenseLineItem] li ON li.[ExpenseId] = e.[Id]
+        INNER JOIN dbo.[ExpenseLineItemAttachment] elia
+                ON elia.[ExpenseLineItemId] = li.[Id] AND elia.[AttachmentId] = @Id
+        WHERE e.[Status] = 'completed';
+
+        IF @AllowTerminalParent = 0 AND @LockedCompletedExpenses > 0
+        BEGIN
+            COMMIT TRANSACTION;
+            RAISERROR('STATUS_LOCKED: this file is evidence for a completed Expense.', 16, 1);
             RETURN;
         END
     END

@@ -104,6 +104,23 @@ GO
 
 GO
 
+-- ===========================================================================
+-- U-468 — the terminal lock's IN-TRANSACTION half, ported from
+-- dbo.bill_line_item.sql (U-446b / U-446c).
+--
+-- The Python guard reads the parent Expense in one transaction and writes the
+-- child row in another. Under RCSI every statement takes its own snapshot, so
+-- a line edit that races a completion passes the guard against a `draft`
+-- snapshot and then commits AFTER the expense finalizes. Only a predicate
+-- inside the writing transaction closes that.
+--
+-- Shape, in all three mutation sprocs below:
+--     SELECT ... FROM dbo.[Expense] WITH (UPDLOCK, HOLDLOCK) WHERE [Id] IN (...)
+-- LOCK UNCONDITIONALLY, REFUSE CONDITIONALLY. @AllowTerminalParent DEFAULTS
+-- TO 0 — FAIL-CLOSED. On refusal: COMMIT the untouched transaction, THEN
+-- RAISERROR. Never ROLLBACK inside a sproc.
+-- ===========================================================================
+
 CREATE OR ALTER PROCEDURE CreateExpenseLineItem
 (
     @ExpenseId BIGINT,
@@ -118,11 +135,27 @@ CREATE OR ALTER PROCEDURE CreateExpenseLineItem
     @Markup DECIMAL(18,4) NULL,
     @Price DECIMAL(18,2) NULL,
     @IsDraft BIT = 1,
-    @CreatedByUserId BIGINT = NULL
+    @CreatedByUserId BIGINT = NULL,
+    @AllowTerminalParent BIT = 0
 )
 AS
 BEGIN
+    SET NOCOUNT ON;
+
     BEGIN TRANSACTION;
+
+    -- LOCK UNCONDITIONALLY, REFUSE CONDITIONALLY (U-446c, ported U-468).
+    DECLARE @LockedParents INT;
+    SELECT @LockedParents = COUNT(*)
+    FROM dbo.[Expense] WITH (UPDLOCK, HOLDLOCK)
+    WHERE [Id] = @ExpenseId AND [Status] = 'completed';
+
+    IF @AllowTerminalParent = 0 AND @LockedParents > 0
+    BEGIN
+        COMMIT TRANSACTION;
+        RAISERROR('STATUS_LOCKED: line items cannot be added to a completed Expense.', 16, 1);
+        RETURN;
+    END
 
     DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();
 
@@ -153,31 +186,44 @@ GO
 
 GO
 
+-- Scoped by UserProject membership for non-admin actors, exactly as
+-- ReadBillLineItems is. This list path was the one unscoped read left on the
+-- entity — read_by_id / read_by_public_id / read_by_expense_id all gate in the
+-- service layer via assert_can_access_expense, but read_all had no gate at
+-- either layer. New params take = NULL defaults so an older caller still
+-- binds. Fail-closed: UserCanAccessExpense(NULL, NULL, ...) returns 0 for
+-- every row, so a caller that omits them gets an EMPTY list, never the whole
+-- table.
 CREATE OR ALTER PROCEDURE ReadExpenseLineItems
+(
+    @ActorUserId BIGINT = NULL,
+    @ActorIsSystemAdmin BIT = NULL
+)
 AS
 BEGIN
     BEGIN TRANSACTION;
 
     SELECT
-        [Id],
-        [PublicId],
-        [RowVersion],
-        CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
-        CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
-        [ExpenseId],
-        [SubCostCodeId],
-        [ProjectId],
-        [Description],
-        [Quantity],
-        [Rate],
-        [Amount],
-        [IsBillable],
-        [IsBilled],
-        [Markup],
-        [Price],
-        [IsDraft]
-    FROM dbo.[ExpenseLineItem]
-    ORDER BY [CreatedDatetime] DESC;
+        eli.[Id],
+        eli.[PublicId],
+        eli.[RowVersion],
+        CONVERT(VARCHAR(19), eli.[CreatedDatetime], 120) AS [CreatedDatetime],
+        CONVERT(VARCHAR(19), eli.[ModifiedDatetime], 120) AS [ModifiedDatetime],
+        eli.[ExpenseId],
+        eli.[SubCostCodeId],
+        eli.[ProjectId],
+        eli.[Description],
+        eli.[Quantity],
+        eli.[Rate],
+        eli.[Amount],
+        eli.[IsBillable],
+        eli.[IsBilled],
+        eli.[Markup],
+        eli.[Price],
+        eli.[IsDraft]
+    FROM dbo.[ExpenseLineItem] eli
+    WHERE dbo.UserCanAccessExpense(@ActorUserId, @ActorIsSystemAdmin, eli.[ExpenseId]) = 1
+    ORDER BY eli.[CreatedDatetime] DESC;
 
     COMMIT TRANSACTION;
 END;
@@ -312,11 +358,45 @@ CREATE OR ALTER PROCEDURE UpdateExpenseLineItemById
     @IsBilled BIT NULL,
     @Markup DECIMAL(18,4) NULL,
     @Price DECIMAL(18,2) NULL,
-    @IsDraft BIT = NULL
+    @IsDraft BIT = NULL,
+    @AllowTerminalParent BIT = 0
 )
 AS
 BEGIN
+    SET NOCOUNT ON;
+
     BEGIN TRANSACTION;
+
+    -- LOCK UNCONDITIONALLY, REFUSE CONDITIONALLY (U-446c, ported U-468).
+    -- BOTH parents: the one the line is on now, and the one it is being moved
+    -- to. Acquired LOW id first, then HIGH, always.
+    BEGIN
+        DECLARE @CurrentExpenseId BIGINT;
+        SELECT @CurrentExpenseId = [ExpenseId] FROM dbo.[ExpenseLineItem] WHERE [Id] = @Id;
+
+        DECLARE @LoExpenseId BIGINT = CASE WHEN @CurrentExpenseId IS NULL THEN @ExpenseId
+                                           WHEN @CurrentExpenseId <= @ExpenseId THEN @CurrentExpenseId
+                                           ELSE @ExpenseId END;
+        DECLARE @HiExpenseId BIGINT = CASE WHEN @CurrentExpenseId IS NULL THEN @ExpenseId
+                                           WHEN @CurrentExpenseId <= @ExpenseId THEN @ExpenseId
+                                           ELSE @CurrentExpenseId END;
+
+        DECLARE @LockedParents INT = 0;
+        SELECT @LockedParents = @LockedParents + COUNT(*)
+        FROM dbo.[Expense] WITH (UPDLOCK, HOLDLOCK)
+        WHERE [Id] = @LoExpenseId AND [Status] = 'completed';
+
+        SELECT @LockedParents = @LockedParents + COUNT(*)
+        FROM dbo.[Expense] WITH (UPDLOCK, HOLDLOCK)
+        WHERE [Id] = @HiExpenseId AND [Id] <> @LoExpenseId AND [Status] = 'completed';
+
+        IF @AllowTerminalParent = 0 AND @LockedParents > 0
+        BEGIN
+            COMMIT TRANSACTION;
+            RAISERROR('STATUS_LOCKED: the line items of a completed Expense cannot be changed.', 16, 1);
+            RETURN;
+        END
+    END
 
     DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();
 
@@ -365,12 +445,46 @@ GO
 
 CREATE OR ALTER PROCEDURE DeleteExpenseLineItemById
 (
-    @Id BIGINT
+    @Id BIGINT,
+    @AllowTerminalParent BIT = 0
 )
 AS
 BEGIN
+    SET NOCOUNT ON;
+
     BEGIN TRANSACTION;
 
+    -- LOCK UNCONDITIONALLY, REFUSE CONDITIONALLY (U-446c, ported U-468).
+    DECLARE @ParentExpenseId BIGINT;
+    SELECT @ParentExpenseId = [ExpenseId] FROM dbo.[ExpenseLineItem] WHERE [Id] = @Id;
+
+    DECLARE @LockedParents INT;
+    SELECT @LockedParents = COUNT(*)
+    FROM dbo.[Expense] WITH (UPDLOCK, HOLDLOCK)
+    WHERE [Id] = @ParentExpenseId AND [Status] = 'completed';
+
+    IF @AllowTerminalParent = 0 AND @LockedParents > 0
+    BEGIN
+        COMMIT TRANSACTION;
+        RAISERROR('STATUS_LOCKED: the line items of a completed Expense cannot be deleted.', 16, 1);
+        RETURN;
+    END
+
+    -- The `[ExpenseId] = @ParentExpenseId` half is what makes the guard above
+    -- authoritative (U-446b Codex round 3, P1, ported U-468). @ParentExpenseId
+    -- is resolved by a snapshot read, so between that read and here the line
+    -- could have been MOVED to another Expense which then completed — the
+    -- guard would have checked the old parent and this DELETE would have
+    -- removed a line from a completed one. Binding the DELETE to the parent
+    -- we actually locked makes that impossible: if the line moved, zero rows
+    -- match and the caller gets "not found" instead of a wrong deletion.
+    --
+    -- The `@AllowTerminalParent = 1` half is the exempt-caller escape. An
+    -- exempt writer (the QBO pull's orphan rollback) has no guard to
+    -- authorize, and must still delete the row even if it was reparented
+    -- between the snapshot read and here. Without it, a race deletes zero
+    -- rows, `_reassert_after_a_lost_write` finds a non-terminal parent, and
+    -- rollback_orphan_header silently leaves an orphan ExpenseLineItem.
     DELETE FROM dbo.[ExpenseLineItem]
     OUTPUT
         DELETED.[Id],
@@ -390,7 +504,8 @@ BEGIN
         DELETED.[Markup],
         DELETED.[Price],
         DELETED.[IsDraft]
-    WHERE [Id] = @Id;
+    WHERE [Id] = @Id
+      AND (@AllowTerminalParent = 1 OR [ExpenseId] = @ParentExpenseId);
 
     COMMIT TRANSACTION;
 END;

@@ -197,6 +197,14 @@ def test_expense_header_connector_create_lands_status_not_is_draft():
             "integrations/intuit/qbo/bill/connector/bill_line_item/business/service.py",
             "_via_internal_pipeline",
         ),
+        (
+            "integrations/intuit/qbo/purchase/connector/expense/business/service.py",
+            "_via_completion_pipeline",
+        ),
+        (
+            "integrations/intuit/qbo/purchase/connector/expense_line_item/business/service.py",
+            "_via_internal_pipeline",
+        ),
     ],
 )
 def test_the_terminal_lock_exemption_survived_the_is_draft_drop(path, marker):

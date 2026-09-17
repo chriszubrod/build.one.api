@@ -149,6 +149,14 @@ class PurchaseExpenseConnector:
                 total_amount=total_amount,
                 memo=memo,
                 is_credit=qbo_purchase.credit or False,
+                # ⛔ `_via_completion_pipeline=True` MUST SURVIVE the is_draft
+                # drop (LS-01d) and U-468's terminal lock. It is not marking a
+                # completion — it is the terminal-lock exemption that lets a QBO
+                # field update land on an already-completed Expense. 11,745 of
+                # 11,755 expenses are completed (U-467 census), so removing it
+                # raises StatusLockedError on virtually every routine purchase
+                # pull update and breaks the unattended 15-minute job wholesale.
+                _via_completion_pipeline=True,
             )
             if updated is None:
                 return None

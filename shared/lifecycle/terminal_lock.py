@@ -87,24 +87,30 @@ it. The line is: a system or internal-pipeline caller may bring the local record
 back into agreement with an external system of record; nobody may change what
 the document says on their own authority once it is completed.
 
-ACCEPTED RESIDUAL #1 — THE CASCADES ARE NOT ATOMIC (Codex rounds 4-5, P1).
-`BillService.delete_by_public_id` and `BillLineItemService.delete_by_public_id`
-each run several transactions: links, dependent invoice-line and contract-labor
-cleanup, lines, header. Every step is now guarded and every step carries the
-same decision, so a completion landing mid-cascade IS refused — but at whichever
-step it reaches, with the earlier steps already committed. The outcome is a
-partially deleted document rather than a wrongly deleted one.
+ACCEPTED RESIDUAL #1 — THE LINE-ITEM CASCADES ARE NOT ATOMIC (Codex rounds 4-5,
+P1; header half CLOSED, line-item half STILL OPEN).
 
-Closing it properly means one transaction spanning the whole cascade — a single
-`DeleteBillCascadeById` sproc holding the parent lock throughout, with blob
-deletion staying outside it. That is a rewrite of a destructive path and is
-booked as its own unit. It is NOT claimed as fixed here, and the window is a few
-hundred milliseconds between a delete and a completion of the same document.
+CLOSED at the header level: `DeleteBillCascadeById` (U-446c) and
+`DeleteExpenseCascadeById` (U-468) each run the whole cascade in ONE transaction
+holding the parent under `UPDLOCK, HOLDLOCK` throughout, with attachment rows and
+blobs deliberately left alone so the transaction makes no external calls. A
+completion landing mid-cascade waits, then is refused outright.
 
-ACCEPTED RESIDUAL #2 — the attachment sprocs lock every Bill a file is linked to
-without imposing an order, so two attachment writers sharing Bills can deadlock.
-That is an availability failure (a rolled-back transaction the caller retries),
-not corruption: the rollback happens before any blob is touched. The line-item
+STILL NOT ATOMIC at the line-item level: `ExpenseLineItemService.delete_by_public_id`
+is still several transactions (link -> attachment row -> Azure blob -> legacy
+mapping -> line). Every step is guarded and carries the same decision, so a
+completion landing mid-cascade IS refused — but at whichever step it reached, with
+the earlier steps already committed. The outcome is a partially deleted line
+rather than a wrongly deleted one. Bill closed this with
+`DeleteBillLineItemCascadeById`; Expense has no equivalent yet, and U-468
+deliberately did not build one. Booked as its own unit.
+
+CLOSED (was ACCEPTED RESIDUAL #2 — unordered attachment locks).
+The attachment sprocs now walk their parents in a defined low->high order, so two
+attachment writers sharing parents no longer deadlock. U-468 extended the walk to
+a second parent kind (Expense) alongside Bill; the ordering holds across both.
+
+
 path does impose low→high ordering; extending it here needs a different shape
 than a join, and is booked with the unit above.
 

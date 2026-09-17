@@ -58,6 +58,138 @@ here. These are the items found while mapping that are **out of all four units' 
   U-458→U-464 follow-up section). U-467 changes what that path writes (`status='completed'`, origin
   `qbo_pull`) but does **not** close the authz gap — the wrap-vs-refuse decision is its own unit.
 
+## Review history must survive a parent delete — ALL FIVE reviewable entities (booked 2026-09-16, Chris)
+
+**Decision (Chris, 2026-09-16):** deleting a parent must **REFUSE** rather than destroy its `dbo.Review`
+audit history. Booked as its own cross-entity unit — deliberately NOT built inside U-468, because it is a
+live behaviour change on already-shipped paths (Bill) and deserves its own review + Gate-2.
+
+**Today every cascade DELETES the reviews.** `dbo.bill.sql:951` — `DELETE FROM dbo.[Review] WHERE
+[BillId] = @Id;` has destroyed Bill review history since U-446c. `DeleteExpenseCascadeById` (U-468)
+ports the same behaviour for Expense. Review rows are otherwise **insert-only audit records**: reviewer
+identity, comments, decision timestamps.
+
+**Scope = the five parents `CK_Review_OneParent` actually allows** (`entities/review/sql/dbo.review.sql:27-33`):
+`BillId`, `ExpenseId`, `BillCreditId`, `InvoiceId`, `ContractLaborId`.
+⚠️ Two corrections to the informal list this was booked from:
+  - **ExpenseRefund is NOT a separate entity** — there is no `entities/expense_refund/`. Refunds are
+    `dbo.Expense` rows with `IsCredit = 1`, so they are covered by the Expense case automatically.
+  - **ContractLabor WAS missing from the informal list** but is a real fifth Review parent and needs the
+    same guard.
+
+**The fix, per entity:** inside the cascade sproc, alongside the existing refusals and under the same
+header `UPDLOCK, HOLDLOCK`, refuse when review history exists unless the admin escape hatch is set:
+```sql
+IF @AllowTerminalParent = 0
+   AND EXISTS (SELECT 1 FROM dbo.[Review] WHERE [<Parent>Id] = @Id)
+BEGIN
+    COMMIT TRANSACTION;
+    RAISERROR('... cannot be deleted: it carries review history.', 16, 1);
+    RETURN;
+END
+```
+Mirror the shape of `DeleteExpenseCascadeById`'s invoiced-citation refusal (same transaction, same lock,
+refuse-before-destroying-anything). `ContractLabor` and `Invoice` have no cascade sproc of that shape yet
+— check each before assuming the hook exists.
+
+**Why it matters beyond tidiness:** the terminal lock only protects `completed`. An expense or bill
+sitting in `submitted` / `in_review` / `approved` / `declined` is deletable by an ordinary user with
+`can_delete`, and today that silently takes the approval record with it. For Expense there is also
+`POST /cancel-expense-from-qbo-purchase/{public_id}`
+(`integrations/intuit/qbo/purchase/api/router.py:97`), which reaches the same service method with
+**`QBO_SYNC.can_delete` and no `EXPENSES` permission at all**.
+
+**Expected consequence to communicate when it ships:** an approved document someone genuinely wants gone
+will start refusing, and a system admin has to delete it deliberately. That is the intent, but it will be
+visible to whoever hits it first.
+
+## U-468 review-pass findings — booked from the build session (2026-09-16)
+
+From the F2 review + Pass-2 quality pass on U-468 (Expense terminal lock + atomic delete cascade).
+U-468 itself SHIPPED the terminal lock, `DeleteExpenseCascadeById`, the attachment-file lock, and child
+row scoping. These are the items deliberately left out.
+
+⚠️ **Context for LS-03b (BillCredit) and LS-03d (Invoice): several of these are extractions that are
+cheapest to do BEFORE the third and fourth ports, not after.**
+
+- [ ] 🔴 **P1 — the attachment lock-walk is 159 lines, byte-for-byte identical, in TWO sprocs** —
+  `UpdateAttachmentById` and `DeleteAttachmentById` (`entities/attachment/sql/dbo.attachment.sql`
+  ~:440-611 and ~:693-864). Verified identical by exact string comparison. That is **318 of the file's
+  1,083 lines (29%)** spent on one algorithm written four times. BillCredit + Invoice add ~580 more lines
+  across eight copies. **Fix now, while the Expense copy is provably identical to the Bill one:** extract
+  one sproc per parent kind (`dbo.LockCompletedExpensesForAttachment @AttachmentId, @Completed OUTPUT`)
+  and `EXEC` it from both. Locks taken in a nested procedure belong to the caller's transaction, so
+  semantics are unchanged. ⛔ Do NOT unify Bill and Expense into one parameterised walk — that needs
+  dynamic SQL inside a locking guard, or a per-kind `IF` that just relocates the duplication.
+
+- [ ] 🔴 **P1 — `ExpenseLineItemService.delete_by_public_id` is still the multi-transaction Python
+  cascade** (`entities/expense_line_item/business/service.py:294-399`, ~95 lines: link → attachment row →
+  Azure blob → legacy mapping → line). U-468 *invested* in it (threading `allow_terminal_parent` through
+  each step) rather than replacing it. The partial-delete failure mode that `dbo.expense.sql`'s new
+  cascade header condemns is **still live on `DELETE /expense-line-item/{id}`**. Bill's equivalent is 30
+  lines around `DeleteBillLineItemCascadeById` (`entities/bill_line_item/sql/dbo.bill_line_item.sql:540`).
+  Also: that method's docstring at :296-301 still describes the **pre-U-446b** order ("delete the
+  Attachment record + Azure blob, then delete the link") which the code below it explicitly inverted.
+  Ports 3 and 4 currently have two contradictory precedents to copy. Recorded in
+  `shared/lifecycle/terminal_lock.py` ACCEPTED RESIDUAL #1 as the still-open half.
+
+- [ ] 🟡 **P2 — the cascade's invoiced refusal invents a second, ad-hoc sproc-error protocol.**
+  `entities/expense/persistence/repo.py:437-447` recovers the refusal by substring surgery on pyodbc's
+  error text (`marker = "Cannot delete this expense:"`, then `msg.find(" (")` to cut the `(50000)`
+  suffix). The correct shape is imported two lines above: `SPROC_STATUS_LOCKED_TOKEN` +
+  `reraise_if_sproc_status_locked()` (`shared/lifecycle/terminal_lock.py:150-165`). This is the ONLY
+  occurrence repo-wide — it is **not** Bill parity (Bill's cascade deletes citing invoice lines rather
+  than refusing, so it never needed one). The user-facing message depends on pyodbc's exact formatting.
+  Fix: add `SPROC_CITED_TOKEN` + a generic `reraise_if_sproc_refusal(error, *, exc_type, token)` beside
+  its sibling, and call it from the repo.
+
+- [ ] 🟡 **P2 — the permissive repo default is a footgun being replicated.** Seven methods declare
+  `allow_terminal_parent: bool = True` under docstrings that say "Always pass it explicitly — an omitted
+  kwarg sends 1 and bypasses BOTH the Python guard and the sproc's fail-closed default"
+  (`entities/expense/persistence/repo.py:204,388`; `entities/expense_line_item/persistence/repo.py:67,213,263`;
+  `entities/expense_line_item_attachment/persistence/repo.py:54,239`). The correct shape is in the same
+  diff: `delete_cascade_by_id(self, id, *, allow_terminal_parent: bool)` — keyword-only, **no default**.
+  The footgun is real enough that U-468 needed an 8-case parametrized test whose entire job is catching an
+  omission the signature could catch; ports 3-4 make it ~14 cases. Fix: drop the `= True` on those seven
+  (and Bill's seven), pass `allow_terminal_parent=True` explicitly at the two rollback call sites
+  (`entities/expense/business/service.py:281`, `entities/bill/business/service.py:463`). An omission then
+  becomes a `TypeError`.
+
+- [ ] 🟡 **P2 — extract `tests/terminal_lock_contract.py` BEFORE LS-03b.** The sproc-guard contract is
+  written twice and **has already drifted in structure on the second write**:
+  `tests/test_u446b_terminal_lock.py:893-981` splits it into four named tests each with a docstring naming
+  the failure mode (pyodbc `fetchone`, SQL error 266, the U-446c default flip);
+  `tests/test_u468_expense_terminal_lock.py:244-283` collapses all of it into ONE test with eight bare
+  asserts — so a red run reports `assert 'SET NOCOUNT ON' in body` with no explanation, and the first
+  failure hides the rest. The assertions are entity-agnostic. Expose
+  `assert_guarded_sproc(sql_rel, proc)` keeping Bill's four separate assertions + docstrings; each entity
+  file becomes a tuple table plus one `parametrize`. Same for the duplicated `_attachment_file_service` /
+  `_attachment_service` fixtures (`test_u468:787-820` == `test_u446b:1127-1160`, 34 identical lines) —
+  one fixture in `tests/conftest.py` taking a per-kind count map. Miss one and a file silently tests a
+  two-parent world while asserting it covers all parents.
+
+- [ ] 🟢 **P3 — `CountCompleted*ByAttachmentId` is becoming one COUNT sproc + one round trip per parent
+  kind.** Two today (Bill then Expense, short-circuited), four after BillCredit + Invoice, on EVERY
+  attachment mutation. Collapse into one `CountCompletedParentsByAttachmentId` with a `UNION ALL` leg per
+  kind, so ports 3-4 add a leg instead of a round trip.
+
+- [ ] 🟢 **P3 — redundant reads on the child paths (same shape in Bill — fix both or neither).**
+  (a) `entities/expense_line_item_attachment/business/service.py:149-175` resolves the same rows twice per
+  link delete — ~9 round trips, 3 exact repeats, because `_gated` re-runs `ExpenseLineItemService.read_by_id`
+  plus a `UserCanAccessExpense` UDF call that opens its own connection. Use the `_link` already resolved
+  three lines above. (b) `entities/expense_line_item/business/service.py:67-97` reads the parent Expense
+  twice on every line create — have `_assert_parent_editable` return the parent it read.
+
+- [ ] 🟢 **P3 — Bill has a latent `UnboundLocalError` that Expense does NOT.** Expense initialises
+  `_eli = None` before the guard branch (`expense_line_item_attachment/business/service.py:153`); Bill's
+  `delete_by_public_id` never initialises `_bli`, so its later `if deleted is None and _bli is not None:`
+  can raise. **Backport the Expense fix to Bill — do not re-align Expense to Bill.**
+
+- [ ] 🟢 **P3 — one concept, two kwarg names:** `_via_completion_pipeline` on the header,
+  `_via_internal_pipeline` on every child. Parity with Bill, but a BillCredit/Invoice builder must read
+  both files to learn which applies where. Pick one name, or add a sentence to
+  `shared/lifecycle/terminal_lock.py` explaining why there are two.
+
 ## U-467 review-pass findings — booked from the build session (2026-09-16)
 
 Found by the F2 review / Pass-2 quality passes while building U-467. None are fixed there except

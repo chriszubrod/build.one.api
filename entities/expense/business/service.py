@@ -35,9 +35,8 @@ from integrations.ms.sharepoint.external.client import (
 )
 from integrations.ms.sharepoint.drive.business.service import MsDriveService
 
-from shared.storage import AzureBlobStorage, AzureBlobStorageError
-
-from shared.lifecycle.terminal_lock import StatusLockedError
+from shared.storage import AzureBlobStorage
+from shared.lifecycle.terminal_lock import assert_editable, is_exempt
 
 logger = logging.getLogger(__name__)
 
@@ -435,14 +434,32 @@ class ExpenseService:
         memo: str = None,
         is_draft: bool = None,
         is_credit: bool = None,
+        _via_completion_pipeline: bool = False,
     ) -> Optional[Expense]:
         """
         Update an expense by public ID.
+
+        `_via_completion_pipeline=True` is the U-468 terminal-lock exemption,
+        mirroring Bill. The QBO purchase HIT path updates COMPLETED Expenses
+        by design — a pull writes what QuickBooks already holds — so it must
+        pass this flag. It grants no authority to move the lifecycle. The
+        router's payload never includes it.
         """
         # TODO: In Phase 10, validate tenant_id matches record's tenant
         existing = self.read_by_public_id(public_id=public_id)
         if not existing:
             return None
+
+        # U-468. A completed expense's AP has already reached QBO, SharePoint,
+        # Excel and Box; editing the header afterwards moves our books without
+        # moving any of theirs. The completion / QBO-projection pipeline is
+        # exempt via the same internal-only kwarg Bill uses.
+        assert_editable(
+            status=getattr(existing, "status", None),
+            is_draft=getattr(existing, "is_draft", None),
+            what="its header cannot be changed",
+            exempt=_via_completion_pipeline,
+        )
 
         existing.row_version = row_version
 
@@ -466,142 +483,65 @@ class ExpenseService:
         if is_credit is not None:
             existing.is_credit = is_credit
 
-        updated_expense = self.repo.update_by_id(existing)
+        updated_expense = self.repo.update_by_id(
+            existing,
+            allow_terminal_parent=is_exempt(_via_completion_pipeline),
+        )
         
         return updated_expense
 
     def delete_by_public_id(self, public_id: str, *, tenant_id: int = None) -> Optional[Expense]:
         """
-        Delete an expense by public ID with cascading deletes.
-        
-        TODO: In Phase 10, validate tenant_id matches record's tenant
-        
-        Process:
-        1. Get the expense by public_id
-        2. Get all ExpenseLineItems for this expense
-        3. For each ExpenseLineItem:
-           a. Get its ExpenseLineItemAttachment (1-1 relationship)
-           b. If attachment exists:
-              - Get the Attachment record
-              - Delete the file from Azure Blob Storage (if blob_url exists)
-              - Delete the Attachment record from database
-              - Delete the ExpenseLineItemAttachment record
-           c. Delete the ExpenseLineItem record
-        4. Delete the Expense record
+        Delete an expense and every row that FKs to it, in ONE database transaction.
+
+        Cascades (all inside `DeleteExpenseCascadeById`, header locked throughout):
+          ExpenseLineItemAttachment links -> ExpenseLineItem rows ->
+          Review -> the Expense itself.
+          An InvoiceLineItem citing any of those lines is a REFUSAL, not a
+          delete: removing lines off a client invoice is money-visible and
+          is not done by inference.
+
+        Attachment ROWS and their Azure blobs are deliberately LEFT ALONE — only
+        the link rows go. That is what keeps this free of external calls, and so
+        able to be one transaction.
+
+        Returns the deleted Expense, or None if no such Expense exists. Raises
+        StatusLockedError when the expense is completed and the caller is not a
+        system admin. Raises ValueError when a client invoice still cites a line.
         """
-        # Import here to avoid circular import
-        from entities.expense_line_item.business.service import ExpenseLineItemService
-        from entities.expense_line_item_attachment.business.service import ExpenseLineItemAttachmentService
-        from entities.expense_line_item_attachment.persistence.repo import ExpenseLineItemAttachmentRepository
-        from entities.attachment.business.service import AttachmentService
-        from shared.storage import AzureBlobStorage, AzureBlobStorageError
-        
-        # Step 1: Get the expense
         existing = self.read_by_public_id(public_id=public_id)
         if not existing or not existing.id:
             return None
-        
-        expense_id = existing.id
-        
-        # Step 2: Get all ExpenseLineItems for this expense
-        expense_line_item_service = ExpenseLineItemService()
-        expense_line_items = expense_line_item_service.read_by_expense_id(expense_id=expense_id)
-        
-        # Step 3: Delete each ExpenseLineItem and its associated attachments
-        expense_line_item_attachment_service = ExpenseLineItemAttachmentService()
-        expense_line_item_attachment_repo = ExpenseLineItemAttachmentRepository()
-        attachment_service = AttachmentService()
-        
-        # Initialize storage once (may fail if config is missing, handle gracefully)
-        storage = None
-        try:
-            storage = AzureBlobStorage()
-        except Exception as e:
-            logger.warning(f"Could not initialize Azure Blob Storage for file deletion: {e}")
-        
-        for line_item in expense_line_items:
-            try:
-                # Step 3a: Get the ExpenseLineItemAttachment for this line item (1-1 relationship)
-                if line_item.public_id:
-                    attachment_link = expense_line_item_attachment_service.read_by_expense_line_item_id(
-                        expense_line_item_public_id=line_item.public_id
-                    )
-                    
-                    # Step 3b: Delete attachment and its file if it exists
-                    if attachment_link and attachment_link.attachment_id:
-                        try:
-                            # Get the attachment record
-                            attachment = attachment_service.read_by_id(id=attachment_link.attachment_id)
-                            # U-446b (Codex round 5, P1). LINK, then ROW, then
-                            # BLOB — in that order, and it matters twice over.
-                            #
-                            # The link has to go FIRST because FK_ExpenseLineItemAttachment_Attachment
-                            # is NO ACTION: with the link still present the
-                            # Attachment delete fails on the FK. That was already
-                            # true before this unit, and the failure was swallowed
-                            # — so this cascade destroyed the blob and then left
-                            # the Attachment row orphaned, every time.
-                            #
-                            # The blob goes LAST because the guarded row delete is
-                            # what decides: an attachment can be a completed
-                            # Bill's evidence too (BLIA multi-split linking), and
-                            # a pre-check cannot settle that — it reads in its own
-                            # transaction, so a Bill completing in between still
-                            # destroyed the bytes. Deleting the row first means
-                            # nothing is destroyed when the guard refuses.
-                            if attachment_link.id:
-                                try:
-                                    expense_line_item_attachment_repo.delete_by_id(id=attachment_link.id)
-                                    logger.info(f"Deleted expense line item attachment {attachment_link.id}")
-                                except Exception as e:
-                                    logger.warning(f"Error deleting expense line item attachment {attachment_link.id}: {e}")
 
-                            if attachment:
-                                removed = None
-                                try:
-                                    removed = attachment_service.delete_by_public_id(public_id=attachment.public_id)
-                                    logger.info(f"Deleted attachment {attachment.id}")
-                                except StatusLockedError:
-                                    logger.info(
-                                        "Kept attachment %s: it is evidence for a completed Bill",
-                                        attachment.public_id,
-                                    )
-                                except Exception as e:
-                                    logger.warning(f"Error deleting attachment {attachment.id}: {e}")
+        # U-468. Non-admins cannot delete a completed expense. Admins still can
+        # — deleting one whose AP already shipped is destructive, but it is the
+        # only escape hatch for an expense created in error. Exempts on
+        # is_system_admin ALONE (unlike the header guard) because a human admin
+        # is the intended actor.
+        cascade_exempt = current_is_system_admin.get()
+        assert_editable(
+            status=getattr(existing, "status", None),
+            is_draft=getattr(existing, "is_draft", None),
+            what="it cannot be deleted",
+            exempt=cascade_exempt,
+        )
 
-                                if removed is not None and attachment.blob_url and storage:
-                                    try:
-                                        storage.delete_file(attachment.blob_url)
-                                        logger.info(f"Deleted blob {attachment.blob_url} for attachment {attachment.id}")
-                                    except AzureBlobStorageError as e:
-                                        logger.warning(f"Error deleting blob {attachment.blob_url} for attachment {attachment.id}: {e}")
-                                    except Exception as e:
-                                        logger.warning(f"Error deleting blob {attachment.blob_url} for attachment {attachment.id}: {e}")
-                        except Exception as e:
-                            logger.warning(f"Error processing attachment for line item {line_item.id}: {e}")
-                
-                # Step 3c: Delete the ExpenseLineItem record
-                if line_item.id and line_item.public_id:
-                    try:
-                        expense_line_item_service.delete_by_public_id(public_id=line_item.public_id)
-                        logger.info(f"Deleted expense line item {line_item.id}")
-                    except Exception as e:
-                        logger.warning(f"Error deleting expense line item {line_item.id}: {e}")
-                elif line_item.id:
-                    # Fallback: delete directly by ID if public_id is missing
-                    try:
-                        from entities.expense_line_item.persistence.repo import ExpenseLineItemRepository
-                        expense_line_item_repo = ExpenseLineItemRepository()
-                        expense_line_item_repo.delete_by_id(id=line_item.id)
-                        logger.info(f"Deleted expense line item {line_item.id} (by ID, no public_id)")
-                    except Exception as e:
-                        logger.warning(f"Error deleting expense line item {line_item.id} by ID: {e}")
-            except Exception as e:
-                logger.warning(f"Error processing expense line item {line_item.id if line_item.id else 'unknown'}: {e}")
-        
-        # U-354/U-365: no qbo.* mapping row to clear before the header delete —
-        # dbo.Expense.QboId/RealmId die with the row.
-        return self.repo.delete_by_id(existing.id)
+        # U-468: ONE transaction, in the database.
+        #
+        # This used to be ~150 lines running N separate transactions —
+        # a lock-free invoice pre-check, then attachment links / Attachment
+        # rows / blobs, then each line item, then Review rows, then the header.
+        # The pre-check was TOCTOU (its own connection, no locks, window = the
+        # whole cascade). The Review delete was unconditional, destructive-first
+        # and swallowed, so it destroyed insert-only audit history for an
+        # Expense that then survived a 547. Holding the header lock across the
+        # whole cascade is the only thing that fixes both.
+        deleted = self.repo.delete_cascade_by_id(
+            existing.id, allow_terminal_parent=cascade_exempt
+        )
+        if deleted is not None:
+            logger.info(f"Deleted expense {existing.id} and its dependent rows")
+        return deleted
 
     def complete_expense(self, public_id: str) -> dict:
         """
@@ -712,6 +652,15 @@ class ExpenseService:
                         markup=Decimal(str(line_item.markup)) if line_item.markup is not None else None,
                         price=Decimal(str(line_item.price)) if line_item.price is not None else None,
                         is_draft=False,
+                        # U-468. Step 1 above ALREADY set the header to
+                        # `completed`, so by the time Step 2 marks each line the
+                        # parent reads as terminal and the guard refuses it —
+                        # turning every completion that has draft lines into a
+                        # 207 full of `status_locked` errors with the lines left
+                        # draft. The flag is passed HERE, not through a pydantic
+                        # model: a leading-underscore name is a private
+                        # attribute and would be silently dropped.
+                        _via_internal_pipeline=True,
                     )
                 except Exception as e:
                     logger.error(f"Error finalizing line item {line_item.id}: {e}")

@@ -1744,6 +1744,12 @@ class InvoiceService:
                         row_version=source.row_version,
                         expense_public_id=expense_public_id,
                         is_billed=True,
+                        # U-468: the expense this line belongs to is ALREADY
+                        # completed — you invoice completed AP — so the terminal
+                        # lock would refuse this write and break invoice
+                        # completion outright. Invoice completion runs as a real
+                        # user, so the system-caller exemption does NOT cover it.
+                        _via_internal_pipeline=True,
                     )
 
         elif line_item.source_type == "BillCreditLineItem" and line_item.bill_credit_line_item_id:
@@ -1799,6 +1805,9 @@ class InvoiceService:
                         row_version=source.row_version,
                         expense_public_id=expense.public_id,
                         is_billed=False,
+                        # U-468: same as the billed flip — invoice delete runs
+                        # as a real user against completed expenses.
+                        _via_internal_pipeline=True,
                     )
 
         elif line_item.source_type == "BillCreditLineItem" and line_item.bill_credit_line_item_id:

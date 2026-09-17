@@ -13,6 +13,7 @@ from shared.database import (
     get_connection,
     map_database_error,
 )
+from shared.lifecycle.terminal_lock import reraise_if_sproc_status_locked
 
 logger = logging.getLogger(__name__)
 
@@ -50,7 +51,7 @@ class ExpenseLineItemAttachmentRepository:
             logger.error(f"Unexpected error during expense line item attachment mapping: {error}")
             raise map_database_error(error)
 
-    def create(self, *, expense_line_item_id: int, attachment_id: int, created_by_user_id: Optional[int] = None) -> ExpenseLineItemAttachment:
+    def create(self, *, expense_line_item_id: int, attachment_id: int, created_by_user_id: Optional[int] = None, allow_terminal_parent: bool = True) -> ExpenseLineItemAttachment:
         """
         Create a new expense line item attachment.
         """
@@ -65,6 +66,7 @@ class ExpenseLineItemAttachmentRepository:
                             "ExpenseLineItemId": expense_line_item_id,
                             "AttachmentId": attachment_id,
                             "CreatedByUserId": created_by_user_id,
+                            "AllowTerminalParent": 1 if allow_terminal_parent else 0,
                         },
                     )
                     row = cursor.fetchone()
@@ -75,12 +77,22 @@ class ExpenseLineItemAttachmentRepository:
                 finally:
                     cursor.close()
         except Exception as error:
+            reraise_if_sproc_status_locked(
+                error, what="attachments cannot be added to it"
+            )
             logger.error(f"Error during create expense line item attachment: {error}")
             raise map_database_error(error)
 
-    def read_all(self) -> list[ExpenseLineItemAttachment]:
+    def read_all(
+        self,
+        *,
+        actor_user_id: Optional[int] = None,
+        actor_is_system_admin: Optional[bool] = None,
+    ) -> list[ExpenseLineItemAttachment]:
         """
-        Read all expense line item attachments.
+        Read expense line item attachments, scoped by UserProject membership
+        for non-admin actors. The sproc fails closed: an actor of (None, None)
+        matches no rows rather than every row.
         """
         try:
             with get_connection() as conn:
@@ -89,7 +101,10 @@ class ExpenseLineItemAttachmentRepository:
                     call_procedure(
                         cursor=cursor,
                         name="ReadExpenseLineItemAttachments",
-                        params={},
+                        params={
+                            "ActorUserId": actor_user_id,
+                            "ActorIsSystemAdmin": _bit(actor_is_system_admin),
+                        },
                     )
                     rows = cursor.fetchall()
                     return [self._from_db(row) for row in rows if row]
@@ -196,7 +211,32 @@ class ExpenseLineItemAttachmentRepository:
             logger.error(f"Error during read expense line item attachments by public IDs: {error}")
             raise map_database_error(error)
 
-    def delete_by_id(self, id: int) -> Optional[ExpenseLineItemAttachment]:
+    def count_completed_expenses_by_attachment_id(self, attachment_id: int) -> int:
+        """U-468: how many COMPLETED Expenses this Attachment is evidence for.
+
+        Non-zero means the file is frozen — the AP it documents has already
+        reached QBO, SharePoint, Excel and Box, so replacing or deleting it
+        changes what our records show without changing what any of them hold.
+        Mirrors `BillLineItemAttachmentRepository.count_completed_bills_by_attachment_id`.
+        """
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                try:
+                    call_procedure(
+                        cursor=cursor,
+                        name="CountCompletedExpensesByAttachmentId",
+                        params={"AttachmentId": attachment_id},
+                    )
+                    row = cursor.fetchone()
+                    return row.Count if row else 0
+                finally:
+                    cursor.close()
+        except Exception as error:
+            logger.error(f"Error counting completed expenses by attachment ID: {error}")
+            raise map_database_error(error)
+
+    def delete_by_id(self, id: int, *, allow_terminal_parent: bool = True) -> Optional[ExpenseLineItemAttachment]:
         """
         Delete an expense line item attachment by ID.
         """
@@ -207,12 +247,27 @@ class ExpenseLineItemAttachmentRepository:
                     call_procedure(
                         cursor=cursor,
                         name="DeleteExpenseLineItemAttachmentById",
-                        params={"Id": id},
+                        params={
+                            "Id": id,
+                            "AllowTerminalParent": 1 if allow_terminal_parent else 0,
+                        },
                     )
                     row = cursor.fetchone()
                     return self._from_db(row) if row else None
                 finally:
                     cursor.close()
         except Exception as error:
+            reraise_if_sproc_status_locked(
+                error, what="its attachments cannot be deleted"
+            )
             logger.error(f"Error during delete expense line item attachment by ID: {error}")
             raise map_database_error(error)
+
+
+def _bit(flag: Optional[bool]) -> Optional[int]:
+    """SQL Server BIT params take 0/1, not Python bool. Local copy per the
+    prevailing per-repo convention; consolidation tracked separately."""
+    if flag is None:
+        return None
+    return 1 if flag else 0
+

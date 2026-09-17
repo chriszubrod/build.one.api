@@ -95,7 +95,12 @@ def test_insert_list_and_values_stay_in_arity(sproc, base_file, table, parent_pa
     """A param nobody INSERTs is worse than no param — pin both sides."""
     body = sproc_body(base_file, sproc)
     insert_cols = re.search(rf"INSERT INTO dbo\.\[{table}\] \((.*?)\)", body, re.DOTALL)
-    values = re.search(r"VALUES \((.*)\)\s*;", body, re.DOTALL)
+    # U-468 turned CreateExpenseLineItemAttachment's tail from VALUES into
+    # SELECT ... WHERE ... so the write binds to the parent Expense that was
+    # locked and checked. Same arity contract, different shape — accept either.
+    values = re.search(r"VALUES \((.*)\)\s*;", body, re.DOTALL) or re.search(
+        r"\n    SELECT (.*?)\n    WHERE ", body, re.DOTALL
+    )
     assert insert_cols and values, f"could not parse {sproc}'s INSERT"
     columns = split_top_level(insert_cols.group(1))
     bound = split_top_level(values.group(1))

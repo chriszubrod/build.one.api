@@ -702,12 +702,33 @@ CREATE OR ALTER PROCEDURE UpdateExpenseById
     @TotalAmount DECIMAL(18,2) NULL,
     @Memo NVARCHAR(MAX) NULL,
     @IsDraft BIT = NULL,
-    @IsCredit BIT = NULL
+    @IsCredit BIT = NULL,
+    @AllowTerminalParent BIT = 0
 )
 AS
 BEGIN
     SET NOCOUNT ON;
     BEGIN TRANSACTION;
+
+    -- U-468 (U-446b shape). The header had the same check-then-write race as
+    -- its line items: completion winning the race bumps RowVersion, so the
+    -- UPDATE matched zero rows and the repo reported a ROW-VERSION CONFLICT
+    -- (409) — the status installed iOS routes to reload-and-retry. Naming the
+    -- terminal state explicitly gets the caller 422 `status_locked` whichever
+    -- side of the race it lands on.
+    -- LOCK UNCONDITIONALLY, REFUSE CONDITIONALLY (U-446c). An exempt writer
+    -- that skips the lock is invisible to every other transaction.
+    DECLARE @LockedCompleted INT;
+    SELECT @LockedCompleted = COUNT(*)
+    FROM dbo.[Expense] WITH (UPDLOCK, HOLDLOCK)
+    WHERE [Id] = @Id AND [Status] = 'completed';
+
+    IF @AllowTerminalParent = 0 AND @LockedCompleted > 0
+    BEGIN
+        COMMIT TRANSACTION;
+        RAISERROR('STATUS_LOCKED: a completed Expense cannot be edited.', 16, 1);
+        RETURN;
+    END
 
     DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();
 
@@ -815,15 +836,189 @@ BEGIN
 END;
 GO
 
+-- ===========================================================================
+-- U-468 — DELETING AN EXPENSE IS ONE TRANSACTION.
+--
+-- The Python cascade it replaces ran N transactions: attachment links, then
+-- each line item (with its own dependent cleanup, including blob deletes),
+-- then Review rows, then the header. A completion landing mid-cascade was
+-- refused at whichever step it reached, leaving the earlier steps committed.
+-- Worse: a lock-free invoice pre-check on its own connection left a window
+-- the size of the whole cascade, so a citation landing in between destroyed
+-- receipts and review history and then 547'd — Expense ALIVE, bytes GONE.
+-- One transaction under the header lock is the only thing that fixes that.
+--
+-- This is possible at all because the cascade makes NO external calls: the
+-- Attachment rows and their Azure blobs are deliberately LEFT ALONE (only the
+-- link rows go), so there is nothing that has to live outside the transaction.
+--
+-- FK ORDER, verified against the base files rather than assumed:
+--   ExpenseLineItemAttachment -> ExpenseLineItem  NO_ACTION  (must be cleared)
+--   InvoiceLineItem           -> ExpenseLineItem  NO_ACTION  (REFUSE, see below)
+--   ExpenseLineItem           -> Expense          NO_ACTION
+--   Review                    -> Expense          NO_ACTION
+--
+-- INVOICE CITATION: Bill's cascade DELETES the citing InvoiceLineItem rows
+-- (and their two NO ACTION children, InvoiceLineItemAttachment and
+-- InvoiceLineItemSourceProvenance). Expense REFUSES instead. Deleting lines
+-- off a client invoice is a money-visible act we are not doing by inference.
+-- The check runs INSIDE this transaction under the header lock, so a race
+-- cannot destroy children and then 547. Those InvoiceLineItem children are
+-- therefore unreachable from this cascade: we never DELETE InvoiceLineItem,
+-- InvoiceLineItemAttachment, or InvoiceLineItemSourceProvenance here.
+--
+-- ⛔ DO NOT add a dbo.ReviewEntry leg. ReviewEntry never had an ExpenseId
+-- column (prod is Bill-only), so there can be no Expense rows in it.
+-- Referencing that column is a Msg 207 deploy-blocker: SQL Server binds
+-- column names when the procedure is created, if the table exists, and
+-- COL_LENGTH is a RUNTIME guard that cannot save the CREATE. That is
+-- why DeleteReviewsByExpenseId could not ship.
+-- ===========================================================================
+CREATE OR ALTER PROCEDURE DeleteExpenseCascadeById
+(
+    @Id BIGINT,
+    @AllowTerminalParent BIT = 0
+)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    BEGIN TRANSACTION;
+
+    -- Lock the header FIRST and hold it for the whole cascade. Every child
+    -- write below is therefore serialized against FinalizeExpenseById: a
+    -- completion either lands entirely before this (and is refused) or waits
+    -- until the delete has finished. `Status` is NOT NULL on the table, so a
+    -- NULL here means the row does not exist.
+    DECLARE @Status NVARCHAR(20) = NULL;
+    SELECT @Status = [Status]
+    FROM dbo.[Expense] WITH (UPDLOCK, HOLDLOCK)
+    WHERE [Id] = @Id;
+
+    -- No early RETURN for a missing Expense. Every statement below is naturally
+    -- a no-op when nothing matches, and the final DELETE's OUTPUT clause then
+    -- yields an EMPTY result set — which is what the repo needs to return None.
+    -- A bare `RETURN` here produced NO result set at all, and pyodbc's
+    -- fetchone() raises "No results. Previous SQL was not a query" on that
+    -- (CLAUDE.md's 2026-06-11 discipline). Reachable: the service reads the
+    -- expense first, but it can be deleted concurrently in between.
+    IF @AllowTerminalParent = 0 AND @Status = 'completed'
+    BEGIN
+        COMMIT TRANSACTION;
+        RAISERROR('STATUS_LOCKED: a completed Expense cannot be deleted.', 16, 1);
+        RETURN;
+    END
+
+    -- Invoiced-citation check, INSIDE the transaction under the header lock.
+    -- A lock-free pre-check on its own connection is TOCTOU: the window is
+    -- the entire cascade, and losing the race reproduces "Expense ALIVE,
+    -- receipt bytes GONE, review history GONE."
+    DECLARE @CitingInvoiceNumber NVARCHAR(50) = NULL;
+    DECLARE @CitingInvoicePublicId UNIQUEIDENTIFIER = NULL;
+    SELECT TOP 1
+        @CitingInvoiceNumber = i.[InvoiceNumber],
+        @CitingInvoicePublicId = i.[PublicId]
+    FROM dbo.[InvoiceLineItem] ili
+    INNER JOIN dbo.[ExpenseLineItem] eli ON eli.[Id] = ili.[ExpenseLineItemId]
+    INNER JOIN dbo.[Invoice] i ON i.[Id] = ili.[InvoiceId]
+    WHERE eli.[ExpenseId] = @Id
+    ORDER BY i.[Id];
+
+    IF @CitingInvoicePublicId IS NOT NULL
+    BEGIN
+        COMMIT TRANSACTION;
+        DECLARE @CitingMsg NVARCHAR(400);
+        SET @CitingMsg = 'Cannot delete this expense: invoice '
+            + COALESCE(NULLIF(LTRIM(RTRIM(@CitingInvoiceNumber)), ''), CONVERT(NVARCHAR(36), @CitingInvoicePublicId))
+            + ' still cites one of its line items.';
+        RAISERROR('%s', 16, 1, @CitingMsg);
+        RETURN;
+    END
+
+    -- Children, innermost FK first. Attachment ROWS and their blobs survive on
+    -- purpose — only the link goes.
+    DELETE FROM dbo.[ExpenseLineItemAttachment]
+    WHERE [ExpenseLineItemId] IN (SELECT [Id] FROM dbo.[ExpenseLineItem] WHERE [ExpenseId] = @Id);
+
+    -- InvoiceLineItem has TWO NO ACTION children of its own
+    -- (InvoiceLineItemAttachment, InvoiceLineItemSourceProvenance). Bill's
+    -- cascade deletes those, then the citing InvoiceLineItem rows. Expense
+    -- does not: the citation check above already refused, so those DELETEs
+    -- are unreachable here and must not run by inference (money-visible).
+
+    -- U-364 deploy-gap bridge, moved here from Python (U-468). qbo.
+    -- PurchaseLineExpenseLineItem is the line-mapping sibling of Bill's
+    -- qbo.BillLineItemBillLine: ALREADY scheduled to drop, but its FK to
+    -- ExpenseLineItem is NO ACTION, so wherever the table still exists a line
+    -- delete would 547 without this. The OBJECT_ID guard makes it a plain SQL
+    -- no-op once dropped — deferred name resolution means the body compiles
+    -- against a missing table, it just must never be REACHED.
+    IF OBJECT_ID('qbo.PurchaseLineExpenseLineItem') IS NOT NULL
+        DELETE FROM qbo.[PurchaseLineExpenseLineItem]
+        WHERE [ExpenseLineItemId] IN (SELECT [Id] FROM dbo.[ExpenseLineItem] WHERE [ExpenseId] = @Id);
+
+    DELETE FROM dbo.[ExpenseLineItem] WHERE [ExpenseId] = @Id;
+
+    -- Reviews are otherwise insert-only audit history. They go here, inside
+    -- the same transaction, so a refused cascade cannot destroy them first.
+    -- ⛔ No dbo.ReviewEntry leg — that table never had ExpenseId (see header).
+    DELETE FROM dbo.[Review] WHERE [ExpenseId] = @Id;
+
+    DELETE FROM dbo.[Expense]
+    OUTPUT
+        DELETED.[Id],
+        DELETED.[PublicId],
+        DELETED.[RowVersion],
+        CONVERT(VARCHAR(19), DELETED.[CreatedDatetime], 120) AS [CreatedDatetime],
+        CONVERT(VARCHAR(19), DELETED.[ModifiedDatetime], 120) AS [ModifiedDatetime],
+        DELETED.[VendorId],
+        CONVERT(VARCHAR(19), DELETED.[ExpenseDate], 120) AS [ExpenseDate],
+        DELETED.[ReferenceNumber],
+        DELETED.[TotalAmount],
+        DELETED.[Memo],
+        DELETED.[IsDraft],
+        DELETED.[Status],
+        DELETED.[StatusDatetime],
+        DELETED.[StatusOrigin],
+        DELETED.[StatusSourceRef],
+        DELETED.[IsCredit],
+        DELETED.[QboId],
+        DELETED.[RealmId]
+    WHERE [Id] = @Id;
+
+    COMMIT TRANSACTION;
+END;
 GO
 
 CREATE OR ALTER PROCEDURE DeleteExpenseById
 (
-    @Id BIGINT
+    @Id BIGINT,
+    @AllowTerminalParent BIT = 0
 )
 AS
 BEGIN
+    -- Required: the guard below precedes the DML (CLAUDE.md, 2026-06-11).
+    SET NOCOUNT ON;
+
     BEGIN TRANSACTION;
+
+    -- U-468 (U-446b shape). The service checks the status first, in a
+    -- different transaction and BEFORE a multi-step cascade; a completion
+    -- landing anywhere in between left a non-admin deleting a completed
+    -- Expense's header with nothing to stop it. Deciding again here, with
+    -- the row locked, is the only place that cannot be raced.
+    -- LOCK UNCONDITIONALLY, REFUSE CONDITIONALLY (U-446c).
+    DECLARE @LockedCompleted INT;
+    SELECT @LockedCompleted = COUNT(*)
+    FROM dbo.[Expense] WITH (UPDLOCK, HOLDLOCK)
+    WHERE [Id] = @Id AND [Status] = 'completed';
+
+    IF @AllowTerminalParent = 0 AND @LockedCompleted > 0
+    BEGIN
+        COMMIT TRANSACTION;
+        RAISERROR('STATUS_LOCKED: a completed Expense cannot be deleted.', 16, 1);
+        RETURN;
+    END
 
     DELETE FROM dbo.[Expense]
     OUTPUT
@@ -1147,3 +1342,4 @@ BEGIN
     COMMIT TRANSACTION;
 END;
 GO
+

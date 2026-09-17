@@ -12,8 +12,13 @@ from entities.sub_cost_code.business.service import SubCostCodeService
 from entities.project.business.service import ProjectService
 from entities.expense.business.service import ExpenseService
 from shared.access import assert_can_access_expense
-from shared.authz import current_user_id
-from shared.lifecycle.terminal_lock import StatusLockedError
+from shared.authz import current_user_id, current_is_system_admin
+from shared.database import DatabaseConcurrencyError
+from shared.lifecycle.terminal_lock import (
+    StatusLockedError,
+    assert_editable,
+    is_exempt,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -59,10 +64,47 @@ class ExpenseLineItemService:
         """Initialize the ExpenseLineItemService."""
         self.repo = repo or ExpenseLineItemRepository()
 
-    def create(self, *, tenant_id: int = None, expense_public_id: str, sub_cost_code_id: Optional[int] = None, project_public_id: Optional[str] = None, description: Optional[str] = None, quantity: Optional[int] = None, rate: Optional[Decimal] = None, amount: Optional[Decimal] = None, is_billable: Optional[bool] = None, is_billed: Optional[bool] = None, markup: Optional[Decimal] = None, price: Optional[Decimal] = None, is_draft: bool = True) -> ExpenseLineItem:
+    def _assert_parent_editable(self, *, expense_id=None, expense_public_id=None,
+                                what: str, exempt: bool = False) -> None:
+        """U-468: a completed expense's line items are frozen with it.
+
+        Reads the parent rather than trusting the caller — the line item itself
+        carries no lifecycle state. Exempt callers skip the read entirely.
+        """
+        if exempt:
+            return
+        if expense_id is None and expense_public_id is None:
+            return
+        from shared.lifecycle.terminal_lock import is_system_caller
+        if is_system_caller():
+            return
+        from entities.expense.business.service import ExpenseService
+        svc = ExpenseService()
+        parent = (svc.read_by_id(id=expense_id) if expense_id is not None
+                  else svc.read_by_public_id(public_id=expense_public_id))
+        if parent is None:
+            return
+        assert_editable(
+            status=getattr(parent, "status", None),
+            is_draft=getattr(parent, "is_draft", None),
+            what=what,
+        )
+
+    def _reassert_after_a_lost_write(self, *, expense_id, expense_public_id=None, what, exempt):
+        """U-468 (U-446b Codex round 4). Turn a lost reparent race into 422."""
+        self._assert_parent_editable(
+            expense_id=expense_id, expense_public_id=expense_public_id, what=what, exempt=exempt
+        )
+
+    def create(self, *, tenant_id: int = None, expense_public_id: str, sub_cost_code_id: Optional[int] = None, project_public_id: Optional[str] = None, description: Optional[str] = None, quantity: Optional[int] = None, rate: Optional[Decimal] = None, amount: Optional[Decimal] = None, is_billable: Optional[bool] = None, is_billed: Optional[bool] = None, markup: Optional[Decimal] = None, price: Optional[Decimal] = None, is_draft: bool = True, _via_internal_pipeline: bool = False) -> ExpenseLineItem:
         """
         Create a new expense line item.
         """
+        self._assert_parent_editable(
+            expense_public_id=expense_public_id,
+            what="line items cannot be added to it",
+            exempt=_via_internal_pipeline,
+        )
         # TODO: In Phase 10, use tenant_id for tenant isolation
         # Validate Expense exists and get internal ID
         expense = ExpenseService().read_by_public_id(public_id=expense_public_id)
@@ -84,6 +126,7 @@ class ExpenseLineItemService:
             project_id = project.id
         
         return self.repo.create(
+            allow_terminal_parent=is_exempt(_via_internal_pipeline),
             expense_id=expense.id,
             sub_cost_code_id=sub_cost_code_id,
             project_id=project_id,
@@ -101,9 +144,17 @@ class ExpenseLineItemService:
 
     def read_all(self) -> list[ExpenseLineItem]:
         """
-        Read all expense line items.
+        Read expense line items, scoped by UserProject for non-admin actors.
+
+        Bill's equivalent (`BillLineItemService.read_all`) is scoped in the
+        sproc, not via per-row `assert_can_access_*`. Match that shape: scoping
+        happens in ReadExpenseLineItems. Every other read on this service
+        already gates via `assert_can_access_expense`.
         """
-        return self.repo.read_all()
+        return self.repo.read_all(
+            actor_user_id=current_user_id.get(),
+            actor_is_system_admin=current_is_system_admin.get(),
+        )
 
     def read_by_id(self, id: int) -> Optional[ExpenseLineItem]:
         """
@@ -160,12 +211,25 @@ class ExpenseLineItemService:
         markup: float = None,
         price: float = None,
         is_draft: bool = None,
+        _via_internal_pipeline: bool = False,
     ) -> Optional[ExpenseLineItem]:
         """
         Update an expense line item by public ID.
         """
         # TODO: In Phase 10, validate tenant_id matches record's tenant
         existing = self.read_by_public_id(public_id=public_id)
+        if existing is not None:
+            self._assert_parent_editable(
+                expense_id=getattr(existing, "expense_id", None),
+                what="its line items cannot be changed",
+                exempt=_via_internal_pipeline,
+            )
+            if expense_public_id is not None:
+                self._assert_parent_editable(
+                    expense_public_id=expense_public_id,
+                    what="line items cannot be moved onto it",
+                    exempt=_via_internal_pipeline,
+                )
         if not existing:
             return None
 
@@ -212,9 +276,22 @@ class ExpenseLineItemService:
         if is_draft is not None:
             existing.is_draft = is_draft
 
-        return self.repo.update_by_id(existing)
+        try:
+            return self.repo.update_by_id(
+                existing, allow_terminal_parent=is_exempt(_via_internal_pipeline)
+            )
+        except StatusLockedError:
+            raise
+        except DatabaseConcurrencyError:
+            self._reassert_after_a_lost_write(
+                expense_id=getattr(existing, "expense_id", None),
+                expense_public_id=expense_public_id,
+                what="its line items cannot be changed",
+                exempt=_via_internal_pipeline,
+            )
+            raise
 
-    def delete_by_public_id(self, public_id: str, *, tenant_id: int = None) -> Optional[ExpenseLineItem]:
+    def delete_by_public_id(self, public_id: str, *, tenant_id: int = None, _via_internal_pipeline: bool = False) -> Optional[ExpenseLineItem]:
         """
         Delete an expense line item by public ID, cascading to its attachment.
 
@@ -225,6 +302,12 @@ class ExpenseLineItemService:
         """
         # TODO: In Phase 10, validate tenant_id matches record's tenant
         existing = self.read_by_public_id(public_id=public_id)
+        if existing is not None:
+            self._assert_parent_editable(
+                expense_id=getattr(existing, "expense_id", None),
+                what="its line items cannot be deleted",
+                exempt=_via_internal_pipeline,
+            )
         if not existing:
             return None
 
@@ -250,7 +333,10 @@ class ExpenseLineItemService:
                 # multi-split linking), and destroying the bytes before asking
                 # leaves that evidence pointing at nothing.
                 try:
-                    ExpenseLineItemAttachmentRepository().delete_by_id(id=attachment_link.id)
+                    ExpenseLineItemAttachmentRepository().delete_by_id(
+                        id=attachment_link.id,
+                        allow_terminal_parent=is_exempt(_via_internal_pipeline),
+                    )
                 except Exception as e:
                     import logging
                     logging.getLogger(__name__).warning(
@@ -300,4 +386,13 @@ class ExpenseLineItemService:
         # needed post-U-364: the mapping is redundant, so losing a row on a
         # failed delete is harmless — the dbo-native QboId is the identity.
         _clear_legacy_purchase_line_expense_line_item_mapping(existing.id)
-        return self.repo.delete_by_id(existing.id)
+        deleted = self.repo.delete_by_id(
+            existing.id, allow_terminal_parent=is_exempt(_via_internal_pipeline)
+        )
+        if deleted is None:
+            self._reassert_after_a_lost_write(
+                expense_id=getattr(existing, "expense_id", None),
+                what="its line items cannot be deleted",
+                exempt=_via_internal_pipeline,
+            )
+        return deleted

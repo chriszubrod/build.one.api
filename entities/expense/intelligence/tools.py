@@ -28,7 +28,7 @@ Tools self-register on import.
 from typing import Optional
 from urllib.parse import quote, urlencode
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from intelligence.tools.base import Tool, ToolContext, ToolResult
 from intelligence.tools.registry import register
@@ -45,8 +45,9 @@ class _SearchArgs(BaseModel):
     query: Optional[str] = Field(
         default=None,
         description=(
-            "Optional substring match against reference_number / memo. "
-            "Combine with vendor_id and is_draft to narrow."
+            "Optional case-insensitive substring matched against the "
+            "reference_number / memo (server-side). Use to narrow when the "
+            "user names a number or describes the expense."
         ),
     )
     vendor_id: Optional[int] = Field(
@@ -57,14 +58,51 @@ class _SearchArgs(BaseModel):
             "Vendor read; do not surface this id in user text."
         ),
     )
+    status: Optional[str] = Field(
+        default=None,
+        description=(
+            "Optional filter on ONE canonical lifecycle status: draft, "
+            "submitted, in_review, approved, declined or completed. Prefer "
+            "this over `is_draft` whenever the question is about WHERE an "
+            "expense is — awaiting a reviewer, declined, approved but not yet "
+            "posted. Filtered in SQL, so `count` stays truthful."
+        ),
+    )
     is_draft: Optional[bool] = Field(
         default=None,
         description=(
-            "Optional filter: true returns only draft expenses; false "
-            "returns only completed; omit for all."
+            "Optional coarse filter: true returns every expense that is NOT "
+            "completed — draft, submitted, in_review, approved and declined "
+            "alike — and false returns only completed ones. It is a "
+            "finished/unfinished split, NOT a 'drafts' filter: `is_draft` is "
+            "a computed column over `status` (U-467). Use `status` when you "
+            "mean one specific state."
         ),
     )
     limit: int = Field(default=10, description="Max results (1-100).")
+
+    @model_validator(mode="after")
+    def _status_and_is_draft_must_agree(self):
+        """Refuse a pair that can only ever return nothing (U-446d, Codex P1).
+
+        The sproc ANDs the two predicates, and `is_draft` IS
+        `status != 'completed'` — so `status='completed'` with `is_draft=True`,
+        or any non-completed status with `is_draft=False`, is a contradiction
+        that yields an empty page and `count: 0`. An agent reads that as "there
+        are none", which is the worst possible failure: confidently wrong, with
+        no error to notice. Erroring here turns it into something the model can
+        see and correct.
+        """
+        if self.status is None or self.is_draft is None:
+            return self
+        implied = self.status != "completed"
+        if implied != self.is_draft:
+            raise ValueError(
+                f"status={self.status!r} and is_draft={self.is_draft} "
+                f"contradict: is_draft is status != 'completed', so this pair "
+                f"matches nothing. Drop is_draft and filter on status alone."
+            )
+        return self
 
 
 class _ByReferenceArgs(BaseModel):
@@ -85,6 +123,8 @@ async def _search_expenses(args: dict, ctx: ToolContext) -> ToolResult:
         qs["search"] = parsed.query
     if parsed.vendor_id is not None:
         qs["vendor_id"] = parsed.vendor_id
+    if parsed.status is not None:
+        qs["status"] = parsed.status
     if parsed.is_draft is not None:
         qs["is_draft"] = "true" if parsed.is_draft else "false"
     return await ctx.call_api("GET", f"/api/v1/get/expenses?{urlencode(qs)}")
@@ -96,11 +136,16 @@ search_expenses = Tool(
         "Find expenses via server-side search + filters. The catalog "
         "is large (~10K rows) so this is the only read-many tool. "
         "Combine `query` (substring on reference_number / memo), "
-        "`vendor_id` (specific vendor's expenses), and `is_draft` to "
+        "`vendor_id` (specific vendor's expenses), and `status` to "
         "narrow. NOTE: there's no server-side filter for `is_credit` "
         "(refunds vs charges); each result row carries the field, so "
         "if the user asks for refunds you can filter the returned "
-        "list yourself."
+        "list yourself. "
+        "An expense occupies exactly one of six canonical states: draft, "
+        "submitted, in_review, approved, declined, completed. Filter on "
+        "`status` for any of them individually — `is_draft=true` lumps the "
+        "first five together and cannot answer 'what is waiting on a "
+        "reviewer'."
     ),
     input_schema=input_schema_from(_SearchArgs),
     handler=_search_expenses,
@@ -296,8 +341,10 @@ def _summarize_update_expense(args: dict) -> str:
 update_expense = Tool(
     name="update_expense",
     description=(
-        "Modify an existing expense's PARENT fields. Line items are "
-        "NOT changed by this tool. REQUIRES USER APPROVAL. Read the "
+        "Modify an existing expense's PARENT fields (vendor, dates, "
+        "number, memo). Lifecycle state is NOT one of them — it moves "
+        "only via the review workflow and `complete_expense`. Line items "
+        "are NOT changed by this tool. REQUIRES USER APPROVAL. Read the "
         "record first to get all required fields and `row_version`. "
         "Be explicit in prose about what's changing."
     ),
@@ -375,20 +422,26 @@ def _summarize_complete_expense(args: dict) -> str:
     ref = args.get("reference_number")
     vendor = args.get("vendor_name")
     if ref and vendor:
-        return f"Complete expense {ref} ({vendor}) — push to QBO + Excel"
+        return f"Complete expense {ref} ({vendor}) — push to SharePoint + Excel"
     if ref:
-        return f"Complete expense {ref} — push to QBO + Excel"
+        return f"Complete expense {ref} — push to SharePoint + Excel"
     return f"Complete expense {args.get('public_id') or '?'}"
 
 
 complete_expense = Tool(
     name="complete_expense",
     description=(
-        "Finalize a draft expense: locks IsDraft=false, then enqueues "
-        "Excel sync + QBO push via the outbox. REQUIRES USER APPROVAL. "
-        "Use this for the 'mark this expense ready / push to QBO' "
-        "workflow — do NOT just flip `is_draft` via update_expense, "
-        "that bypasses the external sync side effects."
+        "Move an expense to the terminal `completed` state and enqueue "
+        "SharePoint + receipts-folder upload + Excel sync (QBO push is "
+        "currently disabled). REQUIRES USER APPROVAL. This is the only "
+        "route to `completed` that an agent has: `is_draft` is a "
+        "computed column over `status` (U-467) and is not exposed on "
+        "`create_expense` or `update_expense`. `completed` is terminal — "
+        "afterwards, header edits, line-item changes and attachment "
+        "mutations are refused with 422 `status_locked` (U-468), so "
+        "say so before completing if the user may still want to edit. "
+        "The tool returns immediately (202-style); the external work "
+        "lands asynchronously within ~5-30s."
     ),
     input_schema=input_schema_from(CompleteExpenseArgs),
     handler=_complete_expense,

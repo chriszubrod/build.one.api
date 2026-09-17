@@ -103,6 +103,118 @@ sitting in `submitted` / `in_review` / `approved` / `declined` is deletable by a
 will start refusing, and a system admin has to delete it deliberately. That is the intent, but it will be
 visible to whoever hits it first.
 
+## U-469 review-pass findings — booked from the build session (2026-09-17)
+
+From the F2 review + Pass-2 (reuse/simplification/altitude) on U-469 (Expense agent + MCP lifecycle
+vocabulary). U-469 SHIPPED the agent `status` filter, the contradiction guard, the specialist prompt, the
+MCP filter + `total_matching`, and (SCOPE-extended on Chris's OK) the orchestrator delegation. These are
+the items deliberately left out.
+
+⚠️ **BillCredit (LS-03b) and Invoice (LS-03d) are booked to receive this same port. Several items below
+are cheapest BEFORE instances 3 and 4, not after — the sequencing argument is in the altitude review.**
+
+- [ ] 🔴 **P1 — MCP's `search_bills` has NO contradiction guard; the fix never reached the Bill twin.**
+  `build.one.mcp/src/build_one_mcp/tools/bill.py` has **zero** `model_validator` (verified by grep);
+  `tools/expense.py` now has two. The finding was raised on Bill (the guard's own docstring credits
+  "U-446d, Codex P1"), fixed in **api**-Bill, and never propagated to **mcp**-Bill. Proven by running both
+  models: `EXPENSE: refused (ValidationError)` / `BILL: accepted contradiction status='completed'
+  is_draft=True`. So `search_bills(status="completed", is_draft=True)` still returns an empty page +
+  `total_matching: 0` — the "confidently wrong, with no error to notice" failure. **U-469 reproduced the
+  fix in a new place rather than closing the old hole; copy-paste propagation cannot converge.**
+  Fix: move the validator into `src/build_one_mcp/validators.py` (already the shared home, hosts
+  `PublicId`) as a mixin, and mix it into BOTH `SearchBillsInput` and `SearchExpensesInput`.
+
+- [ ] 🔴 **P1 — the MCP server has THREE conventions for the field name `count`.** Verified:
+  `count=len(results)` with no total in **nine** tools (invoice, bill_credit, vendor, customer, project,
+  cost_code, sub_cost_code ×2, contract_labor); `count=len(results)` + `total_matching` in bill + expense
+  (U-446d, U-469); and **`count=int(total)` — the OPPOSITE meaning, same field name — in
+  `email_message.py:306`**. A model reading `count` gets "rows on this page" from nine tools and "total
+  across all pages" from one, with no way to tell. Under-reporting is the exact bug U-446d fixed for Bill
+  (it under-reported by 13). U-469 added a second-convention instance rather than converging. Fix: one
+  `SearchResults` base model, or a `search_results(payload, model, context)` helper beside
+  `parse_json_response` in `response_json.py`, that extracts the envelope count once.
+
+- [ ] 🟡 **P2 — extract the contradiction predicate before LS-03b, not after.** The validator body is
+  **byte-identical** between `entities/bill/intelligence/tools.py` and
+  `entities/expense/intelligence/tools.py`, and now exists in three places heading for five-plus
+  (`shared/lifecycle/__init__.py` names expense, bill_credit, invoice, contract_labor, employee_labor,
+  time_entry). This is NOT premature generalization: `implied = status != "completed"` is a **schema
+  fact**, not an entity policy — `IsDraft` is a PERSISTED COMPUTED column over `Status`
+  (`dbo.expense.sql:311`), and `CK_*_Status_IsDraft` was dropped as tautological precisely because of it.
+  It cannot drift per entity without the table definition drifting first. Fix: a pure predicate in
+  `shared/lifecycle/` beside `LIFECYCLE_STATUSES`, plus a pydantic mixin in `intelligence/tools/` next to
+  `schema.py`. Fold into the already-booked `TODO.md` item "extract a shared lifecycle SQL/test contract
+  BEFORE LS-03b" rather than opening a parallel one.
+
+- [ ] 🟡 **P2 — the contradiction guard exists ONLY on consumer surfaces, never server-side.** Verified:
+  `entities/expense/api/router.py:153-157` validates only `status not in LIFECYCLE_STATUSES`; a repo-wide
+  grep finds a contradiction check in the two agent `tools.py` files and nowhere in router/service/repo/
+  sproc. The sproc ANDs the predicates (`dbo.expense.sql:1138,1140`) against a computed `IsDraft`, so the
+  empty page is a property of the schema — two layers BELOW where the guard sits. The doctrine is already
+  written in the codebase: `entities/bill/api/router.py:231` says *"Rejected rather than silently
+  returning everything — a typo'd tab quietly showing all 20k bills is worse than an error."* A
+  contradictory pair is the same doctrine pointed the other way: silently returning NOTHING.
+  ⚠️ **This converts `200 + empty page` into `422` — an API CONTRACT CHANGE, not a refactor.** Needs its
+  own unit, a `/docs` route-table refresh, and must NOT be smuggled into LS-03b. Blast radius checked and
+  ~zero today: web sends `?status=` only (`billStatusTabs.ts:52-59`), `ExpenseList.tsx:17` sends neither,
+  agent + MCP are now guarded client-side. Keep the consumer guards regardless — they return the message
+  to the model before a round trip, where a 422 arrives a turn later.
+
+- [ ] 🟡 **P2 — test hardenings landed on Expense and were not back-ported to the Bill twin.**
+  `build.one.mcp/tests/test_u446d_bill_status_filter.py` still uses the per-word substring loop that
+  U-469's own new docstring calls inadequate (*"`draft` is the worst case: the surrounding text contains
+  `is_draft`"*), and lacks `test_total_matching_is_none_when_count_is_not_an_int` even though `bill.py`
+  has the identical `isinstance(total, int)` guard. ~12 lines. Also: its module docstring still says
+  *"Bill is the ONLY entity that gets this… Expense… NOT BUILT"*, which U-469 falsified.
+  Same class on the api side: `tests/test_u446d_agent_lifecycle_vocabulary.py:366-378` tries **3
+  hardcoded pairs** where the Expense version loops all six.
+
+- [ ] 🟢 **P3 — `LIFECYCLE_STATUSES` is the source of truth and the code under test does not use it.**
+  `shared/lifecycle/resolver.py:10` owns the tuple; `tests/test_u469_*.py:17` imports it;
+  `entities/expense/intelligence/tools.py` hardcodes the list **three times**. Even the router does both
+  — `:156` derives its 422 message from the tuple while `:139`, twelve lines earlier, hardcodes the same
+  list in the `Query` description. Every occurrence is one of three mechanical renderings
+  (`", ".join(x[:-1]) + " or "/" and " + x[-1]`, or `" / ".join(x)`) that the TESTS already compute and
+  assert against — the derivation exists, pointed backwards. Honest trade-off: deriving makes the two
+  "must enumerate all six" tests tautologies and they should then be deleted, keeping only the regex that
+  rejects out-of-vocabulary values. MCP has no runtime constant at all (six values live only in prose and
+  in a `CANONICAL` literal copied into two test files) — `validators.py` is the natural home.
+
+- [ ] 🟢 **P3 — the specialist prompts contradict themselves on `is_draft`, in BOTH entities.**
+  `expense_specialist/prompt.md:45` (new) says *"`is_draft` is not a seventh state and it is not 'draft'"*
+  while `:169`/`:172` (untouched) still say creation *"creates a draft expense (`IsDraft=true`)"* and it
+  *"stays in draft until `complete_expense`"* — false for four of the six states. Same shape at
+  `entities/expense/intelligence/tools.py:280,536`. **Shared with Bill** (`bill_specialist/prompt.md:188`,
+  `entities/bill/intelligence/tools.py:345,631`) — U-446d missed it too, so fixing Expense alone creates
+  NEW drift. Fix both together: `IsDraft=true` → `status='draft'`, "remains a draft until `complete_*`" →
+  "stays out of `completed` until `complete_*`". ~6 one-line edits across 4 files.
+
+- [ ] 🟢 **P3 — the single-record output contract cannot express the vocabulary the unit just taught.**
+  `expense_specialist/prompt.md:129` uses a table with a Status column for multi-record answers, but the
+  single-record ```record``` block at `:137-153` emits `"is_draft": false` and **no `status`** — so "this
+  expense is `declined`" is structurally unrepresentable when answering about one expense. Same in Bill
+  (`bill_specialist/prompt.md:148` vs `:166`). Add `"status"` to the record template in both, keeping
+  `is_draft` for back-compat with whatever renders those blocks.
+
+- [ ] 🟢 **P3 — the cross-entity pins are hand-edited once per port.**
+  `tests/test_u446d_agent_lifecycle_vocabulary.py:236-265` — U-469 had to de-parametrize the sibling pin
+  and edit `assert with_status == ["bill", "expense"]`. BillCredit and Invoice will each edit those same
+  two tests again, in a file named after somebody else's unit. Replace with ONE derived biconditional:
+  for each entity, *router exposes `?status=`* ⟺ *that entity's `_SearchArgs` has a `status` field*.
+  Catches both hazards, needs zero edits at instances 3 and 4, and should live outside a unit-named file.
+
+- [ ] 🟢 **P3 — the Python-comment stripper is open-coded ~29 times in the api suite.**
+  `tests/test_u469_*.py:137` re-inlines `"\n".join(l.split("#")[0] for l in src.splitlines())`. The repo
+  already made this call for the SQL analogue (`tests/sproc_text.py::strip_sql_comments`, extracted by
+  U-467 with a docstring saying to call it "rather than re-inlining"); the Python sibling is simply
+  missing. ~28-site sweep, out of scope for U-469.
+
+- [ ] 🟢 **P3 — `/docs` has no MCP section at all.** `build.one.web/src/docs/` contains only `ios` and
+  `web`, and package.json has `docs:sync:ios` + `docs:sync:web` but no MCP equivalent. The umbrella
+  `CLAUDE.md` states MCP is *"DERIVED at build time (MCP tool manifest)"* and the scheduler likewise —
+  **neither is true.** So U-469 changed the MCP tool surface and there is nowhere for it to land. The
+  docs-freshness model is asserting coverage it does not have.
+
 ## U-468 review-pass findings — booked from the build session (2026-09-16)
 
 From the F2 review + Pass-2 quality pass on U-468 (Expense terminal lock + atomic delete cascade).

@@ -12,12 +12,12 @@ with `is_draft=true` returns 42 rows, none of which are drafts.
 SCOPE, and why it is narrower than the booked "reword every file mentioning
 is_draft":
 
-* Only **Bill** can speak this vocabulary. `?status=` on the list endpoint and
-  the `status` / `review_status_kind` read fields ship for Bill alone
-  (U-443/U-445). Expense, BillCredit and Invoice are LS-01a/LS-03b/c/d and NOT
-  BUILT — advertising a `status` filter their endpoints would silently ignore
-  is worse than not having one, because the model would believe it had narrowed
-  the page and reason over an unnarrowed one.
+* Only entities whose list endpoint actually has `?status=` may advertise it.
+  Bill (U-443/U-445, agent half U-446d) and Expense (U-467, agent half U-469)
+  do. BillCredit and Invoice are LS-03b/c and NOT BUILT — advertising a
+  `status` filter their endpoints would silently ignore is worse than not
+  having one, because the model would believe it had narrowed the page and
+  reason over an unnarrowed one. Pinned below for BillCredit.
 * **`Vendor.is_draft` is an entirely unrelated field** — a real, writable
   boolean meaning "incomplete vendor record". It has nothing to do with the
   document lifecycle, and a blind rewording of every file matching `is_draft`
@@ -233,32 +233,21 @@ def test_vendor_is_draft_is_left_alone_because_it_is_a_different_field():
         )
 
 
-@pytest.mark.parametrize(
-    "module_path,args_class",
-    [
-        ("entities.expense.intelligence.tools", "_SearchArgs"),
-        ("entities.bill_credit.intelligence.tools", "_SearchArgs"),
-    ],
-)
-def test_sibling_search_tools_do_not_advertise_a_status_filter_yet(module_path, args_class):
-    """Expense's list endpoint gained `?status=` in U-467; the agent `_SearchArgs`
-    half is U-469 and is deliberately not built here. BillCredit's endpoint has
-    no `?status=` (LS-03b not built). A filter the API silently ignores is worse
-    than an absent one: the model would believe it had narrowed the result set
-    and then reason over a full page."""
-    import importlib
+def test_bill_credit_search_tool_does_not_advertise_a_status_filter_yet():
+    """BillCredit's list endpoint has no `?status=` (LS-03b is not built). A
+    filter the API silently ignores is worse than an absent one: the model
+    would believe it had narrowed the result set and then reason over a full
+    page. Expense's agent half shipped in U-469; this pin is BillCredit only."""
+    from entities.bill_credit.intelligence.tools import _SearchArgs
 
-    mod = importlib.import_module(module_path)
-    model = getattr(mod, args_class, None)
-    if model is None:
-        pytest.skip(f"{module_path} has no {args_class}")
-    assert "status" not in model.model_fields
+    assert "status" not in _SearchArgs.model_fields
 
 
 def test_bill_and_expense_expose_the_status_query_param_today():
     """The guard behind the scope decision above. If another entity's router
     gains `?status=`, this test fails and its agent surfaces should be brought
-    onto the vocabulary in the same unit."""
+    onto the vocabulary in the same unit. Bill (U-445 / U-446d) and Expense
+    (U-467 / U-469) are both live."""
     with_status = []
     for entity in ("bill", "expense", "bill_credit", "invoice"):
         router = REPO_ROOT / f"entities/{entity}/api/router.py"
@@ -270,8 +259,8 @@ def test_bill_and_expense_expose_the_status_query_param_today():
             with_status.append(entity)
     assert with_status == ["bill", "expense"], (
         f"entities exposing ?status= changed to {with_status} — bring their "
-        "agent prompts and tools onto the six-state vocabulary too (Expense "
-        "agent half is U-469)"
+        "agent prompts and tools onto the six-state vocabulary too (Bill "
+        "agent half is U-446d; Expense agent half is U-469)"
     )
 
 

@@ -137,15 +137,19 @@ _register_tool(make_delegation_tool(
     name="delegate_to_expense",
     target_agent="expense_specialist",
     description=(
-        "Hand an Expense task off to the Expense specialist agent. "
-        "Use for expense lookups (by vendor, reference, or filter), "
-        "reads, draft creation (parent record only — no line items), "
-        "updates to parent fields, deletes, and the `complete` "
-        "workflow action that pushes to QBO + Excel. **Refunds "
-        "(credit-card credits / 'ExpenseRefunds') are also handled "
-        "here** — they're stored as Expense rows with `IsCredit=true`, "
-        "no separate entity. Large catalog (~10K); specialist is "
-        "search-first. No line-item edits today."
+            "Hand an Expense task off to the Expense specialist agent. "
+            "Use for expense lookups (by vendor, reference, or lifecycle "
+            "status), reads, draft creation (parent record only), updates "
+            "to parent fields, line-item add/update/remove, deletes, and "
+            "the workflow `complete` action that moves an expense to the "
+            "terminal `completed` state and pushes it to SharePoint + "
+            "Excel (QBO push is currently disabled). An expense is in "
+            "exactly one of draft / submitted / in_review / approved / "
+            "declined / completed; route any 'what is waiting on a "
+            "reviewer' question here. Refunds (credit-card credits / "
+            "'ExpenseRefunds') are also handled here - they are stored "
+            "as Expense rows with `IsCredit=true`, no separate entity. "
+            "Large catalog (~10K); specialist is search-first."
     ),
 ))
 

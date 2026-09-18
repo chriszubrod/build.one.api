@@ -25,7 +25,11 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1", tags=["api", "expense-coding"])
 
 
-@router.get("/expense-coding/queue")
+@router.get(
+    "/expense-coding/queue",
+    deprecated=True,
+    description="Deprecated. Use GET /api/v1/get/expense/coding/queue instead.",
+)
 def get_expense_coding_queue_router(
     realm_id: Optional[str] = Query(default=None),
     _: dict = Depends(require_module_api(Modules.EXPENSES, "can_read")),
@@ -38,7 +42,12 @@ def get_expense_coding_queue_router(
     return list_response(rows)
 
 
-@router.post("/expense-coding/suggest")
+@router.post("/expense/coding/suggest")
+@router.post(
+    "/expense-coding/suggest",
+    deprecated=True,
+    description="Deprecated. Use POST /api/v1/expense/coding/suggest instead.",
+)
 def suggest_expense_coding_items_router(
     realm_id: Optional[str] = Query(default=None),
     max_items: int = Query(default=200, ge=1, le=1000),
@@ -58,7 +67,11 @@ def suggest_expense_coding_items_router(
     return item_response(counts)
 
 
-@router.get("/expense-coding/metrics")
+@router.get(
+    "/expense-coding/metrics",
+    deprecated=True,
+    description="Deprecated. Use GET /api/v1/get/expense/coding/metrics instead.",
+)
 def get_expense_coding_metrics_router(
     realm_id: Optional[str] = Query(default=None),
     since_days: Optional[int] = Query(default=None, ge=1),
@@ -134,7 +147,12 @@ def release_expense_coding_item_router(
     return item_response(released.to_dict())
 
 
-@router.post("/expense-coding/{public_id}/flag")
+@router.post("/expense/coding/{public_id}/flag")
+@router.post(
+    "/expense-coding/{public_id}/flag",
+    deprecated=True,
+    description="Deprecated. Use POST /api/v1/expense/coding/{public_id}/flag instead.",
+)
 def flag_expense_coding_item_router(
     public_id: str,
     body: FlagExpenseCodingItemRequest,
@@ -160,7 +178,12 @@ def flag_expense_coding_item_router(
     return item_response(flagged.to_dict())
 
 
-@router.post("/expense-coding/{public_id}/confirm")
+@router.post("/expense/coding/{public_id}/confirm")
+@router.post(
+    "/expense-coding/{public_id}/confirm",
+    deprecated=True,
+    description="Deprecated. Use POST /api/v1/expense/coding/{public_id}/confirm instead.",
+)
 def confirm_expense_coding_item_router(
     public_id: str,
     body: ConfirmExpenseCodingItemRequest,

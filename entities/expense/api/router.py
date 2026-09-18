@@ -226,6 +226,46 @@ def get_expenses_router(
     }
 
 
+from entities.expense_coding_item.api.router import (
+    get_expense_coding_metrics_router,
+    get_expense_coding_queue_router,
+)
+
+# Literal `/get/expense/coding/*` segments MUST register before `/get/expense/{public_id}`
+# (app mounts this router before expense_coding_item — see U-481 / Bill parity).
+router.add_api_route(
+    "/get/expense/coding/queue",
+    get_expense_coding_queue_router,
+    methods=["GET"],
+    tags=router.tags,
+)
+router.add_api_route(
+    "/get/expense/coding/metrics",
+    get_expense_coding_metrics_router,
+    methods=["GET"],
+    tags=router.tags,
+)
+
+
+@router.get("/get/expense/{public_id}/coding")
+def get_expense_public_id_coding_router(
+    public_id: str,
+    _: dict = Depends(require_module_api(Modules.EXPENSES, "can_read")),
+):
+    """Coding state for one expense (may include several coded lines)."""
+    expense = ExpenseService().read_by_public_id(public_id=public_id)
+    if not expense:
+        raise_not_found("Expense")
+    from entities.expense_coding_item.persistence.repo import ExpenseCodingItemRepository
+
+    coding_map = (
+        ExpenseCodingItemRepository().read_state_by_expense_ids([expense.id])
+        if expense.id is not None
+        else {}
+    )
+    return item_response(build_expense_coding_block(coding_map.get(expense.id)))
+
+
 @router.get("/get/expense/by-reference-number-and-vendor")
 def get_expense_by_reference_number_and_vendor_router(reference_number: str, vendor_public_id: str, current_user: dict = Depends(require_module_api(Modules.EXPENSES))):
     """

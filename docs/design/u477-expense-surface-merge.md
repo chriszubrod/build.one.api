@@ -17,8 +17,8 @@
 ## 1. The three-sentence answer
 
 The Expense ledger and the coding cockpit read **different tables in different keyspaces** — the ledger reads
-`dbo.Expense`, the cockpit reads `qbo.Purchase`/`qbo.PurchaseLine` plus a side-car — and **13% of coding items
-have no local Expense at all**, so the merge cannot be a re-keying or a data migration. It is a
+`dbo.Expense`, the cockpit reads `qbo.Purchase`/`qbo.PurchaseLine` plus a side-car — and **38% of open coding items
+cannot be reached from an Expense at all**, so the merge cannot be a re-keying or a data migration. It is a
 **read-composition plus a route consolidation**: one `/expense/...` family, coding state exposed on every
 expense read, coding actions still addressable by their own identity, and **exactly one writer** of the GL code
 (QuickBooks, via the surgical recode). Bill parity is then four capabilities, three of which are cheaper than
@@ -34,17 +34,29 @@ they look because their server-side machinery already exists.
 | QBO lines still on 58999 | **465** | Live inflow |
 | Coding items resolving to a local `ExpenseLineItem` | **368 of 588** | The clean join |
 | Coding items with **no** local line | **220** | July's spec assumed ~88. It has grown. |
-| …of which a **parent Expense EXISTS**, only the line map is missing | **144** | Addressable by expense; a data-completeness gap |
-| …of which there is **no Expense at all** | **76 (13%)** | ⭐ **Structurally unaddressable by expense identity** |
+| …**orphans** — the `qbo.PurchaseLine` itself is GONE | **134** | ⭐ Invisible in BOTH surfaces (the queue reads FROM that table). All non-written: 62 pending / 54 suggested / 14 flagged / 4 changed_in_qbo |
+| …live line, but **no Expense at all** | **73** | Structurally unaddressable by expense identity |
+| …**Expense exists, only the map row is missing** | **13** | The genuinely fixable pull gap |
 | Completed Expenses carrying an OPEN coding item | **330** | The contradiction the merge exists to end |
 | Uncoded spread | 2022-05 → 2026-09, **10 in September** | Ongoing inflow, not a backlog |
 | `dbo.Expense` lifecycle | 11,746 `completed` / 10 `draft`, all completed via `qbo_pull` | Post U-467 |
 
-**The 76 decide the architecture.** Any merged endpoint keyed solely on `expense.public_id` silently drops
-them — 13% of the queue, including 76 real card charges that still need coding. So coding items keep their own
+> ⚠️ **CORRECTED 2026-09-18 — the first draft of this table was WRONG.** It claimed **144** items had a parent
+> Expense with only the line-map row missing, and called that "a fixable pull gap worth its own unit". The real
+> figure is **13**. The 144 came from a looser join (`qbo.Purchase` via the coding item's stored
+> `QboPurchaseId`) that counted rows whose staging **line** had already vanished. Re-measured with the line
+> join: 134 orphans / 73 no-Expense / 13 map-missing. Recorded rather than silently edited, because the wrong
+> number was quoted in the U-480 commit message and on the board.
+>
+> **Of the 550 OPEN items: 330 mapped (the badge works, and these ARE exactly the 330 contradictory rows
+> Phase 1 set out to fix) · 134 orphans · 73 no-Expense · 13 map-missing.**
+
+**The unaddressable set decides the architecture.** Any merged endpoint keyed solely on `expense.public_id`
+silently drops the **73** items with a live line but no Expense, **and the 134 orphans** — together **207 of
+550 open items, 38%**, every one a real card charge that still needs coding. So coding items keep their own
 addressable identity. This is not a compromise on the merge; it is what the data requires.
 
-**The 144 are an open question, not a design constraint** — see §8 Q1.
+**The 134 orphans and the 13 map-missing rows are open questions, not design constraints** — see §8 Q1.
 
 ---
 
@@ -200,10 +212,17 @@ Phase 1.
 
 ## 8. Open questions — `/em` needs answers before the matching phase
 
-**Q1 — the 144.** 144 coding items have a parent Expense *with lines*, but no `qbo.PurchaseLineExpenseLineItem`
-row for that specific line, so the ledger cannot see their coding state. Is that a bug in the line-map pull
-worth fixing (which would shrink the unaddressable set from 220 to 76), or accepted? *Recommend: investigate as
-its own small unit before Phase 1, because Phase 1's badge is only as complete as this join.*
+**Q1 — the orphans and the map gap (re-measured 2026-09-18).** Two separate problems, not one:
+- **134 orphans** whose `qbo.PurchaseLine` no longer exists. The coding queue reads FROM that table, so it
+  **structurally cannot show them** — and all 134 are non-written, so they read as open work in the table while
+  being invisible in both surfaces. This is the cost of the coding item deliberately carrying **no FK to
+  volatile staging** (right call for survivability, but it left no cleanup path). It also makes the cockpit's
+  funnel internally inconsistent: the per-status counts aggregate `dbo.ExpenseCodingItem` while
+  `TotalTargetLines` reads live staging, so the page reports **396 pending against 465 live target lines** —
+  two different populations. *Recommend: a reconcile unit — close, re-link, or exclude — plus a metrics fix so
+  the funnel counts only what the queue can surface.*
+- **13** rows where the Expense exists and only the map row is missing. Small enough to fold into whichever
+  unit next touches the pull.
 
 **Q2 — claim / release.** Both endpoints have **zero consumers**; the UI never calls them, and confirm
 auto-claims. There is also no UI path to clear a stale claim. Keep them as an API-only surface, or retire

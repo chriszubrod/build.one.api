@@ -344,3 +344,57 @@ class ExpenseCodingItemRepository:
         except Exception as error:
             logger.error(f"Error marking expense coding item {public_id} error: {error}")
             raise map_database_error(error)
+
+    def read_state_by_expense_ids(self, expense_ids: list[int]) -> dict[int, list[dict]]:
+        """Batch lookup of coding items keyed by ExpenseId (U-480).
+
+        One round trip for a whole page. Without it the Expense list would
+        resolve coding state per row — the N+1 Bill's review stitch avoided.
+        """
+        if not expense_ids:
+            return {}
+        from shared.authz import current_is_system_admin, current_user_id
+
+        csv = ",".join(str(int(x)) for x in expense_ids if x is not None)
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(
+                    cursor=cursor,
+                    name="ReadExpenseCodingStateByExpenseIds",
+                    params={
+                        "ExpenseIds": csv,
+                        "ActorUserId": current_user_id.get(),
+                        "ActorIsSystemAdmin": 1 if current_is_system_admin.get() else 0,
+                    },
+                )
+                out: dict[int, list[dict]] = {}
+                for row in cursor.fetchall():
+                    expense_id = getattr(row, "ExpenseId", None)
+                    if expense_id is None:
+                        continue
+                    suggestion_confidence = getattr(row, "SuggestionConfidence", None)
+                    out.setdefault(int(expense_id), []).append(
+                        {
+                            "public_id": (
+                                str(row.CodingItemPublicId)
+                                if getattr(row, "CodingItemPublicId", None)
+                                else None
+                            ),
+                            "status": getattr(row, "Status", None),
+                            "confidence": (
+                                Decimal(str(suggestion_confidence))
+                                if suggestion_confidence is not None
+                                else None
+                            ),
+                            "suggested_project_id": getattr(row, "SuggestedProjectId", None),
+                            "suggested_sub_cost_code_id": getattr(
+                                row, "SuggestedSubCostCodeId", None
+                            ),
+                            "flag_reason": getattr(row, "FlagReason", None),
+                        }
+                    )
+                return out
+        except Exception as error:
+            logger.error("Error during read expense coding state by expense ids: %s", error)
+            raise map_database_error(error)

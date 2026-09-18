@@ -833,3 +833,51 @@ BEGIN
     COMMIT TRANSACTION;
 END;
 GO
+
+
+-- U-480: batch coding-state reader for the Expense ledger read model (U-477 Phase 1).
+-- One round trip per page — never resolve coding state per row. Joins through
+-- PurchaseLineExpenseLineItem because qbo.*.Id ≠ dbo.*.Id.
+CREATE OR ALTER PROCEDURE ReadExpenseCodingStateByExpenseIds
+(
+    @ExpenseIds NVARCHAR(MAX),
+    @ActorUserId BIGINT = NULL,
+    @ActorIsSystemAdmin BIT = 0
+)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    SELECT
+        eli.[ExpenseId],
+        eci.[PublicId] AS [CodingItemPublicId],
+        eci.[Status],
+        eci.[SuggestionConfidence],
+        eci.[SuggestedProjectId],
+        eci.[SuggestedSubCostCodeId],
+        eci.[ConfirmedProjectId],
+        eci.[ConfirmedSubCostCodeId],
+        eci.[FlagReason]
+    FROM dbo.[ExpenseCodingItem] eci
+    INNER JOIN qbo.[PurchaseLineExpenseLineItem] pleli
+        ON pleli.[QboPurchaseLineId] = eci.[QboPurchaseLineId]
+    INNER JOIN dbo.[ExpenseLineItem] eli
+        ON eli.[Id] = pleli.[ExpenseLineItemId]
+    INNER JOIN STRING_SPLIT(ISNULL(@ExpenseIds, ''), ',') s
+        ON s.value <> ''
+       AND eli.[ExpenseId] = TRY_CAST(LTRIM(RTRIM(s.value)) AS BIGINT)
+    WHERE
+      -- U-059: UserProject row-scoping (mirrors the Expense ledger). A coding
+      -- row has no committed Expense; its project is the coding item's resolved
+      -- project (Confirmed, else Suggested). Uncoded rows (no project yet) stay
+      -- visible to every EXPENSES user — the queue's whole purpose is triaging
+      -- them. Admins bypass. Non-admins see a coded row only via UserProject.
+      (
+          @ActorIsSystemAdmin = 1
+          OR COALESCE(eci.[ConfirmedProjectId], eci.[SuggestedProjectId]) IS NULL
+          OR dbo.UserCanAccessProject(
+                 @ActorUserId, @ActorIsSystemAdmin,
+                 COALESCE(eci.[ConfirmedProjectId], eci.[SuggestedProjectId])) = 1
+      );
+END;
+GO

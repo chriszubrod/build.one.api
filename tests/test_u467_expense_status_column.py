@@ -42,8 +42,11 @@ def _call(expenses, **kwargs):
     service.read_paginated.return_value = (expenses, len(expenses))
     review_repo = MagicMock()
     review_repo.read_current_by_expense_ids.return_value = {}
+    coding_repo = MagicMock()
+    coding_repo.read_state_by_expense_ids.return_value = {}
     with patch("entities.expense.api.router.ExpenseService", return_value=service), \
-         patch("entities.review.persistence.repo.ReviewRepository", return_value=review_repo):
+         patch("entities.review.persistence.repo.ReviewRepository", return_value=review_repo), \
+         patch("entities.expense_coding_item.persistence.repo.ExpenseCodingItemRepository", return_value=coding_repo):
         params = dict(page=1, page_size=50, search=None, vendor_id=None,
                       is_draft=None, status=None, start_date=None, end_date=None,
                       current_user=USER)
@@ -506,8 +509,11 @@ def test_the_route_reports_the_total_the_sproc_returned_not_the_page_length():
     service.read_paginated.return_value = ([_expense(id=1), _expense(id=2)], 4242)
     review_repo = MagicMock()
     review_repo.read_current_by_expense_ids.return_value = {}
+    coding_repo = MagicMock()
+    coding_repo.read_state_by_expense_ids.return_value = {}
     with patch("entities.expense.api.router.ExpenseService", return_value=service), \
-         patch("entities.review.persistence.repo.ReviewRepository", return_value=review_repo):
+         patch("entities.review.persistence.repo.ReviewRepository", return_value=review_repo), \
+         patch("entities.expense_coding_item.persistence.repo.ExpenseCodingItemRepository", return_value=coding_repo):
         response = get_expenses_router(
             page=1, page_size=50, search=None, vendor_id=None,
             is_draft=None, status=None, start_date=None, end_date=None,
@@ -614,8 +620,11 @@ def test_omitted_date_args_do_not_leak_the_query_sentinel():
     service.read_paginated.return_value = ([], 0)
     review_repo = MagicMock()
     review_repo.read_current_by_expense_ids.return_value = {}
+    coding_repo = MagicMock()
+    coding_repo.read_state_by_expense_ids.return_value = {}
     with patch("entities.expense.api.router.ExpenseService", return_value=service), \
-         patch("entities.review.persistence.repo.ReviewRepository", return_value=review_repo):
+         patch("entities.review.persistence.repo.ReviewRepository", return_value=review_repo), \
+         patch("entities.expense_coding_item.persistence.repo.ExpenseCodingItemRepository", return_value=coding_repo):
         get_expenses_router(current_user=USER)
     kw = service.read_paginated.call_args.kwargs
     assert kw["start_date"] is None and kw["end_date"] is None

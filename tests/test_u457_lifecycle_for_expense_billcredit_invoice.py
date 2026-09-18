@@ -192,8 +192,11 @@ def _drive_list(module, service_attr, route_name, filter_kw, batch, review_map):
     else:
         svc.read_paginated.return_value = rows
         svc.count.return_value = 2
+    coding_repo = MagicMock()
+    coding_repo.read_state_by_expense_ids.return_value = {}
     with patch.object(mod, service_attr, return_value=svc), \
-         patch("entities.review.persistence.repo.ReviewRepository") as Repo:
+         patch("entities.review.persistence.repo.ReviewRepository") as Repo, \
+         patch("entities.expense_coding_item.persistence.repo.ExpenseCodingItemRepository", return_value=coding_repo):
         getattr(Repo.return_value, batch).return_value = review_map
         kwargs = {"page": 1, "page_size": 50, "search": None,
                   filter_kw: None, "is_draft": None, "current_user": {}}
@@ -251,8 +254,11 @@ def test_the_list_asks_the_batch_reader_for_exactly_the_page_ids(
     else:
         svc.read_paginated.return_value = rows
         svc.count.return_value = 2
+    coding_repo = MagicMock()
+    coding_repo.read_state_by_expense_ids.return_value = {}
     with patch.object(mod, service_attr, return_value=svc), \
-         patch("entities.review.persistence.repo.ReviewRepository") as Repo:
+         patch("entities.review.persistence.repo.ReviewRepository") as Repo, \
+         patch("entities.expense_coding_item.persistence.repo.ExpenseCodingItemRepository", return_value=coding_repo):
         reader = getattr(Repo.return_value, batch)
         reader.return_value = {}
         kwargs = {"page": 1, "page_size": 50, "search": None,

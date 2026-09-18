@@ -25,6 +25,10 @@ from entities.review.business.model import ParentType
 
 logger = logging.getLogger(__name__)
 
+# Terminal coding statuses — everything else counts as OPEN for `needs_coding`.
+# `written` is the sole terminal state; do not derive openness from SubCostCodeId.
+EXPENSE_CODING_TERMINAL_STATUSES = frozenset({"written"})
+
 router = APIRouter(prefix="/api/v1", tags=["api", "expense"])
 
 # Cache last completion result per expense (TTL 1 hour)
@@ -108,7 +112,36 @@ def _current_review_for_expense(expense_id):
     return ReviewRepository().read_current_by_expense_id(expense_id)
 
 
-def _expense_dict_with_lifecycle(expense, *, review=None) -> dict:
+def build_expense_coding_block(items: list[dict] | None) -> dict:
+    """Compose the `coding` block for an expense read payload (U-480).
+
+    `needs_coding` derives from ExpenseCodingItem.Status only — never from
+    ExpenseLineItem.SubCostCodeId (the post-recode / pre-pull window can leave
+    the line coded locally while the coding item is still open).
+    """
+    rows = items or []
+    open_items = [
+        item for item in rows
+        if item.get("status") not in EXPENSE_CODING_TERMINAL_STATUSES
+    ]
+    return {
+        "needs_coding": len(open_items) > 0,
+        "open_items": len(open_items),
+        "items": [
+            {
+                "public_id": item["public_id"],
+                "status": item["status"],
+                "confidence": item.get("confidence"),
+                "suggested_project_id": item.get("suggested_project_id"),
+                "suggested_sub_cost_code_id": item.get("suggested_sub_cost_code_id"),
+                "flag_reason": item.get("flag_reason"),
+            }
+            for item in rows
+        ],
+    }
+
+
+def _expense_dict_with_lifecycle(expense, *, review=None, coding_items=None) -> dict:
     """Serialize an Expense and stamp `status` + `review_status*`.
 
     U-467: `status` is the STORED `Expense.Status` column where one exists
@@ -121,7 +154,7 @@ def _expense_dict_with_lifecycle(expense, *, review=None) -> dict:
         is_draft=expense.is_draft,
         review=review,
         stored_status=getattr(expense, "status", None),
-    )
+    ) | {"coding": build_expense_coding_block(coding_items)}
 
 
 @router.get("/get/expenses")
@@ -170,11 +203,21 @@ def get_expenses_router(
     # ONE lookup for the whole page (U-457). Resolving per row is the N+1 that
     # Bill's slice avoided and pinned; the batch sproc exists for this.
     from entities.review.persistence.repo import ReviewRepository
+    from entities.expense_coding_item.persistence.repo import ExpenseCodingItemRepository
     expense_ids = [e.id for e in expenses if e.id is not None]
     review_map = ReviewRepository().read_current_by_expense_ids(expense_ids) if expense_ids else {}
+    coding_map = (
+        ExpenseCodingItemRepository().read_state_by_expense_ids(expense_ids)
+        if expense_ids
+        else {}
+    )
     return {
         "data": [
-            _expense_dict_with_lifecycle(e, review=review_map.get(e.id))
+            _expense_dict_with_lifecycle(
+                e,
+                review=review_map.get(e.id),
+                coding_items=coding_map.get(e.id),
+            )
             for e in expenses
         ],
         "count": total,
@@ -221,8 +264,19 @@ def get_expense_by_public_id_router(public_id: str, current_user: dict = Depends
     expense = ExpenseService().read_by_public_id(public_id=public_id)
     if not expense:
         raise_not_found("Expense")
+    from entities.expense_coding_item.persistence.repo import ExpenseCodingItemRepository
+
+    coding_map = (
+        ExpenseCodingItemRepository().read_state_by_expense_ids([expense.id])
+        if expense.id is not None
+        else {}
+    )
     return item_response(
-        _expense_dict_with_lifecycle(expense, review=_current_review_for_expense(expense.id))
+        _expense_dict_with_lifecycle(
+            expense,
+            review=_current_review_for_expense(expense.id),
+            coding_items=coding_map.get(expense.id),
+        )
     )
 
 

@@ -8,6 +8,37 @@ Carry-over items from sessions. Check off as done; prune anything stale.
 - [ ] 🟡 **The U-463 cycle rule is still latently wrong — guard it before it is reused for Invoice.** The migration picks the latest `submitted` row by TIMESTAMP alone (`OUTER APPLY ... TOP 1 ... ORDER BY CreatedDatetime DESC, Id DESC WHERE CreatedDatetime <= r.CreatedDatetime`). But `_advance_to_in_review` attributes to the `review` object it was HANDED, and the pipeline does slow work first (recipient resolution, HTML render, PDF, outbox enqueue). So: Alice submits → declined → Bob resubmits → Alice's lagging pipeline finally writes its `in_review` row, which now timestamps AFTER Bob's submission → the migration credits **Bob** for Alice's cycle. Idempotency (`WHERE UserId <> <submitter>`) then preserves the wrong value on re-run. **Owed** (the audit half is DONE — see the closed item above): replace the timestamp inference before this pattern is reused for the 18 Invoice rows left out of scope. **Cheapest correct fix, given the audit's numbers:** only 1 of 408 bills has a resubmit cycle, so the rule does not need rebuilding — add a guard that REFUSES (or flags for manual review) any candidate whose parent has >1 `submitted` row, and the remaining 99.8% stay trivially safe. The exact linkage, if a full fix is ever wanted, is `ms.Outbox` `Kind='send_mail'` → `Payload.review_id`, written in the same `_do_enqueue` call ~0.5–3s before the `in_review` row; note it is only populated from ~2026-08-11 onward (older rows carry `"review_id": null`). Also: `DATETIME2(3)` ties are possible and the tie-break omits `Id`. Surfaced by the retrospective `/review` of U-461..U-465, which shipped without an adversarial pass (Codex out of credits). Web half booked in `build.one.web/TODO.md`.
 
 
+## QBO Deposits are not pulled — refund credits are permanently source-less (booked 2026-09-17, KA2-08 run)
+
+A vendor **refund** received by check and deposited in QBO against a project is coded to a job-cost
+account with a customer/project ref, which makes QBO auto-create a `ReimburseCharge` that flows onto
+the customer invoice as a negative line. build.one has **no Deposit support at all** — no
+`integrations/intuit/qbo/deposit/`, no `sync_qbo_deposit.py`, no Deposit table, and `dbo.Sync` carries
+no `deposit` entity. (Every `deposit` hit in the QBO packages is the Invoice header's own `Deposit`
+amount field, not the transaction.)
+
+- [ ] 🟡 **Build a Deposit pull (or an explicit documented exception).** Until then such a line stays
+  `SourceType='Manual'` forever: `ProposeInvoiceSourceLinks` only matches Bill/Expense/BillCredit, so it
+  reports `no_match`, it never gets a DETAILS row (no source public_id ⇒ no col-Z key ⇒ no draw tag),
+  and it counts against the daily reconciler's "completed invoices with unlinked lines" forever.
+  Volume is low — 2026 YTD: **5** cost-coded deposit lines out of 138 lines across 120 deposits — so this
+  is proportionate, not urgent. NB the payer may be recorded as a **CUSTOMER** entity on the deposit line
+  even when they are a vendor, so a vendor-side search will not find it either.
+- [ ] 🟡 **`_draw_fee_from_invoice` misstates the Builder's Fee when a second Manual line exists.**
+  `entities/invoice/api/router.py` computes the Draw Request fee as `invoice.total - cover.subtotal`,
+  where the subtotal rolls up source-linked lines only; its docstring assumes "the fee is the only Manual
+  line". A Deposit-sourced credit breaks that: on KA2-08 the packet printed Builder's Fee **$5,112.23**
+  against a true QBO fee line of **$5,266.99** — understated by exactly the $154.76 credit — while
+  Total Due still printed correctly at $57,936.86, so nothing looked wrong. Consider surfacing the
+  delta at generation time, or attributing non-fee Manual lines separately on the cover.
+
+First instance: KA2-08 (2026-09-17). Deposit `67308` → ReimburseCharge `67309` → invoice line 1
+−$154.76 "Hardscapes REFUND"; Marmiro Stones refund check #6228 against Bill 14532 `#MR-46085`.
+The check was delivered to both draw folders via `dbo.InvoiceLineItemAttachment` — which the
+**uploaders** read but the **packet generator's enrichment does not**, so it ships to the folder
+but is not a merged packet page.
+
+
 ## U-476 spillover — server-side gaps behind the Expense receipt fix (booked 2026-09-17)
 
 U-476 (web) stopped an Expense's receipt PDF being permanently destroyed when the user removed the line
@@ -4781,3 +4812,13 @@ Shipped in BATCH-36. Everything below is deliberately NOT in those units.
   backfill preview had to be re-run as a separate read-only query to see its
   numbers. Either teach the runner to surface result sets, or stop writing
   previews into migrations and ship them as paired read-only scripts.
+
+## U-480 follow-ups — expense coding read model (booked 2026-09-17)
+
+- [ ] **Ledger badge is blind to coding items with no resolvable local Expense.**
+  Measured **76** coding items have no local `dbo.Expense` at all — the three-hop
+  join cannot attach them to a ledger row, so the cockpit count legitimately
+  exceeds what the badge can show.
+- [ ] **144 coding items whose Expense exists but `PurchaseLineExpenseLineItem`
+  is missing.** These look like a fixable QBO pull / line-map gap worth their own
+  unit — Phase 1's badge is only as complete as that join.

@@ -66,6 +66,16 @@ BEGIN
                  @ActorUserId, @ActorIsSystemAdmin,
                  COALESCE(eci.[ConfirmedProjectId], eci.[SuggestedProjectId])) = 1
       )
+      -- U-484: exclude terminal coding-item statuses from the work list (diverges
+      -- from ReadExpenseCodingMetrics TotalTargetLines — see that sproc's comment).
+      -- AccountRef stays at 58999 even after item-based recode, so Status is
+      -- authoritative.
+      -- NULL is explicit — LEFT JOIN rows with no ExpenseCodingItem yet must stay
+      -- visible or lazy reseed never fires (NULL NOT IN (...) drops them).
+      -- Keep confirmed/enqueued/error visible: dead-lettered recodes stay enqueued
+      -- forever with no ExpenseCodingItem-specific handler — hiding them would
+      -- make permanently-failed writes invisible (U-005 trap).
+      AND (eci.[Status] IS NULL OR eci.[Status] NOT IN (N'written', N'resolved_externally'))
     ORDER BY TRY_CONVERT(DATE, p.[TxnDate], 23) DESC, p.[DocNumber], pl.[LineNum];
 END;
 GO
@@ -93,6 +103,11 @@ BEGIN
     -- returns 0 (not NULL) over an empty set, matching the old COUNT(*) semantics.
     SELECT
         (
+            -- U-484: intentional divergence from ReadExpenseCodingQueue — metrics is a
+            -- funnel whose TotalTargetLines denominator is all lines ever targeted;
+            -- the queue excludes written/resolved_externally as a work list. Keeping
+            -- finished rows here while AcceptedCount/OverriddenCount count written rows
+            -- prevents inflating the cockpit Auto-cleared % KPI.
             SELECT COUNT(*)
             FROM [qbo].[PurchaseLine] pl
             INNER JOIN [qbo].[Purchase] p ON pl.[QboPurchaseId] = p.[Id]

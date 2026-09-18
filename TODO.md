@@ -4869,3 +4869,27 @@ Verifying the apply surfaced two adjacent defects, both measured on prod that da
   declines to close it. That is the safe direction (it under-selects, never
   over-selects), so the applied reconcile is unaffected; note it before anyone
   "fixes" condition (c).
+
+## U-484 follow-ups — queue excludes terminal coding statuses (booked 2026-09-18)
+
+- [ ] **Server-side terminal-status guard on confirm.** U-484 filters `written` /
+  `resolved_externally` out of `ReadExpenseCodingQueue` only — a UI-level mitigation.
+  `ExpenseCodingItemService.confirm()` and `RecordExpenseCodingConfirmation` still
+  accept any status, so the endpoint remains directly callable and a re-confirm could
+  enqueue a second QBO recode write. Separate unit; carries a product question: is
+  correcting a miscoding from the cockpit a supported workflow, or does that belong
+  in QBO?
+- [ ] **Web cockpit `canConfirm` / Flag gates are status-agnostic.** Confirm and Flag
+  buttons render for terminal rows if they ever appear (stale cache, direct API call).
+  Gate on `coding_status` in `ExpenseCodingCockpit.tsx` — separate web unit.
+- [ ] **No re-detection of post-write drift.** The queue now hides `written` rows, and
+  `changed_in_qbo` is set only by the write-time SyncToken conflict path — nothing
+  detects a line that was written cleanly and later reverted or re-synced at 58999 in
+  QBO. Such a line is now invisible to the cockpit. Options: a reconcile job flagging
+  `written` items whose QBO line is still 58999, or an operator "show finished" toggle.
+- [ ] **`tests/test_expense_coding_queue_scoping.py` count-pins are position-blind** — they
+  count occurrences across the whole raw file including comments, so a deleted
+  `dbo.UserCanAccessProject(` call offset by a mention in a comment keeps the count at
+  3. Should run on comment-stripped text, asserted per-sproc. Left as-is by U-484
+  deliberately — retightening it is its own unit, since the pins guard row scoping and
+  a botched rewrite would silently stop guarding it.

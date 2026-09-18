@@ -4833,3 +4833,39 @@ Shipped in BATCH-36. Everything below is deliberately NOT in those units.
 - [ ] **Expose `ResolvedExternallyCount` on the web metrics surface** once `/em`
   applies the metrics sproc change — cockpit header should show externally
   closed rows separately from `WrittenCount` / acceptance metrics.
+
+**Reconcile APPLIED 2026-09-18** — 134 marked, 0 skipped; `written` unchanged at 38
+(the acceptance metric was not inflated). Detection re-run returns 0; orphaned open
+items are now 0. Rollback record: `docs/operations/u483_pre_reconcile_snapshot.csv`.
+Verifying the apply surfaced two adjacent defects, both measured on prod that day:
+
+- [ ] **14 open coding items whose line is ALIVE but recoded away from 58999**
+  (10 `suggested`, 4 `pending`). Same "finished but still open" class U-483 closed,
+  reached by a different mechanism: U-483 caught lines **replaced** by an external
+  recode (new QBO `Line.Id` → the staging row is orphaned). These 14 were **edited
+  in place** — same `Line.Id`, `AccountRefName` now a real account (Auto and Truck
+  Expenses, Office supplies, Other Construction) and `ItemRefName` NULL, i.e. an
+  account-based recode done directly in QBO. `ReadExternallyResolvedCodingItemCandidates`
+  cannot see them: its condition (a) requires the line to be **missing** from
+  `qbo.PurchaseLine`. Extending it means adding "line exists but is no longer 58999"
+  as a second candidate arm — do NOT loosen condition (a) in place, since that arm
+  needs its own safety proof. These 14 are invisible to the operator queue (which
+  reads `FROM qbo.PurchaseLine` with the 58999 predicate) yet counted open by
+  `ReadExpenseCodingMetrics` (which aggregates `dbo.ExpenseCodingItem` directly) —
+  metrics-open 441 vs queue-open 427.
+- [ ] **The operator queue presents 38 already-`written` rows as outstanding work.**
+  `ReadExpenseCodingQueue` selects `WHERE pl.[AccountRefName] LIKE N'%NEED TO
+  CATEGORIZE%'` and does not exclude terminal coding statuses, so all 465 live 58999
+  lines come back — 38 of them already coded. The cockpit's own `recode_purchase_line`
+  is **item-based**: it sets `ItemRef` (the SubCostCode→Item mapping) and leaves
+  `AccountRef` on the 58999 placeholder, verified on staging rows pulled *after* the
+  recode (e.g. line 12355 coded 2026-07-16, pulled 2026-09-10, `ItemRefName` =
+  "26.0 Electrical Materials", `AccountRefName` still NEED TO CATEGORIZE). So the
+  58999 account label is NOT a reliable "still needs coding" signal, and
+  `TotalTargetLines` (465) permanently counts finished work in its denominator.
+  Fix is a status exclusion in the queue predicate, not a change to the recode.
+  ⚠️ This same label-vs-reality gap means U-483's safety condition (c) — parent has
+  no 58999 line left — reads a **cockpit**-coded sibling as still-58999 and therefore
+  declines to close it. That is the safe direction (it under-selects, never
+  over-selects), so the applied reconcile is unaffected; note it before anyone
+  "fixes" condition (c).

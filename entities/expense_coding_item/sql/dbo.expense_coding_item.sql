@@ -881,3 +881,104 @@ BEGIN
       );
 END;
 GO
+
+
+CREATE OR ALTER PROCEDURE ReadExternallyResolvedCodingItemCandidates
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    SELECT
+        eci.[PublicId],
+        eci.[Id],
+        eci.[Status],
+        eci.[QboPurchaseQboId],
+        eci.[QboLineId]
+    FROM dbo.[ExpenseCodingItem] eci
+    WHERE eci.[Status] IN (N'pending', N'suggested', N'flagged', N'changed_in_qbo')
+      AND NOT EXISTS (
+          SELECT 1
+          FROM [qbo].[PurchaseLine] pl
+          WHERE pl.[Id] = eci.[QboPurchaseLineId]
+      )
+      AND EXISTS (
+          SELECT 1
+          FROM [qbo].[Purchase] p
+          WHERE p.[QboId] = eci.[QboPurchaseQboId]
+            AND p.[RealmId] = eci.[RealmId]
+      )
+      AND NOT EXISTS (
+          SELECT 1
+          FROM [qbo].[Purchase] p
+          INNER JOIN [qbo].[PurchaseLine] pl ON pl.[QboPurchaseId] = p.[Id]
+          WHERE p.[QboId] = eci.[QboPurchaseQboId]
+            AND p.[RealmId] = eci.[RealmId]
+            AND pl.[AccountRefName] LIKE N'%NEED TO CATEGORIZE%'
+      );
+END;
+GO
+
+
+CREATE OR ALTER PROCEDURE MarkExpenseCodingResolvedExternally
+(
+    @PublicId UNIQUEIDENTIFIER,
+    @WriteError NVARCHAR(1024) = NULL
+)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    BEGIN TRANSACTION;
+
+    DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();
+
+    UPDATE eci
+    SET
+        [Status] = N'resolved_externally',
+        [WriteError] = COALESCE(
+            @WriteError,
+            N'recoded outside the cockpit; staging line replaced'
+        ),
+        [ModifiedDatetime] = @Now
+    OUTPUT
+        INSERTED.[Id],
+        INSERTED.[PublicId],
+        INSERTED.[RowVersion],
+        INSERTED.[QboPurchaseId],
+        INSERTED.[QboPurchaseLineId],
+        INSERTED.[QboLineId],
+        INSERTED.[QboPurchaseQboId],
+        INSERTED.[RealmId],
+        INSERTED.[VendorId],
+        INSERTED.[SyncTokenAtSuggest],
+        INSERTED.[Status],
+        INSERTED.[SuggestedProjectId],
+        INSERTED.[SuggestedSubCostCodeId],
+        INSERTED.[SuggestedDescription],
+        INSERTED.[SuggestionSource],
+        INSERTED.[SuggestionReason],
+        INSERTED.[SuggestionConfidence],
+        INSERTED.[SuggestedAt],
+        INSERTED.[ConfirmedProjectId],
+        INSERTED.[ConfirmedSubCostCodeId],
+        INSERTED.[ConfirmedDescription],
+        INSERTED.[WasOverridden],
+        INSERTED.[ConfirmedByUserId],
+        INSERTED.[ConfirmedAt],
+        INSERTED.[FlagReason],
+        INSERTED.[FlaggedAt],
+        INSERTED.[WrittenAt],
+        INSERTED.[WriteError],
+        INSERTED.[ClaimedByUserId],
+        INSERTED.[ClaimedAt],
+        INSERTED.[CompanyId],
+        INSERTED.[CreatedByUserId],
+        CONVERT(VARCHAR(19), INSERTED.[CreatedDatetime], 120) AS [CreatedDatetime],
+        CONVERT(VARCHAR(19), INSERTED.[ModifiedDatetime], 120) AS [ModifiedDatetime]
+    FROM dbo.[ExpenseCodingItem] eci
+    WHERE eci.[PublicId] = @PublicId
+      AND eci.[Status] IN (N'pending', N'suggested', N'flagged', N'changed_in_qbo');
+
+    COMMIT TRANSACTION;
+END;
+GO

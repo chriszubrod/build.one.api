@@ -541,6 +541,30 @@ async def reconcile_box_router():
     return await _timed("reconcile.box", _run)
 
 
+@router.post(
+    "/expense-coding/reconcile-externally-resolved",
+    dependencies=[Depends(_require_drain_secret)],
+)
+async def reconcile_expense_coding_externally_resolved_router(
+    apply: bool = Query(default=False),
+):
+    """Close orphaned expense-coding rows recoded outside the cockpit (U-483).
+
+    Default is dry-run (`apply=false`): returns candidate rows only. Pass
+    `apply=true` to mark each as `resolved_externally`.
+    """
+    def _run() -> dict[str, Any]:
+        from entities.expense_coding_item.business.service import ExpenseCodingItemService
+        from shared.authz.context import system_authz
+
+        with system_authz():
+            return ExpenseCodingItemService().reconcile_externally_resolved(
+                dry_run=not apply
+            )
+
+    return await _timed("expense_coding.reconcile_externally_resolved", _run)
+
+
 # --- Email inbox poll ------------------------------------------------------ #
 
 

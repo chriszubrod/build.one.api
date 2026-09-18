@@ -133,6 +133,28 @@ class ExpenseCodingItemService:
     def mark_changed_in_qbo(self, public_id: str) -> Optional[ExpenseCodingItem]:
         return self.repo.mark_changed_in_qbo(public_id)
 
+    _DEFAULT_EXTERNALLY_RESOLVED_REASON = (
+        "recoded outside the cockpit; staging line replaced"
+    )
+
+    def reconcile_externally_resolved(self, dry_run: bool = True) -> dict:
+        candidates = self.repo.read_externally_resolved_candidates()
+        if dry_run:
+            return {"candidates": len(candidates), "items": candidates}
+
+        marked = 0
+        skipped = 0
+        for item in candidates:
+            result = self.repo.mark_resolved_externally(
+                item["public_id"],
+                self._DEFAULT_EXTERNALLY_RESOLVED_REASON,
+            )
+            if result is not None:
+                marked += 1
+            else:
+                skipped += 1
+        return {"marked": marked, "skipped": skipped}
+
     def mark_error(
         self,
         public_id: str,

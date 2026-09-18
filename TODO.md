@@ -4822,3 +4822,14 @@ Shipped in BATCH-36. Everything below is deliberately NOT in those units.
 - [ ] **144 coding items whose Expense exists but `PurchaseLineExpenseLineItem`
   is missing.** These look like a fixable QBO pull / line-map gap worth their own
   unit — Phase 1's badge is only as complete as that join.
+
+## U-483 follow-ups — externally resolved coding items (booked 2026-09-18)
+
+- [ ] **Scheduler timer for `POST /api/v1/admin/expense-coding/reconcile-externally-resolved`.**
+  API endpoint ships dry-run-by-default (`?apply=false`); `/em` applies SQL then
+  runs the first reconcile manually. Wire a daily timer in `build.one.scheduler`
+  (e.g. after QBO purchase pull) calling `apply=true` so the 134 prod orphans
+  and future externals auto-close without hand-running admin.
+- [ ] **Expose `ResolvedExternallyCount` on the web metrics surface** once `/em`
+  applies the metrics sproc change — cockpit header should show externally
+  closed rows separately from `WrittenCount` / acceptance metrics.

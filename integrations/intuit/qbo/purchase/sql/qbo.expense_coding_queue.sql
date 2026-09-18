@@ -114,6 +114,7 @@ BEGIN
         COUNT(CASE WHEN eci.[Status] = N'enqueued' THEN 1 END) AS [EnqueuedCount],
         COUNT(CASE WHEN eci.[Status] = N'written' THEN 1 END) AS [WrittenCount],
         COUNT(CASE WHEN eci.[Status] = N'changed_in_qbo' THEN 1 END) AS [ChangedInQboCount],
+        COUNT(CASE WHEN eci.[Status] = N'resolved_externally' THEN 1 END) AS [ResolvedExternallyCount],
         COUNT(CASE WHEN eci.[Status] = N'error' THEN 1 END) AS [ErrorCount],
         COUNT(CASE WHEN eci.[Status] = N'written' AND eci.[WasOverridden] = 0 THEN 1 END) AS [AcceptedCount],
         COUNT(CASE WHEN eci.[Status] = N'written' AND eci.[WasOverridden] = 1 THEN 1 END) AS [OverriddenCount]

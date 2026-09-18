@@ -284,6 +284,54 @@ class ExpenseCodingItemRepository:
             logger.error(f"Error marking expense coding item {public_id} written: {error}")
             raise map_database_error(error)
 
+    def read_externally_resolved_candidates(self) -> list[dict]:
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(
+                    cursor=cursor,
+                    name="ReadExternallyResolvedCodingItemCandidates",
+                    params={},
+                )
+                return [
+                    {
+                        "public_id": str(row.PublicId) if getattr(row, "PublicId", None) else None,
+                        "id": getattr(row, "Id", None),
+                        "status": getattr(row, "Status", None),
+                        "qbo_purchase_qbo_id": getattr(row, "QboPurchaseQboId", None),
+                        "qbo_line_id": getattr(row, "QboLineId", None),
+                    }
+                    for row in cursor.fetchall()
+                ]
+        except Exception as error:
+            logger.error("Error reading externally resolved coding item candidates: %s", error)
+            raise map_database_error(error)
+
+    def mark_resolved_externally(
+        self,
+        public_id: str,
+        reason: Optional[str] = None,
+    ) -> Optional[ExpenseCodingItem]:
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(
+                    cursor=cursor,
+                    name="MarkExpenseCodingResolvedExternally",
+                    params={
+                        "PublicId": public_id,
+                        "WriteError": reason,
+                    },
+                )
+                return self._from_db(cursor.fetchone())
+        except Exception as error:
+            logger.error(
+                "Error marking expense coding item %s resolved_externally: %s",
+                public_id,
+                error,
+            )
+            raise map_database_error(error)
+
     def mark_changed_in_qbo(self, public_id: str) -> Optional[ExpenseCodingItem]:
         try:
             with get_connection() as conn:

@@ -1,4 +1,5 @@
 # Python Standard Library Imports
+import asyncio
 import logging
 import time
 from datetime import date
@@ -44,7 +45,7 @@ def _clean_expense_completion_cache():
 
 
 @router.post("/create/expense")
-def create_expense_router(body: ExpenseCreate, current_user: dict = Depends(require_module_api(Modules.EXPENSES, "can_create"))):
+async def create_expense_router(body: ExpenseCreate, current_user: dict = Depends(require_module_api(Modules.EXPENSES, "can_create"))):
     """
     Create a new expense.
     
@@ -87,8 +88,8 @@ def create_expense_router(body: ExpenseCreate, current_user: dict = Depends(requ
         workflow_type="expense_create",
     )
     
-    result = ProcessEngine().execute_synchronous(context)
-    
+    result = await asyncio.to_thread(ProcessEngine().execute_synchronous, context)
+
     if not result.get("success"):
         raise_workflow_error(result.get("error", ""), "Failed to create expense")
 
@@ -158,7 +159,7 @@ def _expense_dict_with_lifecycle(expense, *, review=None, coding_items=None) -> 
 
 
 @router.get("/get/expenses")
-def get_expenses_router(
+async def get_expenses_router(
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=50, ge=1, le=100),
     search: Optional[str] = Query(default=None),
@@ -189,28 +190,32 @@ def get_expenses_router(
             detail=f"Unknown status {status!r}. Expected one of: {', '.join(LIFECYCLE_STATUSES)}.",
             error_code=ErrorCode.VALIDATION_ERROR,
         )
-    service = ExpenseService()
-    expenses, total = service.read_paginated(
-        page_number=page,
-        page_size=page_size,
-        search_term=search,
-        vendor_id=vendor_id,
-        is_draft=is_draft,
-        status=status if isinstance(status, str) else None,
-        start_date=start_date.isoformat() if isinstance(start_date, date) else None,
-        end_date=end_date.isoformat() if isinstance(end_date, date) else None,
-    )
-    # ONE lookup for the whole page (U-457). Resolving per row is the N+1 that
-    # Bill's slice avoided and pinned; the batch sproc exists for this.
-    from entities.review.persistence.repo import ReviewRepository
-    from entities.expense_coding_item.persistence.repo import ExpenseCodingItemRepository
-    expense_ids = [e.id for e in expenses if e.id is not None]
-    review_map = ReviewRepository().read_current_by_expense_ids(expense_ids) if expense_ids else {}
-    coding_map = (
-        ExpenseCodingItemRepository().read_state_by_expense_ids(expense_ids)
-        if expense_ids
-        else {}
-    )
+    def _fetch():
+        service = ExpenseService()
+        expenses, total = service.read_paginated(
+            page_number=page,
+            page_size=page_size,
+            search_term=search,
+            vendor_id=vendor_id,
+            is_draft=is_draft,
+            status=status if isinstance(status, str) else None,
+            start_date=start_date.isoformat() if isinstance(start_date, date) else None,
+            end_date=end_date.isoformat() if isinstance(end_date, date) else None,
+        )
+        # ONE lookup for the whole page (U-457). Resolving per row is the N+1 that
+        # Bill's slice avoided and pinned; the batch sproc exists for this.
+        from entities.review.persistence.repo import ReviewRepository
+        from entities.expense_coding_item.persistence.repo import ExpenseCodingItemRepository
+        expense_ids = [e.id for e in expenses if e.id is not None]
+        review_map = ReviewRepository().read_current_by_expense_ids(expense_ids) if expense_ids else {}
+        coding_map = (
+            ExpenseCodingItemRepository().read_state_by_expense_ids(expense_ids)
+            if expense_ids
+            else {}
+        )
+        return expenses, total, review_map, coding_map
+
+    expenses, total, review_map, coding_map = await asyncio.to_thread(_fetch)
     return {
         "data": [
             _expense_dict_with_lifecycle(
@@ -248,34 +253,50 @@ router.add_api_route(
 
 
 @router.get("/get/expense/{public_id}/coding")
-def get_expense_public_id_coding_router(
+async def get_expense_public_id_coding_router(
     public_id: str,
     _: dict = Depends(require_module_api(Modules.EXPENSES, "can_read")),
 ):
     """Coding state for one expense (may include several coded lines)."""
-    expense = ExpenseService().read_by_public_id(public_id=public_id)
-    if not expense:
-        raise_not_found("Expense")
-    from entities.expense_coding_item.persistence.repo import ExpenseCodingItemRepository
+    def _fetch():
+        expense = ExpenseService().read_by_public_id(public_id=public_id)
+        if not expense:
+            return None
+        from entities.expense_coding_item.persistence.repo import ExpenseCodingItemRepository
 
-    coding_map = (
-        ExpenseCodingItemRepository().read_state_by_expense_ids([expense.id])
-        if expense.id is not None
-        else {}
-    )
-    return item_response(build_expense_coding_block(coding_map.get(expense.id)))
+        coding_map = (
+            ExpenseCodingItemRepository().read_state_by_expense_ids([expense.id])
+            if expense.id is not None
+            else {}
+        )
+        return build_expense_coding_block(coding_map.get(expense.id))
+
+    block = await asyncio.to_thread(_fetch)
+    if block is None:
+        raise_not_found("Expense")
+    return item_response(block)
 
 
 @router.get("/get/expense/by-reference-number-and-vendor")
-def get_expense_by_reference_number_and_vendor_router(reference_number: str, vendor_public_id: str, current_user: dict = Depends(require_module_api(Modules.EXPENSES))):
+async def get_expense_by_reference_number_and_vendor_router(reference_number: str, vendor_public_id: str, current_user: dict = Depends(require_module_api(Modules.EXPENSES))):
     """
     Read an expense by reference number and vendor public ID.
     """
-    expense = ExpenseService().read_by_reference_number_and_vendor_public_id(reference_number=reference_number, vendor_public_id=vendor_public_id)
-    if not expense:
+    def _fetch():
+        expense = ExpenseService().read_by_reference_number_and_vendor_public_id(
+            reference_number=reference_number,
+            vendor_public_id=vendor_public_id,
+        )
+        if not expense:
+            return None
+        return expense, _current_review_for_expense(expense.id)
+
+    result = await asyncio.to_thread(_fetch)
+    if not result:
         raise_not_found("Expense")
+    expense, review = result
     return item_response(
-        _expense_dict_with_lifecycle(expense, review=_current_review_for_expense(expense.id))
+        _expense_dict_with_lifecycle(expense, review=review)
     )
 
 
@@ -297,31 +318,38 @@ def get_expense_completion_result_router(public_id: str, current_user: dict = De
 
 
 @router.get("/get/expense/{public_id}")
-def get_expense_by_public_id_router(public_id: str, current_user: dict = Depends(require_module_api(Modules.EXPENSES))):
+async def get_expense_by_public_id_router(public_id: str, current_user: dict = Depends(require_module_api(Modules.EXPENSES))):
     """
     Read an expense by public ID.
     """
-    expense = ExpenseService().read_by_public_id(public_id=public_id)
-    if not expense:
-        raise_not_found("Expense")
-    from entities.expense_coding_item.persistence.repo import ExpenseCodingItemRepository
+    def _fetch():
+        expense = ExpenseService().read_by_public_id(public_id=public_id)
+        if not expense:
+            return None
+        from entities.expense_coding_item.persistence.repo import ExpenseCodingItemRepository
 
-    coding_map = (
-        ExpenseCodingItemRepository().read_state_by_expense_ids([expense.id])
-        if expense.id is not None
-        else {}
-    )
+        coding_map = (
+            ExpenseCodingItemRepository().read_state_by_expense_ids([expense.id])
+            if expense.id is not None
+            else {}
+        )
+        return expense, _current_review_for_expense(expense.id), coding_map.get(expense.id)
+
+    result = await asyncio.to_thread(_fetch)
+    if not result:
+        raise_not_found("Expense")
+    expense, review, coding_items = result
     return item_response(
         _expense_dict_with_lifecycle(
             expense,
-            review=_current_review_for_expense(expense.id),
-            coding_items=coding_map.get(expense.id),
+            review=review,
+            coding_items=coding_items,
         )
     )
 
 
 @router.put("/update/expense/{public_id}")
-def update_expense_by_public_id_router(public_id: str, body: ExpenseUpdate, current_user: dict = Depends(require_module_api(Modules.EXPENSES, "can_update"))):
+async def update_expense_by_public_id_router(public_id: str, body: ExpenseUpdate, current_user: dict = Depends(require_module_api(Modules.EXPENSES, "can_update"))):
     """
     Update an expense by public ID.
     
@@ -357,8 +385,8 @@ def update_expense_by_public_id_router(public_id: str, body: ExpenseUpdate, curr
         workflow_type="expense_update",
     )
     
-    result = ProcessEngine().execute_synchronous(context)
-    
+    result = await asyncio.to_thread(ProcessEngine().execute_synchronous, context)
+
     if not result.get("success"):
         raise_workflow_error(result.get("error", ""), "Failed to update expense")
 
@@ -366,7 +394,7 @@ def update_expense_by_public_id_router(public_id: str, body: ExpenseUpdate, curr
 
 
 @router.delete("/delete/expense/{public_id}")
-def delete_expense_by_public_id_router(public_id: str, current_user: dict = Depends(require_module_api(Modules.EXPENSES, "can_delete"))):
+async def delete_expense_by_public_id_router(public_id: str, current_user: dict = Depends(require_module_api(Modules.EXPENSES, "can_delete"))):
     """
     Delete an expense by public ID.
 
@@ -383,7 +411,7 @@ def delete_expense_by_public_id_router(public_id: str, current_user: dict = Depe
         workflow_type="expense_delete",
     )
 
-    result = ProcessEngine().execute_synchronous(context)
+    result = await asyncio.to_thread(ProcessEngine().execute_synchronous, context)
 
     if not result.get("success"):
         raise_workflow_error(result.get("error", ""), "Failed to delete expense")
@@ -478,6 +506,9 @@ def complete_expense_router(
     """
     Queue expense completion (finalize, SharePoint). Returns 202 immediately;
     work runs in background. Client can poll GET /api/v1/get/expense/{public_id}/completion-result or use list page banner.
+
+    Left sync deliberately — Bill's ``complete_bill_router`` is also sync (202 +
+    BackgroundTasks path). U-485 async offload parity does not convert it.
     """
     logger.info("Complete expense API called: public_id=%s (queuing background task)", public_id)
     expense = ExpenseService().read_by_public_id(public_id=public_id)

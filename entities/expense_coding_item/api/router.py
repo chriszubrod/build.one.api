@@ -89,64 +89,6 @@ def get_expense_coding_metrics_router(
     return item_response(metrics)
 
 
-@router.post("/expense-coding/{public_id}/claim")
-def claim_expense_coding_item_router(
-    public_id: str,
-    _: dict = Depends(require_module_api(Modules.EXPENSES, "can_update")),
-):
-    user_id = current_user_id.get()
-    if user_id is None:
-        raise HTTPException(status_code=401, detail="Authenticated user required.")
-
-    service = ExpenseCodingItemService()
-    existing = service.read_by_public_id(public_id)
-    if existing is None:
-        raise_not_found("Expense coding item")
-
-    try:
-        claimed = service.claim(public_id=public_id, user_id=user_id)
-    except Exception as error:
-        logger.exception("Failed to claim expense coding item %s.", public_id)
-        raise_database_error(error)
-
-    if claimed is None:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Expense coding item is currently claimed by another user.",
-        )
-
-    return item_response(claimed.to_dict())
-
-
-@router.post("/expense-coding/{public_id}/release")
-def release_expense_coding_item_router(
-    public_id: str,
-    _: dict = Depends(require_module_api(Modules.EXPENSES, "can_update")),
-):
-    user_id = current_user_id.get()
-    if user_id is None:
-        raise HTTPException(status_code=401, detail="Authenticated user required.")
-
-    service = ExpenseCodingItemService()
-    existing = service.read_by_public_id(public_id)
-    if existing is None:
-        raise_not_found("Expense coding item")
-
-    try:
-        released = service.release(public_id=public_id, user_id=user_id)
-    except Exception as error:
-        logger.exception("Failed to release expense coding item %s.", public_id)
-        raise_database_error(error)
-
-    if released is None:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Expense coding item is not claimed by the current user.",
-        )
-
-    return item_response(released.to_dict())
-
-
 @router.post("/expense/coding/{public_id}/flag")
 @router.post(
     "/expense-coding/{public_id}/flag",

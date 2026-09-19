@@ -26,6 +26,7 @@ from IsDraft alone (Expense: stored Status after U-467), which is still strictly
 more than they emitted before.
 """
 
+import asyncio
 import inspect
 import re
 from pathlib import Path
@@ -200,7 +201,10 @@ def _drive_list(module, service_attr, route_name, filter_kw, batch, review_map):
         getattr(Repo.return_value, batch).return_value = review_map
         kwargs = {"page": 1, "page_size": 50, "search": None,
                   filter_kw: None, "is_draft": None, "current_user": {}}
-        return getattr(mod, route_name)(**kwargs)["data"]
+        response = getattr(mod, route_name)(**kwargs)
+        if asyncio.iscoroutine(response):
+            response = asyncio.run(response)
+        return response["data"]
 
 
 @pytest.mark.parametrize(
@@ -263,7 +267,9 @@ def test_the_list_asks_the_batch_reader_for_exactly_the_page_ids(
         reader.return_value = {}
         kwargs = {"page": 1, "page_size": 50, "search": None,
                   filter_kw: None, "is_draft": None, "current_user": {}}
-        getattr(mod, route_name)(**kwargs)
+        response = getattr(mod, route_name)(**kwargs)
+        if asyncio.iscoroutine(response):
+            asyncio.run(response)
 
     reader.assert_called_once()
     assert list(reader.call_args.args[0]) == [101, 202]
@@ -465,9 +471,9 @@ def test_expense_by_reference_number_carries_the_lifecycle_block():
     with patch.object(mod, "ExpenseService", return_value=svc), \
          patch("entities.review.persistence.repo.ReviewRepository") as Repo:
         Repo.return_value.read_current_by_expense_id.return_value = _review()
-        out = mod.get_expense_by_reference_number_and_vendor_router(
+        out = asyncio.run(mod.get_expense_by_reference_number_and_vendor_router(
             reference_number="R-1", vendor_public_id="v-1", current_user={}
-        )["data"]
+        ))["data"]
 
     assert out["public_id"] == "exp-77"
     assert out["status"] == "completed", "IsDraft=0 wins over any review"

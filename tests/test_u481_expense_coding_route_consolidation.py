@@ -166,20 +166,22 @@ def test_alias_routes_marked_deprecated(method, alias_path, canonical_path):
 
 
 @pytest.mark.parametrize("method,path", SINGLE_SPELLING_ONLY)
-def test_claim_and_release_have_exactly_one_spelling(method, path):
+def test_claim_and_release_routes_are_gone_in_both_spellings(method, path):
+    # Chris, 2026-09-18: drop the two unused HTTP routes, keep the service lease
+    # (confirm() auto-claims via ExpenseCodingItemService.claim).
     paths = _route_paths(method)
-    assert path in paths
-    # Deliberate non-aliases — no /expense/coding/{id}/claim spelling.
+    assert path not in paths, f"legacy route still registered: {method} {path}"
     alt = path.replace("/expense-coding/", "/expense/coding/")
-    assert alt not in paths, f"unexpected second spelling for {path}: {alt}"
+    assert alt not in paths, f"canonical spelling still registered: {method} {alt}"
 
 
-def test_claim_and_release_count_is_one_each():
+def test_claim_and_release_routes_are_not_registered_at_all():
+    # Chris, 2026-09-18: drop the two unused HTTP routes, keep the service lease.
     paths = _route_paths("POST")
     claim_paths = [p for p in paths if p.endswith("/claim") and "coding" in p]
     release_paths = [p for p in paths if p.endswith("/release") and "coding" in p]
-    assert claim_paths == ["/api/v1/expense-coding/{public_id}/claim"]
-    assert release_paths == ["/api/v1/expense-coding/{public_id}/release"]
+    assert claim_paths == []
+    assert release_paths == []
 
 
 # ---------------------------------------------------------------------------

@@ -5,6 +5,7 @@ on whether an expense still needs coding; `needs_coding` derives from
 ExpenseCodingItem.Status, never from ExpenseLineItem.SubCostCodeId.
 """
 
+import asyncio
 import inspect
 from decimal import Decimal
 from pathlib import Path
@@ -130,7 +131,7 @@ def test_list_handler_calls_coding_repo_exactly_once_for_multi_row_page():
     with patch("entities.expense.api.router.ExpenseService", return_value=service), \
          patch("entities.review.persistence.repo.ReviewRepository", return_value=review_repo), \
          patch("entities.expense_coding_item.persistence.repo.ExpenseCodingItemRepository", return_value=coding_repo):
-        get_expenses_router(
+        asyncio.run(get_expenses_router(
             page=1,
             page_size=50,
             search=None,
@@ -140,7 +141,7 @@ def test_list_handler_calls_coding_repo_exactly_once_for_multi_row_page():
             end_date=None,
             status=None,
             current_user={},
-        )
+        ))
 
     coding_repo.read_state_by_expense_ids.assert_called_once_with([101, 202, 303])
 
@@ -230,7 +231,7 @@ def test_list_response_keeps_lifecycle_keys_and_adds_coding():
     with patch("entities.expense.api.router.ExpenseService", return_value=service), \
          patch("entities.review.persistence.repo.ReviewRepository", return_value=review_repo), \
          patch("entities.expense_coding_item.persistence.repo.ExpenseCodingItemRepository", return_value=coding_repo):
-        data = get_expenses_router(
+        data = asyncio.run(get_expenses_router(
             page=1,
             page_size=50,
             search=None,
@@ -240,7 +241,7 @@ def test_list_response_keeps_lifecycle_keys_and_adds_coding():
             end_date=None,
             status=None,
             current_user={},
-        )["data"]
+        ))["data"]
 
     row = data[0]
     assert "status" in row

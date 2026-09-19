@@ -14,6 +14,7 @@ from datetime import date as date_type
 from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
+import asyncio
 import inspect
 import re
 
@@ -51,7 +52,7 @@ def _call(expenses, **kwargs):
                       is_draft=None, status=None, start_date=None, end_date=None,
                       current_user=USER)
         params.update(kwargs)
-        response = get_expenses_router(**params)
+        response = asyncio.run(get_expenses_router(**params))
     return response, service
 
 
@@ -514,10 +515,10 @@ def test_the_route_reports_the_total_the_sproc_returned_not_the_page_length():
     with patch("entities.expense.api.router.ExpenseService", return_value=service), \
          patch("entities.review.persistence.repo.ReviewRepository", return_value=review_repo), \
          patch("entities.expense_coding_item.persistence.repo.ExpenseCodingItemRepository", return_value=coding_repo):
-        response = get_expenses_router(
+        response = asyncio.run(get_expenses_router(
             page=1, page_size=50, search=None, vendor_id=None,
             is_draft=None, status=None, start_date=None, end_date=None,
-            current_user=USER)
+            current_user=USER))
     assert response["count"] == 4242
     assert len(response["data"]) == 2
 
@@ -625,7 +626,7 @@ def test_omitted_date_args_do_not_leak_the_query_sentinel():
     with patch("entities.expense.api.router.ExpenseService", return_value=service), \
          patch("entities.review.persistence.repo.ReviewRepository", return_value=review_repo), \
          patch("entities.expense_coding_item.persistence.repo.ExpenseCodingItemRepository", return_value=coding_repo):
-        get_expenses_router(current_user=USER)
+        asyncio.run(get_expenses_router(current_user=USER))
     kw = service.read_paginated.call_args.kwargs
     assert kw["start_date"] is None and kw["end_date"] is None
     assert kw["status"] is None

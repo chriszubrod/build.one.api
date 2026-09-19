@@ -483,6 +483,144 @@ class ExpenseService:
             )
             return None
 
+    def enqueue_coding_recode_on_submit(self, *, expense_id: int, user_id: int) -> dict:
+        """Enqueue surgical QBO recode for each open ExpenseCodingItem (U-486 C2).
+
+        Called from ReviewService on initial expense submit. Does not mutate review
+        state; callers must failure-isolate. All writes go through
+        ExpenseCodingItemService.confirm() — this method records nothing itself.
+        """
+        from entities.expense.api.router import EXPENSE_CODING_TERMINAL_STATUSES
+        from entities.expense_coding_item.business.service import ExpenseCodingItemService
+        from entities.expense_coding_item.persistence.repo import ExpenseCodingItemRepository
+
+        def _is_terminal_status(status: Optional[str]) -> bool:
+            return status in EXPENSE_CODING_TERMINAL_STATUSES or status == "resolved_externally"
+
+        summary: dict[str, Any] = {
+            "enqueued": 0,
+            "skipped": 0,
+            "writes_disabled": 0,
+            "invalid": 0,
+            "items": [],
+        }
+
+        coding_states = ExpenseCodingItemRepository().read_state_by_expense_ids([expense_id])
+        coding_items = coding_states.get(expense_id) or []
+        if not coding_items:
+            summary["skipped"] = 1
+            summary["items"].append({"reason": "no_coding_items"})
+            return summary
+
+        line_by_public_id: dict[str, dict[str, Any]] = {}
+        from shared.database import get_connection
+
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    """
+                    SELECT
+                        eci.[PublicId],
+                        eli.[ProjectId],
+                        eli.[SubCostCodeId],
+                        eli.[Description]
+                    FROM dbo.[ExpenseCodingItem] eci
+                    INNER JOIN qbo.[PurchaseLineExpenseLineItem] pleli
+                        ON pleli.[QboPurchaseLineId] = eci.[QboPurchaseLineId]
+                    INNER JOIN dbo.[ExpenseLineItem] eli
+                        ON eli.[Id] = pleli.[ExpenseLineItemId]
+                    WHERE eli.[ExpenseId] = ?
+                    """,
+                    expense_id,
+                )
+                for row in cursor.fetchall():
+                    public_id = getattr(row, "PublicId", None)
+                    if public_id is None:
+                        continue
+                    line_by_public_id[str(public_id)] = {
+                        "project_id": getattr(row, "ProjectId", None),
+                        "sub_cost_code_id": getattr(row, "SubCostCodeId", None),
+                        "description": getattr(row, "Description", None),
+                    }
+        except Exception as error:
+            logger.exception(
+                "Failed to resolve expense line targets for coding recode "
+                "(expense_id=%s): %s",
+                expense_id,
+                error,
+            )
+            raise
+
+        coding_service = ExpenseCodingItemService()
+
+        for item in coding_items:
+            public_id = item.get("public_id")
+            status = item.get("status")
+            item_result: dict[str, Any] = {"public_id": public_id, "status": status}
+
+            if _is_terminal_status(status):
+                summary["skipped"] += 1
+                item_result["outcome"] = "skipped"
+                item_result["reason"] = "terminal_status"
+                summary["items"].append(item_result)
+                continue
+
+            line = line_by_public_id.get(str(public_id)) if public_id else None
+            if line is None:
+                summary["skipped"] += 1
+                item_result["outcome"] = "skipped"
+                item_result["reason"] = "line_mapping_missing"
+                summary["items"].append(item_result)
+                continue
+
+            project_id = line.get("project_id")
+            sub_cost_code_id = line.get("sub_cost_code_id")
+            if not project_id or not sub_cost_code_id:
+                summary["skipped"] += 1
+                item_result["outcome"] = "skipped"
+                item_result["reason"] = "missing_project_or_sub_cost_code"
+                summary["items"].append(item_result)
+                continue
+
+            suggested_project_id = item.get("suggested_project_id")
+            suggested_sub_cost_code_id = item.get("suggested_sub_cost_code_id")
+            was_overridden = (
+                suggested_project_id is None
+                or suggested_sub_cost_code_id is None
+                or project_id != suggested_project_id
+                or sub_cost_code_id != suggested_sub_cost_code_id
+            )
+
+            confirm_result = coding_service.confirm(
+                public_id=public_id,
+                project_id=int(project_id),
+                sub_cost_code_id=int(sub_cost_code_id),
+                description=line.get("description"),
+                was_overridden=was_overridden,
+                user_id=user_id,
+            )
+            item_result["confirm"] = confirm_result
+
+            confirm_status = confirm_result.get("status")
+            if confirm_status == "enqueued":
+                summary["enqueued"] += 1
+                item_result["outcome"] = "enqueued"
+            elif confirm_status == "writes_disabled":
+                summary["writes_disabled"] += 1
+                item_result["outcome"] = "writes_disabled"
+            elif confirm_status == "invalid":
+                summary["invalid"] += 1
+                item_result["outcome"] = "invalid"
+            else:
+                summary["skipped"] += 1
+                item_result["outcome"] = "skipped"
+                item_result["reason"] = confirm_status or "unknown"
+
+            summary["items"].append(item_result)
+
+        return summary
+
     def read_by_reference_number_and_vendor_public_id(self, reference_number: str, vendor_public_id: str) -> Optional[Expense]:
         """
         Read an expense by reference number and vendor public ID.

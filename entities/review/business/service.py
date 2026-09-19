@@ -263,6 +263,21 @@ class ReviewService:
                     review.id,
                 )
 
+            try:
+                from entities.expense.business.service import ExpenseService
+
+                ExpenseService().enqueue_coding_recode_on_submit(
+                    expense_id=expense_id,
+                    user_id=user_id,
+                )
+            except Exception:
+                logger.exception(
+                    "Failed to enqueue Expense coding recode on review submit "
+                    "(expense_id=%s, review_id=%s)",
+                    expense_id,
+                    review.id,
+                )
+
         return review
 
     # =========================================================================

@@ -1615,3 +1615,29 @@ class ExpenseService:
             )
         except Exception as e:
             logger.warning(f"box.excel.enqueue.failed expense={expense.public_id} project_id={project_id}: {e}")
+
+    def backfill_uncoded_to_draft(self, dry_run: bool = True) -> dict:
+        """Move genuinely-uncoded completed expenses to draft (U-486 Phase B).
+
+        Default is dry-run: returns candidate rows only. Pass dry_run=False to
+        flip each row via MarkExpenseDraftForCoding (exempt from U-468 terminal lock).
+        """
+        candidates = self.repo.read_uncoded_completed_candidates()
+        if dry_run:
+            return {"candidates": len(candidates), "items": candidates}
+
+        marked = 0
+        skipped = 0
+        for item in candidates:
+            source_ref = item.get("coding_item_public_id")
+            if source_ref is None and item.get("qbo_purchase_line_id") is not None:
+                source_ref = str(item["qbo_purchase_line_id"])
+            result = self.repo.mark_draft_for_coding(
+                item["id"],
+                status_source_ref=source_ref,
+            )
+            if result is not None:
+                marked += 1
+            else:
+                skipped += 1
+        return {"marked": marked, "skipped": skipped}

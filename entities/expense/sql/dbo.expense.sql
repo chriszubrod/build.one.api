@@ -267,11 +267,28 @@ BEGIN
 END
 GO
 
+-- U-486 Phase B: 'coding_backfill' added so a GL-coding backfill is provenance-
+-- distinguishable from U-467's earlier status backfill (which used 'backfill' and
+-- left StatusSourceRef NULL). The two populations do not overlap and a later phase
+-- needs to tell them apart; that distinction cannot be reconstructed after the fact.
+-- Drop-then-recreate rather than a bare NOT EXISTS create, because the constraint
+-- already exists in prod with the shorter list and would otherwise never be updated.
+IF OBJECT_ID('dbo.Expense', 'U') IS NOT NULL
+   AND EXISTS (
+       SELECT 1 FROM sys.check_constraints
+       WHERE name = 'CK_Expense_StatusOrigin'
+         AND definition NOT LIKE '%coding_backfill%'
+   )
+BEGIN
+    ALTER TABLE [dbo].[Expense] DROP CONSTRAINT [CK_Expense_StatusOrigin];
+END
+GO
+
 IF OBJECT_ID('dbo.Expense', 'U') IS NOT NULL
    AND NOT EXISTS (SELECT 1 FROM sys.check_constraints WHERE name = 'CK_Expense_StatusOrigin')
 BEGIN
     ALTER TABLE [dbo].[Expense] WITH CHECK ADD CONSTRAINT [CK_Expense_StatusOrigin]
-        CHECK ([StatusOrigin] IN ('user','completion','qbo_pull','fast_path','backfill'));
+        CHECK ([StatusOrigin] IN ('user','completion','qbo_pull','fast_path','backfill','coding_backfill'));
 END
 GO
 
@@ -1338,6 +1355,87 @@ BEGIN
     -- row" means "expense gone" rather than "already finalized" — there, the
     -- guard is the state itself; here it is the caller's @FromStatuses.
     WHERE [Id] = @Id AND [Status] = @ToStatus;
+
+    COMMIT TRANSACTION;
+END;
+GO
+
+
+-- U-486 Phase B: detect completed expenses genuinely uncoded on the 58999
+-- placeholder (AccountRef label AND ItemRefValue IS NULL — never the label alone).
+CREATE OR ALTER PROCEDURE ReadUncodedCompletedExpenseCandidates
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    ;WITH Ranked AS (
+        SELECT
+            e.[Id],
+            e.[PublicId],
+            e.[Status],
+            CONVERT(VARCHAR(19), e.[ExpenseDate], 120) AS [ExpenseDate],
+            e.[TotalAmount],
+            e.[ReferenceNumber],
+            pl.[Id] AS [QboPurchaseLineId],
+            eci.[PublicId] AS [CodingItemPublicId],
+            ROW_NUMBER() OVER (PARTITION BY e.[Id] ORDER BY eli.[Id]) AS [Rn]
+        FROM dbo.[Expense] e
+        INNER JOIN dbo.[ExpenseLineItem] eli
+            ON eli.[ExpenseId] = e.[Id]
+        INNER JOIN qbo.[PurchaseLineExpenseLineItem] pleli
+            ON pleli.[ExpenseLineItemId] = eli.[Id]
+        INNER JOIN qbo.[PurchaseLine] pl
+            ON pl.[Id] = pleli.[QboPurchaseLineId]
+        LEFT JOIN dbo.[ExpenseCodingItem] eci
+            ON eci.[QboPurchaseLineId] = pl.[Id]
+        WHERE e.[Status] = N'completed'
+          AND pl.[AccountRefName] LIKE N'%NEED TO CATEGORIZE%'
+          AND pl.[ItemRefValue] IS NULL
+    )
+    SELECT
+        [Id],
+        [PublicId],
+        [Status],
+        [ExpenseDate],
+        [TotalAmount],
+        [ReferenceNumber],
+        [QboPurchaseLineId],
+        [CodingItemPublicId]
+    FROM Ranked
+    WHERE [Rn] = 1;
+END;
+GO
+
+
+-- U-486 Phase B: flip genuinely-uncoded completed expenses to draft for local
+-- coding. Bypasses U-468 assert_editable (completed is terminal in the service
+-- layer); this sproc's WHERE [Status] = N'completed' guard is the replacement.
+CREATE OR ALTER PROCEDURE MarkExpenseDraftForCoding
+(
+    @ExpenseId BIGINT,
+    @StatusSourceRef NVARCHAR(64) = NULL
+)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    BEGIN TRANSACTION;
+
+    DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();
+
+    UPDATE dbo.[Expense]
+    SET
+        [Status] = N'draft',
+        [ModifiedDatetime] = @Now,
+        [StatusOrigin] = N'coding_backfill',
+        [StatusDatetime] = @Now,
+        [StatusSourceRef] = COALESCE(
+            @StatusSourceRef,
+            CAST(@ExpenseId AS NVARCHAR(64))
+        )
+    OUTPUT INSERTED.*
+    WHERE [Id] = @ExpenseId
+      AND [Status] = N'completed';
 
     COMMIT TRANSACTION;
 END;

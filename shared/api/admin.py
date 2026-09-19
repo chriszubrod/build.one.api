@@ -565,6 +565,28 @@ async def reconcile_expense_coding_externally_resolved_router(
     return await _timed("expense_coding.reconcile_externally_resolved", _run)
 
 
+@router.post(
+    "/expense/backfill-uncoded-to-draft",
+    dependencies=[Depends(_require_drain_secret)],
+)
+async def backfill_expense_uncoded_to_draft_router(
+    apply: bool = Query(default=False),
+):
+    """Flip genuinely-uncoded completed expenses to draft (U-486 Phase B).
+
+    Default is dry-run (`apply=false`): returns candidate rows only. Pass
+    `apply=true` to mark each as `draft` with StatusOrigin `coding_backfill`.
+    """
+    def _run() -> dict[str, Any]:
+        from entities.expense.business.service import ExpenseService
+        from shared.authz.context import system_authz
+
+        with system_authz():
+            return ExpenseService().backfill_uncoded_to_draft(dry_run=not apply)
+
+    return await _timed("expense.backfill_uncoded_to_draft", _run)
+
+
 # --- Email inbox poll ------------------------------------------------------ #
 
 

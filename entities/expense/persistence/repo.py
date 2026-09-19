@@ -576,3 +576,59 @@ class ExpenseRepository:
             )
             raise map_database_error(error)
 
+    def read_uncoded_completed_candidates(self) -> list[dict]:
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(
+                    cursor=cursor,
+                    name="ReadUncodedCompletedExpenseCandidates",
+                    params={},
+                )
+                return [
+                    {
+                        "id": getattr(row, "Id", None),
+                        "public_id": str(row.PublicId) if getattr(row, "PublicId", None) else None,
+                        "status": getattr(row, "Status", None),
+                        "expense_date": getattr(row, "ExpenseDate", None),
+                        "total_amount": getattr(row, "TotalAmount", None),
+                        "reference_number": getattr(row, "ReferenceNumber", None),
+                        "qbo_purchase_line_id": getattr(row, "QboPurchaseLineId", None),
+                        "coding_item_public_id": (
+                            str(row.CodingItemPublicId)
+                            if getattr(row, "CodingItemPublicId", None)
+                            else None
+                        ),
+                    }
+                    for row in cursor.fetchall()
+                ]
+        except Exception as error:
+            logger.error("Error reading uncoded completed expense candidates: %s", error)
+            raise map_database_error(error)
+
+    def mark_draft_for_coding(
+        self,
+        expense_id: int,
+        *,
+        status_source_ref: Optional[str] = None,
+    ) -> Optional[Expense]:
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(
+                    cursor=cursor,
+                    name="MarkExpenseDraftForCoding",
+                    params={
+                        "ExpenseId": expense_id,
+                        "StatusSourceRef": status_source_ref,
+                    },
+                )
+                return self._from_db(cursor.fetchone())
+        except Exception as error:
+            logger.error(
+                "Error marking expense %s draft for coding: %s",
+                expense_id,
+                error,
+            )
+            raise map_database_error(error)
+

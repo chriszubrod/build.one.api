@@ -18,6 +18,16 @@ EXPENSE_SQL = REPO_ROOT / "entities/expense/sql/dbo.expense.sql"
 DETECTION_SPROC = "ReadUncodedCompletedExpenseCandidates"
 MARK_SPROC = "MarkExpenseDraftForCoding"
 
+# CK_Expense_StatusOrigin — recurring reconcile must only touch qbo_pull completions.
+STATUS_ORIGIN_VOCABULARY = (
+    "user",
+    "completion",
+    "qbo_pull",
+    "fast_path",
+    "backfill",
+    "coding_backfill",
+)
+
 PRE_U486B_SPROC_NAMES = frozenset(
     {
         "CreateExpense",
@@ -119,6 +129,102 @@ def test_mark_sproc_only_transitions_from_completed():
             body,
             re.IGNORECASE,
         ), f"MarkExpenseDraftForCoding must NOT allow transition from {status!r}"
+
+
+def _mark_sproc_update_where_clause(body: str) -> str:
+    match = re.search(
+        r"UPDATE\s+dbo\.\[Expense\].*?\bWHERE\b\s+(.*?)(?:\n\s*OUTPUT|\n\s*COMMIT)",
+        body,
+        re.IGNORECASE | re.DOTALL,
+    )
+    assert match is not None, "MarkExpenseDraftForCoding UPDATE must have a WHERE clause"
+    return match.group(1)
+
+
+def test_mark_sproc_where_requires_qbo_pull_origin_not_completion():
+    """Recurring reconcile must not un-complete human Mark Complete (StatusOrigin=completion)."""
+    body = strip_sql_comments(sproc_body(EXPENSE_SQL, MARK_SPROC))
+    where_clause = _mark_sproc_update_where_clause(body)
+    assert re.search(
+        r"\[StatusOrigin\]\s*=\s*N'qbo_pull'",
+        where_clause,
+        re.IGNORECASE,
+    ), (
+        "MarkExpenseDraftForCoding WHERE must require StatusOrigin = qbo_pull "
+        "so human completion is never pulled back to draft"
+    )
+    assert not re.search(
+        r"\[StatusOrigin\]\s*=\s*N'completion'",
+        where_clause,
+        re.IGNORECASE,
+    ), "MarkExpenseDraftForCoding must NOT treat completion origin as draftable"
+
+
+def test_detection_sproc_filters_status_origin_qbo_pull():
+    body = strip_sql_comments(sproc_body(EXPENSE_SQL, DETECTION_SPROC))
+    where_match = re.search(
+        r"WHERE\s+e\.\[Status\]\s*=\s*N'completed'(.*?)\n\s*\)",
+        body,
+        re.IGNORECASE | re.DOTALL,
+    )
+    assert where_match is not None, "expected Ranked CTE WHERE on completed expenses"
+    where_chunk = where_match.group(0)
+    assert re.search(
+        r"e\.\[StatusOrigin\]\s*=\s*N'qbo_pull'",
+        where_chunk,
+        re.IGNORECASE,
+    ), (
+        "ReadUncodedCompletedExpenseCandidates must filter StatusOrigin = qbo_pull "
+        "so protected rows never appear in a dry run"
+    )
+
+
+@pytest.mark.parametrize("origin", STATUS_ORIGIN_VOCABULARY)
+def test_only_qbo_pull_is_selectable_status_origin_in_detection_sproc(origin):
+    body = strip_sql_comments(sproc_body(EXPENSE_SQL, DETECTION_SPROC))
+    pattern = rf"(?:e\.)?\[StatusOrigin\]\s*=\s*N'{origin}'"
+    if origin == "qbo_pull":
+        assert re.search(pattern, body, re.IGNORECASE), (
+            "detection sproc must select only qbo_pull completed expenses"
+        )
+    else:
+        assert not re.search(pattern, body, re.IGNORECASE), (
+            f"detection sproc must not filter on StatusOrigin = {origin!r}"
+        )
+
+
+@pytest.mark.parametrize("origin", STATUS_ORIGIN_VOCABULARY)
+def test_only_qbo_pull_is_selectable_status_origin_in_mark_sproc(origin):
+    body = strip_sql_comments(sproc_body(EXPENSE_SQL, MARK_SPROC))
+    where_clause = _mark_sproc_update_where_clause(body)
+    pattern = rf"\[StatusOrigin\]\s*=\s*N'{origin}'"
+    if origin == "qbo_pull":
+        assert re.search(pattern, where_clause, re.IGNORECASE), (
+            "mark sproc WHERE must require qbo_pull before flipping to draft"
+        )
+    else:
+        assert not re.search(pattern, where_clause, re.IGNORECASE), (
+            f"mark sproc WHERE must not accept StatusOrigin = {origin!r}"
+        )
+
+
+def test_detection_sproc_58999_and_item_ref_null_predicate_still_intact():
+    """F1 must not relax the genuinely-uncoded predicate."""
+    body = strip_sql_comments(sproc_body(EXPENSE_SQL, DETECTION_SPROC))
+    assert re.search(
+        r"pl\.\[AccountRefName\]\s+LIKE\s+N'%NEED TO CATEGORIZE%'",
+        body,
+        re.IGNORECASE,
+    )
+    assert re.search(r"pl\.\[ItemRefValue\]\s+IS\s+NULL", body, re.IGNORECASE)
+    where_match = re.search(
+        r"WHERE\s+e\.\[Status\]\s*=\s*N'completed'(.*?)\n\s*\)",
+        body,
+        re.IGNORECASE | re.DOTALL,
+    )
+    assert where_match is not None
+    where_chunk = where_match.group(1)
+    assert "AccountRefName" in where_chunk and "ItemRefValue" in where_chunk
 
 
 # ---------------------------------------------------------------------------

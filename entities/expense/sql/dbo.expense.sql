@@ -1389,6 +1389,7 @@ BEGIN
         LEFT JOIN dbo.[ExpenseCodingItem] eci
             ON eci.[QboPurchaseLineId] = pl.[Id]
         WHERE e.[Status] = N'completed'
+          AND e.[StatusOrigin] = N'qbo_pull'
           AND pl.[AccountRefName] LIKE N'%NEED TO CATEGORIZE%'
           AND pl.[ItemRefValue] IS NULL
     )
@@ -1435,7 +1436,8 @@ BEGIN
         )
     OUTPUT INSERTED.*
     WHERE [Id] = @ExpenseId
-      AND [Status] = N'completed';
+      AND [Status] = N'completed'
+      AND [StatusOrigin] = N'qbo_pull';
 
     COMMIT TRANSACTION;
 END;

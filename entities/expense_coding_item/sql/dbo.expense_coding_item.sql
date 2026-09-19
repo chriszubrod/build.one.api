@@ -914,6 +914,28 @@ BEGIN
           WHERE p.[QboId] = eci.[QboPurchaseQboId]
             AND p.[RealmId] = eci.[RealmId]
             AND pl.[AccountRefName] LIKE N'%NEED TO CATEGORIZE%'
+      )
+
+    UNION
+
+    SELECT
+        eci.[PublicId],
+        eci.[Id],
+        eci.[Status],
+        eci.[QboPurchaseQboId],
+        eci.[QboLineId]
+    FROM dbo.[ExpenseCodingItem] eci
+    INNER JOIN [qbo].[PurchaseLine] pl ON pl.[Id] = eci.[QboPurchaseLineId]
+    WHERE eci.[Status] IN (N'pending', N'suggested', N'flagged', N'changed_in_qbo')
+      AND NOT (
+          pl.[AccountRefName] LIKE N'%NEED TO CATEGORIZE%'
+          AND pl.[ItemRefValue] IS NULL
+      )
+      AND EXISTS (
+          SELECT 1
+          FROM [qbo].[Purchase] p
+          WHERE p.[QboId] = eci.[QboPurchaseQboId]
+            AND p.[RealmId] = eci.[RealmId]
       );
 END;
 GO

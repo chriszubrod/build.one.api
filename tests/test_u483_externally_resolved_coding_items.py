@@ -62,6 +62,110 @@ def test_detection_sproc_requires_no_need_to_categorize_lines_left():
     )
 
 
+def _detection_sproc_arms() -> tuple[str, str]:
+    """Return (arm1, arm2) text split on the first UNION in the detection sproc."""
+    body = strip_sql_comments(sproc_body(EXPENSE_CODING_SQL, DETECTION_SPROC))
+    parts = re.split(r"\bUNION\b", body, maxsplit=1, flags=re.IGNORECASE)
+    assert len(parts) >= 2, (
+        "ReadExternallyResolvedCodingItemCandidates must UNION a second arm "
+        "(in-place external recode) with the orphaned-line arm"
+    )
+    return parts[0], parts[1]
+
+
+def test_detection_sproc_arm1_requires_missing_purchase_line_row():
+    arm1, _ = _detection_sproc_arms()
+    assert re.search(
+        r"NOT\s+EXISTS\s*\(\s*"
+        r"SELECT\s+1\s+"
+        r"FROM\s+\[qbo\]\.\[PurchaseLine\]\s+pl\s+"
+        r"WHERE\s+pl\.\[Id\]\s*=\s*eci\.\[QboPurchaseLineId\]",
+        arm1,
+        re.IGNORECASE | re.DOTALL,
+    ), (
+        "Arm 1 must require the coding item's qbo.PurchaseLine row to be missing "
+        "(orphaned staging line after external replace recode)"
+    )
+
+
+def test_detection_sproc_arm2_placeholder_test_requires_item_ref_and_label():
+    _, arm2 = _detection_sproc_arms()
+    assert re.search(
+        r"AccountRefName\]\s+LIKE\s+N'%NEED TO CATEGORIZE%'",
+        arm2,
+        re.IGNORECASE,
+    ), "Arm 2 must test the 58999 AccountRefName label for still-a-placeholder"
+    assert re.search(
+        r"ItemRefValue\]\s+IS\s+NULL",
+        arm2,
+        re.IGNORECASE,
+    ), (
+        "Arm 2 must also test ItemRefValue IS NULL — label-only would leave "
+        "cockpit item-based recodes (U-484) permanently open"
+    )
+    assert re.search(
+        r"NOT\s*\(\s*"
+        r"[^)]*AccountRefName\][^)]*LIKE[^)]*NEED TO CATEGORIZE[^)]*"
+        r"AND[^)]*ItemRefValue\][^)]*IS\s+NULL[^)]*\)",
+        arm2,
+        re.IGNORECASE | re.DOTALL,
+    ), (
+        "Arm 2 placeholder negation must AND both AccountRefName and ItemRefValue "
+        "inside one NOT (...)"
+    )
+
+
+def test_detection_sproc_arm2_is_per_line_not_parent_58999_guard():
+    _, arm2 = _detection_sproc_arms()
+    assert re.search(
+        r"(?:pl\.\[Id\]\s*=\s*eci\.\[QboPurchaseLineId\]"
+        r"|eci\.\[QboPurchaseLineId\]\s*=\s*pl\.\[Id\])",
+        arm2,
+        re.IGNORECASE,
+    ), "Arm 2 must bind to THIS coding item's staging line (per-line safety)"
+    assert not re.search(
+        r"NOT\s+EXISTS\s*\(\s*"
+        r"SELECT\s+1\s+"
+        r"FROM\s+\[qbo\]\.\[Purchase\]\s+p\s+"
+        r"INNER\s+JOIN\s+\[qbo\]\.\[PurchaseLine\]\s+pl\s+"
+        r"ON\s+pl\.\[QboPurchaseId\]\s*=\s*p\.\[Id\][^)]*"
+        r"NEED TO CATEGORIZE",
+        arm2,
+        re.IGNORECASE | re.DOTALL,
+    ), (
+        "Arm 2 must NOT copy Arm 1's parent-level 'no 58999 anywhere on the "
+        "purchase' guard — multi-line purchases close coded lines independently"
+    )
+
+
+def test_detection_sproc_non_terminal_status_filter_on_both_arms():
+    body = strip_sql_comments(sproc_body(EXPENSE_CODING_SQL, DETECTION_SPROC))
+    status_filters = list(
+        re.finditer(r"eci\.\[Status\]\s+IN\s*\(([^)]+)\)", body, re.IGNORECASE)
+    )
+    assert len(status_filters) >= 2, (
+        "Both UNION arms must apply the non-terminal eci.[Status] IN (...) filter"
+    )
+    for match in status_filters:
+        chunk = match.group(1).lower()
+        for forbidden in ("written", "resolved_externally"):
+            assert forbidden not in chunk, (
+                f"Detection sproc must never emit {forbidden!r} candidates"
+            )
+        for allowed in ALLOWED_TRANSITION_FROM:
+            assert f"n'{allowed}'" in chunk or f"'{allowed}'" in chunk
+
+
+def test_detection_sproc_deduplicates_union_arms():
+    body = strip_sql_comments(sproc_body(EXPENSE_CODING_SQL, DETECTION_SPROC))
+    assert re.search(r"\bUNION\b", body, re.IGNORECASE), (
+        "Combine arms with UNION (implicit DISTINCT) so a row cannot appear twice"
+    )
+    assert not re.search(r"\bUNION\s+ALL\b", body, re.IGNORECASE), (
+        "UNION ALL would duplicate candidates that satisfy both arms"
+    )
+
+
 # ---------------------------------------------------------------------------
 # 2 — mark sproc cannot transition from terminal / in-flight statuses
 # ---------------------------------------------------------------------------

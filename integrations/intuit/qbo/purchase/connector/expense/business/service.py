@@ -179,7 +179,10 @@ class PurchaseExpenseConnector:
             read_direct_by_qbo_identity=self.expense_service.read_by_qbo_identity,
             apply_fields=_apply_expense_fields,
             resolve_candidate=lambda: self._create_expense(
-                qbo_purchase=qbo_purchase, vendor_public_id=vendor_public_id, reference_number=reference_number,
+                qbo_purchase=qbo_purchase,
+                vendor_public_id=vendor_public_id,
+                reference_number=reference_number,
+                qbo_purchase_lines=qbo_purchase_lines,
             ),
             stamp_identity=lambda candidate: self._stamp_expense_identity(
                 candidate, qbo_purchase=qbo_purchase, qbo_purchase_lines=qbo_purchase_lines,
@@ -197,7 +200,12 @@ class PurchaseExpenseConnector:
         return outcome.entity
 
     def _create_expense(
-        self, *, qbo_purchase: QboPurchase, vendor_public_id: str, reference_number: str,
+        self,
+        *,
+        qbo_purchase: QboPurchase,
+        vendor_public_id: str,
+        reference_number: str,
+        qbo_purchase_lines: Optional[List[QboPurchaseLine]] = None,
     ) -> Optional[Expense]:
         """
         `resolve_candidate` for the dbo-only fast path's MISS branch (U-354):
@@ -206,6 +214,10 @@ class PurchaseExpenseConnector:
         identity, including the re-read under lock). Expense carries no
         analogous unique business key to dedup against, so this mirrors the
         pre-U-354 legacy CREATE step exactly.
+
+        U-486 Phase F: card spend on the 58999 placeholder is not a finished
+        document — born `draft` when any line is genuinely uncoded (placeholder
+        account label AND no ItemRef); otherwise `completed` as before.
         """
         logger.info(f"Creating new Expense from QboPurchase {qbo_purchase.id}: reference_number={reference_number}")
         realm_id = qbo_purchase.realm_id
@@ -213,6 +225,7 @@ class PurchaseExpenseConnector:
         status_source_ref = (
             f"qbo:{realm_id}/{qbo_id}" if realm_id and qbo_id else None
         )
+        lines = qbo_purchase_lines or []
         return self.expense_service.create(
             vendor_public_id=vendor_public_id,
             expense_date=qbo_purchase.txn_date,
@@ -220,10 +233,20 @@ class PurchaseExpenseConnector:
             total_amount=qbo_purchase.total_amt,
             memo=qbo_purchase.private_note,
             is_credit=qbo_purchase.credit or False,
-            status="completed",
+            status=self._initial_status_for_purchase_lines(lines),
             status_origin="qbo_pull",
             status_source_ref=status_source_ref,
         )
+
+    @staticmethod
+    def _initial_status_for_purchase_lines(lines: List[QboPurchaseLine]) -> str:
+        """`draft` when any line is genuinely uncoded 58999; else `completed`."""
+        if any(
+            PurchaseExpenseConnector._qbo_purchase_line_is_uncoded_58999_placeholder(line)
+            for line in lines
+        ):
+            return "draft"
+        return "completed"
 
     def _stamp_expense_identity(
         self, candidate: Optional[Expense], *, qbo_purchase: QboPurchase, qbo_purchase_lines: List[QboPurchaseLine],
@@ -513,6 +536,20 @@ class PurchaseExpenseConnector:
         if not name:
             return False
         return "need to categorize" in name.lower()
+
+    @staticmethod
+    def _qbo_purchase_line_is_uncoded_58999_placeholder(line: QboPurchaseLine) -> bool:
+        """Genuinely uncoded 58999 line: placeholder account label and no ItemRef.
+
+        Account label alone is insufficient — expense-coding recode sets ItemRef
+        and deliberately leaves AccountRef on the placeholder (U-484).
+        """
+        name = getattr(line, "account_ref_name", None)
+        if not name:
+            return False
+        if "need to categorize" not in name.lower():
+            return False
+        return not getattr(line, "item_ref_value", None)
 
     def _get_qbo_item_ref(self, sub_cost_code_id: int, realm_id: Optional[str] = None):
         """

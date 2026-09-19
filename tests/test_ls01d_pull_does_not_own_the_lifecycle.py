@@ -23,7 +23,15 @@ read the connectors' own ASTs:
    removing the kwarg would have flipped 20k+ historical bills to draft.
    Expense's header connector (U-467) passes `status='completed'` instead of
    `is_draft`; every other connector still passes `is_draft`. Either form
-   is the "born complete" contract.
+   is the "born complete" contract for documents that already exist finished
+   in QBO. Expense exception (U-486 Phase F, CREATE-only): the Purchase header
+   connector may now be born `draft` when the pulled purchase still has a
+   genuinely uncoded 58999 placeholder line (NEED TO CATEGORIZE account label
+   AND ItemRef NULL). QBO card spend in that state is not a finished document
+   — marking it `completed` was the false statement and produced 330
+   completed-but-uncoded expenses. The UPDATE prohibition in pin 1 is
+   unchanged; re-pulling an existing Expense never overrides a human lifecycle
+   decision.
 3. The two Bill-side terminal-lock exemptions SURVIVE the removal. They sat on
    the same call as the dropped kwarg and read like part of the same idea; they
    are not. 20,219 of 20,223 QBO-linked bills are completed, so dropping the
@@ -70,6 +78,34 @@ def _calls(path: str):
 
 def _kwargs(call) -> set:
     return {kw.arg for kw in call.keywords if kw.arg is not None}
+
+
+EXPENSE_HEADER_CONNECTOR = (
+    "integrations/intuit/qbo/purchase/connector/expense/business/service.py"
+)
+
+
+def _expense_header_create_status_allowed(status_node) -> bool:
+    """U-486 Phase F: CREATE may pass status='completed' or a lines-derived if."""
+    if status_node is None:
+        return False
+    if isinstance(status_node, ast.Constant) and status_node.value == "completed":
+        return True
+    if isinstance(status_node, ast.IfExp):
+        body = status_node.body
+        orelse = status_node.orelse
+        return (
+            isinstance(body, ast.Constant)
+            and body.value == "draft"
+            and isinstance(orelse, ast.Constant)
+            and orelse.value == "completed"
+        )
+    if isinstance(status_node, ast.Call):
+        func = status_node.func
+        name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", None)
+        if name == "_initial_status_for_purchase_lines":
+            return True
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -141,6 +177,18 @@ def test_every_entity_create_site_still_passes_is_draft_or_status_completed():
             if isinstance(status_node, ast.Constant) and status_node.value == "completed":
                 ok = True
                 break
+            if path == EXPENSE_HEADER_CONNECTOR:
+                owner = call.func.value
+                owner_name = (
+                    owner.attr
+                    if isinstance(owner, ast.Attribute)
+                    else getattr(owner, "id", None)
+                )
+                if owner_name == "expense_service" and _expense_header_create_status_allowed(
+                    status_node
+                ):
+                    ok = True
+                    break
         if not ok:
             missing.append(path)
     assert missing == [], (
@@ -150,11 +198,13 @@ def test_every_entity_create_site_still_passes_is_draft_or_status_completed():
 
 
 def test_expense_header_connector_create_lands_status_not_is_draft():
-    """U-467: the Purchase header connector binds the status triple and does
-    not pass is_draft. Line items are a separate real column and stay on
-    is_draft (out of scope).
+    """U-467 / U-486 Phase F: the Purchase header connector binds the status
+    triple and does not pass is_draft. Line items are a separate real column
+    and stay on is_draft (out of scope). Status on CREATE is either the
+    constant 'completed' or the documented conditional (draft when any line is
+    a genuinely uncoded 58999 placeholder, else completed).
     """
-    path = "integrations/intuit/qbo/purchase/connector/expense/business/service.py"
+    path = EXPENSE_HEADER_CONNECTOR
     creates = []
     for call, name in _calls(path):
         if name != "create":
@@ -171,8 +221,9 @@ def test_expense_header_connector_create_lands_status_not_is_draft():
         kws = {kw.arg: kw.value for kw in call.keywords if kw.arg is not None}
         status_node = kws.get("status")
         origin_node = kws.get("status_origin")
-        assert isinstance(status_node, ast.Constant) and status_node.value == "completed", (
-            "Expense header create must pass status='completed'"
+        assert _expense_header_create_status_allowed(status_node), (
+            "Expense header create must pass status='completed' or the "
+            "documented draft/completed conditional from purchase lines"
         )
         assert isinstance(origin_node, ast.Constant) and origin_node.value == "qbo_pull", (
             "Expense header create must pass status_origin='qbo_pull'"

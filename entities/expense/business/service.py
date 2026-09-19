@@ -41,6 +41,17 @@ from shared.lifecycle.terminal_lock import assert_editable, is_exempt
 logger = logging.getLogger(__name__)
 
 
+# ---------------------------------------------------------------------------
+# QBO deep-link URL builder (Purchase PaymentType selects /expense vs /check).
+# ---------------------------------------------------------------------------
+
+def _build_qbo_expense_url(*, qbo_id: str, realm_id: str, payment_type: str) -> str:
+    segment = "check" if payment_type == "Check" else "expense"
+    return (
+        f"https://app.qbo.intuit.com/app/{segment}?txnId={qbo_id}&realmId={realm_id}"
+    )
+
+
 class ExpenseService:
     """
     Service for Expense entity business operations.
@@ -407,6 +418,70 @@ class ExpenseService:
             return None
         assert_can_access_expense(expense.id)
         return expense
+
+    def get_qbo_expense_url(self, expense_id: int) -> Optional[str]:
+        """
+        Return a clickable deep link to the QBO Purchase (expense or check
+        UI path depending on PaymentType), or None when identity or purchase
+        metadata cannot be resolved.
+        """
+        assert_can_access_expense(expense_id)
+        expense = self.repo.read_by_id(expense_id)
+        if expense is None:
+            return None
+        return self._build_qbo_url_for_expense(expense)
+
+    def _build_qbo_url_for_expense(self, expense: Expense) -> Optional[str]:
+        qbo_id = getattr(expense, "qbo_id", None)
+        realm_id = getattr(expense, "realm_id", None)
+        if not qbo_id or not realm_id:
+            return None
+        payment_type = self._read_qbo_purchase_payment_type(expense.id)
+        if not payment_type:
+            return None
+        return _build_qbo_expense_url(
+            qbo_id=qbo_id,
+            realm_id=realm_id,
+            payment_type=payment_type,
+        )
+
+    def _read_qbo_purchase_payment_type(self, expense_id: int) -> Optional[str]:
+        """Resolve qbo.Purchase.PaymentType via ExpenseLineItem mapping hop."""
+        from shared.database import get_connection
+
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    """
+                    SELECT TOP 1 p.[PaymentType]
+                    FROM dbo.[ExpenseLineItem] eli
+                    INNER JOIN qbo.[PurchaseLineExpenseLineItem] pleli
+                        ON pleli.[ExpenseLineItemId] = eli.[Id]
+                    INNER JOIN qbo.[PurchaseLine] pl
+                        ON pl.[Id] = pleli.[QboPurchaseLineId]
+                    INNER JOIN qbo.[Purchase] p
+                        ON p.[Id] = pl.[QboPurchaseId]
+                    INNER JOIN dbo.[Expense] e
+                        ON e.[Id] = eli.[ExpenseId]
+                    WHERE eli.[ExpenseId] = ?
+                      AND e.[RealmId] IS NOT NULL
+                      AND p.[RealmId] = e.[RealmId]
+                    """,
+                    expense_id,
+                )
+                row = cursor.fetchone()
+                if not row:
+                    return None
+                payment_type = row[0]
+                return payment_type if payment_type else None
+        except Exception as error:
+            logger.warning(
+                "Could not resolve QBO PaymentType for expense_id=%s: %s",
+                expense_id,
+                error,
+            )
+            return None
 
     def read_by_reference_number_and_vendor_public_id(self, reference_number: str, vendor_public_id: str) -> Optional[Expense]:
         """

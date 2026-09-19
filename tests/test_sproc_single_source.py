@@ -264,6 +264,7 @@ _UDF_PATTERN = re.compile(
 
 _REVIEW_RESOLVER_NAMES = (
     "ResolveReviewRecipientsByBillId",
+    "ResolveReviewRecipientsByExpenseId",
     "ResolveReviewRecipientsByContractLaborId",
     "ResolveContractLaborReviewRecipientsPerProject",
 )

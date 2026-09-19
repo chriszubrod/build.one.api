@@ -1235,3 +1235,83 @@ BEGIN
     ORDER BY clp.[ProjectId], dpr.[RoleName], u.[Lastname], u.[Firstname];
 END;
 GO
+
+
+-- -----------------------------------------------------------------------------
+-- 3. Expense resolver — same envelope as Bill (U-486 Phase C1)
+-- -----------------------------------------------------------------------------
+CREATE OR ALTER PROCEDURE dbo.ResolveReviewRecipientsByExpenseId
+(
+    @ExpenseId BIGINT,
+    @ExcludeUserId BIGINT = NULL
+)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    BEGIN TRANSACTION;
+
+    WITH ExpenseProjects AS (
+        SELECT DISTINCT eli.[ProjectId]
+        FROM dbo.[ExpenseLineItem] eli
+        WHERE eli.[ExpenseId] = @ExpenseId
+          AND eli.[ProjectId] IS NOT NULL
+    ),
+    UserProjectRoles AS (
+        SELECT
+            up.[UserId],
+            up.[ProjectId],
+            r.[Name] AS [RoleName],
+            CASE r.[Name]
+                WHEN 'Project Manager' THEN 1
+                WHEN 'Owner'           THEN 2
+                ELSE 99
+            END AS [RolePrecedence]
+        FROM dbo.[UserProject] up
+        INNER JOIN ExpenseProjects ep ON ep.[ProjectId] = up.[ProjectId]
+        INNER JOIN dbo.[Role] r ON r.[Id] = up.[RoleId]
+        WHERE r.[Name] IN ('Project Manager', 'Owner')
+          AND (@ExcludeUserId IS NULL OR up.[UserId] <> @ExcludeUserId)
+          AND dbo.IsHumanReviewUser(up.[UserId]) = 1
+    ),
+    DedupedRoles AS (
+        SELECT
+            [UserId],
+            [RoleName],
+            [ProjectId],
+            ROW_NUMBER() OVER (
+                PARTITION BY [UserId]
+                ORDER BY [RolePrecedence] ASC, [ProjectId] ASC
+            ) AS rn
+        FROM UserProjectRoles
+    ),
+    UserEmails AS (
+        SELECT
+            c.[UserId],
+            c.[Email],
+            ROW_NUMBER() OVER (
+                PARTITION BY c.[UserId]
+                ORDER BY c.[Id] ASC
+            ) AS rn
+        FROM dbo.[Contact] c
+        WHERE c.[UserId] IS NOT NULL
+          AND c.[Email] IS NOT NULL
+    )
+    SELECT
+        u.[Id]        AS [UserId],
+        u.[Firstname],
+        u.[Lastname],
+        ue.[Email],
+        dr.[RoleName],
+        dr.[ProjectId]
+    FROM DedupedRoles dr
+    INNER JOIN dbo.[User] u ON u.[Id] = dr.[UserId]
+    LEFT JOIN UserEmails ue
+        ON ue.[UserId] = dr.[UserId]
+       AND ue.rn = 1
+    WHERE dr.rn = 1
+    ORDER BY dr.[RoleName], u.[Lastname], u.[Firstname];
+
+    COMMIT TRANSACTION;
+END;
+GO

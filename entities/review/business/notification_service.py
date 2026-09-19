@@ -69,6 +69,269 @@ class ReviewNotificationService:
                 error,
             )
 
+    def enqueue_for_expense(
+        self,
+        *,
+        expense,
+        review,
+        exclude_user_id: Optional[int] = None,
+    ) -> None:
+        """Enqueue a review-submit notification for an expense (U-486 C1)."""
+        try:
+            self._do_enqueue_expense(
+                expense=expense,
+                review=review,
+                exclude_user_id=exclude_user_id,
+            )
+        except Exception as error:
+            logger.exception(
+                "review_notification.enqueue_failed expense_public_id=%s review_id=%s: %s",
+                getattr(expense, "public_id", None),
+                getattr(review, "id", None),
+                error,
+            )
+
+    def _do_enqueue_expense(self, *, expense, review, exclude_user_id):
+        from config import Settings
+        from entities.attachment.business.service import AttachmentService
+        from entities.expense.business.service import ExpenseService
+        from entities.expense_line_item.business.service import ExpenseLineItemService
+        from entities.expense_line_item_attachment.business.service import (
+            ExpenseLineItemAttachmentService,
+        )
+        from entities.project.business.service import ProjectService
+        from entities.review.business.recipient_service import ReviewRecipientService
+        from entities.review.persistence.repo import ReviewRepository
+        from entities.sub_cost_code.business.service import SubCostCodeService
+        from entities.user.business.service import UserService
+        from entities.vendor.business.service import VendorService
+        from integrations.ms.outbox.business.service import MsOutboxService
+        from shared.authz.context import system_authz
+        from shared.storage import AzureBlobStorage
+
+        rows = ReviewRepository().resolve_review_recipients_by_expense_id(
+            expense_id=expense.id,
+            exclude_user_id=exclude_user_id,
+        )
+        envelope = ReviewRecipientService._bucket(rows)
+        to_with_email = [r for r in envelope["to"] if r.email]
+        cc_with_email = [r for r in envelope["cc"] if r.email]
+        unreachable = [r for r in (envelope["to"] + envelope["cc"]) if not r.email]
+        if unreachable:
+            logger.warning(
+                "review_notification.unreachable_recipients expense_public_id=%s "
+                "user_ids=%s reason=no_contact_email",
+                expense.public_id,
+                [r.user_id for r in unreachable],
+            )
+        if not to_with_email:
+            logger.warning(
+                "review_notification.no_to_recipient expense_public_id=%s "
+                "reason=no_project_manager_with_email — sending anyway "
+                "(BCC archive still active).",
+                expense.public_id,
+            )
+        if not cc_with_email:
+            logger.info(
+                "review_notification.no_cc_recipient expense_public_id=%s "
+                "reason=no_owner_with_email",
+                expense.public_id,
+            )
+
+        settings = Settings()
+        bcc_with_email = []
+        if settings.invoice_inbox_email:
+            bcc_with_email.append(
+                {
+                    "email": settings.invoice_inbox_email,
+                    "name": "Invoice Inbox (archive)",
+                }
+            )
+        else:
+            logger.warning(
+                "review_notification.bcc_archive_skipped expense_public_id=%s "
+                "reason=invoice_inbox_email_not_configured",
+                expense.public_id,
+            )
+
+        if not to_with_email and not cc_with_email and not bcc_with_email:
+            logger.error(
+                "review_notification.skipped expense_public_id=%s "
+                "reason=no_recipients_on_any_line",
+                expense.public_id,
+            )
+            return
+
+        vendor_name = "(unknown vendor)"
+        if expense.vendor_id is not None:
+            vendor = VendorService().read_by_id(expense.vendor_id)
+            if vendor and vendor.name:
+                vendor_name = vendor.name
+
+        line_items = ExpenseLineItemService().read_by_expense_id(expense.id) or []
+        project_ids = sorted({li.project_id for li in line_items if li.project_id})
+        project_label = "(no project)"
+        if project_ids:
+            ps = ProjectService()
+            labels = []
+            for pid in project_ids:
+                p = ps.read_by_id(pid)
+                if not p:
+                    continue
+                labels.append(p.abbreviation or p.name or "")
+            labels = [s for s in labels if s]
+            if labels:
+                project_label = ", ".join(labels)
+
+        submitter_name = f"User {review.user_id}"
+        if review.user_id is not None:
+            submitter = UserService().read_by_id(review.user_id)
+            if submitter:
+                full = f"{submitter.firstname or ''} {submitter.lastname or ''}".strip()
+                if full:
+                    submitter_name = full
+
+        attachment_payload = self._build_expense_attachment_payload(
+            expense=expense,
+            line_items=line_items,
+            elia_service=ExpenseLineItemAttachmentService(),
+            attachment_service=AttachmentService(),
+            storage=AzureBlobStorage(),
+        )
+
+        scc_ids = sorted({li.sub_cost_code_id for li in line_items if li.sub_cost_code_id})
+        scc_label_by_id: dict = {}
+        if scc_ids:
+            scs = SubCostCodeService()
+            for scc_id in scc_ids:
+                s = scs.read_by_id(scc_id)
+                if s:
+                    scc_label_by_id[scc_id] = f"{s.number} {s.name}".strip() if (s.number or s.name) else None
+
+        qbo_url = None
+        try:
+            with system_authz():
+                qbo_url = ExpenseService()._build_qbo_url_for_expense(expense)
+        except Exception as qbo_link_error:
+            logger.warning(
+                "review_notification.qbo_link_failed expense_public_id=%s: %s",
+                expense.public_id,
+                qbo_link_error,
+            )
+
+        subject = self._build_expense_subject(
+            vendor_name=vendor_name,
+            reference_number=expense.reference_number,
+            project_label=project_label,
+            total_amount=expense.total_amount,
+        )
+        body_html = self._build_expense_html_body(
+            expense=expense,
+            vendor_name=vendor_name,
+            project_label=project_label,
+            submitter_name=submitter_name,
+            line_items=line_items,
+            scc_label_by_id=scc_label_by_id,
+            to_recipients=to_with_email,
+            attachment_filename=(attachment_payload or {}).get("name"),
+            qbo_url=qbo_url,
+        )
+
+        mode = "draft"
+        result = MsOutboxService().enqueue_send_mail(
+            entity_type="Expense",
+            entity_public_id=expense.public_id,
+            to_addresses=[
+                {"email": r.email, "name": r.display_name} for r in to_with_email
+            ],
+            cc_addresses=[
+                {"email": r.email, "name": r.display_name} for r in cc_with_email
+            ],
+            bcc_addresses=bcc_with_email,
+            subject=subject,
+            body=body_html,
+            body_type="HTML",
+            attachment=attachment_payload,
+            mode=mode,
+            review_id=review.id,
+        )
+
+        if result is None:
+            logger.info(
+                "review_notification.enqueue_refused expense_public_id=%s reason=ms_writes_gate",
+                expense.public_id,
+            )
+            return
+
+        logger.info(
+            "review_notification.enqueued expense_public_id=%s outbox_public_id=%s "
+            "mode=%s to=%d cc=%d bcc=%d attachment=%s",
+            expense.public_id,
+            result.public_id,
+            mode,
+            len(to_with_email),
+            len(cc_with_email),
+            len(bcc_with_email),
+            (attachment_payload or {}).get("name") or "(none)",
+        )
+
+        if not (to_with_email or cc_with_email):
+            return
+        self._advance_expense_to_in_review(expense=expense, review=review)
+
+    def _advance_expense_to_in_review(self, *, expense, review) -> None:
+        try:
+            from shared.authz import system_actor_user_id
+            from entities.review.business.service import ReviewService
+            from entities.review_status.business.service import ReviewStatusService
+
+            actor = system_actor_user_id()
+            status_service = ReviewStatusService()
+            statuses = status_service.read_all()
+            current = next(
+                (s for s in statuses if s.id == review.review_status_id), None
+            )
+            if current is None:
+                logger.info(
+                    "review_notification.current_status_unresolved expense_public_id=%s "
+                    "review_status_id=%s",
+                    expense.public_id,
+                    review.review_status_id,
+                )
+                return
+
+            in_review = status_service.get_next_intermediate_status(
+                current.sort_order, statuses=statuses
+            )
+            if in_review is None:
+                logger.info(
+                    "review_notification.in_review_status_missing expense_public_id=%s "
+                    "no active non-declined non-final ReviewStatus after "
+                    "sort_order=%s",
+                    expense.public_id,
+                    current.sort_order,
+                )
+                return
+
+            ReviewService().create(
+                review_status_id=in_review.id,
+                user_id=review.user_id,
+                created_by_user_id=actor,
+                comments=None,
+                expense_id=expense.id,
+                email_message_id=None,
+            )
+            logger.info(
+                "review_notification.in_review_advanced expense_public_id=%s",
+                expense.public_id,
+            )
+        except Exception as in_review_error:
+            logger.exception(
+                "review_notification.in_review_advance_failed expense_public_id=%s: %s",
+                expense.public_id,
+                in_review_error,
+            )
+
     def _do_enqueue(self, *, bill, review, exclude_user_id):
         # Lazy imports to avoid circular dependencies with BillService.
         from config import Settings
@@ -441,6 +704,170 @@ class ReviewNotificationService:
                 "content_bytes": base64.b64encode(content_bytes).decode("ascii"),
             }
         return None
+
+    @staticmethod
+    def _build_expense_attachment_payload(
+        *,
+        expense,
+        line_items,
+        elia_service,
+        attachment_service,
+        storage,
+    ) -> Optional[dict]:
+        if not line_items:
+            return None
+        for li in line_items:
+            elia = elia_service.read_by_expense_line_item_id(
+                expense_line_item_public_id=str(li.public_id)
+            )
+            if not elia:
+                continue
+            attachment = attachment_service.read_by_id(elia.attachment_id)
+            if not attachment or not attachment.blob_url:
+                continue
+            if (attachment.content_type or "").lower() != "application/pdf":
+                logger.info(
+                    "review_notification.attachment_skipped_non_pdf expense_public_id=%s "
+                    "attachment_public_id=%s content_type=%s",
+                    expense.public_id,
+                    attachment.public_id,
+                    attachment.content_type,
+                )
+                continue
+            try:
+                content_bytes, _meta = storage.download_file(attachment.blob_url)
+            except Exception as e:
+                logger.warning(
+                    "review_notification.attachment_download_failed expense_public_id=%s "
+                    "attachment_public_id=%s: %s",
+                    expense.public_id,
+                    attachment.public_id,
+                    e,
+                )
+                continue
+            return {
+                "name": attachment.filename or "expense.pdf",
+                "content_type": attachment.content_type or "application/pdf",
+                "content_bytes": base64.b64encode(content_bytes).decode("ascii"),
+            }
+        return None
+
+    @staticmethod
+    def _build_expense_subject(
+        *,
+        vendor_name: str,
+        reference_number: Optional[str],
+        project_label: str,
+        total_amount,
+    ) -> str:
+        ref_display = reference_number or "(no reference)"
+        amount_str = ReviewNotificationService._format_amount(total_amount)
+        return (
+            f"[Review] {vendor_name} — Expense {ref_display} "
+            f"— {project_label} — {amount_str}"
+        )
+
+    @classmethod
+    def _build_expense_html_body(
+        cls,
+        *,
+        expense,
+        vendor_name: str,
+        project_label: str,
+        submitter_name: str,
+        line_items,
+        scc_label_by_id: dict,
+        to_recipients: Optional[list],
+        attachment_filename: Optional[str],
+        qbo_url: Optional[str],
+    ) -> str:
+        reference_number = html.escape(expense.reference_number or "(no reference)")
+        vendor = html.escape(vendor_name)
+        project = html.escape(project_label)
+        submitter = html.escape(submitter_name)
+        amount_str = cls._format_amount(expense.total_amount)
+        submitted_date = cls._format_submitted_date(expense.created_datetime)
+
+        greeting = ""
+        if to_recipients:
+            firstnames = [
+                html.escape(r.firstname.strip())
+                for r in to_recipients
+                if getattr(r, "firstname", None) and r.firstname.strip()
+            ]
+            if firstnames:
+                greeting = f"<p>{'/'.join(firstnames)},</p>"
+
+        line_rows_html = ""
+        if line_items:
+            multi_project = (
+                len({li.project_id for li in line_items if li.project_id}) > 1
+            )
+            rows = []
+            for li in line_items:
+                desc = html.escape(li.description or "")
+                scc_label = html.escape(scc_label_by_id.get(li.sub_cost_code_id) or "")
+                amt = cls._format_amount(li.amount)
+                if multi_project:
+                    proj_lbl = ""
+                    if li.project_id:
+                        from entities.project.business.service import ProjectService
+                        p = ProjectService().read_by_id(li.project_id)
+                        if p:
+                            proj_lbl = html.escape(p.abbreviation or p.name or "")
+                    rows.append(
+                        f"<tr><td>{desc}</td><td>{proj_lbl}</td>"
+                        f"<td>{scc_label}</td><td style='text-align:right;'>{amt}</td></tr>"
+                    )
+                else:
+                    rows.append(
+                        f"<tr><td>{desc}</td><td>{scc_label}</td>"
+                        f"<td style='text-align:right;'>{amt}</td></tr>"
+                    )
+            header = (
+                "<tr><th align='left'>Description</th>"
+                + ("<th align='left'>Project</th>" if multi_project else "")
+                + "<th align='left'>Sub Cost Code</th>"
+                "<th align='right'>Amount</th></tr>"
+            )
+            line_rows_html = (
+                "<table cellpadding='4' cellspacing='0' border='1' "
+                "style='border-collapse:collapse; margin-top:6px;'>"
+                f"{header}{''.join(rows)}</table>"
+            )
+
+        attachment_html = ""
+        if attachment_filename:
+            attachment_html = (
+                f"<p>Attached: <strong>{html.escape(attachment_filename)}</strong></p>"
+            )
+
+        qbo_html = ""
+        if qbo_url:
+            safe_url = html.escape(qbo_url, quote=True)
+            qbo_html = (
+                f'<p>Open in QuickBooks: <a href="{safe_url}">{safe_url}</a></p>'
+            )
+
+        return (
+            f"{greeting}"
+            "<p>A new expense has been submitted for review:</p>"
+            "<p>"
+            f"Project: {project}<br/>"
+            f"Vendor: {vendor}<br/>"
+            f"Reference: {reference_number}<br/>"
+            f"Amount: {amount_str}"
+            "</p>"
+            "<p>"
+            f"Submitted By: {submitter}<br/>"
+            f"Submitted Date: {submitted_date}"
+            "</p>"
+            f"{line_rows_html}"
+            f"{attachment_html}"
+            f"{qbo_html}"
+            "<p>When you have a moment, will you please reply for approval "
+            "with Sub Cost Code and Description, or non-approval?</p>"
+        )
 
     # ─── subject + body builders ────────────────────────────────────────────
 

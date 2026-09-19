@@ -8,6 +8,7 @@ import pyodbc
 
 # Local Imports
 from entities.review.business.model import Review
+from entities.review.business.recipient_model import ResolvedRecipient
 from shared.lifecycle.terminal_lock import reraise_if_sproc_status_locked
 from shared.database import (
     call_procedure,
@@ -161,6 +162,45 @@ class ReviewRepository:
 
     def read_by_expense_id(self, expense_id: int) -> list[Review]:
         return self._read_list("ReadReviewsByExpenseId", {"ExpenseId": expense_id})
+
+    def resolve_review_recipients_by_expense_id(
+        self,
+        *,
+        expense_id: int,
+        exclude_user_id: Optional[int] = None,
+    ) -> list[ResolvedRecipient]:
+        """Resolve PM/Owner recipients for an expense review notification."""
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(
+                    cursor=cursor,
+                    name="ResolveReviewRecipientsByExpenseId",
+                    params={
+                        "ExpenseId": expense_id,
+                        "ExcludeUserId": exclude_user_id,
+                    },
+                )
+                rows = cursor.fetchall()
+                return [
+                    ResolvedRecipient(
+                        user_id=row.UserId,
+                        firstname=row.Firstname,
+                        lastname=row.Lastname,
+                        email=row.Email,
+                        role_name=row.RoleName,
+                        project_id=row.ProjectId,
+                    )
+                    for row in rows
+                    if row
+                ]
+        except Exception as error:
+            logger.error(
+                "Error resolving review recipients for expense %s: %s",
+                expense_id,
+                error,
+            )
+            raise map_database_error(error)
 
     def read_by_bill_credit_id(self, bill_credit_id: int) -> list[Review]:
         return self._read_list("ReadReviewsByBillCreditId", {"BillCreditId": bill_credit_id})

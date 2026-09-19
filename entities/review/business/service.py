@@ -154,7 +154,11 @@ class ReviewService:
         # rolls back the Submitted Review row.
         first_status = (
             self.review_status_service.get_first_status()
-            if (bill_id is not None or contract_labor_id is not None)
+            if (
+                bill_id is not None
+                or contract_labor_id is not None
+                or expense_id is not None
+            )
             else None
         )
         is_initial_submit = (
@@ -234,6 +238,28 @@ class ReviewService:
                     "Failed to enqueue Bill review-submit notification "
                     "(bill_id=%s, review_id=%s)",
                     bill_id,
+                    review.id,
+                )
+
+        if expense_id is not None and is_initial_submit:
+            try:
+                from entities.expense.persistence.repo import ExpenseRepository
+                from entities.review.business.notification_service import (
+                    ReviewNotificationService,
+                )
+
+                expense = ExpenseRepository().read_by_id(expense_id)
+                if expense is not None:
+                    ReviewNotificationService().enqueue_for_expense(
+                        expense=expense,
+                        review=review,
+                        exclude_user_id=user_id,
+                    )
+            except Exception:
+                logger.exception(
+                    "Failed to enqueue Expense review-submit notification "
+                    "(expense_id=%s, review_id=%s)",
+                    expense_id,
                     review.id,
                 )
 

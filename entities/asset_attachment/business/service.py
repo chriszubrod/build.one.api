@@ -2,7 +2,8 @@
 from typing import Optional
 
 # Local Imports
-from entities.asset.business.service import AssetService
+from entities.asset.business.service import AssetService, assert_company_scope
+from entities.asset.persistence.repo import AssetRepository
 from entities.asset_attachment.business.model import AssetAttachment
 from entities.asset_attachment.persistence.repo import AssetAttachmentRepository
 from entities.attachment.business.service import AttachmentService
@@ -16,10 +17,12 @@ class AssetAttachmentService:
     def _assert_parent_asset_access(self, link: AssetAttachment) -> None:
         if not link.asset_id:
             raise EntityNotAccessibleError("AssetAttachment", link.id or 0)
-        asset = AssetService().repo.read_by_id(int(link.asset_id))
+        asset = AssetRepository().read_by_id(int(link.asset_id))
         if not asset:
             raise EntityNotAccessibleError("AssetAttachment", link.id or 0)
-        AssetService()._assert_company_access(asset)
+        # Authorized through the PARENT — AssetAttachment carries no CompanyId of
+        # its own, which is the repo's convention for child entities.
+        assert_company_scope("AssetAttachment", link.id, asset.company_id)
 
     def create(
         self,

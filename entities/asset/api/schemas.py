@@ -33,10 +33,10 @@ class AssetUpdate(BaseModel):
     row_version: str = Field(description="Base64-encoded ROWVERSION")
     name: Optional[str] = Field(default=None, max_length=200)
     asset_type: Optional[str] = None
-    make: Optional[str] = None
-    model: Optional[str] = None
+    make: Optional[str] = Field(default=None, max_length=100)
+    model: Optional[str] = Field(default=None, max_length=100)
     model_year: Optional[int] = None
-    serial_number: Optional[str] = None
+    serial_number: Optional[str] = Field(default=None, max_length=100)
     status: Optional[str] = None
     acquisition_date: Optional[str] = None
     disposal_date: Optional[str] = None

@@ -16,7 +16,6 @@ from entities.asset.business.service import (
     AssetService,
 )
 from core.workflow.api.process_engine import Channel, EventType, ProcessEngine, TriggerContext
-from shared.access import EntityNotAccessibleError
 from shared.api.responses import item_response, list_response, raise_not_found, raise_workflow_error
 from shared.rbac import require_module_api
 from shared.rbac_constants import Modules
@@ -59,10 +58,7 @@ def get_asset_by_public_id_router(
     public_id: str,
     current_user: dict = Depends(require_module_api(Modules.ASSETS)),
 ):
-    try:
-        data = service.read_with_qbo_by_public_id(public_id=public_id)
-    except EntityNotAccessibleError:
-        raise_not_found("Asset")
+    data = service.read_with_qbo_by_public_id(public_id=public_id)
     if not data:
         raise_not_found("Asset")
     return item_response(data)

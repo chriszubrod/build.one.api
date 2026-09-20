@@ -21,6 +21,15 @@ BEGIN
 END
 GO
 
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_AssetAttachment_AssetId' AND object_id = OBJECT_ID('dbo.AssetAttachment'))
+BEGIN
+    -- Covers every AssetId-filtered path (list-by-asset, the create-path dedupe read,
+    -- and the cascade delete) plus the FK check. CreatedDatetime is the second key so
+    -- ReadAssetAttachmentsByAssetId's ORDER BY is served by the index, not a sort.
+    CREATE INDEX IX_AssetAttachment_AssetId ON dbo.[AssetAttachment] ([AssetId], [CreatedDatetime] DESC);
+END
+GO
+
 IF NOT EXISTS (SELECT 1 FROM sys.foreign_keys WHERE name = 'FK_AssetAttachment_Asset')
 BEGIN
     ALTER TABLE dbo.[AssetAttachment] ADD CONSTRAINT FK_AssetAttachment_Asset
@@ -61,24 +70,6 @@ BEGIN
     VALUES (@Now, @Now, @AssetId, @AttachmentId);
 
     COMMIT TRANSACTION;
-END;
-GO
-
-CREATE OR ALTER PROCEDURE ReadAssetAttachments
-AS
-BEGIN
-    SET NOCOUNT ON;
-
-    SELECT
-        [Id],
-        [PublicId],
-        [RowVersion],
-        CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
-        CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
-        [AssetId],
-        [AttachmentId]
-    FROM dbo.[AssetAttachment]
-    ORDER BY [AssetId] ASC, [AttachmentId] ASC;
 END;
 GO
 
@@ -151,20 +142,3 @@ BEGIN
 END;
 GO
 
-CREATE OR ALTER PROCEDURE DeleteAssetAttachmentsByAssetId
-(
-    @AssetId INT
-)
-AS
-BEGIN
-    SET NOCOUNT ON;
-    SET XACT_ABORT ON;
-
-    BEGIN TRANSACTION;
-
-    DELETE FROM dbo.[AssetAttachment]
-    WHERE [AssetId] = @AssetId;
-
-    COMMIT TRANSACTION;
-END;
-GO

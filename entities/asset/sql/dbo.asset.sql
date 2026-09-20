@@ -35,41 +35,6 @@ CREATE TABLE [dbo].[Asset]
 END
 GO
 
-IF EXISTS (
-    SELECT 1
-    FROM sys.columns c
-    INNER JOIN sys.types t ON c.user_type_id = t.user_type_id
-    WHERE c.object_id = OBJECT_ID('dbo.Asset')
-      AND c.name = 'QboFixedAssetAccountId'
-      AND t.name = 'int'
-)
-BEGIN
-    -- The index below is created further down this file, so on a database that
-    -- already received the pre-NVARCHAR schema it exists and DEPENDS on this
-    -- column -- SQL Server refuses ALTER COLUMN while it does. Drop it here and
-    -- let the guarded CREATE INDEX further down put it back. Unreachable on a
-    -- fresh apply (the CREATE TABLE already declares NVARCHAR, so the enclosing
-    -- t.name = 'int' guard is false), but a re-apply against an intermediate
-    -- database would otherwise fail mid-deploy.
-    IF EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_Asset_QboFixedAssetAccountId' AND object_id = OBJECT_ID('dbo.Asset'))
-        DROP INDEX IX_Asset_QboFixedAssetAccountId ON dbo.[Asset];
-    ALTER TABLE dbo.[Asset] ALTER COLUMN [QboFixedAssetAccountId] NVARCHAR(50) NULL;
-END
-GO
-
-IF EXISTS (
-    SELECT 1
-    FROM sys.columns c
-    INNER JOIN sys.types t ON c.user_type_id = t.user_type_id
-    WHERE c.object_id = OBJECT_ID('dbo.Asset')
-      AND c.name = 'QboAccumDepAccountId'
-      AND t.name = 'int'
-)
-BEGIN
-    ALTER TABLE dbo.[Asset] ALTER COLUMN [QboAccumDepAccountId] NVARCHAR(50) NULL;
-END
-GO
-
 IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'UQ_Asset_PublicId' AND object_id = OBJECT_ID('dbo.Asset'))
 BEGIN
     CREATE UNIQUE INDEX UQ_Asset_PublicId ON dbo.[Asset] ([PublicId]);
@@ -120,19 +85,6 @@ CREATE TABLE [dbo].[AssetFinancingNote]
 END
 GO
 
-IF EXISTS (
-    SELECT 1
-    FROM sys.columns c
-    INNER JOIN sys.types t ON c.user_type_id = t.user_type_id
-    WHERE c.object_id = OBJECT_ID('dbo.AssetFinancingNote')
-      AND c.name = 'QboLiabilityAccountId'
-      AND t.name = 'int'
-)
-BEGIN
-    ALTER TABLE dbo.[AssetFinancingNote] ALTER COLUMN [QboLiabilityAccountId] NVARCHAR(50) NOT NULL;
-END
-GO
-
 IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'UQ_AssetFinancingNote_PublicId' AND object_id = OBJECT_ID('dbo.AssetFinancingNote'))
 BEGIN
     CREATE UNIQUE INDEX UQ_AssetFinancingNote_PublicId ON dbo.[AssetFinancingNote] ([PublicId]);
@@ -167,23 +119,6 @@ CREATE TABLE [dbo].[AssetAccountExclusion]
     [CompanyId] INT NOT NULL,
     [CreatedByUserId] BIGINT NULL
 );
-END
-GO
-
-IF EXISTS (
-    SELECT 1
-    FROM sys.columns c
-    INNER JOIN sys.types t ON c.user_type_id = t.user_type_id
-    WHERE c.object_id = OBJECT_ID('dbo.AssetAccountExclusion')
-      AND c.name = 'QboAccountId'
-      AND t.name = 'int'
-)
-BEGIN
-    -- Same dependent-index problem as dbo.Asset above: this column is covered by
-    -- IX_AssetAccountExclusion_CompanyId_QboAccountId, which blocks ALTER COLUMN.
-    IF EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_AssetAccountExclusion_CompanyId_QboAccountId' AND object_id = OBJECT_ID('dbo.AssetAccountExclusion'))
-        DROP INDEX IX_AssetAccountExclusion_CompanyId_QboAccountId ON dbo.[AssetAccountExclusion];
-    ALTER TABLE dbo.[AssetAccountExclusion] ALTER COLUMN [QboAccountId] NVARCHAR(50) NOT NULL;
 END
 GO
 
@@ -503,43 +438,6 @@ BEGIN
 END;
 GO
 
-CREATE OR ALTER PROCEDURE DeleteAssetById
-(
-    @Id INT
-)
-AS
-BEGIN
-    SET NOCOUNT ON;
-    SET XACT_ABORT ON;
-
-    BEGIN TRANSACTION;
-
-    DELETE FROM dbo.[Asset]
-    OUTPUT
-        DELETED.[Id],
-        DELETED.[PublicId],
-        DELETED.[RowVersion],
-        CONVERT(VARCHAR(19), DELETED.[CreatedDatetime], 120) AS [CreatedDatetime],
-        CONVERT(VARCHAR(19), DELETED.[ModifiedDatetime], 120) AS [ModifiedDatetime],
-        DELETED.[Name],
-        DELETED.[AssetType],
-        DELETED.[Make],
-        DELETED.[Model],
-        DELETED.[ModelYear],
-        DELETED.[SerialNumber],
-        DELETED.[Status],
-        CONVERT(VARCHAR(10), DELETED.[AcquisitionDate], 23) AS [AcquisitionDate],
-        CONVERT(VARCHAR(10), DELETED.[DisposalDate], 23) AS [DisposalDate],
-        DELETED.[QboFixedAssetAccountId],
-        DELETED.[QboAccumDepAccountId],
-        DELETED.[CompanyId],
-        DELETED.[CreatedByUserId]
-    WHERE [Id] = @Id;
-
-    COMMIT TRANSACTION;
-END;
-GO
-
 CREATE OR ALTER PROCEDURE CreateAssetFinancingNote
 (
     @AssetId INT,
@@ -643,24 +541,6 @@ BEGIN
         DELETED.[CompanyId],
         DELETED.[CreatedByUserId]
     WHERE [Id] = @Id;
-
-    COMMIT TRANSACTION;
-END;
-GO
-
-CREATE OR ALTER PROCEDURE DeleteAssetFinancingNotesByAssetId
-(
-    @AssetId INT
-)
-AS
-BEGIN
-    SET NOCOUNT ON;
-    SET XACT_ABORT ON;
-
-    BEGIN TRANSACTION;
-
-    DELETE FROM dbo.[AssetFinancingNote]
-    WHERE [AssetId] = @AssetId;
 
     COMMIT TRANSACTION;
 END;

@@ -88,15 +88,3 @@ class AssetAttachmentRepository:
                 return self._from_db(row) if row else None
             finally:
                 cursor.close()
-
-    def delete_by_asset_id(self, asset_id: int) -> None:
-        with get_connection() as conn:
-            cursor = conn.cursor()
-            try:
-                call_procedure(
-                    cursor=cursor,
-                    name="DeleteAssetAttachmentsByAssetId",
-                    params={"AssetId": asset_id},
-                )
-            finally:
-                cursor.close()

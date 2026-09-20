@@ -46,9 +46,6 @@ class AssetWithQbo(Asset):
     accum_dep_account_name: Optional[str] = None
     accum_dep_account_balance: Optional[Any] = None
 
-    def to_dict(self) -> dict:
-        return asdict(self)
-
 
 @dataclass
 class AssetFinancingNote:

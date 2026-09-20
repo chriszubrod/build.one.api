@@ -13,16 +13,48 @@ from shared.access import EntityNotAccessibleError
 from shared.authz import current_company_id, current_is_system_admin, current_user_id
 
 
+def _stringify_decimals(row: dict) -> dict:
+    """Money crosses the wire as a string, never a float.
+
+    Detects by TYPE rather than by a hard-coded field list: a list has to be
+    maintained, and the failure mode when someone adds a QBO-enriched money
+    field and forgets it is silent — a raw Decimal reaches jsonable_encoder and
+    is rendered as a float, which is the Decimal->float corruption class this
+    codebase treats as a top defect. `Decimal("0")` is falsy, so the guard is
+    an isinstance check and never a truthiness test.
+    """
+    return {k: str(v) if isinstance(v, Decimal) else v for k, v in row.items()}
+
+
 def _serialize_asset_with_qbo(asset: AssetWithQbo) -> dict:
-    data = asset.to_dict()
-    for key in (
-        "fixed_asset_account_balance",
-        "accum_dep_account_balance",
-    ):
-        val = data.get(key)
-        if val is not None:
-            data[key] = str(val)
-    return data
+    return _stringify_decimals(asset.to_dict())
+
+
+def require_company_id(operation: str = "asset operations") -> int:
+    cid = current_company_id.get()
+    if cid is None:
+        raise ValueError(f"Active company is required for {operation}.")
+    return int(cid)
+
+
+def assert_company_scope(entity_name: str, entity_id: Optional[int], owning_company_id: Optional[int]) -> None:
+    """The tenant boundary for this entity family — ONE copy, deliberately.
+
+    This was three near-identical private methods. That shape is how a tenancy
+    hardening lands in one service and silently not the others: `shared/access.py`
+    records exactly such an incident (2026-05-12), where a `current_user_id is
+    None -> bypass` branch had to be removed from every copy of the same check.
+    Keep this single-sourced.
+
+    NOTE the callers pass the OWNING company, which is not always the row's own
+    column — AssetFinancingNote derives it from its parent asset, because its
+    own CompanyId is not schema-enforced to agree.
+    """
+    if current_is_system_admin.get():
+        return
+    cid = current_company_id.get()
+    if cid is None or owning_company_id is None or int(owning_company_id) != int(cid):
+        raise EntityNotAccessibleError(entity_name, entity_id or 0)
 
 
 class AssetService:
@@ -32,17 +64,10 @@ class AssetService:
         self.repo = repo or AssetRepository()
 
     def _require_company_id(self) -> int:
-        cid = current_company_id.get()
-        if cid is None:
-            raise ValueError("Active company is required for asset operations.")
-        return int(cid)
+        return require_company_id()
 
     def _assert_company_access(self, asset: Asset) -> None:
-        if current_is_system_admin.get():
-            return
-        cid = current_company_id.get()
-        if cid is None or asset.company_id is None or int(asset.company_id) != int(cid):
-            raise EntityNotAccessibleError("Asset", asset.id or 0)
+        assert_company_scope("Asset", asset.id, asset.company_id)
 
     def create(
         self,
@@ -160,17 +185,7 @@ class AssetService:
 
 
 def _serialize_divergence_payload(raw: dict) -> dict:
-    out: dict[str, Any] = {}
-    for section, rows in raw.items():
-        serialized = []
-        for row in rows:
-            item = dict(row)
-            for key, val in list(item.items()):
-                if isinstance(val, Decimal):
-                    item[key] = str(val)
-            serialized.append(item)
-        out[section] = serialized
-    return out
+    return {section: [_stringify_decimals(dict(row)) for row in rows] for section, rows in raw.items()}
 
 
 class AssetFinancingNoteService:
@@ -189,17 +204,13 @@ class AssetFinancingNoteService:
         """
         if current_is_system_admin.get():
             return
-        cid = current_company_id.get()
-        if cid is None:
-            raise EntityNotAccessibleError("AssetFinancingNote", note.id or 0)
         owning_company_id = note.company_id
         if note.asset_id:
-            parent = AssetService().repo.read_by_id(int(note.asset_id))
+            parent = AssetRepository().read_by_id(int(note.asset_id))
             if parent is None or parent.company_id is None:
                 raise EntityNotAccessibleError("AssetFinancingNote", note.id or 0)
             owning_company_id = parent.company_id
-        if owning_company_id is None or int(owning_company_id) != int(cid):
-            raise EntityNotAccessibleError("AssetFinancingNote", note.id or 0)
+        assert_company_scope("AssetFinancingNote", note.id, owning_company_id)
 
     def create(
         self,
@@ -242,17 +253,10 @@ class AssetAccountExclusionService:
         self.repo = repo or AssetAccountExclusionRepository()
 
     def _require_company_id(self) -> int:
-        cid = current_company_id.get()
-        if cid is None:
-            raise ValueError("Active company is required for asset exclusion operations.")
-        return int(cid)
+        return require_company_id("asset exclusion operations")
 
     def _assert_company_access(self, row: AssetAccountExclusion) -> None:
-        if current_is_system_admin.get():
-            return
-        cid = current_company_id.get()
-        if cid is None or row.company_id is None or int(row.company_id) != int(cid):
-            raise EntityNotAccessibleError("AssetAccountExclusion", row.id or 0)
+        assert_company_scope("AssetAccountExclusion", row.id, row.company_id)
 
     def create(
         self,

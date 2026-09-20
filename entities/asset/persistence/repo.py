@@ -247,24 +247,6 @@ class AssetRepository:
             logger.error(f"Error during cascade delete asset: {error}")
             raise map_database_error(error)
 
-    def delete_by_id(self, id: int) -> Optional[Asset]:
-        try:
-            with get_connection() as conn:
-                cursor = conn.cursor()
-                try:
-                    call_procedure(
-                        cursor=cursor,
-                        name="DeleteAssetById",
-                        params={"Id": id},
-                    )
-                    row = cursor.fetchone()
-                    return self._asset_from_db(row) if row else None
-                finally:
-                    cursor.close()
-        except Exception as error:
-            logger.error(f"Error during delete asset: {error}")
-            raise map_database_error(error)
-
     def read_divergence_check(self, company_id: int) -> dict:
         try:
             with get_connection() as conn:
@@ -405,19 +387,6 @@ class AssetFinancingNoteRepository:
                 return self._from_db(row) if row else None
             finally:
                 cursor.close()
-
-    def delete_by_asset_id(self, asset_id: int) -> None:
-        with get_connection() as conn:
-            cursor = conn.cursor()
-            try:
-                call_procedure(
-                    cursor=cursor,
-                    name="DeleteAssetFinancingNotesByAssetId",
-                    params={"AssetId": asset_id},
-                )
-            finally:
-                cursor.close()
-
 
 class AssetAccountExclusionRepository:
     def _from_db(self, row: pyodbc.Row) -> Optional[AssetAccountExclusion]:

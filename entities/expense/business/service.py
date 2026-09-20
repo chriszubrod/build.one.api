@@ -446,7 +446,7 @@ class ExpenseService:
         )
 
     def _read_qbo_purchase_payment_type(self, expense_id: int) -> Optional[str]:
-        """Resolve qbo.Purchase.PaymentType via ExpenseLineItem mapping hop."""
+        """Resolve qbo.Purchase.PaymentType via parent-scoped dbo line identity."""
         from shared.database import get_connection
 
         try:
@@ -455,18 +455,18 @@ class ExpenseService:
                 cursor.execute(
                     """
                     SELECT TOP 1 p.[PaymentType]
-                    FROM dbo.[ExpenseLineItem] eli
-                    INNER JOIN qbo.[PurchaseLineExpenseLineItem] pleli
-                        ON pleli.[ExpenseLineItemId] = eli.[Id]
-                    INNER JOIN qbo.[PurchaseLine] pl
-                        ON pl.[Id] = pleli.[QboPurchaseLineId]
+                    FROM dbo.[Expense] e
+                    INNER JOIN dbo.[ExpenseLineItem] eli
+                        ON eli.[ExpenseId] = e.[Id]
                     INNER JOIN qbo.[Purchase] p
-                        ON p.[Id] = pl.[QboPurchaseId]
-                    INNER JOIN dbo.[Expense] e
-                        ON e.[Id] = eli.[ExpenseId]
-                    WHERE eli.[ExpenseId] = ?
+                        ON p.[QboId] = e.[QboId]
+                       AND p.[RealmId] = e.[RealmId]
+                    INNER JOIN qbo.[PurchaseLine] pl
+                        ON pl.[QboPurchaseId] = p.[Id]
+                       AND pl.[QboLineId] = eli.[QboId]
+                       AND eli.[RealmId] = p.[RealmId]
+                    WHERE e.[Id] = ?
                       AND e.[RealmId] IS NOT NULL
-                      AND p.[RealmId] = e.[RealmId]
                     """,
                     expense_id,
                 )
@@ -526,10 +526,17 @@ class ExpenseService:
                         eli.[SubCostCodeId],
                         eli.[Description]
                     FROM dbo.[ExpenseCodingItem] eci
-                    INNER JOIN qbo.[PurchaseLineExpenseLineItem] pleli
-                        ON pleli.[QboPurchaseLineId] = eci.[QboPurchaseLineId]
+                    INNER JOIN qbo.[PurchaseLine] pl
+                        ON pl.[Id] = eci.[QboPurchaseLineId]
+                    INNER JOIN qbo.[Purchase] p
+                        ON p.[Id] = pl.[QboPurchaseId]
+                    INNER JOIN dbo.[Expense] e
+                        ON e.[QboId] = p.[QboId]
+                       AND e.[RealmId] = p.[RealmId]
                     INNER JOIN dbo.[ExpenseLineItem] eli
-                        ON eli.[Id] = pleli.[ExpenseLineItemId]
+                        ON eli.[ExpenseId] = e.[Id]
+                       AND eli.[QboId] = pl.[QboLineId]
+                       AND eli.[RealmId] = p.[RealmId]
                     WHERE eli.[ExpenseId] = ?
                     """,
                     expense_id,

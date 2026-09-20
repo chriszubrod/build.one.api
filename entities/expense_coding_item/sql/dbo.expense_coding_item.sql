@@ -836,8 +836,8 @@ GO
 
 
 -- U-480: batch coding-state reader for the Expense ledger read model (U-477 Phase 1).
--- One round trip per page — never resolve coding state per row. Joins through
--- PurchaseLineExpenseLineItem because qbo.*.Id ≠ dbo.*.Id.
+-- One round trip per page — never resolve coding state per row. Resolves lines via
+-- parent-scoped dbo.ExpenseLineItem QboId/RealmId (U-494; qbo.*.Id ≠ dbo.*.Id).
 CREATE OR ALTER PROCEDURE ReadExpenseCodingStateByExpenseIds
 (
     @ExpenseIds NVARCHAR(MAX),
@@ -859,10 +859,17 @@ BEGIN
         eci.[ConfirmedSubCostCodeId],
         eci.[FlagReason]
     FROM dbo.[ExpenseCodingItem] eci
-    INNER JOIN qbo.[PurchaseLineExpenseLineItem] pleli
-        ON pleli.[QboPurchaseLineId] = eci.[QboPurchaseLineId]
+    INNER JOIN qbo.[PurchaseLine] pl
+        ON pl.[Id] = eci.[QboPurchaseLineId]
+    INNER JOIN qbo.[Purchase] p
+        ON p.[Id] = pl.[QboPurchaseId]
+    INNER JOIN dbo.[Expense] e
+        ON e.[QboId] = p.[QboId]
+       AND e.[RealmId] = p.[RealmId]
     INNER JOIN dbo.[ExpenseLineItem] eli
-        ON eli.[Id] = pleli.[ExpenseLineItemId]
+        ON eli.[ExpenseId] = e.[Id]
+       AND eli.[QboId] = pl.[QboLineId]
+       AND eli.[RealmId] = p.[RealmId]
     INNER JOIN STRING_SPLIT(ISNULL(@ExpenseIds, ''), ',') s
         ON s.value <> ''
        AND eli.[ExpenseId] = TRY_CAST(LTRIM(RTRIM(s.value)) AS BIGINT)

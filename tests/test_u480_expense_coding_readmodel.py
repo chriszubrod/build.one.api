@@ -164,11 +164,47 @@ def test_read_expense_coding_state_sproc_uses_user_can_access_project():
     assert "UserCanAccessProject" in body
 
 
-def test_read_expense_coding_state_sproc_uses_purchase_line_expense_line_item_hop():
+def test_read_expense_coding_state_sproc_resolves_lines_dbo_natively():
+    """U-494 rewrite. This spec originally asserted the body CONTAINS
+    `PurchaseLineExpenseLineItem` — pinning the mapping-table hop as mandatory.
+
+    That pin was wrong from the day it was written. U-364 (b484ed5c,
+    2026-09-04) had already retired that table: the pull stopped writing it and
+    `dbo.ExpenseLineItem.QboId`/`RealmId` became the sole line identity. U-480
+    (2026-09-17) then joined it anyway, and this test locked that in — so the
+    coding block silently resolved NOTHING for every line imported after
+    2026-09-04 (176 of 210 such lines have no map row).
+
+    The INTENT was right and survives: the hop is mandatory and must never
+    shortcut, because `qbo.*.Id != dbo.*.Id`. Only the mechanism changes —
+    resolution is now dbo-native and PARENT-SCOPED, which is the safety
+    property: QBO `Line.Id` values are unique only WITHIN a parent, so matching
+    on line id alone cross-matches across purchases.
+    """
     body = strip_sql_comments(
         sproc_body(EXPENSE_CODING_SQL, "ReadExpenseCodingStateByExpenseIds")
     )
-    assert "PurchaseLineExpenseLineItem" in body
+    assert "PurchaseLineExpenseLineItem" not in body, (
+        "the retired mapping table has no writer since U-364 — resolve dbo-natively"
+    )
+
+    # Pin the EQUALITIES, not mere token presence. Presence is vacuous here:
+    # [RealmId] appears 4x and [ExpenseId] 3x in this sproc, so `"[RealmId]" in
+    # body` survives deleting any one of them — measured, not assumed.
+    flat = " ".join(body.split())
+    for leg, why in (
+        ("p.[Id] = pl.[QboPurchaseId]", "line must reach its parent purchase"),
+        ("e.[QboId] = p.[QboId]", "purchase->expense identity"),
+        ("e.[RealmId] = p.[RealmId]", "realm scopes purchase->expense"),
+        ("eli.[ExpenseId] = e.[Id]", "line must belong to THIS expense"),
+        ("eli.[QboId] = pl.[QboLineId]", "line identity from the staging line"),
+        ("eli.[RealmId] = p.[RealmId]", "realm scopes the line match"),
+    ):
+        assert leg in flat, (
+            f"missing parent-scoping leg `{leg}` ({why}). QBO Line.Id values are "
+            "unique only WITHIN a parent, so dropping a leg cross-matches across "
+            "purchases — and this sproc feeds a live QBO write path."
+        )
 
 
 def test_read_expense_coding_state_sproc_does_not_filter_on_the_lines_sub_cost_code():

@@ -120,6 +120,12 @@ SYNCHRONOUS_TASKS = [
     "budget",
     "budget_revision",
     "budget_line_item",
+
+    # Asset register
+    "asset",
+    "asset_financing_note",
+    "asset_account_exclusion",
+    "asset_attachment",
 ]
 
 

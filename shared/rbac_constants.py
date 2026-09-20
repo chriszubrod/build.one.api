@@ -53,5 +53,8 @@ class Modules:
     # Time tracking
     TIME_TRACKING   = "Time Tracking"
 
+    # Fixed-asset register (QBO read-only enrichment)
+    ASSETS          = "Assets"
+
     # Email-agent pipeline (polled invoice inbox + DI extraction)
     EMAIL_MESSAGES  = "Email Messages"

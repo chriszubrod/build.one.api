@@ -83,6 +83,8 @@ from entities.bill_credit_line_item.api.router import router as bill_credit_line
 from entities.bill_credit_line_item_attachment.api.router import router as bill_credit_line_item_attachment_api_router
 from entities.taxpayer_attachment.api.router import router as taxpayer_attachment_api_router
 from entities.business_license_attachment.api.router import router as business_license_attachment_api_router
+from entities.asset.api.router import router as asset_api_router
+from entities.asset_attachment.api.router import router as asset_attachment_api_router
 from entities.contractors_license_attachment.api.router import router as contractors_license_attachment_api_router
 from entities.payment_term.api.router import router as payment_term_api_router
 from entities.contract.api.router import router as contract_api_router
@@ -296,6 +298,8 @@ app.include_router(bill_credit_line_item_api_router)
 app.include_router(bill_credit_line_item_attachment_api_router)
 app.include_router(taxpayer_attachment_api_router)
 app.include_router(business_license_attachment_api_router)
+app.include_router(asset_api_router)
+app.include_router(asset_attachment_api_router)
 app.include_router(contractors_license_attachment_api_router)
 app.include_router(payment_term_api_router)
 app.include_router(contract_api_router)

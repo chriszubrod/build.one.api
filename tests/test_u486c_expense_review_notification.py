@@ -239,7 +239,7 @@ def test_deep_link_none_still_enqueues_without_half_built_url():
     assert "txnId=" not in body
 
 
-def test_no_attachment_still_enqueues_with_deep_link_in_body():
+def test_no_attachment_still_enqueues_and_body_has_no_qbo_link():
     expense = SimpleNamespace(
         id=5,
         public_id="exp-pub",
@@ -274,10 +274,16 @@ def test_no_attachment_still_enqueues_with_deep_link_in_body():
         )
 
     kwargs = mock_outbox.enqueue_send_mail.call_args.kwargs
+    # The valuable half of this spec: 281 of the 316 coding drafts have NO
+    # receipt, so the no-attachment path is the COMMON case and must still send.
     assert kwargs["attachment"] is None
-    assert "app.qbo.intuit.com/app/expense" in kwargs["body"]
-    assert "txnId=99" in kwargs["body"]
-    assert "realmId=r1" in kwargs["body"]
+    assert kwargs["body"]
+
+    # Chris, 2026-09-20: the "Open in QuickBooks" line was added for exactly
+    # those 281, then removed after seeing it in a real draft — he deletes it by
+    # hand every time. The body must carry NO QBO link.
+    assert "app.qbo.intuit.com" not in kwargs["body"]
+    assert "Open in QuickBooks" not in kwargs["body"]
 
 
 # ---------------------------------------------------------------------------

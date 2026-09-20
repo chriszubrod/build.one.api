@@ -208,17 +208,6 @@ class ReviewNotificationService:
                 if s:
                     scc_label_by_id[scc_id] = f"{s.number} {s.name}".strip() if (s.number or s.name) else None
 
-        qbo_url = None
-        try:
-            with system_authz():
-                qbo_url = ExpenseService()._build_qbo_url_for_expense(expense)
-        except Exception as qbo_link_error:
-            logger.warning(
-                "review_notification.qbo_link_failed expense_public_id=%s: %s",
-                expense.public_id,
-                qbo_link_error,
-            )
-
         subject = self._build_expense_subject(
             vendor_name=vendor_name,
             reference_number=expense.reference_number,
@@ -234,7 +223,6 @@ class ReviewNotificationService:
             scc_label_by_id=scc_label_by_id,
             to_recipients=to_with_email,
             attachment_filename=(attachment_payload or {}).get("name"),
-            qbo_url=qbo_url,
         )
 
         mode = "draft"
@@ -779,7 +767,6 @@ class ReviewNotificationService:
         scc_label_by_id: dict,
         to_recipients: Optional[list],
         attachment_filename: Optional[str],
-        qbo_url: Optional[str],
     ) -> str:
         reference_number = html.escape(expense.reference_number or "(no reference)")
         vendor = html.escape(vendor_name)
@@ -842,13 +829,6 @@ class ReviewNotificationService:
                 f"<p>Attached: <strong>{html.escape(attachment_filename)}</strong></p>"
             )
 
-        qbo_html = ""
-        if qbo_url:
-            safe_url = html.escape(qbo_url, quote=True)
-            qbo_html = (
-                f'<p>Open in QuickBooks: <a href="{safe_url}">{safe_url}</a></p>'
-            )
-
         return (
             f"{greeting}"
             "<p>A new expense has been submitted for review:</p>"
@@ -864,7 +844,6 @@ class ReviewNotificationService:
             "</p>"
             f"{line_rows_html}"
             f"{attachment_html}"
-            f"{qbo_html}"
             "<p>When you have a moment, will you please reply for approval "
             "with Sub Cost Code and Description, or non-approval?</p>"
         )

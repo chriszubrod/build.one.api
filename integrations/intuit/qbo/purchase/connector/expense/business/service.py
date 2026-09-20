@@ -1,6 +1,7 @@
 # Python Standard Library Imports
 import logging
-from typing import Dict, List, Optional
+from decimal import Decimal
+from typing import Dict, List, Optional, Union
 
 # Third-party Imports
 
@@ -423,6 +424,10 @@ class PurchaseExpenseConnector:
         project_id: Optional[int],
         description: Optional[str],
         expected_sync_token: str,
+        quantity: Optional[Union[int, Decimal]] = None,
+        rate: Optional[Decimal] = None,
+        amount: Optional[Decimal] = None,
+        is_billable: Optional[bool] = None,
     ) -> dict:
         """
         Surgically recode one 58999 placeholder Purchase line to ItemBasedExpenseLineDetail.
@@ -493,9 +498,36 @@ class PurchaseExpenseConnector:
                 }
             elif old.get("CustomerRef"):
                 item_detail["CustomerRef"] = old["CustomerRef"]
-            for carry_key in ("ClassRef", "BillableStatus", "TaxCodeRef", "MarkupInfo"):
+            for carry_key in ("ClassRef", "TaxCodeRef", "MarkupInfo"):
                 if old.get(carry_key) is not None:
                     item_detail[carry_key] = old[carry_key]
+
+            from shared.api.money import round_money, to_decimal_or_none
+
+            qty_dec = to_decimal_or_none(quantity)
+            rate_dec = to_decimal_or_none(rate)
+            amount_dec = to_decimal_or_none(amount)
+            if (
+                qty_dec is not None
+                and rate_dec is not None
+                and amount_dec is not None
+                and qty_dec != 0
+                and rate_dec != 0
+                and amount_dec != 0
+                and round_money(qty_dec * rate_dec) == round_money(amount_dec)
+            ):
+                item_detail["Qty"] = float(qty_dec)
+                item_detail["UnitPrice"] = float(rate_dec)
+
+            if is_billable is True:
+                if item_detail.get("CustomerRef"):
+                    item_detail["BillableStatus"] = "Billable"
+                else:
+                    item_detail["BillableStatus"] = "NotBillable"
+            elif is_billable is False:
+                item_detail["BillableStatus"] = "NotBillable"
+            elif old.get("BillableStatus") is not None:
+                item_detail["BillableStatus"] = old["BillableStatus"]
 
             target["DetailType"] = "ItemBasedExpenseLineDetail"
             target["ItemBasedExpenseLineDetail"] = item_detail

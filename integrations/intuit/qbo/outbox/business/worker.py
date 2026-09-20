@@ -840,6 +840,38 @@ class QboOutboxWorker:
         if item.status not in ("enqueued", "confirmed"):
             return
 
+        quantity = None
+        rate = None
+        amount = None
+        is_billable = None
+        qbo_purchase_line_id = getattr(item, "qbo_purchase_line_id", None)
+        if qbo_purchase_line_id is not None:
+            try:
+                from integrations.intuit.qbo.purchase.connector.expense_line_item.persistence.repo import (
+                    PurchaseLineExpenseLineItemRepository,
+                )
+                from entities.expense_line_item.business.service import ExpenseLineItemService
+
+                mapping = PurchaseLineExpenseLineItemRepository().read_by_qbo_purchase_line_id(
+                    qbo_purchase_line_id
+                )
+                if mapping and mapping.expense_line_item_id:
+                    local_line = ExpenseLineItemService().read_by_id(mapping.expense_line_item_id)
+                    if local_line:
+                        quantity = local_line.quantity
+                        rate = local_line.rate
+                        amount = local_line.amount
+                        is_billable = local_line.is_billable
+            except Exception as exc:
+                logger.warning(
+                    "Could not resolve local ExpenseLineItem for expense coding item %s "
+                    "(qbo_purchase_line_id=%s): %s",
+                    row.entity_public_id,
+                    qbo_purchase_line_id,
+                    exc,
+                    exc_info=True,
+                )
+
         try:
             result = PurchaseExpenseConnector().recode_purchase_line(
                 realm_id=row.realm_id,
@@ -849,6 +881,10 @@ class QboOutboxWorker:
                 project_id=item.confirmed_project_id,
                 description=item.confirmed_description,
                 expected_sync_token=item.sync_token_at_suggest or "",
+                quantity=quantity,
+                rate=rate,
+                amount=amount,
+                is_billable=is_billable,
             )
         except (PurchaseChangedInQboError, QboSyncTokenMismatchError):
             # Both mean the live Purchase drifted from the coding decision — bounce

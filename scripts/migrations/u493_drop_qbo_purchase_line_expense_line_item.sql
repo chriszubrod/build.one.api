@@ -1,7 +1,14 @@
 -- U-493: Phase-6 guarded DROP of qbo.PurchaseLineExpenseLineItem -- the
 -- ELEVENTH AND LAST of the U-349 mapping-table families.
 --
--- STAGED, NOT APPLIED. Per feedback_builders_never_mutate_prod_data, the build
+-- ✅ APPLIED 2026-09-21 17:38:15 UTC against prod, under a same-transaction
+-- precondition gate (P1/P6/P7/P8/P10b re-measured immediately before, drop
+-- aborted on any failure). Table + 5 CRUD sprocs gone; qbo.* 21 -> 20.
+-- P10b caught a HOT write path on its first run four minutes earlier -- one
+-- coding item enqueued and one recode outbox row in flight -- which is exactly
+-- what it was added for. Left here as the record of how it ran; do not re-run.
+--
+-- ORIGINALLY STAGED, NOT APPLIED. Per feedback_builders_never_mutate_prod_data, the build
 -- unit prepares this file; /em runs it only after every precondition below is
 -- RE-MEASURED LIVE. Do not trust the counts in this header or in the design
 -- doc -- they decay the moment they are written.

@@ -1363,6 +1363,8 @@ GO
 
 -- U-486 Phase B: detect completed expenses genuinely uncoded on the 58999
 -- placeholder (AccountRef label AND ItemRefValue IS NULL — never the label alone).
+-- U-491: line identity is dbo-native (Expense/QboId + Purchase + parent-scoped
+-- PurchaseLine); the retired qbo.PurchaseLineExpenseLineItem map is not used here.
 CREATE OR ALTER PROCEDURE ReadUncodedCompletedExpenseCandidates
 AS
 BEGIN
@@ -1382,10 +1384,13 @@ BEGIN
         FROM dbo.[Expense] e
         INNER JOIN dbo.[ExpenseLineItem] eli
             ON eli.[ExpenseId] = e.[Id]
-        INNER JOIN qbo.[PurchaseLineExpenseLineItem] pleli
-            ON pleli.[ExpenseLineItemId] = eli.[Id]
+        INNER JOIN qbo.[Purchase] p
+            ON p.[QboId]   = e.[QboId]
+           AND p.[RealmId] = e.[RealmId]
         INNER JOIN qbo.[PurchaseLine] pl
-            ON pl.[Id] = pleli.[QboPurchaseLineId]
+            ON pl.[QboPurchaseId] = p.[Id]
+           AND pl.[QboLineId]     = eli.[QboId]
+           AND eli.[RealmId]      = p.[RealmId]
         LEFT JOIN dbo.[ExpenseCodingItem] eci
             ON eci.[QboPurchaseLineId] = pl.[Id]
         WHERE e.[Status] = N'completed'

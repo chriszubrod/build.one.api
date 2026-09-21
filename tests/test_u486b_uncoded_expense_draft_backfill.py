@@ -246,9 +246,12 @@ def test_mark_sproc_stamps_coding_backfill_origin():
 # ---------------------------------------------------------------------------
 
 
-def test_detection_sproc_uses_purchase_line_expense_line_item_hop():
+def test_detection_sproc_resolves_lines_dbo_native_not_map_table():
+    """U-486b originally pinned the retired qbo.PurchaseLineExpenseLineItem hop;
+    U-364 (2026-09-04) stopped writing that table and U-491 repointed here to
+    parent-scoped dbo-native identity — do not restore the map-table join."""
     body = strip_sql_comments(sproc_body(EXPENSE_SQL, DETECTION_SPROC))
-    assert "PurchaseLineExpenseLineItem" in body
+    assert "PurchaseLineExpenseLineItem" not in body
     assert not re.search(
         r"\bAS\s+ExpenseId\b",
         body,

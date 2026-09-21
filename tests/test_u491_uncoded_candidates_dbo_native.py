@@ -226,11 +226,43 @@ def test_detection_sproc_outer_select_list_unchanged():
 def test_detection_sproc_single_row_per_expense_ranking():
     body = _detection_sproc_body_stripped()
     assert re.search(
-        r"ROW_NUMBER\(\)\s+OVER\s*\(\s*PARTITION BY e\.\[Id\]\s+ORDER BY eli\.\[Id\]\s*\)\s+AS \[Rn\]",
+        r"ROW_NUMBER\(\)\s+OVER\s*\(\s*PARTITION BY e\.\[Id\]\s+"
+        r"ORDER BY eli\.\[Id\],\s*pl\.\[Id\]\s*\)\s+AS \[Rn\]",
         body,
         re.IGNORECASE,
     )
     assert re.search(r"WHERE \[Rn\] = 1", body, re.IGNORECASE)
+
+
+def test_detection_sproc_ranking_is_a_TOTAL_order():
+    """U-491 round 2 (Pass-1 P1). ORDER BY eli.[Id] alone is NOT a total order.
+
+    qbo.PurchaseLine has no unique constraint on (QboPurchaseId, QboLineId) --
+    only two separate non-unique indexes -- so one ExpenseLineItem can join more
+    than one staging line whenever a stale row survives the pull's cleanup. The
+    retired map hop was 1:1 BY CONSTRAINT; this join is 1:1 only by data (0
+    duplicate pairs live today). Under a tie the stamped QboPurchaseLineId and
+    CodingItemPublicId are nondeterministic, and backfill_uncoded_to_draft
+    writes that provenance into StatusSourceRef -- so the tie-break is
+    provenance correctness, not cosmetics.
+
+    pl.[Id] is qbo.PurchaseLine's primary key, so adding it makes the ordering
+    total. This asserts the PK is in the ORDER BY, not merely that some second
+    column is.
+    """
+    body = _detection_sproc_body_stripped()
+    flat = " ".join(body.split())
+    m = re.search(
+        r"ROW_NUMBER\(\)\s*OVER\s*\(\s*PARTITION BY e\.\[Id\]\s+ORDER BY\s+([^)]+?)\s*\)\s*AS\s*\[Rn\]",
+        flat,
+        re.IGNORECASE,
+    )
+    assert m, "could not locate the Rn window function"
+    order_by = m.group(1)
+    assert "pl.[Id]" in order_by, (
+        "ORDER BY must include pl.[Id] (qbo.PurchaseLine's PK) so the winner is "
+        f"deterministic when one ExpenseLineItem joins two staging lines; got: {order_by!r}"
+    )
 
 
 # ---------------------------------------------------------------------------

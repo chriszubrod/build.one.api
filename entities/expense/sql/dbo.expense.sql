@@ -1380,7 +1380,18 @@ BEGIN
             e.[ReferenceNumber],
             pl.[Id] AS [QboPurchaseLineId],
             eci.[PublicId] AS [CodingItemPublicId],
-            ROW_NUMBER() OVER (PARTITION BY e.[Id] ORDER BY eli.[Id]) AS [Rn]
+            -- U-491 round 2: ORDER BY eli.[Id] alone is not a total order.
+            -- qbo.PurchaseLine has NO unique constraint on (QboPurchaseId, QboLineId)
+            -- -- only two separate non-unique indexes -- so one ExpenseLineItem can
+            -- join more than one staging line if a stale row survives the pull's
+            -- cleanup (that DELETE is wrapped in a try/except and a 547 from the
+            -- retired mapping table's NO ACTION FK leaves the stale row behind).
+            -- The old map hop was 1:1 BY CONSTRAINT; this join is 1:1 only by data.
+            -- 0 duplicate pairs live today, but ties here would make the stamped
+            -- QboPurchaseLineId/CodingItemPublicId provenance nondeterministic, and
+            -- backfill_uncoded_to_draft writes that provenance into StatusSourceRef.
+            -- pl.[Id] is the PK, so this makes the winner total and reproducible.
+            ROW_NUMBER() OVER (PARTITION BY e.[Id] ORDER BY eli.[Id], pl.[Id]) AS [Rn]
         FROM dbo.[Expense] e
         INNER JOIN dbo.[ExpenseLineItem] eli
             ON eli.[ExpenseId] = e.[Id]

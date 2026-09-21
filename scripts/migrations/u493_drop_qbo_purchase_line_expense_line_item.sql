@@ -49,17 +49,31 @@
 --   P4. Raw-SQL census = 0 executed refs across *.py + *.sql, excluding the
 --       three guarded bridges, the CRUD bodies in the deleted base file,
 --       comments, and tests/.
---   P5. integrations/intuit/qbo/purchase/connector/expense_line_item/sql/
---       qbo.purchase_line_expense_line_item.sql is DELETED from the repo, and
---       no remaining .sql file contains CREATE TABLE [qbo].[PurchaseLineExpenseLineItem].
---       *** That file opens with IF OBJECT_ID(...) IS NULL BEGIN CREATE TABLE.
---       Any later run_sql.py re-apply RESURRECTS this table. ***
+--   P5. *** SATISFIED IN THE SAME UNIT AS THIS FILE -- do not re-check by memory,
+--       re-grep. *** The base file
+--       integrations/intuit/qbo/purchase/connector/expense_line_item/sql/
+--       qbo.purchase_line_expense_line_item.sql opened with
+--       IF OBJECT_ID(...) IS NULL BEGIN CREATE TABLE, so an explicit
+--       run_sql.py re-apply of it would RESURRECT this table after the DROP.
+--       It is deleted, together with the connector's now-unimported
+--       persistence/repo.py and business/model.py. Pass 1 (Codex, xhigh) raised
+--       this as a live gap: the header asserted a precondition the repo did not
+--       meet. Verify with a grep for an EXECUTABLE
+--       CREATE TABLE [qbo].[PurchaseLineExpenseLineItem] -- the only remaining
+--       match should be this comment, which is the same comment-vs-body false
+--       positive the u349 design doc predicts for ProposeInvoiceSourceLinks.
+--       Recovery path is git history; this file's own commit is the citation.
 --   P6. Strand census -- all four must be 0:
 --         mapped rows whose dbo.ExpenseLineItem.QboId IS NULL
 --         mapped rows whose dbo.ExpenseLineItem.RealmId IS NULL
 --         mapping rows with a missing dbo.ExpenseLineItem
 --         mapping rows with a missing qbo.PurchaseLine
---   P7. No new writer: COUNT(*) WHERE CreatedDatetime >= <container deploy ts> = 0.
+--   P7. No new writer. Lead with the STRUCTURAL proof -- it is already true and
+--       does not depend on clock resolution: repo.create() has zero callers, and
+--       this unit DELETES persistence/repo.py outright, so no code path can
+--       insert. A same-timestamp writer is invisible to a CreatedDatetime count,
+--       so treat COUNT(*) WHERE CreatedDatetime >= <container deploy ts> = 0 as
+--       CORROBORATION, not as the proof. (Pass 3 called this out.)
 --       KNOWN EXCEPTION: Id 12773 (QboPurchaseLineId 13903 -> ExpenseLineItemId
 --       12965), inserted BY HAND on 2026-09-20 13:43:47 as step 3 of the U-489
 --       expense-32068 repair. That runbook's own correction block already
@@ -73,6 +87,19 @@
 --       `next(s for s in LINE_ENTITY_SPECS if s.key == "bill_line_item")` at
 --       MODULE level -- emptying the registry raises StopIteration at import.
 --   P10. Rollback dump captured (see below).
+--   P10b. *** QUIESCE THE WRITE PATH -- added by Pass 3. *** P11 forces a PULL,
+--       but the recode WRITE path is the one with the silent failure mode, and
+--       nothing here pauses it. Immediately before the DROP assert BOTH:
+--         SELECT COUNT(*) FROM dbo.ExpenseCodingItem
+--          WHERE Status IN (N'enqueued', N'confirmed');                -- must be 0
+--         SELECT COUNT(*) FROM qbo.Outbox
+--          WHERE Kind = N'recode_purchase_line' AND Status <> N'done'; -- must be 0
+--       Re-assert both immediately after. A recode or an expense-delete cascade
+--       landing mid-DDL crosses that boundary with no stated handling: the
+--       DeleteExpenseCascadeById bridge is OBJECT_ID-guarded so it degrades to a
+--       no-op rather than throwing -- but "degrades quietly" is precisely the
+--       property this whole unit exists to stop relying on.
+--
 --   P11. A QBO purchase pull cycle has run against the deployed container with
 --       no Invalid object name and no new ReconciliationIssue for this family.
 --       /em elected a same-day drop rather than the header phase's >=24h soak,
@@ -92,6 +119,36 @@
 --   efforts tier on exactly that signal -- the 229 line-sum-mismatch expenses
 --   and the 144-coding-item backlog. See
 --   docs/operations/u489_expense_32068_line_dedupe_snapshot.md lines 31-34.
+--   *** INLINE ROLLBACK DDL. *** This header used to say the deleting commit's
+--   sha "must be cited here before running" and left it blank. A blank citation
+--   is worthless at 2am, and deleting the base file makes git the ONLY route
+--   back. The minimum needed to restore the table and reload the dump, verbatim:
+--
+--     CREATE TABLE [qbo].[PurchaseLineExpenseLineItem]
+--     (
+--         [Id] BIGINT IDENTITY(1,1) PRIMARY KEY NOT NULL,
+--         [PublicId] UNIQUEIDENTIFIER NOT NULL DEFAULT NEWID(),
+--         [RowVersion] ROWVERSION NOT NULL,
+--         [CreatedDatetime] DATETIME2(3) NOT NULL,
+--         [ModifiedDatetime] DATETIME2(3) NULL,
+--         [QboPurchaseLineId] BIGINT NOT NULL,
+--         [ExpenseLineItemId] BIGINT NOT NULL,
+--         CONSTRAINT [UQ_PurchaseLineExpenseLineItem_QboPurchaseLineId]
+--             UNIQUE ([QboPurchaseLineId]),
+--         CONSTRAINT [UQ_PurchaseLineExpenseLineItem_ExpenseLineItemId]
+--             UNIQUE ([ExpenseLineItemId])
+--     );
+--
+--   Those two UNIQUE constraints are WHY the retired map hop was 1:1 BY
+--   CONSTRAINT, and why the dbo-native replacements had to re-establish that
+--   guarantee themselves: UQ_ExpenseLineItem_ExpenseId_QboId carries the worker
+--   path, and a total ORDER BY (eli.[Id], pl.[Id]) carries the detection sproc,
+--   because qbo.PurchaseLine has NO unique constraint on (QboPurchaseId,
+--   QboLineId). Pass 1 caught that gap; do not undo either.
+--
+--   Then re-add both FKs from add_fk_constraints_to_mapping_tables.sql:75-98 and
+--   reload the CSV dump.
+--
 --   Mechanical restore: re-run the deleted base file from git history (it is
 --   idempotent and recreates table + 5 sprocs), re-add both FKs from
 --   integrations/intuit/qbo/purchase/sql/add_fk_constraints_to_mapping_tables.sql

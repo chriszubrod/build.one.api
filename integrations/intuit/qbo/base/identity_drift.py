@@ -151,29 +151,33 @@ class LineEntitySpec:
     sproc: str
 
 
-LINE_ENTITY_SPECS: tuple[LineEntitySpec, ...] = (
-    LineEntitySpec(
-        "bill_line_item", "BillLineItem", "BillLineItemBillLine", "BillLine",
-        "BillLineItemId", "QboBillLineId", "BillId", "Bill", "QboBillId",
-        "SetBillLineItemQboIdentity",
-    ),
-    LineEntitySpec(
-        "expense_line_item", "ExpenseLineItem", "PurchaseLineExpenseLineItem", "PurchaseLine",
-        "ExpenseLineItemId", "QboPurchaseLineId", "ExpenseId", "Purchase", "QboPurchaseId",
-        "SetExpenseLineItemQboIdentity",
-    ),
-    # U-362b restored this row (U-362 had removed it) to run the one-off
-    # backfill for 70 mapped-but-unstamped prod rows via the still-live
-    # qbo.InvoiceLineItemInvoiceLine mapping table, and to let the drift/
-    # dangling-mapping audits catch that gap class — NOT because the
-    # connector maps again (it doesn't; U-362c's runtime fix makes the
-    # backfill unnecessary going forward). U-362c: backfill DONE (69/70,
-    # 2026-09-02) — re-removed for good, same as U-361's own removal (a JOIN
-    # against the table errors once /em applies the eventual DROP). See
-    # scripts/backfill_qbo_identity_lines.py, scripts/check_qbo_identity_
-    # drift_lines.py, scripts/audit_dangling_qbo_mappings.py for the matching
-    # --entity choice/key removals.
-)
+# All four line-item families (bill, invoice, expense, bill_credit) resolve line
+# identity dbo-natively now (U-361..U-364), so this registry is empty.
+#
+# U-493a removed the last two rows together. bill_line_item's table
+# (qbo.BillLineItemBillLine) was dropped with family 10 on 2026-09-03 and the row
+# was left behind — which silently broke check_qbo_identity_drift_lines.py,
+# backfill_qbo_identity_lines.py and audit_dangling_qbo_mappings.py on
+# `--entity all` for 17 days, because they JOIN through mapping_table. Family 10
+# booked that prune as "PROVEN SAFE — quick follow-up" and it was never done;
+# don't leave a row behind again. expense_line_item's table
+# (qbo.PurchaseLineExpenseLineItem) is the last one standing and is dropped by
+# U-493 — the row goes first, deliberately, because the JOIN is what breaks.
+#
+# U-362b restored the invoice_line_item row (U-362 had removed it) to run the one-off
+# backfill for 70 mapped-but-unstamped prod rows via the still-live
+# qbo.InvoiceLineItemInvoiceLine mapping table, and to let the drift/
+# dangling-mapping audits catch that gap class — NOT because the
+# connector maps again (it doesn't; U-362c's runtime fix makes the
+# backfill unnecessary going forward). U-362c: backfill DONE (69/70,
+# 2026-09-02) — re-removed for good, same as U-361's own removal (a JOIN
+# against the table errors once /em applies the eventual DROP).
+# U-493a: bill_line_item + expense_line_item rows removed — family 10 dropped
+# qbo.BillLineItemBillLine (2026-09-03); qbo.PurchaseLineExpenseLineItem follows
+# (U-493). See scripts/backfill_qbo_identity_lines.py, scripts/check_qbo_identity_
+# drift_lines.py, scripts/audit_dangling_qbo_mappings.py for the matching
+# --entity choice/key removals.
+LINE_ENTITY_SPECS: tuple[LineEntitySpec, ...] = ()
 
 
 def stamp_line_identity_or_warn(

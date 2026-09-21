@@ -1,6 +1,10 @@
 """
 Read-only drift detector for dbo-native QBO identity vs qbo.* mapping+staging (U-238b).
 
+RETIRED (U-493a): All four line-item families went dbo-native (U-361..U-364) and
+their qbo.* mapping tables are dropped — there is nothing left to JOIN. This script
+exits cleanly with a message; kept for history and import stability.
+
 Compares dbo line-item QboId/RealmId against values reachable via the mapping →
 staging line → staging header join (RealmId lives on the header). Never writes —
 diagnostic only.
@@ -92,18 +96,24 @@ def main() -> int:
     ap.add_argument(
         "--entity",
         choices=[
-            "bill_line_item",
-            "expense_line_item",
             # U-361: "bill_credit_line_item" removed — its LineEntitySpec row is
             # gone from identity_drift.py (mapping table retired; dbo-native only).
             # U-362b temporarily restored "invoice_line_item" (see
             # backfill_qbo_identity_lines.py's identical note); U-362c
             # re-removed it once the one-off backfill was done.
+            # U-493a: bill_line_item + expense_line_item removed — registry empty.
             "all",
         ],
         default="all",
     )
     args = ap.parse_args()
+
+    if not LINE_ENTITY_SPECS:
+        logger.info(
+            "No line-item identity specs remain (all families dbo-native; mapping "
+            "tables dropped per U-361..U-364 / U-493a). Nothing to scan."
+        )
+        return 0
 
     assert_cli_system_admin()
 

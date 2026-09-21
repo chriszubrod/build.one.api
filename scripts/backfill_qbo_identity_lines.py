@@ -2,6 +2,11 @@
 Backfill dbo-native QBO identity columns on four line-item entities from existing
 qbo.* mapping + staging tables (U-238b).
 
+RETIRED (U-493a): All four line-item families went dbo-native (U-361..U-364) and
+their qbo.* mapping tables are dropped — there is nothing left to backfill. This
+script exits cleanly with a message; kept for history and unit tests of its SQL
+helpers.
+
 SAFE BY DEFAULT: dry-run unless --apply is passed. Dry-run is READ-ONLY (SELECTs
 only) and reports pre/post-flight counts plus row-level verification. --apply
 stamps identity via the Set*LineItemQboIdentity sprocs in batched loops — never
@@ -18,9 +23,8 @@ Two modes (--mode):
 
 Usage:
   PYTHONPATH=. python scripts/backfill_qbo_identity_lines.py
-  PYTHONPATH=. python scripts/backfill_qbo_identity_lines.py --entity bill_line_item
   PYTHONPATH=. python scripts/backfill_qbo_identity_lines.py --apply --limit 100
-  PYTHONPATH=. python scripts/backfill_qbo_identity_lines.py --mode realm-only --entity bill_line_item
+  PYTHONPATH=. python scripts/backfill_qbo_identity_lines.py --mode realm-only
 """
 from __future__ import annotations
 
@@ -369,13 +373,12 @@ def main() -> None:
     ap.add_argument(
         "--entity",
         choices=[
-            "bill_line_item",
-            "expense_line_item",
             # U-361: "bill_credit_line_item" removed — its LineEntitySpec row is
             # gone from identity_drift.py (mapping table retired; dbo-native only).
             # U-362b temporarily restored "invoice_line_item" to run its one-off
             # backfill; U-362c re-removed it once that backfill was done (see
             # identity_drift.py's LINE_ENTITY_SPECS comment).
+            # U-493a: bill_line_item + expense_line_item removed — registry empty.
             "all",
         ],
         default="all",
@@ -391,6 +394,13 @@ def main() -> None:
              "realm-only: dbo QboId is set but RealmId is NULL (U-293-dw write-side gap).",
     )
     args = ap.parse_args()
+
+    if not LINE_ENTITY_SPECS:
+        logger.info(
+            "No line-item identity specs remain (all families dbo-native; mapping "
+            "tables dropped per U-361..U-364 / U-493a). Nothing to backfill."
+        )
+        return
 
     assert_cli_system_admin()
 

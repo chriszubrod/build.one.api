@@ -49,15 +49,14 @@ logger = logging.getLogger("audit_dangling_qbo_mappings")
 # U-361: "bill_credit_line_item" was removed for the same reason — qbo.VendorCredit
 # LineItemBillCreditLineItem is retired (the first line-item family) and its
 # LineEntitySpec row is gone from LINE_ENTITY_SPECS, so `spec_by_key[...]` below
-# would KeyError if left in. U-363/U-364 remove the other two when their tables drop.
+# would KeyError if left in.
 # U-362b temporarily restored "invoice_line_item" to catch a dangling mapping
 # (the money-double-count precursor it fixed) while its one-off backfill ran
 # against the still-live qbo.InvoiceLineItemInvoiceLine table; U-362c re-removed
 # it once that backfill was done.
-_AUDIT_SPEC_KEYS: tuple[str, ...] = (
-    "bill_line_item",
-    "expense_line_item",
-)
+# U-493a: bill_line_item + expense_line_item removed — all line mapping tables
+# are dropped; LINE_ENTITY_SPECS is empty (this tuple follows suit).
+_AUDIT_SPEC_KEYS: tuple[str, ...] = ()
 
 
 def _build_topologies() -> list[tuple[str, str, str, str, str]]:

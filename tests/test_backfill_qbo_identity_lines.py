@@ -14,14 +14,26 @@ adapted for this script's richer PRE/apply-loop/POST/verify flow.
 """
 from unittest.mock import MagicMock, patch
 
-from integrations.intuit.qbo.base.identity_drift import LINE_ENTITY_SPECS
+from integrations.intuit.qbo.base.identity_drift import LineEntitySpec
 from scripts.backfill_qbo_identity_lines import (
     backfill_entity,
     _batch_select_sql,
     _pending_join_for_mode,
 )
 
-_SPEC = next(s for s in LINE_ENTITY_SPECS if s.key == "bill_line_item")
+# Registry is empty (U-493a); tests pin SQL helpers against a representative spec.
+_SPEC = LineEntitySpec(
+    "bill_line_item",
+    "BillLineItem",
+    "BillLineItemBillLine",
+    "BillLine",
+    "BillLineItemId",
+    "QboBillLineId",
+    "BillId",
+    "Bill",
+    "QboBillId",
+    "SetBillLineItemQboIdentity",
+)
 
 
 def _build_mock_conn(*, pre_counts, post_counts, batch_rows, stamp_results=None):

@@ -26,10 +26,11 @@ def test_line_entity_specs_count():
     # U-362: 3 -> 2 — invoice_line_item removed for the same reason...
     # U-362b: 2 -> 3 — ...then RESTORED (temporarily) once a Gate-2 adversarial
     # workflow found the registry row still load-bearing for a one-off backfill.
-    # U-362c: 3 -> 2 — re-removed once that backfill was done. See identity_
-    # drift.py's LINE_ENTITY_SPECS comment for the full story.
-    assert len(LINE_ENTITY_SPECS) == 2
-    assert {s.key for s in LINE_ENTITY_SPECS} == {"bill_line_item", "expense_line_item"}
+    # U-362c: 3 -> 2 — re-removed once that backfill was done.
+    # U-493a: 2 -> 0 — bill_line_item + expense_line_item removed; all line
+    # mapping tables dropped. See identity_drift.py's LINE_ENTITY_SPECS comment.
+    assert len(LINE_ENTITY_SPECS) == 0
+    assert {s.key for s in LINE_ENTITY_SPECS} == set()
 
 
 @pytest.mark.parametrize(

@@ -1,0 +1,337 @@
+{
+  "captured_utc": "2026-09-21T17:53:58.869703Z",
+  "why": "U-491 backfill: flip 33 uncoded completed qbo_pull expenses to draft so they can be coded. Rollback = restore Status/StatusOrigin/StatusSourceRef per row below. IsDraft is a PERSISTED COMPUTED column (CASE WHEN Status=completed THEN 0 ELSE 1) and follows Status automatically.",
+  "count": 33,
+  "expenses": [
+    {
+      "id": 21987,
+      "public_id": "2DBA22D9-4E1E-4E7D-9996-C0E09F698E21",
+      "status": "completed",
+      "status_origin": "qbo_pull",
+      "status_source_ref": "qbo:9130353016965726/76207",
+      "is_draft": false,
+      "total_amount": 981.3,
+      "modified": "2026-09-08 17:54:39"
+    },
+    {
+      "id": 21988,
+      "public_id": "04EB9BDB-0070-4DF4-B3CF-B035FEA8642D",
+      "status": "completed",
+      "status_origin": "qbo_pull",
+      "status_source_ref": "qbo:9130353016965726/76206",
+      "is_draft": false,
+      "total_amount": 34.35,
+      "modified": "2026-09-08 17:54:43"
+    },
+    {
+      "id": 22007,
+      "public_id": "A7D1363C-C22A-4545-92E8-7FAD614D58DC",
+      "status": "completed",
+      "status_origin": "qbo_pull",
+      "status_source_ref": "qbo:9130353016965726/76252",
+      "is_draft": false,
+      "total_amount": 117.93,
+      "modified": "2026-09-09 16:52:23"
+    },
+    {
+      "id": 22009,
+      "public_id": "B93D8E97-DDF8-494F-9628-1B640AD78AAC",
+      "status": "completed",
+      "status_origin": "qbo_pull",
+      "status_source_ref": "qbo:9130353016965726/76256",
+      "is_draft": false,
+      "total_amount": 85.56,
+      "modified": "2026-09-09 16:54:30"
+    },
+    {
+      "id": 22010,
+      "public_id": "793C16BF-C5F5-497A-88F8-6A5D4C1F3C0E",
+      "status": "completed",
+      "status_origin": "qbo_pull",
+      "status_source_ref": "qbo:9130353016965726/76253",
+      "is_draft": false,
+      "total_amount": 224.68,
+      "modified": "2026-09-09 16:54:41"
+    },
+    {
+      "id": 22013,
+      "public_id": "F5334BC7-2CF8-44DA-BCFC-33F608885A26",
+      "status": "completed",
+      "status_origin": "qbo_pull",
+      "status_source_ref": "qbo:9130353016965726/76246",
+      "is_draft": false,
+      "total_amount": 49.28,
+      "modified": "2026-09-09 16:55:17"
+    },
+    {
+      "id": 22015,
+      "public_id": "2150FD9B-8688-4D04-9C5C-1513B1B435C8",
+      "status": "completed",
+      "status_origin": "qbo_pull",
+      "status_source_ref": "qbo:9130353016965726/76245",
+      "is_draft": false,
+      "total_amount": 125.1,
+      "modified": "2026-09-09 16:55:40"
+    },
+    {
+      "id": 22027,
+      "public_id": "F4706DD4-CBDC-4714-87BB-56C3EA86FB60",
+      "status": "completed",
+      "status_origin": "qbo_pull",
+      "status_source_ref": "qbo:9130353016965726/76407",
+      "is_draft": false,
+      "total_amount": 530.52,
+      "modified": "2026-09-11 15:52:10"
+    },
+    {
+      "id": 22030,
+      "public_id": "9574F3C0-7013-4AE4-A12B-555912529A9E",
+      "status": "completed",
+      "status_origin": "qbo_pull",
+      "status_source_ref": "qbo:9130353016965726/76411",
+      "is_draft": false,
+      "total_amount": 367.84,
+      "modified": "2026-09-11 16:11:03"
+    },
+    {
+      "id": 22031,
+      "public_id": "C7E35903-8D4F-4536-9AED-9F4718F519D7",
+      "status": "completed",
+      "status_origin": "qbo_pull",
+      "status_source_ref": "qbo:9130353016965726/76410",
+      "is_draft": false,
+      "total_amount": 44.86,
+      "modified": "2026-09-11 16:11:10"
+    },
+    {
+      "id": 22037,
+      "public_id": "340892B2-E1AC-4E5E-BD81-BCC209C1F75B",
+      "status": "completed",
+      "status_origin": "qbo_pull",
+      "status_source_ref": "qbo:9130353016965726/76517",
+      "is_draft": false,
+      "total_amount": 360.43,
+      "modified": "2026-09-15 23:31:48"
+    },
+    {
+      "id": 32043,
+      "public_id": "482D2328-B246-4AD0-B4AE-4169AA610F08",
+      "status": "completed",
+      "status_origin": "qbo_pull",
+      "status_source_ref": "qbo:9130353016965726/76555",
+      "is_draft": false,
+      "total_amount": 126.53,
+      "modified": "2026-09-17 15:37:08"
+    },
+    {
+      "id": 32046,
+      "public_id": "AA6A6862-B557-4BA1-8989-83345C2CB47D",
+      "status": "completed",
+      "status_origin": "qbo_pull",
+      "status_source_ref": "qbo:9130353016965726/76599",
+      "is_draft": false,
+      "total_amount": 83.5,
+      "modified": "2026-09-17 18:10:45"
+    },
+    {
+      "id": 32047,
+      "public_id": "A1E36792-2062-4FD1-818D-7C82E768930A",
+      "status": "completed",
+      "status_origin": "qbo_pull",
+      "status_source_ref": "qbo:9130353016965726/76598",
+      "is_draft": false,
+      "total_amount": 107.29,
+      "modified": "2026-09-17 18:10:56"
+    },
+    {
+      "id": 32051,
+      "public_id": "E5069AD7-8F19-47DE-B802-4D9137767602",
+      "status": "completed",
+      "status_origin": "qbo_pull",
+      "status_source_ref": "qbo:9130353016965726/76623",
+      "is_draft": false,
+      "total_amount": 31.37,
+      "modified": "2026-09-17 18:11:42"
+    },
+    {
+      "id": 32052,
+      "public_id": "F29BCE64-8373-44F2-940E-719538159535",
+      "status": "completed",
+      "status_origin": "qbo_pull",
+      "status_source_ref": "qbo:9130353016965726/76622",
+      "is_draft": false,
+      "total_amount": 63.15,
+      "modified": "2026-09-17 18:11:57"
+    },
+    {
+      "id": 32053,
+      "public_id": "0B938B82-37FB-447D-9180-DA742A033A5C",
+      "status": "completed",
+      "status_origin": "qbo_pull",
+      "status_source_ref": "qbo:9130353016965726/76621",
+      "is_draft": false,
+      "total_amount": 88.82,
+      "modified": "2026-09-17 18:12:25"
+    },
+    {
+      "id": 32054,
+      "public_id": "4D427089-DFBB-4841-9936-A79DAB806904",
+      "status": "completed",
+      "status_origin": "qbo_pull",
+      "status_source_ref": "qbo:9130353016965726/76618",
+      "is_draft": false,
+      "total_amount": 107.4,
+      "modified": "2026-09-17 18:12:37"
+    },
+    {
+      "id": 32057,
+      "public_id": "061E174F-3BF7-43C8-9489-711BA26F39B6",
+      "status": "completed",
+      "status_origin": "qbo_pull",
+      "status_source_ref": "qbo:9130353016965726/76619",
+      "is_draft": false,
+      "total_amount": 129.57,
+      "modified": "2026-09-17 18:13:24"
+    },
+    {
+      "id": 32058,
+      "public_id": "B3A09512-7A9E-4E73-978D-90BF029C552B",
+      "status": "completed",
+      "status_origin": "qbo_pull",
+      "status_source_ref": "qbo:9130353016965726/76617",
+      "is_draft": false,
+      "total_amount": 306.2,
+      "modified": "2026-09-17 18:13:42"
+    },
+    {
+      "id": 32059,
+      "public_id": "66DE36F0-157E-4995-B06B-90D903929E56",
+      "status": "completed",
+      "status_origin": "qbo_pull",
+      "status_source_ref": "qbo:9130353016965726/76616",
+      "is_draft": false,
+      "total_amount": 96.29,
+      "modified": "2026-09-17 18:14:09"
+    },
+    {
+      "id": 32065,
+      "public_id": "BF4AE413-2A19-458D-98F4-6B32BAEA697E",
+      "status": "completed",
+      "status_origin": "qbo_pull",
+      "status_source_ref": "qbo:9130353016965726/76606",
+      "is_draft": false,
+      "total_amount": 247.54,
+      "modified": "2026-09-17 18:16:15"
+    },
+    {
+      "id": 32067,
+      "public_id": "C3FC93B7-53D2-4084-9E32-0BA538CB9C22",
+      "status": "completed",
+      "status_origin": "qbo_pull",
+      "status_source_ref": "qbo:9130353016965726/76604",
+      "is_draft": false,
+      "total_amount": 64.85,
+      "modified": "2026-09-17 18:16:51"
+    },
+    {
+      "id": 32071,
+      "public_id": "7894C086-B5ED-49B9-B39F-A4C8EF5E25DA",
+      "status": "completed",
+      "status_origin": "qbo_pull",
+      "status_source_ref": "qbo:9130353016965726/76571",
+      "is_draft": false,
+      "total_amount": 275.0,
+      "modified": "2026-09-17 18:17:51"
+    },
+    {
+      "id": 32074,
+      "public_id": "4EB101B0-68C6-4C93-AD7E-3D49501D3A23",
+      "status": "completed",
+      "status_origin": "qbo_pull",
+      "status_source_ref": "qbo:9130353016965726/76593",
+      "is_draft": false,
+      "total_amount": 395.01,
+      "modified": "2026-09-17 18:18:13"
+    },
+    {
+      "id": 32075,
+      "public_id": "55F4819B-77D0-4EE9-B129-A95A7529731A",
+      "status": "completed",
+      "status_origin": "qbo_pull",
+      "status_source_ref": "qbo:9130353016965726/76584",
+      "is_draft": false,
+      "total_amount": 15.96,
+      "modified": "2026-09-17 18:18:24"
+    },
+    {
+      "id": 32078,
+      "public_id": "8E4C751A-8F68-42D2-BBFC-5C2C8C4C674D",
+      "status": "completed",
+      "status_origin": "qbo_pull",
+      "status_source_ref": "qbo:9130353016965726/76581",
+      "is_draft": false,
+      "total_amount": 1200.0,
+      "modified": "2026-09-17 18:18:45"
+    },
+    {
+      "id": 32088,
+      "public_id": "4F67D4F3-5844-45EF-BEE3-5C095A75AD05",
+      "status": "completed",
+      "status_origin": "qbo_pull",
+      "status_source_ref": "qbo:9130353016965726/76574",
+      "is_draft": false,
+      "total_amount": 257.48,
+      "modified": "2026-09-17 18:20:07"
+    },
+    {
+      "id": 32090,
+      "public_id": "628DE64E-BF9B-404D-9DDC-5CB8F34D6C89",
+      "status": "completed",
+      "status_origin": "qbo_pull",
+      "status_source_ref": "qbo:9130353016965726/76573",
+      "is_draft": false,
+      "total_amount": 1908.0,
+      "modified": "2026-09-17 18:20:31"
+    },
+    {
+      "id": 32094,
+      "public_id": "5D895F65-53A3-4BAC-B28F-52080EB33FC0",
+      "status": "completed",
+      "status_origin": "qbo_pull",
+      "status_source_ref": "qbo:9130353016965726/76575",
+      "is_draft": false,
+      "total_amount": 50.22,
+      "modified": "2026-09-17 18:20:58"
+    },
+    {
+      "id": 32095,
+      "public_id": "F522B84B-872C-40C2-95DA-86F4D4439A1B",
+      "status": "completed",
+      "status_origin": "qbo_pull",
+      "status_source_ref": "qbo:9130353016965726/76568",
+      "is_draft": false,
+      "total_amount": 1104.78,
+      "modified": "2026-09-17 18:21:04"
+    },
+    {
+      "id": 32096,
+      "public_id": "B9FC37DF-E9A4-4449-9C57-A64CBC5C4E26",
+      "status": "completed",
+      "status_origin": "qbo_pull",
+      "status_source_ref": "qbo:9130353016965726/76570",
+      "is_draft": false,
+      "total_amount": 21.9,
+      "modified": "2026-09-17 18:21:15"
+    },
+    {
+      "id": 32099,
+      "public_id": "BA3F1DB4-6A25-4A2F-9F8C-6677B1FFF753",
+      "status": "completed",
+      "status_origin": "qbo_pull",
+      "status_source_ref": "qbo:9130353016965726/76563",
+      "is_draft": false,
+      "total_amount": 300.0,
+      "modified": "2026-09-17 18:21:39"
+    }
+  ]
+}

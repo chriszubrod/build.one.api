@@ -1,0 +1,139 @@
+-- U-493: Phase-6 guarded DROP of qbo.PurchaseLineExpenseLineItem -- the
+-- ELEVENTH AND LAST of the U-349 mapping-table families.
+--
+-- STAGED, NOT APPLIED. Per feedback_builders_never_mutate_prod_data, the build
+-- unit prepares this file; /em runs it only after every precondition below is
+-- RE-MEASURED LIVE. Do not trust the counts in this header or in the design
+-- doc -- they decay the moment they are written.
+--
+-- WHY THIS FILE EXISTS AT ALL (families 9 and 10 did not have one):
+--   U-362 (family 9) and U-363 (family 10) were dropped by ad-hoc SQL run
+--   against prod and recorded only in prose (199a31f8 / fcad2198). Nothing was
+--   committed, so their follow-ups were lost -- family 10's identity_drift.py
+--   registry row is STILL live 17 days later, which silently broke
+--   check_qbo_identity_drift_lines.py, backfill_qbo_identity_lines.py and
+--   audit_dangling_qbo_mappings.py on --entity all. This file restores the
+--   staged, guarded, idempotent shape the header phase used (u307d, u314).
+--
+-- FK GRAPH (live sys.foreign_keys, re-verified 2026-09-21):
+--   Incoming (table as referenced parent): 0 -- nothing blocks the DROP.
+--   Outgoing: 2, both drop with the table --
+--     FK_PurchaseLineExpenseLineItem_ExpenseLineItem -> dbo.ExpenseLineItem  NO_ACTION
+--     FK_PurchaseLineExpenseLineItem_QboPurchaseLine -> qbo.PurchaseLine     CASCADE
+--   No ALTER TABLE ... DROP CONSTRAINT is needed. The NO_ACTION edge is
+--   precisely what the three OBJECT_ID-guarded DELETE bridges exist to satisfy;
+--   see "BRIDGES" below.
+--
+-- ORDERING -- the two inversions that break prod, stated plainly:
+--   * Dropping BEFORE the repointed sprocs are APPLIED breaks
+--     ReadUncodedCompletedExpenseCandidates and ReadExpenseCodingStateByExpenseIds
+--     LOUDLY at runtime (Invalid object name).
+--   * Dropping BEFORE the container is DEPLOYED breaks the U-488 recode
+--     SILENTLY: the outbox worker's mapping read sits inside a broad
+--     `except Exception` that only logs a warning, so a missing table is
+--     swallowed and Qty / UnitPrice / BillableStatus quietly stop reaching the
+--     customer's live QuickBooks line. No alert fires. THIS IS THE WORSE ONE.
+--   Correct order: apply SQL -> deploy container -> verify -> DROP.
+--
+-- PRECONDITIONS (re-measure every one immediately before running):
+--   P1. sys.sql_modules, COMMENT-STRIPPED via tests/sproc_text.py::strip_sql_comments,
+--       names ONLY the 5 CRUD sprocs below plus dbo.DeleteExpenseCascadeById.
+--       dbo.ProposeInvoiceSourceLinks matches on a COMMENT only -- it is the
+--       same false positive family 9 hit; it is not a blocker. Specifically
+--       ReadUncodedCompletedExpenseCandidates (U-491) and
+--       ReadExpenseCodingStateByExpenseIds (U-494) must have ZERO body refs.
+--   P2. Those repointed sprocs are APPLIED TO PROD, not merely committed --
+--       assert against live sys.sql_modules, never against the repo file.
+--   P3. The deployed container no longer imports PurchaseLineExpenseLineItemRepository
+--       (U-492). Verify the RUNNING image, not the merge.
+--   P4. Raw-SQL census = 0 executed refs across *.py + *.sql, excluding the
+--       three guarded bridges, the CRUD bodies in the deleted base file,
+--       comments, and tests/.
+--   P5. integrations/intuit/qbo/purchase/connector/expense_line_item/sql/
+--       qbo.purchase_line_expense_line_item.sql is DELETED from the repo, and
+--       no remaining .sql file contains CREATE TABLE [qbo].[PurchaseLineExpenseLineItem].
+--       *** That file opens with IF OBJECT_ID(...) IS NULL BEGIN CREATE TABLE.
+--       Any later run_sql.py re-apply RESURRECTS this table. ***
+--   P6. Strand census -- all four must be 0:
+--         mapped rows whose dbo.ExpenseLineItem.QboId IS NULL
+--         mapped rows whose dbo.ExpenseLineItem.RealmId IS NULL
+--         mapping rows with a missing dbo.ExpenseLineItem
+--         mapping rows with a missing qbo.PurchaseLine
+--   P7. No new writer: COUNT(*) WHERE CreatedDatetime >= <container deploy ts> = 0.
+--       KNOWN EXCEPTION: Id 12773 (QboPurchaseLineId 13903 -> ExpenseLineItemId
+--       12965), inserted BY HAND on 2026-09-20 13:43:47 as step 3 of the U-489
+--       expense-32068 repair. That runbook's own correction block already
+--       declares the row inert. It is not evidence of a live app writer --
+--       repo.create() has zero callers.
+--   P8. Incoming FK count re-verified as 0. Re-run it; do not trust this header.
+--   P9. identity_drift.py LINE_ENTITY_SPECS has BOTH stale rows pruned
+--       (expense_line_item AND family 10's bill_line_item), the three --entity
+--       choices pruned, and tests/test_qbo_identity_lines.py +
+--       tests/test_backfill_qbo_identity_lines.py updated. NOTE: the latter does
+--       `next(s for s in LINE_ENTITY_SPECS if s.key == "bill_line_item")` at
+--       MODULE level -- emptying the registry raises StopIteration at import.
+--   P10. Rollback dump captured (see below).
+--   P11. A QBO purchase pull cycle has run against the deployed container with
+--       no Invalid object name and no new ReconciliationIssue for this family.
+--       /em elected a same-day drop rather than the header phase's >=24h soak,
+--       so this FORCED PULL is the substitute runtime evidence -- it is not
+--       optional.
+--
+-- ROLLBACK -- captured 2026-09-21, BEFORE this file runs:
+--   docs/operations/u493_purchase_line_expense_line_item_pre_drop_dump.csv
+--     (12,177 rows x 6 cols: Id, PublicId, QboPurchaseLineId, ExpenseLineItemId,
+--      CreatedDatetime, ModifiedDatetime)
+--   docs/operations/u493_purchase_line_expense_line_item_pre_drop_cohort.json
+--     (the 276 stamped-but-unmapped dbo.ExpenseLineItem ids)
+--   Families 9 and 10 captured NOTHING, on the reasoning that the mapping is
+--   redundant with dbo.<X>.QboId. That is true for IDENTITY but NOT here: the
+--   map row's presence and CreatedDatetime are the ONLY surviving discriminator
+--   of which ExpenseLineItems were born before U-364 (2026-09-04), and two open
+--   efforts tier on exactly that signal -- the 229 line-sum-mismatch expenses
+--   and the 144-coding-item backlog. See
+--   docs/operations/u489_expense_32068_line_dedupe_snapshot.md lines 31-34.
+--   Mechanical restore: re-run the deleted base file from git history (it is
+--   idempotent and recreates table + 5 sprocs), re-add both FKs from
+--   integrations/intuit/qbo/purchase/sql/add_fk_constraints_to_mapping_tables.sql
+--   lines 75-98, then reload the dump. The base file is simultaneously the
+--   resurrection hazard (P5) and the rollback script -- which is why it must be
+--   DELETED in the same commit that stages this DROP, and why that commit sha
+--   must be cited here before running.
+--
+-- BRIDGES -- these three SURVIVE this DROP and die in a booked follow-up:
+--   entities/expense/sql/dbo.expense.sql (inside DeleteExpenseCascadeById)
+--   entities/expense_line_item/business/service.py
+--   integrations/intuit/qbo/purchase/business/service.py
+--   All three are IF OBJECT_ID(...) IS NOT NULL DELETE FROM ... -- after this
+--   DROP they are plain SQL no-ops, not exceptions. 11,864 of 12,246 line items
+--   on completed/qbo_pull expenses still carry a map row, so the bridges are
+--   load-bearing on the MAJORITY of expense deletes right up until this runs.
+--   Do not remove them in the same change. Fold family 10's two orphaned
+--   bridges (integrations/intuit/qbo/bill/business/service.py) into that same
+--   follow-up -- they are already 17 days overdue.
+
+IF OBJECT_ID('qbo.PurchaseLineExpenseLineItem', 'U') IS NOT NULL
+BEGIN
+    DROP TABLE [qbo].[PurchaseLineExpenseLineItem];
+END;
+GO
+
+-- Sprocs orphaned by the table drop. SQL Server does not require dropping these
+-- first -- an unbound sproc body only errors at EXECUTE, not at DROP TABLE time
+-- -- but leaving them live is a footgun: a stray caller gets a confusing runtime
+-- error instead of an import-time failure. 5 sprocs, all from the deleted base
+-- file (names confirmed against live sys.sql_modules 2026-09-21).
+DROP PROCEDURE IF EXISTS dbo.CreatePurchaseLineExpenseLineItem;
+DROP PROCEDURE IF EXISTS dbo.ReadPurchaseLineExpenseLineItemById;
+DROP PROCEDURE IF EXISTS dbo.ReadPurchaseLineExpenseLineItemByExpenseLineItemId;
+DROP PROCEDURE IF EXISTS dbo.ReadPurchaseLineExpenseLineItemByQboPurchaseLineId;
+DROP PROCEDURE IF EXISTS dbo.DeletePurchaseLineExpenseLineItemById;
+GO
+
+-- POST-DROP VERIFICATION (run immediately, do not defer):
+--   SELECT OBJECT_ID('qbo.PurchaseLineExpenseLineItem','U');            -- NULL
+--   SELECT COUNT(*) FROM sys.tables WHERE SCHEMA_NAME(schema_id)='qbo'; -- 21 -> 20
+--   All 5 sproc OBJECT_IDs NULL.
+-- Then exercise the two paths whose failure mode is SILENT: the expense-coding
+-- cockpit read, and the uncoded-completed -> draft detection. A clean HTTP 200
+-- is NOT sufficient evidence for either -- assert on returned rows.

@@ -111,16 +111,16 @@ re-expression of drift queries in `reconciliation/business/service.py`) and **co
 | # | Family (mapping) | Unit | Connector | Recon | Real cross-family | Complexity | Status |
 |---|---|---|---|---|---|---|---|
 | 1 | company_info (CompanyInfoCompany) | U-350 | header | 0 | — | pattern-setter | ✅ done+dropped |
-| 2 | physical_address (PhysicalAddressAddress) | U-351 | header | 0 | — | clean clone | in flight |
-| 3 | term (TermPaymentTerm) | U-352 | header | 0 | bill SalesTermRef + sync script | medium | prompt ready |
-| 4 | vendorcredit (VendorCreditBillCredit) | U-353 | header | 0 | vendorcredit entity-SQL write | medium | queue |
-| 5 | purchase/expense (PurchaseExpense) | U-354 | header | 0 | outbox worker + invoice source-link + purchase svc/router | medium-heavy | queue |
-| 6 | bill (BillBill) | U-355 | header | 0 | base/compensation + base/identity_consistency + outbox + bill_line_item connector | heavy (solo) | queue |
-| 7 | invoice (InvoiceInvoice) | U-356 | header | **1** | reconciliation + outbox worker | hard (recon) | queue |
-| 8 | vendorcredit_line_item (…BillCreditLineItem) | U-361 | **line-item** | 0 (Map: 2 executed consumers in `vendorcredit/business/service.py`, both repointed) | — | **FOUNDATIONAL: builds `run_line_identity_fastpath_dbo_only`; two-phase** | ✅ built 2026-09-01 (Gate-2 pending) |
+| 2 | physical_address (PhysicalAddressAddress) | U-351 | header | 0 | — | clean clone | ✅ done+dropped — verified GONE in live prod 2026-09-21 |
+| 3 | term (TermPaymentTerm) | U-352 | header | 0 | bill SalesTermRef + sync script | medium | ✅ done+dropped — verified GONE in live prod 2026-09-21 |
+| 4 | vendorcredit (VendorCreditBillCredit) | U-353 | header | 0 | vendorcredit entity-SQL write | medium | ✅ done+dropped — verified GONE in live prod 2026-09-21 |
+| 5 | purchase/expense (PurchaseExpense) | U-354 | header | 0 | outbox worker + invoice source-link + purchase svc/router | medium-heavy | ✅ done+dropped — verified GONE in live prod 2026-09-21 |
+| 6 | bill (BillBill) | U-355 | header | 0 | base/compensation + base/identity_consistency + outbox + bill_line_item connector | heavy (solo) | ✅ done+dropped — verified GONE in live prod 2026-09-21 |
+| 7 | invoice (InvoiceInvoice) | U-356 | header | **1** | reconciliation + outbox worker | hard (recon) | ✅ done+dropped — verified GONE in live prod 2026-09-21 |
+| 8 | vendorcredit_line_item (…BillCreditLineItem) | U-361 | **line-item** | 0 (Map: 2 executed consumers in `vendorcredit/business/service.py`, both repointed) | — | **FOUNDATIONAL: builds `run_line_identity_fastpath_dbo_only`; two-phase** | ✅ done+dropped — built 2026-09-01; verified GONE in live prod 2026-09-21 |
 | 9 | invoice_line_item (InvoiceLineItemInvoiceLine) | U-362→362b→362c | line-item | 0 | invoice source-link | clone (needs #8's helper); +3 adversarial-caught money bugs on source-linked-line collision (28,979 shared-LinkedTxn lines) | ✅ done+deployed+dropped 2026-09-03 (cd03ca84 / ACR caak; table 30,513 rows dropped) |
 | 10 | bill_line_item (BillLineItemBillLine) | U-363 | line-item | **1** | reconciliation + bill svc | hard (recon); flag-only recon re-expression + push-stamp-verify + concurrent-delete-race fix | ✅ done+deployed+dropped 2026-09-03 (745d7285 / ACR caam; table 23,678 rows dropped; census 0 strand risk; adversarial 0 money bugs) |
-| 11 | expense_line_item (PurchaseLineExpenseLineItem) | U-364 | line-item | **1** | reconciliation + purchase svc/router | hard (recon) | queue |
+| 11 | expense_line_item (PurchaseLineExpenseLineItem) | U-364 | line-item | **1** | reconciliation + purchase svc/router | hard (recon) | 🟡 built+deployed 2026-09-04 (b484ed5c) — **NOT dropped**; table live at 12,177 rows. Blocked on reader repoints: `ReadExpenseCodingStateByExpenseIds` (U-494 ✅), `ReadUncodedCompletedExpenseCandidates` (U-491), outbox recode handler (U-492). DROP = U-493. |
 
 **Ordering logic:** header families first (existing helper, ascending cross-family surface), the one
 header-with-recon (invoice) at the end of the header block; then the line-item block led by the
@@ -160,6 +160,6 @@ and #11 (`PurchaseLineExpenseLineItem`) in the re-expressed reconciliation sproc
 - After enough families land on the shape, fold in the deferred conflict-predicate `/simplify`
   extraction into `base/identity_fastpath.py` (U-350-booked cross-cutting cleanup).
 
-Net at completion: `qbo.*` 30 → **19** (11 mapping tables gone); the ~15 raw-staging entity tables
+Net at completion: `qbo.*` **21 → 20** — measured live 2026-09-21, not projected. (The original "30 → 19" was an estimate made before any family landed and never held: 10 of the 11 mapping tables are already gone and the live count is 21, so family 11's DROP takes it to 20.) Separately, the ~15 raw-staging entity tables
 (now unblocked, their mapping children removed) become the separate Phase-4/5 program; keep-set stays
 `qbo.Auth` + `Outbox`/`ReconciliationIssue`/`ApiUsage`/`Client`.

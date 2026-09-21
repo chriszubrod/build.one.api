@@ -271,21 +271,22 @@ def _make_outbox_row():
     )
 
 
-@patch(
-    "integrations.intuit.qbo.purchase.connector.expense_line_item.persistence.repo.PurchaseLineExpenseLineItemRepository"
-)
+@patch("entities.expense_line_item.business.service.ExpenseLineItemService")
+@patch("entities.expense.business.service.ExpenseService")
 @patch(
     "integrations.intuit.qbo.purchase.connector.expense.business.service.PurchaseExpenseConnector"
 )
 @patch("entities.expense_coding_item.business.service.ExpenseCodingItemService")
 def test_handler_unresolvable_local_line_still_recodes(
-    mock_svc_cls, mock_connector_cls, mock_mapping_repo_cls
+    mock_svc_cls, mock_connector_cls, mock_expense_svc_cls, mock_eli_svc_cls
 ):
+    from conftest import stub_qbo_identity_fastpath_miss
+
     svc = MagicMock()
     mock_svc_cls.return_value = svc
     svc.read_by_public_id.return_value = _make_coding_item()
 
-    mock_mapping_repo_cls.return_value.read_by_qbo_purchase_line_id.return_value = None
+    stub_qbo_identity_fastpath_miss(mock_expense_svc_cls.return_value)
 
     connector = MagicMock()
     mock_connector_cls.return_value = connector
@@ -302,22 +303,21 @@ def test_handler_unresolvable_local_line_still_recodes(
     svc.mark_written.assert_called_once()
 
 
-@patch(
-    "integrations.intuit.qbo.purchase.connector.expense_line_item.persistence.repo.PurchaseLineExpenseLineItemRepository"
-)
+@patch("entities.expense_line_item.business.service.ExpenseLineItemService")
+@patch("entities.expense.business.service.ExpenseService")
 @patch(
     "integrations.intuit.qbo.purchase.connector.expense.business.service.PurchaseExpenseConnector"
 )
 @patch("entities.expense_coding_item.business.service.ExpenseCodingItemService")
 def test_handler_resolves_local_line_economics(
-    mock_svc_cls, mock_connector_cls, mock_mapping_repo_cls
+    mock_svc_cls, mock_connector_cls, mock_expense_svc_cls, mock_eli_svc_cls
 ):
     svc = MagicMock()
     mock_svc_cls.return_value = svc
     svc.read_by_public_id.return_value = _make_coding_item()
 
-    mock_mapping_repo_cls.return_value.read_by_qbo_purchase_line_id.return_value = SimpleNamespace(
-        expense_line_item_id=55
+    mock_expense_svc_cls.return_value.read_by_qbo_identity.return_value = SimpleNamespace(
+        id=42
     )
 
     line = SimpleNamespace(
@@ -326,18 +326,17 @@ def test_handler_resolves_local_line_economics(
         amount=Decimal("21.94"),
         is_billable=True,
     )
+    mock_eli_svc_cls.return_value.read_by_qbo_identity.return_value = line
 
-    with patch(
-        "entities.expense_line_item.business.service.ExpenseLineItemService"
-    ) as mock_eli_svc_cls:
-        mock_eli_svc_cls.return_value.read_by_id.return_value = line
+    connector = MagicMock()
+    mock_connector_cls.return_value = connector
+    connector.recode_purchase_line.return_value = {"status": "written", "sync_token": "6"}
 
-        connector = MagicMock()
-        mock_connector_cls.return_value = connector
-        connector.recode_purchase_line.return_value = {"status": "written", "sync_token": "6"}
+    QboOutboxWorker()._handle_recode_purchase_line(_make_outbox_row())
 
-        QboOutboxWorker()._handle_recode_purchase_line(_make_outbox_row())
-
+    mock_eli_svc_cls.return_value.read_by_qbo_identity.assert_called_once_with(
+        42, TARGET_LINE_ID
+    )
     kwargs = connector.recode_purchase_line.call_args.kwargs
     assert kwargs["quantity"] == 1
     assert kwargs["rate"] == Decimal("21.94")

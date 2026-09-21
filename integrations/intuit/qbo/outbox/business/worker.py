@@ -844,33 +844,65 @@ class QboOutboxWorker:
         rate = None
         amount = None
         is_billable = None
-        qbo_purchase_line_id = getattr(item, "qbo_purchase_line_id", None)
-        if qbo_purchase_line_id is not None:
-            try:
-                from integrations.intuit.qbo.purchase.connector.expense_line_item.persistence.repo import (
-                    PurchaseLineExpenseLineItemRepository,
-                )
-                from entities.expense_line_item.business.service import ExpenseLineItemService
+        try:
+            from entities.expense.business.service import ExpenseService
+            from entities.expense_line_item.business.service import ExpenseLineItemService
+            from integrations.intuit.qbo.base.reconciliation_recorder import record_mapping_issue
+            from integrations.intuit.qbo.reconciliation.persistence.repo import (
+                ReconciliationIssueRepository,
+            )
 
-                mapping = PurchaseLineExpenseLineItemRepository().read_by_qbo_purchase_line_id(
-                    qbo_purchase_line_id
+            expense = ExpenseService().read_by_qbo_identity(
+                item.qbo_purchase_qbo_id, row.realm_id
+            )
+            local_line = None
+            if expense is not None:
+                local_line = ExpenseLineItemService().read_by_qbo_identity(
+                    expense.id, item.qbo_line_id
                 )
-                if mapping and mapping.expense_line_item_id:
-                    local_line = ExpenseLineItemService().read_by_id(mapping.expense_line_item_id)
-                    if local_line:
-                        quantity = local_line.quantity
-                        rate = local_line.rate
-                        amount = local_line.amount
-                        is_billable = local_line.is_billable
-            except Exception as exc:
+            if local_line is not None:
+                quantity = local_line.quantity
+                rate = local_line.rate
+                amount = local_line.amount
+                is_billable = local_line.is_billable
+            else:
+                if expense is None:
+                    reason = (
+                        f"no dbo.Expense for QboId={item.qbo_purchase_qbo_id!r} "
+                        f"realm_id={row.realm_id!r}"
+                    )
+                else:
+                    reason = (
+                        f"no dbo.ExpenseLineItem for ExpenseId={expense.id} "
+                        f"QboId={item.qbo_line_id!r}"
+                    )
                 logger.warning(
                     "Could not resolve local ExpenseLineItem for expense coding item %s "
-                    "(qbo_purchase_line_id=%s): %s",
+                    "(%s); proceeding without qty/rate/amount/is_billable",
                     row.entity_public_id,
-                    qbo_purchase_line_id,
-                    exc,
-                    exc_info=True,
+                    reason,
                 )
+                record_mapping_issue(
+                    ReconciliationIssueRepository(),
+                    drift_type="missing_mapping",
+                    entity_type="ExpenseCodingItem",
+                    entity_public_id=row.entity_public_id,
+                    qbo_id=item.qbo_purchase_qbo_id,
+                    realm_id=row.realm_id or "",
+                    details=(
+                        f"Expense coding recode for item {row.entity_public_id} could not "
+                        f"resolve dbo-native line economics ({reason}) — Qty/UnitPrice/"
+                        f"BillableStatus will not be stamped on the QBO Purchase line. "
+                        f"Proceeding with the recode anyway."
+                    ),
+                )
+        except Exception as exc:
+            logger.warning(
+                "Could not resolve local ExpenseLineItem for expense coding item %s: %s",
+                row.entity_public_id,
+                exc,
+                exc_info=True,
+            )
 
         try:
             result = PurchaseExpenseConnector().recode_purchase_line(

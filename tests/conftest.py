@@ -11,6 +11,10 @@ import pytest
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
+# Imported AFTER the sys.path insert above — that line is what makes the repo
+# root importable when pytest is invoked from elsewhere.
+from shared.authz import current_is_system_admin, current_user_id  # noqa: E402
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -44,6 +48,24 @@ def mock_qbo_app_lock_denied(*_args, **_kwargs):
     mirror-image of `mock_qbo_app_lock_granted`; import this instead of
     hand-rolling another local `yield False` copy (U-337 simplify pass)."""
     yield False
+
+
+@contextmanager
+def actor_context(user_id, is_system_admin):
+    """Set the authz ContextVars for the block, restoring them afterwards — for
+    tests that assert a scoped repo/sproc read receives the caller's actor.
+
+    Import this instead of hand-rolling another local `set`/`try-finally`/`reset`
+    copy; it existed verbatim in two modules and inline in five more. For a
+    system/CLI caller use `shared.authz.system_authz()` instead — it covers all
+    five authz vars, not just these two."""
+    token_user = current_user_id.set(user_id)
+    token_admin = current_is_system_admin.set(is_system_admin)
+    try:
+        yield
+    finally:
+        current_user_id.reset(token_user)
+        current_is_system_admin.reset(token_admin)
 
 
 def mock_ms_graph_client_cm(return_value=None):

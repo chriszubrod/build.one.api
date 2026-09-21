@@ -3,29 +3,20 @@ authenticated actor (current_user_id / current_is_system_admin ContextVars) down
 into the repository call so the sproc can UserProject-scope the rows, plus an
 anti-drift guard that the scoping predicate stays in all three SQL scans. No DB."""
 
-from contextlib import contextmanager
+import sys
 from pathlib import Path
 
+# tests/ must be on sys.path for `from conftest import ...` — this module sorts
+# alphabetically before the test_qbo_* files that would otherwise have inserted it.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from conftest import actor_context  # noqa: E402
 from integrations.intuit.qbo.purchase.business.service import QboPurchaseService
-from shared.authz import current_user_id, current_is_system_admin
 
 
 _SQL_FILE = (
     Path(__file__).resolve().parent.parent
     / "integrations/intuit/qbo/purchase/sql/qbo.expense_coding_queue.sql"
 )
-
-
-@contextmanager
-def _actor(user_id, is_system_admin):
-    """Set the auth ContextVars for the block, restoring them afterwards."""
-    t1 = current_user_id.set(user_id)
-    t2 = current_is_system_admin.set(is_system_admin)
-    try:
-        yield
-    finally:
-        current_user_id.reset(t1)
-        current_is_system_admin.reset(t2)
 
 
 class _FakeLineRepo:
@@ -45,7 +36,7 @@ class _FakeLineRepo:
 def test_queue_threads_actor_into_repo():
     fake = _FakeLineRepo()
     svc = QboPurchaseService(line_repo=fake)
-    with _actor(42, False):
+    with actor_context(42, False):
         svc.get_expense_coding_queue(realm_id="R1")
     assert fake.queue_calls == [("R1", 42, False)]
 
@@ -53,7 +44,7 @@ def test_queue_threads_actor_into_repo():
 def test_metrics_threads_actor_into_repo():
     fake = _FakeLineRepo()
     svc = QboPurchaseService(line_repo=fake)
-    with _actor(7, True):
+    with actor_context(7, True):
         svc.get_expense_coding_metrics(realm_id="R1", since_days=30)
     assert fake.metrics_calls == [("R1", 30, 7, True)]
 
@@ -61,7 +52,7 @@ def test_metrics_threads_actor_into_repo():
 def test_admin_actor_forwarded_true():
     fake = _FakeLineRepo()
     svc = QboPurchaseService(line_repo=fake)
-    with _actor(17, True):
+    with actor_context(17, True):
         svc.get_expense_coding_queue(realm_id=None)
     assert fake.queue_calls == [(None, 17, True)]
 

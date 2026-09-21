@@ -1498,24 +1498,15 @@ class InvoiceService:
 
         prefix = (project.abbreviation or "INV").upper()
 
-        # Go through the SERVICE read, not self.repo, so the caller's actor is
-        # threaded to ReadInvoicesPaginated. That sproc filters on
-        # dbo.UserCanAccessProject(@ActorUserId, @ActorIsSystemAdmin, ...),
-        # which FAILS CLOSED on NULL/NULL — a bare repo call returned zero rows
-        # for every project, so max_num stayed 0 and this handed back
-        # "{PREFIX}-1" on a project that already had 19 invoices (EVR, 2026-09-21).
-        #
-        # A sequence generator needs a COMPLETE view of the project's numbers,
-        # and it gets one — not because it threads the actor, but because
-        # ReadProjectByPublicId's predicate (isa OR UserProject) is a strict
-        # SUBSET of UserCanAccessProject's (isa OR CreatedByUserId OR
-        # UserProject). Anyone who survives the project read above therefore
-        # sees every invoice on that project. Widening ReadProjectByPublicId
-        # (company-scope, a role branch) breaks that and reopens this as a
-        # wrong NUMBER rather than an error — see test_list_sproc_scoping.
-        # Deliberately NOT adding assert_can_access_project here: by the same
-        # subset relation it could never fire, so it would be dead code reading
-        # like the real guard.
+        # SERVICE read, not self.repo: ReadInvoicesPaginated filters on
+        # dbo.UserCanAccessProject, which fails closed on a NULL actor — the
+        # bare repo call saw zero invoices and restarted a live sequence at
+        # "{PREFIX}-1" (EVR, 2026-09-21).
+        # The read is COMPLETE because ReadProjectByPublicId's predicate
+        # (isa OR UserProject) is a strict subset of UserCanAccessProject's
+        # (isa OR CreatedByUserId OR UserProject). Widen the project read and
+        # this becomes a wrong number rather than an error; by that same subset
+        # assert_can_access_project could never fire here, so it is left out.
         invoices = self.read_paginated(
             page_number=1,
             page_size=10000,

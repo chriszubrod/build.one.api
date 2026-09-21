@@ -56,7 +56,6 @@ class AssetFinancingNote:
     modified_datetime: Optional[str] = None
     asset_id: Optional[int] = None
     qbo_liability_account_id: Optional[str] = None
-    company_id: Optional[int] = None
     created_by_user_id: Optional[int] = None
 
     @property

@@ -79,7 +79,6 @@ CREATE TABLE [dbo].[AssetFinancingNote]
     [AssetId] INT NOT NULL,
     -- Holds qbo.Account.QboId (QBO external id), NOT qbo.Account.Id (staging PK).
     [QboLiabilityAccountId] NVARCHAR(50) NOT NULL,
-    [CompanyId] INT NOT NULL,
     [CreatedByUserId] BIGINT NULL
 );
 END
@@ -442,7 +441,6 @@ CREATE OR ALTER PROCEDURE CreateAssetFinancingNote
 (
     @AssetId INT,
     @QboLiabilityAccountId NVARCHAR(50),
-    @CompanyId INT,
     @CreatedByUserId BIGINT = NULL
 )
 AS
@@ -453,7 +451,7 @@ BEGIN
     BEGIN TRANSACTION;
 
     INSERT INTO dbo.[AssetFinancingNote]
-        ([AssetId], [QboLiabilityAccountId], [CompanyId], [CreatedByUserId])
+        ([AssetId], [QboLiabilityAccountId], [CreatedByUserId])
     OUTPUT
         INSERTED.[Id],
         INSERTED.[PublicId],
@@ -462,10 +460,9 @@ BEGIN
         CONVERT(VARCHAR(19), INSERTED.[ModifiedDatetime], 120) AS [ModifiedDatetime],
         INSERTED.[AssetId],
         INSERTED.[QboLiabilityAccountId],
-        INSERTED.[CompanyId],
         INSERTED.[CreatedByUserId]
     VALUES
-        (@AssetId, @QboLiabilityAccountId, @CompanyId, COALESCE(@CreatedByUserId, 17));
+        (@AssetId, @QboLiabilityAccountId, COALESCE(@CreatedByUserId, 17));
 
     COMMIT TRANSACTION;
 END;
@@ -487,7 +484,6 @@ BEGIN
         CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
         [AssetId],
         [QboLiabilityAccountId],
-        [CompanyId],
         [CreatedByUserId]
     FROM dbo.[AssetFinancingNote]
     WHERE [AssetId] = @AssetId
@@ -511,7 +507,6 @@ BEGIN
         CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
         [AssetId],
         [QboLiabilityAccountId],
-        [CompanyId],
         [CreatedByUserId]
     FROM dbo.[AssetFinancingNote]
     WHERE [PublicId] = @PublicId;
@@ -538,7 +533,6 @@ BEGIN
         CONVERT(VARCHAR(19), DELETED.[ModifiedDatetime], 120) AS [ModifiedDatetime],
         DELETED.[AssetId],
         DELETED.[QboLiabilityAccountId],
-        DELETED.[CompanyId],
         DELETED.[CreatedByUserId]
     WHERE [Id] = @Id;
 

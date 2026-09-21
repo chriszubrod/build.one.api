@@ -316,3 +316,29 @@ def test_asset_update_raises_on_stale_row_version():
 
     with pytest.raises(ValueError, match="Concurrency conflict"):
         svc.update_by_public_id("p1", row_version="stale", name="Updated")
+
+
+def test_asset_financing_note_has_no_company_id_column():
+    """The child must derive its owning company from its parent asset, never carry its own.
+
+    An earlier revision stamped a CompanyId on this table while
+    `CreateAssetFinancingNote` took @AssetId and @CompanyId independently, so nothing
+    made them agree -- an authoritative-looking column that authorization could not
+    trust. It was removed before first deploy. Re-adding it would silently reintroduce
+    a second, divergent source for the tenant boundary.
+    """
+    text = ASSET_SQL.read_text(encoding="utf-8")
+    start = text.index("CREATE TABLE [dbo].[AssetFinancingNote]")
+    body = text[start : text.index(");", start)]
+    assert "[CompanyId]" not in body, "dbo.AssetFinancingNote must not carry its own CompanyId"
+
+    # ...and no sproc may accept or project one for it either.
+    for sproc in (
+        "CreateAssetFinancingNote",
+        "ReadAssetFinancingNotesByAssetId",
+        "ReadAssetFinancingNoteByPublicId",
+        "DeleteAssetFinancingNoteById",
+    ):
+        s = text.index(f"CREATE OR ALTER PROCEDURE {sproc}")
+        seg = text[s : text.index("\nGO", s)]
+        assert "CompanyId" not in seg, f"{sproc} still references CompanyId"

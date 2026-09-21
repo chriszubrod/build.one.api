@@ -314,7 +314,6 @@ class AssetFinancingNoteRepository:
             modified_datetime=row.ModifiedDatetime,
             asset_id=row.AssetId,
             qbo_liability_account_id=row.QboLiabilityAccountId,
-            company_id=row.CompanyId,
             created_by_user_id=row.CreatedByUserId,
         )
 
@@ -323,7 +322,6 @@ class AssetFinancingNoteRepository:
         *,
         asset_id: int,
         qbo_liability_account_id: str,
-        company_id: int,
         created_by_user_id: Optional[int] = None,
     ) -> AssetFinancingNote:
         with get_connection() as conn:
@@ -335,7 +333,6 @@ class AssetFinancingNoteRepository:
                     params={
                         "AssetId": asset_id,
                         "QboLiabilityAccountId": qbo_liability_account_id,
-                        "CompanyId": company_id,
                         "CreatedByUserId": created_by_user_id,
                     },
                 )
@@ -347,46 +344,59 @@ class AssetFinancingNoteRepository:
                 cursor.close()
 
     def read_by_asset_id(self, asset_id: int) -> list[AssetFinancingNote]:
-        with get_connection() as conn:
-            cursor = conn.cursor()
-            try:
-                call_procedure(
-                    cursor=cursor,
-                    name="ReadAssetFinancingNotesByAssetId",
-                    params={"AssetId": asset_id},
-                )
-                rows = cursor.fetchall()
-                return [self._from_db(row) for row in rows if row]
-            finally:
-                cursor.close()
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                try:
+                    call_procedure(
+                        cursor=cursor,
+                        name="ReadAssetFinancingNotesByAssetId",
+                        params={"AssetId": asset_id},
+                    )
+                    rows = cursor.fetchall()
+                    return [self._from_db(row) for row in rows if row]
+                finally:
+                    cursor.close()
+        except Exception as error:
+            logger.error(f"Error during read by asset id: {error}")
+            raise map_database_error(error)
 
     def read_by_public_id(self, public_id: str) -> Optional[AssetFinancingNote]:
-        with get_connection() as conn:
-            cursor = conn.cursor()
-            try:
-                call_procedure(
-                    cursor=cursor,
-                    name="ReadAssetFinancingNoteByPublicId",
-                    params={"PublicId": public_id},
-                )
-                row = cursor.fetchone()
-                return self._from_db(row)
-            finally:
-                cursor.close()
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                try:
+                    call_procedure(
+                        cursor=cursor,
+                        name="ReadAssetFinancingNoteByPublicId",
+                        params={"PublicId": public_id},
+                    )
+                    row = cursor.fetchone()
+                    return self._from_db(row)
+                finally:
+                    cursor.close()
+        except Exception as error:
+            logger.error(f"Error during read by public id: {error}")
+            raise map_database_error(error)
 
     def delete_by_id(self, id: int) -> Optional[AssetFinancingNote]:
-        with get_connection() as conn:
-            cursor = conn.cursor()
-            try:
-                call_procedure(
-                    cursor=cursor,
-                    name="DeleteAssetFinancingNoteById",
-                    params={"Id": id},
-                )
-                row = cursor.fetchone()
-                return self._from_db(row) if row else None
-            finally:
-                cursor.close()
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                try:
+                    call_procedure(
+                        cursor=cursor,
+                        name="DeleteAssetFinancingNoteById",
+                        params={"Id": id},
+                    )
+                    row = cursor.fetchone()
+                    return self._from_db(row) if row else None
+                finally:
+                    cursor.close()
+        except Exception as error:
+            logger.error(f"Error during delete by id: {error}")
+            raise map_database_error(error)
+
 
 class AssetAccountExclusionRepository:
     def _from_db(self, row: pyodbc.Row) -> Optional[AssetAccountExclusion]:
@@ -433,43 +443,55 @@ class AssetAccountExclusionRepository:
                 cursor.close()
 
     def read_by_company_id(self, company_id: int) -> list[AssetAccountExclusion]:
-        with get_connection() as conn:
-            cursor = conn.cursor()
-            try:
-                call_procedure(
-                    cursor=cursor,
-                    name="ReadAssetAccountExclusionsByCompanyId",
-                    params={"CompanyId": company_id},
-                )
-                rows = cursor.fetchall()
-                return [self._from_db(row) for row in rows if row]
-            finally:
-                cursor.close()
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                try:
+                    call_procedure(
+                        cursor=cursor,
+                        name="ReadAssetAccountExclusionsByCompanyId",
+                        params={"CompanyId": company_id},
+                    )
+                    rows = cursor.fetchall()
+                    return [self._from_db(row) for row in rows if row]
+                finally:
+                    cursor.close()
+        except Exception as error:
+            logger.error(f"Error during read by company id: {error}")
+            raise map_database_error(error)
 
     def read_by_public_id(self, public_id: str) -> Optional[AssetAccountExclusion]:
-        with get_connection() as conn:
-            cursor = conn.cursor()
-            try:
-                call_procedure(
-                    cursor=cursor,
-                    name="ReadAssetAccountExclusionByPublicId",
-                    params={"PublicId": public_id},
-                )
-                row = cursor.fetchone()
-                return self._from_db(row)
-            finally:
-                cursor.close()
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                try:
+                    call_procedure(
+                        cursor=cursor,
+                        name="ReadAssetAccountExclusionByPublicId",
+                        params={"PublicId": public_id},
+                    )
+                    row = cursor.fetchone()
+                    return self._from_db(row)
+                finally:
+                    cursor.close()
+        except Exception as error:
+            logger.error(f"Error during read by public id: {error}")
+            raise map_database_error(error)
 
     def delete_by_id(self, id: int) -> Optional[AssetAccountExclusion]:
-        with get_connection() as conn:
-            cursor = conn.cursor()
-            try:
-                call_procedure(
-                    cursor=cursor,
-                    name="DeleteAssetAccountExclusionById",
-                    params={"Id": id},
-                )
-                row = cursor.fetchone()
-                return self._from_db(row) if row else None
-            finally:
-                cursor.close()
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                try:
+                    call_procedure(
+                        cursor=cursor,
+                        name="DeleteAssetAccountExclusionById",
+                        params={"Id": id},
+                    )
+                    row = cursor.fetchone()
+                    return self._from_db(row) if row else None
+                finally:
+                    cursor.close()
+        except Exception as error:
+            logger.error(f"Error during delete by id: {error}")
+            raise map_database_error(error)

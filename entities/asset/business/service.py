@@ -193,24 +193,23 @@ class AssetFinancingNoteService:
         self.repo = repo or AssetFinancingNoteRepository()
 
     def _assert_company_access(self, note: AssetFinancingNote) -> None:
-        """Authorize against the PARENT asset, not the note's own stamped CompanyId.
+        """Authorize through the PARENT asset — this entity has no CompanyId.
 
-        `create` derives the note's CompanyId from its parent asset, so the two agree
-        for every note this service writes. That invariant is not enforced by the
-        schema, though — `CreateAssetFinancingNote` takes @AssetId and @CompanyId
-        independently — so trusting the note's own column would make authorization
-        depend on an invariant a direct INSERT or a future second create path could
-        break. Deriving it from the parent instead removes that dependency.
+        It deliberately carries none. An earlier revision stamped its own copy, and
+        because `CreateAssetFinancingNote` took @AssetId and @CompanyId independently
+        nothing made the two agree — so the column looked authoritative while being
+        untrustworthy, which is strictly worse than absent. Dropping it leaves exactly
+        one place the owning company can come from, and matches AssetAttachment and
+        the repo's wider convention for child entities.
         """
         if current_is_system_admin.get():
             return
-        owning_company_id = note.company_id
-        if note.asset_id:
-            parent = AssetRepository().read_by_id(int(note.asset_id))
-            if parent is None or parent.company_id is None:
-                raise EntityNotAccessibleError("AssetFinancingNote", note.id or 0)
-            owning_company_id = parent.company_id
-        assert_company_scope("AssetFinancingNote", note.id, owning_company_id)
+        if not note.asset_id:
+            raise EntityNotAccessibleError("AssetFinancingNote", note.id or 0)
+        parent = AssetRepository().read_by_id(int(note.asset_id))
+        if parent is None:
+            raise EntityNotAccessibleError("AssetFinancingNote", note.id or 0)
+        assert_company_scope("AssetFinancingNote", note.id, parent.company_id)
 
     def create(
         self,
@@ -219,16 +218,14 @@ class AssetFinancingNoteService:
         asset_public_id: str,
         qbo_liability_account_id: str,
     ) -> AssetFinancingNote:
+        # read_by_public_id asserts company access, so reaching here means the
+        # caller owns the parent — and the note inherits that scope structurally.
         asset = AssetService().read_by_public_id(asset_public_id)
         if not asset or not asset.id:
             raise ValueError(f"Asset with public_id '{asset_public_id}' not found")
-        cid = asset.company_id
-        if cid is None:
-            raise ValueError("Asset is missing CompanyId")
         return self.repo.create(
             asset_id=int(asset.id),
             qbo_liability_account_id=qbo_liability_account_id,
-            company_id=int(cid),
             created_by_user_id=current_user_id.get(),
         )
 

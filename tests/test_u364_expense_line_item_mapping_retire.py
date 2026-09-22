@@ -542,114 +542,18 @@ def test_sync_line_items_raises_when_any_line_fails():
         )
 
 
-# --- deploy-gap bridge (3 call sites) --------------------------------------------
-
-
-def test_bridge_is_object_id_guarded_and_scoped_by_qbo_purchase_line_id():
-    from integrations.intuit.qbo.purchase.business.service import (
-        _clear_legacy_purchase_line_expense_line_item_mapping_by_qbo_line_id,
-    )
-
-    mock_cursor = Mock()
-    mock_conn = Mock()
-    mock_conn.__enter__ = Mock(return_value=mock_conn)
-    mock_conn.__exit__ = Mock(return_value=False)
-    mock_conn.cursor.return_value = mock_cursor
-
-    with patch("shared.database.get_connection", return_value=mock_conn):
-        _clear_legacy_purchase_line_expense_line_item_mapping_by_qbo_line_id(600)
-
-    sql_text = mock_cursor.execute.call_args.args[0]
-    assert "OBJECT_ID" in sql_text
-    assert "qbo.PurchaseLineExpenseLineItem" in sql_text or "[PurchaseLineExpenseLineItem]" in sql_text
-    assert "QboPurchaseLineId" in sql_text
-    assert mock_cursor.execute.call_args.args[1] == (600,)
-
-
-def test_bridge_failure_is_swallowed_best_effort():
-    from integrations.intuit.qbo.purchase.business.service import (
-        _clear_legacy_purchase_line_expense_line_item_mapping_by_qbo_line_id,
-    )
-
-    with patch("shared.database.get_connection", side_effect=RuntimeError("connection reset")):
-        _clear_legacy_purchase_line_expense_line_item_mapping_by_qbo_line_id(600)  # must not raise
-
-
 def test_purchase_router_no_longer_directly_constructs_the_retired_mapping_repo():
     """/em Gate-2 (Codex P2 finding): `cancel_expense_from_qbo_purchase_router`
-    used to pre-clear qbo.PurchaseLineExpenseLineItem via a direct,
-    unguarded `PurchaseLineExpenseLineItemRepository()` construction, ahead
-    of `ExpenseService().delete_by_public_id`'s own cascade — which already
-    clears the SAME mapping per line via this unit's OBJECT_ID-guarded
-    bridge (ExpenseLineItemService.delete_by_public_id). Left as-is, the
-    router's direct construction would start hard-failing before ever
-    reaching the guarded cascade once /em applies the eventual table/sproc
-    DROP. Static guard: the route module must carry no reference to the
-    retired repo class at all."""
+    must not construct the retired `PurchaseLineExpenseLineItemRepository` —
+    expense delete is handled by `ExpenseService().delete_by_public_id` and its
+    SQL cascade (`DeleteExpenseCascadeById`). Static guard: the route module
+    carries no reference to the retired repo class."""
     import inspect
 
     from integrations.intuit.qbo.purchase.api import router as purchase_router
 
     source = inspect.getsource(purchase_router)
     assert "PurchaseLineExpenseLineItemRepository" not in source
-
-
-def test_upsert_purchase_lines_stale_cleanup_clears_bridge_before_deleting_staging_line():
-    repo = Mock()
-    line_repo = Mock()
-    line_repo.read_by_qbo_purchase_id_and_qbo_line_id.return_value = None
-    line_repo.read_by_qbo_purchase_id.return_value = [
-        SimpleNamespace(id=501, qbo_line_id="1"),
-        SimpleNamespace(id=502, qbo_line_id="9"),  # no longer in the QBO response
-    ]
-    svc = QboPurchaseService(repo=repo, line_repo=line_repo)
-
-    call_order = []
-    with patch(
-        "integrations.intuit.qbo.purchase.business.service."
-        "_clear_legacy_purchase_line_expense_line_item_mapping_by_qbo_line_id",
-        side_effect=lambda qbo_purchase_line_id: call_order.append(("bridge", qbo_purchase_line_id)),
-    ):
-        line_repo.delete_by_id.side_effect = lambda lid: call_order.append(("delete", lid))
-        svc._upsert_purchase_lines(88, [
-            SimpleNamespace(
-                id="1", line_num=1, description="d", amount=Decimal("1"), detail_type="AccountBasedExpenseLineDetail",
-                item_based_expense_line_detail=None, account_based_expense_line_detail=None,
-            )
-        ])
-
-    assert call_order == [("bridge", 502), ("delete", 502)]
-
-
-def test_reconcile_deleted_purchases_step1_clears_bridge_per_staging_line():
-    repo = Mock()
-    local = SimpleNamespace(qbo_id="42", id=1, realm_id="realm-1")
-    repo.read_by_realm_id.return_value = [local]
-    line_repo = Mock()
-    line_repo.read_by_qbo_purchase_id.return_value = [
-        SimpleNamespace(id=901, qbo_line_id="1"),
-        SimpleNamespace(id=902, qbo_line_id="2"),
-    ]
-    svc = QboPurchaseService(repo=repo, line_repo=line_repo)
-
-    bridge_calls = []
-    with patch(
-        "integrations.intuit.qbo.purchase.business.service.QboPurchaseClient"
-    ), patch(
-        "integrations.intuit.qbo.base.delete_reconcile.strict_confirmed_deleted_ids",
-        return_value={"42"},
-    ), patch(
-        "integrations.intuit.qbo.purchase.business.service."
-        "_clear_legacy_purchase_line_expense_line_item_mapping_by_qbo_line_id",
-        side_effect=lambda qbo_purchase_line_id: bridge_calls.append(qbo_purchase_line_id),
-    ), patch(
-        "entities.expense.business.service.ExpenseService"
-    ) as expense_svc_cls:
-        expense_svc_cls.return_value.read_by_qbo_identity.return_value = None
-        deleted = svc._reconcile_deleted_purchases("realm-1")
-
-    assert deleted == 1
-    assert bridge_calls == [901, 902]
 
 
 # ---------------------------------------------------------------------------

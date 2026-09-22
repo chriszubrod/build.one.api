@@ -102,3 +102,10 @@ GO
 -- Check for orphaned PurchaseLineExpenseLineItem rows (ExpenseLineItem deleted)
 -- DELETE FROM [qbo].[PurchaseLineExpenseLineItem]
 -- WHERE [ExpenseLineItemId] NOT IN (SELECT [Id] FROM [dbo].[ExpenseLineItem]);
+
+-- =============================================================================
+-- RETIRED (U-501, 2026-09-21): qbo.PurchaseLineExpenseLineItem was dropped in
+-- prod. This script remains the mechanical rollback cited by
+-- scripts/migrations/u493_drop_qbo_purchase_line_expense_line_item.sql — do not
+-- delete; annotate only.
+-- =============================================================================

@@ -10,7 +10,6 @@ from tests.sproc_text import REPO_ROOT, sproc_body, strip_sql_comments
 
 EXPENSE_SQL = REPO_ROOT / "entities/expense/sql/dbo.expense.sql"
 DETECTION_SPROC = "ReadUncodedCompletedExpenseCandidates"
-DELETE_CASCADE_SPROC = "DeleteExpenseCascadeById"
 
 DETECTION_OUTER_SELECT_COLUMNS = [
     "[Id]",
@@ -139,8 +138,6 @@ def _rows_for_expense(conn: sqlite3.Connection, expense_id: int) -> list[sqlite3
 
 def test_detection_sproc_does_not_reference_map_table():
     body = _detection_sproc_body_stripped()
-    # PurchaseLineExpenseLineItem still appears in DeleteExpenseCascadeById (spec 10);
-    # pin only the detection sproc body extracted above.
     assert "PurchaseLineExpenseLineItem" not in body
 
 
@@ -263,26 +260,3 @@ def test_detection_sproc_ranking_is_a_TOTAL_order():
         "ORDER BY must include pl.[Id] (qbo.PurchaseLine's PK) so the winner is "
         f"deterministic when one ExpenseLineItem joins two staging lines; got: {order_by!r}"
     )
-
-
-# ---------------------------------------------------------------------------
-# 10 — DeleteExpenseCascadeById map-table bridge survives tidying
-# ---------------------------------------------------------------------------
-
-
-def test_delete_expense_cascade_still_guards_map_table_bridge():
-    full_file = EXPENSE_SQL.read_text()
-    body = strip_sql_comments(sproc_body(EXPENSE_SQL, DELETE_CASCADE_SPROC))
-    assert "PurchaseLineExpenseLineItem" in body
-    assert re.search(
-        r"IF\s+OBJECT_ID\s*\(\s*'qbo\.PurchaseLineExpenseLineItem'\s*\)\s+IS\s+NOT\s+NULL",
-        body,
-        re.IGNORECASE,
-    )
-    assert re.search(
-        r"DELETE FROM qbo\.\[PurchaseLineExpenseLineItem\]",
-        body,
-        re.IGNORECASE,
-    )
-    # Detection sproc must not be the only remaining mention — cascade still owns FK cleanup.
-    assert full_file.count("PurchaseLineExpenseLineItem") >= 2

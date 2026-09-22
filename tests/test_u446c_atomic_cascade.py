@@ -147,8 +147,7 @@ def test_the_line_cascades_child_cleanup_is_bound_to_the_locked_parent():
     )
     for destructive in ("DELETE FROM dbo.[BillLineItemAttachment]",
                         "DELETE FROM dbo.[InvoiceLineItem]",
-                        "UPDATE dbo.[ContractLabor]",
-                        "DELETE FROM qbo.[BillLineItemBillLine]"):
+                        "UPDATE dbo.[ContractLabor]"):
         assert body.index(destructive) > guard, (
             f"{destructive} runs outside the @StillOnLockedParent guard"
         )
@@ -227,18 +226,6 @@ def test_the_line_cascade_clears_the_attachment_link_that_used_to_547():
     body = _body(BLI_SQL, "DeleteBillLineItemCascadeById")
     assert "DELETE FROM dbo.[BillLineItemAttachment] WHERE [BillLineItemId] = @Id;" in body
     assert body.index("dbo.[BillLineItemAttachment]") < body.index("DELETE FROM dbo.[BillLineItem]")
-
-
-@pytest.mark.parametrize(
-    "rel,proc", [(BILL_SQL, "DeleteBillCascadeById"), (BLI_SQL, "DeleteBillLineItemCascadeById")]
-)
-def test_the_legacy_qbo_bridge_moved_into_the_sproc_still_guarded(rel, proc):
-    """qbo.BillLineItemBillLine is already dropped in prod, but its FK was NO
-    ACTION — so wherever it still exists the delete would 547 without this. The
-    OBJECT_ID guard is what makes the dropped case a plain no-op."""
-    body = _body(rel, proc)
-    assert "OBJECT_ID('qbo.BillLineItemBillLine')" in body
-    assert body.index("OBJECT_ID('qbo.BillLineItemBillLine')") < body.index("DELETE FROM dbo.[BillLineItem]")
 
 
 @pytest.mark.parametrize(

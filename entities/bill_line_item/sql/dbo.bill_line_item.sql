@@ -612,15 +612,6 @@ BEGIN
         SET [BillLineItemId] = NULL,
             [ModifiedDatetime] = SYSUTCDATETIME()
         WHERE [BillLineItemId] = @Id;
-
-        -- U-363 deploy-gap bridge, moved here from Python (U-446c). qbo.
-        -- BillLineItemBillLine is ALREADY DROPPED in prod, but its FK to
-        -- BillLineItem was NO ACTION, so wherever the table still exists a line
-        -- delete would 547 without this. The OBJECT_ID guard makes the dropped
-        -- case a plain no-op — deferred name resolution lets the body compile
-        -- against a missing table, it just must never be REACHED.
-        IF OBJECT_ID('qbo.BillLineItemBillLine') IS NOT NULL
-            DELETE FROM qbo.[BillLineItemBillLine] WHERE [BillLineItemId] = @Id;
     END
 
     -- Bound to the parent we locked: if the line was MOVED between the snapshot

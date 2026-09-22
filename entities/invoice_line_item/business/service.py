@@ -20,41 +20,6 @@ logger = logging.getLogger(__name__)
 VALID_SOURCE_TYPES = {"BillLineItem", "ExpenseLineItem", "BillCreditLineItem", "ExpenseRefundLineItem", "Manual"}
 
 
-def _clear_legacy_invoice_line_item_invoice_line_mapping(invoice_line_item_id: int) -> None:
-    """U-362 deploy-gap bridge for InvoiceLineItemService.delete_by_public_id —
-    see its call site. Raw SQL, not a repo/model (both retired in this unit):
-    deletes any row in the (soon-to-be-dropped) qbo.InvoiceLineItemInvoiceLine
-    table that still points at this InvoiceLineItem, so its NO ACTION FK
-    (FK_InvoiceLineItemInvoiceLine_InvoiceLineItem, live since
-    scripts/migrations/u225_qbo_mapping_fk_gaps.sql) never blocks the line
-    delete below. Mirrors BillCreditService's U-353
-    _clear_legacy_vendorcredit_billcredit_mapping bridge exactly (same
-    OBJECT_ID-guard idiom — table-already-dropped becomes a plain SQL no-op,
-    not a caught Python exception on driver error text). Once /em applies the
-    DROP for this table, this whole function becomes a permanent no-op and
-    should be deleted (see U-365, which did exactly that for the 4 header
-    mapping tables)."""
-    from shared.database import get_connection
-
-    try:
-        with get_connection() as conn:
-            conn.cursor().execute(
-                "IF OBJECT_ID('qbo.InvoiceLineItemInvoiceLine', 'U') IS NOT NULL "
-                "DELETE FROM [qbo].[InvoiceLineItemInvoiceLine] WHERE [InvoiceLineItemId] = ?",
-                (invoice_line_item_id,),
-            )
-    except Exception as e:
-        # Only reachable now for a genuine unexpected failure (connection reset,
-        # deadlock, permissions) — table-missing no longer raises at all. Logged,
-        # not raised: best-effort only. The real safety net is the FK itself — if
-        # a mapping row really does still exist and this failed to clear it, the
-        # line delete below 547s anyway (fail-safe, not fail-silent-corruption).
-        logger.warning(
-            f"Could not clear legacy qbo.InvoiceLineItemInvoiceLine mapping for "
-            f"InvoiceLineItem {invoice_line_item_id}: {e}"
-        )
-
-
 def _signed_for_billcredit(value: Optional[Decimal]) -> Optional[Decimal]:
     """A BillCredit reduces the draw; every write path stores Price/Amount
     signed-negative (U-344). -abs(), not -value, so it's idempotent over an
@@ -295,15 +260,4 @@ class InvoiceLineItemService:
                     except Exception:
                         pass
 
-        # U-362: qbo.InvoiceLineItemInvoiceLine's CONNECTOR (mapping_repo,
-        # create_mapping, the U-293b fastpath's mapping fallback) is retired —
-        # dbo.InvoiceLineItem.QboId/RealmId (U-238b) is the sole identity store
-        # going forward. The TABLE itself is not dropped by this unit (that's a
-        # separate /em-run post-deploy step), and it carries a live NO ACTION FK
-        # onto this one (FK_InvoiceLineItemInvoiceLine_InvoiceLineItem, added by
-        # scripts/migrations/u225_qbo_mapping_fk_gaps.sql) — so a still-mapped
-        # row's delete WOULD 547 without this bridge. Correcting U-241's original
-        # comment here: that FK did not exist when this delete path was first
-        # written, but it does now.
-        _clear_legacy_invoice_line_item_invoice_line_mapping(existing.id)
         return self.repo.delete_by_id(existing.id)

@@ -963,17 +963,6 @@ BEGIN
     -- does not: the citation check above already refused, so those DELETEs
     -- are unreachable here and must not run by inference (money-visible).
 
-    -- U-364 deploy-gap bridge, moved here from Python (U-468). qbo.
-    -- PurchaseLineExpenseLineItem is the line-mapping sibling of Bill's
-    -- qbo.BillLineItemBillLine: ALREADY scheduled to drop, but its FK to
-    -- ExpenseLineItem is NO ACTION, so wherever the table still exists a line
-    -- delete would 547 without this. The OBJECT_ID guard makes it a plain SQL
-    -- no-op once dropped — deferred name resolution means the body compiles
-    -- against a missing table, it just must never be REACHED.
-    IF OBJECT_ID('qbo.PurchaseLineExpenseLineItem') IS NOT NULL
-        DELETE FROM qbo.[PurchaseLineExpenseLineItem]
-        WHERE [ExpenseLineItemId] IN (SELECT [Id] FROM dbo.[ExpenseLineItem] WHERE [ExpenseId] = @Id);
-
     DELETE FROM dbo.[ExpenseLineItem] WHERE [ExpenseId] = @Id;
 
     -- Reviews are otherwise insert-only audit history. They go here, inside
@@ -1383,10 +1372,10 @@ BEGIN
             -- U-491 round 2: ORDER BY eli.[Id] alone is not a total order.
             -- qbo.PurchaseLine has NO unique constraint on (QboPurchaseId, QboLineId)
             -- -- only two separate non-unique indexes -- so one ExpenseLineItem can
-            -- join more than one staging line if a stale row survives the pull's
-            -- cleanup (that DELETE is wrapped in a try/except and a 547 from the
-            -- retired mapping table's NO ACTION FK leaves the stale row behind).
-            -- The old map hop was 1:1 BY CONSTRAINT; this join is 1:1 only by data.
+            -- join more than one staging line when duplicate (QboPurchaseId, QboLineId)
+            -- rows coexist in staging (pull re-seed can leave an older row behind until
+            -- stale-line cleanup removes it). The old map hop was 1:1 BY CONSTRAINT;
+            -- this join is 1:1 only by data.
             -- 0 duplicate pairs live today, but ties here would make the stamped
             -- QboPurchaseLineId/CodingItemPublicId provenance nondeterministic, and
             -- backfill_uncoded_to_draft writes that provenance into StatusSourceRef.

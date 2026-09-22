@@ -977,10 +977,7 @@ def test_the_repo_always_sends_the_flag_and_sends_0_for_a_human(method, kwargs):
          patch("entities.expense_line_item.business.service.ExpenseService") as MockExp2, \
          patch(
              "entities.expense_line_item_attachment.persistence.repo.ExpenseLineItemAttachmentRepository"
-         ) as MockLink, \
-         patch(
-             "entities.expense_line_item.business.service._clear_legacy_purchase_line_expense_line_item_mapping"
-         ):
+         ) as MockLink:
         draft = _expense(status="in_review", is_draft=True)
         for m in (MockExp, MockExp2):
             m.return_value.read_by_id.return_value = draft
@@ -1055,10 +1052,7 @@ def test_a_lost_reparent_race_surfaces_as_422_not_409_or_404():
              "entities.expense_line_item_attachment.persistence.repo.ExpenseLineItemAttachmentRepository"
          ) as MockLink, \
          patch("entities.attachment.business.service.AttachmentService"), \
-         patch("shared.storage.AzureBlobStorage"), \
-         patch(
-             "entities.expense_line_item.business.service._clear_legacy_purchase_line_expense_line_item_mapping"
-         ):
+         patch("shared.storage.AzureBlobStorage"):
         MockLink.return_value.read_by_expense_line_item_id.return_value = None
         draft, done = _expense(status="in_review", is_draft=True), _expense()
         MockExp.return_value.read_by_id.side_effect = [draft, done]

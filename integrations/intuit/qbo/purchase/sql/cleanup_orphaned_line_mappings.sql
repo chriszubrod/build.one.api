@@ -32,3 +32,8 @@ END
 ELSE
     PRINT 'FK_PurchaseLineExpenseLineItem_ExpenseLineItem already exists';
 GO
+
+-- =============================================================================
+-- RETIRED (U-501, 2026-09-21): qbo.PurchaseLineExpenseLineItem was dropped in
+-- prod. Historical orphan cleanup only — kept for rollback archaeology.
+-- =============================================================================

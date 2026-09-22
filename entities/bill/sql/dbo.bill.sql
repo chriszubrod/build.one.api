@@ -927,19 +927,6 @@ BEGIN
         [ModifiedDatetime] = SYSUTCDATETIME()
     WHERE [BillLineItemId] IN (SELECT [Id] FROM dbo.[BillLineItem] WHERE [BillId] = @Id);
 
-
-    -- U-363 deploy-gap bridge, moved here from Python (U-446c). qbo.
-    -- BillLineItemBillLine is ALREADY DROPPED in prod, but its FK to
-    -- BillLineItem was NO ACTION, so wherever the table still exists a line
-    -- delete would 547 without this. The OBJECT_ID guard makes it a plain SQL
-    -- no-op once dropped — deferred name resolution means the body compiles
-    -- against a missing table, it just must never be REACHED. Delete this block
-    -- when the table is dropped everywhere (U-365 did exactly that for the 4
-    -- header mapping tables).
-    IF OBJECT_ID('qbo.BillLineItemBillLine') IS NOT NULL
-        DELETE FROM qbo.[BillLineItemBillLine]
-        WHERE [BillLineItemId] IN (SELECT [Id] FROM dbo.[BillLineItem] WHERE [BillId] = @Id);
-
     DELETE FROM dbo.[BillLineItem] WHERE [BillId] = @Id;
 
     -- ReviewEntry is DECOMMISSIONED and guarded exactly as DeleteReviewsByBillId

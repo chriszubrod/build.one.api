@@ -567,50 +567,6 @@ def test_has_qbo_line_provenance_false_with_no_lines():
         assert connector._has_qbo_line_provenance(1057) is False
 
 
-# --- the executed consumer in invoice/business/service.py -----------------------
-
-
-def test_stale_line_cleanup_clears_legacy_mapping_row_before_the_staging_line():
-    """_upsert_invoice_lines' stale-line cleanup used to delete the line's
-    InvoiceLineItemInvoiceLine mapping row first (via a full repo class), then
-    the staging line. U-362 retired the connector-level repo/model, but the
-    mapping TABLE isn't dropped by this unit and still carries a live NO
-    ACTION FK onto qbo.InvoiceLine — so a lightweight OBJECT_ID-guarded raw-SQL
-    bridge (mirroring the entities-side one) must still clear it first, or the
-    staging-line delete 547s and the stale row survives to poison a future
-    pull's live_qbo_line_ids."""
-    line_repo = Mock()
-    line_repo.read_by_qbo_invoice_id.return_value = [
-        SimpleNamespace(id=501, qbo_line_id="1"),
-        SimpleNamespace(id=502, qbo_line_id="9"),  # no longer in the QBO response
-    ]
-    svc = QboInvoiceService(line_repo=line_repo)
-    incoming = [
-        SimpleNamespace(
-            id="1", line_num=1, description="d", amount=Decimal("1"), detail_type="SalesItemLineDetail",
-            sales_item_line_detail=None, discount_line_detail=None, linked_txn=None,
-        )
-    ]
-    call_order = []
-    line_repo.delete_by_id.side_effect = lambda *_: call_order.append("line")
-
-    mock_cursor = Mock()
-    mock_cursor.execute.side_effect = lambda *_: call_order.append("mapping")
-    mock_conn = Mock()
-    mock_conn.__enter__ = Mock(return_value=mock_conn)
-    mock_conn.__exit__ = Mock(return_value=False)
-    mock_conn.cursor.return_value = mock_cursor
-
-    with patch("shared.database.get_connection", return_value=mock_conn):
-        svc._upsert_invoice_lines(30, incoming)
-
-    assert call_order == ["mapping", "line"]
-    line_repo.delete_by_id.assert_called_once_with(502)
-    sql_text = mock_cursor.execute.call_args.args[0]
-    assert "OBJECT_ID" in sql_text
-    assert mock_cursor.execute.call_args.args[1] == (502,)
-
-
 # --- regression: the identity-projection gap found by SQL inspection -----------
 #
 # Static, no-DB-required guard: the sprocs the dbo-only fast path (and the

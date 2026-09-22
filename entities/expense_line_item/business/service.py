@@ -23,38 +23,6 @@ from shared.lifecycle.terminal_lock import (
 logger = logging.getLogger(__name__)
 
 
-def _clear_legacy_purchase_line_expense_line_item_mapping(expense_line_item_id: int) -> None:
-    """U-364 deploy-gap bridge for ExpenseLineItemService.delete_by_public_id —
-    see its call site. Raw SQL, not a repo/model (both retired in this unit):
-    deletes any row in the (soon-to-be-dropped) qbo.PurchaseLineExpenseLineItem
-    table that still points at this ExpenseLineItem, so its NO ACTION FK
-    (FK_PurchaseLineExpenseLineItem_ExpenseLineItem) never blocks the line
-    delete below. Mirrors entities/bill_line_item/business/service.py's U-363
-    sibling bridge exactly (same OBJECT_ID-guard idiom — table-already-dropped
-    becomes a plain SQL no-op, not a caught Python exception). Once /em
-    applies the DROP for this table, this whole function becomes a permanent
-    no-op and should be deleted."""
-    from shared.database import get_connection
-
-    try:
-        with get_connection() as conn:
-            conn.cursor().execute(
-                "IF OBJECT_ID('qbo.PurchaseLineExpenseLineItem', 'U') IS NOT NULL "
-                "DELETE FROM [qbo].[PurchaseLineExpenseLineItem] WHERE [ExpenseLineItemId] = ?",
-                (expense_line_item_id,),
-            )
-    except Exception as e:
-        # Only reachable now for a genuine unexpected failure (connection reset,
-        # deadlock, permissions) — table-missing no longer raises at all. Logged,
-        # not raised: best-effort only. The real safety net is the FK itself — if
-        # a mapping row really does still exist and this failed to clear it, the
-        # line delete below 547s anyway (fail-safe, not fail-silent-corruption).
-        logger.warning(
-            f"Could not clear legacy qbo.PurchaseLineExpenseLineItem mapping for "
-            f"ExpenseLineItem {expense_line_item_id}: {e}"
-        )
-
-
 class ExpenseLineItemService:
     """
     Service for ExpenseLineItem entity business operations.
@@ -374,18 +342,7 @@ class ExpenseLineItemService:
                 "Error during attachment cleanup for ExpenseLineItem %s: %s", existing.id, e
             )
 
-        # Step 3: Delete the line item. U-364: qbo.PurchaseLineExpenseLineItem's
-        # CONNECTOR (mapping_repo, create_mapping, the legacy fastpath's mapping
-        # fallback) is retired — dbo.ExpenseLineItem.QboId/RealmId (U-238b) is
-        # the sole identity store going forward. The TABLE itself is not
-        # dropped by this unit (that's a separate /em-run post-deploy step),
-        # and it carries a live NO ACTION FK onto this one
-        # (FK_PurchaseLineExpenseLineItem_ExpenseLineItem) — so a still-mapped
-        # row's delete WOULD 547 without this bridge. The old restore-on-
-        # failure (delete_own_qbo_mapping_before_header, U-241) is no longer
-        # needed post-U-364: the mapping is redundant, so losing a row on a
-        # failed delete is harmless — the dbo-native QboId is the identity.
-        _clear_legacy_purchase_line_expense_line_item_mapping(existing.id)
+        # Step 3: Delete the line item (U-364: identity is dbo-native QboId/RealmId).
         deleted = self.repo.delete_by_id(
             existing.id, allow_terminal_parent=is_exempt(_via_internal_pipeline)
         )

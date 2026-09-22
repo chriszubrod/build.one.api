@@ -20,40 +20,6 @@ MAX_RETRIES = 3  # Max retries for transient errors
 INITIAL_RETRY_DELAY = 2.0  # Initial retry delay (seconds)
 
 
-def _clear_legacy_bill_line_item_bill_line_mapping_by_qbo_line_id(qbo_bill_line_id: int) -> None:
-    """U-363 deploy-gap bridge for QboBillService's stale-line cleanup
-    (_upsert_bill_lines) and deleted-bill reconcile (_reconcile_deleted_bills)
-    — see their call sites. Raw SQL, not a repo/model (both retired in this
-    unit): deletes any row in the (soon-to-be-dropped) qbo.BillLineItemBillLine
-    table that still points at this staging QboBillLine, so its NO ACTION FK
-    (FK_BillLineItemBillLine_QboBillLine, live since
-    scripts/migrations/u225_qbo_mapping_fk_gaps.sql) never blocks the staging
-    line's delete. Same OBJECT_ID-guard idiom as entities/bill_line_item/
-    business/service.py's sibling bridge (and InvoiceLineItemService's U-362
-    precedent) — table-already-dropped becomes a plain SQL no-op, not a
-    caught Python exception. Once /em applies the DROP, this whole function
-    becomes a permanent no-op and should be deleted."""
-    from shared.database import get_connection
-
-    try:
-        with get_connection() as conn:
-            conn.cursor().execute(
-                "IF OBJECT_ID('qbo.BillLineItemBillLine', 'U') IS NOT NULL "
-                "DELETE FROM [qbo].[BillLineItemBillLine] WHERE [QboBillLineId] = ?",
-                (qbo_bill_line_id,),
-            )
-    except Exception as e:
-        # Best-effort only — the real safety net is the FK itself. If a mapping
-        # row really does still exist and this failed to clear it, the stale
-        # QboBillLine delete below 547s and is caught by its own try/except
-        # (fail-safe: the stale row just persists for the next pull to retry,
-        # never fail-silent-corruption).
-        logger.warning(
-            f"Could not clear legacy qbo.BillLineItemBillLine mapping for "
-            f"QboBillLine {qbo_bill_line_id}: {e}"
-        )
-
-
 class QboBillService:
     """
     Service for QboBill entity business operations.
@@ -214,12 +180,7 @@ class QboBillService:
             # returned. Mirrors QboPurchaseService's identical U-354 fix.
             destructive_labels = []
             try:
-                # Step 1: line mappings (before BillLineItem deletion — FK NO ACTION).
-                for line in self.line_repo.read_by_qbo_bill_id(local.id):
-                    destructive_labels.append("BillLineItemBillLine mapping")
-                    _clear_legacy_bill_line_item_bill_line_mapping_by_qbo_line_id(line.id)
-
-                # Step 2: the Bill, resolved directly via dbo-native QBO identity
+                # Step 1: the Bill, resolved directly via dbo-native QBO identity
                 # (U-355 — no more qbo.BillBill mapping row to hop through).
                 bill = bill_service.read_by_qbo_identity(local.qbo_id, realm_id)
                 if bill:
@@ -227,17 +188,13 @@ class QboBillService:
                     bill_service.delete_by_public_id(bill.public_id)
                     logger.info(f"Deleted Bill id={bill.id} mapped to deleted QboBill {local.qbo_id}")
 
-                # Step 3: the QboBill staging (CASCADE removes qbo.BillLine).
+                # Step 2: the QboBill staging (CASCADE removes qbo.BillLine).
                 self.repo.delete_by_qbo_id(local.qbo_id)
                 logger.info(f"Deleted QboBill qbo_id={local.qbo_id}")
                 deleted += 1
             except Exception as e:
                 logger.error(f"Failed to delete stale QboBill {local.qbo_id}: {e}")
                 if destructive_labels:
-                    # dict.fromkeys(...) dedupes while preserving first-seen order — a
-                    # bill with 3+ mapped lines would otherwise repeat "BillLineItemBillLine
-                    # mapping" once per line, turning the recorded issue's label into
-                    # unreadable noise instead of a clean summary.
                     record_partial_delete_issue(
                         entity_type="Bill",
                         mapping_label=" + ".join(dict.fromkeys(destructive_labels)),
@@ -469,17 +426,9 @@ class QboBillService:
         # Delete stale lines — any locally-stored QboBillLine whose qbo_line_id is
         # no longer present in the QBO API response means QBO removed that line.
         # U-363: the downstream BillLineItem is matched by its own dbo-native
-        # (BillId, QboId) identity now — the connector-level qbo.
-        # BillLineItemBillLine mapping this layer used to keep valid is retired.
-        # The TABLE itself is not dropped by this unit though, and it carries a
-        # live NO ACTION FK onto this staging row
-        # (FK_BillLineItemBillLine_QboBillLine) — so the delete below still
-        # needs the mapping cleared first, via the deploy-gap bridge, or it 547s
-        # and the stale row silently survives. Its dbo BillLineItem, if any, is
-        # left under its now-stale identity — the re-adopt matcher
-        # (base/line_orphan_adopt.py) picks it up on a future pull if QBO
-        # re-sends an equivalent line; nothing here can determine that on its
-        # own.
+        # (BillId, QboId) identity. Its dbo BillLineItem, if any, is left under its
+        # now-stale identity — the re-adopt matcher (base/line_orphan_adopt.py) picks
+        # it up on a future pull if QBO re-sends an equivalent line.
         stored_lines = self.line_repo.read_by_qbo_bill_id(qbo_bill_id)
         for stored_line in stored_lines:
             if stored_line.qbo_line_id not in current_qbo_line_ids:
@@ -487,7 +436,6 @@ class QboBillService:
                     f"Deleting stale QboBillLine id={stored_line.id} "
                     f"qbo_line_id={stored_line.qbo_line_id} (no longer in QBO response)"
                 )
-                _clear_legacy_bill_line_item_bill_line_mapping_by_qbo_line_id(stored_line.id)
                 try:
                     self.line_repo.delete_by_id(stored_line.id)
                 except Exception as e:

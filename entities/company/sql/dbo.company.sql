@@ -76,6 +76,26 @@ BEGIN
 END
 GO
 
+-- U-500a: filtered UNIQUE on RealmId alone — upgrades realm-scoping on the QBO
+-- expense-recode path (integrations/intuit/qbo/outbox/business/worker.py) into
+-- provable Company-scoping. That path has no CompanyId boundary today; an
+-- Expense.CompanyId vs ExpenseCodingItem.CompanyId guard was considered and
+-- rejected as vacuous — ExpenseCodingItem.CompanyId exists but the queue MERGE
+-- omits it (every row defaults to 1), Expense.CompanyId is not projected by
+-- ReadExpenseByQboIdAndRealmId / the Expense dataclass, and measured prod had
+-- 613 ExpenseCodingItem + 11,826 Expense rows all at CompanyId=1 (would stay
+-- 1==1 after a second Company onboarded). dbo.Company.RealmId is what actually
+-- holds; UQ_Company_QboId_RealmId does NOT forbid two Companies sharing a
+-- RealmId. This index enforces at most one Company per non-NULL RealmId so
+-- every existing realm guard on that path becomes a proven Company guard.
+IF OBJECT_ID('dbo.Company', 'U') IS NOT NULL AND NOT EXISTS (
+    SELECT 1 FROM sys.indexes WHERE name = 'UQ_Company_RealmId' AND object_id = OBJECT_ID('dbo.Company')
+)
+BEGIN
+    CREATE UNIQUE INDEX UQ_Company_RealmId ON [dbo].[Company] ([RealmId]) WHERE [RealmId] IS NOT NULL;
+END
+GO
+
 -- U-281 (Phase-4 prerequisite, account family): dbo-native home for the one
 -- live business fact BillBillConnector._get_ap_account_ref reads off
 -- qbo.Account on every Bill push — "which QBO account is Accounts Payable

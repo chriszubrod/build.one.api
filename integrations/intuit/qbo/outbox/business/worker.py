@@ -819,6 +819,63 @@ class QboOutboxWorker:
             realm_id=row.realm_id,
         )
 
+    def _resolve_recode_line_economics(
+        self, row: QboOutbox, item
+    ) -> tuple[Optional[object], Optional[str]]:
+        from entities.expense.business.service import ExpenseService
+        from entities.expense_line_item.business.service import ExpenseLineItemService
+        from integrations.intuit.qbo.base.ids import coerce_id
+
+        expense = ExpenseService().read_by_qbo_identity(
+            item.qbo_purchase_qbo_id, row.realm_id
+        )
+        if expense is None:
+            reason = (
+                f"no dbo.Expense for QboId={item.qbo_purchase_qbo_id!r} "
+                f"realm_id={row.realm_id!r}"
+            )
+            return None, reason
+
+        local_line = ExpenseLineItemService().read_by_qbo_identity(
+            coerce_id(expense.id), item.qbo_line_id
+        )
+        if local_line is None:
+            reason = (
+                f"no dbo.ExpenseLineItem for ExpenseId={expense.id} "
+                f"QboId={item.qbo_line_id!r}"
+            )
+            return None, reason
+
+        # U-492 round 2: the line read is parent-scoped by ExpenseId and the
+        # parent is realm-scoped, so the realm is pinned TRANSITIVELY -- but
+        # only while every ExpenseLineItem.RealmId agrees with its parent
+        # Expense's. Nothing enforces that: it is a data invariant, not a
+        # constraint (0 violations live, 1 realm in prod). The new SQL readers
+        # assert eli.RealmId = p.RealmId outright; this path did not, and this
+        # is the path that copies money onto a live QuickBooks line. Close the
+        # asymmetry explicitly rather than inheriting it. NULL is not a
+        # mismatch -- 124 rows carry no realm and must keep resolving.
+        # getattr, not attribute access: this handler must degrade rather
+        # than raise. A model without the attribute is a resolve failure,
+        # not a crash -- the same defensive style the old mapping lookup
+        # used on the coding item.
+        line_realm = getattr(local_line, "realm_id", None)
+        if (
+            line_realm is not None
+            and row.realm_id is not None
+            and line_realm != row.realm_id
+        ):
+            reason = (
+                f"dbo.ExpenseLineItem for ExpenseId={expense.id} "
+                f"QboId={item.qbo_line_id!r} carries RealmId="
+                f"{line_realm!r} but this outbox row targets "
+                f"{row.realm_id!r} -- refusing to copy its economics "
+                f"across realms"
+            )
+            return None, reason
+
+        return local_line, None
+
     def _handle_recode_purchase_line(self, row: QboOutbox) -> None:
         from entities.expense_coding_item.business.service import ExpenseCodingItemService
         from integrations.intuit.qbo.purchase.connector.expense.business.service import PurchaseExpenseConnector
@@ -845,69 +902,18 @@ class QboOutboxWorker:
         amount = None
         is_billable = None
         try:
-            from entities.expense.business.service import ExpenseService
-            from entities.expense_line_item.business.service import ExpenseLineItemService
-            from integrations.intuit.qbo.base.ids import coerce_id
             from integrations.intuit.qbo.base.reconciliation_recorder import record_mapping_issue
             from integrations.intuit.qbo.reconciliation.persistence.repo import (
                 ReconciliationIssueRepository,
             )
 
-            expense = ExpenseService().read_by_qbo_identity(
-                item.qbo_purchase_qbo_id, row.realm_id
-            )
-            local_line = None
-            realm_mismatch = None
-            if expense is not None:
-                local_line = ExpenseLineItemService().read_by_qbo_identity(
-                    coerce_id(expense.id), item.qbo_line_id
-                )
-                # U-492 round 2: the line read is parent-scoped by ExpenseId and the
-                # parent is realm-scoped, so the realm is pinned TRANSITIVELY -- but
-                # only while every ExpenseLineItem.RealmId agrees with its parent
-                # Expense's. Nothing enforces that: it is a data invariant, not a
-                # constraint (0 violations live, 1 realm in prod). The new SQL readers
-                # assert eli.RealmId = p.RealmId outright; this path did not, and this
-                # is the path that copies money onto a live QuickBooks line. Close the
-                # asymmetry explicitly rather than inheriting it. NULL is not a
-                # mismatch -- 124 rows carry no realm and must keep resolving.
-                # getattr, not attribute access: this handler must degrade rather
-                # than raise. A model without the attribute is a resolve failure,
-                # not a crash -- the same defensive style the old mapping lookup
-                # used on the coding item.
-                line_realm = getattr(local_line, "realm_id", None)
-                if (
-                    local_line is not None
-                    and line_realm is not None
-                    and row.realm_id is not None
-                    and line_realm != row.realm_id
-                ):
-                    realm_mismatch = (line_realm, row.realm_id)
-                    local_line = None
+            local_line, reason = self._resolve_recode_line_economics(row, item)
             if local_line is not None:
                 quantity = local_line.quantity
                 rate = local_line.rate
                 amount = local_line.amount
                 is_billable = local_line.is_billable
             else:
-                if expense is None:
-                    reason = (
-                        f"no dbo.Expense for QboId={item.qbo_purchase_qbo_id!r} "
-                        f"realm_id={row.realm_id!r}"
-                    )
-                elif realm_mismatch is not None:
-                    reason = (
-                        f"dbo.ExpenseLineItem for ExpenseId={expense.id} "
-                        f"QboId={item.qbo_line_id!r} carries RealmId="
-                        f"{realm_mismatch[0]!r} but this outbox row targets "
-                        f"{realm_mismatch[1]!r} -- refusing to copy its economics "
-                        f"across realms"
-                    )
-                else:
-                    reason = (
-                        f"no dbo.ExpenseLineItem for ExpenseId={expense.id} "
-                        f"QboId={item.qbo_line_id!r}"
-                    )
                 logger.warning(
                     "Could not resolve local ExpenseLineItem for expense coding item %s "
                     "(%s); proceeding without qty/rate/amount/is_billable",

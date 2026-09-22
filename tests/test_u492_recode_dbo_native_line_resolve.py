@@ -4,6 +4,8 @@ from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from integrations.intuit.qbo.outbox.business.worker import QboOutboxWorker
 from tests.test_u488_recode_carries_qty_rate_billable import (
     PUBLIC_ID,
@@ -293,3 +295,198 @@ def test_s14_unresolvable_issue_is_not_recorded_as_critical():
     ctx = _run_handler_with_mocks(expense_return=None, line_return=None)
     ctx.record_mapping_issue.assert_called_once()
     assert ctx.record_mapping_issue.call_args.kwargs["severity"] == "low"
+
+
+# ---------------------------------------------------------------------------
+# S15-S19 — U-499: _resolve_recode_line_economics extraction (behavior-preserving)
+# ---------------------------------------------------------------------------
+
+
+def _resolve_with_mocks(*, expense_return, line_return):
+    patches = [
+        patch("entities.expense.business.service.ExpenseService"),
+        patch("entities.expense_line_item.business.service.ExpenseLineItemService"),
+    ]
+    with patches[0] as mock_expense_svc_cls, patches[1] as mock_eli_svc_cls:
+        mock_expense_svc_cls.return_value.read_by_qbo_identity.return_value = (
+            expense_return
+        )
+        mock_eli_svc_cls.return_value.read_by_qbo_identity.return_value = line_return
+        row = _make_outbox_row()
+        item = _make_coding_item()
+        return QboOutboxWorker()._resolve_recode_line_economics(row, item)
+
+
+@pytest.mark.parametrize(
+    "expense_return,line_return",
+    [
+        pytest.param(
+            SimpleNamespace(id=9001),
+            SimpleNamespace(quantity=1, realm_id=REALM_ID),
+            id="success",
+        ),
+        pytest.param(None, None, id="no_expense"),
+        pytest.param(
+            SimpleNamespace(id=9001),
+            None,
+            id="no_line",
+        ),
+        pytest.param(
+            SimpleNamespace(id=9001),
+            SimpleNamespace(quantity=1, realm_id="other-realm"),
+            id="realm_mismatch",
+        ),
+    ],
+)
+def test_s15_helper_returns_exactly_one_of_line_or_reason(
+    expense_return, line_return
+):
+    local_line, reason = _resolve_with_mocks(
+        expense_return=expense_return, line_return=line_return
+    )
+    assert (local_line is not None) ^ (reason is not None)
+
+
+def _expected_details(reason: str) -> str:
+    return (
+        f"Expense coding recode for item {PUBLIC_ID} could not "
+        f"resolve dbo-native line economics ({reason}) — Qty/UnitPrice/"
+        f"BillableStatus will not be stamped on the QBO Purchase line. "
+        f"Proceeding with the recode anyway."
+    )
+
+
+@pytest.mark.parametrize(
+    "expense_return,line_return,reason",
+    [
+        pytest.param(
+            None,
+            None,
+            (
+                f"no dbo.Expense for QboId={PURCHASE_QBO_ID!r} "
+                f"realm_id={REALM_ID!r}"
+            ),
+            id="no_expense",
+        ),
+        pytest.param(
+            SimpleNamespace(id=4242),
+            None,
+            (
+                f"no dbo.ExpenseLineItem for ExpenseId=4242 "
+                f"QboId={TARGET_LINE_ID!r}"
+            ),
+            id="no_line",
+        ),
+        pytest.param(
+            SimpleNamespace(id=9001),
+            SimpleNamespace(
+                quantity=1,
+                rate=Decimal("1"),
+                amount=Decimal("1"),
+                is_billable=True,
+                realm_id="a-different-realm",
+            ),
+            (
+                f"dbo.ExpenseLineItem for ExpenseId=9001 "
+                f"QboId={TARGET_LINE_ID!r} carries RealmId="
+                f"'a-different-realm' but this outbox row targets "
+                f"{REALM_ID!r} -- refusing to copy its economics "
+                f"across realms"
+            ),
+            id="realm_mismatch",
+        ),
+    ],
+)
+def test_s16_reason_strings_byte_identical_in_details(
+    expense_return, line_return, reason, caplog
+):
+    with caplog.at_level("WARNING"):
+        ctx = _run_handler_with_mocks(
+            expense_return=expense_return,
+            line_return=line_return,
+        )
+    assert ctx.record_mapping_issue.call_args.kwargs["details"] == _expected_details(
+        reason
+    )
+
+
+def test_s17_precedence_line_none_vs_cross_realm():
+    """Line-missing and cross-realm failures are disjoint: line-none must cite
+    ``no dbo.ExpenseLineItem`` and must not cite ``refusing to copy``; cross-realm
+    is the reverse. Swapping the line-none and realm early returns in the helper
+    does not make this spec fail — that non-firing is the proof the partitions are
+    disjoint, not weak coverage."""
+    ctx_missing = _run_handler_with_mocks(
+        expense_return=SimpleNamespace(id=1),
+        line_return=None,
+    )
+    details_missing = ctx_missing.record_mapping_issue.call_args.kwargs["details"]
+    assert "no dbo.ExpenseLineItem" in details_missing
+    assert "refusing to copy" not in details_missing
+
+    ctx_realm = _run_handler_with_mocks(
+        expense_return=SimpleNamespace(id=9001),
+        line_return=SimpleNamespace(
+            quantity=1,
+            rate=Decimal("1"),
+            amount=Decimal("1"),
+            is_billable=True,
+            realm_id="a-different-realm",
+        ),
+    )
+    details_realm = ctx_realm.record_mapping_issue.call_args.kwargs["details"]
+    assert "refusing to copy" in details_realm
+    assert "no dbo.ExpenseLineItem" not in details_realm
+
+
+def test_s18_record_mapping_issue_failure_still_recodes():
+    patches = [
+        patch("entities.expense_coding_item.business.service.ExpenseCodingItemService"),
+        patch(
+            "integrations.intuit.qbo.purchase.connector.expense.business.service.PurchaseExpenseConnector"
+        ),
+        patch("entities.expense.business.service.ExpenseService"),
+        patch("entities.expense_line_item.business.service.ExpenseLineItemService"),
+        patch(
+            "integrations.intuit.qbo.base.reconciliation_recorder.record_mapping_issue",
+            side_effect=RuntimeError("recorder down"),
+        ),
+    ]
+    with patches[0] as mock_eci_cls, patches[1] as mock_connector_cls, patches[
+        2
+    ] as mock_expense_svc_cls, patches[3] as mock_eli_svc_cls, patches[4]:
+        svc = MagicMock()
+        mock_eci_cls.return_value = svc
+        svc.read_by_public_id.return_value = _make_coding_item()
+        mock_expense_svc_cls.return_value.read_by_qbo_identity.return_value = None
+        connector = MagicMock()
+        mock_connector_cls.return_value = connector
+        connector.recode_purchase_line.return_value = {
+            "status": "written",
+            "sync_token": "6",
+        }
+
+        QboOutboxWorker()._handle_recode_purchase_line(_make_outbox_row())
+
+        connector.recode_purchase_line.assert_called_once()
+        svc.mark_written.assert_called_once()
+
+
+def test_s19_record_mapping_issue_import_stays_lazy_in_handler():
+    from integrations.intuit.qbo.outbox.business import worker as worker_module
+
+    module_header = inspect.getsource(worker_module).split("class QboOutboxWorker")[
+        0
+    ]
+    assert "record_mapping_issue" not in module_header
+    handler_source = inspect.getsource(
+        QboOutboxWorker._handle_recode_purchase_line
+    )
+    assert (
+        "from integrations.intuit.qbo.base.reconciliation_recorder import record_mapping_issue"
+        in handler_source
+    )
+    helper_source = inspect.getsource(
+        QboOutboxWorker._resolve_recode_line_economics
+    )
+    assert "record_mapping_issue" not in helper_source

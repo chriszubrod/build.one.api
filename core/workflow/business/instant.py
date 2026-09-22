@@ -134,6 +134,12 @@ PROCESS_REGISTRY: Dict[str, str] = {
     "budget": "entities.budget.business.service.BudgetService",
     "budget_revision": "entities.budget_revision.business.service.BudgetRevisionService",
     "budget_line_item": "entities.budget_line_item.business.service.BudgetLineItemService",
+
+    # Asset register
+    "asset": "entities.asset.business.service.AssetService",
+    "asset_financing_note": "entities.asset.business.service.AssetFinancingNoteService",
+    "asset_account_exclusion": "entities.asset.business.service.AssetAccountExclusionService",
+    "asset_attachment": "entities.asset_attachment.business.service.AssetAttachmentService",
 }
 
 _missing = set(SYNCHRONOUS_TASKS) - set(PROCESS_REGISTRY)

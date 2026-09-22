@@ -1,0 +1,52 @@
+{
+  "captured_utc": "2026-09-22T02:52:06.265183Z",
+  "why": "U-497 step 1: close the 5 stale-anchor coding items via the existing U-483 sweep. Rollback = restore Status per row.",
+  "count": 5,
+  "items": [
+    {
+      "id": 10,
+      "public_id": "41A400EF-727B-4ACA-A47B-5569A1C4BD44",
+      "status": "suggested",
+      "purchase_qbo_id": "72875",
+      "qbo_line_id": "1",
+      "staging_pk": 13109,
+      "created": "2026-07-14 12:52:34"
+    },
+    {
+      "id": 41,
+      "public_id": "FD0B8207-BD00-479C-A1E7-8E2E28649D34",
+      "status": "suggested",
+      "purchase_qbo_id": "70934",
+      "qbo_line_id": "1",
+      "staging_pk": 12578,
+      "created": "2026-07-14 12:52:46"
+    },
+    {
+      "id": 43,
+      "public_id": "D4C4E41B-8A5B-4F94-BD1C-C40CC58D3281",
+      "status": "suggested",
+      "purchase_qbo_id": "70820",
+      "qbo_line_id": "1",
+      "staging_pk": 12504,
+      "created": "2026-07-14 12:52:47"
+    },
+    {
+      "id": 555,
+      "public_id": "46B4441C-C329-4C78-A418-E7D4DD5F77BB",
+      "status": "pending",
+      "purchase_qbo_id": "75885",
+      "qbo_line_id": "1",
+      "staging_pk": 13659,
+      "created": "2026-09-03 19:05:34"
+    },
+    {
+      "id": 616,
+      "public_id": "71F0DBCE-6D58-43B0-A30A-AB1779611CEC",
+      "status": "pending",
+      "purchase_qbo_id": "76602",
+      "qbo_line_id": "1",
+      "staging_pk": 13855,
+      "created": "2026-09-18 13:21:30"
+    }
+  ]
+}

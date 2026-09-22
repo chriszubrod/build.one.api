@@ -52,6 +52,26 @@ def _build_qbo_expense_url(*, qbo_id: str, realm_id: str, payment_type: str) -> 
     )
 
 
+def _uncoded_backfill_status_source_ref(item: dict) -> Optional[str]:
+    """Provenance string for MarkExpenseDraftForCoding during uncoded backfill (U-504)."""
+    coding_ref = item.get("coding_item_public_id")
+    if coding_ref is not None:
+        return coding_ref
+
+    realm_id = item.get("realm_id")
+    purchase_qbo_id = item.get("purchase_qbo_id")
+    qbo_line_id = item.get("qbo_line_id")
+    if (
+        realm_id
+        and purchase_qbo_id
+        and qbo_line_id is not None
+        and str(qbo_line_id) != ""
+    ):
+        return f"qbo:{realm_id}/{purchase_qbo_id}#{qbo_line_id}"
+
+    return None
+
+
 class ExpenseService:
     """
     Service for Expense entity business operations.
@@ -1849,9 +1869,7 @@ class ExpenseService:
         marked = 0
         skipped = 0
         for item in candidates:
-            source_ref = item.get("coding_item_public_id")
-            if source_ref is None and item.get("qbo_purchase_line_id") is not None:
-                source_ref = str(item["qbo_purchase_line_id"])
+            source_ref = _uncoded_backfill_status_source_ref(item)
             result = self.repo.mark_draft_for_coding(
                 item["id"],
                 status_source_ref=source_ref,

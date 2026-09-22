@@ -593,6 +593,9 @@ class ExpenseRepository:
                         "expense_date": getattr(row, "ExpenseDate", None),
                         "total_amount": getattr(row, "TotalAmount", None),
                         "reference_number": getattr(row, "ReferenceNumber", None),
+                        "realm_id": getattr(row, "RealmId", None),
+                        "purchase_qbo_id": getattr(row, "PurchaseQboId", None),
+                        "qbo_line_id": getattr(row, "QboLineId", None),
                         "qbo_purchase_line_id": getattr(row, "QboPurchaseLineId", None),
                         "coding_item_public_id": (
                             str(row.CodingItemPublicId)

@@ -1367,6 +1367,9 @@ BEGIN
             CONVERT(VARCHAR(19), e.[ExpenseDate], 120) AS [ExpenseDate],
             e.[TotalAmount],
             e.[ReferenceNumber],
+            p.[RealmId],
+            p.[QboId] AS [PurchaseQboId],
+            pl.[QboLineId],
             pl.[Id] AS [QboPurchaseLineId],
             eci.[PublicId] AS [CodingItemPublicId],
             -- U-491 round 2: ORDER BY eli.[Id] alone is not a total order.
@@ -1405,6 +1408,9 @@ BEGIN
         [ExpenseDate],
         [TotalAmount],
         [ReferenceNumber],
+        [RealmId],
+        [PurchaseQboId],
+        [QboLineId],
         [QboPurchaseLineId],
         [CodingItemPublicId]
     FROM Ranked

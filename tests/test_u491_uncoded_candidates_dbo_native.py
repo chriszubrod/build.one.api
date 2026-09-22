@@ -18,6 +18,9 @@ DETECTION_OUTER_SELECT_COLUMNS = [
     "[ExpenseDate]",
     "[TotalAmount]",
     "[ReferenceNumber]",
+    "[RealmId]",
+    "[PurchaseQboId]",
+    "[QboLineId]",
     "[QboPurchaseLineId]",
     "[CodingItemPublicId]",
 ]
@@ -199,7 +202,7 @@ def test_detection_resolves_without_map_row():
 
 
 # ---------------------------------------------------------------------------
-# 8 — 8-column outer SELECT list unchanged
+# 8 — 11-column outer SELECT list pinned (U-504 extended provenance projection)
 # ---------------------------------------------------------------------------
 
 

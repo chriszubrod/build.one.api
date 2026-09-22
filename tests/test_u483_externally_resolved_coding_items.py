@@ -75,16 +75,28 @@ def _detection_sproc_arms() -> tuple[str, str]:
 
 def test_detection_sproc_arm1_requires_missing_purchase_line_row():
     arm1, _ = _detection_sproc_arms()
+    assert not re.search(
+        r"eci\.\[QboPurchaseLineId\]",
+        arm1,
+        re.IGNORECASE,
+    ), (
+        "Arm 1 must not key on staging PK QboPurchaseLineId — after U-497b the "
+        "MERGE dedupe key is dbo-native and a stale PK can refresh"
+    )
     assert re.search(
         r"NOT\s+EXISTS\s*\(\s*"
         r"SELECT\s+1\s+"
-        r"FROM\s+\[qbo\]\.\[PurchaseLine\]\s+pl\s+"
-        r"WHERE\s+pl\.\[Id\]\s*=\s*eci\.\[QboPurchaseLineId\]",
+        r"FROM\s+\[qbo\]\.\[Purchase\]\s+p\s+"
+        r"INNER\s+JOIN\s+\[qbo\]\.\[PurchaseLine\]\s+pl\s+"
+        r"ON\s+pl\.\[QboPurchaseId\]\s*=\s*p\.\[Id\]\s+"
+        r"WHERE\s+p\.\[QboId\]\s*=\s*eci\.\[QboPurchaseQboId\]\s+"
+        r"AND\s+p\.\[RealmId\]\s*=\s*eci\.\[RealmId\]\s+"
+        r"AND\s+pl\.\[QboLineId\]\s*=\s*eci\.\[QboLineId\]",
         arm1,
         re.IGNORECASE | re.DOTALL,
     ), (
-        "Arm 1 must require the coding item's qbo.PurchaseLine row to be missing "
-        "(orphaned staging line after external replace recode)"
+        "Arm 1 must require no live qbo.PurchaseLine under the purchase carries "
+        "this coding item's QboLineId (dbo-native orphaned line)"
     )
 
 

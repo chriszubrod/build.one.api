@@ -18,9 +18,9 @@ CREATE TABLE [dbo].[ExpenseCodingItem]
     [PublicId] UNIQUEIDENTIFIER NOT NULL DEFAULT NEWID(),
     [QboPurchaseId] BIGINT NOT NULL,
     [QboPurchaseLineId] BIGINT NOT NULL,
-    [QboLineId] NVARCHAR(50) NULL,
-    [QboPurchaseQboId] NVARCHAR(50) NULL,
-    [RealmId] NVARCHAR(50) NULL,
+    [QboLineId] NVARCHAR(50) NOT NULL,
+    [QboPurchaseQboId] NVARCHAR(50) NOT NULL,
+    [RealmId] NVARCHAR(50) NOT NULL,
     [VendorId] BIGINT NULL,
     [SyncTokenAtSuggest] NVARCHAR(50) NULL,
     [Status] NVARCHAR(30) NOT NULL DEFAULT 'pending',
@@ -66,6 +66,13 @@ BEGIN
 END
 GO
 
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'UQ_ExpenseCodingItem_PurchaseLineIdentity' AND object_id = OBJECT_ID('dbo.ExpenseCodingItem'))
+BEGIN
+    CREATE UNIQUE INDEX UQ_ExpenseCodingItem_PurchaseLineIdentity
+        ON dbo.[ExpenseCodingItem] ([QboPurchaseQboId], [RealmId], [QboLineId]);
+END
+GO
+
 IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_ExpenseCodingItem_Status' AND object_id = OBJECT_ID('dbo.ExpenseCodingItem'))
 BEGIN
     CREATE INDEX IX_ExpenseCodingItem_Status
@@ -78,9 +85,9 @@ CREATE OR ALTER PROCEDURE UpsertExpenseCodingItem
 (
     @QboPurchaseId BIGINT,
     @QboPurchaseLineId BIGINT,
-    @QboLineId NVARCHAR(50) = NULL,
-    @QboPurchaseQboId NVARCHAR(50) = NULL,
-    @RealmId NVARCHAR(50) = NULL,
+    @QboLineId NVARCHAR(50),
+    @QboPurchaseQboId NVARCHAR(50),
+    @RealmId NVARCHAR(50),
     @VendorId BIGINT = NULL,
     @CreatedByUserId BIGINT = NULL
 )
@@ -93,11 +100,19 @@ BEGIN
     DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();
 
     MERGE dbo.[ExpenseCodingItem] WITH (HOLDLOCK) AS target
-    USING (SELECT @QboPurchaseLineId AS QboPurchaseLineId) AS source
-    ON target.[QboPurchaseLineId] = source.QboPurchaseLineId
+    USING (
+        SELECT
+            @QboPurchaseQboId AS QboPurchaseQboId,
+            @RealmId AS RealmId,
+            @QboLineId AS QboLineId
+    ) AS source
+    ON target.[QboPurchaseQboId] = source.QboPurchaseQboId
+       AND target.[RealmId] = source.RealmId
+       AND target.[QboLineId] = source.QboLineId
     WHEN MATCHED THEN
         UPDATE SET
             [QboPurchaseId] = CASE WHEN @QboPurchaseId IS NOT NULL THEN @QboPurchaseId ELSE target.[QboPurchaseId] END,
+            [QboPurchaseLineId] = @QboPurchaseLineId,
             [QboLineId] = CASE WHEN @QboLineId IS NOT NULL THEN @QboLineId ELSE target.[QboLineId] END,
             [QboPurchaseQboId] = CASE WHEN @QboPurchaseQboId IS NOT NULL THEN @QboPurchaseQboId ELSE target.[QboPurchaseQboId] END,
             [RealmId] = CASE WHEN @RealmId IS NOT NULL THEN @RealmId ELSE target.[RealmId] END,
@@ -905,8 +920,11 @@ BEGIN
     WHERE eci.[Status] IN (N'pending', N'suggested', N'flagged', N'changed_in_qbo')
       AND NOT EXISTS (
           SELECT 1
-          FROM [qbo].[PurchaseLine] pl
-          WHERE pl.[Id] = eci.[QboPurchaseLineId]
+          FROM [qbo].[Purchase] p
+          INNER JOIN [qbo].[PurchaseLine] pl ON pl.[QboPurchaseId] = p.[Id]
+          WHERE p.[QboId] = eci.[QboPurchaseQboId]
+            AND p.[RealmId] = eci.[RealmId]
+            AND pl.[QboLineId] = eci.[QboLineId]
       )
       AND EXISTS (
           SELECT 1

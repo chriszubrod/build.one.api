@@ -23,9 +23,9 @@ class ExpenseCodingItemService:
         *,
         qbo_purchase_id: int,
         qbo_purchase_line_id: int,
-        qbo_line_id: Optional[str] = None,
-        qbo_purchase_qbo_id: Optional[str] = None,
-        realm_id: Optional[str] = None,
+        qbo_line_id: str,
+        qbo_purchase_qbo_id: str,
+        realm_id: str,
         vendor_qbo_id: Optional[str] = None,
         created_by_user_id: Optional[int] = None,
     ) -> Optional[ExpenseCodingItem]:

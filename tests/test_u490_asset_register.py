@@ -342,3 +342,26 @@ def test_asset_financing_note_has_no_company_id_column():
         s = text.index(f"CREATE OR ALTER PROCEDURE {sproc}")
         seg = text[s : text.index("\nGO", s)]
         assert "CompanyId" not in seg, f"{sproc} still references CompanyId"
+
+
+def test_divergence_unmapped_set_counts_both_account_columns():
+    """An account referenced as accumulated-depreciation is MAPPED, not unmapped.
+
+    The first live run reported 22 unmapped accounts out of 24 because Set 1 tested
+    only QboFixedAssetAccountId — so all 20 accum-dep accounts looked unmapped, which
+    buried the 2 genuine gaps. A divergence check that fires on almost every row is
+    worse than none: it trains the reader to ignore it.
+    """
+    text = ASSET_SQL.read_text(encoding="utf-8")
+    d = text[text.index("ReadAssetDivergenceCheck"):]
+    set1 = d[: d.index("ORDER BY")]
+    # the Asset NOT EXISTS must test BOTH account columns
+    assert "a.[QboFixedAssetAccountId] = qa.[QboId]" in set1
+    assert "a.[QboAccumDepAccountId]" in set1, (
+        "Set 1 ignores QboAccumDepAccountId; every accumulated-depreciation account "
+        "will be reported as unmapped"
+    )
+    # and they must be OR'd inside one NOT EXISTS, not AND'd (which would match nothing)
+    ne = set1[set1.index("NOT EXISTS"):]
+    ne_asset = ne[: ne.index(")")]
+    assert " OR " in ne_asset.upper(), "the two account columns must be OR'd, not AND'd"

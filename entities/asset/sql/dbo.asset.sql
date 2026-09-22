@@ -665,10 +665,16 @@ BEGIN
     INNER JOIN dbo.[Company] co ON co.[Id] = @CompanyId AND qa.[RealmId] = co.[RealmId]
     WHERE qa.[AccountType] = N'Fixed Asset'
       AND ISNULL(qa.[Active], 1) = 1
+      -- An account is MAPPED if an Asset references it through EITHER column.
+      -- Testing only QboFixedAssetAccountId reported every accumulated-depreciation
+      -- account as unmapped: 20 false positives on the first live run, which masked
+      -- the 2 genuine gaps the check exists to surface. A check that cries wolf on
+      -- 22 of 24 rows gets ignored, so the false positives are the actual defect.
       AND NOT EXISTS (
           SELECT 1 FROM dbo.[Asset] a
           WHERE a.[CompanyId] = @CompanyId
-            AND a.[QboFixedAssetAccountId] = qa.[QboId]
+            AND (a.[QboFixedAssetAccountId] = qa.[QboId]
+              OR a.[QboAccumDepAccountId]  = qa.[QboId])
       )
       AND NOT EXISTS (
           SELECT 1 FROM dbo.[AssetAccountExclusion] e

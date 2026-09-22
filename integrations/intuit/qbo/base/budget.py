@@ -200,12 +200,22 @@ class QboApiBudget:
     """
     Durable per-call meter + monthly-budget breaker for the QBO API.
 
-    `record_call` is invoked at the single HTTP choke points (QboHttpClient
-    ._send_http and QboAttachableClient) once per real HTTP round-trip:
-    increment first, then compare the returned month-to-date count against
-    the block threshold. Increment-before-check means a blocked attempt
-    still counts — deliberate: it is conservative in the safe direction and
-    only occurs while already at the ceiling.
+    `record_call_or_raise` is invoked at the SINGLE HTTP choke point —
+    `QboHttpClient._send_http` — once per real QBO API round-trip: increment
+    first, then compare the returned month-to-date count against the block
+    threshold. Increment-before-check means a blocked attempt still counts —
+    deliberate: it is conservative in the safe direction and only occurs
+    while already at the ceiling.
+
+    Every QBO API call routes through that one seam, the per-entity clients
+    included: they compose `QboHttpClient` for transport rather than issuing
+    their own requests, `QboAttachableClient` (multipart upload) among them.
+    The one deliberate exception is
+    `QboAttachableClient.download_attachable`, which fetches an absolute
+    pre-signed `TempDownloadUri` with no Authorization header — not a
+    CorePlus call, so correctly unmetered. Anything else that reaches QBO
+    without passing through `_send_http` is a metering hole: the breaker
+    under-counts and the cap can be blown while the meter reads safe.
 
     The meter FAILS OPEN: any DB error while metering logs loudly and lets
     the call proceed. A broken meter must never become the thing that takes

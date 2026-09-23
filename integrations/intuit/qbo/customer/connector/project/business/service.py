@@ -1,6 +1,6 @@
 # Python Standard Library Imports
 import logging
-from typing import Optional
+from typing import Iterator, Optional
 
 # Third-party Imports
 
@@ -35,6 +35,36 @@ logger = logging.getLogger(__name__)
 ADDRESS_TYPE_BILLING = 1
 ADDRESS_TYPE_SHIPPING = 2
 
+# ── U-506 P1: what a Project's BILLING address slot MEANS ────────────────────
+# The ONE place this semantic lives. Flipping it is a one-line change; nothing
+# else in this module encodes the choice.
+#
+# ✅ DECIDED by Chris, 2026-09-23: the slot is the OWNER'S MAILING address.
+#    This shipped as an EM assumption and is now a confirmed product decision —
+#    do not re-litigate it as "an assumption" on a later pass. The False branch
+#    below is retained because it documents what the decision RULED OUT and what
+#    breaks if someone flips it, not because the question is still open.
+#
+#   True  — the OWNER'S MAILING / REMIT-TO address   ← SHIPPED + DECIDED
+#       Evidence: `entities/invoice/business/g702.py` renders this block under
+#       the literal label "TO OWNER:" and renders the property SEPARATELY as
+#       "PROJECT:" from `project.name`; the Draw Request "To:" name is
+#       `customer.name`. Pairing a customer's NAME with a property STREET is
+#       incoherent. Under this reading the parent customer's BillAddr IS the
+#       owner's mailing address, so inheriting it is correct for all 61
+#       projects the fallback newly covers — `c/o` billing agents included.
+#
+#   False — the PROPERTY (street) address of the job itself
+#       Under this reading inheritance is WRONG for 16 of those 61: the
+#       parent's address is then a SIBLING project's street (e.g.
+#       `BD - 4527 Beacon Dr.` would inherit `1539 Old Hillsboro Road - OHR2`).
+#       Setting False degrades the billing chain to own-bill → own-ship — the
+#       pre-U-506 behavior plus the blank guard — and reads NO parent row.
+#
+# Either way the SHIPPING slot stays job-only (see `_sync_addresses`): it never
+# inherits, and it is the only place a future property-address feature belongs.
+PROJECT_BILLING_ADDRESS_IS_OWNER_MAILING = True
+
 
 class CustomerProjectConnector:
     """
@@ -58,17 +88,19 @@ class CustomerProjectConnector:
         self.project_address_service = project_address_service or ProjectAddressService()
         self.address_connector = address_connector or PhysicalAddressAddressConnector()
         self.reconciliation_repo = reconciliation_repo or ReconciliationIssueRepository()
-        # U-297: previously fed _resolve_parent_customer_id; U-310 repointed
-        # that resolver onto Option A (dbo-only verify), so qbo_customer_repo
-        # is DEAD there too (U-311 also repointed this connector's OWN pull
-        # onto Option B, so it's not used anywhere in this class any more).
-        # Its own class (QboCustomerRepository, the qbo.Customer staging repo)
-        # is untouched by U-314's drop and stays a live Pass-2/simplify
-        # candidate for a future dead-DI-param pass. (The sibling
-        # customer_mapping_repo param -- CustomerCustomerRepository, dropped
-        # by U-314 -- was removed outright rather than neutered: unlike
-        # vendor_vendor_repo/customer_project_repo on other connectors, its
-        # only 5 test call sites are all in this unit's own touched files.)
+        # U-506 P1: LIVE AGAIN — no longer a dead DI param. History: U-297 fed
+        # _resolve_parent_customer_id from this repo; U-310 repointed that
+        # resolver onto Option A (dbo-only verify) and U-311 repointed this
+        # connector's OWN pull onto Option B, which left the param unused.
+        # `_get_parent_qbo_customer` below revives it because the U-506 P1
+        # parent-address fallback needs the parent's qbo.Customer STAGING row
+        # (BillAddrId / ShipAddrId) — no dbo table carries those, so
+        # CustomerService cannot answer it and the former "future dead-DI-param
+        # pass" note no longer applies. (The sibling customer_mapping_repo param
+        # -- CustomerCustomerRepository, dropped by U-314 -- was removed
+        # outright rather than neutered: unlike vendor_vendor_repo/
+        # customer_project_repo on other connectors, its only 5 test call sites
+        # are all in that unit's own touched files.)
         self.customer_service = customer_service or CustomerService()
         self.qbo_customer_repo = qbo_customer_repo or QboCustomerRepository()
         # Per-instance memo for the parent-Customer resolution. ONE connector
@@ -80,6 +112,14 @@ class CustomerProjectConnector:
         # construction: a fresh connector per pull run, so nothing survives a
         # tick. Caches misses as well as hits, per the canonical shape.
         self._parent_customer_cache: dict = {}
+        # U-506 P1: the parent's qbo.Customer STAGING row, memoized on the SAME
+        # (realm_id, parent_ref_value) key and for the same reason — 138 job
+        # customers resolve to only 73 distinct parents (live count
+        # 2026-09-23), so the address fallback costs ~73 staging reads per run
+        # rather than one per job. Run-scoped by construction (a fresh
+        # connector per pull run) and caches MISSES as well as hits, per the
+        # canonical shape above.
+        self._parent_qbo_customer_cache: dict = {}
 
     def sync_from_qbo_customer(self, qbo_customer: QboCustomer) -> Project:
         """
@@ -473,30 +513,162 @@ class CustomerProjectConnector:
     def _sync_addresses(self, qbo_customer: QboCustomer, project_id: int) -> None:
         """
         Sync billing and shipping addresses from QboCustomer to ProjectAddress/Address.
-        
+
+        U-506 P1 — the WRITER half of the blank Draw-Request-"To:"-block fix
+        (P0 hardened the READER in `entities/invoice/api/router.py`). Two
+        changes over the pre-U-506 shape, which keyed purely on ID PRESENCE:
+
+        1. BLANKNESS, not presence. QBO hands back placeholder address rows —
+           an `Id` with empty Line1/City/PostalCode. 138 job customers
+           reference 32 staging addresses of which only 3 carry any content;
+           the other 29 passed truthiness, were minted into dbo.Address as
+           blank rows and linked (191 of 799 dbo.Address rows are blank as a
+           result). A blank staging row is now treated as absent.
+
+        2. PARENT FALLBACK on the BILLING slot, first NON-BLANK wins:
+               own bill -> own ship -> parent bill -> parent ship
+           Measured: 2/139 projects and 64/1,012 invoices carried an address
+           before; 63/139 and 706/1,012 after. The residual 76 is irreducible
+           — those parents' BillAddrId points at a blank staging row too; QBO
+           holds nothing more. See PROJECT_BILLING_ADDRESS_IS_OWNER_MAILING for
+           WHY the parent's mailing address is the right thing to inherit, and
+           for the one-line flip if that reading is ever rejected.
+
+        The SHIPPING slot deliberately does NOT inherit: under property
+        semantics a parent's address is a SIBLING project's street, wrong for
+        16 of the 61 newly-covered projects. Shipping stays job-only and is the
+        only place a future property-address feature belongs.
+
+        When NOTHING resolves we do NOTHING — no blank dbo.Address is minted
+        and no ProjectAddress link is written or repointed. Each slot stays
+        failure-isolated: an address problem must not fail the customer pull.
+
         Args:
-            qbo_customer: QboCustomer with bill_addr_id and ship_addr_id
+            qbo_customer: QboCustomer with bill_addr_id / ship_addr_id / parent_ref_value
             project_id: Database ID of the Project
         """
-        # Sync billing address
-        if qbo_customer.bill_addr_id:
-            try:
-                address = self.address_connector.sync_from_qbo_to_address(qbo_customer.bill_addr_id)
+        # BILLING: the fallback chain.
+        try:
+            billing_addr_id = self._resolve_billing_address_id(qbo_customer)
+            if billing_addr_id:
+                address = self.address_connector.sync_from_qbo_to_address(billing_addr_id)
                 address_id = coerce_id(address.id)
                 self._ensure_project_address(project_id, address_id, ADDRESS_TYPE_BILLING)
                 logger.debug(f"Synced billing address {address_id} for Project {project_id}")
-            except Exception as e:
-                logger.error(f"Failed to sync billing address for Project {project_id}: {e}")
-        
-        # Sync shipping address
-        if qbo_customer.ship_addr_id:
-            try:
-                address = self.address_connector.sync_from_qbo_to_address(qbo_customer.ship_addr_id)
+            else:
+                logger.debug(
+                    f"No non-blank billing address resolved for Project {project_id} "
+                    f"(QboCustomer {qbo_customer.id}) — leaving the slot untouched"
+                )
+        except Exception as e:
+            logger.error(f"Failed to sync billing address for Project {project_id}: {e}")
+
+        # SHIPPING: job-only, blank-guarded. NEVER inherits from the parent.
+        try:
+            ship_addr_id = qbo_customer.ship_addr_id
+            if ship_addr_id and not self._staged_address_is_blank(ship_addr_id):
+                address = self.address_connector.sync_from_qbo_to_address(ship_addr_id)
                 address_id = coerce_id(address.id)
                 self._ensure_project_address(project_id, address_id, ADDRESS_TYPE_SHIPPING)
                 logger.debug(f"Synced shipping address {address_id} for Project {project_id}")
-            except Exception as e:
-                logger.error(f"Failed to sync shipping address for Project {project_id}: {e}")
+        except Exception as e:
+            logger.error(f"Failed to sync shipping address for Project {project_id}: {e}")
+
+    def _resolve_billing_address_id(self, qbo_customer: QboCustomer) -> Optional[int]:
+        """
+        The first NON-BLANK staging address id in the billing chain, or None
+        when the whole chain is blank/absent (U-506 P1). None means DO NOTHING
+        — never mint a blank dbo.Address to fill the slot.
+        """
+        for addr_id in self._billing_address_candidates(qbo_customer):
+            if addr_id and not self._staged_address_is_blank(addr_id):
+                return addr_id
+        return None
+
+    def _billing_address_candidates(self, qbo_customer: QboCustomer) -> Iterator[Optional[int]]:
+        """
+        The billing chain, LAZILY: own bill -> own ship -> parent bill ->
+        parent ship. A generator on purpose — the parent's staging row is read
+        only once BOTH of the job's own slots have come up blank/absent, so a
+        job that carries its own address costs zero extra round trips.
+        """
+        yield qbo_customer.bill_addr_id
+        yield qbo_customer.ship_addr_id
+        if not PROJECT_BILLING_ADDRESS_IS_OWNER_MAILING:
+            return
+        parent = self._get_parent_qbo_customer(
+            qbo_customer.parent_ref_value, qbo_customer.realm_id
+        )
+        if parent is None:
+            return
+        yield parent.bill_addr_id
+        yield parent.ship_addr_id
+
+    def _get_parent_qbo_customer(
+        self, parent_ref_value: Optional[str], realm_id: Optional[str]
+    ) -> Optional[QboCustomer]:
+        """
+        The parent's `qbo.Customer` STAGING row (U-506 P1) — the only store
+        carrying a customer's BillAddrId/ShipAddrId. dbo.Customer has no
+        equivalent, which is why this revives `self.qbo_customer_repo` instead
+        of going through `CustomerService` like `_get_parent_customer_id` does.
+
+        `realm_id` is the CHILD's — the same realm as its parent by
+        construction (a QBO sub-customer cannot live in a different company
+        file than its parent), exactly as `_resolve_parent_customer_id`
+        documents.
+
+        No `parent_ref_value` -> None WITHOUT touching the repo (a top-level
+        job has no parent to inherit from, and reading by a None qbo_id would
+        be a realm-wide scan for nothing). A missing staging row -> None as
+        well, never a raise: the caller simply finds no candidate and leaves
+        the slot untouched. Memoized per (realm_id, parent_ref_value), MISSES
+        included, alongside `_parent_customer_cache`.
+        """
+        if not parent_ref_value:
+            return None
+
+        cache_key = (realm_id, parent_ref_value)
+        if cache_key in self._parent_qbo_customer_cache:
+            return self._parent_qbo_customer_cache[cache_key]
+
+        parent = self.qbo_customer_repo.read_by_qbo_id_and_realm_id(parent_ref_value, realm_id)
+        self._parent_qbo_customer_cache[cache_key] = parent
+        return parent
+
+    def _staged_address_is_blank(self, qbo_physical_address_id: int) -> bool:
+        """
+        True when the `qbo.PhysicalAddress` staging row behind this id carries
+        no content — QBO's placeholder shape: an Id with empty Line1 / City /
+        PostalCode (U-506 P1). A row that cannot be read AT ALL counts as blank
+        too: `sync_from_qbo_to_address` would raise on it anyway, and the chain
+        should just move on.
+
+        Reads through `self.address_connector`'s own staging service rather
+        than taking a SECOND injected handle — that connector is the thing that
+        reads (and syncs) these exact rows, so a separate handle would be a
+        second source of truth for one table.
+        """
+        staged = self.address_connector.qbo_physical_address_service.read_by_id(
+            qbo_physical_address_id
+        )
+        return self._is_blank_staged_address(staged)
+
+    @staticmethod
+    def _is_blank_staged_address(staged) -> bool:
+        """
+        The blankness test itself, independent of the read (U-506 P1). Pure, so
+        it can be exercised without a staging repo. Fields are read directly,
+        not via getattr — a renamed QboPhysicalAddress field must break loudly
+        rather than silently make every address look blank.
+        """
+        if staged is None:
+            return True
+        return not (
+            (staged.line1 or "").strip()
+            + (staged.city or "").strip()
+            + (staged.postal_code or "").strip()
+        )
 
     def _ensure_project_address(self, project_id: int, address_id: int, address_type_id: int) -> None:
         """

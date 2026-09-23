@@ -1,14 +1,7 @@
-# Python Standard Library Imports
-import base64
-
 # Third-party Imports
 from fastapi import APIRouter, Depends, HTTPException
 
 # Local Imports
-from integrations.intuit.qbo.physical_address.api.schemas import (
-    QboPhysicalAddressCreate,
-    QboPhysicalAddressUpdate,
-)
 from integrations.intuit.qbo.physical_address.business.service import QboPhysicalAddressService
 from shared.rbac import require_module_api
 from shared.rbac_constants import Modules
@@ -16,23 +9,6 @@ from shared.api.responses import list_response, item_response
 
 router = APIRouter(prefix="/api/v1", tags=["api", "qbo-physical-address"])
 service = QboPhysicalAddressService()
-
-
-@router.post("/intuit/qbo/physical-address/create")
-def create_qbo_physical_address_router(body: QboPhysicalAddressCreate, current_user: dict = Depends(require_module_api(Modules.QBO_SYNC, "can_create"))):
-    """
-    Create a new QBO physical address.
-    """
-    address = service.create(
-        qbo_id=body.qbo_id,
-        line1=body.line1,
-        line2=body.line2,
-        city=body.city,
-        country=body.country,
-        country_sub_division_code=body.country_sub_division_code,
-        postal_code=body.postal_code,
-    )
-    return item_response(address.to_dict())
 
 
 @router.get("/intuit/qbo/physical-address/list")
@@ -55,39 +31,35 @@ def read_qbo_physical_address_by_id_router(id: int, current_user: dict = Depends
     return item_response(address.to_dict())
 
 
-@router.put("/intuit/qbo/physical-address/update/{id}")
-def update_qbo_physical_address_by_id_router(id: int, body: QboPhysicalAddressUpdate, current_user: dict = Depends(require_module_api(Modules.QBO_SYNC, "can_update"))):
-    """
-    Update a QBO physical address by ID.
-    """
-    address = service.update_by_id(
-        id=id,
-        row_version=base64.b64decode(body.row_version),
-        qbo_id=body.qbo_id,
-        line1=body.line1,
-        line2=body.line2,
-        city=body.city,
-        country=body.country,
-        country_sub_division_code=body.country_sub_division_code,
-        postal_code=body.postal_code,
-    )
-    if not address:
-        raise HTTPException(status_code=404, detail="Physical address not found")
-    return item_response(address.to_dict())
-
-
-@router.delete("/intuit/qbo/physical-address/delete/{id}")
-def delete_qbo_physical_address_by_id_router(id: int, current_user: dict = Depends(require_module_api(Modules.QBO_SYNC, "can_delete"))):
-    """
-    Delete a QBO physical address by ID.
-    """
-    address = service.delete_by_id(id=id)
-    if not address:
-        raise HTTPException(status_code=404, detail="Physical address not found")
-    return item_response(address.to_dict())
-
-
-# U-519 fix round 2 — `POST /intuit/qbo/physical-address/sync` DELETED, not repaired.
+# ── U-519 fix round 3: the WHOLE write surface is deleted, not just /sync ─────
+#
+# Round 2 deleted /sync as a caller-keyed unscoped write. It MISSED that the
+# same commit made `PUT /update/{id}` live for the first time, via this unit's
+# own base64 fix -- the identical defect on a STRICTLY MORE POWERFUL primitive,
+# found by an adversarial review of the pushed commit:
+#
+#   * The PUT had passed a base64 STRING into `@RowVersion BINARY(8)` since
+#     144b3a30, so it matched 0 rows and 500'd on every call. Decoding to bytes
+#     (correct in itself, and required for the sync path) made it functional.
+#   * `UpdateQboPhysicalAddressById` is `WHERE [Id] = @Id AND [RowVersion] =
+#     @RowVersion` -- no realm, no owner -- and it SETS [QboId] and [RealmId]
+#     from parameters. So a caller could rewrite any staging row's CONTENT *and*
+#     re-stamp its IDENTITY onto another party's.
+#   * row_version is not a defence: `GET /read/{id}` hands it to the same role.
+#   * Worse than /sync on reach: Controller is seeded ('QBO Sync', 0,1,1,0,...)
+#     = can_read + can_update but NOT can_create, so /sync was never reachable
+#     by a Controller and this PUT was the one write on the package that was.
+#
+# POST /create and DELETE /delete/{id} go with it: same unscoped staging writes,
+# same caller-settable QboId, same zero callers. Verified zero consumers across
+# api/web/ios/mcp/scheduler INCLUDING `entities/*/intelligence/tools.py`, which a
+# plain route grep misses. qbo.PhysicalAddress is written by the PULL path only,
+# and is itself the U-513 sunset target.
+#
+# The two READ routes remain. They are unscoped by realm (see U-514) but they
+# disclose addresses rather than mutate identity.
+#
+# U-519 round 2 note, retained: — `POST /intuit/qbo/physical-address/sync` DELETED, not repaired.
 #
 # The route read `body.qbo_id` while its schema declared `address_id`, so pydantic
 # raised AttributeError and EVERY call 500'd from its first commit (144b3a30) to

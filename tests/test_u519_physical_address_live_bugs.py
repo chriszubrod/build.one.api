@@ -50,9 +50,6 @@ from unittest.mock import MagicMock, Mock, patch
 import integrations.intuit.qbo.physical_address.api.router as router_module
 import integrations.intuit.qbo.physical_address.business.service as service_module
 import integrations.intuit.qbo.physical_address.persistence.repo as repo_module
-from integrations.intuit.qbo.physical_address.api.schemas import (
-    QboPhysicalAddressUpdate,
-)
 from integrations.intuit.qbo.physical_address.business.model import QboPhysicalAddress
 from integrations.intuit.qbo.physical_address.business.service import QboPhysicalAddressService
 
@@ -161,14 +158,14 @@ def test_every_body_attribute_read_exists_on_that_routes_request_schema():
                     f"declare (declares: {sorted(declared)})"
                 )
 
-    # Anti-vacuity: the three body-bearing routes are create / update / sync, and each
-    # must really have been inspected -- an empty read-set would make this pass blindly.
-    assert set(per_route) == {
-        "create_qbo_physical_address_router",
-        "update_qbo_physical_address_by_id_router",
-    }, f"unexpected set of body-bearing routes: {sorted(per_route)}"
-    assert all(count >= 3 for count in per_route.values()), (
-        f"a route contributed suspiciously few body reads: {per_route}"
+    # Round 3: the package has NO body-bearing routes left. The schema/route
+    # agreement check is retained (not deleted) so that re-adding any write route
+    # is still covered the moment it appears -- but the live invariant is now the
+    # stronger one below: there must be no write route at all.
+    assert per_route == {}, (
+        f"a body-bearing route is back on this package: {sorted(per_route)}. "
+        f"Every write route here was an unscoped staging write with a "
+        f"caller-settable QboId -- see the round-3 note in api/router.py."
     )
     assert not problems, "route reads a field its schema does not declare:\n" + "\n".join(problems)
 
@@ -228,22 +225,57 @@ def test_no_route_in_this_package_reaches_sync_from_qbo_with_body_data():
     )
 
 
-def test_create_and_update_routes_legitimately_read_body_qbo_id():
-    """Guards the two body.qbo_id reads that are CORRECT -- do not 'fix' these.
+def test_the_package_exposes_no_write_route_at_all():
+    """ROUND 3 -- the invariant that round 2 got wrong by only deleting /sync.
 
-    Both QboPhysicalAddressCreate and QboPhysicalAddressUpdate really do declare
-    qbo_id, so the create/update routes reading it is right.
+    Round 2 removed /sync as a caller-keyed unscoped write, while the SAME commit
+    made ``PUT /update/{id}`` live for the first time by decoding row_version to
+    bytes. That route was strictly worse: `UpdateQboPhysicalAddressById` is
+    ``WHERE [Id] = @Id AND [RowVersion] = @RowVersion`` -- no realm, no owner --
+    and it SETS [QboId], so a caller could re-stamp one party's staging row with
+    another party's identity. It was also reachable by Controller
+    (``('QBO Sync', 0,1,1,0,...)`` = read+update), which could never reach /sync.
+
+    So the invariant is not "no /sync" but "NO WRITE ROUTE". qbo.PhysicalAddress
+    is written by the PULL path only.
     """
-    for route_name in (
-        "create_qbo_physical_address_router",
-        "update_qbo_physical_address_by_id_router",
-    ):
-        node = _route_named(route_name)
-        schema = _body_schema(node)
-        assert "qbo_id" in _body_attrs(node), f"{route_name} should read body.qbo_id"
-        assert "qbo_id" in schema.model_fields, (
-            f"{schema.__name__} must declare qbo_id for {route_name} to read it"
-        )
+    import inspect as _inspect
+
+    src = _inspect.getsource(router_module)
+    tree = ast.parse(src)
+    writes = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.FunctionDef):
+            continue
+        for dec in node.decorator_list:
+            if not isinstance(dec, ast.Call):
+                continue
+            fn = dec.func
+            if isinstance(fn, ast.Attribute) and fn.attr in {"post", "put", "patch", "delete"}:
+                writes.append(f"@router.{fn.attr} -> {node.name}")
+    assert not writes, (
+        "a write route is back on qbo.PhysicalAddress:\n  " + "\n  ".join(writes)
+        + "\nEvery one of these was an unscoped write with a caller-settable QboId."
+    )
+
+
+def test_no_router_function_hands_caller_data_to_a_repo_write():
+    """Defence in depth: even a write route that dodged the decorator check above
+    must not pipe body data into a create/update/delete call."""
+    offenders = []
+    for node in ast.walk(ast.parse(inspect.getsource(router_module))):
+        if not isinstance(node, ast.Call):
+            continue
+        fn = node.func
+        if not (isinstance(fn, ast.Attribute) and fn.attr in {"create", "update_by_id", "delete_by_id"}):
+            continue
+        for kw in node.keywords:
+            rendered = ast.unparse(kw.value)
+            if rendered.startswith("body.") or rendered == "id":
+                offenders.append(f"{fn.attr}({kw.arg}={rendered})")
+    assert not offenders, (
+        "a router pipes caller data into a staging write:\n  " + "\n  ".join(offenders)
+    )
 
 
 def test_sync_from_qbo_keys_the_record_on_the_realm():
@@ -324,28 +356,29 @@ def test_repo_does_not_decode_row_version_so_callers_must():
     assert isinstance(captured["params"]["RowVersion"], bytes)
 
 
-def test_update_route_passes_decoded_bytes_to_the_service():
-    """BUG 2 on the PUT route: the base64 transport string must be decoded to BINARY(8).
+def test_the_deleted_put_route_stays_deleted():
+    """BUG 2's PUT call site is gone with the route.
 
-    Mutation guard: revert to ``row_version=body.row_version`` and this goes RED on
-    the isinstance assertion.
+    The str-vs-bytes fix itself was correct -- `row_version: bytes` is what the
+    repo declares and the pull path still relies on it (pinned by
+    ``test_repo_does_not_decode_row_version_so_callers_must``). What was wrong was
+    applying it to a route that should not exist; correcting the decode is what
+    made that unscoped write reachable.
     """
-    captured: dict = {}
-    fake_service = Mock()
-    fake_service.update_by_id.side_effect = lambda **kw: captured.update(kw) or _address()
+    names = {
+        n.name for n in ast.walk(ast.parse(inspect.getsource(router_module)))
+        if isinstance(n, ast.FunctionDef)
+    }
+    assert "update_qbo_physical_address_by_id_router" not in names
+    assert "create_qbo_physical_address_router" not in names
+    assert "delete_qbo_physical_address_by_id_router" not in names
 
-    body = QboPhysicalAddressUpdate(row_version=B64_ROW_VERSION, qbo_id="realm-1", line1="2 New St")
-    with patch.object(router_module, "service", fake_service):
-        router_module.update_qbo_physical_address_by_id_router(
-            id=42, body=body, current_user={}
+    import integrations.intuit.qbo.physical_address.api.schemas as schemas_module
+
+    for gone in ("QboPhysicalAddressCreate", "QboPhysicalAddressUpdate"):
+        assert not hasattr(schemas_module, gone), (
+            f"{gone} is back; its caller-settable qbo_id is the re-stamp primitive"
         )
-
-    assert isinstance(captured["row_version"], bytes), (
-        f"update route handed the service {type(captured['row_version']).__name__}; "
-        "the sproc parameter is BINARY(8) and the repo does not decode"
-    )
-    assert captured["row_version"] == RAW_ROW_VERSION
-    assert len(captured["row_version"]) == 8, "a SQL Server ROWVERSION is exactly 8 bytes"
 
 
 class _FakeRepo:

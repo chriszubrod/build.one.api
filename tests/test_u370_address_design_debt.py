@@ -7,6 +7,7 @@ route-dependency inspection.
 from __future__ import annotations
 
 import inspect
+import re
 from pathlib import Path
 from typing import get_args
 from unittest.mock import MagicMock, Mock, patch
@@ -132,9 +133,29 @@ def test_address_id_and_read_by_id_are_int():
 
 
 def test_invoice_draw_request_passes_address_id_as_int():
+    """U-370 B3: the invoice router must pass the address id as the `int` that
+    `Address.id` / `AddressService.read_by_id` are typed as, never a stringified
+    one.
+
+    NARROWED by U-506 (2026-09-23), not weakened. The original asserted the
+    literal call text `AddressService().read_by_id(pas[0].address_id)`. U-506
+    replaced the unordered, unfiltered `pas[0]` pick with a sorted slot loop, so
+    that exact string no longer exists -- but the DEFECT this guard records
+    (str-wrapping the id) is not committed: the call is now
+    `address_service.read_by_id(pa.address_id)`, still unwrapped.
+
+    The negative half is kept and BROADENED (any `read_by_id(str(` in this
+    router, not just the one call site). The positive half is now shape-agnostic
+    -- it pins that a bare `.address_id` attribute is passed, which is the
+    actual invariant, rather than one spelling of the surrounding loop.
+    """
     source = _INVOICE_ROUTER.read_text(encoding="utf-8")
-    assert "AddressService().read_by_id(pas[0].address_id)" in source
-    assert "read_by_id(str(pas[0].address_id))" not in source
+    assert re.search(r"read_by_id\(\s*\w+\.address_id\s*\)", source), (
+        "the invoice router no longer passes a bare .address_id to read_by_id"
+    )
+    assert "read_by_id(str(" not in source, (
+        "an address id is being stringified before read_by_id -- the exact U-370 B3 defect"
+    )
 
 
 # --- B4 stamp passthrough ----------------------------------------------------

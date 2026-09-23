@@ -148,7 +148,8 @@ BEGIN
         [AddressId],
         [AddressTypeId]
     FROM dbo.[ProjectAddress]
-    WHERE [ProjectId] = @ProjectId;
+    WHERE [ProjectId] = @ProjectId
+    ORDER BY [Id] ASC;
 
     COMMIT TRANSACTION;
 END;

@@ -116,10 +116,65 @@ def _format_invoice_date(value) -> str:
         return str(value)
 
 
+def _recipient_address_lines(addr) -> list:
+    """Display lines for one Address — [] when every field the block renders is blank.
+
+    Load-bearing: a ProjectAddress row existing is NOT the same as an address
+    existing. Most live ProjectAddress rows point at a fully blank dbo.Address
+    (empty StreetOne/City), so callers must read [] as "this slot has no content,
+    keep looking" rather than "this is the address".
+    """
+    if addr is None:
+        return []
+    street_one = (getattr(addr, "street_one", None) or "").strip()
+    street_two = (getattr(addr, "street_two", None) or "").strip()
+    city = (getattr(addr, "city", None) or "").strip()
+    state = (getattr(addr, "state", None) or "").strip()
+    postal = (getattr(addr, "zip", None) or "").strip()
+    lines = []
+    if street_one:
+        lines.append(street_one)
+    if street_two:
+        lines.append(street_two)
+    loc = " ".join(x for x in [state, postal] if x)
+    city_line = ", ".join(p for p in [city, loc] if p)
+    if city_line:
+        lines.append(city_line)
+    return lines
+
+
 def _resolve_draw_request_recipient(project_id: Optional[int]) -> tuple:
-    """(to_name, to_lines) for the Draw Request 'To' block — the project's Customer
-    name + the project's property address, best-effort. Each lookup is isolated so a
-    missing address degrades to name-only (or ("", []) ), never failing the packet."""
+    """(to_name, to_lines) for the Draw Request 'To' block — the project Customer's
+    name + that customer's OWNER / remit-to address.
+
+    NOT the property address, despite living on ProjectAddress: every consumer
+    treats these lines as the owner's. `g702.py` renders them under "TO OWNER:"
+    and renders the property separately as "PROJECT:" from `project.name`; the
+    Draw Request and Trend "To:" blocks address the same owner, and `to_name` is
+    the Customer.
+
+    Selection is deterministic: the BILLING slot first (SHIPPING only as a
+    fallback), rows in Id order, and the first slot whose dbo.Address actually
+    carries content wins.
+
+    ⚠️ The slot ids are the WRITER's constants, not `dbo.AddressType`'s seed.
+    AddressType is seeded 1=Legal / 2=Billing / 3=Shipping, but both QBO address
+    writers hard-code ADDRESS_TYPE_BILLING = 1 / ADDRESS_TYPE_SHIPPING = 2 — so
+    every "billing" address in the system is physically stamped Legal and
+    filtering on the seed values would match nothing. Realigning the constants
+    needs a data migration of the existing rows; until then the writer's
+    constants ARE the contract, which is why they are imported rather than
+    re-declared here.
+
+    Best-effort by design: each lookup is isolated so a missing address degrades
+    to name-only (or ("", [])). This is called OUTSIDE the packet generator's
+    try, and `generate_invoice_packet_router` turns any escape into a 500 — so
+    letting it raise would convert "this project has no address on file" into
+    "the whole draw packet fails" for every invoice. Isolated but LOUD: failures
+    log at exception level under `draw_request.recipient_*_failed`, and the clean
+    no-address outcome logs the distinct `draw_request.recipient_address_missing`
+    so "absent" is never mistaken for "exploded".
+    """
     if not project_id:
         return "", []
     to_name, to_lines = "", []
@@ -132,24 +187,40 @@ def _resolve_draw_request_recipient(project_id: Optional[int]) -> tuple:
             if customer:
                 to_name = customer.name or ""
     except Exception:
-        logger.warning(f"Draw-request recipient name lookup failed for project {project_id}", exc_info=True)
+        logger.exception(f"draw_request.recipient_name_failed project_id={project_id}")
     try:
         from entities.project_address.business.service import ProjectAddressService
         from entities.address.business.service import AddressService
-        pas = ProjectAddressService().read_by_project_id(project_id)
-        if pas and pas[0].address_id:
-            addr = AddressService().read_by_id(pas[0].address_id)
-            if addr:
-                if addr.street_one:
-                    to_lines.append(addr.street_one)
-                if addr.street_two:
-                    to_lines.append(addr.street_two)
-                loc = " ".join(x for x in [addr.state, addr.zip] if x)
-                city_line = ", ".join(p for p in [addr.city, loc] if p)
-                if city_line:
-                    to_lines.append(city_line)
+        # Import, never re-declare — see the ⚠️ note above.
+        from integrations.intuit.qbo.customer.connector.project.business.service import (
+            ADDRESS_TYPE_BILLING,
+            ADDRESS_TYPE_SHIPPING,
+        )
+
+        rows = ProjectAddressService().read_by_project_id(project_id) or []
+        # The sproc's ORDER BY is the server-side half of this; sorting here too
+        # keeps the choice stable no matter what order the rows arrive in.
+        ordered = sorted(rows, key=lambda pa: (getattr(pa, "id", None) or 0))
+        address_service = AddressService()
+        for slot in (ADDRESS_TYPE_BILLING, ADDRESS_TYPE_SHIPPING):
+            for pa in ordered:
+                if getattr(pa, "address_type_id", None) != slot:
+                    continue
+                if not getattr(pa, "address_id", None):
+                    continue
+                lines = _recipient_address_lines(address_service.read_by_id(pa.address_id))
+                if lines:
+                    to_lines = lines
+                    break
+            if to_lines:
+                break
+        if not to_lines:
+            logger.warning(
+                f"draw_request.recipient_address_missing project_id={project_id} "
+                f"project_address_rows={len(ordered)} — 'To' block renders name-only"
+            )
     except Exception:
-        logger.warning(f"Draw-request recipient address lookup failed for project {project_id}", exc_info=True)
+        logger.exception(f"draw_request.recipient_address_failed project_id={project_id}")
     return to_name, to_lines
 
 

@@ -14,6 +14,15 @@ tests/test_u507_staging_skip_removal.py::test_every_pull_family_holds_on_a_missi
     which is not watermarked): their external read schema declares `id` as
     Optional so a malformed row REACHES the guard, which raises ValueError and
     is recorded as a staging failure rather than aborting the batch.
+    ⚠️ CORRECTED (U-507 round 2): this sentence was FALSE for attachable when
+    written. The mechanism depends on `str_strip_whitespace` turning a blank
+    into "" so the `if not x.id` guard sees something falsy -- and attachable's
+    local `_QboBaseModel` set only `populate_by_name`, so `Id=" "` stayed a
+    TRUTHY " ", walked past the guard, and stamped `dbo.Attachment.QboId = " "`.
+    Four of the five stripped; attachable did not. Fixed by giving attachable
+    the same config as its siblings, which makes the sentence true rather than
+    by rewording it. Pinned at RUNTIME by
+    tests/test_u507_staging_skip_removal.py::test_raise_and_hold_families_reject_whitespace_at_runtime.
   * fail-and-hold in the staging loop -- reimburse_charge (U-507 replaced its
     lone skip-and-advance with record_staging_failure + `continue`).
   * schema-rejected falsy `id` -- term, account, bill, purchase, invoice,

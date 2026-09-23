@@ -530,6 +530,80 @@ def test_schema_returns_the_normalized_id_not_the_raw_one(entity, padded):
     )
 
 
+# Whitespace shapes that are TRUTHY in Python but are not identities. NBSP and the
+# ideographic space are included because `str.isspace()` covers them, so `.strip()`
+# removes them -- which is exactly why a bare `str()` leaves them behind.
+_TRUTHY_BLANKS = (" ", "\t", "\r\n", "\u00a0", "\u3000")
+
+
+@pytest.mark.parametrize("blank", _TRUTHY_BLANKS)
+def test_reimburse_charge_holds_on_a_whitespace_id_not_just_an_empty_one(blank):
+    """U-507 round 2 -- a REAL gap this file's other arm could not see.
+
+    `reimburse_charge` is WATERMARKED, and its guard is `if not
+    parsed.get("qbo_id")`. `parse_reimburse_charge` used a bare `_as_str`
+    (`str(value)`), so a whitespace-only Id stayed TRUTHY, passed the guard,
+    staged a garbage identity, recorded SUCCESS and ADVANCED the watermark past
+    itself -- the precise silent-loss shape this unit exists to close.
+
+    Round 1 closed only the EMPTY-string case and this file's reimburse_charge
+    arm is AST-based (it asserts a falsy guard + `continue` exists), so it could
+    never have caught it. This is a RUNTIME probe on purpose.
+    """
+    from integrations.intuit.qbo.reimburse_charge.business.parse import (
+        parse_reimburse_charge,
+    )
+
+    # Negative control: a real id must survive, or "None" below proves nothing.
+    assert parse_reimburse_charge({"Id": "900", "Amount": "1.00"})["qbo_id"] == "900"
+
+    parsed = parse_reimburse_charge({"Id": blank, "Amount": "1.00"})
+    assert parsed["qbo_id"] is None, (
+        f"Id={blank!r} parsed to {parsed['qbo_id']!r}, which is TRUTHY, so "
+        f"`if not parsed.get('qbo_id')` will not fire and the row will stage "
+        f"and advance the watermark."
+    )
+
+
+def test_reimburse_charge_canonicalises_a_padded_id():
+    """A padded-but-real id must normalize, not stage two identities."""
+    from integrations.intuit.qbo.reimburse_charge.business.parse import (
+        parse_reimburse_charge,
+    )
+
+    assert parse_reimburse_charge({"Id": " 900 ", "Amount": "1.00"})["qbo_id"] == "900"
+
+
+@pytest.mark.parametrize("blank", _TRUTHY_BLANKS)
+def test_raise_and_hold_families_reject_whitespace_at_runtime(blank):
+    """The five `if not x.id` families depend on stripping to make a blank falsy.
+
+    attachable's local base declared only `populate_by_name`, so it did NOT
+    strip and `Id=" "` reached the upsert as a truthy identity -- stamping
+    `dbo.Attachment.QboId = " "`. Asserting the CONFIG would be weaker than this:
+    what matters is the observed value, whichever mechanism produces it.
+    """
+    from integrations.intuit.qbo.attachable.external.schemas import QboAttachable
+    from integrations.intuit.qbo.customer.external.schemas import QboCustomer
+    from integrations.intuit.qbo.item.external.schemas import QboItem
+    from integrations.intuit.qbo.vendor.external.schemas import QboVendor
+
+    for name, model in (
+        ("attachable", QboAttachable),
+        ("customer", QboCustomer),
+        ("item", QboItem),
+        ("vendor", QboVendor),
+    ):
+        # Negative control first.
+        assert model(Id="900").id == "900", f"{name} mangled a real id"
+
+        parsed = model(Id=blank).id
+        assert not parsed, (
+            f"{name} kept Id={blank!r} as {parsed!r} -- TRUTHY, so its "
+            f"`if not x.id` guard will not fire and a blank identity reaches the DB."
+        )
+
+
 def test_a_blank_id_row_aborts_the_whole_page_at_the_real_client_parse_site():
     """Arm A's actual claim: the PAGE dies, so nothing stages and commit is unreachable.
 

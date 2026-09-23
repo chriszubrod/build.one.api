@@ -6,10 +6,26 @@ from pydantic import BaseModel, Field
 
 
 class _QboBaseModel(BaseModel):
-    """Base model with common configuration for QBO schemas."""
+    """Base model with common configuration for QBO schemas.
+
+    `str_strip_whitespace` is NOT cosmetic here (added U-507 round 2). Without
+    it this base was the only one of the five raise-and-hold families that did
+    not strip -- the same configuration `vendorcredit` calls "the WORST of the
+    six" -- so `QboAttachable(Id=" ")` kept a TRUTHY `" "`, walked straight past
+    `_upsert_attachable`'s `if not qbo_att.id` guard, and stamped
+    `dbo.Attachment.QboId = " "`: a dbo identity carrier bound to whitespace.
+
+    Stripping restores the mechanism its four siblings (customer, vendor, item,
+    company_info) already rely on -- blank strips to "", the guard sees falsy,
+    raises ValueError, and the row is recorded as a staging failure. Chosen over
+    binding `require_non_blank_qbo_id` deliberately: attachable is NOT
+    watermarked, so a per-row failure is the right blast radius; a schema-level
+    raise would abort the whole page instead.
+    """
 
     class Config:
         populate_by_name = True
+        str_strip_whitespace = True
 
 
 class QboAttachableRef(BaseModel):

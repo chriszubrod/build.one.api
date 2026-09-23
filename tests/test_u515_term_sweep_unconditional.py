@@ -20,6 +20,7 @@ covers that term's window again.
 These tests pin that decision against a future re-gating.
 """
 import ast
+from unittest.mock import MagicMock, patch
 import inspect
 from pathlib import Path
 
@@ -78,3 +79,59 @@ def test_entry_points_take_no_resync_parameter():
             "wanted, wire argparse AND the scheduler/admin call sites, and revisit "
             "the force-advance argument in this module's docstring first."
         )
+
+
+# ── Behavioural guard (added after an adversarial mutation audit, 2026-09-23) ──
+#
+# The AST tests above pin SYNTAX: "the sweep call is not lexically inside an
+# `ast.If`". A mutation audit defeated that trivially, twice, with the suite
+# staying green:
+#
+#     if not os.environ.get("QBO_TERM_RESYNC_EXISTING"):
+#         return {...}                      # early-return BEFORE the call
+#     existing_sync_result = sync_existing_terms_to_payment_terms(...)
+#
+#     existing_sync_result = False and sync_existing_terms_to_payment_terms(...)
+#
+# Neither puts the call inside an `if`, so neither test fired -- i.e. the exact
+# "flag nobody sets" this unit deleted could be reintroduced under a different
+# spelling. Syntax tests cannot pin a runtime fact; this one does.
+def test_the_sweep_actually_runs_on_a_normal_invocation():
+    """Drive the real `sync_qbo_term()` and assert the sweep was INVOKED.
+
+    Mutation guard: add any early return, `False and ...`, or environment gate
+    before the sweep call and this goes RED where the AST tests stay green.
+    """
+    import scripts.sync_qbo_term as mod
+
+    calls = []
+
+    def _spy(**kwargs):
+        calls.append(kwargs)
+        return {"synced": 0, "skipped": 0}
+
+    with (
+        patch.object(mod, "sync_existing_terms_to_payment_terms", _spy),
+        patch.object(mod, "QboTermRepository", MagicMock()),
+        patch.object(mod, "TermPaymentTermConnector", MagicMock()),
+        patch.object(mod, "QboTermService", MagicMock()),
+        patch.object(mod, "QboAuthService", MagicMock()),
+        patch.object(mod, "SyncService", MagicMock()),
+        patch.object(mod, "WatermarkRun", MagicMock()),
+    ):
+        try:
+            mod.sync_qbo_term()
+        except Exception:
+            # The sweep is called before the parts we did not stub can fail; what
+            # this test pins is that it was REACHED, not that the whole run
+            # succeeds against a fully mocked world.
+            pass
+
+    assert calls, (
+        "sync_existing_terms_to_payment_terms was never invoked. The sweep is "
+        "UNCONDITIONAL by design: term's cron (14,400s) exceeds the 7,200s "
+        "watermark hold bound, so a projection failure force-advances and only "
+        "this sweep recovers the unmapped rows. Gating it -- by a flag, an env "
+        "var, or an early return -- reintroduces a silent recovery gap."
+    )
+

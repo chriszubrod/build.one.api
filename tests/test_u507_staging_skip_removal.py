@@ -627,6 +627,119 @@ def test_a_blank_id_row_aborts_the_whole_page_at_the_real_client_parse_site():
         QboTermClient(realm_id=REALM_ID, http_client=http_client).query_terms()
 
 
+@pytest.mark.parametrize("blank", _TRUTHY_BLANKS)
+def test_reimburse_charge_holds_through_the_real_service_not_just_the_parser(blank):
+    """N04b -- the round-2 whitespace fix, pinned END TO END.
+
+    The parser test above proves `parse_reimburse_charge` returns None. It does
+    NOT prove the SERVICE consults the parsed value. A mutation changing the
+    guard to `if not raw.get("Id")` reads the RAW dict instead, sees a truthy
+    " ", skips the hold, and lets the row reach the upsert with qbo_id=None --
+    the filtered-unique-index duplication the code comment itself warns about.
+    That mutation survived the entire suite, so the outcome is asserted here.
+    """
+    repo, outcome = _run_sync([
+        {"Id": blank, "Amount": "1577.45", "TxnDate": "2026-09-01"},
+    ])
+
+    assert outcome.should_hold, (
+        f"Id={blank!r} did not hold (staging_failed_ids={outcome.staging_failed_ids}). "
+        f"A truthy-blank id must be a staging FAILURE, never a success."
+    )
+    assert outcome.synced_count == 0, "a blank-id row must not count as synced"
+    assert repo.create.call_count == 0, (
+        "a blank-id row reached repo.create -- it would stage a garbage identity "
+        "and ADVANCE the watermark past itself"
+    )
+
+
+def test_reimburse_charge_negative_control_a_real_id_still_stages():
+    """If the hold above fired for an unrelated reason, this fails too."""
+    repo, outcome = _run_sync([
+        {"Id": "900", "Amount": "1577.45", "TxnDate": "2026-09-01"},
+    ])
+    assert not outcome.should_hold
+    assert outcome.synced_count == 1
+    assert repo.create.call_count == 1
+
+
+# (client_module_path, class, query method, QueryResponse key, minimal extra fields)
+_CLIENT_PARSE_SITES = (
+    ("bill", "QboBillClient", "query_bills", "Bill", {"SyncToken": "0"}),
+    ("purchase", "QboPurchaseClient", "query_purchases", "Purchase", {"SyncToken": "0"}),
+    ("invoice", "QboInvoiceClient", "query_invoices", "Invoice", {"SyncToken": "0"}),
+    ("vendorcredit", "QboVendorCreditClient", "query_vendor_credits", "VendorCredit", {"SyncToken": "0"}),
+    ("account", "QboAccountClient", "query_accounts", "Account", {"SyncToken": "0"}),
+    ("term", "QboTermClient", "query_terms", "Term", {"SyncToken": "0", "Name": "Net 30"}),
+)
+
+
+@pytest.mark.parametrize("family,cls_name,method,key,extra", _CLIENT_PARSE_SITES)
+def test_every_family_aborts_the_whole_page_at_its_real_client_parse_site(
+    family, cls_name, method, key, extra
+):
+    """ARM A's mechanism, pinned for ALL SIX -- previously only `term` was.
+
+    U-507's claim is not "the schema rejects a blank"; it is "the PAGE dies, so
+    nothing stages and `WatermarkRun.commit` is unreachable". That abort lives in
+    the CLIENT's list comprehension, not in the schema. A mutation wrapping the
+    per-row parse in `try/except: continue` therefore turned a hold into a SILENT
+    SKIP that advances the watermark -- and the whole suite stayed green, because
+    only `term` exercised a real client.
+
+    Found by an adversarial mutation audit (2026-09-23). The schema-level tests
+    above remain necessary but are NOT sufficient: they cannot see a client that
+    swallows the ValidationError.
+    """
+    import importlib
+
+    module = importlib.import_module(f"integrations.intuit.qbo.{family}.external.client")
+    client_cls = getattr(module, cls_name)
+
+    good = {"Id": "800", **extra}
+    bad = {"Id": "", **extra}
+
+    # NEGATIVE CONTROL: the good row alone must parse, or the raise below could be
+    # any unrelated schema failure rather than the blank-id guard.
+    http_client = MagicMock()
+    http_client.get.return_value = {"QueryResponse": {key: [good]}}
+    assert [r.id for r in getattr(client_cls(realm_id=REALM_ID, http_client=http_client), method)()] == ["800"]
+
+    # The bad row must destroy the WHOLE page, good row included.
+    http_client = MagicMock()
+    http_client.get.return_value = {"QueryResponse": {key: [good, bad]}}
+    with pytest.raises(ValidationError, match=BLANK_QBO_ID_ERROR):
+        getattr(client_cls(realm_id=REALM_ID, http_client=http_client), method)()
+
+
+@pytest.mark.parametrize("family,cls_name,method,key,extra", _CLIENT_PARSE_SITES)
+def test_no_client_swallows_a_row_parse_error(family, cls_name, method, key, extra):
+    """Structural companion to the behavioural test above.
+
+    A client that wraps its per-row parse in try/except would skip-and-advance.
+    The behavioural test catches that for the shapes it drives; this catches it
+    for any row shape, including ones we did not think to construct.
+    """
+    import importlib, inspect as _inspect
+
+    module = importlib.import_module(f"integrations.intuit.qbo.{family}.external.client")
+    src = _inspect.getsource(getattr(module, cls_name))
+    tree = ast.parse(src)
+    offenders = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.FunctionDef) or not node.name.startswith("query_"):
+            continue
+        for inner in ast.walk(node):
+            if isinstance(inner, ast.ExceptHandler):
+                body = ast.unparse(ast.Module(body=inner.body, type_ignores=[]))
+                if "continue" in body or "pass" in body:
+                    offenders.append(f"{cls_name}.{node.name} swallows: {body.strip()[:70]}")
+    assert not offenders, (
+        "a client swallows a per-row parse error, turning U-507's page-abort hold "
+        "into a silent skip that ADVANCES the watermark:\n  " + "\n  ".join(offenders)
+    )
+
+
 def test_negative_control_a_valid_id_still_parses_and_still_stages():
     """If the guard broke the happy path it would be over-tightened, not fixed."""
     http_client = MagicMock()

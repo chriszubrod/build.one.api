@@ -232,19 +232,23 @@ def sync_local_to_qbo(
     }
 
 
-def sync_qbo_term(resync_existing: bool = False) -> dict:
+def sync_qbo_term() -> dict:
     """
     One-way sync for QBO Terms -> PaymentTerm module (QBO -> Local only).
 
     1. QBO -> Local: Fetch terms modified since last sync, store locally, sync to PaymentTerm
     2. Existing -> Module: Sync any existing QboTerm records that aren't mapped yet
 
+    Step 2 is UNCONDITIONAL -- see the comment at its call site for why. There
+    used to be a `resync_existing: bool = False` parameter here promising to
+    gate it; nothing ever read it, no caller ever passed it, and there is no
+    argparse in this module, so it was `False` on 100% of invocations while the
+    sweep ran regardless. Removed rather than honored: honoring it would have
+    silently disabled step 2 everywhere (see the call site).
+
     Note: Local -> QBO push is disabled in the batch sync process.
     The sync_local_to_qbo function is preserved for one-time pushes
     when a record is marked Complete.
-    
-    Args:
-        resync_existing: If True, sync all existing QboTerm records to PaymentTerm
     """
     try:
         sync_service = SyncService()
@@ -279,6 +283,21 @@ def sync_qbo_term(resync_existing: bool = False) -> dict:
             term_connector=term_connector,
         )
 
+        # Deliberately UNCONDITIONAL, and it must stay that way.
+        #
+        # This sweep is the only recovery path for a term whose projection
+        # failed once. A projection failure sets should_hold, so the watermark
+        # holds -- but the term timer runs every 4h (`0 40 */4 * * *`,
+        # build.one.scheduler/function_app.py) while the hold bound defaults to
+        # 7200s, so the NEXT tick is already past the bound: it force-advances
+        # and the incremental query never covers that term's window again. Only
+        # this full-table pass picks it back up.
+        #
+        # Cost is bounded by the table, not by the window: qbo.Term is 6 rows,
+        # and the sweep skips anything already carrying a dbo.PaymentTerm
+        # identity (`read_by_qbo_identity`), so a healthy run is a no-op scan.
+        # Revisit if qbo.Term ever stops being small -- the right fix then is a
+        # server-side "unmapped only" read, not a flag nobody sets.
         existing_sync_result = sync_existing_terms_to_payment_terms(
             qbo_term_repo=qbo_term_repo,
             term_connector=term_connector,
@@ -334,7 +353,7 @@ def sync_qbo_term(resync_existing: bool = False) -> dict:
 
 
 @qbo_sync_locked_cli("term")
-def run_locked(resync_existing: bool = False) -> dict:
+def run_locked() -> dict:
     """
     Lock-wrapped entry point for a direct CLI run (`python scripts/sync_qbo_term.py`).
 
@@ -344,7 +363,7 @@ def run_locked(resync_existing: bool = False) -> dict:
     path also calls while already holding this same resource (see
     scripts/sync_qbo_account.py::run_locked for the full rationale).
     """
-    return sync_qbo_term(resync_existing=resync_existing)
+    return sync_qbo_term()
 
 
 if __name__ == "__main__":

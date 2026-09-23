@@ -118,18 +118,25 @@ class QboCompanyInfoService:
                 customer_communication_addr_id=customer_communication_addr_id,
             )
         except ValueError as e:
-            # A staging failure (not a skip) on purpose: `SyncOutcome.should_hold`
-            # is what makes `WatermarkRun.commit` hold the delta cursor, so the
-            # next tick refetches this CompanyInfo instead of stepping past it.
-            # `record_skip` would be wrong here -- a missing Id is a malformed
-            # response that may well be present on the retry, not a permanent
-            # data gap.
+            # A staging failure on purpose: `SyncOutcome.should_hold` is what
+            # makes `WatermarkRun.commit` hold the delta cursor, so the next
+            # tick refetches this CompanyInfo instead of stepping past it. A
+            # missing Id is a malformed response that may well be intact on the
+            # retry, not a permanent data gap. (Since U-507 there is no staging
+            # skip verb at all -- the staging tier holds, and permanent-data
+            # skips live only at the projection tier. See sync_outcome.py's
+            # module docstring.)
             logger.error(f"Cannot project CompanyInfo for realm_id {realm_id}: {e}")
-            # "<no-id>" not the None id: record_staging_failure stringifies, so
-            # passing None writes the literal "None" into staging_failed_ids,
+            # A sentinel, not the None id: record_staging_failure stringifies,
+            # so passing None writes the literal "None" into staging_failed_ids,
             # which _record_bound_forced_advance stamps as the
-            # ReconciliationIssue's qbo_id at the hold bound. Same sentinel
-            # reimburse_charge uses (reimburse_charge/business/service.py:88).
+            # ReconciliationIssue's qbo_id at the hold bound.
+            #
+            # A BARE sentinel is correct HERE and only here: this pull stages
+            # exactly one CompanyInfo per run, so it cannot collide with itself.
+            # reimburse_charge deliberately diverged in U-507 to a per-row
+            # f"<no-id>:{i}" -- it loops, and N malformed rows under one bare
+            # sentinel would emit N identical ReconciliationIssues at the bound.
             outcome.record_staging_failure("<no-id>", e)
             return outcome
 
@@ -207,11 +214,70 @@ class QboCompanyInfoService:
         repos, so no access_token is threaded here (removing it closed a P0
         NameError: the caller referenced an undefined `qbo_auth`).
 
+        Plain read-or-create, identical in shape to the customer/ and vendor/
+        siblings' `_upsert_physical_address`. It deliberately has NO
+        match-by-address-fields fallback:
+
+          U-508 — a "# Migration:" block used to run `repo.read_all()` (957
+          rows) on a qbo_id MISS and linear-scan in Python for a row with the
+          same (line1, city, postal_code), then REWRITE that row's qbo_id to
+          this one. It was unscoped by realm and by owner, so it could adopt
+          any customer's or vendor's billing address that happened to share a
+          street. It was also spent: commit e3f2f068 (07:34:07 UTC) introduced
+          it 14 minutes AFTER the three CompanyInfo rows it was meant to heal
+          were created (07:20:32 UTC); it re-keyed them once in January 2026
+          and has matched nothing since. Its trigger stayed live, though — the
+          caller still synthesises `f"{realm_id}-company"` when QBO omits an
+          address Id — so U-514's realm-scoped read (which makes those three
+          realm-NULL rows MISS until the backfill lands) would have fired it
+          against `read_all()`'s `ORDER BY [QboId] ASC`, where '1246_bill'
+          sorts before '1612' and Vendor 1246's billing address is the first
+          (line1, city, postal_code) match.
+
+          ⚠️ U-514 (realm-scoping the read, the unique index, the column
+          narrowing, the realm backfill) was SPLIT OUT of this unit on
+          2026-09-23, after its fix round kept uncovering adjacent pre-existing
+          defects in the physical_address package. This deletion ships ALONE
+          and is safe alone: with no realm-scoped read, the three CompanyInfo
+          rows still resolve by qbo_id exactly as they do today, so the miss
+          that would fire this fallback cannot occur. It must still never be
+          reinstated -- U-514 makes that miss reachable, and the theft above is
+          what would follow.
+
+        ⚠️ ONE TRANSITION IS DELIBERATELY UNHANDLED — see BOARD.md U-518.
+          The caller synthesises `f"{realm_id}-company"` when QBO omits an
+          address Id. If a later response carries a REAL Id, this method creates
+          a SECOND staging row rather than re-keying the first (re-keying by
+          address fields is exactly what was deleted above, and what could steal
+          a foreign vendor's row).
+
+          Consequence, traced: `dbo.Address` owns its QBO identity directly
+          (U-351 retired the mapping), so it still carries the synthetic id.
+          Projecting the real-id row then trips
+          `PhysicalAddressAddressConnector._check_no_conflicting_address_identity`,
+          which raises `ValueError`; `record_projection_error` classifies a
+          plain ValueError as a PERMANENT SKIP, so the watermark advances and
+          the real address never reaches dbo. It is loud in
+          `qbo.ReconciliationIssue` and silent everywhere else.
+
+          0 synthetic rows exist today. The detection query, the cross-check
+          that distinguishes a live transition from a still-current synthetic
+          row, and the repair sequence live in BOARD.md U-518 — NOT here. An
+          earlier draft carried ~40 lines of runbook in this docstring and drifted
+          out of true three times in one day; a function docstring is the wrong
+          home for an operational procedure.
+
         Args:
-            realm_id: QBO company realm ID
+            realm_id: QBO company realm ID. Used to synthesise a fallback
+                qbo_id when QBO omits the address Id, and passed to the
+                projection. NOT threaded to the repo: this service's read is
+                qbo_id-only and neither write persists a realm. That threading
+                is U-514's, split out of this unit on 2026-09-23 — it needs its
+                realm backfill in the same deploy or the CompanyAddr projection
+                regresses.
             address_ref: QboPhysicalAddressRef object from CompanyInfo
             qbo_id: QBO ID to use for the address record
-        
+
         Returns:
             int: The PhysicalAddress.Id, or None if address is empty
         """
@@ -223,23 +289,14 @@ class QboCompanyInfoService:
         ]):
             return None
         
-        # Check if PhysicalAddress already exists
+        # Check if PhysicalAddress already exists. NOT realm-scoped: that is
+        # U-514's, split out of this unit 2026-09-23. Realm-scoping this read
+        # is what makes the three RealmId-NULL CompanyInfo rows MISS, and that
+        # miss is what used to fire the deleted fallback into Vendor 1246's
+        # row. U-514 must land its realm backfill in the same deploy.
         physical_address_repo = QboPhysicalAddressRepository()
         existing = physical_address_repo.read_by_qbo_id(qbo_id=qbo_id)
-        
-        # Migration: If not found by QBO ID, try to find by matching address fields
-        # This handles the case where old records have synthetic QBO IDs
-        if not existing and address_ref.line1 and address_ref.city:
-            all_addresses = physical_address_repo.read_all()
-            for addr in all_addresses:
-                # Match by key address fields (line1, city, postal_code)
-                if (addr.line1 == address_ref.line1 and 
-                    addr.city == address_ref.city and
-                    addr.postal_code == address_ref.postal_code):
-                    existing = addr
-                    logger.info(f"Found existing PhysicalAddress by address match (old QBO ID: {addr.qbo_id}), updating to new QBO ID: {qbo_id}")
-                    break
-        
+
         if existing:
             # Update existing PhysicalAddress
             logger.debug(f"Updating existing PhysicalAddress with QBO ID: {qbo_id}")

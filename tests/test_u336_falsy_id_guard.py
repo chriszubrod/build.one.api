@@ -1,5 +1,15 @@
 """U-336: Vendor/Customer QBO pull falsy-id guard parity with Item/Attachable.
 
+U-505 added the fifth family, CompanyInfo. Its guard lives in the same place
+(`QboCompanyInfoService._build_company_info`), but its tests live in
+tests/test_u504_company_info_staging_repoint.py because what they pin is not
+guard *parity* -- it is the watermark regression the guard's ABSENCE caused
+once CompanyInfo went transient and stopped staging a row. Current tally:
+company_info, item, customer, vendor, attachable raise-and-hold;
+reimburse_charge skips-and-advances; term/account/bill/purchase/invoice/
+vendorcredit have no guard (they still stage, so a truthy PK carries them into
+the connector, which raises and holds via record_projection_error).
+
 Upstream staged-upsert guards in QboVendorService._upsert_vendor and
 QboCustomerService._upsert_customer (production pull path), plus the vendor
 external-schema Optional id/sync_token override that lets a malformed (no-Id)

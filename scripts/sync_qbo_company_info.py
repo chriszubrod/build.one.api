@@ -113,22 +113,28 @@ def sync_qbo_company_info() -> dict:
                     addresses_synced.append(None)
 
         # Sync CompanyInfo to Company module via connector
+        # No truthiness pre-guard here, deliberately: `_build_company_info` now
+        # refuses a record with no QBO Id, so `outcome.synced` cannot contain
+        # one. The guard this replaced had an `else` that skipped the projection
+        # while recording NOTHING on the outcome -- the exact shape that let the
+        # watermark advance past an unprojected Company. Every sibling script
+        # (sync_qbo_item.py, sync_qbo_vendor.py, sync_qbo_term.py) calls its
+        # connector straight inside try/except and lets record_projection_error
+        # classify; this was the only truthiness pre-guard around a projection
+        # call in any of the 11 sync scripts.
         company = None
-        if company_info and company_info.id:
-            logger.info(f"Syncing CompanyInfo to Company module for QboCompanyInfo ID: {company_info.id}")
-            try:
-                company = company_connector.sync_from_qbo_to_company(
-                    qbo_company_info_id=company_info.id,
-                    realm_id=realm_id
-                )
-                outcome.record_projected()
-                logger.info(f"Successfully synced to Company module. Company ID: {company.id}")
-            except Exception as e:
-                outcome.record_projection_error(
-                    company_info.qbo_id, e, label="QboCompanyInfo->Company", logger=logger
-                )
-        else:
-            logger.warning("CompanyInfo sync completed but no ID found. Skipping Company module sync.")
+        logger.info(f"Syncing CompanyInfo to Company module for QBO id: {company_info.qbo_id}")
+        try:
+            company = company_connector.sync_from_qbo_to_company(
+                qbo_company_info=company_info,
+                realm_id=realm_id
+            )
+            outcome.record_projected()
+            logger.info(f"Successfully synced to Company module. Company ID: {company.id}")
+        except Exception as e:
+            outcome.record_projection_error(
+                company_info.qbo_id, e, label="QboCompanyInfo->Company", logger=logger
+            )
 
         end_time = datetime.now(timezone.utc)
         end_time_str = _normalize_last_sync(end_time.isoformat())

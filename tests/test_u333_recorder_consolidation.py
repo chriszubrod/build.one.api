@@ -130,7 +130,7 @@ _EXPECTED = {
         "qbo_id": "CI-NEW",
         "realm_id": "realm-in",
         "details": (
-            "Duplicate QBO company detected. QboCompanyInfo 4 (Name='Acme') name-matches local "
+            "Duplicate QBO company detected. QboCompanyInfo CI-NEW (Name='Acme') name-matches local "
             "Company 7 which already carries a DIFFERENT QboId CI-OLD (realm 'realm-old'). Resolve "
             "by merging or renaming one of the QBO companies."
         ),

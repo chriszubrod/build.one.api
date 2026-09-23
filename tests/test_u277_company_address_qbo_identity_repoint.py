@@ -45,7 +45,11 @@ from integrations.intuit.qbo.physical_address.connector.business.service import 
 
 def _make_qbo_company_info(**overrides):
     defaults = dict(
-        id=4,
+        # U-505: the real object the connector now receives is transient --
+        # `id` is ALWAYS None. A truthy PK here modelled a shape that can no
+        # longer occur, which is why this suite stayed green through the
+        # watermark regression Codex Pass 1 caught.
+        id=None,
         qbo_id="CI-99",
         realm_id="realm-1",
         legal_name="Acme Co",
@@ -144,11 +148,12 @@ def test_address_service_read_by_qbo_identity_is_a_thin_passthrough():
 # there is no mapping-table fallback, no self-heal, and no mapping-vs-dbo conflict
 # state left to test. A hit updates fields and writes nothing else; a genuine miss
 # adopts by NAME or creates, then stamps identity under the candidate's own lock.
-# One Company-specific divergence from Customer/Vendor: `sync_from_qbo_to_company`
-# takes a bare `qbo_company_info_id` (not the already-fetched staging row), so it
-# reads `qbo_company_info_service.repo.read_by_id` first — and unlike every sibling,
-# it always overwrites name/website unconditionally (no `preserve_human_edited_name`
-# — the pre-U-350 legacy path never had one either, "QBO is source of truth").
+# `sync_from_qbo_to_company` now takes the already-built QboCompanyInfo directly,
+# like every sibling — the bare `qbo_company_info_id` + `repo.read_by_id` round-trip
+# went with the staging repoint (the object is transient, `.id` is always None).
+# One Company-specific divergence remains: unlike every sibling it always overwrites
+# name/website unconditionally (no `preserve_human_edited_name` — the pre-U-350
+# legacy path never had one either, "QBO is source of truth").
 
 FASTPATH_LOCK_TARGET = "integrations.intuit.qbo.base.identity_fastpath.qbo_app_lock"
 # _stamp_company_identity's own lock lives in the shared stamp_dbo_identity_with_lock
@@ -160,11 +165,8 @@ def _build_company_connector():
     company_service = Mock()
     company_service.repo = Mock()
     reconciliation_repo = Mock()
-    qbo_company_info_service = Mock()
-    qbo_company_info_service.repo = Mock()
     connector = CompanyInfoCompanyConnector(
         company_service=company_service,
-        qbo_company_info_service=qbo_company_info_service,
         reconciliation_repo=reconciliation_repo,
     )
     return connector, company_service, reconciliation_repo
@@ -177,9 +179,7 @@ def test_company_direct_hit_updates_fields_no_create_or_stamp():
     company_service.read_by_qbo_identity.return_value = direct_hit
     updated = SimpleNamespace(id=55, name="Acme", website="acme.example.com")
     company_service.repo.update_by_id.return_value = updated
-
-    connector.qbo_company_info_service.repo.read_by_id.return_value = qbo_company_info
-    result = connector.sync_from_qbo_to_company(qbo_company_info.id, "realm-1")
+    result = connector.sync_from_qbo_to_company(qbo_company_info, "realm-1")
 
     assert result is updated
     company_service.repo.update_by_id.assert_called_once()
@@ -199,9 +199,7 @@ def test_company_direct_hit_always_overwrites_name_and_website():
     direct_hit = SimpleNamespace(id=55, name="Curated Old Name", website="old.example.com")
     company_service.read_by_qbo_identity.return_value = direct_hit
     company_service.repo.update_by_id.side_effect = lambda c: c
-
-    connector.qbo_company_info_service.repo.read_by_id.return_value = qbo_company_info
-    result = connector.sync_from_qbo_to_company(qbo_company_info.id, "realm-1")
+    result = connector.sync_from_qbo_to_company(qbo_company_info, "realm-1")
 
     assert result.name == "New Legal Name"
     assert result.website == "new.example.com"
@@ -218,12 +216,10 @@ def test_company_genuine_miss_creates_new_and_stamps_identity():
     company_service.create.return_value = created
     stamped = SimpleNamespace(id=300, qbo_id="CI-99", realm_id="realm-1")
     company_service.read_by_id.side_effect = [created, stamped]
-
-    connector.qbo_company_info_service.repo.read_by_id.return_value = qbo_company_info
     with patch(FASTPATH_LOCK_TARGET, mock_qbo_app_lock_granted), patch(
         STAMP_LOCK_TARGET, mock_qbo_app_lock_granted
     ):
-        result = connector.sync_from_qbo_to_company(qbo_company_info.id, "realm-1")
+        result = connector.sync_from_qbo_to_company(qbo_company_info, "realm-1")
 
     assert result is stamped
     company_service.create.assert_called_once_with(name="Acme", website="acme.example.com")
@@ -243,12 +239,10 @@ def test_company_genuine_miss_adopts_existing_unmapped_by_name():
     company_service.repo.update_by_id.side_effect = lambda c: c
     stamped = SimpleNamespace(id=150, qbo_id="CI-99", realm_id="realm-1", name="Acme")
     company_service.read_by_id.side_effect = [existing, stamped]
-
-    connector.qbo_company_info_service.repo.read_by_id.return_value = qbo_company_info
     with patch(FASTPATH_LOCK_TARGET, mock_qbo_app_lock_granted), patch(
         STAMP_LOCK_TARGET, mock_qbo_app_lock_granted
     ):
-        result = connector.sync_from_qbo_to_company(qbo_company_info.id, "realm-1")
+        result = connector.sync_from_qbo_to_company(qbo_company_info, "realm-1")
 
     assert result is stamped
     assert existing.name == "Acme"
@@ -266,12 +260,10 @@ def test_company_blank_incoming_name_skips_the_adopt_lookup_and_creates():
     created = SimpleNamespace(id=300, name="")
     company_service.create.return_value = created
     company_service.read_by_id.side_effect = [created, created]
-
-    connector.qbo_company_info_service.repo.read_by_id.return_value = qbo_company_info
     with patch(FASTPATH_LOCK_TARGET, mock_qbo_app_lock_granted), patch(
         STAMP_LOCK_TARGET, mock_qbo_app_lock_granted
     ):
-        connector.sync_from_qbo_to_company(qbo_company_info.id, "realm-1")
+        connector.sync_from_qbo_to_company(qbo_company_info, "realm-1")
 
     company_service.read_by_name.assert_not_called()
     company_service.create.assert_called_once_with(name="", website=qbo_company_info.web_addr or "")
@@ -308,11 +300,9 @@ def test_company_duplicate_qbo_id_guard_raises_and_records_issue():
     company_service.read_by_qbo_identity.return_value = None
     existing = SimpleNamespace(id=150, public_id="company-pub-150", qbo_id="CI-OTHER", realm_id="realm-1")
     company_service.read_by_name.return_value = existing
-
-    connector.qbo_company_info_service.repo.read_by_id.return_value = qbo_company_info
     with patch(FASTPATH_LOCK_TARGET, mock_qbo_app_lock_granted):
         with pytest.raises(ValueError, match="already carries a DIFFERENT identity"):
-            connector.sync_from_qbo_to_company(qbo_company_info.id, "realm-1")
+            connector.sync_from_qbo_to_company(qbo_company_info, "realm-1")
 
     company_service.repo.update_by_id.assert_not_called()
     company_service.repo.set_qbo_identity.assert_not_called()
@@ -331,11 +321,9 @@ def test_company_duplicate_guard_catches_same_qbo_id_different_realm():
         id=150, public_id="company-pub-150", qbo_id="CI-99", realm_id="realm-OTHER", name="Untouched",
     )
     company_service.read_by_name.return_value = existing
-
-    connector.qbo_company_info_service.repo.read_by_id.return_value = qbo_company_info
     with patch(FASTPATH_LOCK_TARGET, mock_qbo_app_lock_granted):
         with pytest.raises(ValueError, match="already carries a DIFFERENT identity"):
-            connector.sync_from_qbo_to_company(qbo_company_info.id, "realm-1")
+            connector.sync_from_qbo_to_company(qbo_company_info, "realm-1")
 
     assert existing.name == "Untouched"  # never mutated before the raise
     company_service.repo.update_by_id.assert_not_called()
@@ -349,10 +337,8 @@ def test_company_race_discovered_hit_adopts_racer_without_create():
     racer_row = SimpleNamespace(id=400, qbo_id="CI-99", realm_id="realm-1")
     company_service.read_by_qbo_identity.side_effect = [None, racer_row]
     company_service.repo.update_by_id.side_effect = lambda c: c
-
-    connector.qbo_company_info_service.repo.read_by_id.return_value = qbo_company_info
     with patch(FASTPATH_LOCK_TARGET, mock_qbo_app_lock_granted):
-        result = connector.sync_from_qbo_to_company(qbo_company_info.id, "realm-1")
+        result = connector.sync_from_qbo_to_company(qbo_company_info, "realm-1")
 
     assert result is racer_row
     company_service.create.assert_not_called()
@@ -373,10 +359,8 @@ def test_company_update_returning_none_raises_runtime_error_not_value_error():
     qbo_company_info = _make_qbo_company_info(qbo_id="CI-99", realm_id="realm-1")
     company_service.read_by_qbo_identity.return_value = SimpleNamespace(id=55)
     company_service.repo.update_by_id.return_value = None  # race: row gone on write
-
-    connector.qbo_company_info_service.repo.read_by_id.return_value = qbo_company_info
     with pytest.raises(RuntimeError, match="concurrent write race"):
-        connector.sync_from_qbo_to_company(qbo_company_info.id, "realm-1")
+        connector.sync_from_qbo_to_company(qbo_company_info, "realm-1")
 
     company_service.create.assert_not_called()
     company_service.repo.set_qbo_identity.assert_not_called()
@@ -385,10 +369,8 @@ def test_company_update_returning_none_raises_runtime_error_not_value_error():
 def test_company_no_qbo_id_raises():
     connector, company_service, _ = _build_company_connector()
     qbo_company_info = _make_qbo_company_info(qbo_id=None)
-
-    connector.qbo_company_info_service.repo.read_by_id.return_value = qbo_company_info
     with pytest.raises(RuntimeError, match="dbo-only identity fast path"):
-        connector.sync_from_qbo_to_company(qbo_company_info.id, "realm-1")
+        connector.sync_from_qbo_to_company(qbo_company_info, "realm-1")
 
     company_service.read_by_qbo_identity.assert_not_called()
 
@@ -407,12 +389,10 @@ def test_company_uses_connector_realm_id_when_qbo_company_info_realm_id_is_falsy
     company_service.read_by_id.side_effect = [
         created, SimpleNamespace(id=1, qbo_id="CI-99", realm_id="connector-realm"),
     ]
-
-    connector.qbo_company_info_service.repo.read_by_id.return_value = qbo_company_info
     with patch(FASTPATH_LOCK_TARGET, mock_qbo_app_lock_granted), patch(
         STAMP_LOCK_TARGET, mock_qbo_app_lock_granted
     ):
-        connector.sync_from_qbo_to_company(qbo_company_info.id, "connector-realm")
+        connector.sync_from_qbo_to_company(qbo_company_info, "connector-realm")
 
     # Called twice (pre-lock check + re-check under the create lock) — both with
     # the connector-level realm_id fallback, never the (falsy) qbo_company_info one.
@@ -491,11 +471,9 @@ def test_company_duplicate_guard_records_effective_fallback_realm_not_raw_none()
     company_service.read_by_qbo_identity.return_value = None
     existing = SimpleNamespace(id=150, public_id="company-pub-150", qbo_id="CI-OTHER", realm_id="realm-1")
     company_service.read_by_name.return_value = existing
-
-    connector.qbo_company_info_service.repo.read_by_id.return_value = qbo_company_info
     with patch(FASTPATH_LOCK_TARGET, mock_qbo_app_lock_granted):
         with pytest.raises(ValueError):
-            connector.sync_from_qbo_to_company(qbo_company_info.id, "connector-realm")
+            connector.sync_from_qbo_to_company(qbo_company_info, "connector-realm")
 
     kwargs = reconciliation_repo.create.call_args.kwargs
     # The recorded issue's realm_id is the EFFECTIVE fallback, not the raw

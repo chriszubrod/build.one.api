@@ -14,7 +14,6 @@ from integrations.intuit.qbo.base.reconciliation_recorder import (
     build_duplicate_qbo_identity_conflict_desc,
     record_duplicate_identity_conflict,
 )
-from integrations.intuit.qbo.company_info.business.service import QboCompanyInfoService
 from integrations.intuit.qbo.company_info.business.model import QboCompanyInfo as QboCompanyInfoModel
 from integrations.intuit.qbo.reconciliation.persistence.repo import ReconciliationIssueRepository
 from entities.company.business.service import CompanyService
@@ -46,21 +45,27 @@ class CompanyInfoCompanyConnector:
     def __init__(
         self,
         company_service: Optional[CompanyService] = None,
-        qbo_company_info_service: Optional[QboCompanyInfoService] = None,
         reconciliation_repo: Optional[ReconciliationIssueRepository] = None,
     ):
         """Initialize the CompanyInfoCompanyConnector."""
         self.company_service = company_service or CompanyService()
-        self.qbo_company_info_service = qbo_company_info_service or QboCompanyInfoService()
         self.reconciliation_repo = reconciliation_repo or ReconciliationIssueRepository()
 
-    def sync_from_qbo_to_company(self, qbo_company_info_id: int, realm_id: str) -> Company:
+    def sync_from_qbo_to_company(
+        self, qbo_company_info: QboCompanyInfoModel, realm_id: str
+    ) -> Company:
         """
         Sync data from QboCompanyInfo to Company module, via the dbo-only
         identity fast path (U-350).
 
         Args:
-            qbo_company_info_id: Database ID of QboCompanyInfo record
+            qbo_company_info: QboCompanyInfo record. This is a transient
+                (never persisted) object built by
+                `QboCompanyInfoService._build_company_info` — `.id` is always
+                None; use `.qbo_id` for identity/logging. Taking the object
+                rather than a `qbo.CompanyInfo` row id is what removes the
+                staging round-trip from the pull; mirrors U-307c's
+                `ItemCostCodeConnector.sync_from_qbo_item`.
             realm_id: QBO realm ID fallback, used only when
                 `qbo_company_info.realm_id` itself is falsy (U-277's own
                 fallback, preserved here — no sibling connector takes this
@@ -69,12 +74,6 @@ class CompanyInfoCompanyConnector:
         Returns:
             Company: The synced Company record
         """
-        qbo_company_info_repo = self.qbo_company_info_service.repo
-        qbo_company_info = qbo_company_info_repo.read_by_id(qbo_company_info_id)
-
-        if not qbo_company_info:
-            raise ValueError(f"QboCompanyInfo with ID {qbo_company_info_id} not found")
-
         # Company.Name maps to CompanyInfo.LegalName
         company_name = qbo_company_info.legal_name
         company_website = qbo_company_info.web_addr
@@ -104,8 +103,8 @@ class CompanyInfoCompanyConnector:
             # invoked falsy qbo_company_info.qbo_id, mirroring every sibling
             # connector's identical guard (U-310/U-313/U-311).
             raise RuntimeError(
-                f"Failed to resolve Company for QboCompanyInfo {qbo_company_info.id} "
-                f"(qbo_id={qbo_company_info.qbo_id}) via the dbo-only identity fast path"
+                f"Failed to resolve Company for QboCompanyInfo "
+                f"qbo_id={qbo_company_info.qbo_id} via the dbo-only identity fast path"
             )
         return outcome.entity
 
@@ -147,7 +146,7 @@ class CompanyInfoCompanyConnector:
         existing = self.company_service.read_by_name(name) if name else None
         if existing is None:
             logger.info(
-                f"No existing Company found. Creating new Company from QboCompanyInfo {qbo_company_info.id}"
+                f"No existing Company found. Creating new Company from QboCompanyInfo {qbo_company_info.qbo_id}"
             )
             return self.company_service.create(name=name or "", website=website or "")
 
@@ -163,7 +162,7 @@ class CompanyInfoCompanyConnector:
 
         logger.info(
             f"Binding existing local Company {existing.id} ({name}) to QboCompanyInfo "
-            f"{qbo_company_info.id} by name match"
+            f"{qbo_company_info.qbo_id} by name match"
         )
         # Field write deliberately deferred to _stamp_company_identity, which
         # applies it atomically with the identity stamp under the candidate's
@@ -218,7 +217,6 @@ class CompanyInfoCompanyConnector:
             apply_fields=_apply_fields,
             write_identity=lambda c: self.create_mapping(
                 company_id=c.id,
-                qbo_company_info_id=qbo_company_info.id,
                 qbo_id=qbo_company_info.qbo_id,
                 realm_id=realm_id,
             ),
@@ -298,7 +296,7 @@ class CompanyInfoCompanyConnector:
             incoming_realm_id=realm_id,
         )
         details = (
-            f"Duplicate QBO company detected. QboCompanyInfo {qbo_company_info.id} "
+            f"Duplicate QBO company detected. QboCompanyInfo {qbo_company_info.qbo_id} "
             f"(Name='{qbo_company_info.legal_name}') name-matches local Company "
             f"{local_company.id} which already carries {conflict_desc}. "
             f"Resolve by merging or renaming one of the QBO companies."
@@ -316,7 +314,6 @@ class CompanyInfoCompanyConnector:
     def create_mapping(
         self,
         company_id: int,
-        qbo_company_info_id: int,
         *,
         qbo_id: Optional[str],
         realm_id: Optional[str],
@@ -327,8 +324,10 @@ class CompanyInfoCompanyConnector:
 
         `dbo.Company.QboId`/`RealmId` is the SOLE identity store — this no
         longer reads or writes a `qbo.CompanyInfoCompany` mapping row (that
-        table is retired). `qbo_company_info_id` stays in the signature for
-        the caller's symmetry but is no longer persisted anywhere.
+        table is retired). The vestigial `qbo_company_info_id` parameter went
+        with the staging repoint: it was never persisted, and the transient
+        QboCompanyInfo it would have been read off carries `id=None`, so
+        keeping it would have passed None for symmetry with nothing.
 
         The sole caller is `_stamp_company_identity`, which reaches this only
         under `stamp_dbo_identity_with_lock`'s own theft-guard — already

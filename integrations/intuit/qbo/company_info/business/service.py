@@ -7,7 +7,6 @@ from typing import Optional
 
 # Local Imports
 from integrations.intuit.qbo.company_info.business.model import QboCompanyInfo
-from integrations.intuit.qbo.company_info.persistence.repo import QboCompanyInfoRepository
 from integrations.intuit.qbo.company_info.external.client import QboCompanyInfoClient
 from integrations.intuit.qbo.company_info.external.schemas import QboCompanyInfo as QboCompanyInfoExternalSchema
 from integrations.intuit.qbo.base.sync_outcome import SyncOutcome
@@ -19,17 +18,29 @@ logger = logging.getLogger(__name__)
 class QboCompanyInfoService:
     """
     Service for QboCompanyInfo entity business operations.
-    """
 
-    def __init__(self, repo: Optional[QboCompanyInfoRepository] = None):
-        """Initialize the QboCompanyInfoService."""
-        self.repo = repo or QboCompanyInfoRepository()
+    Holds no repository: the pull no longer stages a `qbo.CompanyInfo` row.
+    `sync_from_qbo` returns a transient QboCompanyInfo that
+    `CompanyInfoCompanyConnector` projects straight into `dbo.Company`, which
+    is the sole store for this entity's identity (U-350) and now for its data
+    too. Mirrors `QboItemService` (U-307c) and `QboAttachableService`
+    (U-300b), whose persistence packages are likewise empty.
+
+    `qbo.PhysicalAddress` IS still written, by `_sync_physical_address` — that
+    table is shared with the customer and vendor pulls and is out of scope.
+    """
 
     def sync_from_qbo(self, realm_id: str, last_updated_time: Optional[str] = None) -> SyncOutcome[QboCompanyInfo]:
         """
-        Fetch CompanyInfo from QBO API and store locally.
-        Extracts PhysicalAddress objects and creates/updates them first.
-        Uses upsert pattern: creates if not exists, updates if exists.
+        Fetch CompanyInfo from QBO API and return it as a transient object.
+        Extracts PhysicalAddress objects and upserts them (into
+        `qbo.PhysicalAddress`) first, so their row ids can ride along for the
+        caller's address projection.
+
+        Nothing about the CompanyInfo itself is persisted here — see
+        `_build_company_info`. The `SyncOutcome` it returns therefore holds an
+        object whose `id`/`public_id`/`row_version` are None; consumers must
+        key off `qbo_id`.
         
         Args:
             realm_id: QBO company realm ID
@@ -38,7 +49,8 @@ class QboCompanyInfoService:
                 If no records match, returns an outcome with empty ``synced``.
         
         Returns:
-            SyncOutcome[QboCompanyInfo]: Pull run envelope; ``synced`` holds 0 or 1 row
+            SyncOutcome[QboCompanyInfo]: Pull run envelope; ``synced`` holds 0 or 1
+                transient (never persisted) record
         """
         outcome: SyncOutcome[QboCompanyInfo] = SyncOutcome.for_service_pull()
         # Fetch CompanyInfo from QBO API. QboHttpClient resolves and refreshes
@@ -97,64 +109,90 @@ class QboCompanyInfoService:
                 addr_qbo_id
             )
         
-        # Extract email and web address strings
-        email_str = None
-        if qbo_company_info.email and hasattr(qbo_company_info.email, 'address'):
-            email_str = qbo_company_info.email.address
-        
-        web_addr_str = None
-        if qbo_company_info.web_addr and hasattr(qbo_company_info.web_addr, 'uri'):
-            web_addr_str = qbo_company_info.web_addr.uri
-        
-        # Extract currency ref as JSON string
-        currency_ref_str = None
-        if qbo_company_info.currency_ref:
-            currency_ref_str = json.dumps(qbo_company_info.currency_ref.dict(exclude_none=True))
-        
-        # Check if CompanyInfo already exists
-        existing = self.repo.read_by_realm_id(realm_id=realm_id)
-        
-        if existing:
-            # Update existing record
-            logger.info(f"Updating existing QBO company info for realm_id: {realm_id}")
-            record = self.repo.update_by_qbo_id(
-                qbo_id=qbo_company_info.id or existing.qbo_id,
-                row_version=existing.row_version_bytes,
-                sync_token=qbo_company_info.sync_token or existing.sync_token,
+        try:
+            record = self._build_company_info(
+                qbo_company_info,
                 realm_id=realm_id,
-                company_name=qbo_company_info.company_name,
-                legal_name=qbo_company_info.legal_name,
                 company_addr_id=company_addr_id,
                 legal_addr_id=legal_addr_id,
                 customer_communication_addr_id=customer_communication_addr_id,
-                tax_payer_id=qbo_company_info.tax_payer_id,
-                fiscal_year_start_month=qbo_company_info.fiscal_year_start_month,
-                country=qbo_company_info.country,
-                email=email_str,
-                web_addr=web_addr_str,
-                currency_ref=currency_ref_str,
             )
-        else:
-            # Create new record
-            logger.info(f"Creating new QBO company info for realm_id: {realm_id}")
-            record = self.repo.create(
-                qbo_id=qbo_company_info.id,
-                sync_token=qbo_company_info.sync_token,
-                realm_id=realm_id,
-                company_name=qbo_company_info.company_name,
-                legal_name=qbo_company_info.legal_name,
-                company_addr_id=company_addr_id,
-                legal_addr_id=legal_addr_id,
-                customer_communication_addr_id=customer_communication_addr_id,
-                tax_payer_id=qbo_company_info.tax_payer_id,
-                fiscal_year_start_month=qbo_company_info.fiscal_year_start_month,
-                country=qbo_company_info.country,
-                email=email_str,
-                web_addr=web_addr_str,
-                currency_ref=currency_ref_str,
-            )
+        except ValueError as e:
+            # A staging failure (not a skip) on purpose: `SyncOutcome.should_hold`
+            # is what makes `WatermarkRun.commit` hold the delta cursor, so the
+            # next tick refetches this CompanyInfo instead of stepping past it.
+            # `record_skip` would be wrong here -- a missing Id is a malformed
+            # response that may well be present on the retry, not a permanent
+            # data gap.
+            logger.error(f"Cannot project CompanyInfo for realm_id {realm_id}: {e}")
+            # "<no-id>" not the None id: record_staging_failure stringifies, so
+            # passing None writes the literal "None" into staging_failed_ids,
+            # which _record_bound_forced_advance stamps as the
+            # ReconciliationIssue's qbo_id at the hold bound. Same sentinel
+            # reimburse_charge uses (reimburse_charge/business/service.py:88).
+            outcome.record_staging_failure("<no-id>", e)
+            return outcome
+
         outcome.record_synced(record)
         return outcome
+
+    def _build_company_info(
+        self,
+        qbo_company_info: QboCompanyInfoExternalSchema,
+        *,
+        realm_id: str,
+        company_addr_id: Optional[int],
+        legal_addr_id: Optional[int],
+        customer_communication_addr_id: Optional[int],
+    ) -> QboCompanyInfo:
+        """
+        Build the transient QboCompanyInfo this pull projects from.
+
+        Raises ValueError when the response carries no QBO `Id`; `sync_from_qbo`
+        turns that into a staging failure so the watermark HOLDS. See the module
+        docstring of tests/test_u504_company_info_staging_repoint.py for why
+        that matters -- it is the regression this guard exists to prevent.
+
+        The address ids are the `qbo.PhysicalAddress` rows `_sync_physical_address`
+        just upserted; they are parameters because only the caller has them.
+        Everything else is derived here, matching `QboItemService._upsert_item`.
+        """
+        if not qbo_company_info.id:
+            raise ValueError("QBO CompanyInfo must have an ID")
+
+        email = None
+        if qbo_company_info.email and hasattr(qbo_company_info.email, "address"):
+            email = qbo_company_info.email.address
+
+        web_addr = None
+        if qbo_company_info.web_addr and hasattr(qbo_company_info.web_addr, "uri"):
+            web_addr = qbo_company_info.web_addr.uri
+
+        currency_ref = None
+        if qbo_company_info.currency_ref:
+            currency_ref = json.dumps(qbo_company_info.currency_ref.dict(exclude_none=True))
+
+        return QboCompanyInfo(
+            id=None,
+            public_id=None,
+            row_version=None,
+            created_datetime=None,
+            modified_datetime=None,
+            qbo_id=qbo_company_info.id,
+            sync_token=qbo_company_info.sync_token,
+            realm_id=realm_id,
+            company_name=qbo_company_info.company_name,
+            legal_name=qbo_company_info.legal_name,
+            company_addr_id=company_addr_id,
+            legal_addr_id=legal_addr_id,
+            customer_communication_addr_id=customer_communication_addr_id,
+            tax_payer_id=qbo_company_info.tax_payer_id,
+            fiscal_year_start_month=qbo_company_info.fiscal_year_start_month,
+            country=qbo_company_info.country,
+            email=email,
+            web_addr=web_addr,
+            currency_ref=currency_ref,
+        )
 
     def _sync_physical_address(
         self,
@@ -231,21 +269,4 @@ class QboCompanyInfoService:
             )
             return created.id if created else None
 
-    def read_all(self) -> list[QboCompanyInfo]:
-        """
-        Read all QboCompanyInfos.
-        """
-        return self.repo.read_all()
-
-    def read_by_qbo_id(self, qbo_id: str) -> Optional[QboCompanyInfo]:
-        """
-        Read a QboCompanyInfo by QBO ID.
-        """
-        return self.repo.read_by_qbo_id(qbo_id)
-
-    def read_by_realm_id(self, realm_id: str) -> Optional[QboCompanyInfo]:
-        """
-        Read a QboCompanyInfo by realm ID.
-        """
-        return self.repo.read_by_realm_id(realm_id)
 

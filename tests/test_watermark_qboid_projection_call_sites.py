@@ -254,9 +254,13 @@ def _make_qbo_term(*, staging_pk=STAGING_PK, qbo_id="QB-TERM-501"):
     )
 
 
-def _make_qbo_company_info(*, staging_pk=STAGING_PK, qbo_id="QB-COMPANY-501"):
+def _make_qbo_company_info(*, qbo_id="QB-COMPANY-501"):
+    # No staging_pk: U-505 made QboCompanyInfo transient, so `id` is always
+    # None in production. The assertion below still discriminates -- it pins
+    # the recorded id to the real qbo_id, and "None" is not "QB-COMPANY-501"
+    # (mutation-verified both ways).
     return QboCompanyInfo(
-        id=staging_pk,
+        id=None,
         public_id="88888888-8888-8888-8888-888888888888",
         row_version=None,
         created_datetime=None,

@@ -272,7 +272,6 @@ def test_company_create_mapping_stamps_identity():
     connector, company_repo = _make_company_connector()
     connector.create_mapping(
         company_id=1,
-        qbo_company_info_id=2,
         qbo_id="CI-1",
         realm_id="realm-c",
     )
@@ -287,7 +286,6 @@ def test_company_create_mapping_identity_failure_propagates():
     with pytest.raises(RuntimeError, match="stamp failed"):
         connector.create_mapping(
             company_id=1,
-            qbo_company_info_id=2,
             qbo_id="CI-1",
             realm_id="realm-c",
         )

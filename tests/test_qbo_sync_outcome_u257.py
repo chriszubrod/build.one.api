@@ -162,11 +162,13 @@ def test_failure_reasons_populated_for_staging_projection_and_skip():
     outcome = SyncOutcome()
     outcome.record_staging_failure("s1", RuntimeError("db timeout"))
     outcome.record_projection_failure("p1", ValueError("connector blew up"))
-    outcome.record_staging_skip("k1", reason="malformed QBO row")
+    # U-507: a skip is a PROJECTION-tier classification, reached only through
+    # record_projection_error. There is no staging skip verb to namespace.
+    outcome.record_projection_error("k1", ValueError("vendor not mapped"))
 
     assert outcome.failure_reasons["staging:s1"] == "db timeout"
     assert outcome.failure_reasons["projection:p1"] == "connector blew up"
-    assert outcome.failure_reasons["staging_skip:k1"] == "malformed QBO row"
+    assert outcome.failure_reasons["skip:k1"] == "vendor not mapped"
     assert outcome.summary()["failure_reasons"] == outcome.failure_reasons
 
 

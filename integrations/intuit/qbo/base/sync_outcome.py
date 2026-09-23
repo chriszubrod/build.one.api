@@ -1,3 +1,22 @@
+"""
+Shared failure vocabulary for QBO pull runs (staging + projection tiers).
+
+STAGING-TIER POLICY (U-507) — there is no staging skip. Every record a pull
+fetches either syncs or fails-and-holds; a staging-tier caller has exactly two
+verbs, ``record_synced`` and ``record_staging_failure``. "It would stall
+forever" is NOT a valid reason to skip: the hold is bounded by
+``QBO_WATERMARK_HOLD_BOUND_SECONDS`` (default 7200s), after which
+``WatermarkRun.commit`` force-advances the watermark and records a critical
+``[qbo].[ReconciliationIssue]`` — so a wrongly-held watermark costs a couple of
+redundant idempotent re-pulls and then leaves a durable trail, while a wrongly
+skipped record is lost silently until someone edits it in QBO again.
+
+Permanent-data skips exist ONLY at the PROJECTION tier, via
+``record_projection_error`` (plain ``ValueError`` → skip; everything else →
+failure/hold). That is the single place allowed to classify an error as
+permanent, and it is deliberately the safe-default-HOLD classifier described in
+its own docstring.
+"""
 # Python Standard Library Imports
 import logging
 from dataclasses import dataclass, field
@@ -16,7 +35,6 @@ from integrations.intuit.qbo.base.errors import is_retryable_error
 FAILURE_REASON_STAGING = "staging"
 FAILURE_REASON_PROJECTION = "projection"
 FAILURE_REASON_SKIP = "skip"
-FAILURE_REASON_STAGING_SKIP = "staging_skip"
 
 DEFAULT_FAILURE_REASON = "no reason provided"
 
@@ -105,13 +123,6 @@ class SyncOutcome(Generic[T]):
         self.skipped_ids.append(str(qbo_id))
         _store_failure_reason(
             self.failure_reasons, FAILURE_REASON_SKIP, qbo_id, reason=reason
-        )
-
-    def record_staging_skip(self, qbo_id, reason=None) -> None:
-        """Permanent staging-tier skip (e.g. malformed QBO row with no Id)."""
-        self.skipped_ids.append(str(qbo_id))
-        _store_failure_reason(
-            self.failure_reasons, FAILURE_REASON_STAGING_SKIP, qbo_id, reason=reason
         )
 
     def record_projection_error(

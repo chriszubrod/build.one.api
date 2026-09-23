@@ -4,11 +4,46 @@ U-505 added the fifth family, CompanyInfo. Its guard lives in the same place
 (`QboCompanyInfoService._build_company_info`), but its tests live in
 tests/test_u504_company_info_staging_repoint.py because what they pin is not
 guard *parity* -- it is the watermark regression the guard's ABSENCE caused
-once CompanyInfo went transient and stopped staging a row. Current tally:
-company_info, item, customer, vendor, attachable raise-and-hold;
-reimburse_charge skips-and-advances; term/account/bill/purchase/invoice/
-vendorcredit have no guard (they still stage, so a truthy PK carries them into
-the connector, which raises and holds via record_projection_error).
+once CompanyInfo went transient and stopped staging a row.
+
+TALLY (U-507): all ELEVEN watermarked QBO pull families now HOLD on a missing
+QBO Id; none skips. Three mechanisms, pinned as a test by
+tests/test_u507_staging_skip_removal.py::test_every_pull_family_holds_on_a_missing_qbo_id:
+
+  * raise-and-hold guard  -- company_info, item, customer, vendor (+ attachable,
+    which is not watermarked): their external read schema declares `id` as
+    Optional so a malformed row REACHES the guard, which raises ValueError and
+    is recorded as a staging failure rather than aborting the batch.
+  * fail-and-hold in the staging loop -- reimburse_charge (U-507 replaced its
+    lone skip-and-advance with record_staging_failure + `continue`).
+  * schema-rejected falsy `id` -- term, account, bill, purchase, invoice,
+    vendorcredit. These have NO in-service guard and need none. Their external
+    read schema declares `id: str` REQUIRED *and* binds the shared before-validator
+    `integrations.intuit.qbo.base.id_validation.require_non_blank_qbo_id`. Between
+    them those two reject every shape of a missing QBO Id -- absent, NULL, `""`,
+    and whitespace-only -- so `[QboBill(**row) for row in page]` raises pydantic
+    ValidationError on a malformed row and aborts the WHOLE page before anything
+    stages. They hold HARDER than a guard does: sync_from_qbo never returns,
+    commit is never reached, so no hold marker is stamped and the bounded
+    force-advance (QBO_WATERMARK_HOLD_BOUND_SECONDS) cannot engage at all.
+
+    PRECISION MATTERS HERE -- this docstring has been wrong TWICE.
+      (1) It first claimed these six "still stage, so a truthy PK carries them
+          into the connector". False: the pull raises before anything stages.
+      (2) The correction then claimed "`id` is REQUIRED so a no-Id row aborts the
+          page". ALSO false, and it is what let U-507's tally guard pass
+          vacuously: pydantic's required rule rejects an ABSENT or NULL field,
+          NOT a falsy one. `{"Id": ""}` validated, staged with QBO id `""`,
+          recorded SUCCESS and ADVANCED the watermark; `{"Id": " "}` did the same
+          (stripped to `""` on the five that inherit `str_strip_whitespace`, kept
+          VERBATIM as a truthy garbage id on vendorcredit, which does not strip).
+    The invariant is NOT "required" and NOT "truthy" -- it is `str(Id).strip()` is
+    non-empty, and as of U-507 fix round 1 the shared validator is what enforces
+    it. `required` still does its own half of the job (absent / NULL); neither
+    half is sufficient alone. Pinned by
+    tests/test_u507_staging_skip_removal.py::test_schema_required_family_rejects_a_blank_or_whitespace_qbo_id,
+    which proves rejection by CONSTRUCTING each schema with a falsy Id rather
+    than by inspecting `is_required()`.
 
 Upstream staged-upsert guards in QboVendorService._upsert_vendor and
 QboCustomerService._upsert_customer (production pull path), plus the vendor

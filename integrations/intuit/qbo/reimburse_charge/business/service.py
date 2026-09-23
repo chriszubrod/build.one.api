@@ -61,6 +61,8 @@ class QboReimburseChargeService:
         window on the next tick. This is conservative good practice regardless of
         QBO pointer behavior (the original KI-32 one-shot rationale is not
         supported by measurement — see docs/rc_source_linking_signal_2026_08_16.md).
+        Since U-507 that includes a malformed (no-Id) RC: this pull has no skip
+        tier, so every fetched record either syncs or fails-and-holds.
         """
         reject_reimburse_charge_txndate_filter(start_date, end_date)
         outcome: SyncOutcome[QboReimburseCharge] = SyncOutcome.for_service_pull()
@@ -82,10 +84,41 @@ class QboReimburseChargeService:
         for i, raw in enumerate(raw_records):
             parsed = parse_reimburse_charge(raw)
             if not parsed.get("qbo_id"):
-                # Malformed RC (QBO entity with no Id) — can never persist or be
-                # retried, so it does NOT hold the watermark (would stall forever).
-                logger.warning(f"Skipping ReimburseCharge with no Id: {raw}")
-                outcome.record_staging_skip("<no-id>", "ReimburseCharge with no Id")
+                # Malformed RC (QBO entity with no Id) — a staging FAILURE, so the
+                # watermark HOLDS (U-507). The staging tier has no skip: the hold is
+                # bounded by QBO_WATERMARK_HOLD_BOUND_SECONDS (default 7200s), after
+                # which WatermarkRun.commit force-advances and records a critical
+                # [qbo].[ReconciliationIssue] — a durable trail, not a silent loss.
+                # (The pre-U-507 "would stall forever" rationale predates that bound:
+                # this pull runs hourly, so a wrong hold costs 1-2 redundant ticks.)
+                #
+                # `continue` is LOAD-BEARING: UQ_QboReimburseCharge_QboId_RealmId is a
+                # FILTERED unique index (WHERE QboId IS NOT NULL AND RealmId IS NOT
+                # NULL), so a NULL-QboId row would insert cleanly and duplicate on
+                # every single pull if this fell through to the upsert.
+                #
+                # PER-RESPONSE sentinel, deliberately diverging from company_info's
+                # bare "<no-id>" (company_info/business/service.py): that pull stages
+                # exactly one row per run, so a bare sentinel is structurally
+                # unambiguous there. This loop can see N malformed rows in one run, and
+                # a bare sentinel would write N identical entries into
+                # staging_failed_ids — _record_bound_forced_advance would then emit N
+                # identical ReconciliationIssues at the hold bound. Distinguishing them
+                # WITHIN one run is the whole job, and `i` does it.
+                #
+                # `i` is NOT a durable identity and must not be read as one: the QBO
+                # query carries no ORDER BY, so the same malformed record can surface
+                # at a different index on the next tick or a retry, and the sentinel
+                # will not match across runs. Nothing here needs it to — these strings
+                # exist to keep one run's ReconciliationIssues distinct, not to
+                # correlate a record across runs. There is no durable alternative
+                # anyway: a record with no Id has nothing stable to key on.
+                logger.error(
+                    f"ReimburseCharge with no Id at index {i} — holding watermark: {raw}"
+                )
+                outcome.record_staging_failure(
+                    f"<no-id>:{i}", "ReimburseCharge with no Id"
+                )
                 continue
             try:
                 record = with_retry(

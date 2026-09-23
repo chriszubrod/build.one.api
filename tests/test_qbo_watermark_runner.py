@@ -233,11 +233,12 @@ def test_should_hold_true_when_only_projection_failure_recorded():
 
 
 def test_should_hold_false_when_only_skips_recorded():
-    """Permanent data gaps (e.g. unmapped vendor) must not wedge the watermark forever."""
+    """Permanent PROJECTION data gaps (e.g. unmapped vendor) must not wedge the watermark."""
     outcome = SyncOutcome()
-    outcome.record_staging_skip("7", reason="vendor not mapped")
-    # Skips are intentional permanent data issues — they will never self-resolve on retry,
-    # so holding the watermark on them would stall incremental sync indefinitely.
+    # U-507: a skip is a PROJECTION-tier classification only, and record_projection_error
+    # is the single entry point that makes it (plain ValueError → skip). The staging tier
+    # has no skip verb at all.
+    assert outcome.record_projection_error("7", ValueError("vendor not mapped")) == "skip"
     assert outcome.should_hold is False
 
 
@@ -246,7 +247,7 @@ def test_failed_count_sums_both_tiers_and_excludes_skips():
     outcome = SyncOutcome()
     outcome.record_staging_failure("1")
     outcome.record_projection_failure("2")
-    outcome.record_staging_skip("3")
+    outcome.record_projection_error("3", ValueError("vendor not mapped"))
     assert outcome.failed_count == 2
 
 
@@ -257,7 +258,7 @@ def test_summary_carries_all_fields_and_list_copies():
         outcome.record_synced(object())
     outcome.record_staging_failure("s1")
     outcome.record_projection_failure("p1")
-    outcome.record_staging_skip("k1")
+    outcome.record_projection_error("k1", ValueError("vendor not mapped"))
     summary = outcome.summary()
     assert summary["fetched"] == 5
     assert summary["synced"] == 4
@@ -898,11 +899,11 @@ def test_held_duration_none_when_anchor_unparseable():
 
 
 def test_commit_skips_only_outcome_advances_watermark_normally():
-    """Benign permanent skips must not block incremental sync from moving forward."""
+    """Benign permanent PROJECTION skips must not block incremental sync from moving forward."""
     fake = FakeSyncService([_make_sync()])
     run = _opened_run(fake)
     outcome = SyncOutcome.for_service_pull()
-    outcome.record_staging_skip("perm")
+    outcome.record_projection_error("perm", ValueError("vendor not mapped"))
     run.commit(outcome)
     assert len(fake.updates) == 1
     assert fake.updates[0][1].last_sync_datetime == run.watermark_value
@@ -1479,15 +1480,17 @@ def test_every_sync_qbo_script_calls_exit_nonzero_on_sync_failure():
 
 
 def test_sync_scripts_never_call_outcome_record_skip_directly():
-    """Skip vs hold must go through record_projection_error, not service-only skip verbs."""
+    """Skip vs hold must go through record_projection_error — no direct skip verb anywhere."""
+    # record_staging_skip was DELETED in U-507 (the staging tier has no skip); it stays in
+    # this set as a static tripwire so a script cannot reintroduce the verb by re-adding it.
     offenders = _offending_attr_call_sites(
         frozenset({"record_skip", "_record_skip", "record_staging_skip"}),
         receiver="outcome",
     )
     assert not offenders, (
         "classifying by exception type is what let a transient DB error become a permanent skip; "
-        "route projection skips through record_projection_error and keep staging skips in the "
-        "service. Offenders: " + ", ".join(offenders)
+        "record_projection_error is the ONLY place allowed to classify an error as permanent, and "
+        "the staging tier has no skip at all (U-507). Offenders: " + ", ".join(offenders)
     )
 
 

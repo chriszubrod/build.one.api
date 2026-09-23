@@ -7,6 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 # Local Imports
 from integrations.intuit.qbo.base.schemas import _QboBaseModel
+from integrations.intuit.qbo.base.id_validation import require_non_blank_qbo_id
 
 
 class QboReferenceType(BaseModel):
@@ -113,20 +114,14 @@ class QboPurchase(QboPurchaseUpdate):
     """
     metadata: Optional[Dict[str, Any]] = Field(default=None, alias="MetaData")
 
-    @field_validator('id', mode='before')
-    @classmethod
-    def convert_id_to_string(cls, v):
-        """
-        Convert QBO Id to string if it comes as an integer.
-        QBO may return Id as either integer or string, but we store it as string.
-        """
-        if v is None:
-            return None
-        if isinstance(v, int):
-            return str(v)
-        if isinstance(v, str):
-            return v
-        return str(v)
+    # U-507 fix: ONE shared validator, not a seventh hand-copy of the int->str
+    # coercion. `id: str` REQUIRED rejects an ABSENT or NULL Id -- it does NOT
+    # reject an EMPTY STRING, and `str_strip_whitespace` quietly turns " " into
+    # one. Such a row staged with QBO id "" and ADVANCED the watermark past
+    # itself. `require_non_blank_qbo_id` raises instead; see base/id_validation.py
+    # for why this lives on the schema (the page must abort before anything
+    # stages) and why `sync_token` is deliberately left alone.
+    _coerce_id = field_validator("id", mode="before")(require_non_blank_qbo_id)
 
 
 class QboPurchaseResponse(_QboBaseModel):

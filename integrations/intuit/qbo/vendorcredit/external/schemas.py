@@ -6,6 +6,7 @@ from decimal import Decimal
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 # Local Imports
+from integrations.intuit.qbo.base.id_validation import require_non_blank_qbo_id
 
 
 class QboReferenceType(BaseModel):
@@ -116,12 +117,16 @@ class QboVendorCredit(QboVendorCreditBase):
     sync_token: str = Field(alias="SyncToken")
     meta_data: Optional[dict] = Field(default=None, alias="MetaData")
     
-    @field_validator('id', mode='before')
-    @classmethod
-    def convert_id_to_string(cls, v):
-        if v is not None:
-            return str(v)
-        return v
+    # U-507 fix: ONE shared validator, not a seventh hand-copy of the int->str
+    # coercion. `id: str` REQUIRED rejects an ABSENT or NULL Id -- it does NOT
+    # reject an EMPTY STRING, so a row staged with QBO id "" and ADVANCED the
+    # watermark past itself. VendorCredit is the WORST of the six: its local
+    # `_QboBaseModel` (below) omits `str_strip_whitespace`, so a whitespace-only
+    # " " was kept VERBATIM -- a TRUTHY garbage id that also sails past every
+    # downstream `if not qbo_id:` guard. `require_non_blank_qbo_id` strips before
+    # testing, so both die here; see base/id_validation.py for why this lives on
+    # the schema and why `sync_token` is deliberately left alone.
+    _coerce_id = field_validator("id", mode="before")(require_non_blank_qbo_id)
 
 
 class QboVendorCreditResponse(BaseModel):

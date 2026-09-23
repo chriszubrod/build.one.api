@@ -86,14 +86,10 @@ class QboPhysicalAddressUpdate(BaseModel):
     )
 
 
-class QboPhysicalAddressSyncRequest(BaseModel):
-    access_token: str = Field(
-        description="QBO OAuth access token.",
-    )
-    realm_id: str = Field(
-        description="QBO company realm ID.",
-    )
-    address_id: Optional[str] = Field(
-        default=None,
-        description="Optional ID to use for the address record (defaults to realm_id if not provided).",
-    )
+# QboPhysicalAddressSyncRequest DELETED with the /sync route it served (U-519
+# fix round 2). Its `address_id` was a caller-controlled LOCAL upsert key over an
+# unscoped lookup, not a remote selector; see the note in api/router.py. Its
+# `access_token` was separately a required field the service documents as ignored
+# ("QboHttpClient resolves and refreshes the token lazily"), i.e. an OpenAPI
+# contract instructing callers to put a live OAuth bearer token in a request body
+# for no reason — that surface goes away with the model.

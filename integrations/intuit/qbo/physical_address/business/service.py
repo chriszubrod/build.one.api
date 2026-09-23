@@ -106,37 +106,40 @@ class QboPhysicalAddressService:
             return self.repo.delete_by_id(id=id)
         return None
 
-    def sync_from_qbo(
-        self,
-        *,
-        realm_id: str,
-        qbo_id: Optional[str] = None,
-        access_token: Optional[str] = None,
-    ) -> QboPhysicalAddress:
+    def sync_from_qbo(self, *, realm_id: str) -> QboPhysicalAddress:
         """
-        Fetch a QBO physical address from QBO CompanyInfo API and store locally.
-        Uses upsert pattern: creates if not exists, updates if exists.
+        Fetch this realm's physical address from QBO CompanyInfo and upsert it.
 
-        Args:
-            realm_id: QBO company realm ID
-            qbo_id: Optional QBO ID to use for the address record
-                    (defaults to realm_id if not provided)
-            access_token: Deprecated — kept for backward compatibility with the
-                          public API route. QboHttpClient resolves and refreshes
-                          the token lazily via the auth service, so this value
-                          is ignored.
+        The record is keyed on `realm_id` and NOTHING ELSE. The `qbo_id` and
+        `access_token` parameters were removed in U-519 fix round 2:
+
+        * `qbo_id` was never a remote selector — `get_physical_address(qbo_id)`
+          ignores it and always returns the realm's own CompanyInfo address. It
+          was purely the LOCAL upsert key, fed straight from a request body into
+          `read_by_qbo_id`, whose sproc has no realm or ownership predicate. That
+          let one authenticated call overwrite any party's staged address (the
+          keyspace is guessable: `{customer.id}_bill`, `{vendor.id}_bill`). The
+          parameter is gone rather than merely unused, so the primitive cannot be
+          reached by adding a caller back.
+        * `access_token` was documented as ignored — QboHttpClient resolves and
+          refreshes the token lazily via the auth service.
+
+        This method currently has NO production caller: the `/sync` route that was
+        its only one is deleted. It is retained because it is the exercised entry
+        point for the BINARY(8) row_version fix (bug 2) and will be removed with
+        `qbo.PhysicalAddress` itself at the U-506 staging-sunset endpoint.
 
         Returns:
             QboPhysicalAddress: The synced address record
         """
         with QboPhysicalAddressClient(realm_id=realm_id) as client:
-            qbo_address = client.get_physical_address(qbo_id=qbo_id)
+            qbo_address = client.get_physical_address()
             
             if not qbo_address:
                 raise ValueError("No PhysicalAddress found in CompanyInfo response")
             
-            # Use realm_id as the ID if not provided
-            record_id = qbo_id or realm_id
+            # Keyed on the realm, never on caller input. See the docstring.
+            record_id = realm_id
             
             # Check if record already exists
             existing = self.read_by_qbo_id(qbo_id=record_id)
@@ -146,7 +149,7 @@ class QboPhysicalAddressService:
                 logger.info(f"Updating existing QBO physical address with QBO ID: {record_id}")
                 return self.repo.update_by_id(
                     id=existing.id,
-                    row_version=existing.row_version,
+                    row_version=existing.row_version_bytes,
                     qbo_id=record_id,
                     realm_id=realm_id,
                     line1=qbo_address.line1,

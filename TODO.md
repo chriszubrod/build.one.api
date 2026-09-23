@@ -2,6 +2,34 @@
 
 Carry-over items from sessions. Check off as done; prune anything stale.
 
+## U-520 Pass-2 judgements — recorded so they are not re-litigated (2026-09-23)
+
+- [ ] 🟢 **Considered and REJECTED: extracting a shared helper from `_build_attachment_payload` (Bill/BLA) and `_build_expense_attachment_payload` (Expense/ELIA).** They are ~25 near-identical lines differing in exactly four things: the child-link method (`read_by_bill_line_item_id` vs `read_by_expense_line_item_id`), the default filename (`bill.pdf` vs `expense.pdf`), the log key (`bill_public_id=` vs `expense_public_id=`), and the parameter names. A behaviour-preserving extraction needs a `resolve_link` callable + `default_filename` + `log_key` + `entity_public_id` — roughly six parameters of indirection to remove one copy of twenty-five lines, in a P0-surface file, paying greppability for it. **The reason it is safe to leave duplicated is specific and load-bearing: every guard in these two functions is mutation-covered IN PAIRS** — m1/m5 (enqueue must not download), m10/m14 (first-PDF-wins ordering), m15/m15b (skip an attachment with no `blob_url`), m4 (PDF-only guard, both). A change applied to one twin and not the other goes RED. ⚠️ **If anyone deletes one of a pair, the argument for leaving this duplicated collapses** — either restore the pair or do the extraction. The divergence risk is real and already nearly materialised: U-520's first build brief covered only the Bill twin, and mutation m5 exists precisely because the Expense twin was almost left behind.
+- [ ] 🟢 **Enqueue-side N+1 is NOT worth its own unit.** `_build_attachment_payload` still walks line items with `read_by_bill_line_item_id()` then `read_by_id()` — two DB round trips per line item until one has an attachment. U-520 moved the blob download, the base64 and the multi-MB `ms.Outbox.Payload` write off the request path but **left this loop in place** (the EM's Gate-1 note claiming the N+1 also moved was over-stated). In practice this is 2 calls, not N, because this codebase writes **one BLI per vendor invoice** ([[feedback_one_bli_per_vendor_invoice]]). Fold it into any future work on that function rather than booking a unit for it; a batch `read_by_bill_id` on the BLA service would be the shape if the one-BLI convention ever changes.
+- ✅ **Altitude reviewed and the existing decision upheld:** the payload stores `blob_url` rather than an attachment identifier. Resolving from an id server-side at drain was considered and rejected correctly — the stored `blob_url` is *itself* client-settable at `/create/attachment`, so re-resolution returns the same attacker-chosen value. The trust boundary is the **write**, not the drain. See the security booking directly below.
+
+## 🔴 SECURITY — client-supplied `blob_url` lets an authenticated user mail themselves ANY blob in the storage account (found 2026-09-23, U-520 Pass-3 cross-session)
+
+> ⚠️ **PRE-EXISTING — NOT introduced by U-520.** Verified: `git show HEAD:entities/review/business/notification_service.py` already had `storage.download_file(attachment.blob_url)` at `:681`/`:726` with `b64encode` at `:692`/`:739`. The same caller-influenced URL already reached the same function and the same bytes already left as a Graph mail attachment. U-520 moved *when* the fetch happens (enqueue → drain), not *what* is fetched or who controls it. **Do not sequence the fix as if U-520 caused it.**
+
+**The chain** (each link verified by reading, not inferred):
+1. `entities/attachment/api/router.py:68` — `POST /create/attachment` takes `"blob_url": body.blob_url` **straight from the request body**, gated only by `require_module_api(Modules.ATTACHMENTS, "can_create")` — a module permission, **not** admin. Same at `:201` for `/update/attachment`.
+2. `entities/review/business/notification_service.py` copies `attachment.blob_url` into the outbox payload.
+3. `integrations/ms/outbox/business/worker.py` `_resolve_send_mail_attachment` → `_fetch_blob(blob_url)`.
+4. `shared/storage.py:244-247` — `download_file` does `container, blob_name = self._parse_blob_url(blob_url)` then `_build_url(...)`. **The HOST is rebuilt from config**, so this is **NOT SSRF** to an arbitrary endpoint — but `container` and `blob_name` are parsed from the **caller-supplied URL** (`urlparse` + path split), so the caller chooses **which blob inside the configured storage account** is read.
+5. Those bytes are base64'd and attached to an **outbound** Graph mail.
+
+**Bounded claim:** an authenticated user with `ATTACHMENTS.can_create` sets an Attachment's `blob_url` to any container/blob in the configured account, links it to a bill line item, submits for review → that blob's contents are emailed out. **Arbitrary-blob-read-to-exfil within the account, not SSRF.** Threat model is insider / compromised account on a small trusted team — not internet-facing — which bounds urgency but not scope: whatever else shares that storage account is in range.
+
+**⛔ THE OBVIOUS FIX DOES NOT WORK.** Carrying the Attachment ID and re-resolving `blob_url` server-side at drain time was proposed and **refuted**: the stored `blob_url` is *itself* attacker-set at create/update, so re-resolution returns the same attacker-chosen value. **The trust boundary is the WRITE, not the drain.**
+
+**Correct fix:** `/upload/attachment` (`router.py:362`, `:446`) already derives `blob_url` **server-side** from `storage.upload_file(...)` — that is the legitimate path and the one every real consumer uses. So:
+- **`POST /create/attachment` has ZERO callers** across api, web and mcp → delete it (same remedy as U-519's unused `/physical-address/sync`), or at minimum stop accepting `blob_url` from the body.
+- **`/update/attachment`** presumably does have callers → drop `blob_url` from the updatable field set, or validate container + path prefix against config.
+
+**Provenance:** surfaced by the `qbo-sunset` session's Pass-3, whose two reviewers split — one had the storage layer right and the provenance wrong ("blob_url originates from server-set dbo.Attachment.blob_url" — false, see :68), the other had provenance right but had not read `download_file`. The bounded claim required refusing both. Ownership handed to this session by agreement; `qbo-sunset` will not book a duplicate.
+
+**STATUS: awaiting triage from Chris — book vs. treat as urgent. Not started.** Same class as the `TaxpayerService` plaintext-TIN P0 already booked below: a body field trusted as a row key / resource selector with module-level auth only.
 ## Family-11 follow-ups (U-497 … U-502) — ALL SHIPPED 2026-09-21/22
 
 Folded in from `docs/operations/u497_family11_followups.md` (now deleted); that file existed only because this one was held uncommitted by a parallel session for the whole of the work. All six shipped, deployed and verified live. Kept here for the findings, not the status.
@@ -4911,3 +4939,265 @@ Verifying the apply surfaced two adjacent defects, both measured on prod that da
   3. Should run on comment-stripped text, asserted per-sproc. Left as-is by U-484
   deliberately — retightening it is its own unit, since the pins guard row scoping and
   a botched rewrite would silently stop guarding it.
+
+
+## Multi-document display — a vendor can hold MORE THAN ONE current business/contractor license (booked 2026-09-18, Vendor Agent session)
+
+The compliance dashboard surfaces **one** BusinessLicense and **one** ContractorsLicense per vendor, but
+vendors legitimately hold several concurrent ones issued by different jurisdictions. The data layer
+already stores them all (`VendorId` is many-per-vendor on both tables); only the read/display collapses
+them, so a real, current license silently does not appear.
+
+**Live evidence (both ingested this session, both correct):**
+- **Ronald Servidio Construction LLC** (dbo 796) — **two** business licenses, both expiring `2027-05-15`:
+  BL **25** City of Franklin `2027 128667`, BL **26** Williamson County `1001200351`. City *and* county,
+  as is normal for a TN contractor working across jurisdictions.
+- **Scales Electric, LLC** (dbo 1195) — **two** contractor licenses: CL **1** TN State `49103` (CE,
+  exp `2027-07-31`) and CL **2** Metro Nashville/Davidson `DC328` (exp `2027-03-31`).
+
+- [ ] 🟡 **API half — `resolve_current_business_license` / `resolve_current_contractors_license`
+  (`entities/vendor_compliance/business/read_helpers.py`) each return a SINGLE row.** They should return
+  the full set of currently-valid licenses (keyed by issuing authority / jurisdiction), the way
+  **U-116 already solved this for COI**: that migration replaced a single doc-level record with a
+  per-coverage *map* (`coverage_resolver.resolve_coverage_map`) precisely because one row could not
+  represent GL *and* WC. BL/CL need the analogous shape — a list/map per authority, with a worst-of
+  rollup for the compliant flag. Until then a vendor missing its *county* license while holding its
+  *city* one reads as compliant (or vice versa) depending on which row wins.
+- [ ] 🟡 **Web half — the dashboard BL/CL cards render one slot each.** Needs to render N, labelled by
+  issuing authority. Book in `build.one.web/TODO.md` when the API shape lands.
+- [ ] 🟢 **Related gap surfaced the same session: `dbo.ContractorsLicense` has no monetary-limit field.**
+  A TN contractor licence carries a dollar cap that is load-bearing for what work the sub may legally
+  take: Scales Electric is `$240,000.00; CE`, Siteworks is `UNLIMITED; BC-26; BC-A; LMC`. Both are
+  currently jammed into the free-text `Classification` column. Same story on WC limits — the
+  `VendorInsurancePolicy` table has only `EachOccurrence`/`Aggregate` but an ACORD WC row carries THREE
+  E.L. figures (each-accident / disease-per-employee / disease-policy-limit), so one is always dropped;
+  **161 of 167 WC rows carry no limits at all**, and several that do (the `25,000` values on certs 82/83)
+  are EPLI figures mis-assigned by `coi_parser`, not real WC limits.
+
+## 🔴 P0 SECURITY — `TaxpayerService.update_by_public_id` writes the TIN back in PLAINTEXT (found 2026-09-19, Vendor Agent session)
+
+**Any update to a `dbo.Taxpayer` that does not itself pass `taxpayer_id_number` silently decrypts
+that taxpayer's SSN/EIN to plaintext at rest.** Encryption-at-rest is defeated by an ordinary
+field edit (renaming the entity, setting a classification, marking a W-9 signed).
+
+`entities/taxpayer/business/service.py:137-183` — fetch-then-merge over a model whose TIN was
+already decrypted on read:
+
+```python
+existing = self.read_by_public_id(public_id=public_id)   # ← .taxpayer_id_number is DECRYPTED here
+...
+if taxpayer_id_number is not None:                        # ← caller omitted it, so this is SKIPPED
+    if taxpayer_id_number != existing.taxpayer_id_number:
+        existing.taxpayer_id_number = encrypt_sensitive_data(taxpayer_id_number)
+...
+updated = self.repo.update_by_id(existing)                # ← writes the PLAINTEXT straight back
+```
+
+There is a second, narrower leg of the same bug: when the caller DOES pass a TIN equal to the
+stored one, `taxpayer_id_number != existing.taxpayer_id_number` is False (both plaintext), the
+re-encrypt is skipped, and plaintext is written again. **So the service cannot repair its own
+damage** — a direct SQL re-encrypt is required.
+
+**It is self-revealing but only after the fact:** the very next `update` or `read` throws
+`EncryptionError: Failed to decrypt sensitive data.` (Fernet `InvalidToken` — 9 chars is not
+valid base64), so the record becomes unreadable through the service while sitting exposed in
+the table.
+
+**Observed in prod, twice.** A survey of all 59 live taxpayers (`LEN(TaxpayerIdNumber) < 60`;
+ciphertext is 100 chars, a bare TIN is 9) found exactly two:
+- **Id 25 `Angel Ivan Najera Ojeda`** — INDIVIDUAL_SOLE_PROPRIETOR, so an **SSN in the clear
+  since `ModifiedDatetime` 2026-07-22**, undetected for ~2 months.
+- **Id 47 `GM Construction Services, LLC`** — EIN, caused during this session's W-9 ingest.
+
+Both were re-encrypted 2026-09-19 via direct SQL guarded on `TaxpayerIdNumber` being all-digits
+AND `blind_index(plain) == TaxpayerIdNumberHash`; both verified to decrypt and re-hash correctly;
+`remaining plaintext TINs: 0`. `TaxpayerIdNumberHash` was never corrupted (the sproc NULL-preserves
+it), so the blind index kept working throughout — which is exactly why nothing flagged it.
+
+**Fix:** never round-trip the decrypted TIN through the update path. Either (a) have the repo /
+sproc NULL-preserve `TaxpayerIdNumber` and stop assigning it on the no-change path, or (b) keep
+the ciphertext on the model and decrypt only into a separate read-only field. Add a regression
+test that updates a non-TIN field and asserts the stored column still decrypts. Consider a
+scheduled sentinel that alerts on `LEN(TaxpayerIdNumber) < 60`.
+
+Related: the same fetch-then-merge shape in `entities/vendor/business/service.py` is safe only
+because no Vendor column is encrypted — audit any other entity that decrypts on read.
+
+## W-9 parser (`w9_parser`) — three defects, measured across 4 live ingests (booked 2026-09-19, Vendor Agent session)
+
+Every W-9 ingested this session needed its stored values supplied by hand from a visual read. The
+parser's `extract()` output was used for **nothing** except `taxpayer_id_last4` and `is_signed`.
+
+**Defect 1 — `classification` looks hard-wired to `"LLC"`.** It returned `"LLC"` on **4 of 4**
+W-9s, and was right only on the one vendor that happens to be an LLC:
+
+| Vendor | Box actually checked on line 3a | Parser said |
+|---|---|---|
+| SledgeCraft Inc. | S corporation | `LLC` ❌ |
+| GM Construction Services, LLC | LLC (code blank) | `LLC` ✅ (coincidence) |
+| Ferguson US Holdings, Inc | **C corporation** | `LLC` ❌ |
+| StoneCraft Fabricators, Inc. | S corporation | `LLC` ❌ |
+
+A constant is the likeliest explanation — 4/4 identical on four different forms, two of which don't
+even have the LLC box checked. Whatever reads line 3a is not reading the checkbox state. This is
+**not cosmetic**: classification drives 1099 treatment (corps generally not reportable,
+disregarded/sole-prop are), and it writes straight into `dbo.Taxpayer.Classification`.
+
+**Defect 2 — `entity_name` is ALWAYS null.** 4 of 4, every one self-reported as
+`unresolved: ["entity_name"]`. W-9 **line 1 is the IRS-required legal name** and the field the TIN
+must match — the single most important value on the form. `business_name` (line 2) is populated
+inconsistently and sometimes holds the line-1 value instead (SledgeCraft), i.e. the two lines are
+being conflated rather than one simply being missed. Ferguson is the case that shows why it matters:
+line 1 is `Ferguson US Holdings, Inc` (EIN 54-1473338) while line 2 is
+`FERGUSON ENTERPRISES, LLC (FEIN 54-1211771)` — two different entities and two different EINs, and
+the parser returned only the line-2 one.
+
+**Defect 3 — `signature_date` can come back WRONG rather than null (the dangerous one).**
+StoneCraft's handwritten date is **07/22/2026**; the parser returned **`2026-07-12`**, with the same
+`confidence: 0.6667` and `unresolved: ["entity_name"]` as every other run — nothing flagged the date.
+Contrast defects 1 and 2, which are at least null-or-constant and so detectable. A plausible
+off-by-ten on a date is silently wrong. (GM `2026-06-08` and Ferguson `2026-01-05` were both correct,
+so this is intermittent and likely specific to handwritten dates.)
+
+**Notes for whoever fixes it:** `confidence` was `0.6667` on every single run regardless of how much
+was wrong, so it carries no signal and must not be used as an ingest gate. `taxpayer_id_last4` was
+correct 4/4 and `is_signed` correct 4/4 — those two are the only trustworthy outputs today.
+
+**Fix direction:** per [[feedback_di_as_sensor]] DI is a sensor, not a classifier — the checkbox
+grid on line 3a and the line-1/line-2 split should be resolved by the agent reading the layout, not
+by whatever currently produces a constant. Add a regression fixture per classification
+(individual/C/S/partnership/trust/LLC) asserting line 1, line 2 and the checked box independently.
+Until then, **every W-9 ingest must be visually verified before the values are written** — the
+`extract()` output is not safe to pass through to `ingest()`.
+
+Sibling, still unbooked: the **COI parser** (`coi_parser`) has its own recurring WC defects — carrier
+defaulting to Insurer A instead of following the `INSR LTR` column, dropped E.L. limits, and
+multiple WC policy numbers concatenated into one string (Ferguson cert 21802538 returned
+`"WLR C72808162 (AOS) WLR C72808150 (OR) SCF C72808174 (WI)"` as a single `policy_number` with a
+null carrier). See also the EPLI-mis-assignment note above at line ~4929.
+
+## Follow-ups from the 2026-09-19 Vendor Agent session
+
+- [ ] **`Vendor1099 = True` in QBO with no `Taxpayer` in dbo — 281 vendors.** Owner will review the
+  flag in QBO directly (noted 2026-09-19); parked here so it isn't lost. Query used:
+  `SELECT COUNT(*) FROM dbo.Vendor v JOIN qbo.Vendor q ON q.QboId = v.QboId
+   WHERE v.IsDeleted=0 AND v.TaxpayerId IS NULL AND q.Vendor1099 = 1`.
+  Each of these is a vendor QBO believes is 1099-reportable while we hold no W-9 and no TIN, so a
+  correct 1099 cannot be issued and backup-withholding exposure is unassessed. Worth a pass before
+  year-end. Largest single example found: **Kenny & Company (dbo 507 / QBO 183)** — 126 bills,
+  **$717,373.85** since 2022-04, `Vendor1099=True`, no TaxIdentifier in QBO and no Taxpayer in dbo.
+
+- [ ] **`dbo.Bill.QboId` can point at a QBO bill that does not exist.** `dbo.Bill` 17777
+  (Kenny `12626-99`, $356.48) carries `QboId = '68612'`, but `GET bill/68612` returns
+  **Object Not Found**; the live bill with that DocNumber is **68746**. So the stored cross-system
+  key is stale — the bill was presumably deleted and re-created in QBO, and nothing re-pointed dbo.
+  Impact: any reconcile that joins on `dbo.Bill.QboId` silently misses this bill, and
+  [[reference_vendor_statement_reconciliation]] §5b names `QboId` as *the* reliable cross-system key.
+  Worth a sweep: for every `dbo.Bill` with a non-null `QboId`, confirm the QBO object still exists
+  and its `DocNumber` matches `BillNumber`; re-point or clear the ones that don't.
+
+- [ ] **Kenny & Company name mismatch.** Vendor 507 / QBO 183 are both named `Kenny & Company`, but
+  the statement letterhead, remit-to and email domain are all **Kenny Pipe & Supply / Kenny Pipe
+  Supply, Inc** (`kennypipe.com`); the on-file contact is `@kennycompany.com`. "Kenny Pipe Supply,
+  Inc" carries the corporate suffix and "Kenny & Company" does not, which suggests the Inc is the
+  legal entity and our `Vendor.Name` is already the DBA — but there is **no W-9 on file** (no
+  Taxpayer, no document, no Box/SharePoint folder at all), so it cannot be confirmed. Requesting a
+  W-9 settles the name question and the 1099 gap above in one step.
+
+
+## U-503 — QBO bill-line connector derives `Price` wrongly (booked 2026-09-21, SSC2-05 run) 🔴 P0-surface (money/QBO)
+
+`integrations/intuit/qbo/bill/connector/bill_line_item/business/service.py:173` computes the
+customer-facing price on BOTH the create and update paths as:
+
+```python
+price = qbo_bill_line.unit_price * (Decimal('1') + qbo_bill_line.markup_percent / Decimal('100'))
+```
+
+Two independent defects in that one expression. Canonical helper already exists and is unused here:
+`shared/api/money.py::labor_price_two_shot` (U-203 closed three ContractLabor sites; this is the fourth).
+
+- [ ] 🔴 **Class B — `Quantity` is never applied. 53 rows, $11,515.49 aggregate drift, 20 projects.**
+  `Price` lands as a UNIT price: 49 of the 53 are exactly `round(Rate × (1+Markup))`. Example BLI 2501:
+  `qty=5, rate=35.00, markup=0.50` → stored `$52.50`, canonical `$262.50` (−$210.00). This is the
+  material half — it silently understates the client-billed price of any bill line with `qty ≠ 1`.
+- [ ] 🔴 **Class A — single-shot rounding. 175 rows, ±$0.01** (165 at −0.01, 10 at +0.01). Rounds once on
+  the UNROUNDED rate instead of two-shot. Example BLI 23861: `rate=23.1250, markup=0.5001` → single-shot
+  `23.125 × 1.5001 = 34.68981` → `34.69`; two-shot `round(23.13 × 1.5001, 2)` = **34.70**, which is what
+  QBO itself carries (`23.13 + 11.57`). First seen on SSC2-05 (2026-09-21).
+- [ ] 🟡 **Decide the canonical basis before fixing — it is NOT simply "use Amount".** For 35 of the 228
+  mismatched rows QBO's own `Amount ≠ round(qty × rate)` (e.g. BLI 2501 `Amount=183.75` where
+  `5 × 35 = 175`), so an `Amount`-based rule and a `qty × rate` rule disagree on real data. Pick one
+  deliberately and document why.
+- [ ] 🟡 **Backfill the 228 existing rows is a SEPARATE, /em-applied action** — not the builder's
+  (`feedback_builders_never_mutate_prod_data`). Measure again after the code fix; re-deriving `Price`
+  changes client-billed history, so it needs Chris's sign-off per project.
+
+**Why it stayed invisible:** `Price` feeds DETAILS col-N, the packet cover subtotal, and the Draw Request
+fee — all of which still FOOT internally, so a wrong `Price` shifts money between the subtotal and the
+derived fee without ever failing a total. Detection query: compare `Price` against
+`labor_price_two_shot(Quantity, Rate, Markup)` over `dbo.BillLineItem`.
+
+
+## U-504 — Trend renders $0.00 Builder's Fee on a coded draw when the project has no Contract (booked 2026-09-21, SSC2-05 run) 🔴 P0-surface (money)
+
+`entities/invoice/business/draw_financials.py::coded_draws_for_project` sets
+`builders_fee = subtotal × fee_rate`, and `fee_rate` is `None` whenever the project has no
+`dbo.Contract` row carrying a `BuildersFeeRate` (`router._resolve_builders_fee_rate` degrades to
+`None`). The fee cannot arrive by the other route either: a coded draw's rollup sums **source-linked**
+lines only, and the QBO fee line is `SourceType='Manual'`, so it is excluded. Net effect: the Trend
+column for the current draw understates by the entire fee.
+
+- [ ] 🔴 **Assert Draw Request total == Trend current-draw total at packet generation.** They are built
+  from different fee sources — the Draw Request uses `_draw_fee_from_invoice` (`invoice.total −
+  cover.subtotal`, invoice-derived) while the Trend uses the Contract rate — so they can disagree by the
+  whole fee with no error anywhere. On SSC2-05 page 1 read **$32,610.12** and page 2 read **$29,116.17**:
+  a $3,493.95 contradiction inside one client-facing PDF, `skipped=0`, no warning logged.
+- [ ] 🔴 **19 of the 23 projects with at least one coded draw have no fee rate** (only 4 of 139 projects
+  carry a Contract). Every one of them will render this way on its next packet.
+- [ ] 🟡 **Linking sources is what triggers it** — before Step 4 the draw is all-Manual and rolls up via
+  `_qbo_derived_draw`, which reads the QBO Item ref and DOES show the fee under cost code 90. Applying
+  source links flips it to the coded path and drops the fee. So the packet gets *worse* at exactly the
+  step that is supposed to make it correct.
+- [ ] 🟡 **Historical columns are affected too.** SSC2-03/-04 were understating by $9,069.65 / $9,050.72
+  until a Contract was created 2026-09-18; adding it made both reconcile to their live QBO totals to the
+  cent ($84,650.10 / $84,473.39), which is what confirmed the 12% rate. `_qbo_derived_draw` hardcodes
+  `builders_fee = 0` and is correctly NOT affected (a historical billed total already embeds its fee).
+
+**Workaround applied for SSC2 only:** `dbo.Contract` id=4, project 79, rate 0.12.
+
+### U-503 spillover — findings raised during the build, deliberately NOT fixed in it
+
+- [ ] 🔴 **Extract shot 2 of the two-shot policy as `price_from_cost(cost, markup)` in `shared/api/money.py`
+  — this is the fix that retires the bug class.** Pass-2 altitude lens, corroborated by the reuse lens.
+  `labor_price_two_shot` assumes the caller derives cost from `hours × rate`, so every site that already
+  HOLDS a cost basis (a QBO extended `Amount`, an SCC-group subtotal, a client-sent `Amount`) cannot call
+  it and hand-rolls the tail instead. Four sites is not four mistakes — it is one abstraction with a
+  missing seam, hit four times. `labor_price_two_shot` then becomes
+  `price_from_cost(round_money(hours × rate), markup)`; U-503's connector helper becomes
+  `price_from_cost(amount, markup)`. Zero behavior change at every site. Also update CLAUDE.md, which
+  still reads "Third site closed (U-203)" and names only a `(hours, rate, markup)` helper that does not
+  fit an Amount-basis line — that doc line is half the reason the recurrence keeps happening.
+- [ ] 🟡 **`purchase/connector/expense_line_item` holds a divergent fifth copy.** It computes
+  `price = amount_val * (1 + markup)` — correct Amount basis, so NO quantity bug — but **unrounded**, and
+  with different None-semantics (markup absent → `price = amount`, not `None`). **Measured LATENT, not
+  live:** 0 of 1,443 `ExpenseLineItem` rows drift, because the `DECIMAL(18,2)` column rounds at write and
+  currently agrees with `round_money`. Adopt `price_from_cost` when it exists; do not "fix" it before then.
+- [ ] 🟡 **Cleared QBO markup leaves a stale marked-up `Price`** (Codex P1, round 1). If an operator
+  removes `MarkupInfo` from a line that had it, the connector yields `price=None` and
+  `entities/bill_line_item/business/service.py`'s `if price is not None` guard preserves the OLD
+  marked-up price forever. **Pre-existing** — the old connector returned `None` the same way — so U-503
+  neither introduces nor worsens it; Codex agreed the deferral is defensible. Fixing it needs an
+  authoritative-sync clear path through both the service and the staging sproc; do NOT globally change
+  PATCH NULL semantics.
+- [ ] 🟡 **Unbounded `Amount × MarkupPercent` can raise `decimal.InvalidOperation` and fail a bill pull**
+  (security pass, MEDIUM). Both operands clear the external schema and the `DECIMAL(18,*)` staging
+  columns, and `round_money(...).quantize()` exhausts the default Decimal context. NEW exposure for
+  **account-based** lines specifically: they carry no `UnitPrice`, so the old code computed no price for
+  them at all. Failure is loud (the bill projection raises, watermark holds, retries) rather than silent
+  wrong money, which is why it is booked not blocked. Fix = validate the product against the destination
+  `Price DECIMAL(18,2)` range and quarantine the line.
+- [ ] 🔴 **Backfill the 228 mis-priced `BillLineItem` rows — needs Chris's per-project sign-off.**
+  53 rows materially wrong (quantity dropped; $11,515.49 across 20 projects) + 175 off by a cent.
+  Re-deriving `Price` rewrites client-billed history, so this is an /em-applied action, never a builder's.
+  Detection: compare `Price` to `labor_price_two_shot(Quantity, Rate, Markup)` over `dbo.BillLineItem`.

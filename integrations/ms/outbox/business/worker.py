@@ -1,4 +1,5 @@
 # Python Standard Library Imports
+import base64
 import json
 import logging
 from datetime import datetime, timedelta, timezone
@@ -10,7 +11,7 @@ from integrations.ms.base.correlation import (
     idempotency_key_context,
     set_correlation_id,
 )
-from integrations.ms.base.errors import MsGraphError, MsServerError
+from integrations.ms.base.errors import MsGraphError, MsNotFoundError, MsServerError
 from integrations.ms.base.locking import ms_app_lock
 from integrations.ms.base.logger import get_ms_logger
 from integrations.ms.base.retry import RetryPolicy, compute_backoff_seconds
@@ -714,14 +715,36 @@ class MsOutboxWorker:
             "subject":       "...",
             "body":          "<p>...</p>",
             "body_type":     "HTML" | "Text",
-            "attachment":    {"name": ..., "content_type": ..., "content_bytes": "<base64>"} | None,
+            "attachment":    legacy {name, content_type, content_bytes} |
+                             reference {name, content_type, blob_url} |
+                             None,
             "mode":          "draft" | "send",
             "review_id":     <int>,
             "bill_id":       <int>
           }
 
+        Attachment shapes are detected by key presence (``"content_bytes"
+        in attachment``, including the empty string ``b64encode(b"")``
+        produces — not truthiness, and not a version flag). The legacy
+        branch is cheap insurance for the one cancelled send_mail row that
+        still carries embedded base64. It is not covering in-flight
+        pending/in_progress rows: prod has none, and this worker ships in
+        the same image as enqueue (the scheduler drain is a timer POSTing
+        ``/admin/outbox/drain/ms``).
+
+        A reference fetch either succeeds or the row retries / dead-letters
+        — this handler does not call Graph with an unresolved reference.
+        That is not the same as "the reviewer always gets a PDF":
+        ``create_draft`` currently logs and swallows a non-201 from
+        ``add_attachment_to_message`` and still returns 201 (pre-existing,
+        ``integrations/ms/mail/external/client.py``). A 404 blob miss
+        dead-letters on attempt 1; other fetch failures retry across a
+        2–3 minute window (see ``_resolve_send_mail_attachment``).
+
         On success the worker stamps the resulting Graph message_id (for
-        drafts) back into the row's payload for audit traceability.
+        drafts) back into the row's payload for audit traceability. The
+        fetched bytes stay in a local; they are not written back onto
+        ``payload["attachment"]``.
         """
         from integrations.ms.mail.external.client import (
             create_draft,
@@ -751,6 +774,12 @@ class MsOutboxWorker:
             if mode != "draft":
                 raise ValueError("send_mail payload has no recipients on any line")
 
+        # Forward inherits the source message's attachments; a reference
+        # fetch here would be unused work. Resolve only for new-mail.
+        # Bind a local — do not assign onto payload["attachment"], or the
+        # success-path update_payload would persist fetched base64.
+        if attachment and not forward_message_id:
+            attachment = self._resolve_send_mail_attachment(attachment)
         attachments = [attachment] if attachment else None
 
         if forward_message_id:
@@ -925,6 +954,99 @@ class MsOutboxWorker:
                 raise MsAuthError(message, http_status=status_code)
             raise MsServerError(message, http_status=status_code)
         raise MsUnexpectedError(message, http_status=status_code)
+
+    @staticmethod
+    def _is_permanent_blob_miss(exc: BaseException) -> bool:
+        """True iff this fetch failure means the blob is gone (HTTP 404)."""
+        seen: set[int] = set()
+        current: Optional[BaseException] = exc
+        while current is not None and id(current) not in seen:
+            seen.add(id(current))
+            if getattr(current, "http_status", None) == 404:
+                return True
+            response = getattr(current, "response", None)
+            if response is not None and getattr(response, "status_code", None) == 404:
+                return True
+            # AzureBlobStorage.download_file wraps HTTPStatusError as
+            # AzureBlobStorageError("Failed to download blob: 404").
+            if type(current).__name__ == "AzureBlobStorageError":
+                if str(current).rstrip().endswith("404"):
+                    return True
+            current = current.__cause__ or current.__context__
+        return False
+
+    def _resolve_send_mail_attachment(
+        self, attachment: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """
+        Turn a send_mail payload attachment into Graph's
+        ``{name, content_type, content_bytes}`` (content_bytes already base64).
+
+        Detected by key presence, not truthiness: ``"content_bytes" in
+        attachment`` (including ``""`` from ``b64encode(b"")``) takes the
+        legacy path. The branch is cheap insurance for the cancelled
+        send_mail row that still carries embedded base64 — worker and
+        enqueue ship in the same image, and prod has no pending/
+        in_progress send_mail rows.
+
+          * legacy: ``content_bytes`` key present → return as-is; do not re-fetch.
+          * reference: ``blob_url`` present → ``_fetch_blob`` then base64.
+          * neither: ``ValueError``. ``_process_inner`` treats that as
+            unexpected and dead-letters on attempt 1 (no retry). Distinct
+            from the fetch-failure paths below.
+
+        A 404 / not-found from ``_fetch_blob`` is permanent (blob deleted):
+        raise non-retryable ``MsNotFoundError`` so the row dead-letters
+        and escalates on attempt 1. Any other fetch failure raises
+        retryable ``MsServerError`` (caught by ``_process_inner`` →
+        ``_handle_ms_error``). Backoff is ``RetryPolicy.for_writes()``
+        (1.0s base, ×2, full jitter → ~15s of sleep) across
+        ``MAX_ATTEMPTS`` (5). ``drain_once()`` processes one row per 30s
+        tick, so the total window is **2–3 minutes** before dead-letter.
+        A later tick can deliver a transient 503; it will not un-delete
+        a 404, and it will not outlast an Azure Storage incident that
+        covers the whole window.
+        """
+        if "content_bytes" in attachment:
+            return attachment
+        blob_url = attachment.get("blob_url")
+        if not blob_url:
+            raise ValueError(
+                "send_mail attachment has neither content_bytes nor blob_url"
+            )
+        try:
+            content = self._fetch_blob(blob_url)
+        except Exception as exc:
+            if self._is_permanent_blob_miss(exc):
+                logger.warning(
+                    "ms.outbox.send_mail.attachment_blob_not_found",
+                    extra={
+                        "event_name": "ms.outbox.send_mail.attachment_blob_not_found",
+                        "blob_url": blob_url,
+                        "error_class": type(exc).__name__,
+                    },
+                )
+                raise MsNotFoundError(
+                    f"send_mail attachment blob not found: {exc}",
+                    http_status=404,
+                ) from exc
+            logger.warning(
+                "ms.outbox.send_mail.attachment_fetch_failed",
+                extra={
+                    "event_name": "ms.outbox.send_mail.attachment_fetch_failed",
+                    "blob_url": blob_url,
+                    "error_class": type(exc).__name__,
+                },
+            )
+            raise MsServerError(
+                f"send_mail attachment fetch failed: {exc}",
+                http_status=503,
+            ) from exc
+        return {
+            "name": attachment.get("name") or "attachment.pdf",
+            "content_type": attachment.get("content_type") or "application/pdf",
+            "content_bytes": base64.b64encode(content).decode("ascii"),
+        }
 
     @staticmethod
     def _fetch_blob(blob_path: str) -> bytes:

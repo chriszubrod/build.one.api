@@ -1,5 +1,4 @@
 # Python Standard Library Imports
-import base64
 import html
 import logging
 from datetime import datetime
@@ -107,7 +106,6 @@ class ReviewNotificationService:
         from entities.vendor.business.service import VendorService
         from integrations.ms.outbox.business.service import MsOutboxService
         from shared.authz.context import system_authz
-        from shared.storage import AzureBlobStorage
 
         rows = ReviewRepository().resolve_review_recipients_by_expense_id(
             expense_id=expense.id,
@@ -196,7 +194,6 @@ class ReviewNotificationService:
             line_items=line_items,
             elia_service=ExpenseLineItemAttachmentService(),
             attachment_service=AttachmentService(),
-            storage=AzureBlobStorage(),
         )
 
         scc_ids = sorted({li.sub_cost_code_id for li in line_items if li.sub_cost_code_id})
@@ -333,7 +330,6 @@ class ReviewNotificationService:
         from entities.user.business.service import UserService
         from entities.vendor.business.service import VendorService
         from integrations.ms.outbox.business.service import MsOutboxService
-        from shared.storage import AzureBlobStorage
 
         # 1. Resolve recipients (PMs To, Owners Cc, invoice@ Bcc).
         envelope = ReviewRecipientService().resolve_for_bill(
@@ -432,7 +428,6 @@ class ReviewNotificationService:
             line_items=line_items,
             bla_service=BillLineItemAttachmentService(),
             attachment_service=AttachmentService(),
-            storage=AzureBlobStorage(),
         )
 
         # 4. Resolve line-item SubCostCode labels for the body table.
@@ -523,9 +518,9 @@ class ReviewNotificationService:
 
         Extracted from `_do_enqueue`'s step 7 in LS-01c′. It was the tail of a
         250-line method that first has to resolve recipients, build an HTML
-        body, base64 a PDF and enqueue an outbox row — so the status-resolution
-        and attribution rules below had no reachable test seam at all, which is
-        why both of the bugs they fix survived this long.
+        body, resolve a PDF attachment and enqueue an outbox row — so the
+        status-resolution and attribution rules below had no reachable test
+        seam at all, which is why both of the bugs they fix survived this long.
 
         Never raises: a failure here leaves the bill at "Submitted" with the
         notification already sent, which is recoverable by a human. Raising
@@ -653,13 +648,21 @@ class ReviewNotificationService:
         line_items,
         bla_service,
         attachment_service,
-        storage,
+        storage=None,
     ) -> Optional[dict]:
-        """Resolve the bill's primary PDF attachment + base64-encode its
-        blob bytes for the outbox payload. Returns None when no
-        attachment is linked, when the blob can't be downloaded, or when
-        the file isn't a PDF (defensive — bill create enforces PDF, but
-        legacy data may not)."""
+        """Resolve the bill's primary PDF attachment as an outbox *reference*.
+
+        Returns ``{"name", "content_type", "blob_url"}`` so the ``send_mail``
+        worker can fetch bytes at drain time. Does not download or base64-encode
+        the blob — that was the submit-button latency. Returns None when no
+        attachment is linked or when the file isn't a PDF (defensive — bill
+        create enforces PDF, but legacy data may not).
+
+        ``storage`` is accepted so tests can inject a double and assert it is
+        never called. Enqueue must not touch Azure Blob Storage. A linked
+        attachment with no ``blob_url`` is skipped — a ``blob_url: None``
+        reference would ValueError-dead-letter at drain on attempt 1.
+        """
         if not line_items:
             return None
         # Walk line items in DB order; first one with a BLA wins.
@@ -677,19 +680,10 @@ class ReviewNotificationService:
                     bill.public_id, attachment.public_id, attachment.content_type,
                 )
                 continue
-            try:
-                content_bytes, _meta = storage.download_file(attachment.blob_url)
-            except Exception as e:
-                logger.warning(
-                    "review_notification.attachment_download_failed bill_public_id=%s "
-                    "attachment_public_id=%s: %s",
-                    bill.public_id, attachment.public_id, e,
-                )
-                continue
             return {
-                "name":          attachment.filename or "bill.pdf",
-                "content_type":  attachment.content_type or "application/pdf",
-                "content_bytes": base64.b64encode(content_bytes).decode("ascii"),
+                "name":         attachment.filename or "bill.pdf",
+                "content_type": attachment.content_type or "application/pdf",
+                "blob_url":     attachment.blob_url,
             }
         return None
 
@@ -700,8 +694,15 @@ class ReviewNotificationService:
         line_items,
         elia_service,
         attachment_service,
-        storage,
+        storage=None,
     ) -> Optional[dict]:
+        """Resolve the expense's primary PDF attachment as an outbox *reference*.
+
+        Twin of ``_build_attachment_payload``: same PDF-only guard, same first-
+        linked-attachment-wins walk, same no-download contract, same skip of
+        attachments with no ``blob_url``. Returns None when no attachment is
+        linked or when the file isn't a PDF.
+        """
         if not line_items:
             return None
         for li in line_items:
@@ -722,21 +723,10 @@ class ReviewNotificationService:
                     attachment.content_type,
                 )
                 continue
-            try:
-                content_bytes, _meta = storage.download_file(attachment.blob_url)
-            except Exception as e:
-                logger.warning(
-                    "review_notification.attachment_download_failed expense_public_id=%s "
-                    "attachment_public_id=%s: %s",
-                    expense.public_id,
-                    attachment.public_id,
-                    e,
-                )
-                continue
             return {
-                "name": attachment.filename or "expense.pdf",
+                "name":         attachment.filename or "expense.pdf",
                 "content_type": attachment.content_type or "application/pdf",
-                "content_bytes": base64.b64encode(content_bytes).decode("ascii"),
+                "blob_url":     attachment.blob_url,
             }
         return None
 

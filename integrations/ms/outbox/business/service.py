@@ -511,11 +511,29 @@ class MsOutboxService:
         shaped `{"email": str, "name": Optional[str]}` matching the existing
         mail-client `_build_recipient_list` contract — passing `address`
         instead of `email` silently drops the destination, leaving only the
-        display name on the recipient line. `attachment`, when supplied,
-        carries `{"name": str, "content_type": str, "content_bytes": str}`
-        where `content_bytes` is **already base64-encoded** (Graph requires
-        base64; storing it pre-encoded keeps the JSON payload self-sufficient
-        and survives outbox retries without re-fetching the blob).
+        display name on the recipient line. `attachment`, when supplied, is
+        one of two shapes, detected by key presence (``"content_bytes" in
+        attachment``, including the empty string ``b64encode(b"")`` produces
+        — not truthiness, and not a version flag). The legacy branch is
+        cheap insurance for the one cancelled send_mail row that still
+        carries embedded base64. Worker and enqueue ship in the same
+        image (the scheduler drain is a timer POSTing
+        ``/admin/outbox/drain/ms``); prod has no pending/in_progress
+        send_mail rows to keep alive across a deploy.
+
+          * legacy: ``{"name", "content_type", "content_bytes"}`` where
+            ``content_bytes`` is already base64. The worker uses this as-is
+            and does not re-fetch the blob.
+          * reference (preferred): ``{"name", "content_type", "blob_url"}``
+            where ``blob_url`` is the Attachment entity's Azure blob path.
+            The ``send_mail`` worker fetches bytes at drain time via
+            ``_fetch_blob`` and base64-encodes them for Graph.
+
+        Graph still requires base64; that encoding now happens in the worker,
+        not at enqueue. Storing a reference keeps the outbox JSON small —
+        review-submit used to embed the whole PDF (measured up to 5.7 MB)
+        as NVARCHAR(MAX) on the request path, which is the latency the
+        submit button was paying.
 
         `mode` is "draft" (default) or "send" — the worker dispatches to
         `create_draft` or `send_message` respectively.

@@ -12,21 +12,60 @@
 -- renders) is the submitter; `CreatedByUserId` (the AUDIT SUBJECT) stays the
 -- pipeline. This script applies the same split to the rows already written.
 --
--- SCOPE. Only rows that are ALL of:
---   * ReviewKind = 'in_review'            (the auto-advance, not a human step)
---   * UserId     = the system actor       (written by the pipeline)
---   * have a resolvable submitter          (see the cycle rule below)
+-- PROD OUTCOME (2026-09-15, audited after apply). 21 rows re-attributed; ZERO
+-- misattributions found. 13 verified against `[ms].[Outbox]` `Kind='send_mail'`
+-- audit trail (`Payload.review_id` / `bill_id` linkage); 8 unambiguous because
+-- their parent bill has exactly one `submitted` row. `CreatedByUserId` stayed
+-- 33 (system actor) on all 21. There is no remaining population to repair.
+--
+-- SCOPE. Bill pipeline rows only (`BillId IS NOT NULL`). Only rows that are ALL of:
+--   * ReviewKind = 'in_review'            (frozen at insert — see dbo.review.sql)
+--   * UserId     = the system actor       (typical for pipeline auto-advance)
+--   * exactly ONE `submitted` row on the parent bill (see guard below)
+--   * a resolvable submitter for that lone `submitted` row
 -- Everything else is left alone. In particular this does NOT touch the 268
 -- other system-actor review rows — those are genuine agent work.
 --
--- THE CYCLE RULE. A review can cycle: submit -> decline -> submit again. The
--- submitter of a given In Review row is the author of the latest 'submitted'
--- row on the SAME parent at or before it — not simply the parent's first
--- submission, which would credit the wrong person after a resubmit.
+-- DO NOT reuse this script for Invoice. There is no bill-style notification
+-- pipeline for Invoice (only `_advance_to_in_review` on Bill and
+-- `_advance_expense_to_in_review` on Expense exist). The ~18 system-actor
+-- `in_review` Invoice rows were never written by this path; re-attributing
+-- them would be wrong.
+--
+-- INFERENCE vs FACT (read before copying this file). The submitter join below
+-- is TIMESTAMP PROXIMITY INFERENCE, not ground truth. The FACT is recorded in
+-- the same synchronous `ReviewNotificationService._do_enqueue` call: it enqueues
+-- `[ms].[Outbox]` `Kind='send_mail'` with `Payload.review_id` (and `bill_id`
+-- from ~2026-08-11 onward) for the `submitted` row, then calls
+-- `_advance_to_in_review`, which inserts the `in_review` row ~0.5–3.1 seconds
+-- later in the same HTTP request — not "after a resubmit cycle". Normal
+-- submit → decline → resubmit over minutes or days resolves correctly; the
+-- inference breaks only if a second `submitted` row on the same bill lands
+-- BETWEEN those two inserts in one request (vanishingly rare). Do NOT copy this
+-- inference into a new backfill without also requiring the outbox linkage
+-- (when payload fields exist).
+--
+-- GAP-2 HAZARD (documented; no hard outbox gate in this spent script). The
+-- candidate predicate `ReviewKind='in_review' AND UserId=@SystemActorId` also
+-- matches a genuine agent review action on an intermediate status: same
+-- `UserId=33`, same kind, and `CreatedByUserId=33` on both. There is no column
+-- on `dbo.Review` alone that separates them. The outbox `send_mail` row for
+-- the parent bill proves the pipeline wrote the row, but `review_id`/`bill_id`
+-- in JSON were only populated from ~2026-08-11 onward — older outbox rows carry
+-- nulls, so a hard NOT EXISTS outbox requirement would skip legitimate pipeline
+-- rows. This file therefore documents the hazard in the header rather than
+-- pretending a partial outbox filter is safe. New backfills must join outbox
+-- when payloads allow it, and treat unmatched system-actor `in_review` rows as
+-- manual review.
 --
 -- `CreatedByUserId` IS DELIBERATELY UNTOUCHED. It already records the pipeline,
 -- and that is the fact this migration exists to preserve: after it runs,
 -- "did a human move this or did the system?" is still answerable in SQL.
+--
+-- GUARDS (for safe re-run and safe copy-as-template).
+--   * Parent has more than one `submitted` row → SKIP and REPORT (never UPDATE).
+--     Only 1 of 408 bills ever had a resubmit cycle; none of the 21 prod rows
+--     needed this guard, but it blocks ambiguous inference on copy.
 --
 -- IDEMPOTENT. Re-running changes nothing once applied — the WHERE clause stops
 -- matching as soon as UserId is no longer the system actor.
@@ -56,6 +95,16 @@ BEGIN
     RETURN;
 END
 
+-- Parent bills with more than one submitted row: timestamp inference is unsafe.
+IF OBJECT_ID('tempdb..#u463_multi_submit') IS NOT NULL DROP TABLE #u463_multi_submit;
+SELECT s.[BillId]
+INTO #u463_multi_submit
+FROM dbo.[Review] s
+WHERE s.[ReviewKind] = N'submitted'
+  AND s.[BillId] IS NOT NULL
+GROUP BY s.[BillId]
+HAVING COUNT(*) > 1;
+
 -- Candidate rows plus the submitter that owns each one's cycle.
 IF OBJECT_ID('tempdb..#u463') IS NOT NULL DROP TABLE #u463;
 SELECT
@@ -81,11 +130,29 @@ WHERE r.[ReviewKind] = N'in_review'
 PRINT '--- U-463 backfill preview ---';
 SELECT
     COUNT(*)                                                       AS [candidates],
+    SUM(CASE WHEN EXISTS (
+              SELECT 1 FROM #u463_multi_submit m WHERE m.[BillId] = t.[BillId]
+          ) THEN 1 ELSE 0 END)                                     AS [multi_submit_skipped],
     SUM(CASE WHEN [SubmitterUserId] IS NULL THEN 1 ELSE 0 END)     AS [no_submitter_skipped],
     SUM(CASE WHEN [SubmitterUserId] = [CurrentUserId] THEN 1 ELSE 0 END) AS [already_correct],
     SUM(CASE WHEN [SubmitterUserId] IS NOT NULL
-              AND [SubmitterUserId] <> [CurrentUserId] THEN 1 ELSE 0 END) AS [would_update]
-FROM #u463;
+              AND [SubmitterUserId] <> [CurrentUserId]
+              AND NOT EXISTS (
+                  SELECT 1 FROM #u463_multi_submit m WHERE m.[BillId] = t.[BillId]
+              ) THEN 1 ELSE 0 END)                                 AS [would_update]
+FROM #u463 t;
+
+PRINT '--- U-463 multi-submit parents (inference skipped) ---';
+SELECT
+    t.[ReviewId],
+    t.[BillId],
+    t.[CreatedDatetime],
+    (SELECT COUNT(*)
+     FROM dbo.[Review] s
+     WHERE s.[BillId] = t.[BillId] AND s.[ReviewKind] = N'submitted') AS [submitted_row_count]
+FROM #u463 t
+WHERE EXISTS (SELECT 1 FROM #u463_multi_submit m WHERE m.[BillId] = t.[BillId])
+ORDER BY t.[BillId], t.[CreatedDatetime];
 
 -- Who the rows would move to, so the change is inspectable before it is made.
 SELECT
@@ -95,6 +162,7 @@ FROM #u463 t
 LEFT JOIN dbo.[User] u ON u.[Id] = t.[SubmitterUserId]
 LEFT JOIN dbo.[Auth] a ON a.[UserId] = u.[Id]
 WHERE t.[SubmitterUserId] IS NOT NULL AND t.[SubmitterUserId] <> t.[CurrentUserId]
+  AND NOT EXISTS (SELECT 1 FROM #u463_multi_submit m WHERE m.[BillId] = t.[BillId])
 GROUP BY ISNULL(a.[Username], CONCAT('user#', t.[SubmitterUserId]));
 
 IF @Apply = 1
@@ -106,6 +174,9 @@ BEGIN
     INNER JOIN #u463 t ON t.[ReviewId] = r.[Id]
     WHERE t.[SubmitterUserId] IS NOT NULL
       AND t.[SubmitterUserId] <> t.[CurrentUserId]
+      AND NOT EXISTS (
+          SELECT 1 FROM #u463_multi_submit m WHERE m.[BillId] = t.[BillId]
+      )
       -- Re-assert the guard at write time: #u463 was built earlier in this
       -- transaction, and a concurrent write could have moved the row since.
       AND r.[UserId] = @SystemActorId
@@ -117,3 +188,4 @@ ELSE
     PRINT 'U-463: PREVIEW ONLY — set @Apply = 1 to write.';
 
 DROP TABLE #u463;
+DROP TABLE #u463_multi_submit;

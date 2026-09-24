@@ -4,8 +4,9 @@ REFERENCE_ENTITY_SPECS) from existing qbo.* mapping + staging tables (U-238c).
 
 SAFE BY DEFAULT: dry-run unless --apply is passed. Dry-run is READ-ONLY (SELECTs
 only) and reports pre/post-flight counts plus row-level verification. --apply
-stamps identity via the Set*QboIdentity sprocs in batched loops — never writes to
-qbo.* tables except Address Stage 0 (qbo.PhysicalAddress.RealmId backfill).
+stamps identity via the Set*QboIdentity sprocs in batched loops — and never writes
+to qbo.* tables at all (U-534 removed the last exception, the Address Stage 0
+qbo.PhysicalAddress.RealmId backfill, ahead of that table being dropped).
 
 Usage:
   PYTHONPATH=. python scripts/backfill_qbo_identity_reference.py
@@ -34,49 +35,10 @@ logger = logging.getLogger("backfill_qbo_identity_reference")
 ENTITY_SPECS = {spec.key: spec for spec in REFERENCE_ENTITY_SPECS if spec.key != "bill_credit"}
 
 
-def parse_physical_address_parent_qbo_id(qbo_id: Optional[str]) -> Optional[str]:
-    """Strip trailing _bill/_ship suffix to recover parent QBO vendor/customer id."""
-    if not qbo_id:
-        return None
-    for suffix in ("_bill", "_ship"):
-        if qbo_id.endswith(suffix):
-            parent = qbo_id[: -len(suffix)]
-            return parent or None
-    return None
 
 
-def resolve_parent_realm_id(realm_ids: frozenset[str]) -> tuple[Optional[str], str]:
-    """Resolve qbo.PhysicalAddress.RealmId from parent lookup realm ids.
-
-    Accepts the union of distinct RealmId values from all matching qbo.Vendor and
-    qbo.Customer rows for the parsed parent QboId. Returns (realm_id_or_none, status)
-    where status is matched|unmatched|ambiguous.
-    """
-    if not realm_ids:
-        return None, "unmatched"
-    if len(realm_ids) > 1:
-        return None, "ambiguous"
-    return next(iter(realm_ids)), "matched"
 
 
-def _assert_physical_address_realm_id_column(cursor) -> None:
-    """Fail fast when staging DDL was not applied with the 238c companion file."""
-    cursor.execute(
-        """
-        SELECT 1
-        FROM sys.columns c
-        INNER JOIN sys.tables t ON t.object_id = c.object_id
-        INNER JOIN sys.schemas s ON s.schema_id = t.schema_id
-        WHERE s.name = 'qbo' AND t.name = 'PhysicalAddress' AND c.name = 'RealmId'
-        """
-    )
-    if not cursor.fetchone():
-        raise SystemExit(
-            "qbo.PhysicalAddress.RealmId column is missing. Re-apply "
-            "integrations/intuit/qbo/physical_address/sql/qbo.physical_address.sql "
-            "in the same SQL-first deploy step as scripts/migrations/238c_qbo_identity_reference.sql "
-            "before running Address backfill."
-        )
 
 
 def _stamp_via_sproc(
@@ -230,74 +192,6 @@ def _verify_entity(cursor, spec: FlatEntitySpec) -> bool:
     return match_ok and collision_ok
 
 
-def backfill_address_stage0(*, apply: bool) -> dict[str, int]:
-    """Backfill qbo.PhysicalAddress.RealmId for historical NULL rows (staging only)."""
-    print("\n--- Address Stage 0: qbo.PhysicalAddress.RealmId backfill (staging only) ---")
-    stats = {"matched": 0, "unmatched": 0, "ambiguous": 0, "would_apply": 0, "applied": 0}
-
-    with get_connection() as conn:
-        cur = conn.cursor()
-        _assert_physical_address_realm_id_column(cur)
-        cur.execute(
-            """
-            SELECT [Id], [QboId]
-            FROM qbo.[PhysicalAddress]
-            WHERE [RealmId] IS NULL AND [QboId] IS NOT NULL
-            ORDER BY [Id]
-            """
-        )
-        rows = cur.fetchall()
-        print(f"  -> {'WOULD update' if not apply else 'Updating'} up to {len(rows)} staging row(s)")
-
-        vendor_realm_lookup: dict[str, set[str]] = {}
-        cur.execute("SELECT [QboId], [RealmId] FROM qbo.[Vendor] WHERE [RealmId] IS NOT NULL")
-        for realm_row in cur.fetchall():
-            vendor_realm_lookup.setdefault(realm_row.QboId, set()).add(realm_row.RealmId)
-
-        customer_realm_lookup: dict[str, set[str]] = {}
-        cur.execute("SELECT [QboId], [RealmId] FROM qbo.[Customer] WHERE [RealmId] IS NOT NULL")
-        for realm_row in cur.fetchall():
-            customer_realm_lookup.setdefault(realm_row.QboId, set()).add(realm_row.RealmId)
-
-        for row in rows:
-            parent_id = parse_physical_address_parent_qbo_id(row.QboId)
-            if not parent_id:
-                stats["unmatched"] += 1
-                continue
-
-            vendor_realms = vendor_realm_lookup.get(parent_id, set())
-            customer_realms = customer_realm_lookup.get(parent_id, set())
-            parent_realms = frozenset(vendor_realms | customer_realms)
-            realm_id, status = resolve_parent_realm_id(parent_realms)
-            stats[status] += 1
-            if status != "matched" or not realm_id:
-                if status == "ambiguous":
-                    logger.error(
-                        "Address Stage 0 ambiguous parent for PhysicalAddress Id=%s QboId=%s "
-                        "(distinct parent realms=%s) — skipping",
-                        row.Id,
-                        row.QboId,
-                        sorted(parent_realms),
-                    )
-                continue
-
-            stats["would_apply"] += 1
-            if apply:
-                cur.execute(
-                    "UPDATE qbo.[PhysicalAddress] SET [RealmId] = ? WHERE [Id] = ?",
-                    (realm_id, row.Id),
-                )
-                stats["applied"] += 1
-
-        if apply and stats["applied"]:
-            conn.commit()
-
-    print(
-        f"  Stage 0 summary: matched={stats['matched']} unmatched={stats['unmatched']} "
-        f"ambiguous={stats['ambiguous']} "
-        f"{'applied' if apply else 'would_apply'}={stats['applied'] if apply else stats['would_apply']}"
-    )
-    return stats
 
 
 def backfill_entity(
@@ -307,8 +201,6 @@ def backfill_entity(
     batch_size: int,
     limit: Optional[int],
 ) -> bool:
-    if spec.key == "address":
-        backfill_address_stage0(apply=apply)
 
     with get_connection() as conn:
         cur = conn.cursor()

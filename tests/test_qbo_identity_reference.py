@@ -15,11 +15,7 @@ from integrations.intuit.qbo.base.identity_drift import REFERENCE_ENTITY_SPECS, 
 from integrations.intuit.qbo.physical_address.connector.business.service import PhysicalAddressAddressConnector
 from integrations.intuit.qbo.term.connector.payment_term.business.service import TermPaymentTermConnector
 from integrations.intuit.qbo.vendorcredit.connector.bill_credit.business.service import VendorCreditBillCreditConnector
-from scripts.backfill_qbo_identity_reference import (
-    main as backfill_main,
-    parse_physical_address_parent_qbo_id,
-    resolve_parent_realm_id,
-)
+from scripts.backfill_qbo_identity_reference import main as backfill_main
 
 
 @pytest.mark.parametrize(
@@ -79,32 +75,8 @@ def test_reference_entity_specs_topology(key, expected):
     assert spec.sproc == expected["sproc"]
 
 
-@pytest.mark.parametrize(
-    "qbo_id,expected",
-    [
-        ("42_bill", "42"),
-        ("99_ship", "99"),
-        ("plain", None),
-        (None, None),
-        ("", None),
-    ],
-)
-def test_parse_physical_address_parent_qbo_id(qbo_id, expected):
-    assert parse_physical_address_parent_qbo_id(qbo_id) == expected
 
 
-@pytest.mark.parametrize(
-    "realm_ids,expected_realm,expected_status",
-    [
-        (frozenset({"r1"}), "r1", "matched"),
-        (frozenset(), None, "unmatched"),
-        (frozenset({"r1", "r2"}), None, "ambiguous"),
-    ],
-)
-def test_resolve_parent_realm_id(realm_ids, expected_realm, expected_status):
-    realm, status = resolve_parent_realm_id(realm_ids)
-    assert realm == expected_realm
-    assert status == expected_status
 
 
 @pytest.mark.parametrize(

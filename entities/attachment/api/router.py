@@ -8,11 +8,11 @@ import uuid
 from typing import Optional
 
 # Third-party Imports
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, UploadFile, File, Form, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, UploadFile, File, Form
 from fastapi.responses import Response, StreamingResponse
 
 # Local Imports
-from entities.attachment.api.schemas import AttachmentCreate, AttachmentUpdate
+from entities.attachment.api.schemas import AttachmentUpdate
 from entities.attachment.business.service import AttachmentService
 from shared.api.responses import list_response, item_response, raise_not_found, raise_workflow_error
 from shared.lifecycle.terminal_lock import StatusLockedError
@@ -44,48 +44,6 @@ def _mark_attachment_pending_extraction(attachment_id: int) -> None:
         logger.warning(
             "upload.mark_pending_extraction_failed id=%s: %s", attachment_id, e
         )
-
-
-@router.post("/create/attachment")
-def create_attachment_router(body: AttachmentCreate, current_user: dict = Depends(require_module_api(Modules.ATTACHMENTS, "can_create"))):
-    """
-    Create a new attachment (metadata only, upload handled separately).
-    
-    Routes through the workflow engine for audit logging and state tracking.
-    """
-    context = TriggerContext(
-        trigger_type=EventType.API_CALL,
-        trigger_source=Channel.API,
-        tenant_id=current_user.get("tenant_id", 1),
-        user_id=current_user.get("id"),
-        payload={
-            "filename": body.filename,
-            "original_filename": body.original_filename,
-            "file_extension": body.file_extension,
-            "content_type": body.content_type,
-            "file_size": body.file_size,
-            "file_hash": body.file_hash,
-            "blob_url": body.blob_url,
-            "description": body.description,
-            "category": body.category,
-            "tags": body.tags,
-            "is_archived": body.is_archived or False,
-            "status": body.status,
-            "expiration_date": body.expiration_date,
-            "storage_tier": body.storage_tier or "Hot",
-        },
-        workflow_type="attachment_create",
-    )
-    
-    result = ProcessEngine().execute_synchronous(context)
-
-    if not result.get("success"):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=result.get("error", "Failed to create attachment")
-        )
-
-    return item_response(result.get("data"))
 
 
 @router.get("/get/attachments")
@@ -198,7 +156,6 @@ def update_attachment_by_public_id_router(
             "content_type": body.content_type,
             "file_size": body.file_size,
             "file_hash": body.file_hash,
-            "blob_url": body.blob_url,
             "description": body.description,
             "category": body.category,
             "tags": body.tags,

@@ -831,9 +831,11 @@ def _attachment_file_service(*, completed_bills=0, completed_expenses=0):
 def test_a_completed_expenses_evidence_file_cannot_be_touched(method, kwargs):
     """The link row was guarded; the FILE it points at was not.
 
-    A caller holding plain ATTACHMENTS permissions could repoint `blob_url` at
-    different bytes, rename it, or archive it — for the exact PDF the AP was
-    approved from — because the Bill-only COUNT returned zero.
+    Before U-528, a caller with plain ATTACHMENTS permissions could repoint
+    `blob_url` at different bytes (via generic attachment routes), rename it,
+    or archive it — for the exact PDF the AP was approved from — because the
+    Bill-only COUNT returned zero. U-528 closed the HTTP `blob_url` path; this
+    test still guards the service-layer file lock.
     """
     svc, patcher = _attachment_file_service(completed_expenses=1)
     try:

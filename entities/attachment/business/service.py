@@ -225,11 +225,14 @@ class AttachmentService:
 
         The lock already refused edits to the LINK row
         (BillLineItemAttachment / ExpenseLineItemAttachment). This is the file
-        that link points at — the PDF the AP was approved from — and it was
-        reachable through the generic attachment routes with nothing but
-        ATTACHMENTS permissions. Replacing its `blob_url`, renaming it,
-        archiving it or deleting it all change what our books can show without
-        changing what QBO, SharePoint, Excel and Box already received.
+        that link points at — the PDF the AP was approved from. Before U-528,
+        generic attachment HTTP routes (with only ATTACHMENTS permissions) could
+        still mutate identifying metadata on that file — e.g. rename it, archive
+        it, or delete it — changing what our books can show without changing
+        what QBO, SharePoint, Excel and Box already received. U-528 closed the
+        client `blob_url` repoint path on those routes; this guard still blocks
+        the remaining service-layer mutations (including internal `blob_url`
+        updates such as completion rename).
 
         Costs up to two COUNTs per attachment mutation. These are not hot
         paths — the only high-frequency writer is completion's own blob rename,

@@ -1,0 +1,42 @@
+-- ---------------------------------------------------------------------------
+-- U-527 (2026-09-23) — POINTER STUB. Body deliberately absent.
+--
+-- WHAT WAS APPLIED
+--   `ReadAssetDivergenceCheck` Set 1 gained one predicate:
+--       AND ISNULL(qa.[CurrentBalance], 0) <> 0
+--   so a $0 QBO fixed-asset account with no `Asset` row is no longer a
+--   divergence. Applied to prod 2026-09-23; Set 1 went 1 -> 0.
+--
+-- WHY the metric was redefined rather than the account excluded
+--   The QBO chart of accounts is upstream REFERENCE DATA: we read it, we do
+--   not control it, and we do not direct changes to it (Owner, 2026-09-23).
+--   Acct 273 `2015 GMC Sierra (VIN506874)` matched no asset, carried no value,
+--   and fitted neither permitted `AssetAccountExclusion` reason — so NO remedy
+--   was available to us, making "target 0, continuous" unsatisfiable rather
+--   than demanding. That is a metric design defect, not a books problem.
+--
+--   Self-healing, which is what makes it safe: any posting to such an account
+--   takes its balance non-zero and it re-enters Set 1. Verified non-vacuous on
+--   live data — 2 unmapped NON-ZERO accounts (300 at $110,933.31, 242 at
+--   -$2,662.14) still satisfy the chain and are suppressed only by their
+--   legitimate `leasehold-improvement` exclusions.
+--
+-- WHY THERE IS NO BODY HERE
+--   `tests/test_sproc_single_source.py::test_no_unledgered_duplicate_sprocs`
+--   (U-107) fails on any sproc defined in 2+ files: "single-source it in its
+--   canonical home; do NOT add a ledger entry … migrations carry pointer stubs
+--   only". A copy here would be a second source that silently reverts the base
+--   file if ever re-run. The guard caught exactly that and is right.
+--
+-- CANONICAL HOME
+--   entities/asset/sql/dbo.asset.sql  (CREATE OR ALTER, idempotent)
+--
+-- HOW IT WAS APPLIED (and must be re-applied)
+--   NOT by running the base file whole — it also contains 3 CREATE TABLE
+--   statements, which raise 2714 'already exists', and run_sql.py rolls a file
+--   back ATOMICALLY, so the sproc change would silently not land. Extract just
+--   this procedure's own definition block (from its CREATE-OR-ALTER header
+--   through the following batch separator) out of the canonical file into a
+--   scratch file, and apply that:
+--       ./.venv/bin/python scripts/run_sql.py <scratch>.sql     # from repo root
+-- ---------------------------------------------------------------------------

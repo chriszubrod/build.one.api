@@ -344,6 +344,54 @@ def test_asset_financing_note_has_no_company_id_column():
         assert "CompanyId" not in seg, f"{sproc} still references CompanyId"
 
 
+def test_divergence_set1_ignores_zero_balance_accounts_but_set3_still_uses_zero():
+    """U-527: a $0 fixed-asset account with no Asset is NOT a divergence.
+
+    WHY the metric was redefined rather than the account excluded: the QBO chart
+    of accounts is upstream REFERENCE DATA we read and do not control (Owner,
+    2026-09-23). An account matching no asset, carrying no value, and fitting
+    neither permitted exclusion reason had NO remedy available to us -- so
+    "target 0, continuous" was unsatisfiable, not demanding. That is a metric
+    design defect, not a books problem.
+
+    SELF-HEALING, which is what makes this safe: any posting to such an account
+    makes its balance non-zero and it re-enters Set 1. The drift Set 1 exists to
+    catch -- a machine bought or sold with nobody updating the register --
+    arrives WITH a cost balance.
+
+    Also pins that Set 3 was NOT collaterally changed: it legitimately looks for
+    a $0 balance (an ACTIVE asset whose account went to zero), which is the
+    opposite signal and must survive.
+    """
+    text = ASSET_SQL.read_text(encoding="utf-8")
+    d = text[text.index("ReadAssetDivergenceCheck"):]
+    set1 = d[: d.index("ORDER BY")]
+
+    assert "ISNULL(qa.[CurrentBalance], 0) <> 0" in set1, (
+        "Set 1 no longer skips $0 accounts. An account we cannot map, cannot "
+        "exclude and cannot change would make the primary metric permanently "
+        "non-zero with no action available to us."
+    )
+
+    # ANTI-VACUITY: the predicate must sit in Set 1's own WHERE, not merely
+    # somewhere in the file -- and Set 1 must still be the unmapped-account set.
+    assert "NOT EXISTS" in set1 and "dbo.[Asset]" in set1, (
+        "the slice asserted above is not Set 1; rewrite this test against the "
+        "new shape rather than letting it pass on the wrong block"
+    )
+
+    # Set 3 must STILL test for a zero balance -- opposite signal, must survive.
+    set3 = d[d.index("Set 3"):]
+    set3 = set3[: set3.index("ORDER BY")]
+    assert "[CurrentBalance] = 0" in set3, (
+        "Set 3 lost its zero-balance test; an active asset whose QBO account "
+        "went to $0 would stop being reported"
+    )
+    assert "ISNULL(qa.[CurrentBalance], 0) <> 0" not in set3, (
+        "the Set 1 predicate leaked into Set 3, inverting what Set 3 reports"
+    )
+
+
 def test_divergence_unmapped_set_counts_both_account_columns():
     """An account referenced as accumulated-depreciation is MAPPED, not unmapped.
 

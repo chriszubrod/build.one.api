@@ -665,6 +665,29 @@ BEGIN
     INNER JOIN dbo.[Company] co ON co.[Id] = @CompanyId AND qa.[RealmId] = co.[RealmId]
     WHERE qa.[AccountType] = N'Fixed Asset'
       AND ISNULL(qa.[Active], 1) = 1
+      -- U-527: a $0 account with no Asset is NOT a divergence.
+      --
+      -- The QBO chart of accounts is upstream REFERENCE DATA. We read it; we do
+      -- not control it and do not direct changes to it (Owner, 2026-09-23). So
+      -- an account that corresponds to no asset we own, carries no value, and is
+      -- not one of the two permitted exclusion reasons had NO remedy available
+      -- to us at all -- making "target 0, continuous" unsatisfiable rather than
+      -- demanding. Live example: acct 273 `2015 GMC Sierra (VIN506874)`, an empty
+      -- duplicate mis-subtyped AccumulatedAmortization, superseded by acct
+      -- 1150040025 which carries the real -$17,500 and is correctly linked.
+      --
+      -- This does NOT blind the check, because the condition is SELF-HEALING:
+      -- the moment any value posts to such an account its balance goes non-zero
+      -- and it re-enters Set 1. The drift this set exists to catch -- "a machine
+      -- was bought or sold and nobody updated the register" -- arrives WITH a
+      -- cost balance, so it is still caught. What is given up is the window
+      -- between an account being created at $0 and its first posting.
+      --
+      -- ISNULL is defensive, not load-bearing: 0 of 48 active fixed-asset
+      -- accounts carry a NULL balance today (measured 2026-09-23). Written this
+      -- way so a future NULL is treated as "no value" rather than silently
+      -- dropping the row through a NULL comparison.
+      AND ISNULL(qa.[CurrentBalance], 0) <> 0
       -- An account is MAPPED if an Asset references it through EITHER column.
       -- Testing only QboFixedAssetAccountId reported every accumulated-depreciation
       -- account as unmapped: 20 false positives on the first live run, which masked

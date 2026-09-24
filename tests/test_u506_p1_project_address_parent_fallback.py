@@ -149,6 +149,31 @@ class _FakeAddressConnector:
         return SimpleNamespace(id=_dbo_address_id(qbo_physical_address_id))
 
 
+HAND_SET_ADDRESS_ID = 777  # a human-entered dbo.Address: qbo_id IS NULL
+
+
+class _FakeAddressService:
+    """Stands in for `AddressService`, modelling the ONE field the stale-link
+    check turns on: `dbo.Address.qbo_id`.
+
+    Connector-minted rows (everything `_dbo_address_id` produces) carry a
+    qbo_id because the identity fast path stamps one. A hand-entered address
+    has none. Wiring this fake is load-bearing: with the real AddressService
+    the connector attempts a live DB read, conftest blocks it, and
+    `_sync_addresses`'s `except Exception` swallows the failure -- so the
+    stale-link test would PASS for the wrong reason.
+    """
+
+    def __init__(self):
+        self.reads = []
+
+    def read_by_id(self, id):
+        self.reads.append(id)
+        if id == HAND_SET_ADDRESS_ID:
+            return SimpleNamespace(id=id, qbo_id=None)
+        return SimpleNamespace(id=id, qbo_id=f"{id - 1000}_bill")
+
+
 class _FakeProjectAddressService:
     """In-memory ProjectAddress table: enough for `_ensure_project_address`'s
     read -> create-or-repoint sequence, so "no link was written" is observable
@@ -157,7 +182,10 @@ class _FakeProjectAddressService:
     def __init__(self):
         self.rows = []
         self._next_id = 1
-        self.repo = SimpleNamespace(update_by_id=self._update_by_id)
+        self.deleted = []
+        self.repo = SimpleNamespace(
+            update_by_id=self._update_by_id, delete_by_id=self._delete_by_id
+        )
 
     def read_by_project_id(self, project_id):
         return [r for r in self.rows if r.project_id == project_id]
@@ -170,6 +198,11 @@ class _FakeProjectAddressService:
         self._next_id += 1
         self.rows.append(row)
         return row
+
+    def _delete_by_id(self, id):
+        self.deleted.append(id)
+        self.rows = [r for r in self.rows if r.id != id]
+        return None
 
     def _update_by_id(self, row):
         return row
@@ -216,6 +249,7 @@ def _build_connector(*, parent=None):
         reconciliation_repo=Mock(),
         customer_service=Mock(),
         qbo_customer_repo=qbo_customer_repo,
+        address_service=_FakeAddressService(),
     )
     return connector
 
@@ -264,8 +298,19 @@ def test_blank_own_bill_falls_back_to_parent_bill():
     ]
 
 
-def test_blank_own_bill_and_ship_falls_back_through_the_full_chain():
-    """own bill -> own ship -> parent bill -> parent ship, first NON-BLANK wins."""
+def test_a_ship_address_is_never_a_billing_candidate():
+    """U-506 P2 -- THE CHAIN IS own bill -> parent bill. NO ship link, either one.
+
+    This test previously asserted the OPPOSITE: that `REAL_PARENT_SHIP`
+    ("99 Sibling Street") lands in the BILLING slot. Under the decided semantic
+    -- the slot is the OWNER'S MAILING address -- that was wrong by
+    construction, and it is the same "sibling project's street" error the
+    SHIPPING slot has always been guarded against.
+
+    Both ship links are removed, so a job whose only reachable addresses are
+    ship addresses now renders NAME-ONLY rather than printing a job site under
+    "TO OWNER:" on a payment request. Absent beats plausible-but-wrong.
+    """
     connector = _build_connector(
         parent=_parent(bill_addr_id=BLANK_PARENT_BILL, ship_addr_id=REAL_PARENT_SHIP)
     )
@@ -273,10 +318,88 @@ def test_blank_own_bill_and_ship_falls_back_through_the_full_chain():
 
     connector._sync_addresses(job, PROJECT_ID)
 
-    assert connector.address_connector.synced == [REAL_PARENT_SHIP]
+    assert REAL_PARENT_SHIP not in connector.address_connector.synced, (
+        "the parent's SHIP address was pulled into the billing chain -- that is a "
+        "sibling project's street, not the owner's mailing address"
+    )
+    assert connector.project_address_service.links() == [], (
+        "nothing should occupy the BILLING slot: every remaining candidate is a "
+        "job-site address"
+    )
+
+
+def test_own_ship_does_not_outrank_the_parents_billing_address():
+    """U-506 P2 -- the ordering bug, isolated.
+
+    own ship used to sit at link 2, AHEAD of parent bill. So a job with a site
+    address and an owner with a real remit-to rendered the SITE under
+    "TO OWNER:", while the owner's mailing address sat unused in staging. The
+    owner's address must win; the site must not appear in this slot at all.
+    """
+    connector = _build_connector(parent=_parent(bill_addr_id=REAL_PARENT_BILL))
+    job = _qbo_customer(bill_addr_id=BLANK_OWN_BILL, ship_addr_id=REAL_OWN_SHIP)
+
+    connector._sync_addresses(job, PROJECT_ID)
+
     assert connector.project_address_service.links() == [
-        (ADDRESS_TYPE_BILLING, _dbo_address_id(REAL_PARENT_SHIP)),
-    ]
+        (ADDRESS_TYPE_BILLING, _dbo_address_id(REAL_PARENT_BILL)),
+        (ADDRESS_TYPE_SHIPPING, _dbo_address_id(REAL_OWN_SHIP)),
+    ], "the owner's mailing address must fill BILLING; the site belongs in SHIPPING only"
+
+
+def test_a_reparented_job_does_not_keep_the_former_owners_address():
+    """U-506 P2 -- THE P0. New owner's NAME beside the OLD owner's STREET.
+
+    `_apply_project_fields_and_sync` repoints `project.customer_id`
+    unconditionally, so moving a job under a new owner whose slots are blank
+    left the BILLING link pointing at the FORMER owner's address forever. The
+    packet then addressed the new owner at the previous owner's house.
+
+    Specific to inheritance: before the parent fallback the slot could only hold
+    the job's OWN address, so "stale" was at worst the same party's out-of-date
+    address. Once a PARENT's address can occupy the slot, stale and
+    someone-else's are the same state.
+    """
+    connector = _build_connector(parent=_parent(bill_addr_id=REAL_PARENT_BILL))
+    job = _qbo_customer(bill_addr_id=BLANK_OWN_BILL, ship_addr_id=None)
+    connector._sync_addresses(job, PROJECT_ID)
+    former = _dbo_address_id(REAL_PARENT_BILL)
+    assert connector.project_address_service.links() == [(ADDRESS_TYPE_BILLING, former)]
+
+    # Re-parent onto an owner with NOTHING -- the chain now resolves None.
+    reparented = _build_connector(parent=_parent(bill_addr_id=BLANK_PARENT_BILL))
+    reparented.project_address_service.create(
+        project_id=PROJECT_ID, address_id=former, address_type_id=ADDRESS_TYPE_BILLING,
+    )
+    reparented._sync_addresses(job, PROJECT_ID)
+
+    assert reparented.project_address_service.links() == [], (
+        f"the former owner's address {former} survived the re-parent. The Draw "
+        f"Request would render the NEW owner's name beside the OLD owner's street."
+    )
+    assert reparented.project_address_service.deleted, "the stale link was never cleared"
+
+
+def test_a_hand_set_billing_address_is_never_cleared():
+    """The half of the old 'leave it untouched' guard that records a REAL defect.
+
+    The connector must not clobber human data. `dbo.Address.qbo_id IS NULL`
+    means a person entered it, so a blank chain leaves it exactly alone -- only
+    CONNECTOR-MINTED links (qbo_id set) are ever cleared.
+    """
+    connector = _build_connector(parent=_parent(bill_addr_id=BLANK_PARENT_BILL))
+    connector.project_address_service.create(
+        project_id=PROJECT_ID, address_id=HAND_SET_ADDRESS_ID,
+        address_type_id=ADDRESS_TYPE_BILLING,
+    )
+    job = _qbo_customer(bill_addr_id=BLANK_OWN_BILL, ship_addr_id=None)
+
+    connector._sync_addresses(job, PROJECT_ID)
+
+    assert connector.project_address_service.links() == [
+        (ADDRESS_TYPE_BILLING, HAND_SET_ADDRESS_ID)
+    ], "a hand-set address was cleared -- the connector must never clobber human data"
+    assert connector.project_address_service.deleted == []
 
 
 def test_real_own_bill_wins_over_parent():
@@ -375,9 +498,14 @@ def test_blank_everywhere_creates_no_address_and_no_project_address_link():
 
 
 def test_blank_chain_leaves_an_existing_link_untouched():
-    """Do-nothing means DO NOTHING: an address already on the project (hand-set,
-    or from an earlier pull when QBO still had content) must not be repointed
-    or cleared by a run that resolves nothing."""
+    """NARROWED by U-506 P2. Originally this covered BOTH a hand-set address and
+    one "from an earlier pull when QBO still had content". The second half was
+    WRONG and is now inverted: a connector-minted link whose chain resolves
+    nothing is a FORMER owner's address and IS cleared (see
+    test_a_reparented_job_does_not_keep_the_former_owners_address). The real
+    defect this guard records -- the connector must not clobber human data --
+    is kept, and is pinned harder by test_a_hand_set_billing_address_is_never_cleared:
+    address 777 has no qbo_id, so it survives."""
     connector = _build_connector(parent=_parent(bill_addr_id=BLANK_PARENT_BILL))
     connector.project_address_service.create(
         project_id=PROJECT_ID, address_id=777, address_type_id=ADDRESS_TYPE_BILLING,

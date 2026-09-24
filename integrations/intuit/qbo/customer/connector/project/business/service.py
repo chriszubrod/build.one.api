@@ -28,6 +28,7 @@ from entities.customer.business.service import CustomerService
 from entities.project.business.service import ProjectService
 from entities.project.business.model import Project
 from entities.project_address.business.service import ProjectAddressService
+from entities.address.business.service import AddressService
 
 logger = logging.getLogger(__name__)
 
@@ -58,8 +59,11 @@ ADDRESS_TYPE_SHIPPING = 2
 #       Under this reading inheritance is WRONG for 16 of those 61: the
 #       parent's address is then a SIBLING project's street (e.g.
 #       `BD - 4527 Beacon Dr.` would inherit `1539 Old Hillsboro Road - OHR2`).
-#       Setting False degrades the billing chain to own-bill → own-ship — the
-#       pre-U-506 behavior plus the blank guard — and reads NO parent row.
+#       Setting False degrades the billing chain to own-bill ONLY and reads no
+#       parent row. (Before U-506 P2 this said "own-bill → own-ship". That was
+#       written when own-ship was still a billing candidate; it no longer is,
+#       under either reading — a job's ShipAddr is the SITE. See
+#       `_billing_address_candidates`.)
 #
 # Either way the SHIPPING slot stays job-only (see `_sync_addresses`): it never
 # inherits, and it is the only place a future property-address feature belongs.
@@ -82,11 +86,15 @@ class CustomerProjectConnector:
         reconciliation_repo: Optional[ReconciliationIssueRepository] = None,
         customer_service: Optional[CustomerService] = None,
         qbo_customer_repo: Optional[QboCustomerRepository] = None,
+        address_service: Optional[AddressService] = None,
     ):
         """Initialize the CustomerProjectConnector."""
         self.project_service = project_service or ProjectService()
         self.project_address_service = project_address_service or ProjectAddressService()
         self.address_connector = address_connector or PhysicalAddressAddressConnector()
+        # U-506 P2: reads dbo.Address.qbo_id to tell a CONNECTOR-MINTED billing
+        # link from a HAND-SET one. Only the former may be cleared as stale.
+        self.address_service = address_service or AddressService()
         self.reconciliation_repo = reconciliation_repo or ReconciliationIssueRepository()
         # U-506 P1: LIVE AGAIN — no longer a dead DI param. History: U-297 fed
         # _resolve_parent_customer_id from this repo; U-310 repointed that
@@ -526,11 +534,19 @@ class CustomerProjectConnector:
            result). A blank staging row is now treated as absent.
 
         2. PARENT FALLBACK on the BILLING slot, first NON-BLANK wins:
-               own bill -> own ship -> parent bill -> parent ship
-           Measured: 2/139 projects and 64/1,012 invoices carried an address
-           before; 63/139 and 706/1,012 after. The residual 76 is irreducible
-           — those parents' BillAddrId points at a blank staging row too; QBO
-           holds nothing more. See PROJECT_BILLING_ADDRESS_IS_OWNER_MAILING for
+               own bill -> parent bill
+           ⚠️ U-506 P2 narrowed this from `own bill -> own ship -> parent bill
+           -> parent ship`. Both ship links were job-SITE addresses and had no
+           business in an owner-mailing slot; own-ship additionally OUTRANKED
+           the parent's real remit-to. The measured coverage below was taken
+           against the four-link chain, so the post-P2 figure is somewhat lower
+           — by design: the links removed were the ones contributing WRONG
+           addresses, and name-only beats plausible-but-wrong on a payment
+           request. Re-measure before quoting these numbers again.
+           Measured (pre-P2): 2/139 projects and 64/1,012 invoices carried an
+           address before; 63/139 and 706/1,012 after. The residual 76 is
+           irreducible — those parents' BillAddrId points at a blank staging
+           row too; QBO holds nothing more. See PROJECT_BILLING_ADDRESS_IS_OWNER_MAILING for
            WHY the parent's mailing address is the right thing to inherit, and
            for the one-line flip if that reading is ever rejected.
 
@@ -556,10 +572,23 @@ class CustomerProjectConnector:
                 self._ensure_project_address(project_id, address_id, ADDRESS_TYPE_BILLING)
                 logger.debug(f"Synced billing address {address_id} for Project {project_id}")
             else:
-                logger.debug(
-                    f"No non-blank billing address resolved for Project {project_id} "
-                    f"(QboCustomer {qbo_customer.id}) — leaving the slot untouched"
-                )
+                # U-506 P2 — do NOT simply leave the slot: a stale CONNECTOR-MINTED
+                # link here mails a financial document to the WRONG PARTY.
+                #
+                # `_apply_project_fields_and_sync` repoints `project.customer_id`
+                # unconditionally, so when a job is re-parented in QBO (or merged)
+                # onto an owner whose own address slots are blank, the chain
+                # resolves None while the BILLING link still points at the FORMER
+                # owner's dbo.Address. The Draw Request then renders the NEW
+                # owner's name beside the OLD owner's street, indefinitely --
+                # nothing else ever clears it.
+                #
+                # This is specific to inheritance: before the parent fallback the
+                # slot could only ever hold the job's OWN address, so a stale link
+                # was at worst the same party's out-of-date address. Once a
+                # PARENT's address can occupy the slot, "stale" and "someone
+                # else's" become the same state.
+                self._clear_stale_connector_billing_link(project_id)
         except Exception as e:
             logger.error(f"Failed to sync billing address for Project {project_id}: {e}")
 
@@ -587,13 +616,30 @@ class CustomerProjectConnector:
 
     def _billing_address_candidates(self, qbo_customer: QboCustomer) -> Iterator[Optional[int]]:
         """
-        The billing chain, LAZILY: own bill -> own ship -> parent bill ->
-        parent ship. A generator on purpose — the parent's staging row is read
-        only once BOTH of the job's own slots have come up blank/absent, so a
-        job that carries its own address costs zero extra round trips.
+        The billing chain, LAZILY: own bill -> parent bill. A generator on
+        purpose — the parent's staging row is read only once the job's own
+        BillAddr has come up blank/absent, so a job that carries its own
+        address costs zero extra round trips.
+
+        ⚠️ U-506 P2 — BOTH ShipAddr links were REMOVED from this chain.
+        The slot means the OWNER'S MAILING address (decided 2026-09-23). A QBO
+        sub-customer's ShipAddr is the JOB SITE, so neither ship link can be an
+        owner mailing address:
+
+          * own ship  — the construction site itself. It previously sat at
+            link 2, AHEAD of the parent's BillAddr, so a job with a site
+            address and an owner with a real remit-to rendered the SITE under
+            "TO OWNER:" while the owner's mailing address sat unused in
+            staging. Directly contradicts the decided semantic.
+          * parent ship — a SIBLING project's street. This is the same "16
+            project" error the SHIPPING slot has always been protected from;
+            it was wrong here for the identical reason.
+
+        Dropping them degrades some projects to name-only rather than printing
+        a wrong address on a payment request, which is the safe direction: a
+        missing address is visible, a plausible-but-wrong one is not.
         """
         yield qbo_customer.bill_addr_id
-        yield qbo_customer.ship_addr_id
         if not PROJECT_BILLING_ADDRESS_IS_OWNER_MAILING:
             return
         parent = self._get_parent_qbo_customer(
@@ -602,7 +648,6 @@ class CustomerProjectConnector:
         if parent is None:
             return
         yield parent.bill_addr_id
-        yield parent.ship_addr_id
 
     def _get_parent_qbo_customer(
         self, parent_ref_value: Optional[str], realm_id: Optional[str]
@@ -669,6 +714,50 @@ class CustomerProjectConnector:
             + (staged.city or "").strip()
             + (staged.postal_code or "").strip()
         )
+
+    def _clear_stale_connector_billing_link(self, project_id: int) -> None:
+        """Drop a BILLING link the connector minted, when the chain now resolves
+        nothing. Leaves HAND-SET links alone.
+
+        `dbo.Address.qbo_id` is the discriminator: the identity fast path stamps
+        it on every address this connector mints, and a human-entered address has
+        none. So:
+
+          * qbo_id IS NOT NULL -> the connector put it there, and the connector's
+            current chain has no address at all, so it cannot still be current.
+            Remove it. The next pull re-creates the link the moment QBO has an
+            address again.
+          * qbo_id IS NULL -> hand-set. NEVER touched. This is the half of
+            `test_blank_chain_leaves_an_existing_link_untouched` that records a
+            real defect (the connector must not clobber human data), and it is
+            preserved exactly.
+
+        Failing to name-only is deliberately the safe direction: an absent
+        address is visible to whoever sends the packet, a plausible-but-wrong one
+        is not. It also closes the narrower case of an address the owner DELETED
+        in QBO, which used to keep rendering forever.
+        """
+        for pa in self.project_address_service.read_by_project_id(project_id) or []:
+            if getattr(pa, "address_type_id", None) != ADDRESS_TYPE_BILLING:
+                continue
+            address_id = getattr(pa, "address_id", None)
+            if not address_id:
+                continue
+            address = self.address_service.read_by_id(address_id)
+            if address is None or not getattr(address, "qbo_id", None):
+                # Hand-set (or unreadable) -- not ours to clear.
+                logger.debug(
+                    f"Project {project_id} billing link {pa.id} is hand-set "
+                    f"(address {address_id} has no qbo_id) — left untouched"
+                )
+                continue
+            self.project_address_service.repo.delete_by_id(pa.id)
+            logger.info(
+                f"draw_request.stale_billing_link_cleared project_id={project_id} "
+                f"project_address_id={pa.id} address_id={address_id} "
+                f"qbo_id={address.qbo_id!r} — the billing chain resolved nothing, so a "
+                f"connector-minted link could only be a FORMER owner's address"
+            )
 
     def _ensure_project_address(self, project_id: int, address_id: int, address_type_id: int) -> None:
         """

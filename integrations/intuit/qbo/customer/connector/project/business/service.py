@@ -536,17 +536,29 @@ class CustomerProjectConnector:
         2. PARENT FALLBACK on the BILLING slot, first NON-BLANK wins:
                own bill -> parent bill
            ⚠️ U-506 P2 narrowed this from `own bill -> own ship -> parent bill
-           -> parent ship`. Both ship links were job-SITE addresses and had no
+           -> parent ship`. Both ship links were job-SITE addresses with no
            business in an owner-mailing slot; own-ship additionally OUTRANKED
-           the parent's real remit-to. The measured coverage below was taken
-           against the four-link chain, so the post-P2 figure is somewhat lower
-           — by design: the links removed were the ones contributing WRONG
-           addresses, and name-only beats plausible-but-wrong on a payment
-           request. Re-measure before quoting these numbers again.
-           Measured (pre-P2): 2/139 projects and 64/1,012 invoices carried an
-           address before; 63/139 and 706/1,012 after. The residual 76 is
-           irreducible — those parents' BillAddrId points at a blank staging
-           row too; QBO holds nothing more. See PROJECT_BILLING_ADDRESS_IS_OWNER_MAILING for
+           the parent's real remit-to.
+
+           RE-MEASURED against live data 2026-09-23, and the narrowing costs
+           NOTHING — the figures below are unchanged, not merely close:
+               pre-P1  (own bill -> own ship)       2/138 projects,  64 invoices
+               post-P1 (4-link)                    63/138 projects, 706 invoices
+               post-P2 (own bill -> parent bill)   63/138 projects, 706 invoices
+           Winner breakdown under the 4-link chain: parent bill 61, own bill 2,
+           NEITHER SHIP LINK EVER WON. `parent ship` is non-blank on 58 parents
+           but always sits behind `parent bill`; `own ship` outranks nothing
+           today. So P2 removed a latent wrong-address path with ZERO live
+           instances and 58 latent ones — a parent whose BillAddr ever goes
+           blank would have started supplying a SIBLING project's street.
+           The residual 75 name-only projects are irreducible: those parents'
+           BillAddrId points at a blank staging row too; QBO holds nothing more.
+
+           ⚠️ SEPARATE, STILL OPEN — the numbers above are what a PULL would
+           produce, not what is linked. `dbo.ProjectAddress` today holds a
+           BILLING link for only 5 projects / 105 invoices. The connector writes
+           on pull and nothing backfills, so 58 projects' worth of coverage does
+           not materialise on deploy. That is the outstanding U-506 backfill. See PROJECT_BILLING_ADDRESS_IS_OWNER_MAILING for
            WHY the parent's mailing address is the right thing to inherit, and
            for the one-line flip if that reading is ever rejected.
 

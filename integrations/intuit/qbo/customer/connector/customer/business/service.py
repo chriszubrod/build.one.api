@@ -19,11 +19,63 @@ from integrations.intuit.qbo.base.reconciliation_recorder import (
     record_duplicate_identity_conflict,
 )
 from integrations.intuit.qbo.customer.business.model import QboCustomer
+from integrations.intuit.qbo.physical_address.connector.business.service import PhysicalAddressAddressConnector
 from integrations.intuit.qbo.reconciliation.persistence.repo import ReconciliationIssueRepository
 from entities.customer.business.service import CustomerService
 from entities.customer.business.model import Customer
 
 logger = logging.getLogger(__name__)
+
+# ── U-513: the customer family's address vocabulary ──────────────────────────
+# Both halves of this family write and read the SAME synthetic dbo.Address
+# identity, so its shape lives here ONCE and `CustomerProjectConnector` imports
+# it rather than re-spelling the suffix at its own lookup site. A mint and a
+# lookup that disagreed by one character would fail SILENTLY — the fallback
+# would simply find nothing and every project would degrade to name-only, which
+# is exactly the bug U-506 P1 was built to end.
+
+BILLING_ADDRESS_QBO_ID_SUFFIX = "_bill"
+
+
+def billing_address_qbo_id(customer_qbo_id: str) -> str:
+    """
+    The SYNTHETIC `dbo.Address` identity for a QBO customer's BillAddr.
+
+    QBO does not give a Customer's inline `BillAddr` a stable id of its own, so
+    the address is keyed off its OWNER: `<customer QboId>_bill`. This is not a
+    new convention — it is the exact string `QboCustomerService._upsert_customer`
+    has always written onto the `qbo.PhysicalAddress` staging row, which is what
+    `SetAddressQboIdentity` then stamped onto `dbo.Address`. Keeping it byte-
+    identical is what lets U-513 retire the staging hop with NO re-keying of the
+    799 existing `dbo.Address` rows.
+    """
+    return f"{customer_qbo_id}{BILLING_ADDRESS_QBO_ID_SUFFIX}"
+
+
+def address_fields_are_blank(line1, city, postal_code) -> bool:
+    """
+    The family's ONE blankness rule (U-506 P1, lifted to a shared pure function
+    by U-513): an address is blank when `line1`, `city` and `postal_code` are
+    ALL empty after `.strip()`, and a blank address is treated as ABSENT.
+
+    QBO hands back placeholder address objects — an `Id` and nothing else — and
+    keying on PRESENCE rather than CONTENT is what minted 191 of 799 blank
+    `dbo.Address` rows and left 1,012 invoices rendering a name-only "To:"
+    block. `line2` and the state code are deliberately NOT content: neither is
+    routable on its own.
+
+    Takes discrete field values rather than an object because its three callers
+    hold three different shapes — the inline QBO payload, a `qbo.PhysicalAddress`
+    staging row, and a `dbo.Address` row (whose columns are named
+    `street_one`/`city`/`zip`). Each caller reads its own fields DIRECTLY and
+    passes them in, so a renamed field still breaks loudly at that call site
+    instead of silently making every address look blank.
+    """
+    return not (
+        (line1 or "").strip()
+        + (city or "").strip()
+        + (postal_code or "").strip()
+    )
 
 
 class CustomerCustomerConnector:
@@ -47,17 +99,34 @@ class CustomerCustomerConnector:
         self,
         customer_service: Optional[CustomerService] = None,
         reconciliation_repo: Optional[ReconciliationIssueRepository] = None,
+        address_connector: Optional[PhysicalAddressAddressConnector] = None,
     ):
         """Initialize the CustomerCustomerConnector."""
         self.customer_service = customer_service or CustomerService()
         self.reconciliation_repo = reconciliation_repo or ReconciliationIssueRepository()
+        # U-513: this connector now projects the parent customer's OWN BillAddr
+        # into `dbo.Address` — see `_project_own_billing_address` for why that
+        # has to happen HERE and not (as it did until now) as a side effect of a
+        # child project's fallback.
+        self.address_connector = address_connector or PhysicalAddressAddressConnector()
 
-    def sync_from_qbo_customer(self, qbo_customer: QboCustomer) -> Customer:
+    def sync_from_qbo_customer(
+        self,
+        qbo_customer: QboCustomer,
+        external_customer=None,
+    ) -> Customer:
         """
         Sync data from QboCustomer to Customer module.
 
         Args:
             qbo_customer: QboCustomer record (must be a parent customer with Job=false)
+            external_customer: the ORIGINAL QBO Customer payload this staging row
+                was built from (`customer/external/schemas.py::QboCustomer`), when
+                the caller still has it in scope. Optional and defaulted to None
+                so every existing call site keeps working untouched; it carries
+                the INLINE `BillAddr` that U-513 projects instead of the
+                `qbo.PhysicalAddress` staging row. See
+                `_own_billing_address` for what happens when it is absent.
 
         Returns:
             Customer: The synced Customer record
@@ -101,7 +170,114 @@ class CustomerCustomerConnector:
                 f"Failed to resolve Customer for QboCustomer {qbo_customer.id} "
                 f"(qbo_id={qbo_customer.qbo_id}) via the dbo-only identity fast path"
             )
+        # Deliberately AFTER the fast path: a customer that failed to project has
+        # no business minting an address, and reaching here guarantees a truthy
+        # `qbo_customer.qbo_id` (the fast path raises on a falsy one), which is
+        # what the synthetic `<qbo_id>_bill` identity is built from.
+        self._project_own_billing_address(qbo_customer, external_customer)
         return outcome.entity
+
+    def _project_own_billing_address(self, qbo_customer: QboCustomer, external_customer) -> None:
+        """
+        Mint/refresh the `dbo.Address` row for THIS customer's own BillAddr,
+        under the synthetic identity `<qbo_id>_bill` (U-513).
+
+        ⚠️ THE CIRCULARITY FIX — this is the load-bearing half of the unit.
+
+        Until now this connector wrote NO address at all. Every `<customer>_bill`
+        row in `dbo.Address` existed only as a side effect of a CHILD project's
+        billing fallback calling `sync_from_qbo_to_address` on the PARENT's
+        staging id (`CustomerProjectConnector._billing_address_candidates`). That
+        is circular: the fallback was what created the rows the fallback read.
+        It happened to work only because `qbo.PhysicalAddress` was there to be
+        read; once staging is gone, a NEW parent customer — one no child had ever
+        minted a row for — would never get an address at all, and every project
+        under it would silently degrade to a name-only "To:" block.
+
+        So ownership moves to where it belongs: a customer projects its OWN
+        address, and the child project only ever READS it. U-513's repointed
+        fallback (`_parent_billing_address_id`) depends on this method having
+        run, which the pull's parent-before-job ordering guarantees.
+
+        FAILURE-ISOLATED, matching `CustomerProjectConnector._sync_addresses`'s
+        own convention: an address problem must not fail the customer pull.
+        Raising instead would hold the customer watermark — blocking EVERY
+        customer and project projection — over one address, whereas a missing
+        address degrades that project to name-only, which this family has
+        repeatedly decided is the safe direction (an absent address is visible to
+        whoever sends the packet; a plausible-but-wrong one is not).
+        """
+        try:
+            if not qbo_customer.qbo_id:
+                # Unreachable from `sync_from_qbo_customer` (see its call site),
+                # but never let a `None_bill` identity reach dbo.Address.
+                return
+            address = self._own_billing_address(qbo_customer, external_customer)
+            if address is None:
+                return
+            if address_fields_are_blank(address.line1, address.city, address.postal_code):
+                # A blank address is ABSENT (see `address_fields_are_blank`).
+                # NEVER mint a blank dbo.Address — that is precisely how 191 of
+                # 799 rows became blank.
+                return
+            self.address_connector.sync_address_from_external(
+                qbo_id=billing_address_qbo_id(qbo_customer.qbo_id),
+                realm_id=qbo_customer.realm_id,
+                line1=address.line1,
+                line2=address.line2,
+                city=address.city,
+                country_sub_division_code=address.country_sub_division_code,
+                postal_code=address.postal_code,
+                source_ref=f"QboCustomer:{qbo_customer.qbo_id}",
+            )
+            logger.debug(
+                f"Projected billing address for QboCustomer {qbo_customer.qbo_id} "
+                f"as dbo.Address {billing_address_qbo_id(qbo_customer.qbo_id)}"
+            )
+        except Exception as e:
+            logger.error(
+                f"Failed to project billing address for QboCustomer "
+                f"{qbo_customer.qbo_id}: {e}"
+            )
+
+    def _own_billing_address(self, qbo_customer: QboCustomer, external_customer):
+        """
+        The BillAddr object whose CONTENT this customer should project, or None.
+
+        Two sources, in preference order — both expose the same five fields
+        (`line1` / `line2` / `city` / `country_sub_division_code` /
+        `postal_code`), so the caller reads them the same way either way:
+
+        1. `external_customer.bill_addr` — the address QBO hands back INLINE on
+           the Customer payload. This is U-513's direction and the only source
+           that survives the `qbo.PhysicalAddress` sunset. It requires the caller
+           to have threaded the external record through (see
+           `QboCustomerService._sync_to_customers`).
+
+        2. ⚠️ TRANSITIONAL — the `qbo.PhysicalAddress` staging row
+           `bill_addr_id` points at, for callers that have NOT been threaded yet.
+           `scripts/sync_qbo_customer.py` is one, and it is the path the
+           scheduler actually runs (`POST /api/v1/admin/sync/qbo/customer`): it
+           calls `sync_from_qbo(sync_to_modules=False)` and then runs its own
+           projection loop, so the external payloads never reach it. Without
+           this branch, U-513's repointed child fallback would read a
+           `dbo.Address` that nothing had refreshed — a NEW parent would get no
+           address at all and an EDITED parent's address would go stale forever,
+           a regression on the live path rather than a fix.
+
+           Delete this branch (and the read below it) the moment every caller
+           threads the payload — or staging stops being written, whichever comes
+           first. Nothing else in this connector touches staging.
+
+        Both sources are blank-checked identically by the caller, so a
+        placeholder row cannot sneak in through the transitional path either.
+        """
+        if external_customer is not None:
+            return external_customer.bill_addr
+        staging_id = qbo_customer.bill_addr_id
+        if not staging_id:
+            return None
+        return self.address_connector.qbo_physical_address_service.read_by_id(staging_id)
 
     def _apply_customer_fields_and_sync(
         self, entity: Customer, *, name: str, email: str, phone: str,

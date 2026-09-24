@@ -536,7 +536,10 @@ def test_company_info_projection_failure_records_real_qbo_id_not_staging_pk():
         f"{company_info_module.__name__}.QboCompanyInfoService", return_value=mock_company_info_service
     ), patch(
         f"{company_info_module.__name__}.CompanyInfoCompanyConnector", return_value=mock_company_connector
-    ), patch(f"{company_info_module.__name__}.PhysicalAddressAddressConnector"), patch(
+    ), patch(
+        # No PhysicalAddressAddressConnector patch: U-513 moved the address
+        # projection out of this script and into QboCompanyInfoService (which is
+        # mocked above), so the name no longer exists in this module.
         f"{company_info_module.__name__}.QboAuthService", return_value=mock_auth
     ), patch(f"{company_info_module.__name__}.assert_cli_system_admin"):
         company_info_module.sync_qbo_company_info()

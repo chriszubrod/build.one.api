@@ -698,7 +698,10 @@ def test_address_resolve_candidate_does_not_mutate_or_persist_the_adopted_row():
     address_service.read_by_street_one_and_city.return_value = existing
 
     candidate = connector._resolve_address_candidate(
-        qbo_physical_address, street_one="123 Main", street_two="", city="Austin", state="TX", zip_code="78701",
+        qbo_id=qbo_physical_address.qbo_id,
+        realm_id=qbo_physical_address.realm_id,
+        source_ref=f"QboPhysicalAddress {qbo_physical_address.id}",
+        street_one="123 Main", street_two="", city="Austin", state="TX", zip_code="78701",
     )
 
     assert candidate is existing
@@ -869,7 +872,11 @@ def test_address_stamp_identity_refuses_to_overwrite_different_existing_identity
     with patch(STAMP_LOCK_TARGET, mock_qbo_app_lock_granted):
         with pytest.raises(ValueError, match=r"already carries QBO identity PA-OTHER"):
             connector._stamp_address_identity(
-                candidate, qbo_physical_address, street_one="123 Main", street_two="", city="Austin",
+                candidate,
+                qbo_id=qbo_physical_address.qbo_id,
+                realm_id=qbo_physical_address.realm_id,
+                source_ref=f"QboPhysicalAddress {qbo_physical_address.id}",
+                street_one="123 Main", street_two="", city="Austin",
                 state="TX", zip_code="78701",
             )
 
@@ -892,7 +899,11 @@ def test_address_stamp_identity_update_returning_none_raises_runtime_error():
     with patch(STAMP_LOCK_TARGET, mock_qbo_app_lock_granted):
         with pytest.raises(RuntimeError, match="concurrent write race"):
             connector._stamp_address_identity(
-                candidate, qbo_physical_address, street_one="New", street_two="", city="Austin",
+                candidate,
+                qbo_id=qbo_physical_address.qbo_id,
+                realm_id=qbo_physical_address.realm_id,
+                source_ref=f"QboPhysicalAddress {qbo_physical_address.id}",
+                street_one="New", street_two="", city="Austin",
                 state="TX", zip_code="78701",
             )
 
@@ -919,7 +930,11 @@ def test_address_stamp_identity_sanitizes_blank_fields_to_empty_string():
 
     with patch(STAMP_LOCK_TARGET, mock_qbo_app_lock_granted):
         connector._stamp_address_identity(
-            candidate, qbo_physical_address, street_one=None, street_two=None, city=None,
+            candidate,
+            qbo_id=qbo_physical_address.qbo_id,
+            realm_id=qbo_physical_address.realm_id,
+            source_ref=f"QboPhysicalAddress {qbo_physical_address.id}",
+            street_one=None, street_two=None, city=None,
             state=None, zip_code=None,
         )
 
@@ -946,7 +961,11 @@ def test_address_stamp_identity_applies_field_write_atomically_with_stamp():
 
     with patch(STAMP_LOCK_TARGET, mock_qbo_app_lock_granted):
         connector._stamp_address_identity(
-            candidate, qbo_physical_address, street_one="New", street_two="", city="Austin",
+            candidate,
+            qbo_id=qbo_physical_address.qbo_id,
+            realm_id=qbo_physical_address.realm_id,
+            source_ref=f"QboPhysicalAddress {qbo_physical_address.id}",
+            street_one="New", street_two="", city="Austin",
             state="TX", zip_code="78701",
         )
 

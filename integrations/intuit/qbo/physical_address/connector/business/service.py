@@ -16,12 +16,30 @@ from integrations.intuit.qbo.base.reconciliation_recorder import (
     record_mapping_issue,
 )
 from integrations.intuit.qbo.physical_address.business.service import QboPhysicalAddressService
-from integrations.intuit.qbo.physical_address.business.model import QboPhysicalAddress
 from integrations.intuit.qbo.reconciliation.persistence.repo import ReconciliationIssueRepository
 from entities.address.business.service import AddressService
 from entities.address.business.model import Address
 
 logger = logging.getLogger(__name__)
+
+
+def _describe_source(*, source_ref: Optional[str], qbo_id: Optional[str]) -> str:
+    """
+    Render an address projection's ORIGIN for log/error/ReconciliationIssue
+    text ONLY (U-513). Never load-bearing: nothing in this module — or in
+    `run_identity_fastpath_dbo_only` below it — branches on, parses, or
+    persists this string; it exists so an operator reading a log line or a
+    reconciliation row can tell WHICH inbound address produced it.
+
+    `source_ref` is a free-form label the caller owns. The staging wrapper
+    `sync_from_qbo_to_address` passes the full `"QboPhysicalAddress {id}"`
+    descriptor, which keeps every message this module emits byte-identical
+    to its pre-U-513 wording. A direct-from-payload caller passes whatever
+    names its own source (e.g. `"Customer 1246 BillAddr"`), or nothing —
+    the fallback then names the identity itself, so the message stays
+    informative rather than degrading to a bare `None`.
+    """
+    return source_ref or f"QBO address identity {qbo_id}"
 
 
 class PhysicalAddressAddressConnector:
@@ -42,6 +60,17 @@ class PhysicalAddressAddressConnector:
     independently-writable mapping table) no longer has anything to drift
     from. The dead `sync_from_address_to_qbo` push path (zero callers,
     confirmed at Gate-1) was removed alongside it.
+
+    U-513: the projection is now reachable DIRECTLY from an external QBO
+    payload via `sync_address_from_external`, with no `qbo.PhysicalAddress`
+    read. `qbo.PhysicalAddress` is a pure write-then-read-back cache — the
+    address content is already inline on the originating QBO payload — and
+    that staging table is being sunset. `sync_from_qbo_to_address` survives
+    unchanged for the transition (three packages still call it) as a thin
+    staging-read wrapper over the same shared helpers, so the two entry
+    points cannot drift: everything below the entry points takes plain
+    `qbo_id` / `realm_id` / `source_ref` values rather than the staging
+    model, which is the only reason one implementation can serve both.
 
     Field Mapping:
         QboPhysicalAddress.line1 <-> Address.street_one
@@ -67,6 +96,15 @@ class PhysicalAddressAddressConnector:
         Sync data from QboPhysicalAddress to Address module, via the dbo-only
         identity fast path (U-351).
 
+        U-513: now a thin wrapper — read the staging row, then hand its
+        already-inline content to `sync_address_from_external`, which owns
+        the whole projection. Signature, return value, the missing-row
+        `ValueError`, and every log/error string are unchanged: three
+        packages (`customer/connector/project`, `vendor/connector/vendor`,
+        `scripts/sync_qbo_company_info.py`) still call this during the
+        staging-table sunset, and the staging read is the ONLY thing this
+        method still adds over the direct-from-payload entry point.
+
         Args:
             qbo_physical_address_id: Database ID of QboPhysicalAddress record
 
@@ -79,18 +117,69 @@ class PhysicalAddressAddressConnector:
         if not qbo_physical_address:
             raise ValueError(f"QboPhysicalAddress with ID {qbo_physical_address_id} not found")
 
-        street_one = qbo_physical_address.line1
-        street_two = qbo_physical_address.line2
-        city = qbo_physical_address.city
-        state = qbo_physical_address.country_sub_division_code
-        zip_code = qbo_physical_address.postal_code
         # No connector-level realm fallback here (unlike CompanyInfoCompanyConnector's
         # U-277 fallback) -- sync_from_qbo_to_address has never taken a separate realm
         # parameter; realm comes straight from the staging row.
-        realm_id = qbo_physical_address.realm_id
+        return self.sync_address_from_external(
+            qbo_id=qbo_physical_address.qbo_id,
+            realm_id=qbo_physical_address.realm_id,
+            line1=qbo_physical_address.line1,
+            line2=qbo_physical_address.line2,
+            city=qbo_physical_address.city,
+            country_sub_division_code=qbo_physical_address.country_sub_division_code,
+            postal_code=qbo_physical_address.postal_code,
+            source_ref=f"QboPhysicalAddress {qbo_physical_address.id}",
+        )
+
+    def sync_address_from_external(
+        self,
+        *,
+        qbo_id: str,
+        realm_id: Optional[str],
+        line1: Optional[str],
+        line2: Optional[str],
+        city: Optional[str],
+        country_sub_division_code: Optional[str],
+        postal_code: Optional[str],
+        source_ref: Optional[str] = None,
+    ) -> Address:
+        """
+        Project an address straight from an external QBO payload onto
+        `dbo.Address`, via the dbo-only identity fast path (U-513) — the same
+        `run_identity_fastpath_dbo_only` call `sync_from_qbo_to_address` has
+        always made, minus the `qbo.PhysicalAddress` write-then-read-back hop.
+
+        Args:
+            qbo_id: the SYNTHETIC identity the CALLER mints for this address
+                slot (e.g. `"1246_bill"`, `"1246_ship"`), matching what the
+                staging pull already stored on `qbo.PhysicalAddress.QboId`.
+                QBO does not give addresses their own record ids, so this is
+                never a QBO record id — it is the caller's stable per-slot key,
+                and it is what `dbo.Address.QboId` ends up holding.
+            realm_id: the realm this identity belongs to. Comes from the
+                CALLER; there is deliberately NO connector-level fallback
+                (unlike `CompanyInfoCompanyConnector`'s U-277 fallback) —
+                inventing one here would let a mis-plumbed caller silently
+                bind an address into the wrong realm, and QBO ids are only
+                unique WITHIN a realm.
+            line1/line2/city/country_sub_division_code/postal_code: the QBO
+                payload's own address fields, mapped onto
+                `street_one`/`street_two`/`city`/`state`/`zip`. `None` is
+                accepted and sanitizes to `""` downstream (those columns are
+                all `NOT NULL`).
+            source_ref: free-form ORIGIN label for log/error/reconciliation
+                text only — see `_describe_source`. Never load-bearing.
+
+        Returns:
+            Address: The projected Address record.
+        """
+        street_one = line1
+        street_two = line2
+        state = country_sub_division_code
+        zip_code = postal_code
 
         outcome = run_identity_fastpath_dbo_only(
-            qbo_id=qbo_physical_address.qbo_id,
+            qbo_id=qbo_id,
             realm_id=realm_id,
             entity_label="Address",
             external_label="QboPhysicalAddress",
@@ -100,22 +189,22 @@ class PhysicalAddressAddressConnector:
                 entity, street_one=street_one, street_two=street_two, city=city, state=state, zip_code=zip_code,
             ),
             resolve_candidate=lambda: self._resolve_address_candidate(
-                qbo_physical_address, street_one=street_one, street_two=street_two, city=city, state=state,
-                zip_code=zip_code,
+                qbo_id=qbo_id, realm_id=realm_id, source_ref=source_ref, street_one=street_one,
+                street_two=street_two, city=city, state=state, zip_code=zip_code,
             ),
             stamp_identity=lambda candidate: self._stamp_address_identity(
-                candidate, qbo_physical_address, street_one=street_one, street_two=street_two, city=city,
-                state=state, zip_code=zip_code,
+                candidate, qbo_id=qbo_id, realm_id=realm_id, source_ref=source_ref, street_one=street_one,
+                street_two=street_two, city=city, state=state, zip_code=zip_code,
             ),
         )
         if outcome.entity is None:
             # No longer race-reachable in practice (see run_identity_fastpath_
             # dbo_only's Raises docstring) — kept as a backstop for a directly
-            # invoked falsy qbo_physical_address.qbo_id, mirroring every
-            # sibling connector's identical guard (U-350/U-310/U-313/U-311).
+            # invoked falsy qbo_id, mirroring every sibling connector's
+            # identical guard (U-350/U-310/U-313/U-311).
             raise RuntimeError(
-                f"Failed to resolve Address for QboPhysicalAddress {qbo_physical_address.id} "
-                f"(qbo_id={qbo_physical_address.qbo_id}) via the dbo-only identity fast path"
+                f"Failed to resolve Address for {_describe_source(source_ref=source_ref, qbo_id=qbo_id)} "
+                f"(qbo_id={qbo_id}) via the dbo-only identity fast path"
             )
         return outcome.entity
 
@@ -124,13 +213,13 @@ class PhysicalAddressAddressConnector:
     ) -> Optional[Address]:
         """
         `apply_fields` for the dbo-only fast path's HIT branch (U-351): write
-        the QboPhysicalAddress-derived fields onto an existing dbo-identity-
-        matched Address and persist. QBO is source of truth — always
-        overwrites, same as the pre-U-351 fast path's own behavior. Blank/None
-        values sanitize to `""` — the pre-existing U-277 fast path already did
-        this (unlike CompanyInfoCompanyConnector's HIT branch, which had a
-        legacy gap here) — required because street_one/street_two/city/state/
-        zip are all `NOT NULL` columns.
+        the QBO-derived fields onto an existing dbo-identity-matched Address
+        and persist. QBO is source of truth — always overwrites, same as the
+        pre-U-351 fast path's own behavior. Blank/None values sanitize to
+        `""` — the pre-existing U-277 fast path already did this (unlike
+        CompanyInfoCompanyConnector's HIT branch, which had a legacy gap
+        here) — required because street_one/street_two/city/state/zip are all
+        `NOT NULL` columns.
 
         Returns None on a ROWVERSION-race/concurrent-delete `update_by_id`
         miss (U-291) — `run_identity_fastpath_dbo_only`'s own `_apply()`
@@ -148,8 +237,10 @@ class PhysicalAddressAddressConnector:
 
     def _resolve_address_candidate(
         self,
-        qbo_physical_address: QboPhysicalAddress,
         *,
+        qbo_id: Optional[str],
+        realm_id: Optional[str],
+        source_ref: Optional[str],
         street_one: str,
         street_two: str,
         city: str,
@@ -168,11 +259,14 @@ class PhysicalAddressAddressConnector:
         (U-370 C2: no unique index; TOP 1 lowest Id).
         Mirrors `CompanyInfoCompanyConnector._resolve_company_candidate` (U-350).
 
-        Reads `qbo_physical_address.realm_id` directly rather than taking a
-        separate `realm_id` parameter (unlike the Company mirror this was
-        copied from) — `sync_from_qbo_to_address` has no connector-level realm
-        fallback, so the two values can never diverge here; a second parameter
-        would just be redundant threaded state (Pass-2 simplification).
+        U-513: takes `qbo_id`/`realm_id`/`source_ref` as PLAIN VALUES rather
+        than the `QboPhysicalAddress` staging model it used to read them off.
+        The model was only ever used for those three fields (the last purely
+        in log/error text), and taking values instead is what lets
+        `sync_address_from_external` and `sync_from_qbo_to_address` share one
+        implementation — the alternative being two copies of the tombstone
+        refusal and the street/city dedup, exactly the hand-copy drift the
+        U-349 program exists to end.
         """
         # P1 guard (U-370 C1 / U-313 Vendor): live read_by_qbo_identity
         # filters IsDeleted=0, so a locally soft-deleted Address that still
@@ -181,19 +275,19 @@ class PhysicalAddressAddressConnector:
         # duplicate live row and SetAddressQboIdentity's theft-clear (no
         # IsDeleted filter) would strip the tombstone's QboId. Refuse +
         # record; do not revive.
-        if qbo_physical_address.qbo_id:
-            deleted_holder = self.address_service.read_deleted_by_qbo_identity(
-                qbo_physical_address.qbo_id, qbo_physical_address.realm_id,
-            )
+        if qbo_id:
+            deleted_holder = self.address_service.read_deleted_by_qbo_identity(qbo_id, realm_id)
             if deleted_holder is not None:
                 self._record_deleted_address_holds_identity_issue(
-                    qbo_physical_address=qbo_physical_address,
+                    qbo_id=qbo_id,
+                    realm_id=realm_id,
+                    source_ref=source_ref,
                     deleted_address=deleted_holder,
                 )
                 raise ValueError(
-                    f"QboPhysicalAddress {qbo_physical_address.id} "
-                    f"(QboId={qbo_physical_address.qbo_id}, "
-                    f"RealmId={qbo_physical_address.realm_id}) identity is already held "
+                    f"{_describe_source(source_ref=source_ref, qbo_id=qbo_id)} "
+                    f"(QboId={qbo_id}, "
+                    f"RealmId={realm_id}) identity is already held "
                     f"by soft-deleted Address {deleted_holder.id}; not creating a "
                     f"duplicate. Restore the Address or resolve in QBO."
                 )
@@ -205,7 +299,8 @@ class PhysicalAddressAddressConnector:
         )
         if existing is None:
             logger.info(
-                f"No existing Address found. Creating new Address from QboPhysicalAddress {qbo_physical_address.id}"
+                f"No existing Address found. Creating new Address from "
+                f"{_describe_source(source_ref=source_ref, qbo_id=qbo_id)}"
             )
             return self.address_service.create(
                 street_one=street_one or "", street_two=street_two or "", city=city or "",
@@ -220,11 +315,13 @@ class PhysicalAddressAddressConnector:
         # drift out of sync with each other. Mirrors
         # `CompanyInfoCompanyConnector._resolve_company_candidate`'s
         # Decision-2-style guard (U-350).
-        self._check_no_conflicting_address_identity(existing, qbo_physical_address)
+        self._check_no_conflicting_address_identity(
+            existing, qbo_id=qbo_id, realm_id=realm_id, source_ref=source_ref,
+        )
 
         logger.info(
             f"Binding existing local Address {existing.id} ({street_one}, {city}) to "
-            f"QboPhysicalAddress {qbo_physical_address.id} by street/city match"
+            f"{_describe_source(source_ref=source_ref, qbo_id=qbo_id)} by street/city match"
         )
         # Field write deliberately deferred to _stamp_address_identity, which
         # applies it atomically with the identity stamp under the candidate's
@@ -234,8 +331,10 @@ class PhysicalAddressAddressConnector:
     def _stamp_address_identity(
         self,
         candidate: Address,
-        qbo_physical_address: QboPhysicalAddress,
         *,
+        qbo_id: str,
+        realm_id: Optional[str],
+        source_ref: Optional[str],
         street_one: str,
         street_two: str,
         city: str,
@@ -249,9 +348,9 @@ class PhysicalAddressAddressConnector:
         `docs/design/stamp-lock-helper.md`) — see that function's own
         docstring for why a SECOND lock, keyed on the CANDIDATE's address_id,
         is needed here: `_resolve_address_candidate` binds by (street_one,
-        city) (a side-channel business key), so two different
-        QboPhysicalAddress syncs could street/city-match onto the SAME local
-        Address concurrently. Mirrors
+        city) (a side-channel business key), so two different inbound
+        addresses could street/city-match onto the SAME local Address
+        concurrently. Mirrors
         `CompanyInfoCompanyConnector._stamp_company_identity` (U-350).
 
         `apply_fields` writes the address fields unconditionally (QBO is
@@ -268,6 +367,10 @@ class PhysicalAddressAddressConnector:
         keeps only the reconciliation-recording half of the former
         `_check_no_conflicting_address_identity` call — the raise itself now
         lives in the shared helper.
+
+        U-513: takes `qbo_id`/`realm_id`/`source_ref` as plain values rather
+        than the staging model, for the same reason
+        `_resolve_address_candidate` does — see its docstring.
         """
         def _apply_fields(a: Address) -> Optional[Address]:
             a.street_one = street_one or ""
@@ -281,23 +384,28 @@ class PhysicalAddressAddressConnector:
         return stamp_dbo_identity_with_lock(
             candidate_id=candidate_id,
             entity_label="Address",
-            qbo_id=qbo_physical_address.qbo_id,
-            realm_id=qbo_physical_address.realm_id,
+            qbo_id=qbo_id,
+            realm_id=realm_id,
             read_by_id=self.address_service.read_by_id,
             apply_fields=_apply_fields,
             write_identity=lambda a: self.create_mapping(
                 address_id=a.id,
-                qbo_physical_address_id=qbo_physical_address.id,
-                qbo_id=qbo_physical_address.qbo_id,
-                realm_id=qbo_physical_address.realm_id,
+                qbo_id=qbo_id,
+                realm_id=realm_id,
             ),
             on_conflict=lambda a: self._record_duplicate_qbo_address_issue(
-                qbo_physical_address=qbo_physical_address, local_address=a, existing_qbo_id=a.qbo_id,
+                qbo_id=qbo_id, realm_id=realm_id, source_ref=source_ref, local_address=a,
+                existing_qbo_id=a.qbo_id,
             ),
         )
 
     def _check_no_conflicting_address_identity(
-        self, local_address: Address, qbo_physical_address: QboPhysicalAddress,
+        self,
+        local_address: Address,
+        *,
+        qbo_id: Optional[str],
+        realm_id: Optional[str],
+        source_ref: Optional[str],
     ) -> None:
         """
         Shared guard for `_resolve_address_candidate`'s street/city-matched
@@ -318,24 +426,27 @@ class PhysicalAddressAddressConnector:
         """
         existing_qbo_id = getattr(local_address, "qbo_id", None)
         if not existing_qbo_id or (
-            existing_qbo_id == qbo_physical_address.qbo_id
-            and (getattr(local_address, "realm_id", None) or "") == (qbo_physical_address.realm_id or "")
+            existing_qbo_id == qbo_id
+            and (getattr(local_address, "realm_id", None) or "") == (realm_id or "")
         ):
             return
         self._record_duplicate_qbo_address_issue(
-            qbo_physical_address=qbo_physical_address, local_address=local_address, existing_qbo_id=existing_qbo_id,
+            qbo_id=qbo_id, realm_id=realm_id, source_ref=source_ref, local_address=local_address,
+            existing_qbo_id=existing_qbo_id,
         )
         raise ValueError(
             f"Address {local_address.id} already carries a DIFFERENT identity "
             f"(QboId={existing_qbo_id}, RealmId={getattr(local_address, 'realm_id', None)}) than "
-            f"incoming QboPhysicalAddress {qbo_physical_address.qbo_id} "
-            f"(realm_id={qbo_physical_address.realm_id}) — refusing to overwrite it."
+            f"incoming QboPhysicalAddress {qbo_id} "
+            f"(realm_id={realm_id}) — refusing to overwrite it."
         )
 
     def _record_duplicate_qbo_address_issue(
         self,
         *,
-        qbo_physical_address: QboPhysicalAddress,
+        qbo_id: Optional[str],
+        realm_id: Optional[str],
+        source_ref: Optional[str],
         local_address: Address,
         existing_qbo_id: str,
     ) -> None:
@@ -346,22 +457,22 @@ class PhysicalAddressAddressConnector:
         `_record_identity_mapping_conflict_issue`). Mirrors
         `CompanyInfoCompanyConnector._record_duplicate_qbo_company_issue` (U-350).
 
-        Records `qbo_physical_address.realm_id` — the same value the conflict
-        check itself compared against — `sync_from_qbo_to_address` has no
-        connector-level realm fallback (unlike CompanyInfoCompanyConnector's
-        U-277 fallback), so there is no raw-vs-effective divergence to guard
+        Records the INCOMING `realm_id` — the same value the conflict check
+        itself compared against — there is no connector-level realm fallback
+        anywhere in this family (unlike CompanyInfoCompanyConnector's U-277
+        fallback), so there is no raw-vs-effective divergence to guard
         against here (the class of bug CompanyInfoCompanyConnector's Codex
         xhigh round-1 P2 found).
         """
         existing_realm_id = getattr(local_address, "realm_id", None)
         conflict_desc = build_duplicate_qbo_identity_conflict_desc(
             existing_qbo_id=existing_qbo_id,
-            incoming_qbo_id=qbo_physical_address.qbo_id,
+            incoming_qbo_id=qbo_id,
             existing_realm_id=existing_realm_id,
-            incoming_realm_id=qbo_physical_address.realm_id,
+            incoming_realm_id=realm_id,
         )
         details = (
-            f"Duplicate QBO address detected. QboPhysicalAddress {qbo_physical_address.id} "
+            f"Duplicate QBO address detected. {_describe_source(source_ref=source_ref, qbo_id=qbo_id)} "
             f"name-matches local Address {local_address.id} which already carries {conflict_desc}. "
             f"Resolve by merging or renaming one of the QBO addresses."
         )
@@ -370,18 +481,23 @@ class PhysicalAddressAddressConnector:
             drift_type="address_identity_conflict",
             entity_type="Address",
             entity_public_id=str(local_address.public_id) if local_address.public_id else None,
-            qbo_id=str(qbo_physical_address.qbo_id) if qbo_physical_address.qbo_id else None,
-            realm_id=qbo_physical_address.realm_id or "",
+            qbo_id=str(qbo_id) if qbo_id else None,
+            realm_id=realm_id or "",
             details=details,
         )
 
     def _record_deleted_address_holds_identity_issue(
-        self, *, qbo_physical_address: QboPhysicalAddress, deleted_address,
+        self,
+        *,
+        qbo_id: Optional[str],
+        realm_id: Optional[str],
+        source_ref: Optional[str],
+        deleted_address,
     ) -> None:
         """U-370 C1: tombstone still holds this identity — refuse minting."""
         details = (
-            f"QboPhysicalAddress {qbo_physical_address.id} (QboId="
-            f"{qbo_physical_address.qbo_id}, RealmId={qbo_physical_address.realm_id}) "
+            f"{_describe_source(source_ref=source_ref, qbo_id=qbo_id)} (QboId="
+            f"{qbo_id}, RealmId={realm_id}) "
             f"identity is already held by soft-deleted Address {deleted_address.id}. "
             f"Not creating a duplicate. Restore the Address or resolve in QBO."
         )
@@ -394,15 +510,15 @@ class PhysicalAddressAddressConnector:
                 if getattr(deleted_address, "public_id", None)
                 else None
             ),
-            qbo_id=str(qbo_physical_address.qbo_id) if qbo_physical_address.qbo_id else None,
-            realm_id=qbo_physical_address.realm_id or "",
+            qbo_id=str(qbo_id) if qbo_id else None,
+            realm_id=realm_id or "",
             details=details,
         )
 
     def create_mapping(
         self,
         address_id: int,
-        qbo_physical_address_id: int,
+        qbo_physical_address_id: Optional[int] = None,
         *,
         qbo_id: Optional[str],
         realm_id: Optional[str],
@@ -413,9 +529,11 @@ class PhysicalAddressAddressConnector:
 
         `dbo.Address.QboId`/`RealmId` is the SOLE identity store — this no
         longer reads or writes a `qbo.PhysicalAddressAddress` mapping row
-        (that table is retired). `qbo_physical_address_id` stays in the
-        signature for the caller's symmetry but is no longer persisted
-        anywhere.
+        (that table is retired). `qbo_physical_address_id` was already
+        vestigial (never persisted anywhere); U-513 makes it optional
+        because the direct-from-payload path has no staging row at all, and
+        leaves the parameter in place only so an existing caller spelling it
+        out keeps working through the staging sunset.
 
         The sole caller is `_stamp_address_identity`, which reaches this only
         under `stamp_dbo_identity_with_lock`'s own theft-guard — already

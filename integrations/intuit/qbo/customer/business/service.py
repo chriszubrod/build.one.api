@@ -70,6 +70,14 @@ class QboCustomerService:
         # Process each customer with retry logic and batch delays
         parent_customers = []
         job_customers = []
+        # U-513: the EXTERNAL payload, keyed by QBO id, so projection can read
+        # the addresses QBO already handed back INLINE (`BillAddr`) instead of
+        # re-reading them out of the `qbo.PhysicalAddress` staging table this
+        # loop just wrote them to. The staging rows are the thing being sunset;
+        # the payload is where the data was all along, and this loop is the last
+        # scope that still has it. See `_sync_to_customers` for how it reaches
+        # the connector without touching the shared `project_records`.
+        external_by_id = {}
 
         for i, qbo_customer in enumerate(qbo_customers):
             try:
@@ -85,6 +93,7 @@ class QboCustomerService:
                 logger.debug(f"Upserted customer {qbo_customer.id} ({i + 1}/{len(qbo_customers)})")
 
                 # Categorize for module sync
+                external_by_id[qbo_customer.id] = qbo_customer
                 if qbo_customer.job:
                     job_customers.append(local_customer)
                 else:
@@ -101,9 +110,11 @@ class QboCustomerService:
                 f"Failed to upsert {len(outcome.staging_failed_ids)} customers: {outcome.staging_failed_ids}"
             )
 
-        # Sync to modules if requested
+        # Sync to modules if requested. Parents FIRST, jobs second — a job's
+        # billing fallback reads the `dbo.Address` its parent's projection mints
+        # (U-513), so this ordering is load-bearing, not cosmetic.
         if sync_to_modules:
-            self._sync_to_customers(parent_customers, outcome)
+            self._sync_to_customers(parent_customers, outcome, external_by_id)
             self._sync_to_projects(job_customers, outcome)
         
         return outcome
@@ -221,23 +232,41 @@ class QboCustomerService:
                 print_on_check_name=qbo_customer.print_on_check_name,
             )
 
-    def _sync_to_customers(self, parent_customers: List[QboCustomer], outcome: SyncOutcome) -> None:
+    def _sync_to_customers(
+        self,
+        parent_customers: List[QboCustomer],
+        outcome: SyncOutcome,
+        external_by_id: Optional[dict] = None,
+    ) -> None:
         """
         Sync parent customers to Customer module.
-        
+
         Args:
             parent_customers: List of parent QboCustomer records (Job=false)
+            outcome: the pull envelope this projection records into
+            external_by_id: QBO id -> the ORIGINAL external Customer payload
+                (U-513). Optional; an absent/partial map just means the
+                connector falls back to reading the staging row.
+
+        The closure is the whole point: `project_records` is shared by 10 call
+        sites across 8 other QBO families and takes a strict one-argument
+        `project_one`, so binding the second argument HERE is what lets this
+        family pass the payload through without changing a signature every
+        other family depends on.
         """
         if not parent_customers:
             return
-        
+
         connector = CustomerCustomerConnector()
+        external_by_id = external_by_id or {}
 
         project_records(
             parent_customers,
             outcome,
             label="Customer->Customer",
-            project_one=connector.sync_from_qbo_customer,
+            project_one=lambda row: connector.sync_from_qbo_customer(
+                row, external_by_id.get(row.qbo_id)
+            ),
             logger=logger,
         )
 

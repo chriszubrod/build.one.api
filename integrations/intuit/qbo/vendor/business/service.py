@@ -1,6 +1,6 @@
 # Python Standard Library Imports
 import logging
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 # Third-party Imports
 
@@ -66,7 +66,12 @@ class QboVendorService:
         logger.info(f"Retrieved {len(qbo_vendors)} vendors from QBO")
         
         # Process each vendor with retry logic and batch delays
-        
+
+        # U-513: keep each EXTERNAL record alongside its staging upsert, keyed by
+        # QBO id, so the projection below can read the vendor's address off the
+        # inline `BillAddr` payload instead of reading `qbo.PhysicalAddress` back.
+        external_by_id: Dict[str, QboVendorExternalSchema] = {}
+
         for i, qbo_vendor in enumerate(qbo_vendors):
             try:
                 # Use retry logic for transient database errors
@@ -78,6 +83,9 @@ class QboVendorService:
                     initial_delay=INITIAL_RETRY_DELAY,
                 )
                 outcome.record_synced(local_vendor)
+                # Recorded only on a successful staging upsert, and only under this
+                # record's OWN id -- the pairing the projection closure relies on.
+                external_by_id[str(qbo_vendor.id)] = qbo_vendor
                 logger.debug(f"Upserted vendor {qbo_vendor.id} ({i + 1}/{len(qbo_vendors)})")
             except Exception as e:
                 logger.error(f"Failed to upsert vendor {qbo_vendor.id}: {e}")
@@ -93,8 +101,8 @@ class QboVendorService:
         
         # Sync to modules if requested
         if sync_to_modules:
-            self._sync_to_vendors(outcome.synced, outcome)
-        
+            self._sync_to_vendors(outcome.synced, outcome, external_by_id)
+
         return outcome
 
     def _upsert_vendor(self, qbo_vendor: QboVendorExternalSchema, realm_id: str) -> QboVendor:
@@ -192,26 +200,44 @@ class QboVendorService:
                 web_addr=web_addr,
             )
 
-    def _sync_to_vendors(self, vendors: List[QboVendor], outcome: SyncOutcome) -> None:
+    def _sync_to_vendors(
+        self,
+        vendors: List[QboVendor],
+        outcome: SyncOutcome,
+        external_by_id: Optional[Dict[str, QboVendorExternalSchema]] = None,
+    ) -> None:
         """
         Sync vendors to Vendor module.
-        
+
+        U-513: the external record each staging row was built from is handed to
+        the connector through a CLOSURE over `external_by_id`, rather than by
+        widening `project_records`. `project_records` is shared by ten call
+        sites across eight QBO families (seven besides this one); a closure
+        keeps this family's extra argument entirely inside this family.
+
         Args:
-            vendors: List of QboVendor records
+            vendors: List of QboVendor staging records to project
+            outcome: the pull's SyncOutcome (projection tier appends here)
+            external_by_id: QBO id -> the external record that produced that
+                staging row. Omitted/empty means every row projects with
+                `external=None`, i.e. the pre-U-513 staging-read address path.
         """
         if not vendors:
             return
-        
+
         # Import here to avoid circular dependencies
         from integrations.intuit.qbo.vendor.connector.vendor.business.service import VendorVendorConnector
-        
+
         connector = VendorVendorConnector()
+        by_id = external_by_id or {}
 
         project_records(
             vendors,
             outcome,
             label="Vendor->Vendor",
-            project_one=connector.sync_from_qbo_vendor,
+            project_one=lambda row: connector.sync_from_qbo_vendor(
+                row, by_id.get(row.qbo_id)
+            ),
             logger=logger,
         )
 

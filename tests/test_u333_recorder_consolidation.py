@@ -251,7 +251,9 @@ def test_recorder_consolidation_emits_identical_tuple(family):
         c = object.__new__(PhysicalAddressAddressConnector)
         c.reconciliation_repo = Mock()
         c._record_duplicate_qbo_address_issue(
-            qbo_physical_address=SimpleNamespace(id=4, qbo_id="ADDR-NEW", realm_id="realm-in"),
+            qbo_id="ADDR-NEW",
+            realm_id="realm-in",
+            source_ref="QboPhysicalAddress 4",
             local_address=SimpleNamespace(
                 id=7, public_id=UUID("88888888-8888-8888-8888-888888888888"), realm_id="realm-old"
             ),

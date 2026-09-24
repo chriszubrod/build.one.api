@@ -6,6 +6,7 @@ from typing import Optional
 
 # Local Imports
 from integrations.intuit.qbo.vendor.business.model import QboVendor
+from integrations.intuit.qbo.vendor.external.schemas import QboVendor as QboVendorExternal
 from integrations.intuit.qbo.physical_address.connector.business.service import PhysicalAddressAddressConnector
 from integrations.intuit.qbo.reconciliation.persistence.repo import ReconciliationIssueRepository
 from integrations.intuit.qbo.base.field_ownership import (
@@ -21,6 +22,7 @@ from integrations.intuit.qbo.base.reconciliation_recorder import (
     record_duplicate_identity_conflict,
     record_mapping_issue,
 )
+from entities.address.business.model import Address
 from entities.vendor.business.service import VendorService
 from entities.vendor.business.model import Vendor
 from entities.vendor_address.business.service import VendorAddressService
@@ -36,6 +38,31 @@ def _qbo_vendor_ref(qbo_vendor: QboVendor) -> tuple[Optional[str], str]:
     return (
         str(qbo_vendor.qbo_id) if qbo_vendor.qbo_id else None,
         qbo_vendor.realm_id or "",
+    )
+
+
+def _inline_address_is_blank(
+    *, line1: Optional[str], city: Optional[str], postal_code: Optional[str],
+) -> bool:
+    """
+    U-513 blankness rule: a QBO `BillAddr` carrying no `Line1`, no `City` and no
+    `PostalCode` (all empty after `.strip()`) is an ABSENT address, not an empty
+    one — QBO emits the object shell for a vendor that simply has no address on
+    file. A blank address must never mint a `dbo.Address` and must never be
+    linked through `dbo.VendorAddress`: 191 blank `dbo.Address` rows already
+    exist from before this guard, minted by the staging round-trip this unit
+    replaces (`_upsert_physical_address` staged the shell, then the projection
+    read it back and created a row of empty strings). Do not add to them.
+
+    `line2` and `country_sub_division_code` are deliberately NOT part of the
+    test — a state code with no street, city or ZIP is not an address anyone
+    can mail to, and treating it as one is how a blank row gets minted with a
+    single non-empty column.
+    """
+    return not (
+        (line1 or "").strip()
+        or (city or "").strip()
+        or (postal_code or "").strip()
     )
 
 
@@ -68,13 +95,24 @@ class VendorVendorConnector:
         self.address_connector = address_connector or PhysicalAddressAddressConnector()
         self.reconciliation_repo = reconciliation_repo or ReconciliationIssueRepository()
 
-    def sync_from_qbo_vendor(self, qbo_vendor: QboVendor) -> Vendor:
+    def sync_from_qbo_vendor(
+        self,
+        qbo_vendor: QboVendor,
+        external: Optional[QboVendorExternal] = None,
+    ) -> Vendor:
         """
         Sync data from QboVendor to Vendor module, via the dbo-only identity
         fast path (U-313).
 
         Args:
-            qbo_vendor: QboVendor record
+            qbo_vendor: QboVendor staging record (the row being projected)
+            external: the EXTERNAL QBO payload this staging row was built from,
+                when the caller still has it (U-513). Its inline `BillAddr` is
+                the address source of truth; `qbo.PhysicalAddress` is a
+                write-then-read-back cache being sunset. `None` means the
+                caller is re-projecting a staging row it did not fetch
+                (`scripts/sync_qbo_vendor.py`), and the address falls back to
+                the staging read — unchanged behavior during the transition.
 
         Returns:
             Vendor: The synced Vendor record
@@ -93,13 +131,13 @@ class VendorVendorConnector:
             lock_resource_label="Vendor",
             read_direct_by_qbo_identity=self.vendor_service.read_by_qbo_identity,
             apply_fields=lambda entity: self._apply_vendor_fields_and_sync(
-                entity, qbo_vendor=qbo_vendor, incoming_name=vendor_name,
+                entity, qbo_vendor=qbo_vendor, incoming_name=vendor_name, external=external,
             ),
             resolve_candidate=lambda: self._resolve_vendor_candidate(
                 qbo_vendor, vendor_name=vendor_name,
             ),
             stamp_identity=lambda candidate: self._stamp_vendor_identity(
-                candidate, qbo_vendor,
+                candidate, qbo_vendor, external=external,
             ),
         )
         if outcome.entity is None:
@@ -121,6 +159,7 @@ class VendorVendorConnector:
         *,
         qbo_vendor: QboVendor,
         incoming_name: Optional[str],
+        external: Optional[QboVendorExternal] = None,
     ) -> Optional[Vendor]:
         """
         `apply_fields` for the dbo-only fast path's HIT branch (direct or
@@ -179,7 +218,7 @@ class VendorVendorConnector:
         self.vendor_service.repo.set_qbo_identity(
             id=vendor_id, qbo_id=None, realm_id=None, active=qbo_vendor.active,
         )
-        self._sync_addresses(qbo_vendor, vendor_id)
+        self._sync_addresses(qbo_vendor, vendor_id, external=external)
         return vendor
 
     def _resolve_vendor_candidate(
@@ -263,7 +302,13 @@ class VendorVendorConnector:
         # round-2 fix, U-310, itself mirroring ItemCostCodeConnector's, U-307c).
         return existing
 
-    def _stamp_vendor_identity(self, candidate: Vendor, qbo_vendor: QboVendor) -> Optional[Vendor]:
+    def _stamp_vendor_identity(
+        self,
+        candidate: Vendor,
+        qbo_vendor: QboVendor,
+        *,
+        external: Optional[QboVendorExternal] = None,
+    ) -> Optional[Vendor]:
         """
         `stamp_identity` for the dbo-only fast path's MISS branch (U-313),
         delegating the row-scoped lock + theft-guard + write sequence to the
@@ -289,7 +334,7 @@ class VendorVendorConnector:
             self.vendor_service.repo.set_qbo_identity(
                 id=c.id, qbo_id=qbo_vendor.qbo_id, realm_id=qbo_vendor.realm_id, active=qbo_vendor.active,
             )
-            self._sync_addresses(qbo_vendor, c.id)
+            self._sync_addresses(qbo_vendor, c.id, external=external)
 
         candidate_id = coerce_id(candidate.id)
         return stamp_dbo_identity_with_lock(
@@ -439,23 +484,108 @@ class VendorVendorConnector:
             details=details,
         )
 
-    def _sync_addresses(self, qbo_vendor: QboVendor, vendor_id: int) -> None:
+    def _sync_addresses(
+        self,
+        qbo_vendor: QboVendor,
+        vendor_id: int,
+        *,
+        external: Optional[QboVendorExternal] = None,
+    ) -> None:
         """
         Sync billing address from QboVendor to VendorAddress/Address.
 
+        U-513: with the external payload in hand the address comes straight off
+        the inline `BillAddr` object (`_bill_address_from_payload`), so the
+        projection no longer READS `qbo.PhysicalAddress` — that table is a pure
+        write-then-read-back cache and is being sunset. Without a payload the
+        staging read stays (`_bill_address_from_staging`), unchanged, so
+        `scripts/sync_qbo_vendor.py`'s own projection loop keeps working
+        through the transition.
+
+        Failure isolation is unchanged: a billing-address failure is logged and
+        swallowed, never allowed to fail the Vendor projection (and so never
+        allowed to hold the pull watermark over an address).
+
         Args:
-            qbo_vendor: QboVendor with bill_addr_id
+            qbo_vendor: QboVendor staging row (carries realm_id + bill_addr_id)
             vendor_id: Database ID of the Vendor
+            external: the external QBO payload for this same vendor, or None
         """
-        # Sync billing address
-        if qbo_vendor.bill_addr_id:
-            try:
-                address = self.address_connector.sync_from_qbo_to_address(qbo_vendor.bill_addr_id)
-                address_id = coerce_id(address.id)
-                self._ensure_vendor_address(vendor_id, address_id, ADDRESS_TYPE_BILLING)
-                logger.debug(f"Synced billing address {address_id} for Vendor {vendor_id}")
-            except Exception as e:
-                logger.error(f"Failed to sync billing address for Vendor {vendor_id}: {e}")
+        try:
+            address = (
+                self._bill_address_from_payload(qbo_vendor, external)
+                if external is not None
+                else self._bill_address_from_staging(qbo_vendor)
+            )
+            if address is None:
+                # No address on this vendor (absent or blank) -- mint nothing,
+                # link nothing. An already-linked VendorAddress is left alone;
+                # this connector has never unlinked, and QBO going blank is not
+                # evidence the local link is wrong.
+                return
+            address_id = coerce_id(address.id)
+            self._ensure_vendor_address(vendor_id, address_id, ADDRESS_TYPE_BILLING)
+            logger.debug(f"Synced billing address {address_id} for Vendor {vendor_id}")
+        except Exception as e:
+            logger.error(f"Failed to sync billing address for Vendor {vendor_id}: {e}")
+
+    def _bill_address_from_staging(self, qbo_vendor: QboVendor) -> Optional[Address]:
+        """Pre-U-513 path: read the address back out of `qbo.PhysicalAddress` by
+        the local id the staging upsert stashed on the vendor row."""
+        if not qbo_vendor.bill_addr_id:
+            return None
+        return self.address_connector.sync_from_qbo_to_address(qbo_vendor.bill_addr_id)
+
+    def _bill_address_from_payload(
+        self, qbo_vendor: QboVendor, external: QboVendorExternal,
+    ) -> Optional[Address]:
+        """
+        U-513: project `dbo.Address` from the vendor's INLINE `BillAddr` payload.
+
+        Identity is the same synthetic `f"{qbo_vendor_id}_bill"` string the
+        staging row carries today, so existing `dbo.Address` rows are matched,
+        not re-keyed. Realm comes from the staging row — the same realm the
+        staging address write used — and is passed through unmodified so the
+        connector's own realm scoping can fail closed on it.
+
+        Returns None (mint nothing, link nothing) when QBO sent no `BillAddr`
+        at all, or sent a blank one (see `_inline_address_is_blank`).
+        """
+        external_id = str(external.id) if external.id else None
+        staging_qbo_id = qbo_vendor.qbo_id or None
+        if not external_id or external_id != staging_qbo_id:
+            # Defense in depth against a mis-paired closure: taking the ADDRESS
+            # from one vendor's payload while writing it under ANOTHER vendor's
+            # identity is silent cross-wiring, so refuse the payload entirely
+            # and fall back to this row's own staging address.
+            logger.error(
+                "Vendor payload/staging mismatch for QboVendor %s: staging QboId=%s, "
+                "payload Id=%s. Ignoring the inline BillAddr and falling back to staging.",
+                qbo_vendor.id, staging_qbo_id, external_id,
+            )
+            return self._bill_address_from_staging(qbo_vendor)
+
+        bill_addr = external.bill_addr
+        if bill_addr is None:
+            return None
+        if _inline_address_is_blank(
+            line1=bill_addr.line1, city=bill_addr.city, postal_code=bill_addr.postal_code,
+        ):
+            logger.debug(
+                f"QboVendor {external_id} has a blank inline BillAddr -- treating it as "
+                f"absent (no dbo.Address minted, no VendorAddress written)"
+            )
+            return None
+
+        return self.address_connector.sync_address_from_external(
+            qbo_id=f"{external_id}_bill",
+            realm_id=qbo_vendor.realm_id,
+            line1=bill_addr.line1,
+            line2=bill_addr.line2,
+            city=bill_addr.city,
+            country_sub_division_code=bill_addr.country_sub_division_code,
+            postal_code=bill_addr.postal_code,
+        )
 
     def _ensure_vendor_address(self, vendor_id: int, address_id: int, address_type_id: int) -> None:
         """

@@ -210,7 +210,7 @@ def test_vendor_direct_hit_updates_fields_refreshes_active_syncs_addresses():
     vendor_service.repo.set_qbo_identity.assert_called_once_with(
         id=55, qbo_id=None, realm_id=None, active=False,
     )
-    connector._sync_addresses.assert_called_once_with(qbo_vendor, 55)
+    connector._sync_addresses.assert_called_once_with(qbo_vendor, 55, external=None)
 
 
 def test_vendor_direct_hit_preserves_non_blank_local_name():
@@ -247,7 +247,7 @@ def test_vendor_genuine_miss_creates_new_and_stamps_identity():
     vendor_service.repo.set_qbo_identity.assert_called_once_with(
         id=300, qbo_id="QBO-V-1", realm_id="r1", active=True,
     )
-    connector._sync_addresses.assert_called_once_with(qbo_vendor, 300)
+    connector._sync_addresses.assert_called_once_with(qbo_vendor, 300, external=None)
 
 
 def test_vendor_genuine_miss_adopts_existing_unmapped_by_name():
@@ -269,7 +269,7 @@ def test_vendor_genuine_miss_adopts_existing_unmapped_by_name():
     vendor_service.repo.set_qbo_identity.assert_called_once_with(
         id=400, qbo_id="QBO-V-1", realm_id="r1", active=None,
     )
-    connector._sync_addresses.assert_called_once_with(qbo_vendor, 400)
+    connector._sync_addresses.assert_called_once_with(qbo_vendor, 400, external=None)
 
 
 def test_vendor_resolve_candidate_does_not_mutate_or_persist_the_adopted_row():
@@ -418,7 +418,7 @@ def test_vendor_race_discovered_hit_adopts_racer_without_create():
 
     assert result is racer_row
     vendor_service.create.assert_not_called()
-    connector._sync_addresses.assert_called_once_with(qbo_vendor, 400)
+    connector._sync_addresses.assert_called_once_with(qbo_vendor, 400, external=None)
 
 
 def test_vendor_no_qbo_id_raises():

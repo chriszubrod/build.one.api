@@ -45,6 +45,10 @@ REALM = "9130353016965726"
 SERVICE_MODULE = "integrations.intuit.qbo.company_info.business.service"
 CLIENT_TARGET = f"{SERVICE_MODULE}.QboCompanyInfoClient"
 REPO_TARGET = f"{SERVICE_MODULE}.QboPhysicalAddressRepository"
+# U-513 added the inline dbo.Address projection to the same `sync_from_qbo`.
+# These tests are about the STAGING write, so the projection is stubbed out —
+# left live it would reach a real connector (and a blocked live DB).
+ADDRESS_CONNECTOR_TARGET = f"{SERVICE_MODULE}.CompanyInfoAddressConnector"
 
 # The live collision, verbatim: Vendor 1246 (Rogers Build Inc.)'s billing
 # address shares all three matched fields with the company address.
@@ -178,7 +182,7 @@ def _run_pull(repo, response):
     svc = QboCompanyInfoService()
     with patch(CLIENT_TARGET, return_value=_patched_client(response)), patch(
         REPO_TARGET, return_value=repo
-    ):
+    ), patch(ADDRESS_CONNECTOR_TARGET):
         return svc.sync_from_qbo(realm_id=REALM)
 
 

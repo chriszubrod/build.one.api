@@ -57,12 +57,17 @@ def test_the_call_sites_were_actually_found():
     trivially -- which is precisely how a cross-package contract break would
     slip through unnoticed."""
     sites = _call_sites()
-    assert len(sites) >= 4, (
-        f"expected a call site in each of physical_address/customer/vendor/"
-        f"company_info, found {len(sites)}: {[str(s[0]) for s in sites]}"
+    # U-513 ph3b: `physical_address` dropped out of the expected set. It used to
+    # appear because the connector's own `sync_from_qbo_to_address` wrapper called
+    # the contract internally; that wrapper died with `qbo.PhysicalAddress`, so the
+    # DEFINING package is no longer also a calling one. The three CONSUMER packages
+    # are what this file was always really guarding.
+    assert len(sites) >= 3, (
+        f"expected a call site in each of customer/vendor/company_info, "
+        f"found {len(sites)}: {[str(s[0]) for s in sites]}"
     )
     packages = {str(s[0]).split("/")[3] for s in sites}
-    assert {"physical_address", "customer", "vendor", "company_info"} <= packages, (
+    assert {"customer", "vendor", "company_info"} <= packages, (
         f"a consumer package has no call site -- its work is inert: {sorted(packages)}"
     )
 

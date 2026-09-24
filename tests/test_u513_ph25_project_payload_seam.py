@@ -11,10 +11,16 @@ the customer family, in two places the production pull actually reaches:
 
 Both now project from the ORIGINAL QBO Customer payload's inline `BillAddr` /
 `ShipAddr`, threaded through `QboCustomerService._sync_to_projects` by the same
-closure `_sync_to_customers` has used since ph1. The staging read survives as a
+closure `_sync_to_customers` has used since ph1. The staging read survived as a
 fallback for the two callers that genuinely have no payload (a bare
-`sync_from_qbo_customer(row)` and `heal_missing_mapping`) and dies with the
-table in ph3b.
+`sync_from_qbo_customer(row)` and `heal_missing_mapping`).
+
+⚠️ UPDATED BY ph3b, which deleted that fallback with the table. Three tests in
+Section 5 are INVERTED as a result and say so in their own docstrings: a
+payload-less call now resolves neither of the job's own slots. The billing
+chain does not collapse with them — Link 2 reads `dbo.Address` — and the full
+accounting of what the gap costs, who pays it and why it self-heals lives in
+`test_u513_ph3b_customer_no_staging_read.py`.
 
 WHY IT HAD TO BE PINNED RATHER THAN DESCRIBED
 ---------------------------------------------
@@ -44,6 +50,7 @@ import pytest
 from integrations.intuit.qbo.customer.business import service as customer_service_module
 from integrations.intuit.qbo.customer.business.service import QboCustomerService
 from integrations.intuit.qbo.customer.connector.customer.business.service import (
+    address_fields_are_blank,
     billing_address_qbo_id,
 )
 from integrations.intuit.qbo.customer.connector.project.business.service import (
@@ -74,10 +81,9 @@ from tests.test_u506_p1_project_address_parent_fallback import (
     _FakeAddressConnector,
     _FakeAddressService,
     _FakeProjectAddressService,
-    _FakeStagingAddressService,
+    _dbo_address,
     _dbo_address_id,
     _qbo_customer,
-    _staged,
 )
 
 REALM = "9130353016965726"
@@ -87,10 +93,11 @@ REALM = "9130353016965726"
 # a drifting literal would silently turn every payload test into a staging test.
 JOB_QBO_ID = _qbo_customer().qbo_id
 
-# ⚠️ A FOURTH disjoint id block. 9xx = qbo.PhysicalAddress staging,
-# 1xxx = `_dbo_address_id` (what the STAGING branch mints), 2xxx = the parent's
-# dbo.Address. 3xxx is what the PAYLOAD branch mints, so no assertion in this
-# file can pass by collision with the branch it is meant to rule out.
+# ⚠️ A disjoint id block, so no assertion in this file can pass by collision
+# with the seam it is meant to rule out. 9xx = qbo.PhysicalAddress staging,
+# 1xxx = `_dbo_address_id` (what the staging branch minted, before ph3b deleted
+# it), 2xxx = the parent's dbo.Address, 4xxx = the U-506 harness's own payload
+# mints. 3xxx is this file's.
 PAYLOAD_ADDRESS_ID_BASE = 3000
 
 # The job's own two addresses as QBO hands them back INLINE. Deliberately
@@ -134,40 +141,27 @@ def _external(*, qbo_id=JOB_QBO_ID, bill_addr=None, ship_addr=None):
     return QboCustomerExternalSchema(**payload)
 
 
-class _ExtendableStagingService(_FakeStagingAddressService):
-    """The U-506 staging fake, plus rows a single test supplies. Used only by
-    the shared-blankness test, which has to drive the STAGING branch over the
-    same arbitrary field values it drives the PAYLOAD branch over."""
-
-    def __init__(self, extra):
-        super().__init__()
-        self.extra = extra
-
-    def read_by_id(self, id):
-        if id in self.extra:
-            self.read_ids.append(id)
-            return self.extra[id]
-        return super().read_by_id(id)
-
-
 class _PayloadAwareAddressConnector(_FakeAddressConnector):
-    """`_FakeAddressConnector` + `sync_address_from_external`, the staging-free
-    write the payload branch calls.
+    """`_FakeAddressConnector` with the payload mint re-keyed into THIS file's
+    3xxx id block, so no assertion here can pass by collision with the U-506
+    harness's own 4xxx payload ids.
 
-    Implemented by the `physical_address` package (a sibling unit), so it is a
-    fake here deliberately: what THIS unit owns is WHEN it is called, with WHAT
-    identity/realm/content, and when it must NOT be called at all. The staging
-    seams are inherited untouched so "the payload branch did not read staging"
-    is observable on the real thing rather than on a re-implementation.
+    `sync_address_from_external` is implemented by the `physical_address`
+    package (a sibling unit), so it is a fake here deliberately: what THIS unit
+    owns is WHEN it is called, with WHAT identity/realm/content, and when it
+    must NOT be called at all. The staging seams are inherited untouched, still
+    un-called, so "the payload branch did not read staging" is observable on the
+    real thing rather than on a re-implementation.
+
+    ⚠️ ph3b removed this class's `extra_staging_rows` plumbing along with the
+    only thing that used it — the shared-blankness test's STAGING half, which
+    had a branch to drive. There is no staging branch left to drive.
     """
 
-    def __init__(self, extra_staging_rows=None):
+    def __init__(self):
         super().__init__()
         self.minted = []
         self._ids = {}
-        self._extra = dict(extra_staging_rows or {})
-        if self._extra:
-            self.qbo_physical_address_service = _ExtendableStagingService(self._extra)
 
     def sync_address_from_external(self, **kwargs):
         self.minted.append(kwargs)
@@ -176,24 +170,8 @@ class _PayloadAwareAddressConnector(_FakeAddressConnector):
             self._ids[qbo_id] = PAYLOAD_ADDRESS_ID_BASE + len(self._ids) + 1
         return SimpleNamespace(id=self._ids[qbo_id])
 
-    def sync_from_qbo_to_address(self, qbo_physical_address_id):
-        if qbo_physical_address_id in self._extra:
-            self.synced.append(qbo_physical_address_id)
-            return SimpleNamespace(id=_dbo_address_id(qbo_physical_address_id))
-        return super().sync_from_qbo_to_address(qbo_physical_address_id)
 
-    # -- observables -------------------------------------------------------
-    def minted_qbo_ids(self):
-        return [m["qbo_id"] for m in self.minted]
-
-    def address_id_for(self, qbo_id):
-        return self._ids[qbo_id]
-
-    def staging_reads(self):
-        return list(self.qbo_physical_address_service.read_ids)
-
-
-def _build(*, parent_address=None, extra_staging_rows=None):
+def _build(*, parent_address=None):
     """`CustomerProjectConnector` wired the U-506 way, with the payload-aware
     address connector swapped in. `parent_address` is the `dbo.Address` the
     parent's `<ref>_bill` identity resolves to; the parent's `_ship` row
@@ -204,7 +182,7 @@ def _build(*, parent_address=None, extra_staging_rows=None):
     return CustomerProjectConnector(
         project_service=Mock(),
         project_address_service=_FakeProjectAddressService(),
-        address_connector=_PayloadAwareAddressConnector(extra_staging_rows),
+        address_connector=_PayloadAwareAddressConnector(),
         reconciliation_repo=Mock(),
         customer_service=Mock(),
         qbo_customer_repo=Mock(),
@@ -420,18 +398,19 @@ BLANKNESS_CASES = [
     pytest.param(None, None, "37064", True, id="postal-only"),
 ]
 
-CUSTOM_STAGING_ID = 950  # outside STAGING_ROWS; supplied per-test
-
-
 @pytest.mark.parametrize("line1, city, postal, expect_link", BLANKNESS_CASES)
 def test_blankness_is_the_same_decision_in_both_branches(line1, city, postal, expect_link):
-    """⚠️ Both branches over the SAME field values, asserted EQUAL.
+    """⚠️ RE-POINTED BY ph3b. There is no second BRANCH any more — ph3b deleted
+    the staging arm — so this now asserts the surviving pair: what the payload
+    branch DOES, against what the shared rule SAYS.
 
-    A payload branch that hand-rolled its own blank test -- say by adding
-    `line2` or the state code as content -- would diverge here on the
-    `line2`/state cases below, and production behaviour would then depend on
-    which branch happened to run. The single shared rule is
-    `address_fields_are_blank`; this is what keeps it single.
+    The intent is unchanged and still load-bearing. A payload branch that
+    hand-rolled its own blank test — say by counting `line2` or the state code
+    as content — would diverge from `address_fields_are_blank` here, and the
+    MINT (this branch) would then disagree with the READ
+    (`_is_blank_dbo_address`, which is the same function applied to the dbo
+    column names). That disagreement is invisible in production: the row is
+    written and then never chosen.
     """
     payload_conn = _build(parent_address=None)
     payload_conn._sync_addresses(
@@ -442,31 +421,31 @@ def test_blankness_is_the_same_decision_in_both_branches(line1, city, postal, ex
         ),
     )
     payload_linked = bool(_links_of_type(payload_conn, ADDRESS_TYPE_BILLING))
+    rule_says_address = not address_fields_are_blank(line1, city, postal)
 
-    staging_conn = _build(
-        parent_address=None,
-        extra_staging_rows={
-            CUSTOM_STAGING_ID: _staged(
-                CUSTOM_STAGING_ID, line1=line1, city=city, postal_code=postal
-            )
-        },
-    )
-    staging_conn._sync_addresses(_qbo_customer(bill_addr_id=CUSTOM_STAGING_ID), PROJECT_ID)
-    staging_linked = bool(_links_of_type(staging_conn, ADDRESS_TYPE_BILLING))
-
-    assert payload_linked == staging_linked == expect_link, (
-        f"the two branches disagree on whether "
+    assert payload_linked == rule_says_address == expect_link, (
+        f"the payload branch and the shared rule disagree on whether "
         f"(line1={line1!r}, city={city!r}, postal={postal!r}) is an address: "
-        f"payload={payload_linked}, staging={staging_linked}"
+        f"branch={payload_linked}, rule={rule_says_address}"
+    )
+    assert payload_conn.address_connector.staging_reads() == [], (
+        "the payload branch read qbo.PhysicalAddress -- ph3b deleted every reader"
     )
 
 
 @pytest.mark.parametrize("line2, state", [("Suite 200", "TN"), (None, "TN"), ("Suite 200", None)])
 def test_line2_and_state_are_not_content_in_either_branch(line2, state):
     """The specific divergence the shared predicate exists to prevent: neither
-    `line2` nor the state code is routable on its own, and BOTH branches must
-    say so. Split out from the parametrize above because these are the fields a
-    hand-rolled payload check is most likely to include by accident."""
+    `line2` nor the state code is routable on its own. Split out from the
+    parametrize above because these are the fields a hand-rolled payload check
+    is most likely to include by accident.
+
+    ⚠️ ph3b: the staging half of this comparison is gone, so the assertion is
+    made against the OTHER live accessor instead — `_is_blank_dbo_address`, the
+    read side of the same row. Asserting only "the payload branch linked
+    nothing" would pass just as well against a branch that had stopped linking
+    anything at all, which is why the mint and the read are compared rather
+    than the outcome alone."""
     payload_conn = _build(parent_address=None)
     payload_conn._sync_addresses(
         _qbo_customer(),
@@ -475,17 +454,18 @@ def test_line2_and_state_are_not_content_in_either_branch(line2, state):
             bill_addr={"Line2": line2, "CountrySubDivisionCode": state}
         ),
     )
-    staging_conn = _build(
-        parent_address=None,
-        extra_staging_rows={
-            CUSTOM_STAGING_ID: _staged(CUSTOM_STAGING_ID, line2=line2, state=state)
-        },
-    )
-    staging_conn._sync_addresses(_qbo_customer(bill_addr_id=CUSTOM_STAGING_ID), PROJECT_ID)
 
     assert _links_of_type(payload_conn, ADDRESS_TYPE_BILLING) == []
-    assert _links_of_type(staging_conn, ADDRESS_TYPE_BILLING) == []
     assert payload_conn.address_connector.minted == []
+    # The same content read back off a dbo.Address row: also blank.
+    dbo_row = _dbo_address(7, street_one=None, city=None, zip=None)
+    dbo_row.street_two = line2
+    dbo_row.state = state
+    assert CustomerProjectConnector._is_blank_dbo_address(dbo_row) is True
+    # ...and the non-blank control, so this is not passing by always-True.
+    assert CustomerProjectConnector._is_blank_dbo_address(
+        _dbo_address(8, street_one="1539 Old Hillsboro Road")
+    ) is False
 
 
 def test_a_blank_payload_address_mints_nothing_in_either_slot():
@@ -506,29 +486,50 @@ def test_a_blank_payload_address_mints_nothing_in_either_slot():
 # Section 5 — degradation: no payload, partial map, mis-paired payload
 # ===========================================================================
 
-def test_a_missing_payload_entry_degrades_to_the_staging_read():
-    """`external_by_id.get(row.qbo_id)` returning None must not crash and must
-    not silently blank both slots -- it must take the transitional staging path,
-    which is the whole reason that path is still standing."""
-    connector = _build(parent_address=None)
+def test_a_missing_payload_entry_no_longer_degrades_to_a_staging_read():
+    """⚠️ INVERTED BY ph3b, which deleted the path this test was named after.
+
+    `external_by_id.get(row.qbo_id)` returning None still must not crash. What
+    changed is what it costs: the job's own BillAddr and its whole SHIPPING slot
+    now resolve NOTHING, even with both staging FKs populated and pointing at
+    real, non-blank rows. Built with those FKs deliberately populated, so the
+    assertion is about the shipped code and not about an empty fixture.
+
+    Billing does NOT collapse with them — Link 2 reads `dbo.Address` and never
+    touched staging — which is the half that keeps the cost bounded. The full
+    treatment of who pays this and why it self-heals is in
+    `test_u513_ph3b_customer_no_staging_read.py`.
+    """
+    connector = _build(parent_address=REAL_PARENT_BILL_ADDRESS)
     connector._sync_addresses(
         _qbo_customer(bill_addr_id=REAL_OWN_BILL, ship_addr_id=REAL_OWN_SHIP),
         PROJECT_ID,
         external_customer=None,
     )
 
-    assert _links_of_type(connector, ADDRESS_TYPE_BILLING) == [_dbo_address_id(REAL_OWN_BILL)]
-    assert _links_of_type(connector, ADDRESS_TYPE_SHIPPING) == [_dbo_address_id(REAL_OWN_SHIP)]
-    assert connector.address_connector.minted == [], (
-        "the staging branch went through the payload writer"
+    assert connector.address_connector.staging_reads() == []
+    assert connector.address_connector.synced == []
+    assert connector.address_connector.minted == []
+    assert _links_of_type(connector, ADDRESS_TYPE_SHIPPING) == [], (
+        "the shipping slot resolved with no payload -- it has gained a source"
+    )
+    assert _links_of_type(connector, ADDRESS_TYPE_BILLING) == [PARENT_BILL_ADDRESS_ID], (
+        "the PARENT link went down with the staging arm -- it reads dbo.Address "
+        "and must be unaffected"
     )
 
 
-def test_heal_missing_mapping_still_reaches_the_staging_path():
-    """`heal_missing_mapping` binds a name-matched Project from an INVOICE pull
-    and genuinely has no Customer payload in scope. It is the second of the two
-    remaining staging callers, and it must keep resolving addresses until ph3b
-    drops the table."""
+def test_heal_missing_mapping_no_longer_reaches_a_staging_path():
+    """⚠️ INVERTED BY ph3b. `heal_missing_mapping` binds a name-matched Project
+    from an INVOICE pull and genuinely has no Customer payload in scope. It was
+    the second of the two remaining staging callers; with the staging arm gone
+    it resolves no own address at all.
+
+    Pinned here only as the inversion of what this file used to assert. The gap
+    itself — what it costs, that it is bounded, and that the next
+    payload-bearing pull closes it — is pinned in
+    `test_u513_ph3b_customer_no_staging_read.py`.
+    """
     connector = _build(parent_address=None)
     project = SimpleNamespace(id=PROJECT_ID, public_id="pub-p88", qbo_id=None, realm_id=None)
     connector.project_service.read_by_name.return_value = project
@@ -539,17 +540,23 @@ def test_heal_missing_mapping_still_reaches_the_staging_path():
         _qbo_customer(bill_addr_id=REAL_OWN_BILL, ship_addr_id=REAL_OWN_SHIP)
     )
 
-    assert _links_of_type(connector, ADDRESS_TYPE_BILLING) == [_dbo_address_id(REAL_OWN_BILL)]
-    assert _links_of_type(connector, ADDRESS_TYPE_SHIPPING) == [_dbo_address_id(REAL_OWN_SHIP)]
+    assert connector.address_connector.staging_reads() == []
+    assert connector.address_connector.synced == []
+    assert connector.project_address_service.links() == []
 
 
-def test_a_payload_for_a_DIFFERENT_customer_is_refused_and_falls_back_to_staging():
+def test_a_payload_for_a_DIFFERENT_customer_is_refused_and_resolves_nothing():
     """Defense in depth against a mis-keyed map. Taking the ADDRESS off one
     customer's payload while writing it under ANOTHER customer's synthetic
     identity is silent cross-wiring -- a project would render a stranger's
     street on a payment request with nothing raised. Mirrors
     `VendorVendorConnector._bill_address_from_payload`'s refusal, and it refuses
     BOTH slots, not just the one the vendor connector has.
+
+    ⚠️ ph3b raised the price and that is DELIBERATE: the refusal used to degrade
+    to the staging read, and now there is nothing behind it. Still the right
+    trade — a missing address is visible to whoever sends the packet, a
+    stranger's is not.
     """
     connector = _build(parent_address=None)
     connector._sync_addresses(
@@ -564,8 +571,8 @@ def test_a_payload_for_a_DIFFERENT_customer_is_refused_and_falls_back_to_staging
         "a payload belonging to another customer was projected under THIS job's "
         "synthetic identity"
     )
-    assert _links_of_type(connector, ADDRESS_TYPE_BILLING) == [_dbo_address_id(REAL_OWN_BILL)]
-    assert _links_of_type(connector, ADDRESS_TYPE_SHIPPING) == [_dbo_address_id(REAL_OWN_SHIP)]
+    assert connector.address_connector.staging_reads() == []
+    assert connector.project_address_service.links() == []
 
 
 def test_a_payload_failure_cannot_fail_the_project_projection():

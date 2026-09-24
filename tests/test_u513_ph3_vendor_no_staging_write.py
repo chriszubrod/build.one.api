@@ -26,15 +26,18 @@ for the first time after ph3a are genuinely NULL. That is asserted below at the
 call boundary (what the service hands the repo), which is the only layer these
 pure-logic tests can see.
 
-`VendorVendorConnector._bill_address_from_staging` also stays. Its
-`external is None` dispatch branch is unreachable from every production entry
-point (the sole production caller of `sync_from_qbo_vendor` is
+`VendorVendorConnector._bill_address_from_staging` also stayed at ph3a — its
+`external is None` dispatch branch already unreachable from every production
+entry point (the sole production caller of `sync_from_qbo_vendor` is
 `QboVendorService._sync_to_vendors`'s closure, which always threads the payload
-it staged from), but the method is still reached by
-`_bill_address_from_payload`'s cross-wiring refusal — a defensive branch that
-must keep refusing. With the write gone it can only ever resolve THIS vendor's
-own `{id}_bill` row (stale) or nothing at all (NULL id); it can never resolve a
-different vendor's address. ph3b retires it with the table.
+it staged from), but still reached by `_bill_address_from_payload`'s
+cross-wiring refusal, a defensive branch that must keep refusing.
+
+**ph3b has since deleted that method**, and the refusal now mints nothing rather
+than falling back to it. The tests below are unaffected because they were
+already written against a NULL `bill_addr_id`, so they never depended on the
+staging read resolving anything; `test_u513_ph3b_vendor_no_staging_read.py`
+pins the removal and the surviving refusal.
 
 Why the assertions are shaped this way
 --------------------------------------
@@ -48,6 +51,7 @@ would also have written nothing.
 Pure logic: the QBO client, both repos and the connector's collaborators are
 mocked; the harness blocks live pyodbc outright (`tests/conftest.py`).
 """
+import inspect
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -72,11 +76,13 @@ from test_u513_vendor_address_from_payload import (
 SERVICE_MODULE = "integrations.intuit.qbo.vendor.business.service"
 CONNECTOR_MODULE = "integrations.intuit.qbo.vendor.connector.vendor.business.service"
 
-# The two bindings through which a `qbo.PhysicalAddress` write could still be
-# reached: the one `QboPhysicalAddressService.__init__` looks up, and the
-# definition site itself (for a caller that builds the repo directly).
-PA_SERVICE_MODULE = "integrations.intuit.qbo.physical_address.business.service"
-PA_REPO_MODULE = "integrations.intuit.qbo.physical_address.persistence.repo"
+# U-513 ph3b deleted both bindings a `qbo.PhysicalAddress` write could be reached
+# through -- `QboPhysicalAddressService`, `QboPhysicalAddressRepository`, their
+# modules, and the table and sprocs under them are all gone, so neither module
+# path resolves any more. The autouse fixture that patched them is replaced by
+# the source-level guard in section 1, which asserts the vendor pull's own text
+# cannot name a staging repository; the deletion itself is pinned by
+# tests/test_u513_ph3b_package_removed.py.
 
 
 # --------------------------------------------------------------------------
@@ -128,33 +134,6 @@ def _client_returning(*externals):
     return client
 
 
-@pytest.fixture(autouse=True)
-def staging_address_repo():
-    """Intercept every route to a `qbo.PhysicalAddress` row. The class is never
-    expected to be CONSTRUCTED at all after ph3a -- `QboVendorService` no longer
-    holds a `QboPhysicalAddressService` -- so both construction and any write
-    through it are failures.
-
-    AUTOUSE on purpose. Without it, reinstating the staging write would make the
-    tests below fail only because the harness blocks live pyodbc -- an incidental
-    RED that would still be RED if the write were reinstated against something
-    harmless. With the repo stubbed everywhere, each test fails for its own
-    stated reason instead."""
-    repo_cls = MagicMock(name="QboPhysicalAddressRepository")
-    with patch(f"{PA_SERVICE_MODULE}.QboPhysicalAddressRepository", repo_cls), \
-            patch(f"{PA_REPO_MODULE}.QboPhysicalAddressRepository", repo_cls):
-        yield repo_cls
-
-
-def _assert_no_staging_address_written(repo_cls):
-    assert repo_cls.call_count == 0, (
-        "the pull constructed a QboPhysicalAddressRepository -- the qbo."
-        "PhysicalAddress staging write is supposed to be gone (U-513 ph3a)"
-    )
-    repo_cls.return_value.create.assert_not_called()
-    repo_cls.return_value.update_by_id.assert_not_called()
-
-
 def _run_pull(service, *externals, connector, realm_id=REALM):
     """Drive a FULL pull through the production shape: fetch -> stage -> project,
     exactly as `scripts/sync_qbo_vendor.py` invokes it."""
@@ -169,7 +148,7 @@ def _run_pull(service, *externals, connector, realm_id=REALM):
 # --------------------------------------------------------------------------
 
 
-def test_full_pull_writes_no_qbo_physical_address_row(staging_address_repo):
+def test_full_pull_writes_no_qbo_physical_address_row():
     """The headline behavior. A vendor carrying a REAL, non-blank BillAddr is
     the case that used to stage a row -- so this is the pull that would trip the
     guard if the write came back."""
@@ -179,7 +158,6 @@ def test_full_pull_writes_no_qbo_physical_address_row(staging_address_repo):
 
     outcome = _run_pull(service, _external(bill_addr=_addr()), connector=connector)
 
-    _assert_no_staging_address_written(staging_address_repo)
     # Non-vacuous: the pull really did stage and project this vendor, and really
     # did have an address in hand to (not) stage.
     assert outcome.synced_count == 1
@@ -187,7 +165,7 @@ def test_full_pull_writes_no_qbo_physical_address_row(staging_address_repo):
     address_connector.sync_address_from_external.assert_called_once()
 
 
-def test_update_path_writes_no_qbo_physical_address_row(staging_address_repo):
+def test_update_path_writes_no_qbo_physical_address_row():
     """The UPDATE branch staged an address too (it re-upserted the same
     `{id}_bill` row on every 4-hour pull), so it needs its own guard -- a fix
     applied only to the CREATE branch would pass the test above."""
@@ -197,18 +175,45 @@ def test_update_path_writes_no_qbo_physical_address_row(staging_address_repo):
 
     outcome = _run_pull(service, _external(bill_addr=_addr()), connector=connector)
 
-    _assert_no_staging_address_written(staging_address_repo)
     assert repo.update_calls and not repo.create_calls
     assert outcome.projected_count == 1
     address_connector.sync_address_from_external.assert_called_once()
 
 
 def test_upsert_physical_address_helper_is_gone():
-    """Structural companion to the repo guard: ph3b's drop of the table + sprocs
-    assumes nothing in this service can still reach them."""
+    """Structural companion to the behavioural guards: ph3b's drop of the table +
+    sprocs assumes nothing in this service can still reach them."""
     assert not hasattr(QboVendorService, "_upsert_physical_address")
     assert not hasattr(QboVendorService(repo=_RecordingVendorRepo()),
                        "physical_address_service")
+
+
+@pytest.mark.parametrize(
+    "module_name", [SERVICE_MODULE, CONNECTOR_MODULE], ids=["service", "connector"],
+)
+def test_no_staging_repository_is_named_anywhere_in_the_pull(module_name):
+    """Replaces ph3a's autouse patch fixture, which armed a stub at
+    `QboPhysicalAddressRepository`'s home module and asserted the pull never
+    constructed it. ph3b deleted that module, so there is no longer a target to
+    patch -- and a name that cannot be imported cannot be called. What a patch
+    could never catch, and this does, is the reinstatement shape: a module-level
+    import binds before any fixture runs. So assert on the module's own text and
+    bindings instead.
+
+    Docstrings and comments are NOT stripped here (unlike the company_info
+    sibling's `_source_without_prose`) because these two modules must not name
+    the staging repository even in prose -- there is nothing left for such a
+    mention to refer to."""
+    import importlib
+
+    module = importlib.import_module(module_name)
+    assert not hasattr(module, "QboPhysicalAddressRepository")
+    assert not hasattr(module, "QboPhysicalAddressService")
+
+    source = inspect.getsource(module)
+    for dead in ("QboPhysicalAddressRepository", "QboPhysicalAddressService",
+                 "physical_address.persistence", "physical_address.business"):
+        assert dead not in source, f"{module_name} still names {dead}"
 
 
 # --------------------------------------------------------------------------

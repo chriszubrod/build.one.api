@@ -15,7 +15,6 @@ from integrations.intuit.qbo.base.reconciliation_recorder import (
     record_duplicate_identity_conflict,
     record_mapping_issue,
 )
-from integrations.intuit.qbo.physical_address.business.service import QboPhysicalAddressService
 from integrations.intuit.qbo.reconciliation.persistence.repo import ReconciliationIssueRepository
 from entities.address.business.service import AddressService
 from entities.address.business.model import Address
@@ -31,20 +30,38 @@ def _describe_source(*, source_ref: Optional[str], qbo_id: Optional[str]) -> str
     persists this string; it exists so an operator reading a log line or a
     reconciliation row can tell WHICH inbound address produced it.
 
-    `source_ref` is a free-form label the caller owns. The staging wrapper
-    `sync_from_qbo_to_address` passes the full `"QboPhysicalAddress {id}"`
-    descriptor, which keeps every message this module emits byte-identical
-    to its pre-U-513 wording. A direct-from-payload caller passes whatever
-    names its own source (e.g. `"Customer 1246 BillAddr"`), or nothing —
-    the fallback then names the identity itself, so the message stays
-    informative rather than degrading to a bare `None`.
+    `source_ref` is a free-form label the caller owns — whatever names its
+    own source (e.g. `"Customer 1246 BillAddr"`), or nothing: the fallback
+    then names the identity itself, so the message stays informative rather
+    than degrading to a bare `None`. Until U-513 ph3b the deleted staging
+    wrapper `sync_from_qbo_to_address` passed a `"QboPhysicalAddress {id}"`
+    descriptor here; that spelling is gone with the table, and nothing reads
+    these strings programmatically, so no consumer moves with it.
     """
     return source_ref or f"QBO address identity {qbo_id}"
 
 
 class PhysicalAddressAddressConnector:
     """
-    Connector service for synchronization between QboPhysicalAddress and Address modules.
+    Projects a QBO physical address (the `PhysicalAddress` / `BillAddr` /
+    `ShipAddr` object inline on a QBO payload) onto `dbo.Address`.
+
+    U-513 ph3b: this class is ALL that survives of the old
+    `integrations/intuit/qbo/physical_address` package. `qbo.PhysicalAddress`
+    — the staging table the package was built around — is dropped
+    (`scripts/migrations/u513_drop_qbo_physical_address.sql`), and with it
+    went the service/repo/model/router/schemas/client and the
+    `sync_from_qbo_to_address` staging-read wrapper. `sync_address_from_external`
+    is the SOLE entry point and the shared contract three packages call:
+    `customer/connector/customer`, `customer/connector/project`,
+    `vendor/connector/vendor` and `company_info/connector/address`.
+
+    It deliberately stays at this module path. The name now denotes the QBO
+    PAYLOAD object (which is still literally called `PhysicalAddress`), not
+    the dropped table, and four importers — two of them being edited by other
+    units in parallel with this one — bind it by this exact dotted path. A
+    rename would be a cross-unit conflict bought for nothing, and the U-349
+    program's rule is one home with no compatibility shim.
 
     U-351: dbo-only identity resolution via `run_identity_fastpath_dbo_only` --
     no `qbo.PhysicalAddressAddress` mapping-table read/write of any kind (the
@@ -61,75 +78,32 @@ class PhysicalAddressAddressConnector:
     from. The dead `sync_from_address_to_qbo` push path (zero callers,
     confirmed at Gate-1) was removed alongside it.
 
-    U-513: the projection is now reachable DIRECTLY from an external QBO
-    payload via `sync_address_from_external`, with no `qbo.PhysicalAddress`
-    read. `qbo.PhysicalAddress` is a pure write-then-read-back cache — the
-    address content is already inline on the originating QBO payload — and
-    that staging table is being sunset. `sync_from_qbo_to_address` survives
-    unchanged for the transition (three packages still call it) as a thin
-    staging-read wrapper over the same shared helpers, so the two entry
-    points cannot drift: everything below the entry points takes plain
-    `qbo_id` / `realm_id` / `source_ref` values rather than the staging
-    model, which is the only reason one implementation can serve both.
+    U-513: the projection is reachable DIRECTLY from an external QBO payload
+    via `sync_address_from_external`, with no `qbo.PhysicalAddress` read.
+    That table was a pure write-then-read-back cache — the address content
+    is already inline on the originating QBO payload — so ph1/ph2/ph2.5
+    repointed every family onto the payload, ph3a stopped the writes, and
+    ph3b (this change) dropped the table and deleted the wrapper that read
+    it. Everything below the entry point takes plain `qbo_id` / `realm_id` /
+    `source_ref` VALUES rather than a staging model, which is what let the
+    wrapper be peeled off without touching the projection underneath it.
 
-    Field Mapping:
-        QboPhysicalAddress.line1 <-> Address.street_one
-        QboPhysicalAddress.line2 <-> Address.street_two
-        QboPhysicalAddress.city <-> Address.city
-        QboPhysicalAddress.country_sub_division_code <-> Address.state
-        QboPhysicalAddress.postal_code <-> Address.zip
+    Field Mapping (QBO payload field <-> dbo.Address column):
+        Line1 <-> street_one
+        Line2 <-> street_two
+        City <-> city
+        CountrySubDivisionCode <-> state
+        PostalCode <-> zip
     """
 
     def __init__(
         self,
         address_service: Optional[AddressService] = None,
-        qbo_physical_address_service: Optional[QboPhysicalAddressService] = None,
         reconciliation_repo: Optional[ReconciliationIssueRepository] = None,
     ):
         """Initialize the PhysicalAddressAddressConnector."""
         self.address_service = address_service or AddressService()
-        self.qbo_physical_address_service = qbo_physical_address_service or QboPhysicalAddressService()
         self.reconciliation_repo = reconciliation_repo or ReconciliationIssueRepository()
-
-    def sync_from_qbo_to_address(self, qbo_physical_address_id: int) -> Address:
-        """
-        Sync data from QboPhysicalAddress to Address module, via the dbo-only
-        identity fast path (U-351).
-
-        U-513: now a thin wrapper — read the staging row, then hand its
-        already-inline content to `sync_address_from_external`, which owns
-        the whole projection. Signature, return value, the missing-row
-        `ValueError`, and every log/error string are unchanged: three
-        packages (`customer/connector/project`, `vendor/connector/vendor`,
-        `scripts/sync_qbo_company_info.py`) still call this during the
-        staging-table sunset, and the staging read is the ONLY thing this
-        method still adds over the direct-from-payload entry point.
-
-        Args:
-            qbo_physical_address_id: Database ID of QboPhysicalAddress record
-
-        Returns:
-            Address: The synced Address record
-        """
-        qbo_physical_address_repo = self.qbo_physical_address_service.repo
-        qbo_physical_address = qbo_physical_address_repo.read_by_id(qbo_physical_address_id)
-
-        if not qbo_physical_address:
-            raise ValueError(f"QboPhysicalAddress with ID {qbo_physical_address_id} not found")
-
-        # No connector-level realm fallback here (unlike CompanyInfoCompanyConnector's
-        # U-277 fallback) -- sync_from_qbo_to_address has never taken a separate realm
-        # parameter; realm comes straight from the staging row.
-        return self.sync_address_from_external(
-            qbo_id=qbo_physical_address.qbo_id,
-            realm_id=qbo_physical_address.realm_id,
-            line1=qbo_physical_address.line1,
-            line2=qbo_physical_address.line2,
-            city=qbo_physical_address.city,
-            country_sub_division_code=qbo_physical_address.country_sub_division_code,
-            postal_code=qbo_physical_address.postal_code,
-            source_ref=f"QboPhysicalAddress {qbo_physical_address.id}",
-        )
 
     def sync_address_from_external(
         self,
@@ -518,7 +492,6 @@ class PhysicalAddressAddressConnector:
     def create_mapping(
         self,
         address_id: int,
-        qbo_physical_address_id: Optional[int] = None,
         *,
         qbo_id: Optional[str],
         realm_id: Optional[str],
@@ -529,11 +502,11 @@ class PhysicalAddressAddressConnector:
 
         `dbo.Address.QboId`/`RealmId` is the SOLE identity store — this no
         longer reads or writes a `qbo.PhysicalAddressAddress` mapping row
-        (that table is retired). `qbo_physical_address_id` was already
-        vestigial (never persisted anywhere); U-513 makes it optional
-        because the direct-from-payload path has no staging row at all, and
-        leaves the parameter in place only so an existing caller spelling it
-        out keeps working through the staging sunset.
+        (that table is retired). The vestigial `qbo_physical_address_id`
+        second parameter — never persisted anywhere, kept optional through
+        U-513's transition purely so a staging-era caller spelling it out
+        still worked — is removed in ph3b along with the staging row it
+        named. It had no production caller at any point in the sunset.
 
         The sole caller is `_stamp_address_identity`, which reaches this only
         under `stamp_dbo_identity_with_lock`'s own theft-guard — already

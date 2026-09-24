@@ -1310,7 +1310,12 @@ _QBO_SERVICE_MODULE_BY_ENTITY = {
 }
 
 _PULL_ENTITY_NAMES = frozenset(_QBO_SERVICE_MODULE_BY_ENTITY.keys())
-_EXEMPT_NON_PULL_SYNC_FROM_QBO_ENTITIES = frozenset({"attachable", "physical_address"})
+# U-513 ph3b: "physical_address" left this set by DELETION, not by promotion —
+# `QboPhysicalAddressService.sync_from_qbo` is gone along with the whole staging
+# package behind `qbo.PhysicalAddress`. Addresses now project straight off the
+# owning payload inside each family's own pull, so there is no address pull left
+# to classify.
+_EXEMPT_NON_PULL_SYNC_FROM_QBO_ENTITIES = frozenset({"attachable"})
 
 
 def _iter_sync_script_paths() -> list[Path]:
@@ -1429,8 +1434,8 @@ def test_non_watermarked_qbo_services_are_explicitly_classified():
     expected = _PULL_ENTITY_NAMES | _EXEMPT_NON_PULL_SYNC_FROM_QBO_ENTITIES
     assert defining_entities == expected, (
         "Every sync_from_qbo on a QBO business service must be either one of the eleven "
-        "watermarked pull entities (return SyncOutcome) or an explicit exempt (attachable, "
-        "physical_address). A new watermarked pull must join the eleven — do not let it "
+        "watermarked pull entities (return SyncOutcome) or an explicit exempt (attachable). "
+        "A new watermarked pull must join the eleven — do not let it "
         "quietly land only in the exempt set. "
         f"defining={sorted(defining_entities)!r} expected={sorted(expected)!r}"
     )

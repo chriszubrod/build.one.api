@@ -112,7 +112,6 @@ from intelligence.api.router import router as intelligence_api_router
 
 from integrations.intuit.qbo.auth.api.router import router as intuit_qbo_auth_api_router
 from integrations.intuit.qbo.company_info.api.router import router as intuit_qbo_company_info_api_router
-from integrations.intuit.qbo.physical_address.api.router import router as intuit_qbo_physical_address_api_router
 from integrations.sync.api.router import router as sync_api_router
 from integrations.intuit.qbo.vendor.api.router import router as qbo_vendor_api_router
 from integrations.intuit.qbo.client.api.router import router as qbo_client_api_router
@@ -249,7 +248,6 @@ app.include_router(vendor_project_rate_api_router)
 app.include_router(vendor_address_api_router)
 app.include_router(intuit_qbo_auth_api_router)
 app.include_router(intuit_qbo_company_info_api_router)
-app.include_router(intuit_qbo_physical_address_api_router)
 app.include_router(sync_api_router)
 app.include_router(qbo_vendor_api_router)
 app.include_router(qbo_client_api_router)

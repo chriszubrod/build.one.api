@@ -7,88 +7,17 @@ from pydantic import BaseModel, Field
 # Local Imports
 
 
-class QboVendorCreate(BaseModel):
-    id: Optional[str] = Field(
-        default=None,
-        max_length=50,
-        description="The ID of the QBO vendor.",
-    )
-    sync_token: Optional[str] = Field(
-        default=None,
-        max_length=255,
-        description="The sync token of the QBO vendor.",
-    )
-    display_name: Optional[str] = Field(
-        default=None,
-        max_length=50,
-        description="The display name of the QBO vendor.",
-    )
-    vendor_1099: Optional[int] = Field(
-        default=None,
-        description="The 1099 status of the QBO vendor.",
-    )
-    company_name: Optional[str] = Field(
-        default=None,
-        max_length=50,
-        description="The company name of the QBO vendor.",
-    )
-    tax_identifier: Optional[str] = Field(
-        default=None,
-        max_length=50,
-        description="The tax identifier of the QBO vendor.",
-    )
-    print_on_check_name: Optional[str] = Field(
-        default=None,
-        max_length=50,
-        description="The print on check name of the QBO vendor.",
-    )
-    bill_addr_id: Optional[str] = Field(
-        default=None,
-        max_length=50,
-        description="The bill address ID of the QBO vendor.",
-    )
-
-
-class QboVendorUpdate(BaseModel):
-    id: Optional[str] = Field(
-        default=None,
-        max_length=50,
-        description="The ID of the QBO vendor.",
-    )
-    sync_token: Optional[str] = Field(
-        default=None,
-        max_length=255,
-        description="The sync token of the QBO vendor.",
-    )
-    display_name: Optional[str] = Field(
-        default=None,
-        max_length=50,
-        description="The display name of the QBO vendor.",
-    )
-    vendor_1099: Optional[int] = Field(
-        default=None,
-        description="The 1099 status of the QBO vendor.",
-    )
-    company_name: Optional[str] = Field(
-        default=None,
-        max_length=50,
-        description="The company name of the QBO vendor.",
-    )
-    tax_identifier: Optional[str] = Field(
-        default=None,
-        max_length=50,
-        description="The tax identifier of the QBO vendor.",
-    )
-    print_on_check_name: Optional[str] = Field(
-        default=None,
-        max_length=50,
-        description="The print on check name of the QBO vendor.",
-    )
-    bill_addr_id: Optional[str] = Field(
-        default=None,
-        max_length=50,
-        description="The bill address ID of the QBO vendor.",
-    )
+# U-529: `QboVendorCreate` and `QboVendorUpdate` were DELETED with the
+# create/update routes that were this module's only consumers. Both routes
+# called `QboVendorService` methods that have never existed, so neither schema
+# ever validated a body that reached a service; both also declared
+# `bill_addr_id`, binding a caller-supplied value straight onto the
+# `qbo.Vendor.BillAddrId` column U-513 is dropping. Do not reintroduce them:
+# `qbo.Vendor` is staging, written by the QBO pull alone.
+#
+# NB the identically-named `QboVendorCreate` / `QboVendorUpdate` in
+# `integrations/intuit/qbo/vendor/external/schemas.py` are a DIFFERENT pair —
+# the outbound QBO push payloads — and are untouched by this.
 
 
 class QboVendorSync(BaseModel):

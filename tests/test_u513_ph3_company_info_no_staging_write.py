@@ -68,10 +68,13 @@ REALM = "9130353016965726"
 SERVICE_MODULE = "integrations.intuit.qbo.company_info.business.service"
 CLIENT_TARGET = f"{SERVICE_MODULE}.QboCompanyInfoClient"
 ADDRESS_CONNECTOR_TARGET = f"{SERVICE_MODULE}.CompanyInfoAddressConnector"
-# Patched at its DEFINITION module, not at an importer's binding: the point is
-# that no importer's binding exists any more.
-STAGING_REPO_HOME = "integrations.intuit.qbo.physical_address.persistence.repo"
-STAGING_REPO_TARGET = f"{STAGING_REPO_HOME}.QboPhysicalAddressRepository"
+# U-513 ph3b: there is no staging repository left to patch. `QboPhysicalAddressRepository`,
+# its module, the service above it and the `qbo.PhysicalAddress` table itself are
+# all deleted, so the ph3a-era patch target does not resolve and the guards that
+# used it are subsumed by a stronger fact: the module cannot be imported at all
+# (pinned by tests/test_u513_ph3b_package_removed.py). What still belongs HERE is
+# the source-level and call-shape evidence that this pull's address path never
+# reaches for one -- those tests are below, unchanged in substance.
 
 LINE1 = "PO Box 594"
 CITY = "Brentwood"
@@ -138,16 +141,16 @@ def _patched_client(response):
 
 
 def _run_pull(response, *, address_connector=None):
-    """Drive the REAL `sync_from_qbo` with the staging repository class patched
-    at its home module and recording every construction and call."""
+    """Drive the REAL `sync_from_qbo` and hand back its outcome plus the address
+    connector it drove, so a caller can assert on exactly which of the
+    connector's methods the pull reached."""
     svc = QboCompanyInfoService()
     connector = address_connector or MagicMock()
-    staging_cls = MagicMock(name="QboPhysicalAddressRepository")
     with patch(CLIENT_TARGET, return_value=_patched_client(response)), patch(
         ADDRESS_CONNECTOR_TARGET, MagicMock(return_value=connector)
-    ), patch(STAGING_REPO_TARGET, staging_cls):
+    ):
         outcome = svc.sync_from_qbo(realm_id=REALM)
-    return outcome, connector, staging_cls
+    return outcome, connector
 
 
 def _source_without_prose(module):
@@ -176,37 +179,15 @@ def _source_without_prose(module):
 # --------------------------------------------------------------------------
 
 
-def test_a_full_pull_never_constructs_the_staging_repository():
-    """Three populated slots, one pull, zero staging repositories.
-
-    Patched at the repo's home module, so a REINTRODUCED late import
-    (`from ... import QboPhysicalAddressRepository` inside the function, or an
-    attribute access through the module) is caught here. A reintroduced
-    MODULE-LEVEL import binds before this patch and would slip past -- which is
-    why `test_the_service_module_no_longer_imports_the_staging_repository`
-    exists alongside it and catches exactly that shape."""
-    _outcome, _connector, staging_cls = _run_pull(_all_three())
-
-    assert staging_cls.call_count == 0, (
-        "the pull constructed a qbo.PhysicalAddress repository; phase 3a removed "
-        "the staging write"
-    )
-
-
-@pytest.mark.parametrize("method", WRITE_METHODS)
-def test_a_full_pull_calls_no_staging_write_method(method):
-    """The brief's literal requirement: `create` and `update_by_id` are never
-    called. Parametrized over every mutating method the repo exposes so a
-    reinstatement through a different verb fails too."""
-    _outcome, _connector, staging_cls = _run_pull(_all_three())
-
-    instance = staging_cls.return_value
-    assert getattr(instance, method).call_count == 0, (
-        f"the pull called QboPhysicalAddressRepository.{method}"
-    )
-    assert staging_cls.mock_calls == [], (
-        f"the staging repository was touched at all: {staging_cls.mock_calls!r}"
-    )
+# `test_a_full_pull_never_constructs_the_staging_repository` and
+# `test_a_full_pull_calls_no_staging_write_method[create|update_by_id|
+# update_by_qbo_id|delete_by_id]` were DELETED by U-513 ph3b, not lost. Both
+# patched `QboPhysicalAddressRepository` at its home module and asserted the pull
+# never touched it. That class, its module and the table beneath it no longer
+# exist, so the patch target does not resolve and the property they proved is now
+# structural: there is nothing left to construct or call. The two source-level
+# guards below still carry the "never reintroduce it" half, and
+# tests/test_u513_ph3b_package_removed.py pins the deletion itself.
 
 
 def test_the_service_module_no_longer_imports_the_staging_repository():
@@ -237,31 +218,26 @@ def test_no_staging_write_call_survives_in_the_source(module):
         )
 
 
-def test_the_staging_id_projection_entry_point_is_never_called():
-    """`sync_from_qbo_to_address` is the staging-ROW-id entry point. It still
-    exists (customer and vendor use it until their own conversions land) and
-    must stay unreachable from here -- calling it would re-create the dependency
-    the write was keeping alive."""
-    _outcome, connector, _staging_cls = _run_pull(_all_three())
+def test_the_pull_reaches_exactly_one_connector_method():
+    """`project_address` and NOTHING else. The connector is a MagicMock, which
+    answers to any attribute, so asserting a specific method was not called
+    proves little -- enumerating what WAS called is what actually closes the set.
 
-    assert connector.sync_from_qbo_to_address.call_count == 0
+    This was `test_the_staging_id_projection_entry_point_is_never_called` until
+    U-513 ph3b, pinned against `sync_from_qbo_to_address`; that method is now
+    deleted from the real connector, so the closed-set assertion (which it
+    already carried) is the whole test."""
+    _outcome, connector = _run_pull(_all_three())
+
     assert {c[0] for c in connector.method_calls} == {"project_address"}
 
 
-def test_the_staging_table_itself_is_untouched_by_this_unit():
-    """⛔ Phase 3a deletes the WRITE, not the table. The repository class, its
-    module, and the sprocs behind it must all still be here: other packages
-    reference them until phase 3b, and the previous container may still be live
-    when this deploys."""
-    import importlib
-
-    repo_module = importlib.import_module(STAGING_REPO_HOME)
-    repo_cls = getattr(repo_module, "QboPhysicalAddressRepository")
-    for method in ("create", "update_by_id", "read_by_qbo_id", "read_by_id"):
-        assert hasattr(repo_cls, method), (
-            f"QboPhysicalAddressRepository.{method} was removed; that is phase "
-            f"3b's, and other packages still call it"
-        )
+# `test_the_staging_table_itself_is_untouched_by_this_unit` was ph3a's explicit
+# SCOPE GATE: it asserted `QboPhysicalAddressRepository` and its create/update/
+# read methods were all still present, because deleting them was phase 3b's job
+# and the previously-deployed container still needed them. Phase 3b has now
+# happened -- that is this deletion -- so the gate has been crossed rather than
+# broken. Its inverse lives in tests/test_u513_ph3b_package_removed.py.
 
 
 # --------------------------------------------------------------------------
@@ -279,7 +255,7 @@ def test_each_slot_projects_under_its_own_synthetic_identity(field, expected):
     ⚠️ This is NOT the realm id. Project a bare realm and all three slots
     collide on one `dbo.Address`; project anything else and the existing row is
     missed and a duplicate minted."""
-    _outcome, connector, _staging = _run_pull(_external(**{field: _addr()}))
+    _outcome, connector = _run_pull(_external(**{field: _addr()}))
 
     connector.project_address.assert_called_once()
     qbo_id = connector.project_address.call_args.kwargs["qbo_id"]
@@ -289,7 +265,7 @@ def test_each_slot_projects_under_its_own_synthetic_identity(field, expected):
 
 def test_qbos_own_address_id_wins_over_the_synthetic():
     """`dbo.Address.QboId` carries the real Id whenever QBO supplies one."""
-    _outcome, connector, _staging = _run_pull(
+    _outcome, connector = _run_pull(
         _external(CompanyAddr=_addr(Id="1612"))
     )
 
@@ -299,7 +275,7 @@ def test_qbos_own_address_id_wins_over_the_synthetic():
 def test_all_three_slots_keep_distinct_identities_in_one_pull():
     """Anti-collision across a whole response, and the ORDER is the slot order:
     a transposition would write the legal address under the company identity."""
-    _outcome, connector, _staging = _run_pull(
+    _outcome, connector = _run_pull(
         _all_three(CustomerCommunicationAddr=_addr(Id="1612"))
     )
 
@@ -336,7 +312,7 @@ def test_the_slot_suffixes_are_still_the_three_the_rows_were_written_under():
 def test_the_payload_is_still_the_source_of_the_projected_fields():
     """Anti-vacuity for the identity tests: the right identity carrying the
     wrong content would still corrupt the row."""
-    _outcome, connector, _staging = _run_pull(
+    _outcome, connector = _run_pull(
         _external(
             CompanyAddr=_addr(
                 Line1="123 Main St", Line2="Suite 4", City="Franklin",
@@ -419,7 +395,7 @@ def test_a_missing_qbo_id_is_still_a_staging_failure_so_the_watermark_holds():
     advance the delta cursor past a broken row and lose the Company permanently.
     Deleting the write moved code that ran BEFORE this guard, so it is exactly
     the kind of change that could have reordered it."""
-    outcome, _connector, _staging = _run_pull(_external(Id=None, CompanyAddr=_addr()))
+    outcome, _connector = _run_pull(_external(Id=None, CompanyAddr=_addr()))
 
     assert outcome.staging_failed_ids == ["<no-id>"]
     assert outcome.skipped_ids == [], "a missing Id must never be a skip"
@@ -432,11 +408,10 @@ def test_a_missing_qbo_id_projects_nothing_and_stages_nothing():
     success path only -- and now that the write is gone, a malformed response
     leaves NO trace anywhere, where before it wrote three staging rows it could
     not project."""
-    outcome, connector, staging_cls = _run_pull(_all_three(Id=None))
+    outcome, connector = _run_pull(_all_three(Id=None))
 
     assert outcome.staging_failed_ids == ["<no-id>"]
-    assert connector.project_address.call_count == 0
-    assert staging_cls.mock_calls == []
+    assert connector.method_calls == []
 
 
 def test_the_missing_id_guard_still_raises_value_error():
@@ -451,7 +426,7 @@ def test_the_missing_id_guard_still_raises_value_error():
 def test_a_healthy_pull_does_not_hold():
     """Anti-vacuity for the guard tests: if `should_hold` were True for every
     response, the assertion above would pass while the watermark never advanced."""
-    outcome, connector, _staging = _run_pull(_all_three())
+    outcome, connector = _run_pull(_all_three())
 
     assert outcome.should_hold is False
     assert outcome.staging_failed_ids == []

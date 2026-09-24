@@ -15,6 +15,12 @@ object via `PhysicalAddressAddressConnector.sync_address_from_external`.
 The staging WRITE deliberately stays (the table is dropped by a later step, once
 every consumer is off it); what goes away is the DEPENDENCE on reading it back.
 
+ph3b UPDATE — the later steps happened. ph3a removed the write; ph3b removed the
+last read (`_bill_address_from_staging`) and drops the table. Two tests in
+section 4 below were rewritten for that and say so in their own docstrings; the
+rest of this file is ph1 behavior that ph3b did not touch. The full ph3b
+invariants live in `test_u513_ph3b_vendor_no_staging_read.py`.
+
 How the payload reaches the connector — a closure, not a wider primitive
 -----------------------------------------------------------------------
 `sync_outcome.project_records` is shared by ten call sites across eight QBO
@@ -466,21 +472,22 @@ def test_sync_to_vendors_without_a_payload_map_still_projects_every_row():
 # --------------------------------------------------------------------------
 
 
-def test_no_payload_keeps_the_pre_u513_staging_read_path():
-    """The staging read is still the address source for a caller that re-projects
-    rows it did not fetch. No PULL takes that branch any more (U-513 ph2
-    converted `scripts/sync_qbo_vendor.py`, the last one), but the branch stays
-    until `qbo.PhysicalAddress` itself is dropped — deleting it early would
-    blind any remaining payload-less caller to addresses entirely."""
+def test_no_payload_projects_the_vendor_but_no_address_at_all():
+    """UPDATED at ph3b (was `test_no_payload_keeps_the_pre_u513_staging_read_path`).
+
+    The staging read is GONE, so a payload-less projection has no address source:
+    the VENDOR still projects, but nothing is minted and nothing is linked. Note
+    `bill_addr_id=555` is populated here — a surviving reader would resolve it,
+    so this asserts the reader's absence rather than merely a NULL column."""
     connector, _, vendor_address_service, address_connector = _build_connector()
 
-    connector.sync_from_qbo_vendor(_staging(bill_addr_id=555))
+    result = connector.sync_from_qbo_vendor(_staging(bill_addr_id=555))
 
-    address_connector.sync_from_qbo_to_address.assert_called_once_with(555)
+    assert result.id == 55  # the vendor projection itself is unaffected
+    address_connector.sync_from_qbo_to_address.assert_not_called()
     address_connector.sync_address_from_external.assert_not_called()
-    vendor_address_service.create.assert_called_once_with(
-        vendor_id="55", address_id="901", address_type_id="1",
-    )
+    vendor_address_service.create.assert_not_called()
+    vendor_address_service.repo.update_by_id.assert_not_called()
 
 
 def test_no_payload_and_no_staging_address_links_nothing():
@@ -496,8 +503,9 @@ def test_no_payload_and_no_staging_address_links_nothing():
 def test_mispaired_payload_is_refused_rather_than_written_under_the_wrong_identity():
     """Defense in depth behind the closure: if a payload ever arrives whose Id is
     not this staging row's, taking its address content would write ONE vendor's
-    address under ANOTHER's identity. Refuse the payload; fall back to this
-    row's own staging address (here: none, so nothing is written at all)."""
+    address under ANOTHER's identity. Refuse the payload — and as of ph3b that
+    means mint nothing at all, since there is no staging address to fall back
+    to."""
     connector, _, vendor_address_service, address_connector = _build_connector()
 
     connector.sync_from_qbo_vendor(_staging(qbo_id="1246"), _external("329", bill_addr=_addr()))
@@ -506,15 +514,22 @@ def test_mispaired_payload_is_refused_rather_than_written_under_the_wrong_identi
     vendor_address_service.create.assert_not_called()
 
 
-def test_mispaired_payload_falls_back_to_this_rows_own_staging_address():
-    connector, _, _, address_connector = _build_connector()
+def test_mispaired_payload_no_longer_falls_back_to_staging():
+    """UPDATED at ph3b (was
+    `test_mispaired_payload_falls_back_to_this_rows_own_staging_address`).
+
+    The refusal itself is unchanged; what it falls back TO is not. With
+    `qbo.PhysicalAddress` dropped, refusing means minting nothing for this
+    vendor. `bill_addr_id=555` is populated so a surviving fallback would fire."""
+    connector, _, vendor_address_service, address_connector = _build_connector()
 
     connector.sync_from_qbo_vendor(
         _staging(qbo_id="1246", bill_addr_id=555), _external("329", bill_addr=_addr()),
     )
 
     address_connector.sync_address_from_external.assert_not_called()
-    address_connector.sync_from_qbo_to_address.assert_called_once_with(555)
+    address_connector.sync_from_qbo_to_address.assert_not_called()
+    vendor_address_service.create.assert_not_called()
 
 
 def test_address_failure_does_not_fail_the_vendor_projection():

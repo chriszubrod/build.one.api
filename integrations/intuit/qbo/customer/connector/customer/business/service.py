@@ -64,12 +64,18 @@ def address_fields_are_blank(line1, city, postal_code) -> bool:
     block. `line2` and the state code are deliberately NOT content: neither is
     routable on its own.
 
-    Takes discrete field values rather than an object because its three callers
-    hold three different shapes — the inline QBO payload, a `qbo.PhysicalAddress`
-    staging row, and a `dbo.Address` row (whose columns are named
-    `street_one`/`city`/`zip`). Each caller reads its own fields DIRECTLY and
-    passes them in, so a renamed field still breaks loudly at that call site
-    instead of silently making every address look blank.
+    Takes discrete field values rather than an object because its callers hold
+    different shapes — the inline QBO payload (`line1`/`city`/`postal_code`) and
+    a `dbo.Address` row (`street_one`/`city`/`zip`). Each caller reads its own
+    fields DIRECTLY and passes them in, so a renamed field still breaks loudly
+    at that call site instead of silently making every address look blank.
+
+    (U-513 ph3b retired the third shape, a `qbo.PhysicalAddress` staging row,
+    with the last reader of that table. The function is unchanged: what made it
+    worth sharing was never the number of shapes but the fact that a MINT and a
+    LOOKUP apply it — `CustomerCustomerConnector` mints the parent's row and
+    `CustomerProjectConnector._is_blank_dbo_address` reads it back, and two
+    copies that drifted would write a row nothing ever chooses.)
     """
     return not (
         (line1 or "").strip()
@@ -125,8 +131,9 @@ class CustomerCustomerConnector:
                 the caller still has it in scope. Optional and defaulted to None
                 so every existing call site keeps working untouched; it carries
                 the INLINE `BillAddr` that U-513 projects instead of the
-                `qbo.PhysicalAddress` staging row. See
-                `_own_billing_address` for what happens when it is absent.
+                `qbo.PhysicalAddress` staging row. ⚠️ ph3b: it is now the ONLY
+                source — absent, this customer projects NO address at all. See
+                `_own_billing_address` for why no pull path can land there.
 
         Returns:
             Customer: The synced Customer record
@@ -212,7 +219,7 @@ class CustomerCustomerConnector:
                 # Unreachable from `sync_from_qbo_customer` (see its call site),
                 # but never let a `None_bill` identity reach dbo.Address.
                 return
-            address = self._own_billing_address(qbo_customer, external_customer)
+            address = self._own_billing_address(external_customer)
             if address is None:
                 return
             if address_fields_are_blank(address.line1, address.city, address.postal_code):
@@ -240,44 +247,53 @@ class CustomerCustomerConnector:
                 f"{qbo_customer.qbo_id}: {e}"
             )
 
-    def _own_billing_address(self, qbo_customer: QboCustomer, external_customer):
+    @staticmethod
+    def _own_billing_address(external_customer):
         """
         The BillAddr object whose CONTENT this customer should project, or None.
 
-        Two sources, in preference order — both expose the same five fields
-        (`line1` / `line2` / `city` / `country_sub_division_code` /
-        `postal_code`), so the caller reads them the same way either way:
+        ONE source: `external_customer.bill_addr` — the address QBO hands back
+        INLINE on the Customer payload. This is U-513's direction and the only
+        source that survives the `qbo.PhysicalAddress` sunset. It requires the
+        caller to have threaded the external record through (see
+        `QboCustomerService._sync_to_customers`, which always does).
 
-        1. `external_customer.bill_addr` — the address QBO hands back INLINE on
-           the Customer payload. This is U-513's direction and the only source
-           that survives the `qbo.PhysicalAddress` sunset. It requires the caller
-           to have threaded the external record through (see
-           `QboCustomerService._sync_to_customers`).
+        ⚠️ U-513 ph3b DELETED the second source — the `qbo.PhysicalAddress`
+        staging row `bill_addr_id` pointed at. It was already dead when it was
+        deleted, and that was PROVEN rather than assumed: `sync_from_qbo` writes
+        `external_by_id[qbo_customer.id]` and appends to `parent_customers`
+        inside the SAME try block after the SAME upsert, and the projection
+        closure looks the payload up by `row.qbo_id` — the exact value
+        `_upsert_customer` passed as `qbo_id`. So a parent row reaches this
+        connector only if its payload was recorded first, keyed on the value the
+        lookup uses; the map cannot miss for a row that arrives. (The one
+        remaining payload-less caller is a direct one-argument
+        `sync_from_qbo_customer(row)`, which is a test/console shape, not a
+        pull. It now projects no address, which is correct: there is no address
+        in hand and inventing a source for one is how the pre-U-506 connector
+        minted 191 blank rows.)
 
-        2. ⚠️ TRANSITIONAL — the `qbo.PhysicalAddress` staging row
-           `bill_addr_id` points at, for callers that have NOT been threaded yet.
-           `scripts/sync_qbo_customer.py` WAS the one that mattered — the path
-           the scheduler actually runs (`POST /api/v1/admin/sync/qbo/customer`) —
-           because it called `sync_from_qbo(sync_to_modules=False)` and then ran
-           its own projection loop, so the external payloads never reached it.
-           U-513 ph2 converted it: it now asks for `sync_to_modules=True` and the
-           service threads the payload, so no production caller lands here.
+        `scripts/sync_qbo_customer.py` — the path the scheduler actually runs
+        via `POST /api/v1/admin/sync/qbo/customer` — was the caller that made
+        the staging branch live: it called `sync_from_qbo(sync_to_modules=False)`
+        and ran its own projection loop, so the payloads never reached here.
+        U-513 ph2 converted it to `sync_to_modules=True`. Nothing in this
+        connector touches `qbo.PhysicalAddress` any more.
 
-           What is left is a defensive default for a direct
-           `sync_from_qbo_customer(row)` call with no second argument. Delete
-           this branch (and the read below it) once the sibling vendor half is
-           converted too — or when staging stops being written, whichever comes
-           first. Nothing else in this connector touches staging.
+        The result is blank-checked by the caller (`_project_own_billing_address`
+        -> `address_fields_are_blank`), so a placeholder object still mints
+        nothing.
 
-        Both sources are blank-checked identically by the caller, so a
-        placeholder row cannot sneak in through the transitional path either.
+        A `@staticmethod` on purpose, and it took no argument away by accident:
+        ph3b's deletion left this reading NOTHING off the connector — no repo,
+        no service, no staging handle, not even the `qbo_customer` staging row
+        it used to take for its FK. Re-introducing `self` here would mean a
+        second source for this customer's address has appeared, which is the
+        exact shape ph3b removed.
         """
-        if external_customer is not None:
-            return external_customer.bill_addr
-        staging_id = qbo_customer.bill_addr_id
-        if not staging_id:
+        if external_customer is None:
             return None
-        return self.address_connector.qbo_physical_address_service.read_by_id(staging_id)
+        return external_customer.bill_addr
 
     def _apply_customer_fields_and_sync(
         self, entity: Customer, *, name: str, email: str, phone: str,

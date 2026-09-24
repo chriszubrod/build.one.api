@@ -53,8 +53,44 @@ from integrations.intuit.qbo.customer.connector.project.business.service import 
 from integrations.intuit.qbo.customer.external.schemas import (
     QboCustomer as QboCustomerExternalSchema,
 )
-from integrations.intuit.qbo.physical_address.business.model import QboPhysicalAddress
 from tests.test_u269_qbo_staging_try_except import _client_cm
+from dataclasses import dataclass
+
+
+@dataclass
+class _StagedPhysicalAddress:
+    """Tombstone stand-in for the deleted `QboPhysicalAddress` staging dataclass.
+
+    U-513 ph3b dropped `qbo.PhysicalAddress` and deleted the model, repository
+    and service that mapped it. The customer connector paths exercised below
+    still read a staging row by attribute, so the tests still need a row-shaped
+    object — but there is no longer a shipped dataclass for them to stay honest
+    against, which is why this is declared here rather than imported.
+
+    Still a dataclass, not a `SimpleNamespace`: a misspelled field is then a
+    TypeError at construction instead of a silently-absent attribute that makes
+    a blankness predicate read `None` and pass for the wrong reason. It is
+    deliberately frozen at the dropped table's exact column set, and it goes
+    away with the last customer-side staging reader.
+    """
+    id: object
+    public_id: object
+    row_version: object
+    created_datetime: object
+    modified_datetime: object
+    qbo_id: object
+    realm_id: object
+    line1: object
+    line2: object
+    city: object
+    country: object
+    country_sub_division_code: object
+    postal_code: object
+
+
+# U-513 ph3b: the shipped staging dataclass is gone; alias the stand-in so
+# the assertions below keep reading as they did.
+QboPhysicalAddress = _StagedPhysicalAddress
 
 FASTPATH_LOCK_TARGET = "integrations.intuit.qbo.base.identity_fastpath.qbo_app_lock"
 
@@ -564,19 +600,38 @@ def test_a_falsy_qbo_id_never_mints_a_none_bill_identity():
 
 
 # --------------------------------------------------------------------------
-# ⚠️ The TRANSITIONAL staging source
+# ⚠️ The TRANSITIONAL staging source — DELETED BY ph3b
 # --------------------------------------------------------------------------
 # `scripts/sync_qbo_customer.py` — the path the scheduler actually runs — USED
 # to call `sync_from_qbo(sync_to_modules=False)` and run its OWN projection
 # loop, so the external payloads never reached it. Without a content fallback,
 # U-513's repointed child lookup would have read a `dbo.Address` nothing had
 # refreshed. U-513 ph2 converted that script (`sync_to_modules=True`), so no
-# production caller reaches the fallback any more — it now only covers a direct
-# one-argument `sync_from_qbo_customer(row)` call. These four tests pin it until
-# the sibling vendor half is converted and the EM deletes the branch; deleting
-# it should turn them red, which is the signal to delete them too.
+# production caller reached the fallback any more.
+#
+# ph3b deleted it, exactly as the note that stood here predicted: "deleting it
+# should turn them red, which is the signal to delete them too." Two of the four
+# WERE deleted because their subject is gone; the other two are KEPT and
+# INVERTED, because "no payload -> nothing is minted AND nothing is read" is now
+# a claim about the shipped code rather than an incidental property of a fixture.
 
-def test_without_the_payload_the_staging_row_supplies_the_content():
+def test_without_the_payload_NOTHING_is_projected_and_NOTHING_is_read():
+    """⚠️ INVERTED BY ph3b. This test used to assert the opposite: that a
+    populated `bill_addr_id` supplied the content when no payload arrived.
+
+    Built with the staging FK populated and pointing at a real, NON-BLANK row —
+    the fixture that used to make this path succeed — so a regression to the
+    staging read fails here rather than passing on an empty table.
+
+    Safe to lose, and that was PROVEN before it was deleted rather than assumed:
+    `sync_from_qbo` records `external_by_id[qbo_customer.id]` and appends to
+    `parent_customers` in the SAME try block after the SAME upsert, and the
+    projection closure looks the payload up by `row.qbo_id` — the exact value
+    `_upsert_customer` passed as `qbo_id`. A parent row cannot reach this
+    connector without its payload. (`test_the_parent_staging_fallback_cannot_
+    fire_from_the_pull` in test_u513_ph3_customer_no_staging_write.py drives
+    that through a real pull, including a row that fails to stage.)
+    """
     connector = _build_connector(
         hit=_customer_row(qbo_id=PARENT_QBO_ID, realm_id=REALM),
         staging_rows={
@@ -589,31 +644,19 @@ def test_without_the_payload_the_staging_row_supplies_the_content():
 
     _sync(connector, _staging_customer(bill_addr_id=STAGING_BILL_ADDR_ID), None)
 
-    assert connector.address_connector.qbo_physical_address_service.read_ids == [
-        STAGING_BILL_ADDR_ID
-    ]
-    call = connector.address_connector.calls[0]
-    assert call["qbo_id"] == PARENT_BILL_QBO_ID, (
-        "the transitional path must write the SAME synthetic identity as the "
-        "payload path, or the two sources would mint two different rows"
+    assert connector.address_connector.qbo_physical_address_service.read_ids == [], (
+        "the parent connector read qbo.PhysicalAddress -- ph3b deleted every "
+        "reader of that table in this package"
     )
-    assert call["line1"] == "1539 Old Hillsboro Road"
-
-
-def test_without_the_payload_a_blank_staging_row_still_mints_nothing():
-    """The blank guard is applied to BOTH sources — a placeholder row cannot
-    sneak a blank dbo.Address in through the transitional door."""
-    connector = _build_connector(
-        hit=_customer_row(qbo_id=PARENT_QBO_ID, realm_id=REALM),
-        staging_rows={STAGING_BILL_ADDR_ID: _staged(STAGING_BILL_ADDR_ID)},
+    assert connector.address_connector.calls == [], (
+        "an address was minted with no payload in hand -- from where?"
     )
-
-    _sync(connector, _staging_customer(bill_addr_id=STAGING_BILL_ADDR_ID), None)
-
-    assert connector.address_connector.calls == []
 
 
 def test_without_the_payload_and_without_a_staging_id_nothing_is_read():
+    """The other half of the pair, kept because it rules out the trivial way the
+    test above could pass: a connector that reads staging only when the FK is
+    populated would still satisfy this one, and vice versa."""
     connector = _build_connector(hit=_customer_row(qbo_id=PARENT_QBO_ID, realm_id=REALM))
 
     _sync(connector, _staging_customer(bill_addr_id=None), None)
@@ -626,7 +669,12 @@ def test_the_payload_wins_over_staging_and_staging_is_not_even_read():
     """Preference, not merge. When both are available the payload is what QBO
     just said; the staging row is a copy of what QBO said last time, and re-
     reading it would be a round trip whose only possible effect is to be
-    ignored."""
+    ignored.
+
+    ⚠️ ph3b turned "preference" into "the only source", which makes the STALE
+    content in the fixture the point: if a merge or a re-read ever creeps back
+    in, `"STALE STREET"` is what a project would start mailing draw requests
+    to."""
     connector = _build_connector(
         hit=_customer_row(qbo_id=PARENT_QBO_ID, realm_id=REALM),
         staging_rows={

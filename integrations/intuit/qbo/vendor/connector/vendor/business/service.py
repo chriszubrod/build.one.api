@@ -108,13 +108,13 @@ class VendorVendorConnector:
             qbo_vendor: QboVendor staging record (the row being projected)
             external: the EXTERNAL QBO payload this staging row was built from,
                 when the caller still has it (U-513). Its inline `BillAddr` is
-                the address source of truth; `qbo.PhysicalAddress` is a
-                write-then-read-back cache being sunset. `None` means the
-                caller is re-projecting a staging row it did not fetch, and the
-                address falls back to the staging read — unchanged behavior
-                during the transition. As of U-513 ph2 no PULL takes that
-                branch: `scripts/sync_qbo_vendor.py` (the scheduler/admin path)
-                was the last one, and it now stages and projects in a single
+                the ONLY address source as of ph3b — `qbo.PhysicalAddress` was a
+                write-then-read-back cache, and it is gone. `None` means the
+                caller is re-projecting a staging row it did not fetch; the
+                vendor itself still projects, but no address is minted or
+                linked. As of U-513 ph2 no PULL takes that branch:
+                `scripts/sync_qbo_vendor.py` (the scheduler/admin path) was the
+                last one, and it now stages and projects in a single
                 `sync_from_qbo(sync_to_modules=True)` that carries the payload.
 
         Returns:
@@ -497,29 +497,36 @@ class VendorVendorConnector:
         """
         Sync billing address from QboVendor to VendorAddress/Address.
 
-        U-513: with the external payload in hand the address comes straight off
-        the inline `BillAddr` object (`_bill_address_from_payload`), so the
-        projection no longer READS `qbo.PhysicalAddress` — that table is a pure
-        write-then-read-back cache and is being sunset. Without a payload the
-        staging read stays (`_bill_address_from_staging`), unchanged, so
-        `scripts/sync_qbo_vendor.py`'s own projection loop keeps working
-        through the transition.
+        U-513: the address comes straight off the external payload's inline
+        `BillAddr` object (`_bill_address_from_payload`). `qbo.PhysicalAddress`
+        was a pure write-then-read-back cache; ph3a stopped writing it and ph3b
+        (this change) removed the last read and drops the table, so THE INLINE
+        PAYLOAD IS NOW THE ONLY ADDRESS SOURCE.
+
+        A projection handed no payload therefore has no address source at all:
+        mint nothing, link nothing. That is not a silent downgrade of a working
+        path — as of ph2 no production entry point takes it (the sole production
+        caller of `sync_from_qbo_vendor` is `QboVendorService._sync_to_vendors`'s
+        closure, which always threads the payload it staged from), and with the
+        table gone the alternative is not "read staging" but "raise on a dropped
+        table".
 
         Failure isolation is unchanged: a billing-address failure is logged and
         swallowed, never allowed to fail the Vendor projection (and so never
         allowed to hold the pull watermark over an address).
 
         Args:
-            qbo_vendor: QboVendor staging row (carries realm_id + bill_addr_id)
+            qbo_vendor: QboVendor staging row (carries realm_id + the qbo_id the
+                payload is checked against)
             vendor_id: Database ID of the Vendor
             external: the external QBO payload for this same vendor, or None
         """
         try:
-            address = (
-                self._bill_address_from_payload(qbo_vendor, external)
-                if external is not None
-                else self._bill_address_from_staging(qbo_vendor)
-            )
+            if external is None:
+                # No payload -> no address source (U-513 ph3b). An already-linked
+                # VendorAddress is left alone, exactly as for an absent address.
+                return
+            address = self._bill_address_from_payload(qbo_vendor, external)
             if address is None:
                 # No address on this vendor (absent or blank) -- mint nothing,
                 # link nothing. An already-linked VendorAddress is left alone;
@@ -531,34 +538,6 @@ class VendorVendorConnector:
             logger.debug(f"Synced billing address {address_id} for Vendor {vendor_id}")
         except Exception as e:
             logger.error(f"Failed to sync billing address for Vendor {vendor_id}: {e}")
-
-    def _bill_address_from_staging(self, qbo_vendor: QboVendor) -> Optional[Address]:
-        """Pre-U-513 path: read the address back out of `qbo.PhysicalAddress` by
-        the local id the staging upsert stashed on the vendor row.
-
-        U-513 ph3a NOTE — nothing writes that cache for vendors any more.
-        `QboVendorService._upsert_vendor` no longer stages `BillAddr` and now
-        always passes `bill_addr_id=None`, so:
-          * a vendor first staged after ph3a has `bill_addr_id IS NULL` and this
-            returns None (mint nothing, link nothing);
-          * a vendor staged BEFORE ph3a keeps its id, because
-            `UpdateQboVendorByQboId` guards the column with
-            `CASE WHEN @BillAddrId IS NULL THEN [BillAddrId]` — so this still
-            resolves that vendor's OWN `{id}_bill` row, frozen at the last
-            pre-ph3a pull.
-        Either way it can never resolve a DIFFERENT vendor's address, which is
-        why the two remaining callers are safe to leave standing until ph3b
-        drops the table, the column and this method together:
-          1. `_sync_addresses`'s `external is None` dispatch — unreachable from
-             every production entry point as of ph2 (the only production caller
-             of `sync_from_qbo_vendor` is `QboVendorService._sync_to_vendors`'s
-             closure, which always threads the payload it staged from);
-          2. `_bill_address_from_payload`'s cross-wiring refusal — a defensive
-             branch that must not fire at all.
-        """
-        if not qbo_vendor.bill_addr_id:
-            return None
-        return self.address_connector.sync_from_qbo_to_address(qbo_vendor.bill_addr_id)
 
     def _bill_address_from_payload(
         self, qbo_vendor: QboVendor, external: QboVendorExternal,
@@ -572,23 +551,36 @@ class VendorVendorConnector:
         staging address write used — and is passed through unmodified so the
         connector's own realm scoping can fail closed on it.
 
-        Returns None (mint nothing, link nothing) when QBO sent no `BillAddr`
-        at all, or sent a blank one (see `_inline_address_is_blank`).
+        Returns None (mint nothing, link nothing) when the payload does not
+        belong to this staging row (see the refusal below), when QBO sent no
+        `BillAddr` at all, or when it sent a blank one (see
+        `_inline_address_is_blank`).
         """
         external_id = str(external.id) if external.id else None
         staging_qbo_id = qbo_vendor.qbo_id or None
         if not external_id or external_id != staging_qbo_id:
-            # Defense in depth against a mis-paired closure: taking the ADDRESS
-            # from one vendor's payload while writing it under ANOTHER vendor's
-            # identity is silent cross-wiring, so refuse the payload entirely
-            # and fall back to this row's own staging address.
+            # CROSS-WIRING REFUSAL (U-513 ph1, re-based in ph3b). Defense in
+            # depth against a mis-paired closure: taking the ADDRESS from one
+            # vendor's payload while writing it under ANOTHER vendor's identity
+            # is silent, permanent corruption on both rows. Refuse the payload.
+            #
+            # ph3b changed only what refusing FALLS BACK TO. It used to return
+            # `_bill_address_from_staging(qbo_vendor)` — this row's own
+            # `qbo.PhysicalAddress` cache entry. That table is being dropped, so
+            # refusing now means "mint NOTHING for this vendor": no address, no
+            # `dbo.VendorAddress` write, any existing link left untouched. The
+            # guarantee is unchanged and strictly stronger — the refusal never
+            # produced the mispaired vendor's address, and now it produces none.
             logger.error(
                 "Vendor payload/staging mismatch for QboVendor %s: staging QboId=%s, "
-                "payload Id=%s. Ignoring the inline BillAddr and falling back to staging.",
+                "payload Id=%s. Refusing the inline BillAddr; no address is projected "
+                "for this vendor on this pass.",
                 qbo_vendor.id, staging_qbo_id, external_id,
             )
-            return self._bill_address_from_staging(qbo_vendor)
+            return None
 
+        # Past the refusal, `external_id == staging_qbo_id`, so the synthetic
+        # identity below is this staging row's own by construction.
         bill_addr = external.bill_addr
         if bill_addr is None:
             return None

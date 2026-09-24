@@ -12,7 +12,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from conftest import mock_qbo_app_lock_granted
 from entities.address.business.model import Address
 from integrations.intuit.qbo.base.identity_drift import REFERENCE_ENTITY_SPECS, classify_qbo_identity_drift
-from integrations.intuit.qbo.physical_address.business.model import QboPhysicalAddress
 from integrations.intuit.qbo.physical_address.connector.business.service import PhysicalAddressAddressConnector
 from integrations.intuit.qbo.term.connector.payment_term.business.service import TermPaymentTermConnector
 from integrations.intuit.qbo.vendorcredit.connector.bill_credit.business.service import VendorCreditBillCreditConnector
@@ -227,7 +226,6 @@ def test_address_create_mapping_stamps_identity():
     connector, address_repo = _make_address_connector()
     connector.create_mapping(
         address_id=14,
-        qbo_physical_address_id=25,
         qbo_id="A-1",
         realm_id="realm-addr",
     )
@@ -242,7 +240,6 @@ def test_address_create_mapping_identity_failure_propagates():
     with pytest.raises(RuntimeError, match="stamp failed"):
         connector.create_mapping(
             address_id=14,
-            qbo_physical_address_id=25,
             qbo_id="A-1",
             realm_id="realm-addr",
         )
@@ -305,21 +302,36 @@ FASTPATH_LOCK_TARGET = "integrations.intuit.qbo.base.identity_fastpath.qbo_app_l
 STAMP_LOCK_TARGET = FASTPATH_LOCK_TARGET
 
 
+# The two address slots QBO reports for one party. They carry IDENTICAL content
+# and DIFFERENT synthetic identities — the whole point of the test below — so the
+# content lives here once rather than as two hand-typed literals that agree today.
+SHARED_SLOT_CONTENT = dict(
+    line1="123 Main",
+    line2="",
+    city="Austin",
+    country_sub_division_code="TX",
+    postal_code="78701",
+)
+
+
 def test_address_sync_does_not_steal_identity_on_shared_street_city_second_sync():
-    """Two QboPhysicalAddress rows share street/city; the second sync must not
-    re-stamp (steal) the identity the first sync already bound. Under the U-351
-    dbo-only fast path this is `_check_no_conflicting_address_identity` — a hard
-    raise, not the old mapping-table era's silent "cannot remap" no-op."""
+    """Two address slots on one QBO party share street/city; the second
+    projection must not re-stamp (steal) the identity the first one already
+    bound. Under the U-351 dbo-only fast path this is
+    `_check_no_conflicting_address_identity` — a hard raise, not the old
+    mapping-table era's silent "cannot remap" no-op.
+
+    U-513 ph3b: driven through `sync_address_from_external` with the payload
+    content inline. It used to stage two `qbo.PhysicalAddress` rows and sync
+    each by row id; that table and its read wrapper are gone, and the identities
+    ("42_bill" / "42_ship") are the same synthetic per-slot keys either way."""
     address_service = Mock()
     address_service.repo = Mock()
     address_service.read_deleted_by_qbo_identity.return_value = None
-    qbo_physical_address_service = Mock()
-    qbo_repo = qbo_physical_address_service.repo
     reconciliation_repo = Mock()
 
     connector = PhysicalAddressAddressConnector(
         address_service=address_service,
-        qbo_physical_address_service=qbo_physical_address_service,
         reconciliation_repo=reconciliation_repo,
     )
 
@@ -336,41 +348,13 @@ def test_address_sync_does_not_steal_identity_on_shared_street_city_second_sync(
         zip="78701",
         country=None,
     )
-    qbo_bill = QboPhysicalAddress(
-        id=100,
-        public_id=None,
-        row_version=None,
-        created_datetime=None,
-        modified_datetime="2026-01-02 00:00:00",
-        qbo_id="42_bill",
-        realm_id="realm-1",
-        line1="123 Main",
-        line2="",
-        city="Austin",
-        country=None,
-        country_sub_division_code="TX",
-        postal_code="78701",
-    )
-    qbo_ship = QboPhysicalAddress(
-        id=200,
-        public_id=None,
-        row_version=None,
-        created_datetime=None,
-        modified_datetime="2026-01-03 00:00:00",
-        qbo_id="42_ship",
-        realm_id="realm-1",
-        line1="123 Main",
-        line2="",
-        city="Austin",
-        country=None,
-        country_sub_division_code="TX",
-        postal_code="78701",
-    )
-
-    def read_qbo_by_id(qbo_id):
-        return {100: qbo_bill, 200: qbo_ship}[qbo_id]
-
-    qbo_repo.read_by_id.side_effect = read_qbo_by_id
+    def project(qbo_id):
+        return connector.sync_address_from_external(
+            qbo_id=qbo_id,
+            realm_id="realm-1",
+            source_ref=f"Customer 42 {qbo_id}",
+            **SHARED_SLOT_CONTENT,
+        )
 
     # Neither "42_bill" nor "42_ship" has ever been stamped on a dbo.Address yet
     # in this scenario, so the direct dbo-identity lookup must miss for both syncs.
@@ -386,7 +370,7 @@ def test_address_sync_does_not_steal_identity_on_shared_street_city_second_sync(
     with patch(FASTPATH_LOCK_TARGET, mock_qbo_app_lock_granted), patch(
         STAMP_LOCK_TARGET, mock_qbo_app_lock_granted
     ):
-        connector.sync_from_qbo_to_address(100)
+        project("42_bill")
 
     assert address_service.repo.set_qbo_identity.call_count == 1
     address_service.repo.set_qbo_identity.assert_called_with(
@@ -404,7 +388,7 @@ def test_address_sync_does_not_steal_identity_on_shared_street_city_second_sync(
 
     with patch(FASTPATH_LOCK_TARGET, mock_qbo_app_lock_granted):
         with pytest.raises(ValueError, match="already carries a DIFFERENT identity"):
-            connector.sync_from_qbo_to_address(200)
+            project("42_ship")
 
     address_service.repo.set_qbo_identity.assert_not_called()
     reconciliation_repo.create.assert_called_once()

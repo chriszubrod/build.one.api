@@ -20,17 +20,18 @@ stop propagating).
 halves are now payload-first:
 
     ✅ PARENT half — `CustomerCustomerConnector._own_billing_address` (ph1),
-       threaded by `_sync_to_customers`. Its `bill_addr_id` read is a dead
-       transitional fallback (Section 3).
+       threaded by `_sync_to_customers`. Its `bill_addr_id` read was a dead
+       transitional fallback (Section 3), and ph3b deleted it.
     ✅ JOB half — `CustomerProjectConnector._own_billing_address_id` /
        `_own_shipping_address_id` (ph2.5), threaded by `_sync_to_projects`.
        Both project from the inline `BillAddr` / `ShipAddr`; the staging read
-       survives ONLY as `_own_address_id_from_staging`.
+       survived as `_own_address_id_from_staging` until ph3b deleted that too.
 
-So the file is no longer a blocker. It is now the ph3b inventory: it records
-what the readers actually depend on today, in the direction that is correct
-today, so that the NEXT phase — dropping the table, the columns, and the
-fallback — can be checked against something real rather than against prose.
+So the file is no longer a blocker. It was then the ph3b inventory — recording
+what the readers actually depended on, so the next phase could be checked
+against something real rather than against prose — and ph3b has now emptied
+that inventory (Section 2). What is left is this file's original and still-live
+subject: the staging WRITE, and the proof that no pull path needs it.
 
 WHAT THIS FILE DOES NOW
 -----------------------
@@ -39,11 +40,9 @@ WHAT THIS FILE DOES NOW
     threaded, and asserting the `ProjectAddress` links still land. These are
     the same assertions as before, inverted — a regression to staging-only goes
     RED here.
-  * Section 2 pins the ONE remaining dependency, structurally: every read of
-    `bill_addr_id` / `ship_addr_id` in the connector is inside the staging
-    fallback, and the only caller that still reaches it is
-    `heal_missing_mapping`. The write is still wired and this file no longer
-    demands that it be — it records exactly what ph3a costs.
+  * Section 2 pinned the ONE remaining dependency, structurally. ph3b removed
+    it; the section now records where the (stronger) successor assertions
+    went — `test_u513_ph3b_customer_no_staging_read.py`.
   * Section 3 discharges the one check ph3a explicitly asked for: the parent
     half's transitional fallback really is unreachable from the pull.
   * Section 4 pins the payload -> `dbo.Address` path that ph1 built, under the
@@ -58,7 +57,6 @@ Pure logic throughout: in-memory fakes, no live DB.
 """
 from __future__ import annotations
 
-import ast
 import inspect
 from types import SimpleNamespace
 from unittest.mock import MagicMock, Mock, patch
@@ -68,9 +66,6 @@ from integrations.intuit.qbo.customer.business.service import QboCustomerService
 from integrations.intuit.qbo.customer.connector.customer.business.service import (
     CustomerCustomerConnector,
     billing_address_qbo_id,
-)
-from integrations.intuit.qbo.customer.connector.project.business import (
-    service as project_connector_module,
 )
 from integrations.intuit.qbo.customer.connector.project.business.service import (
     ADDRESS_TYPE_BILLING,
@@ -86,11 +81,8 @@ from integrations.intuit.qbo.customer.connector.project.business.service import 
 from tests.test_u506_p1_project_address_parent_fallback import (
     PARENT_BILL_ADDRESS_ID,
     PROJECT_ID,
-    REAL_OWN_BILL,
-    REAL_OWN_SHIP,
     REAL_PARENT_BILL_ADDRESS,
     _build_connector,
-    _dbo_address_id,
     _qbo_customer,
 )
 # ph2.5's payload harness — the SAME connector, wired with the seam this file
@@ -251,84 +243,27 @@ def test_the_job_projection_now_has_the_same_payload_seam_as_the_parent():
 
 
 # ===========================================================================
-# Section 2 — THE RESIDUAL: what still depends on the staging write
+# Section 2 — DISCHARGED: nothing depends on the staging write any more
 # ===========================================================================
-
-def _fk_reader_functions():
-    """Every function in the project connector whose body reads
-    `.bill_addr_id` or `.ship_addr_id`, found by AST rather than by grepping
-    source text -- so a mention in a docstring or comment (there are several,
-    deliberately) cannot make this pass or fail for the wrong reason."""
-    tree = ast.parse(inspect.getsource(project_connector_module))
-    readers = set()
-    for node in ast.walk(tree):
-        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            continue
-        for child in ast.walk(node):
-            if isinstance(child, ast.Attribute) and child.attr in {
-                "bill_addr_id", "ship_addr_id",
-            }:
-                readers.add(node.name)
-    return readers
-
-
-def test_the_staging_fallback_is_the_only_remaining_reader_of_the_address_fks():
-    """⛔ THE ph3b GATE, and the one thing Section 1 cannot show on its own.
-
-    Section 1 proves the payload path WORKS. It cannot prove that no OTHER
-    reader of the FK columns survived somewhere else in the module -- and a
-    surviving reader is precisely the shape that fails silently, because every
-    read here is blank-guarded and failure-isolated.
-
-    So: the FKs may be read in exactly two places, and both must be the
-    dispatch that chooses the transitional staging arm. When ph3b drops the
-    columns, these two functions plus `_own_address_id_from_staging` and
-    `_staged_address_is_blank` are the whole of what comes out.
-    """
-    assert _fk_reader_functions() == {
-        "_own_billing_address_id", "_own_shipping_address_id",
-    }, (
-        "a reader of bill_addr_id/ship_addr_id appeared outside the staging "
-        "fallback dispatch -- it will keep the qbo.PhysicalAddress dependency "
-        "alive past ph3b, and it will do it silently"
-    )
-
-
-def test_heal_missing_mapping_is_the_last_production_caller_of_the_staging_path():
-    """What removing the write actually COSTS, stated as an assertion.
-
-    `heal_missing_mapping` binds a name-matched Project during an INVOICE pull
-    and genuinely has no Customer payload in scope, so it takes the staging arm.
-    NULL the FKs and this path stops resolving addresses.
-
-    That is a BOUNDED loss, unlike the pre-ph2.5 one: heal does not own project
-    addresses, the next customer pull re-projects them from the payload, and the
-    failure mode is a slot that fills one tick later rather than one that never
-    fills again. Recorded here so ph3a is a decision with a known price rather
-    than an assumption.
-    """
-    connector = _build_payload_connector(parent_address=None)
-    project = SimpleNamespace(id=PROJECT_ID, public_id="pub-p88", qbo_id=None, realm_id=None)
-    connector.project_service.read_by_name.return_value = project
-    connector.project_service.read_by_id.return_value = project
-    connector.project_service.read_by_qbo_identity.return_value = None
-
-    connector.heal_missing_mapping(
-        _qbo_customer(bill_addr_id=REAL_OWN_BILL, ship_addr_id=REAL_OWN_SHIP)
-    )
-    assert _links_of_type(connector, ADDRESS_TYPE_BILLING) == [_dbo_address_id(REAL_OWN_BILL)]
-    assert _links_of_type(connector, ADDRESS_TYPE_SHIPPING) == [_dbo_address_id(REAL_OWN_SHIP)]
-
-    after_ph3a = _build_payload_connector(parent_address=None)
-    after_ph3a.project_service.read_by_name.return_value = project
-    after_ph3a.project_service.read_by_id.return_value = project
-    after_ph3a.project_service.read_by_qbo_identity.return_value = None
-
-    after_ph3a.heal_missing_mapping(_qbo_customer(bill_addr_id=None, ship_addr_id=None))
-    assert after_ph3a.project_address_service.links() == [], (
-        "heal resolved an address with both FKs NULL -- it has gained a source "
-        "this test does not know about; re-price ph3a before shipping it"
-    )
+#
+# ⚠️ EMPTIED BY ph3b, which is the outcome this section was built to produce.
+# Two tests stood here:
+#
+#   * `test_the_staging_fallback_is_the_only_remaining_reader_of_the_address_
+#     fks` — an AST inventory asserting the FK columns were read in exactly two
+#     places, both of them the staging-arm dispatch. ph3b deleted that arm, so
+#     the inventory is EMPTY. It did not simply lose its subject: "zero readers"
+#     is a stronger claim than "these two", and it now spans the whole customer
+#     package rather than one module. It lives in
+#     `test_u513_ph3b_customer_no_staging_read.py`.
+#
+#   * `test_heal_missing_mapping_is_the_last_production_caller_of_the_staging_
+#     path` — which priced ph3a by showing heal still resolved addresses
+#     through staging. ph3b is where that price is actually paid, so the gap,
+#     its bound and the proof that the next payload-bearing pull closes it are
+#     pinned there too.
+#
+# What remains here is what this file is actually about: the staging WRITE.
 
 
 def test_the_physical_address_staging_write_is_GONE():
@@ -387,8 +322,15 @@ def test_a_full_pull_stamps_NULL_into_both_address_fks():
 def test_the_parent_staging_fallback_cannot_fire_from_the_pull():
     """✅ CONFIRMED DEAD -- for the parent half only.
 
-    `CustomerCustomerConnector._own_billing_address` falls back to the staging
-    row when `external_customer is None`. It cannot happen on the pull path:
+    ⚠️ ph3b DELETED that fallback on the strength of this test, so what it
+    proves has changed register: it is no longer "the branch is unreachable", it
+    is "the payload is always there" — i.e. the deletion took nothing away. Kept
+    verbatim for that reason. If it ever goes red, ph3b's parent half stops
+    being a dead-branch removal and becomes address loss.
+
+    `CustomerCustomerConnector._own_billing_address` used to fall back to the
+    staging row when `external_customer is None`. That could not happen on the
+    pull path:
     `sync_from_qbo` writes `external_by_id[qbo_customer.id]` and appends to
     `parent_customers` inside the SAME try block, after the same upsert, so a
     row reaches projection only if its payload was recorded first -- and the
@@ -456,10 +398,13 @@ def test_the_parent_staging_fallback_cannot_fire_from_the_pull():
 
 def test_the_parent_half_prefers_the_payload_over_the_staging_row():
     """Belt to Section 3's braces: even WITH a staging FK present, a threaded
-    payload wins, so the parent half already ignores the rows ph3b will drop.
+    payload wins, so the parent half ignores the rows ph3b drops.
 
     The staging service is a Mock that must stay untouched -- an un-called seam
-    is how "reads the payload" stays pinned rather than merely refactored.
+    is how "reads the payload" stays pinned rather than merely refactored. After
+    ph3b nothing in the connector could call it, which is why the Mock is kept
+    rather than removed: an assertion on a seam absent from the fake would be an
+    assertion about the fake.
     """
     address_connector = Mock()
     address_connector.qbo_physical_address_service = Mock()

@@ -2,6 +2,28 @@
 
 Carry-over items from sessions. Check off as done; prune anything stale.
 
+## U-535 — the document-text layer: built, exposed, never run (booked 2026-09-24)
+
+> Booked by Chris out of the SledgeCraft/OHR2 pocket-door search, which had to download 1,444 PDFs and OCR 173 scans because no text index exists. Board rows: `U-535a` (this repo + scheduler), `U-535b` (this repo, DESIGN-gated).
+
+### U-535a — wire + backfill attachment text extraction (non-P0-surface)
+
+- [ ] 🔴 **Fix the Document Intelligence environment FIRST — a timer without it converts 28,459 NULL rows into 28,459 failures.** All 200 `failed` rows are environment, not code: 95 `Azure Document Intelligence endpoint is required`, 66 `Failed to start analysis: 403`, 36 `403 … Access denied due to Virtual Network/Firewall`, 2 `Out of call volume quota for FormRecognizer`, 1 blob read timeout. Configure the DI endpoint for the App Service, open its VNet/firewall to the API, confirm the quota tier is not free.
+- [ ] 🟡 **Then reset the 200 `failed` → `pending`** so they re-drain. One-shot, idempotent.
+- [ ] 🟡 **Backfill the 28,459 `ExtractionStatus IS NULL` rows.** Set-based, idempotent, per-batch commit per `feedback_backfill_setbased_under_load` — per-row backfills TCP-drop under load. `AttachmentExtractionService` is text-layer-first, so the majority of PDFs succeed even while DI is still broken; this item does **not** have to wait on the DI fix.
+- [ ] 🟢 **Verify the enqueue-on-upload path stays correct** (`entities/attachment/api/router.py:31 _is_extractable_content_type`). It already works — `pending` was measured growing **746 → 893 in ~30 minutes** on 2026-09-24 (oldest row 2026-08-02), which is exactly the symptom of a queue with no consumer.
+- **Live counts 2026-09-24:** `(NULL)` 28,459 · `pending` 893 · `failed` 200 · `completed` 170. `ExtractedTextBlobUrl` covers 170 of 29,722 rows (0.6%); `AIExtractedFields` is 100% NULL. Neither is an index today — see `reference_search_project_invoice_folders`.
+- **Do not rebuild the service.** `AttachmentExtractionService` (U-187) is complete and tested (`tests/test_attachment_extraction_service.py`), and `POST /api/v1/admin/attachment/extract/tick` already exists at `shared/api/admin.py:638`. The only missing piece is a caller — see `build.one.scheduler/TODO.md`.
+
+### U-535b — DESIGN: backfill `Bill → Attachment` links (P0-surface ⇒ Pass 3 required)
+
+- [ ] 🔴 **DESIGN unit only** per `feedback_two_phase_dispatch_design_gated` — nothing is written until `/em` approves a match-confidence spec.
+- **The gap:** `dbo.Attachment` starts 2026-01. Link coverage by `BillDate` year — 2022 **0.0%** (0/2,864) · 2023 **0.7%** (32/4,709) · 2024 **0.3%** (14/4,914) · 2025 **13.2%** (595/4,521) · 2026 **90.1%** (3,027/3,359). **16,699 of 20,367 bills (82%) have no linked document**, so any document question about them leaves the database entirely.
+- **The documents exist.** Project folders are complete back to 2022 (OHR2's `14 - Invoices & Receipts` holds 1,293 files; Box and SharePoint agree 1:1 on count and on all 100 SledgeCraft invoice numbers). SharePoint's convention is machine-parseable — `PROJ - Vendor - Inv# - Desc - CostCode - $Amount - Date.pdf` — so invoice number + amount + project is a strong candidate key against `dbo.Bill`.
+- **The design must settle:** (a) the confidence bar, and that anything below it stays **unlinked** rather than guessed; (b) Box vs SharePoint as source of record — ~16% of names diverge (203 of 1,293 on OHR2; Box often keeps the raw `Inv_NNNNNN_from_Vendor.pdf`), so compare **parsed invoice numbers**, never raw names; (c) the ~13% of files with no text layer; (d) that it **LINKS existing Attachment rows and never duplicates**, per `feedback_attachable_identity_conflict_link_existing`.
+- ⚠️ **P0-surface despite being "just a backfill":** it writes `BillLineItemAttachment`, and a wrong link puts the wrong vendor invoice on a bill that feeds client draw packets (`feedback_invoice_attachment_specificity`). Depends on U-535a for the extracted text that makes content-matching possible beyond filenames.
+
+
 ## U-524 spillover — the three reviewer-decision siblings have diverged in ways worth closing (booked 2026-09-23)
 
 Booked out of U-524 (`POST /api/v1/expense/{id}/apply-reviewer-decision`). All four

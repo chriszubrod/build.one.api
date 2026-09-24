@@ -36,18 +36,22 @@ class CompanyInfoAddressConnector:
     """
 
     # ⚠️ The realm `dbo.Address` identity for CompanyInfo's three addresses is
-    # stamped under — and it is None, NOT the live realm id. Verified 2026-09-24
-    # against the code, in the order the value actually flows:
+    # stamped under — and it is None, NOT the live realm id. This is a fact
+    # about rows that ALREADY EXIST in prod, so deleting the code that created
+    # them (U-513 phase 3a) does not change it. How they came to be, in the
+    # order the value flowed:
     #
-    #   1. `QboCompanyInfoService._sync_physical_address` calls
-    #      `QboPhysicalAddressRepository.create()` / `.update_by_id()` WITHOUT
-    #      `realm_id` (the repo's parameter defaults to None), so every
+    #   1. The CompanyInfo pull's `qbo.PhysicalAddress` upsert — deleted in
+    #      phase 3a, live until then — called the staging repo's create/update
+    #      WITHOUT `realm_id` (the repo's parameter defaults to None), so every
     #      `qbo.PhysicalAddress` row this family owns carries `RealmId = NULL`.
     #      The board records the live count: three rows, and they are the reason
     #      U-514 (realm-scoping the staging read) had to be split out of U-508a.
-    #   2. `PhysicalAddressAddressConnector.sync_from_qbo_to_address` reads
+    #   2. `PhysicalAddressAddressConnector.sync_from_qbo_to_address` read
     #      `realm_id = qbo_physical_address.realm_id` — NULL — and
-    #      `SetAddressQboIdentity` stamps that onto `dbo.Address.RealmId`.
+    #      `SetAddressQboIdentity` stamped that onto `dbo.Address.RealmId`. Those
+    #      `dbo.Address` rows are still there, still NULL-realmed, and are the
+    #      rows this connector has to keep hitting.
     #   3. `ReadAddressByQboIdAndRealmId` matches NULL only against NULL:
     #      `(([RealmId] = @RealmId) OR ([RealmId] IS NULL AND @RealmId IS NULL))`.
     #
@@ -62,10 +66,10 @@ class CompanyInfoAddressConnector:
     # re-keying anything.
     #
     # Flipping this to the live realm is U-514's job, in the same deploy as its
-    # realm backfill — not this unit's. Customer/vendor are NOT affected: their
-    # `_upsert_physical_address` does pass `realm_id` to the repo, so their
-    # `dbo.Address` rows carry a real realm and their inline projection should
-    # pass one.
+    # realm backfill of those existing rows — not this unit's. Customer/vendor
+    # are NOT affected: their staging upsert did pass `realm_id` to the repo, so
+    # their `dbo.Address` rows carry a real realm and their inline projection
+    # should pass one.
     ADDRESS_IDENTITY_REALM_ID: Optional[str] = None
 
     def __init__(

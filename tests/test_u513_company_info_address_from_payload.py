@@ -7,8 +7,12 @@ row ids to the caller, which read each row straight back out via
 held is present inline on the CompanyInfo response, so that round trip bought
 nothing but a dependency on a table being sunset.
 
-The staging WRITE deliberately stays (the EM drops the table in a later step,
-once customer and vendor are converted too); only the read-back is gone.
+Phase 1 (this file) removed the READ and kept the WRITE, so the customer and
+vendor packages could be converted in parallel against a table that still
+existed. Phase 3a removed the write too, once they were; the assertions here
+that pinned the surviving write moved to
+`test_u513_ph3_company_info_no_staging_write.py`, which pins its absence.
+Everything else in this file is unchanged and is what phase 3a had to preserve.
 
 ⚠️ THE IDENTITY, verified against the code rather than assumed — the unit brief
    guessed the staging row was keyed on the realm id (`record_id = realm_id`).
@@ -46,7 +50,6 @@ REALM = "9130353016965726"
 
 SERVICE_MODULE = "integrations.intuit.qbo.company_info.business.service"
 CLIENT_TARGET = f"{SERVICE_MODULE}.QboCompanyInfoClient"
-REPO_TARGET = f"{SERVICE_MODULE}.QboPhysicalAddressRepository"
 ADDRESS_CONNECTOR_TARGET = f"{SERVICE_MODULE}.CompanyInfoAddressConnector"
 
 LINE1 = "PO Box 594"
@@ -89,15 +92,20 @@ def _patched_client(response):
     return ctx
 
 
-def _run_pull(response, *, address_connector=None, staging_repo=None):
+def _run_pull(response, *, address_connector=None):
     """Drive the REAL `sync_from_qbo`. The synthetic-id derivation and the
     blankness gate both live in it, so exercising `project_address` directly
-    would prove nothing about what production passes."""
+    would prove nothing about what production passes.
+
+    No staging repo is patched: since phase 3a the pull constructs none, and
+    patching a name the module no longer carries would be an AttributeError
+    rather than a guard. Its absence is pinned in
+    `test_u513_ph3_company_info_no_staging_write.py`."""
     svc = QboCompanyInfoService()
     connector_cls = MagicMock(return_value=address_connector or MagicMock())
     with patch(CLIENT_TARGET, return_value=_patched_client(response)), patch(
-        REPO_TARGET, return_value=staging_repo or MagicMock()
-    ), patch(ADDRESS_CONNECTOR_TARGET, connector_cls):
+        ADDRESS_CONNECTOR_TARGET, connector_cls
+    ):
         outcome = svc.sync_from_qbo(realm_id=REALM)
     return outcome
 
@@ -162,25 +170,6 @@ def test_all_three_slots_project_under_distinct_identities():
     assert len(set(projected)) == 3, "two slots resolved to the same dbo.Address"
 
 
-def test_projection_and_staging_write_use_the_same_identity():
-    """The two paths run side by side until the table is dropped. If their
-    qbo_ids ever diverge, the staging row and the dbo row stop describing the
-    same address and the eventual cutover silently re-keys."""
-    connector = MagicMock()
-    staging_repo = MagicMock()
-    staging_repo.read_by_qbo_id.return_value = None
-
-    _run_pull(
-        _external(CompanyAddr=_addr(), LegalAddr=_addr(Id="1612")),
-        address_connector=connector,
-        staging_repo=staging_repo,
-    )
-
-    staged = [c.kwargs["qbo_id"] for c in staging_repo.create.call_args_list]
-    projected = [c.kwargs["qbo_id"] for c in connector.project_address.call_args_list]
-    assert staged == projected == [f"{REALM}-company", "1612"]
-
-
 def test_the_inline_payload_is_the_source_of_the_projected_fields():
     """Not the staging row. The whole point of the unit: every column staging
     held is already on the response."""
@@ -208,18 +197,9 @@ def test_projection_never_reads_a_staging_row_back():
     `qbo.PhysicalAddress` row id to anything. A read-back would keep the sunset
     blocked no matter how the fields were sourced."""
     connector = MagicMock()
-    staging_repo = MagicMock()
-    staging_repo.read_by_qbo_id.return_value = None
 
-    _run_pull(
-        _external(CompanyAddr=_addr()),
-        address_connector=connector,
-        staging_repo=staging_repo,
-    )
+    _run_pull(_external(CompanyAddr=_addr()), address_connector=connector)
 
-    assert staging_repo.read_by_id.call_count == 0, (
-        "a staging row was read back by id -- that is the U-513 dependency"
-    )
     assert connector.sync_from_qbo_to_address.call_count == 0, (
         "the staging-id projection entry point must not be called any more"
     )
@@ -309,19 +289,9 @@ def test_no_field_match_lookup_reaches_the_projection():
     go looking for a same-street row.
     """
     connector = MagicMock()
-    staging_repo = MagicMock()
-    staging_repo.read_by_qbo_id.return_value = None
 
-    _run_pull(
-        _external(CompanyAddr=_addr()),
-        address_connector=connector,
-        staging_repo=staging_repo,
-    )
+    _run_pull(_external(CompanyAddr=_addr()), address_connector=connector)
 
-    assert staging_repo.read_all.call_count == 0, (
-        "the 957-row scan is back -- see _sync_physical_address's docstring for "
-        "the row it would adopt"
-    )
     _args, kwargs = connector.project_address.call_args
     assert kwargs["qbo_id"] == f"{REALM}-company", (
         "a qbo_id MISS must CREATE under the synthetic id, never adopt a "
@@ -516,52 +486,28 @@ def test_the_missing_id_guard_still_raises_value_error():
     something else."""
     svc = QboCompanyInfoService()
     with pytest.raises(ValueError, match="QBO CompanyInfo must have an ID"):
-        svc._build_company_info(
-            _external(Id=None),
-            realm_id=REALM,
-            company_addr_id=None,
-            legal_addr_id=None,
-            customer_communication_addr_id=None,
-        )
+        svc._build_company_info(_external(Id=None), realm_id=REALM)
 
 
 # --------------------------------------------------------------------------
-# 6. The staging write stays until the EM drops the table.
+# 6. The slot table.
 # --------------------------------------------------------------------------
 
 
-def test_staging_rows_are_still_written():
-    """U-513's scope is "stop DEPENDING on qbo.PhysicalAddress", not "stop
-    writing it". The table is dropped in a later step, once the customer and
-    vendor packages are converted and verified; deleting the write here would
-    strand them."""
-    connector = MagicMock()
-    staging_repo = MagicMock()
-    staging_repo.read_by_qbo_id.return_value = None
+def test_slot_table_covers_the_three_payload_fields():
+    """`ADDRESS_SLOTS` is the single derivation the projection reads. A slot
+    dropped from it silently stops projecting that address, with no other test
+    failing.
 
-    _run_pull(
-        _external(CompanyAddr=_addr()),
-        address_connector=connector,
-        staging_repo=staging_repo,
-    )
-
-    assert staging_repo.create.call_count == 1
-    assert staging_repo.create.call_args.kwargs["qbo_id"] == f"{REALM}-company"
-
-
-def test_slot_table_covers_the_three_payload_fields_and_the_three_model_fields():
-    """`ADDRESS_SLOTS` is the single derivation both paths read. A slot dropped
-    from it silently stops both staging AND projecting that address, with no
-    other test failing."""
-    assert [attribute for attribute, _, _ in ADDRESS_SLOTS] == [
+    Two elements per slot since phase 3a: the third carried the transient-model
+    field the staging row id was threaded into, and both the id and the write
+    that produced it are gone."""
+    assert [attribute for attribute, _ in ADDRESS_SLOTS] == [
         "company_addr", "legal_addr", "customer_communication_addr",
     ]
-    assert [suffix for _, suffix, _ in ADDRESS_SLOTS] == [
+    assert [suffix for _, suffix in ADDRESS_SLOTS] == [
         "company", "legal", "customer-communication",
     ]
-    assert [field for _, _, field in ADDRESS_SLOTS] == [
-        "company_addr_id", "legal_addr_id", "customer_communication_addr_id",
-    ]
     external = _external()
-    for attribute, _, _ in ADDRESS_SLOTS:
+    for attribute, _ in ADDRESS_SLOTS:
         assert hasattr(external, attribute)

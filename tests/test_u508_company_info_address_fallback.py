@@ -1,4 +1,5 @@
-"""U-508 — the CompanyInfo pull's match-by-address-fields fallback is deleted.
+"""U-508 — the CompanyInfo pull's match-by-address-fields fallback is deleted,
+and must not come back on the path that replaced it.
 
 `QboCompanyInfoService._sync_physical_address` used to carry a "# Migration:"
 block: on a qbo_id MISS it called `QboPhysicalAddressRepository.read_all()`
@@ -6,7 +7,7 @@ block: on a qbo_id MISS it called `QboPhysicalAddressRepository.read_all()`
 (line1, city, postal_code), and REWROTE that row's `qbo_id` to CompanyInfo's.
 It was scoped by neither realm nor owner.
 
-Why it originally shipped WITH U-514, and why it now ships ALONE
+Why it originally shipped WITH U-514, and why it then shipped ALONE
 (U-514 was split out on 2026-09-23 and is NOT deployed):
 
     Realm-scoping the read makes the three CompanyInfo-owned
@@ -23,13 +24,36 @@ was written to heal were created (07:20:32 UTC). It re-keyed them once in
 January 2026 and has matched nothing since -- zero rows carry the synthetic
 shape it healed. It has never fired destructively.
 
-Its TRIGGER, though, is still live and deliberately kept: `sync_from_qbo` still
+WHAT CHANGED IN U-513 PHASE 3a, AND WHY THIS FILE STILL EXISTS
+--------------------------------------------------------------
+Phase 3a deleted `_sync_physical_address` outright -- host method, staging
+write and all -- so the specific call site this file used to guard no longer
+exists to be guarded. The DEFECT, though, is not a property of that method: it
+is "resolve an address by its street instead of by its identity, and adopt
+whatever you find". The pull still resolves addresses; it just does so against
+`dbo.Address` now, via `CompanyInfoAddressConnector`. So these tests moved down
+onto the surviving path rather than being deleted with the method:
+
+  * a qbo_id MISS must still CREATE under the identity the pull derived
+    (`_address_qbo_id`), never adopt a field-matched stranger's row;
+  * the company_info package must hand the projection nothing it COULD use to
+    go looking for a same-street row -- an identity and the fields to write,
+    and that is all;
+  * no call site in the package may enumerate an address table.
+
+Its TRIGGER is still live and deliberately kept: `sync_from_qbo` still
 synthesises `f"{realm_id}-company"` (and -legal / -customer-communication) when
 QBO omits an address `Id`, so the miss branch remains permanently reachable.
-`test_synthetic_id_fallback_still_creates_cleanly` pins that, which is what
-stops the three tests above it from passing vacuously against a pull that can
-no longer miss at all.
+`test_synthetic_id_trigger_is_still_live` pins that, which is what stops the
+tests above it from passing vacuously against a pull that can no longer miss.
+
+`PhysicalAddressAddressConnector`'s OWN street/city adopt is a different,
+bounded thing and is not in scope here: it runs only under the create lock on a
+confirmed dbo miss, and it refuses any row already carrying a different
+(QboId, RealmId). What this file guards is that company_info never builds a
+second, unbounded one.
 """
+import inspect
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -38,109 +62,28 @@ from integrations.intuit.qbo.company_info.business.service import QboCompanyInfo
 from integrations.intuit.qbo.company_info.external.schemas import (
     QboCompanyInfo as QboCompanyInfoExternal,
 )
-from integrations.intuit.qbo.physical_address.business.model import QboPhysicalAddress
 
 REALM = "9130353016965726"
 
 SERVICE_MODULE = "integrations.intuit.qbo.company_info.business.service"
 CLIENT_TARGET = f"{SERVICE_MODULE}.QboCompanyInfoClient"
-REPO_TARGET = f"{SERVICE_MODULE}.QboPhysicalAddressRepository"
-# U-513 added the inline dbo.Address projection to the same `sync_from_qbo`.
-# These tests are about the STAGING write, so the projection is stubbed out —
-# left live it would reach a real connector (and a blocked live DB).
 ADDRESS_CONNECTOR_TARGET = f"{SERVICE_MODULE}.CompanyInfoAddressConnector"
 
 # The live collision, verbatim: Vendor 1246 (Rogers Build Inc.)'s billing
-# address shares all three matched fields with the company address.
+# address shares all three matched fields with the company address. Every
+# payload below carries it, so a reinstated field-match would have a real
+# stranger's row to reach for.
 SHARED_LINE1 = "PO Box 594"
 SHARED_CITY = "Brentwood"
 SHARED_POSTAL = "37024"
 
-
-def _row(*, id, qbo_id, realm_id, line1=None, city=None, postal_code=None, **rest):
-    """A real QboPhysicalAddress, not a SimpleNamespace -- a renamed field must
-    break these tests rather than silently diverge from the shipped dataclass."""
-    return QboPhysicalAddress(
-        id=id,
-        public_id=f"pub-{id}",
-        # base64 of b"rowver01"; `row_version_bytes` is what the update path reads.
-        row_version="cm93dmVyMDE=",
-        created_datetime="2026-01-01 00:00:00",
-        modified_datetime="2026-01-01 00:00:00",
-        qbo_id=qbo_id,
-        realm_id=realm_id,
-        line1=line1,
-        line2=rest.get("line2"),
-        city=city,
-        country=rest.get("country"),
-        country_sub_division_code=rest.get("country_sub_division_code"),
-        postal_code=postal_code,
-    )
-
-
-class _FakeAddressRepo:
-    """In-memory QboPhysicalAddressRepository.
-
-    `read_by_qbo_id` reproduces the U-514 sproc's realm scoping (exact qbo_id
-    AND realm, with NULL matching only NULL). `read_all` RETURNS ROWS rather
-    than raising: a fake that blew up would make the "read_all is never called"
-    mutation fail for the wrong reason and would hide whether the reinstated
-    fallback actually adopts the wrong row.
-    """
-
-    def __init__(self, rows=None):
-        self.rows = list(rows or [])
-        self.read_all_calls = 0
-        self.create_calls = []
-        self.update_calls = []
-        self._next_id = max((r.id for r in self.rows), default=900) + 1
-
-    # -- reads ------------------------------------------------------------
-    def read_by_qbo_id(self, *, qbo_id):
-        # qbo_id ONLY -- matching HEAD. Realm scoping is U-514's, split out of
-        # this unit on 2026-09-23. The miss this test needs is the SYNTHETIC-id
-        # miss (`{realm}-company`), which exists with or without realm scoping;
-        # U-514 later adds a second way to miss (realm mismatch), which is why
-        # the deleted fallback must never come back.
-        for row in self.rows:
-            if row.qbo_id == qbo_id:
-                return row
-        return None
-
-    def read_all(self):
-        self.read_all_calls += 1
-        # ORDER BY [QboId] ASC -- the ordering that makes '1246_bill' win.
-        return sorted(self.rows, key=lambda r: (r.qbo_id or ""))
-
-    # -- writes -----------------------------------------------------------
-    def create(self, **kwargs):
-        # **kwargs, not an explicit signature: the "drop realm_id" mutation
-        # must reach the assertion, not die on a TypeError here.
-        self.create_calls.append(kwargs)
-        row = _row(
-            id=self._next_id,
-            qbo_id=kwargs.get("qbo_id"),
-            realm_id=kwargs.get("realm_id"),
-            line1=kwargs.get("line1"),
-            city=kwargs.get("city"),
-            postal_code=kwargs.get("postal_code"),
-        )
-        self._next_id += 1
-        self.rows.append(row)
-        return row
-
-    def update_by_id(self, **kwargs):
-        self.update_calls.append(kwargs)
-        for row in self.rows:
-            if row.id == kwargs.get("id"):
-                row.qbo_id = kwargs.get("qbo_id", row.qbo_id)
-                if "realm_id" in kwargs:
-                    row.realm_id = kwargs["realm_id"]
-                row.line1 = kwargs.get("line1", row.line1)
-                row.city = kwargs.get("city", row.city)
-                row.postal_code = kwargs.get("postal_code", row.postal_code)
-                return row
-        return None
+# Every call an address-field scan would have to make, at any layer.
+FIELD_MATCH_CALLS = (
+    "read_all",
+    "read_by_street_one_and_city",
+    "read_by_qbo_id",
+    "read_by_id",
+)
 
 
 def _external(**overrides):
@@ -175,80 +118,134 @@ def _patched_client(response):
     return ctx
 
 
-def _run_pull(repo, response):
-    """Drive the real `sync_from_qbo`, not `_sync_physical_address` directly --
-    the synthetic-id derivation (`... or f"{realm_id}-company"`) lives in the
+def _run_pull(response, *, address_connector=None):
+    """Drive the real `sync_from_qbo`, not the projection directly -- the
+    synthetic-id derivation (`... or f"{realm_id}-company"`) lives in the
     caller, and it is what makes the miss branch reachable at all."""
     svc = QboCompanyInfoService()
+    connector = address_connector or MagicMock()
     with patch(CLIENT_TARGET, return_value=_patched_client(response)), patch(
-        REPO_TARGET, return_value=repo
-    ), patch(ADDRESS_CONNECTOR_TARGET):
-        return svc.sync_from_qbo(realm_id=REALM)
+        ADDRESS_CONNECTOR_TARGET, MagicMock(return_value=connector)
+    ):
+        svc.sync_from_qbo(realm_id=REALM)
+    return connector
 
 
 # --------------------------------------------------------------------------
-# 1. A qbo_id miss CREATES. It never adopts a row by address fields.
+# 1. A qbo_id miss RESOLVES BY IDENTITY. It never adopts a row by address fields.
 # --------------------------------------------------------------------------
 
 
-def test_qbo_id_miss_creates_never_adopts():
-    """A pre-existing row with the identical (line1, city, postal_code) but a
-    different qbo_id must be left completely alone."""
-    twin = _row(
-        id=910,
-        qbo_id="1246_bill",
-        realm_id=REALM,
-        line1=SHARED_LINE1,
-        city=SHARED_CITY,
-        postal_code=SHARED_POSTAL,
+def test_qbo_id_miss_projects_under_the_derived_identity():
+    """The address whose (line1, city, postal_code) is shared with Vendor 1246's
+    billing address must still project under ITS OWN identity. That is what
+    makes a miss a CREATE at the `dbo.Address` layer rather than an adoption:
+    `sync_address_from_external` looks the identity up and, finding nothing,
+    creates under it."""
+    connector = _run_pull(_external(CompanyAddr=_company_addr(Id="1612")))
+
+    connector.project_address.assert_called_once()
+    _args, kwargs = connector.project_address.call_args
+    assert kwargs["qbo_id"] == "1612", (
+        "a qbo_id miss must resolve under the pull's own derived identity; "
+        "adopting an address-field twin is the U-508 defect"
     )
-    repo = _FakeAddressRepo([twin])
 
-    _run_pull(repo, _external(CompanyAddr=_company_addr(Id="1612")))
 
-    assert len(repo.create_calls) == 1, (
-        "a qbo_id miss must CREATE; adopting an address-field twin is the U-508 defect"
+def test_the_projection_is_handed_no_way_to_find_a_same_street_row():
+    """THE structural guard, now that the deleted block's host method is gone.
+
+    `project_address` receives the payload's address ref and the identity --
+    nothing else. A reinstated fallback needs somewhere to say "and if that
+    misses, go looking by street"; this asserts there is no such channel, at the
+    call site AND in the signature, so one cannot be added without failing here.
+    """
+    connector = _run_pull(_external(CompanyAddr=_company_addr()))
+
+    args, kwargs = connector.project_address.call_args
+    assert len(args) == 1, f"unexpected positional args: {args!r}"
+    assert set(kwargs) == {"qbo_id"}, (
+        f"the projection gained a channel beyond the identity: {sorted(kwargs)}"
     )
-    assert repo.create_calls[0]["qbo_id"] == "1612"
-    assert repo.update_calls == [], "nothing existing may be updated on a miss"
+
+    from integrations.intuit.qbo.company_info.connector.address.business.service import (
+        CompanyInfoAddressConnector,
+    )
+
+    params = list(inspect.signature(CompanyInfoAddressConnector.project_address).parameters)
+    assert params == ["self", "address_ref", "qbo_id"], (
+        f"project_address grew a parameter; a match-by-fields hint would ride "
+        f"in on exactly this: {params}"
+    )
 
 
 # --------------------------------------------------------------------------
-# 2. read_all() is never called during address sync.
+# 2. No address table is enumerated anywhere in the package.
 # --------------------------------------------------------------------------
 
 
-def test_read_all_is_never_called_during_address_sync():
+def test_no_enumerating_read_is_called_during_a_pull():
     """The 957-row scan is gone, not merely narrowed. Pinned separately from the
     behavioural tests because a future "optimised" variant of the same fallback
     (scan fewer rows, still by address fields) would keep those green while
-    reintroducing exactly this cross-owner reach."""
-    repo = _FakeAddressRepo(
-        [
-            _row(
-                id=910,
-                qbo_id="1246_bill",
-                realm_id=REALM,
-                line1=SHARED_LINE1,
-                city=SHARED_CITY,
-                postal_code=SHARED_POSTAL,
-            )
-        ]
-    )
+    reintroducing exactly this cross-owner reach.
 
-    _run_pull(
-        repo,
+    Asserted against the connector the service actually drives: every attribute
+    a scan could use is recorded by the Mock, so any of them being touched
+    fails."""
+    connector = _run_pull(
         _external(
             CompanyAddr=_company_addr(),
             LegalAddr=_company_addr(Line1="1 Legal Way", City="Nashville", PostalCode="37201"),
             CustomerCommunicationAddr=_company_addr(),
-        ),
+        )
     )
 
-    assert repo.read_all_calls == 0, (
-        "address sync must never enumerate the whole qbo.PhysicalAddress table; "
-        f"read_all() was called {repo.read_all_calls}x"
+    called = {c[0] for c in connector.method_calls}
+    assert called == {"project_address"}, (
+        f"the pull called something other than the projection: {sorted(called)}"
     )
+    for banned in FIELD_MATCH_CALLS:
+        assert getattr(connector, banned).call_count == 0, (
+            f"{banned} was called during address sync -- see _address_qbo_id's "
+            "docstring for the row it would adopt"
+        )
+
+
+@pytest.mark.parametrize("module_path", [
+    "integrations.intuit.qbo.company_info.business.service",
+    "integrations.intuit.qbo.company_info.connector.address.business.service",
+])
+def test_package_source_carries_no_field_match_call(module_path):
+    """A behavioural pin can be satisfied by a fallback that is merely gated off.
+    This asserts the call sites are absent from the shipped source of BOTH
+    modules on the address path -- the service that derives the identity and the
+    connector that spends it.
+
+    Docstrings and comments are stripped first: they NAME the deleted calls, and
+    that naming is the record of why they must stay deleted."""
+    import importlib
+
+    module = importlib.import_module(module_path)
+    source = inspect.getsource(module)
+    body = "\n".join(
+        line for line in source.splitlines() if not line.lstrip().startswith("#")
+    )
+    for obj in [module] + [
+        getattr(cls, name)
+        for cls in vars(module).values()
+        if inspect.isclass(cls) and cls.__module__ == module_path
+        for name in vars(cls)
+        if callable(getattr(cls, name, None))
+    ]:
+        doc = getattr(obj, "__doc__", None)
+        if doc:
+            body = body.replace(doc, "")
+    for banned in FIELD_MATCH_CALLS:
+        assert banned not in body, (
+            f"{banned} must not appear in {module_path} -- see _address_qbo_id's "
+            "docstring for the row it would adopt"
+        )
 
 
 # --------------------------------------------------------------------------
@@ -256,54 +253,34 @@ def test_read_all_is_never_called_during_address_sync():
 # --------------------------------------------------------------------------
 
 
-def test_foreign_vendor_billing_address_is_never_adopted_or_rekeyed():
-    """The exact live collision the deleted block would have caused under U-514.
+def test_foreign_vendor_billing_address_is_never_reachable_from_this_pull():
+    """The exact live collision the deleted block would have caused under U-514,
+    expressed against the path that survived.
 
     Vendor 1246 (Rogers Build Inc.)'s billing address `1246_bill` shares
-    ('PO Box 594', 'Brentwood', '37024') with the company address, and sorts
+    ('PO Box 594', 'Brentwood', '37024') with the company address, and sorted
     FIRST under `read_all()`'s `ORDER BY [QboId] ASC`. The CompanyInfo response
-    here carries no address `Id`, so the caller synthesises
-    `{realm}-company` -- a guaranteed qbo_id miss, which is precisely the state
-    that fed the fallback.
+    here carries no address `Id`, so the caller synthesises `{realm}-company` --
+    a guaranteed identity miss, which is precisely the state that fed the
+    fallback.
 
-    Its row must come out byte-identical, and a NEW row must be created beside
-    it.
+    What the pull does with that miss must be: project under the synthetic
+    identity, passing the payload's own fields as CONTENT TO WRITE. The street
+    is never an input to a lookup, so there is no path from this pull to
+    `1246_bill` at all.
     """
-    foreign = _row(
-        id=910,
-        qbo_id="1246_bill",
-        realm_id=REALM,
-        line1=SHARED_LINE1,
-        city=SHARED_CITY,
-        postal_code=SHARED_POSTAL,
-    )
-    # A second, later-sorting twin: proves the assertion is about "adopt none",
-    # not merely "adopt a different one".
-    also_foreign = _row(
-        id=920,
-        qbo_id="1612_ship",
-        realm_id=REALM,
-        line1=SHARED_LINE1,
-        city=SHARED_CITY,
-        postal_code=SHARED_POSTAL,
-    )
-    repo = _FakeAddressRepo([foreign, also_foreign])
+    connector = _run_pull(_external(CompanyAddr=_company_addr()))
 
-    outcome = _run_pull(repo, _external(CompanyAddr=_company_addr()))
-
-    assert foreign.qbo_id == "1246_bill", (
-        "Vendor 1246's billing address was re-keyed -- this is the U-508 P0"
+    args, kwargs = connector.project_address.call_args
+    assert kwargs["qbo_id"] == f"{REALM}-company", (
+        "an identity miss must create under the synthetic id, never adopt a "
+        "field-matched stranger's row"
     )
-    assert also_foreign.qbo_id == "1612_ship"
-    assert foreign.realm_id == REALM and also_foreign.realm_id == REALM
-    touched = [call.get("id") for call in repo.update_calls]
-    assert 910 not in touched and 920 not in touched, (
-        f"a foreign address row was updated by the CompanyInfo pull: {repo.update_calls!r}"
-    )
-    assert len(repo.create_calls) == 1
-    assert repo.create_calls[0]["qbo_id"] == f"{REALM}-company"
-    # And the pull still produced a usable projection -- the new row's id.
-    assert outcome.synced[0].company_addr_id not in (910, 920, None)
+    address_ref = args[0]
+    assert (address_ref.line1, address_ref.city, address_ref.postal_code) == (
+        SHARED_LINE1, SHARED_CITY, SHARED_POSTAL,
+    ), "the shared street must reach the projection as content, and only as content"
+    assert connector.method_calls == [c for c in connector.method_calls if c[0] == "project_address"]
 
 
 # --------------------------------------------------------------------------
@@ -319,56 +296,29 @@ def test_foreign_vendor_billing_address_is_never_adopted_or_rekeyed():
         ("CustomerCommunicationAddr", "-customer-communication"),
     ],
 )
-def test_synthetic_id_fallback_still_creates_cleanly(field, suffix):
-    """When QBO omits an address `Id`, the caller synthesises one and the sync
-    CREATES under it. Delete that `or f"{realm_id}-..."` branch and the three
-    tests above go vacuous -- there would be no reachable miss left to guard.
+def test_synthetic_id_trigger_is_still_live(field, suffix):
+    """When QBO omits an address `Id`, the caller synthesises one and the pull
+    projects under it. Delete that `or f"{realm_id}-..."` branch and the tests
+    above go vacuous -- there would be no reachable miss left to guard.
 
-    It also pins that the synthesised id is the one PERSISTED, so the
-    qbo_id-only read finds the row again next tick. (U-514 later adds a
-    realm-scoped read, which introduces a SECOND way to miss -- which is why
-    the deleted fallback must never come back.)
-    """
-    repo = _FakeAddressRepo()
+    It also pins that the synthesised id is the one PROJECTED, so the identity
+    read finds the same `dbo.Address` again next tick."""
+    connector = _run_pull(_external(**{field: _company_addr()}))
 
-    outcome = _run_pull(repo, _external(**{field: _company_addr()}))
-
-    assert len(repo.create_calls) == 1, "an Id-less address must still be persisted"
-    assert repo.create_calls[0]["qbo_id"] == f"{REALM}{suffix}"
-    assert repo.update_calls == []
-    assert outcome.should_hold is False
+    connector.project_address.assert_called_once()
+    assert connector.project_address.call_args.kwargs["qbo_id"] == f"{REALM}{suffix}"
 
 
 # --------------------------------------------------------------------------
 # 5. (Parked) realm_id threading moved to U-514 on 2026-09-23 along with the
-#    realm-scoped read it depends on. This service's read is qbo_id-only and
-#    neither write persists a realm; see scratchpad/u514_parked/.
+#    realm-scoped read it depends on. The staging write it would have threaded
+#    through is gone as of phase 3a; U-514 now owns backfilling the realm onto
+#    the `dbo.Address` rows that write left behind. See scratchpad/u514_parked/.
 # --------------------------------------------------------------------------
 
 
-
-
-
-def test_service_source_carries_no_read_all_call():
-    """A behavioural pin can be satisfied by a fallback that is merely gated off.
-    This asserts the call site itself is absent from the module."""
-    import inspect
-
-    from integrations.intuit.qbo.company_info.business import service as module
-
-    method = module.QboCompanyInfoService._sync_physical_address
-    source = inspect.getsource(method)
-    # The method's own docstring NAMES the deleted call (that is the record of
-    # why it must stay deleted), so strip it before pinning the code.
-    body = source.replace(method.__doc__ or "", "")
-    assert "read_all" not in body, (
-        "_sync_physical_address must not reference read_all at all -- see that "
-        "method's docstring for the row it would adopt"
-    )
-
-
 # --------------------------------------------------------------------------
-# 8. The one transition the deletion leaves unhandled is RECORDED, not silent.
+# 6. The one transition the deletion leaves unhandled is RECORDED, not silent.
 # --------------------------------------------------------------------------
 
 
@@ -383,12 +333,12 @@ def test_synthetic_to_real_transition_records_its_consequence_and_defers_the_run
     the rows merely 'drift' when they actually conflict-and-skip, and claimed
     any synthetic row proves a live transition when it does not). A function
     docstring cannot be kept accurate as a procedure; BOARD.md U-518 owns it.
-    """
-    from integrations.intuit.qbo.company_info.business.service import (
-        QboCompanyInfoService,
-    )
 
-    doc = QboCompanyInfoService._sync_physical_address.__doc__
+    The record moved with the code: it used to live on `_sync_physical_address`,
+    which phase 3a deleted. Its home is now `_address_qbo_id` -- the derivation
+    that MINTS the synthetic id, which is where a reader meets the transition.
+    """
+    doc = QboCompanyInfoService._address_qbo_id.__doc__
 
     # the consequence, stated correctly
     assert "address_identity_conflict" not in doc or "PERMANENT SKIP" in doc
@@ -403,3 +353,19 @@ def test_synthetic_to_real_transition_records_its_consequence_and_defers_the_run
     # the runbook is deferred, not inlined
     assert "U-518" in doc, "the docstring must point at the unit that owns the runbook"
     assert "MANUAL REMEDY" not in doc, "the runbook is back in the docstring"
+
+
+def test_the_deleted_fallbacks_rationale_survived_the_methods_deletion():
+    """`_sync_physical_address`'s docstring was the written record of WHY the
+    match-by-address-fields block must stay deleted -- the 957-row scan, the
+    `ORDER BY [QboId] ASC` ordering, and Vendor 1246's billing address by name.
+    Deleting the method deleted that record along with it.
+
+    Without this, a future reader sees only a clean projection and no reason not
+    to add a helpful "fall back to matching on the street" branch. The reason
+    must still be readable on the code that survived."""
+    doc = QboCompanyInfoService._address_qbo_id.__doc__
+
+    assert "U-508a" in doc
+    assert "1246" in doc, "the row the fallback would adopt must still be named"
+    assert "NEVER ADOPT" in doc

@@ -18,10 +18,19 @@ defects they pin, and the pre-existing suite could not have caught either:
        moved past it. Mirrors `QboItemService._upsert_item`'s own
        `if not qbo_item.id: raise ValueError(...)` guard.
 
-  P2 — the three `qbo.PhysicalAddress` row ids are the one thing that still
-       has to survive the staging removal: they are produced by
+  P2 — the three `qbo.PhysicalAddress` row ids were, at U-505, the one thing
+       that still had to survive the staging removal: they were produced by
        `_sync_physical_address` and consumed by the caller's address
-       projection. Nothing asserted they arrive intact.
+       projection. Nothing asserted they arrived intact.
+
+       U-513 retired that dependency in stages: phase 1 re-sourced the address
+       projection from the inline payload (so the ids stopped being consumed),
+       and phase 3a deleted the write (so they stopped being produced). The P2
+       test now pins the other side of the same contract -- the three model
+       fields are unconditionally None, and nothing downstream reads them --
+       because a reader who finds a None there must not conclude the company
+       has no address. The addresses reach `dbo.Address` keyed on
+       `_address_qbo_id`; see tests/test_u513_ph3_company_info_no_staging_write.py.
 """
 from unittest.mock import MagicMock, patch
 
@@ -35,9 +44,8 @@ from tests.test_u338_qbo_attachable_transient_factory import ALWAYS_NONE_FIELDS
 
 REALM = "realm-504"
 
-CLIENT_TARGET = (
-    "integrations.intuit.qbo.company_info.business.service.QboCompanyInfoClient"
-)
+SERVICE_MODULE = "integrations.intuit.qbo.company_info.business.service"
+CLIENT_TARGET = f"{SERVICE_MODULE}.QboCompanyInfoClient"
 
 
 def _external(**overrides):
@@ -100,30 +108,53 @@ def test_present_qbo_id_still_syncs_and_does_not_hold():
     _assert_transient(outcome.synced[0])
 
 
-# --- P2: the three PhysicalAddress row ids must survive onto the transient ---
+# --- P2: the three PhysicalAddress row ids are gone, and nothing reads them ---
 
-def test_three_physical_address_ids_reach_the_transient_object():
-    """`_sync_physical_address` returns the qbo.PhysicalAddress row id for each
-    of the three address slots. Those ids are the caller's only handle for the
-    address projection, and they are position-sensitive: company / legal /
-    customer-communication must not be transposed."""
+ADDR_ID_FIELDS = ("company_addr_id", "legal_addr_id", "customer_communication_addr_id")
+
+
+def test_the_three_address_id_fields_are_unconditionally_none():
+    """They held `qbo.PhysicalAddress` row PKs. U-513 phase 3a deleted the write
+    that produced them, so there is no id left to thread -- not even for a
+    response carrying three fully-populated addresses, which is the case that
+    would have produced three ids before.
+
+    Pinned rather than dropped because the field still EXISTS on the dataclass
+    (and therefore in `to_dict()`, and therefore in the sync script's response
+    body). A None here means "this pull no longer stages addresses", NOT "this
+    company has no address" -- the addresses are projected to `dbo.Address`
+    under `_address_qbo_id`."""
     svc = QboCompanyInfoService()
     response = _external(
-        CompanyAddr={"Id": "A-company"},
-        LegalAddr={"Id": "A-legal"},
-        CustomerCommunicationAddr={"Id": "A-cc"},
+        CompanyAddr={"Id": "A-company", "Line1": "1 Main", "City": "Franklin", "PostalCode": "37064"},
+        LegalAddr={"Id": "A-legal", "Line1": "2 Legal", "City": "Nashville", "PostalCode": "37201"},
+        CustomerCommunicationAddr={"Id": "A-cc", "Line1": "3 CC", "City": "Brentwood", "PostalCode": "37024"},
     )
-    by_qbo_id = {"A-company": 11, "A-legal": 22, "A-cc": 33}
 
     with patch(CLIENT_TARGET, return_value=_patched_client(response)), \
-         patch.object(
-             QboCompanyInfoService,
-             "_sync_physical_address",
-             side_effect=lambda realm, addr_ref, addr_qbo_id: by_qbo_id[addr_qbo_id],
-         ):
+         patch(f"{SERVICE_MODULE}.CompanyInfoAddressConnector"):
         outcome = svc.sync_from_qbo(realm_id=REALM)
 
     record = outcome.synced[0]
-    assert record.company_addr_id == 11
-    assert record.legal_addr_id == 22
-    assert record.customer_communication_addr_id == 33
+    for field in ADDR_ID_FIELDS:
+        assert getattr(record, field) is None, (
+            f"{field} carries a value; the staging write that minted those PKs "
+            f"was deleted in U-513 phase 3a"
+        )
+
+
+def test_the_company_projection_never_reads_an_address_id_field():
+    """The reason the Nones above are harmless. `CompanyInfoCompanyConnector`
+    uses qbo_id / realm_id / legal_name / web_addr and nothing else; if it ever
+    started reading an address id it would now silently read None."""
+    import inspect
+
+    from integrations.intuit.qbo.company_info.connector.business import (
+        service as connector_module,
+    )
+
+    source = inspect.getsource(connector_module)
+    for field in ADDR_ID_FIELDS:
+        assert field not in source, (
+            f"the Company projection reads {field}, which is now always None"
+        )

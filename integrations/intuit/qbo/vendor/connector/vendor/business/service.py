@@ -534,7 +534,28 @@ class VendorVendorConnector:
 
     def _bill_address_from_staging(self, qbo_vendor: QboVendor) -> Optional[Address]:
         """Pre-U-513 path: read the address back out of `qbo.PhysicalAddress` by
-        the local id the staging upsert stashed on the vendor row."""
+        the local id the staging upsert stashed on the vendor row.
+
+        U-513 ph3a NOTE — nothing writes that cache for vendors any more.
+        `QboVendorService._upsert_vendor` no longer stages `BillAddr` and now
+        always passes `bill_addr_id=None`, so:
+          * a vendor first staged after ph3a has `bill_addr_id IS NULL` and this
+            returns None (mint nothing, link nothing);
+          * a vendor staged BEFORE ph3a keeps its id, because
+            `UpdateQboVendorByQboId` guards the column with
+            `CASE WHEN @BillAddrId IS NULL THEN [BillAddrId]` — so this still
+            resolves that vendor's OWN `{id}_bill` row, frozen at the last
+            pre-ph3a pull.
+        Either way it can never resolve a DIFFERENT vendor's address, which is
+        why the two remaining callers are safe to leave standing until ph3b
+        drops the table, the column and this method together:
+          1. `_sync_addresses`'s `external is None` dispatch — unreachable from
+             every production entry point as of ph2 (the only production caller
+             of `sync_from_qbo_vendor` is `QboVendorService._sync_to_vendors`'s
+             closure, which always threads the payload it staged from);
+          2. `_bill_address_from_payload`'s cross-wiring refusal — a defensive
+             branch that must not fire at all.
+        """
         if not qbo_vendor.bill_addr_id:
             return None
         return self.address_connector.sync_from_qbo_to_address(qbo_vendor.bill_addr_id)

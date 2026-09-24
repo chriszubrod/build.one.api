@@ -96,13 +96,19 @@ def sync_qbo_company_info() -> dict:
         # them off the INLINE CompanyInfo payload; this loop used to take the
         # `qbo.PhysicalAddress` row ids the pull had just written and hand each
         # back to `PhysicalAddressAddressConnector.sync_from_qbo_to_address`,
-        # which read the same row back out. That read is the dependency on the
-        # table being sunset; the write still happens, and the service still
-        # records one `record_projection_error` per failing slot onto this same
-        # outcome, so hold-vs-skip and the `run.commit(outcome)` below are
-        # unchanged. The `addresses_synced` response key went with the loop —
-        # it had no consumer, and address failures already surface through
-        # `outcome.summary()`.
+        # which read the same row back out. Phase 1 removed that read (the
+        # dependency on the table being sunset) and phase 3a removed the write
+        # behind it, so this pull now touches no `qbo.*` staging table at all.
+        # The service still records one `record_projection_error` per failing
+        # slot onto this same outcome, so hold-vs-skip and the
+        # `run.commit(outcome)` below are unchanged. The `addresses_synced`
+        # response key went with the loop — it had no consumer, and address
+        # failures already surface through `outcome.summary()`.
+        #
+        # NB `company_info.to_dict()` below still carries `company_addr_id` /
+        # `legal_addr_id` / `customer_communication_addr_id`, now always None:
+        # they held the staging row PKs. A None there does NOT mean the company
+        # has no address.
 
         # Sync CompanyInfo to Company module via connector
         # No truthiness pre-guard here, deliberately: `_build_company_info` now

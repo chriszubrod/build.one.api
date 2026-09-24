@@ -12,7 +12,6 @@ from integrations.intuit.qbo.vendor.external.client import QboVendorClient
 from integrations.intuit.qbo.vendor.external.schemas import QboVendor as QboVendorExternalSchema
 from integrations.intuit.qbo.base.pacing import pace_batch
 from integrations.intuit.qbo.base.sync_outcome import SyncOutcome, project_records
-from integrations.intuit.qbo.physical_address.business.service import QboPhysicalAddressService
 from shared.database import with_retry, is_transient_error
 
 logger = logging.getLogger(__name__)
@@ -30,7 +29,6 @@ class QboVendorService:
     def __init__(self, repo: Optional[QboVendorRepository] = None):
         """Initialize the QboVendorService."""
         self.repo = repo or QboVendorRepository()
-        self.physical_address_service = QboPhysicalAddressService()
 
     def sync_from_qbo(
         self,
@@ -136,15 +134,22 @@ class QboVendorService:
         if qbo_vendor.web_addr:
             web_addr = qbo_vendor.web_addr.get("URI") if isinstance(qbo_vendor.web_addr, dict) else str(qbo_vendor.web_addr)
         
-        # Create/update bill address and get ID
-        bill_addr_id = None
-        if qbo_vendor.bill_addr:
-            bill_addr_id = self._upsert_physical_address(
-                qbo_address=qbo_vendor.bill_addr,
-                qbo_id=f"{qbo_vendor.id}_bill",
-                realm_id=realm_id
-            )
-        
+        # U-513 ph3a: the `qbo.PhysicalAddress` staging WRITE is gone. Phases 1-2
+        # moved the projection onto the vendor's INLINE `BillAddr` payload
+        # (`VendorVendorConnector._bill_address_from_payload`), which made this a
+        # write-then-never-read-back cache; ph3b drops the table, its sprocs and
+        # the `BillAddrId` column. The `bill_addr_id=` keyword stays on both repo
+        # calls -- the repo/sproc parameter is NOT being removed here, precisely
+        # so this deploy is compatible in both directions with the container it
+        # replaces. It is now always NULL:
+        #   * CREATE inserts NULL.
+        #   * UPDATE preserves whatever the row already holds -- `UpdateQboVendor
+        #     ByQboId` guards every column with `CASE WHEN @X IS NULL THEN [X]`.
+        #     That is deliberate: a container still running the phase-2 code can
+        #     keep resolving an existing vendor's address through the staging
+        #     row while the rollout is in flight.
+        # `qbo_vendor.bill_addr` is deliberately no longer read here; the
+        # connector reads it off the same external record it is handed.
         if existing:
             # Update existing record
             logger.debug(f"Updating existing QBO vendor {qbo_vendor.id}")
@@ -168,7 +173,7 @@ class QboVendorService:
                 primary_phone=primary_phone,
                 mobile=mobile,
                 fax=fax,
-                bill_addr_id=bill_addr_id,
+                bill_addr_id=None,  # U-513 ph3a -- see _upsert_vendor's note above
                 balance=qbo_vendor.balance,
                 acct_num=qbo_vendor.acct_num,
                 web_addr=web_addr,
@@ -195,7 +200,7 @@ class QboVendorService:
                 primary_phone=primary_phone,
                 mobile=mobile,
                 fax=fax,
-                bill_addr_id=bill_addr_id,
+                bill_addr_id=None,  # U-513 ph3a -- see _upsert_vendor's note above
                 balance=qbo_vendor.balance,
                 acct_num=qbo_vendor.acct_num,
                 web_addr=web_addr,
@@ -267,60 +272,6 @@ class QboVendorService:
             project_one=_project,
             logger=logger,
         )
-
-    def _upsert_physical_address(
-        self,
-        qbo_address,
-        qbo_id: str,
-        realm_id: str
-    ) -> Optional[int]:
-        """
-        Create or update a QboPhysicalAddress record and return its ID.
-        
-        Args:
-            qbo_address: QboPhysicalAddress from external API
-            qbo_id: QBO ID to use for the address record
-            realm_id: QBO realm ID
-        
-        Returns:
-            int: The database ID of the PhysicalAddress record, or None if address is empty
-        """
-        if not qbo_address:
-            return None
-        
-        # Check if address already exists
-        existing = self.physical_address_service.read_by_qbo_id(qbo_id=qbo_id)
-        
-        if existing:
-            # Update existing record
-            logger.debug(f"Updating existing QBO physical address {qbo_id}")
-            updated = self.physical_address_service.repo.update_by_id(
-                id=existing.id,
-                row_version=existing.row_version_bytes,
-                qbo_id=qbo_id,
-                realm_id=realm_id,
-                line1=qbo_address.line1,
-                line2=qbo_address.line2,
-                city=qbo_address.city,
-                country=qbo_address.country,
-                country_sub_division_code=qbo_address.country_sub_division_code,
-                postal_code=qbo_address.postal_code,
-            )
-            return updated.id if updated else None
-        else:
-            # Create new record
-            logger.debug(f"Creating new QBO physical address {qbo_id}")
-            created = self.physical_address_service.create(
-                qbo_id=qbo_id,
-                realm_id=realm_id,
-                line1=qbo_address.line1,
-                line2=qbo_address.line2,
-                city=qbo_address.city,
-                country=qbo_address.country,
-                country_sub_division_code=qbo_address.country_sub_division_code,
-                postal_code=qbo_address.postal_code,
-            )
-            return created.id if created else None
 
     def read_all(self) -> List[QboVendor]:
         """

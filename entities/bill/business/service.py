@@ -1480,7 +1480,7 @@ class BillService:
 
 
     def _rename_invoice_blob_on_complete(
-        self, public_id: str, line_items: list, all_errors: list
+        self, line_items: list, all_errors: list
     ) -> None:
         """
         On Mark Complete: move all attachment blobs to the container root.
@@ -1688,8 +1688,11 @@ class BillService:
                         "error": str(e)
                     })
         
-        # Step 2b: Ensure invoice blob is named {public_id}.pdf (no-op if already correct)
-        self._rename_invoice_blob_on_complete(public_id=public_id, line_items=line_items, all_errors=line_item_errors)
+        # Step 2b: Move nested invoice attachment blobs to the container root
+        # (basename preserved; skip if already at root).
+        self._rename_invoice_blob_on_complete(
+            line_items=line_items, all_errors=line_item_errors
+        )
 
         # Step 3: Upload attachments to module folders and sync to Excel
         file_upload_results = {}

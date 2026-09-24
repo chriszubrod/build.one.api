@@ -163,7 +163,12 @@ def test_upload_attachment_passes_storage_derived_blob_url_to_service_create(
 
 
 def test_rename_invoice_blob_on_complete_still_passes_blob_url_to_update():
-    """Pinned at the call site so a naive service-layer cleanup cannot drop it."""
+    """AST guard: exactly one completion rename call passes `blob_url=new_url`.
+
+    Does NOT prove the rename runs — a no-op function or early return stays green.
+    Behavioural coverage: tests/test_u532_completion_blob_move_behaviour.py.
+    This spec still kills M17 (a second unexempted rename call site elsewhere).
+    """
     tree = ast.parse(
         (REPO_ROOT / "entities/bill/business/service.py").read_text(encoding="utf-8")
     )

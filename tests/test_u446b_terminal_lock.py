@@ -1224,8 +1224,12 @@ def test_completions_own_blob_rename_is_still_allowed():
 
 
 def test_the_completion_rename_call_site_passes_the_exemption():
-    """Pinned at the call, not the source: dropping it breaks every completion
-    whose invoice blob still sits under a nested name."""
+    """AST guard: the single completion rename passes `_via_internal_pipeline=True`.
+
+    Does NOT prove the rename runs — behavioural coverage is
+    tests/test_u532_completion_blob_move_behaviour.py. Still required with that
+    file: `len(renames) == 1` kills M17 (duplicate unexempted call sites).
+    """
     import ast
 
     from tests.sproc_text import REPO_ROOT

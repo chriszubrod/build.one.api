@@ -2,6 +2,70 @@
 
 Carry-over items from sessions. Check off as done; prune anything stale.
 
+## U-524 spillover — the three reviewer-decision siblings have diverged in ways worth closing (booked 2026-09-23)
+
+Booked out of U-524 (`POST /api/v1/expense/{id}/apply-reviewer-decision`). All four
+were deliberately NOT taken in that unit: each would either change behaviour or fix
+only one of three near-identical copies, and a one-sided "improvement" to
+near-identical code is its own hazard. Right depth is all three at once.
+
+1. **`Review.CreatedByUserId` is overwritten with the reviewer on all three call sites — the DB cannot
+   distinguish "the PM approved" from "the agent approved AS the PM."** (Pass-3 P2, inherited.)
+   `apply_reviewer_decision` passes `user_id=reviewer_user_id` AND
+   `created_by_user_id=reviewer_user_id`. `UserId` is correct and is what the API/UI surface. But
+   `CreatedByUserId` exists precisely to hold the ACTUAL writer, and overwriting it leaves the real
+   caller only in an application log line. Under `LIFECYCLE_COMPLETION_GATE_EXPENSE=require_approved`
+   that row is what unlocks the QBO/SharePoint/Box push. Byte-identical in
+   `entities/bill/business/service.py`, `entities/contract_labor/business/service.py`, and now expense.
+   Fix `CreatedByUserId = the authenticated caller` across all three together. **Highest value of these
+   four** — it completes the attribution story U-524 only half-delivers, and it is the same column the
+   U-472 DML-repair precedent deliberately leaves alone for exactly this reason.
+
+2. **All three re-implement status selection inline instead of calling the hardened helper that already
+   exists.** (Pass-2 item 2 — BEHAVIOUR-CHANGING, hence not in U-524.)
+   Each does `next((s for s in review_statuses if s.is_final and not s.is_declined), None)`.
+   `ReviewStatusService.get_approved_status()` already exists and is strictly better: it filters
+   `is_active` (the inline form does NOT) and it REFUSES when more than one active final status is
+   configured rather than picking whichever the sproc happened to return first — recording a Codex P1
+   from 2026-09-15, "SQL ordering is not a uniqueness guarantee". `get_declined_statuses()` is the
+   rejection-side twin. Swapping them in changes behaviour, so it must land across all three at once or
+   the three parents' approval semantics diverge.
+   Related: `ReadReviewStatuses` does not filter `IsActive`, so a deactivated legacy "Approved" with a
+   lower `SortOrder` could win the inline `next()`.
+   NOTE this also explains U-524's one accepted mutation survivor: dropping `and not s.is_declined` is
+   unkillable there, because the prod seed has `Declined.IsFinal = 0`
+   (`entities/review_status/sql/seed_review_statuses.sql`), making the clause defensive-but-unreachable.
+   Adopting the helper is what would make it meaningful.
+
+3. **`_APPROVAL_WRITERS_NOT_YET_GATED`'s BILL entry is factually wrong.** (Pass-3 P3.)
+   It claims "nothing binding the authenticated caller to the asserted reviewer" — but U-459's
+   `assert_may_act_as` IS that binding. `git log -S` shows U-458 (the tuple) and U-459 (the binding)
+   landed in the SAME commit `c696afbb`, so the text was wrong on arrival. U-524 corrected only the
+   expense entry it added; the bill entry was deliberately left alone as out of scope. This string is the
+   only signal reaching an operator flipping `require_approved` WITHOUT a deploy, and a warning known to
+   be wrong gets discounted wholesale.
+
+4. **No agent tool for the expense reviewer-decision route — the email-reply flow cannot reach it.**
+   (Pass-2 item 7.) `entities/bill/intelligence/tools.py` wires `apply_reviewer_decision` +
+   `find_bill_by_conversation_id` into `bill_specialist`, and CL does likewise.
+   `entities/expense/intelligence/tools.py` registers ten tools but neither. Per the standing rule that
+   agent tools are a consumer surface, the new endpoint is today reachable only by hand (which is how
+   U-524's five queued expenses are being driven). Behaviour-adding, so explicitly not Pass-2 work.
+
+**Constraint on any extraction across the three:** `tests/test_u459_reviewer_impersonation.py` runs
+`inspect.getsource()` over all three methods and asserts the literal `assert_may_act_as(` appears in each
+body AND textually precedes any `.create(` / `update_by_`. That guard records a real defect (a
+`can_update` user forging a PM's approval), so `assert_may_act_as` and its log line must stay INLINE in
+all three — an extraction that hoists them into a shared helper breaks the guard and must not be worked
+around.
+
+**Minor, not booked as work:** the reviewer-authorization envelope is a strict superset of the
+notification envelope (`apply_reviewer_decision` passes no `exclude_user_id`, so a PM who SUBMITTED the
+expense — deliberately not emailed — can still self-approve); the envelope-vs-caller check ordering is a
+reviewer-membership oracle (400 vs 403); and `reviewer_email_message_public_id` is recorded but never
+verified. All three inherited from bill, all P3.
+
+
 ## U-520 Pass-2 judgements — recorded so they are not re-litigated (2026-09-23)
 
 - [ ] 🟢 **Considered and REJECTED: extracting a shared helper from `_build_attachment_payload` (Bill/BLA) and `_build_expense_attachment_payload` (Expense/ELIA).** They are ~25 near-identical lines differing in exactly four things: the child-link method (`read_by_bill_line_item_id` vs `read_by_expense_line_item_id`), the default filename (`bill.pdf` vs `expense.pdf`), the log key (`bill_public_id=` vs `expense_public_id=`), and the parameter names. A behaviour-preserving extraction needs a `resolve_link` callable + `default_filename` + `log_key` + `entity_public_id` — roughly six parameters of indirection to remove one copy of twenty-five lines, in a P0-surface file, paying greppability for it. **The reason it is safe to leave duplicated is specific and load-bearing: every guard in these two functions is mutation-covered IN PAIRS** — m1/m5 (enqueue must not download), m10/m14 (first-PDF-wins ordering), m15/m15b (skip an attachment with no `blob_url`), m4 (PDF-only guard, both). A change applied to one twin and not the other goes RED. ⚠️ **If anyone deletes one of a pair, the argument for leaving this duplicated collapses** — either restore the pair or do the extraction. The divergence risk is real and already nearly materialised: U-520's first build brief covered only the Bill twin, and mutation m5 exists precisely because the Expense twin was almost left behind.

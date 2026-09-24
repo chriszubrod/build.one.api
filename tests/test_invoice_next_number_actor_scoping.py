@@ -28,7 +28,7 @@ import pytest
 # tests/ must be on sys.path for `from conftest import ...` — this module sorts
 # alphabetically before the test_qbo_* files that would otherwise have inserted it.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from conftest import actor_context  # noqa: E402
+from conftest import actor_absent, actor_context  # noqa: E402
 from shared.authz import system_authz
 from entities.invoice.business.service import InvoiceService
 
@@ -56,7 +56,7 @@ class FailClosedInvoiceRepo:
 
     def read_paginated(self, **kwargs):
         self.calls.append(kwargs)
-        if kwargs.get("actor_user_id") is None and not kwargs.get("actor_is_system_admin"):
+        if actor_absent(kwargs):
             return []
         project_id = kwargs.get("project_id")
         return [

@@ -258,3 +258,201 @@ def test_all_draws_reuses_one_qbo_invoice_service_across_the_project(monkeypatch
 
     assert len(draws) == 3  # all 3 manual invoices resolved via the seam
     assert construct_count["n"] == 1  # ONE QboInvoiceService for the whole project, not 3
+
+
+# ─── U-503b: a coded draw's column must foot to its invoice total ─────────────
+# The Trend rolled up a coded draw's CODED lines only and took the Builder's Fee
+# from the project's Contract rate. A project with no Contract therefore produced
+# fee=0, and the invoice's own fee (a Manual line the rollup excludes) vanished —
+# the column under-reported the draw on a client-facing page. Live instance:
+# TB-REPAIR-04 showed $9,681.82 against an $11,618.20 invoice, short by exactly
+# the $1,936.38 fee; 31 draws across 14 projects were affected.
+#
+# The fix derives the fee from the persisted invoice ONLY when there is no rate,
+# mirroring the Draw Request page's `_draw_fee_from_invoice`. The rate path is
+# deliberately untouched: several real draws (HA-01, HA-02, BR-MAIN-20, OHR2-32,
+# SSC2-03) carry NO fee line at all, and their computed rate fee is the only thing
+# putting a fee on their G702/G703.
+
+
+def test_coded_draw_without_rate_takes_fee_from_invoice_total(monkeypatch):
+    """No Contract rate + a Manual fee line -> the column still foots to the invoice."""
+    from entities.invoice.business.draw_financials import DrawFinancialsService
+
+    _patch_enrich(monkeypatch, {
+        1: [
+            {"source_type": "BillLineItem", "cost_code_number": "06",
+             "cost_code_name": "Grading", "billed_price": 1000.0},
+            # The fee QBO carries as its own Manual line — excluded from the rollup.
+            {"source_type": "Manual", "cost_code_number": "90",
+             "cost_code_name": "Builder's Fee", "billed_price": 140.0},
+        ],
+    })
+    svc = DrawFinancialsService(
+        invoice_service=_FakeInvoices([_Inv(1, "HA-01", "2026-02-27", Decimal("1140.00"))]),
+        line_item_service=_FakeLineItems(),
+    )
+    draw = svc.coded_draws_for_project(128, None)[0]
+
+    assert draw["subtotal"] == Decimal("1000.00")
+    assert draw["builders_fee"] == Decimal("140.00")   # 1140.00 - 1000.00
+    assert draw["total"] == Decimal("1140.00")         # == the invoice total
+    assert draw["total"] == draw["subtotal"] + draw["builders_fee"]
+
+
+def test_coded_draw_with_rate_ignores_trivial_invoice_residue(monkeypatch):
+    """Regression guard (BR-MAIN-21): a $0.02 rounding residue on the invoice must
+    NOT displace a real Contract-rate fee. Its live numbers are subtotal
+    $792,999.34 against an invoice total of $792,999.36 — an 'invoice fee wins when
+    positive' rule would have replaced a $95,159.92 fee with two cents."""
+    from entities.invoice.business.draw_financials import DrawFinancialsService
+
+    _patch_enrich(monkeypatch, {
+        1: [{"source_type": "BillLineItem", "cost_code_number": "06",
+             "cost_code_name": "Grading", "billed_price": 1000.0}],
+    })
+    svc = DrawFinancialsService(
+        invoice_service=_FakeInvoices([_Inv(1, "BR-MAIN-21", "2026-02-27", Decimal("1000.02"))]),
+        line_item_service=_FakeLineItems(),
+    )
+    draw = svc.coded_draws_for_project(64, Decimal("0.12"))[0]
+
+    assert draw["builders_fee"] == Decimal("120.00")   # rate fee, NOT the $0.02
+    assert draw["total"] == Decimal("1120.00")
+
+
+def test_coded_draw_without_rate_or_invoice_total_keeps_zero_fee(monkeypatch):
+    """No rate and no persisted total -> nothing to derive from; fee stays 0."""
+    from entities.invoice.business.draw_financials import DrawFinancialsService
+
+    _patch_enrich(monkeypatch, {
+        1: [{"source_type": "BillLineItem", "cost_code_number": "06",
+             "cost_code_name": "Grading", "billed_price": 1000.0}],
+    })
+    svc = DrawFinancialsService(
+        invoice_service=_FakeInvoices([_Inv(1, "HA-01", "2026-02-27", None)]),
+        line_item_service=_FakeLineItems(),
+    )
+    draw = svc.coded_draws_for_project(128, None)[0]
+
+    assert draw["builders_fee"] == Decimal("0")
+    assert draw["total"] == Decimal("1000.00")
+
+
+def test_coded_draw_without_rate_never_produces_a_negative_fee(monkeypatch):
+    """A credit-heavy draw whose invoice total sits BELOW the coded subtotal must not
+    render a negative Builder's Fee row."""
+    from entities.invoice.business.draw_financials import DrawFinancialsService
+
+    _patch_enrich(monkeypatch, {
+        1: [{"source_type": "BillLineItem", "cost_code_number": "06",
+             "cost_code_name": "Grading", "billed_price": 1000.0}],
+    })
+    svc = DrawFinancialsService(
+        invoice_service=_FakeInvoices([_Inv(1, "HA-01", "2026-02-27", Decimal("900.00"))]),
+        line_item_service=_FakeLineItems(),
+    )
+    draw = svc.coded_draws_for_project(128, None)[0]
+
+    assert draw["builders_fee"] == Decimal("0")
+    assert draw["total"] == Decimal("1000.00")
+
+
+def test_all_draws_coded_column_also_foots_without_rate(monkeypatch):
+    """The Trend consumes all_draws_for_project — its coded columns inherit the fix."""
+    from entities.invoice.business.draw_financials import DrawFinancialsService
+
+    _patch_enrich(monkeypatch, {
+        1: [
+            {"source_type": "BillLineItem", "cost_code_number": "06",
+             "cost_code_name": "Grading", "billed_price": 1000.0},
+            {"source_type": "Manual", "cost_code_number": "90",
+             "cost_code_name": "Builder's Fee", "billed_price": 140.0},
+        ],
+    })
+    svc = DrawFinancialsService(
+        invoice_service=_FakeInvoices([_Inv(1, "HA-01", "2026-02-27", Decimal("1140.00"))]),
+        line_item_service=_FakeLineItems(),
+    )
+    draw = svc.all_draws_for_project(128, None)[0]
+
+    assert draw["builders_fee"] == Decimal("140.00")
+    assert draw["total"] == Decimal("1140.00")
+
+
+# ─── U-503b hardening: the derived fee must be PLAUSIBLY a fee ────────────────
+# Review found that `fee = invoice.total - subtotal` is unbounded, and the
+# canonical-draw rule admits an invoice with as few as ONE source-linked line.
+# QBO-pulled invoices arrive all-Manual and are back-matched line by line, so a
+# half-linked draw would sweep its whole uncoded remainder into a row labelled
+# "Builder's Fee" — turning an obviously-broken $0 into an authoritative-looking
+# six-figure number on the Trend and on the G702/G703 the owner signs.
+#
+# The bound is principled rather than a magic threshold: a Builder's Fee is a
+# markup ON the coded work, so a residual exceeding the entire coded subtotal is
+# definitionally misattribution, not a fee. That one rule also covers a rollup
+# whose categories net to zero.
+
+
+def test_coded_draw_rejects_residual_larger_than_the_coded_subtotal(monkeypatch):
+    """Half-linked draw: $5k coded against a $200k invoice must NOT render a
+    $195k Builder's Fee."""
+    from entities.invoice.business.draw_financials import DrawFinancialsService
+
+    _patch_enrich(monkeypatch, {
+        1: [{"source_type": "BillLineItem", "cost_code_number": "06",
+             "cost_code_name": "Grading", "billed_price": 5000.0}],
+    })
+    svc = DrawFinancialsService(
+        invoice_service=_FakeInvoices([_Inv(1, "HA-01", "2026-02-27", Decimal("200000.00"))]),
+        line_item_service=_FakeLineItems(),
+    )
+    draw = svc.coded_draws_for_project(128, None)[0]
+
+    assert draw["builders_fee"] == Decimal("0")
+    assert draw["total"] == Decimal("5000.00")
+
+
+def test_coded_draw_rejects_fee_when_coded_subtotal_nets_to_zero(monkeypatch):
+    """A bill line and a matching credit collapse to one $0 category; the whole
+    invoice must not become the fee."""
+    from entities.invoice.business.draw_financials import DrawFinancialsService
+
+    _patch_enrich(monkeypatch, {
+        1: [
+            {"source_type": "BillLineItem", "cost_code_number": "06",
+             "cost_code_name": "Grading", "billed_price": 1000.0},
+            # _signed_line_amount negates a positive BillCreditLineItem.
+            {"source_type": "BillCreditLineItem", "cost_code_number": "06",
+             "cost_code_name": "Grading", "billed_price": 1000.0},
+        ],
+    })
+    svc = DrawFinancialsService(
+        invoice_service=_FakeInvoices([_Inv(1, "HA-01", "2026-02-27", Decimal("50000.00"))]),
+        line_item_service=_FakeLineItems(),
+    )
+    draw = svc.coded_draws_for_project(128, None)[0]
+
+    assert draw["subtotal"] == Decimal("0.00")
+    assert draw["builders_fee"] == Decimal("0")
+    assert draw["total"] == Decimal("0.00")
+
+
+def test_zero_contract_rate_is_treated_as_no_rate(monkeypatch):
+    """`_resolve_builders_fee_rate` filters on `is not None`, so a Contract row
+    carrying 0.000000 yields Decimal('0'). That must take the derived-fee path,
+    not silently re-open the bug this unit closed."""
+    from entities.invoice.business.draw_financials import DrawFinancialsService
+
+    _patch_enrich(monkeypatch, {
+        1: [{"source_type": "BillLineItem", "cost_code_number": "06",
+             "cost_code_name": "Grading", "billed_price": 1000.0}],
+    })
+    svc = DrawFinancialsService(
+        invoice_service=_FakeInvoices([_Inv(1, "HA-01", "2026-02-27", Decimal("1140.00"))]),
+        line_item_service=_FakeLineItems(),
+    )
+    draw = svc.coded_draws_for_project(128, Decimal("0"))[0]
+
+    assert draw["builders_fee"] == Decimal("140.00")
+    assert draw["total"] == Decimal("1140.00")

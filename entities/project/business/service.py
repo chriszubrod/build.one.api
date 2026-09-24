@@ -154,7 +154,9 @@ class ProjectService:
         prefix_hits = []
         substring_hits = []
 
-        for project in self.repo.read_all():
+        # Service read_all threads the actor; repo.read_all() with NULL actor
+        # hits ReadProjects' fail-closed UserProject predicate and returns [].
+        for project in self.read_all():
             name = (project.name or "").lower()
             abbreviation = (project.abbreviation or "").lower()
 
@@ -176,8 +178,9 @@ class ProjectService:
         agent ("what projects does Customer X have?"). In-memory filter
         over read_all() since Project is small (~130 rows).
         """
+        # self.read_all(), not self.repo.read_all() — see search_by_name above.
         return [
-            p for p in self.repo.read_all() if p.customer_id == customer_id
+            p for p in self.read_all() if p.customer_id == customer_id
         ]
 
     def update_by_public_id(

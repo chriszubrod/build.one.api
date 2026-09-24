@@ -29,8 +29,31 @@ from integrations.intuit.qbo.base.line_orphan_recorder import (
     record_readopt_stamp_failed_issue,
 )
 from integrations.intuit.qbo.reconciliation.persistence.repo import ReconciliationIssueRepository
+from shared.api.money import labor_price_two_shot, round_money
 
 logger = logging.getLogger(__name__)
+
+
+def compute_qbo_bill_line_customer_price(
+    amount: Optional[Decimal],
+    qty: Optional[Decimal],
+    rate: Optional[Decimal],
+    markup_percent: Optional[Decimal],
+) -> Optional[Decimal]:
+    """
+    Customer-facing Price for a QBO bill line pulled into BillLineItem.
+
+    Uses QBO's extended line Amount (cent-rounded cost) as the first shot of the
+    house two-shot policy: price = round_money(amount × (1 + markup)). When
+    Amount is missing but markup is present, falls back to labor_price_two_shot.
+    Returns None when QBO supplied no MarkupInfo (markup_percent is None).
+    """
+    if markup_percent is None:
+        return None
+    markup = markup_percent / Decimal("100")
+    if amount is not None:
+        return round_money(amount * (Decimal("1") + markup))
+    return labor_price_two_shot(qty, rate, markup)
 
 
 # U-446b. A QBO pull is a PROJECTION of what QuickBooks already holds, so it
@@ -167,10 +190,12 @@ class BillLineItemConnector:
         if qbo_bill_line.markup_percent is not None:
             markup = qbo_bill_line.markup_percent / Decimal('100')
 
-        # Calculate price as UnitPrice * (1 + MarkupPercent/100)
-        price = None
-        if qbo_bill_line.unit_price is not None and qbo_bill_line.markup_percent is not None:
-            price = qbo_bill_line.unit_price * (Decimal('1') + qbo_bill_line.markup_percent / Decimal('100'))
+        price = compute_qbo_bill_line_customer_price(
+            amount=amount,
+            qty=qty,
+            rate=rate,
+            markup_percent=qbo_bill_line.markup_percent,
+        )
 
         # Determine billable and billed status from QBO BillableStatus
         # QBO BillableStatus values: "Billable" (not yet invoiced), "HasBeenBilled" (already invoiced), "NotBillable" (not billable)

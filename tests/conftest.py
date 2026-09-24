@@ -68,6 +68,14 @@ def actor_context(user_id, is_system_admin):
         current_is_system_admin.reset(token_admin)
 
 
+def actor_absent(kwargs) -> bool:
+    """The NULL/NULL fail-closed path of the dbo.UserCanAccess* UDF family — when
+    both actor kwargs are absent/false the sproc yields zero rows. Import this
+    instead of hand-rolling another copy of the predicate in fail-closed repo
+    fakes; a drifted copy that is more permissive makes those guards vacuous."""
+    return kwargs.get("actor_user_id") is None and not kwargs.get("actor_is_system_admin")
+
+
 def mock_ms_graph_client_cm(return_value=None):
     """A MsGraphClient()-as-context-manager double: `__enter__` returns the
     same mock so `with MsGraphClient() as client: client.upload(...)` calls

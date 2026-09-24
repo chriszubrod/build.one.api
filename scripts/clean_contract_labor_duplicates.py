@@ -19,7 +19,9 @@ from collections import defaultdict
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from entities.contract_labor.business.service import ContractLaborService
 from entities.contract_labor.persistence.repo import ContractLaborRepository
+from scripts.sync_helper import assert_cli_system_admin
 
 
 def natural_key(entry):
@@ -39,7 +41,13 @@ def main():
     args = parser.parse_args()
 
     repo = ContractLaborRepository()
-    all_entries = repo.read_all()
+    # Read through the SERVICE, not the repo. ContractLaborRepository.read_all
+    # takes explicit actor kwargs defaulting to None and does NOT consult the
+    # ContextVars, so assert_cli_system_admin() alone is a no-op for a bare repo
+    # call — ReadContractLabors then fails closed and this script reports
+    # "No duplicate groups found." against a table full of duplicates.
+    service = ContractLaborService(repo=repo)
+    all_entries = service.read_all()
     groups = defaultdict(list)
     for e in all_entries:
         groups[natural_key(e)].append(e)
@@ -68,6 +76,9 @@ def main():
             if e.id == keep.id:
                 continue
             try:
+                # Deliberate asymmetry: reads go through ContractLaborService (actor
+                # threading); deletes use the repo because delete_by_public_id refuses
+                # status=billed (CANNOT_DELETE_BILLED_ENTRIES) and dup groups can have two billed rows.
                 repo.delete_by_id(id=e.id)
                 deleted += 1
                 print(f"Deleted ContractLabor Id={e.id} (employee={e.employee_name}, work_date={e.work_date})")
@@ -77,4 +88,8 @@ def main():
 
 
 if __name__ == "__main__":
+    # Both halves are required: this helper sets the authz ContextVars, and
+    # ContractLaborService.read_all() is what actually reads them and threads
+    # them into the repo. Either one alone leaves the read failing closed.
+    assert_cli_system_admin()
     main()

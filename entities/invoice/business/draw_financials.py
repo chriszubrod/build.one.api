@@ -10,7 +10,13 @@ cost codes. That excludes (a) QBO Manual-only duplicate invoices — re-entries 
 draw's work with no source documents — and (b) uncoded invoices (work not started
 locally yet). Both would otherwise double-count or mis-report the historical draws.
 Fee is computed (subtotal x rate), not read from the invoice, so a draw whose fee
-was never entered on its coded invoice still reconciles.
+was never entered on its coded invoice still reconciles. When the project has no
+usable Contract rate (absent, or 0) there is nothing to compute from, and the fee is
+instead derived from the persisted invoice (`_fee_from_invoice`, U-503b) so the
+column foots to the invoice total — without that fallback a rate-less project
+dropped the invoice's own fee entirely and under-reported the draw on a
+client-facing page. That derivation is bounded and declines rather than guessing, so
+a column can still legitimately fail to foot; `_fee_from_invoice` logs when it does.
 
 `all_draws_for_project` (U-271) additionally surfaces EARLY/historical draws whose
 cost codes live only in QBO — invoices migrated in as all-`Manual` lines (no local
@@ -25,6 +31,7 @@ from __future__ import annotations
 
 import logging
 import re
+from dataclasses import replace
 from decimal import Decimal
 from typing import Optional
 
@@ -116,14 +123,78 @@ class DrawFinancialsService:
 
     def _coded_rollup(self, invoice, fee_rate):
         """The invoice's source-linked (non-Manual) cost-code rollup, or None when it
-        has no coded lines (a Manual-only / uncoded invoice)."""
+        has no coded lines (a Manual-only / uncoded invoice). With no Contract rate
+        the fee comes from the persisted invoice instead — see `_fee_from_invoice`."""
         from entities.invoice.business.enrichment import enrich_line_items
         from entities.invoice.business.cover import build_cover_rollup
 
         line_items = self._line_items().read_by_invoice_id(invoice_id=invoice.id)
         toc = [r for r in enrich_line_items(line_items) if r.get("source_type") != "Manual"]
         rollup = build_cover_rollup(toc, fee_rate)
-        return rollup if rollup.categories else None
+        if not rollup.categories:
+            return None
+        # A rate of exactly 0 is "no usable rate", not a deliberate 0% fee:
+        # `_resolve_builders_fee_rate` selects on `is not None`, so a Contract row
+        # carrying 0.000000 — or a transient lookup failure degrading to no-fee —
+        # would otherwise take the rate path and re-open the bug below.
+        if not fee_rate:
+            return self._fee_from_invoice(rollup, invoice)
+        return rollup
+
+    @staticmethod
+    def _fee_from_invoice(rollup, invoice):
+        """Builder's Fee for a coded draw on a project with NO Contract rate (U-503b).
+
+        The fee is a Manual line the cost-code rollup excludes, so `fee = invoice
+        total - subtotal` makes the column foot to the invoice total by construction.
+        Same derivation the Draw Request page uses (`_draw_fee_from_invoice`), so on
+        the rate-less path pages 1 and 2 of a packet report one number. NB that is
+        NOT a packet-wide guarantee: the router applies its copy unconditionally
+        while this runs only without a rate, so a rated draw carrying a residue can
+        still show two figures (BR-MAIN-21: $0.02 on page 1, $95,159.92 on page 2).
+        Reconciling that is the router's side to fix.
+
+        Before this, a rate-less project rolled up fee=0 and the invoice's own fee
+        simply vanished from the Trend — TB-REPAIR-04 showed $9,681.82 against an
+        $11,618.20 invoice (31 draws / 14 projects).
+
+        Applies ONLY when there is no usable rate; the rate path is deliberately
+        untouched. Two live shapes make "invoice fee wins" unsafe as a general rule:
+          * a draw whose fee was never entered on its coded invoice (HA-01, HA-02,
+            BR-MAIN-20, OHR2-32, SSC2-03 — invoice total == subtotal) depends on the
+            computed rate fee for its G702/G703 numbers, per this module's
+            fee-is-computed-not-read contract; and
+          * a trivial rounding residue must never displace a real fee — BR-MAIN-21
+            bills $0.02 over its subtotal against a $95,159.92 rate fee.
+
+        NOTE (inherited from the router original, and this is the layer it deferred
+        to): the residual folds in EVERY non-source line, so a manual retainage,
+        discount or GC adjustment lands in a row labelled "Builder's Fee". Refining
+        that attribution — identifying the fee line by its cost code rather than by
+        subtraction — is still open. The bound below keeps the damage visible rather
+        than authoritative-looking, but it does not identify the fee.
+
+        Declines (leaving fee 0, so the column stays visibly short) when the residual
+        is <= 0 — a credit-heavy draw billed below its coded subtotal — or when it
+        EXCEEDS the coded subtotal. A Builder's Fee is a markup ON the coded work, so
+        a residual bigger than all of that work is misattribution, not a fee: the
+        signature of a part-linked draw (QBO pulls land all-`Manual` and are
+        back-matched line by line, so a $200k invoice with one $5k line matched would
+        otherwise print a $195k fee) or of a rollup whose categories net to zero.
+        """
+        total = _as_decimal(invoice.total_amount)
+        fee = total - rollup.subtotal
+        if fee <= 0 or fee > rollup.subtotal:
+            if total and total != rollup.total:
+                logger.warning(
+                    "draw_financials: invoice %s total %s does not reconcile to its "
+                    "coded rollup (subtotal %s, residual %s) — fee left at 0, so this "
+                    "draw's column will not foot to the invoice",
+                    getattr(invoice, "invoice_number", None) or getattr(invoice, "id", None),
+                    total, rollup.subtotal, fee,
+                )
+            return rollup
+        return replace(rollup, builders_fee=fee, total=total)
 
     @staticmethod
     def _draw_from_rollup(invoice, rollup) -> dict:

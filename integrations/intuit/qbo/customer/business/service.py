@@ -1,4 +1,5 @@
 # Python Standard Library Imports
+import itertools
 import logging
 from typing import List, Optional
 
@@ -250,43 +251,87 @@ class QboCustomerService:
 
         The closure is the whole point: `project_records` is shared by 10 call
         sites across 8 other QBO families and takes a strict one-argument
-        `project_one`, so binding the second argument HERE is what lets this
-        family pass the payload through without changing a signature every
-        other family depends on.
+        `project_one`, so binding the extra arguments HERE is what lets this
+        family pass the payload through — and wrap the call in retry + pacing —
+        without changing a signature every other family depends on.
+
+        Retry + pacing (U-513 ph2): `scripts/sync_qbo_customer.py` used to run
+        its own projection loop purely to get these two, which is why it could
+        not simply ask for `sync_to_modules=True`. They belong here, alongside
+        the identical pair the STAGING loop above already has — projection is
+        per-row DB work too, and under load it is exactly what drops the TCP
+        connection. `pace_batch` is in a `finally` so a row whose projection
+        RAISED still paces: the next row's retry is what most needs the gap.
+        The index comes from a counter in this closure, never from
+        `project_records` — that seam stays one-argument for its 10 callers.
         """
         if not parent_customers:
             return
 
         connector = CustomerCustomerConnector()
         external_by_id = external_by_id or {}
+        total = len(parent_customers)
+        counter = itertools.count()
+
+        def _project(row: QboCustomer):
+            index = next(counter)
+            try:
+                return with_retry(
+                    connector.sync_from_qbo_customer,
+                    row,
+                    external_by_id.get(row.qbo_id),
+                    max_retries=MAX_RETRIES,
+                    initial_delay=INITIAL_RETRY_DELAY,
+                )
+            finally:
+                pace_batch(index, total, logger, "parent customers")
 
         project_records(
             parent_customers,
             outcome,
             label="Customer->Customer",
-            project_one=lambda row: connector.sync_from_qbo_customer(
-                row, external_by_id.get(row.qbo_id)
-            ),
+            project_one=_project,
             logger=logger,
         )
 
     def _sync_to_projects(self, job_customers: List[QboCustomer], outcome: SyncOutcome) -> None:
         """
         Sync job customers to Project module.
-        
+
         Args:
             job_customers: List of job QboCustomer records (Job=true)
+
+        No external payload here, deliberately: `CustomerProjectConnector` reads
+        a job's billing address out of `dbo.Address` (the row the PARENT's
+        projection just minted), not out of the QBO payload, so there is nothing
+        for a second argument to carry. The closure exists only to wrap the call
+        in retry + pacing — see `_sync_to_customers` for why both live at this
+        call site rather than inside `project_records`.
         """
         if not job_customers:
             return
-        
+
         connector = CustomerProjectConnector()
+        total = len(job_customers)
+        counter = itertools.count()
+
+        def _project(row: QboCustomer):
+            index = next(counter)
+            try:
+                return with_retry(
+                    connector.sync_from_qbo_customer,
+                    row,
+                    max_retries=MAX_RETRIES,
+                    initial_delay=INITIAL_RETRY_DELAY,
+                )
+            finally:
+                pace_batch(index, total, logger, "job customers")
 
         project_records(
             job_customers,
             outcome,
             label="Customer->Project",
-            project_one=connector.sync_from_qbo_customer,
+            project_one=_project,
             logger=logger,
         )
 

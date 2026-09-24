@@ -16,58 +16,64 @@ from scripts.sync_helper import (
     exit_nonzero_on_sync_failure,
 )
 from integrations.intuit.qbo.base.locking import qbo_sync_locked_cli
-from integrations.intuit.qbo.base.pacing import pace_batch
 from integrations.intuit.qbo.base.watermark import (
     WatermarkRun,
     _normalize_last_sync,
     _normalize_watermark_value,
 )
 from integrations.intuit.qbo.base.sync_outcome import SyncOutcome
-from shared.database import with_retry
 from integrations.sync.business.service import SyncService
 from integrations.intuit.qbo.customer.business.service import QboCustomerService
 from integrations.intuit.qbo.customer.business.model import QboCustomer
-from integrations.intuit.qbo.customer.connector.customer.business.service import CustomerCustomerConnector
-from integrations.intuit.qbo.customer.connector.project.business.service import CustomerProjectConnector
 from integrations.intuit.qbo.auth.business.service import QboAuthService
 
 logger = logging.getLogger(__name__)
-
-# Sync configuration
-MAX_RETRIES = 3  # Max retries for transient errors
-INITIAL_RETRY_DELAY = 2.0  # Initial retry delay (seconds)
 
 
 def sync_qbo_to_local(
     realm_id: str,
     last_sync_time: Optional[str],
     qbo_customer_service: QboCustomerService,
-    customer_connector: CustomerCustomerConnector,
-    project_connector: CustomerProjectConnector,
 ) -> tuple[dict, SyncOutcome]:
     """
     Sync Customers from QBO API to local database and modules.
-    
+
     Args:
         realm_id: QBO realm ID
         last_sync_time: Last sync timestamp for incremental sync
         qbo_customer_service: QboCustomerService instance
-        customer_connector: CustomerCustomerConnector instance
-        project_connector: CustomerProjectConnector instance
-    
+
     Returns:
         tuple[dict, SyncOutcome]: Sync results envelope and service pull outcome
+
+    U-513 ph2 — the projection loops that used to live HERE are gone; the
+    service owns projection now (`sync_to_modules=True`). This is the path the
+    scheduler and `shared/api/admin.py` actually run, and while it projected
+    for itself, the parent connector could not be handed the ORIGINAL QBO
+    payload: the external records only ever exist inside
+    `QboCustomerService.sync_from_qbo`'s staging loop, which is where the
+    payload map is built. Projecting from here meant projecting from the
+    `qbo.PhysicalAddress` staging rows instead — the table U-513 is sunsetting.
+
+    The loops were not deletable until the service carried what they alone had:
+    `with_retry` (transient-error retry) and `pace_batch` (inter-batch delay
+    that keeps the DB connection alive under per-row load). Both now sit in the
+    projection closures in `_sync_to_customers` / `_sync_to_projects`.
+
+    Ordering is load-bearing and is now the service's to hold: parents project
+    BEFORE jobs, because a job's billing fallback reads the `dbo.Address` its
+    parent's projection mints.
     """
     logger.info(f"Syncing Customers from QBO API for realm_id: {realm_id}")
-    
-    # Fetch customers from QBO and store locally (without auto-syncing to modules)
+
+    # Fetch customers from QBO, store locally, AND project to Customer/Project.
     outcome = qbo_customer_service.sync_from_qbo(
         realm_id=realm_id,
         last_updated_time=last_sync_time,
-        sync_to_modules=False  # We'll handle module sync separately for better control
+        sync_to_modules=True,
     )
     customers = outcome.synced
-    
+
     if not customers:
         logger.info(f"No Customer updates found since {last_sync_time or 'beginning'}")
         return {
@@ -76,59 +82,25 @@ def sync_qbo_to_local(
             "projects_synced": 0,
             "customers": [],
         }, outcome
-    
+
     logger.info(f"Retrieved {len(customers)} customers from QBO")
-    
-    # Separate parent customers and job customers
-    parent_customers = [customer for customer in customers if customer.is_parent_customer]
-    job_customers = [customer for customer in customers if customer.is_job]
-    
-    # Sync parent customers to Customer module first
-    customers_module_synced = 0
-    
-    for i, customer in enumerate(parent_customers):
-        try:
-            # Use retry logic for transient errors
-            customer_module = with_retry(
-                customer_connector.sync_from_qbo_customer,
-                customer,
-                max_retries=MAX_RETRIES,
-                initial_delay=INITIAL_RETRY_DELAY,
-            )
-            customers_module_synced += 1
-            outcome.record_projected()
-            logger.info(f"Synced QboCustomer {customer.id} to Customer {customer_module.id}")
-        except Exception as e:
-            outcome.record_projection_error(
-                customer.qbo_id, e, label="QboCustomer->Customer", logger=logger
-            )
-        
-        # Add delay between batches to keep connection alive
-        pace_batch(i, len(parent_customers), logger, "parent customers")
-    
-    # Sync job customers to Project module
-    projects_synced = 0
-    
-    for i, customer in enumerate(job_customers):
-        try:
-            # Use retry logic for transient errors
-            project = with_retry(
-                project_connector.sync_from_qbo_customer,
-                customer,
-                max_retries=MAX_RETRIES,
-                initial_delay=INITIAL_RETRY_DELAY,
-            )
-            projects_synced += 1
-            outcome.record_projected()
-            logger.info(f"Synced QboCustomer {customer.id} to Project {project.id}")
-        except Exception as e:
-            outcome.record_projection_error(
-                customer.qbo_id, e, label="QboCustomer->Project", logger=logger
-            )
-        
-        # Add delay between batches to keep connection alive
-        pace_batch(i, len(job_customers), logger, "job customers")
-    
+
+    # Per-module projection counts are DERIVED from the outcome rather than
+    # tallied locally: every staged row was handed to a projection, so a row
+    # projected unless its qbo_id came back as a projection failure or a skip.
+    # `outcome.projected_count` is the two tiers COMBINED and cannot answer
+    # "how many parents" vs "how many jobs", which the returned dict has always
+    # reported separately.
+    unprojected = set(outcome.projection_failed_ids) | set(outcome.skipped_ids)
+    customers_module_synced = sum(
+        1 for customer in customers
+        if customer.is_parent_customer and str(customer.qbo_id) not in unprojected
+    )
+    projects_synced = sum(
+        1 for customer in customers
+        if customer.is_job and str(customer.qbo_id) not in unprojected
+    )
+
     return {
         "customers_synced": len(customers),
         "customers_module_synced": customers_module_synced,
@@ -151,8 +123,6 @@ def sync_qbo_customer() -> dict:
     try:
         sync_service = SyncService()
         qbo_customer_service = QboCustomerService()
-        customer_connector = CustomerCustomerConnector()
-        project_connector = CustomerProjectConnector()
         auth_service = QboAuthService()
         
         # Get realm ID
@@ -178,8 +148,6 @@ def sync_qbo_customer() -> dict:
             realm_id=realm_id,
             last_sync_time=last_sync_time,
             qbo_customer_service=qbo_customer_service,
-            customer_connector=customer_connector,
-            project_connector=project_connector,
         )
         
         # Step 2: Local -> QBO push disabled (one-way intake only).

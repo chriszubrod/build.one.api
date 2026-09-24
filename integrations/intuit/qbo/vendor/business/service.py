@@ -1,4 +1,5 @@
 # Python Standard Library Imports
+import itertools
 import logging
 from typing import Dict, List, Optional
 
@@ -215,6 +216,17 @@ class QboVendorService:
         sites across eight QBO families (seven besides this one); a closure
         keeps this family's extra argument entirely inside this family.
 
+        U-513 ph2: retry + pacing live here too, for the same reason. This is
+        now the ONLY vendor projection loop — `scripts/sync_qbo_vendor.py` (the
+        path the scheduler and the admin dispatcher actually run) used to run
+        its own copy with `with_retry` + `pace_batch` around it, and deleting
+        that loop without these would have dropped transient-error retry and
+        the inter-batch delay that keeps the DB connection alive under load.
+        Pacing must tick once per record even when that record's projection
+        RAISED, hence the `finally`; the per-record index it needs comes from a
+        counter in this closure rather than from `project_records`, which stays
+        untouched for its seven other families.
+
         Args:
             vendors: List of QboVendor staging records to project
             outcome: the pull's SyncOutcome (projection tier appends here)
@@ -231,13 +243,28 @@ class QboVendorService:
         connector = VendorVendorConnector()
         by_id = external_by_id or {}
 
+        total = len(vendors)
+        counter = itertools.count()
+
+        def _project(row: QboVendor):
+            index = next(counter)
+            try:
+                return with_retry(
+                    connector.sync_from_qbo_vendor,
+                    row,
+                    by_id.get(row.qbo_id),
+                    max_retries=MAX_RETRIES,
+                    initial_delay=INITIAL_RETRY_DELAY,
+                )
+            finally:
+                # Add delay between batches to keep the connection alive
+                pace_batch(index, total, logger, "vendors")
+
         project_records(
             vendors,
             outcome,
-            label="Vendor->Vendor",
-            project_one=lambda row: connector.sync_from_qbo_vendor(
-                row, by_id.get(row.qbo_id)
-            ),
+            label="QboVendor->Vendor",
+            project_one=_project,
             logger=logger,
         )
 

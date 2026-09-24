@@ -110,9 +110,12 @@ class VendorVendorConnector:
                 when the caller still has it (U-513). Its inline `BillAddr` is
                 the address source of truth; `qbo.PhysicalAddress` is a
                 write-then-read-back cache being sunset. `None` means the
-                caller is re-projecting a staging row it did not fetch
-                (`scripts/sync_qbo_vendor.py`), and the address falls back to
-                the staging read — unchanged behavior during the transition.
+                caller is re-projecting a staging row it did not fetch, and the
+                address falls back to the staging read — unchanged behavior
+                during the transition. As of U-513 ph2 no PULL takes that
+                branch: `scripts/sync_qbo_vendor.py` (the scheduler/admin path)
+                was the last one, and it now stages and projects in a single
+                `sync_from_qbo(sync_to_modules=True)` that carries the payload.
 
         Returns:
             Vendor: The synced Vendor record

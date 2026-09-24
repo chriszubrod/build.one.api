@@ -430,8 +430,10 @@ def test_closure_pairs_each_staging_row_with_its_own_external_record():
 
 
 def test_projection_is_skipped_entirely_when_sync_to_modules_is_false():
-    """`scripts/sync_qbo_vendor.py` stages with `sync_to_modules=False` and runs
-    its own projection loop; the service must not double-project."""
+    """`sync_to_modules=False` is a staging-only pull (the QBO sync router
+    exposes it as a request flag); the service must not project on it. Note
+    `scripts/sync_qbo_vendor.py` no longer uses it — U-513 ph2 moved it to
+    `sync_to_modules=True` and deleted its own projection loop."""
     service = _service_with_fakes()
     connector = Mock()
 
@@ -466,8 +468,10 @@ def test_sync_to_vendors_without_a_payload_map_still_projects_every_row():
 
 def test_no_payload_keeps_the_pre_u513_staging_read_path():
     """The staging read is still the address source for a caller that re-projects
-    rows it did not fetch (`scripts/sync_qbo_vendor.py`). Deleting that branch
-    before that caller is converted would blind it to addresses entirely."""
+    rows it did not fetch. No PULL takes that branch any more (U-513 ph2
+    converted `scripts/sync_qbo_vendor.py`, the last one), but the branch stays
+    until `qbo.PhysicalAddress` itself is dropped — deleting it early would
+    blind any remaining payload-less caller to addresses entirely."""
     connector, _, vendor_address_service, address_connector = _build_connector()
 
     connector.sync_from_qbo_vendor(_staging(bill_addr_id=555))

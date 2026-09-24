@@ -566,12 +566,15 @@ def test_a_falsy_qbo_id_never_mints_a_none_bill_identity():
 # --------------------------------------------------------------------------
 # ⚠️ The TRANSITIONAL staging source
 # --------------------------------------------------------------------------
-# `scripts/sync_qbo_customer.py` — the path the scheduler actually runs — calls
-# `sync_from_qbo(sync_to_modules=False)` and then runs its OWN projection loop,
-# so the external payloads never reach it. Without a content fallback, U-513's
-# repointed child lookup would read a `dbo.Address` nothing had refreshed. These
-# tests pin the fallback until every caller threads the payload; deleting it
-# then should turn them red, which is the signal to delete them too.
+# `scripts/sync_qbo_customer.py` — the path the scheduler actually runs — USED
+# to call `sync_from_qbo(sync_to_modules=False)` and run its OWN projection
+# loop, so the external payloads never reached it. Without a content fallback,
+# U-513's repointed child lookup would have read a `dbo.Address` nothing had
+# refreshed. U-513 ph2 converted that script (`sync_to_modules=True`), so no
+# production caller reaches the fallback any more — it now only covers a direct
+# one-argument `sync_from_qbo_customer(row)` call. These four tests pin it until
+# the sibling vendor half is converted and the EM deletes the branch; deleting
+# it should turn them red, which is the signal to delete them too.
 
 def test_without_the_payload_the_staging_row_supplies_the_content():
     connector = _build_connector(

@@ -16,55 +16,56 @@ from scripts.sync_helper import (
     exit_nonzero_on_sync_failure,
 )
 from integrations.intuit.qbo.base.locking import qbo_sync_locked_cli
-from integrations.intuit.qbo.base.pacing import pace_batch
 from integrations.intuit.qbo.base.watermark import (
     WatermarkRun,
     _normalize_last_sync,
     _normalize_watermark_value,
 )
 from integrations.intuit.qbo.base.sync_outcome import SyncOutcome
-from shared.database import with_retry
 from integrations.sync.business.service import SyncService
 from integrations.intuit.qbo.vendor.business.service import QboVendorService
 from integrations.intuit.qbo.vendor.business.model import QboVendor
-from integrations.intuit.qbo.vendor.connector.vendor.business.service import VendorVendorConnector
 from integrations.intuit.qbo.auth.business.service import QboAuthService
 
 logger = logging.getLogger(__name__)
-
-# Sync configuration
-MAX_RETRIES = 3  # Max retries for transient errors
-INITIAL_RETRY_DELAY = 2.0  # Initial retry delay (seconds)
 
 
 def sync_qbo_to_local(
     realm_id: str,
     last_sync_time: Optional[str],
     qbo_vendor_service: QboVendorService,
-    vendor_connector: VendorVendorConnector,
 ) -> tuple[dict, SyncOutcome]:
     """
     Sync Vendors from QBO API to local database and modules.
-    
+
+    U-513 ph2: staging AND projection both run inside
+    `QboVendorService.sync_from_qbo(sync_to_modules=True)`. This script used to
+    stage with `sync_to_modules=False` and then run its own projection loop —
+    which meant the production path (this script, imported by
+    `shared/scheduler.py` and `shared/api/admin.py`) never carried the inline
+    QBO payload to the connector and silently kept reading addresses back out
+    of `qbo.PhysicalAddress`. The service's projection closure now owns the
+    `with_retry` / `pace_batch` this loop used to provide, so nothing is lost
+    by deleting it; see `QboVendorService._sync_to_vendors`.
+
     Args:
         realm_id: QBO realm ID
         last_sync_time: Last sync timestamp for incremental sync
         qbo_vendor_service: QboVendorService instance
-        vendor_connector: VendorVendorConnector instance
-    
+
     Returns:
         tuple[dict, SyncOutcome]: Sync results envelope and service pull outcome
     """
     logger.info(f"Syncing Vendors from QBO API for realm_id: {realm_id}")
-    
-    # Fetch vendors from QBO and store locally (without auto-syncing to modules)
+
+    # Fetch vendors from QBO, store locally, and project to the Vendor module
     outcome = qbo_vendor_service.sync_from_qbo(
         realm_id=realm_id,
         last_updated_time=last_sync_time,
-        sync_to_modules=False,  # We'll handle module sync separately for better control
+        sync_to_modules=True,
     )
     vendors = outcome.synced
-    
+
     if not vendors:
         logger.info(f"No Vendor updates found since {last_sync_time or 'beginning'}")
         return {
@@ -72,32 +73,12 @@ def sync_qbo_to_local(
             "vendors_module_synced": 0,
             "vendors": [],
         }, outcome
-    
+
     logger.info(f"Retrieved {len(vendors)} vendors from QBO")
-    
-    # Sync vendors to Vendor module
-    
-    for i, vendor in enumerate(vendors):
-        try:
-            # Use retry logic for transient errors
-            vendor_module = with_retry(
-                vendor_connector.sync_from_qbo_vendor,
-                vendor,
-                max_retries=MAX_RETRIES,
-                initial_delay=INITIAL_RETRY_DELAY,
-            )
-            outcome.record_projected()
-            logger.info(f"Synced QboVendor {vendor.id} to Vendor {vendor_module.id}")
-        except Exception as e:
-            outcome.record_projection_error(
-                vendor.qbo_id, e, label="QboVendor->Vendor", logger=logger
-            )
-        
-        # Add delay between batches to keep connection alive
-        pace_batch(i, len(vendors), logger, "vendors")
-    
+
     return {
         "vendors_synced": len(vendors),
+        # Projection successes are counted by the service's projection loop.
         "vendors_module_synced": outcome.projected_count,
         "vendors": [vendor.to_dict() for vendor in vendors],
     }, outcome
@@ -117,7 +98,6 @@ def sync_qbo_vendor() -> dict:
     try:
         sync_service = SyncService()
         qbo_vendor_service = QboVendorService()
-        vendor_connector = VendorVendorConnector()
         auth_service = QboAuthService()
         
         # Get realm ID
@@ -143,7 +123,6 @@ def sync_qbo_vendor() -> dict:
             realm_id=realm_id,
             last_sync_time=last_sync_time,
             qbo_vendor_service=qbo_vendor_service,
-            vendor_connector=vendor_connector,
         )
         
         # Step 2: Local -> QBO push disabled (one-way intake only).

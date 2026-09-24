@@ -14,11 +14,14 @@ from unittest.mock import MagicMock, patch
 from integrations.intuit.qbo.base.sync_outcome import SyncOutcome
 from integrations.intuit.qbo.bill.business.model import QboBill
 from integrations.intuit.qbo.company_info.business.model import QboCompanyInfo
+from integrations.intuit.qbo.customer.business import service as customer_service_module
 from integrations.intuit.qbo.customer.business.model import QboCustomer
+from integrations.intuit.qbo.customer.business.service import QboCustomerService
 from integrations.intuit.qbo.invoice.business.model import QboInvoice
 from integrations.intuit.qbo.purchase.business.model import QboPurchase
 from integrations.intuit.qbo.term.business.model import QboTerm
 from integrations.intuit.qbo.vendor.business.model import QboVendor
+from integrations.intuit.qbo.vendor.business.service import QboVendorService
 from integrations.intuit.qbo.vendorcredit.business.model import QboVendorCredit
 from scripts import sync_qbo_bill as bill_module
 from scripts import sync_qbo_company_info as company_info_module
@@ -26,11 +29,18 @@ from scripts import sync_qbo_customer as customer_module
 from scripts import sync_qbo_invoice as invoice_module
 from scripts import sync_qbo_purchase as purchase_module
 from scripts import sync_qbo_term as term_module
-from scripts import sync_qbo_vendor as vendor_module
 from scripts import sync_qbo_vendorcredit as vendorcredit_module
 
 REALM_ID = "realm-test"
 STAGING_PK = 501
+
+# U-513 ph2: the vendor family's projection loop lives in its SERVICE now, not
+# in `scripts/sync_qbo_vendor.py`, so the vendor case below patches these
+# rather than the script module.
+VENDOR_SERVICE_MODULE = "integrations.intuit.qbo.vendor.business.service"
+VENDOR_CONNECTOR_MODULE = (
+    "integrations.intuit.qbo.vendor.connector.vendor.business.service"
+)
 
 
 def _retry_calls_fn(fn, *args, **kwargs):
@@ -399,70 +409,62 @@ def test_vendorcredit_exception_projection_failure_records_real_qbo_id_not_stagi
 
 
 def test_vendor_projection_failure_records_real_qbo_id_not_staging_pk():
+    """U-513 ph2 moved the VENDOR family's projection loop out of
+    `scripts/sync_qbo_vendor.py` and into `QboVendorService._sync_to_vendors`
+    (the script now stages with `sync_to_modules=True` and has no loop of its
+    own), so the qbo_id-vs-staging-PK invariant is asserted where that loop
+    now lives. The staging row still carries a DISTINCT `.id` (501) and
+    `.qbo_id` ("QB-VENDOR-501"), which is what makes this mutation-proof."""
     vendor = _make_qbo_vendor()
     outcome = SyncOutcome.for_service_pull(synced=[vendor], fetched=1)
-    qbo_vendor_service = MagicMock()
-    qbo_vendor_service.sync_from_qbo.return_value = outcome
-    vendor_connector = MagicMock()
-    vendor_connector.sync_from_qbo_vendor.side_effect = RuntimeError("transient db error")
+    connector = MagicMock()
+    connector.sync_from_qbo_vendor.side_effect = RuntimeError("transient db error")
 
-    with patch(f"{vendor_module.__name__}.with_retry", side_effect=_retry_calls_fn), patch(
-        f"{vendor_module.__name__}.pace_batch"
+    with patch(f"{VENDOR_SERVICE_MODULE}.with_retry", side_effect=_retry_calls_fn), patch(
+        f"{VENDOR_SERVICE_MODULE}.pace_batch"
+    ), patch(
+        f"{VENDOR_CONNECTOR_MODULE}.VendorVendorConnector", return_value=connector
     ):
-        _, returned_outcome = vendor_module.sync_qbo_to_local(
-            realm_id=REALM_ID,
-            last_sync_time=None,
-            qbo_vendor_service=qbo_vendor_service,
-            vendor_connector=vendor_connector,
-        )
+        QboVendorService(repo=MagicMock())._sync_to_vendors([vendor], outcome)
 
-    assert returned_outcome.projection_failed_ids == ["QB-VENDOR-501"]
+    assert outcome.projection_failed_ids == ["QB-VENDOR-501"]
 
 
 def test_customer_parent_projection_failure_records_real_qbo_id_not_staging_pk():
+    # U-513 ph2: the customer family's projection loop lives in the SERVICE, not
+    # in scripts/sync_qbo_customer.py — the script now asks for
+    # sync_to_modules=True. Same guarantee, targeted where the loop is.
     customer = _make_qbo_customer(job=False)
     outcome = SyncOutcome.for_service_pull(synced=[customer], fetched=1)
-    qbo_customer_service = MagicMock()
-    qbo_customer_service.sync_from_qbo.return_value = outcome
     customer_connector = MagicMock()
     customer_connector.sync_from_qbo_customer.side_effect = RuntimeError("transient db error")
-    project_connector = MagicMock()
 
-    with patch(f"{customer_module.__name__}.with_retry", side_effect=_retry_calls_fn), patch(
-        f"{customer_module.__name__}.pace_batch"
+    with patch(f"{customer_service_module.__name__}.with_retry", side_effect=_retry_calls_fn), patch(
+        f"{customer_service_module.__name__}.pace_batch"
+    ), patch(
+        f"{customer_service_module.__name__}.CustomerCustomerConnector",
+        return_value=customer_connector,
     ):
-        _, returned_outcome = customer_module.sync_qbo_to_local(
-            realm_id=REALM_ID,
-            last_sync_time=None,
-            qbo_customer_service=qbo_customer_service,
-            customer_connector=customer_connector,
-            project_connector=project_connector,
-        )
+        QboCustomerService(repo=MagicMock())._sync_to_customers([customer], outcome, {})
 
-    assert returned_outcome.projection_failed_ids == ["QB-CUSTOMER-501"]
+    assert outcome.projection_failed_ids == ["QB-CUSTOMER-501"]
 
 
 def test_customer_project_projection_failure_records_real_qbo_id_not_staging_pk():
     customer = _make_qbo_customer(job=True, qbo_id="QB-PROJECT-501")
     outcome = SyncOutcome.for_service_pull(synced=[customer], fetched=1)
-    qbo_customer_service = MagicMock()
-    qbo_customer_service.sync_from_qbo.return_value = outcome
-    customer_connector = MagicMock()
     project_connector = MagicMock()
     project_connector.sync_from_qbo_customer.side_effect = RuntimeError("transient db error")
 
-    with patch(f"{customer_module.__name__}.with_retry", side_effect=_retry_calls_fn), patch(
-        f"{customer_module.__name__}.pace_batch"
+    with patch(f"{customer_service_module.__name__}.with_retry", side_effect=_retry_calls_fn), patch(
+        f"{customer_service_module.__name__}.pace_batch"
+    ), patch(
+        f"{customer_service_module.__name__}.CustomerProjectConnector",
+        return_value=project_connector,
     ):
-        _, returned_outcome = customer_module.sync_qbo_to_local(
-            realm_id=REALM_ID,
-            last_sync_time=None,
-            qbo_customer_service=qbo_customer_service,
-            customer_connector=customer_connector,
-            project_connector=project_connector,
-        )
+        QboCustomerService(repo=MagicMock())._sync_to_projects([customer], outcome)
 
-    assert returned_outcome.projection_failed_ids == ["QB-PROJECT-501"]
+    assert outcome.projection_failed_ids == ["QB-PROJECT-501"]
 
 
 def test_term_incremental_projection_failure_records_real_qbo_id_not_staging_pk():

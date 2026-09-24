@@ -256,17 +256,17 @@ class CustomerCustomerConnector:
 
         2. ⚠️ TRANSITIONAL — the `qbo.PhysicalAddress` staging row
            `bill_addr_id` points at, for callers that have NOT been threaded yet.
-           `scripts/sync_qbo_customer.py` is one, and it is the path the
-           scheduler actually runs (`POST /api/v1/admin/sync/qbo/customer`): it
-           calls `sync_from_qbo(sync_to_modules=False)` and then runs its own
-           projection loop, so the external payloads never reach it. Without
-           this branch, U-513's repointed child fallback would read a
-           `dbo.Address` that nothing had refreshed — a NEW parent would get no
-           address at all and an EDITED parent's address would go stale forever,
-           a regression on the live path rather than a fix.
+           `scripts/sync_qbo_customer.py` WAS the one that mattered — the path
+           the scheduler actually runs (`POST /api/v1/admin/sync/qbo/customer`) —
+           because it called `sync_from_qbo(sync_to_modules=False)` and then ran
+           its own projection loop, so the external payloads never reached it.
+           U-513 ph2 converted it: it now asks for `sync_to_modules=True` and the
+           service threads the payload, so no production caller lands here.
 
-           Delete this branch (and the read below it) the moment every caller
-           threads the payload — or staging stops being written, whichever comes
+           What is left is a defensive default for a direct
+           `sync_from_qbo_customer(row)` call with no second argument. Delete
+           this branch (and the read below it) once the sibling vendor half is
+           converted too — or when staging stops being written, whichever comes
            first. Nothing else in this connector touches staging.
 
         Both sources are blank-checked identically by the caller, so a

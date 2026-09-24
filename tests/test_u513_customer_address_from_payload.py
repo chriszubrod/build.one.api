@@ -736,7 +736,8 @@ def test_the_pull_builds_the_payload_map_and_projects_parents_before_jobs():
     )
     project_connector = Mock()
     project_connector.sync_from_qbo_customer.side_effect = (
-        lambda row: order.append(("job", row.qbo_id, None)) or SimpleNamespace(id=2)
+        lambda row, external=None: order.append(("job", row.qbo_id, external))
+        or SimpleNamespace(id=2)
     )
 
     with patch(
@@ -757,3 +758,7 @@ def test_the_pull_builds_the_payload_map_and_projects_parents_before_jobs():
         "inherit an address its parent has not minted yet"
     )
     assert order[0][2] is parent, "the parent's own external payload was not threaded"
+    # U-513 ph2.5: the JOB half is threaded too. Before ph2.5 this argument was
+    # always None and the job's own BillAddr/ShipAddr were read back out of
+    # `qbo.PhysicalAddress` -- the last live readers of the table being sunset.
+    assert order[1][2] is job, "the job's own external payload was not threaded"

@@ -14,7 +14,6 @@ from integrations.intuit.qbo.base.pacing import pace_batch
 from integrations.intuit.qbo.base.sync_outcome import SyncOutcome, project_records
 from integrations.intuit.qbo.customer.connector.customer.business.service import CustomerCustomerConnector
 from integrations.intuit.qbo.customer.connector.project.business.service import CustomerProjectConnector
-from integrations.intuit.qbo.physical_address.business.service import QboPhysicalAddressService
 from shared.database import with_retry
 
 logger = logging.getLogger(__name__)
@@ -32,7 +31,6 @@ class QboCustomerService:
     def __init__(self, repo: Optional[QboCustomerRepository] = None):
         """Initialize the QboCustomerService."""
         self.repo = repo or QboCustomerRepository()
-        self.physical_address_service = QboPhysicalAddressService()
 
     def sync_from_qbo(
         self,
@@ -76,8 +74,9 @@ class QboCustomerService:
         # re-reading them out of the `qbo.PhysicalAddress` staging table this
         # loop just wrote them to. The staging rows are the thing being sunset;
         # the payload is where the data was all along, and this loop is the last
-        # scope that still has it. See `_sync_to_customers` for how it reaches
-        # the connector without touching the shared `project_records`.
+        # scope that still has it. BOTH halves of the family consume it as of
+        # ph2.5 — see `_sync_to_customers` / `_sync_to_projects` for how it
+        # reaches each connector without touching the shared `project_records`.
         external_by_id = {}
 
         for i, qbo_customer in enumerate(qbo_customers):
@@ -116,7 +115,7 @@ class QboCustomerService:
         # (U-513), so this ordering is load-bearing, not cosmetic.
         if sync_to_modules:
             self._sync_to_customers(parent_customers, outcome, external_by_id)
-            self._sync_to_projects(job_customers, outcome)
+            self._sync_to_projects(job_customers, outcome, external_by_id)
         
         return outcome
 
@@ -149,23 +148,22 @@ class QboCustomerService:
         mobile = qbo_customer.mobile.free_form_number if qbo_customer.mobile else None
         fax = qbo_customer.fax.free_form_number if qbo_customer.fax else None
         
-        # Create/update bill address and get ID
+        # U-513 ph3a: the `qbo.PhysicalAddress` staging WRITE is gone. Both slots
+        # project straight from the inline QBO payload now --
+        # `CustomerCustomerConnector` for the parent, `CustomerProjectConnector`
+        # for the job (ph2.5) -- so nothing reads these rows on the pull.
+        #
+        # Passed as None rather than omitted: `QboCustomerRepository.create`
+        # declares bill_addr_id / ship_addr_id keyword-only with NO default, so
+        # omitting them is a TypeError.
+        #
+        # NULL does NOT clear an existing FK: `qbo.customer.sql:512` coalesces
+        # (`CASE WHEN @BillAddrId IS NULL THEN [BillAddrId] ELSE @BillAddrId END`),
+        # so a row staged before this change keeps its id. Deliberate -- it is
+        # what makes the rollout safe in both directions, since the outgoing
+        # container can still resolve addresses mid-deploy. The columns go in ph3b.
         bill_addr_id = None
-        if qbo_customer.bill_addr:
-            bill_addr_id = self._upsert_physical_address(
-                qbo_address=qbo_customer.bill_addr,
-                qbo_id=f"{qbo_customer.id}_bill",
-                realm_id=realm_id
-            )
-        
-        # Create/update ship address and get ID
         ship_addr_id = None
-        if qbo_customer.ship_addr:
-            ship_addr_id = self._upsert_physical_address(
-                qbo_address=qbo_customer.ship_addr,
-                qbo_id=f"{qbo_customer.id}_ship",
-                realm_id=realm_id
-            )
         
         if existing:
             # Update existing record
@@ -294,24 +292,42 @@ class QboCustomerService:
             logger=logger,
         )
 
-    def _sync_to_projects(self, job_customers: List[QboCustomer], outcome: SyncOutcome) -> None:
+    def _sync_to_projects(
+        self,
+        job_customers: List[QboCustomer],
+        outcome: SyncOutcome,
+        external_by_id: Optional[dict] = None,
+    ) -> None:
         """
         Sync job customers to Project module.
 
         Args:
             job_customers: List of job QboCustomer records (Job=true)
+            outcome: the pull envelope this projection records into
+            external_by_id: QBO id -> the ORIGINAL external Customer payload
+                (U-513 ph2.5). Optional; an absent/partial map just means the
+                connector falls back to reading the staging row.
 
-        No external payload here, deliberately: `CustomerProjectConnector` reads
-        a job's billing address out of `dbo.Address` (the row the PARENT's
-        projection just minted), not out of the QBO payload, so there is nothing
-        for a second argument to carry. The closure exists only to wrap the call
-        in retry + pacing — see `_sync_to_customers` for why both live at this
-        call site rather than inside `project_records`.
+        ⚠️ ph2.5 — this used to pass NO payload, on the reading that a job's
+        addresses came from `dbo.Address` (the row the PARENT's projection
+        mints). That is true of the billing chain's SECOND link only. The job's
+        OWN BillAddr and its SHIPPING slot were still read out of the
+        `qbo.PhysicalAddress` staging row, which made them the last live readers
+        of the table U-513 is sunsetting — and the reason the staging write
+        could not be removed. Both now project from the inline payload, so this
+        closure threads the map exactly as `_sync_to_customers` does.
+
+        The closure is the whole point: `project_records` is shared by 10 call
+        sites across 8 other QBO families and takes a strict one-argument
+        `project_one`, so binding the extra arguments HERE is what lets this
+        family pass the payload through — and wrap the call in retry + pacing —
+        without changing a signature every other family depends on.
         """
         if not job_customers:
             return
 
         connector = CustomerProjectConnector()
+        external_by_id = external_by_id or {}
         total = len(job_customers)
         counter = itertools.count()
 
@@ -321,6 +337,7 @@ class QboCustomerService:
                 return with_retry(
                     connector.sync_from_qbo_customer,
                     row,
+                    external_by_id.get(row.qbo_id),
                     max_retries=MAX_RETRIES,
                     initial_delay=INITIAL_RETRY_DELAY,
                 )
@@ -359,56 +376,3 @@ class QboCustomerService:
         """
         return self.repo.read_by_id(id)
 
-    def _upsert_physical_address(
-        self,
-        qbo_address,
-        qbo_id: str,
-        realm_id: str
-    ) -> Optional[int]:
-        """
-        Create or update a QboPhysicalAddress record and return its ID.
-        
-        Args:
-            qbo_address: QboPhysicalAddress from external API
-            qbo_id: QBO ID to use for the address record
-            realm_id: QBO realm ID
-        
-        Returns:
-            int: The database ID of the PhysicalAddress record, or None if address is empty
-        """
-        if not qbo_address:
-            return None
-        
-        # Check if address already exists
-        existing = self.physical_address_service.read_by_qbo_id(qbo_id=qbo_id)
-        
-        if existing:
-            # Update existing record
-            logger.debug(f"Updating existing QBO physical address {qbo_id}")
-            updated = self.physical_address_service.repo.update_by_id(
-                id=existing.id,
-                row_version=existing.row_version_bytes,
-                qbo_id=qbo_id,
-                realm_id=realm_id,
-                line1=qbo_address.line1,
-                line2=qbo_address.line2,
-                city=qbo_address.city,
-                country=qbo_address.country,
-                country_sub_division_code=qbo_address.country_sub_division_code,
-                postal_code=qbo_address.postal_code,
-            )
-            return updated.id if updated else None
-        else:
-            # Create new record
-            logger.debug(f"Creating new QBO physical address {qbo_id}")
-            created = self.physical_address_service.create(
-                qbo_id=qbo_id,
-                realm_id=realm_id,
-                line1=qbo_address.line1,
-                line2=qbo_address.line2,
-                city=qbo_address.city,
-                country=qbo_address.country,
-                country_sub_division_code=qbo_address.country_sub_division_code,
-                postal_code=qbo_address.postal_code,
-            )
-            return created.id if created else None

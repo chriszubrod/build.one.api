@@ -836,7 +836,9 @@ def test_project_direct_hit_updates_fields_no_create_or_stamp():
     project_service.create.assert_not_called()
     project_service.repo.set_qbo_identity.assert_not_called()
     project_service.read_by_name.assert_not_called()
-    connector._sync_addresses.assert_called_once_with(qbo_customer, 88)
+    connector._sync_addresses.assert_called_once_with(
+        qbo_customer, 88, external_customer=None
+    )
 
 
 def test_project_direct_hit_preserves_non_blank_local_name_and_takes_qbo_fields():
@@ -883,7 +885,9 @@ def test_project_genuine_miss_creates_new_and_stamps_identity():
     project_service.repo.set_qbo_identity.assert_called_once_with(
         id=300, qbo_id="P-1", realm_id="realm-1"
     )
-    connector._sync_addresses.assert_called_once_with(qbo_customer, 300)
+    connector._sync_addresses.assert_called_once_with(
+        qbo_customer, 300, external_customer=None
+    )
 
 
 def test_project_genuine_miss_adopts_existing_unmapped_by_name_and_preserves_other_fields():
@@ -921,7 +925,9 @@ def test_project_genuine_miss_adopts_existing_unmapped_by_name_and_preserves_oth
     project_service.repo.set_qbo_identity.assert_called_once_with(
         id=150, qbo_id="P-1", realm_id="realm-1"
     )
-    connector._sync_addresses.assert_called_once_with(qbo_customer, 150)
+    connector._sync_addresses.assert_called_once_with(
+        qbo_customer, 150, external_customer=None
+    )
 
 
 def test_project_blank_incoming_name_skips_the_adopt_lookup_and_creates():
@@ -1208,7 +1214,9 @@ def test_project_stamp_identity_writes_customer_id_only_and_syncs_addresses():
     assert unmapped.status == "inactive"
     project_service.repo.update_by_id.assert_called_once_with(unmapped)
     project_service.repo.set_qbo_identity.assert_called_once_with(id=150, qbo_id="P-1", realm_id="realm-1")
-    connector._sync_addresses.assert_called_once_with(qbo_customer, 150)
+    connector._sync_addresses.assert_called_once_with(
+        qbo_customer, 150, external_customer=None
+    )
 
 
 def test_project_stamp_identity_skips_customer_id_write_when_none():

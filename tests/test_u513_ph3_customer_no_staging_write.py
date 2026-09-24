@@ -1,72 +1,64 @@
-"""U-513 ph3a (CUSTOMER) — ⛔ THE STAGING WRITE WAS **NOT** REMOVED.
+"""U-513 ph3a (CUSTOMER) — the readers are payload-fed; ONE fallback remains.
 
-WHY THIS FILE EXISTS
---------------------
+WHAT THIS FILE WAS, AND WHY IT CHANGED
+--------------------------------------
 ph3a was scoped as "delete `QboCustomerService._upsert_physical_address` and
 stop passing `bill_addr_id` / `ship_addr_id` onto the `qbo.Customer` staging
 row", on the stated premise that *projection no longer reads those rows*.
 
-That premise holds for exactly ONE of the customer family's two halves.
+That premise held for exactly ONE of the customer family's two halves, so this
+file was written as a BLOCKING GATE: it asserted, in the direction that was
+correct at the time, that `CustomerProjectConnector` — the JOB half — still read
+the FK columns in two live places the production pull reached, and that removing
+the write would therefore kill the project SHIPPING slot outright and billing
+Link 1 with it, SILENTLY (every read is blank-guarded and failure-isolated, and
+`UpdateQboCustomerByQboId` COALESCES the FKs, so existing rows would keep
+pointing at staging rows nothing refreshes and a QBO address edit would simply
+stop propagating).
 
-    ✅ PARENT half — `CustomerCustomerConnector` is payload-first. ph1 gave it
-       `_own_billing_address`, ph2 made `scripts/sync_qbo_customer.py` ask for
-       `sync_to_modules=True` so the service threads the inline `BillAddr`, and
-       its `bill_addr_id` read is now a dead transitional fallback (pinned by
-       `test_the_parent_staging_fallback_cannot_fire_from_the_pull` below).
+**U-513 ph2.5 discharged that gate by building the seam it asked for.** Both
+halves are now payload-first:
 
-    ⛔ JOB half — `CustomerProjectConnector` was NEVER converted. It has no
-       payload seam at all (`_sync_to_projects` passes one argument on
-       purpose), and it reads the staging FK columns in TWO live places:
+    ✅ PARENT half — `CustomerCustomerConnector._own_billing_address` (ph1),
+       threaded by `_sync_to_customers`. Its `bill_addr_id` read is a dead
+       transitional fallback (Section 3).
+    ✅ JOB half — `CustomerProjectConnector._own_billing_address_id` /
+       `_own_shipping_address_id` (ph2.5), threaded by `_sync_to_projects`.
+       Both project from the inline `BillAddr` / `ShipAddr`; the staging read
+       survives ONLY as `_own_address_id_from_staging`.
 
-         `_own_billing_address_id`  (service.py:697)  -> `qbo_customer.bill_addr_id`
-         `_sync_addresses`          (service.py:625)  -> `qbo_customer.ship_addr_id`
+So the file is no longer a blocker. It is now the ph3b inventory: it records
+what the readers actually depend on today, in the direction that is correct
+today, so that the NEXT phase — dropping the table, the columns, and the
+fallback — can be checked against something real rather than against prose.
 
-       Its own docstrings say so out loud: *"The job's OWN link still goes
-       through staging"* and *"the one half of this connector U-513 does NOT
-       move off staging"*.
-
-Removing the write as scoped would therefore have:
-
-  1. killed the project SHIPPING slot outright — it is job-only, deliberately
-     never inherits from the parent, and has no other source;
-  2. killed billing Link 1 (the job's own BillAddr), leaving only the parent
-     fallback;
-  3. done both SILENTLY — every read is blank-guarded and failure-isolated, so
-     a NULL FK degrades to "no address" with nothing raised and nothing logged
-     above debug.
-
-And it would NOT have failed loudly on deploy either. The UPDATE sproc coalesces
-(`[BillAddrId] = CASE WHEN @BillAddrId IS NULL THEN [BillAddrId] ELSE @BillAddrId END`),
-so existing job rows keep their FK pointing at a `qbo.PhysicalAddress` row that
-is no longer refreshed — a QBO address edit would stop propagating to a project's
-billing/shipping slot with no symptom at all. Only brand-new job customers would
-show the total loss. Then ph3b drops the table and the columns and the rest goes.
-
-WHAT THIS FILE DOES
--------------------
-It is a GATE, not a regression suite for a change that shipped:
-
-  * Section 1 proves the two job-half readers are live and staging-fed, by
-    running `_sync_addresses` with the FK populated (today) and NULL (what ph3a
-    would produce) and comparing the `ProjectAddress` links written.
-  * Section 2 pins the write itself, so deleting it goes RED **here** instead of
-    going quiet in prod.
+WHAT THIS FILE DOES NOW
+-----------------------
+  * Section 1 proves the two job-half readers are PAYLOAD-fed, by running
+    `_sync_addresses` with the FKs NULL (what ph3a produces) and the payload
+    threaded, and asserting the `ProjectAddress` links still land. These are
+    the same assertions as before, inverted — a regression to staging-only goes
+    RED here.
+  * Section 2 pins the ONE remaining dependency, structurally: every read of
+    `bill_addr_id` / `ship_addr_id` in the connector is inside the staging
+    fallback, and the only caller that still reaches it is
+    `heal_missing_mapping`. The write is still wired and this file no longer
+    demands that it be — it records exactly what ph3a costs.
   * Section 3 discharges the one check ph3a explicitly asked for: the parent
     half's transitional fallback really is unreachable from the pull.
   * Section 4 pins the payload -> `dbo.Address` path that ph1 built, under the
     synthetic identity ph3b depends on staying byte-identical.
 
-TO UNBLOCK: give `CustomerProjectConnector` a payload seam the way
-`VendorVendorConnector` already has one (`_bill_address_from_payload` /
-`_bill_address_from_staging`, chosen on `external is not None`), thread the map
-through `_sync_to_projects`, and cover `ShipAddr` as well as `BillAddr` — the
-vendor family has no shipping slot, so that half has no precedent to copy.
-Then Section 1 inverts and Section 2 flips.
+The job half's own payload seam is covered in depth by
+`test_u513_ph25_project_payload_seam.py` (blankness parity across both
+branches, the shipping non-inheritance invariant, cross-wiring refusal). What
+is here is only what bears on the STAGING WRITE decision.
 
 Pure logic throughout: in-memory fakes, no live DB.
 """
 from __future__ import annotations
 
+import ast
 import inspect
 from types import SimpleNamespace
 from unittest.mock import MagicMock, Mock, patch
@@ -76,6 +68,9 @@ from integrations.intuit.qbo.customer.business.service import QboCustomerService
 from integrations.intuit.qbo.customer.connector.customer.business.service import (
     CustomerCustomerConnector,
     billing_address_qbo_id,
+)
+from integrations.intuit.qbo.customer.connector.project.business import (
+    service as project_connector_module,
 )
 from integrations.intuit.qbo.customer.connector.project.business.service import (
     ADDRESS_TYPE_BILLING,
@@ -97,6 +92,16 @@ from tests.test_u506_p1_project_address_parent_fallback import (
     _build_connector,
     _dbo_address_id,
     _qbo_customer,
+)
+# ph2.5's payload harness — the SAME connector, wired with the seam this file
+# now asserts is live. Reused rather than re-faked for the same reason the U-506
+# harness is: a second copy is how one of them stops modelling the shipped shape.
+from tests.test_u513_ph25_project_payload_seam import (
+    JOB_QBO_ID,
+    PAYLOAD_BILL,
+    PAYLOAD_SHIP,
+    _build as _build_payload_connector,
+    _external,
 )
 from tests.test_u269_qbo_staging_try_except import _client_cm
 
@@ -120,69 +125,86 @@ def _links_of_type(connector, address_type_id):
 
 
 # ===========================================================================
-# Section 1 — THE BLOCKER: the job half reads the FK columns ph3a would NULL
+# Section 1 — DISCHARGED: the job half's two readers are PAYLOAD-fed
 # ===========================================================================
 
-def test_the_job_shipping_slot_is_fed_ONLY_by_the_staging_write():
-    """⛔ THE BLOCKER, shipping half.
+def test_the_job_shipping_slot_survives_a_NULL_staging_fk():
+    """✅ THE BLOCKER, shipping half — inverted by ph2.5.
 
-    `_sync_addresses`'s SHIPPING branch is `qbo_customer.ship_addr_id` and
-    nothing else. Stop writing that FK and the slot is dead for every project,
-    forever -- no payload reaches this connector and shipping deliberately never
-    inherits from the parent, so there is no second source to fall back on.
+    This asserted the opposite until ph2.5: `_sync_addresses`'s SHIPPING branch
+    was `qbo_customer.ship_addr_id` and nothing else, so NULLing the FK killed
+    the slot for every project forever (shipping deliberately never inherits
+    from the parent, so there was no second source).
 
-    Both halves run here on purpose: asserting only the NULL case would pass
-    just as well against a connector that never wrote a shipping link at all.
+    Now the FK is NULL — the post-ph3a state — and the slot still resolves, from
+    the inline `ShipAddr`. Both halves run here on purpose, exactly as before:
+    asserting only the payload case would pass just as well against a connector
+    that had stopped writing shipping links altogether.
     """
-    live = _build_connector()
-    live._sync_addresses(_qbo_customer(ship_addr_id=REAL_OWN_SHIP), PROJECT_ID)
-    assert _links_of_type(live, ADDRESS_TYPE_SHIPPING) == [_dbo_address_id(REAL_OWN_SHIP)], (
-        "the shipping slot is not staging-fed today -- re-read _sync_addresses "
-        "before trusting the NULL half of this test"
+    after_ph3a = _build_payload_connector()
+    after_ph3a._sync_addresses(
+        _qbo_customer(ship_addr_id=None),
+        PROJECT_ID,
+        external_customer=_external(ship_addr=PAYLOAD_SHIP),
+    )
+    assert _links_of_type(after_ph3a, ADDRESS_TYPE_SHIPPING) == [
+        after_ph3a.address_connector.address_id_for(f"{JOB_QBO_ID}_ship")
+    ], (
+        "a NULL ship_addr_id produced no shipping link even WITH the payload "
+        "threaded -- the job half has regressed to staging-only and ph3a is "
+        "blocked again"
     )
 
-    after_ph3a = _build_connector()
-    after_ph3a._sync_addresses(_qbo_customer(ship_addr_id=None), PROJECT_ID)
-    assert _links_of_type(after_ph3a, ADDRESS_TYPE_SHIPPING) == [], (
-        "a NULL ship_addr_id still produced a shipping link -- if this ever "
-        "fires, the job half has gained a non-staging source and ph3a is unblocked"
+    no_payload = _build_payload_connector()
+    no_payload._sync_addresses(_qbo_customer(ship_addr_id=None), PROJECT_ID)
+    assert _links_of_type(no_payload, ADDRESS_TYPE_SHIPPING) == [], (
+        "a link appeared with NEITHER an FK nor a payload -- the assertion "
+        "above is not proving the payload is what fed the slot"
     )
 
 
-def test_the_job_own_billing_link_is_fed_ONLY_by_the_staging_write():
-    """⛔ THE BLOCKER, billing half.
+def test_the_job_own_billing_link_survives_a_NULL_staging_fk():
+    """✅ THE BLOCKER, billing half — inverted by ph2.5.
 
-    Link 1 of the billing chain (`_own_billing_address_id`) resolves the JOB's
-    own BillAddr through `qbo.PhysicalAddress` by `qbo_customer.bill_addr_id`.
-    Built with no parent address at all, so the chain has exactly one candidate
-    and the assertion cannot be satisfied by the parent fallback standing in.
+    Link 1 of the billing chain (`_own_billing_address_id`) used to resolve the
+    JOB's own BillAddr through `qbo.PhysicalAddress`. Built with no parent
+    address at all, so the chain has exactly one candidate and the assertion
+    cannot be satisfied by the parent fallback standing in.
 
     Live measurement (2026-09-23, recorded in `_billing_address_candidates`):
-    own-bill wins for 2 of 138 projects. Small, but those two lose their OWN
-    street and silently fall through to the owner's mailing address.
+    own-bill wins for 2 of 138 projects. Small, but those two would have lost
+    their OWN street and silently fallen through to the owner's mailing address.
     """
-    live = _build_connector(parent_address=None)
-    live._sync_addresses(_qbo_customer(bill_addr_id=REAL_OWN_BILL), PROJECT_ID)
-    assert _links_of_type(live, ADDRESS_TYPE_BILLING) == [_dbo_address_id(REAL_OWN_BILL)]
-
-    after_ph3a = _build_connector(parent_address=None)
-    after_ph3a._sync_addresses(_qbo_customer(bill_addr_id=None), PROJECT_ID)
-    assert _links_of_type(after_ph3a, ADDRESS_TYPE_BILLING) == [], (
-        "a NULL bill_addr_id still produced a billing link from the job's own "
-        "address -- the job half has a non-staging source and ph3a is unblocked"
+    after_ph3a = _build_payload_connector(parent_address=None)
+    after_ph3a._sync_addresses(
+        _qbo_customer(bill_addr_id=None),
+        PROJECT_ID,
+        external_customer=_external(bill_addr=PAYLOAD_BILL),
     )
+    assert _links_of_type(after_ph3a, ADDRESS_TYPE_BILLING) == [
+        after_ph3a.address_connector.address_id_for(f"{JOB_QBO_ID}_bill")
+    ], (
+        "a NULL bill_addr_id produced no billing link even WITH the payload "
+        "threaded -- billing Link 1 has regressed to staging-only"
+    )
+
+    no_payload = _build_payload_connector(parent_address=None)
+    no_payload._sync_addresses(_qbo_customer(bill_addr_id=None), PROJECT_ID)
+    assert _links_of_type(no_payload, ADDRESS_TYPE_BILLING) == []
 
 
 def test_the_parent_fallback_covers_billing_but_CANNOT_cover_shipping():
-    """The asymmetry that makes the shipping loss unrecoverable.
+    """The asymmetry that made the shipping loss unrecoverable WITHOUT a
+    payload, and that ph2.5 did not soften.
 
-    With BOTH FKs NULL (the post-ph3a state) and a parent whose `<ref>_bill`
+    With BOTH FKs NULL and NO payload, but a parent whose `<ref>_bill`
     `dbo.Address` row is fully populated, billing still resolves -- the parent
     fallback is off staging already (ph1). Shipping resolves nothing, and by
     design never will: under property semantics a parent's address is a SIBLING
-    project's street, wrong for 16 of the 61 projects U-506 P1 covered. So the
-    shipping slot cannot be rescued by widening the fallback; it needs the
-    payload.
+    project's street, wrong for 16 of the 61 projects U-506 P1 covered. That is
+    why the shipping slot had to be given the payload rather than a wider
+    fallback, and why `test_shipping_never_inherits_from_the_parent_on_the_
+    payload_path` guards the new branch the same way.
     """
     connector = _build_connector(parent_address=REAL_PARENT_BILL_ADDRESS)
     connector._sync_addresses(
@@ -193,14 +215,13 @@ def test_the_parent_fallback_covers_billing_but_CANNOT_cover_shipping():
     assert _links_of_type(connector, ADDRESS_TYPE_SHIPPING) == []
 
 
-def test_the_job_projection_has_no_payload_seam_to_replace_staging():
-    """Why the job half cannot simply be repointed the way the parent half was.
+def test_the_job_projection_now_has_the_same_payload_seam_as_the_parent():
+    """The structural gap, closed. Both halves take the payload as an optional
+    second parameter, and both projection loops thread the map into it.
 
-    `CustomerCustomerConnector.sync_from_qbo_customer` grew a second parameter
-    in ph1 and `_sync_to_customers` threads the map into it. Its job-side twin
-    has neither, and `_sync_to_projects` says so in prose. This is the
-    structural gap, asserted rather than described -- it goes GREEN the moment
-    someone builds the seam, which is exactly when ph3a becomes shippable.
+    Optional is load-bearing, not politeness: `heal_missing_mapping` and the
+    other direct callers pass one argument, and `project_records`' 10 call sites
+    across 8 other QBO families keep their strict one-argument `project_one`.
     """
     parent_params = list(
         inspect.signature(CustomerCustomerConnector.sync_from_qbo_customer).parameters
@@ -210,98 +231,153 @@ def test_the_job_projection_has_no_payload_seam_to_replace_staging():
     job_params = list(
         inspect.signature(CustomerProjectConnector.sync_from_qbo_customer).parameters
     )
-    assert job_params == ["self", "qbo_customer"], (
-        "CustomerProjectConnector grew a payload parameter -- if it is now "
-        "threaded and covers BOTH BillAddr and ShipAddr, ph3a is unblocked"
+    assert job_params == ["self", "qbo_customer", "external_customer"], (
+        "CustomerProjectConnector lost its payload parameter -- the job half is "
+        "back on staging for BillAddr and ShipAddr, and ph3a is blocked again"
+    )
+    assert (
+        inspect.signature(
+            CustomerProjectConnector.sync_from_qbo_customer
+        ).parameters["external_customer"].default
+        is None
     )
 
     projects_src = inspect.getsource(QboCustomerService._sync_to_projects)
-    assert "external_by_id" not in projects_src, (
-        "the job projection now receives the payload map -- re-check whether "
-        "the connector consumes it for both address slots"
+    assert "external_by_id" in projects_src, (
+        "the job projection no longer receives the payload map -- the connector "
+        "seam exists but nothing feeds it, which is the silent-failure shape "
+        "this file was built to catch"
     )
 
 
 # ===========================================================================
-# Section 2 — THE GATE: the write stays until the job half is converted
+# Section 2 — THE RESIDUAL: what still depends on the staging write
 # ===========================================================================
 
-def test_the_physical_address_staging_write_is_still_wired():
-    """RED-on-deletion guard.
+def _fk_reader_functions():
+    """Every function in the project connector whose body reads
+    `.bill_addr_id` or `.ship_addr_id`, found by AST rather than by grepping
+    source text -- so a mention in a docstring or comment (there are several,
+    deliberately) cannot make this pass or fail for the wrong reason."""
+    tree = ast.parse(inspect.getsource(project_connector_module))
+    readers = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        for child in ast.walk(node):
+            if isinstance(child, ast.Attribute) and child.attr in {
+                "bill_addr_id", "ship_addr_id",
+            }:
+                readers.add(node.name)
+    return readers
 
-    ph3a's own spec asked for the inverse of this assertion. It is written in
-    the direction that is CORRECT TODAY so that removing the write trips a test
-    instead of trickling out as stale project addresses. Flip this test (and the
-    next) in the same commit that converts `CustomerProjectConnector`.
+
+def test_the_staging_fallback_is_the_only_remaining_reader_of_the_address_fks():
+    """⛔ THE ph3b GATE, and the one thing Section 1 cannot show on its own.
+
+    Section 1 proves the payload path WORKS. It cannot prove that no OTHER
+    reader of the FK columns survived somewhere else in the module -- and a
+    surviving reader is precisely the shape that fails silently, because every
+    read here is blank-guarded and failure-isolated.
+
+    So: the FKs may be read in exactly two places, and both must be the
+    dispatch that chooses the transitional staging arm. When ph3b drops the
+    columns, these two functions plus `_own_address_id_from_staging` and
+    `_staged_address_is_blank` are the whole of what comes out.
     """
-    assert hasattr(QboCustomerService, "_upsert_physical_address"), (
-        "_upsert_physical_address was deleted. If CustomerProjectConnector is "
-        "now payload-fed for BOTH BillAddr and ShipAddr, delete this test and "
-        "invert Section 1. If it is not, this deletion silently breaks project "
-        "shipping addresses -- revert it."
+    assert _fk_reader_functions() == {
+        "_own_billing_address_id", "_own_shipping_address_id",
+    }, (
+        "a reader of bill_addr_id/ship_addr_id appeared outside the staging "
+        "fallback dispatch -- it will keep the qbo.PhysicalAddress dependency "
+        "alive past ph3b, and it will do it silently"
     )
 
-    service = QboCustomerService(repo=MagicMock())
-    service.physical_address_service = MagicMock()
-    service.physical_address_service.read_by_qbo_id.return_value = None
-    service.physical_address_service.create.return_value = SimpleNamespace(id=902)
 
-    addr = SimpleNamespace(
-        line1="1539 Old Hillsboro Road", line2=None, city="Franklin",
-        country=None, country_sub_division_code="TN", postal_code="37064",
-    )
-    assert service._upsert_physical_address(
-        qbo_address=addr, qbo_id="J-7_ship", realm_id=REALM
-    ) == 902
-    assert service.physical_address_service.create.called
+def test_heal_missing_mapping_is_the_last_production_caller_of_the_staging_path():
+    """What removing the write actually COSTS, stated as an assertion.
 
+    `heal_missing_mapping` binds a name-matched Project during an INVOICE pull
+    and genuinely has no Customer payload in scope, so it takes the staging arm.
+    NULL the FKs and this path stops resolving addresses.
 
-def test_a_full_pull_still_stamps_both_address_fks_onto_the_staging_row():
-    """The end-to-end shape ph3a would have removed.
-
-    Drives `sync_from_qbo` over one job customer carrying both a BillAddr and a
-    ShipAddr, and asserts the two FKs reach `repo.create`. These are the exact
-    values `CustomerProjectConnector` reads back; NULLing them is what breaks it.
+    That is a BOUNDED loss, unlike the pre-ph2.5 one: heal does not own project
+    addresses, the next customer pull re-projects them from the payload, and the
+    failure mode is a slot that fills one tick later rather than one that never
+    fills again. Recorded here so ph3a is a decision with a known price rather
+    than an assumption.
     """
-    repo = MagicMock()
-    repo.read_by_qbo_id_and_realm_id.return_value = None
-    repo.create.return_value = SimpleNamespace(qbo_id="J-7", is_job=True)
+    connector = _build_payload_connector(parent_address=None)
+    project = SimpleNamespace(id=PROJECT_ID, public_id="pub-p88", qbo_id=None, realm_id=None)
+    connector.project_service.read_by_name.return_value = project
+    connector.project_service.read_by_id.return_value = project
+    connector.project_service.read_by_qbo_identity.return_value = None
 
-    service = QboCustomerService(repo=repo)
-    service.physical_address_service = MagicMock()
-    service.physical_address_service.read_by_qbo_id.return_value = None
-    service.physical_address_service.create.side_effect = [
-        SimpleNamespace(id=910),  # _bill
-        SimpleNamespace(id=911),  # _ship
-    ]
+    connector.heal_missing_mapping(
+        _qbo_customer(bill_addr_id=REAL_OWN_BILL, ship_addr_id=REAL_OWN_SHIP)
+    )
+    assert _links_of_type(connector, ADDRESS_TYPE_BILLING) == [_dbo_address_id(REAL_OWN_BILL)]
+    assert _links_of_type(connector, ADDRESS_TYPE_SHIPPING) == [_dbo_address_id(REAL_OWN_SHIP)]
 
-    job = customer_service_module.QboCustomerExternalSchema(
-        Id="J-7", SyncToken="0", DisplayName="BD - 4527 Beacon Dr.", Job=True,
-        Active=True, BillAddr=OWNER_MAILING,
-        ShipAddr={"Line1": "12 Job Site Rd.", "City": "Nashville", "PostalCode": "37220"},
+    after_ph3a = _build_payload_connector(parent_address=None)
+    after_ph3a.project_service.read_by_name.return_value = project
+    after_ph3a.project_service.read_by_id.return_value = project
+    after_ph3a.project_service.read_by_qbo_identity.return_value = None
+
+    after_ph3a.heal_missing_mapping(_qbo_customer(bill_addr_id=None, ship_addr_id=None))
+    assert after_ph3a.project_address_service.links() == [], (
+        "heal resolved an address with both FKs NULL -- it has gained a source "
+        "this test does not know about; re-price ph3a before shipping it"
     )
 
-    with patch(
-        f"{customer_service_module.__name__}.QboCustomerClient",
-        return_value=_client_cm([job]),
-    ):
-        service.sync_from_qbo(realm_id=REALM, sync_to_modules=False)
 
-    kwargs = repo.create.call_args.kwargs
-    assert kwargs["bill_addr_id"] == 910, (
-        "the job's BillAddr FK no longer reaches the staging row -- "
-        "CustomerProjectConnector._own_billing_address_id reads exactly this"
-    )
-    assert kwargs["ship_addr_id"] == 911, (
-        "the job's ShipAddr FK no longer reaches the staging row -- the project "
-        "SHIPPING slot has no other source"
-    )
+def test_the_physical_address_staging_write_is_GONE():
+    """ph3a, customer half. INVERTED from the gate this file used to be.
 
-    minted = [
-        call.kwargs["qbo_id"]
-        for call in service.physical_address_service.create.call_args_list
-    ]
-    assert minted == ["J-7_bill", "J-7_ship"]
+    Until ph2.5 this asserted the write was still wired, because deleting it
+    silently broke the project SHIPPING slot: `CustomerProjectConnector` read
+    `qbo_customer.ship_addr_id` and had no payload seam. The full suite stayed
+    green and prod would not have raised -- `qbo.customer.sql:512` coalesces, so
+    passing NULL PRESERVES the stale FK rather than clearing it, and every read
+    is blank-guarded and failure-isolated.
+
+    ph2.5 gave the job half the payload seam, so the precondition now holds and
+    the write is deleted. Asserting its ABSENCE rather than deleting the test,
+    because reinstating it would quietly recreate a writer for a table that no
+    longer needs one -- and ph3b is about to drop that table.
+    """
+    assert not hasattr(QboCustomerService, "_upsert_physical_address"), (
+        "the qbo.PhysicalAddress staging write is back on the customer service. "
+        "Both address slots project from the inline payload now; a writer here "
+        "recreates a dependency ph3b is dropping."
+    )
+    import inspect
+    from integrations.intuit.qbo.customer.business import service as svc_mod
+    src = inspect.getsource(svc_mod)
+    for gone in ("QboPhysicalAddressService(", "physical_address_repo."):
+        assert gone not in src, f"{gone} is back in the customer service"
+
+
+def test_a_full_pull_stamps_NULL_into_both_address_fks():
+    """The FKs are passed, and passed as None.
+
+    Passed rather than omitted because `QboCustomerRepository.create` declares
+    both keyword-only with NO default -- omitting is a TypeError (the vendor
+    half hit exactly this).
+
+    ⚠️ NULL does not CLEAR an existing FK: the UPDATE sproc coalesces. A row
+    staged before ph3a keeps its id, which is what makes the rollout safe in
+    both directions -- the outgoing container can still resolve addresses
+    mid-deploy. The columns themselves go in ph3b.
+    """
+    import inspect
+    from integrations.intuit.qbo.customer.business import service as svc_mod
+    src = inspect.getsource(svc_mod.QboCustomerService._upsert_customer)
+    assert "bill_addr_id = None" in src and "ship_addr_id = None" in src, (
+        "the address FKs are no longer pinned to None in _upsert_customer"
+    )
+    assert "_upsert_physical_address" not in src
+
 
 
 # ===========================================================================

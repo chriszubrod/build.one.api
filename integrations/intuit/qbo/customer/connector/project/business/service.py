@@ -74,6 +74,30 @@ ADDRESS_TYPE_SHIPPING = 2
 PROJECT_BILLING_ADDRESS_IS_OWNER_MAILING = True
 
 
+# ── U-513 ph2.5: the SHIPPING slot's synthetic `dbo.Address` identity ────────
+# The billing twin (`billing_address_qbo_id`) lives in `CustomerCustomerConnector`
+# because BOTH halves of the family write and read it. `_ship` has no such
+# sharing problem and deliberately gets none: a PARENT customer never projects a
+# shipping address (shipping is job-only and never inherits — see
+# `_sync_addresses`), so this connector is the ONLY writer and the ONLY reader of
+# the `_ship` identity. Homing it here keeps that ownership visible.
+SHIPPING_ADDRESS_QBO_ID_SUFFIX = "_ship"
+
+
+def shipping_address_qbo_id(customer_qbo_id: str) -> str:
+    """
+    The SYNTHETIC `dbo.Address` identity for a QBO job customer's ShipAddr.
+
+    Byte-identical to the string `QboCustomerService._upsert_customer` has always
+    written onto the `qbo.PhysicalAddress` staging row (`f"{id}_ship"`), which is
+    what `SetAddressQboIdentity` then stamped onto `dbo.Address`. Keeping it
+    unchanged is what lets the payload path match the EXISTING dbo.Address rows
+    instead of re-keying them — the same no-migration guarantee the `_bill`
+    identity carries.
+    """
+    return f"{customer_qbo_id}{SHIPPING_ADDRESS_QBO_ID_SUFFIX}"
+
+
 class CustomerProjectConnector:
     """
     Connector service for synchronization between QboCustomer and Project modules.
@@ -139,7 +163,11 @@ class CustomerProjectConnector:
         # canonical shape above.
         self._parent_billing_address_cache: dict = {}
 
-    def sync_from_qbo_customer(self, qbo_customer: QboCustomer) -> Project:
+    def sync_from_qbo_customer(
+        self,
+        qbo_customer: QboCustomer,
+        external_customer=None,
+    ) -> Project:
         """
         Sync data from QboCustomer to Project module, via the dbo-only identity
         fast path (U-311 — Wave-5 Option B, mirrors U-310's
@@ -147,6 +175,13 @@ class CustomerProjectConnector:
 
         Args:
             qbo_customer: QboCustomer record (must be a job/sub-customer with Job=true)
+            external_customer: the ORIGINAL QBO Customer payload this staging row
+                was built from (`customer/external/schemas.py::QboCustomer`), when
+                the caller still has it in scope (U-513 ph2.5). Optional and
+                defaulted to None so every existing call site keeps working
+                untouched; it carries the INLINE `BillAddr` AND `ShipAddr` this
+                connector projects instead of the `qbo.PhysicalAddress` staging
+                rows. See `_sync_addresses` for what happens when it is absent.
 
         Returns:
             Project: The synced Project record
@@ -184,6 +219,7 @@ class CustomerProjectConnector:
                 description=project_description,
                 status=project_status,
                 customer_id=customer_id,
+                external_customer=external_customer,
             ),
             resolve_candidate=lambda: self._resolve_project_candidate(
                 qbo_customer,
@@ -194,6 +230,7 @@ class CustomerProjectConnector:
             ),
             stamp_identity=lambda candidate: self._stamp_project_identity(
                 candidate, qbo_customer, customer_id=customer_id,
+                external_customer=external_customer,
             ),
         )
         if outcome.entity is None:
@@ -275,6 +312,7 @@ class CustomerProjectConnector:
 
     def _stamp_project_identity(
         self, candidate: Project, qbo_customer: QboCustomer, *, customer_id: Optional[int],
+        external_customer=None,
     ) -> Optional[Project]:
         """
         `stamp_identity` for the dbo-only fast path's MISS branch (U-311),
@@ -313,7 +351,7 @@ class CustomerProjectConnector:
             self.project_service.repo.set_qbo_identity(
                 id=c.id, qbo_id=qbo_customer.qbo_id, realm_id=qbo_customer.realm_id,
             )
-            self._sync_addresses(qbo_customer, c.id)
+            self._sync_addresses(qbo_customer, c.id, external_customer=external_customer)
 
         candidate_id = coerce_id(candidate.id)
         return stamp_dbo_identity_with_lock(
@@ -505,6 +543,7 @@ class CustomerProjectConnector:
         description: str,
         status: str,
         customer_id: Optional[int],
+        external_customer=None,
     ) -> Optional[Project]:
         """
         Write the QboCustomer-derived fields onto an existing Project, persist it,
@@ -525,10 +564,12 @@ class CustomerProjectConnector:
         updated = self.project_service.repo.update_by_id(project)
         if updated is None:
             return None
-        self._sync_addresses(qbo_customer, updated.id)
+        self._sync_addresses(qbo_customer, updated.id, external_customer=external_customer)
         return updated
 
-    def _sync_addresses(self, qbo_customer: QboCustomer, project_id: int) -> None:
+    def _sync_addresses(
+        self, qbo_customer: QboCustomer, project_id: int, *, external_customer=None,
+    ) -> None:
         """
         Sync billing and shipping addresses from QboCustomer to ProjectAddress/Address.
 
@@ -577,25 +618,40 @@ class CustomerProjectConnector:
            `<parent QboId>_bill` identity (`_parent_billing_address_id`), and
            `CustomerCustomerConnector` — not this fallback — is what MINTS that
            row. See `_parent_billing_address_id` for why the old shape was
-           circular. The job's OWN link still goes through staging, and the
-           identity strings are unchanged, so no dbo.Address was re-keyed.
+           circular.
+
+           ⚠️ U-513 ph2.5 moved the job's OWN link (Link 1) too: with the
+           external payload threaded it projects from the INLINE `BillAddr`
+           (`_own_billing_address_id` -> `_address_id_from_inline`), and only
+           falls back to the staging read when no payload reached this
+           connector. Identity strings are unchanged throughout, so no
+           dbo.Address was re-keyed by either move.
 
         The SHIPPING slot deliberately does NOT inherit: under property
         semantics a parent's address is a SIBLING project's street, wrong for
         16 of the 61 newly-covered projects. Shipping stays job-only and is the
-        only place a future property-address feature belongs.
+        only place a future property-address feature belongs. ph2.5 gave it the
+        SAME payload/staging seam as billing Link 1 and gave it NO chain — it
+        resolves `_own_shipping_address_id` and nothing else, in either branch.
 
         When NOTHING resolves we do NOTHING — no blank dbo.Address is minted
         and no ProjectAddress link is written or repointed. Each slot stays
-        failure-isolated: an address problem must not fail the customer pull.
+        failure-isolated: an address problem must not fail the customer pull —
+        which is why the payload is re-validated INSIDE each slot's own `try`
+        rather than once above them (`_payload_for`).
 
         Args:
             qbo_customer: QboCustomer with bill_addr_id / ship_addr_id / parent_ref_value
             project_id: Database ID of the Project
+            external_customer: the ORIGINAL QBO Customer payload for this same
+                job, or None. Present -> both own-address slots project from its
+                inline `BillAddr`/`ShipAddr`; absent -> both read staging.
         """
         # BILLING: the fallback chain.
         try:
-            address_id = self._resolve_billing_address_id(qbo_customer)
+            address_id = self._resolve_billing_address_id(
+                qbo_customer, self._payload_for(qbo_customer, external_customer)
+            )
             if address_id:
                 self._ensure_project_address(project_id, address_id, ADDRESS_TYPE_BILLING)
                 logger.debug(f"Synced billing address {address_id} for Project {project_id}")
@@ -621,17 +677,64 @@ class CustomerProjectConnector:
             logger.error(f"Failed to sync billing address for Project {project_id}: {e}")
 
         # SHIPPING: job-only, blank-guarded. NEVER inherits from the parent.
+        #
+        # ⚠️ ONE candidate, by design — there is no `_resolve_shipping_address_id`
+        # and no candidate generator to add a second link to. Billing has a chain
+        # because the OWNER'S mailing address legitimately lives on the parent;
+        # a job's ShipAddr is the SITE, and a parent's address is a SIBLING
+        # project's street (wrong for 16 of 61 projects — see
+        # PROJECT_BILLING_ADDRESS_IS_OWNER_MAILING). Moving this slot onto the
+        # payload does not change that: the payload's `ship_addr` belongs to
+        # THIS job and there is no parent payload in scope to fall back to.
         try:
-            ship_addr_id = qbo_customer.ship_addr_id
-            if ship_addr_id and not self._staged_address_is_blank(ship_addr_id):
-                address = self.address_connector.sync_from_qbo_to_address(ship_addr_id)
-                address_id = coerce_id(address.id)
+            address_id = self._own_shipping_address_id(
+                qbo_customer, self._payload_for(qbo_customer, external_customer)
+            )
+            if address_id:
                 self._ensure_project_address(project_id, address_id, ADDRESS_TYPE_SHIPPING)
                 logger.debug(f"Synced shipping address {address_id} for Project {project_id}")
         except Exception as e:
             logger.error(f"Failed to sync shipping address for Project {project_id}: {e}")
 
-    def _resolve_billing_address_id(self, qbo_customer: QboCustomer) -> Optional[int]:
+    def _payload_for(self, qbo_customer: QboCustomer, external_customer):
+        """
+        The external payload to project THIS job's own addresses from, or None
+        when the caller threaded none — or when the one it threaded belongs to a
+        DIFFERENT customer (U-513 ph2.5, mirroring
+        `VendorVendorConnector._bill_address_from_payload`'s refusal).
+
+        The cross-wiring guard is defense in depth, not a live condition:
+        `QboCustomerService._sync_to_projects` keys the map by
+        `external_by_id.get(row.qbo_id)`, the exact value `_upsert_customer`
+        staged as `qbo_id`, so a mis-pair cannot arise from the pull. But taking
+        the ADDRESS off one customer's payload while writing it under ANOTHER
+        customer's synthetic identity is silent cross-wiring — a project would
+        render a stranger's street on a payment request with nothing raised — so
+        a mismatch refuses the payload entirely and both slots degrade to their
+        staging reads.
+
+        Called once per SLOT rather than once per call so that each slot stays
+        inside its own failure-isolated `try`: a malformed payload must cost at
+        most one address, never the Project projection (which would hold the
+        pull watermark over an address — see `_sync_addresses`).
+        """
+        if external_customer is None:
+            return None
+        external_id = str(external_customer.id) if external_customer.id else None
+        staging_qbo_id = qbo_customer.qbo_id or None
+        if not external_id or external_id != staging_qbo_id:
+            logger.error(
+                "Customer payload/staging mismatch for QboCustomer %s: staging QboId=%s, "
+                "payload Id=%s. Ignoring the inline BillAddr/ShipAddr and falling back "
+                "to staging.",
+                qbo_customer.id, staging_qbo_id, external_id,
+            )
+            return None
+        return external_customer
+
+    def _resolve_billing_address_id(
+        self, qbo_customer: QboCustomer, external_customer=None,
+    ) -> Optional[int]:
         """
         The `dbo.Address` id of the first NON-BLANK link in the billing chain,
         or None when the whole chain is blank/absent (U-506 P1). None means DO
@@ -640,18 +743,20 @@ class CustomerProjectConnector:
         ⚠️ U-513 changed the UNIT this returns: it used to be a
         `qbo.PhysicalAddress` STAGING id that the caller then pushed through
         `sync_from_qbo_to_address`. It is now a `dbo.Address` id, already
-        resolved — because the two links no longer share a source. The job's own
-        BillAddr still arrives as a staging id (that half of the sunset is not
-        this unit's), while the PARENT's now comes straight out of `dbo.Address`
+        resolved — because the links no longer share a source. As of ph2.5 the
+        job's own BillAddr comes from the INLINE payload (or, with no payload,
+        from staging), while the PARENT's comes straight out of `dbo.Address`
         with no staging row in the picture at all. Each candidate function owns
         its own resolution, and the caller just links what it is handed.
         """
-        for address_id in self._billing_address_candidates(qbo_customer):
+        for address_id in self._billing_address_candidates(qbo_customer, external_customer):
             if address_id:
                 return address_id
         return None
 
-    def _billing_address_candidates(self, qbo_customer: QboCustomer) -> Iterator[Optional[int]]:
+    def _billing_address_candidates(
+        self, qbo_customer: QboCustomer, external_customer=None,
+    ) -> Iterator[Optional[int]]:
         """
         The billing chain, LAZILY: own bill -> parent bill. A generator on
         purpose — the parent is read only once the job's own BillAddr has come
@@ -676,25 +781,131 @@ class CustomerProjectConnector:
         a wrong address on a payment request, which is the safe direction: a
         missing address is visible, a plausible-but-wrong one is not.
         """
-        yield self._own_billing_address_id(qbo_customer)
+        yield self._own_billing_address_id(qbo_customer, external_customer)
         if not PROJECT_BILLING_ADDRESS_IS_OWNER_MAILING:
             return
         yield self._parent_billing_address_id(
             qbo_customer.parent_ref_value, qbo_customer.realm_id
         )
 
-    def _own_billing_address_id(self, qbo_customer: QboCustomer) -> Optional[int]:
+    def _own_billing_address_id(
+        self, qbo_customer: QboCustomer, external_customer=None,
+    ) -> Optional[int]:
         """
         Link 1: the JOB's own BillAddr, as a `dbo.Address` id — or None when it
         is absent or blank.
 
-        Still routed through `qbo.PhysicalAddress`: the job's own address is the
-        one half of this connector U-513 does NOT move off staging (the parent's
-        was the load-bearing one, because it is the one the fallback could not
-        bootstrap). `sync_from_qbo_to_address` is unchanged and keeps minting /
-        refreshing the dbo row from the staging row it is handed.
+        U-513 ph2.5: projected from the INLINE `BillAddr` when the caller
+        threaded the payload, and read back out of `qbo.PhysicalAddress` only
+        when it did not. Same seam as
+        `VendorVendorConnector._bill_address_from_payload` /
+        `_bill_address_from_staging`, chosen the same way.
         """
-        staging_id = qbo_customer.bill_addr_id
+        if external_customer is not None:
+            return self._address_id_from_inline(
+                qbo_customer,
+                external_customer.bill_addr,
+                qbo_id=billing_address_qbo_id(qbo_customer.qbo_id),
+                slot="BillAddr",
+            )
+        return self._own_address_id_from_staging(qbo_customer.bill_addr_id)
+
+    def _own_shipping_address_id(
+        self, qbo_customer: QboCustomer, external_customer=None,
+    ) -> Optional[int]:
+        """
+        The SHIPPING slot's ONLY candidate: the JOB's own ShipAddr, as a
+        `dbo.Address` id — or None when it is absent or blank (U-513 ph2.5).
+
+        ⚠️ There is deliberately NO fallback here, and adding one is the single
+        most damaging change that could be made to this module. Shipping is
+        job-only: a parent's address is a SIBLING project's street, wrong for 16
+        of 61 projects, and this slot is the only place a future property-address
+        feature belongs (see `_sync_addresses` and
+        PROJECT_BILLING_ADDRESS_IS_OWNER_MAILING). The payload move does not
+        create a new opportunity for one — `external_customer` is THIS job's
+        payload and carries no parent address at all.
+
+        Same payload/staging seam as billing Link 1, and the same blankness
+        predicate through the same two helpers, so the two branches cannot
+        diverge on what counts as an address.
+        """
+        if external_customer is not None:
+            return self._address_id_from_inline(
+                qbo_customer,
+                external_customer.ship_addr,
+                qbo_id=shipping_address_qbo_id(qbo_customer.qbo_id),
+                slot="ShipAddr",
+            )
+        return self._own_address_id_from_staging(qbo_customer.ship_addr_id)
+
+    def _address_id_from_inline(
+        self, qbo_customer: QboCustomer, inline_address, *, qbo_id: str, slot: str,
+    ) -> Optional[int]:
+        """
+        Project one of the job's OWN address slots straight from the inline QBO
+        payload onto `dbo.Address`, and return its id — U-513's direction, and
+        the only source that survives the `qbo.PhysicalAddress` sunset.
+
+        Identity is the caller's synthetic `<qbo_id>_bill` / `<qbo_id>_ship`,
+        byte-identical to what the staging hop stamped, so existing dbo.Address
+        rows are MATCHED, not re-keyed. Realm comes from the staging row — the
+        same realm the staging address write used — and is passed through
+        unmodified so the address connector's realm scoping can fail closed.
+
+        Returns None (mint nothing, link nothing) when QBO sent no address
+        object at all, or sent a blank one. Blankness is
+        `address_fields_are_blank`, the family's ONE rule — the SAME function
+        `_is_blank_staged_address` applies on the staging branch, which is what
+        keeps the two branches from silently disagreeing about whether a
+        placeholder counts as an address.
+        """
+        if inline_address is None:
+            return None
+        if address_fields_are_blank(
+            inline_address.line1, inline_address.city, inline_address.postal_code
+        ):
+            # Blank means ABSENT (see `address_fields_are_blank`): 191 of 799
+            # dbo.Address rows are blank precisely because the pre-U-506 writer
+            # keyed on presence. Never mint one, never link one.
+            logger.debug(
+                f"QboCustomer {qbo_customer.qbo_id} has a blank inline {slot} -- "
+                f"treating it as absent (no dbo.Address minted, no ProjectAddress written)"
+            )
+            return None
+        address = self.address_connector.sync_address_from_external(
+            qbo_id=qbo_id,
+            realm_id=qbo_customer.realm_id,
+            line1=inline_address.line1,
+            line2=inline_address.line2,
+            city=inline_address.city,
+            country_sub_division_code=inline_address.country_sub_division_code,
+            postal_code=inline_address.postal_code,
+            source_ref=f"QboCustomer:{qbo_customer.qbo_id}",
+        )
+        return coerce_id(address.id)
+
+    def _own_address_id_from_staging(self, staging_id: Optional[int]) -> Optional[int]:
+        """
+        ⚠️ TRANSITIONAL — the pre-U-513 path for one of the job's own address
+        slots: blank-check the `qbo.PhysicalAddress` row the staging FK points
+        at, then let `sync_from_qbo_to_address` mint/refresh the dbo row from it.
+        Shared by BOTH slots because both behaved identically before ph2.5, and
+        sharing is what guarantees they still do.
+
+        This is now the ONLY reader of `bill_addr_id` / `ship_addr_id` left in
+        this package. It is reachable from exactly two places, neither of them
+        the production pull:
+
+          1. a direct `sync_from_qbo_customer(row)` call with no second argument
+             (`QboCustomerService._sync_to_projects` always threads the payload
+             it staged from, so the pull never lands here);
+          2. `heal_missing_mapping`, which binds a name-matched Project from an
+             invoice pull and genuinely has no Customer payload in scope.
+
+        Delete it — with the FK columns and the table — in ph3b. Until then it
+        is what lets (2) keep resolving addresses at all.
+        """
         if not staging_id or self._staged_address_is_blank(staging_id):
             return None
         address = self.address_connector.sync_from_qbo_to_address(staging_id)

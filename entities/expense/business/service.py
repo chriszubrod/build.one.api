@@ -15,6 +15,7 @@ from entities.project.business.service import ProjectService
 from shared.access import assert_can_access_expense
 from shared.api.money import details_ledger_amount
 from shared.authz import current_user_id, current_is_system_admin
+from shared.authz.delegation import assert_may_act_as
 from entities.vendor.business.service import VendorService
 from entities.sub_cost_code.business.service import SubCostCodeService
 from entities.module.business.service import ModuleService
@@ -782,6 +783,177 @@ class ExpenseService:
         if deleted is not None:
             logger.info(f"Deleted expense {existing.id} and its dependent rows")
         return deleted
+
+    def apply_reviewer_decision(
+        self,
+        *,
+        expense_public_id: str,
+        decision: str,
+        reviewer_email: str,
+        sub_cost_code_public_id: Optional[str] = None,
+        description: Optional[str] = None,
+        raw_reply_text: Optional[str] = None,
+        reviewer_email_message_public_id: Optional[str] = None,
+    ) -> dict:
+        """Apply a Project Manager / Owner's emailed review decision to an Expense.
+
+        Authorization: `reviewer_email` must match a User with
+        `UserProject` → Role 'Project Manager' or 'Owner' on any project
+        the expense spans (same recipient set the notification went to).
+
+        Idempotency / safety: the expense must still be a draft. Once
+        `IsDraft=False` is set (via `complete_expense`), this method refuses
+        — the human has taken final responsibility.
+
+        On approval the agent must supply `sub_cost_code_public_id`, and the
+        expense must have exactly one line item (multi-line splits cannot be
+        auto-coded from a single reply).
+
+        Returns: dict with `decision_applied`, the new `review_status`
+        name, the matched `reviewer_user_id`, and the expense's `is_draft`.
+        """
+        from entities.expense_line_item.business.service import ExpenseLineItemService
+        from entities.review.business.recipient_service import ReviewRecipientService
+        from entities.review_status.business.service import ReviewStatusService
+        from entities.review.persistence.repo import ReviewRepository
+
+        if decision not in ("approved", "rejected"):
+            raise ValueError(
+                f"decision must be 'approved' or 'rejected'; got '{decision}'"
+            )
+
+        expense = self.read_by_public_id(public_id=expense_public_id)
+        if expense is None or expense.id is None:
+            raise ValueError(
+                f"Expense with public_id '{expense_public_id}' not found."
+            )
+
+        if not bool(expense.is_draft):
+            raise ValueError(
+                f"Expense {expense_public_id} is no longer a draft "
+                "(Complete already pressed); reviewer decisions cannot be "
+                "applied. The human must edit directly."
+            )
+
+        envelope = ReviewRecipientService().resolve_for_expense(expense_id=expense.id)
+        all_recipients = envelope["to"] + envelope["cc"]
+        normalized_email = (reviewer_email or "").strip().lower()
+        match = next(
+            (
+                r for r in all_recipients
+                if r.email and r.email.strip().lower() == normalized_email
+            ),
+            None,
+        )
+        if match is None:
+            raise ValueError(
+                f"Sender '{reviewer_email}' is not an authorized reviewer for "
+                f"this expense (must be Project Manager or Owner on the project)."
+            )
+        reviewer_user_id = match.user_id
+
+        delegated = assert_may_act_as(
+            asserted_user_id=reviewer_user_id,
+            what="apply a reviewer decision",
+        )
+        logger.info(
+            "U-459: reviewer decision on %s applied %s (reviewer user_id=%s)",
+            "expense",
+            "BY THE AGENT ON THEIR BEHALF" if delegated else "BY THE REVIEWER THEMSELVES",
+            reviewer_user_id,
+        )
+
+        if decision == "approved":
+            eli_service = ExpenseLineItemService()
+            line_items = eli_service.read_by_expense_id(expense_id=expense.id)
+            if len(line_items) != 1:
+                if not line_items:
+                    raise ValueError(
+                        f"Expense {expense_public_id} has no line items; a reviewer "
+                        "decision cannot be auto-applied."
+                    )
+                raise ValueError(
+                    f"Expense {expense_public_id} has {len(line_items)} line items; "
+                    "a reviewer decision cannot be auto-applied to a multi-line "
+                    "expense (would stamp one cost code over a manual split)."
+                )
+            sole_line = line_items[0]
+
+            if not sub_cost_code_public_id:
+                raise ValueError(
+                    "sub_cost_code_public_id is required when decision='approved'."
+                )
+            scc = SubCostCodeService().read_by_public_id(public_id=sub_cost_code_public_id)
+            if scc is None:
+                raise ValueError(
+                    f"SubCostCode with public_id '{sub_cost_code_public_id}' not found."
+                )
+            eli_service.update_by_public_id(
+                public_id=sole_line.public_id,
+                row_version=sole_line.row_version,
+                sub_cost_code_id=int(scc.id),
+                description=description if description is not None else None,
+            )
+
+        comments = (raw_reply_text or "").strip() or None
+        review_status_service = ReviewStatusService()
+        review_statuses = review_status_service.read_all()
+        if decision == "approved":
+            target = next(
+                (s for s in review_statuses if s.is_final and not s.is_declined),
+                None,
+            )
+            if target is None:
+                raise ValueError(
+                    "No terminal non-declined ReviewStatus configured "
+                    "(expected one with IsFinal=true AND IsDeclined=false)."
+                )
+        else:
+            target = next(
+                (s for s in review_statuses if s.is_declined),
+                None,
+            )
+            if target is None:
+                raise ValueError(
+                    "No declined ReviewStatus configured (expected one with IsDeclined=true)."
+                )
+
+        email_message_id: Optional[int] = None
+        if reviewer_email_message_public_id:
+            from entities.email_message.business.service import EmailMessageService
+
+            em = EmailMessageService().read_by_public_id(
+                public_id=reviewer_email_message_public_id
+            )
+            if em is not None:
+                email_message_id = em.id
+
+        new_review = ReviewRepository().create(
+            review_status_id=target.id,
+            user_id=reviewer_user_id,
+            comments=comments,
+            bill_id=None,
+            expense_id=expense.id,
+            bill_credit_id=None,
+            invoice_id=None,
+            email_message_id=email_message_id,
+            created_by_user_id=reviewer_user_id,
+        )
+
+        rs = (
+            review_status_service.read_by_id(id=new_review.review_status_id)
+            if new_review.review_status_id
+            else None
+        )
+        new_status_name = rs.name if rs else None
+
+        return {
+            "decision_applied": decision,
+            "review_status": new_status_name,
+            "reviewer_user_id": reviewer_user_id,
+            "is_draft": True,
+            "expense_public_id": expense_public_id,
+        }
 
     def complete_expense(self, public_id: str) -> dict:
         """

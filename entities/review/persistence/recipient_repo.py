@@ -54,6 +54,19 @@ class ReviewRecipientRepository:
             exclude_user_id=exclude_user_id,
         )
 
+    def resolve_for_expense(
+        self,
+        *,
+        expense_id: int,
+        exclude_user_id: Optional[int] = None,
+    ) -> list[ResolvedRecipient]:
+        return self._resolve(
+            sproc="ResolveReviewRecipientsByExpenseId",
+            id_key="ExpenseId",
+            parent_id=expense_id,
+            exclude_user_id=exclude_user_id,
+        )
+
     def _resolve(
         self,
         *,

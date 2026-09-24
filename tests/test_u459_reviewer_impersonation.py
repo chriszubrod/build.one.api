@@ -155,6 +155,7 @@ def test_a_null_asserted_reviewer_is_refused_not_waved_through():
 
 CALL_SITES = [
     ("entities.bill.business.service", "BillService", "apply_reviewer_decision"),
+    ("entities.expense.business.service", "ExpenseService", "apply_reviewer_decision"),
     ("entities.contract_labor.business.service", "ContractLaborService", "_apply_decision_to_single_cl"),
 ]
 
@@ -219,6 +220,49 @@ def _bill_service_with_recipient(reviewer_user_id: int):
         return_value=SimpleNamespace(id=5, public_id="pub-5", is_draft=True, status="draft")
     )
     return svc
+
+
+def _expense_service_with_recipient():
+    from entities.expense.business.service import ExpenseService
+
+    svc = ExpenseService(repo=MagicMock())
+    svc.read_by_public_id = MagicMock(
+        return_value=SimpleNamespace(
+            id=101,
+            public_id="exp-pub-5",
+            is_draft=True,
+        )
+    )
+    return svc
+
+
+def test_a_plain_user_forging_a_PM_expense_approval_is_refused_end_to_end():
+    """The actual attack on expenses, driven through the service."""
+    from entities.review.business.recipient_model import ResolvedRecipient
+
+    svc = _expense_service_with_recipient()
+    pm = ResolvedRecipient(
+        user_id=20, firstname="Austin", lastname="P", email="pm@test.com",
+        role_name="Project Manager", project_id=1,
+    )
+    set_authz_context(user_id=7, company_id=1, is_system_admin=False)
+
+    with patch("entities.review.business.recipient_service.ReviewRecipientService") as Rec:
+        Rec.return_value.resolve_for_expense.return_value = {"to": [pm], "cc": []}
+        with patch(
+            "entities.expense_line_item.business.service.ExpenseLineItemService"
+        ) as Eli:
+            with patch("entities.review.persistence.repo.ReviewRepository") as ReviewRepo:
+                with pytest.raises(IdentityAssertionRefused):
+                    svc.apply_reviewer_decision(
+                        expense_public_id="exp-pub-5",
+                        decision="approved",
+                        reviewer_email="pm@test.com",
+                        sub_cost_code_public_id="scc-1",
+                    )
+                Eli.return_value.read_by_expense_id.assert_not_called()
+                Eli.return_value.update_by_public_id.assert_not_called()
+                ReviewRepo.return_value.create.assert_not_called()
 
 
 def test_a_plain_user_forging_a_PM_approval_is_refused_end_to_end():

@@ -41,6 +41,19 @@ class ReviewRecipientService:
         )
         return self._bucket(rows)
 
+    def resolve_for_expense(
+        self,
+        *,
+        expense_id: int,
+        exclude_user_id: Optional[int] = None,
+    ) -> dict[str, list[ResolvedRecipient]]:
+        """Resolve recipients for an Expense review (same {to, cc} envelope as Bill)."""
+        rows = self.repo.resolve_for_expense(
+            expense_id=expense_id,
+            exclude_user_id=exclude_user_id,
+        )
+        return self._bucket(rows)
+
     def resolve_for_contract_labor(
         self,
         *,

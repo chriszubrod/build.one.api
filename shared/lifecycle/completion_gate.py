@@ -181,6 +181,10 @@ _APPROVAL_WRITERS_NOT_YET_GATED = (
     "takes `reviewer_email` from the request body, writing an approval "
     "attributed to that person with nothing binding the authenticated caller "
     "to the asserted reviewer",
+    "POST /expense/{id}/apply-reviewer-decision requires only `can_update` "
+    "(never `can_approve`), takes `reviewer_email` from the request body, "
+    "and any delegated actor — system context, system admin, or an `IsAgent` "
+    "user — may write an approval attributed to a PM/Owner",
     "the gate is a PREFLIGHT, not a write boundary: completion is enqueued and "
     "finalized later without re-checking, and CompletionJob reclaim re-drives "
     "under system_authz — LS-02a moves enforcement into the write transaction",

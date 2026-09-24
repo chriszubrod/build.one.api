@@ -12,7 +12,11 @@ from fastapi.responses import JSONResponse
 from decimal import Decimal
 
 # Local Imports
-from entities.expense.api.schemas import ExpenseCreate, ExpenseUpdate
+from entities.expense.api.schemas import (
+    ExpenseApplyReviewerDecisionRequest,
+    ExpenseCreate,
+    ExpenseUpdate,
+)
 from entities.expense.business.service import ExpenseService
 from shared.api.errors import ApiError, ErrorCode
 from shared.api.responses import list_response, item_response, accepted_response, raise_workflow_error, raise_not_found
@@ -495,6 +499,47 @@ def _run_complete_expense(public_id: str, job_public_id: str | None = None, forc
         _EXPENSE_COMPLETION_RESULT_CACHE[public_id] = {"result": failure_result, "expires_at": expires_at}
         if job_public_id:
             job_service.mark_failure(job_public_id, str(e))
+
+
+@router.post("/expense/{public_id}/apply-reviewer-decision")
+def apply_reviewer_decision_router(
+    public_id: str,
+    body: ExpenseApplyReviewerDecisionRequest,
+    current_user: dict = Depends(require_module_api(Modules.EXPENSES, "can_update")),
+):
+    """Apply an emailed Project Manager / Owner review decision to an Expense.
+
+    Precondition: the expense must still be a draft (`IsDraft=True`). Once
+    completion has run, reviewer decisions are refused — the human owns the
+    record and any QBO/SharePoint/Box side effects.
+
+    Authorization (two legs):
+      1. `reviewer_email` must match a PM or Owner in the same recipient
+         envelope the review notification targeted.
+      2. The authenticated caller must be allowed to act as that reviewer
+         (`assert_may_act_as` — self, system context, system admin, or agent).
+
+    On approval, `sub_cost_code_public_id` is required and is applied to the
+    expense's single line item (multi-line expenses are refused). The Review
+    row is attributed to the reviewer, not the caller.
+
+    ValueError → HTTP 400. IdentityAssertionRefused → HTTP 403 (existing handler).
+    """
+    try:
+        result = ExpenseService().apply_reviewer_decision(
+            expense_public_id=public_id,
+            decision=body.decision,
+            reviewer_email=body.reviewer_email,
+            sub_cost_code_public_id=body.sub_cost_code_public_id,
+            description=body.description,
+            raw_reply_text=body.raw_reply_text,
+            reviewer_email_message_public_id=body.reviewer_email_message_public_id,
+        )
+        return item_response(result)
+    except ValueError as error:
+        raise HTTPException(
+            status_code=http_status.HTTP_400_BAD_REQUEST, detail=str(error)
+        )
 
 
 @router.post("/complete/expense/{public_id}")

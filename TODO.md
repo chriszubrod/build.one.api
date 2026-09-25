@@ -2,6 +2,68 @@
 
 Carry-over items from sessions. Check off as done; prune anything stale.
 
+## U-503d/e residuals — the quantity widening stopped short of three doors (booked 2026-09-25)
+
+Shipped: `34a4ccfa` `06108842` `27c3da22` `281e956e` (bill) and `b2a6d018` (expense). The
+column, sprocs, read path and primary REST endpoint now agree on `Decimal` for BOTH
+entities. These three did NOT move, so a fractional quantity still 422s on them — and
+now that everything around them agrees, they LOOK intentional. That is why they are here.
+
+- [ ] 🟡 **`line_quantity: Optional[int]` on both parents.** `entities/bill/api/schemas.py:70`
+  + `business/service.py:209`, and `entities/expense/api/schemas.py:67` + `business/service.py:152`.
+  These are the one-shot "create the parent with an inline line" paths; they reject 5.25
+  before the fixed line-item create is ever reached. Verified live on expense:
+  `ExpenseCreate(..., line_quantity=Decimal("5.25"))` still raises.
+- [ ] 🟡 **Agent tool surfaces still `int`.** `entities/bill/intelligence/tools.py:290,557,659`
+  and `entities/expense/intelligence/tools.py:257,472,552`. They POST to the endpoints that
+  were just widened, so **an agent still cannot write a fractional quantity on either
+  entity.** Fails loudly (Pydantic v2 rejects 2.5→int rather than truncating), so it is a
+  capability gap, not data loss. Per `feedback_agent_tools_are_a_consumer_surface`, a
+  web+mcp grep would have missed these entirely.
+- [ ] 🟢 **Truthy guard on the QBO bill push.** `integrations/intuit/qbo/bill/connector/bill/business/service.py:1152`
+  — `qty = Decimal(str(line_item.quantity)) if line_item.quantity else None` drops a
+  legitimate `Decimal("0")` to None. **Metadata only, NOT money**: `amount` is sent
+  explicitly and the `qty*unit_price` fallback would have produced 0 anyway. Confirmed the
+  only remaining truthy quantity guard in non-test code. Fold into the next touch of that file.
+
+## U-503f — two silent-advance paths and a void-detector blind spot (booked 2026-09-25)
+
+Found diagnosing why a 2026-02-25 QBO bill pull landed in `qbo.*` staging but never
+projected to `dbo` — 10 bills, 8 missing whole lines, 2 voided bills still showing
+non-zero locally ($4,551.85 of phantom AP). ⚠️ **The February MECHANISM is already CLOSED**
+(`62e34f48` + `a6068356`, 2026-06-20; generalized `a06450d1`, sealed `18657750`): back then
+the watermark update was unconditional and `_sync_line_items` swallowed every per-line
+failure. Verified against the historical commit `57e1fdc8`, which is what prod ran that day.
+What follows is what is STILL open today.
+
+- [ ] 🟡 **A permanent data loss is logged at INFO.** `integrations/intuit/qbo/base/sync_outcome.py:163`
+  — a plain `ValueError` during projection becomes a *skip*, which by design does NOT hold
+  the watermark, and logs at `log.info`. Both failure branches log at `log.error`. The
+  docstring names the cost exactly: *"a wrong skip loses the record until someone edits it
+  in QBO again."* So the one outcome that loses a record permanently is the quietest thing
+  in the log. Raise to WARNING and give skips a durable record (a `ReconciliationIssue`
+  row, as the 7200s hold-bound path already does).
+- [ ] 🟡 **The deferral `continue` records nothing at all.** `scripts/sync_qbo_bill.py:341-347`
+  skips a bill without calling `record_projected()` or `record_projection_error()`, so
+  `SyncOutcome.should_hold` cannot see it and the watermark advances. WARNING log only.
+- [ ] 🔴 **`qbo_voided` cannot detect the case it is named for.** `integrations/intuit/qbo/reconciliation/business/service.py:1018`
+  — its own docstring: *"only hard-deleted records 404; QBO-voided-but-present records
+  return 200 and appear in the query, so neither the old scan nor this one flags them."*
+  Our two voided bills (dbo 15885, 15903) are voided-but-present — `TotalAmt 0`, PrivateNote
+  "Duplicate bill. Leaving record, but will zero out." — and are invisible to it. **Verified:
+  zero `ReconciliationIssue` rows exist for any of the 10 affected bills**, against 19,340
+  `qbo_missing_locally` and 50 `qbo_voided` rows corpus-wide. `qbo_missing_locally` cannot
+  catch them either: it requires the bill to be ABSENT locally, and ours are present but
+  stale. This is the highest-value item here — it is live across the whole corpus, not
+  just these 10.
+- [ ] 🟡 **The 10 bills themselves need a scoped re-pull**, not a column UPDATE. An
+  Amount-only patch would BREAK footing on bills that currently foot perfectly (both sides
+  foot to their own headers today; dbo is a coherent OLDER snapshot missing whole lines).
+  `POST /api/v1/sync/qbo-bills` takes `last_updated_time`; rewinding before 2026-02-25
+  re-projects through the connector. ⚠️ Fix the detector first or the next silent drop is
+  equally invisible.
+
+
 ## U-535 — the document-text layer: built, exposed, never run (booked 2026-09-24)
 
 > Booked by Chris out of the SledgeCraft/OHR2 pocket-door search, which had to download 1,444 PDFs and OCR 173 scans because no text index exists. Board rows: `U-535a` (this repo + scheduler), `U-535b` (this repo, DESIGN-gated).

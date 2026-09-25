@@ -24,9 +24,10 @@ class BillLineItemCreate(BaseModel):
         default=None,
         description="The description of the bill line item."
     )
-    quantity: Optional[int] = Field(
+    quantity: Optional[Decimal] = Field(
         default=None,
-        description="The quantity of the bill line item."
+        max_digits=18,
+        description="The quantity of the bill line item (fractional allowed, e.g. 5.25)."
     )
     rate: Optional[Decimal] = Field(
         default=None,
@@ -77,9 +78,10 @@ class BillLineItemUpdate(BaseModel):
         default=None,
         description="The description of the bill line item."
     )
-    quantity: Optional[int] = Field(
+    quantity: Optional[Decimal] = Field(
         default=None,
-        description="The quantity of the bill line item."
+        max_digits=18,
+        description="The quantity of the bill line item (fractional allowed, e.g. 5.25)."
     )
     rate: Optional[Decimal] = Field(
         default=None,

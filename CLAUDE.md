@@ -1,5 +1,20 @@
 At the start of each session, read SESSION_NOTES.md for historical context.
 
+## The work board — `build.one.team`
+
+Unit tracking lives **outside this repo**, in the sibling `build.one.team` repo (the sixth alongside the five
+product repos; `github.com/chriszubrod/build.one.team`). Read `../build.one.team/BOARD.md` at the start of a
+substantive session — it is the single cross-repo view of what is in flight, and it is where work gets booked.
+
+- Every unit carries a `U-###` id, echoed in its commit's `Unit: U-###` trailer, so any sha traces back to its
+  board row and spec.
+- `/em` (engineering) and `/pm` (product) are conducted from there; their role briefs live under
+  `../build.one.team/engineering/` and `../build.one.team/product/`.
+- ⚠️ `BOARD.md` is edited by parallel sessions. Re-read before writing, commit it by explicit pathspec, and
+  never sweep another session's in-progress rows into your commit.
+- It has no `CLAUDE.md`/`SESSION_NOTES.md`/`TODO.md` of its own — `BOARD.md` is its state. It is committed and
+  pushed like any repo, but it is **never deployable**.
+
 ## Working Style
 
 - **Plan before coding.** Propose a step-by-step plan and wait for approval before writing any code. Do not start implementing until the plan is confirmed.

@@ -24,9 +24,23 @@ class ExpenseLineItemCreate(BaseModel):
         default=None,
         description="The description of the expense line item."
     )
-    quantity: Optional[int] = Field(
+    quantity: Optional[Decimal] = Field(
         default=None,
-        description="The quantity of the expense line item."
+        max_digits=18,
+        # Bounded to what DECIMAL(18,4) can actually hold. `max_digits` alone is
+        # NOT that bound — it counts TOTAL digits, so it accepts 123456789012345
+        # (15 integer digits), which overflows the column at the DB boundary.
+        # The real ceiling is 14 integer digits. `decimal_places` is deliberately
+        # NOT set. ⚠️ The reason is NOT "the QBO pull would break" — the pull calls
+        # the service directly and never sees this schema, so a scale bound here
+        # could not block it. The reason is edge-vs-internal consistency: the
+        # system behind this API stores 6dp values (qbo.PurchaseLine.Qty is
+        # DECIMAL(18,6)) and rounds them into DECIMAL(18,4) at write, so rejecting
+        # 5.016667 at the edge would make the door stricter than the room behind
+        # it. Magnitude is bounded; scale is left to the column.
+        le=Decimal("99999999999999.9999"),
+        ge=Decimal("-99999999999999.9999"),
+        description="The quantity of the expense line item (fractional allowed, e.g. 5.25)."
     )
     rate: Optional[Decimal] = Field(
         default=None,
@@ -77,9 +91,23 @@ class ExpenseLineItemUpdate(BaseModel):
         default=None,
         description="The description of the expense line item."
     )
-    quantity: Optional[int] = Field(
+    quantity: Optional[Decimal] = Field(
         default=None,
-        description="The quantity of the expense line item."
+        max_digits=18,
+        # Bounded to what DECIMAL(18,4) can actually hold. `max_digits` alone is
+        # NOT that bound — it counts TOTAL digits, so it accepts 123456789012345
+        # (15 integer digits), which overflows the column at the DB boundary.
+        # The real ceiling is 14 integer digits. `decimal_places` is deliberately
+        # NOT set. ⚠️ The reason is NOT "the QBO pull would break" — the pull calls
+        # the service directly and never sees this schema, so a scale bound here
+        # could not block it. The reason is edge-vs-internal consistency: the
+        # system behind this API stores 6dp values (qbo.PurchaseLine.Qty is
+        # DECIMAL(18,6)) and rounds them into DECIMAL(18,4) at write, so rejecting
+        # 5.016667 at the edge would make the door stricter than the room behind
+        # it. Magnitude is bounded; scale is left to the column.
+        le=Decimal("99999999999999.9999"),
+        ge=Decimal("-99999999999999.9999"),
+        description="The quantity of the expense line item (fractional allowed, e.g. 5.25)."
     )
     rate: Optional[Decimal] = Field(
         default=None,

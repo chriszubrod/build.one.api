@@ -20,7 +20,7 @@ class ExpenseLineItem:
     sub_cost_code_id: Optional[int]
     project_id: Optional[int]
     description: Optional[str]
-    quantity: Optional[int]
+    quantity: Optional[Decimal]
     rate: Optional[Decimal]
     amount: Optional[Decimal]
     is_billable: Optional[bool]

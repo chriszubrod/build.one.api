@@ -64,7 +64,7 @@ class ExpenseLineItemRepository:
             logger.error(f"Unexpected error during expense line item mapping: {error}")
             raise map_database_error(error)
 
-    def create(self, *, expense_id: int, sub_cost_code_id: Optional[int] = None, project_id: Optional[int] = None, description: Optional[str] = None, quantity: Optional[int] = None, rate: Optional[Decimal] = None, amount: Optional[Decimal] = None, is_billable: Optional[bool] = None, is_billed: Optional[bool] = None, markup: Optional[Decimal] = None, price: Optional[Decimal] = None, is_draft: bool = True, created_by_user_id: Optional[int] = None, allow_terminal_parent: bool = True) -> ExpenseLineItem:
+    def create(self, *, expense_id: int, sub_cost_code_id: Optional[int] = None, project_id: Optional[int] = None, description: Optional[str] = None, quantity: Optional[Decimal] = None, rate: Optional[Decimal] = None, amount: Optional[Decimal] = None, is_billable: Optional[bool] = None, is_billed: Optional[bool] = None, markup: Optional[Decimal] = None, price: Optional[Decimal] = None, is_draft: bool = True, created_by_user_id: Optional[int] = None, allow_terminal_parent: bool = True) -> ExpenseLineItem:
         """
         Create a new expense line item.
         """
@@ -79,7 +79,7 @@ class ExpenseLineItemRepository:
                         "SubCostCodeId": sub_cost_code_id,
                         "ProjectId": project_id,
                         "Description": description,
-                        "Quantity": quantity,
+                        "Quantity": Decimal(str(quantity)) if quantity is not None else None,
                         "Rate": Decimal(str(rate)) if rate is not None else None,
                         "Amount": Decimal(str(amount)) if amount is not None else None,
                         "IsBillable": 1 if is_billable else 0 if is_billable is not None else None,
@@ -224,7 +224,7 @@ class ExpenseLineItemRepository:
                     "SubCostCodeId": expense_line_item.sub_cost_code_id,
                     "ProjectId": expense_line_item.project_id,
                     "Description": expense_line_item.description,
-                    "Quantity": expense_line_item.quantity,
+                    "Quantity": Decimal(str(expense_line_item.quantity)) if expense_line_item.quantity is not None else None,
                     "Rate": Decimal(str(expense_line_item.rate)) if expense_line_item.rate is not None else None,
                     "Amount": Decimal(str(expense_line_item.amount)) if expense_line_item.amount is not None else None,
                     "IsBillable": 1 if expense_line_item.is_billable else 0 if expense_line_item.is_billable is not None else None,

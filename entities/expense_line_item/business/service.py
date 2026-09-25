@@ -64,7 +64,7 @@ class ExpenseLineItemService:
             expense_id=expense_id, expense_public_id=expense_public_id, what=what, exempt=exempt
         )
 
-    def create(self, *, tenant_id: int = None, expense_public_id: str, sub_cost_code_id: Optional[int] = None, project_public_id: Optional[str] = None, description: Optional[str] = None, quantity: Optional[int] = None, rate: Optional[Decimal] = None, amount: Optional[Decimal] = None, is_billable: Optional[bool] = None, is_billed: Optional[bool] = None, markup: Optional[Decimal] = None, price: Optional[Decimal] = None, is_draft: bool = True, _via_internal_pipeline: bool = False) -> ExpenseLineItem:
+    def create(self, *, tenant_id: int = None, expense_public_id: str, sub_cost_code_id: Optional[int] = None, project_public_id: Optional[str] = None, description: Optional[str] = None, quantity: Optional[Decimal] = None, rate: Optional[Decimal] = None, amount: Optional[Decimal] = None, is_billable: Optional[bool] = None, is_billed: Optional[bool] = None, markup: Optional[Decimal] = None, price: Optional[Decimal] = None, is_draft: bool = True, _via_internal_pipeline: bool = False) -> ExpenseLineItem:
         """
         Create a new expense line item.
         """
@@ -171,7 +171,7 @@ class ExpenseLineItemService:
         sub_cost_code_id: int = None,
         project_public_id: str = None,
         description: str = None,
-        quantity: int = None,
+        quantity: Decimal = None,
         rate: float = None,
         amount: float = None,
         is_billable: bool = None,
@@ -228,7 +228,12 @@ class ExpenseLineItemService:
         if description is not None:
             existing.description = description
         if quantity is not None:
-            existing.quantity = quantity
+            # Coerced like its Rate/Amount/Markup/Price siblings below. This line
+            # was a bare assignment: a float 5.25 arriving from an internal caller
+            # was stored on the dataclass as a binary-approximate float and bound
+            # straight to @Quantity DECIMAL(18,4). `is not None`, never truthiness
+            # — Decimal(0) is falsy and 0 is a real quantity.
+            existing.quantity = Decimal(str(quantity))
         if rate is not None:
             existing.rate = Decimal(str(rate))
         if amount is not None:

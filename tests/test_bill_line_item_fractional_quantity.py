@@ -426,3 +426,12 @@ def test_quantity_is_bounded_to_the_column_precision(schema, extra):
     for over in ("123456789012345", "1234567890123456.78", "123456789012345678"):
         with pytest.raises(_VE):
             schema(**{"bill_public_id": "b-1", "quantity": Decimal(over), **extra})
+
+    # ⛔ max_digits carries its OWN weight and needs its own case. Every bound
+    # above is large-magnitude, so `le` refuses it first — which silently
+    # un-pinned `max_digits` when `le`/`ge` were added (06108842). These two are
+    # small in magnitude and wide in digits: they sit INSIDE le/ge and are
+    # refused only by the digit count. Delete max_digits and they go green.
+    for many_digits in ("1.234567890123456789", "0.12345678901234567890"):
+        with pytest.raises(_VE):
+            schema(**{"bill_public_id": "b-1", "quantity": Decimal(many_digits), **extra})

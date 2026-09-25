@@ -347,7 +347,15 @@ def test_an_integer_quantity_serialises_IDENTICALLY_before_and_after():
     """
     row = _returned_row(quantity="5.0000")
     line = BillLineItemRepository()._from_db(row)
-    assert jsonable_encoder(line.to_dict())["quantity"] == 5.0
+    encoded = jsonable_encoder(line.to_dict())["quantity"]
+    assert encoded == 5.0
+    # ⛔ `== 5.0` ALONE IS VACUOUS and cannot detect the regression this test is
+    # named for: jsonable_encoder maps Decimal("5.0000") -> 5.0, int 5 -> 5 and
+    # float 5.0 -> 5.0, all of which compare equal to 5.0. Reverting _from_db to
+    # int(...) keeps it green. The JSON TEXT discriminates — Decimal and float
+    # emit "5.0", an int emits "5".
+    import json as _json
+    assert _json.dumps(encoded) == "5.0"
 
 
 def test_a_fractional_quantity_now_reaches_the_wire_as_5_25():

@@ -27,6 +27,14 @@ class BillLineItemCreate(BaseModel):
     quantity: Optional[Decimal] = Field(
         default=None,
         max_digits=18,
+        # Bounded to what DECIMAL(18,4) can actually hold. `max_digits` alone is
+        # NOT that bound — it counts TOTAL digits, so it accepts 123456789012345
+        # (15 integer digits), which overflows the column at the DB boundary.
+        # The real ceiling is 14 integer digits. `decimal_places` is deliberately
+        # NOT set: it would reject 5.016667, and qbo.BillLine.Qty is DECIMAL(18,6)
+        # carrying exactly that (sixths of an hour). Magnitude bounded, scale not.
+        le=Decimal("99999999999999.9999"),
+        ge=Decimal("-99999999999999.9999"),
         description="The quantity of the bill line item (fractional allowed, e.g. 5.25)."
     )
     rate: Optional[Decimal] = Field(
@@ -81,6 +89,14 @@ class BillLineItemUpdate(BaseModel):
     quantity: Optional[Decimal] = Field(
         default=None,
         max_digits=18,
+        # Bounded to what DECIMAL(18,4) can actually hold. `max_digits` alone is
+        # NOT that bound — it counts TOTAL digits, so it accepts 123456789012345
+        # (15 integer digits), which overflows the column at the DB boundary.
+        # The real ceiling is 14 integer digits. `decimal_places` is deliberately
+        # NOT set: it would reject 5.016667, and qbo.BillLine.Qty is DECIMAL(18,6)
+        # carrying exactly that (sixths of an hour). Magnitude bounded, scale not.
+        le=Decimal("99999999999999.9999"),
+        ge=Decimal("-99999999999999.9999"),
         description="The quantity of the bill line item (fractional allowed, e.g. 5.25)."
     )
     rate: Optional[Decimal] = Field(

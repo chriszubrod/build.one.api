@@ -28,7 +28,7 @@ byte-identical before and after (pinned below).
 from contextlib import contextmanager
 from decimal import Decimal
 from types import SimpleNamespace
-from typing import get_type_hints
+from typing import Optional, get_type_hints
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -62,12 +62,17 @@ def _authz():
 
 
 def _assert_exact_quantity(value, expected: Decimal):
-    """The invariant: an exact Decimal, never a float, never int-truncated."""
+    """The invariant: an exact Decimal, never int-truncated.
+
+    Deliberately only three assertions. Two earlier ones were removed as
+    tautologies — `not isinstance(value, float)` cannot fire once `isinstance(
+    value, Decimal)` has passed (Decimal is not a float subclass), and
+    `value != TRUNCATED or expected == TRUNCATED` is true in both branches once
+    `value == expected` holds. They read as guarantees and checked nothing.
+    """
     assert value is not None
     assert isinstance(value, Decimal)
-    assert not isinstance(value, float)
     assert value == expected
-    assert value != TRUNCATED or expected == TRUNCATED
 
 
 # ---------------------------------------------------------------------------
@@ -361,6 +366,10 @@ def test_the_model_declares_quantity_as_decimal_like_rate_and_amount():
     at runtime. It is here because the `int` annotation is what invited callers
     to coerce, and it should go RED if anyone narrows it back."""
     hints = get_type_hints(BillLineItem)
+    # Pin the TYPE, not equality with its siblings: narrowing all three back to
+    # Optional[int] together would keep them equal and keep an equality-only
+    # assertion green, catching nothing.
+    assert hints["quantity"] == Optional[Decimal]
     assert hints["quantity"] == hints["rate"] == hints["amount"]
 
 
@@ -406,6 +415,14 @@ def test_quantity_is_bounded_to_the_column_precision(schema, extra):
     m = schema(**{"bill_public_id": "b-1", "quantity": Decimal("5.016667"), **extra})
     assert m.quantity == Decimal("5.016667")
 
-    # wider than the column -> rejected at the edge, not at the DB boundary
-    with pytest.raises(_VE):
-        schema(**{"bill_public_id": "b-1", "quantity": Decimal("12345678901234567890.1234"), **extra})
+    # the exact DECIMAL(18,4) ceiling is accepted
+    m = schema(**{"bill_public_id": "b-1", "quantity": Decimal("99999999999999.9999"), **extra})
+    assert m.quantity == Decimal("99999999999999.9999")
+
+    # anything the column cannot hold is rejected AT THE EDGE, not at the DB.
+    # `max_digits=18` alone does NOT do this — it counts TOTAL digits, so it
+    # accepts 123456789012345 (15 integer digits), which overflows the column.
+    # That was measured, and it is why `le`/`ge` are set to the real ceiling.
+    for over in ("123456789012345", "1234567890123456.78", "123456789012345678"):
+        with pytest.raises(_VE):
+            schema(**{"bill_public_id": "b-1", "quantity": Decimal(over), **extra})

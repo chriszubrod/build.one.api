@@ -153,9 +153,33 @@ def _resolve_draw_request_recipient(project_id: Optional[int]) -> tuple:
     Draw Request and Trend "To:" blocks address the same owner, and `to_name` is
     the Customer.
 
-    Selection is deterministic: the BILLING slot first (SHIPPING only as a
-    fallback), rows in Id order, and the first slot whose dbo.Address actually
-    carries content wins.
+    Selection is deterministic: the BILLING slot ONLY, rows in Id order, and the
+    first row whose dbo.Address actually carries content wins.
+
+    ⛔ A CONNECTOR-WRITTEN slot-2 row is never used (U-506 follow-up, 2026-09-25).
+    A job's ShipAddr is the SITE, not a mailing address — the writer says so in as
+    many words ("SHIPPING: job-only … a job's ShipAddr is the SITE") — so falling
+    through to it renders the construction site under "TO OWNER:" on a
+    client-facing G702. That contradicts the decision U-506 P2 made when it
+    removed both ShipAddr links from the billing chain: a missing address is
+    visible, a plausible-but-wrong one is not. Name-only is the correct
+    degradation; the job site is not a safer default than blank.
+
+    But the slot is NOT simply dropped, because id 2 means two different things —
+    see `_is_owner_slot` below. Dropping it outright would have stranded a
+    hand-entered owner address, since `dbo.AddressType` seeds 2 as *Billing* and
+    the public create route accepts the raw id. Provenance separates them.
+
+    Reachability, measured 2026-09-25 rather than assumed: 63 of 139 projects
+    carry a real billing address, 76 already render name-only, and exactly ONE
+    project (30, OHR2) holds a populated slot-2 row — `QboId='382_ship'`, its own
+    street — which its billing link currently outranks. So the bad output fires
+    for zero projects today; this is a latent hole being closed, not a live bug.
+    The route to it is real though: `_clear_stale_connector_billing_link` deletes
+    a BILLING link whose Address carries a `qbo_id` when the chain resolves
+    nothing (it deliberately preserves hand-set links, which have none), and it
+    never touches slot 2 — so the connector can leave a project with only its job
+    site linked.
 
     ⚠️ The slot ids are the WRITER's constants, not `dbo.AddressType`'s seed.
     AddressType is seeded 1=Legal / 2=Billing / 3=Shipping, but both QBO address
@@ -202,13 +226,40 @@ def _resolve_draw_request_recipient(project_id: Optional[int]) -> tuple:
         # keeps the choice stable no matter what order the rows arrive in.
         ordered = sorted(rows, key=lambda pa: (getattr(pa, "id", None) or 0))
         address_service = AddressService()
-        for slot in (ADDRESS_TYPE_BILLING, ADDRESS_TYPE_SHIPPING):
+        def _is_owner_slot(slot, address) -> bool:
+            """Slot 1 is always the owner's mailing address. Slot 2 is only ever
+            the owner's when a HUMAN put it there.
+
+            Slot 2 is genuinely ambiguous and cannot be resolved by id alone: the
+            connector calls it SHIPPING, while `dbo.AddressType` seeds id 2 as
+            *Billing* — and `POST /create/project_address` takes the raw id, so a
+            person entering an owner's billing address through the API lands in
+            exactly this slot meaning the opposite of what the connector means.
+            Provenance disambiguates them: every connector-written row carries a
+            synthetic `Address.QboId` (`{qbo_id}_bill` / `{qbo_id}_ship`), and a
+            hand-entered row carries none. Measured 2026-09-25: slot 1 is 64 rows,
+            all `_bill`; slot 2 is 27 rows, all `_ship`; hand-entered rows: zero.
+            So today this predicate rejects every slot-2 row — which is the point,
+            since all of them are job sites — while leaving the manual case a
+            correct path the moment someone uses it.
+            """
+            if slot == ADDRESS_TYPE_BILLING:
+                return True
+            if slot == ADDRESS_TYPE_SHIPPING:
+                return getattr(address, "qbo_id", None) is None
+            return False
+
+        for tier in (ADDRESS_TYPE_BILLING, ADDRESS_TYPE_SHIPPING):
             for pa in ordered:
-                if getattr(pa, "address_type_id", None) != slot:
+                slot = getattr(pa, "address_type_id", None)
+                if slot != tier:
                     continue
                 if not getattr(pa, "address_id", None):
                     continue
-                lines = _recipient_address_lines(address_service.read_by_id(pa.address_id))
+                address = address_service.read_by_id(pa.address_id)
+                if not _is_owner_slot(slot, address):
+                    continue
+                lines = _recipient_address_lines(address)
                 if lines:
                     to_lines = lines
                     break

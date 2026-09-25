@@ -47,9 +47,16 @@ _ADDRESS_MODULE = "entities.address.business.service"
 
 # ── fixtures ────────────────────────────────────────────────────────────────
 
-def _addr(id, *, street_one=None, street_two=None, city=None, state=None, postal=None):
+def _addr(id, *, street_one=None, street_two=None, city=None, state=None, postal=None,
+          qbo_id=None):
+    """`qbo_id` is the PROVENANCE discriminator, not decoration: every
+    connector-written Address carries a synthetic `{qbo_id}_bill` / `_ship`, and a
+    hand-entered one carries None. A slot-2 fixture without it models a HUMAN's
+    billing address, not a QBO job site — which is the opposite of what a
+    job-site test means to assert."""
     return Address(
         id=id,
+        qbo_id=qbo_id,
         public_id=None,
         row_version=None,
         created_datetime=None,
@@ -181,22 +188,107 @@ def test_ignores_shipping_slot_when_billing_has_content(monkeypatch):
     assert to_lines == ["100 Cedar Ln", "Nashville, TN 37201"]
 
 
-def test_falls_back_to_shipping_only_when_no_billing_slot_has_content(monkeypatch):
-    """Shipping is the fallback, not a peer — it is used only when every billing
-    slot is absent or blank."""
+def test_never_falls_back_to_shipping_even_when_billing_is_blank(monkeypatch):
+    """A blank billing slot degrades to NAME-ONLY. It must never reach shipping.
+
+    CONTRACT CHANGE, 2026-09-25 (U-506 follow-up). This test previously asserted
+    the opposite — that shipping is a fallback — and the fixture it used to prove
+    it was called "9 Jobsite Rd", which is the whole problem: the shipping slot
+    holds the SITE, and the connector says so ("SHIPPING: job-only … a job's
+    ShipAddr is the SITE"). Rendering it under "TO OWNER:" on a client-facing
+    G702 is exactly what U-506 P2 removed both ShipAddr links from the billing
+    chain to prevent — a missing address is visible, a plausible-but-wrong one
+    is not.
+
+    The reachable path was real, not theoretical: `_clear_stale_connector_billing_link`
+    deletes the BILLING link when the chain resolves nothing and never touches
+    SHIPPING, so the connector manufactures this exact row shape. Measured
+    2026-09-25: one project (30, OHR2) holds a populated shipping slot carrying
+    its own street, outranked today only by its billing link.
+    """
     rows = [
         _pa(1, address_id=10, address_type_id=ADDRESS_TYPE_BILLING),   # blank
-        _pa(2, address_id=20, address_type_id=ADDRESS_TYPE_SHIPPING),  # real
+        _pa(2, address_id=20, address_type_id=ADDRESS_TYPE_SHIPPING),  # the job site
     ]
     addresses = {
         10: _blank_addr(10),
-        20: _addr(20, street_one="9 Jobsite Rd", city="Franklin", state="TN", postal="37064"),
+        20: _addr(20, street_one="9 Jobsite Rd", city="Franklin", state="TN", postal="37064",
+                  qbo_id="382_ship"),
     }
     _install(monkeypatch, rows, addresses)
 
     _, to_lines = _resolve_draw_request_recipient(PROJECT_ID)
 
-    assert to_lines == ["9 Jobsite Rd", "Franklin, TN 37064"]
+    assert to_lines == []
+    assert "9 Jobsite Rd" not in " ".join(to_lines)
+
+
+def test_shipping_only_project_renders_name_only(monkeypatch):
+    """No billing row AT ALL (not merely blank) still must not reach shipping.
+
+    The sibling above covers a blank billing Address; this covers the shape the
+    connector's delete path actually produces — the billing LINK removed
+    entirely, leaving a lone populated shipping row.
+    """
+    rows = [_pa(1, address_id=20, address_type_id=ADDRESS_TYPE_SHIPPING)]
+    addresses = {
+        20: _addr(20, street_one="9 Jobsite Rd", city="Franklin", state="TN", postal="37064",
+                  qbo_id="382_ship"),
+    }
+    _install(monkeypatch, rows, addresses)
+
+    to_name, to_lines = _resolve_draw_request_recipient(PROJECT_ID)
+
+    assert to_lines == []
+    assert to_name == OWNER
+
+
+def test_hand_entered_slot_two_address_is_honoured_as_the_owner(monkeypatch):
+    """Slot 2 means TWO different things, and provenance is what separates them.
+
+    The connector calls id 2 SHIPPING, but `dbo.AddressType` seeds it as
+    *Billing* — and `POST /create/project_address` accepts the raw id, so a
+    person entering an owner's remit-to address through the API lands here
+    meaning the opposite of what the connector means. Dropping slot 2 outright
+    to kill the job-site fall-through would have silently stranded that person's
+    address and rendered name-only instead.
+
+    A connector row always carries a synthetic `Address.QboId`; a hand-entered
+    one carries none. Measured 2026-09-25 there are zero hand-entered rows, so
+    this path is latent today — which is exactly why it needs a test rather than
+    a measurement to keep it correct.
+    """
+    rows = [_pa(1, address_id=20, address_type_id=ADDRESS_TYPE_SHIPPING)]
+    addresses = {
+        20: _addr(20, street_one="77 Owner Way", city="Nashville", state="TN",
+                  postal="37205", qbo_id=None),   # hand-entered: no QBO identity
+    }
+    _install(monkeypatch, rows, addresses)
+
+    to_name, to_lines = _resolve_draw_request_recipient(PROJECT_ID)
+
+    assert to_lines == ["77 Owner Way", "Nashville, TN 37205"]
+    assert to_name == OWNER
+
+
+def test_connector_billing_still_outranks_a_hand_entered_slot_two_row(monkeypatch):
+    """Tier order survives the provenance gate: slot 1 wins even when a valid
+    hand-entered slot-2 row sorts first."""
+    rows = [
+        _pa(1, address_id=20, address_type_id=ADDRESS_TYPE_SHIPPING),
+        _pa(2, address_id=10, address_type_id=ADDRESS_TYPE_BILLING),
+    ]
+    addresses = {
+        20: _addr(20, street_one="77 Owner Way", city="Nashville", state="TN",
+                  postal="37205", qbo_id=None),
+        10: _addr(10, street_one="100 Cedar Ln", city="Nashville", state="TN",
+                  postal="37201", qbo_id="382_bill"),
+    }
+    _install(monkeypatch, rows, addresses)
+
+    _, to_lines = _resolve_draw_request_recipient(PROJECT_ID)
+
+    assert to_lines == ["100 Cedar Ln", "Nashville, TN 37201"]
 
 
 def test_deterministic_under_reversed_input_row_order(monkeypatch):

@@ -2,6 +2,35 @@
 
 Carry-over items from sessions. Check off as done; prune anything stale.
 
+## U-549 deferred scope — Ramp chaser follow-ups (booked 2026-09-25, design session)
+
+Design: `docs/design/u549-ramp-receipt-memo-chaser.md`. These were **deliberately cut from v1**,
+not missed. Recorded so they are not re-litigated and not silently forgotten.
+
+- [ ] 🟡 **Pull the receipt IMAGES, not just their absence.** v1 detects a missing receipt and
+  stops. Ramp holds the actual files, and build.one has **no receipt document for card spend at
+  all** — which matters because cost-plus packets need per-charge backup
+  (`feedback_invoice_attachment_specificity`: per-charge PDF only, never a statement). Ramp
+  receipts → Box project folder → invoice packet is the natural v2 and plausibly worth more than
+  the chase loop itself. Ties directly to **U-099** (*"Recode sets Billable — ~$22K unbilled in one
+  46-line batch"*). Needs a `receipts:read` scope, which v1 deliberately does not request.
+- [ ] 🟡 **Richer "needs a memo" test via the hint extractor.** v1 uses a **literal blank** test —
+  offered the alternative and Chris chose blank (2026-09-25). Consequence, stated plainly: a
+  present-but-useless memo (`"THE HOME DEPOT #0723 - 3892"`) passes the blank test and **keeps
+  feeding the 58999 flag queue**. The richer test is "`entities/expense_coding_item/business/hint_extractor.py`
+  cannot resolve a project" — it already exists and is already exercised by U-005's suggestion
+  engine, so this is a swap of one predicate, not new machinery. Revisit once the chase loop has a
+  few weeks of data.
+- [ ] 🟢 **The 1–2 non-Ramp cardholders are invisible to this.** A Ramp-sourced sweep cannot see a
+  card that is not in Ramp (named in the U-005 spec). They keep today's manual chase. Named gap,
+  not an oversight — only worth closing if that population grows.
+- [ ] 🟢 **Revisit the `send` rung.** v1 is **draft-only** (Chris, 2026-09-25) — every chaser email
+  is a draft for human review. That keeps a manual step in a loop whose whole premise is *"the
+  reminder is periodic and manual — large delay."* What it removes is composition and remembering,
+  not sending. `LastDraftedAt` vs `LastNotifiedAt` (design §5) makes the gap measurable: **if drafts
+  sit unsent, the bottleneck simply moved** and enabling `send` becomes the conversation. Do not
+  enable it on a hunch — read the two columns first.
+
 ## U-503d/e residuals — the quantity widening stopped short of three doors (booked 2026-09-25)
 
 Shipped: `34a4ccfa` `06108842` `27c3da22` `281e956e` (bill) and `b2a6d018` (expense). The

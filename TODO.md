@@ -164,6 +164,30 @@ near-identical code is its own hazard. Right depth is all three at once.
    `entities/expense/intelligence/tools.py` registers ten tools but neither. Per the standing rule that
    agent tools are a consumer surface, the new endpoint is today reachable only by hand (which is how
    U-524's five queued expenses are being driven). Behaviour-adding, so explicitly not Pass-2 work.
+   ✅ **BOOKED 2026-09-27 as U-552** (board: 🟡 Ready / queued). Surfaced again by the `/redteam` pass on
+   the iOS Tasks module's U-547, which named wiring this tool as the *cheaper probe* than building the
+   mobile write path — Chris approved running it in PARALLEL with the U-551 re-spec. It pays for itself
+   either way: it closes a live operational gap now, and once emailed expense approvals are automatic it
+   tells us whether anyone actually wants to review on a phone. ⚠️ Reading that channel mix afterwards is
+   a separate act — book it, don't assume it happens.
+
+- [ ] **U-551 — DESIGN: one transactional edit-and-decide command with a client idempotency key.** Booked
+  2026-09-27 out of the `/redteam` **RECONSIDER** on the iOS Tasks module's U-547. ⛔ Gates **U-541**
+  (the `/approve/review/{type}/{id}` route + `expected_review_public_id` precondition) and **U-547**; both
+  are held so neither builds the wrong contract. **Two confirmed defects it must close.** (1) A client-side
+  history check is NOT idempotency: an email approval and an app approval by the same person write a Review
+  row with the same `user_id` and the same `review_kind`, so a client cannot tell which one wrote it and
+  will mark its queued action done when only the DECISION landed and the LINE EDIT did not — silently
+  losing the reviewer's coding. (2) `BillLineItemService.update_by_public_id` checks only its own
+  `row_version` with **zero review-state coupling**, so a queued edit recodes a document whose review moved
+  underneath it, then the decision 409s having already mutated a money document. **Start from the existing
+  prior art, not a blank page:** `Bill/ExpenseService.apply_reviewer_decision` already writes the SCC onto
+  the summary line and then inserts the terminal Review row — the right shape, though ⚠️ its atomicity is
+  **unverified** (sequential calls, no explicit transaction observed) and it acts on a delegation path via
+  `reviewer_email` rather than as the authenticated caller. Must settle: where the composite lives, where
+  the idempotency key lives and whether it covers decline, the real transaction boundary across two
+  services and two sprocs, **distinguishable** error codes for a stale line `row_version` vs a stale review
+  precondition, whether the email path converges, and one line edit or many.
 
 **Constraint on any extraction across the three:** `tests/test_u459_reviewer_impersonation.py` runs
 `inspect.getsource()` over all three methods and asserts the literal `assert_may_act_as(` appears in each

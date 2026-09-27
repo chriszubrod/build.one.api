@@ -108,6 +108,30 @@ integrations/ramp/
 No new outbox — this integration **never writes to Ramp**, so it needs no outbox of its own. Email delivery rides
 the **existing MS outbox**.
 
+#### 4.1.1 Platform constraints (from Ramp's docs, verified 2026-09-27)
+
+| | |
+|---|---|
+| **Environments** | Production API `https://api.ramp.com` (app `https://app.ramp.com`) · Sandbox API `https://demo-api.ramp.com` (app `https://demo.ramp.com`). ⚠️ The API host is **not** the app host. |
+| **Rate limit** | **200 requests / 10-second rolling window, per _source IP_** — not per client or per endpoint. |
+| **Timeout** | A request exceeding **60s** returns 504. |
+| **Backoff** | Docs prescribe exponential backoff (1s → 2s → 4s); explicitly warn against immediate retry. |
+
+Three things follow that the build must not rediscover the hard way:
+
+- ⛔ **The `scope` parameter is REQUIRED on the token request. Omit it and Ramp issues a token with _no scopes_** —
+  not an error, just a token that 403s on everything. This is a silent-failure trap of exactly the kind that
+  costs an afternoon. The auth client must always send `scope` explicitly **and assert the returned token
+  actually carries the scopes requested**, failing loudly at startup rather than at first use.
+- **Rate limiting is per source IP, so the budget is _shared_** with every other outbound call from the same
+  egress address — this sweep does not get 200/10s to itself. Ample for our volume either way (the U-005 probe
+  put target purchases at ~1.2/day), but `base/retry.py` gets the prescribed exponential backoff on 429, not a
+  tight retry.
+- **A real sandbox exists** — a genuine advantage over the QBO work, where U-005's Gate-P2 had no sandbox realm
+  wired and had to be proven on one controlled live Purchase. Use `demo-api.ramp.com` to build and test the auth
+  + pagination plumbing in Phase A. ⚠️ **But Phase 0's probe must run against PRODUCTION (read-only)** — its
+  entire purpose is to measure *real* memo/receipt population, which sandbox data cannot answer.
+
 ### 4.2 Detection window — and the watermark trap
 
 `GET /developer/v1/transactions` has **no server-side "missing receipt" filter**, so classification is
@@ -231,7 +255,8 @@ ships dark, flips without a redeploy:
 | `RAMP_CHASER_ESCALATE_DAYS` | `14` | |
 | `RAMP_CHASER_WINDOW_DAYS` | `90` | discovery window (§4.2) |
 | `RAMP_CHASER_SENDER` | `invoice@rogersbuild.com` | decided 2026-09-25 (§6) |
-| `RAMP_CLIENT_ID` / `RAMP_CLIENT_SECRET` / `RAMP_ENV` | — | Azure app settings, never committed |
+| `RAMP_CLIENT_ID` / `RAMP_CLIENT_SECRET` | — | Azure app settings, never committed. **Separate pairs for sandbox and production** — they are different Ramp apps registered in different dashboards. |
+| `RAMP_API_BASE_URL` | `https://api.ramp.com` | `https://demo-api.ramp.com` for sandbox. Explicit URL rather than an `RAMP_ENV` enum the code maps — one fewer indirection between config and the host actually called. |
 
 Still gated by **`ALLOW_MS_WRITES`** at the outbox layer — two independent switches, same as the time-entry
 digest.
@@ -279,6 +304,9 @@ worklist is the instrument we use to sanity-check the classifier before any of i
 - [ ] A transaction with blank memo and no receipt appears exactly once in `RampTransactionFollowUp`; a repeat
       sweep updates it rather than inserting a duplicate (UNIQUE on `RampTransactionId`).
 - [ ] Supplying the memo in Ramp → next sweep stamps `ResolvedAt` and the item leaves the worklist.
+- [ ] The token request always sends `scope`, and the client **asserts the issued token carries the scopes
+      requested** — a scopeless token fails loudly at startup, not with mystery 403s at first use (§4.1.1).
+- [ ] A 429 triggers exponential backoff (1s/2s/4s), never an immediate retry.
 - [ ] `RAMP_CHASER_MODE=off` performs **no** Graph call and enqueues **no** outbox row.
 - [ ] `draft` deposits one draft per cardholder listing all their open items — never one per transaction.
 - [ ] **v1 never sends.** No path through the code reaches Graph `sendMail` / `send_draft`; only draft creation
@@ -316,9 +344,12 @@ worklist is the instrument we use to sanity-check the classifier before any of i
 **Resolved 2026-09-25 (Chris):** sender = `invoice@rogersbuild.com` · Ramp's policy deadline **is** switched on
 · every chaser email is a **draft**, v1 never auto-sends.
 
-1. **Ramp API credentials** — Chris is researching how to provision them (Ramp Developer Console →
-   client-credentials app, scopes `transactions:read` + `users:read` only). **Blocks Phase 0**, which blocks
-   everything else.
+1. ~~**Ramp API credentials** — how to provision them.~~ **RESOLVED 2026-09-27**, path below. Still **blocks
+   Phase 0**, which blocks everything else, until the app is actually created.
+   **Ramp dashboard → Company → Developer → "Create New App"** (requires **admin** access to the Ramp
+   dashboard). Name it, accept the ToS, then: *Grant types* → "Add new grant type" → **Client Credentials**;
+   *Scopes* → "Configure allowed scopes" → **`transactions:read` + `users:read`** only. Client ID and Client
+   Secret are then shown to copy. Register the app separately on `demo.ramp.com` for sandbox.
 2. **Backfill depth at go-live** — chase 90 days of history, or only transactions from go-live forward? Depends
    entirely on Phase 0's numbers. (§11)
 3. **P0-surface classification** — `/em`'s call; §8 recommends running Pass 3 regardless. Note the draft-only

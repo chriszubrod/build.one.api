@@ -65,10 +65,16 @@ def _ok_patch():
     }
 
 
-def _ok_get(is_draft=True):
+def _ok_get(is_draft=True, **email_overrides):
+    email = {
+        "message_id": _GRAPH_MESSAGE_ID,
+        "is_draft": is_draft,
+        "odata_etag": 'W/"etag-from-get"',
+    }
+    email.update(email_overrides)
     return {
         "status_code": 200,
-        "email": {"message_id": _GRAPH_MESSAGE_ID, "is_draft": is_draft},
+        "email": email,
     }
 
 
@@ -115,7 +121,7 @@ def test_enqueue_update_draft_enqueues_when_ms_writes_on():
         "integrations.ms.outbox.business.service.idempotency_guards_disabled",
         return_value=False,
     ):
-        repo.count_by_entity.return_value = 0
+        repo.count_by_entity_and_kind.return_value = 0
         result = svc.enqueue_update_draft(
             entity_type=_ENTITY_TYPE,
             entity_public_id=_ENTITY_PUBLIC_ID,
@@ -167,6 +173,7 @@ def test_handle_update_draft_calls_graph_with_message_id_and_fields():
         body_type=payload["body_type"],
         cc_recipients=payload["cc_addresses"],
         bcc_recipients=payload["bcc_addresses"],
+        if_match='W/"etag-from-get"',
     )
     assert payload["update_draft_outcome"] == UPDATE_DRAFT_OUTCOME_PATCHED
 
@@ -208,12 +215,12 @@ def test_404_target_gone_completes_without_retry_or_dead_letter():
     assert persisted["update_draft_outcome"] == UPDATE_DRAFT_OUTCOME_TARGET_GONE
 
 
-def test_not_a_draft_400_is_terminal_like_404():
+def test_patch_400_cannot_be_updated_is_not_target_gone_retries():
     repo = MagicMock()
     worker = MsOutboxWorker(repo=repo)
-    row = _update_row(attempts=2)
+    row = _update_row(attempts=0)
 
-    gone = {
+    bad_request = {
         "status_code": 400,
         "message": "The message is not a draft and cannot be updated",
         "is_retryable": False,
@@ -221,13 +228,14 @@ def test_not_a_draft_400_is_terminal_like_404():
     }
 
     with patch(_GET_MESSAGE, return_value=_ok_get(is_draft=True)), patch(
-        _UPDATE_DRAFT, return_value=gone
-    ):
+        _UPDATE_DRAFT, return_value=bad_request
+    ), patch.object(MsOutboxWorker, "_escalate_dead_letter"):
         worker._process_inner(row)
 
-    repo.mark_done.assert_called_once()
+    repo.mark_done.assert_not_called()
+    repo.update_payload.assert_not_called()
+    repo.mark_dead_letter.assert_called_once()
     repo.mark_failed.assert_not_called()
-    repo.mark_dead_letter.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -343,7 +351,7 @@ def test_second_enqueue_same_entity_does_not_create_second_row():
     svc = MsOutboxService(repo=repo)
     created = MsOutbox(id=9, public_id="ob-new", status="pending")
     repo.create.return_value = created
-    repo.count_by_entity.return_value = 1
+    repo.count_by_entity_and_kind.return_value = 1
 
     with patch(
         "integrations.ms.outbox.business.service._writes_allowed",
@@ -366,6 +374,42 @@ def test_second_enqueue_same_entity_does_not_create_second_row():
 
     assert result is None
     repo.create.assert_not_called()
+    repo.count_by_entity_and_kind.assert_called_once_with(
+        _ENTITY_TYPE, _ENTITY_PUBLIC_ID, KIND_UPDATE_DRAFT
+    )
+
+
+def test_send_mail_row_does_not_suppress_update_draft_enqueue():
+    repo = MagicMock()
+    svc = MsOutboxService(repo=repo)
+    created = MsOutbox(id=9, public_id="ob-new", status="pending")
+    repo.create.return_value = created
+    repo.count_by_entity_and_kind.return_value = 0
+
+    with patch(
+        "integrations.ms.outbox.business.service._writes_allowed",
+        return_value=True,
+    ), patch(
+        "integrations.ms.outbox.business.service._resolve_tenant_id",
+        return_value="tenant-abc",
+    ), patch(
+        "integrations.ms.outbox.business.service.idempotency_guards_disabled",
+        return_value=False,
+    ):
+        result = svc.enqueue_update_draft(
+            entity_type=_ENTITY_TYPE,
+            entity_public_id=_ENTITY_PUBLIC_ID,
+            graph_message_id=_GRAPH_MESSAGE_ID,
+            to_addresses=[{"email": "worker@example.com"}],
+            subject="s",
+            body="b",
+        )
+
+    assert result is created
+    repo.create.assert_called_once()
+    repo.count_by_entity_and_kind.assert_called_once_with(
+        _ENTITY_TYPE, _ENTITY_PUBLIC_ID, KIND_UPDATE_DRAFT
+    )
 
 
 def test_outcome_persistence_failure_does_not_mark_done():
@@ -387,6 +431,109 @@ def test_outcome_persistence_failure_does_not_mark_done():
 # ---------------------------------------------------------------------------
 # Dispatch table guard
 # ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "get_result",
+    [
+        {"status_code": 200, "email": None},
+        {"status_code": 200},
+        {"status_code": 200, "email": []},
+        {"status_code": 200, "email": {"message_id": _GRAPH_MESSAGE_ID}},
+        {"status_code": 200, "email": {"message_id": _GRAPH_MESSAGE_ID, "is_draft": None}},
+    ],
+    ids=[
+        "email_none",
+        "email_missing",
+        "email_not_dict",
+        "is_draft_absent",
+        "is_draft_none",
+    ],
+)
+def test_get_inconclusive_shapes_retry_not_target_gone(get_result):
+    repo = MagicMock()
+    worker = MsOutboxWorker(repo=repo)
+    row = _update_row(attempts=0)
+
+    with patch(_GET_MESSAGE, return_value=get_result), patch(
+        _UPDATE_DRAFT
+    ) as graph_patch, patch.object(MsOutboxWorker, "_escalate_dead_letter"):
+        worker._process_inner(row)
+
+    graph_patch.assert_not_called()
+    repo.mark_done.assert_not_called()
+    repo.mark_failed.assert_called_once()
+    repo.update_payload.assert_not_called()
+
+
+def test_get_200_empty_top_level_retries_not_target_gone():
+    repo = MagicMock()
+    worker = MsOutboxWorker(repo=repo)
+    row = _update_row(attempts=0)
+
+    with patch(_GET_MESSAGE, return_value={"status_code": 200}), patch(
+        _UPDATE_DRAFT
+    ) as graph_patch, patch.object(MsOutboxWorker, "_escalate_dead_letter"):
+        worker._process_inner(row)
+
+    graph_patch.assert_not_called()
+    repo.mark_failed.assert_called_once()
+    repo.mark_done.assert_not_called()
+
+
+def test_update_payload_none_does_not_mark_done():
+    repo = MagicMock()
+    repo.update_payload.return_value = None
+    worker = MsOutboxWorker(repo=repo)
+    row = _update_row(attempts=0)
+
+    with patch(_GET_MESSAGE, return_value=_ok_get()), patch(
+        _UPDATE_DRAFT, return_value=_ok_patch()
+    ), patch.object(MsOutboxWorker, "_escalate_dead_letter"):
+        worker._process_inner(row)
+
+    repo.mark_done.assert_not_called()
+    repo.mark_failed.assert_called_once()
+
+
+def test_get_message_list_body_is_retryable_not_dead_letter():
+    from integrations.ms.mail.external.client import get_message
+
+    mock_client = MagicMock()
+    mock_client.get.return_value = []
+
+    with patch(
+        "integrations.ms.mail.external.client.MsGraphClient"
+    ) as client_cls:
+        client_cls.return_value.__enter__.return_value = mock_client
+        result = get_message("msg-id", include_body=False)
+
+    assert result["status_code"] == 503
+    assert result["is_retryable"] is True
+    assert result.get("email") is None
+
+
+def test_get_message_list_body_via_worker_retries_not_dead_letter():
+    repo = MagicMock()
+    worker = MsOutboxWorker(repo=repo)
+    row = _update_row(attempts=0)
+
+    inconclusive = {
+        "status_code": 503,
+        "message": "Unexpected Graph message response shape",
+        "is_retryable": True,
+        "email": None,
+    }
+
+    with patch(_GET_MESSAGE, return_value=inconclusive), patch(
+        _UPDATE_DRAFT
+    ) as graph_patch, patch.object(MsOutboxWorker, "_escalate_dead_letter"):
+        worker._process_inner(row)
+
+    graph_patch.assert_not_called()
+    repo.mark_failed.assert_called_once()
+    repo.mark_dead_letter.assert_not_called()
+    repo.mark_done.assert_not_called()
 
 
 def test_dispatch_table_maps_update_draft_and_preserves_existing_kinds():

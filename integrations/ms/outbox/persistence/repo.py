@@ -170,6 +170,41 @@ class MsOutboxRepository:
             logger.error(f"Error during count ms outbox by entity: {error}")
             raise map_database_error(error)
 
+    def count_by_entity_and_kind(
+        self,
+        entity_type: str,
+        entity_public_id: str,
+        kind: str,
+    ) -> int:
+        """
+        Count `[ms].[Outbox]` rows for an (entity_type, entity_public_id, kind)
+        triple regardless of status. Used when idempotency must not suppress
+        across Kinds (e.g. `update_draft` vs `send_mail` on the same entity).
+        """
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                try:
+                    call_procedure(
+                        cursor=cursor,
+                        name="CountMsOutboxByEntityAndKind",
+                        params={
+                            "EntityType": entity_type,
+                            "EntityPublicId": entity_public_id,
+                            "Kind": kind,
+                        },
+                    )
+                    row = cursor.fetchone()
+                    return int(row.Cnt) if row and row.Cnt is not None else 0
+                finally:
+                    try:
+                        cursor.close()
+                    except Exception:
+                        pass
+        except Exception as error:
+            logger.error(f"Error during count ms outbox by entity and kind: {error}")
+            raise map_database_error(error)
+
     def read_pending_by_entity(
         self,
         entity_type: str,

@@ -280,9 +280,10 @@ Phase A has none.
 
 **Chris's call: ONCE PER WEEK** (2026-09-28, reduced from twice). Day is a Phase-D scheduler concern, not a
 Phase-C one — the digest's idempotency key is `(cardholder, sweep_date)`, so cadence changes cost nothing in
-code. ⚠️ **Open: which day.** Friday overlaps Ramp's own Friday nag so the office message lands beside it — but
-Friday afternoon is when field crew are least likely to act. A Tuesday gives them the week. Chris's call at
-Phase D.
+code. ✅ **Day: TUESDAY** (Chris, 2026-09-28), morning in `business_timezone` (`America/Chicago`). Chosen over
+Friday deliberately: Friday would overlap Ramp's own Friday nag so the office message lands beside it, but
+Friday afternoon is when field crew are least likely to act — and at weekly cadence there is no second
+bite that week. Tuesday gives them the week to clear it.
 
 - **One digest per cardholder per run**, listing every open item with merchant, amount, date, age, and exactly
   what's missing. Never one email per transaction.

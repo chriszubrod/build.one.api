@@ -948,7 +948,31 @@ class MsOutboxWorker:
             )
             return
 
+        if self._is_update_draft_get_inconclusive(get_result):
+            raise MsServerError(
+                "update_draft GET did not positively prove an updatable draft",
+                http_status=503,
+            )
+
         self._raise_if_external_error(row, get_result)
+
+        email = get_result.get("email") if isinstance(get_result, dict) else None
+        odata_etag = email.get("odata_etag") if isinstance(email, dict) else None
+        if not odata_etag:
+            # Residual TOCTOU when @odata.etag is absent: Graph supports If-Match on
+            # PATCH me/messages/{id}, but without the etag we cannot precondition the
+            # write. A human can send between this GET and PATCH; Graph may accept
+            # PATCH on the now-sent message (~sub-second window vs the old ~60s queue
+            # delay). Normal message GETs include @odata.etag; this branch is the
+            # irreducible gap when it does not.
+            logger.warning(
+                "ms.outbox.update_draft.patch_without_if_match",
+                extra={
+                    "event_name": "ms.outbox.update_draft.patch_without_if_match",
+                    "outbox_public_id": row.public_id,
+                    "graph_message_id": graph_message_id,
+                },
+            )
 
         result = update_draft(
             message_id=graph_message_id,
@@ -958,6 +982,7 @@ class MsOutboxWorker:
             body_type=body_type,
             cc_recipients=cc_addresses,
             bcc_recipients=bcc_addresses,
+            if_match=odata_etag,
         )
 
         if self._is_update_draft_target_gone(result):
@@ -988,9 +1013,8 @@ class MsOutboxWorker:
     @staticmethod
     def _is_update_draft_get_terminal_gone(result: Any) -> bool:
         """
-        True when GET proves the target is not an updatable draft: 404, or 200
-        with `is_draft` not strictly True. Transient GET failures (5xx, etc.)
-        return False here — caller must `_raise_if_external_error` instead.
+        True only on positive proof the draft is gone: explicit 404, or 200 with
+        a well-formed email object whose `is_draft` is explicitly False.
         """
         if not isinstance(result, dict):
             return False
@@ -1001,32 +1025,36 @@ class MsOutboxWorker:
             return False
         email = result.get("email")
         if not isinstance(email, dict):
+            return False
+        return email.get("is_draft") is False
+
+    @staticmethod
+    def _is_update_draft_get_inconclusive(result: Any) -> bool:
+        """
+        True when GET succeeded numerically but did not prove `is_draft is True`
+        (missing email, malformed shape, absent/None is_draft). Caller must retry.
+        """
+        if not isinstance(result, dict):
+            return True
+        if result.get("status_code") != 200:
+            return False
+        email = result.get("email")
+        if not isinstance(email, dict):
             return True
         return email.get("is_draft") is not True
 
     @staticmethod
     def _is_update_draft_target_gone(result: Any) -> bool:
         """
-        True when Graph reports the explicit graph_message_id no longer exists
-        as an updatable draft (sent, deleted, or 404). Distinct from transient
-        5xx/timeouts, which must retry via `_raise_if_external_error`.
+        True only on positive proof PATCH cannot apply to an updatable draft:
+        explicit 404, or 412 If-Match precondition failed (message changed/sent
+        under us). Never infer from free-text 400 bodies.
         """
         if not isinstance(result, dict):
             return False
         status_code = result.get("status_code", 500)
-        if status_code == 404:
+        if status_code in (404, 412):
             return True
-        if status_code == 400:
-            message = (result.get("message") or "").lower()
-            gone_markers = (
-                "not a draft",
-                "non-draft",
-                "non draft",
-                "has been sent",
-                "cannot be updated",
-                "errorinvalidoperation",
-            )
-            return any(marker in message for marker in gone_markers)
         return False
 
     def _stamp_update_draft_outcome(
@@ -1043,8 +1071,12 @@ class MsOutboxWorker:
                 row_version=row.row_version,
                 payload=json.dumps(payload),
             )
-            if updated and updated.row_version:
-                row.row_version = updated.row_version
+            if not updated or not updated.row_version:
+                raise MsServerError(
+                    "update_draft outcome not persisted (row version conflict or no OUTPUT)",
+                    http_status=500,
+                )
+            row.row_version = updated.row_version
         except Exception as error:
             logger.exception(
                 "ms.outbox.update_draft.payload_update_failed",

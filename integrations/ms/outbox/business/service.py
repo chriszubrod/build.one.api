@@ -612,7 +612,16 @@ class MsOutboxService:
 
         if _writes_allowed() and not idempotency_guards_disabled():
             try:
-                if self.repo.count_by_entity(entity_type, entity_public_id) > 0:
+                # Kind-scoped: a prior send_mail row for the same entity must not
+                # block a legitimate update_draft enqueue. Concurrent double-insert
+                # remains possible without a DB uniqueness constraint — same residual
+                # as other enqueue idempotency guards that read-then-insert.
+                if (
+                    self.repo.count_by_entity_and_kind(
+                        entity_type, entity_public_id, KIND_UPDATE_DRAFT
+                    )
+                    > 0
+                ):
                     logger.info(
                         "ms.outbox.update_draft.already_enqueued",
                         extra={

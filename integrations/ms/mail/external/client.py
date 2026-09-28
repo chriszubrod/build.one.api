@@ -391,7 +391,33 @@ def get_message(
                 params={"$select": select_fields, "$expand": "attachments"},
                 operation_name="mail.get_message",
             )
-        formatted = _format_message(msg, include_body=include_body)
+        if not isinstance(msg, dict):
+            logger.error(
+                "Unexpected Graph get_message response shape for %s: %r",
+                message_id,
+                type(msg).__name__,
+            )
+            return {
+                "status_code": 503,
+                "message": "Unexpected Graph message response shape",
+                "is_retryable": True,
+                "email": None,
+            }
+        try:
+            formatted = _format_message(msg, include_body=include_body)
+        except (AttributeError, TypeError) as format_error:
+            logger.error(
+                "Failed to format Graph message %s: %s",
+                message_id,
+                format_error,
+            )
+            return {
+                "status_code": 503,
+                "message": f"Unexpected Graph message response shape: {format_error}",
+                "is_retryable": True,
+                "email": None,
+            }
+        formatted["odata_etag"] = msg.get("@odata.etag")
 
         bcc_recipients = [
             {
@@ -681,6 +707,7 @@ def update_draft(
     cc_recipients: Optional[List[dict]] = None,
     bcc_recipients: Optional[List[dict]] = None,
     importance: Optional[str] = None,
+    if_match: Optional[str] = None,
 ) -> dict:
     """Update an existing draft message."""
     message: Dict[str, Any] = {}
@@ -697,17 +724,48 @@ def update_draft(
     if importance is not None:
         message["importance"] = importance
 
+    extra_headers: Optional[Dict[str, str]] = None
+    if if_match:
+        extra_headers = {"If-Match": if_match}
+
     try:
         with MsGraphClient() as client:
             draft = client.patch(
                 f"me/messages/{message_id}",
                 json=message,
+                extra_headers=extra_headers,
                 operation_name="mail.update_draft",
             )
+        if not isinstance(draft, dict):
+            logger.error(
+                "Unexpected Graph update_draft response shape for %s: %r",
+                message_id,
+                type(draft).__name__,
+            )
+            return {
+                "status_code": 503,
+                "message": "Unexpected Graph update_draft response shape",
+                "is_retryable": True,
+                "draft": None,
+            }
+        try:
+            formatted_draft = _format_message(draft, include_body=True)
+        except (AttributeError, TypeError) as format_error:
+            logger.error(
+                "Failed to format Graph update_draft response %s: %s",
+                message_id,
+                format_error,
+            )
+            return {
+                "status_code": 503,
+                "message": f"Unexpected Graph update_draft response shape: {format_error}",
+                "is_retryable": True,
+                "draft": None,
+            }
         return {
             "message": "Draft updated successfully",
             "status_code": 200,
-            "draft": _format_message(draft, include_body=True),
+            "draft": formatted_draft,
         }
     except MsGraphError as e:
         logger.error(f"Error updating draft {message_id}: {e}")

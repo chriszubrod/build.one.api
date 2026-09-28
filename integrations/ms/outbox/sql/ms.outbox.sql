@@ -535,3 +535,25 @@ BEGIN
       AND [EntityPublicId] = @EntityPublicId;
 END;
 GO
+
+
+-- ============================================================================
+-- CountMsOutboxByEntityAndKind — idempotency count scoped to one Kind
+-- ============================================================================
+CREATE OR ALTER PROCEDURE dbo.CountMsOutboxByEntityAndKind
+(
+    @EntityType     NVARCHAR(32),
+    @EntityPublicId UNIQUEIDENTIFIER,
+    @Kind           NVARCHAR(64)
+)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    SELECT COUNT(*) AS [Cnt]
+    FROM [ms].[Outbox]
+    WHERE [EntityType] = @EntityType
+      AND [EntityPublicId] = @EntityPublicId
+      AND [Kind] = @Kind;
+END;
+GO

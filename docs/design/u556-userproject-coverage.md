@@ -44,17 +44,41 @@ framing raised it as a possibility:
 
 Measured, non-sysadmin agents on a new project: `UserCanAccessProject(27, 0, 204) = False`.
 
-### The one counter-example, explained
+### The apparent counter-example — CORRECTED 2026-09-28
 
-`time_tracking_agent` (50) carries **zero** rows yet stamps `ReviewPriority`
-successfully — 189 rows, most recently 2026-09-28 17:16. That is not evidence
-the rows are unnecessary: its two routes are gated on the TIME_TRACKING module
-only and call **no** `assert_can_access_*`. It works because that surface is
-unscoped, which is a separate (and arguably wrong) property — not because agents
-escape scoping.
+An earlier revision of this doc claimed `time_tracking_agent` (50) "stamps
+`ReviewPriority` successfully despite zero rows, because its routes are
+module-gated only". **That was wrong, and the conclusion it supported was wrong.**
+The agent is not doing the stamping at all:
 
-`contract_labor_agent` (49) also carries zero rows, and its writes **do** go
-through `assert_can_access_project`. It has authored no row anywhere, ever.
+- `dbo.AgentSession` records **4** `time_tracking_specialist` runs ever, the last
+  on **2026-05-27**. No agent of any kind has run since **2026-06-30**.
+- The `ReviewPriority` stamps (189 rows, latest 2026-09-28 17:16) come from the
+  **deterministic** sweep in `entities/time_entry/business/auto_submit_service.py`,
+  which runs under drain-secret system authz and bypasses scoping entirely.
+- `dbo.TimeTrackingOutbox` holds **878 rows, all `pending`**, oldest 2026-06-02 —
+  nothing has ever drained. `PAUSE_TIME_TRACKING_AGENT` was specified ON for first
+  deploy and is still on, so `process_one` returns `{paused: true}` before
+  claiming anything while `submit()` keeps enqueueing. Already tracked as a P2 in
+  `TODO.md` (measured 815 rows on 2026-09-09; 878 now).
+
+`contract_labor_agent` (49) likewise carries zero rows and has **zero
+`AgentSession` rows, ever** — it is registered and reachable as an orchestrator
+delegate (`intelligence/agents/buildone/__init__.py:176`) but has never executed.
+
+The corrected reading does not weaken the case for the backfill — the 12 agents
+that *were* topped up are still genuinely scoped, and
+`UserCanAccessProject(bill_agent, 204)` was measurably `False`. It changes the
+answer for the two deferred agents (below).
+
+### Recommendation on the deferred 278: do not grant
+
+Both agents are dormant — one deliberately paused behind a kill switch since
+first deploy, the other never executed. Granting them tenant-wide project access
+buys nothing today and widens the blast radius if either is switched on
+unexpectedly. When one is genuinely turned on, the Part 2 capability (Option C
+below) is the right mechanism anyway: one flag per service account rather than
+139 rows each that then need maintaining forever.
 
 ## Part 1 — the backfill (BUILT)
 
@@ -168,8 +192,18 @@ rule exists to prevent.
 
 - **`time_tracking_agent`'s routes are module-gated only.** `review-flag` and
   `validate-completeness` call no `assert_can_access_*`. Whether that is correct
-  for a flag-only observability surface is a real question; today it is the only
-  reason a zero-coverage agent functions.
-- **`contract_labor_agent` has authored nothing, ever**, while its writes do
-  assert project access. Part 1 unblocks it. Whether it is actually wired up in
-  prod is unverified.
+  for a flag-only observability surface is a real question independent of
+  whether the agent runs.
+- **The whole agent fleet is dormant** — no `AgentSession` row since 2026-06-30.
+  Worth knowing before designing anything that assumes agents are live; a
+  scoping gap on an agent path is latent, not active.
+- **`update_draft` is inert in prod.** `dbo.CountMsOutboxByEntityAndKind` — the
+  idempotency-guard sproc `enqueue_update_draft` calls — does not exist in the
+  live database, so the guard throws and the enqueue fails **closed**
+  (`idempotency_guard_failed_enqueue_refused`). It is the **only** missing sproc
+  of the 13 in `integrations/ms/outbox/sql/ms.outbox.sql`; the other 12 are live.
+  The definition is purely additive — `CREATE OR ALTER`, a read-only `COUNT`,
+  three params, no table or index change. Belongs to U-549 C1's pending Gate-2,
+  not to this unit. Found by hitting it: the bill-40638 review draft had to be
+  patched through the Graph client directly because the sanctioned outbox path
+  could not enqueue.

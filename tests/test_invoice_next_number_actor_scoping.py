@@ -115,11 +115,16 @@ def test_next_number_reads_one_project_scoped_page_with_the_callers_actor():
 
 
 def test_next_number_excludes_other_projects():
-    """The sequence is per-project: another project's higher numbers must not count."""
+    """The sequence is per-project: another project's higher numbers must not count.
+
+    Expectation zero-padded to "ABC-03" (was "ABC-3") when the prefix-derivation
+    fix landed — see test_invoice_next_number_prefix_derivation.py. The invariant
+    this test exists for is unchanged: the other project's ABC-90 must not count.
+    """
     service, _ = _service(["ABC-01", "ABC-02"], other_project_numbers=["ABC-90"])
 
     with actor_context(17, False):
-        assert service.get_next_invoice_number("proj-public-id") == "ABC-3"
+        assert service.get_next_invoice_number("proj-public-id") == "ABC-03"
 
 
 def test_next_number_ignores_other_prefixes_and_suffixed_duplicates():
@@ -129,11 +134,19 @@ def test_next_number_ignores_other_prefixes_and_suffixed_duplicates():
     legacy-prefix rows real projects carry — EVR's own history opens with
     EVD-01..EVD-03 before switching to EVR-04. `abc-04` covers the re.IGNORECASE
     branch, which a "tighten the regex" cleanup would otherwise drop silently.
+
+    Expectation changed from "ABC-5" to "ABC-05" when the prefix-derivation fix
+    landed — padding only. The prefix stays uppercase here because this fixture
+    HAS an abbreviation ("ABC") which already names a live series, and the
+    abbreviation is authoritative; the newest-number derivation (which would
+    have inherited `abc-04`'s lowercase) only runs when it does not. The
+    mutations this test kills are unchanged: suffixed duplicate, foreign prefix,
+    and "ABC-4x".
     """
     service, _ = _service(["ABC-01", "ABC-07-2", "XYZ-99", "abc-04", "ABC-4x"])
 
     with actor_context(17, False):
-        assert service.get_next_invoice_number("proj-public-id") == "ABC-5"
+        assert service.get_next_invoice_number("proj-public-id") == "ABC-05"
 
 
 def test_next_number_runs_under_system_authz():
@@ -148,11 +161,16 @@ def test_next_number_runs_under_system_authz():
 
 def test_next_number_starts_at_one_when_project_has_no_invoices():
     """Contract guard, not a regression guard — documented empty-project behaviour,
-    whose expected value IS "ABC-1" and so cannot distinguish the bug."""
+    which cannot distinguish the actor-scoping bug because the bug's symptom and
+    the correct answer are the same string.
+
+    Now "ABC-01": with no invoices to derive a series from, the prefix falls back
+    to Project.Abbreviation, and the width floor of 2 still applies.
+    """
     service, _ = _service([])
 
     with actor_context(17, False):
-        assert service.get_next_invoice_number("proj-public-id") == "ABC-1"
+        assert service.get_next_invoice_number("proj-public-id") == "ABC-01"
 
 
 def test_next_number_raises_when_the_project_does_not_resolve():

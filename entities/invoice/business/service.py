@@ -44,6 +44,85 @@ def _contiguous_runs(rows: list) -> list:
     return runs
 
 
+_INVOICE_NUMBER_TAIL = re.compile(r'^(\d+)(?:-\d+)?$')
+
+
+def _invoice_recency_key(invoice):
+    """Total order over a project's invoices, NEWEST LAST.
+
+    Tolerates the absent/None invoice_date and id that test fakes carry; equal
+    keys keep input order under a stable sort. Do NOT "simplify" this to the
+    sproc's own InvoiceDate DESC ordering — the series choice below depends on
+    which end of the list is newest, so the order has to be stated here.
+    """
+    stamp = getattr(invoice, "invoice_date", None)
+    return (
+        stamp is not None,
+        str(stamp) if stamp is not None else "",
+        getattr(invoice, "id", None) or 0,
+    )
+
+
+def _invoice_series_size(prefix: str, numbers: list) -> int:
+    """How many of `numbers` belong to the exact series `{prefix}-{digits}`."""
+    pattern = re.compile(rf'^{re.escape(prefix)}-\d+$', re.IGNORECASE)
+    return sum(1 for n in numbers if pattern.match(n))
+
+
+def _invoice_prefix_candidates(number: str) -> list:
+    """Every way `number` splits into `{prefix}-{N}` or `{prefix}-{N}-{dupe}`.
+
+    Irreducibly ambiguous, and BOTH readings are live in prod: 'ONT-1-14' is
+    series ONT-1 number 14, while 'HP2-12-3' is series HP2 number 12's third
+    copy (KI-5 dedupe suffix). A greedy split breaks the second, a non-greedy
+    one breaks the first — so enumerate both and let the caller choose.
+    """
+    return [
+        number[:i]
+        for i, ch in enumerate(number)
+        if ch == '-' and i and _INVOICE_NUMBER_TAIL.match(number[i + 1:])
+    ]
+
+
+def _derive_invoice_prefix(numbers_oldest_first: list, fallback: str) -> str:
+    """The series the project's NEWEST parseable invoice number belongs to.
+
+    `fallback` (the project's own Abbreviation) WINS whenever it already names a
+    live series here. That ordering is not a stylistic preference — it is load
+    bearing, and deriving purely from the newest number is a REGRESSION:
+
+        Prod holds HP-DRAFT-23, HP2-DRAFT-07, OL-DRAFT-10, TB3-DRAFT-17 and
+        HE12-Initial-2 — placeholder rows that parse perfectly as
+        `{prefix}-{N}`. Read newest-first, HP-DRAFT-23 yields the sole candidate
+        'HP-DRAFT' with a series size of 1 (it matches itself), so it wins
+        unopposed and the next number becomes HP-DRAFT-24. The human actually
+        issued HP-23, which is what the old abbreviation-only scan returned
+        because it ignored HP-DRAFT-23 entirely.
+
+    A placeholder and a deliberately-opened new series are the SAME SHAPE
+    (`{X}-{WORD}-{N}`), so no amount of parsing separates HP-DRAFT-23 from
+    BMB-POST-01. The Abbreviation is the only signal that can, which is why it
+    goes first — and why it is consulted only when it names a series that exists,
+    so the 82 NULL-Abbreviation projects still fall through to the data.
+
+    Among data candidates the ambiguity is broken by SERIES SIZE, SHORTEST
+    prefix breaking a tie. 'HP2-12-3' -> HP2 (12 siblings vs 1 for 'HP2-12');
+    'ONT-1-14' -> ONT-1 (8 vs 0 for 'ONT'). Shortest-on-tie matters when the
+    plain series has one member: ['SD2-01', 'SD2-01-2', 'SD2-02-2'] ties SD2 and
+    SD2-02 at 1 apiece, and longest-on-tie would open a bogus 'SD2-02-NN'.
+    """
+    if fallback and _invoice_series_size(fallback, numbers_oldest_first):
+        return fallback
+    for number in reversed(numbers_oldest_first):
+        candidates = _invoice_prefix_candidates(number)
+        if candidates:
+            return max(
+                candidates,
+                key=lambda p: (_invoice_series_size(p, numbers_oldest_first), -len(p)),
+            )
+    return fallback
+
+
 class InvoiceService:
     """
     Service for Invoice entity business operations.
@@ -1489,14 +1568,38 @@ class InvoiceService:
     def get_next_invoice_number(self, project_public_id: str) -> str:
         """
         Given a project, determine the next invoice number.
-        Pattern: {project.abbreviation}-{N} where N is max existing + 1.
-        If no existing invoices, starts at 1.
+
+        The prefix comes from the project's OWN invoice history — the series its
+        NEWEST invoice belongs to — NOT from `Project.Abbreviation`. That column
+        is NULL on 82 of the 106 prod projects that have invoices, so the prefix
+        the max() scan was built from fell back to "INV", matched none of those
+        projects' real numbers, and every one of those 82 live client-draw
+        sequences restarted at "INV-1" (measured 2026-09-28; "INV-%" matches 0
+        of 1,012 existing invoices, which is why no bad row was ever written —
+        this endpoint only SUGGESTS a number). `Project.Abbreviation` is now the
+        fallback when no invoice number parses, and "INV" only when neither
+        exists.
+
+        Precedence: the project's Abbreviation wins when it already names a live
+        series (so the 24 projects that have one keep the number they get today,
+        and prod's HP-DRAFT-23 / TB3-DRAFT-17 placeholder rows cannot hijack the
+        sequence); otherwise the series the project's NEWEST parseable number
+        belongs to. Latest-wins among the data is deliberate: project 42 opens
+        EVD-01..EVD-03 then switches to EVR-04..EVR-20, and project 16 runs
+        BMB-01..BMB-34 then opens BMB-POST-01 — the series most recently issued
+        under is the one to continue, even when it is the smaller one.
+
+        Zero-padded to the width the series already uses, minimum two ("ABC-08"
+        -> "ABC-09", never "ABC-9"): all 942 unambiguous prod numbers are 2-wide,
+        and a bare single digit also string-sorts AFTER "-10" in the web list and
+        in the SharePoint folder names `_upload_to_sharepoint` derives from this.
+
+        Case is inherited from the newest matching number, so "Exton-01" is
+        followed by "Exton-02" rather than being shouted into uppercase.
         """
         project = self.project_service.read_by_public_id(public_id=project_public_id)
         if not project:
             raise ValueError(f"Project with public_id '{project_public_id}' not found.")
-
-        prefix = (project.abbreviation or "INV").upper()
 
         # SERVICE read, not self.repo: ReadInvoicesPaginated filters on
         # dbo.UserCanAccessProject, which fails closed on a NULL actor — the
@@ -1513,17 +1616,24 @@ class InvoiceService:
             project_id=project.id,
         )
 
-        max_num = 0
-        pattern = re.compile(rf'^{re.escape(prefix)}-(\d+)$', re.IGNORECASE)
-        for inv in invoices:
-            if inv.invoice_number:
-                m = pattern.match(inv.invoice_number.strip())
-                if m:
-                    num = int(m.group(1))
-                    if num > max_num:
-                        max_num = num
+        ordered = sorted(invoices, key=_invoice_recency_key)
+        numbers = [inv.invoice_number.strip() for inv in ordered if inv.invoice_number]
 
-        return f"{prefix}-{max_num + 1}"
+        # .strip() also closes a latent branch: a whitespace-only abbreviation is
+        # truthy, and the old `or "INV"` let it through to emit "  -1".
+        fallback = (getattr(project, "abbreviation", None) or "").strip().upper() or "INV"
+        prefix = _derive_invoice_prefix(numbers, fallback)
+
+        max_num = 0
+        width = 2
+        pattern = re.compile(rf'^{re.escape(prefix)}-(\d+)$', re.IGNORECASE)
+        for number in numbers:
+            m = pattern.match(number)
+            if m and int(m.group(1)) >= max_num:
+                max_num = int(m.group(1))
+                width = max(len(m.group(1)), 2)
+
+        return f"{prefix}-{str(max_num + 1).zfill(width)}"
 
     def _upload_to_sharepoint(self, invoice, line_items: list) -> dict:
         """

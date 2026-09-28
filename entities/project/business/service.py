@@ -1,4 +1,5 @@
 # Python Standard Library Imports
+import logging
 from typing import Optional, Tuple
 
 # Third-party Imports
@@ -8,10 +9,114 @@ from entities.project.business.model import Project
 from entities.project.persistence.repo import ProjectRepository
 from shared.authz import current_user_id, current_is_system_admin
 
+logger = logging.getLogger(__name__)
+
+# The company-level Role whose holders are granted access to every new project.
+# Read as data (dbo.UserRole -> dbo.Role.Name) rather than hardcoded to a user
+# id: the Owner changes, the rule does not.
+_OWNER_ROLE_NAME = "Owner"
+
 
 def _actor_scope() -> Tuple[Optional[int], Optional[bool]]:
     """Read the current request actor from ContextVars."""
     return current_user_id.get(), current_is_system_admin.get()
+
+
+def _grant_owner_project_access(project_id: int) -> None:
+    """
+    Give every company-level Owner a `dbo.UserProject` row on a newly created
+    Project, tagged `RoleId = Owner`.
+
+    WHY: review-notification routing buckets `Project Manager` -> To and
+    `Owner` -> Cc (`entities/review/business/recipient_service.py`). A project
+    with no Owner row produces an empty Cc on every review email it ever
+    generates, and the Cc has to exist BEFORE the project's first bill — by
+    which time it is too late to backfill. Bill 40638 on project 203 drafted
+    with an empty To AND Cc line for exactly this reason (U-556).
+
+    WHO: resolved from `dbo.UserRole` where the Role is named 'Owner', scoped to
+    the project's OWN CompanyId (read back from the row, not from the caller's
+    ambient context, so a system/connector path that carries no company still
+    resolves correctly).
+
+    FAILURE ISOLATION: never raises. A Project must be creatable even when the
+    grant cannot be written — the same contract the review-notification hook
+    keeps with Bill. A failure is logged and leaves the project grant-less,
+    which the idempotent backfill
+    (`intelligence/persistence/sql/patch.userproject_coverage_gap.sql`) repairs.
+
+    KNOWN GAP: this is a service-level hook, so a Project inserted by a path
+    that bypasses `ProjectService.create` — a restore, direct SQL — still
+    arrives grant-less. That is the accepted limitation of Option A in
+    `docs/design/u556-userproject-coverage.md`; the backfill remains the
+    safety net.
+    """
+    try:
+        from entities.user_project.business.service import UserProjectService
+        from shared.database import get_connection
+
+        with get_connection() as conn:
+            cursor = conn.cursor()
+            try:
+                cursor.execute(
+                    "SELECT ur.[UserId], r.[Id] "
+                    "FROM dbo.[UserRole] ur "
+                    "INNER JOIN dbo.[Role] r ON r.[Id] = ur.[RoleId] "
+                    "INNER JOIN dbo.[Project] p ON p.[CompanyId] = ur.[CompanyId] "
+                    "WHERE r.[Name] = ? AND p.[Id] = ?",
+                    (_OWNER_ROLE_NAME, project_id),
+                )
+                owner_rows = cursor.fetchall()
+            finally:
+                cursor.close()
+
+        if not owner_rows:
+            logger.info(
+                "project.owner_grant.no_owner project_id=%s reason=no_company_level_owner_role",
+                project_id,
+            )
+            return
+
+        service = UserProjectService()
+        # Idempotent: the UNIQUE index UQ_UserProject_UserId_ProjectId fails
+        # loud on a duplicate, so skip anyone already granted rather than
+        # relying on the constraint to absorb a re-run.
+        already = {
+            up.user_id for up in (service.read_by_project_id(project_id) or [])
+        }
+        actor = current_user_id.get()
+        granted = 0
+        for owner_user_id, owner_role_id in owner_rows:
+            if owner_user_id in already:
+                continue
+            try:
+                # NB: the service derives modified_by from created_by — it takes
+                # no modified_by_user_id kwarg.
+                service.create(
+                    user_id=owner_user_id,
+                    project_id=project_id,
+                    role_id=owner_role_id,
+                    created_by_user_id=actor,
+                )
+                granted += 1
+            except Exception as error:
+                # One owner failing must not deny the others their row.
+                logger.error(
+                    "project.owner_grant.row_failed project_id=%s user_id=%s: %s",
+                    project_id,
+                    owner_user_id,
+                    error,
+                )
+        logger.info(
+            "project.owner_grant.done project_id=%s granted=%d already_held=%d",
+            project_id,
+            granted,
+            len(already),
+        )
+    except Exception as error:
+        logger.exception(
+            "project.owner_grant.failed project_id=%s: %s", project_id, error
+        )
 
 
 class ProjectService:
@@ -55,7 +160,7 @@ class ProjectService:
                 f"An active project named '{name}' already exists. Use the "
                 f"existing project or choose a different name."
             )
-        return self.repo.create(
+        project = self.repo.create(
             tenant_id=tenant_id,
             name=name,
             description=description,
@@ -65,6 +170,12 @@ class ProjectService:
             notes=notes,
             created_by_user_id=current_user_id.get(),
         )
+        # U-556: seed the Owner's UserProject row so review notifications can
+        # route a Cc from this project's very first bill. Failure-isolated —
+        # see _grant_owner_project_access.
+        if project is not None and getattr(project, "id", None) is not None:
+            _grant_owner_project_access(int(project.id))
+        return project
 
     def read_all(self) -> list[Project]:
         """

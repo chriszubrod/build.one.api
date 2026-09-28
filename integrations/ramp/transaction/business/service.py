@@ -45,6 +45,7 @@ class RampChaserSweepStats:
     upserted: int = 0
     resolved: int = 0
     skipped_approval_only: int = 0
+    refreshed_tracked_approval_only: int = 0
     skipped_inactive_cardholder: int = 0
     unroutable_persisted: int = 0
     flag_unknown: int = 0
@@ -186,15 +187,25 @@ class RampTransactionService:
                 continue
 
             if cls.skip_approval_only:
-                stats.skipped_approval_only += 1
-                logger.warning(
-                    "ramp.chaser.skip.approval_only",
-                    extra={
-                        "event_name": "ramp.chaser.skip.approval_only",
-                        "ramp_transaction_id": ramp_id,
-                    },
-                )
-                continue
+                if ramp_id in unresolved_ids:
+                    stats.refreshed_tracked_approval_only += 1
+                    logger.warning(
+                        "ramp.chaser.refresh.approval_only_tracked",
+                        extra={
+                            "event_name": "ramp.chaser.refresh.approval_only_tracked",
+                            "ramp_transaction_id": ramp_id,
+                        },
+                    )
+                else:
+                    stats.skipped_approval_only += 1
+                    logger.warning(
+                        "ramp.chaser.skip.approval_only",
+                        extra={
+                            "event_name": "ramp.chaser.skip.approval_only",
+                            "ramp_transaction_id": ramp_id,
+                        },
+                    )
+                    continue
 
             snapshot = _snapshot_from_raw(raw)
             card_holder_user_id = snapshot["card_holder_user_id"]

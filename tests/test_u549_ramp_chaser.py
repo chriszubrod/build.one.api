@@ -228,7 +228,68 @@ def test_approval_only_guard_skips_and_counts(caplog):
     svc = _make_service(txns, users)
     stats = svc.run_chaser_sweep(follow_up_repo=repo)
     assert stats.skipped_approval_only == 1
+    assert stats.refreshed_tracked_approval_only == 0
     assert repo.upsert_calls == 0
+
+
+def test_tracked_approval_only_refreshes_needs_flags_not_resolved(caplog):
+    repo = _FakeFollowUpRepo()
+    repo.upsert_open_item(
+        ramp_transaction_id="appr-tracked-1",
+        card_holder_ramp_user_id="user-1",
+        card_holder_name="Pat Cardholder",
+        merchant_name="M",
+        amount=Decimal("75.00"),
+        transaction_date="2026-09-01",
+        needs_memo=True,
+        needs_receipt=True,
+    )
+    txns = [
+        _txn(txn_id="appr-tracked-1", complete=False, memo="ok", receipts=[{"id": "r1"}]),
+    ]
+    users = [{"id": "user-1", "email": "pat@example.com", "status": "USER_ACTIVE"}]
+    svc = _make_service(txns, users)
+    with caplog.at_level(logging.WARNING):
+        stats = svc.run_chaser_sweep(follow_up_repo=repo)
+    assert stats.refreshed_tracked_approval_only == 1
+    assert stats.skipped_approval_only == 0
+    assert stats.resolved == 0
+    assert repo.rows["appr-tracked-1"]["needs_memo"] is False
+    assert repo.rows["appr-tracked-1"]["needs_receipt"] is False
+    assert repo.rows["appr-tracked-1"]["resolved_at"] is None
+    assert "appr-tracked-1" not in repo.resolve_calls
+    assert repo.upsert_calls >= 2
+    assert any(
+        record.message == "ramp.chaser.refresh.approval_only_tracked"
+        or getattr(record, "event_name", "") == "ramp.chaser.refresh.approval_only_tracked"
+        for record in caplog.records
+    )
+
+
+def test_approval_only_never_tracked_vs_tracked_separate_counters():
+    repo = _FakeFollowUpRepo()
+    repo.upsert_open_item(
+        ramp_transaction_id="tracked-appr",
+        card_holder_ramp_user_id="user-1",
+        card_holder_name="Pat",
+        merchant_name="M",
+        amount=Decimal("10.00"),
+        transaction_date="2026-09-01",
+        needs_memo=True,
+        needs_receipt=True,
+    )
+    txns = [
+        _txn(txn_id="never-appr", complete=False, memo="ok", receipts=[{"id": "r1"}]),
+        _txn(txn_id="tracked-appr", complete=False, memo="ok", receipts=[{"id": "r2"}]),
+    ]
+    users = [{"id": "user-1", "email": "pat@example.com", "status": "USER_ACTIVE"}]
+    svc = _make_service(txns, users)
+    stats = svc.run_chaser_sweep(follow_up_repo=repo)
+    assert stats.skipped_approval_only == 1
+    assert stats.refreshed_tracked_approval_only == 1
+    assert "never-appr" not in repo.rows
+    assert repo.rows["tracked-appr"]["needs_memo"] is False
+    assert repo.rows["tracked-appr"]["needs_receipt"] is False
 
 
 def test_email_resolves_via_users_roster_once_per_sweep():

@@ -1,6 +1,7 @@
 # U-556 — UserProject coverage for new projects
 
-**Status:** Part 1 (backfill) BUILT + dry-run verified. Part 2 (recurrence) DESIGN — gated, not built.
+**Status:** Part 1 (backfill) **APPLIED to prod 2026-09-28** — narrowed to top-up only, 66 rows.
+Part 2 (recurrence) DESIGN — gated, not built.
 **Date:** 2026-09-28
 
 ## Problem
@@ -67,26 +68,47 @@ the Owner Cc must exist *before* a project's first bill, and projects 202/204
 carry zero activity, so the old filter would leave exactly the gap that caused
 the empty Cc.
 
-Transactional dry-run against live data (applied, asserted, rolled back):
+### Narrowed to a top-up (Chris's call, 2026-09-28)
 
-```
-before: UserProject=4670  Projects=139
-  agents inserted: 337        (11 fleet agents +5 each; CL/TT agents +139 each)
-  owner  inserted: 7
-after:  UserProject=5014  (+344)
-agents with incomplete coverage: 0
-Austin rows=139, NULL RoleId=0
-UserCanAccessProject(bill_agent, 204)           False -> True
-UserCanAccessProject(contract_labor_agent, 204) False -> True
-UserCanAccessProject(Austin, 204)               False -> True
-idempotency re-run inserted: 0
+The unnarrowed script would have written **344** rows, of which **278** were
+`contract_labor_agent` (49) and `time_tracking_agent` (50) going 0 → 139. That is
+a real access expansion, not a top-up — both are locked out of *every* project,
+not just the new ones — so it was split out and deferred.
+
+The narrowing is a **predicate, not a name list**:
+
+```sql
+AND EXISTS (SELECT 1 FROM dbo.[UserProject] held WHERE held.[UserId] = u.[Id])
 ```
 
-⚠ **278 of the 337 agent rows are `contract_labor_agent` + `time_tracking_agent`
-going 0 → 139.** That is a real access expansion, not a top-up. It matches
-`gap1`'s stated intent ("agents are tenant-wide query bots") and both agents were
-provisioned after it ran — but it deserves an explicit yes rather than arriving
-inside a routine backfill.
+Only agents that already hold coverage get topped up. This matters beyond the two
+agents at hand: `gap1` grants any `IsAgent = 1` row the whole estate, so an agent
+provisioned tomorrow would silently inherit tenant-wide reach the next time
+anyone re-ran a backfill to fix an unrelated gap. Coverage should widen by an
+explicit decision. A predicate stays true for agents that do not exist yet; a
+list of usernames would rot.
+
+The post-flight assertion was changed to match — `NOT IN (0, @Projects)` — since
+"every agent covers every project" would otherwise fail the script on exactly the
+rows we chose not to write. Zero-coverage agents are listed under a `DEFERRED`
+heading so a zero never reads as "done".
+
+### Applied to prod 2026-09-28
+
+```
+UserProject 4670 -> 4736   (delta 66 = 59 agent + 7 Owner)
+12 agents at 139/139; agents 49 + 50 deferred at 0
+Austin 139/139, NULL RoleId = 0
+UserCanAccessProject(bill_agent,           201..204) = Y Y Y Y
+UserCanAccessProject(orchestrator,         201..204) = Y Y Y Y
+UserCanAccessProject(Austin/Owner,         201..204) = Y Y Y Y
+UserCanAccessProject(contract_labor_agent, 201..204) = N N N N   (deferred, as intended)
+duplicate (UserId, ProjectId) pairs: 0
+re-ran the script against prod: count unchanged at 4736 (idempotent)
+```
+
+**To grant the deferred 278 later:** drop the `EXISTS` clause and re-run. The
+whole script is idempotent, so the rows already applied are a no-op.
 
 ## Part 2 — stopping the recurrence (DESIGN, gated)
 

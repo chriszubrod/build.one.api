@@ -47,16 +47,30 @@ DECLARE @OwnerGap INT = (
 PRINT CONCAT('PRE-FLIGHT: agent rows missing = ', @AgentGap, ' | Owner rows missing = ', @OwnerGap);
 GO
 
--- ─── 1. Agents x Projects ────────────────────────────────────────────────
+-- ─── 1. Agents x Projects — TOP-UP ONLY ──────────────────────────────────
 -- Reuses gap1_agent_user_project_backfill.sql's exact CROSS JOIN + NOT EXISTS
 -- shape rather than inventing a second pattern. That script already documents
 -- the intent ("agents are tenant-wide query bots") and declares itself
 -- "re-runnable as new Projects come online" — it simply was never re-run.
 --
--- NOTE ON VOLUME: contract_labor_agent (49) and time_tracking_agent (50) were
--- provisioned AFTER gap1 ran and carry ZERO rows, so they account for the bulk
--- of this insert. That is a genuine access expansion, not a no-op top-up, and
--- is called out in the unit notes. Both are covered by gap1's stated intent.
+-- ⛔ ONE DELIBERATE NARROWING vs gap1: the extra
+--        AND EXISTS (SELECT 1 FROM dbo.[UserProject] WHERE UserId = u.Id)
+--    restricts this to agents that ALREADY hold coverage — a top-up of an
+--    existing grant, never a 0 → every-project expansion.
+--
+--    Why it is a rule and not a name list: gap1 grants any IsAgent=1 row the
+--    whole estate, so an agent provisioned later (or added tomorrow) silently
+--    inherits tenant-wide reach the first time someone re-runs a backfill.
+--    Coverage should widen by an explicit decision, not as a side effect of
+--    fixing someone else's gap. Expressed as a predicate this stays true for
+--    agents that do not exist yet; a list of usernames would rot.
+--
+--    Deferred by this narrowing (Chris's call, 2026-09-28): contract_labor_agent
+--    (49) and time_tracking_agent (50), both provisioned after gap1 and both on
+--    ZERO rows — 278 rows between them. They are locked out of EVERY project,
+--    not just the new ones, so granting them is a real posture change that gets
+--    its own yes. To grant later, drop the EXISTS clause and re-run: the whole
+--    script is idempotent, so the already-applied rows are a no-op.
 DECLARE @AgentInserted INT = 0;
 
 INSERT INTO dbo.[UserProject] (CreatedDatetime, ModifiedDatetime, UserId, ProjectId, CreatedByUserId, ModifiedByUserId)
@@ -64,6 +78,10 @@ SELECT SYSUTCDATETIME(), SYSUTCDATETIME(), u.[Id], p.[Id], 17, 17
 FROM dbo.[User] u
 CROSS JOIN dbo.[Project] p
 WHERE u.[IsAgent] = 1
+  AND EXISTS (
+      SELECT 1 FROM dbo.[UserProject] held
+       WHERE held.[UserId] = u.[Id]
+  )
   AND NOT EXISTS (
       SELECT 1 FROM dbo.[UserProject] existing
        WHERE existing.[UserId] = u.[Id]
@@ -122,25 +140,40 @@ DECLARE @Projects INT = (SELECT COUNT(*) FROM dbo.[Project]);
 PRINT '────────────────────────────────────────────────────────────';
 PRINT CONCAT('Total projects: ', @Projects);
 
--- Every agent should now equal @Projects. Any shortfall is a real failure.
+-- Every agent that HOLDS coverage should now equal @Projects. An agent on zero
+-- rows is deliberately untouched by section 1 and is NOT a failure — it is the
+-- deferred expansion. Asserting "every agent == @Projects" here would fail the
+-- script on exactly the rows we chose not to write.
 IF EXISTS (
     SELECT 1 FROM dbo.[User] u
      WHERE u.[IsAgent] = 1
-       AND (SELECT COUNT(*) FROM dbo.[UserProject] up WHERE up.[UserId] = u.[Id]) <> @Projects
+       AND (SELECT COUNT(*) FROM dbo.[UserProject] up WHERE up.[UserId] = u.[Id]) NOT IN (0, @Projects)
 )
 BEGIN
-    PRINT 'FAIL: at least one agent still has incomplete project coverage:';
+    PRINT 'FAIL: an agent holding coverage is still incomplete:';
     SELECT u.[Id],
            u.[Firstname] + ' ' + u.[Lastname] AS Agent,
            (SELECT COUNT(*) FROM dbo.[UserProject] up WHERE up.[UserId] = u.[Id]) AS Rows_,
            @Projects AS Expected
       FROM dbo.[User] u
      WHERE u.[IsAgent] = 1
-       AND (SELECT COUNT(*) FROM dbo.[UserProject] up WHERE up.[UserId] = u.[Id]) <> @Projects
+       AND (SELECT COUNT(*) FROM dbo.[UserProject] up WHERE up.[UserId] = u.[Id]) NOT IN (0, @Projects)
      ORDER BY u.[Id];
 END
 ELSE
-    PRINT 'OK: every agent covers every project.';
+    PRINT 'OK: every agent holding coverage covers every project.';
+
+-- Name the deferred ones explicitly so a zero never reads as "done".
+IF EXISTS (SELECT 1 FROM dbo.[User] u WHERE u.[IsAgent] = 1
+            AND NOT EXISTS (SELECT 1 FROM dbo.[UserProject] up WHERE up.[UserId] = u.[Id]))
+BEGIN
+    PRINT 'DEFERRED (zero coverage by design — needs an explicit grant decision):';
+    SELECT u.[Id], u.[Firstname] + ' ' + u.[Lastname] AS Agent, 0 AS Rows_
+      FROM dbo.[User] u
+     WHERE u.[IsAgent] = 1
+       AND NOT EXISTS (SELECT 1 FROM dbo.[UserProject] up WHERE up.[UserId] = u.[Id])
+     ORDER BY u.[Id];
+END
 
 -- Austin must cover every project AND carry RoleId = Owner on all of them.
 DECLARE @AustinId BIGINT = (SELECT u.[Id] FROM dbo.[User] u

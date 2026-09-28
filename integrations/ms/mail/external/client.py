@@ -405,6 +405,25 @@ def get_message(
             }
         try:
             formatted = _format_message(msg, include_body=include_body)
+            formatted["odata_etag"] = msg.get("@odata.etag")
+            bcc_recipients = [
+                {
+                    "name": r.get("emailAddress", {}).get("name"),
+                    "email": r.get("emailAddress", {}).get("address"),
+                }
+                for r in (msg.get("bccRecipients") or [])
+            ]
+            formatted["bcc_recipients"] = bcc_recipients
+            formatted["attachments"] = [
+                {
+                    "id": att.get("id"),
+                    "name": att.get("name"),
+                    "content_type": att.get("contentType"),
+                    "size": att.get("size"),
+                    "is_inline": att.get("isInline", False),
+                }
+                for att in (msg.get("attachments") or [])
+            ]
         except (AttributeError, TypeError) as format_error:
             logger.error(
                 "Failed to format Graph message %s: %s",
@@ -417,26 +436,6 @@ def get_message(
                 "is_retryable": True,
                 "email": None,
             }
-        formatted["odata_etag"] = msg.get("@odata.etag")
-
-        bcc_recipients = [
-            {
-                "name": r.get("emailAddress", {}).get("name"),
-                "email": r.get("emailAddress", {}).get("address"),
-            }
-            for r in msg.get("bccRecipients", [])
-        ]
-        formatted["bcc_recipients"] = bcc_recipients
-        formatted["attachments"] = [
-            {
-                "id": att.get("id"),
-                "name": att.get("name"),
-                "content_type": att.get("contentType"),
-                "size": att.get("size"),
-                "is_inline": att.get("isInline", False),
-            }
-            for att in msg.get("attachments", [])
-        ]
         return {
             "message": "Message retrieved successfully",
             "status_code": 200,
@@ -707,7 +706,6 @@ def update_draft(
     cc_recipients: Optional[List[dict]] = None,
     bcc_recipients: Optional[List[dict]] = None,
     importance: Optional[str] = None,
-    if_match: Optional[str] = None,
 ) -> dict:
     """Update an existing draft message."""
     message: Dict[str, Any] = {}
@@ -724,16 +722,11 @@ def update_draft(
     if importance is not None:
         message["importance"] = importance
 
-    extra_headers: Optional[Dict[str, str]] = None
-    if if_match:
-        extra_headers = {"If-Match": if_match}
-
     try:
         with MsGraphClient() as client:
             draft = client.patch(
                 f"me/messages/{message_id}",
                 json=message,
-                extra_headers=extra_headers,
                 operation_name="mail.update_draft",
             )
         if not isinstance(draft, dict):

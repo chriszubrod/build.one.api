@@ -901,8 +901,6 @@ class MsGraphClient:
             raise MsNotFoundError(message, **common)
         if status == 409:
             raise MsConflictError(message, **common)
-        if status == 412:
-            raise MsClientError(message, **common)
         if status == 423:
             raise MsLockedError(message, **common)
         if status == 429:

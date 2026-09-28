@@ -29,9 +29,11 @@ KIND_INSERT_EXCEL_ROW = "insert_excel_row"
 KIND_SEND_MAIL = "send_mail"  # Phase 4
 KIND_UPDATE_DRAFT = "update_draft"  # U-549 Phase C1
 
-# Distinct, greppable drain outcomes stamped onto update_draft payload rows.
+# Factual update_draft drain outcomes (what Graph returned). None of these mean the
+# message was sent — a later phase interprets them with conversation / folder context.
 UPDATE_DRAFT_OUTCOME_PATCHED = "update_draft_patched"
-UPDATE_DRAFT_OUTCOME_TARGET_GONE = "update_draft_target_gone"
+UPDATE_DRAFT_OUTCOME_NOT_A_DRAFT = "update_draft_not_a_draft"
+UPDATE_DRAFT_OUTCOME_NOT_FOUND = "update_draft_not_found"
 
 
 def sharepoint_upload_outcome(queued: Optional[MsOutbox]) -> str:

@@ -22,8 +22,9 @@ from integrations.ms.outbox.business.service import (
     KIND_SEND_MAIL,
     KIND_UPDATE_DRAFT,
     KIND_UPLOAD_SHAREPOINT_FILE,
+    UPDATE_DRAFT_OUTCOME_NOT_A_DRAFT,
+    UPDATE_DRAFT_OUTCOME_NOT_FOUND,
     UPDATE_DRAFT_OUTCOME_PATCHED,
-    UPDATE_DRAFT_OUTCOME_TARGET_GONE,
 )
 from integrations.ms.outbox.persistence.repo import MsOutboxRepository
 from shared.authz.context import system_authz
@@ -904,14 +905,11 @@ class MsOutboxWorker:
             "body_type":     "HTML" | "Text",
           }
 
-        On success stamps `update_draft_outcome=update_draft_patched` on the
-        row payload. When the target draft was sent or deleted before drain,
-        completes terminally with `update_draft_outcome=update_draft_target_gone`
-        (no retry, no dead-letter, no recreate).
+        Stamps factual `update_draft_outcome` values on the row payload (see
+        service module constants). None of those outcomes mean the message was sent.
 
         Read-before-write: GET the message and require `is_draft is True` before
-        PATCHing. Graph still permits PATCH on sent messages until 2026-12-31;
-        without the GET gate a queued body could rewrite an already-sent chaser.
+        PATCHing so we do not rewrite a message already known not to be a draft.
         """
         from integrations.ms.mail.external.client import get_message, update_draft
 
@@ -927,17 +925,21 @@ class MsOutboxWorker:
         body_type = payload.get("body_type") or "HTML"
 
         get_result = get_message(message_id=graph_message_id, include_body=False)
-        if self._is_update_draft_get_terminal_gone(get_result):
-            self._stamp_update_draft_outcome(
-                row, payload, UPDATE_DRAFT_OUTCOME_TARGET_GONE
+        get_terminal = self._classify_update_draft_get_terminal(get_result)
+        if get_terminal is not None:
+            self._stamp_update_draft_outcome(row, payload, get_terminal)
+            event_name = (
+                "ms.outbox.update_draft.not_found"
+                if get_terminal == UPDATE_DRAFT_OUTCOME_NOT_FOUND
+                else "ms.outbox.update_draft.not_a_draft"
             )
             logger.info(
-                "ms.outbox.update_draft.target_gone",
+                event_name,
                 extra={
-                    "event_name": "ms.outbox.update_draft.target_gone",
+                    "event_name": event_name,
                     "outbox_public_id": row.public_id,
                     "graph_message_id": graph_message_id,
-                    "update_draft_outcome": UPDATE_DRAFT_OUTCOME_TARGET_GONE,
+                    "update_draft_outcome": get_terminal,
                     "http_status": (
                         get_result.get("status_code")
                         if isinstance(get_result, dict)
@@ -956,24 +958,10 @@ class MsOutboxWorker:
 
         self._raise_if_external_error(row, get_result)
 
-        email = get_result.get("email") if isinstance(get_result, dict) else None
-        odata_etag = email.get("odata_etag") if isinstance(email, dict) else None
-        if not odata_etag:
-            # Residual TOCTOU when @odata.etag is absent: Graph supports If-Match on
-            # PATCH me/messages/{id}, but without the etag we cannot precondition the
-            # write. A human can send between this GET and PATCH; Graph may accept
-            # PATCH on the now-sent message (~sub-second window vs the old ~60s queue
-            # delay). Normal message GETs include @odata.etag; this branch is the
-            # irreducible gap when it does not.
-            logger.warning(
-                "ms.outbox.update_draft.patch_without_if_match",
-                extra={
-                    "event_name": "ms.outbox.update_draft.patch_without_if_match",
-                    "outbox_public_id": row.public_id,
-                    "graph_message_id": graph_message_id,
-                },
-            )
-
+        # Residual race (accepted): a human can send between this GET and PATCH.
+        # Graph permits PATCH on a sent message until 2026-12-31, so the consequence
+        # is a rewritten sent message. If-Match was removed — unsupported on this
+        # contract and previously manufactured false terminal outcomes.
         result = update_draft(
             message_id=graph_message_id,
             to_recipients=to_addresses,
@@ -982,20 +970,19 @@ class MsOutboxWorker:
             body_type=body_type,
             cc_recipients=cc_addresses,
             bcc_recipients=bcc_addresses,
-            if_match=odata_etag,
         )
 
-        if self._is_update_draft_target_gone(result):
+        if self._is_update_draft_patch_not_found(result):
             self._stamp_update_draft_outcome(
-                row, payload, UPDATE_DRAFT_OUTCOME_TARGET_GONE
+                row, payload, UPDATE_DRAFT_OUTCOME_NOT_FOUND
             )
             logger.info(
-                "ms.outbox.update_draft.target_gone",
+                "ms.outbox.update_draft.not_found",
                 extra={
-                    "event_name": "ms.outbox.update_draft.target_gone",
+                    "event_name": "ms.outbox.update_draft.not_found",
                     "outbox_public_id": row.public_id,
                     "graph_message_id": graph_message_id,
-                    "update_draft_outcome": UPDATE_DRAFT_OUTCOME_TARGET_GONE,
+                    "update_draft_outcome": UPDATE_DRAFT_OUTCOME_NOT_FOUND,
                     "http_status": result.get("status_code") if isinstance(result, dict) else None,
                     "phase": "patch",
                 },
@@ -1011,22 +998,24 @@ class MsOutboxWorker:
         self._stamp_update_draft_outcome(row, payload, UPDATE_DRAFT_OUTCOME_PATCHED)
 
     @staticmethod
-    def _is_update_draft_get_terminal_gone(result: Any) -> bool:
+    def _classify_update_draft_get_terminal(result: Any) -> Optional[str]:
         """
-        True only on positive proof the draft is gone: explicit 404, or 200 with
-        a well-formed email object whose `is_draft` is explicitly False.
+        Terminal GET facts only. Returns an outcome constant or None (retry/other).
+        GET 404 → id does not resolve; 200 + is_draft is False → not a draft.
         """
         if not isinstance(result, dict):
-            return False
+            return None
         status_code = result.get("status_code", 500)
         if status_code == 404:
-            return True
+            return UPDATE_DRAFT_OUTCOME_NOT_FOUND
         if status_code != 200:
-            return False
+            return None
         email = result.get("email")
         if not isinstance(email, dict):
-            return False
-        return email.get("is_draft") is False
+            return None
+        if email.get("is_draft") is False:
+            return UPDATE_DRAFT_OUTCOME_NOT_A_DRAFT
+        return None
 
     @staticmethod
     def _is_update_draft_get_inconclusive(result: Any) -> bool:
@@ -1044,18 +1033,11 @@ class MsOutboxWorker:
         return email.get("is_draft") is not True
 
     @staticmethod
-    def _is_update_draft_target_gone(result: Any) -> bool:
-        """
-        True only on positive proof PATCH cannot apply to an updatable draft:
-        explicit 404, or 412 If-Match precondition failed (message changed/sent
-        under us). Never infer from free-text 400 bodies.
-        """
+    def _is_update_draft_patch_not_found(result: Any) -> bool:
+        """True when PATCH reports 404 — the stored Graph id does not resolve."""
         if not isinstance(result, dict):
             return False
-        status_code = result.get("status_code", 500)
-        if status_code in (404, 412):
-            return True
-        return False
+        return result.get("status_code") == 404
 
     def _stamp_update_draft_outcome(
         self,

@@ -15,6 +15,25 @@ substantive session — it is the single cross-repo view of what is in flight, a
 - It has no `CLAUDE.md`/`SESSION_NOTES.md`/`TODO.md` of its own — `BOARD.md` is its state. It is committed and
   pushed like any repo, but it is **never deployable**.
 
+## Parallel sub-agents & worktrees
+
+⚠️ Sessions fan out to sub-agents, and **several sessions may be working this repo at once**. Agents share one
+filesystem and one git index. Full rules in the umbrella `../CLAUDE.md`; the ones that bite here:
+
+- **Disjoint `SCOPE` per writing agent.** Read-only agents may overlap freely; two agents writing one file is
+  the collision. Verify the diff against SCOPE mechanically (`--porcelain -uall` + md5), never by eye.
+- **Sub-agents never commit, push, deploy, or write prod data** — they hand back a diff; the session applies it.
+- **Any agent that writes code gets its own worktree**, and mutation testing ALWAYS does — in-place mutation
+  injects broken code into other sessions' test runs:
+  `git worktree add --detach .worktrees/<unit> origin/<branch>`, then symlink `.venv` and copy `.env`.
+- ⛔ **Worktrees on durable disk, never `/tmp`** (it gets wiped mid-unit). ⛔ **The stash stack is SHARED** —
+  never bare `git stash`/`pop`; push with a unique `-m` tag, `apply` by tag, drop by tag.
+- **Re-base a worktree before committing from it** — its base tip has moved since creation.
+- **Remove worktrees when done.** A stale one is a live writer, and has blocked a prod DROP before.
+- **Commit by explicit pathspec, never `-A`, and verify `git show <sha> --stat` before pushing** — another
+  session's uncommitted files are one careless command from your commit. ⚠️ Hunk-staged
+  (`git apply --cached`) ⇒ commit with **NO** pathspec, or you re-sweep the working tree.
+
 ## Working Style
 
 - **Plan before coding.** Propose a step-by-step plan and wait for approval before writing any code. Do not start implementing until the plan is confirmed.

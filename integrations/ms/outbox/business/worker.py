@@ -989,7 +989,7 @@ class MsOutboxWorker:
             )
             return
 
-        self._raise_if_external_error(row, result)
+        self._raise_unless_update_draft_patch_success(result)
 
         draft = result.get("draft") if isinstance(result, dict) else None
         message_id = (draft or {}).get("message_id") if isinstance(draft, dict) else None
@@ -1038,6 +1038,23 @@ class MsOutboxWorker:
         if not isinstance(result, dict):
             return False
         return result.get("status_code") == 404
+
+    @staticmethod
+    def _raise_unless_update_draft_patch_success(result: Any) -> None:
+        """
+        PATCH path: only 404 is a factual terminal (handled before this call).
+        Any other non-2xx is UNKNOWN — retry through the attempt budget.
+        """
+        if not isinstance(result, dict):
+            raise MsServerError(
+                "update_draft PATCH returned non-dict envelope",
+                http_status=503,
+            )
+        status_code = result.get("status_code", 500)
+        if 200 <= status_code < 300:
+            return
+        message = result.get("message") or "update_draft PATCH did not succeed"
+        raise MsServerError(message, http_status=503)
 
     def _stamp_update_draft_outcome(
         self,

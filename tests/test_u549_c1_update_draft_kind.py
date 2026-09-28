@@ -262,8 +262,8 @@ def test_patch_400_not_a_draft_body_retries_not_terminal():
 
     repo.mark_done.assert_not_called()
     repo.update_payload.assert_not_called()
-    repo.mark_dead_letter.assert_called_once()
-    repo.mark_failed.assert_not_called()
+    repo.mark_dead_letter.assert_not_called()
+    repo.mark_failed.assert_called_once()
 
 
 # ---------------------------------------------------------------------------
@@ -319,8 +319,8 @@ def test_get_200_empty_top_level_body_retries():
     repo.mark_done.assert_not_called()
 
 
-def test_get_message_null_bcc_recipients_parses_without_type_error():
-    """Graph may return null recipient collections; must not raise outside retry envelope."""
+def test_get_message_null_bcc_recipients_is_retryable_not_success():
+    """Explicit null in a collection slot is malformed — must not coerce to success."""
     from integrations.ms.mail.external.client import get_message
 
     mock_client = MagicMock()
@@ -335,33 +335,37 @@ def test_get_message_null_bcc_recipients_parses_without_type_error():
         client_cls.return_value.__enter__.return_value = mock_client
         result = get_message("msg-id", include_body=False)
 
-    assert result["status_code"] == 200
-    assert result["email"]["is_draft"] is True
-    assert result["email"]["bcc_recipients"] == []
+    assert result["status_code"] == 503
+    assert result.get("is_retryable") is True
+    assert result.get("email") is None
 
 
-def test_get_message_null_bcc_worker_patches_not_dead_letter():
+def test_get_message_null_bcc_recipients_worker_retries_not_terminal():
+    """Worker must exercise raw Graph null via get_message, not a pre-coerced envelope."""
     repo = MagicMock()
     worker = MsOutboxWorker(repo=repo)
     row = _update_row(attempts=0)
 
-    get_ok = {
-        "status_code": 200,
-        "email": {
-            "message_id": _GRAPH_MESSAGE_ID,
-            "is_draft": True,
-            "bcc_recipients": [],
-        },
+    mock_client = MagicMock()
+    mock_client.get.return_value = {
+        "id": _GRAPH_MESSAGE_ID,
+        "isDraft": True,
+        "bccRecipients": None,
     }
 
-    with patch(_GET_MESSAGE, return_value=get_ok), patch(
-        _UPDATE_DRAFT, return_value=_ok_patch()
-    ), patch.object(MsOutboxWorker, "_escalate_dead_letter"):
+    with patch(
+        "integrations.ms.mail.external.client.MsGraphClient"
+    ) as client_cls, patch(_UPDATE_DRAFT) as graph_patch, patch.object(
+        MsOutboxWorker, "_escalate_dead_letter"
+    ):
+        client_cls.return_value.__enter__.return_value = mock_client
         worker._process_inner(row)
 
-    repo.mark_done.assert_called_once()
+    graph_patch.assert_not_called()
+    repo.mark_failed.assert_called_once()
+    repo.mark_done.assert_not_called()
     repo.mark_dead_letter.assert_not_called()
-    repo.mark_failed.assert_not_called()
+    repo.update_payload.assert_not_called()
 
 
 def test_get_503_retries():
@@ -445,6 +449,34 @@ def test_get_message_list_body_is_retryable_not_dead_letter():
 # ---------------------------------------------------------------------------
 # Idempotency + durable outcome
 # ---------------------------------------------------------------------------
+
+
+def test_enqueue_update_draft_guard_count_failure_does_not_enqueue():
+    repo = MagicMock()
+    svc = MsOutboxService(repo=repo)
+    repo.count_by_entity_and_kind.side_effect = OSError("db unavailable")
+
+    with patch(
+        "integrations.ms.outbox.business.service._writes_allowed",
+        return_value=True,
+    ), patch(
+        "integrations.ms.outbox.business.service._resolve_tenant_id",
+        return_value="tenant-abc",
+    ), patch(
+        "integrations.ms.outbox.business.service.idempotency_guards_disabled",
+        return_value=False,
+    ):
+        result = svc.enqueue_update_draft(
+            entity_type=_ENTITY_TYPE,
+            entity_public_id=_ENTITY_PUBLIC_ID,
+            graph_message_id=_GRAPH_MESSAGE_ID,
+            to_addresses=[{"email": "worker@example.com"}],
+            subject="s",
+            body="b",
+        )
+
+    assert result is None
+    repo.create.assert_not_called()
 
 
 def test_second_enqueue_same_entity_does_not_create_second_row():

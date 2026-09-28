@@ -634,15 +634,16 @@ class MsOutboxService:
                     )
                     return None
             except Exception as error:
-                logger.warning(
-                    "ms.outbox.update_draft.idempotency_guard_failed",
+                logger.error(
+                    "ms.outbox.update_draft.idempotency_guard_failed_enqueue_refused",
                     extra={
-                        "event_name": "ms.outbox.update_draft.idempotency_guard_failed",
+                        "event_name": "ms.outbox.update_draft.idempotency_guard_failed_enqueue_refused",
                         "entity_type": entity_type,
                         "entity_public_id": entity_public_id,
                         "error_class": type(error).__name__,
                     },
                 )
+                return None
 
         return self.enqueue(
             kind=KIND_UPDATE_DRAFT,

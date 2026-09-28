@@ -406,14 +406,24 @@ def get_message(
         try:
             formatted = _format_message(msg, include_body=include_body)
             formatted["odata_etag"] = msg.get("@odata.etag")
+            if "bccRecipients" in msg and msg["bccRecipients"] is None:
+                raise TypeError("Graph message bccRecipients was null")
+            bcc_source = (
+                msg["bccRecipients"] if "bccRecipients" in msg else []
+            )
             bcc_recipients = [
                 {
                     "name": r.get("emailAddress", {}).get("name"),
                     "email": r.get("emailAddress", {}).get("address"),
                 }
-                for r in (msg.get("bccRecipients") or [])
+                for r in bcc_source
             ]
             formatted["bcc_recipients"] = bcc_recipients
+            if "attachments" in msg and msg["attachments"] is None:
+                raise TypeError("Graph message attachments was null")
+            attachments_source = (
+                msg["attachments"] if "attachments" in msg else []
+            )
             formatted["attachments"] = [
                 {
                     "id": att.get("id"),
@@ -422,7 +432,7 @@ def get_message(
                     "size": att.get("size"),
                     "is_inline": att.get("isInline", False),
                 }
-                for att in (msg.get("attachments") or [])
+                for att in attachments_source
             ]
         except (AttributeError, TypeError) as format_error:
             logger.error(

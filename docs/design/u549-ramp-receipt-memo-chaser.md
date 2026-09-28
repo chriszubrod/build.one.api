@@ -5,7 +5,9 @@
 > Repos: `build.one.api` (primary) · `build.one.scheduler` · `build.one.web`.
 > Origin: this is U-005's explicitly deferred v2 — *"Auto-emailing cardholders for missing info (v2 — the
 > exception path is flag only in v1)"* ([`expense-coding-cockpit.md`](../../../build.one.team/product/specs/expense-coding-cockpit.md)).
-> Author: session 2026-09-25 with Chris. Status: **awaiting Gate-1.**
+> Author: session 2026-09-25 with Chris.
+> **Status: Gate-1 APPROVED 2026-09-27 · Phase A BUILT, reviewed, mutation-proven · Gate-2 pending.**
+> Phases B–E are still unbuilt and each takes its own Gate 1.
 
 ---
 
@@ -232,7 +234,7 @@ and drops off the worklist.
 | `Id`, `PublicId` | house convention |
 | `RampTransactionId` | Ramp's id — **UNIQUE**, the idempotency anchor |
 | `CardHolderRampUserId`, `CardHolderName` | off the transaction's `card_holder` |
-| `CardHolderEmail` | ⚠️ **from the `/users` join, NOT the transaction** (§4.3) — nullable; null = unroutable, surfaced on the worklist, never silently dropped |
+| ~~`CardHolderEmail`~~ | ⛔ **NOT STORED — removed at Gate 2 (Chris, 2026-09-27).** See §5.1. |
 | `MerchantName`, `Amount`, `TransactionDate` | for the digest body and the worklist |
 | `NeedsMemo`, `NeedsReceipt` | **descriptive, not selective** — they populate the digest body ("what's missing"). Membership is decided solely by Ramp's `all_requirements_met_and_approved` (§4.4). |
 | `FirstSeenAt` | drives the age buckets and the 14-day escalation |
@@ -244,6 +246,31 @@ and drops off the worklist.
 
 `Amount` is `DECIMAL` and read via `Decimal(str(...))` end-to-end — display-only here, but the house money rule
 applies regardless ([[feedback_money_falsy_zero_coercion]]).
+
+### 5.1 What this table is — and the one column that was cut
+
+The columns fall into two groups, and it is worth being explicit about which is which:
+
+- **Irreducible chase state, which Ramp cannot know:** `RampTransactionId` (the join key), `FirstSeenAt`,
+  `LastDraftedAt`, `DraftMessageId`, `LastNotifiedAt`, `NotifyCount`, `EscalatedAt`, `ResolvedAt`.
+- **A denormalised display cache, re-fetched from Ramp every sweep:** `CardHolderRampUserId`, `CardHolderName`,
+  `MerchantName`, `Amount`, `TransactionDate`, `NeedsMemo`, `NeedsReceipt`. These exist so the Phase-B worklist
+  can render without calling Ramp on every page load.
+
+**This is not a `qbo.*`-style raw mirror, and must not become one.** It holds only *open* items (~37 measured)
+and stops being written once an item resolves. U-294 found that **none** of the 39 `qbo.*` staging tables are
+drop-ready and that retiring them is ~6 prerequisite waves out; a second raw mirror is a mistake this codebase
+is actively paying for elsewhere.
+
+⛔ **`CardHolderEmail` was cut at Gate 2 (Chris's call, 2026-09-27) and must not come back.** It is employee PII,
+the `/users` roster is already fetched once per sweep so the address is always available fresh, and a stored copy
+can drift from Ramp. Persisting it bought nothing for the digest (which runs inside a sweep) and served only the
+worklist. **Routability is now DERIVED at the moment it is needed rather than stored** — which is strictly better,
+because a stored flag could go stale against the roster. The unroutable *handling* is unchanged: such a row is
+still persisted, still logged, still counted, and never silently dropped.
+
+Cutting it also keeps the tier honest: PII at rest is a `/security-review` surface, and without this column
+Phase A has none.
 
 ---
 
@@ -367,10 +394,10 @@ worklist is the instrument we use to sanity-check the classifier before any of i
       over-chase directly — the single worst outcome this design can produce.)
 - [ ] **A flagged item with neither memo nor receipt missing is logged and SKIPPED**, never chased and never
       placed in a digest (§4.4 guard — the `..._and_approved` conflation).
-- [ ] **`CardHolderEmail` is resolved via the `/users` join**, not read off the transaction (§4.3). Assert the
-      roster is fetched **once per sweep**, not once per transaction.
-- [ ] **An unresolvable `user_id`, or one resolving to a user with no email, is recorded as unroutable and
-      surfaced** — never silently dropped from the queue.
+- [ ] **The cardholder email is resolved via the `/users` join** and **never persisted** (§5.1). Assert the
+      roster is fetched **once per sweep**, not once per transaction, and that no column holds an address.
+- [ ] **An unresolvable `user_id`, or one resolving to a user with no email, is still PERSISTED, logged and
+      counted** — never silently dropped. Routability is derived at use, not stored.
 - [ ] A cardholder whose `/users` status is not active is not chased.
 - [ ] An open item appears exactly once in `RampTransactionFollowUp`; a repeat sweep updates it rather than
       inserting a duplicate (UNIQUE on `RampTransactionId`).

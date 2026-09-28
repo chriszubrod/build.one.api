@@ -13,7 +13,6 @@ class RampTransactionFollowUp:
     ramp_transaction_id: Optional[str]
     card_holder_ramp_user_id: Optional[str]
     card_holder_name: Optional[str]
-    card_holder_email: Optional[str]
     merchant_name: Optional[str]
     amount: Optional[Decimal]
     transaction_date: Optional[str]

@@ -204,7 +204,6 @@ class RampTransactionService:
                 stats.skipped_inactive_cardholder += 1
                 continue
 
-            email: Optional[str] = None
             if roster_entry is None:
                 stats.unroutable_persisted += 1
                 logger.warning(
@@ -225,15 +224,12 @@ class RampTransactionService:
                         "card_holder_user_id": card_holder_user_id,
                     },
                 )
-            else:
-                email = roster_entry.email
 
             repo.upsert_open_item(
                 conn=conn,
                 ramp_transaction_id=ramp_id,
                 card_holder_ramp_user_id=card_holder_user_id,
                 card_holder_name=snapshot["card_holder_name"],
-                card_holder_email=email,
                 merchant_name=snapshot["merchant_name"],
                 amount=snapshot["amount"],
                 transaction_date=snapshot["transaction_date"],

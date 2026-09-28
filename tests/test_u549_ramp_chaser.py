@@ -250,19 +250,25 @@ def test_email_resolves_via_users_roster_once_per_sweep():
     )
     svc.run_chaser_sweep(follow_up_repo=repo)
     assert user_client.list_calls == 1
-    assert repo.rows["t1"]["card_holder_email"] == "one@example.com"
-    assert repo.rows["t2"]["card_holder_email"] == "two@example.com"
+    assert repo.rows["t1"]["card_holder_ramp_user_id"] == "user-1"
+    assert repo.rows["t2"]["card_holder_ramp_user_id"] == "user-2"
+    assert "card_holder_email" not in repo.rows["t1"]
 
 
-def test_unresolvable_user_id_persisted_unroutable_not_dropped():
+def test_unresolvable_user_id_persisted_unroutable_not_dropped(caplog):
     repo = _FakeFollowUpRepo()
     txns = [_txn(txn_id="orph-1", complete=False, memo="", receipts=[], user_id="missing-user")]
     users = [{"id": "user-1", "email": "one@example.com", "status": "USER_ACTIVE"}]
     svc = _make_service(txns, users)
-    stats = svc.run_chaser_sweep(follow_up_repo=repo)
+    with caplog.at_level(logging.WARNING):
+        stats = svc.run_chaser_sweep(follow_up_repo=repo)
     assert "orph-1" in repo.rows
-    assert repo.rows["orph-1"]["card_holder_email"] is None
     assert stats.unroutable_persisted == 1
+    assert any(
+        record.message == "ramp.chaser.unroutable.missing_user"
+        or getattr(record, "event_name", "") == "ramp.chaser.unroutable.missing_user"
+        for record in caplog.records
+    )
 
 
 def test_inactive_cardholder_not_chased():
@@ -361,7 +367,6 @@ def test_omitted_completion_flag_does_not_resolve_tracked_row(caplog):
         ramp_transaction_id="unk-1",
         card_holder_ramp_user_id="user-1",
         card_holder_name="Pat",
-        card_holder_email="pat@example.com",
         merchant_name="M",
         amount=Decimal("10.00"),
         transaction_date="2026-09-01",
@@ -397,7 +402,6 @@ def test_explicit_completion_flag_resolves_tracked_row():
         ramp_transaction_id="done-flag-1",
         card_holder_ramp_user_id="user-1",
         card_holder_name="Pat",
-        card_holder_email="pat@example.com",
         merchant_name="M",
         amount=Decimal("10.00"),
         transaction_date="2026-09-01",
@@ -572,7 +576,6 @@ def test_resolution_observed_from_ramp_on_later_sweep():
         ramp_transaction_id="res-1",
         card_holder_ramp_user_id="user-1",
         card_holder_name="Pat",
-        card_holder_email="pat@example.com",
         merchant_name="M",
         amount=Decimal("10.00"),
         transaction_date="2026-09-01",

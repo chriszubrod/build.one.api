@@ -12,7 +12,6 @@ CREATE TABLE [dbo].[RampTransactionFollowUp]
     [RampTransactionId] NVARCHAR(64) NOT NULL,
     [CardHolderRampUserId] NVARCHAR(64) NULL,
     [CardHolderName] NVARCHAR(256) NULL,
-    [CardHolderEmail] NVARCHAR(320) NULL,
     [MerchantName] NVARCHAR(512) NULL,
     [Amount] DECIMAL(19,4) NULL,
     [TransactionDate] NVARCHAR(40) NULL,
@@ -59,7 +58,6 @@ CREATE OR ALTER PROCEDURE UpsertRampTransactionFollowUp
     @RampTransactionId NVARCHAR(64),
     @CardHolderRampUserId NVARCHAR(64) = NULL,
     @CardHolderName NVARCHAR(256) = NULL,
-    @CardHolderEmail NVARCHAR(320) = NULL,
     @MerchantName NVARCHAR(512) = NULL,
     @Amount DECIMAL(19,4) = NULL,
     @TransactionDate NVARCHAR(40) = NULL,
@@ -83,7 +81,6 @@ BEGIN
         UPDATE SET
             [CardHolderRampUserId] = CASE WHEN @CardHolderRampUserId IS NOT NULL THEN @CardHolderRampUserId ELSE target.[CardHolderRampUserId] END,
             [CardHolderName] = CASE WHEN @CardHolderName IS NOT NULL THEN @CardHolderName ELSE target.[CardHolderName] END,
-            [CardHolderEmail] = @CardHolderEmail,
             [MerchantName] = CASE WHEN @MerchantName IS NOT NULL THEN @MerchantName ELSE target.[MerchantName] END,
             [Amount] = CASE WHEN @Amount IS NOT NULL THEN @Amount ELSE target.[Amount] END,
             [TransactionDate] = CASE WHEN @TransactionDate IS NOT NULL THEN @TransactionDate ELSE target.[TransactionDate] END,
@@ -92,11 +89,11 @@ BEGIN
             [UpdatedAt] = @Now
     WHEN NOT MATCHED THEN
         INSERT
-            ([RampTransactionId], [CardHolderRampUserId], [CardHolderName], [CardHolderEmail],
+            ([RampTransactionId], [CardHolderRampUserId], [CardHolderName],
              [MerchantName], [Amount], [TransactionDate], [NeedsMemo], [NeedsReceipt],
              [FirstSeenAt], [CreatedAt], [UpdatedAt])
         VALUES
-            (@RampTransactionId, @CardHolderRampUserId, @CardHolderName, @CardHolderEmail,
+            (@RampTransactionId, @CardHolderRampUserId, @CardHolderName,
              @MerchantName, @Amount, @TransactionDate, @NeedsMemo, @NeedsReceipt,
              @Now, @Now, @Now)
     OUTPUT
@@ -106,7 +103,6 @@ BEGIN
         INSERTED.[RampTransactionId],
         INSERTED.[CardHolderRampUserId],
         INSERTED.[CardHolderName],
-        INSERTED.[CardHolderEmail],
         INSERTED.[MerchantName],
         INSERTED.[Amount],
         INSERTED.[TransactionDate],
@@ -149,7 +145,6 @@ BEGIN
         INSERTED.[RampTransactionId],
         INSERTED.[CardHolderRampUserId],
         INSERTED.[CardHolderName],
-        INSERTED.[CardHolderEmail],
         INSERTED.[MerchantName],
         INSERTED.[Amount],
         INSERTED.[TransactionDate],
@@ -199,7 +194,6 @@ BEGIN
         r.[RampTransactionId],
         r.[CardHolderRampUserId],
         r.[CardHolderName],
-        r.[CardHolderEmail],
         r.[MerchantName],
         r.[Amount],
         r.[TransactionDate],

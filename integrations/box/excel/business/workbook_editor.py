@@ -32,6 +32,86 @@ SUBCOSTCODE_COL_INDEX = 2  # column C (0-based)
 DATE_COL_INDEX = 8  # column I (0-based) — the date
 DEFAULT_KEY_COL_INDEX = 25  # column Z (0-based)
 
+# Positional invariants a DETAILS row must satisfy before any of it is written.
+# Not style checks. A row that carries one EXTRA element ahead of column I —
+# e.g. a hand-assembled row that emits the col-H draw stamp as an extra cell
+# instead of assigning it at index 7 — shifts every field one column right: the
+# amount lands in O (AMOUNT NOT BILLABLE) so it leaves the draw, the literal
+# type label lands in N (AMOUNT BILLABLE) making the column TEXT so every
+# SUMIFS over it silently skips the row, and the col-Z key falls off the end
+# into AA, which defeats the idempotency filter in apply_rows_to_details so the
+# next drain of the same bill inserts a SECOND copy.
+# Observed live on three workbooks: WVA r1824 (2026-08-27), SHT r2294
+# (2026-09-23), EVR r1383 (2026-09-28) — one row each, $56.25 off the EVR-20
+# draw. The writer's own column arithmetic is correct and always has been;
+# what was missing is that the 26-cell contract was only ever a docstring.
+TYPE_COL_INDEX = 12  # column M — the entity type label
+AMOUNT_COL_INDEX = 13  # column N — AMOUNT BILLABLE, must never hold text
+DRAW_REQUEST_COL_INDEX = 7  # column H — assign here, never splice
+_VALID_TYPE_LABELS = frozenset(
+    {"Bill", "Expense", "Expense Credit", "Credit"}
+)
+
+
+class DetailsRowShapeError(ValueError):
+    """A DETAILS row failed its positional contract — refuse to write it."""
+
+
+def _assert_details_row_shape(row: Any, *, require_key: bool) -> None:
+    """Refuse to write a row whose fields are not on their contracted columns.
+
+    `require_key` relaxes ONLY the column-Z check — width and the M/N column
+    checks always apply, so every caller must still hand over a full 26-cell
+    row even when it only means to populate a few of them.
+
+    The asymmetry is deliberate: DETAILS legitimately carries keyless rows —
+    the per-draw builder's-fee lines (cost code 90.01, invoice number in K, no
+    source line item) have no public_id to key on. But an INSERT with no key is
+    a different animal: apply_rows_to_details dedupes on column Z, so a keyless
+    inserted row is not "possibly a duplicate", it is guaranteed to duplicate on
+    the next drain of the same entity.
+
+    Raising here dead-letters the Box outbox row on its FIRST attempt rather
+    than retrying — DetailsRowShapeError is a ValueError, not a BoxError, so the
+    worker's `except BoxError` retry path does not catch it. That is the right
+    shape for a deterministic contract violation (a retry cannot fix a malformed
+    row) but it is a sharper failure than the 5-attempt path, so it escalates
+    immediately and visibly instead of silently writing corruption.
+    """
+    from decimal import Decimal
+
+    if not isinstance(row, (list, tuple)):
+        raise DetailsRowShapeError(
+            f"DETAILS row must be a list, got {type(row).__name__}"
+        )
+    if len(row) != DETAILS_ROW_WIDTH:
+        raise DetailsRowShapeError(
+            f"DETAILS row must be exactly {DETAILS_ROW_WIDTH} cells (A..Z); "
+            f"got {len(row)}. Assign the col-H draw stamp at index "
+            f"{DRAW_REQUEST_COL_INDEX} — never splice it in, which shifts "
+            f"every column from I rightward."
+        )
+    label = row[TYPE_COL_INDEX]
+    if label not in (None, "") and str(label).strip() not in _VALID_TYPE_LABELS:
+        raise DetailsRowShapeError(
+            f"DETAILS col M (type) is {label!r}; expected one of "
+            f"{sorted(_VALID_TYPE_LABELS)} — the row is shifted"
+        )
+    amount = row[AMOUNT_COL_INDEX]
+    if amount is not None and (
+        isinstance(amount, bool) or not isinstance(amount, (int, float, Decimal))
+    ):
+        raise DetailsRowShapeError(
+            f"DETAILS col N (AMOUNT BILLABLE) is non-numeric {amount!r} — a "
+            f"shifted row parks the type label here and the amount in O"
+        )
+    if require_key and not str(row[DEFAULT_KEY_COL_INDEX] or "").strip():
+        raise DetailsRowShapeError(
+            "DETAILS col Z (line-item public_id) is empty on an inserted row — "
+            "it is un-rekeyable and defeats col-Z idempotency, so the next "
+            "drain of this entity inserts a second copy"
+        )
+
 # The date column is written as a real date VALUE (not a text string) so the
 # number format actually renders it, with an explicit mm/dd/yyyy display.
 DATE_NUMBER_FORMAT = "mm/dd/yyyy"
@@ -332,6 +412,10 @@ def _write_row_values(ws, target_row: int, row: List[Any]) -> None:
     """
     from datetime import datetime
 
+    # Last line of defence, and the reason it lives HERE rather than only in
+    # apply_rows_to_details: the manual workbook-reconciliation playbook calls
+    # _write_row_values directly, bypassing the insert path entirely.
+    _assert_details_row_shape(row, require_key=False)
     for col_index, value in enumerate(row):
         cell = ws.cell(row=target_row, column=col_index + 1)
         if col_index == DATE_COL_INDEX:
@@ -470,15 +554,16 @@ def apply_rows_to_details(
     new_rows = []
     skipped = 0
     for row in rows:
-        key = ""
-        if len(row) > key_col_index and row[key_col_index] is not None:
-            key = str(row[key_col_index]).strip()
-        if key and key in existing_keys:
+        # Validate BEFORE the group/insert planning below, so a malformed row
+        # fails while the caller still holds the Box lock and has uploaded
+        # nothing — never half-applied.
+        _assert_details_row_shape(row, require_key=True)
+        key = str(row[key_col_index]).strip()
+        if key in existing_keys:
             skipped += 1
             continue
         # Guard against a duplicate key within the same batch.
-        if key:
-            existing_keys.add(key)
+        existing_keys.add(key)
         new_rows.append(row)
 
     if not new_rows:
@@ -708,7 +793,10 @@ def _self_test() -> None:  # pragma: no cover - manual harness
         _make_row("65.03", "INV-2", "new matching line", "250.55", "new-key-1111"),
         _make_row("99.99", "INV-3", "no-match append line", "33.33", "new-key-2222"),
         # Duplicate of the already-present key — must be skipped.
-        [*( [""] * 25 ), "existing-key-aaaa"],
+        # Duplicate-key row. Col N must be a real number, not "": the shape
+        # validator runs BEFORE the key-already-present check, so a row that
+        # exists only to exercise the skip branch still has to be well formed.
+        [*([""] * 13), Decimal(0), *([""] * 11), "existing-key-aaaa"],
     ]
 
     result = apply_rows_to_details(file_bytes, "DETAILS", rows)

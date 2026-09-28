@@ -1,4 +1,5 @@
 # Python Standard Library Imports
+import logging
 from decimal import Decimal
 from typing import Any, Dict, List, Optional
 
@@ -453,12 +454,18 @@ def test_omitted_completion_flag_does_not_resolve_tracked_row(caplog):
         transaction_client=tx_client,
         user_service=RampUserService(_FakeUserClient(users)),  # type: ignore[arg-type]
     )
-    stats = svc.run_chaser_sweep(follow_up_repo=repo)
+    with caplog.at_level(logging.WARNING):
+        stats = svc.run_chaser_sweep(follow_up_repo=repo)
     assert stats.resolved == 0
     assert stats.flag_unknown == 1
     assert repo.rows["unk-1"]["resolved_at"] is None
     assert "unk-1" not in repo.resolve_calls
     assert tx_client.get_calls == 1
+    assert any(
+        record.message == "ramp.chaser.flag.unknown"
+        or getattr(record, "event_name", "") == "ramp.chaser.flag.unknown"
+        for record in caplog.records
+    )
 
 
 def test_explicit_completion_flag_resolves_tracked_row():
@@ -546,11 +553,51 @@ def test_same_origin_absolute_and_relative_next_links_work():
         http_client=_HttpStub(),  # type: ignore[arg-type]
     )
     client.get("https://api.ramp.com/developer/v1/transactions?page=2")
+    client.get("https://api.ramp.com:443/developer/v1/transactions?page=2")
+    client.get("https://api.ramp.com./developer/v1/transactions?page=2")
     client.get("developer/v1/transactions?page=2")
     assert captured == [
         "https://api.ramp.com/developer/v1/transactions?page=2",
+        "https://api.ramp.com:443/developer/v1/transactions?page=2",
+        "https://api.ramp.com./developer/v1/transactions?page=2",
         "https://api.ramp.com/developer/v1/transactions?page=2",
     ]
+
+
+def test_untrusted_pagination_link_scheme_downgrade_raises():
+    class _AuthStub:
+        def ensure_valid_token(self) -> str:
+            return "tok"
+
+    client = RampHttpClient(
+        api_base="https://api.ramp.com",
+        auth_service=_AuthStub(),
+        http_client=_HttpStubNeverCalled(),  # type: ignore[arg-type]
+    )
+    with pytest.raises(RampUntrustedRedirectError):
+        client.get("http://api.ramp.com/developer/v1/transactions?page=2")
+
+
+def test_untrusted_pagination_link_userinfo_host_raises():
+    class _AuthStub:
+        def ensure_valid_token(self) -> str:
+            return "tok"
+
+    client = RampHttpClient(
+        api_base="https://api.ramp.com",
+        auth_service=_AuthStub(),
+        http_client=_HttpStubNeverCalled(),  # type: ignore[arg-type]
+    )
+    with pytest.raises(RampUntrustedRedirectError):
+        client.get("https://api.ramp.com@evil.example/developer/v1/transactions?page=2")
+
+
+class _HttpStubNeverCalled:
+    def get(self, url, **kwargs):
+        raise AssertionError(f"HTTP must not be called for untrusted URL: {url}")
+
+    def close(self):
+        pass
 
 
 def test_token_mint_429_retries_with_backoff(monkeypatch):
@@ -598,7 +645,55 @@ def test_token_mint_429_retries_with_backoff(monkeypatch):
     assert auth.ensure_valid_token(force_refresh=True) == "tok"
     assert calls["n"] == 2
     assert len(sleeps) == 1
-    assert sleeps[0] >= 1.0
+    assert sleeps[0] == 2.0
+
+
+def test_token_mint_429_honors_large_retry_after(monkeypatch):
+    from integrations.ramp.auth.business import service as auth_mod
+
+    auth_mod._token_cache = _TokenCache()
+    sleeps: List[float] = []
+    monkeypatch.setattr(ramp_retry_module.time, "sleep", lambda s: sleeps.append(s))
+    monkeypatch.setattr(ramp_retry_module.time, "monotonic", lambda: 0.0)
+
+    calls = {"n": 0}
+
+    def fake_post(url, data=None, headers=None, timeout=None):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return httpx.Response(429, headers={"Retry-After": "60"})
+        return httpx.Response(
+            200,
+            json={
+                "access_token": "tok",
+                "expires_in": 3600,
+                "scope": RAMP_OAUTH_SCOPES,
+            },
+        )
+
+    monkeypatch.setattr(httpx, "post", fake_post)
+    settings = config.Settings(
+        host="h",
+        port=1,
+        db_driver="d",
+        db_server="s",
+        db_name="n",
+        db_user="u",
+        db_password="p",
+        secret_key="k",
+        algorithm="HS256",
+        access_token_expire_seconds=1,
+        refresh_token_expire_seconds=1,
+        iterations=1,
+        ramp_client_id="cid",
+        ramp_client_secret="sec",
+        ramp_api_base_url="https://api.ramp.com",
+    )
+    auth = RampAuthService(settings)
+    assert auth.ensure_valid_token(force_refresh=True) == "tok"
+    assert calls["n"] == 2
+    assert len(sleeps) == 1
+    assert sleeps[0] == 60.0
 
 
 def test_token_mint_401_fails_fast_without_retry(monkeypatch):

@@ -31,6 +31,48 @@ logger = get_ramp_logger(__name__)
 
 DEFAULT_USER_AGENT = "buildone-ramp-client/1.0"
 
+_DEFAULT_PORTS = {"http": 80, "https": 443}
+
+
+def _normalized_http_origin(url: str) -> tuple[str, str, int]:
+    """Return (scheme_lower, host, effective_port) for same-origin checks."""
+    parsed = urlparse(url)
+    if not parsed.scheme or not parsed.hostname:
+        raise RampUntrustedRedirectError(
+            "Ramp pagination link is not a valid absolute URL",
+            request_path=parsed.path or url,
+        )
+    if parsed.username is not None or parsed.password is not None:
+        raise RampUntrustedRedirectError(
+            "Ramp pagination link must not contain embedded credentials",
+            request_path=parsed.path or url,
+        )
+
+    scheme = parsed.scheme.lower()
+    if scheme not in _DEFAULT_PORTS:
+        raise RampUntrustedRedirectError(
+            "Ramp pagination link uses an unsupported URL scheme",
+            request_path=parsed.path or url,
+        )
+
+    host = parsed.hostname.lower()
+    if host.endswith("."):
+        host = host[:-1]
+
+    try:
+        host = host.encode("idna").decode("ascii")
+    except UnicodeError as error:
+        raise RampUntrustedRedirectError(
+            "Ramp pagination link host could not be normalized",
+            request_path=parsed.path or url,
+        ) from error
+
+    port = parsed.port
+    if port is None:
+        port = _DEFAULT_PORTS[scheme]
+
+    return scheme, host, port
+
 # Ramp returns 504 when a request exceeds 60s.
 _TIMEOUT_TIERS: Dict[str, httpx.Timeout] = {
     "A": httpx.Timeout(connect=5.0, read=30.0, write=30.0, pool=5.0),
@@ -111,15 +153,15 @@ class RampHttpClient:
     def _resolve_url(self, path_or_url: str) -> str:
         if path_or_url.startswith("http://") or path_or_url.startswith("https://"):
             parsed = urlparse(path_or_url)
-            base_parsed = urlparse(self.api_base)
-            if parsed.scheme.lower() != base_parsed.scheme.lower():
+            link_origin = _normalized_http_origin(path_or_url)
+            base_origin = _normalized_http_origin(self.api_base)
+            if link_origin != base_origin:
+                if link_origin[0] != base_origin[0]:
+                    reason = "Ramp pagination link scheme does not match configured api_base"
+                else:
+                    reason = "Ramp pagination link host does not match configured api_base"
                 raise RampUntrustedRedirectError(
-                    "Ramp pagination link scheme does not match configured api_base",
-                    request_path=parsed.path or path_or_url,
-                )
-            if parsed.netloc.lower() != base_parsed.netloc.lower():
-                raise RampUntrustedRedirectError(
-                    "Ramp pagination link host does not match configured api_base",
+                    reason,
                     request_path=parsed.path or path_or_url,
                 )
             return path_or_url

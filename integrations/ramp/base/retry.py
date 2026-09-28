@@ -48,7 +48,11 @@ def compute_backoff_seconds(
 ) -> float:
     if isinstance(error, RampRateLimitError):
         idx = min(max(0, attempt - 1), len(_RAMP_RATE_LIMIT_BACKOFF_SECONDS) - 1)
-        return _RAMP_RATE_LIMIT_BACKOFF_SECONDS[idx]
+        fixed = _RAMP_RATE_LIMIT_BACKOFF_SECONDS[idx]
+        if retry_after_seconds is not None and retry_after_seconds > 0:
+            wait = max(fixed, retry_after_seconds)
+            return min(wait, policy.max_retry_after_clamp_seconds)
+        return fixed
 
     if retry_after_seconds is not None and retry_after_seconds > 0:
         return min(retry_after_seconds, policy.max_retry_after_clamp_seconds)

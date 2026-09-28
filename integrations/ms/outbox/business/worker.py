@@ -46,6 +46,11 @@ DRAIN_LOCK_TIMEOUT_MS = 1000
 # independently-gated integrations and an MS drain must not import Box code.
 RECONCILIATION_KEY_COL_INDEX = 25
 
+_UPDATE_DRAFT_TERMINAL_LOG_EVENTS = {
+    UPDATE_DRAFT_OUTCOME_NOT_FOUND: "ms.outbox.update_draft.not_found",
+    UPDATE_DRAFT_OUTCOME_NOT_A_DRAFT: "ms.outbox.update_draft.not_a_draft",
+}
+
 
 def _reconciliation_key(row_values: Any) -> str:
     """
@@ -453,15 +458,7 @@ class MsOutboxWorker:
                 raise ValueError("upload session did not return an uploadUrl")
             payload["upload_session_url"] = upload_url
             payload["total_bytes"] = total_size
-            updated = self.repo.update_payload(
-                id=row.id,
-                row_version=row.row_version,
-                payload=json.dumps(payload),
-            )
-            # Keep our in-memory row.row_version in sync so subsequent mark_*
-            # calls succeed (ROWVERSION advanced after the payload update).
-            if updated and updated.row_version:
-                row.row_version = updated.row_version
+            self._persist_payload(row, payload)
 
         # Step 2: chunk upload from `completed_bytes`.
         CHUNK_SIZE = 5 * 1024 * 1024
@@ -497,13 +494,7 @@ class MsOutboxWorker:
 
                 # Checkpoint after every chunk so a retry resumes from here.
                 payload["completed_bytes"] = offset
-                updated = self.repo.update_payload(
-                    id=row.id,
-                    row_version=row.row_version,
-                    payload=json.dumps(payload),
-                )
-                if updated and updated.row_version:
-                    row.row_version = updated.row_version
+                self._persist_payload(row, payload)
 
         if last_json is None:
             # Final chunk didn't produce a JSON body (rare). Treat as success
@@ -869,13 +860,7 @@ class MsOutboxWorker:
         if message_id:
             payload["graph_message_id"] = message_id
             try:
-                updated = self.repo.update_payload(
-                    id=row.id,
-                    row_version=row.row_version,
-                    payload=json.dumps(payload),
-                )
-                if updated and updated.row_version:
-                    row.row_version = updated.row_version
+                self._persist_payload(row, payload)
             except Exception:
                 logger.exception(
                     "ms.outbox.send_mail.payload_update_failed",
@@ -927,26 +912,13 @@ class MsOutboxWorker:
         get_result = get_message(message_id=graph_message_id, include_body=False)
         get_terminal = self._classify_update_draft_get_terminal(get_result)
         if get_terminal is not None:
-            self._stamp_update_draft_outcome(row, payload, get_terminal)
-            event_name = (
-                "ms.outbox.update_draft.not_found"
-                if get_terminal == UPDATE_DRAFT_OUTCOME_NOT_FOUND
-                else "ms.outbox.update_draft.not_a_draft"
-            )
-            logger.info(
-                event_name,
-                extra={
-                    "event_name": event_name,
-                    "outbox_public_id": row.public_id,
-                    "graph_message_id": graph_message_id,
-                    "update_draft_outcome": get_terminal,
-                    "http_status": (
-                        get_result.get("status_code")
-                        if isinstance(get_result, dict)
-                        else None
-                    ),
-                    "phase": "get",
-                },
+            self._log_update_draft_terminal(
+                row,
+                payload,
+                get_terminal,
+                graph_message_id,
+                get_result.get("status_code"),
+                phase="get",
             )
             return
 
@@ -973,19 +945,13 @@ class MsOutboxWorker:
         )
 
         if self._is_update_draft_patch_not_found(result):
-            self._stamp_update_draft_outcome(
-                row, payload, UPDATE_DRAFT_OUTCOME_NOT_FOUND
-            )
-            logger.info(
-                "ms.outbox.update_draft.not_found",
-                extra={
-                    "event_name": "ms.outbox.update_draft.not_found",
-                    "outbox_public_id": row.public_id,
-                    "graph_message_id": graph_message_id,
-                    "update_draft_outcome": UPDATE_DRAFT_OUTCOME_NOT_FOUND,
-                    "http_status": result.get("status_code") if isinstance(result, dict) else None,
-                    "phase": "patch",
-                },
+            self._log_update_draft_terminal(
+                row,
+                payload,
+                UPDATE_DRAFT_OUTCOME_NOT_FOUND,
+                graph_message_id,
+                result.get("status_code"),
+                phase="patch",
             )
             return
 
@@ -1002,6 +968,10 @@ class MsOutboxWorker:
         """
         Terminal GET facts only. Returns an outcome constant or None (retry/other).
         GET 404 → id does not resolve; 200 + is_draft is False → not a draft.
+
+        Call order vs ``_is_update_draft_get_inconclusive`` is load-bearing: this
+        runs first; inconclusive's ``status != 200 -> False`` lets 5xx/401/403 reach
+        ``_raise_if_external_error`` instead of being misclassified as inconclusive.
         """
         if not isinstance(result, dict):
             return None
@@ -1056,6 +1026,43 @@ class MsOutboxWorker:
         message = result.get("message") or "update_draft PATCH did not succeed"
         raise MsServerError(message, http_status=503)
 
+    def _persist_payload(self, row: MsOutbox, payload: Dict[str, Any]) -> bool:
+        updated = self.repo.update_payload(
+            id=row.id,
+            row_version=row.row_version,
+            payload=json.dumps(payload),
+        )
+        # Keep our in-memory row.row_version in sync so subsequent mark_*
+        # calls succeed (ROWVERSION advanced after the payload update).
+        if updated and updated.row_version:
+            row.row_version = updated.row_version
+            return True
+        return False
+
+    def _log_update_draft_terminal(
+        self,
+        row: MsOutbox,
+        payload: Dict[str, Any],
+        outcome: str,
+        graph_message_id: str,
+        http_status: Any,
+        *,
+        phase: str,
+    ) -> None:
+        self._stamp_update_draft_outcome(row, payload, outcome)
+        event_name = _UPDATE_DRAFT_TERMINAL_LOG_EVENTS[outcome]
+        logger.info(
+            event_name,
+            extra={
+                "event_name": event_name,
+                "outbox_public_id": row.public_id,
+                "graph_message_id": graph_message_id,
+                "update_draft_outcome": outcome,
+                "http_status": http_status,
+                "phase": phase,
+            },
+        )
+
     def _stamp_update_draft_outcome(
         self,
         row: MsOutbox,
@@ -1065,17 +1072,11 @@ class MsOutboxWorker:
         """Persist drain outcome before the row may be marked done; retry on failure."""
         payload["update_draft_outcome"] = outcome
         try:
-            updated = self.repo.update_payload(
-                id=row.id,
-                row_version=row.row_version,
-                payload=json.dumps(payload),
-            )
-            if not updated or not updated.row_version:
+            if not self._persist_payload(row, payload):
                 raise MsServerError(
                     "update_draft outcome not persisted (row version conflict or no OUTPUT)",
                     http_status=500,
                 )
-            row.row_version = updated.row_version
         except Exception as error:
             logger.exception(
                 "ms.outbox.update_draft.payload_update_failed",

@@ -45,24 +45,23 @@ def _strip_base(absolute_url: str) -> str:
     return absolute_url  # fallback; base URL mismatch — let Graph reject it
 
 
+def _format_recipients(recipients: Any) -> List[dict]:
+    """Map Graph to/cc/bcc recipient objects to {name, email} dicts."""
+    return [
+        {
+            "name": r.get("emailAddress", {}).get("name"),
+            "email": r.get("emailAddress", {}).get("address"),
+        }
+        for r in recipients
+    ]
+
+
 def _format_message(msg: dict, include_body: bool = False) -> dict:
     """Format a message from MS Graph API response."""
     from_email = msg.get("from", {}).get("emailAddress", {})
 
-    to_recipients = [
-        {
-            "name": r.get("emailAddress", {}).get("name"),
-            "email": r.get("emailAddress", {}).get("address"),
-        }
-        for r in msg.get("toRecipients", [])
-    ]
-    cc_recipients = [
-        {
-            "name": r.get("emailAddress", {}).get("name"),
-            "email": r.get("emailAddress", {}).get("address"),
-        }
-        for r in msg.get("ccRecipients", [])
-    ]
+    to_recipients = _format_recipients(msg.get("toRecipients", []))
+    cc_recipients = _format_recipients(msg.get("ccRecipients", []))
 
     formatted = {
         "message_id": msg.get("id"),
@@ -388,7 +387,10 @@ def get_message(
         with MsGraphClient() as client:
             msg = client.get(
                 f"{_mailbox_path(mailbox)}/messages/{message_id}",
-                params={"$select": select_fields, "$expand": "attachments"},
+                params={
+                    "$select": select_fields,
+                    "$expand": "attachments($select=id,name,contentType,size,isInline)",
+                },
                 operation_name="mail.get_message",
             )
         if not isinstance(msg, dict):
@@ -405,35 +407,12 @@ def get_message(
             }
         try:
             formatted = _format_message(msg, include_body=include_body)
+            # Exposed on GET /mail/messages/{id} — not used in-repo after If-Match removal.
             formatted["odata_etag"] = msg.get("@odata.etag")
-            if "bccRecipients" in msg and msg["bccRecipients"] is None:
-                raise TypeError("Graph message bccRecipients was null")
-            bcc_source = (
-                msg["bccRecipients"] if "bccRecipients" in msg else []
+            formatted["bcc_recipients"] = _format_recipients(
+                msg.get("bccRecipients", [])
             )
-            bcc_recipients = [
-                {
-                    "name": r.get("emailAddress", {}).get("name"),
-                    "email": r.get("emailAddress", {}).get("address"),
-                }
-                for r in bcc_source
-            ]
-            formatted["bcc_recipients"] = bcc_recipients
-            if "attachments" in msg and msg["attachments"] is None:
-                raise TypeError("Graph message attachments was null")
-            attachments_source = (
-                msg["attachments"] if "attachments" in msg else []
-            )
-            formatted["attachments"] = [
-                {
-                    "id": att.get("id"),
-                    "name": att.get("name"),
-                    "content_type": att.get("contentType"),
-                    "size": att.get("size"),
-                    "is_inline": att.get("isInline", False),
-                }
-                for att in attachments_source
-            ]
+            formatted.setdefault("attachments", [])
         except (AttributeError, TypeError) as format_error:
             logger.error(
                 "Failed to format Graph message %s: %s",

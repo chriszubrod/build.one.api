@@ -42,7 +42,8 @@ reminders on" is closed as an alternative. This is the strongest single piece of
 
 **In (v1).**
 - Read-only Ramp integration: `transactions:read`, `users:read`.
-- Rolling sweep classifying transactions as `needs_memo` / `needs_receipt` / `needs_both` / `complete`.
+- Rolling sweep selecting open items by **Ramp's own `all_requirements_met_and_approved == False`** (§4.4), and
+  reading `memo` / `receipts` only to say *what* is missing.
 - Persisted delinquency state per transaction (what's missing, since when, notified how often, resolved when).
 - **Twice-weekly per-cardholder digest email** from build.one, created as a **draft** for human review — v1
   never auto-sends (§6.1).
@@ -149,23 +150,43 @@ email comes straight off the transaction**; no roster mapping or Contact lookup 
 `User` row needs to exist. `/users` is pulled only to resolve status (skip `deleted` / `inactive` cardholders so
 we don't chase someone who left).
 
-### 4.4 What counts as incomplete
+### 4.4 What counts as incomplete — **SETTLED BY THE PHASE 0 PROBE (2026-09-27)**
 
-**Chris's call (2026-09-25): a literal blank test.**
+> **Both candidate predicates were wrong. Ramp already computes this, and its answer is authoritative.**
+>
+> ### `needs_followup` ⟺ `all_requirements_met_and_approved == False`
 
-- `needs_memo` ⟺ `memo` is null or whitespace-only.
-- `needs_receipt` ⟺ `receipt_ids` is empty.
+**The measurement** (live production, 420 transactions over 90 days, read-only):
 
-Deliberately *not* the richer "hint-extractor can't resolve a project" test — that was offered and declined. Log
-it in `TODO.md` as a tagged follow-up rather than re-arguing it: the useless-but-present memo
-(`"THE HOME DEPOT #0723 - 3892"`) will pass the blank test and continue to feed the 58999 flag queue.
+| | count |
+|---|---|
+| Ramp says **NOT** complete (`all_requirements_met_and_approved == False`) | **37** |
+| The hand-rolled blank-memo-or-no-receipt test | 101 |
+| — Ramp flags it, my test does not | **0** |
+| — My test flags it, Ramp does not | **64** |
 
-⚠️ **Gate-1 must probe this empirically before a line is written.** The U-005 probe found text present on
-**439/439** QBO `PrivateNote` values. Ramp composes that field as *"{cardholder name} - {memo}"* for memo'd
-transactions and falls back to the raw merchant descriptor otherwise — so a blank Ramp `memo` most likely
-corresponds to the **~75%** that arrived as bare merchant strings. If instead Ramp auto-populates `memo`, **the
-blank test selects zero rows and v1 is inert.** This is a yes/no question one read-only API call answers, and it
-is the single highest-value thing Gate-1 can do.
+Ramp's verdict is a **strict subset** of the hand-rolled test, with **zero** disagreement in the other
+direction. The 64 extras are transactions missing a receipt that **Ramp's own policy does not require one for** —
+the missing-receipt population has a median of **exactly $75.00** with 29 under that line, and includes refunds
+(one at **−$3,362.47**). ⛔ **Chasing those 64 would nag people for receipts they do not owe.** That is the fastest
+imaginable way to teach the crew to ignore *our* emails too — self-inflicting the exact failure this unit exists
+to escape.
+
+**Consequences, stated plainly:**
+
+- ❌ **My "~75% blank memo" projection was wrong.** Measured: **6.7%** (28 of 420). The inference that a blank
+  Ramp `memo` maps to U-005's bare-merchant-string population does not hold. The design carried that number as a
+  premise in two places; both are corrected.
+- ❌ **The blank-memo vs hint-extractor debate is moot.** Chris chose the literal blank test on 2026-09-25 from
+  the two options I offered — neither was the right predicate, and the better one existed the whole time in a
+  field I hadn't read. Not a decision to revisit; a decision that no longer applies.
+- ✅ **Using Ramp's flag inherits the policy Chris already configured** (§1: the policy deadline is on). Thresholds,
+  category exemptions and refund handling all come for free and stay correct when he changes them in Ramp — we
+  never re-implement a policy engine, and we can never drift from it.
+- **`memo` / `receipts` are still read** — not to decide *whether* to chase, but to say *what is missing* in the
+  digest body. Of the 37: **12** receipt only, **6** memo only, **19** both, **0** neither.
+- **`policy_violations` is empty on all 420** — the field exists but is unpopulated for this account. Do not
+  build on it.
 
 ### 4.5 Resolution
 
@@ -183,7 +204,7 @@ and drops off the worklist.
 | `RampTransactionId` | Ramp's id — **UNIQUE**, the idempotency anchor |
 | `CardHolderRampUserId`, `CardHolderEmail`, `CardHolderName` | denormalized off the transaction |
 | `MerchantName`, `Amount`, `TransactionDate` | for the digest body and the worklist |
-| `NeedsMemo`, `NeedsReceipt` | current classification, refreshed each sweep |
+| `NeedsMemo`, `NeedsReceipt` | **descriptive, not selective** — they populate the digest body ("what's missing"). Membership is decided solely by Ramp's `all_requirements_met_and_approved` (§4.4). |
 | `FirstSeenAt` | drives the age buckets and the 14-day escalation |
 | `LastDraftedAt`, `DraftMessageId` | the draft created for this item's cardholder — see §6.1 |
 | `LastNotifiedAt`, `NotifyCount` | ⚠️ stamped on **observed send**, never on draft creation (§6.1) |
@@ -208,6 +229,14 @@ inbox alongside it.
   flagged in the body and stamped `EscalatedAt`. *(Alternative considered — a separate consolidated escalation
   digest to Chris. Rejected for v1: the web worklist already provides the consolidated view, and a CC keeps the
   escalation visible to the cardholder, which is the point.)*
+- ⚠️ **Two different clocks — do not collapse them.** Escalation keys off `FirstSeenAt` (**how long we have been
+  chasing**), never off transaction age. Phase 0 measured **22 of 37 open items already past 14 days** (oldest
+  82d), so an age-based clock would CC Chris on 5 of 6 cardholders on the very first run and make escalation
+  meaningless before it ever meant anything. Backfilled items get `FirstSeenAt = go-live`, so nothing escalates
+  for the first two weeks — correct, and deliberate. The **worklist** (Phase B) sorts by transaction age instead,
+  so Chris still sees the 82-day-old item on day one; it just doesn't manufacture an escalation.
+- **Never CC the escalation recipient onto their own digest.** Chris is himself the #2 cardholder (10 open items,
+  $3,884.98 at stake — Phase 0). CC'ing him on his own reminder is pure noise; suppress it.
 - **Delivery rides the MS outbox `send_mail` Kind** — never an inline Graph call, exactly as
   [`digest_service.py`](../../entities/time_entry/business/digest_service.py:36) does.
 - **Per-cardholder `try/except`**; one bad recipient cannot sink the batch. Cardholders with no resolvable email
@@ -285,7 +314,7 @@ Each phase is independently shippable and independently useful. **Phase 0 gates 
 
 | Phase | Deliverable | Repo |
 |---|---|---|
-| **0 — Probe (read-only, no build)** | Authenticate; pull 90 days; report counts: blank-memo, no-receipt, both, by cardholder, age distribution. **Answers §4.4's kill question and sizes the chase population before we commit to cadence.** | api (script) |
+| ✅ **0 — Probe (read-only)** | **DONE 2026-09-27.** 420 transactions / 90d, live production, read-only. Settled §4.4's classifier (Ramp's own flag, not a hand-rolled test), sized the queue at **37 open items across 6 cardholders**, and answered the backfill question. Ran inline per [[feedback_no_script_files]] — no script file committed. | api |
 | **A — Integration + state** | `integrations/ramp/`, `dbo.RampTransactionFollowUp`, classify + upsert sweep. No email, no UI. | api |
 | **B — Worklist** | `GET` endpoint + web page: open items by cardholder, age buckets. **Closes Chris's visibility gap on its own, before a single email is sent.** | api + web |
 | **C — Digest** | `RampChaserDigestService` + MS outbox enqueue, **draft-only** (§6.1), including the update-in-place and vanished-draft-means-sent handling. | api |
@@ -299,11 +328,19 @@ worklist is the instrument we use to sanity-check the classifier before any of i
 
 ## 10. Acceptance criteria
 
-- [ ] Phase 0 reports real counts from the live Ramp account; blank-memo count is **> 0** (if it is 0, §4.4's
-      definition is wrong and v1 stops for a re-spec).
-- [ ] A transaction with blank memo and no receipt appears exactly once in `RampTransactionFollowUp`; a repeat
-      sweep updates it rather than inserting a duplicate (UNIQUE on `RampTransactionId`).
-- [ ] Supplying the memo in Ramp → next sweep stamps `ResolvedAt` and the item leaves the worklist.
+- [x] **Phase 0 reports real counts from the live Ramp account.** Done 2026-09-27: 420 txns / 90d → **37 open**,
+      6 cardholders, oldest 82d. Classifier settled (§4.4).
+- [ ] The sweep selects **exactly** the transactions with `all_requirements_met_and_approved == False` — no local
+      memo/receipt predicate decides membership. Mutation-prove it: flip one item's flag in a fixture and assert
+      membership follows the flag, not the fields.
+- [ ] **A transaction missing a receipt that Ramp considers complete is NOT chased.** (Guards the 64-item
+      over-chase directly — the single worst outcome this design can produce.)
+- [ ] An open item appears exactly once in `RampTransactionFollowUp`; a repeat sweep updates it rather than
+      inserting a duplicate (UNIQUE on `RampTransactionId`).
+- [ ] Ramp flipping the item to complete → next sweep stamps `ResolvedAt` and it leaves the worklist.
+- [ ] A backfilled item carries `FirstSeenAt = go-live`, not its transaction date, and therefore does **not**
+      escalate on the first run despite being 82 days old.
+- [ ] The escalation recipient is never CC'd onto their own digest.
 - [ ] The token request always sends `scope`, and the client **asserts the issued token carries the scopes
       requested** — a scopeless token fails loudly at startup, not with mystery 403s at first use (§4.1.1).
 - [ ] A 429 triggers exponential backoff (1s/2s/4s), never an immediate retry.
@@ -328,11 +365,12 @@ worklist is the instrument we use to sanity-check the classifier before any of i
 
 | Risk | Handling |
 |---|---|
-| **Ramp auto-populates `memo` → blank test is inert** | Phase 0 probe answers it before any build. Highest-priority unknown. |
+| ~~Ramp auto-populates `memo` → blank test is inert~~ | ✅ **CLOSED by Phase 0.** Not inert (6.7% blank) — but moot anyway: the classifier is now Ramp's own flag (§4.4). |
+| ~~Blank-memo test selects ~75% of transactions~~ | ✅ **CLOSED by Phase 0 — the projection was wrong.** Real queue is **37 of 420 (8.8%)**, worst cardholder 11 items. The "demoralizing first digest" fear does not materialize. |
+| **Over-chasing — the risk that replaced them** | The hand-rolled test would have chased **64 items Ramp does not require a receipt for** (sub-threshold spend, refunds). Using Ramp's flag structurally prevents it; a future "improvement" that reintroduces a local predicate reintroduces this. Do not. |
 | **Duplicate nagging** — our digest lands beside Ramp's | Accepted by design: the whole premise is that our sender lands where Ramp's doesn't. Revisit if the crew complains. |
 | **Crew ignores us too** | `NotifyCount` / `FirstSeenAt` make this *measurable* within two weeks instead of anecdotal. If the loop doesn't move time-to-completion, we learn it from the data. |
 | **Chasing a departed employee** | `/users` status check skips `deleted` / `inactive`. |
-| **Blank-memo test selects ~75% of transactions** | Plausible per the U-005 probe. A first digest listing dozens of items per cardholder is demoralizing and gets filtered. **Phase 0 sizes it**; if large, consider seeding only from a go-live date forward rather than 90 days of history. |
 | **Drafts pile up unsent** | Draft-only keeps a human in the loop, so the loop is only as fast as the sending. `LastDraftedAt` vs `LastNotifiedAt` makes the gap visible rather than invisible — if drafts sit, we'll see it in the data and revisit the `send` rung (§12 #4). |
 | **Duplicate drafts / duplicate chasing** | §6.1: update-in-place by verified `DraftMessageId`, and a vanished draft is read as *sent*, never as *missing*. Both are explicit acceptance criteria. |
 | **Employee PII in logs** | Explicit §8 rule; check in Pass 1 review. |
@@ -350,8 +388,11 @@ worklist is the instrument we use to sanity-check the classifier before any of i
    dashboard). Name it, accept the ToS, then: *Grant types* → "Add new grant type" → **Client Credentials**;
    *Scopes* → "Configure allowed scopes" → **`transactions:read` + `users:read`** only. Client ID and Client
    Secret are then shown to copy. Register the app separately on `demo.ramp.com` for sandbox.
-2. **Backfill depth at go-live** — chase 90 days of history, or only transactions from go-live forward? Depends
-   entirely on Phase 0's numbers. (§11)
+2. ~~**Backfill depth at go-live**~~ — ✅ **ANSWERED by Phase 0: chase the full 90 days.** 22 of 37 open items
+   (59%) are already older than 14 days and the oldest is 82d, so a go-live-forward-only seed would ignore the
+   actual backlog — which *is* the problem Chris described. At 37 items total there is no volume argument against
+   it. Items are backfilled with `FirstSeenAt = go-live` so the aged history does not trigger instant escalation
+   (§6).
 3. **P0-surface classification** — `/em`'s call; §8 recommends running Pass 3 regardless. Note the draft-only
    decision *lowers* the outbound risk materially: nothing leaves the building without a human pressing send.
 4. **Does the draft-only gate undercut the goal?** The stated pain is *"the reminder is periodic and manual —

@@ -14,13 +14,14 @@ not missed. Recorded so they are not re-litigated and not silently forgotten.
   receipts → Box project folder → invoice packet is the natural v2 and plausibly worth more than
   the chase loop itself. Ties directly to **U-099** (*"Recode sets Billable — ~$22K unbilled in one
   46-line batch"*). Needs a `receipts:read` scope, which v1 deliberately does not request.
-- [ ] 🟡 **Richer "needs a memo" test via the hint extractor.** v1 uses a **literal blank** test —
-  offered the alternative and Chris chose blank (2026-09-25). Consequence, stated plainly: a
-  present-but-useless memo (`"THE HOME DEPOT #0723 - 3892"`) passes the blank test and **keeps
-  feeding the 58999 flag queue**. The richer test is "`entities/expense_coding_item/business/hint_extractor.py`
-  cannot resolve a project" — it already exists and is already exercised by U-005's suggestion
-  engine, so this is a swap of one predicate, not new machinery. Revisit once the chase loop has a
-  few weeks of data.
+- [x] ~~🟡 **Richer "needs a memo" test via the hint extractor.**~~ **MOOT — closed by the Phase 0
+  probe 2026-09-27, do not revisit.** Both candidate predicates (literal-blank, and the
+  hint-extractor "can't resolve a project") were wrong. Ramp already computes completeness in
+  `all_requirements_met_and_approved`, and its verdict is a **strict subset** of the hand-rolled
+  test: 37 vs 101 flagged, **zero** cases Ramp flags that the local test missed, and **64** the
+  local test would have chased that Ramp does not require a receipt for (sub-$75 spend, refunds).
+  A local predicate is not an improvement here — it is an over-chase bug waiting to be reintroduced.
+  ⛔ **Anyone tempted to "upgrade" the classifier to a local test: read design §4.4 first.**
 - [ ] 🟢 **The 1–2 non-Ramp cardholders are invisible to this.** A Ramp-sourced sweep cannot see a
   card that is not in Ramp (named in the U-005 spec). They keep today's manual chase. Named gap,
   not an oversight — only worth closing if that population grows.

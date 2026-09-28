@@ -178,6 +178,12 @@ class Settings(BaseSettings):
     # enterprise. When unset, tokens mint as the enterprise service account.
     box_as_user_id: Optional[str] = None
 
+    # Ramp developer API (U-549 receipt/memo chaser — read-only scopes).
+    ramp_client_id: Optional[str] = None
+    ramp_client_secret: Optional[str] = None
+    ramp_api_base_url: str = "https://api.ramp.com"
+    ramp_chaser_window_days: int = 90
+
     # Intelligence Layer — provider API keys
     anthropic_api_key: Optional[str] = None
     # Azure AI Foundry (OpenAI-compatible chat-completions; DeepSeek + GPT-5.4

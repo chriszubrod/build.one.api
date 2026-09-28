@@ -1,16 +1,33 @@
 # Python Standard Library Imports
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from enum import Enum
+from typing import Any, Dict
+
+
+class RampApprovalState(str, Enum):
+    OPEN = "open"
+    COMPLETE = "complete"
+    UNKNOWN = "unknown"
 
 
 @dataclass(frozen=True)
 class TransactionClassification:
     ramp_transaction_id: str
-    is_open: bool
-    is_complete: bool
+    approval_state: RampApprovalState
     needs_memo: bool
     needs_receipt: bool
-    skip_approval_only: bool
+
+    @property
+    def is_open(self) -> bool:
+        return self.approval_state == RampApprovalState.OPEN
+
+    @property
+    def is_complete(self) -> bool:
+        return self.approval_state == RampApprovalState.COMPLETE
+
+    @property
+    def skip_approval_only(self) -> bool:
+        return self.is_open and (not self.needs_memo) and (not self.needs_receipt)
 
 
 def _memo_is_blank(memo: Any) -> bool:
@@ -20,10 +37,8 @@ def _memo_is_blank(memo: Any) -> bool:
 
 
 def _receipts_empty(receipts: Any) -> bool:
-    if receipts is None:
-        return True
     if isinstance(receipts, list):
-        return len(receipts) == 0
+        return not receipts
     return True
 
 
@@ -34,32 +49,19 @@ def classify_transaction(raw: Dict[str, Any]) -> TransactionClassification:
     """
     ramp_id = str(raw.get("id") or "")
     flag = raw.get("all_requirements_met_and_approved")
-    is_open = flag is False
-    is_complete = flag is True
+    if flag is False:
+        approval_state = RampApprovalState.OPEN
+    elif flag is True:
+        approval_state = RampApprovalState.COMPLETE
+    else:
+        approval_state = RampApprovalState.UNKNOWN
 
     needs_memo = _memo_is_blank(raw.get("memo"))
     needs_receipt = _receipts_empty(raw.get("receipts"))
 
-    skip_approval_only = is_open and (not needs_memo) and (not needs_receipt)
-
     return TransactionClassification(
         ramp_transaction_id=ramp_id,
-        is_open=is_open,
-        is_complete=is_complete,
+        approval_state=approval_state,
         needs_memo=needs_memo,
         needs_receipt=needs_receipt,
-        skip_approval_only=skip_approval_only,
     )
-
-
-def select_open_transactions(transactions: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Return transactions selected for follow-up (after guard), preserving input order."""
-    selected: List[Dict[str, Any]] = []
-    for raw in transactions:
-        cls = classify_transaction(raw)
-        if not cls.is_open:
-            continue
-        if cls.skip_approval_only:
-            continue
-        selected.append(raw)
-    return selected

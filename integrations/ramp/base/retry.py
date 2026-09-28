@@ -5,16 +5,13 @@ from dataclasses import dataclass
 from typing import Callable, Optional, TypeVar
 
 # Local Imports
-from integrations.ramp.base.errors import RampError, RampRateLimitError
+from integrations.ramp.base.errors import RampError
 from integrations.ramp.base.logger import get_ramp_logger
 
 
 logger = get_ramp_logger(__name__)
 
 T = TypeVar("T")
-
-# Ramp docs: exponential backoff 1s → 2s → 4s on 429; never immediate retry.
-_RAMP_RATE_LIMIT_BACKOFF_SECONDS = (1.0, 2.0, 4.0)
 
 
 @dataclass(frozen=True)
@@ -24,19 +21,14 @@ class RetryPolicy:
     backoff_multiplier: float = 2.0
     max_total_budget_seconds: float = 60.0
     max_retry_after_clamp_seconds: float = 60.0
-    use_ramp_rate_limit_schedule: bool = False
 
     @classmethod
     def for_reads(cls) -> "RetryPolicy":
         return cls(max_attempts=5, max_total_budget_seconds=120.0)
 
     @classmethod
-    def for_ramp_rate_limit(cls) -> "RetryPolicy":
-        return cls(
-            max_attempts=4,
-            max_total_budget_seconds=120.0,
-            use_ramp_rate_limit_schedule=True,
-        )
+    def for_token_mint(cls) -> "RetryPolicy":
+        return cls(max_attempts=4, max_total_budget_seconds=120.0)
 
 
 def compute_backoff_seconds(
@@ -44,16 +36,18 @@ def compute_backoff_seconds(
     policy: RetryPolicy,
     *,
     error: Optional[RampError] = None,
-    retry_after_seconds: Optional[float] = None,
 ) -> float:
-    if isinstance(error, RampRateLimitError):
-        idx = min(max(0, attempt - 1), len(_RAMP_RATE_LIMIT_BACKOFF_SECONDS) - 1)
-        fixed = _RAMP_RATE_LIMIT_BACKOFF_SECONDS[idx]
+    floor_schedule = type(error).backoff_floor_seconds if error is not None else ()
+    if floor_schedule:
+        idx = min(max(0, attempt - 1), len(floor_schedule) - 1)
+        fixed = floor_schedule[idx]
+        retry_after_seconds = error.retry_after_seconds if error is not None else None
         if retry_after_seconds is not None and retry_after_seconds > 0:
             wait = max(fixed, retry_after_seconds)
             return min(wait, policy.max_retry_after_clamp_seconds)
         return fixed
 
+    retry_after_seconds = error.retry_after_seconds if error is not None else None
     if retry_after_seconds is not None and retry_after_seconds > 0:
         return min(retry_after_seconds, policy.max_retry_after_clamp_seconds)
 
@@ -89,12 +83,11 @@ def execute_with_retry(
                 attempt=attempt,
                 policy=policy,
                 error=error,
-                retry_after_seconds=error.retry_after_seconds,
             )
 
             elapsed = time.monotonic() - start_time
             remaining_budget = policy.max_total_budget_seconds - elapsed
-            if sleep_seconds >= remaining_budget and remaining_budget <= 0:
+            if remaining_budget <= 0:
                 raise
 
             active_log.info(

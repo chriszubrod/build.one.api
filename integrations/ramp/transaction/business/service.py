@@ -3,26 +3,40 @@ from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any, Dict, List, Optional, Protocol
 
+# Third-party Imports
+import pyodbc
+
 # Local Imports
 import config
 from integrations.ramp.auth.business.service import RampAuthService
 from integrations.ramp.base.client import RampHttpClient
 from integrations.ramp.base.logger import get_ramp_logger
-from integrations.ramp.transaction.business.classify import classify_transaction
+from integrations.ramp.transaction.business.classify import (
+    RampApprovalState,
+    classify_transaction,
+)
 from integrations.ramp.transaction.external.client import RampTransactionExternalClient
 from integrations.ramp.user.business.service import RampUserRosterEntry, RampUserService
 from integrations.ramp.user.external.client import RampUserExternalClient
+from entities.ramp_transaction_follow_up.persistence.repo import (
+    RampTransactionFollowUpRepository,
+)
+from shared.database import get_connection
 
 
 logger = get_ramp_logger(__name__)
 
 
 class RampFollowUpRepository(Protocol):
-    def upsert_open_item(self, **kwargs: Any) -> Any: ...
+    def upsert_open_item(self, *, conn: Optional[pyodbc.Connection] = None, **kwargs: Any) -> Any: ...
 
-    def mark_resolved(self, *, ramp_transaction_id: str) -> Any: ...
+    def mark_resolved(
+        self, *, ramp_transaction_id: str, conn: Optional[pyodbc.Connection] = None
+    ) -> Any: ...
 
-    def read_unresolved_ramp_transaction_ids(self) -> List[str]: ...
+    def read_unresolved_ramp_transaction_ids(
+        self, *, conn: Optional[pyodbc.Connection] = None
+    ) -> List[str]: ...
 
 
 @dataclass
@@ -33,7 +47,6 @@ class RampChaserSweepStats:
     skipped_approval_only: int = 0
     skipped_inactive_cardholder: int = 0
     unroutable_persisted: int = 0
-    user_roster_fetches: int = 0
     flag_unknown: int = 0
 
 
@@ -101,39 +114,67 @@ class RampTransactionService:
 
         stats = RampChaserSweepStats()
 
-        roster = self._user_service.build_roster()
-        stats.user_roster_fetches = 1
+        try:
+            roster = self._user_service.build_roster()
 
-        window_days = int(self._settings.ramp_chaser_window_days or 90)
-        transactions = self._tx_client.list_transactions_in_window(window_days=window_days)
-        stats.transactions_fetched = len(transactions)
+            window_days = int(self._settings.ramp_chaser_window_days or 90)
+            transactions = self._tx_client.list_transactions_in_window(window_days=window_days)
+            stats.transactions_fetched = len(transactions)
 
-        by_id: Dict[str, Dict[str, Any]] = {}
-        for raw in transactions:
-            rid = raw.get("id")
-            if rid is not None:
-                by_id[str(rid)] = raw
+            window = {
+                str(r["id"]): r for r in transactions if r.get("id") is not None
+            }
 
-        unresolved_ids = set(repo.read_unresolved_ramp_transaction_ids())
-        for ramp_id in unresolved_ids:
-            if ramp_id not in by_id:
-                extra = self._tx_client.get_transaction(ramp_id)
-                if extra:
-                    by_id[ramp_id] = extra
+            if isinstance(repo, RampTransactionFollowUpRepository):
+                with get_connection() as conn:
+                    self._process_chaser_window(
+                        repo=repo,
+                        conn=conn,
+                        roster=roster,
+                        window=window,
+                        stats=stats,
+                    )
+            else:
+                self._process_chaser_window(
+                    repo=repo,
+                    conn=None,
+                    roster=roster,
+                    window=window,
+                    stats=stats,
+                )
+        finally:
+            self._http.close()
 
-        for raw in by_id.values():
+        return stats
+
+    def _process_chaser_window(
+        self,
+        *,
+        repo: RampFollowUpRepository,
+        conn: Optional[pyodbc.Connection],
+        roster: Dict[str, RampUserRosterEntry],
+        window: Dict[str, Dict[str, Any]],
+        stats: RampChaserSweepStats,
+    ) -> None:
+        unresolved_ids = set(repo.read_unresolved_ramp_transaction_ids(conn=conn))
+        for ramp_id in unresolved_ids - window.keys():
+            extra = self._tx_client.get_transaction(ramp_id)
+            if extra:
+                window[ramp_id] = extra
+
+        for raw in window.values():
             cls = classify_transaction(raw)
             ramp_id = cls.ramp_transaction_id
             if not ramp_id:
                 continue
 
-            if cls.is_complete:
+            if cls.approval_state == RampApprovalState.COMPLETE:
                 if ramp_id in unresolved_ids:
-                    repo.mark_resolved(ramp_transaction_id=ramp_id)
+                    repo.mark_resolved(ramp_transaction_id=ramp_id, conn=conn)
                     stats.resolved += 1
                 continue
 
-            if not cls.is_open and not cls.is_complete:
+            if cls.approval_state == RampApprovalState.UNKNOWN:
                 stats.flag_unknown += 1
                 logger.warning(
                     "ramp.chaser.flag.unknown",
@@ -157,9 +198,7 @@ class RampTransactionService:
 
             snapshot = _snapshot_from_raw(raw)
             card_holder_user_id = snapshot["card_holder_user_id"]
-            roster_entry: Optional[RampUserRosterEntry] = None
-            if card_holder_user_id:
-                roster_entry = roster.get(card_holder_user_id)
+            roster_entry = roster.get(card_holder_user_id) if card_holder_user_id else None
 
             if roster_entry is not None and not roster_entry.is_active:
                 stats.skipped_inactive_cardholder += 1
@@ -167,6 +206,7 @@ class RampTransactionService:
 
             email: Optional[str] = None
             if roster_entry is None:
+                stats.unroutable_persisted += 1
                 logger.warning(
                     "ramp.chaser.unroutable.missing_user",
                     extra={
@@ -176,6 +216,7 @@ class RampTransactionService:
                     },
                 )
             elif not roster_entry.email:
+                stats.unroutable_persisted += 1
                 logger.warning(
                     "ramp.chaser.unroutable.no_email",
                     extra={
@@ -187,10 +228,8 @@ class RampTransactionService:
             else:
                 email = roster_entry.email
 
-            if email is None:
-                stats.unroutable_persisted += 1
-
             repo.upsert_open_item(
+                conn=conn,
                 ramp_transaction_id=ramp_id,
                 card_holder_ramp_user_id=card_holder_user_id,
                 card_holder_name=snapshot["card_holder_name"],
@@ -202,5 +241,3 @@ class RampTransactionService:
                 needs_receipt=cls.needs_receipt,
             )
             stats.upserted += 1
-
-        return stats

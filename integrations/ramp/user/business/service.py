@@ -32,9 +32,7 @@ class RampUserService:
             status_str = str(status) if status is not None else None
             is_active = status_str in ACTIVE_USER_STATUSES
             email_raw = raw.get("email")
-            email = str(email_raw).strip() if email_raw else None
-            if email == "":
-                email = None
+            email = (str(email_raw).strip() or None) if email_raw else None
             roster[str(user_id)] = RampUserRosterEntry(
                 ramp_user_id=str(user_id),
                 email=email,

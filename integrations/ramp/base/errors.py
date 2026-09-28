@@ -4,6 +4,7 @@ from typing import Any, Dict, Optional
 
 class RampError(Exception):
     is_retryable: bool = False
+    backoff_floor_seconds: tuple = ()
 
     def __init__(
         self,
@@ -37,14 +38,11 @@ class RampTimeoutError(RampError):
 
 class RampRateLimitError(RampError):
     is_retryable = True
+    backoff_floor_seconds = (1.0, 2.0, 4.0)
 
 
 class RampServerError(RampError):
     is_retryable = True
-
-
-class RampServiceUnavailableError(RampServerError):
-    pass
 
 
 class RampClientError(RampError):

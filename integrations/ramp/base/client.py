@@ -2,7 +2,7 @@
 import email.utils
 import json
 import time
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
 
 # Third-party Imports
@@ -124,9 +124,10 @@ class RampHttpClient:
         params: Optional[Dict[str, Any]] = None,
         timeout_tier: str = "A",
         operation_name: Optional[str] = None,
-        retry_policy: Optional[RetryPolicy] = None,
     ) -> Dict[str, Any]:
-        policy = retry_policy or RetryPolicy.for_reads()
+        if timeout_tier not in _TIMEOUT_TIERS:
+            raise ValueError(f"Unknown Ramp HTTP timeout tier: {timeout_tier!r}")
+        policy = RetryPolicy.for_reads()
         correlation_id = ensure_correlation_id()
         url = self._resolve_url(path_or_url)
         request_path = path_or_url if path_or_url.startswith("/") else urlparse(path_or_url).path
@@ -150,18 +151,41 @@ class RampHttpClient:
             correlation_id=correlation_id,
         )
 
+    def _paginate(
+        self,
+        path: str,
+        *,
+        params: Optional[Dict[str, Any]] = None,
+        operation_name: str,
+    ) -> List[Dict[str, Any]]:
+        items: List[Dict[str, Any]] = []
+        next_url: Optional[str] = path
+        page_params = params
+
+        while next_url:
+            body = self.get(
+                next_url,
+                params=page_params,
+                operation_name=operation_name,
+            )
+            page_params = None
+            data = body.get("data") or []
+            if isinstance(data, list):
+                items.extend(data)
+            page = body.get("page") or {}
+            next_link = page.get("next") if isinstance(page, dict) else None
+            next_url = str(next_link) if next_link else None
+
+        return items
+
     def _resolve_url(self, path_or_url: str) -> str:
         if path_or_url.startswith("http://") or path_or_url.startswith("https://"):
             parsed = urlparse(path_or_url)
             link_origin = _normalized_http_origin(path_or_url)
             base_origin = _normalized_http_origin(self.api_base)
             if link_origin != base_origin:
-                if link_origin[0] != base_origin[0]:
-                    reason = "Ramp pagination link scheme does not match configured api_base"
-                else:
-                    reason = "Ramp pagination link host does not match configured api_base"
                 raise RampUntrustedRedirectError(
-                    reason,
+                    "Ramp pagination link origin does not match configured api_base",
                     request_path=parsed.path or path_or_url,
                 )
             return path_or_url

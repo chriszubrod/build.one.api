@@ -142,33 +142,30 @@ BEGIN
     UPDATE dbo.[RampTransactionFollowUp]
     SET [ResolvedAt] = @Now,
         [UpdatedAt] = @Now
+    OUTPUT
+        INSERTED.[Id],
+        INSERTED.[PublicId],
+        INSERTED.[RowVersion],
+        INSERTED.[RampTransactionId],
+        INSERTED.[CardHolderRampUserId],
+        INSERTED.[CardHolderName],
+        INSERTED.[CardHolderEmail],
+        INSERTED.[MerchantName],
+        INSERTED.[Amount],
+        INSERTED.[TransactionDate],
+        INSERTED.[NeedsMemo],
+        INSERTED.[NeedsReceipt],
+        CONVERT(VARCHAR(30), INSERTED.[FirstSeenAt], 126) AS [FirstSeenAt],
+        CONVERT(VARCHAR(30), INSERTED.[LastDraftedAt], 126) AS [LastDraftedAt],
+        INSERTED.[DraftMessageId],
+        CONVERT(VARCHAR(30), INSERTED.[LastNotifiedAt], 126) AS [LastNotifiedAt],
+        INSERTED.[NotifyCount],
+        CONVERT(VARCHAR(30), INSERTED.[EscalatedAt], 126) AS [EscalatedAt],
+        CONVERT(VARCHAR(30), INSERTED.[ResolvedAt], 126) AS [ResolvedAt],
+        CONVERT(VARCHAR(30), INSERTED.[CreatedAt], 126) AS [CreatedAt],
+        CONVERT(VARCHAR(30), INSERTED.[UpdatedAt], 126) AS [UpdatedAt]
     WHERE [RampTransactionId] = @RampTransactionId
       AND [ResolvedAt] IS NULL;
-
-    SELECT
-        r.[Id],
-        r.[PublicId],
-        r.[RowVersion],
-        r.[RampTransactionId],
-        r.[CardHolderRampUserId],
-        r.[CardHolderName],
-        r.[CardHolderEmail],
-        r.[MerchantName],
-        r.[Amount],
-        r.[TransactionDate],
-        r.[NeedsMemo],
-        r.[NeedsReceipt],
-        CONVERT(VARCHAR(30), r.[FirstSeenAt], 126) AS [FirstSeenAt],
-        CONVERT(VARCHAR(30), r.[LastDraftedAt], 126) AS [LastDraftedAt],
-        r.[DraftMessageId],
-        CONVERT(VARCHAR(30), r.[LastNotifiedAt], 126) AS [LastNotifiedAt],
-        r.[NotifyCount],
-        CONVERT(VARCHAR(30), r.[EscalatedAt], 126) AS [EscalatedAt],
-        CONVERT(VARCHAR(30), r.[ResolvedAt], 126) AS [ResolvedAt],
-        CONVERT(VARCHAR(30), r.[CreatedAt], 126) AS [CreatedAt],
-        CONVERT(VARCHAR(30), r.[UpdatedAt], 126) AS [UpdatedAt]
-    FROM dbo.[RampTransactionFollowUp] r
-    WHERE r.[RampTransactionId] = @RampTransactionId;
 
     COMMIT TRANSACTION;
 END

@@ -9,7 +9,7 @@ import pyodbc
 
 # Local Imports
 from entities.ramp_transaction_follow_up.business.model import RampTransactionFollowUp
-from shared.database import call_procedure, get_connection, map_database_error
+from shared.database import call_procedure, conn_ctx, get_connection, map_database_error
 
 
 logger = logging.getLogger(__name__)
@@ -61,10 +61,11 @@ class RampTransactionFollowUpRepository:
         transaction_date: Optional[str],
         needs_memo: bool,
         needs_receipt: bool,
+        conn: Optional[pyodbc.Connection] = None,
     ) -> Optional[RampTransactionFollowUp]:
         try:
-            with get_connection() as conn:
-                cursor = conn.cursor()
+            with conn_ctx(conn) as c:
+                cursor = c.cursor()
                 call_procedure(
                     cursor=cursor,
                     name="UpsertRampTransactionFollowUp",
@@ -80,7 +81,10 @@ class RampTransactionFollowUpRepository:
                         "NeedsReceipt": 1 if needs_receipt else 0,
                     },
                 )
-                return self._from_db(cursor.fetchone())
+                row = self._from_db(cursor.fetchone())
+                if conn is not None:
+                    c.commit()
+                return row
         except Exception as error:
             logger.error(
                 "Error upserting ramp transaction follow-up %s: %s",
@@ -89,16 +93,24 @@ class RampTransactionFollowUpRepository:
             )
             raise map_database_error(error)
 
-    def mark_resolved(self, *, ramp_transaction_id: str) -> Optional[RampTransactionFollowUp]:
+    def mark_resolved(
+        self,
+        *,
+        ramp_transaction_id: str,
+        conn: Optional[pyodbc.Connection] = None,
+    ) -> Optional[RampTransactionFollowUp]:
         try:
-            with get_connection() as conn:
-                cursor = conn.cursor()
+            with conn_ctx(conn) as c:
+                cursor = c.cursor()
                 call_procedure(
                     cursor=cursor,
                     name="MarkRampTransactionFollowUpResolved",
                     params={"RampTransactionId": ramp_transaction_id},
                 )
-                return self._from_db(cursor.fetchone())
+                row = self._from_db(cursor.fetchone())
+                if conn is not None:
+                    c.commit()
+                return row
         except Exception as error:
             logger.error(
                 "Error resolving ramp transaction follow-up %s: %s",
@@ -107,20 +119,25 @@ class RampTransactionFollowUpRepository:
             )
             raise map_database_error(error)
 
-    def read_unresolved_ramp_transaction_ids(self) -> List[str]:
+    def read_unresolved_ramp_transaction_ids(
+        self, *, conn: Optional[pyodbc.Connection] = None
+    ) -> List[str]:
         try:
-            with get_connection() as conn:
-                cursor = conn.cursor()
+            with conn_ctx(conn) as c:
+                cursor = c.cursor()
                 call_procedure(
                     cursor=cursor,
                     name="ReadUnresolvedRampTransactionFollowUpIds",
                     params={},
                 )
-                return [
+                ids = [
                     str(row.RampTransactionId)
                     for row in cursor.fetchall()
                     if getattr(row, "RampTransactionId", None)
                 ]
+                if conn is not None:
+                    c.commit()
+                return ids
         except Exception as error:
             logger.error("Error reading unresolved ramp follow-up ids: %s", error)
             raise map_database_error(error)

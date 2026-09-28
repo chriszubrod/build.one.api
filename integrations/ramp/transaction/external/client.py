@@ -4,6 +4,7 @@ from typing import Any, Dict, List, Optional
 
 # Local Imports
 from integrations.ramp.base.client import RampHttpClient
+from integrations.ramp.base.errors import RampNotFoundError
 
 
 class RampTransactionExternalClient:
@@ -22,32 +23,16 @@ class RampTransactionExternalClient:
             datetime.now(timezone.utc) - timedelta(days=window_days)
         ).strftime("%Y-%m-%dT%H:%M:%SZ")
 
-        items: List[Dict[str, Any]] = []
-        next_url: Optional[str] = "developer/v1/transactions"
-        params: Optional[Dict[str, Any]] = {
-            "from_date": from_date,
-            "page_size": page_size,
-        }
-
-        while next_url:
-            body = self._http.get(
-                next_url,
-                params=params if next_url == "developer/v1/transactions" else None,
-                operation_name="ramp.transactions.list",
-            )
-            params = None
-            data = body.get("data") or []
-            if isinstance(data, list):
-                items.extend(data)
-            page = body.get("page") or {}
-            next_link = page.get("next") if isinstance(page, dict) else None
-            next_url = str(next_link) if next_link else None
-
-        return items
+        return self._http._paginate(
+            "developer/v1/transactions",
+            params={
+                "from_date": from_date,
+                "page_size": page_size,
+            },
+            operation_name="ramp.transactions.list",
+        )
 
     def get_transaction(self, ramp_transaction_id: str) -> Optional[Dict[str, Any]]:
-        from integrations.ramp.base.errors import RampNotFoundError
-
         try:
             body = self._http.get(
                 f"developer/v1/transactions/{ramp_transaction_id}",

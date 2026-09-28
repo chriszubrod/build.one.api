@@ -37,7 +37,6 @@ _MINT_TIMEOUT = httpx.Timeout(connect=5.0, read=30.0, write=30.0, pool=5.0)
 class _TokenCache:
     access_token: Optional[str] = None
     expires_at: Optional[datetime] = None
-    granted_scope: Optional[str] = None
 
 
 _token_cache = _TokenCache()
@@ -168,7 +167,7 @@ class RampAuthService:
 
         payload = execute_with_retry(
             _do_mint,
-            RetryPolicy.for_ramp_rate_limit(),
+            RetryPolicy.for_token_mint(),
             log=logger,
             operation_name="ramp.auth.token.mint",
         )
@@ -186,7 +185,6 @@ class RampAuthService:
             expires_in = DEFAULT_TOKEN_LIFETIME_SECONDS
 
         _token_cache.access_token = str(access_token)
-        _token_cache.granted_scope = str(granted_scope) if granted_scope is not None else None
         _token_cache.expires_at = datetime.now(timezone.utc) + timedelta(
             seconds=max(0, expires_in - TOKEN_EXPIRY_BUFFER_SECONDS)
         )

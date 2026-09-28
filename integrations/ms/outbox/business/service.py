@@ -27,6 +27,11 @@ KIND_UPLOAD_SHAREPOINT_FILE = "upload_sharepoint_file"
 KIND_APPEND_EXCEL_ROW = "append_excel_row"
 KIND_INSERT_EXCEL_ROW = "insert_excel_row"
 KIND_SEND_MAIL = "send_mail"  # Phase 4
+KIND_UPDATE_DRAFT = "update_draft"  # U-549 Phase C1
+
+# Distinct, greppable drain outcomes stamped onto update_draft payload rows.
+UPDATE_DRAFT_OUTCOME_PATCHED = "update_draft_patched"
+UPDATE_DRAFT_OUTCOME_TARGET_GONE = "update_draft_target_gone"
 
 
 def sharepoint_upload_outcome(queued: Optional[MsOutbox]) -> str:
@@ -574,6 +579,73 @@ class MsOutboxService:
                 "forward_message_id": forward_message_id,
                 "comment_text": comment_text,
                 "html_preamble": html_preamble,
+            },
+        )
+
+    def enqueue_update_draft(
+        self,
+        *,
+        entity_type: str,
+        entity_public_id: str,
+        graph_message_id: str,
+        to_addresses: list,
+        cc_addresses: Optional[list] = None,
+        bcc_addresses: Optional[list] = None,
+        subject: str,
+        body: str,
+        body_type: str = "HTML",
+    ) -> Optional[MsOutbox]:
+        """
+        Queue an in-place PATCH of an existing Outlook draft for background dispatch.
+
+        `entity_public_id` should be deterministic when callers need idempotent
+        enqueue (same as `enqueue_send_mail`). `graph_message_id` is the only
+        draft locator — never match by subject or other heuristics.
+
+        Recipient dicts use the same `{"email": str, "name": Optional[str]}`
+        shape as `enqueue_send_mail`.
+        """
+        tenant_id = _resolve_tenant_id()
+        if not tenant_id:
+            logger.error("ms.outbox.enqueue_update_draft.no_tenant_id")
+            return None
+
+        if _writes_allowed() and not idempotency_guards_disabled():
+            try:
+                if self.repo.count_by_entity(entity_type, entity_public_id) > 0:
+                    logger.info(
+                        "ms.outbox.update_draft.already_enqueued",
+                        extra={
+                            "event_name": "ms.outbox.update_draft.already_enqueued",
+                            "entity_type": entity_type,
+                            "entity_public_id": entity_public_id,
+                        },
+                    )
+                    return None
+            except Exception as error:
+                logger.warning(
+                    "ms.outbox.update_draft.idempotency_guard_failed",
+                    extra={
+                        "event_name": "ms.outbox.update_draft.idempotency_guard_failed",
+                        "entity_type": entity_type,
+                        "entity_public_id": entity_public_id,
+                        "error_class": type(error).__name__,
+                    },
+                )
+
+        return self.enqueue(
+            kind=KIND_UPDATE_DRAFT,
+            entity_type=entity_type,
+            entity_public_id=entity_public_id,
+            tenant_id=tenant_id,
+            payload={
+                "graph_message_id": graph_message_id,
+                "to_addresses": to_addresses,
+                "cc_addresses": cc_addresses or [],
+                "bcc_addresses": bcc_addresses or [],
+                "subject": subject,
+                "body": body,
+                "body_type": body_type,
             },
         )
 

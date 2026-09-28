@@ -47,9 +47,11 @@ reminders on" is closed as an alternative. This is the strongest single piece of
 - Rolling sweep selecting open items by **Ramp's own `all_requirements_met_and_approved == False`** (§4.4), and
   reading `memo` / `receipts` only to say *what* is missing.
 - Persisted delinquency state per transaction (what's missing, since when, notified how often, resolved when).
-- **Twice-weekly per-cardholder digest email** from build.one, created as a **draft** for human review — v1
-  never auto-sends (§6.1).
-- **Escalation at 14 days**: items open ≥14d CC Chris on that cardholder's digest and are marked escalated.
+- **Weekly per-cardholder digest email** from build.one, created as a **draft** for human review — v1
+  never auto-sends (§6.1). *(Was twice-weekly; reduced to once per week by Chris, 2026-09-28.)*
+- ~~**Escalation at 14 days**~~ — **DEFERRED** (Chris, 2026-09-28). Meaningless in draft mode: he sends every
+  draft, so he already sees every message. Aged items carry an inline marker instead (§6.2). A **standing CC to
+  the company owner** replaces it, from `RAMP_CHASER_CC_EMAIL` (§6.2).
 - **Web worklist**: open items by cardholder, age-bucketed — the visibility half of the ask.
 
 **Out (v1), deliberately.**
@@ -276,9 +278,11 @@ Phase A has none.
 
 ## 6. Cadence, escalation, delivery
 
-**Chris's call: twice weekly, escalate at 14 days.** Proposed Tue + Fri mornings in `business_timezone`
-(`America/Chicago`) — Friday deliberately overlaps Ramp's own Friday nag so the office message is the one in the
-inbox alongside it.
+**Chris's call: ONCE PER WEEK** (2026-09-28, reduced from twice). Day is a Phase-D scheduler concern, not a
+Phase-C one — the digest's idempotency key is `(cardholder, sweep_date)`, so cadence changes cost nothing in
+code. ⚠️ **Open: which day.** Friday overlaps Ramp's own Friday nag so the office message lands beside it — but
+Friday afternoon is when field crew are least likely to act. A Tuesday gives them the week. Chris's call at
+Phase D.
 
 - **One digest per cardholder per run**, listing every open item with merchant, amount, date, age, and exactly
   what's missing. Never one email per transaction.
@@ -329,6 +333,55 @@ answer them:
   a re-run on the same day cannot produce a second draft even before the checks above.
 
 ---
+
+### 6.2 The message — specified by Chris, 2026-09-28
+
+⛔ **This is the active ingredient, not decoration.** The entire premise of the unit is that the crew ignores
+Ramp's automated mail but responds to the office. A message that pattern-matches to another automated nag fails
+in the one way the architecture cannot compensate for.
+
+**Subject:** `Ramp Action Needed - <yyyy-mm-dd> - <card holder>`
+
+**Body:**
+
+```
+<First name>,
+
+When you have a moment, will you please jump into Ramp and complete the following items?
+
+Receipt & Memo
+  Sep 18   Lowe's              $92.50
+  Aug 04   Amazon              $47.10   ← 54 days
+
+Receipt Only
+  Sep 12   Home Depot         $184.22
+
+Memo Only
+  Sep 24   Tractor Supply     $310.00
+
+Thanks,
+Chris
+```
+
+**Rules the build must hold:**
+
+- **Three sections, in this order: `Receipt & Memo`, `Receipt Only`, `Memo Only`.** They partition the
+  cardholder's open items by `NeedsMemo` / `NeedsReceipt`. An item appears in exactly one section.
+- **Omit any section that is empty** — never render a heading with nothing under it.
+- **Aged items carry a marker** (`← N days`) computed from `FirstSeenAt`, i.e. how long *we* have been chasing,
+  consistent with §6's two-clocks rule. Not transaction age.
+- **CC: the company owner**, from config (`RAMP_CHASER_CC_EMAIL`), on every digest — a standing CC, not
+  escalation-triggered. ⚠️ If the owner is also the sender/signer, the CC is a no-op and should be left unset.
+- **No "easiest way to submit" paragraph and no "this holds up billing" paragraph.** Cut deliberately — the
+  opening line already tells them to do it in Ramp, and the rest reads as filler. Do not reintroduce them.
+- **Closing is exactly `Thanks,` / `Chris`.**
+- Amounts are `Decimal`-formatted currency; dates render in `business_timezone`.
+
+**The 14-day escalation is DEFERRED, not built** (Chris, 2026-09-28). It was specced as "CC Chris on aged
+items," which is meaningless in draft mode — he sends every draft, so he already sees every message. It only
+becomes meaningful if `send` mode is ever enabled. The aged-item marker carries the signal in the meantime.
+`EscalatedAt` stays in the schema unused rather than being dropped and re-added.
+
 
 ## 7. Config and gates
 

@@ -20,7 +20,10 @@ from integrations.ms.outbox.business.service import (
     KIND_APPEND_EXCEL_ROW,
     KIND_INSERT_EXCEL_ROW,
     KIND_SEND_MAIL,
+    KIND_UPDATE_DRAFT,
     KIND_UPLOAD_SHAREPOINT_FILE,
+    UPDATE_DRAFT_OUTCOME_PATCHED,
+    UPDATE_DRAFT_OUTCOME_TARGET_GONE,
 )
 from integrations.ms.outbox.persistence.repo import MsOutboxRepository
 from shared.authz.context import system_authz
@@ -85,6 +88,7 @@ class MsOutboxWorker:
             KIND_APPEND_EXCEL_ROW: self._handle_append_excel_row,
             KIND_INSERT_EXCEL_ROW: self._handle_insert_excel_row,
             KIND_SEND_MAIL: self._handle_send_mail,
+            KIND_UPDATE_DRAFT: self._handle_update_draft,
         }
         self._retry_policy = RetryPolicy.for_writes()
 
@@ -880,6 +884,181 @@ class MsOutboxWorker:
                         "graph_message_id": message_id,
                     },
                 )
+
+    def _handle_update_draft(
+        self,
+        row: MsOutbox,
+        payload: Dict[str, Any],
+    ) -> None:
+        """
+        PATCH an existing draft in place via Graph `me/messages/{id}`.
+
+        Payload shape:
+          {
+            "graph_message_id": "<Graph message id>",
+            "to_addresses":  [{"email": "...", "name": "..."}, ...],
+            "cc_addresses":  [...],
+            "bcc_addresses": [...],
+            "subject":       "...",
+            "body":          "<p>...</p>",
+            "body_type":     "HTML" | "Text",
+          }
+
+        On success stamps `update_draft_outcome=update_draft_patched` on the
+        row payload. When the target draft was sent or deleted before drain,
+        completes terminally with `update_draft_outcome=update_draft_target_gone`
+        (no retry, no dead-letter, no recreate).
+
+        Read-before-write: GET the message and require `is_draft is True` before
+        PATCHing. Graph still permits PATCH on sent messages until 2026-12-31;
+        without the GET gate a queued body could rewrite an already-sent chaser.
+        """
+        from integrations.ms.mail.external.client import get_message, update_draft
+
+        graph_message_id = payload.get("graph_message_id")
+        if not graph_message_id:
+            raise ValueError("update_draft payload missing graph_message_id")
+
+        to_addresses = payload.get("to_addresses") or []
+        cc_addresses = payload.get("cc_addresses") or []
+        bcc_addresses = payload.get("bcc_addresses") or []
+        subject = payload.get("subject")
+        body = payload.get("body")
+        body_type = payload.get("body_type") or "HTML"
+
+        get_result = get_message(message_id=graph_message_id, include_body=False)
+        if self._is_update_draft_get_terminal_gone(get_result):
+            self._stamp_update_draft_outcome(
+                row, payload, UPDATE_DRAFT_OUTCOME_TARGET_GONE
+            )
+            logger.info(
+                "ms.outbox.update_draft.target_gone",
+                extra={
+                    "event_name": "ms.outbox.update_draft.target_gone",
+                    "outbox_public_id": row.public_id,
+                    "graph_message_id": graph_message_id,
+                    "update_draft_outcome": UPDATE_DRAFT_OUTCOME_TARGET_GONE,
+                    "http_status": (
+                        get_result.get("status_code")
+                        if isinstance(get_result, dict)
+                        else None
+                    ),
+                    "phase": "get",
+                },
+            )
+            return
+
+        self._raise_if_external_error(row, get_result)
+
+        result = update_draft(
+            message_id=graph_message_id,
+            to_recipients=to_addresses,
+            subject=subject,
+            body=body,
+            body_type=body_type,
+            cc_recipients=cc_addresses,
+            bcc_recipients=bcc_addresses,
+        )
+
+        if self._is_update_draft_target_gone(result):
+            self._stamp_update_draft_outcome(
+                row, payload, UPDATE_DRAFT_OUTCOME_TARGET_GONE
+            )
+            logger.info(
+                "ms.outbox.update_draft.target_gone",
+                extra={
+                    "event_name": "ms.outbox.update_draft.target_gone",
+                    "outbox_public_id": row.public_id,
+                    "graph_message_id": graph_message_id,
+                    "update_draft_outcome": UPDATE_DRAFT_OUTCOME_TARGET_GONE,
+                    "http_status": result.get("status_code") if isinstance(result, dict) else None,
+                    "phase": "patch",
+                },
+            )
+            return
+
+        self._raise_if_external_error(row, result)
+
+        draft = result.get("draft") if isinstance(result, dict) else None
+        message_id = (draft or {}).get("message_id") if isinstance(draft, dict) else None
+        if message_id:
+            payload["graph_message_id"] = message_id
+        self._stamp_update_draft_outcome(row, payload, UPDATE_DRAFT_OUTCOME_PATCHED)
+
+    @staticmethod
+    def _is_update_draft_get_terminal_gone(result: Any) -> bool:
+        """
+        True when GET proves the target is not an updatable draft: 404, or 200
+        with `is_draft` not strictly True. Transient GET failures (5xx, etc.)
+        return False here — caller must `_raise_if_external_error` instead.
+        """
+        if not isinstance(result, dict):
+            return False
+        status_code = result.get("status_code", 500)
+        if status_code == 404:
+            return True
+        if status_code != 200:
+            return False
+        email = result.get("email")
+        if not isinstance(email, dict):
+            return True
+        return email.get("is_draft") is not True
+
+    @staticmethod
+    def _is_update_draft_target_gone(result: Any) -> bool:
+        """
+        True when Graph reports the explicit graph_message_id no longer exists
+        as an updatable draft (sent, deleted, or 404). Distinct from transient
+        5xx/timeouts, which must retry via `_raise_if_external_error`.
+        """
+        if not isinstance(result, dict):
+            return False
+        status_code = result.get("status_code", 500)
+        if status_code == 404:
+            return True
+        if status_code == 400:
+            message = (result.get("message") or "").lower()
+            gone_markers = (
+                "not a draft",
+                "non-draft",
+                "non draft",
+                "has been sent",
+                "cannot be updated",
+                "errorinvalidoperation",
+            )
+            return any(marker in message for marker in gone_markers)
+        return False
+
+    def _stamp_update_draft_outcome(
+        self,
+        row: MsOutbox,
+        payload: Dict[str, Any],
+        outcome: str,
+    ) -> None:
+        """Persist drain outcome before the row may be marked done; retry on failure."""
+        payload["update_draft_outcome"] = outcome
+        try:
+            updated = self.repo.update_payload(
+                id=row.id,
+                row_version=row.row_version,
+                payload=json.dumps(payload),
+            )
+            if updated and updated.row_version:
+                row.row_version = updated.row_version
+        except Exception as error:
+            logger.exception(
+                "ms.outbox.update_draft.payload_update_failed",
+                extra={
+                    "event_name": "ms.outbox.update_draft.payload_update_failed",
+                    "outbox_public_id": row.public_id,
+                    "graph_message_id": payload.get("graph_message_id"),
+                    "update_draft_outcome": outcome,
+                },
+            )
+            raise MsServerError(
+                f"Failed to persist update_draft outcome {outcome!r}",
+                http_status=500,
+            ) from error
 
     # ------------------------------------------------------------------ #
     # Helpers

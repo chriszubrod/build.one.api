@@ -2,6 +2,28 @@
 
 Carry-over items from sessions. Check off as done; prune anything stale.
 
+## U-549 Phase A residuals — booked at Pass 2, deliberately not fixed (2026-09-27)
+
+Found by the Pass-2 efficiency and altitude agents. Each is a **behavior change**, which is why a
+behavior-preserving quality pass could not take them. Design: `docs/design/u549-ramp-receipt-memo-chaser.md`.
+
+- [ ] 🟡 **The refetch set is unbounded and ratchets forever.** `ReadUnresolvedRampTransactionIds` is a bare
+  `WHERE [ResolvedAt] IS NULL` — no age predicate, no `TOP`. Two row classes never leave it: an item that aged
+  out of the 90-day window and is still open, and an item whose Ramp transaction **404s** (the external client
+  returns `None`, so the row never enters `by_id`, so `mark_resolved` can never fire). Each costs one
+  `GET /developer/v1/transactions/{id}` **every sweep, forever**, and the count only goes up. Harmless today
+  (~37 open items, almost nothing has aged out) but at N=37 it would be a 7x amplification of the ~6-request
+  sweep baseline. Fix = a bound: age-cap the refetch set, or persist a terminal "gone from Ramp" state so 404s
+  stop being retried. Both change behavior. Belongs to the scheduling phase (Phase D).
+- [ ] 🟢 **The straggler fan-out is invisible.** `stats.transactions_fetched` counts only the window; nothing in
+  `RampChaserSweepStats` or the logs reveals how many individual refetches a sweep did, so an operator cannot
+  watch the ratchet above grow. `integrations/intuit/qbo/base/delete_reconcile.py:105` is this repo's named home
+  for the same "bulk list + diff + confirm absentees individually" shape, complete with a candidate ceiling and
+  an `abort_reason` — worth adopting wholesale when the bound lands, rather than inventing a second vocabulary.
+- [ ] 🟢 **`read_by_ramp_transaction_id` has no caller.** Kept deliberately — it is plausible scaffolding for the
+  Phase C digest, which needs to read a row back. If Phase C lands without using it, delete the method **and its
+  stored procedure**. Do not let it quietly become permanent dead code.
+
 ## U-549 deferred scope — Ramp chaser follow-ups (booked 2026-09-25, design session)
 
 Design: `docs/design/u549-ramp-receipt-memo-chaser.md`. These were **deliberately cut from v1**,

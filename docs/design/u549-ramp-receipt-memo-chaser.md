@@ -143,12 +143,27 @@ pre-existing rows the moment the "incomplete" definition widens. The window gove
 transaction is in `RampTransactionFollowUp` it is tracked until resolved regardless of age, so an item that ages
 out of the 90-day window is never dropped.
 
-### 4.3 Cardholder identity
+### 4.3 Cardholder identity — ⚠️ **CORRECTED AT GATE 1 (2026-09-27)**
 
-`card_holder` rides on the transaction itself — `{first_name, last_name, user_id, email, department}`. **The
-email comes straight off the transaction**; no roster mapping or Contact lookup is required, and no build.one
-`User` row needs to exist. `/users` is pulled only to resolve status (skip `deleted` / `inactive` cardholders so
-we don't chase someone who left).
+> **An earlier draft of this section claimed the cardholder's email rides on the transaction. It does not.
+> Measured: `email` appears on `card_holder` in 0 of 420 transactions.** The claim came from the API docs; the
+> live payload disagrees. Left uncorrected it would have produced a digest with no way to address it.
+
+`card_holder` carries **`user_id`**, `employee_id`, `first_name`, `last_name`, `department_{id,name}`,
+`location_{id,name}` — **no email, ever** (all eight keys present on 420/420; the object is never empty).
+
+**So the `/users` join is REQUIRED for delivery, not optional.** `GET /developer/v1/users` returns `id`, `email`,
+`first_name`, `last_name`, `status`, `department_id`, `manager_id`, `is_manager`, `role`. Join
+`card_holder.user_id` → `users.id` → `email`.
+
+Measured feasibility (90-day window): roster is **14 users total** — fetch once per sweep and cache; this is a
+single call, never an N+1 per transaction. All **6/6** open-item cardholders resolve to an email and all are
+`USER_ACTIVE`.
+
+**Failure mode the build must handle:** a `user_id` that does not resolve, or resolves to a user with no email,
+**cannot be chased**. Log it and surface it on the worklist as unroutable — never silently drop the item, or a
+cardholder disappears from the chase with no trace. Skip non-active statuses (don't chase someone who left);
+`status` values observed are `USER_ACTIVE`, and the API documents `active | deleted | draft | inactive | pending`.
 
 ### 4.4 What counts as incomplete — **SETTLED BY THE PHASE 0 PROBE (2026-09-27)**
 
@@ -188,6 +203,20 @@ to escape.
 - **`policy_violations` is empty on all 420** — the field exists but is unpopulated for this account. Do not
   build on it.
 
+#### ⚠️ Required guard — the field name says `..._and_approved`
+
+The selector **conflates "requirements met" with "approved."** A transaction could read `False` because an
+*approval* is pending — something no amount of nagging the cardholder can fix. Chasing those would be the
+over-chase failure in a new costume.
+
+**Verified clean at Gate 1 over a widened 180-day window: 928 transactions, 45 flagged, `0` with neither a
+missing memo nor a missing receipt.** So the selector is safe against today's Ramp configuration — but that is a
+property of the *config*, not of the field, and nobody will remember this the day approvals get switched on.
+
+⛔ **Build the guard: flagged, but neither memo nor receipt is actually missing → log it and SKIP. Never chase
+it, and never let it into a digest** (there would be nothing to ask for). Surface the count so a rising number
+is visible rather than silent.
+
 ### 4.5 Resolution
 
 A follow-up row resolves when a **later sweep observes** Ramp showing the missing field(s) present. Resolution is
@@ -202,7 +231,8 @@ and drops off the worklist.
 |---|---|
 | `Id`, `PublicId` | house convention |
 | `RampTransactionId` | Ramp's id — **UNIQUE**, the idempotency anchor |
-| `CardHolderRampUserId`, `CardHolderEmail`, `CardHolderName` | denormalized off the transaction |
+| `CardHolderRampUserId`, `CardHolderName` | off the transaction's `card_holder` |
+| `CardHolderEmail` | ⚠️ **from the `/users` join, NOT the transaction** (§4.3) — nullable; null = unroutable, surfaced on the worklist, never silently dropped |
 | `MerchantName`, `Amount`, `TransactionDate` | for the digest body and the worklist |
 | `NeedsMemo`, `NeedsReceipt` | **descriptive, not selective** — they populate the digest body ("what's missing"). Membership is decided solely by Ramp's `all_requirements_met_and_approved` (§4.4). |
 | `FirstSeenAt` | drives the age buckets and the 14-day escalation |
@@ -335,6 +365,13 @@ worklist is the instrument we use to sanity-check the classifier before any of i
       membership follows the flag, not the fields.
 - [ ] **A transaction missing a receipt that Ramp considers complete is NOT chased.** (Guards the 64-item
       over-chase directly — the single worst outcome this design can produce.)
+- [ ] **A flagged item with neither memo nor receipt missing is logged and SKIPPED**, never chased and never
+      placed in a digest (§4.4 guard — the `..._and_approved` conflation).
+- [ ] **`CardHolderEmail` is resolved via the `/users` join**, not read off the transaction (§4.3). Assert the
+      roster is fetched **once per sweep**, not once per transaction.
+- [ ] **An unresolvable `user_id`, or one resolving to a user with no email, is recorded as unroutable and
+      surfaced** — never silently dropped from the queue.
+- [ ] A cardholder whose `/users` status is not active is not chased.
 - [ ] An open item appears exactly once in `RampTransactionFollowUp`; a repeat sweep updates it rather than
       inserting a duplicate (UNIQUE on `RampTransactionId`).
 - [ ] Ramp flipping the item to complete → next sweep stamps `ResolvedAt` and it leaves the worklist.

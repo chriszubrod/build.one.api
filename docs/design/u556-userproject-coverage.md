@@ -1,7 +1,11 @@
 # U-556 — UserProject coverage for new projects
 
-**Status:** Part 1 (backfill) **APPLIED to prod 2026-09-28** — narrowed to top-up only, 66 rows.
-Part 2 (recurrence) DESIGN — gated, not built.
+**Status:**
+- Part 1 (backfill) — **APPLIED to prod 2026-09-28**, narrowed to top-up only, 66 rows.
+- Part 2 Option A (Owner row at project creation) — **BUILT 2026-09-28** (`aa48c6ec`), approved by Chris.
+- Part 2 Option C (tenant-wide reach capability for agents) — **DESIGN only, still gated.**
+- Deferred 278 agent rows — **closed as won't-grant**, Chris's call, on the dormancy evidence below.
+
 **Date:** 2026-09-28
 
 ## Problem
@@ -138,18 +142,45 @@ whole script is idempotent, so the rows already applied are a no-op.
 
 Three options considered.
 
-### A. Grant at project creation
+### A. Grant at project creation — **BUILT 2026-09-28** (`aa48c6ec`)
 
 Hook `ProjectService.create`, which self-documents as the choke point for "ALL
-callers (UI, agents, connectors)" and is enforced by
-`UQ_Project_Name_CustomerId_Active`. On insert, write the agent rows + the Owner row.
+callers (UI, agents, connectors)". On insert, write the Owner row.
 
 *For:* one place; no schema change; no new timer; correct at t=0 for the review
 routing that motivated this.
 *Against:* does not self-heal a project that arrives by any path bypassing the
-service (a restore, a direct SQL insert, a future bulk import). Grows the matrix
-forever — today 14 agents × 139 projects = 1,946 rows whose only information
-content is "yes".
+service (a restore, a direct SQL insert, a future bulk import).
+
+**Scope as built: the Owner row only, not agent rows.** Agent reach is the
+O(agents × projects) matrix problem that Option C exists to solve; writing agent
+rows here would entrench the thing we want to remove. The Owner row genuinely
+belongs in `UserProject` — it is a per-project human assignment.
+
+**Verified the choke point is real** rather than trusting the docstring: the QBO
+sub-customer pull, which is how projects 201–204 actually arrived, creates through
+`self.project_service.create(...)` at
+`integrations/intuit/qbo/customer/connector/project/business/service.py:284`. No
+production code creates a Project through `ProjectRepository.create` directly, so
+the hook covers every live path.
+
+**Owner set resolved from data, not hardcoded:** `dbo.UserRole` joined to
+`dbo.Role.Name = 'Owner'`, scoped to the project's own `CompanyId` read back from
+the row (not the caller's ambient company — a connector path carries none).
+`Role.Name = 'Owner'` matches exactly one row and
+`UQ_UserRole_UserId_CompanyId_RoleId` is unique, so the query cannot return a
+duplicate user.
+
+**Failure-isolated**, mirroring the review-notification hook's contract with Bill:
+a lookup failure, one owner's insert failure, and a total blow-up are each
+absorbed and logged. A Project stays creatable when the grant cannot be written,
+and the idempotent backfill remains the safety net.
+
+11 tests, all six mutations RED in an isolated worktree (drop `role_id`; remove
+failure isolation; break idempotency; grant only the first owner; unwire the hook;
+let one owner's failure deny the rest). Pass 1 at `high`: no findings — two
+candidates (duplicate-owner cardinality, and an `int()` cast outside the isolation
+boundary) were both refuted against the schema and the `Optional[int]` model type.
 
 ### B. Reconcile timer in `build.one.scheduler`
 

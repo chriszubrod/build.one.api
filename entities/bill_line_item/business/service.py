@@ -335,6 +335,29 @@ class BillLineItemService:
             )
             raise
 
+    def count_by_bill_id_for_update(self, bill_id: int, *, conn=None) -> int:
+        return self.repo.count_by_bill_id_for_update(bill_id, conn=conn)
+
+    def update_coding_in_transaction(
+        self,
+        *,
+        line_item: BillLineItem,
+        row_version: str,
+        sub_cost_code_id: int,
+        description: Optional[str],
+        conn,
+    ) -> BillLineItem:
+        """Apply reviewer SCC coding on one line inside a caller-owned transaction."""
+        line_item.row_version = row_version
+        line_item.sub_cost_code_id = sub_cost_code_id
+        if description is not None:
+            line_item.description = description
+        return self.repo.update_by_id(
+            line_item,
+            allow_terminal_parent=False,
+            conn=conn,
+        )
+
     def delete_by_public_id(self, public_id: str, *, tenant_id: int = None, _via_internal_pipeline: bool = False) -> Optional[BillLineItem]:
         """
         Delete a bill line item by public ID.

@@ -51,6 +51,12 @@ class ErrorCode:
     # U-459. 403: the caller asserted a different person's identity without
     # delegation rights (the agent fleet / a system context).
     IDENTITY_ASSERTION_REFUSED = "identity_assertion_refused"
+    # U-541 transactional POST /apply/review-decision/bill/{id}.
+    NOT_A_REVIEWER = "not_a_reviewer"
+    LINE_ROW_VERSION_STALE = "line_row_version_stale"
+    REVIEW_STATE_STALE = "review_state_stale"
+    IDEMPOTENCY_KEY_CONFLICT = "idempotency_key_conflict"
+    MULTI_LINE_NOT_SUPPORTED = "multi_line_not_supported"
 
 
 class ApiError(HTTPException):

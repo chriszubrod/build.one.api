@@ -12,6 +12,7 @@ from entities.review.business.recipient_model import ResolvedRecipient
 from shared.lifecycle.terminal_lock import reraise_if_sproc_status_locked
 from shared.database import (
     call_procedure,
+    conn_ctx,
     get_connection,
     map_database_error,
 )
@@ -81,26 +82,35 @@ class ReviewRepository:
         email_message_id: Optional[int] = None,
         created_by_user_id: Optional[int] = None,
         allow_terminal_parent: bool = False,
+        idempotency_key: Optional[str] = None,
+        conn: Optional[pyodbc.Connection] = None,
     ) -> Review:
         try:
-            with get_connection() as conn:
-                cursor = conn.cursor()
+            # conn_ctx(None) would call shared.database.get_connection and bypass
+            # repo-module patches in tests/test_u446b_terminal_lock.py and
+            # tests/test_u457_lifecycle_for_expense_billcredit_invoice.py.
+            cm = conn_ctx(conn) if conn is not None else get_connection()
+            with cm as c:
+                cursor = c.cursor()
+                params = {
+                    "ReviewStatusId": review_status_id,
+                    "UserId": user_id,
+                    "Comments": comments,
+                    "BillId": bill_id,
+                    "ExpenseId": expense_id,
+                    "BillCreditId": bill_credit_id,
+                    "InvoiceId": invoice_id,
+                    "ContractLaborId": contract_labor_id,
+                    "EmailMessageId": email_message_id,
+                    "CreatedByUserId": created_by_user_id,
+                    "AllowTerminalParent": allow_terminal_parent,
+                }
+                if idempotency_key is not None:
+                    params["IdempotencyKey"] = idempotency_key
                 call_procedure(
                     cursor=cursor,
                     name="CreateReview",
-                    params={
-                        "ReviewStatusId": review_status_id,
-                        "UserId": user_id,
-                        "Comments": comments,
-                        "BillId": bill_id,
-                        "ExpenseId": expense_id,
-                        "BillCreditId": bill_credit_id,
-                        "InvoiceId": invoice_id,
-                        "ContractLaborId": contract_labor_id,
-                        "EmailMessageId": email_message_id,
-                        "CreatedByUserId": created_by_user_id,
-                        "AllowTerminalParent": allow_terminal_parent,
-                    },
+                    params=params,
                 )
                 row = cursor.fetchone()
                 if not row:
@@ -118,6 +128,30 @@ class ReviewRepository:
                 error, what="its review cannot be changed once the document is completed"
             )
             logger.error(f"Error during create review: {error}")
+            raise map_database_error(error)
+
+    def read_by_idempotency_key(
+        self,
+        idempotency_key: str,
+        *,
+        conn: Optional[pyodbc.Connection] = None,
+    ) -> Optional[Review]:
+        try:
+            # conn_ctx(None) would call shared.database.get_connection and bypass
+            # repo-module patches in tests/test_u446b_terminal_lock.py and
+            # tests/test_u457_lifecycle_for_expense_billcredit_invoice.py.
+            cm = conn_ctx(conn) if conn is not None else get_connection()
+            with cm as c:
+                cursor = c.cursor()
+                call_procedure(
+                    cursor=cursor,
+                    name="ReadReviewByIdempotencyKey",
+                    params={"IdempotencyKey": idempotency_key},
+                )
+                row = cursor.fetchone()
+                return self._from_db(row)
+        except Exception as error:
+            logger.error("Error during read review by idempotency key: %s", error)
             raise map_database_error(error)
 
     def read_by_public_id(self, public_id: str) -> Optional[Review]:
@@ -238,6 +272,15 @@ class ReviewRepository:
 
     def read_current_by_bill_id(self, bill_id: int) -> Optional[Review]:
         return self._read_current("ReadCurrentReviewByBillId", {"BillId": bill_id})
+
+    def read_current_by_bill_id_for_update(
+        self, bill_id: int, *, conn: Optional[pyodbc.Connection] = None
+    ) -> Optional[Review]:
+        return self._read_current(
+            "ReadCurrentReviewByBillIdForUpdate",
+            {"BillId": bill_id},
+            conn=conn,
+        )
 
     def read_current_by_expense_id(self, expense_id: int) -> Optional[Review]:
         return self._read_current("ReadCurrentReviewByExpenseId", {"ExpenseId": expense_id})
@@ -380,10 +423,20 @@ class ReviewRepository:
             logger.error(f"Error during {sproc}: {error}")
             raise map_database_error(error)
 
-    def _read_current(self, sproc: str, params: dict) -> Optional[Review]:
+    def _read_current(
+        self,
+        sproc: str,
+        params: dict,
+        *,
+        conn: Optional[pyodbc.Connection] = None,
+    ) -> Optional[Review]:
         try:
-            with get_connection() as conn:
-                cursor = conn.cursor()
+            # conn_ctx(None) would call shared.database.get_connection and bypass
+            # repo-module patches in tests/test_u446b_terminal_lock.py and
+            # tests/test_u457_lifecycle_for_expense_billcredit_invoice.py.
+            cm = conn_ctx(conn) if conn is not None else get_connection()
+            with cm as c:
+                cursor = c.cursor()
                 call_procedure(cursor=cursor, name=sproc, params=params)
                 row = cursor.fetchone()
                 return self._from_db(row)

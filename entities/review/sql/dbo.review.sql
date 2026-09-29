@@ -55,6 +55,28 @@ BEGIN
 END
 GO
 
+-- U-541: client-supplied idempotency key for transactional app review decisions.
+-- Filtered unique index is created in migrations/009_review_idempotency_key.sql;
+-- the column must exist on from-scratch builds of this file.
+IF OBJECT_ID('dbo.Review', 'U') IS NOT NULL
+   AND COL_LENGTH('dbo.Review', 'IdempotencyKey') IS NULL
+BEGIN
+    ALTER TABLE [dbo].[Review] ADD [IdempotencyKey] UNIQUEIDENTIFIER NULL;
+END
+GO
+IF OBJECT_ID('dbo.Review', 'U') IS NOT NULL
+   AND NOT EXISTS (
+       SELECT 1 FROM sys.indexes
+       WHERE [name] = N'UX_Review_IdempotencyKey'
+         AND [object_id] = OBJECT_ID(N'dbo.Review')
+   )
+BEGIN
+    CREATE UNIQUE NONCLUSTERED INDEX [UX_Review_IdempotencyKey]
+        ON [dbo].[Review] ([IdempotencyKey])
+        WHERE [IdempotencyKey] IS NOT NULL;
+END
+GO
+
 
 -- U-357b: ContractLabor as the 5th Review parent — live in prod since
 -- migrations/003_add_contract_labor_parent.sql (2026-05-28); folded into the base so a
@@ -399,6 +421,7 @@ AS
         r.[InvoiceId],
         r.[ContractLaborId],
         r.[EmailMessageId],
+        r.[IdempotencyKey],
         rs.[Name]       AS [StatusName],
         rs.[SortOrder]  AS [StatusSortOrder],
         rs.[IsFinal]    AS [StatusIsFinal],
@@ -444,7 +467,8 @@ CREATE OR ALTER PROCEDURE CreateReview
     -- U-454. Defaults to 0 = REFUSE, per U-446c: `@AllowTerminalParent BIT = 1`
     -- meant every caller that had not been taught about the lock silently
     -- skipped it, so the guard protected only the paths that already knew.
-    @AllowTerminalParent BIT = 0
+    @AllowTerminalParent BIT = 0,
+    @IdempotencyKey UNIQUEIDENTIFIER = NULL
 )
 AS
 BEGIN
@@ -537,7 +561,8 @@ BEGIN
         [BillId], [ExpenseId], [BillCreditId], [InvoiceId], [ContractLaborId],
         [EmailMessageId],
         [CreatedByUserId],
-        [ReviewKind]
+        [ReviewKind],
+        [IdempotencyKey]
     )
     VALUES (
         @Now, @Now,
@@ -545,7 +570,8 @@ BEGIN
         @BillId, @ExpenseId, @BillCreditId, @InvoiceId, @ContractLaborId,
         @EmailMessageId,
         COALESCE(@CreatedByUserId, 17),
-        @ReviewKind
+        @ReviewKind,
+        @IdempotencyKey
     );
 
     -- U-445: mirror the new review state onto the parent Bill's Status column.
@@ -623,6 +649,22 @@ AS
 BEGIN
     SET NOCOUNT ON;
     SELECT * FROM dbo.[vw_Review] WHERE [PublicId] = @PublicId;
+END;
+GO
+
+
+-- =========================================================================
+-- ReadReviewByIdempotencyKey — U-541 idempotent replay lookup
+-- =========================================================================
+
+CREATE OR ALTER PROCEDURE ReadReviewByIdempotencyKey
+(
+    @IdempotencyKey UNIQUEIDENTIFIER
+)
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SELECT * FROM dbo.[vw_Review] WHERE [IdempotencyKey] = @IdempotencyKey;
 END;
 GO
 
@@ -712,6 +754,58 @@ BEGIN
     SELECT TOP 1 * FROM dbo.[vw_Review]
     WHERE [BillId] = @BillId
     ORDER BY [CreatedDatetime] DESC, [Id] DESC;
+END;
+GO
+
+-- U-541: locked current-read for transactional review-decide only. Serializes
+-- competing inserts on the same bill; ReadCurrentReviewByBillId stays unlocked
+-- for timelines and list surfaces.
+CREATE OR ALTER PROCEDURE ReadCurrentReviewByBillIdForUpdate
+(
+    @BillId BIGINT
+)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    IF NOT EXISTS (
+        SELECT 1 FROM dbo.[Bill] WITH (UPDLOCK, HOLDLOCK) WHERE [Id] = @BillId
+    )
+        RETURN;
+
+    -- Explicit column list (not SELECT * FROM vw_Review): must stay in sync with
+    -- dbo.vw_Review whenever that view gains a column — this sproc locks Review
+    -- only; hinting the view would widen locks onto ReviewStatus and User.
+    SELECT TOP 1
+        r.[Id],
+        r.[PublicId],
+        r.[RowVersion],
+        CONVERT(VARCHAR(19), r.[CreatedDatetime], 120) AS [CreatedDatetime],
+        CONVERT(VARCHAR(19), r.[ModifiedDatetime], 120) AS [ModifiedDatetime],
+        r.[ReviewStatusId],
+        r.[UserId],
+        r.[Comments],
+        r.[BillId],
+        r.[ExpenseId],
+        r.[BillCreditId],
+        r.[InvoiceId],
+        r.[ContractLaborId],
+        r.[EmailMessageId],
+        r.[IdempotencyKey],
+        rs.[Name]       AS [StatusName],
+        rs.[SortOrder]  AS [StatusSortOrder],
+        rs.[IsFinal]    AS [StatusIsFinal],
+        rs.[IsDeclined] AS [StatusIsDeclined],
+        r.[ReviewKind],
+        rs.[IsInitial]  AS [StatusIsInitial],
+        rs.[Color]      AS [StatusColor],
+        u.[Firstname]   AS [UserFirstname],
+        u.[Lastname]    AS [UserLastname]
+    FROM dbo.[Review] r WITH (UPDLOCK, HOLDLOCK)
+    INNER JOIN dbo.[ReviewStatus] rs ON r.[ReviewStatusId] = rs.[Id]
+    INNER JOIN dbo.[User] u          ON r.[UserId]         = u.[Id]
+    WHERE r.[BillId] = @BillId
+    ORDER BY r.[CreatedDatetime] DESC, r.[Id] DESC;
 END;
 GO
 

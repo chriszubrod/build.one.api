@@ -874,3 +874,17 @@ BEGIN
     WHERE [BillId] = @BillId AND [QboId] = @QboId;
 END;
 GO
+
+-- U-541: sole-line guard inside the same transaction as review decide.
+CREATE OR ALTER PROCEDURE CountBillLineItemsByBillIdForUpdate
+(
+    @BillId BIGINT
+)
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SELECT COUNT(*) AS [LineCount]
+    FROM dbo.[BillLineItem] WITH (UPDLOCK, HOLDLOCK)
+    WHERE [BillId] = @BillId;
+END;
+GO

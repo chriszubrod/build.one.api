@@ -11,6 +11,7 @@ import pyodbc
 from entities.bill_line_item.business.model import BillLineItem
 from shared.database import (
     call_procedure,
+    conn_ctx,
     get_connection,
     map_database_error,
     retry_on_transient,
@@ -275,15 +276,22 @@ class BillLineItemRepository:
             logger.error(f"Error during read bill line items by project ID: {error}")
             raise map_database_error(error)
 
-    def update_by_id(self, bill_line_item: BillLineItem, *, allow_terminal_parent: bool = True) -> Optional[BillLineItem]:
+    def update_by_id(
+        self,
+        bill_line_item: BillLineItem,
+        *,
+        allow_terminal_parent: bool = True,
+        conn: Optional[pyodbc.Connection] = None,
+    ) -> Optional[BillLineItem]:
         """
         Update a bill line item by ID.
 
         See `create` for why `allow_terminal_parent` must always be passed.
         """
         try:
-            with get_connection() as conn:
-                cursor = conn.cursor()
+            cm = conn_ctx(conn) if conn is not None else get_connection()
+            with cm as c:
+                cursor = c.cursor()
                 params = {
                     "Id": bill_line_item.id,
                     "RowVersion": bill_line_item.row_version_bytes,
@@ -420,6 +428,31 @@ class BillLineItemRepository:
                 qbo_id,
                 realm_id,
                 error,
+            )
+            raise map_database_error(error)
+
+    def count_by_bill_id_for_update(
+        self, bill_id: int, *, conn: Optional[pyodbc.Connection] = None
+    ) -> int:
+        try:
+            # conn_ctx(None) would call shared.database.get_connection and bypass
+            # repo-module patches in tests/test_u446b_terminal_lock.py and
+            # tests/test_u457_lifecycle_for_expense_billcredit_invoice.py.
+            cm = conn_ctx(conn) if conn is not None else get_connection()
+            with cm as c:
+                cursor = c.cursor()
+                call_procedure(
+                    cursor=cursor,
+                    name="CountBillLineItemsByBillIdForUpdate",
+                    params={"BillId": bill_id},
+                )
+                row = cursor.fetchone()
+                if not row:
+                    return 0
+                return int(row.LineCount)
+        except Exception as error:
+            logger.error(
+                "Error during CountBillLineItemsByBillIdForUpdate: %s", error
             )
             raise map_database_error(error)
 

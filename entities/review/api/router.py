@@ -5,6 +5,8 @@ from fastapi import APIRouter, Depends, HTTPException, status
 
 # Local Imports
 from entities.review.api.schemas import (
+    BillReviewDecisionApplyEnvelope,
+    BillReviewDecisionApplyRequest,
     ReviewAdvanceRequest,
     ReviewDeclineRequest,
     ReviewSubmitRequest,
@@ -22,10 +24,16 @@ from core.workflow.api.process_engine import (
     TriggerContext,
 )
 from shared.api.auth_user import resolve_user_id
+from shared.api.errors import ApiError
 from shared.api.responses import (
     item_response,
     list_response,
     raise_workflow_error,
+)
+from entities.review_status.business.service import ReviewStatusShapeError
+from entities.bill.business.service import (
+    BillReviewDecisionApplyError,
+    BillService,
 )
 from shared.lifecycle.terminal_lock import StatusLockedError
 from shared.rbac import require_module_api
@@ -175,6 +183,46 @@ def get_reviews_bill_router(
     current_user: dict = Depends(require_module_api(Modules.BILLS)),
 ):
     return _do_list(ParentType.BILL, public_id)
+
+
+@router.post(
+    "/apply/review-decision/bill/{public_id}",
+    response_model=BillReviewDecisionApplyEnvelope,
+)
+def apply_review_decision_bill_router(
+    public_id: str,
+    body: BillReviewDecisionApplyRequest,
+    current_user: dict = Depends(require_module_api(Modules.BILLS, "can_approve")),
+):
+    """Transactional edit-and-decide for the iOS reviewer queue (U-541)."""
+    caller_user_id = resolve_user_id(current_user)
+    try:
+        result = BillService().apply_transactional_reviewer_decision(
+            bill_public_id=public_id,
+            decision=body.decision,
+            sub_cost_code_public_id=body.sub_cost_code_public_id,
+            description=body.description,
+            idempotency_key=body.idempotency_key,
+            line_row_version=body.line_row_version,
+            expected_review_public_id=body.expected_review_public_id,
+            caller_user_id=caller_user_id,
+        )
+    except BillReviewDecisionApplyError as err:
+        raise ApiError(
+            status_code=err.status_code,
+            detail=err.detail,
+            error_code=err.error_code,
+        )
+    except ReviewStatusShapeError as exc:
+        raise_workflow_error(str(exc), "Failed to apply review decision")
+    except StatusLockedError as locked:
+        raise_workflow_error(str(locked), "Failed to apply review decision")
+    except ValueError as err:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(err),
+        )
+    return item_response(result)
 
 
 # =============================================================================

@@ -578,12 +578,33 @@ class RampChaserDigestService:
 
     @staticmethod
     def _resolve_cc(settings, *, cardholder_email: str) -> list:
-        cc_addr = (getattr(settings, "ramp_chaser_cc_email", None) or "").strip()
-        if not cc_addr:
+        """Standing CC list for every chaser digest.
+
+        Comma-separated so more than one address can stand on it — the owner and
+        the invoice mailbox both do today. ⛔ Never CC the cardholder onto their
+        own digest: they are already the To:, and a duplicate reads as a mistake
+        by the one person the message is trying to persuade.
+
+        NB the invoice mailbox is also the SENDER (/me resolves to it), so its
+        entry is a self-CC. That is deliberate — it puts the chase in the Inbox
+        rather than only in Sent Items — but it means the address appears twice
+        in the conversation, which is expected, not a bug.
+        """
+        raw = (getattr(settings, "ramp_chaser_cc_email", None) or "").strip()
+        if not raw:
             return []
-        if cc_addr.lower() == cardholder_email.strip().lower():
-            return []
-        return [{"email": cc_addr, "name": "Owner"}]
+        skip = cardholder_email.strip().lower()
+        out, seen = [], set()
+        for part in raw.split(","):
+            addr = part.strip()
+            if not addr:
+                continue
+            low = addr.lower()
+            if low == skip or low in seen:
+                continue
+            seen.add(low)
+            out.append({"email": addr, "name": "Owner"})
+        return out
 
     @staticmethod
     def _stamp_outcome_only(digest_repo, digest_row, outcome: str) -> None:

@@ -194,8 +194,11 @@ class Settings(BaseSettings):
     # Still gated by ALLOW_MS_WRITES at the outbox layer.
     ramp_chaser_mode: str = "off"
 
-    # Optional standing CC on every chaser digest (company owner). When unset, no CC.
-    # If the owner is also the /me sender, leave this unset — CC would be a no-op.
+    # Standing CC on every chaser digest. COMMA-SEPARATED — more than one address
+    # may stand on it (the owner and the invoice mailbox both do). When unset, no CC.
+    # The cardholder is never CC'd onto their own digest even if listed here.
+    # NB the invoice mailbox is also the /me SENDER, so listing it is a self-CC:
+    # deliberate, so the chase lands in the Inbox and not only in Sent Items.
     ramp_chaser_cc_email: Optional[str] = None
 
     # Intelligence Layer — provider API keys

@@ -694,3 +694,37 @@ def test_real_ramp_collaborators_construct_without_typeerror(monkeypatch, draft_
     assert calls["get"] >= 1, "the real Ramp client chain was never exercised"
     # the sweep makes exactly one Ramp call and must not leak the connection
     assert calls["close"] == 1, "the Ramp http client was not closed"
+
+
+@pytest.mark.parametrize(
+    "configured,cardholder,expected",
+    [
+        pytest.param("", "pat@x.com", [], id="unset-no-cc"),
+        pytest.param("austin@rogersbuild.com", "pat@x.com",
+                     ["austin@rogersbuild.com"], id="single-unchanged"),
+        pytest.param("austin@rogersbuild.com,invoice@rogersbuild.com", "pat@x.com",
+                     ["austin@rogersbuild.com", "invoice@rogersbuild.com"], id="two-addresses"),
+        pytest.param("  austin@rogersbuild.com ,  invoice@rogersbuild.com  ", "pat@x.com",
+                     ["austin@rogersbuild.com", "invoice@rogersbuild.com"], id="whitespace-tolerated"),
+        pytest.param("austin@rogersbuild.com,,invoice@rogersbuild.com,", "pat@x.com",
+                     ["austin@rogersbuild.com", "invoice@rogersbuild.com"], id="empty-entries-dropped"),
+        pytest.param("austin@rogersbuild.com,AUSTIN@rogersbuild.com", "pat@x.com",
+                     ["austin@rogersbuild.com"], id="case-insensitive-dedupe"),
+        # ⛔ the cardholder is never CC'd onto their OWN digest, in any position
+        pytest.param("austin@rogersbuild.com,pat@x.com", "pat@x.com",
+                     ["austin@rogersbuild.com"], id="cardholder-stripped-when-listed"),
+        pytest.param("PAT@X.COM", "pat@x.com", [], id="cardholder-stripped-case-insensitively"),
+        pytest.param("austin@rogersbuild.com,pat@x.com", " PAT@X.com ",
+                     ["austin@rogersbuild.com"], id="cardholder-stripped-despite-whitespace"),
+    ],
+)
+def test_resolve_cc_takes_a_comma_separated_list(configured, cardholder, expected):
+    """The standing CC is a LIST — owner and invoice mailbox both stand on it.
+
+    The cardholder must never appear: they are already the To:, and a duplicate
+    reads as a mistake by the one person the message is trying to persuade.
+    """
+    settings = SimpleNamespace(ramp_chaser_cc_email=configured)
+    got = RampChaserDigestService._resolve_cc(settings, cardholder_email=cardholder)
+    assert [e["email"] for e in got] == expected
+    assert all(e.get("name") for e in got), "every CC entry needs a display name"

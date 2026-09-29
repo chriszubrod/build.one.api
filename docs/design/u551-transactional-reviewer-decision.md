@@ -182,7 +182,8 @@ coupling that `BillLineItemService.update_by_public_id` provably lacks** — it 
 | `200` + `replayed: true` | key already applied | mark the queued action done; do not re-send |
 | `409 line_row_version_stale` | someone else edited the line's coding | refetch, re-present the coding to the reviewer |
 | `409 review_state_stale` | the review moved underneath | the decision is already made — **drop** the queued action |
-| `409 parent_not_draft` | bill was completed underneath | drop the action and tell the reviewer why |
+| `422 status_locked` | bill was completed underneath | drop the action and tell the reviewer why |
+| `409 idempotency_key_conflict` | the key was already used on a DIFFERENT bill | a client key bug — do not retry |
 | `422 multi_line_not_supported` | more than one line (see E) | send the reviewer to the web |
 
 A single opaque 409 would force the client to guess, and the wrong guess either **loses the reviewer's
@@ -310,3 +311,36 @@ that is already there and possibly weaken the existing one. Revised ranking of w
    *completed* parents, not *a review that moved underneath the edit*.
 4. **D3 draft state** — already defended at the SQL layer; this unit consolidates rather than fixes it.
 5. **D4 provenance** — closed by construction for the app path only.
+
+
+---
+
+## 10. CORRECTION to §4.D's error table (2026-09-29) — I got a status code wrong
+
+§4.D originally specified `409 parent_not_draft` for "the bill was completed underneath the reviewer." **That
+is wrong, and it would have shipped a client-side infinite loop.** Corrected above; recorded here because the
+mistake is instructive and because U-547 is built against this table.
+
+`entities/review/api/router.py:103-113` carries the frozen rule verbatim, established by U-454:
+
+> 422 `status_locked` … **NOT the 409 below (U-454)** … installed iOS routes 409 to its reload-and-retry
+> CONFLICT path, so a completed parent would make the client spin on a refusal that will never change.
+> **409 means "try again"; this means "never again".**
+
+So the code must be **422 `status_locked`**, raised through `raise_workflow_error(...)` like every sibling
+route, and U-547's offline decision queue must treat it as terminal-drop, never retry. I wrote the table from
+the design's own logic without checking the convention in the file the route lives in — the 409/422 split here
+is not a style choice, it is the contract that decides whether a queued action retries forever.
+
+**Second correction, same cause:** the table listed bare codes without saying WHICH FIELD carries them.
+`shared/api/errors.py:1-4` defines the body as `{"detail": <human text>, "error_code": <machine code>}`, and
+iOS decodes `error_code`. The first build put machine codes in `detail` and left `error_code` null, inverting
+it. Every code in the table above travels in `error_code`, with a human sentence in `detail`, raised via
+`ApiError` with the code appended to the `ErrorCode` enum — never as a bare `HTTPException`, and never as a
+scattered string literal.
+
+**Third, added in the same round:** `idempotency_key_conflict` (409) now exists because
+`review_state_stale` was doing double duty. A key replayed against a DIFFERENT bill is a client key bug, not a
+moved review, and the two want opposite client behaviour — drop-and-report versus drop-silently. Its
+non-concurrent and unique-violation-recovery paths must both return it; the recovery path originally re-raised a
+raw `DatabaseConstraintError`, which the router does not map, so it escaped as a **500**.

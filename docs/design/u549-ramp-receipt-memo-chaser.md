@@ -483,7 +483,7 @@ ships dark, flips without a redeploy:
 | `RAMP_CHASER_MODE` | `off` | `off` = sweep is a no-op (kill switch) · `draft` = draft per cardholder for human review — **the v1 terminal rung** · `send` = deliver directly, **kept in the ladder for shape-parity with the time-entry digest but deliberately unused in v1**; enabling it is a separate decision, not a config tweak |
 | `RAMP_CHASER_ESCALATE_DAYS` | `14` | |
 | `RAMP_CHASER_WINDOW_DAYS` | `90` | discovery window (§4.2) |
-| `RAMP_CHASER_SENDER` | `invoice@rogersbuild.com` | decided 2026-09-25 (§6) |
+| ~~`RAMP_CHASER_SENDER`~~ | — | ⛔ **DO NOT BUILD.** `/me` already resolves to `invoice@rogersbuild.com` (probed 2026-09-28, §12) and `create_draft` hardcodes `me/messages`, so this setting could only ever hold one value and the draft path could not honour any other. A setting that silently cannot take effect is worse than no setting. The existing draft flows do not parameterise the sender either. |
 | `RAMP_CLIENT_ID` / `RAMP_CLIENT_SECRET` | — | Azure app settings, never committed. **Separate pairs for sandbox and production** — they are different Ramp apps registered in different dashboards. |
 | `RAMP_API_BASE_URL` | `https://api.ramp.com` | `https://demo-api.ramp.com` for sandbox. Explicit URL rather than an `RAMP_ENV` enum the code maps — one fewer indirection between config and the host actually called. |
 
@@ -604,7 +604,27 @@ worklist is the instrument we use to sanity-check the classifier before any of i
 
 ## 12. Open questions for Gate-1
 
-### ⛔ C2 BLOCKER — which mailbox is `/me`?
+### ✅ C2 blocker RESOLVED (2026-09-28) — `/me` **is** `invoice@rogersbuild.com`
+
+**Answered empirically, not by reasoning:** a read-only `GET me` returns
+`mail`/`userPrincipalName` = **`invoice@rogersbuild.com`** (`displayName` "Invoice Rogers Build"). The MS
+integration uses a **delegated** OAuth flow (authorization-code grant with a refresh token), so `/me` is
+whichever user consented — and that user is the invoice mailbox itself.
+
+**Consequences:**
+- The hardcoded `me/messages` in `create_draft` was never wrong for this feature. It resolves to exactly the
+  mailbox §6 specifies. **No `mailbox` parameter is needed and no preliminary unit on the shared mail client.**
+- ⛔ **`RAMP_CHASER_SENDER` must NOT be built.** It can only ever hold one value, and the draft path cannot
+  honour any other — a setting like that is worse than none, because someone will eventually set it to
+  something else and get silence. The existing draft flows (review notifications, the time-entry digest) do
+  not parameterise the sender either; they rely on `/me` being the invoice mailbox. C2 does the same, by design.
+- **What the dangerous version would have been, for the record:** had the token resolved to a personal mailbox
+  while C2 read with an explicit `mailbox=invoice@…`, every GET would have 404'd. Under the pre-revision design
+  a 404 meant "sent", so the system would have stamped `LastNotifiedAt` across the entire population while
+  delivering nothing. §6.1's revision closes that trap independently, but the drafts would still have been
+  invisible to every later run. One read-only call settled what no amount of reasoning could.
+
+#### Original statement of the blocker, kept for provenance
 
 `get_message` and `list_messages` accept a `mailbox` parameter. **`create_draft` and `update_draft` do not —
 both hardcode `me/messages`.** So §7's `RAMP_CHASER_SENDER = invoice@rogersbuild.com` **cannot be honoured by

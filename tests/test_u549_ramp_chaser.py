@@ -649,3 +649,80 @@ def test_resolution_observed_from_ramp_on_later_sweep():
     stats = svc.run_chaser_sweep(follow_up_repo=repo)
     assert stats.resolved == 1
     assert repo.rows["res-1"]["resolved_at"] is not None
+
+
+# --- U-567: the straggler refetch is now measurable (bounding it is a separate unit) ---
+#
+# `_process_chaser_window` refetches every unresolved id that is NOT in the window,
+# one GET each, every sweep, forever. Two classes never leave that set: items aged
+# past the window while still open, and items whose Ramp transaction 404s. These
+# drive the PUBLIC run_chaser_sweep rather than the private helper, so they pin the
+# counters as an operator actually sees them — in the endpoint's JSON envelope.
+
+
+def _seed_open(repo: "_FakeFollowUpRepo", ramp_transaction_id: str) -> None:
+    repo.upsert_open_item(
+        ramp_transaction_id=ramp_transaction_id,
+        card_holder_ramp_user_id="user-1",
+        card_holder_name="Pat",
+        merchant_name="M",
+        amount=Decimal("10.00"),
+        transaction_date="2026-09-01",
+        needs_memo=True,
+        needs_receipt=False,
+    )
+
+
+_ACTIVE_USER = {"id": "user-1", "email": "pat@example.com", "status": "USER_ACTIVE"}
+
+
+def test_u567_stragglers_refetched_counts_every_straggler():
+    repo = _FakeFollowUpRepo()
+    for rid in ("gone-1", "extra-1", "extra-2"):
+        _seed_open(repo, rid)
+    # in-window is fetched by the window call, so it is NOT a straggler
+    txns = [_txn(txn_id="in-window")]
+    svc = _make_service(
+        txns,
+        [_ACTIVE_USER],
+        get_overrides={
+            "gone-1": None,
+            "extra-1": _txn(txn_id="extra-1"),
+            "extra-2": _txn(txn_id="extra-2"),
+        },
+    )
+    stats = svc.run_chaser_sweep(follow_up_repo=repo)
+    assert stats.stragglers_refetched == 3
+    assert stats.transactions_fetched == 1
+
+
+def test_u567_stragglers_gone_from_ramp_counts_only_falsy_and_skips_them():
+    repo = _FakeFollowUpRepo()
+    for rid in ("missing-a", "missing-b", "found-1"):
+        _seed_open(repo, rid)
+    seeded_upserts = repo.upsert_calls
+    svc = _make_service(
+        [],  # empty window: every unresolved row is a straggler
+        [_ACTIVE_USER],
+        get_overrides={
+            "missing-a": None,
+            "missing-b": {},  # falsy dict counts as gone too
+            "found-1": _txn(txn_id="found-1"),
+        },
+    )
+    stats = svc.run_chaser_sweep(follow_up_repo=repo)
+    assert stats.stragglers_refetched == 3
+    assert stats.stragglers_gone_from_ramp == 2
+    # a gone straggler never enters the window, so it is never re-upserted;
+    # the one that came back real is.
+    assert repo.upsert_calls == seeded_upserts + 1
+    assert repo.resolve_calls == []
+
+
+def test_u567_straggler_counters_are_zero_not_absent_when_none():
+    repo = _FakeFollowUpRepo()
+    svc = _make_service([_txn(txn_id="only")], [_ACTIVE_USER])
+    stats = svc.run_chaser_sweep(follow_up_repo=repo)
+    assert stats.stragglers_refetched == 0
+    assert stats.stragglers_gone_from_ramp == 0
+

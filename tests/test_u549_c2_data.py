@@ -18,7 +18,13 @@ import pytest
 from entities.ramp_chaser_digest.persistence.repo import RampChaserDigestRepository
 from entities.ramp_transaction_follow_up.business.model import RampTransactionFollowUp
 from entities.ramp_transaction_follow_up.persistence.repo import RampTransactionFollowUpRepository
-from tests.sproc_text import REPO_ROOT, sproc_body, sproc_params, strip_sql_comments
+from tests.sproc_text import (
+    REPO_ROOT,
+    sproc_body,
+    sproc_params,
+    split_top_level,
+    strip_sql_comments,
+)
 
 DIGEST_SQL = REPO_ROOT / "entities/ramp_chaser_digest/sql/dbo.ramp_chaser_digest.sql"
 FOLLOW_UP_SQL = REPO_ROOT / "entities/ramp_transaction_follow_up/sql/dbo.ramp_transaction_follow_up.sql"
@@ -196,21 +202,6 @@ _READ_UNRESOLVED_EXPECTED_COLUMNS = [
 ]
 
 
-def _split_top_level_commas(fragment: str) -> list[str]:
-    """Split a SELECT list on commas that are NOT inside parentheses."""
-    out, depth, start = [], 0, 0
-    for i, ch in enumerate(fragment):
-        if ch == "(":
-            depth += 1
-        elif ch == ")":
-            depth -= 1
-        elif ch == "," and depth == 0:
-            out.append(fragment[start:i])
-            start = i + 1
-    out.append(fragment[start:])
-    return [p.strip() for p in out if p.strip()]
-
-
 def _projected_column_names(select_fragment: str) -> list[str]:
     """The name each projection EXPOSES to pyodbc — its alias, else the bare column.
 
@@ -221,12 +212,14 @@ def _projected_column_names(select_fragment: str) -> list[str]:
     exists to catch.
     """
     names = []
-    for part in _split_top_level_commas(select_fragment):
+    for part in split_top_level(select_fragment):
         alias = re.search(r"\bAS\s*\[(\w+)\]\s*$", part, flags=re.IGNORECASE)
         if alias:
             names.append(alias.group(1))
             continue
         bare = re.fullmatch(r"(?:\w+\.)?\[(\w+)\]", part)
+        # Load-bearing, not defensive boilerplate: without it an unrecognised
+        # projection shape is silently skipped and the column list still lines up.
         assert bare, f"unparseable projection: {part!r}"
         names.append(bare.group(1))
     return names

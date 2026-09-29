@@ -37,6 +37,7 @@ class RampChaserDigestRepository:
             last_notified_at=getattr(row, "LastNotifiedAt", None),
             notify_count=getattr(row, "NotifyCount", None),
             outcome=getattr(row, "Outcome", None),
+            recipient_hash=getattr(row, "RecipientHash", None),
             created_at=getattr(row, "CreatedAt", None),
             updated_at=getattr(row, "UpdatedAt", None),
         )
@@ -46,18 +47,21 @@ class RampChaserDigestRepository:
         *,
         card_holder_ramp_user_id: str,
         week_of: str,
+        recipient_hash: Optional[str] = None,
         conn: Optional[pyodbc.Connection] = None,
     ) -> Optional[RampChaserDigest]:
         try:
             with conn_ctx(conn) as c:
                 cursor = c.cursor()
+                params: dict = {
+                    "CardHolderRampUserId": card_holder_ramp_user_id,
+                    "WeekOf": week_of,
+                    "RecipientHash": recipient_hash,
+                }
                 call_procedure(
                     cursor=cursor,
                     name="UpsertRampChaserDigest",
-                    params={
-                        "CardHolderRampUserId": card_holder_ramp_user_id,
-                        "WeekOf": week_of,
-                    },
+                    params=params,
                 )
                 row = self._from_db(cursor.fetchone())
                 if conn is not None:
@@ -66,6 +70,36 @@ class RampChaserDigestRepository:
         except Exception as error:
             logger.error(
                 "Error upserting ramp chaser digest %s %s: %s",
+                card_holder_ramp_user_id,
+                week_of,
+                error,
+            )
+            raise map_database_error(error)
+
+    def read_latest_recipient_hash(
+        self,
+        *,
+        card_holder_ramp_user_id: str,
+        week_of: str,
+    ) -> Optional[str]:
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(
+                    cursor=cursor,
+                    name="ReadLatestRampChaserDigestRecipientHash",
+                    params={
+                        "CardHolderRampUserId": card_holder_ramp_user_id,
+                        "WeekOf": week_of,
+                    },
+                )
+                row = cursor.fetchone()
+                if not row:
+                    return None
+                return getattr(row, "RecipientHash", None)
+        except Exception as error:
+            logger.error(
+                "Error reading latest ramp chaser digest recipient hash %s %s: %s",
                 card_holder_ramp_user_id,
                 week_of,
                 error,

@@ -18,6 +18,7 @@ class RampChaserDigest:
     last_notified_at: Optional[str]
     notify_count: Optional[int]
     outcome: Optional[str]
+    recipient_hash: Optional[str]
     created_at: Optional[str]
     updated_at: Optional[str]
 

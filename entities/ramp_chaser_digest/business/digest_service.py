@@ -101,10 +101,11 @@ class RampChaserDigestService:
         refused = 0
         outbox_dead_letter = 0
         failed = 0
+        recipient_changed = 0
 
         for card_holder_id, items in groups.items():
             try:
-                outcome = self._process_cardholder(
+                outcome, holder_recipient_changed = self._process_cardholder(
                     card_holder_id=card_holder_id,
                     items=items,
                     week_of=week_of,
@@ -127,6 +128,8 @@ class RampChaserDigestService:
                     refused += 1
                 elif outcome == "outbox_dead_letter":
                     outbox_dead_letter += 1
+                if holder_recipient_changed:
+                    recipient_changed += 1
             except Exception as error:
                 failed += 1
                 logger.exception(
@@ -151,6 +154,7 @@ class RampChaserDigestService:
             "refused_ms_writes_gate": refused,
             "outbox_dead_letter": outbox_dead_letter,
             "failed": failed,
+            "recipient_changed": recipient_changed,
         }
         logger.info("ramp_chaser_digest.sweep_complete %s", summary)
         return summary
@@ -297,13 +301,13 @@ class RampChaserDigestService:
         roster: dict,
         digest_repo,
         outbox_repo,
-    ) -> str:
+    ) -> tuple[str, bool]:
         if not card_holder_id:
             logger.warning(
                 "ramp_chaser_digest.unroutable week_of=%s reason=null_card_holder",
                 week_of,
             )
-            return "unroutable"
+            return "unroutable", False
 
         entry = roster.get(str(card_holder_id))
         if entry is None:
@@ -312,10 +316,10 @@ class RampChaserDigestService:
                 week_of,
                 card_holder_id,
             )
-            return "unroutable"
+            return "unroutable", False
 
         if not entry.is_active:
-            return "skipped_inactive"
+            return "skipped_inactive", False
 
         email = (entry.email or "").strip()
         if not email:
@@ -324,17 +328,33 @@ class RampChaserDigestService:
                 week_of,
                 card_holder_id,
             )
-            return "unroutable"
+            return "unroutable", False
+
+        from shared.encryption import blind_index
+
+        current = blind_index(email.strip().lower())
+        previous = digest_repo.read_latest_recipient_hash(
+            card_holder_ramp_user_id=str(card_holder_id),
+            week_of=week_of,
+        )
+        holder_recipient_changed = bool(previous and current and previous != current)
+        if holder_recipient_changed:
+            logger.warning(
+                "ramp_chaser_digest.recipient_changed week_of=%s card_holder=%s",
+                week_of,
+                card_holder_id,
+            )
 
         digest = digest_repo.upsert(
             card_holder_ramp_user_id=str(card_holder_id),
             week_of=week_of,
+            recipient_hash=current,
         )
         if digest is None:
             raise RuntimeError("upsert returned no digest row")
 
         if digest.draft_message_id:
-            return "already_drafted"
+            return "already_drafted", holder_recipient_changed
 
         capture_state = self._try_capture_draft_from_outbox(
             digest=digest,
@@ -342,18 +362,18 @@ class RampChaserDigestService:
             outbox_repo=outbox_repo,
         )
         if capture_state == "captured":
-            return "already_drafted"
+            return "already_drafted", holder_recipient_changed
         if capture_state == "enqueued":
-            return "already_drafted"
+            return "already_drafted", holder_recipient_changed
         if capture_state == "dead_letter":
-            return "outbox_dead_letter"
+            return "outbox_dead_letter", holder_recipient_changed
 
         refreshed = digest_repo.read_by_card_holder_and_week(
             card_holder_ramp_user_id=str(card_holder_id),
             week_of=week_of,
         )
         if refreshed and refreshed.draft_message_id:
-            return "already_drafted"
+            return "already_drafted", holder_recipient_changed
 
         from entities.ramp_chaser_digest.business.body import (
             RAMP_CHASER_DIGEST_BODY_TYPE,
@@ -370,6 +390,7 @@ class RampChaserDigestService:
             items=body_items,
             now=now,
             tz=tz,
+            recipient_changed=holder_recipient_changed,
         )
 
         cc = self._resolve_cc(settings, cardholder_email=email)
@@ -390,9 +411,9 @@ class RampChaserDigestService:
                 week_of,
                 card_holder_id,
             )
-            return "refused"
+            return "refused", holder_recipient_changed
 
-        return "drafted"
+        return "drafted", holder_recipient_changed
 
     def _try_capture_draft_from_outbox(
         self,
@@ -622,6 +643,7 @@ class RampChaserDigestService:
             "refused_ms_writes_gate": 0,
             "outbox_dead_letter": 0,
             "failed": failed,
+            "recipient_changed": 0,
         }
 
     @staticmethod

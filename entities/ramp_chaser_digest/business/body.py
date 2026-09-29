@@ -28,6 +28,11 @@ _INTRO = (
     "When you have a moment, will you please jump into Ramp and complete the following items?"
 )
 
+_RECIPIENT_CHANGED_WARNING = (
+    "*** WARNING: This cardholder's Ramp email address has changed since the last digest. "
+    "Confirm the To: line is correct before sending. ***"
+)
+
 
 def render_digest(
     *,
@@ -36,6 +41,7 @@ def render_digest(
     items: Sequence[Mapping[str, Any] | Any],
     now: datetime,
     tz: ZoneInfo,
+    recipient_changed: bool = False,
 ) -> tuple[str, str]:
     """
     Build (subject, body) for one cardholder digest.
@@ -75,12 +81,16 @@ def render_digest(
     amount_field_width = _section_amount_field_width(all_rendered)
     amount_start = _section_amount_start(all_rendered, tz=tz)
 
-    body_parts: list[str] = [
+    body_parts: list[str] = []
+    if recipient_changed:
+        body_parts.extend([_RECIPIENT_CHANGED_WARNING, ""])
+
+    body_parts.extend([
         f"{first_name.strip() or 'there'},",
         "",
         _INTRO,
         "",
-    ]
+    ])
 
     for heading, bucket in (
         (_SECTION_RECEIPT_AND_MEMO, partitioned["receipt_and_memo"]),

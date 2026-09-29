@@ -73,6 +73,7 @@ def _digest_row(**overrides) -> SimpleNamespace:
         "LastNotifiedAt": None,
         "NotifyCount": 0,
         "Outcome": None,
+        "RecipientHash": None,
         "CreatedAt": "2026-09-23T08:00:00",
         "UpdatedAt": "2026-09-23T08:00:00",
     }
@@ -175,6 +176,19 @@ def _select_list_from_sproc(sql_path: Path, sproc_name: str) -> str:
     body = strip_sql_comments(sproc_body(sql_path, sproc_name))
     match = re.search(r"\bSELECT\b(.*?)\bFROM\b", body, re.IGNORECASE | re.DOTALL)
     assert match is not None, f"{sproc_name} must have SELECT ... FROM"
+    fragment = re.sub(r"\s+", " ", match.group(1).strip())
+    fragment = re.sub(r"^TOP\s+\d+\s+", "", fragment, flags=re.IGNORECASE)
+    return fragment
+
+
+def _output_list_from_sproc(sql_path: Path, sproc_name: str) -> str:
+    body = strip_sql_comments(sproc_body(sql_path, sproc_name))
+    match = re.search(
+        r"\bOUTPUT\b(.*?)(?:\bWHERE\b|;)",
+        body,
+        re.IGNORECASE | re.DOTALL,
+    )
+    assert match is not None, f"{sproc_name} must have OUTPUT ... WHERE or OUTPUT ... ;"
     return re.sub(r"\s+", " ", match.group(1).strip())
 
 
@@ -325,6 +339,52 @@ def test_u549_c2_digest_from_db_datetime_fields_are_strings():
         assert isinstance(value, str)
 
 
+_READ_DIGEST_EXPECTED_COLUMNS = [
+    "Id",
+    "PublicId",
+    "RowVersion",
+    "CardHolderRampUserId",
+    "WeekOf",
+    "DraftMessageId",
+    "ConversationId",
+    "InternetMessageId",
+    "LastDraftedAt",
+    "LastNotifiedAt",
+    "NotifyCount",
+    "Outcome",
+    "RecipientHash",
+    "CreatedAt",
+    "UpdatedAt",
+]
+
+
+@pytest.mark.parametrize(
+    "sproc_name",
+    [
+        "ReadRampChaserDigestByCardHolderAndWeek",
+        "ReadUncapturedRampChaserDigests",
+        "ReadOutstandingRampChaserDigests",
+    ],
+)
+def test_u570_digest_read_sprocs_project_recipient_hash(sproc_name: str):
+    select_list = _select_list_from_sproc(DIGEST_SQL, sproc_name)
+    assert _projected_column_names(select_list) == _READ_DIGEST_EXPECTED_COLUMNS
+
+
+@pytest.mark.parametrize(
+    "sproc_name",
+    [
+        "UpsertRampChaserDigest",
+        "StampRampChaserDigestDrafted",
+        "StampRampChaserDigestOutcome",
+        "StampRampChaserDigestNotified",
+    ],
+)
+def test_u570_digest_output_sprocs_project_recipient_hash(sproc_name: str):
+    output_list = _output_list_from_sproc(DIGEST_SQL, sproc_name)
+    assert _projected_column_names(output_list) == _READ_DIGEST_EXPECTED_COLUMNS
+
+
 def test_u549_c2_digest_sql_datetime_outputs_use_convert_126():
     """Every datetime column of every digest sproc must ship as CONVERT(...,126).
 
@@ -364,6 +424,11 @@ def _sql_declared_params(sql_path: Path, sproc: str) -> set[str]:
         (
             DIGEST_SQL,
             "UpsertRampChaserDigest",
+            {"CardHolderRampUserId", "WeekOf", "RecipientHash"},
+        ),
+        (
+            DIGEST_SQL,
+            "ReadLatestRampChaserDigestRecipientHash",
             {"CardHolderRampUserId", "WeekOf"},
         ),
         (
@@ -421,6 +486,12 @@ def test_u549_c2_repo_params_declared_in_sql(
             "upsert",
             {"card_holder_ramp_user_id": "u1", "week_of": "2026-09-23"},
             "UpsertRampChaserDigest",
+            {"CardHolderRampUserId", "WeekOf", "RecipientHash"},
+        ),
+        (
+            "read_latest_recipient_hash",
+            {"card_holder_ramp_user_id": "u1", "week_of": "2026-09-23"},
+            "ReadLatestRampChaserDigestRecipientHash",
             {"CardHolderRampUserId", "WeekOf"},
         ),
         (
@@ -476,12 +547,29 @@ def test_u549_c2_digest_repo_call_procedure_param_keys(
     conn.cursor.return_value = cursor
     declared = _sql_declared_params(DIGEST_SQL, expected_sproc)
 
-    with patch(
-        "entities.ramp_chaser_digest.persistence.repo.conn_ctx"
-    ) as mock_ctx, patch(
+    conn_patch_target = (
+        "entities.ramp_chaser_digest.persistence.repo.get_connection"
+        if method_name == "read_latest_recipient_hash"
+        else "entities.ramp_chaser_digest.persistence.repo.conn_ctx"
+    )
+
+    with patch(conn_patch_target) as mock_conn, patch(
         "entities.ramp_chaser_digest.persistence.repo.call_procedure"
     ) as call_proc:
-        mock_ctx.return_value.__enter__.return_value = conn
+        if method_name == "read_latest_recipient_hash":
+            cursor = MagicMock()
+            cursor.fetchone.return_value = SimpleNamespace(RecipientHash="abc")
+            conn = MagicMock()
+            conn.cursor.return_value = cursor
+            conn.__enter__ = MagicMock(return_value=conn)
+            conn.__exit__ = MagicMock(return_value=False)
+            mock_conn.return_value = conn
+        else:
+            cursor = MagicMock()
+            cursor.fetchone.return_value = _digest_row()
+            conn = MagicMock()
+            conn.cursor.return_value = cursor
+            mock_conn.return_value.__enter__.return_value = conn
         getattr(repo, method_name)(**kwargs)
         assert call_proc.call_args.kwargs["name"] == expected_sproc
         sent = call_proc.call_args.kwargs["params"]

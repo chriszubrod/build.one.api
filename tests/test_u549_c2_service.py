@@ -15,6 +15,7 @@ from entities.ramp_chaser_digest.business.digest_service import RampChaserDigest
 from entities.ramp_chaser_digest.business.model import RampChaserDigest
 from entities.ramp_transaction_follow_up.business.model import RampTransactionFollowUp
 from integrations.ramp.user.business.service import RampUserRosterEntry
+from shared.encryption import blind_index
 
 _CHI = ZoneInfo("America/Chicago")
 _ENTITY_TYPE = "RampChaserDigest"
@@ -73,6 +74,7 @@ def _digest_row(
         last_notified_at=None,
         notify_count=0,
         outcome=None,
+        recipient_hash=None,
         created_at=None,
         updated_at=None,
     )
@@ -88,6 +90,7 @@ def mocks():
     digest_repo = MagicMock()
     digest_repo.read_uncaptured.return_value = []
     digest_repo.read_outstanding.return_value = []
+    digest_repo.read_latest_recipient_hash.return_value = None
     digest_repo.upsert.side_effect = lambda **kw: _digest_row(
         card_holder_ramp_user_id=kw["card_holder_ramp_user_id"],
         week_of=kw["week_of"],
@@ -567,6 +570,7 @@ def test_monday_week_of_canonicalizes_to_tuesday(mocks, draft_mode):
     mocks.digest_repo.upsert.assert_called_once_with(
         card_holder_ramp_user_id="user-a",
         week_of="2026-09-29",
+        recipient_hash=blind_index("alex@example.com"),
     )
 
 

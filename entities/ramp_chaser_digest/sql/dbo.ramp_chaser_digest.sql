@@ -18,6 +18,7 @@ CREATE TABLE [dbo].[RampChaserDigest]
     [LastNotifiedAt] DATETIME2(3) NULL,
     [NotifyCount] INT NOT NULL DEFAULT 0,
     [Outcome] NVARCHAR(32) NULL,
+    [RecipientHash] NVARCHAR(64) NULL,
     [CreatedAt] DATETIME2(3) NOT NULL DEFAULT SYSUTCDATETIME(),
     [UpdatedAt] DATETIME2(3) NOT NULL DEFAULT SYSUTCDATETIME(),
     [RowVersion] ROWVERSION NOT NULL
@@ -39,11 +40,18 @@ BEGIN
 END
 GO
 
+IF COL_LENGTH('dbo.RampChaserDigest', 'RecipientHash') IS NULL
+BEGIN
+    ALTER TABLE dbo.[RampChaserDigest] ADD [RecipientHash] NVARCHAR(64) NULL;
+END
+GO
+
 
 CREATE OR ALTER PROCEDURE UpsertRampChaserDigest
 (
     @CardHolderRampUserId NVARCHAR(64),
-    @WeekOf DATE
+    @WeekOf DATE,
+    @RecipientHash NVARCHAR(64) = NULL
 )
 AS
 BEGIN
@@ -63,12 +71,13 @@ BEGIN
        AND target.[WeekOf] = source.WeekOf
     WHEN MATCHED THEN
         UPDATE SET
+            [RecipientHash] = CASE WHEN @RecipientHash IS NOT NULL THEN @RecipientHash ELSE target.[RecipientHash] END,
             [UpdatedAt] = @Now
     WHEN NOT MATCHED THEN
         INSERT
-            ([CardHolderRampUserId], [WeekOf], [CreatedAt], [UpdatedAt])
+            ([CardHolderRampUserId], [WeekOf], [RecipientHash], [CreatedAt], [UpdatedAt])
         VALUES
-            (@CardHolderRampUserId, @WeekOf, @Now, @Now)
+            (@CardHolderRampUserId, @WeekOf, @RecipientHash, @Now, @Now)
     OUTPUT
         INSERTED.[Id],
         INSERTED.[PublicId],
@@ -82,6 +91,7 @@ BEGIN
         CONVERT(VARCHAR(30), INSERTED.[LastNotifiedAt], 126) AS [LastNotifiedAt],
         INSERTED.[NotifyCount],
         INSERTED.[Outcome],
+        INSERTED.[RecipientHash],
         CONVERT(VARCHAR(30), INSERTED.[CreatedAt], 126) AS [CreatedAt],
         CONVERT(VARCHAR(30), INSERTED.[UpdatedAt], 126) AS [UpdatedAt];
 
@@ -112,6 +122,7 @@ BEGIN
         CONVERT(VARCHAR(30), d.[LastNotifiedAt], 126) AS [LastNotifiedAt],
         d.[NotifyCount],
         d.[Outcome],
+        d.[RecipientHash],
         CONVERT(VARCHAR(30), d.[CreatedAt], 126) AS [CreatedAt],
         CONVERT(VARCHAR(30), d.[UpdatedAt], 126) AS [UpdatedAt]
     FROM dbo.[RampChaserDigest] d
@@ -139,6 +150,7 @@ BEGIN
         CONVERT(VARCHAR(30), d.[LastNotifiedAt], 126) AS [LastNotifiedAt],
         d.[NotifyCount],
         d.[Outcome],
+        d.[RecipientHash],
         CONVERT(VARCHAR(30), d.[CreatedAt], 126) AS [CreatedAt],
         CONVERT(VARCHAR(30), d.[UpdatedAt], 126) AS [UpdatedAt]
     FROM dbo.[RampChaserDigest] d
@@ -167,6 +179,7 @@ BEGIN
         CONVERT(VARCHAR(30), d.[LastNotifiedAt], 126) AS [LastNotifiedAt],
         d.[NotifyCount],
         d.[Outcome],
+        d.[RecipientHash],
         CONVERT(VARCHAR(30), d.[CreatedAt], 126) AS [CreatedAt],
         CONVERT(VARCHAR(30), d.[UpdatedAt], 126) AS [UpdatedAt]
     FROM dbo.[RampChaserDigest] d
@@ -212,6 +225,7 @@ BEGIN
         CONVERT(VARCHAR(30), INSERTED.[LastNotifiedAt], 126) AS [LastNotifiedAt],
         INSERTED.[NotifyCount],
         INSERTED.[Outcome],
+        INSERTED.[RecipientHash],
         CONVERT(VARCHAR(30), INSERTED.[CreatedAt], 126) AS [CreatedAt],
         CONVERT(VARCHAR(30), INSERTED.[UpdatedAt], 126) AS [UpdatedAt]
     WHERE [CardHolderRampUserId] = @CardHolderRampUserId
@@ -252,6 +266,7 @@ BEGIN
         CONVERT(VARCHAR(30), INSERTED.[LastNotifiedAt], 126) AS [LastNotifiedAt],
         INSERTED.[NotifyCount],
         INSERTED.[Outcome],
+        INSERTED.[RecipientHash],
         CONVERT(VARCHAR(30), INSERTED.[CreatedAt], 126) AS [CreatedAt],
         CONVERT(VARCHAR(30), INSERTED.[UpdatedAt], 126) AS [UpdatedAt]
     WHERE [CardHolderRampUserId] = @CardHolderRampUserId
@@ -294,6 +309,7 @@ BEGIN
         CONVERT(VARCHAR(30), INSERTED.[LastNotifiedAt], 126) AS [LastNotifiedAt],
         INSERTED.[NotifyCount],
         INSERTED.[Outcome],
+        INSERTED.[RecipientHash],
         CONVERT(VARCHAR(30), INSERTED.[CreatedAt], 126) AS [CreatedAt],
         CONVERT(VARCHAR(30), INSERTED.[UpdatedAt], 126) AS [UpdatedAt]
     WHERE [CardHolderRampUserId] = @CardHolderRampUserId
@@ -301,5 +317,25 @@ BEGIN
       AND [LastNotifiedAt] IS NULL;
 
     COMMIT TRANSACTION;
+END
+GO
+
+
+CREATE OR ALTER PROCEDURE ReadLatestRampChaserDigestRecipientHash
+(
+    @CardHolderRampUserId NVARCHAR(64),
+    @WeekOf DATE
+)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    SELECT TOP 1
+        d.[RecipientHash]
+    FROM dbo.[RampChaserDigest] d
+    WHERE d.[CardHolderRampUserId] = @CardHolderRampUserId
+      AND d.[WeekOf] < @WeekOf
+      AND d.[RecipientHash] IS NOT NULL
+    ORDER BY d.[WeekOf] DESC;
 END
 GO

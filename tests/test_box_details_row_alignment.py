@@ -320,3 +320,39 @@ def test_the_draw_tag_aliases_agree_with_the_reconcile_reader():
     assert _DRAW_TAG_HEADERS <= reader_draw
     assert "AMOUNT PAID" in _AMOUNT_HEADERS
     assert "AMOUNT PAID" not in _KNOWN_HEADERS
+
+
+def test_the_stamper_also_refuses_an_old_template_sheet():
+    """U-559 guarded the INSERT path and left the stamper open, which is the
+    worse of the two.
+
+    `stamp_columns_by_key` writes DRAW_REQUEST_COL_INDEX=7 -> column H. On the
+    modern template H is the draw tag; on the four old-template sheets H is the
+    DATE column and the draw tag is G. So an invoice draw stamp against one of
+    those workbooks overwrites a bill date with a draw value — silently, and on a
+    column the sheet's own SUMIFS read.
+
+    Latent until the stranded rows are repaired: those rows currently have
+    nothing in H to destroy. The repair is what gives this something to break,
+    which is why the guard lands first."""
+    from integrations.box.excel.business.workbook_editor import stamp_columns_by_key
+
+    with pytest.raises(DetailsLayoutError):
+        stamp_columns_by_key(
+            _old_template_bytes(), SHEET,
+            [("41C564EE-F027-4EF8-9FA6-70DE9268A8F5", {DRAW_REQUEST_COL_INDEX: "2026-09-18"})],
+        )
+
+
+def test_the_stamper_still_works_on_the_modern_layout():
+    """GREEN both sides — over-reach guard. The 24 modern workbooks must keep
+    stamping, including the no-match case that returns bytes=None."""
+    from integrations.box.excel.business.workbook_editor import stamp_columns_by_key
+
+    result = stamp_columns_by_key(
+        _tracker_bytes(), SHEET,
+        [("KEY-EXISTING", {DRAW_REQUEST_COL_INDEX: "2026-09-18"})],
+    )
+    assert result["matched"] == 1
+    assert result["applied"] == 1
+    assert result["bytes"] is not None

@@ -755,6 +755,14 @@ def stamp_columns_by_key(
         )
     ws = wb[worksheet_name]
 
+    # Same layout precondition as apply_rows_to_details, and it matters MORE
+    # here: this function writes DRAW_REQUEST_COL_INDEX=7 -> column H. On the
+    # four old-template sheets (CC 41, ML 74, MR2-STABLES 95, CBT 101) the draw
+    # tag is column G and H is the DATE column, so an invoice stamp would
+    # silently overwrite a bill date with a draw value. U-559 guarded only the
+    # insert path; this one was left open.
+    _assert_details_layout(ws)
+
     key_col = key_col_index + 1
     max_existing_row = ws.max_row
 

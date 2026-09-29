@@ -1,5 +1,77 @@
 # Session Notes
 
+## U-549 — Ramp receipt/memo chaser: A + C1 + C2 shipped, three layers broken at once (2026-09-29)
+
+**The transferable lesson first: the chain broke in three independent places, and every layer
+looked fine by its own measure while the feature did nothing.**
+
+- **CODE** — the sweep endpoint existed and worked, but had **no caller at all**. No scheduler
+  timer, ever (U-567).
+- **DATA** — `dbo.RampTransactionFollowUp` had therefore **never been populated**. Zero rows,
+  no error, nothing to see.
+- **CONFIG** — `RAMP_CLIENT_ID` / `RAMP_CLIENT_SECRET` were **never added to App Service**, so the
+  first real sweep failed closed in 218ms.
+
+Each layer passed its own check: the code had tests and a green Pass 1, the table existed with the
+right schema and indexes, the app deployed clean. The only question that catches this is *"is the
+feature doing its job in production"*, asked of the **whole chain** — not of any layer. A unit can be
+three separate breaks deep and still look shipped.
+
+- **Phases A + C1 + C2 shipped and deployed.** `integrations/ramp/` on the hardened base/ pattern
+  (auth with asserted scopes, typed errors, exponential-backoff retry), `dbo.RampTransactionFollowUp`
+  + `dbo.RampChaserDigest`, the classify + upsert sweep, and the weekly per-cardholder draft digest
+  through the MS outbox. Two admin routes in `shared/api/admin.py`:
+  `POST /api/v1/admin/ramp-chaser/sweep` and `POST /api/v1/admin/ramp-chaser/digest`.
+- **U-567 — the sweep got a caller and got observable.** `ramp_chaser_sweep` timer at `0 0 11 * * *`
+  (11:00 UTC daily) in `build.one.scheduler`. ⛔ **No API-side mode gate, deliberately** — unlike
+  `TIME_ENTRY_DIGEST_MODE` and `RAMP_CHASER_MODE`, a sweep that ships switched off leaves the table
+  empty, which is exactly the defect it exists to fix. Same unit added the straggler counters
+  (`stragglers_refetched` / `stragglers_gone_from_ramp`) and the `ramp.chaser.stragglers` log line —
+  visibility only, by design; the bound itself is still open (U-573, booked in TODO.md).
+- **Live now: 25 open items across 5 cardholders.** ⛔ **`RAMP_CHASER_MODE` is still `off`, so zero
+  digests have ever been drafted and no cardholder has been emailed; `dbo.RampChaserDigest` has 0
+  rows.** The Tuesday digest timer is Phase D and is not in the scheduler — the digest runs only
+  when POSTed by hand.
+- **The classifier is Ramp's own `all_requirements_met_and_approved`, never a local memo/receipt
+  test.** Measured: a local predicate flags **101 vs Ramp's 37**, with **64** items Ramp does not
+  require a receipt for (median $75, refunds included). Chasing those would teach the crew to ignore
+  our mail too — self-inflicting the exact failure the unit exists to escape. `NeedsMemo` /
+  `NeedsReceipt` are read only to say *what* is missing in the body; they never decide membership.
+- **U-570 — recipient-change detection, and the allow-list that was rejected.** The recipient address
+  comes from the Ramp `/users` API, an external trust boundary. An HMAC fingerprint of the address
+  (`shared/encryption.py::blind_index`, keyed off `ENCRYPTION_KEY`) is stored per digest row — **the
+  address itself is never persisted** — and a change since the previous digest raises a warning in the
+  draft body plus a `recipient_changed` counter. A first-sight row reports `recipient_unverified`
+  instead, which is the honest signal. ⛔ **A domain allow-list was deliberately REJECTED: 4 of 10
+  active cardholders are legitimately off-domain** (3 gmail, 1 other), so blocking would have traded
+  a visible warning for silently not chasing them.
+- **Two clocks that must not be collapsed.** `FirstSeenAt` = how long **we** have been chasing (drives
+  the deferred escalation); transaction age = how old the charge is (drives the `← N days` marker in
+  the digest body, threshold 14). Backfilled items carry `FirstSeenAt` = go-live so aged history
+  cannot manufacture instant escalations — 22 of the 37 probe items were already past 14 days.
+- **⛔ Phase B (web worklist) KILLED — Chris, 2026-09-29: *"This is not a web ui. This is only a
+  backend scheduled task."*** No endpoint, no page, none planned. The visibility gap it was meant to
+  close is closed by the **draft review** instead: every digest is a draft the owner reads before
+  sending, so all open items reach him weekly — pushed, not pulled. Two decisions in the design rested
+  on the worklist existing (§6 escalation alternative, the two-clocks note) and are annotated in place;
+  re-open either deliberately rather than inheriting a premise that expired.
+- **Draft-only is structural, not a config default.** `mode="draft"` is hardcoded at the enqueue call
+  site — there is no send rung. One draft per `(CardHolderRampUserId, WeekOf)`, enforced by a UNIQUE
+  index rather than application logic, and **never patched** (an open Outlook draft autosaves over a
+  PATCH, and the reviewer having it open is the normal state here). `LastNotifiedAt` / `NotifyCount`
+  stamp on an **observed** send only.
+- **Phase E (this unit) is backend docs only.** New operator runbook
+  `docs/runbooks/ramp-chaser.md` — symptom/severity/diagnosis/recovery/verification/prevention, with
+  the counter-by-counter "cardholder isn't being chased" decision tree, the credentials fix, the
+  `recipient_changed` response, turn-on/turn-off procedures, and the ⛔ Flex `Disabled` app-setting
+  trap (de-registers a function permanently; stop the sweep by commenting out the timer and
+  republishing). ⚠️ **Not linked from `docs/runbooks/README.md`** — that file was outside this unit's
+  SCOPE; add the row on the next pass.
+- **Operational facts worth not rediscovering:** Ramp's rate limit is 200 requests / 10 seconds **per
+  source IP**, shared across all egress from that address; a request over 60s returns 504; and `scope`
+  is **REQUIRED** on the token request — omit it and Ramp issues a scopeless token that 403s on
+  everything without erroring, which is why the auth client asserts the issued scopes and refuses.
+
 ## U-424 — ContractLabor parent aggregates go stale (2026-09-08)
 
 `ContractLabor.TotalAmount` / `TotalHours` / `HourlyRate` / `Markup` drifted from the line items

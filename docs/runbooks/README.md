@@ -32,6 +32,7 @@ to run — no need to reverse-engineer the system under pressure.
 | [deploy-restart-timing.md](deploy-restart-timing.md) | Work triggered within ~2 min of `az webapp restart` runs against OLD code while DB is on NEW migrations — sproc-rename / column-add contract mismatches surface as 500s and stuck `running` agent sessions |
 | [review-notification-failed.md](review-notification-failed.md) | Bill submitted for review but the expected notification didn't land in `invoice@rogersbuild.com`'s Drafts folder, or landed with wrong recipients / missing attachment |
 | [fanout-guard-suppressed-upload.md](fanout-guard-suppressed-upload.md) | A completed bill/expense/invoice document is missing from SharePoint or Box because a U-221 fan-out idempotency guard suppressed a legitimate re-upload |
+| [ramp-chaser.md](ramp-chaser.md) | Ramp receipt/memo chaser — follow-up table empty or stale, a cardholder not being chased, `recipient_changed` fired, turning the digest on or off safely |
 
 ## Runbook format
 

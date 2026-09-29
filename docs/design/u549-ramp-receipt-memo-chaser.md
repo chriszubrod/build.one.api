@@ -18,7 +18,11 @@
 > Two decisions rested on the worklist existing and are annotated in place (§6 escalation alternative, and
 > the two-clocks note); re-open either deliberately rather than inheriting a premise that expired.
 >
-> Remaining: **D — Tuesday digest timer**, **E — docs**. Each takes its own Gate 1.
+> **D and E are DONE (2026-09-29).** D: `ramp_chaser_digest`, Tuesdays 12:03 UTC — inert while the mode is
+> `off`. E: backend docs only — `docs/runbooks/ramp-chaser.md` and a SESSION_NOTES entry; **no `/docs` web
+> section, per the no-web-ui call above.** Every phase is now built. ⛔ **The only remaining step is a
+> DECISION, not code: set `RAMP_CHASER_MODE=draft`.** Also unset today: `RAMP_CHASER_CC_EMAIL`, so the
+> owner CC the design specifies would not happen until it is configured.
 
 ---
 
@@ -535,8 +539,8 @@ Each phase is independently shippable and independently useful. **Phase 0 gates 
 | **A — Integration + state** | `integrations/ramp/`, `dbo.RampTransactionFollowUp`, classify + upsert sweep. No email, no UI. | api |
 | ~~**B — Worklist**~~ | ⛔ **KILLED 2026-09-29 by Chris: "This is not a web ui. This is only a backend scheduled task."** No `GET` endpoint, no page. **The visibility gap is closed by the DRAFT REVIEW instead** — every digest is a draft the owner reads before sending, so he sees all five cardholders' open items weekly, pushed rather than pulled. A page he must remember to open is a weaker instrument than mail already in front of him. ⚠️ See the revision note at §6 — two decisions in this doc rested on the worklist existing. | ~~api + web~~ |
 | **C — Digest** | `RampChaserDigestService` + MS outbox enqueue, **draft-only** (§6.1), including the update-in-place and vanished-draft-means-sent handling. | api |
-| **D — Schedule** | Tue/Fri timer. | scheduler |
-| **E — Docs** | `/docs` section + operator guide, per the per-unit pipeline. | web + team |
+| ✅ **D — Schedule** | **DONE 2026-09-29.** `ramp_chaser_digest`, Tuesdays **12:03 UTC** (the :03 stagger is deliberate — ten timers fire at :00, including `sync_qbo_vendor`). Runs an hour after the daily 11:00 sweep so it reads rows refreshed that morning. Inert while `RAMP_CHASER_MODE=off`. | scheduler |
+| ✅ **E — Docs** | **DONE 2026-09-29 — backend only.** `docs/runbooks/ramp-chaser.md` (house Symptom/Diagnosis/Recovery format, 6 runnable command blocks) + a SESSION_NOTES entry + the runbooks README index row. ⛔ **No `/docs` web section** — struck by the no-web-ui call; the original `web + team` scope does not apply. | ~~web + team~~ api |
 
 ~~**Phase B before C is deliberate.**~~ ⛔ **Moot — B is killed (2026-09-29) and C shipped first anyway.** The
 classifier was instead sanity-checked directly against prod: the first real sweep produced **24 open items over

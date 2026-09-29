@@ -184,6 +184,20 @@ class Settings(BaseSettings):
     ramp_api_base_url: str = "https://api.ramp.com"
     ramp_chaser_window_days: int = 90
 
+    # Ramp receipt/memo chaser — weekly per-cardholder digest (MS outbox, draft-only
+    # in v1). `mode` controls behaviour AND acts as the kill switch for the digest
+    # sweep:
+    #   - "off"   : the sweep is a no-op (default — ships dark).
+    #   - "draft" : create one draft per cardholder in the invoice mailbox's Drafts
+    #               folder for a human to review + send. v1 never auto-sends.
+    # Switch via env var RAMP_CHASER_MODE — no code redeploy needed.
+    # Still gated by ALLOW_MS_WRITES at the outbox layer.
+    ramp_chaser_mode: str = "off"
+
+    # Optional standing CC on every chaser digest (company owner). When unset, no CC.
+    # If the owner is also the /me sender, leave this unset — CC would be a no-op.
+    ramp_chaser_cc_email: Optional[str] = None
+
     # Intelligence Layer — provider API keys
     anthropic_api_key: Optional[str] = None
     # Azure AI Foundry (OpenAI-compatible chat-completions; DeepSeek + GPT-5.4

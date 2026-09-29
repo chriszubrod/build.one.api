@@ -1,0 +1,389 @@
+"""U-549 Phase C2 Slice A — data layer (RampChaserDigest + follow-up full-row read).
+
+Pure-logic / mocked DB — no live pyodbc.
+"""
+
+from __future__ import annotations
+
+import re
+import sqlite3
+from datetime import date
+from decimal import Decimal
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
+
+import pytest
+
+from entities.ramp_chaser_digest.persistence.repo import RampChaserDigestRepository
+from entities.ramp_transaction_follow_up.business.model import RampTransactionFollowUp
+from entities.ramp_transaction_follow_up.persistence.repo import RampTransactionFollowUpRepository
+from tests.sproc_text import REPO_ROOT, sproc_body, sproc_params, strip_sql_comments
+
+DIGEST_SQL = REPO_ROOT / "entities/ramp_chaser_digest/sql/dbo.ramp_chaser_digest.sql"
+FOLLOW_UP_SQL = REPO_ROOT / "entities/ramp_transaction_follow_up/sql/dbo.ramp_transaction_follow_up.sql"
+
+_ROW_VERSION = b"\x00\x01\x02\x03\x04\x05\x06\x07"
+
+
+def _follow_up_row(**overrides) -> SimpleNamespace:
+    base = {
+        "Id": 1,
+        "PublicId": "11111111-1111-1111-1111-111111111111",
+        "RowVersion": _ROW_VERSION,
+        "RampTransactionId": "txn-abc",
+        "CardHolderRampUserId": "user-1",
+        "CardHolderName": "Chris",
+        "MerchantName": "Lowe's",
+        "Amount": Decimal("92.50"),
+        "TransactionDate": "2026-09-18",
+        "NeedsMemo": True,
+        "NeedsReceipt": True,
+        "FirstSeenAt": "2026-09-18T12:00:00",
+        "LastDraftedAt": None,
+        "DraftMessageId": None,
+        "LastNotifiedAt": None,
+        "NotifyCount": 0,
+        "EscalatedAt": None,
+        "ResolvedAt": None,
+        "CreatedAt": "2026-09-18T12:00:00",
+        "UpdatedAt": "2026-09-18T12:00:00",
+    }
+    base.update(overrides)
+    return SimpleNamespace(**base)
+
+
+def _digest_row(**overrides) -> SimpleNamespace:
+    base = {
+        "Id": 10,
+        "PublicId": "22222222-2222-2222-2222-222222222222",
+        "RowVersion": _ROW_VERSION,
+        "CardHolderRampUserId": "user-1",
+        "WeekOf": date(2026, 9, 23),
+        "DraftMessageId": None,
+        "ConversationId": None,
+        "InternetMessageId": None,
+        "LastDraftedAt": None,
+        "LastNotifiedAt": None,
+        "NotifyCount": 0,
+        "Outcome": None,
+        "CreatedAt": "2026-09-23T08:00:00",
+        "UpdatedAt": "2026-09-23T08:00:00",
+    }
+    base.update(overrides)
+    return SimpleNamespace(**base)
+
+
+# --- SQL pins: RampChaserDigest idempotency anchor --------------------------------
+
+
+def test_u549_c2_digest_unique_index_on_cardholder_week():
+    text = DIGEST_SQL.read_text(encoding="utf-8")
+    assert "UQ_RampChaserDigest_CardHolder_WeekOf" in text
+    assert (
+        "ON dbo.[RampChaserDigest] ([CardHolderRampUserId], [WeekOf])"
+        in text
+    )
+
+
+def test_u549_c2_upsert_merge_keys_cardholder_and_week():
+    body = strip_sql_comments(sproc_body(DIGEST_SQL, "UpsertRampChaserDigest"))
+    assert re.search(
+        r"ON\s+target\.\[CardHolderRampUserId\]\s*=\s*source\.CardHolderRampUserId\s+"
+        r"AND\s+target\.\[WeekOf\]\s*=\s*source\.WeekOf",
+        body,
+        re.IGNORECASE | re.DOTALL,
+    )
+
+
+def test_u549_c2_draft_message_id_column_width_512():
+    text = DIGEST_SQL.read_text(encoding="utf-8")
+    assert "[DraftMessageId] NVARCHAR(512)" in text
+    assert "[ConversationId] NVARCHAR(512)" in text
+
+
+def test_u549_c2_read_outstanding_filters_unsent_drafts():
+    body = strip_sql_comments(sproc_body(DIGEST_SQL, "ReadOutstandingRampChaserDigests"))
+    assert re.search(r"\[DraftMessageId\]\s+IS\s+NOT\s+NULL", body, re.I)
+    assert re.search(r"\[LastNotifiedAt\]\s+IS\s+NULL", body, re.I)
+
+
+def test_u549_c2_sqlite_second_upsert_same_pair_updates_not_inserts():
+    conn = sqlite3.connect(":memory:")
+    conn.execute(
+        """
+        CREATE TABLE RampChaserDigest (
+            Id INTEGER PRIMARY KEY,
+            CardHolderRampUserId TEXT NOT NULL,
+            WeekOf TEXT NOT NULL,
+            UpdatedAt TEXT,
+            UNIQUE (CardHolderRampUserId, WeekOf)
+        )
+        """
+    )
+
+    def upsert(cardholder: str, week_of: str) -> int:
+        row = conn.execute(
+            """
+            SELECT Id FROM RampChaserDigest
+            WHERE CardHolderRampUserId = ? AND WeekOf = ?
+            """,
+            (cardholder, week_of),
+        ).fetchone()
+        if row:
+            conn.execute(
+                "UPDATE RampChaserDigest SET UpdatedAt = 't2' WHERE Id = ?",
+                (row[0],),
+            )
+            return row[0]
+        conn.execute(
+            """
+            INSERT INTO RampChaserDigest (CardHolderRampUserId, WeekOf, UpdatedAt)
+            VALUES (?, ?, 't1')
+            """,
+            (cardholder, week_of),
+        )
+        return conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+
+    first_id = upsert("user-1", "2026-09-23")
+    second_id = upsert("user-1", "2026-09-23")
+    assert first_id == second_id
+    assert conn.execute("SELECT COUNT(*) FROM RampChaserDigest").fetchone()[0] == 1
+
+
+# --- ReadUnresolvedRampTransactionFollowUps column parity ---------------------
+
+
+def _select_list_from_sproc(sql_path: Path, sproc_name: str) -> str:
+    body = strip_sql_comments(sproc_body(sql_path, sproc_name))
+    match = re.search(r"\bSELECT\b(.*?)\bFROM\b", body, re.IGNORECASE | re.DOTALL)
+    assert match is not None, f"{sproc_name} must have SELECT ... FROM"
+    return re.sub(r"\s+", " ", match.group(1).strip())
+
+
+def test_u549_c2_unresolved_read_projects_same_columns_as_by_id():
+    by_id = _select_list_from_sproc(
+        FOLLOW_UP_SQL, "ReadRampTransactionFollowUpByRampTransactionId"
+    )
+    unresolved = _select_list_from_sproc(
+        FOLLOW_UP_SQL, "ReadUnresolvedRampTransactionFollowUps"
+    )
+    by_id_norm = re.sub(r"^TOP\s+1\s+", "", by_id, flags=re.I)
+    assert by_id_norm == unresolved
+
+
+def test_u549_c2_unresolved_read_datetime_fields_use_convert_126():
+    body = strip_sql_comments(
+        sproc_body(FOLLOW_UP_SQL, "ReadUnresolvedRampTransactionFollowUps")
+    )
+    for col in (
+        "FirstSeenAt",
+        "LastDraftedAt",
+        "LastNotifiedAt",
+        "EscalatedAt",
+        "ResolvedAt",
+        "CreatedAt",
+        "UpdatedAt",
+    ):
+        assert f"CONVERT(VARCHAR(30), r.[{col}], 126)" in body
+
+
+# --- Repo: read_unresolved returns full models --------------------------------
+
+
+def test_u549_c2_read_unresolved_returns_full_rows_not_id_strings():
+    repo = RampTransactionFollowUpRepository()
+    row = _follow_up_row()
+    cursor = MagicMock()
+    cursor.fetchall.return_value = [row]
+    conn = MagicMock()
+    conn.cursor.return_value = cursor
+
+    with patch(
+        "entities.ramp_transaction_follow_up.persistence.repo.conn_ctx"
+    ) as mock_ctx:
+        mock_ctx.return_value.__enter__.return_value = conn
+        results = repo.read_unresolved()
+
+    assert len(results) == 1
+    item = results[0]
+    assert isinstance(item, RampTransactionFollowUp)
+    assert item.ramp_transaction_id == "txn-abc"
+    assert item.merchant_name == "Lowe's"
+    assert item.amount == Decimal("92.50")
+    assert item.first_seen_at == "2026-09-18T12:00:00"
+    assert isinstance(item.first_seen_at, str)
+
+
+def test_u549_c2_read_unresolved_calls_full_row_sproc():
+    repo = RampTransactionFollowUpRepository()
+    cursor = MagicMock()
+    cursor.fetchall.return_value = []
+    conn = MagicMock()
+    conn.cursor.return_value = cursor
+
+    with patch(
+        "entities.ramp_transaction_follow_up.persistence.repo.conn_ctx"
+    ) as mock_ctx, patch(
+        "entities.ramp_transaction_follow_up.persistence.repo.call_procedure"
+    ) as call_proc:
+        mock_ctx.return_value.__enter__.return_value = conn
+        repo.read_unresolved()
+        call_proc.assert_called_once()
+        assert call_proc.call_args.kwargs["name"] == "ReadUnresolvedRampTransactionFollowUps"
+        assert call_proc.call_args.kwargs["params"] == {}
+
+
+# --- Repo: digest datetime fields as ISO strings --------------------------------
+
+
+def test_u549_c2_digest_from_db_datetime_fields_are_strings():
+    repo = RampChaserDigestRepository()
+    row = _digest_row(
+        LastDraftedAt="2026-09-23T09:15:00",
+        LastNotifiedAt="2026-09-24T10:00:00",
+        CreatedAt="2026-09-23T08:00:00",
+        UpdatedAt="2026-09-24T10:00:00",
+    )
+    digest = repo._from_db(row)
+    assert digest is not None
+    assert digest.last_drafted_at == "2026-09-23T09:15:00"
+    assert digest.last_notified_at == "2026-09-24T10:00:00"
+    assert digest.created_at == "2026-09-23T08:00:00"
+    assert digest.updated_at == "2026-09-24T10:00:00"
+    for value in (
+        digest.last_drafted_at,
+        digest.last_notified_at,
+        digest.created_at,
+        digest.updated_at,
+    ):
+        assert isinstance(value, str)
+
+
+def test_u549_c2_digest_sql_datetime_outputs_use_convert_126():
+    for sproc in (
+        "UpsertRampChaserDigest",
+        "ReadRampChaserDigestByCardHolderAndWeek",
+        "ReadOutstandingRampChaserDigests",
+        "StampRampChaserDigestDrafted",
+        "StampRampChaserDigestNotified",
+    ):
+        body = strip_sql_comments(sproc_body(DIGEST_SQL, sproc))
+        for col in ("LastDraftedAt", "LastNotifiedAt", "CreatedAt", "UpdatedAt"):
+            assert f"CONVERT(VARCHAR(30)" in body and col in body
+
+
+# --- Sproc param contract (repo ↔ SQL) ----------------------------------------
+
+
+def _sql_declared_params(sql_path: Path, sproc: str) -> set[str]:
+    return {m.lower() for m in re.findall(r"@(\w+)", sproc_params(sql_path, sproc))}
+
+
+@pytest.mark.parametrize(
+    "sql_path,sproc,repo_keys",
+    [
+        (
+            DIGEST_SQL,
+            "UpsertRampChaserDigest",
+            {"CardHolderRampUserId", "WeekOf"},
+        ),
+        (
+            DIGEST_SQL,
+            "ReadRampChaserDigestByCardHolderAndWeek",
+            {"CardHolderRampUserId", "WeekOf"},
+        ),
+        (DIGEST_SQL, "ReadOutstandingRampChaserDigests", set()),
+        (
+            DIGEST_SQL,
+            "StampRampChaserDigestDrafted",
+            {
+                "CardHolderRampUserId",
+                "WeekOf",
+                "DraftMessageId",
+                "ConversationId",
+                "InternetMessageId",
+            },
+        ),
+        (
+            DIGEST_SQL,
+            "StampRampChaserDigestNotified",
+            {"CardHolderRampUserId", "WeekOf", "Outcome"},
+        ),
+        (
+            FOLLOW_UP_SQL,
+            "ReadUnresolvedRampTransactionFollowUps",
+            set(),
+        ),
+    ],
+)
+def test_u549_c2_repo_params_declared_in_sql(
+    sql_path: Path, sproc: str, repo_keys: set[str]
+):
+    declared = _sql_declared_params(sql_path, sproc)
+    assert {k.lower() for k in repo_keys} <= declared
+
+
+@pytest.mark.parametrize(
+    "method_name,kwargs,expected_sproc,expected_keys",
+    [
+        (
+            "upsert",
+            {"card_holder_ramp_user_id": "u1", "week_of": "2026-09-23"},
+            "UpsertRampChaserDigest",
+            {"CardHolderRampUserId", "WeekOf"},
+        ),
+        (
+            "stamp_drafted",
+            {
+                "card_holder_ramp_user_id": "u1",
+                "week_of": "2026-09-23",
+                "draft_message_id": "draft-id",
+                "conversation_id": "conv",
+                "internet_message_id": "imid",
+            },
+            "StampRampChaserDigestDrafted",
+            {
+                "CardHolderRampUserId",
+                "WeekOf",
+                "DraftMessageId",
+                "ConversationId",
+                "InternetMessageId",
+            },
+        ),
+        (
+            "stamp_notified",
+            {
+                "card_holder_ramp_user_id": "u1",
+                "week_of": "2026-09-23",
+                "outcome": "sent",
+            },
+            "StampRampChaserDigestNotified",
+            {"CardHolderRampUserId", "WeekOf", "Outcome"},
+        ),
+    ],
+)
+def test_u549_c2_digest_repo_call_procedure_param_keys(
+    method_name: str,
+    kwargs: dict,
+    expected_sproc: str,
+    expected_keys: set[str],
+):
+    repo = RampChaserDigestRepository()
+    cursor = MagicMock()
+    cursor.fetchone.return_value = _digest_row()
+    conn = MagicMock()
+    conn.cursor.return_value = cursor
+    declared = _sql_declared_params(DIGEST_SQL, expected_sproc)
+
+    with patch(
+        "entities.ramp_chaser_digest.persistence.repo.conn_ctx"
+    ) as mock_ctx, patch(
+        "entities.ramp_chaser_digest.persistence.repo.call_procedure"
+    ) as call_proc:
+        mock_ctx.return_value.__enter__.return_value = conn
+        getattr(repo, method_name)(**kwargs)
+        assert call_proc.call_args.kwargs["name"] == expected_sproc
+        sent = call_proc.call_args.kwargs["params"]
+        assert set(sent.keys()) == expected_keys
+        assert {k.lower() for k in sent.keys()} <= declared

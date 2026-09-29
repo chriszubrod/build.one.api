@@ -179,6 +179,43 @@ END
 GO
 
 
+CREATE OR ALTER PROCEDURE ReadUnresolvedRampTransactionFollowUps
+(
+    @CardHolderRampUserId NVARCHAR(64) = NULL
+)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    SELECT
+        r.[Id],
+        r.[PublicId],
+        r.[RowVersion],
+        r.[RampTransactionId],
+        r.[CardHolderRampUserId],
+        r.[CardHolderName],
+        r.[MerchantName],
+        r.[Amount],
+        r.[TransactionDate],
+        r.[NeedsMemo],
+        r.[NeedsReceipt],
+        CONVERT(VARCHAR(30), r.[FirstSeenAt], 126) AS [FirstSeenAt],
+        CONVERT(VARCHAR(30), r.[LastDraftedAt], 126) AS [LastDraftedAt],
+        r.[DraftMessageId],
+        CONVERT(VARCHAR(30), r.[LastNotifiedAt], 126) AS [LastNotifiedAt],
+        r.[NotifyCount],
+        CONVERT(VARCHAR(30), r.[EscalatedAt], 126) AS [EscalatedAt],
+        CONVERT(VARCHAR(30), r.[ResolvedAt], 126) AS [ResolvedAt],
+        CONVERT(VARCHAR(30), r.[CreatedAt], 126) AS [CreatedAt],
+        CONVERT(VARCHAR(30), r.[UpdatedAt], 126) AS [UpdatedAt]
+    FROM dbo.[RampTransactionFollowUp] r
+    WHERE r.[ResolvedAt] IS NULL
+      AND (@CardHolderRampUserId IS NULL OR r.[CardHolderRampUserId] = @CardHolderRampUserId)
+    ORDER BY r.[CardHolderRampUserId], r.[FirstSeenAt];
+END
+GO
+
+
 CREATE OR ALTER PROCEDURE ReadRampTransactionFollowUpByRampTransactionId
 (
     @RampTransactionId NVARCHAR(64)

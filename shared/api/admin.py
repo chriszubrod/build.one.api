@@ -294,6 +294,42 @@ async def time_entry_daily_digest_router(work_date: Optional[str] = None):
     return await _timed("time_entry.daily_digest", _run)
 
 
+# --- Ramp chaser weekly digest --------------------------------------------- #
+
+
+@router.post("/ramp-chaser/digest", dependencies=[Depends(_require_drain_secret)])
+async def ramp_chaser_digest_router(week_of: Optional[str] = None):
+    """
+    Run the weekly Ramp receipt/memo chaser digest sweep: one draft per
+    cardholder listing open follow-up items. Pass `?week_of=YYYY-MM-DD` to
+    target a specific week (ISO date; interpreted in business_timezone by the
+    service); omit to use the service default for the current week. Called by
+    the scheduler's ramp chaser timer once deployed.
+
+    The sweep runs as system admin via the drain-secret guard, enqueues MS-outbox
+    `send_mail` rows for draft creation, and is idempotent per (cardholder, week).
+    Honors RAMP_CHASER_MODE (off | draft) — 'off' is a no-op — plus the
+    ALLOW_MS_WRITES gate. v1 never auto-sends.
+    """
+    if week_of:
+        week_of = _validate_work_date(week_of)
+
+    def _run() -> dict[str, Any]:
+        from dataclasses import asdict, is_dataclass
+
+        from entities.ramp_chaser_digest.business.digest_service import (
+            RampChaserDigestService,
+        )
+
+        svc = RampChaserDigestService()
+        result = svc.run_for_week(week_of)
+        if is_dataclass(result):
+            return asdict(result)
+        return result
+
+    return await _timed("ramp_chaser.digest", _run)
+
+
 # --- Time-entry auto-submit (deterministic prior-day sweep) ---------------- #
 
 

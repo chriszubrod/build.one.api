@@ -116,6 +116,25 @@ class RampTransactionFollowUpRepository:
             )
             raise map_database_error(error)
 
+    def read_unresolved(
+        self, *, conn: Optional[pyodbc.Connection] = None
+    ) -> List[RampTransactionFollowUp]:
+        try:
+            with conn_ctx(conn) as c:
+                cursor = c.cursor()
+                call_procedure(
+                    cursor=cursor,
+                    name="ReadUnresolvedRampTransactionFollowUps",
+                    params={},
+                )
+                rows = [self._from_db(row) for row in cursor.fetchall()]
+                if conn is not None:
+                    c.commit()
+                return [r for r in rows if r is not None]
+        except Exception as error:
+            logger.error("Error reading unresolved ramp follow-ups: %s", error)
+            raise map_database_error(error)
+
     def read_unresolved_ramp_transaction_ids(
         self, *, conn: Optional[pyodbc.Connection] = None
     ) -> List[str]:

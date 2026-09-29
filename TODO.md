@@ -17,42 +17,20 @@ to apply `integrations/ms/outbox/sql/ms.outbox.sql` — purely additive, `CREATE
 Found by the Pass-2 efficiency and altitude agents. Each is a **behavior change**, which is why a
 behavior-preserving quality pass could not take them. Design: `docs/design/u549-ramp-receipt-memo-chaser.md`.
 
-- [ ] 🟡 **The refetch set is unbounded and ratchets forever — now MEASURABLE, still unbounded.**
-  `ReadUnresolvedRampTransactionFollowUpIds` is a bare `WHERE [ResolvedAt] IS NULL` — no age predicate, no `TOP`.
-  Two row classes never leave it: an item that aged out of the 90-day window and is still open, and an item
-  whose Ramp transaction **404s** (the external client returns `None`, so the row never enters `by_id`, so
-  `mark_resolved` can never fire). Each costs one `GET /developer/v1/transactions/{id}` **every sweep,
-  forever**, and the count only goes up. ✅ **U-567 made it observable** — `stragglers_refetched` and
-  `stragglers_gone_from_ramp` on `RampChaserSweepStats`, plus a per-sweep `ramp.chaser.stragglers` log line
-  and both counters in the scheduler's `ramp_chaser_sweep.done` line. **The bound itself is still open and
-  is the remaining work here:** age-cap the refetch set, or persist a terminal "gone from Ramp" state so
-  404s stop being retried. Both change behaviour, so this wants its own Pass 1 — it did NOT ride along in
-  U-567, which was deliberately visibility-only. Watch `stragglers_gone_from_ramp` first: a non-zero value
-  that never falls is the 404 class, and it is the half that can never self-heal.
-  `integrations/intuit/qbo/base/delete_reconcile.py:105` is this repo's named home for the same "bulk list
-  + diff + confirm absentees individually" shape, complete with a candidate ceiling and an `abort_reason` —
-  adopt it wholesale rather than inventing a second vocabulary.
-
-## U-549 deferred scope — Ramp chaser follow-ups (booked 2026-09-25, design session)
-
-Design: `docs/design/u549-ramp-receipt-memo-chaser.md`. These were **deliberately cut from v1**,
-not missed. Recorded so they are not re-litigated and not silently forgotten.
-
-- [ ] 🟡 **Pull the receipt IMAGES, not just their absence.** v1 detects a missing receipt and
-  stops. Ramp holds the actual files, and build.one has **no receipt document for card spend at
-  all** — which matters because cost-plus packets need per-charge backup
-  (`feedback_invoice_attachment_specificity`: per-charge PDF only, never a statement). Ramp
-  receipts → Box project folder → invoice packet is the natural v2 and plausibly worth more than
-  the chase loop itself. Ties directly to **U-099** (*"Recode sets Billable — ~$22K unbilled in one
-  46-line batch"*). Needs a `receipts:read` scope, which v1 deliberately does not request.
-- [x] ~~🟡 **Richer "needs a memo" test via the hint extractor.**~~ **MOOT — closed by the Phase 0
-  probe 2026-09-27, do not revisit.** Both candidate predicates (literal-blank, and the
-  hint-extractor "can't resolve a project") were wrong. Ramp already computes completeness in
-  `all_requirements_met_and_approved`, and its verdict is a **strict subset** of the hand-rolled
-  test: 37 vs 101 flagged, **zero** cases Ramp flags that the local test missed, and **64** the
-  local test would have chased that Ramp does not require a receipt for (sub-$75 spend, refunds).
-  A local predicate is not an improvement here — it is an over-chase bug waiting to be reintroduced.
-  ⛔ **Anyone tempted to "upgrade" the classifier to a local test: read design §4.4 first.**
+- [x] ✅ **The refetch set is bounded — SHIPPED as U-573, `8a721b98`, deployed 2026-09-29.** A row whose
+  Ramp transaction comes back empty **3 CONSECUTIVE sweeps** is retired from the refetch set
+  (`GoneFromRampCount` / `GoneFromRampAt`); any successful fetch zeroes the run, so a transient 404 cannot
+  retire a live row. Counters `stragglers_refetched` / `stragglers_gone_from_ramp` / `stragglers_retired` are
+  in the sweep summary and the scheduler log.
+  ⛔ **Age-capping was REJECTED and must not be reintroduced.** The refetch is the ONLY way an out-of-window
+  item is ever learned to be resolved, so a date predicate would mean chasing people forever for work they
+  had already done — on the oldest items, the ones chased hardest.
+  ⛔ **Retiring is NOT resolving.** `ReadUnresolvedRampTransactionFollowUpIds` filters retired rows;
+  `ReadUnresolvedRampTransactionFollowUps` (the full-row read feeding the digest) deliberately does NOT.
+  Filtering there silently drops someone's open items from their chaser email.
+  ⚠️ **Two mutations came back GREEN here and it was not a weak test** — every behavioural test drives
+  `_FakeFollowUpRepo`, which *mirrors* the sproc, so the real T-SQL is executed by nothing. Logic that lives
+  only in SQL needs STRUCTURAL pins on the sproc text; verify the live `OBJECT_DEFINITION`, not the file.
 - [ ] 🟢 **The 1–2 non-Ramp cardholders are invisible to this.** A Ramp-sourced sweep cannot see a
   card that is not in Ramp (named in the U-005 spec). They keep today's manual chase. Named gap,
   not an oversight — only worth closing if that population grows.

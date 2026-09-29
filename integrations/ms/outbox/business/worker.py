@@ -738,7 +738,9 @@ class MsOutboxWorker:
         2–3 minute window (see ``_resolve_send_mail_attachment``).
 
         On success the worker stamps the resulting Graph message_id (for
-        drafts) back into the row's payload for audit traceability. The
+        drafts) back into the row's payload for audit traceability, plus
+        ``conversation_id`` / ``internet_message_id`` when Graph returned
+        them (U-579 — the only moment those are knowable; see below). The
         fetched bytes stay in a local; they are not written back onto
         ``payload["attachment"]``.
         """
@@ -859,6 +861,28 @@ class MsOutboxWorker:
         message_id = (draft or {}).get("message_id") if isinstance(draft, dict) else None
         if message_id:
             payload["graph_message_id"] = message_id
+            # U-579: also stamp the CONVERSATION identity the same response
+            # already carries (`_format_message` projects conversation_id +
+            # internet_message_id alongside message_id). A Graph message id
+            # changes when the message moves folders, so a later read-back of
+            # `graph_message_id` on a draft the owner has already sent or
+            # deleted returns "not found" and the conversation id is lost
+            # forever — measured 2026-09-29: 6 drafts cleared the same
+            # afternoon, 0 conversation ids recovered by the weekly sweep.
+            # Capturing here is the only window that exists.
+            #
+            # Strictly additive, and only when Graph returned a value:
+            # consumers must treat both keys as optional (rows enqueued
+            # before this change carry neither).
+            # Only a non-empty STRING is a usable identity. Graph returning an
+            # unexpected shape must not be persisted as one: a consumer that
+            # str()-ed it would get something id-shaped and skip its own fallback.
+            conversation_id = draft.get("conversation_id")
+            if isinstance(conversation_id, str) and conversation_id.strip():
+                payload["conversation_id"] = conversation_id.strip()
+            internet_message_id = draft.get("internet_message_id")
+            if isinstance(internet_message_id, str) and internet_message_id.strip():
+                payload["internet_message_id"] = internet_message_id.strip()
             try:
                 self._persist_payload(row, payload)
             except Exception:

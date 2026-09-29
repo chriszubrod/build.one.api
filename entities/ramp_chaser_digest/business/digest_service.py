@@ -11,6 +11,22 @@ _ENTITY_TYPE = "RampChaserDigest"
 _OUTBOX_KIND_SEND_MAIL = "send_mail"
 
 
+def _captured_identity(value: Any) -> Optional[str]:
+    """A captured Graph identity counts only when it is a NON-EMPTY STRING.
+
+    ⛔ Never `str(value)`. A malformed payload — `["bad"]`, `{"bad": 1}`, a number —
+    would coerce into something that LOOKS like an id, which then satisfies the
+    fast path and SKIPS the read-back GET that could still have fetched the real
+    one. Silently stamping a fabricated conversation id is strictly worse than
+    capturing nothing: every later SentItems/DeletedItems lookup searches for a
+    conversation that does not exist, and the row can never be reconciled.
+
+    Anything that is not a non-empty str is treated as ABSENT, which routes the
+    row down the fallback exactly as a pre-U-579 payload does.
+    """
+    return value.strip() if isinstance(value, str) and value.strip() else None
+
+
 class RampChaserDigestService:
     """
     Weekly per-cardholder Ramp memo/receipt chaser — draft-only via MS outbox (U-549 §6).
@@ -473,6 +489,22 @@ class RampChaserDigestService:
         """
         Reconcile outbox → digest draft id.
 
+        Two capture routes, in order:
+
+        1. **From the payload (U-579).** The MS outbox worker stamps
+           ``conversation_id`` / ``internet_message_id`` alongside
+           ``graph_message_id`` at CREATE time, from the very response that
+           created the draft. When the payload carries a conversation id
+           there is nothing left to learn from Graph, so we stamp and skip
+           the read-back entirely.
+        2. **Read-back GET (pre-U-579 rows only).** Rows enqueued before
+           that change carry the message id alone, so the conversation id
+           can only come from a GET — which resolves only while the draft
+           still sits in Drafts. Once the owner sends or deletes it the id
+           changes and the GET 404s; that is INCONCLUSIVE and stamps
+           nothing (never a send inference — 2 of the 6 vanished ids
+           observed on 2026-09-29 were deletions).
+
         Returns: none | captured | enqueued | dead_letter
         """
         from integrations.ms.mail.external.client import get_message
@@ -484,8 +516,19 @@ class RampChaserDigestService:
             _OUTBOX_KIND_SEND_MAIL,
         )
         if completed:
-            graph_id = self._graph_message_id_from_outbox_rows(completed)
-            if graph_id:
+            identity = self._draft_identity_from_outbox_rows(completed)
+            if identity:
+                graph_id = identity["graph_message_id"]
+                if identity["conversation_id"]:
+                    digest_repo.stamp_drafted(
+                        card_holder_ramp_user_id=digest.card_holder_ramp_user_id,
+                        week_of=digest.week_of,
+                        draft_message_id=graph_id,
+                        conversation_id=identity["conversation_id"],
+                        internet_message_id=identity["internet_message_id"],
+                    )
+                    return "captured"
+
                 get_result = get_message(message_id=graph_id, include_body=False)
                 if self._is_transient_graph_result(get_result):
                     return "enqueued"
@@ -522,7 +565,15 @@ class RampChaserDigestService:
         return "none"
 
     @staticmethod
-    def _graph_message_id_from_outbox_rows(rows: list) -> Optional[str]:
+    def _draft_identity_from_outbox_rows(rows: list) -> Optional[Dict[str, Optional[str]]]:
+        """
+        First completed ``send_mail`` payload that carries a Graph message id.
+
+        Returns ``{graph_message_id, conversation_id, internet_message_id}``
+        — the latter two ``None`` for rows the worker stamped before U-579,
+        which is exactly the signal the caller uses to decide whether a
+        read-back GET is still required.
+        """
         for row in rows:
             payload_raw = getattr(row, "payload", None)
             if not payload_raw:
@@ -531,9 +582,18 @@ class RampChaserDigestService:
                 payload = json.loads(payload_raw)
             except (TypeError, json.JSONDecodeError):
                 continue
+            if not isinstance(payload, dict):
+                continue
             graph_id = payload.get("graph_message_id")
-            if graph_id:
-                return str(graph_id)
+            if not graph_id:
+                continue
+            return {
+                "graph_message_id": str(graph_id),
+                "conversation_id": _captured_identity(payload.get("conversation_id")),
+                "internet_message_id": _captured_identity(
+                    payload.get("internet_message_id")
+                ),
+            }
         return None
 
     @staticmethod

@@ -258,6 +258,55 @@ the builder pin is the non-fast `composer-2.5`.
   table: Chris applies it, and the design must not assume it exists before it does.
 - **`CreateReview` is called by paths this unit does not own.** An added optional parameter must be provably
   optional at every call site.
-- **Unverified in this document:** whether `UpdateBillLineItemById` and `CreateReview` contain their own
-  `BEGIN TRAN`/`COMMIT`. If either commits internally, threading one `conn` is **not** sufficient and the
-  sproc bodies must be read before step 2 is built. **The build starts by settling this.**
+- ~~Unverified: whether the sprocs contain their own transaction control.~~ **SETTLED 2026-09-29 — see §9.**
+
+
+---
+
+## 9. Settled after first draft (2026-09-29) — the sprocs compose, and D3 is already defended
+
+§8 listed "do the sprocs manage their own transactions?" as the build's first question. It is answered, and
+the answer is **favourable on the main point and a correction to my own D3 framing.**
+
+### Both sprocs DO manage their own transactions — and they compose correctly
+- `UpdateBillLineItemById` (`entities/bill_line_item/sql/dbo.bill_line_item.sql:403`) opens
+  `BEGIN TRANSACTION`, and on refusal does `COMMIT TRANSACTION` then `RAISERROR`.
+- `CreateReview` (`entities/review/sql/dbo.review.sql:432`) does the same.
+- **Executable `ROLLBACK` statements in either sproc: ZERO.** The only occurrence of the word is a comment in
+  `CreateReview` explaining the discipline: *"COMMIT then RAISERROR, never ROLLBACK inside a sproc: pyodbc runs
+  autocommit-off, so an in-proc rollback zeroes the implicit outer transaction and SQL Server raises error 266
+  instead of this message."*
+
+That discipline is exactly what makes threading one `conn` work. Under SQL Server nesting, the sproc's
+`BEGIN TRANSACTION` increments `@@TRANCOUNT` and its `COMMIT` merely decrements it — only the OUTERMOST commit
+durably commits, and that outermost commit is Python's. On a refusal the sproc's `COMMIT` decrements, the
+`RAISERROR` surfaces to pyodbc, and `get_connection`'s `except` branch rolls back the whole outer transaction.
+So **§4.A's single-transaction plan is sound as written**, and it is sound *because* the codebase already
+adopted "never ROLLBACK in a sproc" for an unrelated reason. Had either sproc rolled back, the plan would have
+needed rework.
+
+⚠️ The build must NOT add a `ROLLBACK` to either sproc, and must not "tidy" the COMMIT-then-RAISERROR shape
+into one. It looks wrong and is load-bearing.
+
+### CORRECTION to D3 — the draft guard is already defended in depth
+My D3 said the draft check is a TOCTOU that this unit's transaction boundary would close. The service-level
+TOCTOU is real (the read at `entities/bill/business/service.py:1256`, the writes at `:1321`/`:1377`), but I
+under-read the SQL layer: **both sprocs already re-check the parent's terminal state INSIDE their own writing
+transaction.**
+- `CreateReview` carries a U-454 guard that takes `UPDLOCK, HOLDLOCK` on the parent **unconditionally** and
+  refuses conditionally, with a comment making the same RCSI-snapshot argument this design made independently:
+  a completion committing between the service's read and the INSERT would otherwise land a review on a
+  completed parent.
+- `UpdateBillLineItemById` refuses with `STATUS_LOCKED: the line items of a completed Bill cannot be changed.`
+
+So D3 is **not** an open hole that must be closed to ship — it is defence-in-depth that already exists at the
+layer that matters. The transaction boundary still improves it (one atomic unit rather than two independently
+guarded writes), but **D3 must not be presented to the builder as a defect to fix**, or it will "add" a guard
+that is already there and possibly weaken the existing one. Revised ranking of what this unit actually closes:
+
+1. **D1 atomicity across the two writes** — genuinely open, the real defect, unchanged.
+2. **D2 idempotency** — genuinely open; `dbo.Review` still has no uniqueness constraint.
+3. **Review-state coupling** (`expected_review_public_id`) — genuinely open; the line-item sproc's guard covers
+   *completed* parents, not *a review that moved underneath the edit*.
+4. **D3 draft state** — already defended at the SQL layer; this unit consolidates rather than fixes it.
+5. **D4 provenance** — closed by construction for the app path only.

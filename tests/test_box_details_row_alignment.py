@@ -32,6 +32,7 @@ from integrations.box.excel.business.workbook_editor import (
     DEFAULT_KEY_COL_INDEX,
     DETAILS_ROW_WIDTH,
     DRAW_REQUEST_COL_INDEX,
+    DetailsLayoutError,
     DetailsRowShapeError,
     _write_row_values,
     apply_rows_to_details,
@@ -182,3 +183,97 @@ def test_the_shift_is_real_when_the_guard_is_removed(monkeypatch):
     assert ws.cell(row=r, column=15).value == 56.25       # amount fell into O
     assert ws.cell(row=r, column=26).value in (None, "")  # Z empty
     assert ws.cell(row=r, column=27).value == "41C564EE-F027-4EF8-9FA6-70DE9268A8F5"
+
+
+# ---------------------------------------------------------------------------
+# Sheet layout: a well-formed MODERN row written into an OLD-template sheet is
+# corruption that no row-level check can see. CC (41), CBT (101) and ML (74)
+# sit one column left from the date rightward — amount at M, not N — so every
+# row the writer has ever put in them stranded its amount in a column no
+# formula reads. Verified live 2026-09-28: $525 in CC r1032, $95 across CBT
+# r1120/r2398/r2399.
+# ---------------------------------------------------------------------------
+
+def _old_template_bytes() -> bytes:
+    """CC/CBT's real layout: amount at M (13), no amount-not-billable column."""
+    wb = Workbook()
+    ws = wb.active
+    ws.title = SHEET
+    for col, text in {
+        1: "Cost Code", 2: "Cost Sub Code", 3: "CODE", 4: "CATEGORY",
+        5: "BUDGET AMOUNT", 7: "DRAW REQUEST DATE", 8: "DATE",
+        9: "PAYABLE TO", 10: "INVOICE #", 11: "DESCRIPTION", 12: "Ck",
+        13: "AMOUNT PAID",
+    }.items():
+        ws.cell(row=2, column=col, value=text)
+    out = BytesIO()
+    wb.save(out)
+    return out.getvalue()
+
+
+def test_an_old_template_sheet_is_refused_before_anything_is_written():
+    """The second defect, and the one the row-shape guard cannot see: the row is
+    a perfectly well-formed 26-cell modern row — it is the SHEET that differs.
+
+    The real old template has BOTH columns displaced (draw tag at G, amount at
+    M), and the guard reports whichever it meets first in scan order — the draw
+    tag, since G precedes M. Asserting on the specific message would pin scan
+    order rather than the behaviour, so this asserts the refusal and names the
+    sheet; the amount-specific message has its own test below."""
+    with pytest.raises(DetailsLayoutError) as excinfo:
+        apply_rows_to_details(_old_template_bytes(), SHEET, [_valid_bill_row()])
+    assert SHEET in str(excinfo.value)
+
+
+def test_a_displaced_amount_column_is_named_in_the_error():
+    """Amount at M with the draw tag correctly at H — isolates the amount check,
+    which is the one that costs money: the amount lands in a column no formula
+    reads while the type label lands in the column every SUMIFS sums."""
+    wb = Workbook()
+    ws = wb.active
+    ws.title = SHEET
+    ws.cell(row=2, column=8, value="DRAW REQUEST DATE")
+    ws.cell(row=2, column=13, value="AMOUNT PAID")
+    out = BytesIO()
+    wb.save(out)
+    with pytest.raises(DetailsLayoutError, match="amount column"):
+        apply_rows_to_details(out.getvalue(), SHEET, [_valid_bill_row()])
+
+
+def test_the_modern_layout_is_accepted():
+    """GREEN both sides — over-reach guard. The 25 modern workbooks must keep
+    working, including ones whose column N is headed 'AMOUNT PAID' rather than
+    'AMOUNT BILLABLE' (the wording drifts; only the POSITION is checked)."""
+    result = apply_rows_to_details(_tracker_bytes(), SHEET, [_valid_bill_row()])
+    assert result["applied"] == 1
+
+
+def test_a_sheet_with_no_locatable_headers_is_left_alone():
+    """GREEN both sides. The U-437 survey found trackers with a BLANK amount
+    header; refusing those would reject workbooks this writer has always handled
+    correctly. The guard fires on positive evidence of a different layout, never
+    on absence of evidence."""
+    wb = Workbook()
+    ws = wb.active
+    ws.title = SHEET
+    ws.cell(row=3, column=2, value="35")
+    ws.cell(row=3, column=3, value="35.01")
+    ws.cell(row=3, column=26, value="KEY-EXISTING")
+    out = BytesIO()
+    wb.save(out)
+    result = apply_rows_to_details(out.getvalue(), SHEET, [_valid_bill_row()])
+    assert result["applied"] == 1
+
+
+def test_a_shifted_draw_tag_column_is_also_refused():
+    """The draw tag is stamped at H by a different code path, so its position is
+    checked independently of the amount column."""
+    wb = Workbook()
+    ws = wb.active
+    ws.title = SHEET
+    ws.cell(row=2, column=6, value="DRAW REQUEST DATE")   # F, not H
+    ws.cell(row=2, column=14, value="AMOUNT BILLABLE")
+    out = BytesIO()
+    wb.save(out)
+    with pytest.raises(DetailsLayoutError, match="draw tag"):
+        apply_rows_to_details(out.getvalue(), SHEET, [_valid_bill_row()])

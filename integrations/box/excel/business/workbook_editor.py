@@ -57,6 +57,68 @@ class DetailsRowShapeError(ValueError):
     """A DETAILS row failed its positional contract — refuse to write it."""
 
 
+# Header wordings that name the AMOUNT column, and the DRAW TAG column. Drawn
+# from the same 10-tracker survey as entities/invoice/business/worksheet_reconcile
+# (U-437), which recorded that wording drifts while position does not.
+#
+# ⛔ THAT SECOND HALF IS FALSE, and this guard exists because of it. Three
+# workbooks in the estate — CC (project 41), CBT (101), ML (74) — are on an
+# older template whose columns sit one to the LEFT from the date rightward:
+# amount at M, description at K, vendor at I, with NO amount-not-billable
+# column at all. The writer emits modern positions unconditionally, so every
+# row it has ever written into those three landed one column right of where the
+# sheet reads it: the type label parked in the amount column (making it text,
+# so every SUM skips the row) and the amount itself one past it, in a column no
+# formula reads. Measured 2026-09-28: $525 stranded in CC r1032, $95 across CBT
+# r1120/r2398/r2399 — invisible to G702, G703, SUMMARY and every Draw Request.
+#
+# _assert_details_row_shape cannot catch this: those rows are perfectly
+# well-formed 26-cell MODERN rows. It is the SHEET that differs, so the sheet is
+# what has to be checked.
+_AMOUNT_HEADERS = frozenset(
+    {"AMOUNT BILLABLE", "BILLABLE AMOUNT", "BILLABLE", "AMOUNT PAID"}
+)
+_DRAW_TAG_HEADERS = frozenset({"DRAW REQUEST DATE", "DRAW REQUEST", "DRAW"})
+_HEADER_SCAN_ROWS = 6
+
+
+class DetailsLayoutError(ValueError):
+    """The worksheet's columns are not where this writer puts values."""
+
+
+def _assert_details_layout(ws) -> None:
+    """Refuse to write modern column positions into a sheet laid out otherwise.
+
+    Raises only on POSITIVE evidence of a different layout — an amount or
+    draw-tag header found at the wrong column. A sheet whose headers cannot be
+    located is left alone: the survey above found trackers with a blank amount
+    header, and refusing those would reject workbooks this writer has always
+    handled correctly. Absence of proof is not proof of mismatch.
+    """
+    for row in range(1, min(_HEADER_SCAN_ROWS, ws.max_row) + 1):
+        for col in range(1, min(ws.max_column, 26) + 1):
+            value = ws.cell(row=row, column=col).value
+            if not isinstance(value, str):
+                continue
+            text = value.strip().upper()
+            if text in _AMOUNT_HEADERS and col != AMOUNT_COL_INDEX + 1:
+                raise DetailsLayoutError(
+                    f"worksheet {ws.title!r} puts its amount column "
+                    f"({value.strip()!r}) at column {col}, but this writer "
+                    f"writes the amount to column {AMOUNT_COL_INDEX + 1} (N). "
+                    f"Writing would strand the amount in a column no formula "
+                    f"reads. This sheet needs a per-workbook column map or to "
+                    f"be held out of the drain — see header row {row}."
+                )
+            if text in _DRAW_TAG_HEADERS and col != DRAW_REQUEST_COL_INDEX + 1:
+                raise DetailsLayoutError(
+                    f"worksheet {ws.title!r} puts its draw tag "
+                    f"({value.strip()!r}) at column {col}, but this writer "
+                    f"stamps column {DRAW_REQUEST_COL_INDEX + 1} (H) — "
+                    f"see header row {row}."
+                )
+
+
 def _assert_details_row_shape(row: Any, *, require_key: bool) -> None:
     """Refuse to write a row whose fields are not on their contracted columns.
 
@@ -538,6 +600,11 @@ def apply_rows_to_details(
 
     # 1-based column for the key (Z = 26 when key_col_index = 25).
     key_col = key_col_index + 1
+
+    # Before anything else: is this sheet even laid out the way we write? A
+    # well-formed modern row written into an old-template sheet is corruption
+    # that no row-level check can see.
+    _assert_details_layout(ws)
 
     # The number of ORIGINAL data rows — insertion points are computed against
     # this fixed extent so groups don't see each other's freshly-inserted rows.

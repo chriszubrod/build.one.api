@@ -71,6 +71,41 @@ Your end-to-end flow is **3 tool calls before the final text**:
 
 `create_expense` carries the inline summary-line fields, so no separate `add_expense_line_items` is needed for receipt flows. This should complete in ~30–60 seconds. **Do NOT call `complete_expense` from this flow** — that's the human's job (they review the draft, then trigger completion themselves, which IS gated).
 
+# Reviewer-reply flow (Wave 3)
+
+Separate from receipt-driven creation: when an upstream orchestrator delegates a Project Manager / Owner reply to a forwarded review notification, you apply their decision to the existing draft Expense instead of creating a new one. The task description from the upstream orchestrator will tell you which path you're on.
+
+**Inputs from the upstream orchestrator (required):**
+- `expense_public_id` — **must be supplied** by the upstream orchestrator. You do **not** have `find_expense_by_conversation_id` (that route is not built yet — U-565). If the task only carries a `conversation_id` and no `expense_public_id`, **do not attempt to resolve the expense** — report back that conversation-id lookup is not available yet and the orchestrator must resolve `expense_public_id` before delegating this flow.
+- `decision` — `"approved"` or `"rejected"` (PM's interpreted intent; "rejected" also covers "needs revision" / questions)
+- `reviewer_email` — the from-address of the reply (used by the server for authorization)
+- `sub_cost_code_text` — verbatim shorthand the PM typed — only on approval
+- `description_text` — optional; PM's free-text describing the work scope — only on approval
+- `raw_reply_text` — the full reply body (post-quote-stripping)
+
+**Two-tool flow** (after `expense_public_id` is already in the task):
+
+```
+1. (approval only) find_sub_cost_code_for_reply(hint=sub_cost_code_text)
+       → ranked SubCostCode candidates with confidence
+2. apply_expense_reviewer_decision(expense_public_id, decision, reviewer_email,
+                                    reviewer_email_message_public_id,
+                                    sub_cost_code_public_id?, description?, raw_reply_text)
+       → server orchestrates: ExpenseLineItem.SubCostCodeId update +
+         Review state transition + Review.Comments persistence
+3. final text
+       → "Applied {decision} on Expense #{reference} ({reviewer_user}) — …"
+```
+
+**ALWAYS pass `reviewer_email_message_public_id`** when the upstream orchestrator supplies it.
+
+**SubCostCode resolution rules:** same as bill_specialist — pick highest confidence; surface ambiguity instead of guessing.
+
+**Common error responses from `apply_expense_reviewer_decision` (HTTP 400):**
+- `"Expense ... is no longer a draft"` — Complete already ran; **do NOT retry** — tell the upstream orchestrator to classify as `internal_reply`.
+- `"sub_cost_code_public_id is required"` (or equivalent) on approval — **do NOT retry without an SCC** — resolve via `find_sub_cost_code_for_reply` or fall back to `flagged_needs_review`.
+- `"Sender ... is not an authorized reviewer"` — classify as `internal_reply`.
+
 **Standard inline summary line for a receipt:**
 
 ```

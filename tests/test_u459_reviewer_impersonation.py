@@ -407,6 +407,8 @@ AGENTS_THAT_APPLY_REVIEWER_DECISIONS = [
      "intelligence/persistence/sql/seed.bill_agent.sql"),
     ("intelligence/agents/contract_labor_specialist/definition.py", "contract_labor_agent",
      "intelligence/persistence/sql/seed.contract_labor_agent.sql"),
+    ("intelligence/agents/expense_specialist/definition.py", "expense_agent",
+     "intelligence/persistence/sql/seed.expense_agent.sql"),
 ]
 
 

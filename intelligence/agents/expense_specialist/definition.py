@@ -25,6 +25,25 @@ expense_specialist = Agent(
         "add_expense_line_items",
         "update_expense_line_item",
         "remove_expense_line_item",
+        # Reviewer-reply path (Wave 3): apply a PM's emailed decision
+        # (approval + SCC + description, or rejection with comments).
+        #
+        # ⛔ `find_expense_by_conversation_id` is DELIBERATELY NOT REGISTERED
+        # HERE (U-552, 2026-09-28). The tool is defined in
+        # `entities/expense/intelligence/tools.py` and is correct, but the route
+        # it calls — GET /api/v1/get/expense/find-by-conversation-id — DOES NOT
+        # EXIST yet. Bill has its twin (`entities/bill/api/router.py`, backed by
+        # `BillRepository.find_for_reviewer_reply`); Expense has neither the
+        # route nor the repo method. Registering it would arm a guaranteed 404
+        # inside an agent that writes approvals on money documents, which is
+        # worse than not having it: the agent would try, fail, and the failure
+        # would look like a data problem rather than a missing endpoint.
+        # The unit that builds the route re-registers it. Until then the
+        # Expense reviewer-reply chain is HALF wired — apply works, resolve does
+        # not — so an emailed expense approval still needs a human to supply the
+        # expense's public_id.
+        "apply_expense_reviewer_decision",
+        "find_sub_cost_code_for_reply",
         # Vendor read tools — for parent name resolution and lookup-by-name
         "search_vendors",
         "read_vendor_by_public_id",

@@ -16,6 +16,7 @@ Read tools (no approval):
   search_expenses                       → GET /api/v1/get/expenses?search=...
   read_expense_by_public_id             → GET /api/v1/get/expense/{public_id}
   read_expense_by_reference_and_vendor  → GET /api/v1/get/expense/by-reference-number-and-vendor
+  find_expense_by_conversation_id       → GET /api/v1/get/expense/find-by-conversation-id
 
 Write tools (user approval required):
   create_expense                        → POST   /api/v1/create/expense
@@ -613,12 +614,199 @@ remove_expense_line_item = Tool(
 )
 
 
+# ─── Reviewer-reply tools (Wave 3) ───────────────────────────────────────
+
+
+class _FindExpenseByConversationIdArgs(BaseModel):
+    conversation_id: str = Field(
+        description=(
+            "MS Graph ConversationId from an inbound email. The reviewer-"
+            "reply path uses this to identify which Expense the PM is "
+            "reviewing — replies inherit the original vendor email's "
+            "ConversationId, and the linked Expense stamps "
+            "SourceEmailMessageId on the EmailMessage from that thread."
+        ),
+    )
+    reference_number_hint: Optional[str] = Field(
+        default=None,
+        description=(
+            "Optional reference / receipt number extracted from the reply's "
+            "subject line (e.g. `'Re: Receipt 206640'` → `'206640'`). When "
+            "supplied alongside `project_hint`, enables a fuzzy fallback: if "
+            "the conversation_id misses, the server looks up draft Expenses "
+            "where `ReferenceNumber` matches exactly AND the line item is on "
+            "a Project whose name contains `project_hint`. Pass both "
+            "hints opportunistically — the agent doesn't see the fallback "
+            "mechanism, just gets back an Expense (or null) as usual. "
+            "Returns null on 0 or 2+ fuzzy hits to avoid wrong-expense "
+            "auto-apply."
+        ),
+    )
+    project_hint: Optional[str] = Field(
+        default=None,
+        description=(
+            "Optional project hint extracted from the reply body (e.g. "
+            "`'7550 Buffalo'`, `'Bluebird Landing'` — typically a job-site "
+            "address or project name fragment the PM mentions). Used "
+            "together with `reference_number_hint` for the fuzzy fallback. "
+            "Matched as a case-insensitive substring against `Project.Name`."
+        ),
+    )
+
+
+async def _find_expense_by_conversation_id(args: dict, ctx: ToolContext) -> ToolResult:
+    parsed = _FindExpenseByConversationIdArgs(**args)
+    query: dict[str, str] = {"conversation_id": parsed.conversation_id}
+    if parsed.reference_number_hint:
+        query["reference_number_hint"] = parsed.reference_number_hint
+    if parsed.project_hint:
+        query["project_hint"] = parsed.project_hint
+    return await ctx.call_api(
+        "GET",
+        f"/api/v1/get/expense/find-by-conversation-id?{urlencode(query, quote_via=quote)}",
+    )
+
+
+find_expense_by_conversation_id = Tool(
+    name="find_expense_by_conversation_id",
+    description=(
+        "Find the Expense linked to an email conversation. Use during the "
+        "reviewer-reply flow: when an inbound email is identified as a "
+        "reply on a tracked conversation, call this with the email's "
+        "`conversation_id` to learn which Expense the PM is reviewing.\n\n"
+        "**Always pass `reference_number_hint` and `project_hint` when you "
+        "can extract them** — `reference_number_hint` from the reply's "
+        "subject (e.g. `'Re: Receipt 206640'` → `'206640'`), "
+        "`project_hint` from the body (e.g. job-site address or project "
+        "name fragment the PM mentions). The server uses them as a "
+        "fuzzy-fallback lookup when the conversation_id alone doesn't "
+        "match (PMs replying from non-Outlook clients can lose the "
+        "ConversationId during the round trip). Single-result fallback "
+        "only — 0 or 2+ fuzzy hits return null so ambiguous replies "
+        "still flow through `flagged_needs_review`.\n\n"
+        "Returns null when no Expense is linked. Returns a slim payload — "
+        "`public_id`, `reference_number`, `vendor_name`, `total_amount`, "
+        "`is_draft`, `match_kind` (`'conversation'` or `'fuzzy'`) — "
+        "when one is found."
+    ),
+    input_schema=input_schema_from(_FindExpenseByConversationIdArgs),
+    handler=_find_expense_by_conversation_id,
+)
+
+
+class ApplyExpenseReviewerDecisionArgs(BaseModel):
+    expense_public_id: str = Field(
+        description=(
+            "The Expense's public_id (UUID). Get this from "
+            "`find_expense_by_conversation_id`."
+        ),
+    )
+    decision: str = Field(
+        description=(
+            "Either 'approved' or 'rejected'. 'rejected' is also used "
+            "for 'needs revision' / questions — put the human's text in "
+            "`raw_reply_text` and the AP reviewer reads it. The decision "
+            "comes from interpreting the PM's reply body."
+        ),
+    )
+    reviewer_email: str = Field(
+        description=(
+            "The from-address of the reviewer's reply. The server "
+            "authorizes this against the Expense's recipient set (PM or "
+            "Owner via UserProject + Role). Replies from unauthorized "
+            "addresses are refused — fall back to `flagged_needs_review`."
+        ),
+    )
+    sub_cost_code_public_id: Optional[str] = Field(
+        default=None,
+        description=(
+            "Required when decision='approved'. Resolve via "
+            "`find_sub_cost_code_for_reply` first; pass the highest-"
+            "confidence candidate's public_id. Omit on rejection."
+        ),
+    )
+    description: Optional[str] = Field(
+        default=None,
+        description=(
+            "Optional. When the PM's reply spells out a description for "
+            "the work ('fuel and supplies for site'), pass it here so "
+            "the summary ExpenseLineItem.description gets updated. Omit "
+            "when the PM only stamped approval without a description."
+        ),
+    )
+    raw_reply_text: Optional[str] = Field(
+        default=None,
+        description=(
+            "The PM's reply body verbatim (post-quote-stripping). "
+            "Persisted as Review.Comments for the audit trail and "
+            "shown to AP on rejection / needs-review."
+        ),
+    )
+    reviewer_email_message_public_id: Optional[str] = Field(
+        default=None,
+        description=(
+            "Public_id of the EmailMessage row for the PM's reply (the "
+            "same UUID email_specialist passed to you). Persisted on the "
+            "new Review row so the Web UI's final-review surface can "
+            "link directly to the reply email. If omitted the Review "
+            "row's EmailMessageId is left NULL (degraded but still "
+            "valid)."
+        ),
+    )
+
+
+async def _apply_expense_reviewer_decision(args: dict, ctx: ToolContext) -> ToolResult:
+    parsed = ApplyExpenseReviewerDecisionArgs(**args)
+    body = {
+        "decision": parsed.decision,
+        "reviewer_email": parsed.reviewer_email,
+        "sub_cost_code_public_id": parsed.sub_cost_code_public_id,
+        "description": parsed.description,
+        "raw_reply_text": parsed.raw_reply_text,
+        "reviewer_email_message_public_id": parsed.reviewer_email_message_public_id,
+    }
+    return await ctx.call_api(
+        "POST",
+        f"/api/v1/expense/{parsed.expense_public_id}/apply-reviewer-decision",
+        body=body,
+    )
+
+
+apply_expense_reviewer_decision = Tool(
+    name="apply_expense_reviewer_decision",
+    description=(
+        "Apply a Project Manager's emailed approval or rejection to a "
+        "draft Expense. The server orchestrates: validates the Expense is "
+        "still draft, authorizes the sender against the recipient set, "
+        "updates the summary ExpenseLineItem (sub_cost_code + description) "
+        "on approval, and transitions the Review state with "
+        "`raw_reply_text` persisted in Review.Comments.\n\n"
+        "Required flow:\n"
+        "  1. find_expense_by_conversation_id → get expense_public_id\n"
+        "  2. (approval only) find_sub_cost_code_for_reply → resolve SCC\n"
+        "  3. apply_expense_reviewer_decision → applies the change\n\n"
+        "ALWAYS assign `sub_cost_code_public_id` on approval — never "
+        "`cost_code_id`. Approval and GL coding are one act; the server "
+        "refuses approval without a SubCostCode.\n\n"
+        "Errors are returned as 400 with descriptive text — read the "
+        "message and decide: retry with a corrected SCC, fall back to "
+        "`flagged_needs_review`, or classify the email as "
+        "`internal_reply` if the expense is no longer a draft (Complete "
+        "already pressed — do NOT retry; the human owns the record once "
+        "`complete_expense` runs)."
+    ),
+    input_schema=input_schema_from(ApplyExpenseReviewerDecisionArgs),
+    handler=_apply_expense_reviewer_decision,
+)
+
+
 # ─── Self-register ───────────────────────────────────────────────────────
 
 for _tool in (
     search_expenses,
     read_expense_by_public_id,
     read_expense_by_reference_and_vendor,
+    find_expense_by_conversation_id,
     create_expense,
     update_expense,
     delete_expense,
@@ -626,5 +814,6 @@ for _tool in (
     add_expense_line_items,
     update_expense_line_item,
     remove_expense_line_item,
+    apply_expense_reviewer_decision,
 ):
     register(_tool)

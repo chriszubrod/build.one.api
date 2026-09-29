@@ -60,11 +60,15 @@ def _is_delegated_actor(caller_id: Optional[int]) -> bool:
     on a request that is otherwise about to be REFUSED. Normal traffic never
     pays for it.
 
-    The `is_agent` fallback is belt-and-braces. Claude Agent (user 33) is
-    recorded as `IsSystemAdmin = 1`, so it is already covered by the check
-    above — but this workflow is live automation, and a guard that breaks the
-    agent fleet because one flag was not what the notes said is worse than one
-    extra query on a path that was going to raise anyway.
+    For the specialist fleet (`bill_agent`, `contract_labor_agent`, `expense_agent`,
+    …) this `IsAgent` lookup is the **primary** delegation path: those users
+    authenticate with their own bearer tokens, so `is_system_caller()` is false
+    and their seeds set `IsSystemAdmin = 0` with `IsAgent = 1` (see
+    `seed.claude_agent.sql` — user 33 is `IsSystemAdmin = 0`, `IsAgent = 1`, not
+    system admin). The lookup only runs on requests already about to be refused,
+    but a missing `IsAgent` on a specialist seed breaks live reviewer-reply
+    automation with 403 — which is why each specialist seed carries an
+    unconditional heal block.
     """
     if is_system_caller():
         return True

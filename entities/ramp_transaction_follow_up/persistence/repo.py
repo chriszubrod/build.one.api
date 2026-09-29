@@ -8,7 +8,10 @@ from typing import List, Optional
 import pyodbc
 
 # Local Imports
-from entities.ramp_transaction_follow_up.business.model import RampTransactionFollowUp
+from entities.ramp_transaction_follow_up.business.model import (
+    GONE_FROM_RAMP_MISS_THRESHOLD,
+    RampTransactionFollowUp,
+)
 from shared.database import call_procedure, conn_ctx, map_database_error
 
 
@@ -46,6 +49,8 @@ class RampTransactionFollowUpRepository:
             resolved_at=getattr(row, "ResolvedAt", None),
             created_at=getattr(row, "CreatedAt", None),
             updated_at=getattr(row, "UpdatedAt", None),
+            gone_from_ramp_count=getattr(row, "GoneFromRampCount", None),
+            gone_from_ramp_at=getattr(row, "GoneFromRampAt", None),
         )
 
     def upsert_open_item(
@@ -111,6 +116,69 @@ class RampTransactionFollowUpRepository:
         except Exception as error:
             logger.error(
                 "Error resolving ramp transaction follow-up %s: %s",
+                ramp_transaction_id,
+                error,
+            )
+            raise map_database_error(error)
+
+    def record_gone_from_ramp(
+        self,
+        *,
+        ramp_transaction_id: str,
+        conn: Optional[pyodbc.Connection] = None,
+    ) -> Optional[RampTransactionFollowUp]:
+        """Count one consecutive miss. Returns the row ONLY when it just retired.
+
+        The sproc stamps `GoneFromRampAt` on the call that crosses
+        GONE_FROM_RAMP_MISS_THRESHOLD and matches nothing once stamped, so a
+        non-None return with `gone_from_ramp_at` set means "retired on this call" —
+        never "was already retired".
+        """
+        try:
+            with conn_ctx(conn) as c:
+                cursor = c.cursor()
+                call_procedure(
+                    cursor=cursor,
+                    name="RecordRampTransactionFollowUpGoneFromRamp",
+                    params={
+                        "RampTransactionId": ramp_transaction_id,
+                        "Threshold": GONE_FROM_RAMP_MISS_THRESHOLD,
+                    },
+                )
+                row = self._from_db(cursor.fetchone())
+                if conn is not None:
+                    c.commit()
+                return row
+        except Exception as error:
+            logger.error(
+                "Error recording ramp follow-up gone-from-ramp miss %s: %s",
+                ramp_transaction_id,
+                error,
+            )
+            raise map_database_error(error)
+
+    def reset_gone_from_ramp_count(
+        self,
+        *,
+        ramp_transaction_id: str,
+        conn: Optional[pyodbc.Connection] = None,
+    ) -> Optional[RampTransactionFollowUp]:
+        """Zero the consecutive-miss run after a successful refetch."""
+        try:
+            with conn_ctx(conn) as c:
+                cursor = c.cursor()
+                call_procedure(
+                    cursor=cursor,
+                    name="ResetRampTransactionFollowUpGoneFromRampCount",
+                    params={"RampTransactionId": ramp_transaction_id},
+                )
+                row = self._from_db(cursor.fetchone())
+                if conn is not None:
+                    c.commit()
+                return row
+        except Exception as error:
+            logger.error(
+                "Error resetting ramp follow-up gone-from-ramp count %s: %s",
                 ramp_transaction_id,
                 error,
             )

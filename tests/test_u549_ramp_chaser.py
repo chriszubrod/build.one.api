@@ -1,6 +1,7 @@
 # Python Standard Library Imports
 import logging
 from decimal import Decimal
+from types import SimpleNamespace
 from typing import Any, Dict, List, Optional
 
 # Third-party Imports
@@ -26,6 +27,9 @@ from integrations.ramp.base.retry import RetryPolicy, execute_with_retry
 from integrations.ramp.transaction.business.classify import classify_transaction
 from integrations.ramp.transaction.business.service import RampTransactionService
 from integrations.ramp.user.business.service import RampUserService
+from entities.ramp_transaction_follow_up.business.model import (
+    GONE_FROM_RAMP_MISS_THRESHOLD,
+)
 
 
 def _settings(**overrides) -> config.Settings:
@@ -102,6 +106,9 @@ class _FakeFollowUpRepo:
         self.rows: Dict[str, Dict[str, Any]] = {}
         self.upsert_calls = 0
         self.resolve_calls: List[str] = []
+        # U-573
+        self.gone_calls: List[str] = []
+        self.reset_calls: List[str] = []
 
     def upsert_open_item(self, *, conn: Optional[Any] = None, **kwargs: Any) -> Any:
         self.upsert_calls += 1
@@ -126,7 +133,51 @@ class _FakeFollowUpRepo:
     def read_unresolved_ramp_transaction_ids(
         self, *, conn: Optional[Any] = None
     ) -> List[str]:
-        return [rid for rid, row in self.rows.items() if not row.get("resolved_at")]
+        # Mirrors ReadUnresolvedRampTransactionFollowUpIds: retired rows (U-573)
+        # leave the REFETCH set. tests/test_u573_gone_from_ramp.py pins that the
+        # shipped sproc carries the same predicate.
+        return [
+            rid
+            for rid, row in self.rows.items()
+            if not row.get("resolved_at") and not row.get("gone_from_ramp_at")
+        ]
+
+    def read_unresolved(self, *, conn: Optional[Any] = None) -> List[Dict[str, Any]]:
+        # Mirrors ReadUnresolvedRampTransactionFollowUps: NOT filtered on
+        # gone_from_ramp_at. A retired row is still an open follow-up item and must
+        # still reach the digest.
+        return [row for row in self.rows.values() if not row.get("resolved_at")]
+
+    def record_gone_from_ramp(
+        self, *, ramp_transaction_id: str, conn: Optional[Any] = None
+    ) -> Any:
+        """Mirrors RecordRampTransactionFollowUpGoneFromRamp, WHERE clause included."""
+        self.gone_calls.append(ramp_transaction_id)
+        row = self.rows.get(ramp_transaction_id)
+        if not row or row.get("resolved_at") or row.get("gone_from_ramp_at"):
+            return None
+        count = int(row.get("gone_from_ramp_count") or 0) + 1
+        row["gone_from_ramp_count"] = count
+        if count >= GONE_FROM_RAMP_MISS_THRESHOLD:
+            row["gone_from_ramp_at"] = "2026-09-29T00:00:00Z"
+        return SimpleNamespace(
+            gone_from_ramp_count=count,
+            gone_from_ramp_at=row.get("gone_from_ramp_at"),
+        )
+
+    def reset_gone_from_ramp_count(
+        self, *, ramp_transaction_id: str, conn: Optional[Any] = None
+    ) -> Any:
+        """Mirrors ResetRampTransactionFollowUpGoneFromRampCount."""
+        self.reset_calls.append(ramp_transaction_id)
+        row = self.rows.get(ramp_transaction_id)
+        if not row or row.get("resolved_at") or not row.get("gone_from_ramp_count"):
+            return None
+        row["gone_from_ramp_count"] = 0
+        return SimpleNamespace(
+            gone_from_ramp_count=0,
+            gone_from_ramp_at=row.get("gone_from_ramp_at"),
+        )
 
 
 class _FakeTxClient:

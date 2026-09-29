@@ -211,6 +211,10 @@ _READ_UNRESOLVED_EXPECTED_COLUMNS = [
     "NotifyCount",
     "EscalatedAt",
     "ResolvedAt",
+    # U-573 added these two to the table; the projection must grow with it or
+    # _from_db silently reads None for both.
+    "GoneFromRampCount",
+    "GoneFromRampAt",
     "CreatedAt",
     "UpdatedAt",
 ]
@@ -239,7 +243,7 @@ def _projected_column_names(select_fragment: str) -> list[str]:
     return names
 
 
-def test_read_unresolved_projects_explicit_twenty_columns_for_from_db():
+def test_read_unresolved_projects_the_exact_column_list_for_from_db():
     """RampTransactionFollowUpRepository._from_db reads columns by name from pyodbc rows.
 
     A dropped or renamed column in ReadUnresolvedRampTransactionFollowUps would not

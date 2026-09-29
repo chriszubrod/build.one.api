@@ -38,12 +38,21 @@ class RampFollowUpRepository(Protocol):
         self, *, conn: Optional[pyodbc.Connection] = None
     ) -> List[str]: ...
 
+    def record_gone_from_ramp(
+        self, *, ramp_transaction_id: str, conn: Optional[pyodbc.Connection] = None
+    ) -> Any: ...
+
+    def reset_gone_from_ramp_count(
+        self, *, ramp_transaction_id: str, conn: Optional[pyodbc.Connection] = None
+    ) -> Any: ...
+
 
 @dataclass
 class RampChaserSweepStats:
     transactions_fetched: int = 0
     stragglers_refetched: int = 0
     stragglers_gone_from_ramp: int = 0
+    stragglers_retired: int = 0
     upserted: int = 0
     resolved: int = 0
     skipped_approval_only: int = 0
@@ -165,12 +174,33 @@ class RampTransactionService:
             extra = self._tx_client.get_transaction(ramp_id)
             if extra:
                 window[ramp_id] = extra
+                # U-573: any successful fetch zeroes the consecutive-miss run. An
+                # item that merely aged out of the window keeps being refetched
+                # forever — that refetch is the ONLY way we learn the cardholder
+                # finally added the memo/receipt.
+                repo.reset_gone_from_ramp_count(ramp_transaction_id=ramp_id, conn=conn)
             else:
                 stats.stragglers_gone_from_ramp += 1
+                retired = repo.record_gone_from_ramp(
+                    ramp_transaction_id=ramp_id, conn=conn
+                )
+                if getattr(retired, "gone_from_ramp_at", None):
+                    stats.stragglers_retired += 1
+                    logger.info(
+                        "ramp.chaser.straggler.retired",
+                        extra={
+                            "event_name": "ramp.chaser.straggler.retired",
+                            "ramp_transaction_id": ramp_id,
+                            "gone_from_ramp_count": getattr(
+                                retired, "gone_from_ramp_count", None
+                            ),
+                        },
+                    )
         logger.info(
-            "ramp.chaser.stragglers refetched=%s gone=%s",
+            "ramp.chaser.stragglers refetched=%s gone=%s retired=%s",
             stats.stragglers_refetched,
             stats.stragglers_gone_from_ramp,
+            stats.stragglers_retired,
         )
 
         for raw in window.values():

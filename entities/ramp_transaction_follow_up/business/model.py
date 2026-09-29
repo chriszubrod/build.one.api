@@ -5,6 +5,14 @@ from typing import Optional
 import base64
 
 
+# U-573: a follow-up row whose Ramp transaction comes back falsy this many sweeps IN
+# A ROW is retired from the straggler refetch set. CONSECUTIVE is load-bearing — any
+# successful fetch zeroes the run, so a transient Ramp 404 cannot retire a live row.
+# Retiring is not resolving: a retired row stays an open item and still reaches the
+# digest.
+GONE_FROM_RAMP_MISS_THRESHOLD: int = 3
+
+
 @dataclass
 class RampTransactionFollowUp:
     id: Optional[int]
@@ -27,6 +35,10 @@ class RampTransactionFollowUp:
     resolved_at: Optional[str]
     created_at: Optional[str]
     updated_at: Optional[str]
+    # U-573. Defaulted and last so the 20-field keyword constructors already in the
+    # tree keep working; SQL projection order is unrelated to dataclass field order.
+    gone_from_ramp_count: Optional[int] = None
+    gone_from_ramp_at: Optional[str] = None
 
     @property
     def row_version_bytes(self) -> Optional[bytes]:

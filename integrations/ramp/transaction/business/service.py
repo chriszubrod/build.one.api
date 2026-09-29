@@ -42,6 +42,8 @@ class RampFollowUpRepository(Protocol):
 @dataclass
 class RampChaserSweepStats:
     transactions_fetched: int = 0
+    stragglers_refetched: int = 0
+    stragglers_gone_from_ramp: int = 0
     upserted: int = 0
     resolved: int = 0
     skipped_approval_only: int = 0
@@ -159,9 +161,17 @@ class RampTransactionService:
     ) -> None:
         unresolved_ids = set(repo.read_unresolved_ramp_transaction_ids(conn=conn))
         for ramp_id in unresolved_ids - window.keys():
+            stats.stragglers_refetched += 1
             extra = self._tx_client.get_transaction(ramp_id)
             if extra:
                 window[ramp_id] = extra
+            else:
+                stats.stragglers_gone_from_ramp += 1
+        logger.info(
+            "ramp.chaser.stragglers refetched=%s gone=%s",
+            stats.stragglers_refetched,
+            stats.stragglers_gone_from_ramp,
+        )
 
         for raw in window.values():
             cls = classify_transaction(raw)

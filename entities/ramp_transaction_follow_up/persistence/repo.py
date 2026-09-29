@@ -9,7 +9,7 @@ import pyodbc
 
 # Local Imports
 from entities.ramp_transaction_follow_up.business.model import RampTransactionFollowUp
-from shared.database import call_procedure, conn_ctx, get_connection, map_database_error
+from shared.database import call_procedure, conn_ctx, map_database_error
 
 
 logger = logging.getLogger(__name__)
@@ -156,24 +156,4 @@ class RampTransactionFollowUpRepository:
                 return ids
         except Exception as error:
             logger.error("Error reading unresolved ramp follow-up ids: %s", error)
-            raise map_database_error(error)
-
-    def read_by_ramp_transaction_id(
-        self, ramp_transaction_id: str
-    ) -> Optional[RampTransactionFollowUp]:
-        try:
-            with get_connection() as conn:
-                cursor = conn.cursor()
-                call_procedure(
-                    cursor=cursor,
-                    name="ReadRampTransactionFollowUpByRampTransactionId",
-                    params={"RampTransactionId": ramp_transaction_id},
-                )
-                return self._from_db(cursor.fetchone())
-        except Exception as error:
-            logger.error(
-                "Error reading ramp follow-up by ramp id %s: %s",
-                ramp_transaction_id,
-                error,
-            )
             raise map_database_error(error)

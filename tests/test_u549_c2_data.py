@@ -172,15 +172,76 @@ def _select_list_from_sproc(sql_path: Path, sproc_name: str) -> str:
     return re.sub(r"\s+", " ", match.group(1).strip())
 
 
-def test_u549_c2_unresolved_read_projects_same_columns_as_by_id():
-    by_id = _select_list_from_sproc(
-        FOLLOW_UP_SQL, "ReadRampTransactionFollowUpByRampTransactionId"
-    )
-    unresolved = _select_list_from_sproc(
+_READ_UNRESOLVED_EXPECTED_COLUMNS = [
+    "Id",
+    "PublicId",
+    "RowVersion",
+    "RampTransactionId",
+    "CardHolderRampUserId",
+    "CardHolderName",
+    "MerchantName",
+    "Amount",
+    "TransactionDate",
+    "NeedsMemo",
+    "NeedsReceipt",
+    "FirstSeenAt",
+    "LastDraftedAt",
+    "DraftMessageId",
+    "LastNotifiedAt",
+    "NotifyCount",
+    "EscalatedAt",
+    "ResolvedAt",
+    "CreatedAt",
+    "UpdatedAt",
+]
+
+
+def _split_top_level_commas(fragment: str) -> list[str]:
+    """Split a SELECT list on commas that are NOT inside parentheses."""
+    out, depth, start = [], 0, 0
+    for i, ch in enumerate(fragment):
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+        elif ch == "," and depth == 0:
+            out.append(fragment[start:i])
+            start = i + 1
+    out.append(fragment[start:])
+    return [p.strip() for p in out if p.strip()]
+
+
+def _projected_column_names(select_fragment: str) -> list[str]:
+    """The name each projection EXPOSES to pyodbc — its alias, else the bare column.
+
+    Must read the OUTPUT name, never a source column nested inside an expression:
+    `CONVERT(VARCHAR(30), r.[FirstSeenAt], 126) AS [FirstSeenAt]` exposes the
+    alias, and a naive scan matches the inner `r.[FirstSeenAt]` instead — which
+    passes unchanged when the alias alone is renamed, the exact drift this test
+    exists to catch.
+    """
+    names = []
+    for part in _split_top_level_commas(select_fragment):
+        alias = re.search(r"\bAS\s*\[(\w+)\]\s*$", part, flags=re.IGNORECASE)
+        if alias:
+            names.append(alias.group(1))
+            continue
+        bare = re.fullmatch(r"(?:\w+\.)?\[(\w+)\]", part)
+        assert bare, f"unparseable projection: {part!r}"
+        names.append(bare.group(1))
+    return names
+
+
+def test_read_unresolved_projects_explicit_twenty_columns_for_from_db():
+    """RampTransactionFollowUpRepository._from_db reads columns by name from pyodbc rows.
+
+    A dropped or renamed column in ReadUnresolvedRampTransactionFollowUps would not
+    fail at the SQL layer — getattr would silently yield None for that model field.
+    """
+    select_list = _select_list_from_sproc(
         FOLLOW_UP_SQL, "ReadUnresolvedRampTransactionFollowUps"
     )
-    by_id_norm = re.sub(r"^TOP\s+1\s+", "", by_id, flags=re.I)
-    assert by_id_norm == unresolved
+    assert _projected_column_names(select_list) == _READ_UNRESOLVED_EXPECTED_COLUMNS
 
 
 def test_u549_c2_unresolved_read_datetime_fields_use_convert_126():

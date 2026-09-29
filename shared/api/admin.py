@@ -328,6 +328,30 @@ async def ramp_chaser_digest_router(week_of: Optional[str] = None):
     return await _timed("ramp_chaser.digest", _run)
 
 
+@router.post("/ramp-chaser/sweep", dependencies=[Depends(_require_drain_secret)])
+async def ramp_chaser_sweep_router():
+    """
+    Refresh dbo.RampTransactionFollowUp from Ramp over a rolling
+    RAMP_CHASER_WINDOW_DAYS window. Read-only against Ramp; writes only the
+    local follow-up table. Idempotent — re-running upserts the same rows.
+
+    No RAMP_CHASER_MODE gate by design (unlike the weekly digest): a sweep that
+    no-ops when mode is off would leave the table empty, which is the defect
+    this endpoint fixes. Called by the scheduler's ramp chaser sweep timer once
+    deployed.
+    """
+    def _run() -> dict[str, Any]:
+        from dataclasses import asdict
+
+        from entities.ramp_transaction_follow_up.business.service import (
+            RampTransactionFollowUpService,
+        )
+
+        return asdict(RampTransactionFollowUpService().run_chaser_sweep())
+
+    return await _timed("ramp_chaser.sweep", _run)
+
+
 # --- Time-entry auto-submit (deterministic prior-day sweep) ---------------- #
 
 

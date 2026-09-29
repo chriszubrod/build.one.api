@@ -751,6 +751,7 @@ def check_excel_to_db(
     item_id: str,
     worksheet_name: str,
     project_id: int = None,
+    existing_public_ids: Optional[Set[str]] = None,
 ) -> Tuple[List[str], int, int, Set[str]]:
     """
     Step 8 — Match scoped Excel rows to DB records.
@@ -773,6 +774,10 @@ def check_excel_to_db(
     backfill_count = 0
     orphan_clear_count = 0
     backfilled_public_ids: Set[str] = set()
+    # Keys ALREADY stamped somewhere on the sheet. Without this, the backfill
+    # below can stamp one line item's public_id onto a SECOND row — see the
+    # guard at the write site for why that is worse than leaving a row keyless.
+    already_on_sheet: Set[str] = set(existing_public_ids or ())
 
     for row_idx, row in enumerate(data_rows):
         excel_row_num = row_idx + 2  # +2: row 1 is header, rows are 1-based
@@ -908,6 +913,24 @@ def check_excel_to_db(
             issues.append(
                 f"  [Excel->DB] Row {excel_row_num}: matched {source_type} line item "
                 f"id={matched_li.id} has no public_id"
+            )
+            continue
+
+        # ⛔ Never stamp a public_id that is already on another row. A line item
+        # keyed to TWO Excel rows is a worse state than an unkeyed row: both
+        # rows then look synced, the DB->Excel direction skips the line item
+        # forever, and the duplicate becomes permanent and invisible. This is
+        # reachable because matching is on five fields, not on the key — EVR
+        # SharePoint r1113/r1116 were the same $3,150 charge recorded twice, and
+        # only a description mismatch ('HVAC' vs 'HVAC Costs') kept the backfill
+        # off r1113. Tidy that description and --write would have keyed both.
+        if public_id_str in already_on_sheet or public_id_str in backfilled_public_ids:
+            issues.append(
+                f"  [Excel->DB] Row {excel_row_num}: matched {source_type} line "
+                f"item id={matched_li.id} but public_id={public_id_str} is ALREADY "
+                f"on another row of this sheet — refusing to key it twice. This "
+                f"row is most likely a duplicate of the keyed one; review and "
+                f"clear it manually."
             )
             continue
 
@@ -1166,6 +1189,7 @@ def process_project(
         item_id=item_id,
         worksheet_name=worksheet_name,
         project_id=project_id,
+        existing_public_ids=excel_public_ids,
     )
     for issue in e2db_issues:
         print(issue)

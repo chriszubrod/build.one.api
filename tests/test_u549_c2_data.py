@@ -385,6 +385,26 @@ def test_u570_digest_output_sprocs_project_recipient_hash(sproc_name: str):
     assert _projected_column_names(output_list) == _READ_DIGEST_EXPECTED_COLUMNS
 
 
+def test_u570_latest_recipient_hash_uses_STRICT_less_than_on_weekof():
+    """`WeekOf < @WeekOf`, never `<=`. Proven necessary by mutation.
+
+    The service reads the previous hash BEFORE upserting this week's row. On a
+    same-week RE-RUN the row already exists carrying this week's hash, so a `<=`
+    would return the row being written, make previous == current, and SILENTLY
+    SUPPRESS a warning that the first run correctly raised. Strict `<` keeps the
+    comparison anchored to the last DISTINCT week.
+
+    Pinned on the SQL text because the suite is pure-logic with no live DB, so
+    this predicate has no other guard.
+    """
+    body = strip_sql_comments(
+        sproc_body(DIGEST_SQL, "ReadLatestRampChaserDigestRecipientHash")
+    )
+    normalised = re.sub(r"\s+", " ", body)
+    assert "[WeekOf] < @WeekOf" in normalised, "must be STRICT less-than"
+    assert "[WeekOf] <= @WeekOf" not in normalised, "<= returns the row being written"
+
+
 def test_u549_c2_digest_sql_datetime_outputs_use_convert_126():
     """Every datetime column of every digest sproc must ship as CONVERT(...,126).
 

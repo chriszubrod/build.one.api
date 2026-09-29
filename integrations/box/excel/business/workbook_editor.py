@@ -2,6 +2,7 @@
 import logging
 from collections import defaultdict
 from copy import copy
+from decimal import Decimal
 from io import BytesIO
 from typing import Any, Dict, List, Optional
 
@@ -75,10 +76,18 @@ class DetailsRowShapeError(ValueError):
 # _assert_details_row_shape cannot catch this: those rows are perfectly
 # well-formed 26-cell MODERN rows. It is the SHEET that differs, so the sheet is
 # what has to be checked.
+# Bare single-word tokens ("DRAW", "BILLABLE") are deliberately EXCLUDED even
+# though worksheet_reconcile's reader aliases them. This guard refuses the whole
+# workbook on a match at the wrong column, and that refusal dead-letters, so the
+# evidence has to be strong: a lone cell reading "DRAW" in the first six rows is
+# as likely to be a banner, a merged title or a legend as a column header. Every
+# one of the four old-template workbooks spells these in full ("DRAW REQUEST
+# DATE", "AMOUNT PAID"), verified against all 28 live workbooks, so dropping the
+# bare tokens costs no detection and removes a false-refusal surface.
 _AMOUNT_HEADERS = frozenset(
-    {"AMOUNT BILLABLE", "BILLABLE AMOUNT", "BILLABLE", "AMOUNT PAID"}
+    {"AMOUNT BILLABLE", "BILLABLE AMOUNT", "AMOUNT PAID"}
 )
-_DRAW_TAG_HEADERS = frozenset({"DRAW REQUEST DATE", "DRAW REQUEST", "DRAW"})
+_DRAW_TAG_HEADERS = frozenset({"DRAW REQUEST DATE", "DRAW REQUEST"})
 _HEADER_SCAN_ROWS = 6
 
 
@@ -119,29 +128,26 @@ def _assert_details_layout(ws) -> None:
                 )
 
 
-def _assert_details_row_shape(row: Any, *, require_key: bool) -> None:
+def _assert_details_row_shape(row: Any) -> None:
     """Refuse to write a row whose fields are not on their contracted columns.
 
-    `require_key` relaxes ONLY the column-Z check — width and the M/N column
-    checks always apply, so every caller must still hand over a full 26-cell
-    row even when it only means to populate a few of them.
+    Checks WIDTH and columns M/N only. The col-Z key is deliberately NOT checked
+    here: it is validated at the insert call site instead, because that is where
+    the key column is actually known — `apply_rows_to_details` takes a
+    `key_col_index` parameter, so a key check wired to the module default would
+    validate column Z while the caller deduped on a different column.
 
-    The asymmetry is deliberate: DETAILS legitimately carries keyless rows —
-    the per-draw builder's-fee lines (cost code 90.01, invoice number in K, no
-    source line item) have no public_id to key on. But an INSERT with no key is
-    a different animal: apply_rows_to_details dedupes on column Z, so a keyless
-    inserted row is not "possibly a duplicate", it is guaranteed to duplicate on
-    the next drain of the same entity.
+    It also must not be checked on every write, because DETAILS legitimately
+    carries keyless rows: the per-draw builder's-fee lines (cost code 90.01,
+    invoice number in K, no source line item) have no public_id to key on.
 
     Raising here dead-letters the Box outbox row on its FIRST attempt rather
     than retrying — DetailsRowShapeError is a ValueError, not a BoxError, so the
     worker's `except BoxError` retry path does not catch it. That is the right
     shape for a deterministic contract violation (a retry cannot fix a malformed
-    row) but it is a sharper failure than the 5-attempt path, so it escalates
-    immediately and visibly instead of silently writing corruption.
+    row) but it is a sharper failure than the 5-attempt path, so it fails
+    visibly instead of silently writing corruption.
     """
-    from decimal import Decimal
-
     if not isinstance(row, (list, tuple)):
         raise DetailsRowShapeError(
             f"DETAILS row must be a list, got {type(row).__name__}"
@@ -166,12 +172,6 @@ def _assert_details_row_shape(row: Any, *, require_key: bool) -> None:
         raise DetailsRowShapeError(
             f"DETAILS col N (AMOUNT BILLABLE) is non-numeric {amount!r} — a "
             f"shifted row parks the type label here and the amount in O"
-        )
-    if require_key and not str(row[DEFAULT_KEY_COL_INDEX] or "").strip():
-        raise DetailsRowShapeError(
-            "DETAILS col Z (line-item public_id) is empty on an inserted row — "
-            "it is un-rekeyable and defeats col-Z idempotency, so the next "
-            "drain of this entity inserts a second copy"
         )
 
 # The date column is written as a real date VALUE (not a text string) so the
@@ -477,7 +477,7 @@ def _write_row_values(ws, target_row: int, row: List[Any]) -> None:
     # Last line of defence, and the reason it lives HERE rather than only in
     # apply_rows_to_details: the manual workbook-reconciliation playbook calls
     # _write_row_values directly, bypassing the insert path entirely.
-    _assert_details_row_shape(row, require_key=False)
+    _assert_details_row_shape(row)
     for col_index, value in enumerate(row):
         cell = ws.cell(row=target_row, column=col_index + 1)
         if col_index == DATE_COL_INDEX:
@@ -624,8 +624,16 @@ def apply_rows_to_details(
         # Validate BEFORE the group/insert planning below, so a malformed row
         # fails while the caller still holds the Box lock and has uploaded
         # nothing — never half-applied.
-        _assert_details_row_shape(row, require_key=True)
-        key = str(row[key_col_index]).strip()
+        _assert_details_row_shape(row)
+        # Keyed at the caller's OWN key column, not the module default.
+        key = str(row[key_col_index] or "").strip()
+        if not key:
+            raise DetailsRowShapeError(
+                f"DETAILS col Z (line-item public_id, index {key_col_index}) is "
+                f"empty on an inserted row — it is un-rekeyable and defeats "
+                f"col-Z idempotency, so the next drain of this entity inserts a "
+                f"second copy"
+            )
         if key in existing_keys:
             skipped += 1
             continue

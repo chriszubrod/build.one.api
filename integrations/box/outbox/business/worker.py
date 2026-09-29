@@ -28,6 +28,23 @@ from shared.authz.context import system_authz
 logger = get_box_logger(__name__)
 
 
+def _is_unsupported_layout(error: BaseException) -> bool:
+    """True for the Excel editor's DetailsLayoutError.
+
+    Imported lazily, and only once an exception has already been raised, so the
+    Excel editor (and openpyxl with it) stays off this worker's import path —
+    the same reason every excel handler in this module imports its service
+    inside the function body.
+    """
+    try:
+        from integrations.box.excel.business.workbook_editor import (
+            DetailsLayoutError,
+        )
+    except Exception:
+        return False
+    return isinstance(error, DetailsLayoutError)
+
+
 # Cross-process drain lock.
 DRAIN_LOCK_NAME = "box_outbox_drain"
 DRAIN_LOCK_TIMEOUT_MS = 1000
@@ -283,6 +300,27 @@ class BoxOutboxWorker:
                 self._last_outcome_visibility_lost = True
             return self._handle_box_error(row, error)
         except Exception as error:
+            if _is_unsupported_layout(error):
+                # U-559 refuses to write modern column positions into an
+                # old-template DETAILS sheet. That is PERMANENT for the four
+                # workbooks concerned (CC 41, ML 74, MR2-STABLES 95, CBT 101),
+                # so it is terminal — a retry cannot fix a template — but it is
+                # NOT drift for anyone to investigate, and escalating it would
+                # write a fresh box.ReconciliationIssue for every future bill on
+                # those projects, forever, with no dedupe. Dead-letter it
+                # visibly and skip the escalation.
+                logger.error(
+                    "box.outbox.row.unsupported_worksheet_layout",
+                    extra={
+                        "event_name": "box.outbox.row.unsupported_worksheet_layout",
+                        "outbox_public_id": row.public_id,
+                        "entity_type": row.entity_type,
+                        "entity_public_id": row.entity_public_id,
+                        "detail": str(error),
+                    },
+                )
+                self._dead_letter(row, str(error), escalate=False)
+                return "dead_lettered"
             logger.exception(
                 "box.outbox.row.unexpected_error",
                 extra={
@@ -389,7 +427,9 @@ class BoxOutboxWorker:
         )
         return "failed"
 
-    def _dead_letter(self, row: BoxOutbox, last_error: str) -> None:
+    def _dead_letter(
+        self, row: BoxOutbox, last_error: str, *, escalate: bool = True
+    ) -> None:
         self.repo.mark_dead_letter(
             id=row.id,
             row_version=row.row_version,
@@ -406,6 +446,12 @@ class BoxOutboxWorker:
                 "last_error": last_error,
             },
         )
+
+        if not escalate:
+            # A known, permanent, non-actionable condition. The dead-letter row
+            # and the log line above are the record; a reconciliation issue
+            # would imply there is drift to chase.
+            return
 
         # Escalation hook — failure-isolated: a broken reconciliation write
         # must never mask the dead-letter itself.

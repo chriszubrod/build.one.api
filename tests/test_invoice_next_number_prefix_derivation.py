@@ -186,3 +186,21 @@ def test_ignores_a_whitespace_only_abbreviation():
     """Latent branch, 0 prod instances: '   ' is truthy, so the old `or "INV"`
     let it through and emitted '  -1'."""
     assert _next([], abbreviation="   ") == "INV-01"
+
+
+def test_a_qbo_placeholder_number_cannot_become_the_series():
+    """`QBO-<qbo_id>` is the surrogate the QBO pull mints when QBO has assigned
+    no DocNumber yet. It parses as `{prefix}-{N}` exactly, so left alone it reads
+    as the newest series and the next client draw becomes `QBO-<qbo_id + 1>` — a
+    draw number derived from a QBO internal id, inside a namespace the QBO layer
+    owns and later overwrites.
+
+    0 such rows in prod on 2026-09-28, so this guards what the next pull mints
+    rather than anything currently stored. Found by Pass 2 review, not by data."""
+    assert _next(["OL2-01", "QBO-9912"]) == "OL2-02"
+
+
+def test_a_project_with_only_a_qbo_placeholder_falls_back():
+    """Nothing parseable remains once placeholders are skipped, so the
+    abbreviation supplies the prefix — not "QBO"."""
+    assert _next(["QBO-9912"], abbreviation="OL2") == "OL2-01"

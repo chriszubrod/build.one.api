@@ -141,7 +141,8 @@ def test_a_keyless_row_is_still_allowed_by_the_bare_cell_writer():
     DETAILS legitimately carries keyless rows: the per-draw builder's-fee
     lines (cost code 90.01, invoice number in K, no source line item) have no
     public_id to key on. Requiring a key in `_write_row_values` — as the first
-    draft of this fix did — would have refused to write them."""
+    draft of this fix did — would have refused to write them. The key is checked
+    on the INSERT path instead, at the caller's own `key_col_index`."""
     wb = Workbook()
     ws = wb.active
     fee_row = [None] * DETAILS_ROW_WIDTH
@@ -168,21 +169,28 @@ def test_a_correct_row_still_lands_on_the_canonical_columns():
 
 
 def test_the_shift_is_real_when_the_guard_is_removed(monkeypatch):
-    """Reproduces EVR r1383 field-for-field against the PRE-FIX code path.
+    """Reproduces EVR r1383 field-for-field against the PRE-FIX cell writer.
 
-    This asserts the defect, not the fix, so it is the one test here that
-    would pass on the old code — its job is to prove the guard is load-bearing
-    rather than decorative, and to pin exactly which cells move."""
+    This asserts the defect, not the fix, so it is the one test here that would
+    pass on the old code — its job is to prove the guard is load-bearing rather
+    than decorative, and to pin exactly which cells move.
+
+    Goes through `_write_row_values` rather than `apply_rows_to_details` so it
+    isolates the column shift from the dedupe logic: a shifted row's key lands
+    in AA, leaving index 25 empty, so the insert path's own key check would stop
+    it before any cell was written and the shift would never be observable. That
+    is the correct behaviour and is pinned separately by
+    test_a_keyless_row_is_refused_on_the_insert_path."""
     import integrations.box.excel.business.workbook_editor as editor
 
     monkeypatch.setattr(editor, "_assert_details_row_shape", lambda row, **kw: None)
-    result = editor.apply_rows_to_details(_tracker_bytes(), SHEET, [_shifted_row()])
-    ws = load_workbook(BytesIO(result["bytes"]))[SHEET]
-    r = _row_with_key(ws, "41C564EE-F027-4EF8-9FA6-70DE9268A8F5")
-    assert ws.cell(row=r, column=14).value == "Bill"      # N holds TEXT
-    assert ws.cell(row=r, column=15).value == 56.25       # amount fell into O
-    assert ws.cell(row=r, column=26).value in (None, "")  # Z empty
-    assert ws.cell(row=r, column=27).value == "41C564EE-F027-4EF8-9FA6-70DE9268A8F5"
+    wb = Workbook()
+    ws = wb.active
+    editor._write_row_values(ws, 10, _shifted_row())
+    assert ws.cell(row=10, column=14).value == "Bill"      # N holds TEXT
+    assert ws.cell(row=10, column=15).value == 56.25       # amount fell into O
+    assert ws.cell(row=10, column=26).value in (None, "")  # Z empty
+    assert ws.cell(row=10, column=27).value == "41C564EE-F027-4EF8-9FA6-70DE9268A8F5"
 
 
 # ---------------------------------------------------------------------------
@@ -277,3 +285,38 @@ def test_a_shifted_draw_tag_column_is_also_refused():
     wb.save(out)
     with pytest.raises(DetailsLayoutError, match="draw tag"):
         apply_rows_to_details(out.getvalue(), SHEET, [_valid_bill_row()])
+
+
+def test_the_duplicated_column_constants_agree_across_modules():
+    """row_builder and workbook_editor each define DETAILS_ROW_WIDTH and
+    DRAW_REQUEST_COL_INDEX, and they MUST agree — the row builder writes to the
+    positions the editor validates.
+
+    Deliberately a consistency test rather than an import: row_builder's module
+    docstring states it keeps its imports light so that importing it, and the
+    outbox worker that dispatches to it, does not pull in a heavier stack. Having
+    it import the editor would undo that for the sake of two integers. This test
+    is the cheaper coupling and it still catches drift."""
+    from integrations.box.excel.business import row_builder
+
+    assert row_builder.DETAILS_ROW_WIDTH == DETAILS_ROW_WIDTH
+    assert row_builder.DRAW_REQUEST_COL_INDEX == DRAW_REQUEST_COL_INDEX
+
+
+def test_the_draw_tag_aliases_agree_with_the_reconcile_reader():
+    """The writer's draw-tag wordings must not drift from the reader's.
+
+    NOT true of the amount wordings, and that asymmetry is deliberate: the
+    reader excludes "AMOUNT PAID" on purpose (mapping it into the billable slot
+    would reconcile client billing against amounts paid, which
+    test_u437_worksheet_header_aliases pins), while this writer MUST recognise it
+    because it is literally the header on the four old-template sheets."""
+    from integrations.box.excel.business.workbook_editor import (
+        _AMOUNT_HEADERS, _DRAW_TAG_HEADERS,
+    )
+    from entities.invoice.business.worksheet_reconcile import _KNOWN_HEADERS
+
+    reader_draw = {k for k, v in _KNOWN_HEADERS.items() if v == "draw_request_date"}
+    assert _DRAW_TAG_HEADERS <= reader_draw
+    assert "AMOUNT PAID" in _AMOUNT_HEADERS
+    assert "AMOUNT PAID" not in _KNOWN_HEADERS

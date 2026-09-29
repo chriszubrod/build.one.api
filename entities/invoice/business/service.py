@@ -84,6 +84,28 @@ def _invoice_prefix_candidates(number: str) -> list:
     ]
 
 
+def _is_qbo_placeholder_number(number: str) -> bool:
+    """True for a QBO surrogate ref (`QBO-<qbo_id>`), which is NOT a series.
+
+    The pull mints one when QBO has assigned no DocNumber yet, and it upgrades to
+    a genuine number once QBO supplies one. It parses as `{prefix}-{N}` exactly,
+    so left alone it would be read as the newest series and hand the next client
+    draw `QBO-<qbo_id + 1>` — a draw number inside a namespace the QBO layer
+    owns, derived from a surrogate id.
+
+    Recognised via the integration's OWN predicate rather than a local "QBO"
+    literal, so this cannot drift from the minter (both derive the format from
+    one function). 0 such rows existed in prod on 2026-09-28: this guards what
+    the next pull mints, not what is there now.
+    """
+    prefix, _, tail = number.rpartition("-")
+    if not prefix or not tail.isdigit():
+        return False
+    from integrations.intuit.qbo.base.field_ownership import is_qbo_placeholder_ref
+
+    return is_qbo_placeholder_ref(number, tail)
+
+
 def _derive_invoice_prefix(numbers_oldest_first: list, fallback: str) -> str:
     """The series the project's NEWEST parseable invoice number belongs to.
 
@@ -114,6 +136,8 @@ def _derive_invoice_prefix(numbers_oldest_first: list, fallback: str) -> str:
     if fallback and _invoice_series_size(fallback, numbers_oldest_first):
         return fallback
     for number in reversed(numbers_oldest_first):
+        if _is_qbo_placeholder_number(number):
+            continue
         candidates = _invoice_prefix_candidates(number)
         if candidates:
             return max(
@@ -1627,6 +1651,10 @@ class InvoiceService:
         max_num = 0
         width = 2
         pattern = re.compile(rf'^{re.escape(prefix)}-(\d+)$', re.IGNORECASE)
+        # `>=` rather than `>` so width follows the LAST row holding the max.
+        # Only observable if one series carried two spellings of the same number
+        # ("ABC-9" and "ABC-09"); 0 prod series have mixed widths, so this is
+        # forward-looking. The value is identical either way — only padding moves.
         for number in numbers:
             m = pattern.match(number)
             if m and int(m.group(1)) >= max_num:

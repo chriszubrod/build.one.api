@@ -189,7 +189,7 @@ def fake_ramp_chaser_digest_service():
             pass
 
         @staticmethod
-        def canonicalize_week_of(week_of, _settings):
+        def canonicalize_week_of(week_of):
             return week_of
 
         def run_for_week(self, week_of):

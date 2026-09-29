@@ -315,8 +315,6 @@ async def ramp_chaser_digest_router(week_of: Optional[str] = None):
         week_of = _validate_work_date(week_of)
 
     def _run() -> dict[str, Any]:
-        from dataclasses import asdict, is_dataclass
-
         from entities.ramp_chaser_digest.business.digest_service import (
             RampChaserDigestService,
         )
@@ -324,14 +322,8 @@ async def ramp_chaser_digest_router(week_of: Optional[str] = None):
         svc = RampChaserDigestService()
         resolved_week = week_of
         if resolved_week:
-            resolved_week = RampChaserDigestService.canonicalize_week_of(
-                resolved_week,
-                config.Settings(),
-            )
-        result = svc.run_for_week(resolved_week)
-        if is_dataclass(result):
-            return asdict(result)
-        return result
+            resolved_week = RampChaserDigestService.canonicalize_week_of(resolved_week)
+        return svc.run_for_week(resolved_week)
 
     return await _timed("ramp_chaser.digest", _run)
 

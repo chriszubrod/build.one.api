@@ -272,16 +272,29 @@ def test_u549_c2_digest_from_db_datetime_fields_are_strings():
 
 
 def test_u549_c2_digest_sql_datetime_outputs_use_convert_126():
+    """Every datetime column of every digest sproc must ship as CONVERT(...,126).
+
+    Drop one and _from_db hands the caller a datetime for that field and a str
+    for the rest. Asserted per-column with a regex on purpose: a plain
+    `"CONVERT(VARCHAR(30)" in body and col in body` passes when ANY column is
+    converted and the name merely appears somewhere, which pinned nothing.
+    """
     for sproc in (
         "UpsertRampChaserDigest",
         "ReadRampChaserDigestByCardHolderAndWeek",
+        "ReadUncapturedRampChaserDigests",
         "ReadOutstandingRampChaserDigests",
         "StampRampChaserDigestDrafted",
+        "StampRampChaserDigestOutcome",
         "StampRampChaserDigestNotified",
     ):
         body = strip_sql_comments(sproc_body(DIGEST_SQL, sproc))
         for col in ("LastDraftedAt", "LastNotifiedAt", "CreatedAt", "UpdatedAt"):
-            assert f"CONVERT(VARCHAR(30)" in body and col in body
+            pattern = (
+                r"CONVERT\(\s*VARCHAR\(30\)\s*,\s*"
+                r"(?:\w+\.)?\[" + col + r"\]\s*,\s*126\s*\)"
+            )
+            assert re.search(pattern, body), f"{sproc}: {col} not CONVERT(...,126)"
 
 
 # --- Sproc param contract (repo ↔ SQL) ----------------------------------------
@@ -319,6 +332,11 @@ def _sql_declared_params(sql_path: Path, sproc: str) -> set[str]:
         ),
         (
             DIGEST_SQL,
+            "StampRampChaserDigestOutcome",
+            {"CardHolderRampUserId", "WeekOf", "Outcome"},
+        ),
+        (
+            DIGEST_SQL,
             "StampRampChaserDigestNotified",
             {"CardHolderRampUserId", "WeekOf", "Outcome"},
         ),
@@ -333,7 +351,13 @@ def test_u549_c2_repo_params_declared_in_sql(
     sql_path: Path, sproc: str, repo_keys: set[str]
 ):
     declared = _sql_declared_params(sql_path, sproc)
-    assert {k.lower() for k in repo_keys} <= declared
+    expected = {k.lower() for k in repo_keys}
+    # Equality, not subset: a subset check is vacuous for the no-argument sprocs
+    # and let a declared-but-unreachable @CardHolderRampUserId ship on
+    # ReadUnresolvedRampTransactionFollowUps, whose repo method sends params={}.
+    assert expected == declared, (
+        f"{sproc}: repo sends {sorted(expected)}, SQL declares {sorted(declared)}"
+    )
 
 
 @pytest.mark.parametrize(
@@ -362,6 +386,16 @@ def test_u549_c2_repo_params_declared_in_sql(
                 "ConversationId",
                 "InternetMessageId",
             },
+        ),
+        (
+            "stamp_outcome",
+            {
+                "card_holder_ramp_user_id": "u1",
+                "week_of": "2026-09-23",
+                "outcome": "unsent_carryover",
+            },
+            "StampRampChaserDigestOutcome",
+            {"CardHolderRampUserId", "WeekOf", "Outcome"},
         ),
         (
             "stamp_notified",

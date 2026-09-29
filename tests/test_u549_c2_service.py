@@ -469,28 +469,13 @@ def test_one_cardholder_failure_does_not_sink_batch(mocks, draft_mode):
     mocks.ms_outbox_svc.enqueue_send_mail.assert_called_once()
 
 
-@pytest.mark.parametrize(
-    "mode,expects_draft",
-    [
-        ("off", False),
-        ("", False),
-        ("send", False),
-        ("drat", False),
-        ("drafts", False),
-        (" DRAFT ", True),
-        ("draft", True),
-    ],
-)
-def test_mode_normalization_fail_closed(mocks, monkeypatch, mode, expects_draft):
-    monkeypatch.setenv("RAMP_CHASER_MODE", mode)
-    mocks.follow_up_repo.read_unresolved.return_value = [_follow_up()]
-    result = RampChaserDigestService().run_for_week("2026-09-29")
-    if expects_draft:
-        assert result["status"] == "ok"
-        assert result["drafted"] == 1
-    else:
-        assert result["status"] == "disabled"
-        mocks.ms_outbox_svc.enqueue_send_mail.assert_not_called()
+# The fail-closed mode gate is pinned ONCE, in tests/test_u549_c2_config_admin.py
+# (test_ramp_chaser_mode_fail_closed_only_exact_draft) — it covers one more mode
+# string and asserts strictly more: mode == "draft", read_uncaptured called, and
+# that NOTHING at all is constructed for every inert mode. A second
+# parametrisation here duplicated it. Do not re-add one, and do not factor the
+# gate into a shared test helper: a helper that re-states the gate is the mirror
+# that already hid a real divergence between two slices of this unit.
 
 
 def test_uncaptured_digest_captured_with_zero_open_items(mocks, draft_mode):

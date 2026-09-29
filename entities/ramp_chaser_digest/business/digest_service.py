@@ -27,35 +27,22 @@ class RampChaserDigestService:
             from config import Settings
 
             settings = Settings()
-            mode = (settings.ramp_chaser_mode or "off").strip().lower()
+            mode = self._normalized_mode(settings)
             resolved_week = week_of
             if not resolved_week:
                 try:
                     resolved_week = self._default_week_of(settings)
                 except Exception:
                     resolved_week = None
-            return {
-                "status": "error",
-                "mode": mode,
-                "week_of": resolved_week,
-                "cardholders_total": 0,
-                "drafted": 0,
-                "already_drafted": 0,
-                "sent_observed": 0,
-                "discarded_unsent": 0,
-                "unsent_carryover": 0,
-                "skipped_inactive": 0,
-                "unroutable": 0,
-                "refused_ms_writes_gate": 0,
-                "outbox_dead_letter": 0,
-                "failed": 1,
-            }
+            return self._empty_summary(
+                status="error", mode=mode, week_of=resolved_week, failed=1
+            )
 
     def _run_for_week(self, week_of: Optional[str]) -> dict:
         from config import Settings
 
         settings = Settings()
-        mode = (settings.ramp_chaser_mode or "off").strip().lower()
+        mode = self._normalized_mode(settings)
         tz = self._business_tz(settings)
         now = datetime.now(tz)
 
@@ -64,7 +51,7 @@ class RampChaserDigestService:
             return self._empty_summary(status="disabled", mode=mode, week_of=week_of)
 
         if week_of:
-            week_of = self.canonicalize_week_of(str(week_of).strip(), settings)
+            week_of = self.canonicalize_week_of(str(week_of).strip())
         else:
             week_of = self._default_week_of(settings, now=now)
 
@@ -587,7 +574,7 @@ class RampChaserDigestService:
         return False
 
     @classmethod
-    def canonicalize_week_of(cls, week_of: str, settings) -> str:
+    def canonicalize_week_of(cls, week_of: str) -> str:
         """Map any calendar day to the Tuesday anchor for that business week."""
         parsed = date.fromisoformat(str(week_of)[:10])
         return cls._tuesday_of_week(parsed).isoformat()
@@ -636,6 +623,16 @@ class RampChaserDigestService:
             "outbox_dead_letter": 0,
             "failed": failed,
         }
+
+    @staticmethod
+    def _normalized_mode(settings) -> str:
+        """The ONE spelling of the fail-closed gate.
+
+        Never inline a second copy of this, and never mirror it in a test. Two
+        slices of this unit once normalised differently and the suite stayed
+        green, because each asserted a property of its own copy.
+        """
+        return (settings.ramp_chaser_mode or "off").strip().lower()
 
     @staticmethod
     def _business_tz(settings) -> ZoneInfo:

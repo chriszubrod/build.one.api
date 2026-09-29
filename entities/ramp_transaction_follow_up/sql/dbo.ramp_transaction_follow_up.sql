@@ -180,9 +180,6 @@ GO
 
 
 CREATE OR ALTER PROCEDURE ReadUnresolvedRampTransactionFollowUps
-(
-    @CardHolderRampUserId NVARCHAR(64) = NULL
-)
 AS
 BEGIN
     SET NOCOUNT ON;
@@ -210,7 +207,6 @@ BEGIN
         CONVERT(VARCHAR(30), r.[UpdatedAt], 126) AS [UpdatedAt]
     FROM dbo.[RampTransactionFollowUp] r
     WHERE r.[ResolvedAt] IS NULL
-      AND (@CardHolderRampUserId IS NULL OR r.[CardHolderRampUserId] = @CardHolderRampUserId)
     ORDER BY r.[CardHolderRampUserId], r.[FirstSeenAt];
 END
 GO

@@ -18,7 +18,7 @@ Found by the Pass-2 efficiency and altitude agents. Each is a **behavior change*
 behavior-preserving quality pass could not take them. Design: `docs/design/u549-ramp-receipt-memo-chaser.md`.
 
 - [ ] 🟡 **The refetch set is unbounded and ratchets forever — now MEASURABLE, still unbounded.**
-  `ReadUnresolvedRampTransactionIds` is a bare `WHERE [ResolvedAt] IS NULL` — no age predicate, no `TOP`.
+  `ReadUnresolvedRampTransactionFollowUpIds` is a bare `WHERE [ResolvedAt] IS NULL` — no age predicate, no `TOP`.
   Two row classes never leave it: an item that aged out of the 90-day window and is still open, and an item
   whose Ramp transaction **404s** (the external client returns `None`, so the row never enters `by_id`, so
   `mark_resolved` can never fire). Each costs one `GET /developer/v1/transactions/{id}` **every sweep,

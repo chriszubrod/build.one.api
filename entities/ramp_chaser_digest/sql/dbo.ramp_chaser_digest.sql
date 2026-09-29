@@ -194,6 +194,46 @@ END
 GO
 
 
+CREATE OR ALTER PROCEDURE StampRampChaserDigestOutcome
+(
+    @CardHolderRampUserId NVARCHAR(64),
+    @WeekOf DATE,
+    @Outcome NVARCHAR(32)
+)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    BEGIN TRANSACTION;
+
+    DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();
+
+    UPDATE dbo.[RampChaserDigest]
+    SET [Outcome] = @Outcome,
+        [UpdatedAt] = @Now
+    OUTPUT
+        INSERTED.[Id],
+        INSERTED.[PublicId],
+        INSERTED.[RowVersion],
+        INSERTED.[CardHolderRampUserId],
+        INSERTED.[WeekOf],
+        INSERTED.[DraftMessageId],
+        INSERTED.[ConversationId],
+        INSERTED.[InternetMessageId],
+        CONVERT(VARCHAR(30), INSERTED.[LastDraftedAt], 126) AS [LastDraftedAt],
+        CONVERT(VARCHAR(30), INSERTED.[LastNotifiedAt], 126) AS [LastNotifiedAt],
+        INSERTED.[NotifyCount],
+        INSERTED.[Outcome],
+        CONVERT(VARCHAR(30), INSERTED.[CreatedAt], 126) AS [CreatedAt],
+        CONVERT(VARCHAR(30), INSERTED.[UpdatedAt], 126) AS [UpdatedAt]
+    WHERE [CardHolderRampUserId] = @CardHolderRampUserId
+      AND [WeekOf] = @WeekOf;
+
+    COMMIT TRANSACTION;
+END
+GO
+
+
 CREATE OR ALTER PROCEDURE StampRampChaserDigestNotified
 (
     @CardHolderRampUserId NVARCHAR(64),

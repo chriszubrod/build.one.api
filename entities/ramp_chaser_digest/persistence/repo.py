@@ -155,6 +155,40 @@ class RampChaserDigestRepository:
             )
             raise map_database_error(error)
 
+    def stamp_outcome(
+        self,
+        *,
+        card_holder_ramp_user_id: str,
+        week_of: str,
+        outcome: str,
+        conn: Optional[pyodbc.Connection] = None,
+    ) -> Optional[RampChaserDigest]:
+        """Set Outcome without touching LastNotifiedAt / NotifyCount (§6.1)."""
+        try:
+            with conn_ctx(conn) as c:
+                cursor = c.cursor()
+                call_procedure(
+                    cursor=cursor,
+                    name="StampRampChaserDigestOutcome",
+                    params={
+                        "CardHolderRampUserId": card_holder_ramp_user_id,
+                        "WeekOf": week_of,
+                        "Outcome": outcome,
+                    },
+                )
+                row = self._from_db(cursor.fetchone())
+                if conn is not None:
+                    c.commit()
+                return row
+        except Exception as error:
+            logger.error(
+                "Error stamping ramp chaser digest outcome %s %s: %s",
+                card_holder_ramp_user_id,
+                week_of,
+                error,
+            )
+            raise map_database_error(error)
+
     def stamp_notified(
         self,
         *,

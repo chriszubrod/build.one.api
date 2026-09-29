@@ -1,0 +1,468 @@
+"""U-549 Phase C2 — RampChaserDigestService sweep (mocked Graph + DB)."""
+
+from __future__ import annotations
+
+import json
+from datetime import datetime
+from decimal import Decimal
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
+from zoneinfo import ZoneInfo
+
+import pytest
+
+from entities.ramp_chaser_digest.business.digest_service import RampChaserDigestService
+from entities.ramp_chaser_digest.business.model import RampChaserDigest
+from entities.ramp_transaction_follow_up.business.model import RampTransactionFollowUp
+from integrations.ramp.user.business.service import RampUserRosterEntry
+
+_CHI = ZoneInfo("America/Chicago")
+_ENTITY_TYPE = "RampChaserDigest"
+
+
+def _follow_up(
+    *,
+    card_holder_ramp_user_id="user-a",
+    card_holder_name="Alex Active",
+    needs_memo=True,
+    needs_receipt=False,
+    merchant="Store",
+):
+    return RampTransactionFollowUp(
+        id=1,
+        public_id="f-up-1",
+        row_version=None,
+        ramp_transaction_id="tx-1",
+        card_holder_ramp_user_id=card_holder_ramp_user_id,
+        card_holder_name=card_holder_name,
+        merchant_name=merchant,
+        amount=Decimal("10.00"),
+        transaction_date="2026-09-20",
+        needs_memo=needs_memo,
+        needs_receipt=needs_receipt,
+        first_seen_at="2026-09-20T12:00:00+00:00",
+        last_drafted_at=None,
+        draft_message_id=None,
+        last_notified_at=None,
+        notify_count=0,
+        escalated_at=None,
+        resolved_at=None,
+        created_at=None,
+        updated_at=None,
+    )
+
+
+def _digest_row(
+    *,
+    public_id="digest-pub-1",
+    card_holder_ramp_user_id="user-a",
+    week_of="2026-09-29",
+    draft_message_id=None,
+    conversation_id=None,
+):
+    return RampChaserDigest(
+        id=1,
+        public_id=public_id,
+        row_version=None,
+        card_holder_ramp_user_id=card_holder_ramp_user_id,
+        week_of=week_of,
+        draft_message_id=draft_message_id,
+        conversation_id=conversation_id,
+        internet_message_id=None,
+        last_drafted_at=None,
+        last_notified_at=None,
+        notify_count=0,
+        outcome=None,
+        created_at=None,
+        updated_at=None,
+    )
+
+
+@pytest.fixture
+def draft_mode(monkeypatch):
+    monkeypatch.setenv("RAMP_CHASER_MODE", "draft")
+
+
+@pytest.fixture
+def mocks():
+    digest_repo = MagicMock()
+    digest_repo.read_outstanding.return_value = []
+    digest_repo.upsert.side_effect = lambda **kw: _digest_row(
+        card_holder_ramp_user_id=kw["card_holder_ramp_user_id"],
+        week_of=kw["week_of"],
+    )
+    digest_repo.read_by_card_holder_and_week.return_value = None
+
+    follow_up_repo = MagicMock()
+    follow_up_repo.read_unresolved.return_value = []
+
+    outbox_repo = MagicMock()
+    outbox_repo.read_completed_by_entity.return_value = []
+    outbox_repo.count_by_entity_and_kind.return_value = 0
+    outbox_repo.read_pending_by_entity.return_value = []
+
+    user_service = MagicMock()
+    user_service.build_roster.return_value = {
+        "user-a": RampUserRosterEntry(
+            ramp_user_id="user-a",
+            email="alex@example.com",
+            status="USER_ACTIVE",
+            is_active=True,
+        ),
+        "user-b": RampUserRosterEntry(
+            ramp_user_id="user-b",
+            email="bob@example.com",
+            status="USER_ACTIVE",
+            is_active=True,
+        ),
+    }
+
+    ms_outbox_svc = MagicMock()
+    ms_outbox_svc.enqueue_send_mail.return_value = SimpleNamespace(public_id="ob-1")
+
+    patches = {
+        "digest_repo": patch(
+            "entities.ramp_chaser_digest.persistence.repo.RampChaserDigestRepository",
+            return_value=digest_repo,
+        ),
+        "follow_up_repo": patch(
+            "entities.ramp_transaction_follow_up.persistence.repo.RampTransactionFollowUpRepository",
+            return_value=follow_up_repo,
+        ),
+        "outbox_repo": patch(
+            "integrations.ms.outbox.persistence.repo.MsOutboxRepository",
+            return_value=outbox_repo,
+        ),
+        "user_service": patch(
+            "integrations.ramp.user.business.service.RampUserService",
+            return_value=user_service,
+        ),
+        "user_client": patch(
+            "integrations.ramp.user.external.client.RampUserExternalClient",
+        ),
+        "ms_outbox": patch(
+            "integrations.ms.outbox.business.service.MsOutboxService",
+            return_value=ms_outbox_svc,
+        ),
+        "enqueue_update_draft": patch(
+            "integrations.ms.outbox.business.service.MsOutboxService.enqueue_update_draft",
+        ),
+        "update_draft": patch("integrations.ms.mail.external.client.update_draft"),
+    }
+
+    started = {k: p.start() for k, p in patches.items()}
+    yield SimpleNamespace(
+        digest_repo=digest_repo,
+        follow_up_repo=follow_up_repo,
+        outbox_repo=outbox_repo,
+        user_service=user_service,
+        ms_outbox_svc=ms_outbox_svc,
+        enqueue_update_draft=started["enqueue_update_draft"],
+        update_draft=started["update_draft"],
+    )
+    for p in patches.values():
+        p.stop()
+
+
+def test_mode_off_does_nothing(monkeypatch):
+    monkeypatch.setenv("RAMP_CHASER_MODE", "off")
+    with patch(
+        "entities.ramp_chaser_digest.persistence.repo.RampChaserDigestRepository"
+    ) as digest_cls, patch(
+        "entities.ramp_transaction_follow_up.persistence.repo.RampTransactionFollowUpRepository"
+    ) as follow_cls, patch(
+        "integrations.ms.outbox.business.service.MsOutboxService"
+    ) as ms_cls, patch(
+        "integrations.ms.mail.external.client.get_message"
+    ) as get_msg:
+        result = RampChaserDigestService().run_for_week()
+    assert result["status"] == "disabled"
+    digest_cls.assert_not_called()
+    follow_cls.assert_not_called()
+    ms_cls.assert_not_called()
+    get_msg.assert_not_called()
+
+
+def test_week_of_tuesday_in_business_timezone_monday_late(mocks, draft_mode):
+    monday_late = datetime(2026, 9, 28, 23, 0, 0, tzinfo=_CHI)
+    with patch(
+        "entities.ramp_chaser_digest.business.digest_service.datetime"
+    ) as dt_mod:
+        dt_mod.now.return_value = monday_late
+        dt_mod.side_effect = lambda *a, **k: datetime(*a, **k)
+        result = RampChaserDigestService().run_for_week()
+    assert result["week_of"] == "2026-09-29"
+
+
+def test_neither_flag_excluded_from_digest(mocks, draft_mode):
+    mocks.follow_up_repo.read_unresolved.return_value = [
+        _follow_up(needs_memo=False, needs_receipt=False),
+        _follow_up(card_holder_ramp_user_id="user-b", needs_memo=True, needs_receipt=False),
+    ]
+    result = RampChaserDigestService().run_for_week("2026-09-29")
+    assert result["cardholders_total"] == 1
+    assert result["drafted"] == 1
+    mocks.ms_outbox_svc.enqueue_send_mail.assert_called_once()
+
+
+def test_roster_fetched_once_for_multiple_cardholders(mocks, draft_mode):
+    mocks.follow_up_repo.read_unresolved.return_value = [
+        _follow_up(card_holder_ramp_user_id="user-a"),
+        _follow_up(card_holder_ramp_user_id="user-b", needs_memo=False, needs_receipt=True),
+    ]
+    RampChaserDigestService().run_for_week("2026-09-29")
+    mocks.user_service.build_roster.assert_called_once()
+
+
+def test_inactive_cardholder_skipped(mocks, draft_mode):
+    mocks.user_service.build_roster.return_value = {
+        "user-a": RampUserRosterEntry(
+            ramp_user_id="user-a",
+            email="alex@example.com",
+            status="inactive",
+            is_active=False,
+        ),
+    }
+    mocks.follow_up_repo.read_unresolved.return_value = [_follow_up()]
+    result = RampChaserDigestService().run_for_week("2026-09-29")
+    assert result["skipped_inactive"] == 1
+    assert result["drafted"] == 0
+    mocks.ms_outbox_svc.enqueue_send_mail.assert_not_called()
+
+
+def test_missing_roster_unroutable(mocks, draft_mode):
+    mocks.user_service.build_roster.return_value = {}
+    mocks.follow_up_repo.read_unresolved.return_value = [_follow_up()]
+    result = RampChaserDigestService().run_for_week("2026-09-29")
+    assert result["unroutable"] == 1
+    mocks.ms_outbox_svc.enqueue_send_mail.assert_not_called()
+
+
+def test_no_email_unroutable(mocks, draft_mode):
+    mocks.user_service.build_roster.return_value = {
+        "user-a": RampUserRosterEntry(
+            ramp_user_id="user-a",
+            email=None,
+            status="USER_ACTIVE",
+            is_active=True,
+        ),
+    }
+    mocks.follow_up_repo.read_unresolved.return_value = [_follow_up()]
+    result = RampChaserDigestService().run_for_week("2026-09-29")
+    assert result["unroutable"] == 1
+
+
+def test_no_enqueue_update_draft_or_patch(mocks, draft_mode):
+    mocks.follow_up_repo.read_unresolved.return_value = [_follow_up()]
+    RampChaserDigestService().run_for_week("2026-09-29")
+    mocks.enqueue_update_draft.assert_not_called()
+    mocks.update_draft.assert_not_called()
+
+
+def test_outstanding_draft_still_open_not_patched(mocks, draft_mode):
+    outstanding = _digest_row(
+        week_of="2026-09-29",
+        draft_message_id="draft-1",
+        conversation_id="conv-1",
+    )
+    mocks.digest_repo.read_outstanding.return_value = [outstanding]
+    with patch(
+        "integrations.ms.mail.external.client.get_message",
+        return_value={
+            "status_code": 200,
+            "email": {"is_draft": True, "message_id": "draft-1"},
+        },
+    ), patch("integrations.ms.mail.external.client.list_messages") as list_msg:
+        result = RampChaserDigestService().run_for_week("2026-09-29")
+    list_msg.assert_not_called()
+    mocks.digest_repo.stamp_notified.assert_not_called()
+    mocks.digest_repo.stamp_outcome.assert_not_called()
+    assert result["unsent_carryover"] == 0
+
+
+def test_previous_week_open_draft_counts_unsent_carryover(mocks, draft_mode):
+    outstanding = _digest_row(
+        week_of="2026-09-22",
+        draft_message_id="draft-old",
+        conversation_id="conv-old",
+    )
+    mocks.digest_repo.read_outstanding.return_value = [outstanding]
+    with patch(
+        "integrations.ms.mail.external.client.get_message",
+        return_value={
+            "status_code": 200,
+            "email": {"is_draft": True, "message_id": "draft-old"},
+        },
+    ):
+        result = RampChaserDigestService().run_for_week("2026-09-29")
+    assert result["unsent_carryover"] == 1
+    mocks.digest_repo.stamp_outcome.assert_called_once_with(
+        card_holder_ramp_user_id="user-a",
+        week_of="2026-09-22",
+        outcome="unsent_carryover",
+    )
+
+
+def test_vanished_id_in_sentitems_stamps_notified(mocks, draft_mode):
+    outstanding = _digest_row(
+        week_of="2026-09-22",
+        draft_message_id="gone",
+        conversation_id="conv-sent",
+    )
+    mocks.digest_repo.read_outstanding.return_value = [outstanding]
+
+    def list_side_effect(folder, **kwargs):
+        if folder == "sentitems":
+            return {"status_code": 200, "messages": [{"message_id": "sent-1"}]}
+        return {"status_code": 200, "messages": []}
+
+    with patch(
+        "integrations.ms.mail.external.client.get_message",
+        return_value={"status_code": 404, "email": None},
+    ), patch(
+        "integrations.ms.mail.external.client.list_messages",
+        side_effect=list_side_effect,
+    ):
+        result = RampChaserDigestService().run_for_week("2026-09-29")
+    assert result["sent_observed"] == 1
+    mocks.digest_repo.stamp_notified.assert_called_once_with(
+        card_holder_ramp_user_id="user-a",
+        week_of="2026-09-22",
+        outcome="sent",
+    )
+
+
+def test_vanished_id_in_deleteditems_does_not_stamp_notified(mocks, draft_mode):
+    outstanding = _digest_row(
+        week_of="2026-09-22",
+        draft_message_id="gone",
+        conversation_id="conv-del",
+    )
+    mocks.digest_repo.read_outstanding.return_value = [outstanding]
+
+    def list_side_effect(folder, **kwargs):
+        if folder == "deleteditems":
+            return {"status_code": 200, "messages": [{"message_id": "del-1"}]}
+        return {"status_code": 200, "messages": []}
+
+    with patch(
+        "integrations.ms.mail.external.client.get_message",
+        return_value={"status_code": 404, "email": None},
+    ), patch(
+        "integrations.ms.mail.external.client.list_messages",
+        side_effect=list_side_effect,
+    ):
+        result = RampChaserDigestService().run_for_week("2026-09-29")
+    assert result["discarded_unsent"] == 1
+    mocks.digest_repo.stamp_notified.assert_not_called()
+    mocks.digest_repo.stamp_outcome.assert_called_once_with(
+        card_holder_ramp_user_id="user-a",
+        week_of="2026-09-22",
+        outcome="discarded_unsent",
+    )
+
+
+def test_vanished_id_neither_folder_stamps_nothing(mocks, draft_mode):
+    outstanding = _digest_row(
+        week_of="2026-09-22",
+        draft_message_id="gone",
+        conversation_id="conv-unk",
+    )
+    mocks.digest_repo.read_outstanding.return_value = [outstanding]
+    with patch(
+        "integrations.ms.mail.external.client.get_message",
+        return_value={"status_code": 404, "email": None},
+    ), patch(
+        "integrations.ms.mail.external.client.list_messages",
+        return_value={"status_code": 200, "messages": []},
+    ):
+        RampChaserDigestService().run_for_week("2026-09-29")
+    mocks.digest_repo.stamp_notified.assert_not_called()
+    mocks.digest_repo.stamp_outcome.assert_not_called()
+
+
+def test_transient_get_does_not_stamp(mocks, draft_mode):
+    outstanding = _digest_row(
+        draft_message_id="draft-1",
+        conversation_id="conv-1",
+    )
+    mocks.digest_repo.read_outstanding.return_value = [outstanding]
+    with patch(
+        "integrations.ms.mail.external.client.get_message",
+        return_value={"status_code": 503, "email": None, "is_retryable": True},
+    ):
+        RampChaserDigestService().run_for_week("2026-09-29")
+    mocks.digest_repo.stamp_notified.assert_not_called()
+    mocks.digest_repo.stamp_outcome.assert_not_called()
+
+
+def test_capture_draft_id_from_outbox_payload(mocks, draft_mode):
+    digest = _digest_row(public_id="digest-capture")
+    mocks.digest_repo.upsert.return_value = digest
+    mocks.follow_up_repo.read_unresolved.return_value = [_follow_up()]
+
+    outbox_row = SimpleNamespace(
+        payload=json.dumps({"graph_message_id": "graph-draft-99"}),
+    )
+    mocks.outbox_repo.read_completed_by_entity.return_value = [outbox_row]
+
+    with patch(
+        "integrations.ms.mail.external.client.get_message",
+        return_value={
+            "status_code": 200,
+            "email": {
+                "conversation_id": "conv-new",
+                "internet_message_id": "imid-new",
+            },
+        },
+    ):
+        result = RampChaserDigestService().run_for_week("2026-09-29")
+
+    mocks.digest_repo.stamp_drafted.assert_called_once_with(
+        card_holder_ramp_user_id="user-a",
+        week_of="2026-09-29",
+        draft_message_id="graph-draft-99",
+        conversation_id="conv-new",
+        internet_message_id="imid-new",
+    )
+    assert result["already_drafted"] == 1
+    mocks.ms_outbox_svc.enqueue_send_mail.assert_not_called()
+
+
+def test_enqueue_none_counted_refused(mocks, draft_mode):
+    mocks.follow_up_repo.read_unresolved.return_value = [_follow_up()]
+    mocks.ms_outbox_svc.enqueue_send_mail.return_value = None
+    result = RampChaserDigestService().run_for_week("2026-09-29")
+    assert result["refused_ms_writes_gate"] == 1
+    assert result["drafted"] == 0
+
+
+def test_second_run_same_week_already_drafted(mocks, draft_mode):
+    mocks.follow_up_repo.read_unresolved.return_value = [_follow_up()]
+    drafted = _digest_row(draft_message_id="existing-draft")
+    mocks.digest_repo.upsert.side_effect = None
+    mocks.digest_repo.upsert.return_value = drafted
+    result = RampChaserDigestService().run_for_week("2026-09-29")
+    assert result["already_drafted"] == 1
+    mocks.ms_outbox_svc.enqueue_send_mail.assert_not_called()
+
+
+def test_one_cardholder_failure_does_not_sink_batch(mocks, draft_mode):
+    mocks.follow_up_repo.read_unresolved.return_value = [
+        _follow_up(card_holder_ramp_user_id="user-a"),
+        _follow_up(card_holder_ramp_user_id="user-b", needs_memo=False, needs_receipt=True),
+    ]
+
+    def upsert_side_effect(**kw):
+        if kw["card_holder_ramp_user_id"] == "user-a":
+            raise RuntimeError("boom")
+        return _digest_row(
+            card_holder_ramp_user_id=kw["card_holder_ramp_user_id"],
+            week_of=kw["week_of"],
+        )
+
+    mocks.digest_repo.upsert.side_effect = upsert_side_effect
+    result = RampChaserDigestService().run_for_week("2026-09-29")
+    assert result["failed"] == 1
+    assert result["drafted"] == 1
+    mocks.ms_outbox_svc.enqueue_send_mail.assert_called_once()

@@ -561,35 +561,28 @@ def test_u549_c2_digest_repo_call_procedure_param_keys(
     expected_keys: set[str],
 ):
     repo = RampChaserDigestRepository()
+    declared = _sql_declared_params(DIGEST_SQL, expected_sproc)
+
+    # One connection double that is its own context manager, so it serves BOTH
+    # repo shapes: the model reads go through conn_ctx(conn), the scalar
+    # recipient-hash read goes through get_connection(). Patching both
+    # unconditionally removes a per-method branch that had drifted into two
+    # byte-identical halves plus a block of setup neither half used.
     cursor = MagicMock()
     cursor.fetchone.return_value = _digest_row()
     conn = MagicMock()
     conn.cursor.return_value = cursor
-    declared = _sql_declared_params(DIGEST_SQL, expected_sproc)
+    conn.__enter__ = MagicMock(return_value=conn)
+    conn.__exit__ = MagicMock(return_value=False)
 
-    conn_patch_target = (
-        "entities.ramp_chaser_digest.persistence.repo.get_connection"
-        if method_name == "read_latest_recipient_hash"
-        else "entities.ramp_chaser_digest.persistence.repo.conn_ctx"
-    )
-
-    with patch(conn_patch_target) as mock_conn, patch(
+    with patch(
+        "entities.ramp_chaser_digest.persistence.repo.get_connection",
+        return_value=conn,
+    ), patch(
+        "entities.ramp_chaser_digest.persistence.repo.conn_ctx", return_value=conn
+    ), patch(
         "entities.ramp_chaser_digest.persistence.repo.call_procedure"
     ) as call_proc:
-        if method_name == "read_latest_recipient_hash":
-            cursor = MagicMock()
-            cursor.fetchone.return_value = SimpleNamespace(RecipientHash="abc")
-            conn = MagicMock()
-            conn.cursor.return_value = cursor
-            conn.__enter__ = MagicMock(return_value=conn)
-            conn.__exit__ = MagicMock(return_value=False)
-            mock_conn.return_value = conn
-        else:
-            cursor = MagicMock()
-            cursor.fetchone.return_value = _digest_row()
-            conn = MagicMock()
-            conn.cursor.return_value = cursor
-            mock_conn.return_value.__enter__.return_value = conn
         getattr(repo, method_name)(**kwargs)
         assert call_proc.call_args.kwargs["name"] == expected_sproc
         sent = call_proc.call_args.kwargs["params"]

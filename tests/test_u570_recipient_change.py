@@ -154,9 +154,6 @@ def test_changed_address_warns_in_body_and_summary(sweep_mocks, draft_mode, stab
     old_email = "pat@company.com"
     new_email = "attacker@evil.com"
     previous_hash = blind_index(old_email.strip().lower())
-    current_hash = blind_index(new_email.strip().lower())
-    assert previous_hash != current_hash
-
     sweep_mocks.digest_repo.read_latest_recipient_hash.return_value = previous_hash
 
     with patch(
@@ -173,13 +170,13 @@ def test_changed_address_warns_in_body_and_summary(sweep_mocks, draft_mode, stab
             result = RampChaserDigestService().run_for_week(_WEEK)
 
     assert result["recipient_changed"] == 1
+    assert result["recipient_unverified"] == 0
     assert result["drafted"] == 1
     render_mock.assert_called_once()
-    assert render_mock.call_args.kwargs["recipient_changed"] is True
-    body = sweep_mocks.ms_outbox_svc.enqueue_send_mail.call_args.kwargs["body"]
-    greeting_idx = body.index("Emison,")
-    warning_idx = body.index("WARNING")
-    assert warning_idx < greeting_idx
+    assert render_mock.call_args.kwargs["recipient_advisory"] == "changed"
+    # placement is pinned directly on render_digest below; here we only need that
+    # the advisory was threaded through to the enqueued body at all
+    assert "WARNING" in sweep_mocks.ms_outbox_svc.enqueue_send_mail.call_args.kwargs["body"]
 
 
 def test_stable_gmail_address_does_not_warn(sweep_mocks, draft_mode, stable_encryption_key):
@@ -201,13 +198,24 @@ def test_stable_gmail_address_does_not_warn(sweep_mocks, draft_mode, stable_encr
             result = RampChaserDigestService().run_for_week(_WEEK)
 
     assert result["recipient_changed"] == 0
+    assert result["recipient_unverified"] == 0
     render_mock.assert_called_once()
-    assert render_mock.call_args.kwargs["recipient_changed"] is False
+    assert render_mock.call_args.kwargs["recipient_advisory"] is None
     body = sweep_mocks.ms_outbox_svc.enqueue_send_mail.call_args.kwargs["body"]
     assert "WARNING" not in body
+    assert "NOTE:" not in body
 
 
-def test_first_sight_does_not_warn_but_stamps_hash(sweep_mocks, draft_mode, stable_encryption_key):
+def test_first_sight_advises_unverified_not_changed_and_stamps_hash(
+    sweep_mocks, draft_mode, stable_encryption_key
+):
+    """Step 4c: an unbaselined recipient must NOT pass silently.
+
+    With no stored fingerprint there is no historical fact to compare, so an
+    address altered BEFORE the first digest would be adopted as the baseline and
+    never warn. This is the bootstrap bypass; it fires once per cardholder.
+    It must be distinguishable from a real CHANGE, or the two signals blur.
+    """
     email = "new.hire@example.com"
     sweep_mocks.digest_repo.read_latest_recipient_hash.return_value = None
 
@@ -225,8 +233,11 @@ def test_first_sight_does_not_warn_but_stamps_hash(sweep_mocks, draft_mode, stab
             result = RampChaserDigestService().run_for_week(_WEEK)
 
     assert result["recipient_changed"] == 0
+    assert result["recipient_unverified"] == 1
     render_mock.assert_called_once()
-    assert render_mock.call_args.kwargs["recipient_changed"] is False
+    assert render_mock.call_args.kwargs["recipient_advisory"] == "unverified"
+    body = sweep_mocks.ms_outbox_svc.enqueue_send_mail.call_args.kwargs["body"]
+    assert "NOTE:" in body and "WARNING" not in body
     expected = blind_index(email.strip().lower())
     sweep_mocks.digest_repo.upsert.assert_called_once()
     assert sweep_mocks.digest_repo.upsert.call_args.kwargs["recipient_hash"] == expected
@@ -251,7 +262,8 @@ def test_case_and_whitespace_are_not_a_change(sweep_mocks, draft_mode, stable_en
             result = RampChaserDigestService().run_for_week(_WEEK)
 
     assert result["recipient_changed"] == 0
-    assert render_mock.call_args.kwargs["recipient_changed"] is False
+    assert result["recipient_unverified"] == 0
+    assert render_mock.call_args.kwargs["recipient_advisory"] is None
 
 
 def test_raw_email_never_reaches_the_digest_row_or_the_logs(sweep_mocks, draft_mode, stable_encryption_key, caplog):
@@ -296,6 +308,6 @@ def test_warning_renders_above_greeting_by_index(stable_encryption_key):
         items=[],
         now=now,
         tz=_CHI,
-        recipient_changed=True,
+        recipient_advisory="changed",
     )
     assert body.index("WARNING") < body.index("Pat,")

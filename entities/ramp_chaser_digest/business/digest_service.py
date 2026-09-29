@@ -102,10 +102,11 @@ class RampChaserDigestService:
         outbox_dead_letter = 0
         failed = 0
         recipient_changed = 0
+        recipient_unverified = 0
 
         for card_holder_id, items in groups.items():
             try:
-                outcome, holder_recipient_changed = self._process_cardholder(
+                outcome, holder_advisory = self._process_cardholder(
                     card_holder_id=card_holder_id,
                     items=items,
                     week_of=week_of,
@@ -128,8 +129,10 @@ class RampChaserDigestService:
                     refused += 1
                 elif outcome == "outbox_dead_letter":
                     outbox_dead_letter += 1
-                if holder_recipient_changed:
+                if holder_advisory == "changed":
                     recipient_changed += 1
+                elif holder_advisory == "unverified":
+                    recipient_unverified += 1
             except Exception as error:
                 failed += 1
                 logger.exception(
@@ -154,7 +157,12 @@ class RampChaserDigestService:
             "refused_ms_writes_gate": refused,
             "outbox_dead_letter": outbox_dead_letter,
             "failed": failed,
+            # NB these count DETECTIONS, not advisories a human saw: an
+            # already-drafted cardholder short-circuits before render_digest and
+            # still increments here. Fine for monitoring drift; do not read them
+            # as "N reviewers were warned".
             "recipient_changed": recipient_changed,
+            "recipient_unverified": recipient_unverified,
         }
         logger.info("ramp_chaser_digest.sweep_complete %s", summary)
         return summary
@@ -330,6 +338,10 @@ class RampChaserDigestService:
             )
             return "unroutable", False
 
+        from entities.ramp_chaser_digest.business.body import (
+            RECIPIENT_ADVISORY_CHANGED,
+            RECIPIENT_ADVISORY_UNVERIFIED,
+        )
         from shared.encryption import blind_index
 
         current = blind_index(email.strip().lower())
@@ -337,12 +349,35 @@ class RampChaserDigestService:
             card_holder_ramp_user_id=str(card_holder_id),
             week_of=week_of,
         )
-        holder_recipient_changed = bool(previous and current and previous != current)
-        if holder_recipient_changed:
+        # ⛔ THREE FACTS THAT ONLY MAKE SENSE TOGETHER — none is obvious alone.
+        #
+        # 1. WARN-ONCE. The upsert below stamps `current`, so THIS week's row is
+        #    next week's baseline. A change therefore advises exactly once, not
+        #    every week after. Accepted: the advisory lands in the draft the
+        #    reviewer is about to send, which is the moment the control exists for.
+        # 2. WHY A PRE-EXISTING ROW READS AS FIRST SIGHT. The lookup sproc carries
+        #    `AND RecipientHash IS NOT NULL`, so rows written before this column
+        #    existed are skipped rather than compared against NULL. That is what
+        #    stops the first post-deploy sweep raising a CHANGED advisory for
+        #    everyone — they get UNVERIFIED instead, which is the honest signal.
+        # 3. WHY A NULL PARAMETER CANNOT ERASE THE BASELINE. The upsert preserves
+        #    with `CASE WHEN @RecipientHash IS NOT NULL`, so a caller that omits it
+        #    leaves the stored hash intact. Without that, any non-hash-aware upsert
+        #    would silently reset a cardholder to unbaselined.
+        if previous and current and previous != current:
+            holder_advisory = RECIPIENT_ADVISORY_CHANGED
+        elif not previous and current:
+            # No stored fingerprint: nothing to compare, so an address altered before
+            # the first digest would be adopted silently. Flag it once (step 4c).
+            holder_advisory = RECIPIENT_ADVISORY_UNVERIFIED
+        else:
+            holder_advisory = None
+        if holder_advisory:
             logger.warning(
-                "ramp_chaser_digest.recipient_changed week_of=%s card_holder=%s",
+                "ramp_chaser_digest.recipient_advisory week_of=%s card_holder=%s advisory=%s",
                 week_of,
                 card_holder_id,
+                holder_advisory,
             )
 
         digest = digest_repo.upsert(
@@ -354,7 +389,7 @@ class RampChaserDigestService:
             raise RuntimeError("upsert returned no digest row")
 
         if digest.draft_message_id:
-            return "already_drafted", holder_recipient_changed
+            return "already_drafted", holder_advisory
 
         capture_state = self._try_capture_draft_from_outbox(
             digest=digest,
@@ -362,18 +397,18 @@ class RampChaserDigestService:
             outbox_repo=outbox_repo,
         )
         if capture_state == "captured":
-            return "already_drafted", holder_recipient_changed
+            return "already_drafted", holder_advisory
         if capture_state == "enqueued":
-            return "already_drafted", holder_recipient_changed
+            return "already_drafted", holder_advisory
         if capture_state == "dead_letter":
-            return "outbox_dead_letter", holder_recipient_changed
+            return "outbox_dead_letter", holder_advisory
 
         refreshed = digest_repo.read_by_card_holder_and_week(
             card_holder_ramp_user_id=str(card_holder_id),
             week_of=week_of,
         )
         if refreshed and refreshed.draft_message_id:
-            return "already_drafted", holder_recipient_changed
+            return "already_drafted", holder_advisory
 
         from entities.ramp_chaser_digest.business.body import (
             RAMP_CHASER_DIGEST_BODY_TYPE,
@@ -390,7 +425,7 @@ class RampChaserDigestService:
             items=body_items,
             now=now,
             tz=tz,
-            recipient_changed=holder_recipient_changed,
+            recipient_advisory=holder_advisory,
         )
 
         cc = self._resolve_cc(settings, cardholder_email=email)
@@ -411,9 +446,9 @@ class RampChaserDigestService:
                 week_of,
                 card_holder_id,
             )
-            return "refused", holder_recipient_changed
+            return "refused", holder_advisory
 
-        return "drafted", holder_recipient_changed
+        return "drafted", holder_advisory
 
     def _try_capture_draft_from_outbox(
         self,
@@ -644,6 +679,7 @@ class RampChaserDigestService:
             "outbox_dead_letter": 0,
             "failed": failed,
             "recipient_changed": 0,
+            "recipient_unverified": 0,
         }
 
     @staticmethod

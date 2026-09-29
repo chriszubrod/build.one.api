@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from datetime import date, datetime, timezone
 from decimal import Decimal
-from typing import Any, Mapping, Sequence
+from typing import Any, Mapping, Optional, Sequence
 from zoneinfo import ZoneInfo
 
 # Outbox payloads default to HTML; this digest must use Text (see module docstring).
@@ -28,10 +28,26 @@ _INTRO = (
     "When you have a moment, will you please jump into Ramp and complete the following items?"
 )
 
-_RECIPIENT_CHANGED_WARNING = (
-    "*** WARNING: This cardholder's Ramp email address has changed since the last digest. "
-    "Confirm the To: line is correct before sending. ***"
-)
+# Advisory vocabulary. A single value rather than one bool per condition: the next
+# advisory should not mean a third positional flag on the renderer.
+RECIPIENT_ADVISORY_CHANGED = "changed"
+RECIPIENT_ADVISORY_UNVERIFIED = "unverified"
+
+_RECIPIENT_ADVISORIES = {
+    RECIPIENT_ADVISORY_CHANGED: (
+        "*** WARNING: This cardholder's Ramp email address has CHANGED since the last "
+        "digest. Confirm the To: line is correct before sending. ***"
+    ),
+    # Closes the bootstrap gap found by step 4c: with no stored fingerprint there is
+    # no historical fact to compare against, so an address altered BEFORE the first
+    # digest would be silently adopted as the baseline and never warn. This fires
+    # once per cardholder, then never again.
+    RECIPIENT_ADVISORY_UNVERIFIED: (
+        "*** NOTE: This is the first digest recorded for this cardholder, so their "
+        "Ramp email address has not been seen before. Confirm the To: line is correct "
+        "before sending. ***"
+    ),
+}
 
 
 def render_digest(
@@ -41,7 +57,7 @@ def render_digest(
     items: Sequence[Mapping[str, Any] | Any],
     now: datetime,
     tz: ZoneInfo,
-    recipient_changed: bool = False,
+    recipient_advisory: Optional[str] = None,
 ) -> tuple[str, str]:
     """
     Build (subject, body) for one cardholder digest.
@@ -82,8 +98,9 @@ def render_digest(
     amount_start = _section_amount_start(all_rendered, tz=tz)
 
     body_parts: list[str] = []
-    if recipient_changed:
-        body_parts.extend([_RECIPIENT_CHANGED_WARNING, ""])
+    advisory = _RECIPIENT_ADVISORIES.get(recipient_advisory or "")
+    if advisory:
+        body_parts.extend([advisory, ""])
 
     body_parts.extend([
         f"{first_name.strip() or 'there'},",

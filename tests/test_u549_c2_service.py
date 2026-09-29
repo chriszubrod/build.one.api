@@ -613,3 +613,31 @@ def test_sentitems_429_does_not_stamp_even_if_deleted_would_hit(mocks, draft_mod
     assert result["sent_observed"] == 0
     mocks.digest_repo.stamp_notified.assert_not_called()
     mocks.digest_repo.stamp_outcome.assert_not_called()
+
+
+def test_outer_exception_returns_error_summary_with_failed_one(mocks, draft_mode):
+    """A sweep that dies OUTSIDE per-cardholder isolation must say so.
+
+    run_for_week's own except block is the last line of defence: everything
+    before the per-cardholder try/except (Settings, the roster fetch, the
+    uncaptured read) lands here. `failed` is the only numeric signal that
+    anything went wrong, so a summary of failed=0 would make a crashed sweep
+    indistinguishable from a clean no-op — and the endpoint returns 200 either
+    way. Pinned because a mutation of failed=1 -> failed=0 was GREEN.
+    """
+    with patch.object(
+        RampChaserDigestService,
+        "_run_for_week",
+        side_effect=RuntimeError("roster fetch exploded"),
+    ):
+        result = RampChaserDigestService().run_for_week("2026-09-29")
+
+    assert result["status"] == "error"
+    assert result["failed"] == 1
+    assert result["week_of"] == "2026-09-29"
+    assert result["mode"] == "draft"
+    # a failed sweep drafts nothing and stamps nothing
+    assert result["drafted"] == 0
+    assert result["sent_observed"] == 0
+    mocks.ms_outbox_svc.enqueue_send_mail.assert_not_called()
+    mocks.digest_repo.stamp_notified.assert_not_called()

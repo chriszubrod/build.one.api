@@ -2,49 +2,36 @@
 
 Carry-over items from sessions. Check off as done; prune anything stale.
 
-## U-549 C1 — `update_draft` is INERT IN PROD: its guard sproc was never applied (found 2026-09-28)
+## ~~U-549 C1 — `update_draft` guard sproc never applied~~ — RESOLVED 2026-09-29
 
-Found by being the first caller to actually reach it, during U-556's bill-40638 review-draft repair.
+`dbo.CountMsOutboxByEntityAndKind` **is live**, verified against `sys.objects` at U-567's Step 0. The
+`update_draft` Kind is reachable; `enqueue_update_draft` no longer fails closed on a missing guard.
 
-- [ ] 🔴 **`dbo.CountMsOutboxByEntityAndKind` does not exist in the live database, so `enqueue_update_draft`
-  fails CLOSED for every caller.** `MsOutboxService.enqueue_update_draft` calls
-  `repo.count_by_entity_and_kind(...)` for its kind-scoped idempotency guard; the sproc is missing, the call
-  raises, and the `except` logs `ms.outbox.update_draft.idempotency_guard_failed_enqueue_refused` and
-  `return None`. Failing closed is the **correct** design — an unverifiable idempotency guard must not let a
-  duplicate through — but the net effect is that the entire `update_draft` Kind is unreachable in prod. The
-  board row already says it ("SHIPPED … LOCAL ONLY. ⛔ SQL NOT applied", "Still INERT in prod"); what is new
-  is that it now fails in a way that looks like a bug rather than an absence.
-  **Scope of the gap is exactly one object.** Of the 13 sprocs in `integrations/ms/outbox/sql/ms.outbox.sql`,
-  12 are live and only this one is missing — verified against `sys.objects` 2026-09-28. The definition is
-  purely additive: `CREATE OR ALTER PROCEDURE`, three params, a single read-only `SELECT COUNT(*)`, no table,
-  column or index change, and idempotent by construction.
-  ⚠️ **Belongs to U-549's Gate-2, not to U-556** — applying another unit's pending migration is that unit's
-  deploy-time call. Recorded here so it is not rediscovered the hard way a third time.
-  **Consequence while unapplied:** any review-notification correction has to bypass the outbox and PATCH
-  Graph directly, which gives up the outbox's retry and terminal classification (done once, deliberately,
-  for bill 40638 on 2026-09-28).
+Kept as a record because it was rediscovered the hard way twice: the symptom is
+`ms.outbox.update_draft.idempotency_guard_failed_enqueue_refused` + `return None`, which looks like a bug
+and is actually a correct fail-closed on an unverifiable idempotency guard. If it ever recurs, the fix is
+to apply `integrations/ms/outbox/sql/ms.outbox.sql` — purely additive, `CREATE OR ALTER`, idempotent.
 
 ## U-549 Phase A residuals — booked at Pass 2, deliberately not fixed (2026-09-27)
 
 Found by the Pass-2 efficiency and altitude agents. Each is a **behavior change**, which is why a
 behavior-preserving quality pass could not take them. Design: `docs/design/u549-ramp-receipt-memo-chaser.md`.
 
-- [ ] 🟡 **The refetch set is unbounded and ratchets forever.** `ReadUnresolvedRampTransactionIds` is a bare
-  `WHERE [ResolvedAt] IS NULL` — no age predicate, no `TOP`. Two row classes never leave it: an item that aged
-  out of the 90-day window and is still open, and an item whose Ramp transaction **404s** (the external client
-  returns `None`, so the row never enters `by_id`, so `mark_resolved` can never fire). Each costs one
-  `GET /developer/v1/transactions/{id}` **every sweep, forever**, and the count only goes up. Harmless today
-  (~37 open items, almost nothing has aged out) but at N=37 it would be a 7x amplification of the ~6-request
-  sweep baseline. Fix = a bound: age-cap the refetch set, or persist a terminal "gone from Ramp" state so 404s
-  stop being retried. Both change behavior. Belongs to the scheduling phase (Phase D).
-- [ ] 🟢 **The straggler fan-out is invisible.** `stats.transactions_fetched` counts only the window; nothing in
-  `RampChaserSweepStats` or the logs reveals how many individual refetches a sweep did, so an operator cannot
-  watch the ratchet above grow. `integrations/intuit/qbo/base/delete_reconcile.py:105` is this repo's named home
-  for the same "bulk list + diff + confirm absentees individually" shape, complete with a candidate ceiling and
-  an `abort_reason` — worth adopting wholesale when the bound lands, rather than inventing a second vocabulary.
-- [ ] 🟢 **`read_by_ramp_transaction_id` has no caller.** Kept deliberately — it is plausible scaffolding for the
-  Phase C digest, which needs to read a row back. If Phase C lands without using it, delete the method **and its
-  stored procedure**. Do not let it quietly become permanent dead code.
+- [ ] 🟡 **The refetch set is unbounded and ratchets forever — now MEASURABLE, still unbounded.**
+  `ReadUnresolvedRampTransactionIds` is a bare `WHERE [ResolvedAt] IS NULL` — no age predicate, no `TOP`.
+  Two row classes never leave it: an item that aged out of the 90-day window and is still open, and an item
+  whose Ramp transaction **404s** (the external client returns `None`, so the row never enters `by_id`, so
+  `mark_resolved` can never fire). Each costs one `GET /developer/v1/transactions/{id}` **every sweep,
+  forever**, and the count only goes up. ✅ **U-567 made it observable** — `stragglers_refetched` and
+  `stragglers_gone_from_ramp` on `RampChaserSweepStats`, plus a per-sweep `ramp.chaser.stragglers` log line
+  and both counters in the scheduler's `ramp_chaser_sweep.done` line. **The bound itself is still open and
+  is the remaining work here:** age-cap the refetch set, or persist a terminal "gone from Ramp" state so
+  404s stop being retried. Both change behaviour, so this wants its own Pass 1 — it did NOT ride along in
+  U-567, which was deliberately visibility-only. Watch `stragglers_gone_from_ramp` first: a non-zero value
+  that never falls is the 404 class, and it is the half that can never self-heal.
+  `integrations/intuit/qbo/base/delete_reconcile.py:105` is this repo's named home for the same "bulk list
+  + diff + confirm absentees individually" shape, complete with a candidate ceiling and an `abort_reason` —
+  adopt it wholesale rather than inventing a second vocabulary.
 
 ## U-549 deferred scope — Ramp chaser follow-ups (booked 2026-09-25, design session)
 

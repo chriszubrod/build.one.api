@@ -6,9 +6,19 @@
 > Origin: this is U-005's explicitly deferred v2 — *"Auto-emailing cardholders for missing info (v2 — the
 > exception path is flag only in v1)"* ([`expense-coding-cockpit.md`](../../../build.one.team/product/specs/expense-coding-cockpit.md)).
 > Author: session 2026-09-25 with Chris.
-> **Status: Phase A + C1 SHIPPED and DEPLOYED-TO-DB 2026-09-28** (pushed; both SQL files applied; code
-> still inert — no caller outside the units). **C2 REVISED 2026-09-28 and awaiting its own Gate 1.**
-> Phases B, C2, D, E are unbuilt and each takes its own Gate 1.
+> **Status 2026-09-29: Phases A, C1, C2 SHIPPED + DEPLOYED. The chaser is LIVE and populating** —
+> `dbo.RampTransactionFollowUp` carries real open items, refreshed by a daily 11:00 UTC sweep (U-567).
+> ⛔ **`RAMP_CHASER_MODE` is still `off`: no digest has ever been drafted, and no cardholder has been
+> emailed.** U-570 added recipient-change detection, which gates flipping that switch.
+>
+> ⛔ **PHASE B (web worklist) IS KILLED — Chris, 2026-09-29: "This is not a web ui. This is only a backend
+> scheduled task."** Every mention of a *worklist* below is HISTORICAL; there is no endpoint and no page, and
+> none is planned. **The visibility gap it was meant to close is closed by the DRAFT REVIEW instead**: every
+> digest is a draft the owner reads before sending, so all open items reach him weekly — pushed, not pulled.
+> Two decisions rested on the worklist existing and are annotated in place (§6 escalation alternative, and
+> the two-clocks note); re-open either deliberately rather than inheriting a premise that expired.
+>
+> Remaining: **D — Tuesday digest timer**, **E — docs**. Each takes its own Gate 1.
 
 ---
 
@@ -336,13 +346,20 @@ bite that week. Tuesday gives them the week to clear it.
 - **Escalation**: any cardholder holding an item ≥14 days gets Chris CC'd on that digest; those items are
   flagged in the body and stamped `EscalatedAt`. *(Alternative considered — a separate consolidated escalation
   digest to Chris. Rejected for v1: the web worklist already provides the consolidated view, and a CC keeps the
-  escalation visible to the cardholder, which is the point.)*
+  escalation visible to the cardholder, which is the point.)* ⛔ **REVISION 2026-09-29 — HALF THIS REASONING IS
+  GONE.** Phase B is killed, so "the worklist provides the consolidated view" no longer holds. The second half
+  still does, and the CC remains the design. But if a consolidated view is ever wanted again it must be a
+  BACKEND artefact — a summary email or the sweep's own logged counters — never a page. Re-open this choice
+  deliberately rather than inheriting a rejection whose premise expired.
 - ⚠️ **Two different clocks — do not collapse them.** Escalation keys off `FirstSeenAt` (**how long we have been
   chasing**), never off transaction age. Phase 0 measured **22 of 37 open items already past 14 days** (oldest
   82d), so an age-based clock would CC Chris on 5 of 6 cardholders on the very first run and make escalation
   meaningless before it ever meant anything. Backfilled items get `FirstSeenAt = go-live`, so nothing escalates
-  for the first two weeks — correct, and deliberate. The **worklist** (Phase B) sorts by transaction age instead,
-  so Chris still sees the 82-day-old item on day one; it just doesn't manufacture an escalation.
+  for the first two weeks — correct, and deliberate. ⛔ **REVISION 2026-09-29:** this used to continue "the
+  **worklist** (Phase B) sorts by transaction age instead, so Chris still sees the 82-day-old item on day
+  one". Phase B is KILLED, so there is no such surface: for the first two weeks nothing escalates AND
+  nothing displays the aged items. The **>14-day marker in the digest body (§6.2) is now the only place age
+  is visible** — acceptable because the digest lists every open item regardless of age, but a real narrowing.
 - **Never CC the escalation recipient onto their own digest.** Chris is himself the #2 cardholder (10 open items,
   $3,884.98 at stake — Phase 0). CC'ing him on his own reminder is pure noise; suppress it.
 - **Delivery rides the MS outbox `send_mail` Kind** — never an inline Graph call, exactly as
@@ -516,13 +533,16 @@ Each phase is independently shippable and independently useful. **Phase 0 gates 
 |---|---|---|
 | ✅ **0 — Probe (read-only)** | **DONE 2026-09-27.** 420 transactions / 90d, live production, read-only. Settled §4.4's classifier (Ramp's own flag, not a hand-rolled test), sized the queue at **37 open items across 6 cardholders**, and answered the backfill question. Ran inline per [[feedback_no_script_files]] — no script file committed. | api |
 | **A — Integration + state** | `integrations/ramp/`, `dbo.RampTransactionFollowUp`, classify + upsert sweep. No email, no UI. | api |
-| **B — Worklist** | `GET` endpoint + web page: open items by cardholder, age buckets. **Closes Chris's visibility gap on its own, before a single email is sent.** | api + web |
+| ~~**B — Worklist**~~ | ⛔ **KILLED 2026-09-29 by Chris: "This is not a web ui. This is only a backend scheduled task."** No `GET` endpoint, no page. **The visibility gap is closed by the DRAFT REVIEW instead** — every digest is a draft the owner reads before sending, so he sees all five cardholders' open items weekly, pushed rather than pulled. A page he must remember to open is a weaker instrument than mail already in front of him. ⚠️ See the revision note at §6 — two decisions in this doc rested on the worklist existing. | ~~api + web~~ |
 | **C — Digest** | `RampChaserDigestService` + MS outbox enqueue, **draft-only** (§6.1), including the update-in-place and vanished-draft-means-sent handling. | api |
 | **D — Schedule** | Tue/Fri timer. | scheduler |
 | **E — Docs** | `/docs` section + operator guide, per the per-unit pipeline. | web + team |
 
-**Phase B before C is deliberate.** Visibility is half the ask, it carries zero outbound-email risk, and the
-worklist is the instrument we use to sanity-check the classifier before any of it reaches the crew.
+~~**Phase B before C is deliberate.**~~ ⛔ **Moot — B is killed (2026-09-29) and C shipped first anyway.** The
+classifier was instead sanity-checked directly against prod: the first real sweep produced **24 open items over
+5 cardholders**, cross-checked against the Phase 0 probe on three invariants (worst cardholder still exactly 11,
+the oldest open item is the same transaction, and zero rows carry neither flag). That is the check the worklist
+was going to provide, and it did not need a UI.
 
 ---
 

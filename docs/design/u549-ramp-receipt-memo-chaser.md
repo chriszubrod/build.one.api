@@ -6,8 +6,9 @@
 > Origin: this is U-005's explicitly deferred v2 — *"Auto-emailing cardholders for missing info (v2 — the
 > exception path is flag only in v1)"* ([`expense-coding-cockpit.md`](../../../build.one.team/product/specs/expense-coding-cockpit.md)).
 > Author: session 2026-09-25 with Chris.
-> **Status: Gate-1 APPROVED 2026-09-27 · Phase A BUILT, reviewed, mutation-proven · Gate-2 pending.**
-> Phases B–E are still unbuilt and each takes its own Gate 1.
+> **Status: Phase A + C1 SHIPPED and DEPLOYED-TO-DB 2026-09-28** (pushed; both SQL files applied; code
+> still inert — no caller outside the units). **C2 REVISED 2026-09-28 and awaiting its own Gate 1.**
+> Phases B, C2, D, E are unbuilt and each takes its own Gate 1.
 
 ---
 
@@ -49,6 +50,10 @@ reminders on" is closed as an alternative. This is the strongest single piece of
 - Persisted delinquency state per transaction (what's missing, since when, notified how often, resolved when).
 - **Weekly per-cardholder digest email** from build.one, created as a **draft** for human review — v1
   never auto-sends (§6.1). *(Was twice-weekly; reduced to once per week by Chris, 2026-09-28.)*
+- ⛔ **One draft per (cardholder, week); NEVER patched.** A PATCH of an open draft silently reverts
+  when the reviewer's Outlook autosaves over it (§6.1) — and the reviewer having it open is the
+  normal state here. C2 does **not** use C1's `update_draft` Kind.
+- **Send detection via `conversation_id` + SentItems/DeletedItems**, never from a 404 (§6.1).
 - ~~**Escalation at 14 days**~~ — **DEFERRED** (Chris, 2026-09-28). Meaningless in draft mode: he sends every
   draft, so he already sees every message. Aged items carry an inline marker instead (§6.2). A **standing CC to
   the company owner** replaces it, from `RAMP_CHASER_CC_EMAIL` (§6.2).
@@ -93,9 +98,12 @@ Ramp API ──(read-only, cursor-paged)──> RampTransactionService
                         ┌─────────────────────┴──────────────────────┐
                         │                                            │
               RampChaserDigestService                      GET /ramp-follow-up
-              (twice-weekly sweep)                         (web worklist)
+              (WEEKLY, Tuesday)                            (web worklist)
                         │
-                 MS outbox `send_mail`  ──> Graph ──> cardholder + CC Chris @14d
+              dbo.RampChaserDigest  ◄── per-cardholder draft state (§5.2)
+                        │
+                 MS outbox `send_mail`  ──> Graph ──> DRAFT to cardholder, CC owner
+                                                      (never patched — §6.1)
 ```
 
 ### 4.1 Integration layer — `integrations/ramp/`
@@ -276,6 +284,44 @@ Phase A has none.
 
 ---
 
+### 5.2 `dbo.RampChaserDigest` — **NEW, added at the C2 redesign (2026-09-28)**
+
+⛔ **The single highest-leverage change in the C2 revision.** Draft state was specced onto
+`dbo.RampTransactionFollowUp`, which is **one row per transaction** — but §6 and §6.1 treat that state as
+**per cardholder** ("*the stored `DraftMessageId`*", singular). That mismatch is the root of four separate P0s
+found by the pre-build red-team.
+
+| column | purpose |
+|---|---|
+| `Id`, `PublicId` | house convention |
+| `CardHolderRampUserId` | the cardholder this digest is for |
+| `WeekOf` | the Tuesday this digest belongs to — **computed in `business_timezone`, never UTC** (§6) |
+| `DraftMessageId` | the Graph draft created for this (cardholder, week) |
+| `ConversationId` | ⛔ the send-detection key (§6.1) — a 404 alone proves nothing |
+| `InternetMessageId` | secondary identity for the same lookup |
+| `LastDraftedAt` | when the draft was created (distinct from notified) |
+| `LastNotifiedAt`, `NotifyCount` | stamped on an **observed send only** |
+| `Outcome` | `drafted` / `sent` / `discarded_unsent` / `unsent_carryover` / `unroutable` |
+| `CreatedAt`, `UpdatedAt`, `RowVersion` | house convention |
+
+**UNIQUE on `(CardHolderRampUserId, WeekOf)`** — that pair is the idempotency anchor, and it is what makes a
+re-run safe without depending on a `uuid5` of a date string.
+
+**What this closes, and why one table is worth it:**
+
+| pre-mortem P0 | how the digest row closes it |
+|---|---|
+| **No edge back to "draft again"** — each cardholder chased exactly once, forever, while `NotifyCount` climbed | Each week is its own row. Last week being `sent` says nothing about this week; there is no stale `DraftMessageId` to re-resolve. |
+| **Full resolution orphans a draft** — a cardholder who clears *all* items drops out of a `ResolvedAt IS NULL` query, so their outstanding draft is never revisited and gets sent demanding completed work | The digest row survives independently of the follow-up rows, so an outstanding draft is still findable after every item resolves. |
+| **`LastNotifiedAt` misses every *successful* chase** — the cardholder fixes everything, rows resolve, the send is never observed, and a chase that *worked* records as `NotifyCount = 0` | The counter lives on the digest row, which `ResolvedAt` does not touch. |
+| **Torn writes** — stamping one draft id across N transaction rows; a crash after 3 of 10 leaves 3 pointing at the draft and 7 NULL, and the next cycle's behaviour depends on an unstated read | One row, one write. No fan-out, no partial state. |
+
+`dbo.RampTransactionFollowUp` keeps exactly what is genuinely per-transaction: `NeedsMemo`, `NeedsReceipt`,
+`FirstSeenAt`, `ResolvedAt`, and the display cache. Its `LastDraftedAt` / `DraftMessageId` / `LastNotifiedAt` /
+`NotifyCount` / `EscalatedAt` columns become **vestigial** — they were never written by anything (confirmed:
+`UpsertRampTransactionFollowUp` sets none of them). ⚠️ **Leave them in place for now** rather than shipping a
+DROP against a just-applied table; book the cleanup and do it once C2 is proven.
+
 ## 6. Cadence, escalation, delivery
 
 **Chris's call: ONCE PER WEEK** (2026-09-28, reduced from twice). Day is a Phase-D scheduler concern, not a
@@ -308,32 +354,75 @@ bite that week. Tuesday gives them the week to clear it.
 ([[reference_vendor_document_request_email]]). Lives in config, not in code. Accepted side effect: employee
 replies land in the AP mail flow alongside vendor correspondence.
 
-### 6.1 Drafts, not sends — and the resend trap
+### 6.1 Drafts, not sends — **REVISED 2026-09-28 after two pieces of hard evidence**
 
 **Chris's call (2026-09-25): every chaser email is created as a DRAFT for human review. v1 never auto-sends.**
-Consistent with the house convention for all outbound chase mail.
+That stands. What changed is *how* a draft is maintained across cycles, and how a send is detected.
 
-This is not merely "stop at the `draft` rung" — drafts have failure modes a send does not, and the design has to
-answer them:
+#### ⛔ Evidence 1 — a PATCH of an open draft SILENTLY REVERTS
 
-- **`LastNotifiedAt` / `NotifyCount` must not be stamped at draft creation.** A draft that is never sent is a
-  cardholder who was never chased. Stamping on enqueue would make the metrics lie and start the escalation clock
-  on an email nobody received. Draft creation stamps `LastDraftedAt` + `DraftMessageId`; `LastNotifiedAt` is
-  stamped only on an **observed send** (below). The 14-day escalation clock keys off `FirstSeenAt`, which is
-  Ramp-observed and therefore always honest.
-- **Never create a second draft while an unsent one is outstanding**, or the Drafts folder fills with duplicates
-  within two sweeps. Before drafting, resolve the stored `DraftMessageId` and confirm `is_draft == True`
-  ([[feedback_never_patch_email_by_subject_match]] — by verified id, never by subject match). Still a draft →
-  **update it in place** with the current open items rather than creating another.
-- ⚠️ **A vanished draft means SENT, not missing.** [[feedback_remittance_check_sent_before_recreate]] is directly
-  on point: if `DraftMessageId` no longer resolves as a draft, the overwhelmingly likely cause is that Chris sent
-  it. Treat that as the **observed send** — stamp `LastNotifiedAt` / bump `NotifyCount` — and do **not** recreate
-  it. Recreating on a vanished draft is how this design would spam the crew with duplicates of mail they already
-  received.
-- **Idempotent** via a deterministic outbox `EntityPublicId` keyed on `(cardholder_ramp_user_id, sweep_date)`, so
-  a re-run on the same day cannot produce a second draft even before the checks above.
+[[feedback_graph_draft_patch_reverts_if_client_open]], observed live 2026-09-28 on the G&M Plumbing bill-40638
+review draft: a `PATCH me/messages/{id}` landed and read back correct **immediately**, then Chris's Outlook —
+which had the draft open — autosaved its stale copy over it at 18:26:34Z and blanked it. Last-writer-wins, and
+the human's client writes last.
 
----
+**This is not an edge case for this feature; it is the normal state.** Chris reviews and sends every draft, so
+"a human has this draft open" is the expected condition, not a rare one. The failure it produces is the exact
+one the unit exists to prevent:
+
+1. Tuesday — draft created for a cardholder listing 5 open items.
+2. Chris opens it to review.
+3. A later run PATCHes it to the current 3 items. Graph returns 2xx; C1 truthfully stamps `update_draft_patched`.
+4. His still-open client autosaves → the draft reverts to the **5-item** body.
+5. He sends it. **The cardholder is chased for two items they already cleared.**
+
+Note the outcome stamp was *true when written and false a minute later* —
+[[feedback_live_state_readings_are_perishable]] in its purest form.
+
+#### ⛔ Evidence 2 — 404 is not proof of a send
+
+A vanished draft id means sent **or** deleted **or moved** (Graph message ids change on move). Three review
+rounds on C1 established this; C1 was narrowed to report `not_found` as a fact and infer nothing.
+
+#### → The revision: ONE DRAFT PER (CARDHOLDER, WEEK). NEVER PATCH.
+
+**Do not maintain a draft across cycles.** Each weekly run creates that week's draft from current data and
+leaves any earlier unsent draft alone.
+
+- ⛔ **C2 does NOT call C1's `update_draft` Kind.** Patching is unsafe for exactly the reviewer this feature
+  has. *(Honest note: C1 was built before this evidence existed. It is a correct and useful outbox capability,
+  but it is not what C2 v1 needs — a sequencing mistake, recorded rather than hidden. Do not reach for it here
+  because it exists.)*
+- **A leftover unsent draft is a SIGNAL, not a defect to patch away.** It means the previous week's draft was
+  never sent. Surface it on the Phase-B worklist as `unsent_carryover`; do not delete it (deletion needs a Graph
+  write Kind that does not exist, and deleting a human's mail is not ours to do).
+- **Two drafts in the folder is acceptable and self-correcting.** Chris sends the newer and discards the older;
+  both are visible and dated. Visible untidiness beats one silently-wrong draft.
+- At weekly cadence a week-old draft's contents are stale anyway, so recreating is *also* the more correct body.
+
+#### Send detection — `conversation_id`, never absence
+
+Store **`conversation_id`** (and `internet_message_id`) alongside the draft id at creation; `_format_message`
+already returns both. On a later run, for a draft whose id no longer resolves:
+
+| observed | reading | action |
+|---|---|---|
+| a message in that conversation in **SentItems** | genuinely sent | stamp `LastNotifiedAt`, bump `NotifyCount` |
+| the draft in **DeletedItems** | discarded unsent | do **NOT** stamp; surface as `discarded_unsent` |
+| neither | unknown | do **NOT** stamp; log and surface |
+
+All three are id/conversation-keyed lookups, so this respects
+[[feedback_never_patch_email_by_subject_match]]. ⛔ **Never infer a send from absence.**
+
+#### Still true from the original
+
+- One digest per cardholder per run, never one per transaction.
+- Delivery rides the existing MS outbox `send_mail` Kind — never an inline Graph call.
+- Per-cardholder `try/except`; one bad recipient cannot sink the batch; a cardholder with no resolvable email is
+  logged, counted and surfaced, never silently dropped.
+- `LastNotifiedAt` / `NotifyCount` stamp on an **observed send only** — never on draft creation. A draft nobody
+  sent is a cardholder nobody chased.
+
 
 ### 6.2 The message — specified by Chris, 2026-09-28
 
@@ -477,6 +566,24 @@ worklist is the instrument we use to sanity-check the classifier before any of i
 - [ ] A Ramp API outage fails the sweep closed — no partial digests, no rows marked notified that weren't.
 - [ ] Worklist is Expense-module gated; an unauthorized caller gets 403.
 
+**Revised C2 draft-model criteria (2026-09-28):**
+- [ ] ⛔ **No code path PATCHes a chaser draft.** C2 must not call `enqueue_update_draft`. Mutation-prove it:
+      grep-assert the absence in a test, so a future contributor cannot quietly reach for C1's Kind.
+- [ ] **One draft per `(CardHolderRampUserId, WeekOf)`** — enforced by the UNIQUE index, not by application logic.
+      A re-run in the same week creates nothing new.
+- [ ] `WeekOf` is computed in **`business_timezone`**, not UTC. Prove it with a test at a boundary hour: a run at
+      23:00 Central Monday must NOT collide with the scheduled Tuesday-morning run.
+- [ ] **An unsent draft from a previous week does not block this week's draft.** It is surfaced as
+      `unsent_carryover`, never patched, never deleted.
+- [ ] **A send is stamped only on positive evidence** — a message in that `ConversationId` found in SentItems.
+      A 404 alone stamps nothing. A draft found in DeletedItems is recorded `discarded_unsent` and does NOT
+      stamp `LastNotifiedAt`.
+- [ ] **A cardholder who clears every item still has their outstanding draft findable** (the digest row survives
+      independently of `ResolvedAt`), and it is surfaced rather than silently sent.
+- [ ] `LastNotifiedAt` / `NotifyCount` survive their transactions resolving — so a chase that WORKED is
+      distinguishable from one that never happened.
+- [ ] Only items with at least one of `NeedsMemo` / `NeedsReceipt` actually set appear in a digest body.
+
 ---
 
 ## 11. Risks
@@ -496,6 +603,27 @@ worklist is the instrument we use to sanity-check the classifier before any of i
 ---
 
 ## 12. Open questions for Gate-1
+
+### ⛔ C2 BLOCKER — which mailbox is `/me`?
+
+`get_message` and `list_messages` accept a `mailbox` parameter. **`create_draft` and `update_draft` do not —
+both hardcode `me/messages`.** So §7's `RAMP_CHASER_SENDER = invoice@rogersbuild.com` **cannot be honoured by
+the draft path as built**; the draft lands wherever `/me` resolves for the MS token.
+
+The failure shape is what makes this a blocker rather than a detail. If C2 reads with
+`get_message(mailbox=ramp_chaser_sender)` while drafts are created under `/me`, **every GET 404s** — and a 404
+that gets read as "gone" would stamp `LastNotifiedAt` across the whole population while having sent nothing.
+§6.1's revision removes that specific trap (a 404 no longer implies a send), but the drafts would still be
+invisible to every subsequent run, silently, forever.
+
+**Must be settled before C2 starts:** what mailbox does the MS token's `/me` resolve to, and does
+`create_draft` need a `mailbox` parameter? ⚠️ Related and already recorded:
+[[feedback_graph_draft_patch_reverts_if_client_open]] — whichever mailbox it is, a human reviewing in it will
+autosave over a PATCH, which is why §6.1 no longer patches.
+
+### Resolved earlier
+
+
 
 **Resolved 2026-09-25 (Chris):** sender = `invoice@rogersbuild.com` · Ramp's policy deadline **is** switched on
 · every chaser email is a **draft**, v1 never auto-sends.

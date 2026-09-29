@@ -403,6 +403,12 @@ def test_u570_latest_recipient_hash_uses_STRICT_less_than_on_weekof():
     normalised = re.sub(r"\s+", " ", body)
     assert "[WeekOf] < @WeekOf" in normalised, "must be STRICT less-than"
     assert "[WeekOf] <= @WeekOf" not in normalised, "<= returns the row being written"
+    # Equally load-bearing, and proven unpinned by mutation: without this the
+    # sproc returns the LATEST row even when its hash is NULL, so a cardholder
+    # whose most recent row predates this column loses the real baseline from an
+    # earlier week and silently drops back to "unverified" — which is the
+    # bootstrap bypass step 4c found, re-entered through the SQL.
+    assert "[RecipientHash] IS NOT NULL" in normalised, "must skip unbaselined rows"
 
 
 def test_u549_c2_digest_sql_datetime_outputs_use_convert_126():

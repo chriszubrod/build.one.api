@@ -121,6 +121,34 @@ END
 GO
 
 
+CREATE OR ALTER PROCEDURE ReadUncapturedRampChaserDigests
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    SELECT
+        d.[Id],
+        d.[PublicId],
+        d.[RowVersion],
+        d.[CardHolderRampUserId],
+        d.[WeekOf],
+        d.[DraftMessageId],
+        d.[ConversationId],
+        d.[InternetMessageId],
+        CONVERT(VARCHAR(30), d.[LastDraftedAt], 126) AS [LastDraftedAt],
+        CONVERT(VARCHAR(30), d.[LastNotifiedAt], 126) AS [LastNotifiedAt],
+        d.[NotifyCount],
+        d.[Outcome],
+        CONVERT(VARCHAR(30), d.[CreatedAt], 126) AS [CreatedAt],
+        CONVERT(VARCHAR(30), d.[UpdatedAt], 126) AS [UpdatedAt]
+    FROM dbo.[RampChaserDigest] d
+    WHERE d.[DraftMessageId] IS NULL
+      AND d.[LastNotifiedAt] IS NULL
+    ORDER BY d.[CardHolderRampUserId], d.[WeekOf];
+END
+GO
+
+
 CREATE OR ALTER PROCEDURE ReadOutstandingRampChaserDigests
 AS
 BEGIN
@@ -269,7 +297,8 @@ BEGIN
         CONVERT(VARCHAR(30), INSERTED.[CreatedAt], 126) AS [CreatedAt],
         CONVERT(VARCHAR(30), INSERTED.[UpdatedAt], 126) AS [UpdatedAt]
     WHERE [CardHolderRampUserId] = @CardHolderRampUserId
-      AND [WeekOf] = @WeekOf;
+      AND [WeekOf] = @WeekOf
+      AND [LastNotifiedAt] IS NULL;
 
     COMMIT TRANSACTION;
 END

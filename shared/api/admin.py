@@ -322,7 +322,13 @@ async def ramp_chaser_digest_router(week_of: Optional[str] = None):
         )
 
         svc = RampChaserDigestService()
-        result = svc.run_for_week(week_of)
+        resolved_week = week_of
+        if resolved_week:
+            resolved_week = RampChaserDigestService.canonicalize_week_of(
+                resolved_week,
+                config.Settings(),
+            )
+        result = svc.run_for_week(resolved_week)
         if is_dataclass(result):
             return asdict(result)
         return result

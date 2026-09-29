@@ -108,6 +108,17 @@ def test_u549_c2_read_outstanding_filters_unsent_drafts():
     assert re.search(r"\[LastNotifiedAt\]\s+IS\s+NULL", body, re.I)
 
 
+def test_u549_c2_read_uncaptured_filters_missing_draft_id():
+    body = strip_sql_comments(sproc_body(DIGEST_SQL, "ReadUncapturedRampChaserDigests"))
+    assert re.search(r"\[DraftMessageId\]\s+IS\s+NULL", body, re.I)
+    assert re.search(r"\[LastNotifiedAt\]\s+IS\s+NULL", body, re.I)
+
+
+def test_u549_c2_stamp_notified_idempotent_on_last_notified():
+    body = strip_sql_comments(sproc_body(DIGEST_SQL, "StampRampChaserDigestNotified"))
+    assert re.search(r"\[LastNotifiedAt\]\s+IS\s+NULL", body, re.I)
+
+
 def test_u549_c2_sqlite_second_upsert_same_pair_updates_not_inserts():
     conn = sqlite3.connect(":memory:")
     conn.execute(
@@ -293,6 +304,7 @@ def _sql_declared_params(sql_path: Path, sproc: str) -> set[str]:
             "ReadRampChaserDigestByCardHolderAndWeek",
             {"CardHolderRampUserId", "WeekOf"},
         ),
+        (DIGEST_SQL, "ReadUncapturedRampChaserDigests", set()),
         (DIGEST_SQL, "ReadOutstandingRampChaserDigests", set()),
         (
             DIGEST_SQL,

@@ -3,7 +3,7 @@
 import asyncio
 import sys
 import types
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 from fastapi import HTTPException
@@ -12,15 +12,63 @@ from fastapi.testclient import TestClient
 import shared.api.admin as admin
 from app import app
 from config import Settings
+from entities.ramp_chaser_digest.business.digest_service import RampChaserDigestService
 
 
-def _ramp_chaser_draft_enabled(mode: str | None) -> bool:
-    """Fail-closed draft gate — must match RampChaserDigestService.run_for_week.
+@pytest.fixture
+def ramp_chaser_draft_sweep_mocks():
+    """Minimal mocks so run_for_week can enter draft mode without live DB/Graph."""
+    digest_repo = MagicMock()
+    digest_repo.read_uncaptured.return_value = []
+    digest_repo.read_outstanding.return_value = []
 
-    Unlike the time-entry digest, only the exact string ``draft`` enables the
-    sweep (no ``.lower()`` — ``DRAFT`` is treated as off).
-    """
-    return (mode or "off") == "draft"
+    follow_up_repo = MagicMock()
+    follow_up_repo.read_unresolved.return_value = []
+
+    outbox_repo = MagicMock()
+    outbox_repo.read_completed_by_entity.return_value = []
+    outbox_repo.count_by_entity_and_kind.return_value = 0
+    outbox_repo.read_pending_by_entity.return_value = []
+
+    user_service = MagicMock()
+    user_service.build_roster.return_value = {}
+
+    patches = [
+        patch(
+            "entities.ramp_chaser_digest.persistence.repo.RampChaserDigestRepository",
+            return_value=digest_repo,
+        ),
+        patch(
+            "entities.ramp_transaction_follow_up.persistence.repo.RampTransactionFollowUpRepository",
+            return_value=follow_up_repo,
+        ),
+        patch(
+            "integrations.ms.outbox.persistence.repo.MsOutboxRepository",
+            return_value=outbox_repo,
+        ),
+        patch(
+            "integrations.ramp.user.business.service.RampUserService",
+            return_value=user_service,
+        ),
+        patch("integrations.ramp.user.external.client.RampUserExternalClient"),
+        patch("integrations.ms.outbox.business.service.MsOutboxService"),
+        patch("integrations.ms.mail.external.client.get_message"),
+    ]
+    for p in patches:
+        p.start()
+    try:
+        yield {
+            "digest_repo": digest_repo,
+            "follow_up_repo": follow_up_repo,
+        }
+    finally:
+        for p in patches:
+            p.stop()
+
+
+# Do NOT reintroduce a local copy of the draft-mode predicate (e.g. _ramp_chaser_draft_enabled).
+# A mirrored helper here already hid a real divergence: the test asserted its own gate while
+# RampChaserDigestService.run_for_week normalised with .strip().lower() — the suite stayed green.
 
 
 @pytest.mark.parametrize(
@@ -28,21 +76,44 @@ def _ramp_chaser_draft_enabled(mode: str | None) -> bool:
     [
         ("off", False),
         ("", False),
-        ("DRAFT", False),
+        ("DRAFT", True),
+        (" DRAFT ", True),
         ("drafts", False),
         ("send", False),
-        ("draf", False),
+        ("drat", False),
         ("draft", True),
     ],
 )
-def test_ramp_chaser_mode_fail_closed_only_exact_draft(mode, expected_draft):
-    assert _ramp_chaser_draft_enabled(mode) is expected_draft
-
-
-def test_ramp_chaser_mode_fail_closed_from_settings(monkeypatch):
-    monkeypatch.setenv("RAMP_CHASER_MODE", "DRAFT")
-    settings = Settings()
-    assert _ramp_chaser_draft_enabled(settings.ramp_chaser_mode) is False
+def test_ramp_chaser_mode_fail_closed_only_exact_draft(
+    monkeypatch,
+    mode,
+    expected_draft,
+    request,
+):
+    monkeypatch.setenv("RAMP_CHASER_MODE", mode)
+    if expected_draft:
+        sweep_mocks = request.getfixturevalue("ramp_chaser_draft_sweep_mocks")
+        result = RampChaserDigestService().run_for_week("2026-09-29")
+        assert result["status"] != "disabled"
+        assert result["status"] == "ok"
+        assert result["mode"] == "draft"
+        sweep_mocks["digest_repo"].read_uncaptured.assert_called()
+    else:
+        with patch(
+            "entities.ramp_chaser_digest.persistence.repo.RampChaserDigestRepository"
+        ) as digest_cls, patch(
+            "entities.ramp_transaction_follow_up.persistence.repo.RampTransactionFollowUpRepository"
+        ) as follow_cls, patch(
+            "integrations.ms.outbox.business.service.MsOutboxService"
+        ) as ms_outbox_cls, patch(
+            "integrations.ms.mail.external.client.get_message"
+        ) as get_message:
+            result = RampChaserDigestService().run_for_week("2026-09-29")
+        assert result["status"] == "disabled"
+        digest_cls.assert_not_called()
+        follow_cls.assert_not_called()
+        ms_outbox_cls.assert_not_called()
+        get_message.assert_not_called()
 
 
 def test_ramp_chaser_cc_email_defaults_to_none():
@@ -117,6 +188,10 @@ def fake_ramp_chaser_digest_service():
         def __init__(self):
             pass
 
+        @staticmethod
+        def canonicalize_week_of(week_of, _settings):
+            return week_of
+
         def run_for_week(self, week_of):
             return mock_svc.run_for_week(week_of)
 
@@ -156,3 +231,23 @@ def test_ramp_chaser_digest_router_validates_week_of_before_run():
     with pytest.raises(HTTPException) as exc_info:
         asyncio.run(admin.ramp_chaser_digest_router(week_of="2026-99-99"))
     assert exc_info.value.status_code == 400
+
+
+def test_ramp_chaser_admin_canonicalizes_monday_week_of(
+    client, drain_secret_configured,
+):
+    from entities.ramp_chaser_digest.business.digest_service import (
+        RampChaserDigestService,
+    )
+
+    with patch.object(
+        RampChaserDigestService,
+        "run_for_week",
+        return_value={"status": "disabled", "mode": "off"},
+    ) as run_mock:
+        response = client.post(
+            "/api/v1/admin/ramp-chaser/digest?week_of=2026-09-28",
+            headers={"X-Drain-Secret": "unit-test-drain-secret"},
+        )
+    assert response.status_code == 200
+    run_mock.assert_called_once_with("2026-09-29")

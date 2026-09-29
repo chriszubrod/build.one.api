@@ -47,6 +47,7 @@ class RampChaserDigestService:
                 "skipped_inactive": 0,
                 "unroutable": 0,
                 "refused_ms_writes_gate": 0,
+                "outbox_dead_letter": 0,
                 "failed": 1,
             }
 
@@ -63,7 +64,7 @@ class RampChaserDigestService:
             return self._empty_summary(status="disabled", mode=mode, week_of=week_of)
 
         if week_of:
-            week_of = str(week_of).strip()
+            week_of = self.canonicalize_week_of(str(week_of).strip(), settings)
         else:
             week_of = self._default_week_of(settings, now=now)
 
@@ -79,6 +80,11 @@ class RampChaserDigestService:
         follow_up_repo = RampTransactionFollowUpRepository()
         outbox_repo = MsOutboxRepository()
         user_service = RampUserService(RampUserExternalClient())
+
+        self._reconcile_uncaptured_drafts(
+            digest_repo=digest_repo,
+            outbox_repo=outbox_repo,
+        )
 
         sent_observed = 0
         discarded_unsent = 0
@@ -106,6 +112,7 @@ class RampChaserDigestService:
         skipped_inactive = 0
         unroutable = 0
         refused = 0
+        outbox_dead_letter = 0
         failed = 0
 
         for card_holder_id, items in groups.items():
@@ -131,6 +138,8 @@ class RampChaserDigestService:
                     unroutable += 1
                 elif outcome == "refused":
                     refused += 1
+                elif outcome == "outbox_dead_letter":
+                    outbox_dead_letter += 1
             except Exception as error:
                 failed += 1
                 logger.exception(
@@ -153,10 +162,27 @@ class RampChaserDigestService:
             "skipped_inactive": skipped_inactive,
             "unroutable": unroutable,
             "refused_ms_writes_gate": refused,
+            "outbox_dead_letter": outbox_dead_letter,
             "failed": failed,
         }
         logger.info("ramp_chaser_digest.sweep_complete %s", summary)
         return summary
+
+    def _reconcile_uncaptured_drafts(self, *, digest_repo, outbox_repo) -> None:
+        """Capture Graph draft ids for every digest row still missing one (§6)."""
+        for row in digest_repo.read_uncaptured():
+            try:
+                self._try_capture_draft_from_outbox(
+                    digest=row,
+                    digest_repo=digest_repo,
+                    outbox_repo=outbox_repo,
+                )
+            except Exception as error:
+                logger.warning(
+                    "ramp_chaser_digest.capture_failed digest=%s: %s",
+                    row.public_id,
+                    error,
+                )
 
     def _observe_outstanding_sends(
         self,
@@ -227,7 +253,7 @@ class RampChaserDigestService:
                     folder="sentitems",
                     conversation_id=conversation_id,
                 )
-                if sent_hit:
+                if sent_hit is True:
                     digest_repo.stamp_notified(
                         card_holder_ramp_user_id=row.card_holder_ramp_user_id,
                         week_of=row.week_of,
@@ -235,19 +261,23 @@ class RampChaserDigestService:
                     )
                     sent_observed += 1
                     continue
+                if sent_hit is None:
+                    continue
 
                 deleted_hit = self._conversation_in_folder(
                     list_messages,
                     folder="deleteditems",
                     conversation_id=conversation_id,
                 )
-                if deleted_hit:
+                if deleted_hit is True:
                     discarded_unsent += 1
                     self._stamp_outcome_only(
                         digest_repo,
                         row,
                         "discarded_unsent",
                     )
+                    continue
+                if deleted_hit is None:
                     continue
 
                 logger.info(
@@ -319,12 +349,17 @@ class RampChaserDigestService:
         if digest.draft_message_id:
             return "already_drafted"
 
-        if self._try_capture_draft_from_outbox(
+        capture_state = self._try_capture_draft_from_outbox(
             digest=digest,
             digest_repo=digest_repo,
             outbox_repo=outbox_repo,
-        ):
+        )
+        if capture_state == "captured":
             return "already_drafted"
+        if capture_state == "enqueued":
+            return "already_drafted"
+        if capture_state == "dead_letter":
+            return "outbox_dead_letter"
 
         refreshed = digest_repo.read_by_card_holder_and_week(
             card_holder_ramp_user_id=str(card_holder_id),
@@ -378,52 +413,57 @@ class RampChaserDigestService:
         digest,
         digest_repo,
         outbox_repo,
-    ) -> bool:
-        """Return True when a draft id was captured and stamped on the digest row."""
+    ) -> str:
+        """
+        Reconcile outbox → digest draft id.
+
+        Returns: none | captured | enqueued | dead_letter
+        """
         from integrations.ms.mail.external.client import get_message
 
+        entity_id = str(digest.public_id)
         completed = outbox_repo.read_completed_by_entity(
             _ENTITY_TYPE,
-            str(digest.public_id),
+            entity_id,
             _OUTBOX_KIND_SEND_MAIL,
         )
         if completed:
             graph_id = self._graph_message_id_from_outbox_rows(completed)
-            if not graph_id:
-                return False
-            get_result = get_message(message_id=graph_id, include_body=False)
-            if self._is_transient_graph_result(get_result):
-                return False
-            if get_result.get("status_code") != 200 or not get_result.get("email"):
-                return False
-            email = get_result["email"]
-            digest_repo.stamp_drafted(
-                card_holder_ramp_user_id=digest.card_holder_ramp_user_id,
-                week_of=digest.week_of,
-                draft_message_id=graph_id,
-                conversation_id=email.get("conversation_id"),
-                internet_message_id=email.get("internet_message_id"),
-            )
-            return True
+            if graph_id:
+                get_result = get_message(message_id=graph_id, include_body=False)
+                if self._is_transient_graph_result(get_result):
+                    return "enqueued"
+                if get_result.get("status_code") == 200 and get_result.get("email"):
+                    email = get_result["email"]
+                    digest_repo.stamp_drafted(
+                        card_holder_ramp_user_id=digest.card_holder_ramp_user_id,
+                        week_of=digest.week_of,
+                        draft_message_id=graph_id,
+                        conversation_id=email.get("conversation_id"),
+                        internet_message_id=email.get("internet_message_id"),
+                    )
+                    return "captured"
 
         if outbox_repo.count_by_entity_and_kind(
             _ENTITY_TYPE,
-            str(digest.public_id),
+            entity_id,
             _OUTBOX_KIND_SEND_MAIL,
         ) > 0:
             pending = outbox_repo.read_pending_by_entity(
                 _ENTITY_TYPE,
-                str(digest.public_id),
+                entity_id,
                 _OUTBOX_KIND_SEND_MAIL,
             )
             if pending:
-                return False
-            # Row exists but is neither done nor pending — likely in_progress or dead_letter.
+                return "enqueued"
+            if completed:
+                return "enqueued"
             logger.warning(
-                "ramp_chaser_digest.outbox_stuck digest=%s",
+                "ramp_chaser_digest.outbox_dead_letter digest=%s",
                 digest.public_id,
             )
-        return False
+            return "dead_letter"
+        return "none"
 
     @staticmethod
     def _graph_message_id_from_outbox_rows(rows: list) -> Optional[str]:
@@ -514,16 +554,24 @@ class RampChaserDigestService:
         *,
         folder: str,
         conversation_id: str,
-    ) -> bool:
+    ) -> Optional[bool]:
+        """True if a message exists in the folder; False if clean miss; None if inconclusive."""
         safe_id = conversation_id.replace("'", "''")
         result = list_messages_fn(
             folder=folder,
             top=5,
             filter_query=f"conversationId eq '{safe_id}'",
         )
-        if result.get("status_code") not in (200, None):
-            if result.get("status_code") and result.get("status_code") >= 500:
-                raise RuntimeError(f"graph list_messages failed: {result.get('status_code')}")
+        status = result.get("status_code")
+        if status != 200:
+            if status and status >= 500:
+                raise RuntimeError(f"graph list_messages failed: {status}")
+            logger.warning(
+                "ramp_chaser_digest.folder_read_inconclusive folder=%s status=%s",
+                folder,
+                status,
+            )
+            return None
         messages = result.get("messages") or []
         return len(messages) > 0
 
@@ -537,6 +585,12 @@ class RampChaserDigestService:
         if result.get("is_retryable"):
             return True
         return False
+
+    @classmethod
+    def canonicalize_week_of(cls, week_of: str, settings) -> str:
+        """Map any calendar day to the Tuesday anchor for that business week."""
+        parsed = date.fromisoformat(str(week_of)[:10])
+        return cls._tuesday_of_week(parsed).isoformat()
 
     def _default_week_of(self, settings, now: Optional[datetime] = None) -> str:
         tz = self._business_tz(settings)
@@ -579,6 +633,7 @@ class RampChaserDigestService:
             "skipped_inactive": 0,
             "unroutable": 0,
             "refused_ms_writes_gate": 0,
+            "outbox_dead_letter": 0,
             "failed": failed,
         }
 

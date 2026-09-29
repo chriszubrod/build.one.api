@@ -86,6 +86,7 @@ def draft_mode(monkeypatch):
 @pytest.fixture
 def mocks():
     digest_repo = MagicMock()
+    digest_repo.read_uncaptured.return_value = []
     digest_repo.read_outstanding.return_value = []
     digest_repo.upsert.side_effect = lambda **kw: _digest_row(
         card_holder_ramp_user_id=kw["card_holder_ramp_user_id"],
@@ -466,3 +467,164 @@ def test_one_cardholder_failure_does_not_sink_batch(mocks, draft_mode):
     assert result["failed"] == 1
     assert result["drafted"] == 1
     mocks.ms_outbox_svc.enqueue_send_mail.assert_called_once()
+
+
+@pytest.mark.parametrize(
+    "mode,expects_draft",
+    [
+        ("off", False),
+        ("", False),
+        ("send", False),
+        ("drat", False),
+        ("drafts", False),
+        (" DRAFT ", True),
+        ("draft", True),
+    ],
+)
+def test_mode_normalization_fail_closed(mocks, monkeypatch, mode, expects_draft):
+    monkeypatch.setenv("RAMP_CHASER_MODE", mode)
+    mocks.follow_up_repo.read_unresolved.return_value = [_follow_up()]
+    result = RampChaserDigestService().run_for_week("2026-09-29")
+    if expects_draft:
+        assert result["status"] == "ok"
+        assert result["drafted"] == 1
+    else:
+        assert result["status"] == "disabled"
+        mocks.ms_outbox_svc.enqueue_send_mail.assert_not_called()
+
+
+def test_uncaptured_digest_captured_with_zero_open_items(mocks, draft_mode):
+    """P0-a: reconcile by digest row, not this week's cardholder groups."""
+    uncaptured = _digest_row(
+        public_id="digest-stranded",
+        week_of="2026-09-29",
+        draft_message_id=None,
+    )
+    mocks.digest_repo.read_uncaptured.return_value = [uncaptured]
+    mocks.follow_up_repo.read_unresolved.return_value = []
+
+    outbox_row = SimpleNamespace(
+        payload=json.dumps({"graph_message_id": "graph-stranded"}),
+    )
+    mocks.outbox_repo.read_completed_by_entity.return_value = [outbox_row]
+    mocks.outbox_repo.count_by_entity_and_kind.return_value = 1
+
+    with patch(
+        "integrations.ms.mail.external.client.get_message",
+        return_value={
+            "status_code": 200,
+            "email": {
+                "conversation_id": "conv-stranded",
+                "internet_message_id": "imid-stranded",
+            },
+        },
+    ):
+        result = RampChaserDigestService().run_for_week("2026-09-29")
+
+    mocks.digest_repo.stamp_drafted.assert_called_once_with(
+        card_holder_ramp_user_id="user-a",
+        week_of="2026-09-29",
+        draft_message_id="graph-stranded",
+        conversation_id="conv-stranded",
+        internet_message_id="imid-stranded",
+    )
+    assert result["cardholders_total"] == 0
+    mocks.ms_outbox_svc.enqueue_send_mail.assert_not_called()
+
+
+def test_observe_send_with_zero_open_items(mocks, draft_mode):
+    outstanding = _digest_row(
+        week_of="2026-09-29",
+        draft_message_id="draft-sent",
+        conversation_id="conv-sent",
+    )
+    mocks.digest_repo.read_outstanding.return_value = [outstanding]
+    mocks.follow_up_repo.read_unresolved.return_value = []
+
+    with patch(
+        "integrations.ms.mail.external.client.get_message",
+        return_value={"status_code": 404, "email": None},
+    ), patch(
+        "integrations.ms.mail.external.client.list_messages",
+        return_value={"status_code": 200, "messages": [{"message_id": "m1"}]},
+    ):
+        result = RampChaserDigestService().run_for_week("2026-09-29")
+
+    assert result["sent_observed"] == 1
+    assert result["cardholders_total"] == 0
+    mocks.digest_repo.stamp_notified.assert_called_once()
+
+
+def test_rerun_before_drain_does_not_double_enqueue(mocks, draft_mode):
+    """P0-b: pending outbox row means already enqueued — no second send_mail."""
+    digest = _digest_row(public_id="digest-pending")
+    mocks.digest_repo.upsert.return_value = digest
+    mocks.follow_up_repo.read_unresolved.return_value = [_follow_up()]
+    mocks.outbox_repo.read_completed_by_entity.return_value = []
+    mocks.outbox_repo.count_by_entity_and_kind.return_value = 1
+    mocks.outbox_repo.read_pending_by_entity.return_value = [
+        SimpleNamespace(public_id="ob-pending"),
+    ]
+
+    result = RampChaserDigestService().run_for_week("2026-09-29")
+
+    assert result["already_drafted"] == 1
+    assert result["drafted"] == 0
+    mocks.ms_outbox_svc.enqueue_send_mail.assert_not_called()
+
+
+def test_monday_week_of_canonicalizes_to_tuesday(mocks, draft_mode):
+    """P0-c: Monday ?week_of collapses to the same Tuesday anchor."""
+    mocks.follow_up_repo.read_unresolved.return_value = [_follow_up()]
+
+    RampChaserDigestService().run_for_week("2026-09-28")
+
+    mocks.digest_repo.upsert.assert_called_once_with(
+        card_holder_ramp_user_id="user-a",
+        week_of="2026-09-29",
+    )
+
+
+def test_stamp_notified_sql_requires_null_last_notified():
+    """P1-a: notified stamp is idempotent (SQL guard)."""
+    from pathlib import Path
+
+    sql = (
+        Path(__file__).resolve().parents[1]
+        / "entities/ramp_chaser_digest/sql/dbo.ramp_chaser_digest.sql"
+    ).read_text(encoding="utf-8")
+    assert "CREATE OR ALTER PROCEDURE StampRampChaserDigestNotified" in sql
+    idx = sql.index("CREATE OR ALTER PROCEDURE StampRampChaserDigestNotified")
+    body = sql[idx : idx + 2500]
+    assert "[LastNotifiedAt] IS NULL" in body
+
+
+def test_sentitems_429_does_not_stamp_even_if_deleted_would_hit(mocks, draft_mode):
+    """P1-b: transient folder read must not drive any outcome stamp."""
+    outstanding = _digest_row(
+        week_of="2026-09-22",
+        draft_message_id="gone",
+        conversation_id="conv-429",
+    )
+    mocks.digest_repo.read_outstanding.return_value = [outstanding]
+
+    def list_side_effect(folder, **kwargs):
+        if folder == "sentitems":
+            return {"status_code": 429, "messages": []}
+        if folder == "deleteditems":
+            return {"status_code": 200, "messages": [{"message_id": "del-1"}]}
+        return {"status_code": 200, "messages": []}
+
+    with patch(
+        "integrations.ms.mail.external.client.get_message",
+        return_value={"status_code": 404, "email": None},
+    ), patch(
+        "integrations.ms.mail.external.client.list_messages",
+        side_effect=list_side_effect,
+    ):
+        result = RampChaserDigestService().run_for_week("2026-09-29")
+
+    assert result["discarded_unsent"] == 0
+    assert result["sent_observed"] == 0
+    mocks.digest_repo.stamp_notified.assert_not_called()
+    mocks.digest_repo.stamp_outcome.assert_not_called()

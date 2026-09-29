@@ -99,6 +99,26 @@ class RampChaserDigestRepository:
             )
             raise map_database_error(error)
 
+    def read_uncaptured(
+        self, *, conn: Optional[pyodbc.Connection] = None
+    ) -> List[RampChaserDigest]:
+        """Digest rows with no Graph draft id yet (enqueue may have completed)."""
+        try:
+            with conn_ctx(conn) as c:
+                cursor = c.cursor()
+                call_procedure(
+                    cursor=cursor,
+                    name="ReadUncapturedRampChaserDigests",
+                    params={},
+                )
+                rows = [self._from_db(row) for row in cursor.fetchall()]
+                if conn is not None:
+                    c.commit()
+                return [r for r in rows if r is not None]
+        except Exception as error:
+            logger.error("Error reading uncaptured ramp chaser digests: %s", error)
+            raise map_database_error(error)
+
     def read_outstanding(
         self, *, conn: Optional[pyodbc.Connection] = None
     ) -> List[RampChaserDigest]:

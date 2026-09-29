@@ -645,3 +645,52 @@ def test_outer_exception_returns_error_summary_with_failed_one(mocks, draft_mode
     assert result["sent_observed"] == 0
     mocks.ms_outbox_svc.enqueue_send_mail.assert_not_called()
     mocks.digest_repo.stamp_notified.assert_not_called()
+
+
+def test_real_ramp_collaborators_construct_without_typeerror(monkeypatch, draft_mode):
+    """The digest's Ramp client chain must CONSTRUCT for real, not just when mocked.
+
+    Regression for a live P0: `_run_for_week` called `RampUserExternalClient()` with
+    no arguments, but that constructor REQUIRES an http_client. Every digest run
+    raised TypeError and was swallowed into `failed=1` by the outer handler.
+
+    It survived Pass 1, Pass 2, step 4c and 7 mutation proofs because every other
+    test in this file patches `RampUserService`/`RampUserExternalClient`, so the real
+    constructor never ran — and `RAMP_CHASER_MODE=off` returned at the mode gate
+    before reaching the construction, so no environment ever executed it either.
+
+    This test therefore stubs at the HTTP boundary ONLY. Everything above it —
+    RampAuthService, RampHttpClient, RampUserExternalClient, RampUserService — is
+    built for real, which is the only way a wrong constructor signature can surface.
+    """
+    import integrations.ramp.base.client as ramp_client_mod
+
+    calls = {"get": 0, "close": 0}
+
+    def fake_get(self, path_or_url, **kwargs):
+        calls["get"] += 1
+        return {"data": [], "page": {}}
+
+    def fake_close(self):
+        calls["close"] += 1
+
+    monkeypatch.setattr(ramp_client_mod.RampHttpClient, "get", fake_get)
+    monkeypatch.setattr(ramp_client_mod.RampHttpClient, "close", fake_close)
+
+    with patch(
+        "entities.ramp_chaser_digest.persistence.repo.RampChaserDigestRepository"
+    ) as digest_cls, patch(
+        "entities.ramp_transaction_follow_up.persistence.repo.RampTransactionFollowUpRepository"
+    ) as follow_cls, patch(
+        "integrations.ms.outbox.persistence.repo.MsOutboxRepository"
+    ):
+        digest_cls.return_value.read_uncaptured.return_value = []
+        digest_cls.return_value.read_outstanding.return_value = []
+        follow_cls.return_value.read_unresolved.return_value = []
+        result = RampChaserDigestService()._run_for_week("2026-09-29")
+
+    assert result["status"] == "ok"
+    assert result["failed"] == 0
+    assert calls["get"] >= 1, "the real Ramp client chain was never exercised"
+    # the sweep makes exactly one Ramp call and must not leak the connection
+    assert calls["close"] == 1, "the Ramp http client was not closed"

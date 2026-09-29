@@ -60,13 +60,23 @@ class RampChaserDigestService:
             RampTransactionFollowUpRepository,
         )
         from integrations.ms.outbox.persistence.repo import MsOutboxRepository
+        from integrations.ramp.auth.business.service import RampAuthService
+        from integrations.ramp.base.client import RampHttpClient
         from integrations.ramp.user.business.service import RampUserService
         from integrations.ramp.user.external.client import RampUserExternalClient
 
         digest_repo = RampChaserDigestRepository()
         follow_up_repo = RampTransactionFollowUpRepository()
         outbox_repo = MsOutboxRepository()
-        user_service = RampUserService(RampUserExternalClient())
+        # RampUserExternalClient REQUIRES an http client — it has no default. The
+        # roster is the only Ramp call this sweep makes, so the client is built
+        # here, used once, and closed immediately rather than held for the whole
+        # sweep. Mirrors RampTransactionService, which also closes in a finally.
+        _ramp_base = (settings.ramp_api_base_url or "https://api.ramp.com").rstrip("/")
+        _ramp_http = RampHttpClient(
+            api_base=_ramp_base,
+            auth_service=RampAuthService(settings),
+        )
 
         self._reconcile_uncaptured_drafts(
             digest_repo=digest_repo,
@@ -92,7 +102,10 @@ class RampChaserDigestService:
         ]
         groups = self._group_by_card_holder(actionable)
 
-        roster = user_service.build_roster()
+        try:
+            roster = RampUserService(RampUserExternalClient(_ramp_http)).build_roster()
+        finally:
+            _ramp_http.close()
 
         drafted = 0
         already_drafted = 0

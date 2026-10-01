@@ -69,10 +69,9 @@ def _role_map() -> dict[int, Any]:
     return {role.id: role for role in RoleService().read_all()}
 
 
-def _roles_for_user(
-    user_id: int, role_map: dict[int, Any], user_role_service: UserRoleService
+def _roles_from_user_roles(
+    user_roles: list[Any], role_map: dict[int, Any]
 ) -> list[dict]:
-    user_roles = user_role_service.read_all_by_user_id(user_id)
     roles = []
     for ur in user_roles:
         role = role_map.get(ur.role_id)
@@ -86,6 +85,13 @@ def _roles_for_user(
             }
         )
     return roles
+
+
+def _roles_for_user(
+    user_id: int, role_map: dict[int, Any], user_role_service: UserRoleService
+) -> list[dict]:
+    user_roles = user_role_service.read_all_by_user_id(user_id)
+    return _roles_from_user_roles(user_roles, role_map)
 
 
 def _build_user_summary(user: User) -> dict:
@@ -113,54 +119,72 @@ def _build_user_summary(user: User) -> dict:
 def _enrich_identity(rows: list[dict]) -> None:
     """Fill username / has_auth / email on the given rows, in place.
 
-    Contact has a bulk read (ReadContacts) but Auth has no bulk repo method, so
-    this stays one lookup per row — which is why callers hand it the page slice
-    rather than the whole table wherever the filter allows it.
+    Uses ReadAuths + ReadContacts bulk reads (one sproc each), not per-user
+    lookups.
     """
     if not rows:
         return
-    auth_service = AuthService()
-    contact_service = ContactService()
+    auths = AuthService().read_all()
+    # Contract: lowest Auth.Id per user wins. The per-user ReadAuthByUserId was a
+    # TOP 1 with NO ORDER BY — i.e. nondeterministic on a duplicate UserId — so
+    # this is a deliberate tightening, not a reproduction of the old pick. No
+    # user has two Auth rows today (verified 2026-10-01).
+    auth_by_user_id: dict[int, Any] = {}
+    for auth in auths:
+        if auth.user_id is None:
+            continue
+        existing = auth_by_user_id.get(auth.user_id)
+        if existing is None or (auth.id is not None and existing.id is not None and auth.id < existing.id):
+            auth_by_user_id[auth.user_id] = auth
+
+    contacts_by_user_id: dict[int, list] = {}
+    for contact in ContactService().read_all():
+        if contact.user_id is None:
+            continue
+        contacts_by_user_id.setdefault(contact.user_id, []).append(contact)
+
     for row in rows:
         user_id = row["id"]
-        auth = auth_service.read_by_user_id(user_id=user_id)
+        auth = auth_by_user_id.get(user_id)
         row["username"] = auth.username if auth else None
         row["has_auth"] = auth is not None
-        row["email"] = _first_email(contact_service.read_by_user_id(user_id=user_id))
+        row["email"] = _first_email(contacts_by_user_id.get(user_id, []))
 
 
 def _enrich_roles(rows: list[dict]) -> None:
-    """Fill roles on the given rows, in place — one Role read for all of them."""
+    """Fill roles on the given rows, in place — bulk Role + UserRole reads."""
     if not rows:
         return
     role_map = _role_map()
-    user_role_service = UserRoleService()
+    user_roles_by_user_id: dict[int, list] = {}
+    for ur in UserRoleService().read_all():
+        if ur.user_id is None:
+            continue
+        user_roles_by_user_id.setdefault(ur.user_id, []).append(ur)
+
     for row in rows:
-        row["roles"] = _roles_for_user(row["id"], role_map, user_role_service)
+        user_roles = user_roles_by_user_id.get(row["id"], [])
+        user_roles.sort(key=lambda ur: ur.id or 0)
+        row["roles"] = _roles_from_user_roles(user_roles, role_map)
 
 
 def _summaries_for_all_users(
     *, include_agents: bool, search: Optional[str], limit: int, offset: int
 ) -> list[dict]:
-    """Every user as a summary row, with the per-user lookups kept to the page.
+    """Every user as a fully enriched summary row.
 
-    A search term matches `username` / `email`, so on that path every row needs
-    its auth + contact lookup before the filter can be correct. With no search
-    term the filter reads User-row fields only, so the page is resolved first —
-    via `filter_and_page_users` itself, so the sort key can never drift from the
-    caller's — and only those rows pay for a lookup. Rows outside the page are
-    still returned (the caller's `count` is the full total) but keep their
-    placeholder values; the caller's own slice drops them.
+    Five stored-procedure calls total regardless of user count: ReadUsers,
+    ReadAuths, ReadContacts, ReadRoles, ReadUserRoles. Search and paging are
+    applied by the route via ``filter_and_page_users`` on the returned list.
+
+    ``search``, ``limit``, and ``offset`` are accepted for call-site stability
+    with the list route but are not used here.
     """
+    del search, limit, offset
     users = UserService().read_all(include_agents=include_agents)
     summaries = [_build_user_summary(user) for user in users]
-    searching = bool((search or "").strip())
-    if searching:
-        _enrich_identity(summaries)
-    page, _total = filter_and_page_users(summaries, search, limit, offset)
-    if not searching:
-        _enrich_identity(page)
-    _enrich_roles(page)
+    _enrich_identity(summaries)
+    _enrich_roles(summaries)
     return summaries
 
 
@@ -169,8 +193,15 @@ def _summary_for_public_id(user_public_id: str) -> Optional[dict]:
     if not user:
         return None
     summary = _build_user_summary(user)
-    _enrich_identity([summary])
-    _enrich_roles([summary])
+    user_id = summary["id"]
+    auth = AuthService().read_by_user_id(user_id=user_id)
+    summary["username"] = auth.username if auth else None
+    summary["has_auth"] = auth is not None
+    summary["email"] = _first_email(
+        ContactService().read_by_user_id(user_id=user_id)
+    )
+    role_map = _role_map()
+    summary["roles"] = _roles_for_user(user_id, role_map, UserRoleService())
     return summary
 
 

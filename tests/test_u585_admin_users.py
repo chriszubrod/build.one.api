@@ -179,10 +179,8 @@ def test_get_user_audit_200_envelope(client, clear_auth_overrides, mock_admin_us
     assert body["data"][0]["actor_name"] == "Chris Z"
 
 
-def test_list_users_enriches_only_the_page_slice(client, clear_auth_overrides):
-    """With no search term the page is resolved off the User rows first, so the
-    per-user auth / contact / role lookups run `limit` times — not once per row
-    in the table — while count and payload shape stay exactly as before."""
+def test_list_users_uses_bulk_reads_not_per_row_lookups(client, clear_auth_overrides):
+    """List route enriches via bulk reads once each, regardless of page size."""
     users = [
         SimpleNamespace(
             id=i,
@@ -205,10 +203,10 @@ def test_list_users_enriches_only_the_page_slice(client, clear_auth_overrides):
         "shared.api.admin_users.UserRoleService"
     ) as user_role_cls:
         user_cls.return_value.read_all.return_value = users
-        auth_cls.return_value.read_by_user_id.return_value = None
-        contact_cls.return_value.read_by_user_id.return_value = []
+        auth_cls.return_value.read_all.return_value = []
+        contact_cls.return_value.read_all.return_value = []
         role_cls.return_value.read_all.return_value = []
-        user_role_cls.return_value.read_all_by_user_id.return_value = []
+        user_role_cls.return_value.read_all.return_value = []
 
         _override_user(is_system_admin=True)
         response = client.get("/api/v1/admin/users?limit=2")
@@ -217,7 +215,6 @@ def test_list_users_enriches_only_the_page_slice(client, clear_auth_overrides):
     body = response.json()
     assert body["count"] == 6
     assert [row["id"] for row in body["data"]] == [1, 2]
-    # `roles` is still present on every returned row, in its original position.
     assert list(body["data"][0]) == [
         "public_id",
         "id",
@@ -232,10 +229,13 @@ def test_list_users_enriches_only_the_page_slice(client, clear_auth_overrides):
         "created_datetime",
     ]
     assert all(row["roles"] == [] for row in body["data"])
-    # The whole point: bounded by `limit`, not by the size of the table.
-    assert auth_cls.return_value.read_by_user_id.call_count == 2
-    assert contact_cls.return_value.read_by_user_id.call_count == 2
-    assert user_role_cls.return_value.read_all_by_user_id.call_count == 2
+    assert auth_cls.return_value.read_all.call_count == 1
+    assert contact_cls.return_value.read_all.call_count == 1
+    assert user_role_cls.return_value.read_all.call_count == 1
+    assert role_cls.return_value.read_all.call_count == 1
+    assert auth_cls.return_value.read_by_user_id.call_count == 0
+    assert contact_cls.return_value.read_by_user_id.call_count == 0
+    assert user_role_cls.return_value.read_all_by_user_id.call_count == 0
 
 
 @pytest.fixture

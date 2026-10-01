@@ -133,6 +133,24 @@ class AuthRepository:
             logger.error(f"Error during read auth by user ID: {error}")
             raise map_database_error(error)
 
+    def read_all(self) -> list[Auth]:
+        """
+        Read all auth records.
+        """
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(
+                    cursor=cursor,
+                    name="ReadAuths",
+                    params={},
+                )
+                rows = cursor.fetchall()
+                return [self._from_db(row) for row in rows if row]
+        except Exception as error:
+            logger.error(f"Error during read all auths: {error}")
+            raise map_database_error(error)
+
     def update_by_id(self, auth: Auth) -> Optional[Auth]:
         """
         Update auth by ID with optimistic concurrency control.

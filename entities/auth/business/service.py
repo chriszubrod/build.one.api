@@ -317,6 +317,12 @@ class AuthService:
         """
         return self.repo.read_by_user_id(user_id=user_id)
 
+    def read_all(self) -> list[Auth]:
+        """
+        Read all auth records.
+        """
+        return self.repo.read_all()
+
     def revoke_all_refresh_tokens_for_auth(self, *, auth_id: int) -> int:
         """
         Bulk-revoke every non-revoked refresh token for the given Auth.

@@ -402,6 +402,16 @@ def require_module_api(module_name: str, permission: str = "can_read"):
     return _dependency
 
 
+def require_system_admin():
+    """FastAPI dependency: the caller must be authenticated AND have User.IsSystemAdmin. 401 unauthenticated (inherited from get_current_user_api), 403 otherwise."""
+    def _dependency(current_user=Depends(get_current_user_api)):
+        # `is_admin_user` is defined below; Python resolves it at call time.
+        if not is_admin_user(current_user):
+            raise HTTPException(status_code=403, detail="System administrator privileges required.")
+        return current_user
+    return _dependency
+
+
 # ---------------------------------------------------------------------------
 # Admin check helper
 # ---------------------------------------------------------------------------

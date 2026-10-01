@@ -284,6 +284,10 @@ def admin_set_credentials_router(
             username=body.username,
             password=body.password,
         )
+    except PermissionError as e:
+        # U-585: the service refuses a non-system-admin actor on a system-admin
+        # target (privilege ceiling under the Users.can_update module gate).
+        raise HTTPException(status_code=403, detail=str(e))
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 

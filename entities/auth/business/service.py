@@ -15,6 +15,7 @@ import bcrypt
 
 # Local Imports
 from config import Settings
+from entities.admin_audit_log.business import service as admin_audit
 from entities.auth.business.model import (
     Auth,
     AuthToken,
@@ -29,6 +30,7 @@ from shared.authz.companies import (
     resolve_active_company_for_user,
     resolve_company_by_public_id_for_user,
 )
+from shared.authz.privilege import assert_actor_can_manage_user
 from shared.database import (
     DatabaseConcurrencyError,
     DatabaseOperationError,
@@ -355,6 +357,12 @@ class AuthService:
         if not user:
             raise ValueError(f"User with public ID {user_public_id} not found.")
 
+        # U-585 Pass-1 P0: a caller holding only Users.can_update must never be
+        # able to take over a system-admin account by resetting its password.
+        # The route's module gate is deliberately unchanged (Gate-1 decision);
+        # this is the privilege ceiling underneath it.
+        assert_actor_can_manage_user(user)
+
         existing_auth = self.repo.read_by_user_id(user_id=user.id)
 
         # Username uniqueness — must not collide with another Auth row
@@ -366,16 +374,33 @@ class AuthService:
             existing_auth.username = username
             existing_auth.password_hash = _hash_password(password)
             existing_auth.user_id = user.id
-            updated = self.repo.update_by_id(existing_auth)
+            result = self.repo.update_by_id(existing_auth)
+            created = False
             # Admin password change is a security operation — invalidate
             # the target user's outstanding sessions.
-            self.revoke_all_refresh_tokens_for_auth(auth_id=updated.id)
-            return updated
+            revoked = self.revoke_all_refresh_tokens_for_auth(auth_id=result.id)
+        else:
+            # No Auth yet — create one and link to the user
+            new_auth = self.repo.create(username=username, password_hash=_hash_password(password))
+            new_auth.user_id = user.id
+            result = self.repo.update_by_id(new_auth)
+            created = True
+            # Nothing to revoke: the Auth row is brand new.
+            revoked = 0
 
-        # No Auth yet — create one and link to the user
-        new_auth = self.repo.create(username=username, password_hash=_hash_password(password))
-        new_auth.user_id = user.id
-        return self.repo.update_by_id(new_auth)
+        admin_audit.record_admin_action(
+            action="auth.set_credentials",
+            target_user_id=user.id,
+            # Data minimization (Pass-3): no auth_public_id here — it is the
+            # JWT `sub`; target_user_id already identifies the row and the
+            # console never rendered it.
+            detail={
+                "username": username,
+                "created": created,
+                "refresh_tokens_revoked": revoked,
+            },
+        )
+        return result
 
     def change_password(
         self,

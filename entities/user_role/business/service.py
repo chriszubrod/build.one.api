@@ -4,6 +4,7 @@ from typing import Optional
 # Third-party Imports
 
 # Local Imports
+from entities.admin_audit_log.business import service as admin_audit
 from entities.user_role.business.model import UserRole
 from entities.user_role.persistence.repo import UserRoleRepository
 from shared.authz import current_company_id, current_user_id
@@ -34,13 +35,23 @@ class UserRoleService:
         """
         cid = company_id if company_id is not None else current_company_id.get()
         actor = created_by_user_id if created_by_user_id is not None else current_user_id.get()
-        return self.repo.create(
+        created = self.repo.create(
             user_id=user_id,
             role_id=role_id,
             company_id=cid,
             created_by_user_id=actor,
             modified_by_user_id=actor,
         )
+        admin_audit.record_admin_action(
+            action="user_role.assign",
+            target_user_id=user_id,
+            detail={
+                "role_id": role_id,
+                "user_role_public_id": str(created.public_id),
+                "company_id": cid,
+            },
+        )
+        return created
 
     def read_all(self) -> list[UserRole]:
         return self.repo.read_all()
@@ -98,5 +109,19 @@ class UserRoleService:
     def delete_by_public_id(self, public_id: str, *, tenant_id: int = None) -> Optional[UserRole]:
         existing = self.read_by_public_id(public_id=public_id)
         if existing:
-            return self.repo.delete_by_id(existing.id)
+            deleted = self.repo.delete_by_id(existing.id)
+            if not deleted:
+                # Lost the race to a concurrent delete — the sproc deleted
+                # nothing, so there is no removal to audit (U-585 P2).
+                return None
+            admin_audit.record_admin_action(
+                action="user_role.remove",
+                target_user_id=existing.user_id,
+                detail={
+                    "role_id": existing.role_id,
+                    "user_role_public_id": public_id,
+                    "company_id": existing.company_id,
+                },
+            )
+            return deleted
         return None

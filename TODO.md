@@ -5221,7 +5221,7 @@ scheduled sentinel that alerts on `LEN(TaxpayerIdNumber) < 60`.
 Related: the same fetch-then-merge shape in `entities/vendor/business/service.py` is safe only
 because no Vendor column is encrypted — audit any other entity that decrypts on read.
 
-## W-9 parser (`w9_parser`) — three defects, measured across 4 live ingests (booked 2026-09-19, Vendor Agent session)
+## W-9 parser (`w9_parser`) — five defects, measured across 9 live ingests (booked 2026-09-19, extended 2026-09-29 and 2026-10-01). Defect 4 is the Business-License parser, filed here because it shares the extraction path.
 
 Every W-9 ingested this session needed its stored values supplied by hand from a visual read. The
 parser's `extract()` output was used for **nothing** except `taxpayer_id_last4` and `is_signed`.
@@ -5256,6 +5256,73 @@ StoneCraft's handwritten date is **07/22/2026**; the parser returned **`2026-07-
 Contrast defects 1 and 2, which are at least null-or-constant and so detectable. A plausible
 off-by-ten on a date is silently wrong. (GM `2026-06-08` and Ferguson `2026-01-05` were both correct,
 so this is intermittent and likely specific to handwritten dates.)
+
+**2026-09-29 — three more ingests. Defect 1 is NOT a hard-wired `"LLC"`; it is unreliable, full stop.**
+The constant-`LLC` theory above is **superseded**: a W-9 with *Individual/sole proprietor* checked
+came back `PARTNERSHIP`. Running tally is now **7 W-9s, 0 correct classifications**:
+
+| Vendor | Line 3a actually checked | Parser said |
+|---|---|---|
+| L & R Contractors (Rick J. Walton) | Individual/sole proprietor | `LLC` ❌ |
+| Beacon Turf (BeaconLandscape LLC) | Individual/sole proprietor | `PARTNERSHIP` ❌ |
+| Aqua Clear Water Systems (Enjoy, LLC) | LLC, tax classification **S** | `LLC` ⚠️ (box right, S election dropped) |
+
+So whatever reads 3a returns *a* value unrelated to the checkbox state — sometimes plausible, never
+verified. Aqua Clear also shows the **LLC tax-classification letter is discarded**: an LLC with an
+`S` election is 1099-exempt, an ordinary LLC generally is not, and both collapse to `LLC`.
+Defect 2 recurred on 3 of 3 (`entity_name` null; Aqua Clear additionally put **line 1**
+(`Enjoy, LLC`) into `business_name` and lost line 2 entirely — the line-conflation noted above).
+
+**Defect 4 (NEW) — the Business-License parser grabs the wrong number and the wrong date.**
+`BusinessLicenseIngestService.extract` on Aqua Clear's Loudon County license returned
+`license_number: "4925"` — that is the **LOCAL ACCOUNT NUMBER**; the actual license number
+`0059244` is printed twice in the document's top-right. It also returned
+`issue_date: "2025-01-01"`, which is the **TAX PERIOD start**, not the `06/25/26` issue date.
+`expiry_date` was correct. It self-reported **`confidence: 1.0`, `unresolved: []`** — so unlike the
+W-9 path it does not even flag itself. A wrong `LicenseNumber` is what a renewal or an audit is
+looked up by.
+
+**2026-10-01 — Defect 5 (NEW, and the worst so far): `is_signed` came back FALSE on a SIGNED form,
+at `confidence: 1.0` with `unresolved: []`.** Flooring Professionals' W-9 (handwritten, Jeffrey D
+Whittaker dba Flooring Professionals, EIN 20-8594348) is signed and dated **9-23-2026** in ink. The
+parser returned:
+
+| Field | Form says | Parser said |
+|---|---|---|
+| `is_signed` | signed in ink | **`False`** ❌ |
+| `signature_date` | 9-23-2026 | **`None`** ❌ |
+| `classification` | Individual/sole proprietor | `LLC` ❌ |
+| `entity_name` / `business_name` | Jeffrey D Whittaker / Flooring Professionals | **both correct** ✅ |
+| `confidence` / `unresolved` | — | **`1.0` / `[]`** |
+
+Running tally: **9 W-9s, 0 correct classifications.**
+
+**Why this instance escalates the defect rather than just extending the count.** Every earlier run
+self-reported `0.6667` with `entity_name` in `unresolved` — a caller could at least treat the output as
+provisional. This run claims **full confidence with nothing unresolved while being wrong on three
+fields**. A caller that (reasonably) skips review when `confidence == 1.0 and not unresolved` would
+have written an unsigned, mis-classified Taxpayer straight through.
+
+**`is_signed` is the field that must not be wrong.** An unsigned W-9 is not valid for 1099 purposes, so
+this flag is exactly what a reviewer would trust to decide whether to chase the vendor. Observed here
+in the *safe* direction (signed → `False`, which would cause a needless re-request), but nothing in the
+evidence establishes that the field is only wrong in that direction — a `True` on an unsigned form
+would silently accept an invalid W-9. **Until fixed, treat `is_signed` as unread and confirm the
+signature visually.**
+
+Counter-observation worth keeping: `entity_name` and `business_name` were correct here for the first
+time in 9 runs — on a *handwritten* form, where they'd be expected to be hardest. So Defect 2 is not
+"handwriting beats it" either; the whole extraction is non-deterministic in a way none of the
+per-field theories explain. **The BL parser on the same batch (Davidson County license 262530) got
+license number, issue date and expiry all correct** — this is a `w9_parser`-specific problem, not a
+general DI-extraction problem.
+
+**Cross-cutting: `confidence` is not a signal on any of these paths.** The COI parser reported
+`1.0` on a clean ACORD (correct) *and* the BL parser reported `1.0` while wrong on two fields; the
+WC-exemption letter (a TN state registry form, not an ACORD) was parsed as a certificate and
+returned the Bureau's **ZIP code `37243-1002` as the policy number** and the letter's print date as
+both effective and expiry — at `confidence: 0.5`. Treat every extract as a draft for visual
+confirmation; that is the current operating rule in the Vendor Agent sessions.
 
 **Notes for whoever fixes it:** `confidence` was `0.6667` on every single run regardless of how much
 was wrong, so it carries no signal and must not be used as an ingest gate. `taxpayer_id_last4` was
@@ -5399,3 +5466,40 @@ column for the current draw understates by the entire fee.
   53 rows materially wrong (quantity dropped; $11,515.49 across 20 projects) + 175 off by a cent.
   Re-deriving `Price` rewrites client-billed history, so this is an /em-applied action, never a builder's.
   Detection: compare `Price` to `labor_price_two_shot(Quantity, Rate, Markup)` over `dbo.BillLineItem`.
+- [ ] 🔴 **`mail.create_draft` silently drops recipients given the Graph-native shape.**
+  `integrations/ms/mail/external/client.py:107` `_build_recipient_list` reads `r.get("email")` /
+  `r.get("name")` — a **flat** `{"email": ..., "name": ...}` dict. Callers that pass the Graph-native
+  `{"emailAddress": {"address": ...}}` shape (the shape Graph itself returns, and the obvious one to
+  copy from a read) get `address: null, name: null`, and **Graph drops the recipients entirely** while
+  still returning **201 "Draft created successfully"**. The failure is invisible to the caller: the
+  `draft` in the response even echoes a `to_recipients: [{"name": null, "email": null}]` entry, so it
+  looks populated. Hit live 2026-09-29 creating the L&R Contractors compliance request — the draft was
+  created with To/CC/BCC all empty and was only caught by a Graph read-back of the verified message id.
+  **This is P0-adjacent because compliance-chase drafts get reviewed and SENT within hours**
+  (`reference_vendor_document_request_email`), so a recipient-less draft either goes out wrong or
+  silently fails at send time, after the operator believes the chase is staged.
+  Fix: accept BOTH shapes in `_build_recipient_list` (detect a nested `emailAddress` key and flatten it),
+  and make `create_draft` **verify** that every requested recipient survived into the created draft,
+  returning non-201 when it did not. Same helper backs `send_mail` (line 600) and `update_draft`, so the
+  identical trap exists on the send path. Until fixed: **always read the draft back from Graph by its
+  verified id and assert To/CC/BCC before reporting a chase as staged.**
+- [ ] 🟠 **`_format_datetime_for_qbo_query` corrupts any timestamp that already carries a non-UTC offset.**
+  `integrations/intuit/qbo/base/client.py:39`. It strips a trailing `Z` and a trailing `+00:00`, then
+  **unconditionally appends `+00:00`** — so a tz-aware input like `2026-09-25T00:00:00-07:00` becomes
+  `2026-09-25T00:00:00-07:00+00:00` and QBO rejects the whole pull with `QboValidationError: Invalid
+  query`. A space-separated input is mangled differently: `2026-09-25 00:00:00` →
+  `2026-09-25 00:00:00T00:00:00+00:00` (the no-`T` branch appends a time to a value that already has
+  one). A naive `...T00:00:00` is the only shape that survives, and even that is silently relabelled as
+  UTC regardless of the caller's actual zone.
+  **The `try/except` is decorative** — every operation inside it is string slicing, which does not raise,
+  so the "Using as-is" fallback never fires and the malformed string is returned as a success.
+  **Blast radius: 9 entity clients call this.** The scheduler path happens to be safe today only because
+  `_normalize_last_sync` hands it a naive/`Z` value; the trap is live for any targeted or manual pull fed
+  a timestamp read back from QBO itself (QBO's own `MetaData.LastUpdatedTime` carries `-07:00`), which is
+  the most natural thing a caller would do. Hit live 2026-09-29 force-pulling a single vendor.
+  Fix: parse to a real `datetime` (`datetime.fromisoformat` after normalising `Z`), **convert** to the
+  target zone rather than string-appending an offset, and raise/return `None` on an unparseable input
+  instead of returning a corrupted string. Add cases for tz-aware, space-separated and date-only inputs.
+
+---
+

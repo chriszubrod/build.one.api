@@ -30,8 +30,11 @@
 --                               auto-advance row carried the submitter's id.
 --                               For "sent box" surfaces.
 --
--- System admin (@IsSystemAdmin=1) bypasses all scope filtering — they see
--- everything pending regardless of UserProject membership.
+-- System admin (@IsSystemAdmin=1) widens ONLY scope='all' to the whole tenant.
+-- 'mine' and 'mine_submitted' are honest for every actor, admins included —
+-- so an admin's 'mine' is empty unless they hold Project Manager / Owner on
+-- a project (decided U-542, 2026-10-01). ReadInboxTaskCounts already computes
+-- Mine without the bypass and Total with it; the two now agree arm for arm.
 --
 -- assigned_to_me is always computed independently of scope so the client can
 -- badge rows when paging through the wider 'all' queue.
@@ -230,8 +233,7 @@ BEGIN
           -- stays on IsDraft so the four parents share one predicate.
           AND B.[IsDraft] = 1
           AND (
-            @IsSystemAdmin = 1
-            OR (@Scope = N'mine_submitted' AND P.[SubmitterId] = @CurrentUserId)
+            (@Scope = N'mine_submitted' AND P.[SubmitterId] = @CurrentUserId)
             OR (@Scope = N'mine' AND EXISTS (
                 SELECT 1
                 FROM dbo.[BillLineItem] BLI
@@ -239,11 +241,14 @@ BEGIN
                 INNER JOIN dbo.[Role] R         ON R.[Id]         = UP.[RoleId]     AND R.[Name] IN (N'Project Manager', N'Owner')
                 WHERE BLI.[BillId] = B.[Id]
             ))
-            OR (@Scope = N'all' AND EXISTS (
-                SELECT 1
-                FROM dbo.[BillLineItem] BLI
-                INNER JOIN dbo.[UserProject] UP ON UP.[ProjectId] = BLI.[ProjectId] AND UP.[UserId] = @CurrentUserId
-                WHERE BLI.[BillId] = B.[Id]
+            OR (@Scope = N'all' AND (
+                @IsSystemAdmin = 1   -- the ONLY place the admin bypass lives (U-542)
+                OR EXISTS (
+                    SELECT 1
+                    FROM dbo.[BillLineItem] BLI
+                    INNER JOIN dbo.[UserProject] UP ON UP.[ProjectId] = BLI.[ProjectId] AND UP.[UserId] = @CurrentUserId
+                    WHERE BLI.[BillId] = B.[Id]
+                )
             ))
           )
 
@@ -287,8 +292,7 @@ BEGIN
           -- stays on IsDraft so the four parents share one predicate.
           AND E.[IsDraft] = 1
           AND (
-            @IsSystemAdmin = 1
-            OR (@Scope = N'mine_submitted' AND P.[SubmitterId] = @CurrentUserId)
+            (@Scope = N'mine_submitted' AND P.[SubmitterId] = @CurrentUserId)
             OR (@Scope = N'mine' AND EXISTS (
                 SELECT 1
                 FROM dbo.[ExpenseLineItem] ELI
@@ -296,11 +300,14 @@ BEGIN
                 INNER JOIN dbo.[Role] R         ON R.[Id]         = UP.[RoleId]     AND R.[Name] IN (N'Project Manager', N'Owner')
                 WHERE ELI.[ExpenseId] = E.[Id]
             ))
-            OR (@Scope = N'all' AND EXISTS (
-                SELECT 1
-                FROM dbo.[ExpenseLineItem] ELI
-                INNER JOIN dbo.[UserProject] UP ON UP.[ProjectId] = ELI.[ProjectId] AND UP.[UserId] = @CurrentUserId
-                WHERE ELI.[ExpenseId] = E.[Id]
+            OR (@Scope = N'all' AND (
+                @IsSystemAdmin = 1   -- the ONLY place the admin bypass lives (U-542)
+                OR EXISTS (
+                    SELECT 1
+                    FROM dbo.[ExpenseLineItem] ELI
+                    INNER JOIN dbo.[UserProject] UP ON UP.[ProjectId] = ELI.[ProjectId] AND UP.[UserId] = @CurrentUserId
+                    WHERE ELI.[ExpenseId] = E.[Id]
+                )
             ))
           )
 
@@ -344,8 +351,7 @@ BEGIN
           -- stays on IsDraft so the four parents share one predicate.
           AND BC.[IsDraft] = 1
           AND (
-            @IsSystemAdmin = 1
-            OR (@Scope = N'mine_submitted' AND P.[SubmitterId] = @CurrentUserId)
+            (@Scope = N'mine_submitted' AND P.[SubmitterId] = @CurrentUserId)
             OR (@Scope = N'mine' AND EXISTS (
                 SELECT 1
                 FROM dbo.[BillCreditLineItem] BCLI
@@ -353,11 +359,14 @@ BEGIN
                 INNER JOIN dbo.[Role] R         ON R.[Id]         = UP.[RoleId]      AND R.[Name] IN (N'Project Manager', N'Owner')
                 WHERE BCLI.[BillCreditId] = BC.[Id]
             ))
-            OR (@Scope = N'all' AND EXISTS (
-                SELECT 1
-                FROM dbo.[BillCreditLineItem] BCLI
-                INNER JOIN dbo.[UserProject] UP ON UP.[ProjectId] = BCLI.[ProjectId] AND UP.[UserId] = @CurrentUserId
-                WHERE BCLI.[BillCreditId] = BC.[Id]
+            OR (@Scope = N'all' AND (
+                @IsSystemAdmin = 1   -- the ONLY place the admin bypass lives (U-542)
+                OR EXISTS (
+                    SELECT 1
+                    FROM dbo.[BillCreditLineItem] BCLI
+                    INNER JOIN dbo.[UserProject] UP ON UP.[ProjectId] = BCLI.[ProjectId] AND UP.[UserId] = @CurrentUserId
+                    WHERE BCLI.[BillCreditId] = BC.[Id]
+                )
             ))
           )
 
@@ -401,18 +410,20 @@ BEGIN
           -- stays on IsDraft so the four parents share one predicate.
           AND I.[IsDraft] = 1
           AND (
-            @IsSystemAdmin = 1
-            OR (@Scope = N'mine_submitted' AND P.[SubmitterId] = @CurrentUserId)
+            (@Scope = N'mine_submitted' AND P.[SubmitterId] = @CurrentUserId)
             OR (@Scope = N'mine' AND EXISTS (
                 SELECT 1
                 FROM dbo.[UserProject] UP
                 INNER JOIN dbo.[Role] R ON R.[Id] = UP.[RoleId] AND R.[Name] IN (N'Project Manager', N'Owner')
                 WHERE UP.[ProjectId] = I.[ProjectId] AND UP.[UserId] = @CurrentUserId
             ))
-            OR (@Scope = N'all' AND EXISTS (
-                SELECT 1
-                FROM dbo.[UserProject] UP
-                WHERE UP.[ProjectId] = I.[ProjectId] AND UP.[UserId] = @CurrentUserId
+            OR (@Scope = N'all' AND (
+                @IsSystemAdmin = 1   -- the ONLY place the admin bypass lives (U-542)
+                OR EXISTS (
+                    SELECT 1
+                    FROM dbo.[UserProject] UP
+                    WHERE UP.[ProjectId] = I.[ProjectId] AND UP.[UserId] = @CurrentUserId
+                )
             ))
           )
     )

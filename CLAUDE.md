@@ -24,12 +24,16 @@ filesystem and one git index. Full rules in the umbrella `../CLAUDE.md`; the one
   the collision. Verify the diff against SCOPE mechanically (`--porcelain -uall` + md5), never by eye.
 - **Sub-agents never commit, push, deploy, or write prod data** — they hand back a diff; the session applies it.
 - **Any agent that writes code gets its own worktree**, and mutation testing ALWAYS does — in-place mutation
-  injects broken code into other sessions' test runs:
-  `git worktree add --detach .worktrees/<unit> origin/<branch>`, then symlink `.venv` and copy `.env`.
+  injects broken code into other sessions' test runs. Worktrees live in the **umbrella's** `.worktrees/` — use
+  the absolute path; a relative one lands *inside* this repo (`.worktrees/` is gitignored as a guard, U-466d):
+  `git worktree add -b unit/u-<n> /Users/chris/Applications/build.one/.worktrees/u-<n> origin/master` for a
+  code unit (`--detach` instead of `-b unit/u-<n>` for a throwaway mutation run), then symlink `.venv` and copy `.env`.
 - ⛔ **Worktrees on durable disk, never `/tmp`** (it gets wiped mid-unit). ⛔ **The stash stack is SHARED** —
   never bare `git stash`/`pop`; push with a unique `-m` tag, `apply` by tag, drop by tag.
-- **Re-base a worktree before committing from it** — its base tip has moved since creation.
-- **Remove worktrees when done.** A stale one is a live writer, and has blocked a prod DROP before.
+- **Land by fast-forward only** (U-466d): rebase onto the current `origin/master`, re-verify, then
+  `git -C <worktree> push origin unit/u-<n>:master`; rejected ⇒ rebase and re-verify again, never merge. Then delete the branch.
+- **Remove worktrees when done.** A stale one is a live writer, and has blocked a prod DROP before. Stale =
+  branch merged **and** nothing uncommitted — HEAD on trunk is not evidence (every worktree starts there).
 - **Commit by explicit pathspec, never `-A`, and verify `git show <sha> --stat` before pushing** — another
   session's uncommitted files are one careless command from your commit. ⚠️ Hunk-staged
   (`git apply --cached`) ⇒ commit with **NO** pathspec, or you re-sweep the working tree.

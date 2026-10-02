@@ -173,3 +173,5 @@ cython_debug/
 
 # Local scratch / throwaway scripts + data (underscore-prefixed convention)
 scripts/_*
+# worktrees live in the umbrella .worktrees/ (U-466d); an in-repo one must never be committed
+.worktrees/

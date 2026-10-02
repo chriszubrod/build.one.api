@@ -79,6 +79,8 @@ from-scratch build from the base alone yields a missing sproc. Apply that file t
    (adds `ContractLaborLineItem.SourceTimeEntryId`, required by the clock-in
    ordering in `ReadContractLaborLineItemsByContractLaborId`), and
    `entities/contract_labor/sql/add_contract_labor_line_item_bill_line_item_id.sql`
+   `entities/contract_labor/sql/add_edited_since_aggregation.sql` (U-596; the EmployeeLabor twin lives in
+   `entities/employee_labor/sql/add_edited_since_aggregation.sql`)
    (adds `ContractLaborLineItem.BillLineItemId` + FK).
 
 4. **`scripts/migrations/gap2_created_by_user_id.sql`** — adds `CreatedByUserId`.

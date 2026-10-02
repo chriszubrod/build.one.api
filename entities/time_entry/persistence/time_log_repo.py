@@ -76,6 +76,8 @@ class TimeLogRepository:
         project_id: Optional[int] = None,
         note: Optional[str] = None,
         created_by_user_id: Optional[int] = None,
+        reopen_as_user_id: Optional[int] = None,
+        reopen_note: Optional[str] = None,
     ) -> TimeLog:
         """
         Create a new time log. Create paths are unscoped — the
@@ -98,6 +100,10 @@ class TimeLogRepository:
                         "ProjectId": project_id,
                         "Note": note,
                         "CreatedByUserId": created_by_user_id,
+                        # U-596: the OWNER, when the service decided a 'submitted' day may
+                        # reopen for this write; the sproc reopens and writes in ONE transaction.
+                        "ReopenAsUserId": reopen_as_user_id,
+                        "ReopenNote": reopen_note,
                     },
                 )
                 row = cursor.fetchone()
@@ -237,6 +243,8 @@ class TimeLogRepository:
         actor_user_id: Optional[int] = None,
         actor_is_system_admin: Optional[bool] = None,
         actor_can_view_team: Optional[bool] = False,
+        reopen_as_user_id: Optional[int] = None,
+        reopen_note: Optional[str] = None,
     ) ->Optional[TimeLog]:
         """
         Update a time log by ID, scoped to the actor.
@@ -261,6 +269,8 @@ class TimeLogRepository:
                         "ActorUserId": actor_user_id,
                         "ActorIsSystemAdmin": _bit(actor_is_system_admin),
                         "ActorCanViewTeam": _bit(actor_can_view_team),
+                        "ReopenAsUserId": reopen_as_user_id,
+                        "ReopenNote": reopen_note,
                     },
                 )
                 row = cursor.fetchone()
@@ -286,6 +296,8 @@ class TimeLogRepository:
         actor_user_id: Optional[int] = None,
         actor_is_system_admin: Optional[bool] = None,
         actor_can_view_team: Optional[bool] = False,
+        reopen_as_user_id: Optional[int] = None,
+        reopen_note: Optional[str] = None,
     ) ->Optional[TimeLog]:
         """
         Delete a time log by ID, scoped to the actor.
@@ -301,6 +313,8 @@ class TimeLogRepository:
                         "ActorUserId": actor_user_id,
                         "ActorIsSystemAdmin": _bit(actor_is_system_admin),
                         "ActorCanViewTeam": _bit(actor_can_view_team),
+                        "ReopenAsUserId": reopen_as_user_id,
+                        "ReopenNote": reopen_note,
                     },
                 )
                 row = cursor.fetchone()

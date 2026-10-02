@@ -279,7 +279,13 @@ def test_every_review_write_path_is_now_guarded_at_the_sproc():
         "row is already written when the refusal fires"
     )
     assert "STATUS_LOCKED:" in executable[:insert]
-    assert executable.count("UPDLOCK, HOLDLOCK") == 5, (
+    # U-596 added a sixth: the ContractLabor arm also reads its SOURCE TimeEntry's
+
+    # current status under the same lock, refusing a review while that day is in
+
+    # 'draft' (the worker reopened it; its labor is provisional).
+
+    assert executable.count("UPDLOCK, HOLDLOCK") == 6, (
         "one locked read per parent: Bill, Expense, BillCredit, Invoice AND "
         "ContractLabor — every type dbo.Review can point at"
     )

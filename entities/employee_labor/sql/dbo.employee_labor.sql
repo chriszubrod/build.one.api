@@ -111,6 +111,7 @@ CREATE OR ALTER PROCEDURE CreateEmployeeLabor
 )
 AS
 BEGIN
+    SET NOCOUNT ON;
     BEGIN TRANSACTION;
 
     DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();
@@ -118,7 +119,7 @@ BEGIN
     INSERT INTO dbo.[EmployeeLabor]
         ([CreatedDatetime], [ModifiedDatetime], [EmployeeId], [ProjectId], [WorkDate],
          [BillingPeriodStart], [BillingPeriodEnd], [TotalHours], [HourlyRate], [Markup],
-         [TotalAmount], [SubCostCodeId], [Description], [Status], [SourceTimeEntryId], [CreatedByUserId])
+         [TotalAmount], [SubCostCodeId], [Description], [Status], [SourceTimeEntryId], [CreatedByUserId], [EditedSinceAggregation])
     OUTPUT
         INSERTED.[Id], INSERTED.[PublicId], INSERTED.[RowVersion],
         CONVERT(VARCHAR(19), INSERTED.[CreatedDatetime], 120)  AS [CreatedDatetime],
@@ -133,7 +134,7 @@ BEGIN
     VALUES (@Now, @Now, @EmployeeId, @ProjectId, @WorkDate,
             @BillingPeriodStart, @BillingPeriodEnd, @TotalHours, @HourlyRate, @Markup,
             @TotalAmount, @SubCostCodeId, @Description, @Status, @SourceTimeEntryId,
-            COALESCE(@CreatedByUserId, 17));
+            COALESCE(@CreatedByUserId, 17), 1);   -- U-596: a parent created outside the aggregator is 'edited' from birth
 
     COMMIT TRANSACTION;
 END;
@@ -289,6 +290,21 @@ CREATE OR ALTER PROCEDURE UpdateEmployeeLaborById
 AS
 BEGIN
     BEGIN TRANSACTION;
+    -- U-596: labor whose source day is back in 'draft' (the worker reopened it) is
+    -- provisional — its hours may not match the logs any more. Readying it would
+    -- make stale hours actionable, so refuse until the day is submitted again.
+    -- Checked under the status range lock; COMMIT then raise (nothing written).
+    IF @Status = 'ready' AND EXISTS (
+        SELECT 1 FROM dbo.[EmployeeLabor] p
+        WHERE p.[Id] = @Id AND p.[SourceTimeEntryId] IS NOT NULL
+          AND (SELECT TOP 1 s.[Status] FROM dbo.[TimeEntryStatus] s WITH (UPDLOCK, HOLDLOCK)
+               WHERE s.[TimeEntryId] = p.[SourceTimeEntryId]
+               ORDER BY s.[CreatedDatetime] DESC, s.[Id] DESC) = 'draft')
+    BEGIN
+        COMMIT TRANSACTION;
+        RAISERROR('Cannot mark labor ready while its time entry is in ''draft'' — the day is being edited; it will be resubmitted.', 16, 1);
+        RETURN;
+    END
 
     IF NOT EXISTS (SELECT 1 FROM dbo.[EmployeeLabor] WHERE [Id] = @Id)
     BEGIN
@@ -312,6 +328,7 @@ BEGIN
     UPDATE dbo.[EmployeeLabor]
     SET
         [ModifiedDatetime] = @Now,
+        [EditedSinceAggregation] = 1,   -- U-596: a writer other than the aggregator; see add_edited_since_aggregation.sql
         [ProjectId]        = CASE WHEN @ProjectId         IS NULL THEN [ProjectId]         ELSE @ProjectId         END,
         [TotalHours]       = CASE WHEN @TotalHours        IS NULL THEN [TotalHours]        ELSE @TotalHours        END,
         [HourlyRate]       = CASE WHEN @HourlyRate        IS NULL THEN [HourlyRate]        ELSE @HourlyRate        END,
@@ -345,7 +362,16 @@ CREATE OR ALTER PROCEDURE DeleteEmployeeLaborById
 )
 AS
 BEGIN
+    SET NOCOUNT ON;
     BEGIN TRANSACTION;
+    -- U-596: the cascade below erases every marker the labor rows carried, so
+    -- record on the SOURCE time entry that the office deleted its labor —
+    -- dbo.IsTimeEntryLaborUntouched reads it, and the day is never rebuilt
+    -- from its logs again without the office.
+    UPDATE te SET te.[LaborDeletedDatetime] = SYSUTCDATETIME()
+    FROM dbo.[TimeEntry] te
+    JOIN dbo.[EmployeeLabor] p ON p.[SourceTimeEntryId] = te.[Id]
+    WHERE p.[Id] = @Id;
     -- Cascade child line items first (no FK CASCADE per project convention).
     DELETE FROM dbo.[EmployeeLaborLineItem] WHERE [EmployeeLaborId] = @Id;
     DELETE FROM dbo.[EmployeeLabor]         WHERE [Id] = @Id;
@@ -453,8 +479,11 @@ CREATE OR ALTER PROCEDURE CreateEmployeeLaborLineItem
 )
 AS
 BEGIN
+    SET NOCOUNT ON;
     BEGIN TRANSACTION;
     DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();
+    DECLARE @ParentForMarker BIGINT = @EmployeeLaborId;
+    UPDATE dbo.[EmployeeLabor] SET [EditedSinceAggregation] = 1 WHERE [Id] = @ParentForMarker;   -- U-596: a writer other than the aggregator
 
     INSERT INTO dbo.[EmployeeLaborLineItem]
         ([CreatedDatetime], [ModifiedDatetime], [EmployeeLaborId], [LineDate], [ProjectId],
@@ -580,6 +609,7 @@ BEGIN
     UPDATE dbo.[EmployeeLaborLineItem]
     SET
         [ModifiedDatetime]  = @Now,
+        [EditedSinceAggregation] = 1,   -- U-596: a writer other than the aggregator; see add_edited_since_aggregation.sql
         [LineDate]          = CASE WHEN @LineDate          IS NULL THEN [LineDate]          ELSE @LineDate          END,
         [ProjectId]         = CASE WHEN @ProjectId         IS NULL THEN [ProjectId]         ELSE @ProjectId         END,
         [SubCostCodeId]     = CASE WHEN @SubCostCodeId     IS NULL THEN [SubCostCodeId]     ELSE @SubCostCodeId     END,
@@ -613,6 +643,9 @@ CREATE OR ALTER PROCEDURE DeleteEmployeeLaborLineItemById
 )
 AS
 BEGIN
+    SET NOCOUNT ON;
+    DECLARE @ParentForMarker BIGINT = (SELECT [EmployeeLaborId] FROM dbo.[EmployeeLaborLineItem] WHERE [Id] = @Id);
+    UPDATE dbo.[EmployeeLabor] SET [EditedSinceAggregation] = 1 WHERE [Id] = @ParentForMarker;   -- U-596: a writer other than the aggregator
     DELETE FROM dbo.[EmployeeLaborLineItem] WHERE [Id] = @Id;
 END;
 GO
@@ -624,6 +657,9 @@ CREATE OR ALTER PROCEDURE DeleteEmployeeLaborLineItemsByEmployeeLaborId
 )
 AS
 BEGIN
+    SET NOCOUNT ON;
+    DECLARE @ParentForMarker BIGINT = @EmployeeLaborId;
+    UPDATE dbo.[EmployeeLabor] SET [EditedSinceAggregation] = 1 WHERE [Id] = @ParentForMarker;   -- U-596: a writer other than the aggregator
     DELETE FROM dbo.[EmployeeLaborLineItem] WHERE [EmployeeLaborId] = @EmployeeLaborId;
 END;
 GO

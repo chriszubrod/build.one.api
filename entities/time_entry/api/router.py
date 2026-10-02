@@ -89,6 +89,11 @@ def _entry_dict_with_current_status(
             actor_is_system_admin=True,
         )
         d["current_status"] = current.status if current else "draft"
+        # U-596: deliberately NO decision token here. This helper serialises an
+        # entry read BEFORE the mutation it reports (submit/approve/reject), so a
+        # token taken now could be newer than the header shown. The token a
+        # decision binds to comes only from GET /time-entries/{public_id}, which
+        # reads the status row first and the header after it.
     if project_ids is not None:
         d["distinct_project_ids"] = project_ids
     # time_logs only included when the caller asked for them (include_logs=true
@@ -317,13 +322,24 @@ def read_time_entry(
     actor_user_id, actor_is_admin, actor_can_view_team = _actor_scope()
     # Reuse the parent read's access check by calling the child readers
     # with the same scope, using entry.id directly (no re-lookup).
-    time_logs = TimeLogRepository().read_by_time_entry_id(
+    # U-596: read the STATUS FIRST. Its newest row id goes back to the client as
+    # current_status_id, the token a decision binds to; read before the logs it
+    # describes, that token can never be newer than the hours shown — a reopen +
+    # resubmit landing after this read moves the status, so the token is stale
+    # and the decision is refused. (Read after the logs, the response could show
+    # old hours beside a fresh token that approves the new ones.)
+    status_history = TimeEntryStatusRepository().read_by_time_entry_id(
         time_entry_id=entry.id,
         actor_user_id=actor_user_id,
         actor_is_system_admin=actor_is_admin,
         actor_can_view_team=actor_can_view_team,
     )
-    status_history = TimeEntryStatusRepository().read_by_time_entry_id(
+    # …and re-read the HEADER after the token too: the first read only resolved
+    # the id and the 404. Everything serialised below — date, worker, note,
+    # review marker, logs, lineage — is read after the status row, so none of
+    # it can be older than the token that binds a decision to it.
+    entry = service.read_by_public_id(public_id=public_id) or entry
+    time_logs = TimeLogRepository().read_by_time_entry_id(
         time_entry_id=entry.id,
         actor_user_id=actor_user_id,
         actor_is_system_admin=actor_is_admin,
@@ -337,6 +353,9 @@ def read_time_entry(
     result["time_logs"] = [log.to_dict() for log in time_logs]
     result["status_history"] = [s.to_dict() for s in status_history]
     result["current_status"] = status_history[-1].status if status_history else None
+    # U-596: the status row this reader saw — the client echoes it back as
+    # expected_status_id on approve/reject (required for a reopened day).
+    result["current_status_id"] = status_history[-1].id if status_history else None
     result["billed_lineage"] = billed_lineage
 
     return item_response(result)
@@ -498,6 +517,7 @@ def approve_time_entry(
             public_id=public_id,
             user_id=_resolve_user_id(current_user),
             note=note,
+            expected_status_id=body.expected_status_id if body else None,
         )
         return item_response(_entry_dict_with_current_status(entry))
     except ValueError as e:
@@ -520,6 +540,7 @@ def reject_time_entry(
             public_id=public_id,
             user_id=_resolve_user_id(current_user),
             note=note,
+            expected_status_id=body.expected_status_id if body else None,
         )
         return item_response(_entry_dict_with_current_status(entry))
     except ValueError as e:

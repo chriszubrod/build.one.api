@@ -238,6 +238,7 @@ CREATE OR ALTER PROCEDURE CreateContractLabor
 )
 AS
 BEGIN
+    SET NOCOUNT ON;
     BEGIN TRANSACTION;
 
     DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();
@@ -247,7 +248,8 @@ BEGIN
         [WorkDate], [TimeIn], [TimeOut], [BreakTime], [RegularHours], [OvertimeHours],
         [TotalHours], [HourlyRate], [Markup], [TotalAmount], [SubCostCodeId], [Description],
         [BillingPeriodStart], [Status], [BillLineItemId], [ImportBatchId], [SourceFile], [SourceRow],
-        [CreatedByUserId]
+        [CreatedByUserId],
+        [EditedSinceAggregation]   -- U-596: a parent created outside the aggregator is 'edited' from birth
     )
     OUTPUT
         INSERTED.[Id],
@@ -286,7 +288,8 @@ BEGIN
         @WorkDate, @TimeIn, @TimeOut, @BreakTime, @RegularHours, @OvertimeHours,
         @TotalHours, @HourlyRate, @Markup, @TotalAmount, @SubCostCodeId, @Description,
         @BillingPeriodStart, @Status, @BillLineItemId, @ImportBatchId, @SourceFile, @SourceRow,
-        COALESCE(@CreatedByUserId, 17)
+        COALESCE(@CreatedByUserId, 17),
+        1
     );
 
     COMMIT TRANSACTION;
@@ -817,12 +820,28 @@ CREATE OR ALTER PROCEDURE UpdateContractLaborById
 AS
 BEGIN
     BEGIN TRANSACTION;
+    -- U-596: labor whose source day is back in 'draft' (the worker reopened it) is
+    -- provisional — its hours may not match the logs any more. Readying it would
+    -- make stale hours actionable, so refuse until the day is submitted again.
+    -- Checked under the status range lock; COMMIT then raise (nothing written).
+    IF @Status = 'ready' AND EXISTS (
+        SELECT 1 FROM dbo.[ContractLabor] p
+        WHERE p.[Id] = @Id AND p.[SourceTimeEntryId] IS NOT NULL
+          AND (SELECT TOP 1 s.[Status] FROM dbo.[TimeEntryStatus] s WITH (UPDLOCK, HOLDLOCK)
+               WHERE s.[TimeEntryId] = p.[SourceTimeEntryId]
+               ORDER BY s.[CreatedDatetime] DESC, s.[Id] DESC) = 'draft')
+    BEGIN
+        COMMIT TRANSACTION;
+        RAISERROR('Cannot mark labor ready while its time entry is in ''draft'' — the day is being edited; it will be resubmitted.', 16, 1);
+        RETURN;
+    END
 
     DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();
 
     UPDATE dbo.[ContractLabor]
     SET
         [ModifiedDatetime] = @Now,
+        [EditedSinceAggregation] = 1,   -- U-596: a writer other than the aggregator; see add_edited_since_aggregation.sql
         [VendorId] = @VendorId,
         [ProjectId] = @ProjectId,
         [EmployeeName] = @EmployeeName,
@@ -892,7 +911,16 @@ CREATE OR ALTER PROCEDURE DeleteContractLaborById
 )
 AS
 BEGIN
+    SET NOCOUNT ON;
     BEGIN TRANSACTION;
+    -- U-596: the cascade below erases every marker the labor rows carried, so
+    -- record on the SOURCE time entry that the office deleted its labor —
+    -- dbo.IsTimeEntryLaborUntouched reads it, and the day is never rebuilt
+    -- from its logs again without the office.
+    UPDATE te SET te.[LaborDeletedDatetime] = SYSUTCDATETIME()
+    FROM dbo.[TimeEntry] te
+    JOIN dbo.[ContractLabor] p ON p.[SourceTimeEntryId] = te.[Id]
+    WHERE p.[Id] = @Id;
 
     DELETE FROM dbo.[ContractLabor]
     OUTPUT
@@ -1032,6 +1060,20 @@ CREATE OR ALTER PROCEDURE UpdateContractLaborStatusByIds
 )
 AS
 BEGIN
+    -- U-596: labor whose source day is back in 'draft' (the worker reopened it) is
+    -- provisional — its hours may not match the logs any more. Readying it would
+    -- make stale hours actionable, so refuse until the day is submitted again.
+    IF @Status = 'ready' AND EXISTS (
+        SELECT 1 FROM dbo.[ContractLabor] cl
+        WHERE cl.[Id] IN (SELECT value FROM STRING_SPLIT(@Ids, ','))
+          AND cl.[SourceTimeEntryId] IS NOT NULL
+          AND (SELECT TOP 1 s.[Status] FROM dbo.[TimeEntryStatus] s WITH (UPDLOCK, HOLDLOCK)
+               WHERE s.[TimeEntryId] = cl.[SourceTimeEntryId]
+               ORDER BY s.[CreatedDatetime] DESC, s.[Id] DESC) = 'draft')
+    BEGIN
+        RAISERROR('Cannot mark labor ready while its time entry is in ''draft'' — the day is being edited; it will be resubmitted.', 16, 1);
+        RETURN;
+    END
     SET NOCOUNT ON;
 
     BEGIN TRANSACTION;
@@ -1040,6 +1082,7 @@ BEGIN
 
     UPDATE dbo.[ContractLabor]
     SET
+        [EditedSinceAggregation] = 1,   -- U-596: a writer other than the aggregator; see add_edited_since_aggregation.sql
         [ModifiedDatetime] = @Now,
         [Status] = @Status,
         [BillLineItemId] = @BillLineItemId
@@ -1126,9 +1169,12 @@ CREATE OR ALTER PROCEDURE CreateContractLaborLineItem
 )
 AS
 BEGIN
+    SET NOCOUNT ON;
     BEGIN TRANSACTION;
 
     DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();
+    DECLARE @ParentForMarker BIGINT = @ContractLaborId;
+    UPDATE dbo.[ContractLabor] SET [EditedSinceAggregation] = 1 WHERE [Id] = @ParentForMarker;   -- U-596: a writer other than the aggregator
 
     INSERT INTO dbo.[ContractLaborLineItem] (
         [CreatedDatetime], [ModifiedDatetime], [ContractLaborId], [LineDate], [ProjectId], [SubCostCodeId],
@@ -1314,6 +1360,7 @@ BEGIN
     UPDATE dbo.[ContractLaborLineItem]
     SET
         [ModifiedDatetime] = @Now,
+        [EditedSinceAggregation] = 1,   -- U-596: a writer other than the aggregator; see add_edited_since_aggregation.sql
         [LineDate] = @LineDate,
         [ProjectId] = @ProjectId,
         [SubCostCodeId] = @SubCostCodeId,
@@ -1358,7 +1405,10 @@ CREATE OR ALTER PROCEDURE DeleteContractLaborLineItemById
 )
 AS
 BEGIN
+    SET NOCOUNT ON;
     BEGIN TRANSACTION;
+    DECLARE @ParentForMarker BIGINT = (SELECT [ContractLaborId] FROM dbo.[ContractLaborLineItem] WHERE [Id] = @Id);
+    UPDATE dbo.[ContractLabor] SET [EditedSinceAggregation] = 1 WHERE [Id] = @ParentForMarker;   -- U-596: a writer other than the aggregator
 
     DELETE FROM dbo.[ContractLaborLineItem]
     OUTPUT
@@ -1395,6 +1445,8 @@ BEGIN
     SET NOCOUNT ON;
 
     BEGIN TRANSACTION;
+    DECLARE @ParentForMarker BIGINT = @ContractLaborId;
+    UPDATE dbo.[ContractLabor] SET [EditedSinceAggregation] = 1 WHERE [Id] = @ParentForMarker;   -- U-596: a writer other than the aggregator
 
     DELETE FROM dbo.[ContractLaborLineItem]
     WHERE [ContractLaborId] = @ContractLaborId;
@@ -1427,6 +1479,7 @@ BEGIN
 
     UPDATE dbo.[ContractLabor]
     SET
+        [EditedSinceAggregation] = 1,   -- U-596: a writer other than the aggregator; see add_edited_since_aggregation.sql
         [ModifiedDatetime] = @Now,
         [BillVendorId] = @BillVendorId,
         [BillDate] = @BillDate,
@@ -1545,6 +1598,7 @@ BEGIN
 
     UPDATE dbo.[ContractLabor]
     SET
+        [EditedSinceAggregation] = 1,   -- U-596: a writer other than the aggregator; see add_edited_since_aggregation.sql
         [Status] = @Status,
         [BillLineItemId] = @BillLineItemId,
         [ModifiedDatetime] = @Now

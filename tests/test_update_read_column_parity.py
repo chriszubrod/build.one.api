@@ -19,7 +19,12 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 # System-managed columns excluded from parity. Omitting a column here fails
 # LOUD (Test 1 demands the read sprocs return it), so under-inclusion is safe.
 _AUDIT_COLUMNS = frozenset(
-    {"ModifiedDatetime", "UpdatedDatetime", "RowVersion", "ModifiedByUserId"}
+    {"ModifiedDatetime", "UpdatedDatetime", "RowVersion", "ModifiedByUserId",
+     # U-596: the four generic labor update sprocs SET this to the constant 1
+     # ("a writer other than the aggregator touched this row"). It is never
+     # merged from the entity, so the NULL-wipe hazard this test guards against
+     # cannot arise; only dbo.IsTimeEntryLaborUntouched reads it.
+     "EditedSinceAggregation"}
 )
 
 _PROC_PATTERN = re.compile(

@@ -356,7 +356,9 @@ BEGIN
         CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
         [UserId],
         CONVERT(VARCHAR(10), [WorkDate], 120) AS [WorkDate],
-        [Note]
+        [Note],
+        [ReviewPriority],
+        [ReviewReasons]
     FROM dbo.[TimeEntry] te
     WHERE
         @ActorIsSystemAdmin = 1
@@ -400,7 +402,9 @@ BEGIN
         CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
         [UserId],
         CONVERT(VARCHAR(10), [WorkDate], 120) AS [WorkDate],
-        [Note]
+        [Note],
+        [ReviewPriority],
+        [ReviewReasons]
     FROM dbo.[TimeEntry] te
     WHERE te.[Id] = @Id
       AND (
@@ -444,7 +448,9 @@ BEGIN
         CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
         [UserId],
         CONVERT(VARCHAR(10), [WorkDate], 120) AS [WorkDate],
-        [Note]
+        [Note],
+        [ReviewPriority],
+        [ReviewReasons]
     FROM dbo.[TimeEntry] te
     WHERE te.[PublicId] = @PublicId
       AND (
@@ -488,7 +494,9 @@ BEGIN
         CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
         [UserId],
         CONVERT(VARCHAR(10), [WorkDate], 120) AS [WorkDate],
-        [Note]
+        [Note],
+        [ReviewPriority],
+        [ReviewReasons]
     FROM dbo.[TimeEntry] te
     WHERE te.[UserId] = @UserId
       AND (
@@ -533,7 +541,9 @@ BEGIN
         CONVERT(VARCHAR(19), te.[ModifiedDatetime], 120) AS [ModifiedDatetime],
         te.[UserId],
         CONVERT(VARCHAR(10), te.[WorkDate], 120) AS [WorkDate],
-        te.[Note]
+        te.[Note],
+        te.[ReviewPriority],
+        te.[ReviewReasons]
     FROM dbo.[TimeEntry] te
     WHERE EXISTS (
             SELECT 1 FROM dbo.[TimeLog] tl WHERE tl.[TimeEntryId] = te.[Id] AND tl.[ProjectId] = @ProjectId
@@ -589,7 +599,9 @@ BEGIN
         CONVERT(VARCHAR(19), te.[ModifiedDatetime], 120) AS [ModifiedDatetime],
         te.[UserId],
         CONVERT(VARCHAR(10), te.[WorkDate], 120) AS [WorkDate],
-        te.[Note]
+        te.[Note],
+        te.[ReviewPriority],
+        te.[ReviewReasons]
     FROM dbo.[TimeEntry] te
     LEFT JOIN dbo.[User] u ON te.[UserId] = u.[Id]
     OUTER APPLY (
@@ -719,7 +731,26 @@ CREATE OR ALTER PROCEDURE dbo.UpdateTimeEntryById
 )
 AS
 BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
     BEGIN TRANSACTION;
+    -- U-596: the header may only change while the day is in 'draft' (or has no
+    -- status history). Checked HERE, in the write's own transaction, under the
+    -- range lock every transition, submit and log write take — the service's
+    -- own draft check is a read, and a submit or approval can land between it
+    -- and this write (submission does not touch this row's RowVersion).
+    DECLARE @CurrentStatus NVARCHAR(20) = (
+        SELECT TOP 1 s.[Status] FROM dbo.[TimeEntryStatus] s WITH (UPDLOCK, HOLDLOCK)
+        WHERE s.[TimeEntryId] = @Id
+        ORDER BY s.[CreatedDatetime] DESC, s.[Id] DESC);
+    IF @CurrentStatus IS NOT NULL AND @CurrentStatus <> 'draft'
+    BEGIN
+        COMMIT TRANSACTION;      -- nothing written yet: commit, then raise (never ROLLBACK — error 266 under pyodbc)
+        DECLARE @Locked NVARCHAR(400) = N'Cannot modify a time entry when it is in ''' + @CurrentStatus
+            + N''' status — the entry is not in ''draft''.';
+        RAISERROR(@Locked, 16, 1);
+        RETURN;
+    END
 
     DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();
 
@@ -772,7 +803,26 @@ CREATE OR ALTER PROCEDURE dbo.DeleteTimeEntryById
 )
 AS
 BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
     BEGIN TRANSACTION;
+    -- U-596: the header may only change while the day is in 'draft' (or has no
+    -- status history). Checked HERE, in the write's own transaction, under the
+    -- range lock every transition, submit and log write take — the service's
+    -- own draft check is a read, and a submit or approval can land between it
+    -- and this write (submission does not touch this row's RowVersion).
+    DECLARE @CurrentStatus NVARCHAR(20) = (
+        SELECT TOP 1 s.[Status] FROM dbo.[TimeEntryStatus] s WITH (UPDLOCK, HOLDLOCK)
+        WHERE s.[TimeEntryId] = @Id
+        ORDER BY s.[CreatedDatetime] DESC, s.[Id] DESC);
+    IF @CurrentStatus IS NOT NULL AND @CurrentStatus <> 'draft'
+    BEGIN
+        COMMIT TRANSACTION;      -- nothing written yet: commit, then raise (never ROLLBACK — error 266 under pyodbc)
+        DECLARE @Locked NVARCHAR(400) = N'Cannot modify a time entry when it is in ''' + @CurrentStatus
+            + N''' status — the entry is not in ''draft''.';
+        RAISERROR(@Locked, 16, 1);
+        RETURN;
+    END
 
     DELETE FROM dbo.[TimeEntry]
     OUTPUT
@@ -820,11 +870,62 @@ CREATE OR ALTER PROCEDURE CreateTimeLog
     @Longitude DECIMAL(9,6) NULL,
     @ProjectId BIGINT NULL,
     @Note NVARCHAR(MAX) NULL,
-    @CreatedByUserId BIGINT = NULL
+    @CreatedByUserId BIGINT = NULL,
+    @ReopenAsUserId BIGINT = NULL,     -- U-596: the OWNER, when the service decided a submitted day may reopen
+    @ReopenNote NVARCHAR(MAX) = NULL
 )
 AS
 BEGIN
+    SET NOCOUNT ON;      -- DML now precedes the OUTPUT rows (the reopen): no row-count chatter before them
+    SET XACT_ABORT ON;
     BEGIN TRANSACTION;
+    -- U-596: a log may only change while its day is in 'draft' (or has no
+    -- status history). Checked HERE, in the write's own transaction, under a
+    -- range lock on the day's status rows — every transition and the submit
+    -- take the same lock, so nothing lands between this read and the write.
+    -- A 'submitted' day is REOPENED here, in this same transaction, when the
+    -- service passes the OWNER as @ReopenAsUserId (it decided eligibility:
+    -- untouched labor, no stale row, no bucket change…): a draft status row
+    -- plus the review marker, then the write. If the write then fails — a bad
+    -- project id, a unique-key collision — XACT_ABORT rolls the reopen back
+    -- with it: a refused request never leaves a reopened day behind.
+    DECLARE @CurrentStatus NVARCHAR(20) = (
+        SELECT TOP 1 s.[Status] FROM dbo.[TimeEntryStatus] s WITH (UPDLOCK, HOLDLOCK)
+        WHERE s.[TimeEntryId] = @TimeEntryId
+        ORDER BY s.[CreatedDatetime] DESC, s.[Id] DESC);
+    IF @CurrentStatus = 'submitted' AND @ReopenAsUserId IS NOT NULL
+       AND EXISTS (SELECT 1 FROM dbo.[TimeEntry] te WHERE te.[Id] = @TimeEntryId AND te.[UserId] = @ReopenAsUserId)
+    BEGIN
+        -- The service checked the labor before calling; re-check it HERE, under
+        -- the locks the predicate takes, so a decision or edit that landed in
+        -- between refuses the reopen instead of reopening a day whose labor
+        -- can no longer be rebuilt.
+        DECLARE @LaborUntouched BIT = 1;
+        EXEC dbo.IsTimeEntryLaborUntouched @TimeEntryId = @TimeEntryId, @Untouched = @LaborUntouched OUTPUT, @ReturnRow = 0;
+        IF @LaborUntouched = 0
+        BEGIN
+            COMMIT TRANSACTION;      -- nothing written yet; see the refusal below
+            RAISERROR('Cannot modify time logs when time entry is in ''submitted'' status — the entry is not in ''draft''. Its labor has been reviewed, billed or invoiced; reverse that first.', 16, 1);
+            RETURN;
+        END
+        INSERT INTO dbo.[TimeEntryStatus] ([CreatedDatetime], [TimeEntryId], [Status], [UserId], [Note])
+        VALUES (SYSUTCDATETIME(), @TimeEntryId, N'draft', @ReopenAsUserId, @ReopenNote);
+        DECLARE @ReopenedPublicId UNIQUEIDENTIFIER = (SELECT [PublicId] FROM dbo.[TimeEntry] WHERE [Id] = @TimeEntryId);
+        EXEC dbo.StampTimeEntryReview @TimeEntryPublicId = @ReopenedPublicId, @Priority = 'medium',
+                                      @ReasonsJson = N'["reopened_after_submit"]', @ReturnRow = 0;
+        SET @CurrentStatus = 'draft';
+    END
+    IF @CurrentStatus IS NOT NULL AND @CurrentStatus <> 'draft'
+    BEGIN
+        -- COMMIT then RAISERROR, never ROLLBACK: nothing has been written, and
+        -- pyodbc runs autocommit-off — a ROLLBACK here would zero the implicit
+        -- outer transaction and surface error 266 instead of this refusal.
+        COMMIT TRANSACTION;
+        DECLARE @Locked NVARCHAR(400) = N'Cannot modify time logs when time entry is in ''' + @CurrentStatus
+            + N''' status — the entry is not in ''draft''.';
+        RAISERROR(@Locked, 16, 1);
+        RETURN;
+    END
 
     DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();
 
@@ -1024,11 +1125,63 @@ CREATE OR ALTER PROCEDURE dbo.UpdateTimeLogById
     @Note NVARCHAR(MAX) NULL,
     @ActorUserId BIGINT = NULL,
     @ActorIsSystemAdmin BIT = NULL,
-    @ActorCanViewTeam BIT = 0
+    @ActorCanViewTeam BIT = 0,
+    @ReopenAsUserId BIGINT = NULL,     -- U-596: the OWNER, when the service decided a submitted day may reopen
+    @ReopenNote NVARCHAR(MAX) = NULL
 )
 AS
 BEGIN
+    SET NOCOUNT ON;      -- DML now precedes the OUTPUT rows (the reopen): no row-count chatter before them
+    SET XACT_ABORT ON;
     BEGIN TRANSACTION;
+    DECLARE @TimeEntryId BIGINT = (SELECT [TimeEntryId] FROM dbo.[TimeLog] WHERE [Id] = @Id);
+    -- U-596: a log may only change while its day is in 'draft' (or has no
+    -- status history). Checked HERE, in the write's own transaction, under a
+    -- range lock on the day's status rows — every transition and the submit
+    -- take the same lock, so nothing lands between this read and the write.
+    -- A 'submitted' day is REOPENED here, in this same transaction, when the
+    -- service passes the OWNER as @ReopenAsUserId (it decided eligibility:
+    -- untouched labor, no stale row, no bucket change…): a draft status row
+    -- plus the review marker, then the write. If the write then fails — a bad
+    -- project id, a unique-key collision — XACT_ABORT rolls the reopen back
+    -- with it: a refused request never leaves a reopened day behind.
+    DECLARE @CurrentStatus NVARCHAR(20) = (
+        SELECT TOP 1 s.[Status] FROM dbo.[TimeEntryStatus] s WITH (UPDLOCK, HOLDLOCK)
+        WHERE s.[TimeEntryId] = @TimeEntryId
+        ORDER BY s.[CreatedDatetime] DESC, s.[Id] DESC);
+    IF @CurrentStatus = 'submitted' AND @ReopenAsUserId IS NOT NULL
+       AND EXISTS (SELECT 1 FROM dbo.[TimeEntry] te WHERE te.[Id] = @TimeEntryId AND te.[UserId] = @ReopenAsUserId)
+    BEGIN
+        -- The service checked the labor before calling; re-check it HERE, under
+        -- the locks the predicate takes, so a decision or edit that landed in
+        -- between refuses the reopen instead of reopening a day whose labor
+        -- can no longer be rebuilt.
+        DECLARE @LaborUntouched BIT = 1;
+        EXEC dbo.IsTimeEntryLaborUntouched @TimeEntryId = @TimeEntryId, @Untouched = @LaborUntouched OUTPUT, @ReturnRow = 0;
+        IF @LaborUntouched = 0
+        BEGIN
+            COMMIT TRANSACTION;      -- nothing written yet; see the refusal below
+            RAISERROR('Cannot modify time logs when time entry is in ''submitted'' status — the entry is not in ''draft''. Its labor has been reviewed, billed or invoiced; reverse that first.', 16, 1);
+            RETURN;
+        END
+        INSERT INTO dbo.[TimeEntryStatus] ([CreatedDatetime], [TimeEntryId], [Status], [UserId], [Note])
+        VALUES (SYSUTCDATETIME(), @TimeEntryId, N'draft', @ReopenAsUserId, @ReopenNote);
+        DECLARE @ReopenedPublicId UNIQUEIDENTIFIER = (SELECT [PublicId] FROM dbo.[TimeEntry] WHERE [Id] = @TimeEntryId);
+        EXEC dbo.StampTimeEntryReview @TimeEntryPublicId = @ReopenedPublicId, @Priority = 'medium',
+                                      @ReasonsJson = N'["reopened_after_submit"]', @ReturnRow = 0;
+        SET @CurrentStatus = 'draft';
+    END
+    IF @CurrentStatus IS NOT NULL AND @CurrentStatus <> 'draft'
+    BEGIN
+        -- COMMIT then RAISERROR, never ROLLBACK: nothing has been written, and
+        -- pyodbc runs autocommit-off — a ROLLBACK here would zero the implicit
+        -- outer transaction and surface error 266 instead of this refusal.
+        COMMIT TRANSACTION;
+        DECLARE @Locked NVARCHAR(400) = N'Cannot modify time logs when time entry is in ''' + @CurrentStatus
+            + N''' status — the entry is not in ''draft''.';
+        RAISERROR(@Locked, 16, 1);
+        RETURN;
+    END
 
     DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();
 
@@ -1087,11 +1240,63 @@ CREATE OR ALTER PROCEDURE dbo.DeleteTimeLogById
     @Id BIGINT,
     @ActorUserId BIGINT = NULL,
     @ActorIsSystemAdmin BIT = NULL,
-    @ActorCanViewTeam BIT = 0
+    @ActorCanViewTeam BIT = 0,
+    @ReopenAsUserId BIGINT = NULL,     -- U-596: the OWNER, when the service decided a submitted day may reopen
+    @ReopenNote NVARCHAR(MAX) = NULL
 )
 AS
 BEGIN
+    SET NOCOUNT ON;      -- DML now precedes the OUTPUT rows (the reopen): no row-count chatter before them
+    SET XACT_ABORT ON;
     BEGIN TRANSACTION;
+    DECLARE @TimeEntryId BIGINT = (SELECT [TimeEntryId] FROM dbo.[TimeLog] WHERE [Id] = @Id);
+    -- U-596: a log may only change while its day is in 'draft' (or has no
+    -- status history). Checked HERE, in the write's own transaction, under a
+    -- range lock on the day's status rows — every transition and the submit
+    -- take the same lock, so nothing lands between this read and the write.
+    -- A 'submitted' day is REOPENED here, in this same transaction, when the
+    -- service passes the OWNER as @ReopenAsUserId (it decided eligibility:
+    -- untouched labor, no stale row, no bucket change…): a draft status row
+    -- plus the review marker, then the write. If the write then fails — a bad
+    -- project id, a unique-key collision — XACT_ABORT rolls the reopen back
+    -- with it: a refused request never leaves a reopened day behind.
+    DECLARE @CurrentStatus NVARCHAR(20) = (
+        SELECT TOP 1 s.[Status] FROM dbo.[TimeEntryStatus] s WITH (UPDLOCK, HOLDLOCK)
+        WHERE s.[TimeEntryId] = @TimeEntryId
+        ORDER BY s.[CreatedDatetime] DESC, s.[Id] DESC);
+    IF @CurrentStatus = 'submitted' AND @ReopenAsUserId IS NOT NULL
+       AND EXISTS (SELECT 1 FROM dbo.[TimeEntry] te WHERE te.[Id] = @TimeEntryId AND te.[UserId] = @ReopenAsUserId)
+    BEGIN
+        -- The service checked the labor before calling; re-check it HERE, under
+        -- the locks the predicate takes, so a decision or edit that landed in
+        -- between refuses the reopen instead of reopening a day whose labor
+        -- can no longer be rebuilt.
+        DECLARE @LaborUntouched BIT = 1;
+        EXEC dbo.IsTimeEntryLaborUntouched @TimeEntryId = @TimeEntryId, @Untouched = @LaborUntouched OUTPUT, @ReturnRow = 0;
+        IF @LaborUntouched = 0
+        BEGIN
+            COMMIT TRANSACTION;      -- nothing written yet; see the refusal below
+            RAISERROR('Cannot modify time logs when time entry is in ''submitted'' status — the entry is not in ''draft''. Its labor has been reviewed, billed or invoiced; reverse that first.', 16, 1);
+            RETURN;
+        END
+        INSERT INTO dbo.[TimeEntryStatus] ([CreatedDatetime], [TimeEntryId], [Status], [UserId], [Note])
+        VALUES (SYSUTCDATETIME(), @TimeEntryId, N'draft', @ReopenAsUserId, @ReopenNote);
+        DECLARE @ReopenedPublicId UNIQUEIDENTIFIER = (SELECT [PublicId] FROM dbo.[TimeEntry] WHERE [Id] = @TimeEntryId);
+        EXEC dbo.StampTimeEntryReview @TimeEntryPublicId = @ReopenedPublicId, @Priority = 'medium',
+                                      @ReasonsJson = N'["reopened_after_submit"]', @ReturnRow = 0;
+        SET @CurrentStatus = 'draft';
+    END
+    IF @CurrentStatus IS NOT NULL AND @CurrentStatus <> 'draft'
+    BEGIN
+        -- COMMIT then RAISERROR, never ROLLBACK: nothing has been written, and
+        -- pyodbc runs autocommit-off — a ROLLBACK here would zero the implicit
+        -- outer transaction and surface error 266 instead of this refusal.
+        COMMIT TRANSACTION;
+        DECLARE @Locked NVARCHAR(400) = N'Cannot modify time logs when time entry is in ''' + @CurrentStatus
+            + N''' status — the entry is not in ''draft''.';
+        RAISERROR(@Locked, 16, 1);
+        RETURN;
+    END
 
     DELETE tl
     OUTPUT
@@ -1372,9 +1577,129 @@ BEGIN
         @ParentTotalHrs = SUM(TotalHours)
     FROM @Buckets;
 
+    -- ── U-596: one invariant for a RE-submit ───────────────────────────────
+    -- A labor row aggregated from this entry is rebuilt from the logs only while
+    -- it is still a pure derivation of them (dbo.IsTimeEntryLaborUntouched: status
+    -- 'pending_review', no Review row, no bill/invoice line on the parent or any
+    -- line, no PM-split line). Once anyone has reviewed, split, billed or invoiced
+    -- it, NOTHING here may change it: a resubmit whose buckets still equal the
+    -- lines this entry produced is a no-op; one that would change them is
+    -- REFUSED (the office reverses the downstream work first). This is what used
+    -- to let a re-submit rewrite a reviewed row's hours, restore a PM's split, or
+    -- re-price a billed line — on the reject path as much as on the reopen path.
+    -- The office deleted this entry's labor outright: no parent remains to carry
+    -- a marker, so the record lives on the entry (LaborDeletedDatetime). Read it
+    -- here, independently of whether a parent exists — otherwise a resubmit
+    -- would simply recreate the deleted charges.
+    IF EXISTS (SELECT 1 FROM dbo.[TimeEntry] te WITH (UPDLOCK, HOLDLOCK)
+               WHERE te.[Id] = @TimeEntryId AND te.[LaborDeletedDatetime] IS NOT NULL)
+    BEGIN
+        DECLARE @RefusedDeleted NVARCHAR(400) = N'REFUSED: TimeEntry ' + CAST(@TimeEntryId AS NVARCHAR(20))
+            + N' — the office deleted its labor; it is not rebuilt from the logs without the office.';
+        RAISERROR(@RefusedDeleted, 16, 1);
+        RETURN;
+    END
+    DECLARE @ExistingParentId BIGINT = NULL;
+    IF @EmployeeId IS NOT NULL
+        SELECT @ExistingParentId = [Id] FROM dbo.[EmployeeLabor] WHERE [SourceTimeEntryId] = @TimeEntryId;
+    ELSE
+        SELECT @ExistingParentId = [Id] FROM dbo.[ContractLabor] WHERE [SourceTimeEntryId] = @TimeEntryId;
+    -- A parent in the OTHER family means the entry's worker changed type (or was
+    -- reassigned across vendor/employee) since it was aggregated. Rebuilding
+    -- here would leave that parent standing beside a new one — double labor —
+    -- and it is not this run's to delete. Refuse; the office reconciles.
+    IF (@EmployeeId IS NOT NULL AND EXISTS (SELECT 1 FROM dbo.[ContractLabor] WHERE [SourceTimeEntryId] = @TimeEntryId))
+       OR (@EmployeeId IS NULL AND OBJECT_ID('dbo.[EmployeeLabor]', 'U') IS NOT NULL
+           AND EXISTS (SELECT 1 FROM dbo.[EmployeeLabor] WHERE [SourceTimeEntryId] = @TimeEntryId))
+    BEGIN
+        DECLARE @RefusedFamily NVARCHAR(400) = N'REFUSED: TimeEntry ' + CAST(@TimeEntryId AS NVARCHAR(20))
+            + N' — its labor was aggregated for a different worker type; reconcile that labor row first.';
+        RAISERROR(@RefusedFamily, 16, 1);
+        RETURN;
+    END
+    DECLARE @Untouched BIT = 1;
+    IF @ExistingParentId IS NOT NULL
+        EXEC dbo.IsTimeEntryLaborUntouched @TimeEntryId = @TimeEntryId, @Untouched = @Untouched OUTPUT, @ReturnRow = 0;
+    IF @ExistingParentId IS NOT NULL AND @Untouched = 0
+    BEGIN
+        DECLARE @Differs BIT = 0;
+        IF @EmployeeId IS NOT NULL
+        BEGIN
+            IF EXISTS (SELECT ProjectId, TotalHours FROM @Buckets
+                       EXCEPT SELECT [ProjectId], [Hours] FROM dbo.[EmployeeLaborLineItem]
+                              WHERE [EmployeeLaborId] = @ExistingParentId AND [SourceTimeEntryId] = @TimeEntryId)
+               OR EXISTS (SELECT [ProjectId], [Hours] FROM dbo.[EmployeeLaborLineItem]
+                          WHERE [EmployeeLaborId] = @ExistingParentId AND [SourceTimeEntryId] = @TimeEntryId
+                          EXCEPT SELECT ProjectId, TotalHours FROM @Buckets)
+                SET @Differs = 1;
+        END
+        ELSE
+        BEGIN
+            IF EXISTS (SELECT ProjectId, TotalHours FROM @Buckets
+                       EXCEPT SELECT [ProjectId], [Hours] FROM dbo.[ContractLaborLineItem]
+                              WHERE [ContractLaborId] = @ExistingParentId AND [SourceTimeEntryId] = @TimeEntryId)
+               OR EXISTS (SELECT [ProjectId], [Hours] FROM dbo.[ContractLaborLineItem]
+                          WHERE [ContractLaborId] = @ExistingParentId AND [SourceTimeEntryId] = @TimeEntryId
+                          EXCEPT SELECT ProjectId, TotalHours FROM @Buckets)
+                SET @Differs = 1;
+        END
+        -- Touched labor is pinned to its date too: a reopened day whose WorkDate
+        -- moved cannot be resubmitted "unchanged" with its labor on the old date.
+        -- …and to its worker: a reopened day reassigned within the same family
+        -- cannot resubmit "unchanged" with labor still on the previous payee.
+        IF @Differs = 0 AND (
+               (@EmployeeId IS NOT NULL AND EXISTS (SELECT 1 FROM dbo.[EmployeeLabor]
+                                                   WHERE [Id] = @ExistingParentId AND ([WorkDate] <> @WorkDate OR [EmployeeId] <> @EmployeeId)))
+            OR (@EmployeeId IS NULL AND EXISTS (SELECT 1 FROM dbo.[ContractLabor]
+                                                WHERE [Id] = @ExistingParentId AND ([WorkDate] <> @WorkDate OR [VendorId] <> @VendorId))))
+            SET @Differs = 1;
+        IF @Differs = 1
+        BEGIN
+            DECLARE @Refused NVARCHAR(400) = N'REFUSED: TimeEntry ' + CAST(@TimeEntryId AS NVARCHAR(20))
+                + N' — this resubmit would change labor that has been reviewed, split, billed or invoiced. Reverse that first.';
+            RAISERROR(@Refused, 16, 1);
+            RETURN;
+        END
+        -- Identical: nothing to rebuild and nothing may be touched. Report the
+        -- existing lines and leave.
+        IF @EmployeeId IS NOT NULL
+            INSERT INTO @Results
+            SELECT N'EmployeeLabor', @ExistingParentId, li.[Id], li.[ProjectId], @WorkDate,
+                   li.[Hours], li.[Rate], li.[Markup], N'unchanged', p.[Status], N'unchanged — labor already reviewed/billed; left as is'
+            FROM dbo.[EmployeeLaborLineItem] li JOIN dbo.[EmployeeLabor] p ON p.[Id] = li.[EmployeeLaborId]
+            WHERE li.[EmployeeLaborId] = @ExistingParentId AND li.[SourceTimeEntryId] = @TimeEntryId;
+        ELSE
+            INSERT INTO @Results
+            SELECT N'ContractLabor', @ExistingParentId, li.[Id], li.[ProjectId], @WorkDate,
+                   li.[Hours], li.[Rate], li.[Markup], N'unchanged', p.[Status], N'unchanged — labor already reviewed/billed; left as is'
+            FROM dbo.[ContractLaborLineItem] li JOIN dbo.[ContractLabor] p ON p.[Id] = li.[ContractLaborId]
+            WHERE li.[ContractLaborId] = @ExistingParentId AND li.[SourceTimeEntryId] = @TimeEntryId;
+        SELECT TargetTable, TargetRowId, LineItemRowId, ProjectId,
+               CONVERT(VARCHAR(10), WorkDate, 120) AS WorkDate,
+               TotalHours, HourlyRate, Markup, RateSource, Status, Note
+        FROM @Results;
+        RETURN;
+    END
+
     IF @BucketCount = 0
     BEGIN
-        -- No work logs (only breaks, or no logs at all). Nothing to aggregate.
+        -- No work logs (only breaks, or no logs at all). Nothing to aggregate —
+        -- and an UNTOUCHED aggregation from an earlier submit must not keep
+        -- billing hours the day no longer has (U-596): drop its lines.
+        IF @ExistingParentId IS NOT NULL
+        BEGIN
+            IF @EmployeeId IS NOT NULL
+            BEGIN
+                DELETE FROM dbo.[EmployeeLaborLineItem] WHERE [EmployeeLaborId] = @ExistingParentId AND [SourceTimeEntryId] = @TimeEntryId;
+                UPDATE dbo.[EmployeeLabor] SET [TotalHours] = 0, [TotalAmount] = 0, [ModifiedDatetime] = SYSUTCDATETIME()
+                WHERE [Id] = @ExistingParentId;
+            END
+            ELSE
+            BEGIN
+                DELETE FROM dbo.[ContractLaborLineItem] WHERE [ContractLaborId] = @ExistingParentId AND [SourceTimeEntryId] = @TimeEntryId;
+                EXEC dbo.UpdateContractLaborAggregates @Id = @ExistingParentId, @ReturnRow = 0;
+            END
+        END
         SELECT TargetTable, TargetRowId, LineItemRowId, ProjectId,
                CONVERT(VARCHAR(10), WorkDate, 120) AS WorkDate,
                TotalHours, HourlyRate, Markup, RateSource, Status, Note
@@ -1473,7 +1798,10 @@ BEGIN
 
             UPDATE dbo.[EmployeeLabor]
             SET [ModifiedDatetime]  = SYSUTCDATETIME(),
+                [EmployeeId]        = @EmployeeId,          -- U-596: the day's worker may have changed while reopened
                 [ProjectId]         = @ParentProjectId,
+                [WorkDate]          = @WorkDate,            -- U-596: the day may have moved while reopened
+                [BillingPeriodStart] = @BillingPeriodStart,
                 [TotalHours]        = @ParentTotalHrs,
                 [HourlyRate]        = @ParentRate,
                 [Markup]            = @ParentMarkup,
@@ -1525,7 +1853,12 @@ BEGIN
             -- still needs them — it has no row to recompute from yet.
             UPDATE dbo.[ContractLabor]
             SET [ModifiedDatetime]  = SYSUTCDATETIME(),
+                [VendorId]          = @VendorId,            -- U-596: the day's worker may have changed while reopened
+                [BillVendorId]      = @VendorId,
+                [EmployeeName]      = @WorkerName,
                 [ProjectId]         = @ParentProjectId,
+                [WorkDate]          = @WorkDate,            -- U-596: the day may have moved while reopened
+                [BillingPeriodStart] = @BillingPeriodStart,
                 [Description]       = @ParentDesc,
                 [SourceTimeEntryId] = @TimeEntryId
             WHERE [Id] = @ParentRowId;
@@ -1613,7 +1946,7 @@ BEGIN
             BEGIN
                 -- Preserve PM edits: SubCostCodeId, Description, IsBillable,
                 -- IsOverhead, InvoiceLineItemId all left alone.
-                UPDATE dbo.[EmployeeLaborLineItem]
+                    UPDATE dbo.[EmployeeLaborLineItem]
                 SET [ModifiedDatetime] = SYSUTCDATETIME(),
                     [Hours]    = @TotalHours,
                     [Rate]     = @HourlyRate,
@@ -1648,7 +1981,7 @@ BEGIN
             END
             ELSE
             BEGIN
-                UPDATE dbo.[ContractLaborLineItem]
+                    UPDATE dbo.[ContractLaborLineItem]
                 SET [ModifiedDatetime] = SYSUTCDATETIME(),
                     [Hours]    = @TotalHours,
                     [Rate]     = @HourlyRate,
@@ -1686,6 +2019,25 @@ BEGIN
     --
     -- @ReturnRow = 0 suppresses the sproc's row set (see its header).
     -- EmployeeLabor has no equivalent recompute sproc — see TODO.md.
+    -- U-596: retire lines this entry no longer produces. The loop above upserts
+    -- one line per (parent, ProjectId) from the CURRENT work logs; a line whose
+    -- project no longer appears (a log moved, deleted, or re-typed as a break)
+    -- used to stand forever, so a resubmit billed hours twice. We only reach
+    -- this point for an UNTOUCHED aggregation (above), so every such line is
+    -- this entry's own and unlinked; the predicates restate that as a guard.
+    IF @EmployeeId IS NOT NULL
+        DELETE li FROM dbo.[EmployeeLaborLineItem] li
+        WHERE li.[EmployeeLaborId] = @ParentRowId AND li.[SourceTimeEntryId] = @TimeEntryId
+          AND li.[InvoiceLineItemId] IS NULL
+          AND NOT EXISTS (SELECT 1 FROM @Buckets b
+                          WHERE (b.ProjectId IS NULL AND li.[ProjectId] IS NULL) OR b.ProjectId = li.[ProjectId]);
+    ELSE
+        DELETE li FROM dbo.[ContractLaborLineItem] li
+        WHERE li.[ContractLaborId] = @ParentRowId AND li.[SourceTimeEntryId] = @TimeEntryId
+          AND li.[BillLineItemId] IS NULL
+          AND NOT EXISTS (SELECT 1 FROM @Buckets b
+                          WHERE (b.ProjectId IS NULL AND li.[ProjectId] IS NULL) OR b.ProjectId = li.[ProjectId]);
+
     IF @EmployeeId IS NULL AND @ParentRowId IS NOT NULL
     BEGIN
         EXEC dbo.UpdateContractLaborAggregates @Id = @ParentRowId, @ReturnRow = 0;
@@ -2024,18 +2376,255 @@ CREATE OR ALTER PROCEDURE [dbo].[StampTimeEntryReview]
 (
     @TimeEntryPublicId UNIQUEIDENTIFIER,
     @Priority          VARCHAR(20),
-    @ReasonsJson       NVARCHAR(MAX)
+    @ReasonsJson       NVARCHAR(MAX),
+    @ReturnRow         BIT = 1          -- 0 when called from another sproc: no result set
 )
 AS
 BEGIN
     SET NOCOUNT ON;
 
-    UPDATE [dbo].[TimeEntry]
-    SET [ReviewPriority] = @Priority,
-        [ReviewReasons]  = @ReasonsJson
-    WHERE [PublicId] = @TimeEntryPublicId;
-
-    SELECT @@ROWCOUNT AS [AffectedRowCount];
+    -- U-596: `reopened_after_submit` is a HISTORICAL marker — the worker's own
+    -- device reopened a day auto-submit had already submitted. Every later
+    -- restamp (the sweep's completeness reasons, the specialist's clean/[])
+    -- recomputes reasons from the logs and would erase it, so it is carried
+    -- forward here, and a 'clean' or 'low' restamp of such a day lands as 'medium':
+    -- a human must still look before approval. Non-JSON input keeps the old
+    -- overwrite semantics exactly.
+    DECLARE @Marker NVARCHAR(40) = N'reopened_after_submit';
+    UPDATE te
+    SET [ReviewPriority] = CASE WHEN k.[Marked] = 1 AND @Priority IN ('clean', 'low') THEN 'medium' ELSE @Priority END,
+        [ReviewReasons]  = CASE WHEN k.[Keep] = 1 THEN JSON_MODIFY(@ReasonsJson, 'append $', @Marker) ELSE @ReasonsJson END
+    FROM [dbo].[TimeEntry] te
+    CROSS APPLY (
+        SELECT
+            CASE WHEN ISJSON(te.[ReviewReasons]) = 1
+                  AND EXISTS (SELECT 1 FROM OPENJSON(te.[ReviewReasons]) WHERE [value] = @Marker) THEN 1 ELSE 0 END AS [Had],
+            CASE WHEN ISJSON(@ReasonsJson) = 1
+                  AND EXISTS (SELECT 1 FROM OPENJSON(@ReasonsJson) WHERE [value] = @Marker) THEN 1 ELSE 0 END AS [Incoming]
+    ) h
+    CROSS APPLY (
+        -- Keep: carry the marker forward when the restamp lacks it. Marked: the
+        -- day is a reopened day either way, so 'clean' never lands on it — not
+        -- from the sweep, not from the specialist, not from the worker's own
+        -- review-flag call that names the marker to get Keep = 0.
+        SELECT CASE WHEN h.[Had] = 1 AND h.[Incoming] = 0 AND ISJSON(@ReasonsJson) = 1 THEN 1 ELSE 0 END AS [Keep],
+               CASE WHEN h.[Had] = 1 OR h.[Incoming] = 1 THEN 1 ELSE 0 END AS [Marked]
+    ) k
+    WHERE te.[PublicId] = @TimeEntryPublicId;
+    DECLARE @Affected INT = @@ROWCOUNT;
+    -- Return what was PERSISTED, not what was asked: on a reopened day the floor
+    -- and the carried-forward marker make the two differ.
+    IF @ReturnRow = 1
+        SELECT @Affected AS [AffectedRowCount], te.[ReviewPriority], te.[ReviewReasons]
+        FROM [dbo].[TimeEntry] te WHERE te.[PublicId] = @TimeEntryPublicId;
 END;
 GO
 
+-- =============================================================================
+-- U-596 (2026-10-02): reopen a submitted day on the owner's late log write
+-- =============================================================================
+-- Compare-and-insert for a status transition. The caller read the entry's
+-- current status row (@ExpectedCurrentStatusId) and decided a transition; this
+-- inserts ONLY if no newer status row exists for the entry, under a range lock
+-- on the entry's status rows, so a concurrent transition (an approval) either
+-- committed before us — and we insert nothing — or waits for us. Returns the
+-- inserted row, or no row when the status moved underneath the caller.
+CREATE OR ALTER PROCEDURE dbo.CreateTimeEntryStatusIfCurrent
+(
+    @TimeEntryId BIGINT,
+    @ExpectedCurrentStatusId BIGINT,
+    @Status NVARCHAR(20),
+    @UserId BIGINT,
+    @Note NVARCHAR(MAX) NULL
+)
+AS
+BEGIN
+    SET NOCOUNT ON;
+    BEGIN TRANSACTION;
+    IF NOT EXISTS (
+        SELECT 1 FROM dbo.[TimeEntryStatus] WITH (UPDLOCK, HOLDLOCK)
+        WHERE [TimeEntryId] = @TimeEntryId AND [Id] > @ExpectedCurrentStatusId
+    )
+    BEGIN
+        INSERT INTO dbo.[TimeEntryStatus] (
+            [CreatedDatetime], [TimeEntryId], [Status], [UserId], [Note]
+        )
+        OUTPUT
+            INSERTED.[Id],
+            INSERTED.[PublicId],
+            INSERTED.[RowVersion],
+            CONVERT(VARCHAR(19), INSERTED.[CreatedDatetime], 120) AS [CreatedDatetime],
+            INSERTED.[TimeEntryId],
+            INSERTED.[Status],
+            INSERTED.[UserId],
+            INSERTED.[Note]
+        VALUES (SYSUTCDATETIME(), @TimeEntryId, @Status, @UserId, @Note);
+    END
+    ELSE
+    BEGIN
+        -- The status moved underneath the caller. Return an EMPTY result set
+        -- with the same shape — a statement that produces no result set makes
+        -- the driver raise instead of returning no row.
+        SELECT [Id], [PublicId], [RowVersion],
+               CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
+               [TimeEntryId], [Status], [UserId], [Note]
+        FROM dbo.[TimeEntryStatus] WHERE 1 = 0;
+    END
+    COMMIT TRANSACTION;
+END;
+GO
+
+-- 1 when every labor row aggregated from this entry is still a pure derivation
+-- of its logs: status 'pending_review' (nobody has reviewed, coded or readied
+-- it) and no bill/invoice line points at the parent or any of its line items
+-- (a multi-project row stays 'ready' while one project is billed, which
+-- IsTimeEntryDownstreamLocked does not see). No labor rows at all is untouched.
+-- Only such a day may be reopened without a human: the resubmit then recomputes
+-- exactly what submit computed.
+CREATE OR ALTER PROCEDURE dbo.IsTimeEntryLaborUntouched
+(
+    @TimeEntryId BIGINT,
+    @Untouched BIT = NULL OUTPUT,     -- for callers inside T-SQL (the aggregator)
+    @ReturnRow BIT = 1                -- 0 from inside T-SQL: a result set here would be read
+                                      -- by the CALLER's client as the caller's first result set
+)
+AS
+BEGIN
+    SET NOCOUNT ON;
+    -- Every read below takes UPDLOCK, HOLDLOCK: inside a caller's transaction
+    -- (the submit's aggregation, a log write's reopen) the labor rows, their
+    -- lines and the Review range stay locked until that transaction commits,
+    -- so a reviewer's decision, a mark-ready or a PM's edit cannot land between
+    -- this answer and the write that relies on it. Standalone (autocommit) the
+    -- locks end with the statement.
+    -- EditedSinceAggregation is the durable record that a writer OTHER than the
+    -- aggregator touched the row (the generic update sprocs set it): a PM's
+    -- in-place correction of an existing line is 'touched' even though it
+    -- keeps 'pending_review', its SourceTimeEntryId and creates no Review row.
+    DECLARE @Touched BIT = 0;
+    -- The office deleted this entry's labor outright (the parent cascade erased
+    -- every row-level marker): recorded on the entry, read first.
+    IF EXISTS (SELECT 1 FROM dbo.[TimeEntry] te WITH (UPDLOCK, HOLDLOCK)
+               WHERE te.[Id] = @TimeEntryId AND te.[LaborDeletedDatetime] IS NOT NULL)
+        SET @Touched = 1;
+    IF @Touched = 0 AND EXISTS (
+        SELECT 1 FROM dbo.[ContractLabor] cl WITH (UPDLOCK, HOLDLOCK)
+        WHERE cl.[SourceTimeEntryId] = @TimeEntryId
+          AND (cl.[Status] <> 'pending_review'
+               OR cl.[EditedSinceAggregation] = 1
+               OR cl.[BillLineItemId] IS NOT NULL
+               OR EXISTS (SELECT 1 FROM dbo.[Review] r WITH (UPDLOCK, HOLDLOCK) WHERE r.[ContractLaborId] = cl.[Id])
+               OR EXISTS (SELECT 1 FROM dbo.[ContractLaborLineItem] li WITH (UPDLOCK, HOLDLOCK)
+                          WHERE li.[ContractLaborId] = cl.[Id]
+                            AND (li.[SourceTimeEntryId] IS NULL OR li.[EditedSinceAggregation] = 1 OR li.[BillLineItemId] IS NOT NULL)))
+    )
+        SET @Touched = 1;
+    IF @Touched = 0 AND OBJECT_ID('dbo.[EmployeeLabor]', 'U') IS NOT NULL
+    BEGIN
+        IF EXISTS (
+            SELECT 1 FROM dbo.[EmployeeLabor] el WITH (UPDLOCK, HOLDLOCK)
+            WHERE el.[SourceTimeEntryId] = @TimeEntryId
+              AND (el.[Status] <> 'pending_review'
+                   OR el.[EditedSinceAggregation] = 1
+                   OR el.[InvoiceLineItemId] IS NOT NULL
+                   OR EXISTS (SELECT 1 FROM dbo.[EmployeeLaborLineItem] li WITH (UPDLOCK, HOLDLOCK)
+                              WHERE li.[EmployeeLaborId] = el.[Id]
+                                AND (li.[SourceTimeEntryId] IS NULL OR li.[EditedSinceAggregation] = 1 OR li.[InvoiceLineItemId] IS NOT NULL)))
+        )
+            SET @Touched = 1;
+    END
+    SET @Untouched = CASE WHEN @Touched = 1 THEN CAST(0 AS BIT) ELSE CAST(1 AS BIT) END;
+    IF @ReturnRow = 1 SELECT @Untouched AS Untouched;
+END;
+GO
+
+-- Submit = the status row AND the aggregation, in one transaction (U-596). Before,
+-- they were two commits: a log write could land between them (or between a
+-- read and either of them), leaving payroll totals that no longer matched the
+-- logs of a 'submitted' day. The status row is a compare-and-insert under the
+-- range lock every log write and transition takes, so for the whole of this
+-- transaction no log can change; the aggregator's REFUSED (labor someone has
+-- reviewed, split, billed or invoiced would change) rolls the status row back
+-- with it and re-raises; any OTHER aggregation failure keeps the day
+-- submitted, unaggregated, and is reported in the outcome row (the long-
+-- standing best-effort semantics the sweep counts as submitted_unaggregated).
+-- Result sets, in order: the aggregator's rows if it produced any, then the
+-- outcome row (status columns + AggregationError) — always last.
+CREATE OR ALTER PROCEDURE dbo.SubmitTimeEntry
+(
+    @TimeEntryId BIGINT,
+    @ExpectedCurrentStatusId BIGINT,
+    @UserId BIGINT
+)
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT OFF;
+    DECLARE @Outcome TABLE (
+        [Id] BIGINT, [PublicId] UNIQUEIDENTIFIER, [RowVersion] BINARY(8), [CreatedDatetime] VARCHAR(19),
+        [TimeEntryId] BIGINT, [Status] NVARCHAR(20), [UserId] BIGINT, [Note] NVARCHAR(MAX)
+    );
+    DECLARE @AggregationError NVARCHAR(4000) = NULL;
+    BEGIN TRANSACTION;
+    -- Nothing is written before the decision. The status range lock is taken by
+    -- this read and HELD to commit; the aggregation runs under a savepoint; the
+    -- status row is inserted LAST. A refusal rolls back to the savepoint and
+    -- COMMITS (nothing written) before raising — never a full ROLLBACK, which
+    -- under pyodbc's autocommit-off zeroes the outer transaction and surfaces
+    -- error 266 instead of the refusal. Only a doomed transaction still needs
+    -- the full rollback.
+    IF EXISTS (
+        SELECT 1 FROM dbo.[TimeEntryStatus] WITH (UPDLOCK, HOLDLOCK)
+        WHERE [TimeEntryId] = @TimeEntryId AND [Id] > @ExpectedCurrentStatusId
+    )
+    BEGIN
+        -- the status moved underneath the caller: nothing written, empty outcome
+        COMMIT TRANSACTION;
+        SELECT [Id], [PublicId], [RowVersion], [CreatedDatetime], [TimeEntryId], [Status], [UserId], [Note],
+               CAST(NULL AS NVARCHAR(4000)) AS [AggregationError]
+        FROM @Outcome;
+        RETURN;
+    END
+    -- Best effort applies to a FIRST aggregation only. If labor already exists for
+    -- this entry, a failed rebuild must not leave the OLD labor standing under a
+    -- new submission (the logs changed; the labor did not): refuse the submit.
+    DECLARE @HadLabor BIT = CASE WHEN EXISTS (SELECT 1 FROM dbo.[ContractLabor] WHERE [SourceTimeEntryId] = @TimeEntryId)
+                                   OR (OBJECT_ID('dbo.[EmployeeLabor]', 'U') IS NOT NULL
+                                       AND EXISTS (SELECT 1 FROM dbo.[EmployeeLabor] WHERE [SourceTimeEntryId] = @TimeEntryId))
+                                 THEN 1 ELSE 0 END;
+    SAVE TRANSACTION AggregationSavepoint;
+    BEGIN TRY
+        EXEC dbo.AggregateTimeEntryOnSubmit @TimeEntryId = @TimeEntryId;
+    END TRY
+    BEGIN CATCH
+        SET @AggregationError = ERROR_MESSAGE();
+        IF XACT_STATE() = -1
+        BEGIN
+            ROLLBACK TRANSACTION;    -- doomed: the only option; the caller sees a database fault
+            RAISERROR(@AggregationError, 16, 1);
+            RETURN;
+        END
+        IF @AggregationError LIKE N'REFUSED:%' OR @HadLabor = 1
+        BEGIN
+            IF @AggregationError NOT LIKE N'REFUSED:%'
+                SET @AggregationError = N'REFUSED: TimeEntry ' + CAST(@TimeEntryId AS NVARCHAR(20))
+                    + N' — its labor could not be rebuilt from the logs (' + LEFT(@AggregationError, 200) + N'); the previous labor is left unchanged and the day stays in draft.';
+            ROLLBACK TRANSACTION AggregationSavepoint;
+            COMMIT TRANSACTION;      -- commits nothing: the savepoint undid the aggregation, no status row was written
+            RAISERROR(@AggregationError, 16, 1);
+            RETURN;
+        END
+        ROLLBACK TRANSACTION AggregationSavepoint;   -- first aggregation, best effort: submit unaggregated
+    END CATCH
+    INSERT INTO dbo.[TimeEntryStatus] ([CreatedDatetime], [TimeEntryId], [Status], [UserId], [Note])
+    OUTPUT INSERTED.[Id], INSERTED.[PublicId], INSERTED.[RowVersion],
+           CONVERT(VARCHAR(19), INSERTED.[CreatedDatetime], 120),
+           INSERTED.[TimeEntryId], INSERTED.[Status], INSERTED.[UserId], INSERTED.[Note]
+    INTO @Outcome
+    VALUES (SYSUTCDATETIME(), @TimeEntryId, N'submitted', @UserId, NULL);
+    COMMIT TRANSACTION;
+    SELECT [Id], [PublicId], [RowVersion], [CreatedDatetime], [TimeEntryId], [Status], [UserId], [Note],
+           @AggregationError AS [AggregationError]
+    FROM @Outcome;
+END;
+GO

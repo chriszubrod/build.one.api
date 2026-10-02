@@ -326,6 +326,38 @@ class ReviewService:
     # at the LS-04 cutover.
     _CONTRACT_LABOR_TERMINAL = ("billed", "completed")
 
+    def _bind_labor_decision(self, parent_type: str, parent, expected_row_version: Optional[str]) -> None:
+        """
+        A labor decision is about the labor row the reviewer READ (U-596). The
+        aggregator rebuilds an untouched row when its day is resubmitted — the
+        row_version moves — so a decision carrying `expected_row_version` is
+        refused when it no longer matches. On a row whose source time entry
+        carries `reopened_after_submit` (the worker reopened the day after it
+        was submitted) the version is REQUIRED: that is exactly the case where a
+        reviewer's queued decision — or the agent's fast-path approval — could
+        otherwise bless hours nobody saw. Other parents, and labor rows without
+        a source day, are unaffected. Raises ReviewTransitionError: a reload-
+        and-decide-again condition for the reviewer.
+        """
+        if parent_type != ParentType.CONTRACT_LABOR:
+            return
+        row_version = getattr(parent, "row_version", None)
+        source_id = getattr(parent, "source_time_entry_id", None)
+        if expected_row_version is not None and row_version is not None and expected_row_version != row_version:
+            raise ReviewTransitionError(
+                "This labor row changed since you reviewed it (its hours were rebuilt from the day's logs). "
+                "Reload and decide again."
+            )
+        if expected_row_version is None and source_id:
+            from entities.time_entry.business.validation import REASON_REOPENED_AFTER_SUBMIT
+            from entities.time_entry.persistence.repo import TimeEntryRepository
+            source = TimeEntryRepository().read_by_id(id=source_id, actor_is_system_admin=True)
+            if source is not None and REASON_REOPENED_AFTER_SUBMIT in (getattr(source, "review_reasons", None) or []):
+                raise ReviewTransitionError(
+                    "This labor row's time entry was reopened after submission; reload it and decide on what you see "
+                    "(send expected_row_version = the labor row's row_version)."
+                )
+
     def _assert_parent_open(self, parent_type: str, parent, *, what: str) -> None:
         """Refuse a review transition on a document that is already finished.
 
@@ -353,9 +385,11 @@ class ReviewService:
         parent_public_id: str,
         user_id: int,
         comments: Optional[str] = None,
+        expected_row_version: Optional[str] = None,
     ) -> dict:
         parent = self._resolve_parent(parent_type, parent_public_id)
         self._assert_parent_open(parent_type, parent, what="it cannot be submitted for review once completed")
+        self._bind_labor_decision(parent_type, parent, expected_row_version)
         parent_id = parent.id
         current = self._get_current_by_id(parent_type, parent_id)
 
@@ -389,9 +423,11 @@ class ReviewService:
         parent_public_id: str,
         user_id: int,
         comments: Optional[str] = None,
+        expected_row_version: Optional[str] = None,
     ) -> dict:
         parent = self._resolve_parent(parent_type, parent_public_id)
         self._assert_parent_open(parent_type, parent, what="its review cannot be advanced once completed")
+        self._bind_labor_decision(parent_type, parent, expected_row_version)
         parent_id = parent.id
         current = self._get_current_by_id(parent_type, parent_id)
 
@@ -457,6 +493,7 @@ class ReviewService:
         self._assert_parent_open(
             parent_type, parent, what="it cannot be approved once completed"
         )
+        self._bind_labor_decision(parent_type, parent, None)   # an automatic approval can never carry the version it saw
         parent_id = parent.id
         current = self._get_current_by_id(parent_type, parent_id)
 
@@ -507,9 +544,11 @@ class ReviewService:
         user_id: int,
         target_status_public_id: Optional[str] = None,
         comments: Optional[str] = None,
+        expected_row_version: Optional[str] = None,
     ) -> dict:
         parent = self._resolve_parent(parent_type, parent_public_id)
         self._assert_parent_open(parent_type, parent, what="its review cannot be declined once completed")
+        self._bind_labor_decision(parent_type, parent, expected_row_version)
         parent_id = parent.id
         current = self._get_current_by_id(parent_type, parent_id)
 

@@ -17,6 +17,18 @@ from shared.database import (
 logger = logging.getLogger(__name__)
 
 
+def _reasons(raw):
+    """ReviewReasons is a JSON array of short codes; anything else reads as absent."""
+    if not raw:
+        return None
+    try:
+        import json
+        value = json.loads(raw)
+        return value if isinstance(value, list) else None
+    except (TypeError, ValueError):
+        return None
+
+
 class TimeEntryRepository:
     """
     Repository for TimeEntry persistence operations.
@@ -48,6 +60,8 @@ class TimeEntryRepository:
                 user_id=getattr(row, "UserId", None),
                 work_date=getattr(row, "WorkDate", None),
                 note=getattr(row, "Note", None),
+                review_priority=getattr(row, "ReviewPriority", None),
+                review_reasons=_reasons(getattr(row, "ReviewReasons", None)),
             )
         except AttributeError as error:
             logger.error(f"Attribute error during time entry mapping: {error}")
@@ -527,6 +541,91 @@ class TimeEntryRepository:
             )
             return False
 
+    def labor_is_untouched(self, *, time_entry_id: int) -> bool:
+        """True when every labor row aggregated from this entry is still a pure
+        derivation of its logs — `dbo.IsTimeEntryLaborUntouched`: status
+        'pending_review', no bill/invoice line on the parent or any line item.
+        No labor rows at all is untouched.
+
+        Used by service.reopen_for_owner_write (U-596): only such a day may be
+        reopened without a human. FAILS CLOSED — an error reads as touched, so
+        a broken check refuses the reopen rather than granting it (the opposite
+        of is_downstream_locked, whose failure must not block a reviewer).
+        """
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(
+                    cursor=cursor,
+                    name="IsTimeEntryLaborUntouched",
+                    params={"TimeEntryId": time_entry_id},
+                )
+                row = cursor.fetchone()
+                return bool(row.Untouched) if row else False
+        except Exception as error:
+            logger.warning(
+                "time_entry.labor_is_untouched.failed",
+                extra={"time_entry_id": time_entry_id, "error": str(error)},
+            )
+            return False
+
+    def submit_with_aggregation(self, *, time_entry_id: int, expected_current_status_id: int, user_id: int):
+        """dbo.SubmitTimeEntry (U-596): the 'submitted' status row (compare-and-
+        insert against the row the caller read) AND the billing aggregation in
+        ONE transaction. Returns (status_row_or_None, aggregation_rows,
+        aggregation_error): None when the status moved underneath the caller
+        (nothing written); aggregation_error set when the day submitted
+        UNAGGREGATED (best effort, as before). A refused aggregation
+        ('REFUSED: …') rolls everything back and raises.
+
+        The sproc emits the aggregator's rows first (when it produced any) and
+        the outcome row last; the sets are told apart by their columns.
+        """
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(
+                    cursor=cursor,
+                    name="SubmitTimeEntry",
+                    params={
+                        "TimeEntryId": time_entry_id,
+                        "ExpectedCurrentStatusId": expected_current_status_id,
+                        "UserId": user_id,
+                    },
+                )
+                aggregation_rows: list = []
+                outcome = None
+                while True:
+                    columns = [d[0] for d in (cursor.description or [])]
+                    if "TargetTable" in columns:
+                        aggregation_rows = [self._aggregation_row(r) for r in cursor.fetchall()]
+                    elif "AggregationError" in columns:
+                        outcome = cursor.fetchone()
+                    if not cursor.nextset():
+                        break
+                if outcome is None:
+                    return None, aggregation_rows, None
+                from entities.time_entry.persistence.time_entry_status_repo import TimeEntryStatusRepository
+                return TimeEntryStatusRepository()._from_db(outcome), aggregation_rows, outcome.AggregationError
+        except Exception as error:
+            logger.error(f"Error during SubmitTimeEntry (TimeEntryId={time_entry_id}): {error}")
+            raise map_database_error(error)
+
+    @staticmethod
+    def _aggregation_row(r) -> dict:
+        return {
+            "target_table": r.TargetTable,
+            "target_row_id": r.TargetRowId,
+            "project_id": r.ProjectId,
+            "work_date": r.WorkDate,
+            "total_hours": float(r.TotalHours) if r.TotalHours is not None else None,
+            "hourly_rate": float(r.HourlyRate) if r.HourlyRate is not None else None,
+            "markup": float(r.Markup) if r.Markup is not None else None,
+            "rate_source": r.RateSource,
+            "status": r.Status,
+            "note": r.Note,
+        }
+
     def aggregate_for_billing(self, *, time_entry_id: int) -> list[dict]:
         """Fire dbo.AggregateTimeEntryOnSubmit for the given TimeEntry.
 
@@ -576,7 +675,7 @@ class TimeEntryRepository:
         public_id: str,
         priority: str,
         reasons_json: str,
-    ) -> int:
+    ) -> tuple:
         """
         Stamp ReviewPriority + ReviewReasons on a TimeEntry by PublicId.
 
@@ -602,7 +701,14 @@ class TimeEntryRepository:
                     },
                 )
                 row = cursor.fetchone()
-                return int(row[0]) if row else 0
+                if not row:
+                    return 0, None, None
+                # (affected, persisted priority, persisted reasons) — U-596: on a
+                # reopened day the sproc floors the priority and carries the
+                # marker forward, so the stored values can differ from the request.
+                return (int(row[0]),
+                        getattr(row, "ReviewPriority", None),
+                        _reasons(getattr(row, "ReviewReasons", None)))
         except Exception as error:
             logger.error(f"Error during stamp time entry review: {error}")
             raise map_database_error(error)

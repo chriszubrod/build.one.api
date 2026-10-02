@@ -5503,3 +5503,222 @@ column for the current draw understates by the entire fee.
 
 ---
 
+
+## U-596 — reopen a submitted day on the worker's late log write (server half of U-593) — BUILT 2026-10-02 in `.worktrees/u596` (`6a1e262`), HELD by Chris's decision 2026-10-02 (parked on branch `u596-held`, not on master)
+- [ ] **STATUS (2026-10-02): HELD — Chris chose not to ship.** The device fix U-593 stands; late logs on an already-submitted day keep queuing until the office rejects the day (today's behaviour). Revisit after the decision-binding program (U-597). Building-session record: sixteen rounds of cross-family review (`gpt-6-astra` xhigh,
+  correctness + a separate security pass each round) all REFUSED; each round's findings were real and were fixed (the
+  rows below), but the LAST class does not converge inside this unit: every office or agent decision on labor — the
+  `/bill` header edit replayed with a saved row version, an employee-labor `{"status":"ready"}` without a version, the
+  emailed crew decision's own read-then-write — can race the worker's reopen + resubmit, because the labor review and
+  billing pipeline has never bound a decision to the version it was made against. U-596 added that binding to
+  time-entry approve/reject and to in-app labor review actions, and refused the rest while a day is in draft; the
+  remaining paths are the same program (U-597). Decision put to Chris: ship as built with the residual race windows
+  documented; hold it (device fix U-593 stands, office keeps rejecting to unlock — status quo); or first land the
+  decision-binding program across review/contract-labor/employee-labor and both clients, then ship.
+- [x] **Policy (Chris, 2026-10-01, chosen from four options):** a `submitted`, not-yet-approved TimeEntry goes back to
+  `draft` when its OWNER writes a time log to it (create/update/delete), is flagged `reopened_after_submit` (medium),
+  and the next 18:00 UTC sweep resubmits it with the late logs included. Anyone else — a PM editing a teammate's
+  log, a system admin — is still refused with the same "in 'submitted' status" wording the clients classify as a
+  locked entry; approved/billed/rejected days are never reopened here; a day under a posted bill/invoice is refused
+  exactly as `reject` refuses it. Why: auto-submit was LOCKING partially-synced days (Selvin 09-10: submitted
+  09-11 18:00:23Z, the device's remaining logs refused until the office reject on 09-14, then landed in 78 s).
+  Implementation: `TimeEntryService.reopen_for_owner_write` (status row `draft` with `REOPEN_NOTE`, no `rejected`
+  row; flag failure is logged, never refuses the write) and `TimeLogService._ensure_parent_writable`, which
+  replaces `_validate_parent_is_draft` on all three write paths. Parity kept: an entry with no status history still
+  writes. Tests: `tests/test_u596_time_log_reopen_on_owner_write.py` (22, repository doubles, order-asserting).
+- [x] **Round-1 reviews (gpt-6-astra, correctness + security) both REFUSED the first cut; round 2 answers them:**
+  (1) a reopen could race an approval — the `draft` row is now written by `dbo.CreateTimeEntryStatusIfCurrent`, a
+  compare-and-insert against the status row the caller read, under `UPDLOCK, HOLDLOCK` on the entry's status rows,
+  so a `draft` can never land after an `approved` row; (2) the `reopened_after_submit` flag was erased by the next
+  sweep/specialist restamp — `dbo.StampTimeEntryReview` now carries the marker forward and lands a 'clean' restamp
+  of such a day as 'medium'; (3) a reopen committed before input validation — `log_type` is validated first, and
+  on a submitted day a stale `row_version` never reopens; (4) the billing refusal did not classify as a locked
+  entry on iOS — every refusal now names the status AND says "not in 'draft'"; (5) reviewed/readied or partially
+  billed labor could be rewritten by the resubmit — `dbo.IsTimeEntryLaborUntouched` (status `pending_review`, no
+  bill/invoice line on parent or line items; fails CLOSED) gates the reopen on top of `IsTimeEntryDownstreamLocked`;
+  (6) the aggregator upserts per project and never retires a line, so a log DELETE or project MOVE after reopen
+  would leave the old line standing — those two writes no longer reopen a submitted day (they stay with review);
+  the aggregator defect itself is pre-existing via `reject` and booked as U-597 below.
+- [x] **Round-2 reviews (both) refused again — the first-submit aggregation goes stale once a day reopens, and the
+  approve path's own read-then-insert became reachable by the worker. Round 3 moves the fixes to where they belong:**
+  (a) `dbo.AggregateTimeEntryOnSubmit` now RETIRES lines this entry no longer produces (its own `SourceTimeEntryId`
+  lines only — a PM's split lines carry NULL and are never touched; unbilled only; a stale line a bill/invoice points at
+  REFUSES the resubmit) and re-queues a `ready` parent to `pending_review` when a line was inserted, re-houred or
+  retired, so a reviewer's approval never silently covers different hours; (b) `submit`/`approve`/`reject` all write
+  through `CreateTimeEntryStatusIfCurrent` against the row they read (`TimeEntryService._transition`), so no
+  transition can land on a stale read — reject's `draft` row chains on its own `rejected` row; (c) the conflict
+  branch returns an EMPTY result set (a no-result statement made pyodbc raise instead of returning no row); (d) the
+  stamp floors a reopened day at 'medium' whenever the marker is present in the existing OR incoming reasons — the
+  worker's own review-flag call cannot name the marker to land 'clean'; (e) on a submitted day a malformed timestamp,
+  a replayed create (same clock-in), or a work↔break change never reopens; (f) `IsTimeEntryLaborUntouched` also reads
+  `Review` rows on the labor row and PM-split lines as evidence. **Prod evidence for (a), read-only 2026-10-02:** one
+  stale unbilled 8 h line on a `ready` ContractLabor (the live defect; retired on its next resubmit) and 43 stale
+  lines, all on `billed` parents the aggregator already freezes — the RAISERROR branch (stale AND billed line on an
+  unbilled parent) matches zero rows today.
+- [x] **Round-3 reviews (both) refused once more; round 4 replaces the piecemeal rules with ONE invariant and
+  closes the last race at the row:** (a) `dbo.AggregateTimeEntryOnSubmit` decides, BEFORE any early return and from
+  the same predicate the reopen uses (`IsTimeEntryLaborUntouched`, now with an OUTPUT parameter), whether this entry's
+  labor is still a pure derivation of its logs — UNTOUCHED labor is rebuilt (stale lines retired; zero work buckets
+  drop every line and zero the parent); TOUCHED labor (reviewed, split, billed, invoiced) is NEVER modified: a resubmit
+  whose buckets equal the lines it produced is a no-op, one that would change them is REFUSED (`RAISERROR 'REFUSED: …'`);
+  the round-3 re-queue is gone (it left an approved `Review` behind — a dead end in the review-submit path);
+  (b) `submit` aggregates BEFORE the status row and turns `REFUSED:` into a ValueError (no status written); every
+  other aggregation failure keeps the best-effort "submit unaggregated" semantics; (c) `CreateTimeLog`,
+  `UpdateTimeLogById`, `DeleteTimeLogById` check the day's status INSIDE their own transaction under
+  `UPDLOCK, HOLDLOCK` on the status rows — the same lock every transition takes — so a log write can no longer land
+  after a submit + approve that slipped between the service's read and the write (draft or no history writes, as
+  before); (d) an update that moves a clock-in onto a sibling's never reopens; (e) the stamp floor covers `low`.
+  Behaviour change worth knowing on the HUMAN path too: reject → edit hours → resubmit on labor the office already
+  readied/billed is now refused instead of silently rewriting it.
+- [x] **Round-4 reviews (both) found a real defect in round 4 and the last two-transaction seams; round 5 makes every
+  state change ONE transaction at the row:** (a) calling `IsTimeEntryLaborUntouched` from inside the aggregator emitted
+  an extra result set that `aggregate_for_billing` read as labor rows → `@ReturnRow = 0` on it and on
+  `StampTimeEntryReview` for in-T-SQL callers; (b) the aggregator's `REFUSED` used `%d` with a BIGINT (a formatting
+  error that loses the prefix) → built with CAST; (c) the reopen is now performed INSIDE `CreateTimeLog` /
+  `UpdateTimeLogById` / `DeleteTimeLogById` (`@ReopenAsUserId`, `@ReopenNote`; `XACT_ABORT ON`): the service only
+  DECIDES eligibility and hands the owner id to the write; the sproc re-checks the status under the lock, verifies
+  ownership itself, writes the draft row + marker and the log in one transaction — a refused write (bad project id,
+  unique-key collision) rolls the reopen back with it, and an approval that slipped in refuses the write at the row;
+  (d) new `dbo.SubmitTimeEntry` writes the `submitted` row (compare-and-insert) AND aggregates in one transaction
+  under the same lock, so no log write can land between them; `REFUSED` rolls the status row back and refuses the
+  submit; other aggregation failures keep the best-effort "submitted, unaggregated" outcome; (e) a row-level lock
+  refusal surfaces as the 400 the clients classify, not a 500; (f) the collision wording no longer says "already
+  exists", which the workflow-error mapper routes to 409 (iOS's discard-the-edit path).
+- [x] **House guard `test_sproc_nocount_shape_guard` caught the round-5 shape** (DML — the reopen's status row and stamp —
+  now precedes the OUTPUT rows in the three log write sprocs, so row-count chatter would reach the driver first):
+  `SET NOCOUNT ON` is the first statement in each. Fixed after the round-5 reviews were dispatched (reviewed at
+  `3cd482d`; the only difference in the shipped commit is those three lines and their pin).
+- [x] **Round-5 reviews (both) left two P1s; round 6 closes them at the data:** (a) the untouched check held no locks
+  on the labor rows, so a reviewer's decision, a mark-ready or a PM's edit could land between the check and the
+  aggregator's rewrite → `IsTimeEntryLaborUntouched` now reads the parents, their lines and the `Review` range
+  `WITH (UPDLOCK, HOLDLOCK)`, held for the caller's transaction (the submit, a log write's reopen), and the log write
+  sprocs re-run it inside the reopen branch; (b) a PM's in-place correction of an existing source-tagged line left no
+  evidence (status stays `pending_review`, no Review row, SourceTimeEntryId kept) → new column
+  `EditedSinceAggregation BIT NOT NULL DEFAULT 0` on ContractLabor, ContractLaborLineItem, EmployeeLabor and
+  EmployeeLaborLineItem (idempotent `add_edited_since_aggregation.sql` in each owning entity), raised by the four generic
+  update sprocs — every writer other than the aggregator — and read by the predicate; the aggregator never sets or
+  clears it. Prod: the ALTERs run FIRST (additive, defaulted), then the labor update sprocs, then the time_entry bodies.
+- [x] **Round-6 correctness review: two gaps in the marker.** (a) An office edit that only DELETES lines
+  (`PUT /contract-labor/{id}/bill` with `line_items=[]`) never ran an update sproc → the six line create/delete sprocs
+  (`Create…LineItem`, `Delete…LineItemById`, `Delete…LineItemsBy…Id`, both families) now mark the PARENT; (b) rows that
+  exist at deployment all started at 0, so corrections made before the marker existed looked untouched → the column
+  files BACKFILL every existing row to 1: pre-existing labor is never auto-rebuilt (a late log on such a day is refused
+  and handled by the office, as before); only labor the aggregator creates after the deploy starts at 0.
+- [x] **Round-6 security review (P2):** a reopened day whose WorkDate the worker then changed resubmitted with lines on
+  the new date and a parent on the old date and billing period → the untouched-rebuild path's parent UPDATE now sets
+  `WorkDate` and `BillingPeriodStart` too (pure derivation; touched parents are never updated).
+- [x] **Round-7 correctness review:** (a) a non-REFUSED aggregation failure that left the transaction committable fell
+  through to COMMIT with a half-built labor row → `SubmitTimeEntry` aggregates under a savepoint and rolls back to it
+  on such a failure (status row still commits, unaggregated — the old semantics, now without partial labor); (b) the
+  office deleting a labor PARENT cascaded away every marker → new `TimeEntry.LaborDeletedDatetime` (migration 018),
+  stamped by `DeleteContractLaborById` / `DeleteEmployeeLaborById` on the source entry and read FIRST by the predicate;
+  (c) touched labor compared only project+hours → its WorkDate is pinned too (a moved day cannot resubmit "unchanged").
+- [x] **Round-7 security + round-8 correctness:** (a) a reopened day reassigned to another worker resubmitted with the
+  new worker's RATES on the old worker's parent → a rebuilt (untouched) parent now follows the entry's current worker
+  (`VendorId`/`BillVendorId`/`EmployeeName`, `EmployeeId`), and a parent in the OTHER family (vendor ↔ employee) refuses
+  the resubmit; (b) the aggregator consulted the untouched predicate only when a parent existed, so after the office
+  deleted the parent the next sweep recreated the charges → the aggregator reads `LaborDeletedDatetime` first,
+  independently of any parent, and refuses.
+- [x] **Round-9 correctness review:** (a) the touched-labor "unchanged" check ignored the worker → `VendorId` /
+  `EmployeeId` now compared too (a reassigned day cannot resubmit "unchanged" on the previous payee); (b)
+  `UpdateContractLaborBillInfo` (and `UpdateContractLaborStatusByIds`, `UpdateContractLaborStatusAndLink`,
+  `CreateContractLabor`, `CreateEmployeeLabor`) wrote labor rows without the marker → marked, and a SYSTEMATIC test now
+  enumerates every procedure in the labor files that writes a labor table and requires the marker unless the procedure
+  is on the explicit allowlist (`UpdateContractLaborAggregates` — the system recompute; the two parent deletes, which
+  stamp the entry instead).
+- [x] **Round-9 security + round-10 reviews:** (a) a header edit (`PUT /time-entries/{E}` work_date / user) could land
+  after a submit or approval that slipped in between the service's draft check and the SQL write → `UpdateTimeEntryById`
+  and `DeleteTimeEntryById` re-check the day's status inside their own transaction under the same lock as every other
+  write; (b) the `reopened_after_submit` marker was invisible to clients → every entry read returns `ReviewPriority` /
+  `ReviewReasons` (`review_priority` / `review_reasons` on the entry; additive); (c) the manual parent creates marked
+  the row AFTER `OUTPUT`, invalidating the returned row version → the marker is in the INSERT itself; (d) a PM could
+  start a Review (or mark-ready) on labor whose day the worker had reopened — stale hours actionable, and the Review
+  made the labor "touched" so the resubmit could never reconcile it → `CreateReview` and `UpdateContractLaborStatusByIds`
+  refuse at the row while the source day is in `draft`; (e) a failed REBUILD of existing labor (e.g. an absurd log
+  overflowing DECIMAL(6,2)) rolled back to the savepoint and still committed `submitted` over the OLD labor →
+  `SubmitTimeEntry` refuses the submit when labor already existed; best effort applies to a first aggregation only.
+  Pre-existing gaps the reopen makes reachable without a reject are booked under U-597 (approve carries no expected
+  version; deleting every log on a draft leaves its labor standing).
+- [x] **House guard `test_the_sproc_commits_before_raising_and_never_rolls_back` (U-454) taught the convention every
+  refusal in this unit now follows:** pyodbc runs autocommit-off, so an explicit `ROLLBACK` inside a sproc zeroes the
+  caller's implicit outer transaction and SQL Server raises error 266 instead of the refusal. Every guard that fires
+  before any write (the three log writes, the two entry header writes, the reopen-branch labor recheck, `CreateReview`)
+  COMMITs its empty transaction and then raises; `SubmitTimeEntry` writes NOTHING before its decision (lock → savepoint →
+  aggregation → status row), so a refusal rolls back to the savepoint and commits nothing; only a doomed transaction
+  still rolls back fully. `CreateReview`'s refusal carries the `STATUS_LOCKED:` prefix the API maps to a 422.
+- [x] **Round-11 reviews:** (a) the 'ready' guard sat only on the bulk status sproc, but mark-ready / bulk-mark-ready /
+  a plain `PUT /contract-labor/{C} {"status":"ready"}` go through the generic updates → guard on `UpdateContractLaborById`
+  and `UpdateEmployeeLaborById`, under the status lock, commit-then-raise; (b) `stamp_review` echoed the REQUESTED
+  priority/reasons → the sproc returns the persisted values and the service reports them; (c) **the security reviewer
+  insisted the approve-side gap ship here, and the argument holds — a reopen lets the worker replace reviewed content
+  with no rejection, so a decision must bind to what the reviewer saw:** `POST /approve` and `/reject` accept
+  `expected_status_id` (the `current_status_id` every single-entry response now carries); when sent and stale the
+  decision is refused ("changed since you reviewed it"); on a day carrying `reopened_after_submit` it is REQUIRED
+  ("refresh it and decide on what you see"). Ordinary days keep accepting a bare decision, so no client breaks;
+  approving a REOPENED day needs the client to echo the id — see U-597 for the web + iOS follow-up.
+- [x] **Round-12 reviews:** (a) the reopen marker was read from the entry read that PRECEDED the status read, so a
+  reopen + resubmit landing in between left a bare approve bound to the new status row → the marker is re-read AFTER
+  the status row; with the compare-and-insert bound to that row, a reopen either shows its marker or conflicts;
+  (b) the detail `GET /time-entries/{id}` builds its own dict and lacked `current_status_id` → added; (c) the public
+  review-flag path accepted `reopened_after_submit` from any `can_update` caller for any entry (no row scope) —
+  forging a permanent decision restriction → the service refuses the reserved marker; the sproc still carries an
+  existing one forward. The flag endpoint's missing row scope itself is pre-existing — booked under U-597.
+- [x] **Round-13 correctness review:** the detail GET read the logs, THEN the status history, and exposed the newest status
+  id — a reopen + resubmit between the two reads handed the reviewer old hours beside a fresh token that approved the
+  new ones → the status is read FIRST; a move after that read makes the token stale and the decision conflicts.
+- [x] **Round-14 correctness review:** the entry HEADER (date, worker) was still read before the token → the detail GET
+  re-reads the entry after capturing the status row and serialises that; the first read only resolves the id/404.
+- [x] **Round-14 security + round-15 reviews:** (a) a reviewer's decision on the LABOR row carried no version, so a
+  reopen + resubmit between the read and the decision applied it to rebuilt hours → in-app labor reviews (`submit` /
+  `advance` / `decline` on `review/contract-labor/{id}`) accept `expected_row_version`, refuse it when stale, and REQUIRE
+  it when the labor's time entry carries `reopened_after_submit`; the agent's fast-path approval, which can never carry a
+  version, refuses such rows; the EMAILED crew decision (a reply to a notice sent earlier) refuses rows whose day was
+  reopened — "decide it in the app"; (b) mutation responses (submit/approve/reject) serialised a pre-mutation header
+  beside a fresh token → the decision token is issued ONLY by the detail GET (token first, header re-read after).
+- [ ] **Deploy order** — (00) `entities/time_entry/sql/migrations/018_2026_10_02_labor_deleted_marker.sql`;
+  (0) `entities/contract_labor/sql/add_edited_since_aggregation.sql` and
+  `entities/employee_labor/sql/add_edited_since_aggregation.sql`; (1) `UpdateContractLaborById`,
+  `UpdateContractLaborLineItemById` (contract_labor base), `UpdateEmployeeLaborById`, `UpdateEmployeeLaborLineItemById`
+  (employee_labor base); (2) apply the EIGHT sproc bodies from `entities/time_entry/sql/dbo.time_entry.sql`
+  (`StampTimeEntryReview`, `IsTimeEntryLaborUntouched`, `CreateTimeEntryStatusIfCurrent`, `AggregateTimeEntryOnSubmit`,
+  `SubmitTimeEntry`, `CreateTimeLog`, `UpdateTimeLogById`, `DeleteTimeLogById` — in that order; later ones call
+  earlier ones) to prod FIRST, then ship the API container. Not merely additive: every submit now rebuilds untouched
+  labor (retiring stale lines) and REFUSES to change touched labor; every log write re-checks the day's status at the
+  row and can reopen it in the same transaction. No effect until then; the iOS half (U-593,
+  `f5fc399`) is already pushed and shrinks the lag to minutes, so this covers the overnight-offline residue.
+- [ ] **Follow-up, not built:** the reopen is two sproc calls plus the log write, not one transaction. A crash
+  between the status row and the log write leaves a reopened, unflagged draft that the next sweep re-evaluates —
+  acceptable, but if the `time_entry` status writes ever move under `shared/lifecycle` transactional helpers, fold
+  this in.
+
+## U-597 — labor-aggregation follow-ups left open by U-596 (booked 2026-10-02, found by U-596's reviews)
+- [x] ~~Stale lines on resubmit~~ — fixed in U-596 (`AggregateTimeEntryOnSubmit` retires unbilled stale lines, refuses
+  on a billed one, re-queues `ready` parents when lines change). ~~Every transition reads-then-inserts~~ — fixed in
+  U-596 (`TimeEntryService._transition` over `CreateTimeEntryStatusIfCurrent`).
+- [ ] **Clients must echo `current_status_id` (from the detail GET) as `expected_status_id` on time-entry approve/reject,
+  and the labor row's `row_version` as `expected_row_version` on labor review submit/advance/decline** (server side
+  shipped in U-596). Until web and iOS send it, a day carrying `reopened_after_submit` cannot be approved from them —
+  the API returns a clear 400 ("refresh it and decide on what you see"); ordinary days are unaffected. Web: the
+  time-entry review action; iOS: the approve/reject calls on the reviewer screens. Small, additive.
+- [ ] **Deleting every log on a reopened (or rejected) draft leaves its labor standing** (security round 9 #4): the day
+  can no longer be submitted (no logs), so the zero-bucket rebuild never runs. Pre-existing on the reject path. Fix
+  shape: when a draft day's last log is deleted and its labor is untouched, drop the labor rows (pure derivation) — or
+  flag the day `labor_without_logs` for review.
+- [ ] **No sanity cap on a single log's duration** (security round 10 #2 used a 9,992-hour log to overflow the
+  aggregator). `validate_completeness` only flags `over_12_hours`; the create/update paths accept any clock-out. A cap
+  (e.g. 24 h) at the write is cheap and belongs in the time_log service.
+
+- [ ] **`POST /time-entries/{id}/review-flag` has no row scope** (security round 12 #2): `TimeEntryRepository.stamp_review`
+  deliberately bypasses actor scope (the specialist agent's JWT carries `can_update`), so any `can_update` caller can
+  restamp any entry's review priority/reasons by public id. U-596 reserved the one marker that changes behaviour; the
+  rest is observability metadata, but it should still be scoped (owner, team viewer, or the agent's system context).
+
+- [ ] **`IsTimeEntryDownstreamLocked` sees only the parent's status.** A multi-project `ContractLabor` stays `ready`
+  while one project's line is billed (`bill_service.py` ~712 keeps the parent `ready` until fully billed), so `reject`
+  and `update_by_public_id` let an edit desync from a posted bill. `IsTimeEntryLaborUntouched` (U-596) already checks
+  line-item links and `Review` rows — switch `reject`/`update_by_public_id` to it, or widen the lock to line items.
+- [x] ~~The reopen is still two sproc calls plus the log write~~ — closed in U-596 round 5: the log write sprocs reopen
+  and write in one transaction; `SubmitTimeEntry` writes the status row and aggregates in one transaction.
+- [ ] **43 billed ContractLabor parents carry lines for projects their entry's logs no longer produce** (prod,
+  2026-10-02). Frozen and skipped by the aggregator, so no live effect — but it means logs were edited after billing
+  somewhere; worth a one-off audit of how (the `update_by_public_id` lock? direct SQL?).

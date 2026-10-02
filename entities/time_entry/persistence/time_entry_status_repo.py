@@ -90,6 +90,43 @@ class TimeEntryStatusRepository:
             logger.error(f"Error during create time entry status: {error}")
             raise map_database_error(error)
 
+    def create_if_current(
+        self,
+        *,
+        time_entry_id: int,
+        expected_current_status_id: int,
+        status: str,
+        user_id: int,
+        note: Optional[str] = None,
+    ) -> Optional[TimeEntryStatus]:
+        """
+        Compare-and-insert (U-596): write the status row ONLY if the entry's
+        newest status row is still `expected_current_status_id` — the row the
+        caller read before deciding the transition. `dbo.CreateTimeEntryStatusIfCurrent`
+        takes a range lock on the entry's status rows, so a concurrent
+        transition either committed first (we return None, nothing written)
+        or waits for us. Returns the inserted row, or None on conflict.
+        """
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(
+                    cursor=cursor,
+                    name="CreateTimeEntryStatusIfCurrent",
+                    params={
+                        "TimeEntryId": time_entry_id,
+                        "ExpectedCurrentStatusId": expected_current_status_id,
+                        "Status": status,
+                        "UserId": user_id,
+                        "Note": note,
+                    },
+                )
+                row = cursor.fetchone()
+                return self._from_db(row) if row else None
+        except Exception as error:
+            logger.error(f"Error during conditional create time entry status: {error}")
+            raise map_database_error(error)
+
     def read_by_time_entry_id(
         self,
         time_entry_id: int,

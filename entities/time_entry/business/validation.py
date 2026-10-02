@@ -19,6 +19,8 @@ REASON_UNDER_15_MINUTES = "under_15_minutes"
 REASON_FUTURE_DATED = "future_dated"
 REASON_GPS_NO_PROJECT = "gps_no_project"
 REASON_MISSING_NOTE = "missing_note"
+# U-596: a submitted-not-approved day the WORKER reopened by writing a late log.
+REASON_REOPENED_AFTER_SUBMIT = "reopened_after_submit"
 
 ALL_REASON_CODES = (
     REASON_NO_TIME_LOGS,
@@ -30,6 +32,7 @@ ALL_REASON_CODES = (
     REASON_FUTURE_DATED,
     REASON_GPS_NO_PROJECT,
     REASON_MISSING_NOTE,
+    REASON_REOPENED_AFTER_SUBMIT,
 )
 
 

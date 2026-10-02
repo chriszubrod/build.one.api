@@ -12,12 +12,22 @@ class ReviewSubmitRequest(BaseModel):
         default=None,
         description="Optional comments to record on the submission entry.",
     )
+    expected_row_version: Optional[str] = Field(
+        default=None,
+        description=("For a ContractLabor parent: the labor row_version the reviewer read. Refused if the "
+                     "labor was rebuilt since; REQUIRED when its time entry carries reopened_after_submit (U-596)."),
+    )
 
 
 class ReviewAdvanceRequest(BaseModel):
     comments: Optional[str] = Field(
         default=None,
         description="Optional comments to record on the advance entry.",
+    )
+    expected_row_version: Optional[str] = Field(
+        default=None,
+        description=("For a ContractLabor parent: the labor row_version the reviewer read. Refused if the "
+                     "labor was rebuilt since; REQUIRED when its time entry carries reopened_after_submit (U-596)."),
     )
 
 
@@ -33,6 +43,11 @@ class ReviewDeclineRequest(BaseModel):
     comments: Optional[str] = Field(
         default=None,
         description="Optional comments to record on the decline entry.",
+    )
+    expected_row_version: Optional[str] = Field(
+        default=None,
+        description=("For a ContractLabor parent: the labor row_version the reviewer read. Refused if the "
+                     "labor was rebuilt since; REQUIRED when its time entry carries reopened_after_submit (U-596)."),
     )
 
 

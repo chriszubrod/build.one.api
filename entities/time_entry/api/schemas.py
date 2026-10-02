@@ -133,6 +133,11 @@ class TimeEntryReject(BaseModel):
         default=None,
         description="Reason for rejection."
     )
+    expected_status_id: Optional[int] = Field(
+        default=None,
+        description=("The entry's current_status_id as the reviewer read it. Refused if the day "
+                     "moved since; REQUIRED for a day reopened after submission (U-596)."),
+    )
 
 
 class TimeEntryApprove(BaseModel):
@@ -140,4 +145,9 @@ class TimeEntryApprove(BaseModel):
     note: Optional[str] = Field(
         default=None,
         description="Approval notes."
+    )
+    expected_status_id: Optional[int] = Field(
+        default=None,
+        description=("The entry's current_status_id as the reviewer read it. Refused if the day "
+                     "moved since; REQUIRED for a day reopened after submission (U-596)."),
     )

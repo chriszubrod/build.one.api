@@ -6,6 +6,7 @@ from typing import Optional, Tuple
 
 # Local Imports
 from entities.time_entry.business.model import TimeEntry
+from entities.time_entry.business.validation import REASON_REOPENED_AFTER_SUBMIT as REASON_REOPENED_AFTER_SUBMIT_
 from entities.time_entry.persistence.repo import TimeEntryRepository
 from entities.time_entry.persistence.time_entry_status_repo import TimeEntryStatusRepository
 from entities.time_entry.persistence.time_log_repo import TimeLogRepository
@@ -319,7 +320,7 @@ class TimeEntryService:
         if not existing:
             raise ValueError(f"TimeEntry with public_id '{public_id}' not found.")
 
-        self._validate_transition(existing.id, "submitted")
+        current = self._validate_transition(existing.id, "submitted")
 
         # Verify at least one time log exists. Bypass row-scope here —
         # the parent read already proved access.
@@ -330,36 +331,46 @@ class TimeEntryService:
         if not logs:
             raise ValueError("Cannot submit time entry without any time logs.")
 
-        TimeEntryStatusRepository().create(
-            time_entry_id=existing.id,
-            status="submitted",
-            user_id=user_id,
-        )
 
-        # Sidecar: aggregate this entry into ContractLabor or EmployeeLabor for
-        # billing. Best-effort — aggregation failure (e.g. worker has no
-        # EmployeeId/VendorId linkage) logs + flags but does NOT roll back the
-        # submitted-status transition. The worker still submits cleanly; the
-        # office sees a flagged row on the bills page.
+        # U-596: the status row AND the aggregation in ONE transaction
+        # (dbo.SubmitTimeEntry). A log write cannot land between them — the
+        # submit holds the status range lock every log write takes — and the
+        # aggregator's REFUSED (this resubmit would change labor someone has
+        # reviewed, split, billed or invoiced) rolls the status row back and
+        # refuses the submit. Any other aggregation failure keeps the long-
+        # standing best-effort semantics: the day submits unaggregated, the
+        # office sees a flagged row on the bills page, the sweep counts it.
         try:
-            results = self.repo.aggregate_for_billing(time_entry_id=existing.id)
-            for r in results:
-                if r.get("rate_source") == "none":
-                    logger.warning(
-                        "time_entry.aggregate.rate_missing",
-                        extra={
-                            "time_entry_public_id": existing.public_id,
-                            "target_table": r.get("target_table"),
-                            "project_id": r.get("project_id"),
-                            "note": r.get("note"),
-                        },
-                    )
-        except Exception:
-            logger.exception(
-                "time_entry.aggregate.failed",
-                extra={"time_entry_public_id": existing.public_id},
+            written, results, aggregation_error = self.repo.submit_with_aggregation(
+                time_entry_id=existing.id,
+                expected_current_status_id=current.id,
+                user_id=user_id,
             )
-
+        except Exception as error:
+            if "REFUSED:" in str(error):
+                raise ValueError("Cannot submit: " + str(error).split("REFUSED:", 1)[1].strip())
+            raise
+        if written is None:
+            raise ValueError(
+                "Cannot transition to 'submitted': the time entry's status changed "
+                "while this request was in flight. Refresh and retry."
+            )
+        if aggregation_error:
+            logger.error(
+                "time_entry.aggregate.failed",
+                extra={"time_entry_public_id": existing.public_id, "error": aggregation_error},
+            )
+        for r in results:
+            if r.get("rate_source") == "none":
+                logger.warning(
+                    "time_entry.aggregate.rate_missing",
+                    extra={
+                        "time_entry_public_id": existing.public_id,
+                        "target_table": r.get("target_table"),
+                        "project_id": r.get("project_id"),
+                        "note": r.get("note"),
+                    },
+                )
         # Sidecar: enqueue a time_tracking_specialist review pass. Best-effort
         # — outbox failure must NOT roll back the status transition. The
         # scheduler tick will pick up the queued row and run the agent; if
@@ -380,7 +391,8 @@ class TimeEntryService:
 
         return existing
 
-    def approve(self, public_id: str, *, user_id: int, note: Optional[str] = None) -> TimeEntry:
+    def approve(self, public_id: str, *, user_id: int, note: Optional[str] = None,
+                expected_status_id: Optional[int] = None) -> TimeEntry:
         """
         Approve a submitted time entry. Transitions from 'submitted' to 'approved'.
         The API surface gates this on Time Tracking can_approve — reviewers act
@@ -393,18 +405,14 @@ class TimeEntryService:
         if not existing:
             raise ValueError(f"TimeEntry with public_id '{public_id}' not found.")
 
-        self._validate_transition(existing.id, "approved")
-
-        TimeEntryStatusRepository().create(
-            time_entry_id=existing.id,
-            status="approved",
-            user_id=user_id,
-            note=note,
-        )
+        current = self._validate_transition(existing.id, "approved")
+        self._bind_to_what_the_reviewer_saw(existing, current, expected_status_id)
+        self._transition(current, status="approved", user_id=user_id, note=note)
 
         return existing
 
-    def reject(self, public_id: str, *, user_id: int, note: Optional[str] = None) -> TimeEntry:
+    def reject(self, public_id: str, *, user_id: int, note: Optional[str] = None,
+               expected_status_id: Optional[int] = None) -> TimeEntry:
         """
         Reject a submitted time entry. Transitions from 'submitted' back to 'draft'.
         The API surface gates this on Time Tracking can_approve — reviewers act
@@ -417,7 +425,8 @@ class TimeEntryService:
         if not existing:
             raise ValueError(f"TimeEntry with public_id '{public_id}' not found.")
 
-        self._validate_transition(existing.id, "rejected")
+        current = self._validate_transition(existing.id, "rejected")
+        self._bind_to_what_the_reviewer_saw(existing, current, expected_status_id)
 
         # Phase 5 edit-lock — block reject if the aggregated row is already
         # billed/invoiced. Rejecting would push the entry back to 'draft' so
@@ -430,21 +439,10 @@ class TimeEntryService:
                 "Reverse the downstream Bill/Invoice first."
             )
 
-        status_repo = TimeEntryStatusRepository()
-
-        status_repo.create(
-            time_entry_id=existing.id,
-            status="rejected",
-            user_id=user_id,
-            note=note,
-        )
-
-        # Auto-transition back to draft so the worker can re-edit
-        status_repo.create(
-            time_entry_id=existing.id,
-            status="draft",
-            user_id=user_id,
-        )
+        rejected = self._transition(current, status="rejected", user_id=user_id, note=note)
+        # Auto-transition back to draft so the worker can re-edit — against the
+        # row we just wrote, so nothing can slip between the two.
+        self._transition(rejected, status="draft", user_id=user_id)
 
         return existing
 
@@ -494,11 +492,22 @@ class TimeEntryService:
                 f"Unknown reason code(s): {unknown}. "
                 f"Allowed codes: {sorted(ALL_REASON_CODES)}."
             )
+        # U-596: `reopened_after_submit` is HISTORY, written only by the transactional
+        # reopen inside the log-write sprocs, and it makes every later decision on
+        # the day require the reviewer's token. Nobody may stamp it through this
+        # path — a caller who could would impose that restriction on any entry
+        # whose public id they know. An existing marker is still carried forward
+        # by the sproc regardless of what this call sends.
+        if REASON_REOPENED_AFTER_SUBMIT_ in reasons:
+            raise ValueError(
+                f"'{REASON_REOPENED_AFTER_SUBMIT_}' is set only when a submitted day is reopened; "
+                "it cannot be stamped directly."
+            )
 
         import json
         reasons_json = json.dumps(reasons)
 
-        affected = self.repo.stamp_review(
+        affected, stored_priority, stored_reasons = self.repo.stamp_review(
             public_id=public_id,
             priority=priority,
             reasons_json=reasons_json,
@@ -508,18 +517,101 @@ class TimeEntryService:
                 f"TimeEntry with public_id '{public_id}' not found."
             )
 
+        # Report what was PERSISTED (U-596): on a reopened day the sproc floors
+        # the priority to 'medium' and carries `reopened_after_submit` forward,
+        # so a caller asking for clean/[] must not be told it got it.
         return {
             "time_entry_public_id": public_id,
-            "priority": priority,
-            "reasons": reasons,
+            "priority": stored_priority if stored_priority is not None else priority,
+            "reasons": stored_reasons if stored_reasons is not None else reasons,
             "affected_row_count": affected,
         }
 
-    def _validate_transition(self, time_entry_id: int, target_status: str) -> None:
+    # ------------------------------------------------------------------ #
+    # Reopen on the owner's late write (U-596)
+    # ------------------------------------------------------------------ #
+    REOPEN_NOTE = "Reopened: the worker's device delivered a time log after submission."
+
+    def reopen_for_owner_write(
+        self,
+        *,
+        time_entry: TimeEntry,
+        actor_user_id: Optional[int],
+        allow_reopen: bool = True,
+        why_not: str = "",
+    ) -> Optional[int]:
+        """
+        Decide whether a log write may proceed on this entry, and whether it
+        may REOPEN a submitted day on the way. Returns None when the day is in
+        draft (or has no history — parity with the guard this replaced): the
+        write proceeds as always. Returns the owner's user id when the day is
+        `submitted`, not yet approved, the writer is its owner, the write is
+        one that may reopen, and its labor is still a pure derivation of its
+        logs: the caller passes that id to the write sproc as @ReopenAsUserId,
+        and the sproc reopens — draft status row + `reopened_after_submit`
+        marker — and writes in ONE transaction, re-checking the status under
+        the lock every transition takes. A refused write therefore never
+        leaves a reopened day behind, and an approval that slipped in between
+        this read and the write refuses the write at the row. Raises
+        ValueError, in the wording the clients classify as a locked entry, in
+        every other case.
+
+        Why (U-593): field devices drain offline writes late; the 18:00 UTC
+        sweep had meanwhile submitted the day, and every later log write was
+        refused until the office rejected the entry by hand. Policy (Chris,
+        2026-10-01): the OWNER's late write reopens; anyone else — a PM editing
+        a teammate's log, an admin — is still refused: reopening is the worker
+        finishing their own day, not a reviewer's act, which stays `reject`.
+
+        What may NOT reopen a day without a human:
+        - any status but `submitted`;
+        - a day whose aggregated labor someone has reviewed, split, billed or
+          invoiced (`labor_is_untouched`, fail-closed) — the aggregator refuses
+          to change such labor on resubmit, so the write would be pointless;
+        - a write the caller marked `allow_reopen=False`: a stale row, a
+          malformed timestamp, a clock-in another log holds, a project move or
+          a work↔break change, a delete — each would fail or change buckets.
+        """
+        status_repo = TimeEntryStatusRepository()
+        current = status_repo.read_current(
+            time_entry_id=time_entry.id,
+            actor_is_system_admin=True,
+        )
+        status = current.status if current else None
+        if status in (None, "draft"):
+            return None
+
+        def locked(detail: str = "") -> ValueError:
+            # Every refusal names the status AND says "not in 'draft'": the iOS
+            # client classifies either as a locked entry and keeps the write
+            # queued instead of retrying or discarding it.
+            return ValueError(
+                f"Cannot modify time logs when time entry is in '{status}' status — "
+                f"the entry is not in 'draft'.{detail}"
+            )
+
+        if status != "submitted":
+            raise locked()
+        if actor_user_id is None or actor_user_id != time_entry.user_id:
+            raise locked()
+        if not allow_reopen:
+            raise locked(why_not)
+        if self.repo.is_downstream_locked(time_entry_id=time_entry.id) \
+                or not self.repo.labor_is_untouched(time_entry_id=time_entry.id):
+            raise locked(" Its labor has been reviewed, billed or invoiced; reverse that first.")
+        logger.info(
+            "time_entry.reopen_for_owner_write public_id=%s owner=%s",
+            time_entry.public_id, actor_user_id,
+        )
+        return actor_user_id
+
+    def _validate_transition(self, time_entry_id: int, target_status: str):
         """
         Validate that a status transition is allowed. Status reads bypass
         row-scope — the caller already proved access (or is acting in a
-        privileged transition like approve/reject).
+        privileged transition like approve/reject). Returns the current status
+        ROW: `_transition` writes against its id, so a transition decided on a
+        stale read inserts nothing (U-596).
         """
         current = TimeEntryStatusRepository().read_current(
             time_entry_id=time_entry_id,
@@ -536,3 +628,58 @@ class TimeEntryService:
                 f"Cannot transition from '{current_status}' to '{target_status}'. "
                 f"Allowed transitions: {allowed}"
             )
+        return current
+
+    def _bind_to_what_the_reviewer_saw(self, entry, current, expected_status_id: Optional[int]) -> None:
+        """
+        A decision is about the day the reviewer READ. `expected_status_id` is
+        the `current_status_id` the client got with that read; when it is sent
+        it must still be the entry's current status row, or the day changed
+        underneath the reviewer and the decision is refused (U-596). On a day
+        the worker REOPENED after submission (`reopened_after_submit` in its
+        review reasons) it is REQUIRED: the reopen is exactly the case where a
+        reviewer's queued approve could otherwise bless hours they never saw.
+        Other days keep accepting a bare decision, as every client does today.
+        """
+        # Read the marker AFTER the status row (`current`) was read, never from the
+        # entry read that preceded it: a reopen + resubmit landing between the two
+        # would leave an unmarked entry beside a fresh `submitted` row, and a bare
+        # decision would bind to that row. Ordered this way, a reopen either shows
+        # its marker here or moves the status after `current` — and the
+        # compare-and-insert then refuses the decision as a conflict.
+        fresh = self.repo.read_by_public_id(public_id=entry.public_id, actor_is_system_admin=True) or entry
+        reopened = REASON_REOPENED_AFTER_SUBMIT_ in (getattr(fresh, "review_reasons", None) or [])
+        if expected_status_id is None:
+            if reopened:
+                raise ValueError(
+                    "This day was reopened after submission; refresh it and decide on what you see "
+                    "(send expected_status_id = the entry's current_status_id)."
+                )
+            return
+        if expected_status_id != current.id:
+            raise ValueError(
+                "The time entry changed since you reviewed it (its status moved). Refresh and decide again."
+            )
+
+    @staticmethod
+    def _transition(current, *, status: str, user_id: int, note: Optional[str] = None):
+        """
+        Write a status row as a compare-and-insert against `current` (the row
+        `_validate_transition` returned). Before U-596 every transition was
+        read-then-insert, so two reviewers, or a reviewer and the worker's
+        reopen, could each pass validation and both land. Now the second
+        writer gets no row and a refusal to retry on. Returns the new row.
+        """
+        written = TimeEntryStatusRepository().create_if_current(
+            time_entry_id=current.time_entry_id,
+            expected_current_status_id=current.id,
+            status=status,
+            user_id=user_id,
+            note=note,
+        )
+        if written is None:
+            raise ValueError(
+                f"Cannot transition to '{status}': the time entry's status changed "
+                "while this request was in flight. Refresh and retry."
+            )
+        return written

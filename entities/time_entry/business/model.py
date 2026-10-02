@@ -25,6 +25,11 @@ class TimeEntry:
     user_id: Optional[int]             # FK to User (the worker)
     work_date: Optional[str]           # Date worked (YYYY-MM-DD)
     note: Optional[str]                # Worker's note for the day
+    # U-596: the review marker is part of the entry a client sees. `reopened_after_submit`
+    # in review_reasons means the worker's device delivered a log after submission and the
+    # day was reopened — a reviewer must look again before approving. (to_dict is asdict.)
+    review_priority: Optional[str] = None
+    review_reasons: Optional[list] = None
 
     @property
     def row_version_bytes(self) -> Optional[bytes]:

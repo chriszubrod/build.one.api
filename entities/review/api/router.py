@@ -81,6 +81,7 @@ def _do_action(
             payload = service.build_submit_payload(
                 parent_type=parent_type,
                 parent_public_id=parent_public_id,
+                expected_row_version=getattr(body, "expected_row_version", None),
                 user_id=user_id,
                 comments=body.comments,
             )
@@ -88,6 +89,7 @@ def _do_action(
             payload = service.build_advance_payload(
                 parent_type=parent_type,
                 parent_public_id=parent_public_id,
+                expected_row_version=getattr(body, "expected_row_version", None),
                 user_id=user_id,
                 comments=body.comments,
             )
@@ -95,6 +97,7 @@ def _do_action(
             payload = service.build_decline_payload(
                 parent_type=parent_type,
                 parent_public_id=parent_public_id,
+                expected_row_version=getattr(body, "expected_row_version", None),
                 user_id=user_id,
                 target_status_public_id=body.target_status_public_id,
                 comments=body.comments,

@@ -589,6 +589,22 @@ class ContractLaborService:
                 f"reviewable (current status: {cl.status!r}); reviewer "
                 f"decisions cannot be applied. The human must edit directly."
             )
+        # U-596: an emailed decision answers a review NOTICE sent at some earlier
+        # moment; it cannot say which hours it saw. A day the worker reopened
+        # after submission (`reopened_after_submit` on the source entry) is
+        # exactly the case where the notice may describe hours that no longer
+        # exist — the labor was rebuilt from the new logs on resubmit. Such rows
+        # are decided in the app, where the decision carries the labor row's
+        # version it was made against.
+        if getattr(cl, "source_time_entry_id", None):
+            from entities.time_entry.business.validation import REASON_REOPENED_AFTER_SUBMIT
+            from entities.time_entry.persistence.repo import TimeEntryRepository
+            source = TimeEntryRepository().read_by_id(id=cl.source_time_entry_id, actor_is_system_admin=True)
+            if source is not None and REASON_REOPENED_AFTER_SUBMIT in (getattr(source, "review_reasons", None) or []):
+                raise ValueError(
+                    f"ContractLabor {contract_labor_public_id}: its time entry was reopened after submission, "
+                    "so this emailed decision may not describe the hours now on the day. Decide it in the app."
+                )
 
         # Resolve target project from the supplied public_id; needed to
         # filter the line-item update + the authz check.

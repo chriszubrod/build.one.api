@@ -474,6 +474,24 @@ AS
 BEGIN
     SET NOCOUNT ON;
     BEGIN TRANSACTION;
+    -- U-596: a review on labor whose source day is back in 'draft' (the worker
+    -- reopened it) would review provisional hours — and the Review row would mark
+    -- the labor 'touched', so the day's resubmit could never reconcile it. Refuse
+    -- under the status range lock every transition takes.
+    IF @ContractLaborId IS NOT NULL AND EXISTS (
+        SELECT 1 FROM dbo.[ContractLabor] cl
+        WHERE cl.[Id] = @ContractLaborId AND cl.[SourceTimeEntryId] IS NOT NULL
+          AND (SELECT TOP 1 s.[Status] FROM dbo.[TimeEntryStatus] s WITH (UPDLOCK, HOLDLOCK)
+               WHERE s.[TimeEntryId] = cl.[SourceTimeEntryId]
+               ORDER BY s.[CreatedDatetime] DESC, s.[Id] DESC) = 'draft')
+    BEGIN
+        -- COMMIT then RAISERROR (see the STATUS_LOCKED refusal below): nothing has
+        -- been written, and rolling back here would zero the caller's implicit
+        -- outer transaction and surface error 266 instead of this refusal.
+        COMMIT TRANSACTION;
+        RAISERROR('STATUS_LOCKED: cannot review labor while its time entry is in ''draft'' — the day is being edited; it will be resubmitted.', 16, 1);
+        RETURN;
+    END
 
     DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();
 

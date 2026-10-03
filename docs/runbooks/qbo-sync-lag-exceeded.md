@@ -36,6 +36,34 @@ Baseline:
 - Reference (vendor, customer, item, account, term) should be <4 hours.
 - CompanyInfo should be <24 hours.
 
+### Step 1b — Check for skipped ticks (the silent doubler)
+
+A tick that fires while the previous one is still running is **skipped**, and
+the whole cadence is added to the lag. Since 2026-10-03 the admin dispatcher logs
+it at WARNING and counts the run:
+
+```kusto
+traces
+| where timestamp > ago(6h)
+| where message startswith "qbo.sync.skipped_lock_busy"
+| project timestamp, message
+| order by timestamp desc
+```
+
+`consecutive_skips=N` climbing means the previous tick is overlong, not stuck:
+for `purchase` the usual causes were the full-realm Attachable snapshot (~19K
+rows, ~20 calls — now bounded by the watermark on incremental ticks) and the
+inline Graph fan-out (now an `expense_pull_fanout` outbox row; see
+`expense-pull-fanout.md`). A tick that never finishes (lock held with no
+`qbo.sync.pull.*` progress) is the 240 s gateway kill — the session-scoped
+`sp_getapplock` releases with the connection, so the next tick runs.
+
+For `purchase` specifically, `qbo_to_local.attachments_linked` now also counts
+receipts linked to purchases that did NOT change this tick (QBO does not bump
+the parent's LastUpdatedTime on attach); a purchase whose vendor is unknown is
+resolved on demand and otherwise HOLDS the watermark (`VendorNotResolvedError`)
+rather than being skipped.
+
 ### Step 2 — Check scheduler health
 
 ```kusto

@@ -22,12 +22,25 @@ class QboAttachableService:
     def __init__(
         self,
         auth_service: Optional[QboAuthService] = None,
+        *,
+        attachables_since: Optional[str] = None,
     ):
-        """Initialize the QboAttachableService."""
+        """Initialize the QboAttachableService.
+
+        `attachables_since` bounds the per-run realm snapshot to attachables
+        whose `Metadata.LastUpdatedTime` is after the given watermark (the
+        caller's pull watermark, overlap included). Without it the snapshot is
+        the FULL realm list — ~19K rows / ~20 metered HTTP calls / minutes per
+        run, which was the dominant cost of every purchase tick. An incremental
+        pull passes its own `last_sync_time`; a full/historical pull passes
+        None and keeps the authoritative full-list behaviour.
+        """
         self.auth_service = auth_service or QboAuthService()
-        # Per-instance snapshot of the full realm attachable list, populated lazily on the first
-        # per-entity lookup and reused across the sync run (the service is created once per run).
-        # Avoids re-pulling the full list per entity while making same-entity lookups authoritative.
+        self.attachables_since = attachables_since
+        # Per-instance snapshot of the realm attachable list (full, or bounded by
+        # `attachables_since`), populated lazily on the first per-entity lookup and
+        # reused across the sync run (the service is created once per run). Avoids
+        # re-pulling the list per entity while keeping same-entity lookups authoritative.
         self._all_attachables_cache = None
 
     def sync_from_qbo(
@@ -85,16 +98,22 @@ class QboAttachableService:
         (`query_attachables`, MAXRESULTS 1000) silently missed any entity whose attachable
         sat past position 1000 of the ~3.3k realm total. Both produced false "no attachments".
 
-        Fix: pull the FULL realm list once (cached on this service for the sync run; the
+        Fix: pull the realm list once (cached on this service for the sync run; the
         service is created once per run) and filter in-memory by an EXACT (entity_ref_type,
         entity_ref_value) match — both must match. Exact type match (not startswith) prevents
         cross-type collisions where ids are only unique per type (a "PurchaseOrder" /
         "BillPayment" attachable mis-attributed to a "Purchase"/"Bill" with the same id).
         Note: this captures SAME-entity docs reliably; cross-entity (Invoice-keyed) docs are
         recovered by the separate all-realm reconcile, not here.
+
+        The list is the FULL realm when `attachables_since` is None, and only the
+        attachables updated after that watermark otherwise. The exactness rule is the
+        same either way — the bound only changes how many rows are paged, never how a
+        row is matched. An attachable that predates the watermark was handled by the
+        tick that first saw it; an attachable added later is new by definition and is
+        inside the bound.
         """
-        if self._all_attachables_cache is None:
-            self._all_attachables_cache = client.query_all_attachables()
+        self._ensure_snapshot(client)
         target_type = (entity_type or "").upper()
         filtered = [
             a for a in self._all_attachables_cache
@@ -107,6 +126,47 @@ class QboAttachableService:
         if filtered:
             logger.info(f"Found {len(filtered)} attachables for {entity_type} {entity_id} (full-list filter)")
         return filtered
+
+    def _ensure_snapshot(self, client) -> list:
+        """Load the per-run attachable snapshot once (full or watermark-bounded)."""
+        if self._all_attachables_cache is None:
+            self._all_attachables_cache = client.query_all_attachables(
+                last_updated_time=self.attachables_since,
+            )
+            logger.info(
+                "qbo.attachable.snapshot_loaded mode=%s since=%s rows=%d",
+                "incremental" if self.attachables_since else "full",
+                self.attachables_since,
+                len(self._all_attachables_cache),
+            )
+        return self._all_attachables_cache
+
+    def entity_ids_in_snapshot(self, realm_id: str, entity_type: str) -> set:
+        """
+        QBO ids of every `entity_type` entity that has at least one attachable in
+        this run's snapshot (loading it if needed).
+
+        Lets a pull act on attachables whose PARENT did not change: QBO does not
+        bump a Purchase's `MetaData.LastUpdatedTime` when a receipt is attached to
+        it, so a receipt matched after the purchase was first pulled is invisible
+        to a parent-keyed pull. With an incremental snapshot this is cheap — the
+        set is exactly the entities touched by attachables since the watermark.
+        """
+        qbo_auth = self.auth_service.ensure_valid_token(realm_id=realm_id)
+        if not qbo_auth or not qbo_auth.access_token:
+            raise ValueError(f"No valid QBO auth found for realm {realm_id}")
+
+        if self._all_attachables_cache is None:
+            with QboAttachableClient(realm_id=realm_id) as client:
+                self._ensure_snapshot(client)
+
+        target_type = (entity_type or "").upper()
+        ids: set = set()
+        for a in self._all_attachables_cache or []:
+            for ref in (a.attachable_ref or []):
+                if (ref.entity_ref_type or "").upper() == target_type and ref.entity_ref_value:
+                    ids.add(ref.entity_ref_value)
+        return ids
 
     def sync_attachables_for_bill(
         self,

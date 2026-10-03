@@ -26,6 +26,39 @@ from entities.sub_cost_code.business.service import SubCostCodeService
 logger = logging.getLogger(__name__)
 
 
+class VendorNotResolvedError(RuntimeError):
+    """
+    A Purchase whose QBO vendor has no dbo.Vendor even after an on-demand pull.
+
+    Deliberately NOT a ValueError: `SyncOutcome.record_projection_error` treats
+    a plain ValueError as a permanent-data skip (watermark advances, record
+    lost). This holds the watermark instead, so the purchase is retried next
+    tick and, if it never binds, surfaces through the bounded-hold critical
+    ReconciliationIssue rather than vanishing.
+    """
+
+
+def resolve_vendor_on_demand(qbo_vendor_id: str, realm_id: Optional[str]) -> Optional[str]:
+    """
+    Pull ONE Vendor from QBO and project it to dbo.Vendor (read from QBO, local
+    write only). Returns the dbo.Vendor public_id when the projection binds.
+
+    Reuses the vendor family's own staging upsert + connector so the row is
+    indistinguishable from one the scheduled vendor pull would have written.
+    """
+    if not qbo_vendor_id or not realm_id:
+        return None
+    from integrations.intuit.qbo.vendor.business.service import QboVendorService
+    from integrations.intuit.qbo.vendor.connector.vendor.business.service import VendorVendorConnector
+    from integrations.intuit.qbo.vendor.external.client import QboVendorClient
+
+    with QboVendorClient(realm_id=realm_id) as client:
+        external = client.get_vendor(qbo_vendor_id)
+    staging = QboVendorService()._upsert_vendor(external, realm_id)
+    vendor = VendorVendorConnector().sync_from_qbo_vendor(staging, external)
+    return str(vendor.public_id) if vendor is not None and getattr(vendor, "public_id", None) else None
+
+
 class PurchaseExpenseConnector:
     """
     Connector service for synchronization between QboPurchase and Expense modules.
@@ -57,6 +90,7 @@ class PurchaseExpenseConnector:
         qbo_vendor_repo: Optional[QboVendorRepository] = None,
         reconciliation_repo: Optional[ReconciliationIssueRepository] = None,
         sub_cost_code_service: Optional[SubCostCodeService] = None,
+        vendor_on_demand_resolver=None,
     ):
         """Initialize the PurchaseExpenseConnector."""
         self.expense_service = expense_service or ExpenseService()
@@ -80,6 +114,12 @@ class PurchaseExpenseConnector:
         # Per-sync cache: avoids 3 DB round-trips per purchase when multiple purchases
         # share the same QBO vendor (the common case).
         self._vendor_cache: dict = {}
+        # A4: `(qbo_vendor_id, realm_id) -> Optional[vendor_public_id]`. Pulls the
+        # ONE missing QBO Vendor and projects it through the vendor connector so a
+        # purchase from a vendor the 4-hourly vendor pull has not seen yet lands
+        # instead of being dropped. Injectable for tests; defaults to the real
+        # QBO-backed resolver.
+        self._vendor_on_demand_resolver = vendor_on_demand_resolver or resolve_vendor_on_demand
         # Single line connector shared across all purchases so _sub_cost_code_cache and
         # _project_cache persist for the entire sync run, not just per-purchase.
         from integrations.intuit.qbo.purchase.connector.expense_line_item.business.service import PurchaseLineExpenseLineItemConnector
@@ -98,8 +138,22 @@ class PurchaseExpenseConnector:
         # Find vendor mapping to get Vendor public_id
         # Purchase uses EntityRef instead of VendorRef
         vendor_public_id = self._get_vendor_public_id(qbo_purchase.entity_ref_value, qbo_purchase.realm_id)
+        if not vendor_public_id and qbo_purchase.entity_ref_value:
+            # A4: a vendor the vendor pull has not seen yet (Ramp creates QBO
+            # vendors on first spend; the vendor pull is 4-hourly). This used to
+            # raise ValueError, which `record_projection_error` classifies as a
+            # PERMANENT skip — the watermark advanced and the purchase was lost
+            # until someone edited it in QBO. Resolve the single vendor on
+            # demand; if that still fails, raise a non-ValueError so the tick
+            # HOLDS (safe default) and retries next cadence.
+            vendor_public_id = self._resolve_vendor_on_demand(
+                qbo_purchase.entity_ref_value, qbo_purchase.realm_id,
+            )
         if not vendor_public_id:
-            raise ValueError(f"No vendor mapping found for QBO entity ref: {qbo_purchase.entity_ref_value}")
+            raise VendorNotResolvedError(
+                f"No vendor mapping found for QBO entity ref: {qbo_purchase.entity_ref_value} "
+                f"(on-demand resolve did not bind; holding for retry)"
+            )
 
         # Map QBO Purchase fields to Expense module fields
         reference_number = qbo_ref_or_placeholder(qbo_purchase.doc_number, qbo_purchase.qbo_id)
@@ -375,6 +429,27 @@ class PurchaseExpenseConnector:
 
         self._vendor_cache[cache_key] = None
         return None
+
+    def _resolve_vendor_on_demand(self, qbo_entity_ref_value: str, realm_id: Optional[str]) -> Optional[str]:
+        """Pull + project one QBO Vendor, then re-run the dbo lookup. None if still unbound."""
+        try:
+            resolved = self._vendor_on_demand_resolver(qbo_entity_ref_value, realm_id)
+        except Exception as resolve_e:
+            logger.warning(
+                f"On-demand vendor resolve failed for QBO vendor {qbo_entity_ref_value} "
+                f"(realm {realm_id}): {resolve_e}"
+            )
+            resolved = None
+        # Drop the negative cache entry the first lookup wrote, then look again
+        # through the same dbo-only path so the identity check is identical.
+        self._vendor_cache.pop((realm_id, qbo_entity_ref_value), None)
+        vendor_public_id = self._get_vendor_public_id(qbo_entity_ref_value, realm_id)
+        if vendor_public_id:
+            logger.info(
+                f"Resolved QBO vendor {qbo_entity_ref_value} on demand -> Vendor {vendor_public_id}"
+            )
+            return vendor_public_id
+        return resolved if isinstance(resolved, str) and resolved else None
 
     def _sync_line_items(self, expense_id: int, expense_public_id: str, qbo_purchase_lines: List[QboPurchaseLine], realm_id: Optional[str] = None) -> None:
         """

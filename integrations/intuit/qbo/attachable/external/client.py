@@ -11,7 +11,7 @@ from integrations.intuit.qbo.attachable.external.schemas import (
     QboAttachable,
     QboAttachableResponse,
 )
-from integrations.intuit.qbo.base.client import QboHttpClient
+from integrations.intuit.qbo.base.client import QboHttpClient, _format_datetime_for_qbo_query
 from integrations.intuit.qbo.base.errors import QboValidationError
 
 logger = logging.getLogger(__name__)
@@ -70,9 +70,17 @@ class QboAttachableClient:
         self,
         start_position: int = 1,
         max_results: int = 1000,
+        last_updated_time: Optional[str] = None,
     ) -> List[QboAttachable]:
         """
         Query attachables with pagination.
+
+        `last_updated_time` narrows the page to `Metadata.LastUpdatedTime >
+        <value>` — the same incremental shape every transactional client uses.
+        QBO cannot filter Attachable by AttachableRef, so the caller still
+        filters by entity in memory; this just bounds how many rows it has to
+        page through (the full realm is ~19K rows ≈ 20 calls, see
+        `QboAttachableService._query_attachables_with_fallback`).
 
         Latent fix riding along with the re-route: the old client built
         ?minorversion= into the URL string AND passed params= — httpx replaces
@@ -80,6 +88,9 @@ class QboAttachableClient:
         minorversion. The shared client merges minorversion into params.
         """
         query_parts = ["SELECT * FROM Attachable"]
+        if last_updated_time:
+            formatted_time = _format_datetime_for_qbo_query(last_updated_time, logger=logger)
+            query_parts.append(f"WHERE Metadata.LastUpdatedTime > '{formatted_time}'")
         query_parts.append(f"STARTPOSITION {start_position} MAXRESULTS {max_results}")
         query_string = " ".join(query_parts)
 
@@ -94,8 +105,11 @@ class QboAttachableClient:
         attachables_data = query_response.get("Attachable", [])
         return [QboAttachable(**a) for a in attachables_data]
 
-    def query_all_attachables(self) -> List[QboAttachable]:
-        """Query all attachables with pagination."""
+    def query_all_attachables(
+        self,
+        last_updated_time: Optional[str] = None,
+    ) -> List[QboAttachable]:
+        """Query all attachables with pagination (optionally only those updated since)."""
         all_attachables: List[QboAttachable] = []
         start_position = 1
         max_results = 1000
@@ -104,6 +118,7 @@ class QboAttachableClient:
             attachables = self.query_attachables(
                 start_position=start_position,
                 max_results=max_results,
+                last_updated_time=last_updated_time,
             )
             if not attachables:
                 break

@@ -1,5 +1,68 @@
 # Session Notes
 
+## Expense entity deep review — QBO pull lag + draft→submit throughput (2026-10-03)
+
+**Method:** four read-only review passes (API entity, QBO purchase→Expense pull, web expense pages,
+MS/Box pipelines) with every finding verified against source before it counted; the markdown was
+treated as a drift checklist, not a source. Full report lived in the session scratchpad; the
+findings that were NOT fixed are booked in TODO.md under the same heading. Ten CLAUDE.md drifts
+corrected in the same commit.
+
+**Why QBO→app lagged (all in code, none of it the 15-minute timer alone):**
+- Every purchase tick with ≥1 changed purchase fetched the **entire realm Attachable list** (~19K rows,
+  ~20 metered calls, minutes) because QBO cannot filter by AttachableRef. Now bounded by the pull's own
+  watermark (`QboAttachableService(attachables_since=last_sync_time)`); full/historical pulls keep the
+  authoritative full list. Side effect worth having: receipts attached to an UNCHANGED purchase (QBO does
+  not bump the parent's LastUpdatedTime on attach) are linked from that snapshot — they used to be
+  invisible until the purchase was edited.
+- The tick ran MS Graph Excel + SharePoint work **inline** (`scripts/sync_qbo_purchase.py`), stretching
+  past the next timer and the 240 s gateway, with failures swallowed to WARN. Now one
+  `[ms].[Outbox]` row of Kind **`expense_pull_fanout`** per (expense, project);
+  `MsOutboxWorker._handle_expense_pull_fanout` runs the same two `ExpenseService` methods at drain
+  (unmapped project = done, real errors retry → dead-letter → ReconciliationIssue). Runbook:
+  `docs/runbooks/expense-pull-fanout.md`.
+- MS outbox drained **ONE row per 30 s tick** (`drain_once`) — a 3–4 row expense completion took
+  ~2 minutes; a pull's fan-out would have queued for most of an hour. Now a bounded loop
+  (`MS_DRAIN_MAX_ROWS=20`, `MS_DRAIN_TIME_BUDGET_SECONDS=20`), the Box drain's shape.
+- A `lock_busy` tick skip (previous tick still running) added a full cadence silently at INFO. Now
+  WARNING with `consecutive_skips`, echoed in the endpoint response.
+- **P1 fixed:** a purchase whose vendor had no `dbo.Vendor` raised `ValueError`, which
+  `record_projection_error` classifies as a permanent skip — the watermark advanced and the expense was
+  lost until edited in QBO. Ramp creates vendors on first spend and the vendor pull is 4-hourly, so this
+  was a real loss path. Now resolved on demand (one `vendor/{id}` GET + the vendor connector), else
+  `VendorNotResolvedError` (non-ValueError) → HOLD.
+- ⛔ **Scheduler side not done here** (`build.one.scheduler` is not in this session): shorten the
+  purchase timer to 5 min once this is deployed — the per-tick cost no longer forbids it.
+
+**Why draft→submit was slow in the web UI (`build.one.web`, same branch):**
+- ExpenseView had no Submit control, so the real path was List → View → Edit → Submit → Cancel → View →
+  List: ~20 serial round-trips and four downloads of the same receipt per draft. ExpenseView now renders
+  the active `ReviewTimeline` (read-only only on `completed`), with **no pre-save** — nothing on View is
+  editable. After a submit it opens the **next draft** (`GET /get/expenses?status=draft&page_size=1`) or
+  returns to the Draft tab.
+- ExpenseEdit's Submit always ran `saveAll`: a header PUT plus one PUT per line (each a ProcessEngine
+  workflow with audit rows) on an untouched form. Now header/line dirty tracking; a clean form issues
+  **zero** PUTs; the header PUT runs only when the header changed.
+- `saveAll` cancelled the auto-save timer but not an in-flight PUT, so Submit could 409 on the same
+  `row_version` (CLAUDE.md flush-or-guard rule; BillEdit flushed). Now `await flushAutoSave()` first.
+- The line-item/receipt chain was keyed on the `item` object; every refetch (review action, U-471
+  rebase) re-listed lines, re-walked per-line link GETs and re-downloaded the receipt with a viewer
+  flash. Keyed on `item.id` now; link GETs run in parallel.
+- Breadcrumb/Cancel went to a bare `/expense/list`, which is the Completed tab (11.8K rows). Now
+  `expenseListPath(status)` keeps the user's tab.
+- Card hover/focus/touch prefetches the View's item query (`EntryCard.onPrefetch`, TimeEntryList's
+  pattern); Ctrl/Cmd+Enter confirms the review dialog.
+- Nine ExpenseEdit specs were rewritten for the new contract (an untouched form writes nothing); the
+  chained-token spec now exercises an edit typed while the auto-save PUT is in flight, which is the only
+  way a second PUT happens now.
+
+**Tests:** `tests/test_expense_pull_latency.py` (API, pure-logic: client WHERE clause, snapshot bound,
+late-attach pass, enqueue-not-inline, handler done/raise cases, bounded drain, lock_busy streak,
+vendor on-demand + HOLD). Web: `ExpenseView.test.tsx` (+7), `ExpenseEdit.test.tsx` (+2, 9 rewritten),
+`ReviewTimeline.test.tsx` (+3), `EntryCard.test.tsx` (new), `expenseStatusTabs.test.ts` (+2). Full
+web suite 1072/1072; API suite green except 12 pre-existing env-only failures (`Settings` missing
+`.env` values in `test_u570_*`, `test_u579_*`, `test_vendor_compliance_packet`).
+
 ## U-549 — Ramp receipt/memo chaser: A + C1 + C2 shipped, three layers broken at once (2026-09-29)
 
 **The transferable lesson first: the chain broke in three independent places, and every layer

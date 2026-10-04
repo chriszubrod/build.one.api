@@ -56,6 +56,12 @@ same date. Everything below was confirmed against source and is open. Severity i
   enqueues instead) — delete once the completion path is on the same kind; web list search is not
   debounced; ExpenseEdit has no line math from `shared/money.ts`; Attach/remove controls show with
   Expenses perms while the routes gate on `Modules.ATTACHMENTS`.
+- [ ] 🟡 **Test gaps the review found (API)** — no test for: the line-item GET None path; the completion-result
+  cache across `-w 2` workers; line-item `is_billed`/`is_draft` not client-writable; `apply_reviewer_decision`
+  against an existing Review; `complete_expense` tolerating a stale line RowVersion; attachment download
+  scoping; two distinct attachments on a multi-line expense producing distinct SharePoint/Box names (would
+  catch the P1 above); the receipts-folder early returns; pending outbox rows after delete;
+  `query_purchases` pagination termination. Each fix above should land with its missing test.
 - [ ] 🟢 **Scheduler — shorten the `sync_qbo_purchase` timer from 15 to 5 min** in `build.one.scheduler`
   (`function_app.py`, the `:07/:22/:37/:52` NCRONTAB). Precondition: this unit deployed to the API, then one
   day of `qbo.sync.skipped_lock_busy` showing no skips (`consecutive_skips` never climbs). Budget: +8 query

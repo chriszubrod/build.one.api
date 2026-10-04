@@ -231,14 +231,115 @@ def test_script_links_late_attached_receipts_for_unchanged_purchases():
         attachable_service=attachable_service, ms_outbox=MagicMock(), line_items=[],
         late_expense=late_expense,
     )
-    # The changed purchase is linked in the main loop; the unchanged one in the late pass.
-    expense_service.read_by_qbo_identity.assert_called_once_with("qbo-purchase-OLD", REALM_ID)
+    # The changed purchase is linked in the main loop; the unchanged one in the late pass
+    # (the main loop also reads the changed purchase's identity for the was_local check).
+    expense_service.read_by_qbo_identity.assert_any_call("qbo-purchase-OLD", REALM_ID)
     attachable_service.sync_attachables_for_purchase.assert_any_call(
         realm_id=REALM_ID, purchase_qbo_id="qbo-purchase-OLD", sync_to_modules=True
     )
     linked_expense_ids = sorted(c.kwargs["expense_id"] for c in link.call_args_list)
     assert linked_expense_ids == [99, 500]
     assert result["attachments_linked"] == 2
+
+
+def test_late_attach_pass_runs_on_an_empty_tick():
+    """P0 from Pass 1: the watermark commits on an empty tick and the next tick
+    bounds its snapshot by it. If the late pass only ran when a purchase changed,
+    a receipt matched during a quiet window would never be seen again."""
+    from scripts.sync_qbo_purchase import sync_qbo_to_local
+
+    outcome = SyncOutcome.for_service_pull()
+    outcome.synced = []  # nothing changed this tick
+    qbo_purchase_service = MagicMock()
+    qbo_purchase_service.sync_from_qbo.return_value = outcome
+
+    attachable_service = MagicMock()
+    attachable_service.entity_ids_in_snapshot.return_value = {"qbo-purchase-OLD"}
+    attachable_service.sync_attachables_for_purchase.return_value = [SimpleNamespace(qbo_id="att-9")]
+    expense_service = MagicMock()
+    expense_service.read_by_qbo_identity.return_value = SimpleNamespace(id=500, public_id="p")
+
+    with patch("scripts.sync_qbo_purchase.QboAttachableService", return_value=attachable_service), patch(
+        "entities.expense.business.service.ExpenseService", return_value=expense_service
+    ), patch(
+        "entities.expense_line_item.business.service.ExpenseLineItemService", return_value=MagicMock()
+    ), patch(
+        "scripts.sync_qbo_purchase.sync_purchase_attachments_to_expense_line_items", return_value=1
+    ):
+        result, _ = sync_qbo_to_local(
+            realm_id=REALM_ID, last_sync_time="2026-10-03T11:59:00+00:00",
+            qbo_purchase_service=qbo_purchase_service, purchase_connector=MagicMock(),
+        )
+    assert result["purchases_synced"] == 0
+    assert result["attachments_linked"] == 1
+    attachable_service.sync_attachables_for_purchase.assert_called_once_with(
+        realm_id=REALM_ID, purchase_qbo_id="qbo-purchase-OLD", sync_to_modules=True
+    )
+
+
+def test_new_local_purchase_that_is_old_in_qbo_gets_the_authoritative_list():
+    """A purchase first projected this tick whose transaction is well before the
+    window may carry receipts older than the snapshot bound: it asks for the
+    full list. A fresh one (txn_date inside the window) stays bounded."""
+    from scripts.sync_qbo_purchase import _is_old_in_qbo, OLD_PURCHASE_HORIZON_DAYS
+
+    wm = "2026-10-03T11:59:00+00:00"
+    assert _is_old_in_qbo(SimpleNamespace(txn_date="2026-10-02"), wm) is False
+    assert _is_old_in_qbo(SimpleNamespace(txn_date="2026-09-01"), wm) is True
+    assert _is_old_in_qbo(SimpleNamespace(txn_date=None), wm) is True          # unknown age -> safe side
+    assert _is_old_in_qbo(SimpleNamespace(txn_date="2026-10-02"), None) is True  # no watermark -> full pull anyway
+    assert OLD_PURCHASE_HORIZON_DAYS >= 3  # card spend clears in 1-3 days; must not cross on the ordinary path
+
+    attachable_service = MagicMock()
+    attachable_service.sync_attachables_for_purchase.return_value = []
+    attachable_service.entity_ids_in_snapshot.return_value = set()
+    expense_service_calls = []
+
+    def _run(*, local_exists: bool, txn_date: str):
+        from scripts.sync_qbo_purchase import sync_qbo_to_local
+        purchase = _make_qbo_purchase()
+        purchase.txn_date = txn_date
+        outcome = SyncOutcome.for_service_pull(); outcome.synced = [purchase]
+        qps = MagicMock(); qps.sync_from_qbo.return_value = outcome
+        expense = SimpleNamespace(id=99, public_id="33333333-3333-3333-3333-333333333333")
+        connector = MagicMock(); connector.sync_from_qbo_purchase.return_value = expense
+        es = MagicMock(); es.read_by_qbo_identity.return_value = expense if local_exists else None
+        with patch("scripts.sync_qbo_purchase.QboAttachableService", return_value=attachable_service), patch(
+            "entities.expense.business.service.ExpenseService", return_value=es
+        ), patch(
+            "entities.expense_line_item.business.service.ExpenseLineItemService", return_value=MagicMock()
+        ), patch(
+            "integrations.ms.outbox.business.service.MsOutboxService", return_value=MagicMock()
+        ), patch(
+            "scripts.sync_qbo_purchase.read_lines_riding_out_race", return_value=[MagicMock()]
+        ), patch(
+            "scripts.sync_qbo_purchase.with_retry", side_effect=lambda fn, *a, **k: fn(*a)
+        ), patch("scripts.sync_qbo_purchase.pace_batch"), patch.dict("os.environ", {"ALLOW_BOX_WRITES": "false"}):
+            sync_qbo_to_local(realm_id=REALM_ID, last_sync_time=wm, qbo_purchase_service=qps, purchase_connector=connector)
+        return attachable_service.sync_attachables_for_purchase.call_args.kwargs["authoritative"]
+
+    assert _run(local_exists=True, txn_date="2026-09-01") is False   # update path: bounded
+    assert _run(local_exists=False, txn_date="2026-10-02") is False  # fresh create: bounded
+    assert _run(local_exists=False, txn_date="2026-09-01") is True   # old create: full list
+
+
+def test_service_authoritative_lookup_loads_the_full_list_once_and_keeps_the_snapshot_separate():
+    bounded = [_attachable("new", _ref("Purchase", "77"))]
+    full = [_attachable("old", _ref("Purchase", "77")), _attachable("new", _ref("Purchase", "77"))]
+    service, fake_client = _service_with_fake_client(bounded, attachables_since="2026-10-03T12:00:00+00:00")
+    fake_client.query_all_attachables.side_effect = (
+        lambda last_updated_time=None: full if last_updated_time is None else bounded
+    )
+    with patch(f"{ATTACHABLE_SERVICE_MODULE}.QboAttachableClient", return_value=fake_client):
+        service._sync_to_attachments = MagicMock(side_effect=lambda rows, realm: rows)
+        bounded_hit = service.sync_attachables_for_purchase(REALM_ID, "77")
+        full_hit = service.sync_attachables_for_purchase(REALM_ID, "77", authoritative=True)
+        full_again = service.sync_attachables_for_purchase(REALM_ID, "77", authoritative=True)
+    assert [a.qbo_id for a in bounded_hit] == ["new"]
+    assert sorted(a.qbo_id for a in full_hit) == ["new", "old"]
+    assert sorted(a.qbo_id for a in full_again) == ["new", "old"]
+    # one bounded page set + one full page set, no re-fetch on the second authoritative call
+    assert fake_client.query_all_attachables.call_count == 2
 
 
 def test_script_skips_late_attach_pass_on_full_pull():
@@ -259,15 +360,14 @@ def test_script_enqueues_ms_fanout_instead_of_inline_graph():
         SimpleNamespace(project_id=10), SimpleNamespace(project_id=10), SimpleNamespace(project_id=20),
         SimpleNamespace(project_id=None),
     ]
-    with patch("entities.expense.business.service.ExpenseService.sync_expenses_batch_to_excel") as inline_excel, patch(
-        "entities.expense.business.service.ExpenseService._upload_attachments_to_module_folder"
-    ) as inline_sp:
-        result, _, _, _ = _run_script(
-            last_sync_time="2026-10-03T11:59:00+00:00",
-            attachable_service=attachable_service, ms_outbox=ms_outbox, line_items=line_items,
-        )
-    inline_excel.assert_not_called()
-    inline_sp.assert_not_called()
+    result, _, expense_service, _ = _run_script(
+        last_sync_time="2026-10-03T11:59:00+00:00",
+        attachable_service=attachable_service, ms_outbox=ms_outbox, line_items=line_items,
+    )
+    # The script's ExpenseService instance is the mock itself: the inline Graph
+    # methods it used to call are never invoked on it.
+    expense_service.sync_expenses_batch_to_excel.assert_not_called()
+    expense_service._upload_attachments_to_module_folder.assert_not_called()
     calls = sorted(
         (c.kwargs["project_id"], c.kwargs["expense_line_items_count"])
         for c in ms_outbox.enqueue_expense_pull_fanout.call_args_list
@@ -360,7 +460,22 @@ def test_fanout_handler_treats_unmapped_project_as_done_not_failure():
                    "synced_count": 0, "skipped_count": 0, "errors": [{"error": "Module folder not linked for project 10"}]},
     )
     with p1, p2:
-        MsOutboxWorker(repo=MagicMock())._handle_expense_pull_fanout(_row({"project_id": 10}), {"project_id": 10})
+        result = MsOutboxWorker(repo=MagicMock())._handle_expense_pull_fanout(_row({"project_id": 10}), {"project_id": 10})
+    assert result is None  # returned normally: the row is marked done, not failed
+
+
+def test_unmapped_prefixes_match_the_expense_service_messages():
+    """The handler keys "configuration, not failure" on two ExpenseService message
+    literals. A reworded message would silently turn an unmapped project into a
+    dead-letter, so pin the literals structurally."""
+    import inspect
+    from entities.expense.business.service import ExpenseService
+    from integrations.ms.outbox.business.worker import _UNMAPPED_MESSAGE_PREFIXES
+    source = inspect.getsource(ExpenseService.sync_to_excel_workbook) + inspect.getsource(
+        ExpenseService._upload_attachments_to_module_folder
+    )
+    for prefix in _UNMAPPED_MESSAGE_PREFIXES:
+        assert prefix in source, f"ExpenseService no longer emits {prefix!r}"
 
 
 def test_fanout_handler_raises_on_real_errors_so_the_row_retries():
@@ -371,8 +486,12 @@ def test_fanout_handler_raises_on_real_errors_so_the_row_retries():
         sp_result={"success": False, "message": "Drive not found", "synced_count": 0,
                    "skipped_count": 0, "errors": [{"error": "Drive not found"}]},
     )
-    with p1, p2, pytest.raises(RuntimeError, match="Drive not found"):
+    from integrations.ms.base.errors import MsGraphError
+    with p1, p2, pytest.raises(MsGraphError, match="Drive not found") as excinfo:
         MsOutboxWorker(repo=MagicMock())._handle_expense_pull_fanout(_row({"project_id": 10}), {"project_id": 10})
+    # Retryable: `_process` routes MsGraphError to `_handle_ms_error` (backoff,
+    # MAX_ATTEMPTS, then dead-letter). A plain RuntimeError dead-lettered on attempt 1.
+    assert excinfo.value.is_retryable is True
 
 
 def test_fanout_handler_is_done_when_expense_was_deleted():
@@ -438,7 +557,6 @@ def test_lock_busy_skip_warns_and_counts_consecutive_skips(monkeypatch, caplog):
 # A4 — vendor miss resolves on demand, else HOLDS
 # --------------------------------------------------------------------------- #
 
-pytestmark_a4 = pytest.mark.usefixtures("grant_qbo_app_lock")
 
 
 def _connector(resolver):
@@ -462,6 +580,7 @@ def _purchase():
     )
 
 
+@pytest.mark.usefixtures("grant_qbo_app_lock")
 def test_vendor_miss_resolves_on_demand_then_binds():
     resolver = MagicMock(return_value="vendor-pub-NEW")
     connector = _connector(resolver)
@@ -479,6 +598,25 @@ def test_vendor_miss_resolves_on_demand_then_binds():
     assert connector.expense_service.update_by_public_id.call_args.kwargs["vendor_public_id"] == "vendor-pub-NEW"
 
 
+@pytest.mark.usefixtures("grant_qbo_app_lock")
+@pytest.mark.usefixtures("grant_qbo_app_lock")
+def test_vendor_lookup_404_is_a_permanent_skip_not_a_hold():
+    """P2 from Pass 1: a Purchase can pay a Customer or an Employee. `vendor/{id}`
+    404s for those — permanent data, so the tick must SKIP (ValueError) as it did
+    before the on-demand path, never hold the watermark for 2h per reimbursement."""
+    from integrations.intuit.qbo.base.errors import QboNotFoundError
+
+    connector = _connector(MagicMock(side_effect=QboNotFoundError("404")))
+    connector._get_vendor_public_id = MagicMock(return_value=None)
+    with pytest.raises(ValueError, match="not a Vendor") as excinfo:
+        connector.sync_from_qbo_purchase(_purchase(), [])
+    outcome = SyncOutcome.for_service_pull()
+    outcome.record_projection_error("77", excinfo.value, label="QboPurchase->Expense", logger=logging.getLogger("t"))
+    assert not outcome.should_hold
+    assert outcome.skipped_ids == ["77"]
+
+
+@pytest.mark.usefixtures("grant_qbo_app_lock")
 def test_vendor_miss_that_cannot_resolve_holds_the_watermark_instead_of_skipping():
     from integrations.intuit.qbo.purchase.connector.expense.business.service import VendorNotResolvedError
 

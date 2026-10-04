@@ -42,6 +42,13 @@ class QboAttachableService:
         # reused across the sync run (the service is created once per run). Avoids
         # re-pulling the list per entity while keeping same-entity lookups authoritative.
         self._all_attachables_cache = None
+        # Full-realm list, loaded lazily ONLY when a caller asks for an
+        # authoritative lookup (`authoritative=True`) on an incremental run —
+        # the one case the bounded snapshot cannot answer: a purchase that is
+        # NEW locally but OLD in QBO (deferred, skipped, or first pulled late),
+        # whose receipts predate the bound. Separate from the bounded cache so
+        # the common path never pays for it.
+        self._full_attachables_cache = None
 
     def sync_from_qbo(
         self,
@@ -88,7 +95,9 @@ class QboAttachableService:
 
         return synced
 
-    def _query_attachables_with_fallback(self, client, entity_type: str, entity_id: str) -> list:
+    def _query_attachables_with_fallback(
+        self, client, entity_type: str, entity_id: str, *, authoritative: bool = False,
+    ) -> list:
         """
         Fetch the attachables linked to one QBO entity — authoritatively.
 
@@ -109,14 +118,22 @@ class QboAttachableService:
         The list is the FULL realm when `attachables_since` is None, and only the
         attachables updated after that watermark otherwise. The exactness rule is the
         same either way — the bound only changes how many rows are paged, never how a
-        row is matched. An attachable that predates the watermark was handled by the
-        tick that first saw it; an attachable added later is new by definition and is
-        inside the bound.
+        row is matched. Continuity is what makes the bound safe: every incremental
+        tick (including one with no changed purchases) walks the attachables updated
+        since the previous tick's query start, so each attachable is seen by exactly
+        one tick after it is created or updated. The one case continuity cannot
+        cover is an attachable that was seen while its parent had NO local row yet
+        (the parent was deferred, skipped, or is being pulled late) — the caller
+        passes `authoritative=True` for such a parent and gets the full list.
         """
-        self._ensure_snapshot(client)
+        rows = (
+            self._ensure_full_list(client)
+            if authoritative and self.attachables_since
+            else self._ensure_snapshot(client)
+        )
         target_type = (entity_type or "").upper()
         filtered = [
-            a for a in self._all_attachables_cache
+            a for a in rows
             if a.attachable_ref and any(
                 ref.entity_ref_value == entity_id
                 and (ref.entity_ref_type or "").upper() == target_type
@@ -140,6 +157,16 @@ class QboAttachableService:
                 len(self._all_attachables_cache),
             )
         return self._all_attachables_cache
+
+    def _ensure_full_list(self, client) -> list:
+        """Load the authoritative full-realm list once per run (see `authoritative`)."""
+        if self._full_attachables_cache is None:
+            self._full_attachables_cache = client.query_all_attachables()
+            logger.info(
+                "qbo.attachable.full_list_loaded reason=authoritative_lookup rows=%d",
+                len(self._full_attachables_cache),
+            )
+        return self._full_attachables_cache
 
     def entity_ids_in_snapshot(self, realm_id: str, entity_type: str) -> set:
         """
@@ -259,6 +286,8 @@ class QboAttachableService:
         realm_id: str,
         purchase_qbo_id: str,
         sync_to_modules: bool = True,
+        *,
+        authoritative: bool = False,
     ) -> List[QboAttachable]:
         """
         Sync attachables linked to a specific Purchase from QBO.
@@ -267,6 +296,9 @@ class QboAttachableService:
             realm_id: QBO realm ID
             purchase_qbo_id: QBO Purchase ID
             sync_to_modules: If True, also sync to Attachment module
+            authoritative: use the full-realm list even on an incremental run —
+                for a purchase that is new locally but old in QBO, whose receipts
+                may predate the snapshot bound (see `_query_attachables_with_fallback`).
 
         Returns:
             List of synced QboAttachable records
@@ -276,7 +308,9 @@ class QboAttachableService:
             raise ValueError(f"No valid QBO auth found for realm {realm_id}")
 
         with QboAttachableClient(realm_id=realm_id) as client:
-            qbo_attachables = self._query_attachables_with_fallback(client, "Purchase", purchase_qbo_id)
+            qbo_attachables = self._query_attachables_with_fallback(
+                client, "Purchase", purchase_qbo_id, authoritative=authoritative,
+            )
 
         logger.info(f"Fetched {len(qbo_attachables)} attachables for Purchase {purchase_qbo_id}")
 

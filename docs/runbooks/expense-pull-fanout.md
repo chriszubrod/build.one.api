@@ -52,7 +52,10 @@ What the handler treats as **done, not failure** (logged at INFO, row marked don
 - No line items on that project (lines re-coded after the pull).
 
 Everything else in `errors` (Drive not found, Vendor not found, Graph failures,
-enqueue refused) raises → retry with backoff → dead-letter after 5 attempts.
+enqueue refused) raises a **retryable `MsServerError`** → `_handle_ms_error` backoff →
+dead-letter after 5 attempts. (Both `ExpenseService` methods catch internally and
+report through `errors`, so the handler must raise an `MsGraphError` subclass itself;
+a plain exception would dead-letter on attempt 1 — caught in the unit's own Pass 1.)
 
 ## Recovery
 
@@ -72,6 +75,27 @@ MsOutboxService().enqueue_expense_pull_fanout(
 
 Both downstream writers are idempotent (Excel on column Z, SharePoint on the
 done-row target match), so a replay never duplicates a row or a file.
+
+## Receipts and the attachable snapshot (how the bound stays safe)
+
+The purchase tick bounds its QBO Attachable snapshot to its own watermark. Three rules
+keep that from losing a receipt (the Pass-1 P0 of this unit was exactly that loss):
+
+1. **The late-attach pass runs on EVERY incremental tick, including one with no
+   changed purchases** (`_link_late_attachables`, before the empty-tick return). The
+   watermark commits on empty ticks too, so a receipt matched during a quiet window
+   is linked by the tick that first sees it, never by a later one that cannot.
+2. **A purchase that is NEW locally but OLD in QBO gets the authoritative full list**
+   (`authoritative=True` → `QboAttachableService._ensure_full_list`): its transaction
+   is more than `OLD_PURCHASE_HORIZON_DAYS` (7) before the watermark — deferred, skipped,
+   or pulled late — so its receipts may predate the bound. Ordinary card spend clears in
+   1–3 days and never crosses this. `qbo.attachable.full_list_loaded reason=authoritative_lookup`
+   in the log marks each such run.
+3. **A full or historical pull (no watermark) always takes the full list.**
+
+Residual: a receipt seen by the late pass while its purchase had no local row (the
+purchase was deferred/skipped at the time and is later projected as "fresh" by txn_date)
+is not re-found. Booked in TODO.md with the durable-record idea.
 
 ## Known hazards this does NOT fix (booked in TODO.md, 2026-10-03 review)
 

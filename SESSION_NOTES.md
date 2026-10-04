@@ -56,6 +56,26 @@ corrected in the same commit.
   chained-token spec now exercises an edit typed while the auto-save PUT is in flight, which is the only
   way a second PUT happens now.
 
+**Pass 1 fix round (2026-10-04, `/em` conducted in-session; Codex pin unreachable in the cloud container so
+the reviewer leg was the Claude-only F2 rung — an independent subagent given only the diff file + rubric;
+flagged at Gate 2 as the self-review gap the registry names).** API, CHANGES-REQUESTED → fixed:
+- **P0** — the bounded snapshot + the pre-existing empty-tick early return advanced the watermark past a
+  receipt matched during a quiet window, and the main loop's bounded lookup regressed edit-to-recover. Fix:
+  late pass runs on every incremental tick before the early return; a purchase new locally but old in QBO
+  (`txn_date` > 7 days before the watermark) takes the authoritative full list. Residual booked.
+- **P1** — the fan-out handler raised a plain `RuntimeError`, which `_process` dead-letters on attempt 1.
+  Now a retryable `MsServerError`.
+- **P2** — a Customer/Employee payee (QBO `Purchase.EntityRef` need not be a Vendor) 404'd on `vendor/{id}`
+  and HELD the watermark 2h per reimbursement. Now 404 → `ValueError` → permanent skip, as before.
+Web, CHANGES-REQUESTED → fixed: **P1** the next-draft guard (`advancingRef`) never reset on the UNKEYED View
+route, so the queue flow worked exactly once — reset on `publicId` change AND the View route is now keyed
+(`ExpenseViewRoute`, mirroring U-465), pinned in `routes.test.tsx`; **P2** `saveAll`'s post-flush header PUT
+was built from the click-time closure, silently dropping a keystroke typed while the flush PUT was in flight
+(a regression — the old cancelled timer re-fired with the latest form) — now `formRef`; **P3** any failure
+re-dirtied the header (redundant PUT) — now header-PUT failure only; Edit's breadcrumb/Delete use
+`expenseListPath`. Every fix carries a regression spec proved red on the pre-fix source. Security pass (4c)
+on the API diff: no high-confidence findings.
+
 **Tests:** `tests/test_expense_pull_latency.py` (API, pure-logic: client WHERE clause, snapshot bound,
 late-attach pass, enqueue-not-inline, handler done/raise cases, bounded drain, lock_busy streak,
 vendor on-demand + HOLD). Web: `ExpenseView.test.tsx` (+7), `ExpenseEdit.test.tsx` (+2, 9 rewritten),

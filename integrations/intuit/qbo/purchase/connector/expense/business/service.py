@@ -18,6 +18,7 @@ from integrations.intuit.qbo.base.identity_consistency import verify_identity_db
 from integrations.intuit.qbo.base.field_ownership import preserve_human_edited_ref, qbo_ref_or_placeholder
 from integrations.intuit.qbo.base.identity_fastpath import run_identity_fastpath_dbo_only
 from integrations.intuit.qbo.base.ids import coerce_id
+from integrations.intuit.qbo.base.errors import QboNotFoundError
 from integrations.intuit.qbo.base.reconciliation_recorder import record_mapping_issue
 from integrations.intuit.qbo.base.cost_code_resolver import resolve_qbo_item_ref
 from integrations.intuit.qbo.reconciliation.persistence.repo import ReconciliationIssueRepository
@@ -431,9 +432,22 @@ class PurchaseExpenseConnector:
         return None
 
     def _resolve_vendor_on_demand(self, qbo_entity_ref_value: str, realm_id: Optional[str]) -> Optional[str]:
-        """Pull + project one QBO Vendor, then re-run the dbo lookup. None if still unbound."""
+        """Pull + project one QBO Vendor, then re-run the dbo lookup. None if still unbound.
+
+        A QBO 404 on `vendor/{id}` means the Purchase's EntityRef is NOT a
+        Vendor (QBO lets a Purchase pay a Customer or an Employee — a cash
+        reimbursement). That is permanent data, not a transient miss: raise the
+        plain ValueError the outcome classifier treats as a SKIP, exactly as
+        before this path existed. Holding the watermark for 2h on every
+        reimbursement would have put the whole pull persistently behind.
+        """
         try:
             resolved = self._vendor_on_demand_resolver(qbo_entity_ref_value, realm_id)
+        except QboNotFoundError as not_found:
+            raise ValueError(
+                f"QBO EntityRef {qbo_entity_ref_value} is not a Vendor (vendor/{qbo_entity_ref_value} -> 404); "
+                f"skipping purchase (Customer/Employee payee)"
+            ) from not_found
         except Exception as resolve_e:
             logger.warning(
                 f"On-demand vendor resolve failed for QBO vendor {qbo_entity_ref_value} "

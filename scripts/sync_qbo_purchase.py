@@ -3,7 +3,7 @@ import argparse
 import logging
 import os
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import List, Optional
 
 # Add project root to path
@@ -113,24 +113,39 @@ def _dry_run_preview(
     }
 
 
-# A purchase first projected this tick whose transaction is older than this
-# is treated as "old in QBO": deferred earlier, skipped, or pulled late. Its
-# receipts may predate the attachable snapshot bound, so it gets the
-# authoritative full list. Card spend normally clears within 1-3 days of the
-# transaction date, so the ordinary path never crosses this.
-OLD_PURCHASE_HORIZON_DAYS = 7
+# A purchase first projected this tick (no local Expense yet — deferred earlier,
+# skipped, or pulled late) may carry receipts older than the snapshot bound. A
+# receipt cannot predate the purchase it is attached to, and a purchase is not
+# entered in QBO before its transaction date (Ramp posts after clearing), so a
+# window starting `CREATE_WINDOW_MARGIN_DAYS` before the transaction date holds
+# every receipt it can have — exact, and a few days of attachables instead of
+# the ~19K-row realm. Beyond the cap (or with no date) the full list is used.
+CREATE_WINDOW_MARGIN_DAYS = 3
+CREATE_WINDOW_CAP_DAYS = 60
 
 
-def _is_old_in_qbo(purchase, last_sync_time: Optional[str]) -> bool:
-    """True when `purchase.txn_date` is more than the horizon before the watermark."""
-    if not last_sync_time or not getattr(purchase, "txn_date", None):
-        return True  # unknown age — take the safe (authoritative) side
+def _attachable_window_for_create(purchase, last_sync_time: Optional[str]) -> tuple:
+    """
+    (authoritative, window_since) for a purchase that is NEW locally.
+
+    Returns (False, None) on a full pull (the snapshot is already the full
+    list); (True, None) when the age is unknown or past the cap; otherwise
+    (False, "<ISO date>") — the create-window bound.
+    """
+    if not last_sync_time:
+        return (False, None)
+    txn_raw = getattr(purchase, "txn_date", None)
+    if not txn_raw:
+        return (True, None)
     try:
-        txn = datetime.fromisoformat(str(purchase.txn_date)[:10]).date()
+        txn = datetime.fromisoformat(str(txn_raw)[:10]).date()
         watermark = datetime.fromisoformat(str(last_sync_time).replace("Z", "+00:00")).date()
     except ValueError:
-        return True
-    return (watermark - txn).days > OLD_PURCHASE_HORIZON_DAYS
+        return (True, None)
+    if (watermark - txn).days > CREATE_WINDOW_CAP_DAYS:
+        return (True, None)
+    since = txn - timedelta(days=CREATE_WINDOW_MARGIN_DAYS)
+    return (False, f"{since.isoformat()}T00:00:00+00:00")
 
 
 def _link_late_attachables(
@@ -174,8 +189,9 @@ def _link_attachables_for_unchanged_purchases(
     main loop. Runs on EVERY incremental tick, including one with no changed
     purchases. Returns the number of ExpenseLineItemAttachment links created.
     Purchases with no local Expense (never projected, or skipped) are left
-    alone — their own projection, when it comes, asks for the authoritative
-    list (`_is_old_in_qbo`).
+    alone — their own projection, when it comes, looks back to their own
+    transaction date (`_attachable_window_for_create`), which covers any
+    receipt matched in the meantime.
     """
     touched = attachable_service.entity_ids_in_snapshot(realm_id, "Purchase")
     pending = sorted(touched - set(changed_qbo_ids))
@@ -296,12 +312,15 @@ def sync_qbo_to_local(
     for i, purchase in enumerate(purchases):
         try:
             # Known BEFORE projection: a purchase with no local Expense yet is a
-            # CREATE. If it is also old in QBO (a transaction dated well before
-            # the window — deferred, skipped, or pulled late), its receipts may
-            # predate the snapshot bound; that one case gets the full list.
+            # CREATE (deferred earlier, skipped, or pulled late). Its receipts may
+            # predate the snapshot bound, so its attachable lookup uses the
+            # create window — see `_attachable_window_for_create`.
             was_local = (
                 expense_service.read_by_qbo_identity(purchase.qbo_id, realm_id) is not None
                 if (last_sync_time and purchase.qbo_id) else True
+            )
+            authoritative, window_since = (
+                _attachable_window_for_create(purchase, last_sync_time) if not was_local else (False, None)
             )
             # Get purchase lines, re-reading to ride out the cross-process pull-race (an empty
             # read colliding with a non-zero header). If the lines never arrive, DEFER the row:
@@ -340,7 +359,8 @@ def sync_qbo_to_local(
                         realm_id=realm_id,
                         purchase_qbo_id=purchase.qbo_id,
                         sync_to_modules=True,
-                        authoritative=(not was_local) and _is_old_in_qbo(purchase, last_sync_time),
+                        authoritative=authoritative,
+                        window_since=window_since,
                     )
                     if qbo_attachables:
                         linked = sync_purchase_attachments_to_expense_line_items(

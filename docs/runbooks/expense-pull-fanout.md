@@ -85,17 +85,21 @@ keep that from losing a receipt (the Pass-1 P0 of this unit was exactly that los
    changed purchases** (`_link_late_attachables`, before the empty-tick return). The
    watermark commits on empty ticks too, so a receipt matched during a quiet window
    is linked by the tick that first sees it, never by a later one that cannot.
-2. **A purchase that is NEW locally but OLD in QBO gets the authoritative full list**
-   (`authoritative=True` → `QboAttachableService._ensure_full_list`): its transaction
-   is more than `OLD_PURCHASE_HORIZON_DAYS` (7) before the watermark — deferred, skipped,
-   or pulled late — so its receipts may predate the bound. Ordinary card spend clears in
-   1–3 days and never crosses this. `qbo.attachable.full_list_loaded reason=authoritative_lookup`
-   in the log marks each such run.
+2. **A purchase that is NEW locally looks back to its own transaction date.** A receipt
+   cannot predate the purchase it is attached to, and a purchase is not entered in QBO
+   before its transaction date, so a window starting `CREATE_WINDOW_MARGIN_DAYS` (3) before
+   `txn_date` holds every receipt it can have (`window_since=` → the per-run create-window
+   cache, `qbo.attachable.create_window_loaded since=…`). This is exact whether the purchase
+   was deferred yesterday or skipped a month ago — the first fix round's "older than 7
+   days → full list" heuristic missed a purchase deferred and then recoded within the week.
+   Past `CREATE_WINDOW_CAP_DAYS` (60), or with no transaction date, the authoritative full
+   list is used (`qbo.attachable.full_list_loaded reason=authoritative_lookup`).
 3. **A full or historical pull (no watermark) always takes the full list.**
 
-Residual: a receipt seen by the late pass while its purchase had no local row (the
-purchase was deferred/skipped at the time and is later projected as "fresh" by txn_date)
-is not re-found. Booked in TODO.md with the durable-record idea.
+Residual: a receipt a late pass SAW while its purchase had no local row is not staged
+anywhere; it is simply re-found by rule 2 when the purchase lands. The remaining gap is a
+purchase whose QBO record predates its own `txn_date` by more than the margin (a
+post-dated manual entry whose receipt was attached before the transaction date) — booked.
 
 ## Known hazards this does NOT fix (booked in TODO.md, 2026-10-03 review)
 

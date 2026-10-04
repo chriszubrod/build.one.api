@@ -121,6 +121,10 @@ class PurchaseExpenseConnector:
         # instead of being dropped. Injectable for tests; defaults to the real
         # QBO-backed resolver.
         self._vendor_on_demand_resolver = vendor_on_demand_resolver or resolve_vendor_on_demand
+        # Per-run: QBO EntityRefs that 404'd on `vendor/{id}` (Customer/Employee
+        # payees). Checked before the resolver so a second purchase paying the
+        # same non-vendor in one tick does not re-issue the GET.
+        self._vendor_not_found: set = set()
         # Single line connector shared across all purchases so _sub_cost_code_cache and
         # _project_cache persist for the entire sync run, not just per-purchase.
         from integrations.intuit.qbo.purchase.connector.expense_line_item.business.service import PurchaseLineExpenseLineItemConnector
@@ -441,9 +445,16 @@ class PurchaseExpenseConnector:
         before this path existed. Holding the watermark for 2h on every
         reimbursement would have put the whole pull persistently behind.
         """
+        cache_key = (realm_id, qbo_entity_ref_value)
+        if cache_key in self._vendor_not_found:
+            raise ValueError(
+                f"QBO EntityRef {qbo_entity_ref_value} is not a Vendor (404 earlier this run); "
+                f"skipping purchase (Customer/Employee payee)"
+            )
         try:
             resolved = self._vendor_on_demand_resolver(qbo_entity_ref_value, realm_id)
         except QboNotFoundError as not_found:
+            self._vendor_not_found.add(cache_key)
             raise ValueError(
                 f"QBO EntityRef {qbo_entity_ref_value} is not a Vendor (vendor/{qbo_entity_ref_value} -> 404); "
                 f"skipping purchase (Customer/Employee payee)"

@@ -277,23 +277,30 @@ def test_late_attach_pass_runs_on_an_empty_tick():
     )
 
 
-def test_new_local_purchase_that_is_old_in_qbo_gets_the_authoritative_list():
-    """A purchase first projected this tick whose transaction is well before the
-    window may carry receipts older than the snapshot bound: it asks for the
-    full list. A fresh one (txn_date inside the window) stays bounded."""
-    from scripts.sync_qbo_purchase import _is_old_in_qbo, OLD_PURCHASE_HORIZON_DAYS
+def test_new_local_purchase_looks_back_to_its_own_transaction_date():
+    """Round-2 fix for the Pass-1 P0/P1: a purchase NEW locally (deferred, skipped,
+    pulled late) may carry receipts older than the snapshot bound. A receipt cannot
+    predate the purchase it is attached to, so the lookup window starts at the
+    purchase's transaction date minus a margin — exact, regardless of how recently
+    it was deferred (the earlier 7-day heuristic left a deferred-then-recoded
+    purchase with a permanently unlinked receipt). Past the cap, or with no date,
+    the full list is used."""
+    from scripts.sync_qbo_purchase import (
+        CREATE_WINDOW_CAP_DAYS, CREATE_WINDOW_MARGIN_DAYS, _attachable_window_for_create,
+    )
 
     wm = "2026-10-03T11:59:00+00:00"
-    assert _is_old_in_qbo(SimpleNamespace(txn_date="2026-10-02"), wm) is False
-    assert _is_old_in_qbo(SimpleNamespace(txn_date="2026-09-01"), wm) is True
-    assert _is_old_in_qbo(SimpleNamespace(txn_date=None), wm) is True          # unknown age -> safe side
-    assert _is_old_in_qbo(SimpleNamespace(txn_date="2026-10-02"), None) is True  # no watermark -> full pull anyway
-    assert OLD_PURCHASE_HORIZON_DAYS >= 3  # card spend clears in 1-3 days; must not cross on the ordinary path
+    assert CREATE_WINDOW_MARGIN_DAYS >= 1
+    assert _attachable_window_for_create(SimpleNamespace(txn_date="2026-10-01"), wm) == (False, "2026-09-28T00:00:00+00:00")
+    assert _attachable_window_for_create(SimpleNamespace(txn_date="2026-09-20"), wm) == (False, "2026-09-17T00:00:00+00:00")
+    assert _attachable_window_for_create(SimpleNamespace(txn_date="2026-06-01"), wm) == (True, None)   # past the cap
+    assert _attachable_window_for_create(SimpleNamespace(txn_date=None), wm) == (True, None)           # unknown age
+    assert _attachable_window_for_create(SimpleNamespace(txn_date="2026-10-01"), None) == (False, None)  # full pull
+    assert CREATE_WINDOW_CAP_DAYS >= 30
 
     attachable_service = MagicMock()
     attachable_service.sync_attachables_for_purchase.return_value = []
     attachable_service.entity_ids_in_snapshot.return_value = set()
-    expense_service_calls = []
 
     def _run(*, local_exists: bool, txn_date: str):
         from scripts.sync_qbo_purchase import sync_qbo_to_local
@@ -316,11 +323,37 @@ def test_new_local_purchase_that_is_old_in_qbo_gets_the_authoritative_list():
             "scripts.sync_qbo_purchase.with_retry", side_effect=lambda fn, *a, **k: fn(*a)
         ), patch("scripts.sync_qbo_purchase.pace_batch"), patch.dict("os.environ", {"ALLOW_BOX_WRITES": "false"}):
             sync_qbo_to_local(realm_id=REALM_ID, last_sync_time=wm, qbo_purchase_service=qps, purchase_connector=connector)
-        return attachable_service.sync_attachables_for_purchase.call_args.kwargs["authoritative"]
+        kw = attachable_service.sync_attachables_for_purchase.call_args.kwargs
+        return (kw["authoritative"], kw["window_since"])
 
-    assert _run(local_exists=True, txn_date="2026-09-01") is False   # update path: bounded
-    assert _run(local_exists=False, txn_date="2026-10-02") is False  # fresh create: bounded
-    assert _run(local_exists=False, txn_date="2026-09-01") is True   # old create: full list
+    assert _run(local_exists=True, txn_date="2026-09-01") == (False, None)                       # update: bounded snapshot
+    # The Pass-1 reviewer's exact scenario: deferred at T1 (txn Oct 1), receipt matched Oct 2,
+    # recoded Oct 3 and first projected now — the window reaches back past the receipt.
+    assert _run(local_exists=False, txn_date="2026-10-01") == (False, "2026-09-28T00:00:00+00:00")
+    assert _run(local_exists=False, txn_date="2026-06-01") == (True, None)                       # very old create: full list
+
+
+def test_service_create_window_is_a_separate_cache_bounded_by_the_oldest_request():
+    """The create window is loaded once on first use and only widened (reloaded) when
+    a later purchase needs an OLDER bound; the per-tick snapshot stays untouched."""
+    snapshot = [_attachable("new", _ref("Purchase", "77"))]
+    window = [_attachable("old", _ref("Purchase", "77")), _attachable("new", _ref("Purchase", "77"))]
+    service, fake_client = _service_with_fake_client(snapshot, attachables_since="2026-10-03T12:00:00+00:00")
+    fake_client.query_all_attachables.side_effect = (
+        lambda last_updated_time=None: window if str(last_updated_time) < "2026-10-03" else snapshot
+    )
+    with patch(f"{ATTACHABLE_SERVICE_MODULE}.QboAttachableClient", return_value=fake_client):
+        service._sync_to_attachments = MagicMock(side_effect=lambda rows, realm: rows)
+        bounded = service.sync_attachables_for_purchase(REALM_ID, "77")
+        w1 = service.sync_attachables_for_purchase(REALM_ID, "77", window_since="2026-09-28T00:00:00+00:00")
+        w2 = service.sync_attachables_for_purchase(REALM_ID, "77", window_since="2026-09-30T00:00:00+00:00")  # newer: reuse
+        w3 = service.sync_attachables_for_purchase(REALM_ID, "77", window_since="2026-09-20T00:00:00+00:00")  # older: widen
+    assert [a.qbo_id for a in bounded] == ["new"]
+    assert sorted(a.qbo_id for a in w1) == ["new", "old"]
+    assert sorted(a.qbo_id for a in w2) == ["new", "old"]
+    assert sorted(a.qbo_id for a in w3) == ["new", "old"]
+    calls = [c.kwargs.get("last_updated_time") for c in fake_client.query_all_attachables.call_args_list]
+    assert calls == ["2026-10-03T12:00:00+00:00", "2026-09-28T00:00:00+00:00", "2026-09-20T00:00:00+00:00"]
 
 
 def test_service_authoritative_lookup_loads_the_full_list_once_and_keeps_the_snapshot_separate():
@@ -599,7 +632,6 @@ def test_vendor_miss_resolves_on_demand_then_binds():
 
 
 @pytest.mark.usefixtures("grant_qbo_app_lock")
-@pytest.mark.usefixtures("grant_qbo_app_lock")
 def test_vendor_lookup_404_is_a_permanent_skip_not_a_hold():
     """P2 from Pass 1: a Purchase can pay a Customer or an Employee. `vendor/{id}`
     404s for those — permanent data, so the tick must SKIP (ValueError) as it did
@@ -614,6 +646,10 @@ def test_vendor_lookup_404_is_a_permanent_skip_not_a_hold():
     outcome.record_projection_error("77", excinfo.value, label="QboPurchase->Expense", logger=logging.getLogger("t"))
     assert not outcome.should_hold
     assert outcome.skipped_ids == ["77"]
+    # A second purchase paying the same non-vendor in the run does not re-issue the GET.
+    with pytest.raises(ValueError, match="not a Vendor"):
+        connector.sync_from_qbo_purchase(_purchase(), [])
+    assert connector._vendor_on_demand_resolver.call_count == 1
 
 
 @pytest.mark.usefixtures("grant_qbo_app_lock")

@@ -56,11 +56,10 @@ same date. Everything below was confirmed against source and is open. Severity i
   enqueues instead) — delete once the completion path is on the same kind; web list search is not
   debounced; ExpenseEdit has no line math from `shared/money.ts`; Attach/remove controls show with
   Expenses perms while the routes gate on `Modules.ATTACHMENTS`.
-- [ ] 🟠 **P2 — receipt seen while its purchase had no local row is not re-found later.** The late-attach pass
-  links only purchases with a local Expense; a purchase deferred/skipped at that tick and later projected as
-  "fresh" by `txn_date` (inside `OLD_PURCHASE_HORIZON_DAYS`) takes the bounded list and misses that receipt.
-  Durable fix: record unlinked (purchase_qbo_id, attachable_qbo_id) pairs seen by the late pass (a small table
-  or a ReconciliationIssue) and drain them when the purchase lands. Found by Pass 1 of the 2026-10-04 fix round.
+- [ ] 🟡 **P3 — create-window edge: a QBO purchase whose record predates its own `txn_date` by more than
+  `CREATE_WINDOW_MARGIN_DAYS` (3)** (a post-dated manual entry with a receipt attached before the transaction
+  date) would miss that receipt on first projection. Exact fix: stage QBO `MetaData.CreateTime` on
+  `qbo.Purchase` and bound the create window by it (schema change). Found by the 2026-10-04 fix round.
 - [ ] 🟡 **P3 — late-linked receipts get no MS/Box fan-out** (the fan-out enqueue iterates only changed
   purchases). Either document as intended in the runbook or enqueue `expense_pull_fanout` for those expenses.
 - [ ] 🟡 **P3 — `_QBO_SYNC_LOCK_BUSY_STREAK` is per-process**; under `-w 2` `consecutive_skips` undercounts.

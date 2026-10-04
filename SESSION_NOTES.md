@@ -61,8 +61,11 @@ the reviewer leg was the Claude-only F2 rung — an independent subagent given o
 flagged at Gate 2 as the self-review gap the registry names).** API, CHANGES-REQUESTED → fixed:
 - **P0** — the bounded snapshot + the pre-existing empty-tick early return advanced the watermark past a
   receipt matched during a quiet window, and the main loop's bounded lookup regressed edit-to-recover. Fix:
-  late pass runs on every incremental tick before the early return; a purchase new locally but old in QBO
-  (`txn_date` > 7 days before the watermark) takes the authoritative full list. Residual booked.
+  late pass runs on every incremental tick before the early return; a purchase new locally looks back to its
+  own transaction date. **Round 2:** round 1 used a "older than 7 days → full list" heuristic; the scoped
+  re-review traced a deferred-then-recoded purchase (within the week) to a permanently unlinked receipt.
+  Replaced with the exact create window (`txn_date − 3 days`, capped at 60 days → full list) — a receipt
+  cannot predate its purchase. Vendor 404s are also cached per run now.
 - **P1** — the fan-out handler raised a plain `RuntimeError`, which `_process` dead-letters on attempt 1.
   Now a retryable `MsServerError`.
 - **P2** — a Customer/Employee payee (QBO `Purchase.EntityRef` need not be a Vendor) 404'd on `vendor/{id}`

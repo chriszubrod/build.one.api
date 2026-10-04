@@ -49,6 +49,14 @@ class QboAttachableService:
         # whose receipts predate the bound. Separate from the bounded cache so
         # the common path never pays for it.
         self._full_attachables_cache = None
+        # Second bounded cache for purchases that are NEW locally: bounded at the
+        # oldest such purchase's transaction date (minus a margin) rather than at
+        # the pull watermark — a receipt cannot predate the purchase it is attached
+        # to, so this window holds every receipt such a purchase can carry, however
+        # long ago it was deferred or skipped. Loaded once per run on first use;
+        # reloaded only if a later request needs an OLDER bound.
+        self._create_window_since: Optional[str] = None
+        self._create_window_cache = None
 
     def sync_from_qbo(
         self,
@@ -96,7 +104,8 @@ class QboAttachableService:
         return synced
 
     def _query_attachables_with_fallback(
-        self, client, entity_type: str, entity_id: str, *, authoritative: bool = False,
+        self, client, entity_type: str, entity_id: str, *,
+        authoritative: bool = False, window_since: Optional[str] = None,
     ) -> list:
         """
         Fetch the attachables linked to one QBO entity — authoritatively.
@@ -126,11 +135,14 @@ class QboAttachableService:
         (the parent was deferred, skipped, or is being pulled late) — the caller
         passes `authoritative=True` for such a parent and gets the full list.
         """
-        rows = (
-            self._ensure_full_list(client)
-            if authoritative and self.attachables_since
-            else self._ensure_snapshot(client)
-        )
+        if not self.attachables_since:
+            rows = self._ensure_snapshot(client)          # full pull: the snapshot IS the full list
+        elif authoritative:
+            rows = self._ensure_full_list(client)
+        elif window_since:
+            rows = self._ensure_create_window(client, window_since)
+        else:
+            rows = self._ensure_snapshot(client)
         target_type = (entity_type or "").upper()
         filtered = [
             a for a in rows
@@ -157,6 +169,17 @@ class QboAttachableService:
                 len(self._all_attachables_cache),
             )
         return self._all_attachables_cache
+
+    def _ensure_create_window(self, client, window_since: str) -> list:
+        """Load (or widen) the create-window list: attachables updated after `window_since`."""
+        if self._create_window_cache is None or str(window_since) < str(self._create_window_since):
+            self._create_window_since = str(window_since)
+            self._create_window_cache = client.query_all_attachables(last_updated_time=window_since)
+            logger.info(
+                "qbo.attachable.create_window_loaded since=%s rows=%d",
+                window_since, len(self._create_window_cache),
+            )
+        return self._create_window_cache
 
     def _ensure_full_list(self, client) -> list:
         """Load the authoritative full-realm list once per run (see `authoritative`)."""
@@ -288,6 +311,7 @@ class QboAttachableService:
         sync_to_modules: bool = True,
         *,
         authoritative: bool = False,
+        window_since: Optional[str] = None,
     ) -> List[QboAttachable]:
         """
         Sync attachables linked to a specific Purchase from QBO.
@@ -296,9 +320,11 @@ class QboAttachableService:
             realm_id: QBO realm ID
             purchase_qbo_id: QBO Purchase ID
             sync_to_modules: If True, also sync to Attachment module
-            authoritative: use the full-realm list even on an incremental run —
-                for a purchase that is new locally but old in QBO, whose receipts
-                may predate the snapshot bound (see `_query_attachables_with_fallback`).
+            authoritative: use the full-realm list even on an incremental run
+                (a purchase whose age is unknown or beyond the create-window cap).
+            window_since: for a purchase NEW locally, the ISO date/time its
+                receipts cannot predate (its transaction date minus a margin);
+                selects the per-run create-window list instead of the snapshot.
 
         Returns:
             List of synced QboAttachable records
@@ -309,7 +335,8 @@ class QboAttachableService:
 
         with QboAttachableClient(realm_id=realm_id) as client:
             qbo_attachables = self._query_attachables_with_fallback(
-                client, "Purchase", purchase_qbo_id, authoritative=authoritative,
+                client, "Purchase", purchase_qbo_id,
+                authoritative=authoritative, window_since=window_since,
             )
 
         logger.info(f"Fetched {len(qbo_attachables)} attachables for Purchase {purchase_qbo_id}")

@@ -145,6 +145,11 @@ def _attachable_window_for_create(purchase, last_sync_time: Optional[str]) -> tu
     if (watermark - txn).days > CREATE_WINDOW_CAP_DAYS:
         return (True, None)
     since = txn - timedelta(days=CREATE_WINDOW_MARGIN_DAYS)
+    if since >= watermark:
+        # Future-dated (a post-dated manual entry): txn − margin would be NEWER
+        # than the snapshot bound and could exclude a receipt attached on
+        # entry. The per-tick snapshot already reaches further back — use it.
+        return (False, None)
     return (False, f"{since.isoformat()}T00:00:00+00:00")
 
 

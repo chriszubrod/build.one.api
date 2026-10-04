@@ -65,7 +65,10 @@ flagged at Gate 2 as the self-review gap the registry names).** API, CHANGES-REQ
   own transaction date. **Round 2:** round 1 used a "older than 7 days → full list" heuristic; the scoped
   re-review traced a deferred-then-recoded purchase (within the week) to a permanently unlinked receipt.
   Replaced with the exact create window (`txn_date − 3 days`, capped at 60 days → full list) — a receipt
-  cannot predate its purchase. Vendor 404s are also cached per run now.
+  cannot predate its purchase. Vendor 404s are also cached per run now. The round-2 re-review caught one
+  P2 the window itself introduced — a future-dated purchase got a window NEWER than the snapshot — clamped to
+  the snapshot (one line + assertion; the 2-round cap was reached, so that clamp carries its test and a
+  reading, no further reviewer leg).
 - **P1** — the fan-out handler raised a plain `RuntimeError`, which `_process` dead-letters on attempt 1.
   Now a retryable `MsServerError`.
 - **P2** — a Customer/Employee payee (QBO `Purchase.EntityRef` need not be a Vendor) 404'd on `vendor/{id}`

@@ -56,10 +56,12 @@ same date. Everything below was confirmed against source and is open. Severity i
   enqueues instead) — delete once the completion path is on the same kind; web list search is not
   debounced; ExpenseEdit has no line math from `shared/money.ts`; Attach/remove controls show with
   Expenses perms while the routes gate on `Modules.ATTACHMENTS`.
-- [ ] 🟡 **P3 — create-window edge: a QBO purchase whose record predates its own `txn_date` by more than
-  `CREATE_WINDOW_MARGIN_DAYS` (3)** (a post-dated manual entry with a receipt attached before the transaction
-  date) would miss that receipt on first projection. Exact fix: stage QBO `MetaData.CreateTime` on
-  `qbo.Purchase` and bound the create window by it (schema change). Found by the 2026-10-04 fix round.
+- [ ] 🟡 **P3 — the create window keys on the mutable `TxnDate`, not purchase `CreateTime`.** Loss path is a
+  compound of rare events: purchase deferred (no local row), receipt attached, then the user moves the
+  transaction date FORWARD by more than `CREATE_WINDOW_MARGIN_DAYS` (3) before it is first projected — the
+  window (`newTxn − 3d`) starts after the receipt. Exact fix: stage QBO `MetaData.CreateTime` on
+  `qbo.Purchase` and bound by `min(create_time, txn_date) − margin` (schema change). The future-dated case
+  (window newer than the snapshot) is already clamped to the snapshot. Found by the 2026-10-04 fix rounds.
 - [ ] 🟡 **P3 — late-linked receipts get no MS/Box fan-out** (the fan-out enqueue iterates only changed
   purchases). Either document as intended in the runbook or enqueue `expense_pull_fanout` for those expenses.
 - [ ] 🟡 **P3 — `_QBO_SYNC_LOCK_BUSY_STREAK` is per-process**; under `-w 2` `consecutive_skips` undercounts.

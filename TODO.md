@@ -56,8 +56,15 @@ same date. Everything below was confirmed against source and is open. Severity i
   enqueues instead) — delete once the completion path is on the same kind; web list search is not
   debounced; ExpenseEdit has no line math from `shared/money.ts`; Attach/remove controls show with
   Expenses perms while the routes gate on `Modules.ATTACHMENTS`.
-- [ ] 🟢 **Scheduler** — shorten the `sync_qbo_purchase` timer from 15 to 5 min in `build.one.scheduler`
-  once this unit is deployed and one day of `qbo.sync.skipped_lock_busy` shows no skips.
+- [ ] 🟢 **Scheduler — shorten the `sync_qbo_purchase` timer from 15 to 5 min** in `build.one.scheduler`
+  (`function_app.py`, the `:07/:22/:37/:52` NCRONTAB). Precondition: this unit deployed to the API, then one
+  day of `qbo.sync.skipped_lock_busy` showing no skips (`consecutive_skips` never climbs). Budget: +8 query
+  calls/h, trivial against the 500K/mo cap. If skips appear after the change, the tick is still overlong —
+  revert to 15 and look at `qbo_to_local` timings before trying again.
+- [ ] 🟢 **Board — book a `U-###` row in `build.one.team/BOARD.md` for this unit.** The two commits shipped
+  without a `Unit:` trailer because the team repo was not attached to the session that made them:
+  `build.one.api` `b6b69fc` and `build.one.web` `67f8f06`, both on `claude/expense-entity-review-sx4baz`.
+  Record both shas on the row so they trace back; no amend/rewrite of the pushed commits.
 
 ## ~~U-549 C1 — `update_draft` guard sproc never applied~~ — RESOLVED 2026-09-29
 

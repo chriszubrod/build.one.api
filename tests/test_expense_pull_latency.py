@@ -296,6 +296,10 @@ def test_new_local_purchase_looks_back_to_its_own_transaction_date():
     assert _attachable_window_for_create(SimpleNamespace(txn_date="2026-06-01"), wm) == (True, None)   # past the cap
     assert _attachable_window_for_create(SimpleNamespace(txn_date=None), wm) == (True, None)           # unknown age
     assert _attachable_window_for_create(SimpleNamespace(txn_date="2026-10-01"), None) == (False, None)  # full pull
+    # Future-dated: txn − margin would be NEWER than the snapshot bound and could miss a
+    # receipt attached on entry; the snapshot (bounded at the watermark) is the wider window.
+    assert _attachable_window_for_create(SimpleNamespace(txn_date="2026-10-10"), wm) == (False, None)
+    assert _attachable_window_for_create(SimpleNamespace(txn_date="2026-10-05"), wm) == (False, "2026-10-02T00:00:00+00:00")
     assert CREATE_WINDOW_CAP_DAYS >= 30
 
     attachable_service = MagicMock()

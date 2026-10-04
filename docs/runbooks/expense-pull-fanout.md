@@ -96,10 +96,10 @@ keep that from losing a receipt (the Pass-1 P0 of this unit was exactly that los
    list is used (`qbo.attachable.full_list_loaded reason=authoritative_lookup`).
 3. **A full or historical pull (no watermark) always takes the full list.**
 
-Residual: a receipt a late pass SAW while its purchase had no local row is not staged
-anywhere; it is simply re-found by rule 2 when the purchase lands. The remaining gap is a
-purchase whose QBO record predates its own `txn_date` by more than the margin (a
-post-dated manual entry whose receipt was attached before the transaction date) — booked.
+A future-dated purchase (window newer than the watermark) falls back to the per-tick
+snapshot, which reaches further back. Residual: the window keys on the editable
+`TxnDate`; a purchase deferred, then given a receipt, then re-dated forward by more than
+the margin before it first lands would miss that receipt — booked (stage `CreateTime`).
 
 ## Known hazards this does NOT fix (booked in TODO.md, 2026-10-03 review)
 

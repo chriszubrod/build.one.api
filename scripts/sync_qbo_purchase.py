@@ -113,6 +113,52 @@ def _dry_run_preview(
     }
 
 
+# A purchase first projected this tick whose transaction is older than this
+# is treated as "old in QBO": deferred earlier, skipped, or pulled late. Its
+# receipts may predate the attachable snapshot bound, so it gets the
+# authoritative full list. Card spend normally clears within 1-3 days of the
+# transaction date, so the ordinary path never crosses this.
+OLD_PURCHASE_HORIZON_DAYS = 7
+
+
+def _is_old_in_qbo(purchase, last_sync_time: Optional[str]) -> bool:
+    """True when `purchase.txn_date` is more than the horizon before the watermark."""
+    if not last_sync_time or not getattr(purchase, "txn_date", None):
+        return True  # unknown age — take the safe (authoritative) side
+    try:
+        txn = datetime.fromisoformat(str(purchase.txn_date)[:10]).date()
+        watermark = datetime.fromisoformat(str(last_sync_time).replace("Z", "+00:00")).date()
+    except ValueError:
+        return True
+    return (watermark - txn).days > OLD_PURCHASE_HORIZON_DAYS
+
+
+def _link_late_attachables(
+    *,
+    realm_id: str,
+    attachable_service: QboAttachableService,
+    expense_service: ExpenseService,
+    changed_qbo_ids: set,
+) -> int:
+    """
+    Failure-isolated wrapper: a problem linking late receipts must never fail
+    the tick (the watermark still commits — continuity is per attachable, and
+    the next tick's bound starts from this one's query start, not from here).
+    """
+    try:
+        return _link_attachables_for_unchanged_purchases(
+            realm_id=realm_id,
+            attachable_service=attachable_service,
+            expense_service=expense_service,
+            changed_qbo_ids=changed_qbo_ids,
+        )
+    except (QboBudgetExceededError, QboWriteRefusedError):
+        raise
+    except Exception as orphan_e:
+        logger.warning(f"Could not link late-attached receipts: {orphan_e}")
+        return 0
+
+
 def _link_attachables_for_unchanged_purchases(
     *,
     realm_id: str,
@@ -123,9 +169,13 @@ def _link_attachables_for_unchanged_purchases(
     """
     Sync + link attachables whose parent Purchase did NOT change this tick.
 
-    Returns the number of ExpenseLineItemAttachment links created. Purchases
-    with no local Expense (never projected, or skipped) are left alone — the
-    purchase's own pull is the path that creates them.
+    QBO does not bump a Purchase's LastUpdatedTime when a receipt is attached,
+    so a Ramp receipt matched after the purchase's own pull never re-enters the
+    main loop. Runs on EVERY incremental tick, including one with no changed
+    purchases. Returns the number of ExpenseLineItemAttachment links created.
+    Purchases with no local Expense (never projected, or skipped) are left
+    alone — their own projection, when it comes, asks for the authoritative
+    list (`_is_old_in_qbo`).
     """
     touched = attachable_service.entity_ids_in_snapshot(realm_id, "Purchase")
     pending = sorted(touched - set(changed_qbo_ids))
@@ -192,14 +242,32 @@ def sync_qbo_to_local(
         reconcile_deletes=True,  # Removes local records for purchases deleted in QBO (full syncs only)
     )
     purchases = outcome.synced
-    
+
+    # Created BEFORE the empty-tick early return below: the late-attach pass
+    # must run on EVERY incremental tick. The watermark commits on an empty
+    # tick too, and the next tick bounds its attachable snapshot by it — so a
+    # receipt matched during a quiet window would otherwise never be seen again.
+    attachable_service = QboAttachableService(attachables_since=last_sync_time)
+    from entities.expense.business.service import ExpenseService
+    from entities.expense_line_item.business.service import ExpenseLineItemService
+    expense_service = ExpenseService()
+    expense_line_item_service = ExpenseLineItemService()
+    late_linked = 0
+    if last_sync_time:
+        late_linked = _link_late_attachables(
+            realm_id=realm_id,
+            attachable_service=attachable_service,
+            expense_service=expense_service,
+            changed_qbo_ids={p.qbo_id for p in purchases if p.qbo_id},
+        )
+
     if not purchases:
         logger.info(f"No Purchase updates found since {last_sync_time or 'beginning'}")
         return {
             "purchases_synced": 0,
             "expenses_module_synced": 0,
             "expenses_completed": 0,
-            "attachments_linked": 0,
+            "attachments_linked": late_linked,
             "ms_fanout_enqueued": 0,
             "ms_fanout_refused": 0,
             "box_excel_batches": 0,
@@ -215,24 +283,26 @@ def sync_qbo_to_local(
     logger.info(f"Retrieved {len(purchases)} purchases from QBO")
     
     # Sync purchases to Expense module
-    attachments_linked = 0
+    attachments_linked = late_linked
     ms_fanout_enqueued = 0   # expense_pull_fanout outbox rows written (Excel + SharePoint run at drain)
     ms_fanout_refused = 0    # ALLOW_MS_WRITES gate off / no tenant — nothing enqueued
     box_excel_batches = 0
     synced_expenses = []     # (expense, expense_id) — collected for the per-project fan-out
-    # A1: bound the per-run attachable snapshot to the pull's own watermark. An
-    # incremental tick pages only attachables updated since `last_sync_time`
-    # (overlap included) instead of the full ~19K-row realm list; a full or
-    # historical pull (no watermark) keeps the authoritative full list.
-    attachable_service = QboAttachableService(attachables_since=last_sync_time)
-
-    from entities.expense.business.service import ExpenseService
-    from entities.expense_line_item.business.service import ExpenseLineItemService
-    expense_service = ExpenseService()
-    expense_line_item_service = ExpenseLineItemService()
+    # A1: the per-run attachable snapshot is bounded to the pull's own watermark
+    # (`attachable_service` above). An incremental tick pages only attachables
+    # updated since `last_sync_time` (overlap included) instead of the full
+    # ~19K-row realm list; a full or historical pull keeps the full list.
 
     for i, purchase in enumerate(purchases):
         try:
+            # Known BEFORE projection: a purchase with no local Expense yet is a
+            # CREATE. If it is also old in QBO (a transaction dated well before
+            # the window — deferred, skipped, or pulled late), its receipts may
+            # predate the snapshot bound; that one case gets the full list.
+            was_local = (
+                expense_service.read_by_qbo_identity(purchase.qbo_id, realm_id) is not None
+                if (last_sync_time and purchase.qbo_id) else True
+            )
             # Get purchase lines, re-reading to ride out the cross-process pull-race (an empty
             # read colliding with a non-zero header). If the lines never arrive, DEFER the row:
             # skip it WITHOUT failing so the watermark advances — avoids stalling the sync on a
@@ -270,6 +340,7 @@ def sync_qbo_to_local(
                         realm_id=realm_id,
                         purchase_qbo_id=purchase.qbo_id,
                         sync_to_modules=True,
+                        authoritative=(not was_local) and _is_old_in_qbo(purchase, last_sync_time),
                     )
                     if qbo_attachables:
                         linked = sync_purchase_attachments_to_expense_line_items(
@@ -289,26 +360,6 @@ def sync_qbo_to_local(
 
         # Add delay between batches to keep connection alive
         pace_batch(i, len(purchases), logger, "purchases")
-
-    # --- Receipts attached AFTER the purchase was pulled (A1) ---
-    # QBO does not bump a Purchase's LastUpdatedTime when a receipt is attached,
-    # so a Ramp receipt matched after the purchase's own pull never re-entered
-    # this loop. With the watermark-bounded snapshot the attachables updated
-    # since the last tick are already in hand; link the ones whose parent did
-    # not change this tick. Incremental ticks only — a full pull's snapshot is
-    # the whole realm and this pass would walk every purchase.
-    if last_sync_time:
-        try:
-            attachments_linked += _link_attachables_for_unchanged_purchases(
-                realm_id=realm_id,
-                attachable_service=attachable_service,
-                expense_service=expense_service,
-                changed_qbo_ids={p.qbo_id for p in purchases if p.qbo_id},
-            )
-        except (QboBudgetExceededError, QboWriteRefusedError):
-            raise
-        except Exception as orphan_e:
-            logger.warning(f"Could not link late-attached receipts: {orphan_e}")
 
     # --- MS fan-out (Excel DETAILS rows + SharePoint module-folder upload) ---
     # A2: enqueued, never run inline. Each (expense, project) pair becomes one

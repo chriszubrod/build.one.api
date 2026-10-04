@@ -396,9 +396,9 @@ class MsOutboxWorker:
         QBO purchase tick projected. Re-reads the expense at drain time (the
         payload carries only ids), then calls the same two `ExpenseService`
         methods the tick used to call inline. Both return result dicts rather
-        than raising; a non-empty `errors` list here is turned back into an
-        exception so the row retries and eventually dead-letters with a
-        ReconciliationIssue instead of vanishing into a WARN.
+        than raising; a non-empty `errors` list here is turned back into a
+        retryable `MsServerError` so the row retries with backoff and eventually
+        dead-letters with a ReconciliationIssue instead of vanishing into a WARN.
 
         An unmapped project (no Excel workbook / no module folder) is a
         configuration state, not a failure: it is logged and the row is done,
@@ -482,8 +482,14 @@ class MsOutboxWorker:
             },
         )
         if errors:
-            raise RuntimeError(
-                "expense_pull_fanout: " + "; ".join(str(e.get("error", e)) for e in errors)
+            # Both ExpenseService methods catch internally and report through
+            # `errors`, so a Graph 503 can never surface as an MsGraphError from
+            # here. Raise a RETRYABLE MsGraphError subclass: `_process` routes it
+            # to `_handle_ms_error` (backoff, MAX_ATTEMPTS, then dead-letter). A
+            # plain RuntimeError would dead-letter on attempt 1.
+            raise MsServerError(
+                "expense_pull_fanout: " + "; ".join(str(e.get("error", e)) for e in errors),
+                request_path=f"expense_pull_fanout/{row.entity_public_id}/project/{project_id}",
             )
 
     def _handle_upload_sharepoint_file(

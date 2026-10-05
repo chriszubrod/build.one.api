@@ -438,7 +438,10 @@ class MsOutboxWorker:
                 },
             )
             return
-        line_items_count = int(payload.get("expense_line_items_count") or len(line_items))
+        # Drain-time truth, not the enqueue-time payload: a line projected between
+        # enqueue and drain would otherwise yield a single-line filename for a
+        # multi-line expense and defeat completed-upload dedup (U-621 re-review).
+        line_items_count = len(line_items)
 
         errors: list = []
 

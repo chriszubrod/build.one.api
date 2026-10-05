@@ -147,9 +147,11 @@ def _attachable_window_for_create(purchase, last_sync_time: Optional[str]) -> tu
     since = txn - timedelta(days=CREATE_WINDOW_MARGIN_DAYS)
     if since >= watermark:
         # Future-dated (a post-dated manual entry): txn − margin would be NEWER
-        # than the snapshot bound and could exclude a receipt attached on
-        # entry. The per-tick snapshot already reaches further back — use it.
-        return (False, None)
+        # than the snapshot bound. The snapshot is bounded at the WATERMARK, so it
+        # cannot see a receipt attached on entry weeks earlier when this purchase
+        # was deferred — and once projected, `was_local` hides it for good
+        # (U-621 re-review). Rare case, full list cached once per run: authoritative.
+        return (True, None)
     return (False, f"{since.isoformat()}T00:00:00+00:00")
 
 
@@ -320,13 +322,26 @@ def sync_qbo_to_local(
             # CREATE (deferred earlier, skipped, or pulled late). Its receipts may
             # predate the snapshot bound, so its attachable lookup uses the
             # create window — see `_attachable_window_for_create`.
-            was_local = (
-                expense_service.read_by_qbo_identity(purchase.qbo_id, realm_id) is not None
-                if (last_sync_time and purchase.qbo_id) else True
+            local_expense = (
+                expense_service.read_by_qbo_identity(purchase.qbo_id, realm_id)
+                if (last_sync_time and purchase.qbo_id) else None
             )
+            was_local = local_expense is not None if (last_sync_time and purchase.qbo_id) else True
             authoritative, window_since = (
                 _attachable_window_for_create(purchase, last_sync_time) if not was_local else (False, None)
             )
+            # U-621 re-review: an UPDATE that adds a line creates an ExpenseLineItem
+            # whose receipt (attached long ago, outside the bounded snapshot) would
+            # never be linked — `was_local` stays True on every later tick. Count the
+            # lines before projection; growth re-lists this purchase authoritatively.
+            pre_line_count = None
+            if local_expense is not None and last_sync_time:
+                try:
+                    pre_line_count = len(expense_line_item_service.read_by_expense_id(
+                        expense_id=int(local_expense.id) if isinstance(local_expense.id, str) else local_expense.id
+                    ))
+                except Exception as cnt_e:
+                    logger.warning(f"Could not count lines for Expense {local_expense.id} before projection: {cnt_e}")
             # Get purchase lines, re-reading to ride out the cross-process pull-race (an empty
             # read colliding with a non-zero header). If the lines never arrive, DEFER the row:
             # skip it WITHOUT failing so the watermark advances — avoids stalling the sync on a
@@ -356,6 +371,18 @@ def sync_qbo_to_local(
             expense_id = int(expense.id) if isinstance(expense.id, str) else expense.id
             synced_expenses.append((expense, expense_id))
             logger.info(f"Synced QboPurchase {purchase.id} to Expense {expense.id}")
+
+            if pre_line_count is not None:
+                try:
+                    post_line_count = len(expense_line_item_service.read_by_expense_id(expense_id=expense_id))
+                    if post_line_count > pre_line_count:
+                        logger.info(
+                            f"Expense {expense.id}: lines grew {pre_line_count}->{post_line_count} on update; "
+                            f"re-listing receipts authoritatively so the new line can link an older receipt"
+                        )
+                        authoritative, window_since = True, None
+                except Exception as cnt_e:
+                    logger.warning(f"Could not count lines for Expense {expense.id} after projection: {cnt_e}")
 
             # Sync attachables (download to Attachment module) and link to ExpenseLineItems
             if purchase.qbo_id:

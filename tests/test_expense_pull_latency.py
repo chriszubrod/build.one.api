@@ -296,9 +296,9 @@ def test_new_local_purchase_looks_back_to_its_own_transaction_date():
     assert _attachable_window_for_create(SimpleNamespace(txn_date="2026-06-01"), wm) == (True, None)   # past the cap
     assert _attachable_window_for_create(SimpleNamespace(txn_date=None), wm) == (True, None)           # unknown age
     assert _attachable_window_for_create(SimpleNamespace(txn_date="2026-10-01"), None) == (False, None)  # full pull
-    # Future-dated: txn − margin would be NEWER than the snapshot bound and could miss a
-    # receipt attached on entry; the snapshot (bounded at the watermark) is the wider window.
-    assert _attachable_window_for_create(SimpleNamespace(txn_date="2026-10-10"), wm) == (False, None)
+    # Future-dated: txn − margin would be NEWER than the snapshot bound; the snapshot is
+    # bounded at the watermark too, so only the full list is safe (see the U-621 test below).
+    assert _attachable_window_for_create(SimpleNamespace(txn_date="2026-10-10"), wm) == (True, None)
     assert _attachable_window_for_create(SimpleNamespace(txn_date="2026-10-05"), wm) == (False, "2026-10-02T00:00:00+00:00")
     assert CREATE_WINDOW_CAP_DAYS >= 30
 
@@ -671,3 +671,123 @@ def test_vendor_miss_that_cannot_resolve_holds_the_watermark_instead_of_skipping
     outcome.record_projection_error("77", excinfo.value, label="QboPurchase->Expense", logger=logging.getLogger("t"))
     assert outcome.should_hold
     assert outcome.skipped_ids == []
+
+
+# --------------------------------------------------------------------------- #
+# U-621 Gate-2 re-review (Codex gpt-6-astra xhigh, 2026-10-04) — NEW regressions
+# --------------------------------------------------------------------------- #
+
+def test_future_dated_create_uses_the_authoritative_list():
+    """Re-review P1: the per-tick snapshot is bounded at the WATERMARK, so a
+    post-dated purchase first projected after a deferral (receipt attached on
+    entry, weeks before the watermark) lost its receipt permanently — `was_local`
+    is True from then on. Future-dated is rare and the full list is cached once
+    per run, so make it authoritative."""
+    from scripts.sync_qbo_purchase import _attachable_window_for_create
+    wm = "2026-10-03T11:59:00+00:00"
+    assert _attachable_window_for_create(SimpleNamespace(txn_date="2026-10-10"), wm) == (True, None)
+    assert _attachable_window_for_create(SimpleNamespace(txn_date="2026-10-06"), wm) == (True, None)  # txn-3d == wm day: boundary
+    assert _attachable_window_for_create(SimpleNamespace(txn_date="2026-10-05"), wm) == (False, "2026-10-02T00:00:00+00:00")
+
+
+def _run_update(*, line_reads):
+    """An already-local purchase re-pulled on an incremental tick; `line_reads` are the
+    successive `read_by_expense_id` results (before projection, after projection)."""
+    from scripts.sync_qbo_purchase import sync_qbo_to_local
+    attachable_service = MagicMock()
+    attachable_service.sync_attachables_for_purchase.return_value = []
+    attachable_service.entity_ids_in_snapshot.return_value = set()
+    purchase = _make_qbo_purchase(); purchase.txn_date = "2026-09-01"
+    outcome = SyncOutcome.for_service_pull(); outcome.synced = [purchase]
+    qps = MagicMock(); qps.sync_from_qbo.return_value = outcome
+    expense = SimpleNamespace(id=99, public_id="33333333-3333-3333-3333-333333333333")
+    connector = MagicMock(); connector.sync_from_qbo_purchase.return_value = expense
+    es = MagicMock(); es.read_by_qbo_identity.return_value = expense
+    eli = MagicMock(); eli.read_by_expense_id.side_effect = list(line_reads)
+    with patch("scripts.sync_qbo_purchase.QboAttachableService", return_value=attachable_service), patch(
+        "entities.expense.business.service.ExpenseService", return_value=es
+    ), patch(
+        "entities.expense_line_item.business.service.ExpenseLineItemService", return_value=eli
+    ), patch(
+        "integrations.ms.outbox.business.service.MsOutboxService", return_value=MagicMock()
+    ), patch(
+        "scripts.sync_qbo_purchase.read_lines_riding_out_race", return_value=[MagicMock()]
+    ), patch(
+        "scripts.sync_qbo_purchase.with_retry", side_effect=lambda fn, *a, **k: fn(*a)
+    ), patch("scripts.sync_qbo_purchase.pace_batch"), patch.dict("os.environ", {"ALLOW_BOX_WRITES": "false"}):
+        sync_qbo_to_local(realm_id=REALM_ID, last_sync_time="2026-10-03T11:59:00+00:00",
+                          qbo_purchase_service=qps, purchase_connector=connector)
+    kw = attachable_service.sync_attachables_for_purchase.call_args.kwargs
+    return (kw["authoritative"], kw["window_since"])
+
+
+def test_existing_purchase_that_gains_a_line_relists_receipts_authoritatively():
+    """Re-review P1: master listed the FULL attachable set for every changed purchase.
+    With the bounded snapshot, a QBO edit that adds a line (without touching the
+    Attachable) created the new ExpenseLineItem with no link to the older receipt —
+    permanently, since `was_local` stays True. A line-count increase across the
+    projection is the tell: re-list authoritatively for that purchase."""
+    a, b = SimpleNamespace(project_id=10), SimpleNamespace(project_id=10)
+    assert _run_update(line_reads=[[a], [a, b], [a, b]]) == (True, None)      # a line was added
+    assert _run_update(line_reads=[[a], [a], [a]]) == (False, None)           # control: unchanged → bounded snapshot
+
+
+@pytest.mark.usefixtures("grant_qbo_app_lock")
+def test_payee_less_purchase_is_a_permanent_skip_not_a_hold():
+    """Re-review P2: a Purchase with NO EntityRef (a card charge entered without a
+    payee) raised ValueError on master → permanent skip. The on-demand path made it
+    raise VendorNotResolvedError → the whole purchase watermark HOLDS for 2h per
+    such row and a spurious critical issue fires. There is no id to resolve: skip."""
+    resolver = MagicMock()
+    connector = _connector(resolver)
+    connector._get_vendor_public_id = MagicMock(return_value=None)
+    # qbo_id "210054" contains SQL Server's TCP-reset code 10054: `is_transient_error`
+    # matches error MESSAGES by substring, so an id echoed into the message text turns
+    # a permanent skip into a HOLD (found by the fix-round re-review's probe).
+    purchase = _purchase(); purchase.entity_ref_value = None; purchase.qbo_id = "210054"
+    with pytest.raises(ValueError, match="no payee") as excinfo:
+        connector.sync_from_qbo_purchase(purchase, [])
+    resolver.assert_not_called()
+    outcome = SyncOutcome.for_service_pull()
+    outcome.record_projection_error("210054", excinfo.value, label="QboPurchase->Expense", logger=logging.getLogger("t"))
+    assert not outcome.should_hold
+    assert outcome.skipped_ids == ["210054"]
+
+
+def test_fanout_handler_uses_the_drain_time_line_count_for_the_filename():
+    """Re-review P2: the handler re-reads the lines at drain but took the line count
+    from the ENQUEUE-time payload. A second line projected before the drain yields a
+    single-line filename for a multi-line expense; completed-upload dedup compares
+    filenames exactly, so a later refresh creates a second SharePoint file."""
+    expense = SimpleNamespace(id=99, public_id="33333333-3333-3333-3333-333333333333")
+    lines = [SimpleNamespace(project_id=10), SimpleNamespace(project_id=10)]
+    p1, p2, svc = _handler_env(
+        expense=expense, line_items=lines,
+        excel_result={"success": True, "synced_count": 1, "errors": []},
+        sp_result={"success": True, "synced_count": 1, "skipped_count": 0, "errors": []},
+    )
+    with p1, p2:
+        MsOutboxWorker(repo=MagicMock())._handle_expense_pull_fanout(
+            _row({"project_id": 10, "expense_line_items_count": 1}), {"project_id": 10, "expense_line_items_count": 1}
+        )
+    assert svc._upload_attachments_to_module_folder.call_args.kwargs["expense_line_items_count"] == 2
+
+
+def test_fanout_dead_letter_is_critical_like_the_other_excel_kinds():
+    """Re-review P2: `expense_pull_fanout` writes Excel directly (no child
+    append_excel_row), so its dead-letter must carry the Excel kinds' `critical`
+    severity, not `high`. The escalation test mocks the reconciliation service and
+    cannot see this; this one runs the real service over a mocked repo."""
+    from integrations.ms.reconciliation.business.service import MsReconciliationIssueService
+    repo = MagicMock()
+    MsReconciliationIssueService(repo=repo).flag_dead_letter(
+        kind=KIND_EXPENSE_PULL_FANOUT, entity_type="Expense", entity_public_id="e-1",
+        tenant_id="t", outbox_public_id="o-1", details="5 attempts",
+    )
+    assert repo.create.call_args.kwargs["severity"] == "critical"
+    repo.reset_mock()
+    MsReconciliationIssueService(repo=repo).flag_dead_letter(
+        kind="upload_sharepoint_file", entity_type="Expense", entity_public_id="e-1",
+        tenant_id="t", outbox_public_id="o-1", details="5 attempts",
+    )
+    assert repo.create.call_args.kwargs["severity"] == "high"   # control: non-Excel kinds unchanged

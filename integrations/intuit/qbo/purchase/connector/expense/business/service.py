@@ -160,6 +160,14 @@ class PurchaseExpenseConnector:
             vendor_public_id = self._resolve_vendor_on_demand(
                 qbo_purchase.entity_ref_value, qbo_purchase.realm_id,
             )
+        if not vendor_public_id and not qbo_purchase.entity_ref_value:
+            # No EntityRef at all (a card/bank charge entered without a payee):
+            # permanent data, nothing to resolve — SKIP as before the on-demand
+            # path (ValueError), never HOLD the whole watermark for it (U-621 re-review).
+            # No ids in the message: `is_transient_error` matches message text by
+            # substring, and an id containing e.g. 10054/10060 would turn this skip
+            # into a HOLD. The outcome records the qbo_id separately.
+            raise ValueError("QBO Purchase has no payee (EntityRef empty); skipping")
         if not vendor_public_id:
             raise VendorNotResolvedError(
                 f"No vendor mapping found for QBO entity ref: {qbo_purchase.entity_ref_value} "

@@ -82,6 +82,25 @@ law. Not equivalent to Beacon Turf's TN exemption. Owner has queried them.
 per-vendor: a vendor can be WC-exempt while carrying real GL, and the exemption has its own expiry
 that a vendor-level flag would drop). Until it lands the fact lives in a **carrier string**, which
 nothing can filter or report on.
+## U-621 — Gate-2 re-review of the expense-entity unit before landing (2026-10-04)
+
+The cloud session's Pass 1 was Claude reviewing Claude (Codex not installed there), so the pinned
+reviewer (gpt-6-astra, xhigh) ran over the full branch diff before merge. CHANGES-REQUESTED, 8 findings;
+every one adversarially verified by read-only subagents — 8/8 confirmed. Five were NEW regressions and
+are fixed in this round, each with a regression test proved red on the unfixed code and a mutation that
+kills it:
+- future-dated purchase: `_attachable_window_for_create` now returns the AUTHORITATIVE list (the snapshot
+  is bounded at the watermark too, so clamping to it still lost a receipt attached on entry);
+- an already-local purchase whose projection ADDS a line re-lists receipts authoritatively (line count
+  before vs after projection) — master's full-realm list linked the new line; the bounded snapshot did not;
+- a Purchase with NO EntityRef is a permanent SKIP (ValueError) again, not a 2 h watermark HOLD;
+- `_handle_expense_pull_fanout` derives the SharePoint line count at drain (`len(line_items)`), not from
+  the enqueue-time payload;
+- `expense_pull_fanout` dead-letters as `critical` like the other Excel-writing kinds.
+Three were PRE-EXISTING on master (receipt failures advance the watermark; late-linked receipts get no
+fan-out; a failed fan-out enqueue is only logged) — booked in TODO.md at P2 with Codex's P1 rating noted,
+not fixed in-branch. Full record on the board row U-621.
+
 ## Expense entity deep review — QBO pull lag + draft→submit throughput (2026-10-03)
 
 **Method:** four read-only review passes (API entity, QBO purchase→Expense pull, web expense pages,

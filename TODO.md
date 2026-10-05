@@ -875,9 +875,29 @@ same date. Everything below was confirmed against source and is open. Severity i
   transaction date FORWARD by more than `CREATE_WINDOW_MARGIN_DAYS` (3) before it is first projected — the
   window (`newTxn − 3d`) starts after the receipt. Exact fix: stage QBO `MetaData.CreateTime` on
   `qbo.Purchase` and bound by `min(create_time, txn_date) − margin` (schema change). The future-dated case
-  (window newer than the snapshot) is already clamped to the snapshot. Found by the 2026-10-04 fix rounds.
-- [ ] 🟡 **P3 — late-linked receipts get no MS/Box fan-out** (the fan-out enqueue iterates only changed
-  purchases). Either document as intended in the runbook or enqueue `expense_pull_fanout` for those expenses.
+  now uses the AUTHORITATIVE list (U-621 Gate-2 re-review: the snapshot is bounded at the watermark too, so
+  clamping to it still lost a receipt attached on entry). Found by the 2026-10-04 fix rounds.
+- [ ] 🟠 **P2 — late-linked receipts get no MS/Box fan-out** (the fan-out enqueue iterates only changed
+  purchases; `_link_attachables_for_unchanged_purchases` returns only a count). The U-621 Gate-2 Codex
+  re-review (gpt-6-astra xhigh, 2026-10-04) rated this P1 — it is the NORMAL Ramp flow (receipt matched
+  after the purchase projected), so the receipt reaches dbo but never SharePoint/Box. Pre-existing scope
+  gap (master never delivered these receipts anywhere; the unit added the local link), hence not fixed
+  in-branch. Fix: enqueue `expense_pull_fanout` for every expense the late pass linked (same dedupe key).
+- [ ] 🟠 **P2 — receipt sync/link failures advance the watermark** (`scripts/sync_qbo_purchase.py`: the
+  per-purchase attachable try/except and `_link_late_attachables` only log; `_sync_to_attachments`
+  swallows download failures). A receipt updated at 12:05 whose snapshot fetch or link fails on the 12:15
+  tick is excluded by every later incremental query. Pre-existing on master (same catch), but WORSENED:
+  master's full-realm snapshot gave incidental recovery on the next re-pull; the bounded snapshot does not.
+  Codex re-review rated P1. Fix: record a hold-class outcome failure, or a durable per-purchase
+  "receipt pending" retry the late pass re-reads regardless of the snapshot bound; stop swallowing
+  download failures in `_sync_to_attachments`. (U-621 re-review #1)
+- [ ] 🟠 **P2 — a failed `expense_pull_fanout` ENQUEUE silently loses the external work** (post-loop
+  `except Exception as fan_e: logger.warning` — `failed_count` stays 0, no outbox row, watermark advances,
+  an unchanged purchase never re-enters the enqueue path; no sweep creates fan-out rows for Expenses that
+  lack one). Pre-existing in kind (master's inline Excel/SharePoint failures were also only logged) and the
+  window is now one SQL insert instead of a Graph sequence. Codex re-review rated P1. Fix: hold-class
+  outcome on enqueue failure (re-projection is idempotent), or enqueue inside the projection transaction,
+  or a reconcile sweep for qbo-pulled Expenses with project lines and no fan-out row. (U-621 re-review #5)
 - [ ] 🟡 **P3 — `_QBO_SYNC_LOCK_BUSY_STREAK` is per-process**; under `-w 2` `consecutive_skips` undercounts.
   Move it to the Sync row if the number ever matters more than the WARNING itself.
 - [ ] 🟡 **Test gaps the review found (API)** — no test for: the line-item GET None path; the completion-result

@@ -253,7 +253,15 @@ def _link_attachables_for_unchanged_purchases(
 
     linked_total = 0
     for qbo_id in pending:
-        expense = expense_service.read_by_qbo_identity(qbo_id, realm_id)
+        # Per-purchase isolation: the watermark commits whatever happens here, so
+        # one failing identity read must not take the rest of the pass with it.
+        try:
+            expense = expense_service.read_by_qbo_identity(qbo_id, realm_id)
+        except (QboBudgetExceededError, QboWriteRefusedError):
+            raise
+        except Exception as read_e:
+            logger.warning(f"Could not read the local Expense for Purchase {qbo_id} (late attach): {read_e}")
+            continue
         if expense is None:
             continue
         linked_total += _sync_and_link_purchase_attachables(
@@ -400,16 +408,20 @@ def sync_qbo_to_local(
             synced_expenses.append((expense, expense_id))
             logger.info(f"Synced QboPurchase {purchase.id} to Expense {expense.id}")
 
-            if pre_lines is not None:
+            if local_expense is not None:
                 post_lines = _count_lines(expense_line_item_service, expense_id, "after")
                 if post_lines is not None:
                     lines_by_expense_id[expense_id] = post_lines   # reused by the fan-out below
-                    if len(post_lines) > len(pre_lines):
-                        logger.info(
-                            f"Expense {expense.id}: lines grew {len(pre_lines)}->{len(post_lines)} on update; "
-                            f"re-listing receipts authoritatively so the new line can link an older receipt"
-                        )
-                        authoritative, window_since = True, None
+                if pre_lines is None or post_lines is None:
+                    # The growth check cannot run: fail CLOSED on the full list rather
+                    # than fall back to the bounded snapshot and silently skip a receipt.
+                    authoritative, window_since = True, None
+                elif len(post_lines) > len(pre_lines):
+                    logger.info(
+                        f"Expense {expense.id}: lines grew {len(pre_lines)}->{len(post_lines)} on update; "
+                        f"re-listing receipts authoritatively so the new line can link an older receipt"
+                    )
+                    authoritative, window_since = True, None
 
             # Sync attachables (download to Attachment module) and link to ExpenseLineItems
             if purchase.qbo_id:

@@ -792,3 +792,35 @@ def test_fanout_dead_letter_is_critical_like_the_other_excel_kinds():
         tenant_id="t", outbox_public_id="o-1", details="5 attempts",
     )
     assert repo.create.call_args.kwargs["severity"] == "high"   # control: non-Excel kinds unchanged
+
+
+def test_late_attach_pass_isolates_a_failing_identity_read_per_purchase():
+    """F2 re-review P1 (introduced by the Pass-2 refactor): one purchase's
+    `read_by_qbo_identity` raising must not abort the rest of the late pass —
+    the watermark commits regardless, so every later purchase's receipt in this
+    tick's window would be lost for good."""
+    from scripts.sync_qbo_purchase import _link_attachables_for_unchanged_purchases
+    attachable_service = MagicMock()
+    attachable_service.entity_ids_in_snapshot.return_value = {"p-bad", "p-good"}
+    attachable_service.sync_attachables_for_purchase.return_value = [MagicMock()]
+    good = SimpleNamespace(id=7, public_id="exp-7")
+    expense_service = MagicMock()
+    expense_service.read_by_qbo_identity.side_effect = (
+        lambda qbo_id, realm: (_ for _ in ()).throw(RuntimeError("deadlock")) if qbo_id == "p-bad" else good
+    )
+    with patch("scripts.sync_qbo_purchase.sync_purchase_attachments_to_expense_line_items", return_value=1) as link:
+        linked = _link_attachables_for_unchanged_purchases(
+            realm_id=REALM_ID, attachable_service=attachable_service,
+            expense_service=expense_service, changed_qbo_ids=set(),
+        )
+    assert linked == 1
+    link.assert_called_once_with(expense_id=7, qbo_attachables=[attachable_service.sync_attachables_for_purchase.return_value[0]])
+
+
+def test_update_with_an_unreadable_line_count_relists_receipts_authoritatively():
+    """F2 re-review P2: when the before/after line read fails, the growth check
+    cannot run — fail CLOSED (authoritative) rather than fall back to the bounded
+    snapshot, which would silently skip a new line's older receipt."""
+    a = SimpleNamespace(project_id=10)
+    assert _run_update(line_reads=[[a], RuntimeError("read failed after projection"), [a]]) == (True, None)
+    assert _run_update(line_reads=[RuntimeError("read failed before projection"), [a], [a]]) == (True, None)

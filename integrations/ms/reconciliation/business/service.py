@@ -165,9 +165,8 @@ class MsReconciliationIssueService:
         """
         # DriftType follows the kind namespace directly — easy to query.
         drift_type = f"{kind}_dead_letter" if len(f"{kind}_dead_letter") <= 32 else "outbox_dead_letter"
-        # `expense_pull_fanout` writes Excel directly (no child Excel row), so it is
-        # an Excel kind for this purpose (U-621 re-review).
-        severity = "critical" if kind in ("append_excel_row", "insert_excel_row", "expense_pull_fanout") else "high"
+        from integrations.ms.outbox.business.service import EXCEL_WRITING_KINDS  # lazy: outbox imports this module
+        severity = "critical" if kind in EXCEL_WRITING_KINDS else "high"
 
         issue = self.repo.create(
             drift_type=drift_type,

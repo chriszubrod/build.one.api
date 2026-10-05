@@ -2,6 +2,7 @@
 import base64
 import json
 import logging
+import time
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Dict, Optional
 
@@ -153,11 +154,11 @@ class MsOutboxWorker:
         time_budget_seconds=20.0)`); this is the same shape.
         """
         processed = 0
-        started = datetime.now(timezone.utc)
+        started = time.monotonic()   # monotonic, like the Box drain
         while processed < max_rows:
             if (
                 time_budget_seconds is not None
-                and (datetime.now(timezone.utc) - started).total_seconds() >= time_budget_seconds
+                and time.monotonic() - started >= time_budget_seconds
             ):
                 logger.info(
                     "ms.outbox.drain.time_budget_reached",
@@ -438,9 +439,7 @@ class MsOutboxWorker:
                 },
             )
             return
-        # Drain-time truth, not the enqueue-time payload: a line projected between
-        # enqueue and drain would otherwise yield a single-line filename for a
-        # multi-line expense and defeat completed-upload dedup (U-621 re-review).
+        # Drain-time truth (the SharePoint filename differs for multi-line expenses).
         line_items_count = len(line_items)
 
         errors: list = []

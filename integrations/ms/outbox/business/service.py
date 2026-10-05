@@ -36,6 +36,9 @@ KIND_UPDATE_DRAFT = "update_draft"  # U-549 Phase C1
 # the same two service methods the tick used, so a Graph outage retries instead
 # of being swallowed to a WARN.
 KIND_EXPENSE_PULL_FANOUT = "expense_pull_fanout"
+# Kinds that WRITE Excel (directly or via a child row). A dead-letter of any of
+# these is `critical` in reconciliation (failed Excel writes must be followed up).
+EXCEL_WRITING_KINDS = frozenset({KIND_APPEND_EXCEL_ROW, KIND_INSERT_EXCEL_ROW, KIND_EXPENSE_PULL_FANOUT})
 
 # Factual update_draft drain outcomes (what Graph returned). None of these mean the
 # message was sent — a later phase interprets them with conversation / folder context.
@@ -674,7 +677,6 @@ class MsOutboxService:
         *,
         expense_public_id: str,
         project_id: int,
-        expense_line_items_count: int,
     ) -> Optional[MsOutbox]:
         """
         Enqueue the per-(expense, project) MS fan-out for a QBO-pulled expense:
@@ -693,10 +695,7 @@ class MsOutboxService:
             entity_type="Expense",
             entity_public_id=str(expense_public_id),
             tenant_id=tenant_id,
-            payload={
-                "project_id": int(project_id),
-                "expense_line_items_count": int(expense_line_items_count),
-            },
+            payload={"project_id": int(project_id)},
         )
 
     def enqueue_sharepoint_upload(

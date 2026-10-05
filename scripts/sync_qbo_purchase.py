@@ -155,6 +155,51 @@ def _attachable_window_for_create(purchase, last_sync_time: Optional[str]) -> tu
     return (False, f"{since.isoformat()}T00:00:00+00:00")
 
 
+def _expense_pk(expense) -> int:
+    return int(expense.id) if isinstance(expense.id, str) else expense.id
+
+
+def _count_lines(expense_line_item_service, expense_id: int, phase: str):
+    """Line rows of an Expense, or None (logged) if the read fails."""
+    try:
+        return expense_line_item_service.read_by_expense_id(expense_id=expense_id)
+    except Exception as cnt_e:
+        logger.warning(f"Could not count lines for Expense {expense_id} {phase} projection: {cnt_e}")
+        return None
+
+
+def _sync_and_link_purchase_attachables(
+    *,
+    attachable_service: QboAttachableService,
+    realm_id: str,
+    purchase_qbo_id: str,
+    expense_id: int,
+    authoritative: bool = False,
+    window_since=None,
+) -> int:
+    """
+    Download a purchase's attachables into the Attachment module and link them
+    to its ExpenseLineItems. Returns links created. Budget/write-refused errors
+    propagate (they must end the tick); anything else is logged and counts 0 —
+    the ONLY two paths that link receipts share this rule.
+    """
+    try:
+        qbo_attachables = attachable_service.sync_attachables_for_purchase(
+            realm_id=realm_id, purchase_qbo_id=purchase_qbo_id, sync_to_modules=True,
+            authoritative=authoritative, window_since=window_since,
+        )
+        if not qbo_attachables:
+            return 0
+        return sync_purchase_attachments_to_expense_line_items(
+            expense_id=expense_id, qbo_attachables=qbo_attachables,
+        )
+    except (QboBudgetExceededError, QboWriteRefusedError):
+        raise
+    except Exception as att_e:
+        logger.warning(f"Could not sync/link attachments for Purchase {purchase_qbo_id}: {att_e}")
+        return 0
+
+
 def _link_late_attachables(
     *,
     realm_id: str,
@@ -208,23 +253,13 @@ def _link_attachables_for_unchanged_purchases(
 
     linked_total = 0
     for qbo_id in pending:
-        try:
-            expense = expense_service.read_by_qbo_identity(qbo_id, realm_id)
-            if expense is None:
-                continue
-            qbo_attachables = attachable_service.sync_attachables_for_purchase(
-                realm_id=realm_id, purchase_qbo_id=qbo_id, sync_to_modules=True,
-            )
-            if not qbo_attachables:
-                continue
-            expense_id = int(expense.id) if isinstance(expense.id, str) else expense.id
-            linked_total += sync_purchase_attachments_to_expense_line_items(
-                expense_id=expense_id, qbo_attachables=qbo_attachables,
-            )
-        except (QboBudgetExceededError, QboWriteRefusedError):
-            raise
-        except Exception as att_e:
-            logger.warning(f"Could not link late-attached receipt for Purchase {qbo_id}: {att_e}")
+        expense = expense_service.read_by_qbo_identity(qbo_id, realm_id)
+        if expense is None:
+            continue
+        linked_total += _sync_and_link_purchase_attachables(
+            attachable_service=attachable_service, realm_id=realm_id,
+            purchase_qbo_id=qbo_id, expense_id=_expense_pk(expense),
+        )
     return linked_total
 
 
@@ -311,10 +346,9 @@ def sync_qbo_to_local(
     ms_fanout_refused = 0    # ALLOW_MS_WRITES gate off / no tenant — nothing enqueued
     box_excel_batches = 0
     synced_expenses = []     # (expense, expense_id) — collected for the per-project fan-out
-    # A1: the per-run attachable snapshot is bounded to the pull's own watermark
-    # (`attachable_service` above). An incremental tick pages only attachables
-    # updated since `last_sync_time` (overlap included) instead of the full
-    # ~19K-row realm list; a full or historical pull keeps the full list.
+    lines_by_expense_id = {}  # expense_id -> line rows already read after projection (saves a re-read)
+    # A1: the per-run attachable snapshot is bounded to the pull's own watermark —
+    # see `QboAttachableService.__init__`.
 
     for i, purchase in enumerate(purchases):
         try:
@@ -322,26 +356,20 @@ def sync_qbo_to_local(
             # CREATE (deferred earlier, skipped, or pulled late). Its receipts may
             # predate the snapshot bound, so its attachable lookup uses the
             # create window — see `_attachable_window_for_create`.
-            local_expense = (
-                expense_service.read_by_qbo_identity(purchase.qbo_id, realm_id)
-                if (last_sync_time and purchase.qbo_id) else None
-            )
-            was_local = local_expense is not None if (last_sync_time and purchase.qbo_id) else True
+            is_incremental = bool(last_sync_time and purchase.qbo_id)
+            local_expense = expense_service.read_by_qbo_identity(purchase.qbo_id, realm_id) if is_incremental else None
             authoritative, window_since = (
-                _attachable_window_for_create(purchase, last_sync_time) if not was_local else (False, None)
+                _attachable_window_for_create(purchase, last_sync_time)
+                if is_incremental and local_expense is None else (False, None)
             )
             # U-621 re-review: an UPDATE that adds a line creates an ExpenseLineItem
             # whose receipt (attached long ago, outside the bounded snapshot) would
-            # never be linked — `was_local` stays True on every later tick. Count the
+            # never be linked — the expense is local on every later tick. Count the
             # lines before projection; growth re-lists this purchase authoritatively.
-            pre_line_count = None
-            if local_expense is not None and last_sync_time:
-                try:
-                    pre_line_count = len(expense_line_item_service.read_by_expense_id(
-                        expense_id=int(local_expense.id) if isinstance(local_expense.id, str) else local_expense.id
-                    ))
-                except Exception as cnt_e:
-                    logger.warning(f"Could not count lines for Expense {local_expense.id} before projection: {cnt_e}")
+            pre_lines = (
+                _count_lines(expense_line_item_service, _expense_pk(local_expense), "before")
+                if local_expense is not None else None
+            )
             # Get purchase lines, re-reading to ride out the cross-process pull-race (an empty
             # read colliding with a non-zero header). If the lines never arrive, DEFER the row:
             # skip it WITHOUT failing so the watermark advances — avoids stalling the sync on a
@@ -368,42 +396,28 @@ def sync_qbo_to_local(
                 initial_delay=INITIAL_RETRY_DELAY,
             )
             outcome.record_projected()
-            expense_id = int(expense.id) if isinstance(expense.id, str) else expense.id
+            expense_id = _expense_pk(expense)
             synced_expenses.append((expense, expense_id))
             logger.info(f"Synced QboPurchase {purchase.id} to Expense {expense.id}")
 
-            if pre_line_count is not None:
-                try:
-                    post_line_count = len(expense_line_item_service.read_by_expense_id(expense_id=expense_id))
-                    if post_line_count > pre_line_count:
+            if pre_lines is not None:
+                post_lines = _count_lines(expense_line_item_service, expense_id, "after")
+                if post_lines is not None:
+                    lines_by_expense_id[expense_id] = post_lines   # reused by the fan-out below
+                    if len(post_lines) > len(pre_lines):
                         logger.info(
-                            f"Expense {expense.id}: lines grew {pre_line_count}->{post_line_count} on update; "
+                            f"Expense {expense.id}: lines grew {len(pre_lines)}->{len(post_lines)} on update; "
                             f"re-listing receipts authoritatively so the new line can link an older receipt"
                         )
                         authoritative, window_since = True, None
-                except Exception as cnt_e:
-                    logger.warning(f"Could not count lines for Expense {expense.id} after projection: {cnt_e}")
 
             # Sync attachables (download to Attachment module) and link to ExpenseLineItems
             if purchase.qbo_id:
-                try:
-                    qbo_attachables = attachable_service.sync_attachables_for_purchase(
-                        realm_id=realm_id,
-                        purchase_qbo_id=purchase.qbo_id,
-                        sync_to_modules=True,
-                        authoritative=authoritative,
-                        window_since=window_since,
-                    )
-                    if qbo_attachables:
-                        linked = sync_purchase_attachments_to_expense_line_items(
-                            expense_id=expense_id,
-                            qbo_attachables=qbo_attachables,
-                        )
-                        attachments_linked += linked
-                except (QboBudgetExceededError, QboWriteRefusedError):
-                    raise
-                except Exception as att_e:
-                    logger.warning(f"Could not sync/link attachments for Purchase {purchase.qbo_id}: {att_e}")
+                attachments_linked += _sync_and_link_purchase_attachables(
+                    attachable_service=attachable_service, realm_id=realm_id,
+                    purchase_qbo_id=purchase.qbo_id, expense_id=expense_id,
+                    authoritative=authoritative, window_since=window_since,
+                )
 
         except Exception as e:
             outcome.record_projection_error(
@@ -423,11 +437,11 @@ def sync_qbo_to_local(
     if synced_expenses:
         # Build project_id -> [(expense, [line_items]), ...] mapping
         project_expense_map = {}  # project_id -> [(expense, [line_items_for_this_project])]
-        expense_line_counts = {}  # expense.id -> total line count (SharePoint filename parity with completion)
         for expense, expense_id in synced_expenses:
             try:
-                eli_list = expense_line_item_service.read_by_expense_id(expense_id=expense_id)
-                expense_line_counts[expense.id] = len(eli_list)
+                eli_list = lines_by_expense_id.get(expense_id)
+                if eli_list is None:
+                    eli_list = expense_line_item_service.read_by_expense_id(expense_id=expense_id)
                 by_project = {}
                 for eli in eli_list:
                     if eli.project_id:
@@ -445,9 +459,7 @@ def sync_qbo_to_local(
             for expense, proj_items in expense_line_pairs:
                 try:
                     queued = ms_outbox.enqueue_expense_pull_fanout(
-                        expense_public_id=str(expense.public_id),
-                        project_id=proj_id,
-                        expense_line_items_count=expense_line_counts.get(expense.id, len(proj_items)),
+                        expense_public_id=str(expense.public_id), project_id=proj_id,
                     )
                     if queued is None:
                         ms_fanout_refused += 1

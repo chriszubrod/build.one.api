@@ -235,7 +235,8 @@ def test_script_links_late_attached_receipts_for_unchanged_purchases():
     # (the main loop also reads the changed purchase's identity for the was_local check).
     expense_service.read_by_qbo_identity.assert_any_call("qbo-purchase-OLD", REALM_ID)
     attachable_service.sync_attachables_for_purchase.assert_any_call(
-        realm_id=REALM_ID, purchase_qbo_id="qbo-purchase-OLD", sync_to_modules=True
+        realm_id=REALM_ID, purchase_qbo_id="qbo-purchase-OLD", sync_to_modules=True,
+        authoritative=False, window_since=None,
     )
     linked_expense_ids = sorted(c.kwargs["expense_id"] for c in link.call_args_list)
     assert linked_expense_ids == [99, 500]
@@ -273,7 +274,8 @@ def test_late_attach_pass_runs_on_an_empty_tick():
     assert result["purchases_synced"] == 0
     assert result["attachments_linked"] == 1
     attachable_service.sync_attachables_for_purchase.assert_called_once_with(
-        realm_id=REALM_ID, purchase_qbo_id="qbo-purchase-OLD", sync_to_modules=True
+        realm_id=REALM_ID, purchase_qbo_id="qbo-purchase-OLD", sync_to_modules=True,
+        authoritative=False, window_since=None,
     )
 
 
@@ -405,11 +407,10 @@ def test_script_enqueues_ms_fanout_instead_of_inline_graph():
     # methods it used to call are never invoked on it.
     expense_service.sync_expenses_batch_to_excel.assert_not_called()
     expense_service._upload_attachments_to_module_folder.assert_not_called()
-    calls = sorted(
-        (c.kwargs["project_id"], c.kwargs["expense_line_items_count"])
-        for c in ms_outbox.enqueue_expense_pull_fanout.call_args_list
-    )
-    assert calls == [(10, 4), (20, 4)]
+    calls = sorted(c.kwargs["project_id"] for c in ms_outbox.enqueue_expense_pull_fanout.call_args_list)
+    assert calls == [10, 20]
+    # The line count is NOT carried in the payload: the handler derives it at drain.
+    assert all("expense_line_items_count" not in c.kwargs for c in ms_outbox.enqueue_expense_pull_fanout.call_args_list)
     assert result["ms_fanout_enqueued"] == 2
     assert result["ms_fanout_refused"] == 0
     assert "excel_rows_synced" not in result

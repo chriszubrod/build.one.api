@@ -206,17 +206,18 @@ class QboAttachableService:
         if not qbo_auth or not qbo_auth.access_token:
             raise ValueError(f"No valid QBO auth found for realm {realm_id}")
 
-        if self._all_attachables_cache is None:
+        rows = self._all_attachables_cache
+        if rows is None:
             with QboAttachableClient(realm_id=realm_id) as client:
-                self._ensure_snapshot(client)
+                rows = self._ensure_snapshot(client)
 
         target_type = (entity_type or "").upper()
-        ids: set = set()
-        for a in self._all_attachables_cache or []:
-            for ref in (a.attachable_ref or []):
-                if (ref.entity_ref_type or "").upper() == target_type and ref.entity_ref_value:
-                    ids.add(ref.entity_ref_value)
-        return ids
+        return {
+            ref.entity_ref_value
+            for a in rows
+            for ref in (a.attachable_ref or [])
+            if (ref.entity_ref_type or "").upper() == target_type and ref.entity_ref_value
+        }
 
     def sync_attachables_for_bill(
         self,

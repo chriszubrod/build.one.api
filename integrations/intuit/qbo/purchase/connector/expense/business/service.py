@@ -475,6 +475,13 @@ class PurchaseExpenseConnector:
         self._vendor_cache[cache_key] = None
         return None
 
+    @staticmethod
+    def _not_a_vendor_error(detail: str) -> ValueError:
+        """Permanent skip for a Customer/Employee payee. NO ids in the text:
+        `is_transient_error` matches messages by substring (e.g. 10054), and an
+        id echoed here would turn the skip into a watermark HOLD."""
+        return ValueError(f"QBO EntityRef is not a Vendor ({detail}); skipping purchase (Customer/Employee payee)")
+
     def _resolve_vendor_on_demand(self, qbo_entity_ref_value: str, realm_id: Optional[str]) -> Optional[str]:
         """Pull + project one QBO Vendor, then re-run the dbo lookup. None if still unbound.
 
@@ -487,18 +494,12 @@ class PurchaseExpenseConnector:
         """
         cache_key = (realm_id, qbo_entity_ref_value)
         if cache_key in self._vendor_not_found:
-            raise ValueError(
-                f"QBO EntityRef {qbo_entity_ref_value} is not a Vendor (404 earlier this run); "
-                f"skipping purchase (Customer/Employee payee)"
-            )
+            raise self._not_a_vendor_error("404 earlier this run")
         try:
             resolved = self._vendor_on_demand_resolver(qbo_entity_ref_value, realm_id)
         except QboNotFoundError as not_found:
             self._vendor_not_found.add(cache_key)
-            raise ValueError(
-                f"QBO EntityRef {qbo_entity_ref_value} is not a Vendor (vendor/{qbo_entity_ref_value} -> 404); "
-                f"skipping purchase (Customer/Employee payee)"
-            ) from not_found
+            raise self._not_a_vendor_error("vendor GET -> 404") from not_found
         except Exception as resolve_e:
             logger.warning(
                 f"On-demand vendor resolve failed for QBO vendor {qbo_entity_ref_value} "

@@ -1,3 +1,22 @@
+"""Entity contract — RoleModule.   (maintained with the code; checked by tests/test_entity_docstrings.py)
+
+Owns
+  dbo.RoleModule join granting module CRUD flags to a Role.
+Invariants
+  RBAC: Modules.ROLES require_module_api; router calls invalidate_all_caches + publish_profile_changed on mutations.
+  Concurrency: UpdateRoleModuleById passes @RowVersion.
+External writes
+  None.
+Sprocs
+  CreateRoleModule
+  DeleteRoleModuleById
+  ReadRoleModuleById
+  ReadRoleModuleByModuleId
+  ReadRoleModuleByPublicId
+  ReadRoleModuleByRoleId
+  ReadRoleModules
+  UpdateRoleModuleById
+"""
 # Python Standard Library Imports
 from typing import Optional
 

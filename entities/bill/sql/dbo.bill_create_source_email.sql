@@ -1,3 +1,7 @@
+-- Contract: dbo.Bill   (U-631; mirror of entities/bill/business/service.py docstring)
+-- Owns: CreateBill plus email/reviewer source-email lookup sprocs coupled to dbo.Bill schema.
+-- Invariants: Apply with dbo.bill.sql in one transaction; CreateBill INSERT omits computed IsDraft.
+-- Sprocs: CreateBill, FindBillForReviewerReply, ReadBillByConversationId, ReadBillSlimBySourceEmailMessageId
 -- ⛔ APPLY THIS FILE AND entities/bill/sql/dbo.bill.sql IN **ONE** TRANSACTION.
 --    CreateBill is homed here but dbo.Bill's schema lives there, and since
 --    U-446 the two are coupled: this file's INSERT omits [IsDraft] (a computed

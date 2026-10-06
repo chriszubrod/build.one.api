@@ -1,3 +1,7 @@
+-- Contract: dbo.Invoice   (U-631; mirror of entities/invoice/business/service.py docstring)
+-- Owns: Invoice header, source-link helpers, draw matrix, and QBO identity sprocs.
+-- Invariants: UpdateInvoiceById @RowVersion; ReadInvoices/ReadInvoicesPaginated/CountInvoices take @ActorUserId (project-scoped); Create/Update/Delete do NOT SET NOCOUNT ON.
+-- Sprocs: BackfillLinkedSourceProjectId, ComputeInvoiceDrawMatrix, CountInvoices, CreateInvoice, DeleteInvoiceById, ProposeInvoiceSourceLinks, ReadInvoiceById, ReadInvoiceByInvoiceNumber, ReadInvoiceByInvoiceNumberAndProjectId, ReadInvoiceByPublicId, ReadInvoiceByQboIdAndRealmId, ReadInvoiceSourceLinkLines, ReadInvoices, ReadInvoicesPaginated, SetInvoiceQboIdentity, UpdateInvoiceById
 IF OBJECT_ID('dbo.Invoice', 'U') IS NULL
 BEGIN
 CREATE TABLE [dbo].[Invoice]

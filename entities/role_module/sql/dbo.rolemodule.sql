@@ -1,3 +1,7 @@
+-- Contract: dbo.RoleModule   (U-631; mirror of entities/role_module/business/service.py docstring)
+-- Owns: Role-to-Module permission flags join CRUD.
+-- Invariants: UpdateRoleModuleById @RowVersion; Create/Update/Delete do NOT SET NOCOUNT ON.
+-- Sprocs: CreateRoleModule, DeleteRoleModuleById, ReadRoleModuleById, ReadRoleModuleByModuleId, ReadRoleModuleByPublicId, ReadRoleModuleByRoleId, ReadRoleModules, UpdateRoleModuleById
 IF OBJECT_ID('dbo.RoleModule', 'U') IS NULL
 BEGIN
 CREATE TABLE [dbo].[RoleModule]

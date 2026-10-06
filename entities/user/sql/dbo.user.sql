@@ -1,3 +1,7 @@
+-- Contract: dbo.User   (U-631; mirror of entities/user/business/service.py docstring)
+-- Owns: User profile CRUD and worker picker reads.
+-- Invariants: UpdateUserById @RowVersion; mutation sprocs do NOT SET NOCOUNT ON; UpdateUserWorkerLink uses an in-proc ROLLBACK (pre-existing, violates the CLAUDE.md no-ROLLBACK rule; fix is its own unit).
+-- Sprocs: CreateUser, DeleteUserById, ReadUserByFirstname, ReadUserById, ReadUserByLastname, ReadUserByPublicId, ReadUsers, ReadWorkers, SetUserLastCompanyId, UpdateUserById, UpdateUserWorkerLink
 IF OBJECT_ID('dbo.User', 'U') IS NULL
 BEGIN
 CREATE TABLE [dbo].[User]

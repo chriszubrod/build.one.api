@@ -1,3 +1,25 @@
+"""Entity contract — User.   (maintained with the code; checked by tests/test_entity_docstrings.py)
+
+Owns
+  dbo.User person/worker profile row (credentials via auth entity).
+Invariants
+  RBAC: Modules.USERS require_module_api on user routes; GET /get/workers is gated Modules.TIME_TRACKING.
+  Concurrency: UpdateUserById passes @RowVersion.
+External writes
+  None.
+Sprocs
+  CreateUser
+  DeleteUserById
+  ReadUserByFirstname
+  ReadUserById
+  ReadUserByLastname
+  ReadUserByPublicId
+  ReadUsers
+  ReadWorkers
+  SetUserLastCompanyId
+  UpdateUserById
+  UpdateUserWorkerLink
+"""
 # Python Standard Library Imports
 from typing import Optional
 

@@ -1,3 +1,45 @@
+"""Entity contract — ContractLabor.   (maintained with the code; checked by tests/test_entity_docstrings.py)
+
+Owns
+  dbo.ContractLabor header plus ContractLaborLineItem rows (line_item_repo in same entity package).
+Invariants
+  RBAC: Modules.CONTRACT_LABOR require_module_api; list/detail assert_can_access_project on project_id.
+  Money: labor_price_two_shot and Decimal(str(...)) on hours/rate/markup/total_amount.
+  Concurrency: UpdateContractLaborById and UpdateContractLaborLineItemById use @RowVersion.
+External writes
+  None.
+Sprocs
+  CountContractLabors
+  CreateContractLabor
+  CreateContractLaborLineItem
+  DeleteContractLaborById
+  DeleteContractLaborLineItemById
+  DeleteContractLaborLineItemsByContractLaborId
+  FindContractLaborForReviewerReply
+  ReadContractLaborById
+  ReadContractLaborByNaturalKey
+  ReadContractLaborByPublicId
+  ReadContractLaborDailySummary
+  ReadContractLaborDistinctBillingPeriods
+  ReadContractLaborLineItemById
+  ReadContractLaborLineItemByPublicId
+  ReadContractLaborLineItemsByContractLaborId
+  ReadContractLabors
+  ReadContractLaborsByBillLineItemId
+  ReadContractLaborsByBillingPeriod
+  ReadContractLaborsByImportBatchId
+  ReadContractLaborsByStatus
+  ReadContractLaborsByVendorId
+  ReadContractLaborsPaginated
+  ReadLastRateForVendor
+  ReadReviewableContractLaborByProjectAndDate
+  UpdateContractLaborAggregates
+  UpdateContractLaborBillInfo
+  UpdateContractLaborById
+  UpdateContractLaborLineItemById
+  UpdateContractLaborStatusAndLink
+  UpdateContractLaborStatusByIds
+"""
 # Python Standard Library Imports
 import logging
 from typing import Optional, Tuple

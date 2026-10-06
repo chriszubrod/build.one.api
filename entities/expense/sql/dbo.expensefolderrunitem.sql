@@ -1,3 +1,7 @@
+-- Contract: dbo.ExpenseFolderRunItem   (U-631; mirror of entities/expense/business/service.py docstring)
+-- Owns: Per-file claim/process rows for expense-folder intake.
+-- Invariants: ClaimNext uses queue pattern; AutoFailStaleExpenseFolderRuns for stuck runs.
+-- Sprocs: AutoFailStaleExpenseFolderRuns, CheckAndCompleteExpenseFolderRun, ClaimNextExpenseFolderRunItem, CreateExpenseFolderRunItem, ReadActiveExpenseFolderRunItemIds, ReadExpenseFolderRunAggregateByPublicId, ReadExpenseFolderRunItemErrorsByRunPublicId, UpdateExpenseFolderRunItemOnFailure, UpdateExpenseFolderRunItemOnSuccess
 -- Per-file work items for Process Folder runs. The Function App claims
 -- one at a time via ClaimNextExpenseFolderRunItem and processes it via the
 -- API's /admin/expense-folder/tick endpoint. No single HTTP call ever runs

@@ -1,3 +1,7 @@
+-- Contract: dbo.ExpenseFolderRun   (U-631; mirror of entities/expense/business/service.py docstring)
+-- Owns: Expense folder batch run header.
+-- Invariants: Run lifecycle sprocs only in this file.
+-- Sprocs: CreateExpenseFolderRun, ReadExpenseFolderRunByPublicId, UpdateExpenseFolderRunByPublicId
 -- Cross-worker run-state tracker for the Process Folder flow.
 -- Replaces the in-process _folder_processing_results dict which broke under
 -- -w 2 gunicorn (POST on worker A, poll on worker B → 404).

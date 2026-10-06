@@ -1,3 +1,32 @@
+"""Entity contract — Invoice.   (maintained with the code; checked by tests/test_entity_docstrings.py)
+
+Owns
+  dbo.Invoice client draw request header; InvoiceLineItem children in invoice_line_item entity.
+Invariants
+  RBAC: Modules.INVOICES require_module_api; by-id paths assert_can_access_project on invoice.project_id.
+  Concurrency: UpdateInvoiceById passes @RowVersion.
+External writes
+  MS sharepoint_upload on packet/attachment fan-out (ALLOW_MS_WRITES).
+  Box push_blob / draw-stamp excel helpers (ALLOW_BOX_WRITES).
+  None for QBO push on complete_invoice (disabled in service).
+Sprocs
+  BackfillLinkedSourceProjectId
+  ComputeInvoiceDrawMatrix
+  CountInvoices
+  CreateInvoice
+  DeleteInvoiceById
+  ProposeInvoiceSourceLinks
+  ReadInvoiceById
+  ReadInvoiceByInvoiceNumber
+  ReadInvoiceByInvoiceNumberAndProjectId
+  ReadInvoiceByPublicId
+  ReadInvoiceByQboIdAndRealmId
+  ReadInvoiceSourceLinkLines
+  ReadInvoices
+  ReadInvoicesPaginated
+  SetInvoiceQboIdentity
+  UpdateInvoiceById
+"""
 # Python Standard Library Imports
 import re
 import logging

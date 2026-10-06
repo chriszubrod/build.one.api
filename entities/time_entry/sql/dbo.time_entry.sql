@@ -1,3 +1,7 @@
+-- Contract: dbo.TimeEntry   (U-631; mirror of entities/time_entry/business/service.py docstring)
+-- Owns: TimeEntry, TimeLog, and TimeEntryStatus sprocs (single canonical file U-045).
+-- Invariants: @ActorUserId RBAC on the 16 API read/update/delete/count sprocs (Read*/Update*/Delete*/CountTimeEntries); NOT on Create*, AggregateTimeEntryOnSubmit, StampTimeEntryReview, IsTimeEntryDownstreamLocked, the digest/lineage/batch reads; AggregateTimeEntryOnSubmit two-shot money; @RowVersion updates.
+-- Sprocs: AggregateTimeEntryOnSubmit, CountTimeEntries, CreateTimeEntry, CreateTimeEntryStatus, CreateTimeLog, DeleteTimeEntryById, DeleteTimeLogById, IsTimeEntryDownstreamLocked, ReadCurrentTimeEntryStatus, ReadCurrentTimeEntryStatusesByTimeEntryIds, ReadDistinctProjectIdsByTimeEntryIds, ReadTimeEntries, ReadTimeEntriesByProjectId, ReadTimeEntriesByUserId, ReadTimeEntriesForDigestByWorkDate, ReadTimeEntriesPaginated, ReadTimeEntryBilledLineage, ReadTimeEntryById, ReadTimeEntryByPublicId, ReadTimeEntryStatusesByTimeEntryId, ReadTimeLogById, ReadTimeLogByPublicId, ReadTimeLogsByTimeEntryId, ReadTimeLogsByTimeEntryIds, StampTimeEntryReview, UpdateTimeEntryById, UpdateTimeLogById
 -- ============================================================================
 -- SINGLE CANONICAL SOURCE (U-045, 2026-07-16): this file is the ONE home for
 -- all 19 TimeEntry / TimeLog / TimeEntryStatus stored procedures. No migration

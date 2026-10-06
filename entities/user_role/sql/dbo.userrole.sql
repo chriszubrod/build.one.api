@@ -1,3 +1,7 @@
+-- Contract: dbo.UserRole   (U-631; mirror of entities/user_role/business/service.py docstring)
+-- Owns: User-to-Role assignment join CRUD.
+-- Invariants: UpdateUserRoleById @RowVersion; company-scoped reads for permission union.
+-- Sprocs: CreateUserRole, DeleteUserRoleById, ReadUserRoleById, ReadUserRoleByPublicId, ReadUserRoleByRoleId, ReadUserRoleByUserId, ReadUserRoles, ReadUserRolesByUserId, ReadUserRolesByUserIdAndCompanyId, UpdateUserRoleById
 IF OBJECT_ID('dbo.UserRole', 'U') IS NULL
 BEGIN
 CREATE TABLE [dbo].[UserRole]

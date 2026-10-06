@@ -1,3 +1,24 @@
+"""Entity contract — UserRole.   (maintained with the code; checked by tests/test_entity_docstrings.py)
+
+Owns
+  dbo.UserRole join of User to Role within a Company (permission union input).
+Invariants
+  RBAC: Modules.ROLES require_module_api; router calls invalidate_all_caches + publish_profile_changed on mutations.
+  Concurrency: UpdateUserRoleById passes @RowVersion.
+External writes
+  None.
+Sprocs
+  CreateUserRole
+  DeleteUserRoleById
+  ReadUserRoleById
+  ReadUserRoleByPublicId
+  ReadUserRoleByRoleId
+  ReadUserRoleByUserId
+  ReadUserRoles
+  ReadUserRolesByUserId
+  ReadUserRolesByUserIdAndCompanyId
+  UpdateUserRoleById
+"""
 # Python Standard Library Imports
 from typing import Optional
 

@@ -1,3 +1,42 @@
+"""Entity contract — TimeEntry.   (maintained with the code; checked by tests/test_entity_docstrings.py)
+
+Owns
+  dbo.TimeEntry work-day header; TimeLog segments and TimeEntryStatus history in same sql package.
+Invariants
+  RBAC: Modules.TIME_TRACKING require_module_api; the API read/update/delete/count sprocs take @ActorUserId (16 of 27 — Create*, Aggregate, Stamp, digest/lineage reads do not).
+  Money: AggregateTimeEntryOnSubmit applies two-shot labor rounding in SQL.
+  Concurrency: UpdateTimeEntryById and UpdateTimeLogById take @RowVersion.
+External writes
+  review_submitted_time_entry via intelligence outbox on submit (best-effort).
+Sprocs
+  AggregateTimeEntryOnSubmit
+  CountTimeEntries
+  CreateTimeEntry
+  CreateTimeEntryStatus
+  CreateTimeLog
+  DeleteTimeEntryById
+  DeleteTimeLogById
+  IsTimeEntryDownstreamLocked
+  ReadCurrentTimeEntryStatus
+  ReadCurrentTimeEntryStatusesByTimeEntryIds
+  ReadDistinctProjectIdsByTimeEntryIds
+  ReadTimeEntries
+  ReadTimeEntriesByProjectId
+  ReadTimeEntriesByUserId
+  ReadTimeEntriesForDigestByWorkDate
+  ReadTimeEntriesPaginated
+  ReadTimeEntryBilledLineage
+  ReadTimeEntryById
+  ReadTimeEntryByPublicId
+  ReadTimeEntryStatusesByTimeEntryId
+  ReadTimeLogById
+  ReadTimeLogByPublicId
+  ReadTimeLogsByTimeEntryId
+  ReadTimeLogsByTimeEntryIds
+  StampTimeEntryReview
+  UpdateTimeEntryById
+  UpdateTimeLogById
+"""
 # Python Standard Library Imports
 import logging
 from typing import Optional, Tuple

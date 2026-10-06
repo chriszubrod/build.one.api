@@ -1,3 +1,53 @@
+"""Entity contract — Bill.   (maintained with the code; checked by tests/test_entity_docstrings.py)
+
+Owns
+  dbo.Bill vendor A/P document; BillFolderRun/BillFolderRunItem intake queue (persistence in folder_run_repo).
+  Line items and attachments live in bill_line_item / child entities, not this service package.
+Invariants
+  RBAC: API gated Modules.BILLS via require_module_api; reads/mutations use assert_can_access_bill (dbo.UserCanAccessBill).
+  Money: total_amount is coerced Decimal(str(...)) on update; line pricing is owned by bill_line_item (create only passes Decimal line_markup/line_price through).
+  Concurrency: UpdateBillById takes @RowVersion; finalize uses draft guard instead of rowversion.
+  Cascade: delete_by_public_id uses DeleteBillCascadeById for dependent rows.
+External writes
+  sync_bill_to_qbo via qbo outbox (ALLOW_QBO_WRITES).
+  MS sharepoint_upload / excel insert|append via ms outbox (ALLOW_MS_WRITES).
+  Box push_blob / update_box_excel via box outbox (ALLOW_BOX_WRITES).
+Sprocs
+  AutoFailStaleBillFolderRuns
+  CheckAndCompleteBillFolderRun
+  ClaimNextBillFolderRunItem
+  CountBills
+  CreateBill
+  CreateBillFolderRun
+  CreateBillFolderRunItem
+  DeleteBillById
+  DeleteBillCascadeById
+  FinalizeBillById
+  FindBillForReviewerReply
+  GetBillCompletionResult
+  LinkBillSourceEmailMessage
+  ReadActiveBillFolderRunItemIds
+  ReadBillByBillNumber
+  ReadBillByBillNumberAndVendorId
+  ReadBillByConversationId
+  ReadBillById
+  ReadBillByPublicId
+  ReadBillByQboIdAndRealmId
+  ReadBillFirstLineItemProjects
+  ReadBillFolderRunAggregateByPublicId
+  ReadBillFolderRunByPublicId
+  ReadBillFolderRunItemErrorsByRunPublicId
+  ReadBillQboLinkInfo
+  ReadBillSlimBySourceEmailMessageId
+  ReadBills
+  ReadBillsPaginated
+  SetBillQboIdentity
+  UpdateBillById
+  UpdateBillFolderRunByPublicId
+  UpdateBillFolderRunItemOnFailure
+  UpdateBillFolderRunItemOnSuccess
+  UpsertBillCompletionResult
+"""
 # Python Standard Library Imports
 import logging
 import re

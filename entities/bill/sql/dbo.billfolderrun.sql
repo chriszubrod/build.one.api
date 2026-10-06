@@ -1,3 +1,7 @@
+-- Contract: dbo.BillFolderRun   (U-631; mirror of entities/bill/business/service.py docstring)
+-- Owns: SharePoint bill-folder batch run header.
+-- Invariants: CREATE OR ALTER batches; folder run updates by PublicId.
+-- Sprocs: CreateBillFolderRun, ReadBillFolderRunByPublicId, UpdateBillFolderRunByPublicId
 -- Cross-worker run-state tracker for the Process Folder flow.
 -- Replaces the in-process _folder_processing_results dict which broke under
 -- -w 2 gunicorn (POST on worker A, poll on worker B → 404).

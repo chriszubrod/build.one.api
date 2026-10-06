@@ -1,3 +1,7 @@
+-- Contract: dbo.ContractLabor   (U-631; mirror of entities/contract_labor/business/service.py docstring)
+-- Owns: ContractLabor header and ContractLaborLineItem child sprocs in one base file.
+-- Invariants: Update*ById @RowVersion; UpdateContractLaborAggregates SUMs stored line values (no ROUND) — two-shot cent rounding happens in Python (labor_price_two_shot) before storage.
+-- Sprocs: CountContractLabors, CountPendingContractLaborByWorkDate, CreateContractLabor, CreateContractLaborLineItem, DeleteContractLaborById, DeleteContractLaborLineItemById, DeleteContractLaborLineItemsByContractLaborId, FindContractLaborForReviewerReply, ReadContractLaborById, ReadContractLaborByNaturalKey, ReadContractLaborByPublicId, ReadContractLaborDailySummary, ReadContractLaborLineItemById, ReadContractLaborLineItemByPublicId, ReadContractLaborLineItemsByContractLaborId, ReadContractLabors, ReadContractLaborsByBillLineItemId, ReadContractLaborsByBillingPeriod, ReadContractLaborsByImportBatchId, ReadContractLaborsByStatus, ReadContractLaborsByVendorId, ReadContractLaborsPaginated, ReadLastRateForVendor, ReadReviewableContractLaborByProjectAndDate, ReadSubmittedContractLaborLinesByWorkDate, UpdateContractLaborAggregates, UpdateContractLaborBillInfo, UpdateContractLaborById, UpdateContractLaborLineItemById, UpdateContractLaborStatusAndLink, UpdateContractLaborStatusByIds
 -- ContractLabor Table
 -- Stores time log entries imported from Excel for contract labor billing
 

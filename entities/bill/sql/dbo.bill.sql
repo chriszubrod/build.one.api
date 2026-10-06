@@ -1,3 +1,7 @@
+-- Contract: dbo.Bill   (U-631; mirror of entities/bill/business/service.py docstring)
+-- Owns: Vendor A/P bill header and list/read/mutation sprocs (CreateBill lives in dbo.bill_create_source_email.sql).
+-- Invariants: SET NOCOUNT ON on mutations; UpdateBillById optimistic @RowVersion; CASE WHEN NULL preserves on UPDATE.
+-- Sprocs: CountBills, DeleteBillById, DeleteBillCascadeById, FinalizeBillById, LinkBillSourceEmailMessage, ReadBillByBillNumber, ReadBillByBillNumberAndVendorId, ReadBillById, ReadBillByPublicId, ReadBillByQboIdAndRealmId, ReadBillFirstLineItemProjects, ReadBillQboLinkInfo, ReadBills, ReadBillsPaginated, SetBillQboIdentity, TransitionBillStatus, UpdateBillById
 -- ===========================================================================
 -- ⛔ APPLY THIS FILE AND dbo.bill_create_source_email.sql IN **ONE**
 --    TRANSACTION. NEITHER ORDER IS SAFE ON ITS OWN (Codex P1, U-446).

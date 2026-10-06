@@ -1,3 +1,7 @@
+-- Contract: dbo.Expense   (U-631; mirror of entities/expense/business/service.py docstring)
+-- Owns: Expense header CRUD, QBO identity, and coding-queue candidate reads.
+-- Invariants: UpdateExpenseById @RowVersion; FinalizeExpenseById draft guard; SET NOCOUNT ON mutations.
+-- Sprocs: CountExpenses, CreateExpense, DeleteExpenseById, DeleteExpenseCascadeById, FinalizeExpenseById, MarkExpenseDraftForCoding, ReadExpenseById, ReadExpenseByPublicId, ReadExpenseByQboIdAndRealmId, ReadExpenseByReferenceNumberAndVendorId, ReadExpenseQboIdsByRealmId, ReadExpenses, ReadExpensesPaginated, ReadUncodedCompletedExpenseCandidates, SetExpenseQboIdentity, TransitionExpenseStatus, UpdateExpenseById
 -- ===========================================================================
 -- ⛔ APPLY THIS FILE AND entities/review/sql/dbo.review.sql IN **ONE**
 --    TRANSACTION. NEITHER ORDER IS SAFE ON ITS OWN (U-467).

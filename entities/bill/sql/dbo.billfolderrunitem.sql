@@ -1,3 +1,7 @@
+-- Contract: dbo.BillFolderRunItem   (U-631; mirror of entities/bill/business/service.py docstring)
+-- Owns: Per-PDF claim/process rows for bill-folder intake.
+-- Invariants: Claim uses UPDLOCK+READPAST; stale-run auto-fail sproc for scheduler recovery.
+-- Sprocs: AutoFailStaleBillFolderRuns, CheckAndCompleteBillFolderRun, ClaimNextBillFolderRunItem, CreateBillFolderRunItem, ReadActiveBillFolderRunItemIds, ReadBillFolderRunAggregateByPublicId, ReadBillFolderRunItemErrorsByRunPublicId, UpdateBillFolderRunItemOnFailure, UpdateBillFolderRunItemOnSuccess
 -- Per-file work items for Process Folder runs. The Function App claims
 -- one at a time via ClaimNextBillFolderRunItem and processes it via the
 -- API's /admin/bill-folder/tick endpoint. No single HTTP call ever runs

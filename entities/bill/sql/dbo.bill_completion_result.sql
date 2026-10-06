@@ -1,3 +1,7 @@
+-- Contract: dbo.BillCompletionResult   (U-631; mirror of entities/bill/business/service.py docstring)
+-- Owns: Async completion job result blob keyed to Bill.
+-- Invariants: Upsert/Get sprocs SET NOCOUNT ON; no in-proc ROLLBACK.
+-- Sprocs: GetBillCompletionResult, UpsertBillCompletionResult
 -- Bill completion result (permanent record of completion outcome)
 IF OBJECT_ID('dbo.BillCompletionResult', 'U') IS NULL
 BEGIN

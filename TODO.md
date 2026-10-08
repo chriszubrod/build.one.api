@@ -832,6 +832,44 @@ by 17 rows.
   and each holds rows the other lacks). Re-read col-Z afterward and confirm 305/305.
 - [ ] **P2 — establish how they got there.** The insert flurry sits in `ms.Outbox` around 2026-09-09 21:39
   and 2026-09-10 00:06-00:34 (`Kind='insert_excel_row'`, EntityType Bill/BillBatch/ExpenseBatch, all
+## BR-MAIN-30 follow-ups (booked 2026-10-07, InvoiceAgent run)
+
+- [ ] **Chris to research — Associated Masonry vendor credit `0464398-IN-C` (QBO VendorCredit 76433, -$4,035.59, 2026-09-10).**
+  Its memo says it reverses a DUPLICATE entry of vendor invoice `0464398-IN` (3/3/2026): QBO bills **67380**
+  (NotBillable, paid by check 68402, never on a draw) and **68030** (HasBeenBilled → BR-MAIN-20 via RC 68031,
+  paid by check 72813) both exist for the same invoice. The client was billed once, so the credit is an A/P
+  bookkeeping reversal, not a credit memo owed to the client. Chris's call 2026-10-07: **remove line 14 from the
+  BR-MAIN-30 packet** and research separately — (a) confirm both checks cleared / whether the vendor actually owes
+  a refund of the double payment, (b) decide whether the duplicate bill 67380 should be voided in QBO instead.
+  Local side-notes: dbo `Bill 17550` (QBO 68030) carries `VendorId=533` **Lamps Plus** — wrong vendor (QBO says
+  Associated Masonry Products); SharePoint DETAILS row for `0464398-IN` therefore reads PAYABLE TO = Lamps Plus.
+  Also dbo `Bill 17336` (QBO 67380, BLI 21062) has `IsBilled=NULL`.
+- [x] **Run record — BR-MAIN-30 shipped 2026-10-07** (38 QBO lines, $1,221,063.20; 37 vendor sources + 12% fee
+  $130,828.20; packet 64 pp / skipped 0; SP + Box each 37 H-tagged rows = $1,090,235.00; 35 files delivered to
+  `15 - Draw Requests/BR-MAIN-30/` on both targets). SESSION_NOTES.md was held by another session, so the notes
+  live here. Things the playbook does not yet say:
+  - **A QBO line split leaves the local `BillLineItem.Price` stale.** Harpeth 6946 was one $102,133 line, split
+    in QBO to $88,215 + $13,918; the surviving local line kept `Price=102133` (Amount updated) and that value was
+    already in both DETAILS sheets. Fixed via `update_by_public_id(..., _via_internal_pipeline=True)` + SP
+    `update_excel_range(N)` + Box `stamp_columns_by_key` under the KI-46 lock recipe. Add a Price≠Amount screen to
+    the Phase 1 audit for QBO-pulled bills.
+  - **Deleting a QBO invoice line does NOT remove the local `InvoiceLineItem`** — the project-scoped invoice
+    re-pull updated the header/fee but left the stale Manual row (39 local vs 38 live). Deleted through
+    `InvoiceLineItemService.delete_by_public_id` after confirming it was unlinked/untagged/unbilled.
+  - **`BillCreditCompleteService.sync_to_excel_workbook` writes SharePoint DIRECTLY** (message "Synced 1 row(s)",
+    no `ms.Outbox` row) — unlike Bill/Expense, which enqueue. Don't wait on the MS outbox for a credit row.
+  - **`InvoiceService.sync_to_excel_workbook` pass 2 hung for 33 min with no output** (pass 1 stamped 36 rows in
+    seconds). Killed it and stamped the one late row by col-Z key with `update_excel_range(H{row})`.
+  - **A purchase on an unmapped duplicate QBO vendor is a permanent, silent projection gap** (`No vendor mapping
+    found` → skip; no ReconciliationIssue on the purchase). Mobile Mini 1481 vs 1305 — Chris repointed the
+    purchase to Willscot in QBO; one-day scoped pull then projected it.
+  - Prod `ms.Outbox` 8652 (bill 40607, project 28) and `box.Outbox` 9469 (bill 40646, project 46) have sat
+    `in_progress` since 2026-09-29 — stuck claims, not this run's. Box dead-letter 10472 (18:37 UTC) is a
+    `box_excel_batch` against a `Tracking Budget DETAILS` sheet whose draw-tag header sits at column G, not H —
+    another project's workbook template.
+- [ ] **Cincinnati Builders Risk 0746569 — June 2026 installment is absent from QBO** (bills exist for Jan–May,
+  Jul–Sep; March's was only entered 2026-09-25 and billed on BR-MAIN-30). Check the carrier statement for 06/06.
+
   `done`). Two candidates, and the payloads will separate them: a genuine double-enqueue of the same source
   lines, versus the CRITICAL #8 blind-insert (a writer whose `get_excel_used_range_values` dedup read failed,
   so it never saw the existing keys). Worth knowing which, because the second one recurs on every future

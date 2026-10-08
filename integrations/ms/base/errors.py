@@ -119,9 +119,10 @@ class MsAuthTransientError(MsAuthError):
     to clear on its own — refresh-applock timeout, Microsoft token-endpoint
     429/5xx/timeout, or a DB/network blip. Deliberately a SUBCLASS of
     MsAuthError so every existing 'except MsAuthError' site keeps catching
-    it unchanged; only the retry / dead-letter decision changes. No request
-    ever left the process when this is raised, so an in-process retry
-    cannot duplicate a write.
+    it unchanged; only the retry / dead-letter decision changes. Either no request left the process when this is raised, or (U-069)
+    the request was rejected with 401 after a dampened token recovery
+    (refused before processing), so an in-process retry cannot duplicate
+    a write.
     """
 
     is_retryable = True

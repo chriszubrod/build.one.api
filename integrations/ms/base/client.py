@@ -3,7 +3,7 @@ import email.utils
 import logging
 import os
 import time
-from typing import Any, Dict, NoReturn, Optional, Union
+from typing import Any, Dict, NoReturn, Optional, Union, Callable
 
 # Third-party Imports
 import httpx
@@ -132,7 +132,9 @@ class MsGraphClient:
         if self._owns_http_client:
             self._http_client.close()
 
-    def _resolve_auth(self, force_refresh: bool) -> tuple[Any, AuthFailureKind]:
+    def _resolve_auth(
+        self, force_refresh: bool, stale_access_token: Optional[str] = None
+    ) -> tuple[Any, AuthFailureKind]:
         """
         Resolve a valid MsAuth plus the classification of any failure.
 
@@ -142,7 +144,10 @@ class MsGraphClient:
         dead-letter this unit exists to remove. Every auth service reaching this
         seam is an MsAuthService; anything else should fail loudly.
         """
-        return self.auth_service.ensure_valid_token_classified(force_refresh=force_refresh)
+        return self.auth_service.ensure_valid_token_classified(
+            force_refresh=force_refresh,
+            stale_access_token=stale_access_token,
+        )
 
     def _raise_auth_unavailable(
         self,
@@ -443,6 +448,76 @@ class MsGraphClient:
             correlation_id=correlation_id,
         )
 
+    def _recover_from_401(
+        self,
+        *,
+        auth: Any,
+        resend: Callable[[str], Any],
+        method: str,
+        request_path: str,
+        correlation_id: str,
+        operation_name: str,
+    ) -> Any:
+        """401-refresh-retry-once, shared by the JSON and download paths. Resolve
+        a token, telling the auth service which token just failed (U-069: if a
+        concurrent caller already rotated the row, no refresh is made), resend
+        once with it, and classify a SECOND 401 as transient — the retry token
+        may have been minted by someone else and be bad for its own reasons; the
+        next outbox attempt refreshes for real."""
+        logger.info(
+            "ms.auth.token.refresh.started",
+            extra={
+                "event_name": "ms.auth.token.refresh.started",
+                "operation_name": operation_name,
+                "reason": "401_on_request",
+            },
+        )
+        refreshed, refresh_failure_kind = self._resolve_auth(
+            force_refresh=True, stale_access_token=auth.access_token
+        )
+        if not refreshed or not refreshed.access_token:
+            logger.error(
+                "ms.auth.token.refresh.failed",
+                extra={
+                    "event_name": "ms.auth.token.refresh.failed",
+                },
+            )
+            self._raise_auth_unavailable(
+                failure_kind=refresh_failure_kind,
+                reason="Token refresh after 401 did not yield a new token",
+                request_method=method,
+                request_path=request_path,
+                correlation_id=correlation_id,
+                http_status=401,
+            )
+        logger.info(
+            "ms.auth.token.refresh.completed",
+            extra={
+                "event_name": "ms.auth.token.refresh.completed",
+            },
+        )
+        response = resend(refreshed.access_token)
+        if response.status_code == 401:
+            logger.warning(
+                "ms.auth.token.retry_401",
+                extra={
+                    "event_name": "ms.auth.token.retry_401",
+                    "operation_name": operation_name,
+                    "http_method": method,
+                    "request_path": request_path,
+                    "correlation_id": correlation_id,
+                },
+            )
+            raise MsAuthTransientError(
+                "Request still 401 after token recovery "
+                "(token may have been rotated by a concurrent caller) - retryable",
+                request_method=method,
+                request_path=request_path,
+                correlation_id=correlation_id,
+                http_status=401,
+            )
+        return response
+
     def _send_once_raw(
         self,
         *,
@@ -496,28 +571,25 @@ class MsGraphClient:
             )
 
             if response.status_code == 401:
-                refreshed, refresh_failure_kind = self._resolve_auth(force_refresh=True)
-                if not refreshed or not refreshed.access_token:
-                    self._raise_auth_unavailable(
-                        failure_kind=refresh_failure_kind,
-                        reason="Token refresh after 401 did not yield a new token",
-                        request_method=method,
-                        request_path=request_path,
-                        correlation_id=correlation_id,
-                        http_status=401,
-                    )
-                response = self._send_http(
+                response = self._recover_from_401(
+                    auth=auth,
+                    resend=lambda token: self._send_http(
+                        method=method,
+                        url=url,
+                        access_token=token,
+                        params=params,
+                        json_body=None,
+                        content=None,
+                        content_type=None,
+                        extra_headers=extra_headers,
+                        client_request_id=None,
+                        timeout=timeout,
+                        follow_redirects=True,
+                    ),
                     method=method,
-                    url=url,
-                    access_token=refreshed.access_token,
-                    params=params,
-                    json_body=None,
-                    content=None,
-                    content_type=None,
-                    extra_headers=extra_headers,
-                    client_request_id=None,
-                    timeout=timeout,
-                    follow_redirects=True,
+                    request_path=request_path,
+                    correlation_id=correlation_id,
+                    operation_name=operation_name,
                 )
         except httpx.TimeoutException as error:
             raise MsTimeoutError(
@@ -675,47 +747,24 @@ class MsGraphClient:
             # 401-refresh-retry-once: a single-shot recovery that is intentionally
             # distinct from the retry layer (the retry layer handles 429/5xx).
             if response.status_code == 401:
-                logger.info(
-                    "ms.auth.token.refresh.started",
-                    extra={
-                        "event_name": "ms.auth.token.refresh.started",
-                        "operation_name": operation_name,
-                        "reason": "401_on_request",
-                    },
-                )
-                refreshed, refresh_failure_kind = self._resolve_auth(force_refresh=True)
-                if not refreshed or not refreshed.access_token:
-                    logger.error(
-                        "ms.auth.token.refresh.failed",
-                        extra={
-                            "event_name": "ms.auth.token.refresh.failed",
-                        },
-                    )
-                    self._raise_auth_unavailable(
-                        failure_kind=refresh_failure_kind,
-                        reason="Token refresh after 401 did not yield a new token",
-                        request_method=method,
-                        request_path=request_path,
-                        correlation_id=correlation_id,
-                        http_status=401,
-                    )
-                logger.info(
-                    "ms.auth.token.refresh.completed",
-                    extra={
-                        "event_name": "ms.auth.token.refresh.completed",
-                    },
-                )
-                response = self._send_http(
+                response = self._recover_from_401(
+                    auth=auth,
+                    resend=lambda token: self._send_http(
+                        method=method,
+                        url=url,
+                        access_token=token,
+                        params=params,
+                        json_body=json_body,
+                        content=content,
+                        content_type=content_type,
+                        extra_headers=extra_headers,
+                        client_request_id=client_request_id,
+                        timeout=timeout,
+                    ),
                     method=method,
-                    url=url,
-                    access_token=refreshed.access_token,
-                    params=params,
-                    json_body=json_body,
-                    content=content,
-                    content_type=content_type,
-                    extra_headers=extra_headers,
-                    client_request_id=client_request_id,
-                    timeout=timeout,
+                    request_path=request_path,
+                    correlation_id=correlation_id,
+                    operation_name=operation_name,
                 )
 
         except httpx.TimeoutException as error:

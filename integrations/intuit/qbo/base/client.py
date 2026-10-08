@@ -2,7 +2,7 @@
 import logging
 import time
 from datetime import datetime
-from typing import Any, Dict, List, NoReturn, Optional, Tuple, Union
+from typing import Any, Dict, List, NoReturn, Optional, Tuple, Union, Callable
 
 # Third-party Imports
 import httpx
@@ -181,7 +181,9 @@ class QboHttpClient:
         if self._owns_http_client:
             self._http_client.close()
 
-    def _resolve_auth(self, force_refresh: bool) -> tuple[Any, AuthFailureKind]:
+    def _resolve_auth(
+        self, force_refresh: bool, stale_access_token: Optional[str] = None
+    ) -> tuple[Any, AuthFailureKind]:
         """
         Resolve a valid QboAuth plus the classification of any failure.
 
@@ -194,6 +196,7 @@ class QboHttpClient:
         return self.auth_service.ensure_valid_token_classified(
             realm_id=self.realm_id,
             force_refresh=force_refresh,
+            stale_access_token=stale_access_token,
         )
 
     def _raise_auth_unavailable(
@@ -431,6 +434,81 @@ class QboHttpClient:
             correlation_id=correlation_id,
         )
 
+    def _recover_from_401(
+        self,
+        *,
+        auth: Any,
+        resend: Callable[[str], Any],
+        method: str,
+        request_path: str,
+        correlation_id: str,
+        operation_name: str,
+    ) -> Any:
+        """401-refresh-retry-once. Resolve a token, telling the auth service which
+        token just failed (U-069: if a concurrent caller already rotated the row,
+        no refresh is made), resend once with it, and classify a SECOND 401 as
+        transient — the retry token may have been minted by someone else and be
+        bad for its own reasons; the next outbox attempt refreshes for real."""
+        logger.info(
+            "qbo.auth.token.refresh.started",
+            extra={
+                "event_name": "qbo.auth.token.refresh.started",
+                "correlation_id": correlation_id,
+                "operation_name": operation_name,
+                "realm_id": self.realm_id,
+                "reason": "401_on_request",
+            },
+        )
+        refreshed, refresh_failure_kind = self._resolve_auth(
+            force_refresh=True, stale_access_token=auth.access_token
+        )
+        if not refreshed or not refreshed.access_token:
+            logger.error(
+                "qbo.auth.token.refresh.failed",
+                extra={
+                    "event_name": "qbo.auth.token.refresh.failed",
+                    "correlation_id": correlation_id,
+                    "realm_id": self.realm_id,
+                    "failure_kind": refresh_failure_kind.value,
+                },
+            )
+            self._raise_auth_unavailable(
+                failure_kind=refresh_failure_kind,
+                reason="Token refresh after 401 did not yield a new token",
+                request_method=method,
+                request_path=request_path,
+                correlation_id=correlation_id,
+                http_status=401,
+            )
+        logger.info(
+            "qbo.auth.token.refresh.completed",
+            extra={
+                "event_name": "qbo.auth.token.refresh.completed",
+                "correlation_id": correlation_id,
+                "realm_id": self.realm_id,
+            },
+        )
+        response = resend(refreshed.access_token)
+        if response.status_code == 401:
+            logger.warning(
+                "qbo.auth.token.retry_401",
+                extra={
+                    "event_name": "qbo.auth.token.retry_401",
+                    "correlation_id": correlation_id,
+                    "operation_name": operation_name,
+                    "realm_id": self.realm_id,
+                },
+            )
+            raise QboAuthTransientError(
+                "Request still 401 after token recovery "
+                "(token may have been rotated by a concurrent caller) - retryable",
+                request_method=method,
+                request_path=request_path,
+                correlation_id=correlation_id,
+                http_status=401,
+            )
+        return response
+
     def _send_once(
         self,
         *,
@@ -480,45 +558,15 @@ class QboHttpClient:
             # 401-refresh-retry-once: a single-shot recovery that is intentionally
             # distinct from the retry layer (the retry layer handles 429/5xx).
             if response.status_code == 401:
-                logger.info(
-                    "qbo.auth.token.refresh.started",
-                    extra={
-                        "event_name": "qbo.auth.token.refresh.started",
-                        "correlation_id": correlation_id,
-                        "operation_name": operation_name,
-                        "realm_id": self.realm_id,
-                        "reason": "401_on_request",
-                    },
-                )
-                refreshed, refresh_failure_kind = self._resolve_auth(force_refresh=True)
-                if not refreshed or not refreshed.access_token:
-                    logger.error(
-                        "qbo.auth.token.refresh.failed",
-                        extra={
-                            "event_name": "qbo.auth.token.refresh.failed",
-                            "correlation_id": correlation_id,
-                            "realm_id": self.realm_id,
-                            "failure_kind": refresh_failure_kind.value,
-                        },
-                    )
-                    self._raise_auth_unavailable(
-                        failure_kind=refresh_failure_kind,
-                        reason="Token refresh after 401 did not yield a new token",
-                        request_method=method,
-                        request_path=request_path,
-                        correlation_id=correlation_id,
-                        http_status=401,
-                    )
-                logger.info(
-                    "qbo.auth.token.refresh.completed",
-                    extra={
-                        "event_name": "qbo.auth.token.refresh.completed",
-                        "correlation_id": correlation_id,
-                        "realm_id": self.realm_id,
-                    },
-                )
-                response = self._send_http(
-                    method, url, refreshed.access_token, params, json_body, files, timeout
+                response = self._recover_from_401(
+                    auth=auth,
+                    resend=lambda token: self._send_http(
+                        method, url, token, params, json_body, files, timeout
+                    ),
+                    method=method,
+                    request_path=request_path,
+                    correlation_id=correlation_id,
+                    operation_name=operation_name,
                 )
 
         except httpx.TimeoutException as error:

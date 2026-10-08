@@ -195,6 +195,8 @@ class MsAuthService:
         tenant_id: Optional[str] = None,
         buffer_seconds: int = 60,
         force_refresh: bool = False,
+        *,
+        stale_access_token: Optional[str] = None,
     ) -> Optional[MsAuth]:
         """
         Ensure the access token is valid. If expired (or force_refresh=True),
@@ -209,6 +211,9 @@ class MsAuthService:
             force_refresh: When True, skip the expiry check and refresh unconditionally.
                             Used by the shared MsGraphClient's 401-recovery path to force
                             a fresh token when the cached one appears revoked.
+            stale_access_token: With force_refresh, the access token the failed request
+                            used. If the row already holds a different unexpired token,
+                            a concurrent caller refreshed after that 401 and no refresh is made.
 
         Returns:
             MsAuth object with valid token, or None if refresh failed
@@ -220,14 +225,42 @@ class MsAuthService:
             tenant_id=tenant_id,
             buffer_seconds=buffer_seconds,
             force_refresh=force_refresh,
+            stale_access_token=stale_access_token,
         )
         return auth
+
+    def _token_is_fresh(
+        self,
+        ms_auth: MsAuth,
+        *,
+        force_refresh: bool,
+        buffer_seconds: int,
+        stale_access_token: Optional[str] = None,
+    ) -> bool:
+        """True when the row can be used without calling Microsoft: it is not
+        expired, and either the caller is not forcing a refresh or (U-069) it is
+        forcing because `stale_access_token` got a 401 and the row already holds
+        a DIFFERENT, non-empty token — a concurrent caller refreshed after that
+        failure, so refreshing again would be redundant. Forcing without a stale
+        token is unconditional, as before. (QBO's twin also requires a non-empty
+        token on the non-forced path; MS never did — pre-existing asymmetry,
+        left as is here.)"""
+        return not self.is_token_expired(ms_auth, buffer_seconds) and (
+            not force_refresh
+            or (
+                stale_access_token is not None
+                and bool(ms_auth.access_token)
+                and ms_auth.access_token != stale_access_token
+            )
+        )
 
     def ensure_valid_token_classified(
         self,
         tenant_id: Optional[str] = None,
         buffer_seconds: int = 60,
         force_refresh: bool = False,
+        *,
+        stale_access_token: Optional[str] = None,
     ) -> tuple[Optional[MsAuth], AuthFailureKind]:
         """
         Ensure the access token is valid, classifying any failure for retry decisions.
@@ -255,9 +288,18 @@ class MsAuthService:
             logger.error(f"No MsAuth found for tenant_id: {tenant_id}")
             return None, AuthFailureKind.PERMANENT
 
-        # Skip expiry check when force_refresh is requested
-        if not force_refresh and not self.is_token_expired(ms_auth, buffer_seconds):
-            logger.debug(f"Token for tenant_id {tenant_id} is still valid")
+        if self._token_is_fresh(
+            ms_auth,
+            force_refresh=force_refresh,
+            buffer_seconds=buffer_seconds,
+            stale_access_token=stale_access_token,
+        ):
+            if force_refresh:
+                logger.info(
+                    f"Token for tenant_id {tenant_id} was already rotated by a concurrent caller (pre-lock)"
+                )
+            else:
+                logger.debug(f"Token for tenant_id {tenant_id} is still valid")
             _emit_token_expiration_check(ms_auth)
             return ms_auth, AuthFailureKind.NONE
 
@@ -292,9 +334,15 @@ class MsAuthService:
 
             # If another caller refreshed while we waited and force_refresh is False,
             # the freshly-read token is already valid — skip the MS call entirely.
-            if not force_refresh and not self.is_token_expired(ms_auth, buffer_seconds):
+            if self._token_is_fresh(
+                ms_auth,
+                force_refresh=force_refresh,
+                buffer_seconds=buffer_seconds,
+                stale_access_token=stale_access_token,
+            ):
                 logger.info(
-                    f"Token for tenant_id {tenant_id} was refreshed by a concurrent caller"
+                    f"Token for tenant_id {tenant_id} was "
+                    + ("already rotated by a concurrent caller (in-lock)" if force_refresh else "refreshed by a concurrent caller")
                 )
                 _emit_token_expiration_check(ms_auth)
                 return ms_auth, AuthFailureKind.NONE

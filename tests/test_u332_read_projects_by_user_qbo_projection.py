@@ -100,7 +100,7 @@ def test_read_projects_by_user_both_blocks_match_read_by_id():
     assert len(blocks) == 2, f"expected admin + scoped SELECT variants, got {len(blocks)}"
     for columns in blocks:
         assert {"QboId", "RealmId"} <= columns
-        assert columns == BY_ID_COLUMNS
+        assert columns - {"CustomerName"} == BY_ID_COLUMNS  # U-071: list-only Customer join
 
 
 @patch("entities.project.persistence.repo.get_connection")

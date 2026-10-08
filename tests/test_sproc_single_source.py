@@ -1,4 +1,4 @@
-"""U-045/U-048/U-051/U-062/U-087/U-100/U-102/U-111/U-125/U-126/U-129/U-131/U-133/U-137/U-140/U-142/U-144/U-146/U-148/U-150/U-158/U-162/U-188 guard: canonical
+"""U-045/U-048/U-051/U-062/U-071/U-087/U-100/U-102/U-111/U-125/U-126/U-129/U-131/U-133/U-137/U-140/U-142/U-144/U-146/U-148/U-150/U-158/U-162/U-188 guard: canonical
 SQL homes for sprocs, access UDFs, and the shared human-only review predicate.
 
 Three guard shapes:
@@ -13,7 +13,8 @@ Three guard shapes:
   the USER_BASE trio, later subsumed by U-131's whole-file guard), user_project
   (U-129), user (U-131), user_module (U-133), organization (U-137), company (U-140), vendor (U-142),
   user_role (U-144), user_company (U-146), attachment (U-148), invoice_line_item (U-150),
-  invoice (U-158), and contract_labor (U-162). The remaining entities still carry
+  invoice (U-158), and contract_labor (U-162); project's ReadProjectsByUserId
+  is pinned per-sproc (U-071) as its migration duplicate is removed. The remaining entities still carry
   duplicated base sprocs in migrations (email_message=7, …); converting them is future work.
   **When you convert one, add its row to
   ENTITY_BASE_FILES or SINGLE_SOURCE_SPROCS** — coverage is opt-in, so a
@@ -92,6 +93,7 @@ INVOICE_LINE_ITEM_BASE = REPO_ROOT / "entities" / "invoice_line_item" / "sql" / 
 INVOICE_BASE = REPO_ROOT / "entities" / "invoice" / "sql" / "dbo.invoice.sql"
 AUTH_BASE = REPO_ROOT / "entities" / "auth" / "sql" / "dbo.auth.sql"
 DEVICE_TOKEN_BASE = REPO_ROOT / "entities" / "device_token" / "sql" / "dbo.device_token.sql"
+PROJECT_BASE = REPO_ROOT / "entities" / "project" / "sql" / "dbo.project.sql"
 
 # U-062/U-087: the three review-notification recipient resolvers homed in the
 # review base file (dbo.review.sql), their bodies neutralized to pointer stubs in
@@ -145,6 +147,8 @@ SINGLE_SOURCE_SPROCS = [
     # ContractLaborRepository.create sends CreatedByUserId unconditionally, so a
     # base re-apply would have broken every CL create with SQL 8145.
     ("CreateContractLabor", CONTRACT_LABOR_BASE),
+    # U-071: the only project sproc that had a migration duplicate
+    ("ReadProjectsByUserId", PROJECT_BASE),
 ]
 
 # U-061: the four Create sprocs whose bodies had drifted BEHIND their canonical
@@ -196,6 +200,7 @@ GAP2_NEUTRALIZED_SPROCS = frozenset(
 # just keeps them from ever being redefined elsewhere.
 # "Entity" here reads as entity/package, per the module docstring.
 ENTITY_BASE_FILES = [
+    ("project", PROJECT_BASE),
     ("time_entry", TIME_ENTRY_BASE),
     ("ms_outbox", MS_OUTBOX_BASE),
     ("role_module", ROLE_MODULE_BASE),

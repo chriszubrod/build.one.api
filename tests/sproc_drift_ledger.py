@@ -77,10 +77,6 @@ SPROC_DRIFT_LEDGER: dict[str, frozenset[str]] = {
         'entities/email_message/sql/migrations/002_contract_labor_timesheet_vocab.sql',
         'entities/email_message/sql/migrations/003_delegated_to_contract_labor_action_vocab.sql',
     }),  # known-dup, home=entities/email_message/sql/dbo.email_message.sql
-    "ReadProjectsByUserId": frozenset({
-        'entities/project/sql/dbo.project.sql',
-        'entities/project/sql/migrations/003_read_projects_by_user_id_admin_bypass.sql',
-    }),  # known-dup, home=entities/project/sql/dbo.project.sql
     "ReadQboVendorCreditLineByVendorCreditIdAndQboLineId": frozenset({
         'integrations/intuit/qbo/vendorcredit/sql/qbo.vendorcredit.sql',
         'scripts/migrations/qbo_vendorcredit_upsert_inplace.sql',

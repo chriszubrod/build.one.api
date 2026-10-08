@@ -48,6 +48,7 @@ class ProjectRepository:
                 notes=getattr(row, "Notes", None),
                 qbo_id=getattr(row, "QboId", None),
                 realm_id=getattr(row, "RealmId", None),
+                customer_name=getattr(row, "CustomerName", None),
             )
         except AttributeError as error:
             logger.error(f"Attribute error during project mapping: {error}")

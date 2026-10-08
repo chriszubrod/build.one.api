@@ -30,6 +30,10 @@ class Project:
     # elsewhere, including on entities never synced from QBO.
     qbo_id: Optional[str] = None
     realm_id: Optional[str] = None
+    # Customer.Name via LEFT JOIN — populated only by the list sprocs
+    # (ReadProjects, ReadProjectsByUserId); None elsewhere, including on
+    # projects with no CustomerId.
+    customer_name: Optional[str] = None
 
     @property
     def row_version_bytes(self) -> Optional[bytes]:

@@ -92,7 +92,7 @@ def test_read_projects_select_shape_matches_read_by_id():
     ReadProjectById's SELECT shape")."""
     columns = _select_columns("ReadProjects")
     assert {"QboId", "RealmId"} <= columns
-    assert columns == BY_ID_COLUMNS
+    assert columns - {"CustomerName"} == BY_ID_COLUMNS  # U-071: list-only Customer join
 
 
 def test_read_project_by_public_id_select_shape_matches_read_by_id():

@@ -156,27 +156,29 @@ BEGIN
     BEGIN TRANSACTION;
 
     SELECT
-        [Id],
-        [PublicId],
-        [RowVersion],
-        CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
-        CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
-        [Name],
-        [Description],
-        [Status],
-        [CustomerId],
-        [Abbreviation],
-        [Notes],
-        [QboId],
-        [RealmId]
+        p.[Id],
+        p.[PublicId],
+        p.[RowVersion],
+        CONVERT(VARCHAR(19), p.[CreatedDatetime], 120) AS [CreatedDatetime],
+        CONVERT(VARCHAR(19), p.[ModifiedDatetime], 120) AS [ModifiedDatetime],
+        p.[Name],
+        p.[Description],
+        p.[Status],
+        p.[CustomerId],
+        p.[Abbreviation],
+        p.[Notes],
+        p.[QboId],
+        p.[RealmId],
+        c.[Name] AS [CustomerName]
     FROM dbo.[Project] p
+    LEFT JOIN dbo.[Customer] c ON c.[Id] = p.[CustomerId]
     WHERE
         @ActorIsSystemAdmin = 1
         OR EXISTS (
             SELECT 1 FROM dbo.[UserProject] up
             WHERE up.[UserId] = @ActorUserId AND up.[ProjectId] = p.[Id]
         )
-    ORDER BY [Name] ASC;
+    ORDER BY p.[Name] ASC;
 
     COMMIT TRANSACTION;
 END;
@@ -422,8 +424,10 @@ BEGIN
             p.[Abbreviation],
             p.[Notes],
             p.[QboId],
-            p.[RealmId]
+            p.[RealmId],
+            c.[Name] AS [CustomerName]
         FROM dbo.[Project] p
+        LEFT JOIN dbo.[Customer] c ON c.[Id] = p.[CustomerId]
         ORDER BY p.[Name] ASC;
     END
     ELSE
@@ -441,8 +445,10 @@ BEGIN
             p.[Abbreviation],
             p.[Notes],
             p.[QboId],
-            p.[RealmId]
+            p.[RealmId],
+            c.[Name] AS [CustomerName]
         FROM dbo.[Project] p
+        LEFT JOIN dbo.[Customer] c ON c.[Id] = p.[CustomerId]
         INNER JOIN dbo.[UserProject] up ON up.[ProjectId] = p.[Id]
         WHERE up.[UserId] = @UserId
         ORDER BY p.[Name] ASC;

@@ -255,7 +255,7 @@ class CreateExpenseArgs(BaseModel):
         default=None,
         description="Inline summary line description (~6 words, e.g. 'Fuel, materials, supplies').",
     )
-    line_quantity: Optional[int] = Field(default=None, description="Quantity. Summary-line use passes 1.")
+    line_quantity: Optional[float] = Field(default=None, description="Quantity. Summary-line use passes 1.")
     line_rate: Optional[float] = Field(default=None, description="Rate (often equals total_amount on a summary line).")
     line_amount: Optional[float] = Field(default=None, description="Amount = quantity × rate.")
     line_markup: Optional[float] = Field(default=None, description="Markup decimal (0.10 = 10%). Null = no markup.")
@@ -470,7 +470,7 @@ class _ExpenseLineItemSpec(BaseModel):
         description="Optional UUID of the Project to bill against.",
     )
     description: Optional[str] = Field(default=None)
-    quantity: Optional[int] = Field(default=None)
+    quantity: Optional[float] = Field(default=None)
     rate: Optional[float] = Field(default=None)
     amount: Optional[float] = Field(default=None)
     is_billable: Optional[bool] = Field(default=None)
@@ -550,7 +550,7 @@ class UpdateExpenseLineItemArgs(BaseModel):
     sub_cost_code_id: Optional[int] = Field(default=None)
     project_public_id: Optional[str] = Field(default=None)
     description: Optional[str] = Field(default=None)
-    quantity: Optional[int] = Field(default=None)
+    quantity: Optional[float] = Field(default=None)
     rate: Optional[float] = Field(default=None)
     amount: Optional[float] = Field(default=None)
     is_billable: Optional[bool] = Field(default=None)

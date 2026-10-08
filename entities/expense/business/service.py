@@ -191,7 +191,7 @@ class ExpenseService:
         return self._qbo_auth_service
 
     def create(self, *, tenant_id: int = 1, vendor_public_id: str, expense_date: str, reference_number: str, total_amount: Optional[Decimal] = None, memo: Optional[str] = None, is_draft: bool = True, is_credit: bool = False, source_email_message_public_id: Optional[str] = None, attachment_public_id: Optional[str] = None,
-               line_description: Optional[str] = None, line_quantity: Optional[int] = None,
+               line_description: Optional[str] = None, line_quantity: Optional[Decimal] = None,
                line_rate: Optional[Decimal] = None, line_amount: Optional[Decimal] = None,
                line_markup: Optional[Decimal] = None, line_price: Optional[Decimal] = None,
                line_is_billable: Optional[bool] = None,

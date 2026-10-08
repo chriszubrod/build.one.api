@@ -48,18 +48,18 @@ column, sprocs, read path and primary REST endpoint now agree on `Decimal` for B
 entities. These three did NOT move, so a fractional quantity still 422s on them — and
 now that everything around them agrees, they LOOK intentional. That is why they are here.
 
-- [ ] 🟡 **`line_quantity: Optional[int]` on both parents.** `entities/bill/api/schemas.py:70`
+- [x] 🟡 **`line_quantity: Optional[int]` on both parents.** `entities/bill/api/schemas.py:70` — closed by U-078
   + `business/service.py:209`, and `entities/expense/api/schemas.py:67` + `business/service.py:152`.
   These are the one-shot "create the parent with an inline line" paths; they reject 5.25
   before the fixed line-item create is ever reached. Verified live on expense:
   `ExpenseCreate(..., line_quantity=Decimal("5.25"))` still raises.
-- [ ] 🟡 **Agent tool surfaces still `int`.** `entities/bill/intelligence/tools.py:290,557,659`
+- [x] 🟡 **Agent tool surfaces still `int`.** `entities/bill/intelligence/tools.py:290,557,659` — closed by U-078
   and `entities/expense/intelligence/tools.py:257,472,552`. They POST to the endpoints that
   were just widened, so **an agent still cannot write a fractional quantity on either
   entity.** Fails loudly (Pydantic v2 rejects 2.5→int rather than truncating), so it is a
   capability gap, not data loss. Per `feedback_agent_tools_are_a_consumer_surface`, a
   web+mcp grep would have missed these entirely.
-- [ ] 🟢 **Truthy guard on the QBO bill push.** `integrations/intuit/qbo/bill/connector/bill/business/service.py:1152`
+- [x] 🟢 **Truthy guard on the QBO bill push.** `integrations/intuit/qbo/bill/connector/bill/business/service.py:1152` — closed by U-078
   — `qty = Decimal(str(line_item.quantity)) if line_item.quantity else None` drops a
   legitimate `Decimal("0")` to None. **Metadata only, NOT money**: `amount` is sent
   explicitly and the `qty*unit_price` fallback would have produced 0 anyway. Confirmed the
@@ -5541,3 +5541,15 @@ column for the current draw understates by the entire fee.
 
 ---
 
+
+## U-078 follow-ups — quantity widening, the last three doors (shipped 2026-10-08)
+
+The parent `line_quantity`, the six agent-tool fields and the QBO zero guard are closed (ticked
+above in § U-503d/e residuals). Two items the reviews surfaced and this unit deliberately left:
+
+- [ ] 🟢 **Agent-tool numeric fields are `float` across every `entities/*/intelligence/tools.py`** —
+  `line_quantity` joined `rate`/`amount`/`total_amount`/`markup`/`price` in that convention rather
+  than being the one Decimal field. Codex P3 (U-078): a float quantity loses precision above 13
+  integer digits (1e12 + 0.0003 → .0002) while still fitting DECIMAL(18,4); not a realistic
+  quantity, but the debt is one numeric-type policy for the tool layer (~40 fields, ~8 files; needs
+  a check that the LLM tool-schema export still emits `type: number`). Book as its own unit.

@@ -1149,7 +1149,7 @@ class BillBillConnector:
         # Item-based expense line
         # Ensure we have an amount - QBO requires either Amount or (Qty + UnitPrice)
         line_amount = line_item.amount
-        qty = Decimal(str(line_item.quantity)) if line_item.quantity else None
+        qty = Decimal(str(line_item.quantity)) if line_item.quantity is not None else None
         unit_price = line_item.rate
 
         # If no amount, try to calculate from qty * rate

@@ -308,7 +308,7 @@ class BillService:
 
     def create(self, *, tenant_id: int = 1, user_id: Optional[int] = None, vendor_public_id: Optional[str] = None, payment_term_public_id: Optional[str] = None, bill_date: str, due_date: str, bill_number: Optional[str] = None, total_amount: Optional[Decimal] = None, memo: Optional[str] = None, is_draft: bool = True, intake_source: Optional[str] = None, intake_source_detail: Optional[str] = None, source_email_message_public_id: Optional[str] = None, attachment_public_id: Optional[str] = None,
                require_attachment: bool = True,
-               line_description: Optional[str] = None, line_quantity: Optional[int] = None,
+               line_description: Optional[str] = None, line_quantity: Optional[Decimal] = None,
                line_rate: Optional[Decimal] = None, line_amount: Optional[Decimal] = None,
                line_markup: Optional[Decimal] = None, line_price: Optional[Decimal] = None,
                line_is_billable: Optional[bool] = None,

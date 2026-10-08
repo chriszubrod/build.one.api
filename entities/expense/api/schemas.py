@@ -64,7 +64,7 @@ class ExpenseCreate(BaseModel):
         default=None,
         description="Summary description for the placeholder line (~6 words)."
     )
-    line_quantity: Optional[int] = Field(
+    line_quantity: Optional[Decimal] = Field(
         default=None,
         description="Quantity. Summary-line use typically passes 1."
     )

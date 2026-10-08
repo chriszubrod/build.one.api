@@ -287,7 +287,7 @@ class CreateBillArgs(BaseModel):
         default=None,
         description="Summary description (~6 words) for the bill line.",
     )
-    line_quantity: Optional[int] = Field(
+    line_quantity: Optional[float] = Field(
         default=None,
         description="Quantity. Pass 1 for summary-line use.",
     )
@@ -554,7 +554,7 @@ class _BillLineItemSpec(BaseModel):
         ),
     )
     description: Optional[str] = Field(default=None)
-    quantity: Optional[int] = Field(default=None)
+    quantity: Optional[float] = Field(default=None)
     rate: Optional[float] = Field(default=None)
     amount: Optional[float] = Field(default=None)
     is_billable: Optional[bool] = Field(
@@ -656,7 +656,7 @@ class UpdateBillLineItemArgs(BaseModel):
     sub_cost_code_id: Optional[int] = Field(default=None)
     project_public_id: Optional[str] = Field(default=None)
     description: Optional[str] = Field(default=None)
-    quantity: Optional[int] = Field(default=None)
+    quantity: Optional[float] = Field(default=None)
     rate: Optional[float] = Field(default=None)
     amount: Optional[float] = Field(default=None)
     is_billable: Optional[bool] = Field(default=None)

@@ -37,6 +37,7 @@ class ErrorCode:
     ENTRY_LOCKED = "entry_locked"  # parent entry left draft — only drafts accept edits
     TRANSITION_INVALID = "transition_invalid"  # "Cannot transition from … to …"
     DUPLICATE_KEY = "duplicate_key"  # unique-key violation (2627/2601)
+    CONCURRENCY_CONFLICT = "concurrency_conflict"  # UPDATE matched no row at the stored row version — reload and retry
     FK_VIOLATION = "fk_violation"  # foreign-key violation (547)
     NOT_FOUND = "not_found"
     VALIDATION_ERROR = "validation_error"  # request body/query/path failed schema validation

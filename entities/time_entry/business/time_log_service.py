@@ -12,6 +12,7 @@ from entities.time_entry.persistence.repo import TimeEntryRepository
 from entities.time_entry.persistence.time_log_repo import TimeLogRepository
 from entities.time_entry.persistence.time_entry_status_repo import TimeEntryStatusRepository
 from entities.time_entry.business.actor_scope import actor_scope as _actor_scope
+from shared.database import RecordNotFoundError
 
 logger = logging.getLogger(__name__)
 
@@ -137,7 +138,7 @@ class TimeLogService:
             actor_can_view_team=actor_can_view_team,
         )
         if not existing:
-            raise ValueError(f"TimeLog with public_id '{public_id}' not found.")
+            raise RecordNotFoundError(f"TimeLog with public_id '{public_id}' not found.")
 
         self._validate_parent_is_draft(existing.time_entry_id)
 

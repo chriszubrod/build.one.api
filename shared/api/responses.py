@@ -16,7 +16,11 @@ from shared.db_constraints import (
     looks_like_unique_violation,
     status_for_clean_message,
 )
-from shared.database import DatabaseConstraintError
+from shared.database import (
+    DatabaseConstraintError,
+    RecordNotFoundError,
+    RowVersionConflictError,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -70,6 +74,10 @@ REVIEW_STATUS_SHAPE_PREFIX = "Review status configuration is invalid: "
 # while classifying other 4xx as terminal — so a permanent lock answered with
 # 409 makes a queued edit loop or get discarded through the wrong path.
 STATUS_LOCKED_PREFIX = "This document is completed and can no longer be edited: "
+
+CONCURRENCY_CONFLICT_MESSAGE = (
+    "The record was modified by someone else; reload and retry."
+)
 
 _WORKFLOW_STATUS_BY_PREFIX: tuple[tuple[str, int, str], ...] = (
     (REVIEW_STATUS_SHAPE_PREFIX, status.HTTP_422_UNPROCESSABLE_CONTENT, ErrorCode.REVIEW_STATUS_SHAPE),
@@ -170,6 +178,18 @@ def classify_database_error(error: Exception) -> Optional[ApiError]:
 
     Anything else returns None.
     """
+    if isinstance(error, RowVersionConflictError):
+        return ApiError(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=CONCURRENCY_CONFLICT_MESSAGE,
+            error_code=ErrorCode.CONCURRENCY_CONFLICT,
+        )
+    if isinstance(error, RecordNotFoundError):
+        return ApiError(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(error),
+            error_code=ErrorCode.NOT_FOUND,
+        )
     if isinstance(error, DatabaseConstraintError):
         # U-154 contract preserved: unique-key violations on this path surface the
         # ORIGINAL driver message, because the iOS duplicate-claim matcher keys off

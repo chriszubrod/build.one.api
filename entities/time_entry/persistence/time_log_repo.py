@@ -10,6 +10,8 @@ import pyodbc
 # Local Imports
 from entities.time_entry.business.model import TimeLog
 from shared.database import (
+    RecordNotFoundError,
+    RowVersionConflictError,
     call_procedure,
     get_connection,
     map_database_error,
@@ -265,16 +267,30 @@ class TimeLogRepository:
                 )
                 row = cursor.fetchone()
                 if not row:
+                    still_visible = self.read_by_id(
+                        time_log.id,
+                        actor_user_id=actor_user_id,
+                        actor_is_system_admin=actor_is_system_admin,
+                        actor_can_view_team=actor_can_view_team,
+                    )
+                    if still_visible is None:
+                        logger.warning(
+                            "UpdateTimeLogById returned no row (id=%s); scoped re-read found no row (deleted or inaccessible).",
+                            time_log.id,
+                        )
+                        raise RecordNotFoundError(
+                            f"TimeLog with public_id '{time_log.public_id}' not found."
+                        )
                     logger.warning(
-                        "UpdateTimeLogById returned no row (id=%s); possible row-version conflict, scope mismatch, or record not found.",
+                        "UpdateTimeLogById returned no row (id=%s); scoped re-read still found row — row-version conflict.",
                         time_log.id,
                     )
-                    raise map_database_error(
-                        Exception(
-                            "Update did not match any row; the time log may have been modified by another process (row-version conflict), is not accessible to this user, or no longer exists."
-                        )
+                    raise RowVersionConflictError(
+                        "Update did not match any row; the time log may have been modified by another process (row-version conflict), is not accessible to this user, or no longer exists."
                     )
                 return self._from_db(row)
+        except (RowVersionConflictError, RecordNotFoundError):
+            raise
         except Exception as error:
             logger.error(f"Error during update time log by ID: {error}")
             raise map_database_error(error)

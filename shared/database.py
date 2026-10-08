@@ -47,6 +47,15 @@ class DatabaseOperationError(DatabaseError):
 class DatabaseConcurrencyError(DatabaseError):
     pass
 
+
+class RowVersionConflictError(DatabaseConcurrencyError):
+    """The UPDATE matched no row at the stored RowVersion; the row still exists for this actor — reload and retry."""
+
+
+class RecordNotFoundError(DatabaseError):
+    """The row no longer exists (or is no longer visible to this actor)."""
+
+
 class DatabaseTimeoutError(DatabaseError):
     pass
 

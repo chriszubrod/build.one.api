@@ -38,7 +38,7 @@ class ProjectCreate(BaseModel):
     )
     is_cost_plus: Optional[bool] = Field(
         default=None,
-        description="Whether the project is cost-plus — its expenses are billed on to the customer. Drives the QBO BillableStatus of expenses coded to this project."
+        description="Whether the project is cost-plus-a-builder-fee (flat or percentage) rather than a flat-rate bid. A classification only: it does not drive the QBO BillableStatus of expenses coded to this project."
     )
 
 
@@ -76,5 +76,5 @@ class ProjectUpdate(BaseModel):
     )
     is_cost_plus: Optional[bool] = Field(
         default=None,
-        description="Whether the project is cost-plus — its expenses are billed on to the customer. Omit to keep the current value."
+        description="Whether the project is cost-plus-a-builder-fee rather than a flat-rate bid (classification only). Omit to keep the current value."
     )

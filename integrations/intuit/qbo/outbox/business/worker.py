@@ -819,41 +819,6 @@ class QboOutboxWorker:
             realm_id=row.realm_id,
         )
 
-    @staticmethod
-    def _recode_is_billable(row: QboOutbox, item) -> bool:
-        """U-099: Billable iff the CONFIRMED project is cost-plus.
-
-        Ramp purchases land in QuickBooks NotBillable and the pull mirrors that
-        to the local line, so the local IsBillable is not a signal and is never
-        consulted here. No confirmed project, a project that cannot be read, or
-        a project the read cannot find all stamp NotBillable: a wrong Billable
-        bills the customer for something that is not theirs; a wrong
-        NotBillable is the known, visible manual chase. Never Billable without
-        positive evidence.
-        """
-        if item.confirmed_project_id is None:
-            return False
-        from entities.project.business.service import ProjectService
-
-        try:
-            project = ProjectService().read_by_id(int(item.confirmed_project_id))
-        except Exception as exc:
-            logger.warning(
-                "Could not read project %s for expense coding item %s; stamping NotBillable: %s",
-                item.confirmed_project_id,
-                row.entity_public_id,
-                exc,
-            )
-            return False
-        if project is None:
-            logger.warning(
-                "Project %s for expense coding item %s not found; stamping NotBillable",
-                item.confirmed_project_id,
-                row.entity_public_id,
-            )
-            return False
-        return bool(project.is_cost_plus)
-
     def _resolve_recode_line_economics(
         self, row: QboOutbox, item
     ) -> tuple[Optional[object], Optional[str]]:
@@ -935,6 +900,7 @@ class QboOutboxWorker:
         quantity = None
         rate = None
         amount = None
+        is_billable = None
         try:
             from integrations.intuit.qbo.base.reconciliation_recorder import record_mapping_issue
             from integrations.intuit.qbo.reconciliation.persistence.repo import (
@@ -946,10 +912,11 @@ class QboOutboxWorker:
                 quantity = local_line.quantity
                 rate = local_line.rate
                 amount = local_line.amount
+                is_billable = local_line.is_billable
             else:
                 logger.warning(
                     "Could not resolve local ExpenseLineItem for expense coding item %s "
-                    "(%s); proceeding without qty/rate/amount",
+                    "(%s); proceeding without qty/rate/amount/is_billable",
                     row.entity_public_id,
                     reason,
                 )
@@ -970,8 +937,8 @@ class QboOutboxWorker:
                     realm_id=row.realm_id or "",
                     details=(
                         f"Expense coding recode for item {row.entity_public_id} could not "
-                        f"resolve dbo-native line economics ({reason}) — Qty/UnitPrice "
-                        f"will not be stamped on the QBO Purchase line. "
+                        f"resolve dbo-native line economics ({reason}) — Qty/UnitPrice/"
+                        f"BillableStatus will not be stamped on the QBO Purchase line. "
                         f"Proceeding with the recode anyway."
                     ),
                 )
@@ -982,8 +949,6 @@ class QboOutboxWorker:
                 exc,
                 exc_info=True,
             )
-
-        is_billable = self._recode_is_billable(row, item)
 
         try:
             result = PurchaseExpenseConnector().recode_purchase_line(

@@ -34,14 +34,10 @@ def _run_handler_with_mocks(
         patch(
             "integrations.intuit.qbo.base.reconciliation_recorder.record_mapping_issue"
         ),
-        # U-099: BillableStatus follows the confirmed project's IsCostPlus, not
-        # the local line; stub a cost-plus project so this harness stays DB-free.
-        patch("entities.project.business.service.ProjectService"),
     ]
     with patches[0] as mock_eci_cls, patches[1] as mock_connector_cls, patches[
         2
-    ] as mock_expense_svc_cls, patches[3] as mock_eli_svc_cls, patches[4] as mock_record, patches[5] as mock_project_cls:
-        mock_project_cls.return_value.read_by_id.return_value = SimpleNamespace(is_cost_plus=True)
+    ] as mock_expense_svc_cls, patches[3] as mock_eli_svc_cls, patches[4] as mock_record:
         svc = MagicMock()
         mock_eci_cls.return_value = svc
         svc.read_by_public_id.return_value = _make_coding_item()
@@ -91,7 +87,7 @@ def test_s1_map_miss_population_resolves_economics():
     assert kwargs["quantity"] == 2
     assert kwargs["rate"] == Decimal("10.50")
     assert kwargs["amount"] == Decimal("21.00")
-    assert kwargs["is_billable"] is True  # U-099: the cost-plus project decides, not the line's False
+    assert kwargs["is_billable"] is False
     ctx.record_mapping_issue.assert_not_called()
 
 
@@ -203,8 +199,7 @@ def test_s9_line_from_another_realm_is_refused_and_recorded():
     assert kwargs["quantity"] is None, "cross-realm economics must not be sent"
     assert kwargs["rate"] is None
     assert kwargs["amount"] is None
-    # U-099: Billable is the project's call, not part of the refused economics.
-    assert kwargs["is_billable"] is True
+    assert kwargs["is_billable"] is None
     # observable, not silent -- the whole point of the unit
     ctx.record_mapping_issue.assert_called_once()
     details = ctx.record_mapping_issue.call_args.kwargs["details"]
@@ -355,8 +350,8 @@ def test_s15_helper_returns_exactly_one_of_line_or_reason(
 def _expected_details(reason: str) -> str:
     return (
         f"Expense coding recode for item {PUBLIC_ID} could not "
-        f"resolve dbo-native line economics ({reason}) — Qty/UnitPrice "
-        f"will not be stamped on the QBO Purchase line. "
+        f"resolve dbo-native line economics ({reason}) — Qty/UnitPrice/"
+        f"BillableStatus will not be stamped on the QBO Purchase line. "
         f"Proceeding with the recode anyway."
     )
 

@@ -25,9 +25,10 @@ class Project:
     # FindProjectForInvoice for project-specific guidance (address
     # aliases, special handling rules).
     notes: Optional[str] = None
-    # U-099: False for overhead projects; drives the recode's BillableStatus.
-    # None = the row did not carry the column (a sproc not yet re-applied):
-    # UNKNOWN, never assumed True - the recode treats it as no evidence.
+    # U-099: the project's commercial shape - cost-plus-a-builder-fee (flat or
+    # percentage) vs a flat-rate bid. A classification, NOT a billing switch:
+    # the per-line Billable toggle stays authoritative for QuickBooks. None =
+    # the row did not carry the column (a sproc not yet re-applied): unknown.
     is_cost_plus: Optional[bool] = None
     # Dbo-native QBO identity (U-238a). Populated only by sprocs that
     # select it (ReadProjectById, ReadProjectByQboIdAndRealmId) — None

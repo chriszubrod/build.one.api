@@ -60,9 +60,10 @@ class StructuredTask:
     # Generation params passed to every rung as a superset; each transport keeps
     # only what its model family accepts (temperature for non-reasoning models,
     # reasoning_effort for reasoning models). Default = deterministic + cheap,
-    # which is what classify/extract tasks want.
+    # which is what classify/extract tasks want; thinking stays off so it cannot
+    # spend the single-shot max_tokens cap.
     gen_params: dict[str, Any] = field(
-        default_factory=lambda: {"temperature": 0, "reasoning_effort": "minimal"}
+        default_factory=lambda: {"temperature": 0, "reasoning_effort": "minimal", "thinking": "off"}
     )
     # Consensus accept (optional): if `consensus_k` validated rungs agree on the
     # same `result[consensus_key]` value, accept it even if no single rung's

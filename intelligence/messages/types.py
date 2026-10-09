@@ -6,7 +6,7 @@ source of truth for the shape of a conversation anywhere in the system.
 Content blocks split into two overlapping sets:
 
 - ContentBlock — anything that can appear in a Message's content:
-    Text | ToolUse | ToolResult | Image | Document
+    Text | ToolUse | ToolResult | Image | Document | Thinking | RedactedThinking
 
 - OutputBlock — anything that can appear inside ToolResult.content when the
   tool returns a block list (image-returning tools, document previews):
@@ -14,7 +14,7 @@ Content blocks split into two overlapping sets:
 """
 from typing import Annotated, Any, Literal, Union
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 Role = Literal["system", "user", "assistant", "tool"]
@@ -63,6 +63,29 @@ class Document(BaseModel):
     source: Source
 
 
+class Thinking(BaseModel):
+    """Extended-thinking block. Field names match the Anthropic wire; the
+    signature is opaque and must be replayed byte-identical, so the part is
+    frozen: any in-place edit raises wherever it travels."""
+    model_config = ConfigDict(frozen=True)
+    type: Literal["thinking"] = "thinking"
+    thinking: str
+    signature: str
+
+
+class RedactedThinking(BaseModel):
+    """Safety-redacted thinking: opaque `data`, replayed byte-identical."""
+    model_config = ConfigDict(frozen=True)
+    type: Literal["redacted_thinking"] = "redacted_thinking"
+    data: str
+
+
+ThinkingBlock = Annotated[
+    Union[Thinking, RedactedThinking],
+    Field(discriminator="type"),
+]
+
+
 OutputBlock = Annotated[
     Union[Text, Image, Document],
     Field(discriminator="type"),
@@ -84,7 +107,7 @@ class ToolResult(BaseModel):
 
 
 ContentBlock = Annotated[
-    Union[Text, ToolUse, ToolResult, Image, Document],
+    Union[Text, ToolUse, ToolResult, Image, Document, Thinking, RedactedThinking],
     Field(discriminator="type"),
 ]
 

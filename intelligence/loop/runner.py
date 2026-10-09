@@ -127,6 +127,8 @@ async def run(
     tool_schemas = [t.to_anthropic_schema() for t in tools]
     by_name: dict[str, Tool] = {t.name: t for t in tools}
 
+    # Append-only for the whole run: thinking signatures are bound to the exact
+    # prefix that produced them, so nothing may edit, reorder or drop a turn.
     history: list[Message] = list(prior_history or []) + [
         Message(role="user", content=[Text(text=user_message)]),
     ]
@@ -202,9 +204,10 @@ async def run(
                 # Flush any buffered text into a text block before the tool_use
                 # block is recorded in assistant history. We defer emitting
                 # ToolCallStart until tool_use_complete arrives with the input.
-                if text_buf:
-                    assistant_blocks.append(Text(text=text_buf))
-                    text_buf = ""
+                text_buf = _flush_text(text_buf, assistant_blocks)
+            elif t == "thinking_complete":
+                text_buf = _flush_text(text_buf, assistant_blocks)
+                assistant_blocks.append(ev.block)
             elif t == "tool_use_complete":
                 block = ToolUse(id=ev.id, name=ev.name, input=ev.input)
                 assistant_blocks.append(block)
@@ -212,9 +215,7 @@ async def run(
                 yield ToolCallStart(id=ev.id, name=ev.name, input=ev.input)
             elif t == "turn_end":
                 stop_reason = ev.stop_reason
-                if text_buf:
-                    assistant_blocks.append(Text(text=text_buf))
-                    text_buf = ""
+                text_buf = _flush_text(text_buf, assistant_blocks)
             elif t == "done":
                 turn_usage = ev.usage
             elif t == "error":
@@ -432,6 +433,14 @@ async def _dispatch_tools_concurrently(
                 is_error=result.is_error,
             )
         )
+
+
+def _flush_text(text_buf: str, blocks: list[ContentBlock]) -> str:
+    """Move buffered text into a Text block ahead of the next non-text block,
+    so assistant content keeps wire arrival order. Returns the emptied buffer."""
+    if text_buf:
+        blocks.append(Text(text=text_buf))
+    return ""
 
 
 def _cost(provider: Optional[str], model: str, usage: Usage) -> Optional[float]:

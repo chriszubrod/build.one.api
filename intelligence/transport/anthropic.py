@@ -7,29 +7,37 @@ SSE events consumed:
   message_start                              → TurnStart, seed Usage
   content_block_start   (text)               → (no event; deltas arrive next)
   content_block_start   (tool_use)           → ToolUseStart, begin accumulating input JSON
+  content_block_start   (thinking)           → (no event; buffer opens, seeded from the start)
+  content_block_start   (redacted_thinking)  → (no event; opaque data held whole)
   content_block_delta   (text_delta)         → TextDelta
   content_block_delta   (input_json_delta)   → append to active tool_use's JSON buffer
+  content_block_delta   (thinking_delta)     → append to active thinking buffer
+  content_block_delta   (signature_delta)    → append to active thinking signature
   content_block_stop    (tool_use)           → parse JSON, emit ToolUseComplete
+  content_block_stop    (thinking/redacted)  → emit ThinkingComplete with the whole block
   message_delta                              → update stop_reason + Usage.output_tokens
   message_stop                               → TurnEnd, then Done
   error                                      → TransportError
 
+Thinking blocks are emitted whole (byte-identity rule: messages.types.Thinking).
 ping and other events are ignored.
 """
 import asyncio
 import json
+from dataclasses import dataclass, field
 import logging
 import random
-from typing import Any, AsyncIterator, Optional, Tuple
+from typing import Any, AsyncIterator, Optional, Tuple, Union
 
 import httpx
 
 import config
 from intelligence.messages.convert import to_anthropic_request
-from intelligence.messages.types import Message
+from intelligence.messages.types import Message, RedactedThinking, Thinking
 from intelligence.transport.base import (
     Done,
     TextDelta,
+    ThinkingComplete,
     ToolUseComplete,
     ToolUseStart,
     TransportError,
@@ -88,14 +96,13 @@ def _effort_only_model(model: str) -> bool:
     return model.lower().startswith(_EFFORT_ONLY_PREFIXES)
 
 
-# Thinking is sent as `disabled` for these families. Haiku-only on purpose:
-# Opus 5.5 / Sonnet 5.5 / Fable reject `thinking: disabled`, and the harness
-# does not yet preserve thinking blocks across tool-result turns (follow-up).
-_THINKING_DISABLED_PREFIXES = ("claude-haiku-5",)
+# Opus 5.5 / Sonnet 5.5 / Fable reject `thinking: disabled`, so only these
+# families accept the cross-provider `thinking: "off"` hint.
+_THINKING_OFF_PREFIXES = ("claude-haiku-5",)
 
 
-def _thinking_disabled_model(model: str) -> bool:
-    return model.lower().startswith(_THINKING_DISABLED_PREFIXES)
+def _accepts_thinking_off(model: str) -> bool:
+    return model.lower().startswith(_THINKING_OFF_PREFIXES)
 
 
 def _gen_params(model: str, extra_body: Optional[dict[str, Any]]) -> dict[str, Any]:
@@ -134,7 +141,7 @@ def _build_request_body(
     )
     body.update(_gen_params(model, extra_body))
     body["stream"] = True
-    if _thinking_disabled_model(model):
+    if (extra_body or {}).get("thinking") == "off" and _accepts_thinking_off(model):
         body["thinking"] = {"type": "disabled"}
         # Disabled thinking with xhigh/max effort is rejected with HTTP 400.
         if body.get("output_config", {}).get("effort") in ("xhigh", "max"):
@@ -170,11 +177,6 @@ class AnthropicTransport:
             "anthropic-version": ANTHROPIC_VERSION,
             "content-type": "application/json",
         }
-
-        usage = Usage()
-        stop_reason: Optional[str] = None
-        # index -> {"id": str, "name": str, "json_buf": str} for in-flight tool_use blocks
-        active_tool_blocks: dict[int, dict[str, Any]] = {}
 
         async with httpx.AsyncClient(timeout=httpx.Timeout(
             connect=10.0, read=self._timeout, write=30.0, pool=10.0,
@@ -221,80 +223,8 @@ class AnthropicTransport:
 
             # resp_ctx is the successful (200) context; process + close.
             try:
-                async for event_name, data in _parse_sse(resp):
-                    if event_name == "message_start":
-                        msg = data.get("message", {}) or {}
-                        yield TurnStart(model=msg.get("model", model))
-                        u = msg.get("usage", {}) or {}
-                        usage = Usage(
-                            input_tokens=u.get("input_tokens", 0),
-                            output_tokens=u.get("output_tokens", 0),
-                            cache_creation_input_tokens=u.get(
-                                "cache_creation_input_tokens", 0
-                            ),
-                            cache_read_input_tokens=u.get(
-                                "cache_read_input_tokens", 0
-                            ),
-                        )
-                    elif event_name == "content_block_start":
-                        idx = data.get("index", 0)
-                        block = data.get("content_block", {}) or {}
-                        if block.get("type") == "tool_use":
-                            active_tool_blocks[idx] = {
-                                "id": block.get("id", ""),
-                                "name": block.get("name", ""),
-                                "json_buf": "",
-                            }
-                            yield ToolUseStart(
-                                id=block.get("id", ""),
-                                name=block.get("name", ""),
-                            )
-                        # text blocks emit via content_block_delta; no start event needed
-                    elif event_name == "content_block_delta":
-                        idx = data.get("index", 0)
-                        delta = data.get("delta", {}) or {}
-                        dtype = delta.get("type")
-                        if dtype == "text_delta":
-                            yield TextDelta(text=delta.get("text", ""))
-                        elif dtype == "input_json_delta":
-                            blk = active_tool_blocks.get(idx)
-                            if blk is not None:
-                                blk["json_buf"] += delta.get("partial_json", "")
-                    elif event_name == "content_block_stop":
-                        idx = data.get("index", 0)
-                        blk = active_tool_blocks.pop(idx, None)
-                        if blk is not None:
-                            raw = blk["json_buf"]
-                            try:
-                                tool_input = json.loads(raw) if raw else {}
-                            except json.JSONDecodeError:
-                                tool_input = {}
-                            yield ToolUseComplete(
-                                id=blk["id"],
-                                name=blk["name"],
-                                input=tool_input,
-                            )
-                    elif event_name == "message_delta":
-                        delta = data.get("delta", {}) or {}
-                        if "stop_reason" in delta:
-                            stop_reason = delta["stop_reason"]
-                        u = data.get("usage", {}) or {}
-                        if "output_tokens" in u:
-                            usage = Usage(
-                                input_tokens=usage.input_tokens,
-                                output_tokens=u["output_tokens"],
-                                cache_creation_input_tokens=usage.cache_creation_input_tokens,
-                                cache_read_input_tokens=usage.cache_read_input_tokens,
-                            )
-                    elif event_name == "message_stop":
-                        yield TurnEnd(stop_reason=stop_reason)
-                        yield Done(usage=usage)
-                    elif event_name == "error":
-                        err = data.get("error", {}) or {}
-                        yield TransportError(
-                            message=err.get("message", "unknown error"),
-                            code=err.get("type"),
-                        )
+                async for ev in _sse_to_events(_parse_sse(resp), model):
+                    yield ev
             finally:
                 if resp_ctx is not None:
                     await resp_ctx.__aexit__(None, None, None)
@@ -324,3 +254,103 @@ async def _parse_sse(resp: httpx.Response) -> AsyncIterator[Tuple[str, dict]]:
         elif line.startswith("data:"):
             data_parts.append(line[len("data:"):].lstrip())
         # comments (":") and other fields are ignored
+
+
+@dataclass
+class _ToolBuf:
+    id: str
+    name: str
+    json_parts: list[str] = field(default_factory=list)
+
+
+@dataclass
+class _ThinkingBuf:
+    thinking: list[str]
+    signature: list[str]
+
+
+_OpenBlock = Union[_ToolBuf, _ThinkingBuf, RedactedThinking]
+
+
+async def _sse_to_events(
+    events: AsyncIterator[Tuple[str, dict]],
+    model: str,
+) -> AsyncIterator[TransportEvent]:
+    """Pure translation of parsed (event, data) pairs into TransportEvents.
+
+    The mapping is the table in the module docstring. Each open block is kept
+    under its wire index until its content_block_stop; buffered strings are
+    joined exactly once there, so nothing is stripped or re-encoded.
+    """
+    usage = Usage()
+    stop_reason: Optional[str] = None
+    open_blocks: dict[int, _OpenBlock] = {}
+    async for event_name, data in events:
+        if event_name == "message_start":
+            msg = data.get("message", {}) or {}
+            yield TurnStart(model=msg.get("model", model))
+            u = msg.get("usage", {}) or {}
+            usage = Usage(
+                input_tokens=u.get("input_tokens", 0),
+                output_tokens=u.get("output_tokens", 0),
+                cache_creation_input_tokens=u.get("cache_creation_input_tokens", 0),
+                cache_read_input_tokens=u.get("cache_read_input_tokens", 0),
+            )
+        elif event_name == "content_block_start":
+            idx = data.get("index", 0)
+            block = data.get("content_block", {}) or {}
+            btype = block.get("type")
+            if btype == "tool_use":
+                open_blocks[idx] = _ToolBuf(id=block.get("id", ""), name=block.get("name", ""))
+                yield ToolUseStart(id=block.get("id", ""), name=block.get("name", ""))
+            elif btype == "thinking":
+                open_blocks[idx] = _ThinkingBuf(
+                    thinking=[block.get("thinking") or ""],
+                    signature=[block.get("signature") or ""],
+                )
+            elif btype == "redacted_thinking":
+                open_blocks[idx] = RedactedThinking(data=block.get("data") or "")
+            # text blocks emit via content_block_delta; no start event needed
+        elif event_name == "content_block_delta":
+            delta = data.get("delta", {}) or {}
+            dtype = delta.get("type")
+            blk = open_blocks.get(data.get("index", 0))
+            if dtype == "text_delta":
+                yield TextDelta(text=delta.get("text", ""))
+            elif dtype == "input_json_delta" and isinstance(blk, _ToolBuf):
+                blk.json_parts.append(delta.get("partial_json", ""))
+            elif dtype == "thinking_delta" and isinstance(blk, _ThinkingBuf):
+                blk.thinking.append(delta.get("thinking", ""))
+            elif dtype == "signature_delta" and isinstance(blk, _ThinkingBuf):
+                blk.signature.append(delta.get("signature", ""))
+        elif event_name == "content_block_stop":
+            blk = open_blocks.pop(data.get("index", 0), None)
+            if isinstance(blk, _ToolBuf):
+                raw = "".join(blk.json_parts)
+                try:
+                    tool_input = json.loads(raw) if raw else {}
+                except json.JSONDecodeError:
+                    tool_input = {}
+                yield ToolUseComplete(id=blk.id, name=blk.name, input=tool_input)
+            elif isinstance(blk, _ThinkingBuf):
+                yield ThinkingComplete(block=Thinking(
+                    thinking="".join(blk.thinking), signature="".join(blk.signature),
+                ))
+            elif isinstance(blk, RedactedThinking):
+                yield ThinkingComplete(block=blk)
+        elif event_name == "message_delta":
+            delta = data.get("delta", {}) or {}
+            if "stop_reason" in delta:
+                stop_reason = delta["stop_reason"]
+            u = data.get("usage", {}) or {}
+            if "output_tokens" in u:
+                usage = usage.model_copy(update={"output_tokens": u["output_tokens"]})
+        elif event_name == "message_stop":
+            yield TurnEnd(stop_reason=stop_reason)
+            yield Done(usage=usage)
+        elif event_name == "error":
+            err = data.get("error", {}) or {}
+            yield TransportError(
+                message=err.get("message", "unknown error"),
+                code=err.get("type"),
+            )

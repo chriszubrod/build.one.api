@@ -77,14 +77,11 @@ def _token_param(model: str) -> str:
 
 def _filter_gen_params(model: str, extra_body: dict[str, Any]) -> dict[str, Any]:
     """Keep only the generation params this model's family accepts, so a caller
-    can pass a generous superset without a provider 400."""
-    eb = dict(extra_body)
-    if _is_reasoning_model(model):
-        eb.pop("temperature", None)
-        eb.pop("top_p", None)
-    else:
-        eb.pop("reasoning_effort", None)
-    return eb
+    can pass a generous superset without a provider 400. An allowlist, like the
+    Anthropic adapter's, so harness hints such as `thinking` (see
+    `Transport.stream`) are dropped by default."""
+    keys = ("reasoning_effort",) if _is_reasoning_model(model) else ("temperature", "top_p")
+    return {k: extra_body[k] for k in keys if k in extra_body}
 
 
 def _retry_delay(attempt: int, retry_after: Optional[float] = None) -> float:

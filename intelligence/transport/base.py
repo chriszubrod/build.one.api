@@ -8,7 +8,7 @@ from typing import Any, AsyncIterator, Literal, Optional, Protocol, Union
 
 from pydantic import BaseModel, Field
 
-from intelligence.messages.types import Message
+from intelligence.messages.types import Message, ThinkingBlock
 
 
 class Usage(BaseModel):
@@ -44,6 +44,13 @@ class ToolUseComplete(BaseModel):
     input: dict[str, Any] = Field(default_factory=dict)
 
 
+class ThinkingComplete(BaseModel):
+    """One whole thinking block, emitted once it is complete; thinking is
+    never streamed as deltas above this layer."""
+    type: Literal["thinking_complete"] = "thinking_complete"
+    block: ThinkingBlock
+
+
 class TurnEnd(BaseModel):
     type: Literal["turn_end"] = "turn_end"
     stop_reason: Optional[str] = None
@@ -65,6 +72,7 @@ TransportEvent = Union[
     TextDelta,
     ToolUseStart,
     ToolUseComplete,
+    ThinkingComplete,
     TurnEnd,
     Done,
     TransportError,
@@ -85,5 +93,8 @@ class Transport(Protocol):
         reasoning_effort, top_p, …). Each adapter merges the keys its
         provider/model supports and silently drops the rest, so a caller may
         pass a generous superset (e.g. both temperature and reasoning_effort)
-        without risking a provider 400 on an unsupported field."""
+        without risking a provider 400 on an unsupported field. `thinking: "off"`
+        is a harness hint, never a wire key: adapters whose model can disable
+        thinking honour it; every other adapter drops it. Adapters filter by
+        allowlist so a new hint is dropped by default."""
         ...

@@ -14,7 +14,9 @@ from intelligence.messages.types import (
     Image,
     Message,
     OutputBlock,
+    RedactedThinking,
     Text,
+    Thinking,
     ToolResult,
     ToolUse,
     UrlSource,
@@ -109,6 +111,10 @@ def _block_to_anthropic(block: ContentBlock) -> dict[str, Any]:
         return {"type": "image", "source": _source_to_anthropic(block.source)}
     if isinstance(block, Document):
         return {"type": "document", "source": _source_to_anthropic(block.source)}
+    if isinstance(block, Thinking):
+        return {"type": "thinking", "thinking": block.thinking, "signature": block.signature}
+    if isinstance(block, RedactedThinking):
+        return {"type": "redacted_thinking", "data": block.data}
     raise ValueError(f"Unsupported content block: {type(block).__name__}")
 
 
@@ -193,9 +199,11 @@ def to_openai_request(
                             "arguments": json.dumps(block.input),
                         },
                     })
-                # Images/documents in assistant output are not part of this
-                # fleet's flows; ignore if they ever appear.
+                # Images/documents and thinking parts have no OpenAI-wire
+                # equivalent in this fleet's flows; ignore if they appear.
             content = "".join(text_parts)
+            if not content and not tool_calls:
+                continue
             out: dict[str, Any] = {"role": "assistant"}
             # OpenAI accepts null content when tool_calls are present.
             out["content"] = content if content else None

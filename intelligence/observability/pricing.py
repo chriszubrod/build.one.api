@@ -5,7 +5,7 @@ rates. Models not in the table return None (no cost computed; UI just
 shows tokens). Adding a new model = one entry; no other code changes.
 
 Anthropic source: https://docs.anthropic.com/en/docs/about-claude/pricing
-Last reviewed: 2026-04-23.
+Last reviewed: 2026-10-09.
 """
 from dataclasses import dataclass
 from typing import Optional
@@ -28,17 +28,26 @@ class ModelPricing:
 
 
 # Map of provider → model_id → pricing.
-# Match the model strings used by Agent definitions.
+# Every model id that runs (ladder rungs, non-cascade agent pins, overrides) or
+# that is stored on historical AgentSession/AgentTurn rows, which replay
+# re-prices. Never delete an entry.
 PRICING: dict[str, dict[str, ModelPricing]] = {
     "anthropic": {
-        # Sonnet 4.6
+        # Sonnet 4.6 — legacy, kept for replay of historical sessions
         "claude-sonnet-4-6": ModelPricing(
             input=3.00,
             output=15.00,
             cache_write=3.75,
             cache_read=0.30,
         ),
-        # Opus 4.7
+        # Sonnet 5.5
+        "claude-sonnet-5-5": ModelPricing(
+            input=2.00,
+            output=10.00,
+            cache_write=2.50,
+            cache_read=0.20,
+        ),
+        # Opus 4.7 — legacy, kept for replay of historical sessions
         "claude-opus-4-7": ModelPricing(
             input=15.00,
             output=75.00,
@@ -54,7 +63,7 @@ PRICING: dict[str, dict[str, ModelPricing]] = {
             long_context_threshold=100_000,
             long_context=ModelPricing(input=0.50, output=2.50, cache_write=0.625, cache_read=0.05),
         ),
-        # Haiku 4.5
+        # Haiku 4.5 — legacy, kept for replay of historical sessions
         "claude-haiku-4-5-20251001": ModelPricing(
             input=1.00,
             output=5.00,

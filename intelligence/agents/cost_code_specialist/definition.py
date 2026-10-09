@@ -28,7 +28,7 @@ cost_code_specialist = Agent(
         "update_cost_code",
         "delete_cost_code",
     ),
-    model="claude-sonnet-4-6",
+    model="claude-sonnet-5-5",
     provider="cascade",
     credentials_key="cost_code_agent",
     budget=BudgetPolicy(max_turns=10, max_tokens=120_000),

@@ -7,7 +7,7 @@ collected and parsed as JSON `{...task fields..., "confidence": float}`.
 The acceptance gate is the locked design: **validation AND confidence**.
 A rung is accepted iff the task's deterministic validator passes AND the
 model's self-reported confidence ≥ the task threshold τ. Either failing
-escalates to the next (more expensive) rung.
+escalates to the next rung.
 """
 import json
 import logging
@@ -30,15 +30,16 @@ class Rung:
     max_tokens: int = 1024
 
 
-# Cheapest-first, cost-confirmed 2026-06-30 (blended $/1M: DeepSeek ~0.21,
-# nano ~0.73, mini ~2.63, Haiku 3.00, Sonnet 9.00). Foundry model strings must
-# match the actual Foundry deployment names — VERIFY when the endpoint is set.
+# Foundry rungs first, then Anthropic. Per-model rates live in
+# intelligence/observability/pricing.PRICING, not here, so they cannot drift.
+# Foundry model strings must match the actual Foundry deployment names —
+# VERIFY when the endpoint is set.
 DEFAULT_LADDER: tuple[Rung, ...] = (
     Rung("foundry", "DeepSeek-V4-Flash"),
     Rung("foundry", "gpt-5.4-nano"),
     Rung("foundry", "gpt-5.4-mini"),
     Rung("anthropic", "claude-haiku-5-5"),
-    Rung("anthropic", "claude-sonnet-4-6"),
+    Rung("anthropic", "claude-sonnet-5-5"),
 )
 
 

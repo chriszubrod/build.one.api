@@ -33,7 +33,7 @@ buildone = Agent(
         "delegate_to_contract_labor",
         "delegate_to_time_tracking",
     ),
-    model="claude-sonnet-4-6",
+    model="claude-sonnet-5-5",
     provider="cascade",
     credentials_key="buildone_agent",
     budget=BudgetPolicy(max_turns=12, max_tokens=150_000),

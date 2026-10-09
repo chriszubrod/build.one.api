@@ -36,7 +36,7 @@ bill_credit_specialist = Agent(
         "search_projects",
         "read_project_by_public_id",
     ),
-    model="claude-sonnet-4-6",
+    model="claude-sonnet-5-5",
     provider="cascade",
     credentials_key="bill_credit_agent",
     budget=BudgetPolicy(max_turns=12, max_tokens=150_000),

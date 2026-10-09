@@ -26,7 +26,7 @@ project_specialist = Agent(
         "read_customer_by_public_id",
         "read_customer_by_id",
     ),
-    model="claude-sonnet-4-6",
+    model="claude-sonnet-5-5",
     provider="cascade",
     credentials_key="project_agent",
     budget=BudgetPolicy(max_turns=12, max_tokens=150_000),

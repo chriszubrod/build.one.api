@@ -1,6 +1,6 @@
 """Shared fakes for driving the intelligence loop and transports without a network.
 
-Imported by the U-641 and U-642a test modules (the same way tests/sproc_text.py is
+Imported by the U-641 and U-642 test modules (the same way tests/sproc_text.py is
 shared): one scripted transport, one tool fixture, one runner harness.
 """
 
@@ -10,12 +10,19 @@ from typing import Any, AsyncIterator
 import intelligence.transport.base as tb
 from intelligence.loop.runner import run
 from intelligence.messages.types import Message, Text
+from intelligence.observability.pricing import compute_cost_usd
 from intelligence.tools.base import Tool, ToolContext, ToolResult
 from intelligence.transport.anthropic import _build_request_body
 from intelligence.transport.base import Usage
 
 
 HAIKU = "claude-haiku-5-5"
+SONNET_55 = "claude-sonnet-5-5"
+LEGACY_SONNET = "claude-sonnet-4-6"
+LEGACY_HAIKU = "claude-haiku-4-5-20251001"
+SAMPLING = {"temperature": 0, "top_p": 0.5, "top_k": 10}
+HINT = {"thinking": "off", "reasoning_effort": "minimal"}
+LOOKUP_TOOL = {"name": "lookup", "description": "d", "input_schema": {"type": "object", "properties": {}}}
 
 
 class ScriptedTransport:
@@ -109,9 +116,14 @@ def user_text(text: str) -> Message:
     return Message(role="user", content=[Text(text=text)])
 
 
-def build(model, extra_body, messages=None):
+def build(model, extra_body, messages=None, system=None, tools=None):
     """The Anthropic request body for a one-message conversation."""
     return _build_request_body(
         messages or [user_text("hi")],
-        model=model, system=None, max_tokens=1024, tools=None, extra_body=extra_body,
+        model=model, system=system, max_tokens=1024, tools=tools, extra_body=extra_body,
     )
+
+
+def cost(model, provider="anthropic", **usage):
+    """Dollar cost of one request's usage at the table rate for `model`."""
+    return compute_cost_usd(provider=provider, model=model, usage=Usage(**usage))

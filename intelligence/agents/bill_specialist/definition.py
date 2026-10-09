@@ -46,7 +46,7 @@ bill_specialist = Agent(
         # project_specialist with the Ship To address.
         "delegate_to_project_specialist",
     ),
-    model="claude-sonnet-4-6",
+    model="claude-sonnet-5-5",
     provider="cascade",
     credentials_key="bill_agent",
     budget=BudgetPolicy(max_turns=12, max_tokens=150_000),

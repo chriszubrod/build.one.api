@@ -38,7 +38,7 @@ invoice_specialist = Agent(
         "read_project_by_public_id",
         "read_projects_by_customer_id",
     ),
-    model="claude-sonnet-4-6",
+    model="claude-sonnet-5-5",
     provider="cascade",
     credentials_key="invoice_agent",
     budget=BudgetPolicy(max_turns=12, max_tokens=150_000),

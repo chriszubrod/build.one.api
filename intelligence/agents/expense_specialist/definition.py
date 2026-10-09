@@ -62,7 +62,7 @@ expense_specialist = Agent(
         # specialist (find_project_for_invoice), same as bill_specialist.
         "delegate_to_project_specialist",
     ),
-    model="claude-sonnet-4-6",
+    model="claude-sonnet-5-5",
     provider="cascade",
     credentials_key="expense_agent",
     budget=BudgetPolicy(max_turns=12, max_tokens=150_000),

@@ -19,7 +19,7 @@ vendor_specialist = Agent(
         "update_vendor",
         "delete_vendor",
     ),
-    model="claude-sonnet-4-6",
+    model="claude-sonnet-5-5",
     provider="cascade",
     credentials_key="vendor_agent",
     budget=BudgetPolicy(max_turns=12, max_tokens=150_000),

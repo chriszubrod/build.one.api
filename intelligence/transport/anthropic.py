@@ -96,13 +96,24 @@ def _effort_only_model(model: str) -> bool:
     return model.lower().startswith(_EFFORT_ONLY_PREFIXES)
 
 
-# Opus 5.5 / Sonnet 5.5 / Fable reject `thinking: disabled`, so only these
-# families accept the cross-provider `thinking: "off"` hint.
-_THINKING_OFF_PREFIXES = ("claude-haiku-5",)
+# Off-switch per family (longest prefix wins). Sonnet 5.5 rejects `disabled` and
+# takes `between_tools` (no extended thinking; between-tool notes still stream
+# as thinking blocks). Opus 5.5, Fable and legacy models have no off-switch
+# here, so the cross-provider `thinking: "off"` hint is dropped for them.
+_THINKING_OFF_BY_FAMILY: tuple[tuple[str, str], ...] = (
+    ("claude-haiku-5", "disabled"),
+    ("claude-sonnet-5-5", "between_tools"),
+)
 
 
-def _accepts_thinking_off(model: str) -> bool:
-    return model.lower().startswith(_THINKING_OFF_PREFIXES)
+def _thinking_off_type(model: str) -> Optional[str]:
+    """The `thinking.type` that turns thinking off for this model family, or
+    None when the family has no off-switch. Longest matching prefix wins, so
+    the table's order never matters (a "claude-sonnet-5" entry could not
+    shadow "claude-sonnet-5-5")."""
+    lowered = model.lower()
+    match = max((p for p, _ in _THINKING_OFF_BY_FAMILY if lowered.startswith(p)), key=len, default=None)
+    return dict(_THINKING_OFF_BY_FAMILY)[match] if match is not None else None
 
 
 def _gen_params(model: str, extra_body: Optional[dict[str, Any]]) -> dict[str, Any]:
@@ -141,9 +152,9 @@ def _build_request_body(
     )
     body.update(_gen_params(model, extra_body))
     body["stream"] = True
-    if (extra_body or {}).get("thinking") == "off" and _accepts_thinking_off(model):
-        body["thinking"] = {"type": "disabled"}
-        # Disabled thinking with xhigh/max effort is rejected with HTTP 400.
+    if (extra_body or {}).get("thinking") == "off" and (off_type := _thinking_off_type(model)) is not None:
+        body["thinking"] = {"type": off_type}
+        # Each off-switch rejects xhigh/max effort with HTTP 400.
         if body.get("output_config", {}).get("effort") in ("xhigh", "max"):
             body["output_config"] = {"effort": "high"}
     return body

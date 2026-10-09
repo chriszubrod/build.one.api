@@ -17,6 +17,7 @@ CREATE TABLE [dbo].[Project]
     [Status] NVARCHAR(50) NULL,
     [CustomerId] BIGINT NULL,
     [Abbreviation] NVARCHAR(20) NULL,
+    [IsCostPlus] BIT NOT NULL DEFAULT 1,
     -- Free-text per-project notes — visible in the React Project edit
     -- page and surfaced to the bill_specialist / project_specialist
     -- agents via FindProjectForInvoice. Use for project-specific
@@ -110,6 +111,7 @@ CREATE OR ALTER PROCEDURE CreateProject
     @Status NVARCHAR(50),
     @CustomerId BIGINT NULL,
     @Abbreviation NVARCHAR(20) NULL,
+    @IsCostPlus BIT = 1,
     @Notes NVARCHAR(MAX) = NULL,
     @CreatedByUserId BIGINT = NULL
 )
@@ -119,7 +121,7 @@ BEGIN
 
     DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();
 
-    INSERT INTO dbo.[Project] ([CreatedDatetime], [ModifiedDatetime], [Name], [Description], [Status], [CustomerId], [Abbreviation], [Notes], [CreatedByUserId])
+    INSERT INTO dbo.[Project] ([CreatedDatetime], [ModifiedDatetime], [Name], [Description], [Status], [CustomerId], [Abbreviation], [IsCostPlus], [Notes], [CreatedByUserId])
     OUTPUT
         INSERTED.[Id],
         INSERTED.[PublicId],
@@ -131,8 +133,9 @@ BEGIN
         INSERTED.[Status],
         INSERTED.[CustomerId],
         INSERTED.[Abbreviation],
+        INSERTED.[IsCostPlus],
         INSERTED.[Notes]
-    VALUES (@Now, @Now, @Name, @Description, @Status, @CustomerId, @Abbreviation, @Notes, COALESCE(@CreatedByUserId, 17));
+    VALUES (@Now, @Now, @Name, @Description, @Status, @CustomerId, @Abbreviation, @IsCostPlus, @Notes, COALESCE(@CreatedByUserId, 17));
 
     COMMIT TRANSACTION;
 END;
@@ -166,6 +169,7 @@ BEGIN
         p.[Status],
         p.[CustomerId],
         p.[Abbreviation],
+        p.[IsCostPlus],
         p.[Notes],
         p.[QboId],
         p.[RealmId],
@@ -208,6 +212,7 @@ BEGIN
         [Status],
         [CustomerId],
         [Abbreviation],
+        [IsCostPlus],
         [Notes],
         [QboId],
         [RealmId]
@@ -249,6 +254,7 @@ BEGIN
         [Status],
         [CustomerId],
         [Abbreviation],
+        [IsCostPlus],
         [Notes],
         [QboId],
         [RealmId]
@@ -290,6 +296,7 @@ BEGIN
         [Status],
         [CustomerId],
         [Abbreviation],
+        [IsCostPlus],
         [Notes],
         [QboId],
         [RealmId]
@@ -319,6 +326,7 @@ CREATE OR ALTER PROCEDURE UpdateProjectById
     @Status NVARCHAR(50),
     @CustomerId BIGINT NULL,
     @Abbreviation NVARCHAR(20) NULL,
+    @IsCostPlus BIT = NULL,
     @Notes NVARCHAR(MAX) = NULL
 )
 AS
@@ -335,6 +343,7 @@ BEGIN
         [Status] = @Status,
         [CustomerId] = CASE WHEN @CustomerId IS NULL THEN [CustomerId] ELSE @CustomerId END,
         [Abbreviation] = @Abbreviation,
+        [IsCostPlus] = CASE WHEN @IsCostPlus IS NULL THEN [IsCostPlus] ELSE @IsCostPlus END,
         [Notes] = @Notes
     OUTPUT
         INSERTED.[Id],
@@ -347,6 +356,7 @@ BEGIN
         INSERTED.[Status],
         INSERTED.[CustomerId],
         INSERTED.[Abbreviation],
+        INSERTED.[IsCostPlus],
         INSERTED.[Notes]
     WHERE [Id] = @Id AND [RowVersion] = @RowVersion;
 
@@ -422,6 +432,7 @@ BEGIN
             p.[Status],
             p.[CustomerId],
             p.[Abbreviation],
+            p.[IsCostPlus],
             p.[Notes],
             p.[QboId],
             p.[RealmId],
@@ -443,6 +454,7 @@ BEGIN
             p.[Status],
             p.[CustomerId],
             p.[Abbreviation],
+            p.[IsCostPlus],
             p.[Notes],
             p.[QboId],
             p.[RealmId],
@@ -654,6 +666,7 @@ BEGIN
         [Status],
         [CustomerId],
         [Abbreviation],
+        [IsCostPlus],
         [Notes],
         [QboId],
         [RealmId]

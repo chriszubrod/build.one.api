@@ -277,9 +277,12 @@ def _make_outbox_row():
     "integrations.intuit.qbo.purchase.connector.expense.business.service.PurchaseExpenseConnector"
 )
 @patch("entities.expense_coding_item.business.service.ExpenseCodingItemService")
+@patch("entities.project.business.service.ProjectService")
 def test_handler_unresolvable_local_line_still_recodes(
-    mock_svc_cls, mock_connector_cls, mock_expense_svc_cls, mock_eli_svc_cls
+    mock_project_cls, mock_svc_cls, mock_connector_cls, mock_expense_svc_cls, mock_eli_svc_cls
 ):
+    # U-099: BillableStatus follows the confirmed project's IsCostPlus.
+    mock_project_cls.return_value.read_by_id.return_value = SimpleNamespace(is_cost_plus=True)
     from conftest import stub_qbo_identity_fastpath_miss
 
     svc = MagicMock()
@@ -299,7 +302,7 @@ def test_handler_unresolvable_local_line_still_recodes(
     assert kwargs.get("quantity") is None
     assert kwargs.get("rate") is None
     assert kwargs.get("amount") is None
-    assert kwargs.get("is_billable") is None
+    assert kwargs.get("is_billable") is True  # U-099: the project decides, not the line
     svc.mark_written.assert_called_once()
 
 
@@ -309,9 +312,12 @@ def test_handler_unresolvable_local_line_still_recodes(
     "integrations.intuit.qbo.purchase.connector.expense.business.service.PurchaseExpenseConnector"
 )
 @patch("entities.expense_coding_item.business.service.ExpenseCodingItemService")
+@patch("entities.project.business.service.ProjectService")
 def test_handler_resolves_local_line_economics(
-    mock_svc_cls, mock_connector_cls, mock_expense_svc_cls, mock_eli_svc_cls
+    mock_project_cls, mock_svc_cls, mock_connector_cls, mock_expense_svc_cls, mock_eli_svc_cls
 ):
+    # U-099: BillableStatus follows the confirmed project's IsCostPlus.
+    mock_project_cls.return_value.read_by_id.return_value = SimpleNamespace(is_cost_plus=True)
     svc = MagicMock()
     mock_svc_cls.return_value = svc
     svc.read_by_public_id.return_value = _make_coding_item()

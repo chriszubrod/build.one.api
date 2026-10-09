@@ -128,7 +128,7 @@ class ProjectService:
         """Initialize the ProjectService."""
         self.repo = repo or ProjectRepository()
 
-    def create(self, *, tenant_id: int = 1, name: str, description: str, status: str, customer_id: Optional[int] = None, abbreviation: Optional[str] = None, notes: Optional[str] = None) -> Project:
+    def create(self, *, tenant_id: int = 1, name: str, description: str, status: str, customer_id: Optional[int] = None, abbreviation: Optional[str] = None, notes: Optional[str] = None, is_cost_plus: Optional[bool] = None) -> Project:
         """
         Create a new project.
 
@@ -168,6 +168,7 @@ class ProjectService:
             customer_id=customer_id,
             abbreviation=abbreviation,
             notes=notes,
+            is_cost_plus=is_cost_plus,
             created_by_user_id=current_user_id.get(),
         )
         # U-556: seed the Owner's UserProject row so review notifications can
@@ -306,6 +307,7 @@ class ProjectService:
         customer_id: int = None,
         abbreviation: str = None,
         notes: Optional[str] = None,
+        is_cost_plus: Optional[bool] = None,
     ) -> Optional[Project]:
         """
         Update a project by public ID.
@@ -329,6 +331,8 @@ class ProjectService:
             # Empty string means user cleared the textarea → store NULL.
             if notes is not None:
                 existing.notes = notes if notes != "" else None
+            if is_cost_plus is not None:
+                existing.is_cost_plus = is_cost_plus
         return self.repo.update_by_id(existing)
 
     def delete_by_public_id(self, public_id: str, *, tenant_id: int = None) -> Optional[Project]:

@@ -17,6 +17,14 @@ from shared.database import (
 logger = logging.getLogger(__name__)
 
 
+def _is_cost_plus(row) -> Optional[bool]:
+    """BIT arrives as bool or int. A row from a sproc that does not project the
+    column (not yet re-applied) maps to None - UNKNOWN - never to True: a stored
+    0 must not read as cost-plus through an old proc (U-099, Codex P1)."""
+    value = getattr(row, "IsCostPlus", None)
+    return None if value is None else bool(value)
+
+
 class ProjectRepository:
     """
     Repository for Project persistence operations.
@@ -46,6 +54,7 @@ class ProjectRepository:
                 customer_id=row.CustomerId,
                 abbreviation=row.Abbreviation,
                 notes=getattr(row, "Notes", None),
+                is_cost_plus=_is_cost_plus(row),
                 qbo_id=getattr(row, "QboId", None),
                 realm_id=getattr(row, "RealmId", None),
                 customer_name=getattr(row, "CustomerName", None),
@@ -57,7 +66,7 @@ class ProjectRepository:
             logger.error(f"Unexpected error during project mapping: {error}")
             raise map_database_error(error)
 
-    def create(self, *, tenant_id: int = 1, name: str, description: str, status: str, customer_id: Optional[int] = None, abbreviation: Optional[str] = None, notes: Optional[str] = None, created_by_user_id: Optional[int] = None) -> Project:
+    def create(self, *, tenant_id: int = 1, name: str, description: str, status: str, customer_id: Optional[int] = None, abbreviation: Optional[str] = None, notes: Optional[str] = None, is_cost_plus: Optional[bool] = None, created_by_user_id: Optional[int] = None) -> Project:
         """
         Create a new project.
         """
@@ -73,6 +82,8 @@ class ProjectRepository:
                         "Status": status,
                         "CustomerId": customer_id,
                         "Abbreviation": abbreviation,
+                        # Only when known: an old CreateProject rejects the param (mixed deploy).
+                        **({"IsCostPlus": is_cost_plus} if is_cost_plus is not None else {}),
                         "Notes": notes,
                         "CreatedByUserId": created_by_user_id,
                     },
@@ -251,6 +262,7 @@ class ProjectRepository:
                     customer_id=None,
                     abbreviation=row.Abbreviation,
                     notes=None,
+                    is_cost_plus=_is_cost_plus(row),
                 )
         except Exception as error:
             logger.error(f"Error during read project by abbreviation: {error}")
@@ -315,6 +327,9 @@ class ProjectRepository:
                         "Status": project.status,
                         "CustomerId": project.customer_id,
                         "Abbreviation": project.abbreviation,
+                        # None = unknown/omitted: the proc keeps the stored value; omitted
+                        # entirely so an old UpdateProjectById does not reject it.
+                        **({"IsCostPlus": project.is_cost_plus} if project.is_cost_plus is not None else {}),
                         "Notes": project.notes,
                     },
                 )

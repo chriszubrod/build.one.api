@@ -36,6 +36,10 @@ class ProjectCreate(BaseModel):
         default=None,
         description="Free-text notes — visible in the UI and read by the bill_specialist / project_specialist agents for project-specific guidance (e.g. address aliases)."
     )
+    is_cost_plus: Optional[bool] = Field(
+        default=None,
+        description="Whether the project is cost-plus — its expenses are billed on to the customer. Drives the QBO BillableStatus of expenses coded to this project."
+    )
 
 
 class ProjectUpdate(BaseModel):
@@ -69,4 +73,8 @@ class ProjectUpdate(BaseModel):
     notes: Optional[str] = Field(
         default=None,
         description="Free-text notes — visible in the UI and read by the bill_specialist / project_specialist agents for project-specific guidance (e.g. address aliases)."
+    )
+    is_cost_plus: Optional[bool] = Field(
+        default=None,
+        description="Whether the project is cost-plus — its expenses are billed on to the customer. Omit to keep the current value."
     )

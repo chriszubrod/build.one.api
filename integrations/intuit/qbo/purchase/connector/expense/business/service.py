@@ -520,7 +520,11 @@ class PurchaseExpenseConnector:
                 item_detail["UnitPrice"] = float(rate_dec)
 
             if is_billable is True:
-                if item_detail.get("CustomerRef"):
+                # Billable only against the CONFIRMED project's own customer.
+                # A CustomerRef carried forward from the placeholder line may
+                # belong to someone else (Ramp imports, prior coding); stamping
+                # Billable on it would bill the wrong customer (U-099, Codex P1).
+                if customer_ref is not None:
                     item_detail["BillableStatus"] = "Billable"
                 else:
                     item_detail["BillableStatus"] = "NotBillable"

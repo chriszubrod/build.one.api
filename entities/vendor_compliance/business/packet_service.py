@@ -17,13 +17,11 @@ from entities.vendor_compliance.business.read_helpers import (
 )
 from entities.vendor_insurance_policy.business.service import VendorInsurancePolicyService
 from shared.pdf_utils import merge_pdfs
-from shared.storage import AzureBlobStorage
 
 
 class VendorCompliancePacketService:
     """
-    Builds vendor compliance packet PDFs (cover + licenses + COI + W-9)
-    and resolves single-document downloads.
+    Builds vendor compliance packet PDFs (cover + licenses + COI + W-9).
     """
 
     def _build_cover_pdf(self, vendor_name: str, doc_rows: list[dict], w9_present: bool) -> bytes:
@@ -190,20 +188,3 @@ class VendorCompliancePacketService:
         safe_stem = re.sub(r"[^A-Za-z0-9]+", "-", base_name).strip("-") or "vendor"
         filename = f"{safe_stem}-compliance-packet.pdf"
         return pdf_bytes, filename
-
-    def resolve_single_doc(self, document_public_id: str) -> tuple[bytes, str]:
-        doc = CertificateOfInsuranceService().read_by_public_id(public_id=document_public_id)
-        if not doc:
-            raise ValueError(
-                f"Vendor compliance document with public_id '{document_public_id}' not found"
-            )
-        if not doc.attachment_id:
-            raise ValueError("Vendor compliance document has no attachment")
-
-        attachment = AttachmentService().read_by_id(int(doc.attachment_id))
-        if not attachment or not attachment.blob_url:
-            raise ValueError("Vendor compliance document has no attachment")
-
-        content, _ = AzureBlobStorage().download_file(attachment.blob_url)
-        filename = attachment.original_filename or f"{document_public_id}.pdf"
-        return content, filename

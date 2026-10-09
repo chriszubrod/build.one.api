@@ -1,9 +1,5 @@
-# Python Standard Library Imports
-import io
-
 # Third-party Imports
 from fastapi import APIRouter, Depends, HTTPException, Response
-from fastapi.responses import StreamingResponse
 
 # Local Imports
 from entities.vendor_compliance.business.dashboard_service import VendorComplianceDashboardService
@@ -44,27 +40,6 @@ def generate_vendor_compliance_packet_router(
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.get("/view/vendor-compliance-document/{public_id}/attachment")
-def view_vendor_compliance_coi_attachment_router(
-    public_id: str,
-    current_user: dict = Depends(require_module_api(Modules.VENDORS, "can_read")),
-):
-    try:
-        content, filename = packet_service.resolve_single_doc(public_id)
-        safe_filename = filename.replace('"', "'")
-        return StreamingResponse(
-            io.BytesIO(content),
-            media_type="application/pdf",
-            headers={"Content-Disposition": f'inline; filename="{safe_filename}"'},
-        )
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
     except HTTPException:
         raise
     except Exception as e:

@@ -2895,7 +2895,7 @@ Not a bug (no token loss — the lock ordering is already correct). `ensure_vali
 ## U-081 — MS Excel drain worker re-checks column-Z at drain time (2026-07-17, found during U-065 Gate-2) — closes the reclaim-overlap residual
 
 The one side-effect NOT idempotent under overlapping completion runs. Column-Z (line-item public_id) is checked only at *enqueue*; Excel outbox rows never coalesce and the drain worker doesn't re-check, so two overlapping runs of the same completion — a reclaim overtaking a still-alive >30-min-hung task (U-065's N=1800s residual, practically unreachable but real) — can enqueue duplicate DETAILS rows. SharePoint (coalesce+replace) and QBO (mapping-check) are already overlap-idempotent; Excel is the only gap.
-- [ ] Make the MS Excel drain worker re-check column-Z at drain time → true idempotency under overlap. **Shared sensitive path** — touches every Excel sync (Box + SharePoint workbooks) and the insert row-index is position-dependent, so it needs its own verify + blast-radius pass (which is why it was kept out of U-065).
+- [x] ~~Make the MS Excel drain worker re-check column-Z at drain time → true idempotency under overlap.~~ **CLOSED 2026-10-08 — superseded by U-440a (`d556af0a`, 2026-09-10), which shipped exactly this after the 2026-08-06 duplicate-rows incident; see `MsOutboxWorker._filter_rows_already_in_worksheet` + `tests/test_u440a_excel_drain_dedup.py`.** **Shared sensitive path** — touches every Excel sync (Box + SharePoint workbooks) and the insert row-index is position-dependent, so it needs its own verify + blast-radius pass (which is why it was kept out of U-065).
 
 ## U-084 — Diagnose the real `/time-entries` 13.5s (2026-07-17, from U-064 Gate-2) — the iOS-timeout blocker is NOT the DB query
 

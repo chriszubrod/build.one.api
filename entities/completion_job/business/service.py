@@ -71,12 +71,13 @@ class CompletionJobService:
         """Reclaim path only — never re-raises.
 
         Reclaim fires only after N=1800s (default), far beyond real completion
-        time (seconds). Residual: the one non-idempotent-under-overlap path is
-        the MS Excel enqueue — outbox rows never coalesce and column-Z is only
-        checked at enqueue — so a reclaim overlapping a still-alive >30-min-hung
-        completion could duplicate DETAILS rows. This is a documented, N-guarded
-        residual; the proper fix (column-Z re-check at Excel drain time) is a
-        separate follow-up unit touching the shared MS Excel drain worker.
+        time (seconds). A reclaim overlapping a still-alive >30-min-hung
+        completion re-enqueues the same side-effects; every path is idempotent
+        under that overlap. The last gap — MS Excel outbox rows never coalesce
+        and column-Z was checked only at enqueue — closed in U-440a (api
+        d556af0a): the drain worker re-reads column Z before every row write
+        (`MsOutboxWorker._filter_rows_already_in_worksheet`), so a replayed
+        enqueue skips rows already in the sheet. U-081 is superseded by it.
         """
         with system_authz():
             self._run_job_inner(job)

@@ -20,6 +20,11 @@ class ModelPricing:
     output: float
     cache_write: float   # cache_creation_input_tokens
     cache_read: float    # cache_read_input_tokens
+    # Optional long-context tier, applied per request: when a request's
+    # input + cache_creation + cache_read tokens exceed the threshold, every
+    # rate comes from `long_context` instead.
+    long_context_threshold: Optional[int] = None
+    long_context: Optional["ModelPricing"] = None
 
 
 # Map of provider → model_id → pricing.
@@ -39,6 +44,15 @@ PRICING: dict[str, dict[str, ModelPricing]] = {
             output=75.00,
             cache_write=18.75,
             cache_read=1.50,
+        ),
+        # Haiku 5.5
+        "claude-haiku-5-5": ModelPricing(
+            input=0.10,
+            output=0.50,
+            cache_write=0.125,
+            cache_read=0.01,
+            long_context_threshold=100_000,
+            long_context=ModelPricing(input=0.50, output=2.50, cache_write=0.625, cache_read=0.05),
         ),
         # Haiku 4.5
         "claude-haiku-4-5-20251001": ModelPricing(
@@ -82,6 +96,13 @@ def compute_cost_usd(
                 break
     if not pricing:
         return None
+
+    if pricing.long_context is not None and pricing.long_context_threshold is not None:
+        prompt_tokens = (
+            usage.input_tokens + usage.cache_creation_input_tokens + usage.cache_read_input_tokens
+        )
+        if prompt_tokens > pricing.long_context_threshold:
+            pricing = pricing.long_context
 
     cost = (
         usage.input_tokens * pricing.input

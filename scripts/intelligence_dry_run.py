@@ -21,7 +21,7 @@ from intelligence.messages.types import Message, Text
 from intelligence.transport.registry import get_transport
 
 
-DEFAULT_MODEL = "claude-haiku-4-5-20251001"
+DEFAULT_MODEL = "claude-haiku-5-5"
 
 
 async def run(

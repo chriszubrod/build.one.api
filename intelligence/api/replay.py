@@ -218,6 +218,7 @@ async def tail_session(session_public_id: str) -> AsyncIterator[LoopEvent]:
                         output_tokens=turn.output_tokens or 0,
                     ),
                     stop_reason=turn.stop_reason,
+                    cost_usd=turn.cost_usd,
                 )
                 yielded_turn_ends.add(turn.id)
 
@@ -233,15 +234,20 @@ async def tail_session(session_public_id: str) -> AsyncIterator[LoopEvent]:
                     input_tokens=session.total_input_tokens or 0,
                     output_tokens=session.total_output_tokens or 0,
                 )
-                cost_usd = (
-                    compute_cost_usd(
+                # The runner is the source of cost: replay what it persisted.
+                # Re-pricing the totals is a shim for rows written before
+                # TotalCostUsd existed (2026-05-05); it prices the summed
+                # tokens at the session's declared model.
+                if session.total_cost_usd is not None:
+                    cost_usd = session.total_cost_usd
+                elif session.provider and session.model:
+                    cost_usd = compute_cost_usd(
                         provider=session.provider,
                         model=session.model,
                         usage=replay_usage,
                     )
-                    if session.provider and session.model
-                    else None
-                )
+                else:
+                    cost_usd = None
                 yield Done(
                     reason=session.termination_reason or "end_turn",
                     usage=replay_usage,

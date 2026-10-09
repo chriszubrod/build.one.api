@@ -16,7 +16,7 @@ from intelligence.messages.types import Message, Text
 from intelligence.transport.registry import get_transport
 
 
-MODEL = "claude-haiku-4-5-20251001"  # cheapest + fastest for smoke testing
+MODEL = "claude-haiku-5-5"  # cheapest + fastest for smoke testing
 
 
 async def main() -> int:

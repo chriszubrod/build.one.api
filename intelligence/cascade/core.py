@@ -37,7 +37,7 @@ DEFAULT_LADDER: tuple[Rung, ...] = (
     Rung("foundry", "DeepSeek-V4-Flash"),
     Rung("foundry", "gpt-5.4-nano"),
     Rung("foundry", "gpt-5.4-mini"),
-    Rung("anthropic", "claude-haiku-4-5-20251001"),
+    Rung("anthropic", "claude-haiku-5-5"),
     Rung("anthropic", "claude-sonnet-4-6"),
 )
 

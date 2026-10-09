@@ -30,7 +30,7 @@ from intelligence.tools.base import ToolContext
 from intelligence.transport.registry import get_transport
 
 
-DEFAULT_MODEL = "claude-haiku-4-5-20251001"
+DEFAULT_MODEL = "claude-haiku-5-5"
 DEFAULT_PROVIDER = "anthropic"
 DEFAULT_AGENT_NAME = "dry-run"
 DEFAULT_TOOLS = ["now", "add"]

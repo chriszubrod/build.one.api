@@ -109,8 +109,9 @@ class Done(BaseModel):
     type: Literal["done"] = "done"
     reason: str
     usage: Usage
-    # Optional dollar cost computed by the loop runner using the agent's
-    # provider + model. Null when pricing is unknown for that combo so
+    # Optional dollar cost: the sum of the per-turn costs, each priced on
+    # that turn's usage and the model that actually ran it (cascade rung,
+    # per-request pricing tier). Null when any turn's pricing is unknown so
     # consumers can degrade gracefully to "tokens only" display.
     cost_usd: Optional[float] = None
 

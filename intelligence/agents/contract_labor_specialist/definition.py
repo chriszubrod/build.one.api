@@ -29,7 +29,7 @@ contract_labor_specialist = Agent(
         "find_sub_cost_code_for_reply",
         "apply_contract_labor_reviewer_decision",
     ),
-    model="claude-haiku-4-5-20251001",
+    model="claude-haiku-5-5",
     provider="cascade",
     credentials_key="contract_labor_agent",
     # Each run does ~3 tool calls (lookup, delegate, create) + final

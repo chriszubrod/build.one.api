@@ -136,15 +136,20 @@ async def run(
     # the rung that won (may be cheaper than the agent's declared `model`); the
     # transport reveals it via its turn_start event.
     turn_model = model
+    # Session cost is the sum of per-turn costs: each turn is priced on its own
+    # usage and model (per-request long-context tiers, cascade rungs). None is
+    # sticky, so one unpriced turn makes the session total unknown.
+    total_cost_usd: Optional[float] = 0.0 if provider else None
+
+    def _done(reason: str) -> Done:
+        # Reads the running totals at call time, so every exit reports the
+        # same shape without four copies of the constructor.
+        return Done(reason=reason, usage=total_usage, cost_usd=total_cost_usd)
 
     while True:
         turn += 1
         if turn > budget.max_turns:
-            yield Done(
-                reason="max_turns",
-                usage=total_usage,
-                cost_usd=_cost(provider, turn_model, total_usage),
-            )
+            yield _done("max_turns")
             return
 
         # TurnStart is announced once the transport reveals the model actually
@@ -224,18 +229,20 @@ async def run(
             turn_announced = True
 
         if errored:
-            yield Done(
-                reason="error",
-                usage=total_usage,
-                cost_usd=_cost(provider, turn_model, total_usage),
-            )
+            yield _done("error")
             return
+
+        turn_cost = _cost(provider, turn_model, turn_usage)
+        if turn_cost is None:
+            total_cost_usd = None
+        elif total_cost_usd is not None:
+            total_cost_usd = round(total_cost_usd + turn_cost, 6)
 
         yield TurnEnd(
             turn=turn,
             usage=turn_usage,
             stop_reason=stop_reason,
-            cost_usd=_cost(provider, turn_model, turn_usage),
+            cost_usd=turn_cost,
         )
 
         total_usage = Usage(
@@ -255,19 +262,11 @@ async def run(
             history.append(Message(role="assistant", content=assistant_blocks))
 
         if total_usage.input_tokens + total_usage.output_tokens > budget.max_tokens:
-            yield Done(
-                reason="max_tokens",
-                usage=total_usage,
-                cost_usd=_cost(provider, turn_model, total_usage),
-            )
+            yield _done("max_tokens")
             return
 
         if not pending_calls:
-            yield Done(
-                reason=stop_reason or "end_turn",
-                usage=total_usage,
-                cost_usd=_cost(provider, turn_model, total_usage),
-            )
+            yield _done(stop_reason or "end_turn")
             return
 
         # Dispatch tools concurrently. Each pending_call is handled by a

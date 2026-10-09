@@ -16,7 +16,7 @@ time_tracking_specialist = Agent(
         "validate_time_entry_completeness",
         "flag_time_entry_for_human_review",
     ),
-    model="claude-haiku-4-5-20251001",
+    model="claude-haiku-5-5",
     provider="cascade",
     credentials_key="time_tracking_agent",
     # Each run is exactly 2 tool calls (validate → flag) + final text.

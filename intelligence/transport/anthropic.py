@@ -62,6 +62,86 @@ def _retry_delay(attempt: int, retry_after: Optional[float] = None) -> float:
     return jittered
 
 
+_EFFORT_ONLY_PREFIXES = (
+    "claude-haiku-5",
+    "claude-sonnet-5",
+    "claude-opus-5",
+    "claude-opus-4-7",
+    "claude-opus-4-8",
+    "claude-fable",
+    "claude-mythos",
+)
+
+_REASONING_EFFORT_TO_OUTPUT_EFFORT = {
+    "minimal": "low",
+    "low": "low",
+    "medium": "medium",
+    "high": "high",
+    "xhigh": "xhigh",
+    "max": "max",
+}
+
+
+def _effort_only_model(model: str) -> bool:
+    """Models that reject temperature/top_p/top_k (HTTP 400) and take effort
+    via `output_config` instead."""
+    return model.lower().startswith(_EFFORT_ONLY_PREFIXES)
+
+
+# Thinking is sent as `disabled` for these families. Haiku-only on purpose:
+# Opus 5.5 / Sonnet 5.5 / Fable reject `thinking: disabled`, and the harness
+# does not yet preserve thinking blocks across tool-result turns (follow-up).
+_THINKING_DISABLED_PREFIXES = ("claude-haiku-5",)
+
+
+def _thinking_disabled_model(model: str) -> bool:
+    return model.lower().startswith(_THINKING_DISABLED_PREFIXES)
+
+
+def _gen_params(model: str, extra_body: Optional[dict[str, Any]]) -> dict[str, Any]:
+    """The generation params to add to a request body for `model`.
+
+    Only the params the model family accepts are forwarded; the rest are
+    silently dropped so a caller can pass a cross-provider superset. Effort-only
+    models get `reasoning_effort` translated to `output_config.effort`.
+    """
+    if not extra_body:
+        return {}
+    effort_only = _effort_only_model(model)
+    keys = ("stop_sequences",) if effort_only else ("temperature", "top_p", "top_k", "stop_sequences")
+    params: dict[str, Any] = {k: extra_body[k] for k in keys if k in extra_body}
+    if effort_only:
+        effort = _REASONING_EFFORT_TO_OUTPUT_EFFORT.get(extra_body.get("reasoning_effort"))
+        if effort is not None:
+            params["output_config"] = {"effort": effort}
+    return params
+
+
+def _build_request_body(
+    messages: list[Message],
+    model: str,
+    system: Optional[str],
+    max_tokens: int,
+    tools: Optional[list[dict[str, Any]]],
+    extra_body: Optional[dict[str, Any]],
+) -> dict[str, Any]:
+    body = to_anthropic_request(
+        messages,
+        model=model,
+        system=system,
+        max_tokens=max_tokens,
+        tools=tools,
+    )
+    body.update(_gen_params(model, extra_body))
+    body["stream"] = True
+    if _thinking_disabled_model(model):
+        body["thinking"] = {"type": "disabled"}
+        # Disabled thinking with xhigh/max effort is rejected with HTTP 400.
+        if body.get("output_config", {}).get("effort") in ("xhigh", "max"):
+            body["output_config"] = {"effort": "high"}
+    return body
+
+
 class AnthropicTransport:
     def __init__(self, api_key: Optional[str] = None, timeout: float = 120.0):
         self._api_key = api_key or config.Settings().anthropic_api_key
@@ -83,21 +163,7 @@ class AnthropicTransport:
             )
             return
 
-        body = to_anthropic_request(
-            messages,
-            model=model,
-            system=system,
-            max_tokens=max_tokens,
-            tools=tools,
-        )
-        # Merge only the generation params Anthropic supports; silently drop
-        # the rest (e.g. OpenAI-style `reasoning_effort`) so a caller can pass
-        # a cross-provider superset.
-        if extra_body:
-            for k in ("temperature", "top_p", "top_k", "stop_sequences"):
-                if k in extra_body:
-                    body[k] = extra_body[k]
-        body["stream"] = True
+        body = _build_request_body(messages, model, system, max_tokens, tools, extra_body)
 
         headers = {
             "x-api-key": self._api_key,

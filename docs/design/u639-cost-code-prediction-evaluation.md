@@ -52,7 +52,7 @@ existing deterministic resolver to bill lines and **measuring** it before any le
 - **The "LLM path with rationale" pattern exists — `StructuredTask`** (`intelligence/cascade/core.py`). Returns
   `{label, confidence, reason}`; a rung is accepted **iff** the deterministic validator passes **and** confidence
   ≥ τ (0.85 in the email pilot); optional cross-rung consensus. Ladder cheapest-first: DeepSeek-V4-Flash →
-  gpt-5.4-nano → gpt-5.4-mini → claude-haiku-4-5 → claude-sonnet-4-6. Stage 1 and the LLM path are both
+  claude-haiku-5-5 → gpt-5.4-nano → gpt-5.4-mini → claude-sonnet-5-5 (U-641 · U-642b · U-648). Stage 1 and the LLM path are both
   instances of this, not new integrations.
 - **Text extraction is built, tested, and never runs — U-535a (booked).** `AttachmentExtractionService`
   (text-layer-first → DI fallback) and `POST /admin/attachment/extract/tick` exist; the tick is not on the

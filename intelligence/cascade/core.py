@@ -30,15 +30,16 @@ class Rung:
     max_tokens: int = 1024
 
 
-# Foundry rungs first, then Anthropic. Per-model rates live in
-# intelligence/observability/pricing.PRICING, not here, so they cannot drift.
+# Cheapest-first by blended $/MTok ((input + output) / 2) per
+# intelligence/observability/pricing.PRICING — rates live there, not here, and
+# tests/test_u648_ladder_order.py pins this order to them.
 # Foundry model strings must match the actual Foundry deployment names —
 # VERIFY when the endpoint is set.
 DEFAULT_LADDER: tuple[Rung, ...] = (
     Rung("foundry", "DeepSeek-V4-Flash"),
+    Rung("anthropic", "claude-haiku-5-5"),
     Rung("foundry", "gpt-5.4-nano"),
     Rung("foundry", "gpt-5.4-mini"),
-    Rung("anthropic", "claude-haiku-5-5"),
     Rung("anthropic", "claude-sonnet-5-5"),
 )
 

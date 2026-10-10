@@ -2,6 +2,86 @@
 
 Carry-over items from sessions. Check off as done; prune anything stale.
 
+## Expense entity review residuals — found 2026-10-03, verified in code, NOT fixed (booked)
+
+The review's two approved scopes (QBO pull lag, draft→submit throughput) shipped; see SESSION_NOTES.md
+same date. Everything below was confirmed against source and is open. Severity is the review's.
+
+- [ ] 🔴 **P1 — multi-attachment expense overwrites itself in SharePoint.** With `expense_line_items_count > 1`
+  the filename is `EXP - proj - vendor - ref - "Multiple See Image" - total - date` with no per-attachment
+  component (`entities/expense/business/service.py` `_upload_attachments_to_module_folder` ~1658 and the
+  receipts folder ~1870); the bare `:/content` PUT replaces, so the second receipt silently overwrites the
+  first in BOTH folders. Fix: include a short attachment id in the multi-line filename. Box has the same
+  class: `enqueue_box_upload` scopes identity to the entity for `doc_kind="attachment"`
+  (`integrations/box/outbox/business/service.py` ~154-172), so two same-named receipts 409 → same-owner
+  re-version → the first survives only as a Box prior version. Use the `line_attachment` per-attachment uuid5.
+- [ ] 🔴 **P1 — `GET /get/expense_line_item/{public_id}` 500s on an unknown id** (`to_dict()` on None,
+  `entities/expense_line_item/api/router.py` ~69). One-line 404.
+- [ ] 🟠 **P2 — attachment view/download/list are not row-scoped** (`entities/attachment/api/router.py`
+  49/447/489 gate on `Modules.ATTACHMENTS can_read` only). Any Attachments reader can enumerate and download
+  every receipt and invoice PDF regardless of UserProject — defeats Gap-1 for documents.
+- [ ] 🟠 **P2 — line-item `is_billed` / `is_draft` are client-writable** (`expense_line_item/api/schemas.py`
+  57/69/124/136; router 39-42/105-108). The header hole was closed in U-458; the line was not.
+- [ ] 🟠 **P2 — `apply_reviewer_decision` never consults the current Review** (`service.py` ~787-956):
+  an approval can land on a never-submitted expense; a second decision flips it silently; bypasses the
+  Workflow audit row. Bill's twin has the same shape.
+- [ ] 🟠 **P2 — `complete_expense` Step 2 finalizes lines with a RowVersion-guarded full UPDATE after the
+  header is already `completed`** (`service.py` ~1042-1079): a stale line stays `IsDraft=1` under a
+  completed parent, logged into a 207, never retried. Finalize-line should be idempotent like
+  `FinalizeExpenseById`.
+- [ ] 🟠 **P2 — completion-result cache is a per-process dict** (`router.py` 40/457/499); under `-w 2` the
+  web poll 404s on the other worker. Same shape as Bill. Back it with `CompletionJob`.
+- [ ] 🟠 **P2 — receipts-folder early returns carry `errors: []`** (`service.py` ~1776-1810): a missing
+  `520 - Current Receipts/yyyy/mm` path completes "successfully" with no upload and no issue row.
+- [ ] 🟠 **P2 — `complete_expense` still runs Graph inline**: `sync_to_excel_workbook` (session +
+  used-range read) and `_get_or_create_subfolder` (a folder CREATE). If Graph is down at completion nothing
+  is enqueued and nothing retries (Excel has the daily missing-row detector; receipts have none). The pull
+  side now uses `expense_pull_fanout`; completion should enqueue the same kind.
+- [ ] 🟠 **P2 — Excel `row_index` is computed at enqueue** (~1297-1301) and stale by drain → lines land in
+  the wrong SubCostCode section (col-Z prevents duplicates, not misplacement). Shared with Bill.
+- [ ] 🟠 **P2 — delete after completion leaves pending outbox rows draining for a dead expense** (no cancel
+  sproc in `ms.outbox.sql` / `box.outbox.sql`).
+- [ ] 🟠 **P2 — purchase pull: line-less purchase `continue`s unrecorded** (`scripts/sync_qbo_purchase.py`
+  deferral branch); attachable failures per purchase are WARN-only and never retried.
+- [ ] 🟠 **P2 (web) — SW `NetworkFirst` with `networkTimeoutSeconds: 3`** (`src/sw.ts` ~109) can serve a
+  pre-submit `GET reviews` or a stale `row_version` on a slow/cold API. Exclude write-adjacent reads or
+  raise the timeout.
+- [ ] 🟠 **P2 (web) — `usePaginatedList.load` has no request-sequence guard** (~165-184); fast tab/search
+  changes can let an older response overwrite a newer one. Shared with BillList.
+- [ ] 🟡 **P3** — `by-reference-number-and-vendor` omits coding state (`router.py` ~302); memo/total cannot be
+  nulled via PUT (`service.py` ~719); read sprocs lack `SET NOCOUNT ON` (`dbo.expense.sql` 490/524/641/
+  677/1179); `MarkExpenseDraftForCoding` returns `datetime2` via `OUTPUT INSERTED.*`; `recode_purchase_line`
+  serialises `float()` (`connector` ~519); each attachment blob is downloaded twice as a "probe" on the
+  completion request path (~1673/~1885); `sync_expenses_batch_to_excel` is now unreferenced (the pull
+  enqueues instead) — delete once the completion path is on the same kind; web list search is not
+  debounced; ExpenseEdit has no line math from `shared/money.ts`; Attach/remove controls show with
+  Expenses perms while the routes gate on `Modules.ATTACHMENTS`.
+- [ ] 🟡 **P3 — the create window keys on the mutable `TxnDate`, not purchase `CreateTime`.** Loss path is a
+  compound of rare events: purchase deferred (no local row), receipt attached, then the user moves the
+  transaction date FORWARD by more than `CREATE_WINDOW_MARGIN_DAYS` (3) before it is first projected — the
+  window (`newTxn − 3d`) starts after the receipt. Exact fix: stage QBO `MetaData.CreateTime` on
+  `qbo.Purchase` and bound by `min(create_time, txn_date) − margin` (schema change). The future-dated case
+  (window newer than the snapshot) is already clamped to the snapshot. Found by the 2026-10-04 fix rounds.
+- [ ] 🟡 **P3 — late-linked receipts get no MS/Box fan-out** (the fan-out enqueue iterates only changed
+  purchases). Either document as intended in the runbook or enqueue `expense_pull_fanout` for those expenses.
+- [ ] 🟡 **P3 — `_QBO_SYNC_LOCK_BUSY_STREAK` is per-process**; under `-w 2` `consecutive_skips` undercounts.
+  Move it to the Sync row if the number ever matters more than the WARNING itself.
+- [ ] 🟡 **Test gaps the review found (API)** — no test for: the line-item GET None path; the completion-result
+  cache across `-w 2` workers; line-item `is_billed`/`is_draft` not client-writable; `apply_reviewer_decision`
+  against an existing Review; `complete_expense` tolerating a stale line RowVersion; attachment download
+  scoping; two distinct attachments on a multi-line expense producing distinct SharePoint/Box names (would
+  catch the P1 above); the receipts-folder early returns; pending outbox rows after delete;
+  `query_purchases` pagination termination. Each fix above should land with its missing test.
+- [ ] 🟢 **Scheduler — shorten the `sync_qbo_purchase` timer from 15 to 5 min** in `build.one.scheduler`
+  (`function_app.py`, the `:07/:22/:37/:52` NCRONTAB). Precondition: this unit deployed to the API, then one
+  day of `qbo.sync.skipped_lock_busy` showing no skips (`consecutive_skips` never climbs). Budget: +8 query
+  calls/h, trivial against the 500K/mo cap. If skips appear after the change, the tick is still overlong —
+  revert to 15 and look at `qbo_to_local` timings before trying again.
+- [ ] 🟢 **Board — book a `U-###` row in `build.one.team/BOARD.md` for this unit.** The two commits shipped
+  without a `Unit:` trailer because the team repo was not attached to the session that made them:
+  `build.one.api` `b6b69fc` and `build.one.web` `67f8f06`, both on `claude/expense-entity-review-sx4baz`.
+  Record both shas on the row so they trace back; no amend/rewrite of the pushed commits.
+
 ## ~~U-549 C1 — `update_draft` guard sproc never applied~~ — RESOLVED 2026-09-29
 
 `dbo.CountMsOutboxByEntityAndKind` **is live**, verified against `sys.objects` at U-567's Step 0. The

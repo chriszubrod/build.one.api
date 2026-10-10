@@ -21,6 +21,17 @@ from shared.rbac_constants import Modules
 
 logger = logging.getLogger(__name__)
 
+# MS outbox drain bounds per 30s scheduler tick (see `drain_ms_outbox`). Kept
+# under the tick so two drains never overlap on the same worker; the app lock
+# inside `drain_once` guards the cross-worker case regardless.
+MS_DRAIN_MAX_ROWS = 20
+MS_DRAIN_TIME_BUDGET_SECONDS = 20.0
+
+# Consecutive `lock_busy` skips per QBO entity (A3). A skipped tick is a whole
+# cadence of lag added silently; the WARNING below plus this counter make a
+# stuck or overlong pull visible in the logs and in the endpoint's response.
+_QBO_SYNC_LOCK_BUSY_STREAK: dict[str, int] = {}
+
 router = APIRouter(prefix="/api/v1/admin", tags=["api", "admin"])
 
 
@@ -181,8 +192,13 @@ async def drain_ms_outbox_router():
     def _run() -> dict[str, Any]:
         from integrations.ms.outbox.business.worker import MsOutboxWorker
         try:
-            MsOutboxWorker().drain_once()
-            return {"ms": "ok"}
+            # Bounded loop, same shape as the Box drain below. One row per 30s
+            # tick (the old `drain_once`) made a single expense completion take
+            # minutes and a QBO pull's fan-out take the better part of an hour.
+            processed = MsOutboxWorker().drain_all(
+                max_rows=MS_DRAIN_MAX_ROWS, time_budget_seconds=MS_DRAIN_TIME_BUDGET_SECONDS,
+            )
+            return {"ms": "ok", "processed": processed}
         except Exception as error:
             logger.exception("ms.outbox.drain.failed")
             return {"ms": {"error": str(error)}}
@@ -515,12 +531,21 @@ async def sync_qbo_router(
     envelope = await _timed(f"sync.qbo.{entity}", _locked_sync_fn)
     inner = envelope.get("result")
     if isinstance(inner, dict) and inner.get("skipped"):
-        logger.info("qbo.sync.skipped_lock_busy entity=%s", entity)
+        streak = _QBO_SYNC_LOCK_BUSY_STREAK.get(entity, 0) + 1
+        _QBO_SYNC_LOCK_BUSY_STREAK[entity] = streak
+        logger.warning(
+            "qbo.sync.skipped_lock_busy entity=%s consecutive_skips=%d "
+            "(previous tick still running — each skip adds a full cadence of lag)",
+            entity,
+            streak,
+        )
         return {
             "status": "skipped",
             "job": f"sync.qbo.{entity}",
             "reason": "lock_busy",
+            "consecutive_skips": streak,
         }
+    _QBO_SYNC_LOCK_BUSY_STREAK.pop(entity, None)
     inner_status = inner.get("status_code") if isinstance(inner, dict) else None
     if isinstance(inner_status, int) and inner_status >= 400:
         detail_result = inner.get("result") if isinstance(inner, dict) else None

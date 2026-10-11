@@ -18,6 +18,7 @@ from integrations.ms.base.retry import RetryPolicy, compute_backoff_seconds
 from integrations.ms.outbox.business.model import MsOutbox
 from integrations.ms.outbox.business.service import (
     KIND_APPEND_EXCEL_ROW,
+    KIND_EXPENSE_PULL_FANOUT,
     KIND_INSERT_EXCEL_ROW,
     KIND_SEND_MAIL,
     KIND_UPDATE_DRAFT,
@@ -34,6 +35,20 @@ logger = get_ms_logger(__name__)
 
 # Chapter 5 parity with QBO: dead-letter after 5 failed attempts.
 MAX_ATTEMPTS = 5
+
+# `ExpenseService.sync_to_excel_workbook` / `_upload_attachments_to_module_folder`
+# report an UNMAPPED project with these messages. They are configuration, not
+# failures — the QBO purchase tick logged them and moved on, and so does the
+# fan-out handler (a retry cannot map a project).
+_UNMAPPED_MESSAGE_PREFIXES = (
+    "Excel not linked for project",
+    "Module folder not linked for project",
+)
+
+
+def _is_unmapped_result(result: Dict[str, Any]) -> bool:
+    message = str((result or {}).get("message") or "")
+    return any(message.startswith(prefix) for prefix in _UNMAPPED_MESSAGE_PREFIXES)
 
 # Cross-process drain lock.
 DRAIN_LOCK_NAME = "ms_outbox_drain"
@@ -95,6 +110,7 @@ class MsOutboxWorker:
             KIND_INSERT_EXCEL_ROW: self._handle_insert_excel_row,
             KIND_SEND_MAIL: self._handle_send_mail,
             KIND_UPDATE_DRAFT: self._handle_update_draft,
+            KIND_EXPENSE_PULL_FANOUT: self._handle_expense_pull_fanout,
         }
         self._retry_policy = RetryPolicy.for_writes()
 
@@ -119,10 +135,39 @@ class MsOutboxWorker:
             self._process(row)
             return True
 
-    def drain_all(self, max_rows: int = 100) -> int:
-        """Drain up to `max_rows` in a loop. Returns count processed."""
+    def drain_all(
+        self,
+        max_rows: int = 100,
+        time_budget_seconds: Optional[float] = None,
+    ) -> int:
+        """
+        Drain up to `max_rows` in a loop, stopping early once
+        `time_budget_seconds` has elapsed (checked between rows — a row that is
+        already in flight always finishes). Returns count processed.
+
+        The scheduler's 30s `drain_ms_outbox` timer used to call `drain_once`,
+        i.e. ONE row per tick: a single-attachment expense completion (3-4 rows)
+        took ~2 minutes to land and a pull of 20 expenses queued behind
+        everything else for the better part of an hour. The Box drain already
+        runs a bounded loop (`BoxOutboxWorker.drain_all(max_rows=20,
+        time_budget_seconds=20.0)`); this is the same shape.
+        """
         processed = 0
+        started = datetime.now(timezone.utc)
         while processed < max_rows:
+            if (
+                time_budget_seconds is not None
+                and (datetime.now(timezone.utc) - started).total_seconds() >= time_budget_seconds
+            ):
+                logger.info(
+                    "ms.outbox.drain.time_budget_reached",
+                    extra={
+                        "event_name": "ms.outbox.drain.time_budget_reached",
+                        "processed": processed,
+                        "time_budget_seconds": time_budget_seconds,
+                    },
+                )
+                break
             if not self.drain_once():
                 break
             processed += 1
@@ -318,6 +363,7 @@ class MsOutboxWorker:
             KIND_INSERT_EXCEL_ROW,
             KIND_UPLOAD_SHAREPOINT_FILE,
             KIND_SEND_MAIL,
+            KIND_EXPENSE_PULL_FANOUT,
         ):
             return
 
@@ -343,6 +389,108 @@ class MsOutboxWorker:
     # ------------------------------------------------------------------ #
     # Per-kind handlers
     # ------------------------------------------------------------------ #
+
+    def _handle_expense_pull_fanout(self, row: MsOutbox, payload: Dict[str, Any]) -> None:
+        """
+        Run the Excel + SharePoint fan-out for one (expense, project) that the
+        QBO purchase tick projected. Re-reads the expense at drain time (the
+        payload carries only ids), then calls the same two `ExpenseService`
+        methods the tick used to call inline. Both return result dicts rather
+        than raising; a non-empty `errors` list here is turned back into a
+        retryable `MsServerError` so the row retries with backoff and eventually
+        dead-letters with a ReconciliationIssue instead of vanishing into a WARN.
+
+        An unmapped project (no Excel workbook / no module folder) is a
+        configuration state, not a failure: it is logged and the row is done,
+        matching what the inline path did (a warning, no retry).
+        """
+        from entities.expense.business.service import ExpenseService
+        from entities.expense_line_item.business.service import ExpenseLineItemService
+
+        project_id = payload.get("project_id")
+        if project_id is None:
+            raise ValueError("expense_pull_fanout payload missing project_id")
+        project_id = int(project_id)
+
+        expense_service = ExpenseService()
+        expense = expense_service.read_by_public_id(public_id=str(row.entity_public_id))
+        if expense is None:
+            # Deleted between enqueue and drain — nothing to file for.
+            logger.warning(
+                "ms.outbox.expense_pull_fanout.expense_missing",
+                extra={
+                    "event_name": "ms.outbox.expense_pull_fanout.expense_missing",
+                    "outbox_public_id": row.public_id,
+                    "entity_public_id": row.entity_public_id,
+                },
+            )
+            return
+
+        line_items = ExpenseLineItemService().read_by_expense_id(expense_id=expense.id) or []
+        project_items = [li for li in line_items if li.project_id == project_id]
+        if not project_items:
+            logger.info(
+                "ms.outbox.expense_pull_fanout.no_lines_for_project",
+                extra={
+                    "event_name": "ms.outbox.expense_pull_fanout.no_lines_for_project",
+                    "entity_public_id": row.entity_public_id,
+                    "project_id": project_id,
+                },
+            )
+            return
+        line_items_count = int(payload.get("expense_line_items_count") or len(line_items))
+
+        errors: list = []
+
+        excel_result = expense_service.sync_to_excel_workbook(
+            expense=expense, line_items=project_items, project_id=project_id,
+        )
+        if _is_unmapped_result(excel_result):
+            logger.info(
+                "ms.outbox.expense_pull_fanout.excel_unmapped",
+                extra={"entity_public_id": row.entity_public_id, "project_id": project_id,
+                       "message": excel_result.get("message")},
+            )
+        else:
+            errors.extend(excel_result.get("errors") or [])
+
+        sp_result = expense_service._upload_attachments_to_module_folder(
+            expense=expense,
+            line_items=project_items,
+            project_id=project_id,
+            expense_line_items_count=line_items_count,
+        )
+        if _is_unmapped_result(sp_result):
+            logger.info(
+                "ms.outbox.expense_pull_fanout.sharepoint_unmapped",
+                extra={"entity_public_id": row.entity_public_id, "project_id": project_id,
+                       "message": sp_result.get("message")},
+            )
+        else:
+            errors.extend(sp_result.get("errors") or [])
+
+        logger.info(
+            "ms.outbox.expense_pull_fanout.completed",
+            extra={
+                "event_name": "ms.outbox.expense_pull_fanout.completed",
+                "entity_public_id": row.entity_public_id,
+                "project_id": project_id,
+                "excel_rows": excel_result.get("synced_count", 0),
+                "sharepoint_uploads": sp_result.get("synced_count", 0),
+                "sharepoint_skipped": sp_result.get("skipped_count", 0),
+                "error_count": len(errors),
+            },
+        )
+        if errors:
+            # Both ExpenseService methods catch internally and report through
+            # `errors`, so a Graph 503 can never surface as an MsGraphError from
+            # here. Raise a RETRYABLE MsGraphError subclass: `_process` routes it
+            # to `_handle_ms_error` (backoff, MAX_ATTEMPTS, then dead-letter). A
+            # plain RuntimeError would dead-letter on attempt 1.
+            raise MsServerError(
+                "expense_pull_fanout: " + "; ".join(str(e.get("error", e)) for e in errors),
+                request_path=f"expense_pull_fanout/{row.entity_public_id}/project/{project_id}",
+            )
 
     def _handle_upload_sharepoint_file(
         self,

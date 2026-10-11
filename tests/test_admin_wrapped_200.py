@@ -77,10 +77,14 @@ def test_sync_qbo_skipped_when_lock_busy(monkeypatch):
         lambda entity: _tracking_sync_fn,
     )
 
+    admin._QBO_SYNC_LOCK_BUSY_STREAK.clear()
     env = asyncio.run(sync_qbo_router(entity="bill", attachments=True))
     assert env == {
         "status": "skipped",
         "job": "sync.qbo.bill",
         "reason": "lock_busy",
+        # A skipped tick is a whole cadence of added lag; the streak makes an
+        # overlong previous tick visible (expense review, 2026-10-03).
+        "consecutive_skips": 1,
     }
     assert not sync_fn_called

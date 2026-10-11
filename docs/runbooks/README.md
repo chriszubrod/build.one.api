@@ -23,6 +23,7 @@ to run — no need to reverse-engineer the system under pressure.
 | [ms-token-expiration.md](ms-token-expiration.md) | MS 365 delegated OAuth access/refresh token expiring or failing to refresh |
 | [ms-graph-503-storm.md](ms-graph-503-storm.md) | Cascading Graph 5xx failures during a Microsoft service incident; dead-letter recovery |
 | [ms-excel-conflict-storm.md](ms-excel-conflict-storm.md) | Excel workbook writes blocked by a human editor or stuck session lock |
+| [expense-pull-fanout.md](expense-pull-fanout.md) | A QBO-pulled expense is missing its tracker row or receipt in SharePoint; the `expense_pull_fanout` outbox kind |
 | [ms-permissions-revoked.md](ms-permissions-revoked.md) | Azure AD revoked the app's Graph permissions (403 everywhere) |
 | [box-auth-reauthorization.md](box-auth-reauthorization.md) | Box CCG token mint failing — secret rotated, app pending reauthorization after a scope change, or enterprise deauthorized |
 | [box-rate-limit.md](box-rate-limit.md) | Box 429 storms — per-user limits (1,000 calls/min general, 240 uploads/min), Retry-After honored, outbox absorbs |

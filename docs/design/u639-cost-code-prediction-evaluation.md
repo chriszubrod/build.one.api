@@ -1,7 +1,7 @@
 # U-639 — Cost-code prediction for bill lines: evaluation of the 2026-10-08 design prompt
 
 **Status:** DESIGN unit U-639 (Phase 1), claimed 2026-10-08. Nothing built. Terminology confirmed with Chris
-2026-10-11 (below). Awaiting Chris's D0–D9 decisions (§7); **D0 (intake) is new and comes first.**
+2026-10-11 (below). D0 decided 2026-10-11 (manual web entry is the intake); awaiting D1–D9 (§7).
 **Author:** `/em`, 2026-10-08. Every "exists / does not exist" claim below was checked against `build.one.api` on
 this date; the live counts are quoted from board rows U-535a / U-535b (measured 2026-09-24) and are perishable.
 **Input:** Chris's dictated prompt for an "automated cost-code prediction feature" (two intake adapters → Stage 1
@@ -252,13 +252,13 @@ drop cleanly if AI Search replaces them. Prerequisite: SQL tier bump.
 | # | Unit | Depends on | Tier | Effort | Return |
 |---|---|---|---|---|---|
 | M0 | **U-535a** — configure DI endpoint + VNet, wire `extract/tick` on the `process_bill_folder` timer shape, reset the 200 failed, backfill 28,459 set-based | — | non-P0 | S (mostly config + a timer) | Unblocks *everything* text-based; also the search index the board already wants |
-| M1 | **Bill-line coding suggestion, suggestion-only** — 5.3 table, 5.5 sproc, resolver port (vendor×project → vendor → `FindSubCostCodeForReply`; the filename-convention source dies with the folder intake), **backtest harness** replaying ~20k historical lines with `@AsOfDatetime` and a temporal split, reporting auto-clear / override / flag by confidence bucket | nothing (structured labels exist for all 20k bills) | non-P0 | M | The number that decides M4-vs-GBM; reviewer value on whichever intake D0 picks |
+| M1 | **Bill-line coding suggestion, suggestion-only, surfaced in the web Bill edit form (D0)** — 5.3 table, 5.5 sproc, resolver port (vendor×project → vendor → `FindSubCostCodeForReply`; the filename-convention source dies with the folder intake), **backtest harness** replaying ~20k historical lines with `@AsOfDatetime` and a temporal split, reporting auto-clear / override / flag by confidence bucket | nothing (structured labels exist for all 20k bills) | non-P0 | M | The number that decides M4-vs-GBM; reviewer value on whichever intake D0 picks |
 | M2 | **Budget cross-check + routing** — pure function over the variance sproc (5.4), `Route` enum, scored-bill exclusion | M1 | non-P0 | S | Conflict detection; the "unbudgeted code" flag the owner has asked for in other forms (U-632 suspense coding) |
-| M3 | **Stage-1 attachment-type classifier** — a `StructuredTask` on the cascade over the first ~4k chars of extracted text + filename, §4.5 vocabulary, writes 5.2 | M0 | non-P0 | S–M | Gate for M1 on document intake (D0); splits statements and multi-invoice PDFs before they become wrong bills |
+| M3 | ~~**Stage-1 attachment-type classifier**~~ **Off the critical path (D0):** the person entering the Bill decides the document type. Kept for a future automated intake. Was: — a `StructuredTask` on the cascade over the first ~4k chars of extracted text + filename, §4.5 vocabulary, writes 5.2 | M0 | non-P0 | S–M | Gate for M1 on document intake (D0); splits statements and multi-invoice PDFs before they become wrong bills |
 | M4 | **LLM path** — a `StructuredTask` given bill text + M1 history + M2 budget evidence; validator = SCC ∈ project's approved budget set *or* explicit `unbudgeted`; writes 5.3 with `Source='llm'` and the rationale | M1, M2, M0 | non-P0 (suggestion-only) | M | Covers the multi-code-vendor residual M1's backtest exposes |
 | M5 | **Pre-fill on fast path** — write `SubCostCodeId`/`ProjectId` onto the draft line when `Route='fast'` | M1–M4 + a read auto-clear metric on real volume | **P0-surface** (feeds draw packets) ⇒ Pass 3 | S | The actual time saving; held until the metric earns it, as U-005 v1 was |
 | M6 | **Provenance columns + backfill** (5.1) | — (can run any time) | non-P0 | S | Required before any document intake that D0 picks |
-| M7 | **Email intake revival** | the U-218f teardown rationale; M6; M3 | P0-surface if it creates Bills (`SourceEmailMessageId`, review submit) | M | The second adapter — only if the original reason for tearing it down is addressed |
+| M7 | **Email intake revival** — **off the critical path (D0)**; | the U-218f teardown rationale; M6; M3 | P0-surface if it creates Bills (`SourceEmailMessageId`, review submit) | M | The second adapter — only if the original reason for tearing it down is addressed |
 | M8 | **Embeddings** (5.7) + nearest-neighbour feature | M0, **U-535b** (else ~3k docs), SQL tier bump, and a backtest residual that looks text-separable | non-P0 | M–L | Unknown until M1 reports; may be zero |
 | — | **Learned model (GBM)** | M1 backtest showing a gap the resolver + M4 cannot close | — | L (new runtime surface) | Not scheduled |
 | — | **Commitment / Contract entity** | product decision | — | — | Out of scope here; on the roadmap as a draw-package dependency |
@@ -272,7 +272,7 @@ touch disjoint files (scheduler + `entities/attachment` vs `entities/coding_sugg
 
 | # | Decision | Recommendation |
 |---|---|---|
-| D0 | **Which path brings Bills into build.one once SharePoint folder intake is removed?** Candidates: revived email intake (D3), manual upload in web/iOS, the QBO Bill pull. | **Decide before M1–M4 are scoped.** Where Bills come from decides what signal exists at prediction time (sender, filename, an already-coded QBO bill). First step: the §8 read-only measurement's bills-by-`IntakeSource` breakdown, which shows how Bills actually arrive today. |
+| D0 | **Which path brings Bills into build.one once SharePoint folder intake is removed?** | ✅ **Decided (Chris, 2026-10-11): manual entry in the web app is the intake** (§8: person-entered Bills dominate since July; folder and email intake are already near zero). The predictor becomes a **suggestion in the Bill edit form** as each line is coded, not a pipeline that creates Bills. Consequences: Stage 1 (M3) and email revival (M7) leave the critical path; provenance (M6) is optional. |
 | D1 | Label grain: per `BillLineItem` `(Project, SCC)`, or the bill's dominant code? | **Line.** It is the ledger truth and what the draw package pivots on. |
 | D2 | Is Project an input or a prediction? | **Prediction** with its own confidence; the budget check is gated on it. The folder intake that supplied it is being removed. |
 | D3 | Revive the email intake torn down 2026-08-16? | **Not until the teardown rationale is recovered** (it is not in the U-218f session note). Then M7, after M3 + M6. |
@@ -285,15 +285,35 @@ touch disjoint files (scheduler + `entities/attachment` vs `entities/coding_sugg
 
 ---
 
-## 8. One measurement this evaluation could not take
+## 8. Measurement (run 2026-10-11 on Chris's approval, read-only)
 
-A read-only prod aggregate that bounds the deterministic ceiling *before* M1 is built was prepared and
-**blocked by the auto-mode permission classifier (production reads)**; it was not re-attempted. It measures,
-over completed bill lines with a vendor and an SCC: lines whose vendor's modal SCC matches (in-sample
-ceiling), the same at vendor×project grain, line-weighted consistency buckets (≥90 / 70–90 / 50–70 / <50),
-distinct SCCs in use, bills by `IntakeSource`, and lines-per-bill. Expected to show vendor×project
-consistency materially above vendor-only — the quantitative case for D4. It is SELECT-only; run it on
-approval, or let M1's harness supply the honest temporal version.
+**How Bills arrive.** Origin per Bill: `IntakeSource='bill_folder'` → SharePoint folder; `SourceEmailMessageId`
+set → email; QBO staging row created no later than the dbo row (+5s) → QBO pull; creator `IsAgent` → agent;
+otherwise a person in build.one. Last 12 months: QBO pull 18,277 (mostly older history), person 1,903,
+SharePoint folder 124, agent 106, email 102. Last six months by month:
+
+| Month | Person in build.one | QBO pull | Agent | Email | SharePoint folder |
+|---|---|---|---|---|---|
+| 2026-04 | 278 | 244 | | 7 | |
+| 2026-05 | | 87 | | 65 | 124 |
+| 2026-06 | 1 | 514 | | 11 | |
+| 2026-07 | 207 | 195 | 62 | | |
+| 2026-08 | 478 | 173 | | 13 | |
+| 2026-09 | 245 | 60 | 38 | | |
+| 2026-10 (to the 11th) | 41 | 4 | 6 | | |
+
+Person-entered Bills are almost all Chris's (1,250 in six months); SharePoint folder and email intake are
+already near zero; the QBO-pull share is falling. Lines per Bill ≈ 1.1–1.3 for every origin.
+
+**Deterministic ceiling (in-sample, so optimistic).** Over 22,610 coded lines (503 vendors, 326 SCCs in use):
+the vendor's modal SCC matches **54.0%**; the modal SCC at vendor×project grain matches **65.1%**. Line-weighted
+vendor consistency: ≥90% → 7.0% of lines; 70–90% → 15.8%; 50–70% → 28.2%; <50% → **48.9%**.
+
+**What it means.** Vendor history alone cannot carry the prediction: half of all coded lines come from vendors
+who use their own most common code less than half the time. The line's text (description, extracted
+document text) has to carry the rest, which raises the priority of M0 (extraction) and M4 (LLM path). M1's
+temporal backtest will give the honest (lower) number. Vendor×project beats vendor-only by 11 points, which
+supports keeping project in the signal (D2, D4). Query: kept with the EM's session records; SELECT-only.
 
 ---
 

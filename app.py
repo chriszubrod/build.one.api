@@ -12,9 +12,8 @@ from starlette.requests import Request
 # customDimensions in App Insights), and Python exceptions. No code changes
 # needed in request handlers or the QBO client — the instrumentation sees
 # everything through the stdlib layers we already use.
-if os.getenv("APPLICATIONINSIGHTS_CONNECTION_STRING"):
-    from azure.monitor.opentelemetry import configure_azure_monitor
-    configure_azure_monitor(logger_name="", enable_live_metrics=False)
+from intelligence.observability.cascade_telemetry import configure_app_insights
+configure_app_insights()
 
 # Third-party Imports
 from fastapi import Depends, FastAPI, Request

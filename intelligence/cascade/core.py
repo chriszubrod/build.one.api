@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
 from intelligence.messages.types import Message, Text
+from intelligence.observability.cascade_telemetry import log_ladder_outcome, log_safely
 from intelligence.transport import registry as transport_registry
 from intelligence.transport.base import Done, TextDelta, TransportError, Usage
 
@@ -97,6 +98,7 @@ class CascadeResult:
     winning_rung: Optional[Rung]
     attempts: list[Attempt]
     accepted_via: Optional[str] = None   # "threshold" | "consensus" when accepted
+    winning_index: Optional[int] = None  # 1-based position in attempts of the attempt that produced `result`
 
 
 async def run_cascade(
@@ -163,7 +165,8 @@ async def run_ladder(
                 rung=rung, accepted=False, usage=usage, latency_ms=latency_ms,
                 error=error or "no parseable result",
             ))
-            logger.info(
+            log_safely(
+                logger, logging.INFO,
                 "cascade[%s] rung %s/%s -> escalate (error=%s, %dms)",
                 name, rung.provider, rung.model, error, latency_ms,
             )
@@ -187,31 +190,38 @@ async def run_ladder(
             validated=validated, validation_reason=vreason, result=parsed,
             usage=usage, latency_ms=latency_ms,
         ))
-        logger.info(
+        log_safely(
+            logger, logging.INFO,
             "cascade[%s] rung %s/%s -> %s (validated=%s, conf=%s, τ=%.2f, %dms)",
             name, rung.provider, rung.model,
             (accepted_via.upper() if accepted_via else "escalate"),
             validated, confidence, threshold, latency_ms,
         )
         if accepted:
-            return CascadeResult(
+            outcome = CascadeResult(
                 accepted=True, needs_human=False, result=parsed,
                 confidence=confidence, winning_rung=rung, attempts=attempts,
-                accepted_via=accepted_via,
+                accepted_via=accepted_via, winning_index=len(attempts),
             )
+            log_ladder_outcome(logger, name, outcome)
+            return outcome
 
     best = _best_attempt(attempts)
-    logger.warning(
+    log_safely(
+        logger, logging.WARNING,
         "cascade[%s] EXHAUSTED %d rungs without acceptance -> needs_human",
         name, len(attempts),
     )
-    return CascadeResult(
+    outcome = CascadeResult(
         accepted=False, needs_human=True,
         result=best.result if best else None,
         confidence=best.confidence if best else None,
         winning_rung=best.rung if best else None,
         attempts=attempts,
+        winning_index=next((i + 1 for i, a in enumerate(attempts) if a is best), None),
     )
+    log_ladder_outcome(logger, name, outcome)
+    return outcome
 
 
 def _best_attempt(attempts: list[Attempt]) -> Optional[Attempt]:

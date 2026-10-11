@@ -25,6 +25,7 @@ fall back only on a pre-content error).
 import logging
 from typing import Any, AsyncIterator, Optional
 
+from intelligence.observability.cascade_telemetry import log_safely, log_transport_event
 from intelligence.transport.base import (
     TextDelta,
     ToolUseComplete,
@@ -89,22 +90,46 @@ class CascadeTransport:
                     message=f"rung {rung.model} produced an empty completion",
                     code="empty_completion",
                 )
-                logger.info(
+                log_safely(
+                    logger, logging.INFO,
                     "cascade transport: rung %d %s/%s -> fallback (%s)",
                     i + 1, rung.provider, rung.model, last_error.message[:160],
+                )
+                log_transport_event(
+                    logger,
+                    outcome="fallback",
+                    rung_index=i + 1,
+                    provider=rung.provider,
+                    model=rung.model,
+                    error_code=last_error.code,
                 )
                 continue
 
             if i > 0:
-                logger.info(
+                log_safely(
+                    logger, logging.INFO,
                     "cascade transport: accepted rung %d %s/%s after %d fallback(s)",
                     i + 1, rung.provider, rung.model, i,
                 )
+            log_transport_event(
+                logger,
+                outcome="accepted",
+                rung_index=i + 1,
+                provider=rung.provider,
+                model=rung.model,
+                fallbacks=i,
+            )
             for ev in buffered:
                 yield ev
             return
 
         # Every rung failed structurally.
+        log_transport_event(
+            logger,
+            outcome="exhausted",
+            rung_count=len(self._ladder),
+            error_code=last_error.code,
+        )
         yield last_error or TransportError(
             message="all cascade rungs failed to produce a completion",
             code="cascade_exhausted",

@@ -819,6 +819,37 @@ class QboOutboxWorker:
             realm_id=row.realm_id,
         )
 
+    @staticmethod
+    def _recode_is_billable(item, local_line) -> Optional[bool]:
+        """Resolve Billable for expense-coding recode at drain time.
+
+        A human-stamped ``billable_decided_at`` is authoritative. Otherwise seed
+        from the confirmed project's ``IsCostPlus`` when known; fall back to the
+        local line's current value. Seeding happens here (not on local write)
+        because an undecided local value would be reverted by the QBO pull
+        before this outbox row drains.
+        """
+        if local_line is None:
+            return None
+        if getattr(local_line, "billable_decided_at", None) is not None:
+            return local_line.is_billable
+        if item.confirmed_project_id is None:
+            return local_line.is_billable
+        try:
+            from entities.project.business.service import ProjectService
+
+            project = ProjectService().read_by_id(int(item.confirmed_project_id))
+        except Exception as exc:
+            logger.warning(
+                "Could not read project %s for recode Billable seed: %s",
+                item.confirmed_project_id,
+                exc,
+            )
+            return local_line.is_billable
+        if project is None or project.is_cost_plus is None:
+            return local_line.is_billable
+        return bool(project.is_cost_plus)
+
     def _resolve_recode_line_economics(
         self, row: QboOutbox, item
     ) -> tuple[Optional[object], Optional[str]]:
@@ -912,7 +943,7 @@ class QboOutboxWorker:
                 quantity = local_line.quantity
                 rate = local_line.rate
                 amount = local_line.amount
-                is_billable = local_line.is_billable
+                is_billable = self._recode_is_billable(item, local_line)
             else:
                 logger.warning(
                     "Could not resolve local ExpenseLineItem for expense coding item %s "

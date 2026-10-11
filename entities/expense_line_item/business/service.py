@@ -1,5 +1,6 @@
 # Python Standard Library Imports
 import logging
+from datetime import datetime, timezone
 from typing import Optional
 from decimal import Decimal
 
@@ -21,6 +22,25 @@ from shared.lifecycle.terminal_lock import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _is_human_user(user_id: int) -> bool:
+    """True only for a readable, non-agent user (U-646, Codex P2).
+
+    A stamp makes a Billable value authoritative — the QBO pull stops correcting
+    it and the recode drain stops seeding it — so only a person may create one.
+    The JWT does not carry IsAgent, and leaving billable_decided out of the agent
+    tool's schema does not stop an agent account calling the API directly.
+    Fails closed: an unreadable user is not stamped.
+    """
+    try:
+        from entities.user.business.service import UserService
+
+        user = UserService().read_by_id(user_id)
+    except Exception as exc:
+        logger.warning("Could not read user %s for Billable stamp; not stamping: %s", user_id, exc)
+        return False
+    return user is not None and user.is_agent is False
 
 
 class ExpenseLineItemService:
@@ -180,6 +200,8 @@ class ExpenseLineItemService:
         price: float = None,
         is_draft: bool = None,
         _via_internal_pipeline: bool = False,
+        billable_decided: bool = False,
+        actor_user_id: Optional[int] = None,
     ) -> Optional[ExpenseLineItem]:
         """
         Update an expense line item by public ID.
@@ -240,6 +262,15 @@ class ExpenseLineItemService:
             existing.amount = Decimal(str(amount))
         if is_billable is not None:
             existing.is_billable = is_billable
+        if (
+            billable_decided
+            and not _via_internal_pipeline
+            and is_billable is not None
+            and actor_user_id is not None
+            and _is_human_user(actor_user_id)
+        ):
+            existing.billable_decided_by_user_id = actor_user_id
+            existing.billable_decided_at = datetime.now(timezone.utc).replace(tzinfo=None)
         if is_billed is not None:
             existing.is_billed = is_billed
         if markup is not None:

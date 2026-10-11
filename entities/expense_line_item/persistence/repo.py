@@ -56,6 +56,8 @@ class ExpenseLineItemRepository:
                 is_draft=bool(getattr(row, "IsDraft", True)) if getattr(row, "IsDraft", None) is not None else None,
                 qbo_id=getattr(row, "QboId", None),
                 realm_id=getattr(row, "RealmId", None),
+                billable_decided_by_user_id=getattr(row, "BillableDecidedByUserId", None),
+                billable_decided_at=getattr(row, "BillableDecidedAt", None),
             )
         except AttributeError as error:
             logger.error(f"Attribute error during expense line item mapping: {error}")
@@ -64,7 +66,7 @@ class ExpenseLineItemRepository:
             logger.error(f"Unexpected error during expense line item mapping: {error}")
             raise map_database_error(error)
 
-    def create(self, *, expense_id: int, sub_cost_code_id: Optional[int] = None, project_id: Optional[int] = None, description: Optional[str] = None, quantity: Optional[Decimal] = None, rate: Optional[Decimal] = None, amount: Optional[Decimal] = None, is_billable: Optional[bool] = None, is_billed: Optional[bool] = None, markup: Optional[Decimal] = None, price: Optional[Decimal] = None, is_draft: bool = True, created_by_user_id: Optional[int] = None, allow_terminal_parent: bool = True) -> ExpenseLineItem:
+    def create(self, *, expense_id: int, sub_cost_code_id: Optional[int] = None, project_id: Optional[int] = None, description: Optional[str] = None, quantity: Optional[Decimal] = None, rate: Optional[Decimal] = None, amount: Optional[Decimal] = None, is_billable: Optional[bool] = None, is_billed: Optional[bool] = None, billable_decided_by_user_id: Optional[int] = None, billable_decided_at: Optional[str] = None, markup: Optional[Decimal] = None, price: Optional[Decimal] = None, is_draft: bool = True, created_by_user_id: Optional[int] = None, allow_terminal_parent: bool = True) -> ExpenseLineItem:
         """
         Create a new expense line item.
         """
@@ -89,6 +91,9 @@ class ExpenseLineItemRepository:
                         "IsDraft": 1 if is_draft else 0,
                         "CreatedByUserId": created_by_user_id,
                         "AllowTerminalParent": 1 if allow_terminal_parent else 0,
+                        # Only when set: an old CreateExpenseLineItem rejects unknown params (mixed deploy).
+                        **({"BillableDecidedByUserId": billable_decided_by_user_id} if billable_decided_by_user_id is not None else {}),
+                        **({"BillableDecidedAt": billable_decided_at} if billable_decided_at is not None else {}),
                     },
                 )
                 row = cursor.fetchone()
@@ -236,6 +241,14 @@ class ExpenseLineItemRepository:
                 # Only include IsDraft if it's explicitly set (not None)
                 if expense_line_item.is_draft is not None:
                     params["IsDraft"] = 1 if expense_line_item.is_draft else 0
+                # Only when set (mixed-deploy safety); the proc keeps the stored stamp otherwise.
+                # getattr: callers (and the U-468/U-364 harnesses) pass partial line objects.
+                decided_by = getattr(expense_line_item, "billable_decided_by_user_id", None)
+                decided_at = getattr(expense_line_item, "billable_decided_at", None)
+                if decided_by is not None:
+                    params["BillableDecidedByUserId"] = decided_by
+                if decided_at is not None:
+                    params["BillableDecidedAt"] = decided_at
                 call_procedure(
                     cursor=cursor,
                     name="UpdateExpenseLineItemById",

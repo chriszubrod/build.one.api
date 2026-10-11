@@ -102,6 +102,9 @@ def update_expense_line_item_by_public_id_router(public_id: str, body: ExpenseLi
             "rate": Decimal(str(body.rate)) if body.rate is not None else None,
             "amount": Decimal(str(body.amount)) if body.amount is not None else None,
             "is_billable": body.is_billable,
+            "billable_decided": bool(body.billable_decided),
+            # The JWT payload carries the user as "user_id" (shared/rbac.py), not "id".
+            "actor_user_id": current_user.get("user_id"),
             "is_billed": body.is_billed,
             "markup": Decimal(str(body.markup)) if body.markup is not None else None,
             "price": Decimal(str(body.price)) if body.price is not None else None,

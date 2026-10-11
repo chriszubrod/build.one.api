@@ -121,6 +121,13 @@ class ExpenseLineItemUpdate(BaseModel):
         default=None,
         description="Whether the expense line item is billable."
     )
+    billable_decided: Optional[bool] = Field(
+        default=None,
+        description=(
+            "True only when a human set the Billable value in this edit; records "
+            "the decision so the QuickBooks pull never overwrites it. Agents must not send it."
+        ),
+    )
     is_billed: Optional[bool] = Field(
         default=None,
         description="Whether the expense line item has been billed."

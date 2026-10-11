@@ -50,6 +50,16 @@ def default_amount_only_line(qty, unit_price, amount):
     return qty, unit_price
 
 
+def pull_is_billable(direct, mirrored):
+    """The IsBillable the QBO pull may write onto an existing local line (U-646).
+
+    A line whose Billable value a person decided (``billable_decided_at`` set)
+    keeps it: the pull sends None, which ExpenseLineItemService treats as "leave
+    unchanged". Every other line takes QuickBooks' BillableStatus as today.
+    """
+    return None if getattr(direct, "billable_decided_at", None) is not None else mirrored
+
+
 def preserve_stored_value(default_value, qbo_value, stored_value):
     """
     Decide what to send for a field the pull may default.
@@ -253,7 +263,7 @@ class PurchaseLineExpenseLineItemConnector:
                 quantity=update_qty,
                 rate=update_rate,
                 amount=amount,
-                is_billable=is_billable,
+                is_billable=pull_is_billable(direct, is_billable),
                 is_billed=is_billed,
                 markup=update_markup,
                 price=price,

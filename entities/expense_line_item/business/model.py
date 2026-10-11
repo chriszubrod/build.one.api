@@ -30,6 +30,10 @@ class ExpenseLineItem:
     is_draft: Optional[bool]
     qbo_id: Optional[str] = None
     realm_id: Optional[str] = None
+    # U-646: set only when a human chose the Billable value; the QBO pull never
+    # overwrites a decided line.
+    billable_decided_by_user_id: Optional[int] = None
+    billable_decided_at: Optional[str] = None
 
     @property
     def row_version_bytes(self) -> Optional[bytes]:

@@ -18,6 +18,8 @@ CREATE TABLE [dbo].[ExpenseLineItem]
     [Amount] DECIMAL(18,2) NULL,
     [IsBillable] BIT NULL,
     [IsBilled] BIT NULL,
+    [BillableDecidedByUserId] BIGINT NULL,
+    [BillableDecidedAt] DATETIME2(3) NULL,
     [Markup] DECIMAL(18,4) NULL,
     [Price] DECIMAL(18,2) NULL,
     [IsDraft] BIT NOT NULL DEFAULT 1,
@@ -132,6 +134,8 @@ CREATE OR ALTER PROCEDURE CreateExpenseLineItem
     @Amount DECIMAL(18,2) NULL,
     @IsBillable BIT NULL,
     @IsBilled BIT NULL,
+    @BillableDecidedByUserId BIGINT = NULL,
+    @BillableDecidedAt DATETIME2(3) = NULL,
     @Markup DECIMAL(18,4) NULL,
     @Price DECIMAL(18,2) NULL,
     @IsDraft BIT = 1,
@@ -159,7 +163,7 @@ BEGIN
 
     DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();
 
-    INSERT INTO dbo.[ExpenseLineItem] ([CreatedDatetime], [ModifiedDatetime], [ExpenseId], [SubCostCodeId], [ProjectId], [Description], [Quantity], [Rate], [Amount], [IsBillable], [IsBilled], [Markup], [Price], [IsDraft], [CreatedByUserId])
+    INSERT INTO dbo.[ExpenseLineItem] ([CreatedDatetime], [ModifiedDatetime], [ExpenseId], [SubCostCodeId], [ProjectId], [Description], [Quantity], [Rate], [Amount], [IsBillable], [IsBilled], [BillableDecidedByUserId], [BillableDecidedAt], [Markup], [Price], [IsDraft], [CreatedByUserId])
     OUTPUT
         INSERTED.[Id],
         INSERTED.[PublicId],
@@ -175,10 +179,12 @@ BEGIN
         INSERTED.[Amount],
         INSERTED.[IsBillable],
         INSERTED.[IsBilled],
+        INSERTED.[BillableDecidedByUserId],
+        CONVERT(VARCHAR(19), INSERTED.[BillableDecidedAt], 120) AS [BillableDecidedAt],
         INSERTED.[Markup],
         INSERTED.[Price],
         INSERTED.[IsDraft]
-    VALUES (@Now, @Now, @ExpenseId, @SubCostCodeId, @ProjectId, @Description, @Quantity, @Rate, @Amount, @IsBillable, @IsBilled, @Markup, @Price, @IsDraft, COALESCE(@CreatedByUserId, 17));
+    VALUES (@Now, @Now, @ExpenseId, @SubCostCodeId, @ProjectId, @Description, @Quantity, @Rate, @Amount, @IsBillable, @IsBilled, @BillableDecidedByUserId, @BillableDecidedAt, @Markup, @Price, @IsDraft, COALESCE(@CreatedByUserId, 17));
 
     COMMIT TRANSACTION;
 END;
@@ -218,6 +224,8 @@ BEGIN
         eli.[Amount],
         eli.[IsBillable],
         eli.[IsBilled],
+        eli.[BillableDecidedByUserId],
+        CONVERT(VARCHAR(19), eli.[BillableDecidedAt], 120) AS [BillableDecidedAt],
         eli.[Markup],
         eli.[Price],
         eli.[IsDraft]
@@ -254,6 +262,8 @@ BEGIN
         [Amount],
         [IsBillable],
         [IsBilled],
+        [BillableDecidedByUserId],
+        CONVERT(VARCHAR(19), [BillableDecidedAt], 120) AS [BillableDecidedAt],
         [Markup],
         [Price],
         [IsDraft],
@@ -291,6 +301,8 @@ BEGIN
         [Amount],
         [IsBillable],
         [IsBilled],
+        [BillableDecidedByUserId],
+        CONVERT(VARCHAR(19), [BillableDecidedAt], 120) AS [BillableDecidedAt],
         [Markup],
         [Price],
         [IsDraft],
@@ -328,6 +340,8 @@ BEGIN
         [Amount],
         [IsBillable],
         [IsBilled],
+        [BillableDecidedByUserId],
+        CONVERT(VARCHAR(19), [BillableDecidedAt], 120) AS [BillableDecidedAt],
         [Markup],
         [Price],
         [IsDraft],
@@ -356,6 +370,8 @@ CREATE OR ALTER PROCEDURE UpdateExpenseLineItemById
     @Amount DECIMAL(18,2) NULL,
     @IsBillable BIT NULL,
     @IsBilled BIT NULL,
+    @BillableDecidedByUserId BIGINT = NULL,
+    @BillableDecidedAt DATETIME2(3) = NULL,
     @Markup DECIMAL(18,4) NULL,
     @Price DECIMAL(18,2) NULL,
     @IsDraft BIT = NULL,
@@ -412,6 +428,8 @@ BEGIN
         [Amount] = @Amount,
         [IsBillable] = @IsBillable,
         [IsBilled] = @IsBilled,
+        [BillableDecidedByUserId] = CASE WHEN @BillableDecidedByUserId IS NULL THEN [BillableDecidedByUserId] ELSE @BillableDecidedByUserId END,
+        [BillableDecidedAt] = CASE WHEN @BillableDecidedAt IS NULL THEN [BillableDecidedAt] ELSE @BillableDecidedAt END,
         [Markup] = @Markup,
         [Price] = @Price,
         [IsDraft] = CASE WHEN @IsDraft IS NULL THEN [IsDraft] ELSE @IsDraft END
@@ -430,6 +448,8 @@ BEGIN
         INSERTED.[Amount],
         INSERTED.[IsBillable],
         INSERTED.[IsBilled],
+        INSERTED.[BillableDecidedByUserId],
+        CONVERT(VARCHAR(19), INSERTED.[BillableDecidedAt], 120) AS [BillableDecidedAt],
         INSERTED.[Markup],
         INSERTED.[Price],
         INSERTED.[IsDraft],
@@ -589,6 +609,8 @@ BEGIN
         [Amount],
         [IsBillable],
         [IsBilled],
+        [BillableDecidedByUserId],
+        CONVERT(VARCHAR(19), [BillableDecidedAt], 120) AS [BillableDecidedAt],
         [Markup],
         [Price],
         [IsDraft],

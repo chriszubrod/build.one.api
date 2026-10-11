@@ -1,12 +1,30 @@
 # U-639 — Cost-code prediction for bill lines: evaluation of the 2026-10-08 design prompt
 
-**Status:** DESIGN unit U-639 (Phase 1), claimed 2026-10-08. Nothing built. Awaiting Chris's D1–D9 decisions (§7).
+**Status:** DESIGN unit U-639 (Phase 1), claimed 2026-10-08. Nothing built. Terminology confirmed with Chris
+2026-10-11 (below). Awaiting Chris's D0–D9 decisions (§7); **D0 (intake) is new and comes first.**
 **Author:** `/em`, 2026-10-08. Every "exists / does not exist" claim below was checked against `build.one.api` on
 this date; the live counts are quoted from board rows U-535a / U-535b (measured 2026-09-24) and are perishable.
 **Input:** Chris's dictated prompt for an "automated cost-code prediction feature" (two intake adapters → Stage 1
 document-type gate → Stage 2 cost-code classifier → deterministic budget cross-check → routing → human review).
-**Terminology:** the prompt uses generic construction-finance vocabulary. The build.one names are used here:
-a vendor invoice is a **Bill**; an **Invoice** is the customer draw; lines code to a **SubCostCode** (SCC).
+**Terminology (confirmed with Chris, 2026-10-11).** The prompt uses generic construction-finance vocabulary;
+this document uses the build.one names:
+
+| Prompt says | build.one term | Note |
+|---|---|---|
+| vendor invoice | **Bill** (`dbo.Bill`, lines in `dbo.BillLineItem`) | Always "Bill". An invoice from a vendor is a Bill. |
+| invoice (to the customer) | **Invoice** | The customer draw (AR). |
+| cost code (the label) | **SubCostCode** (SCC) | Lines code to an SCC; `CostCode` is its parent group. |
+| raw-document / attachment record | **Attachment** | One table for every uploaded file; join tables link it to Bill/Expense/Invoice lines. |
+| review workflow | **Review** + **ReviewStatus** | Drives the inbox tasks. |
+| receipt | **Expense** | Card receipts (Ramp) take the expense flow, not the Bill flow. |
+| change order | **BudgetRevision** with `Type='change_order'` | Not a separate entity: a Budget is an original revision plus change-order revisions. |
+| budget line item | **BudgetLineItem** | Carries **exactly one** SubCostCode (nullable) — not "one or more". |
+| commitment (PO / subcontract) | **none** | Not defined yet; Chris undecided (2026-10-11), to be settled in planning (D4). `dbo.Contract` is the *client* contract and holds only the builder's-fee rate. |
+| quote / estimate, lien waiver | **none** | No entity; as document types they can only route to a human (D9). |
+
+**Intake (Chris, 2026-10-11):** SharePoint bill-folder intake **will be removed**; Box is **not** an intake and
+will not become one; email intake was torn down 2026-08-16. So once the folder intake goes, **no automated
+path creates Bills from documents.** That makes D0 (§7) the first decision, ahead of D1–D9.
 
 ---
 
@@ -32,7 +50,7 @@ existing deterministic resolver to bill lines and **measuring** it before any le
 | Change orders exist as an entity | `dbo.BudgetRevision` with `Type='change_order'` and delta lines. | Fine as-is. |
 | A document intake pipeline with provenance exists | `dbo.Attachment` (+ Blob original, SHA-256 `FileHash`) exists. **Provenance is free text**: `Category='email_intake'`, `Description='Bridged from EmailAttachment {id}'` — no source column, no FK. Bill-level `IntakeSource` (`manual|agent|script|bill_folder`) exists. | A real but small gap — columns, not a new entity (§5.1). |
 | The email adapter is new work | **Built, then torn down 2026-08-16 (U-218f):** scheduler timers removed, `email_specialist` deleted. `dbo.EmailMessage` / `dbo.EmailAttachment` / the bridge service remain, inert; `/admin/email/poll` is a manual endpoint nothing calls. | A **revival decision**, not a build. The teardown *rationale* is not recorded in `SESSION_NOTES.md` §U-218f — recover it before proposing revival (§7 D3). |
-| The SharePoint/Box adapter is new work | **SharePoint bill-folder intake is LIVE** (`process_bill_folder`, 1-min timer → `/admin/bill-folder/tick`). The filename convention `{Project} - {Vendor} - {BillNumber} - {Desc} - {SubCostCode} - {Rate} - {BillDate}.pdf` **is the classifier today — a human types the code.** Box inbound = vendor-compliance docs only; there is no Box → Bill path. | The folder adapter exists. The prompt's "platform metadata" is already captured in `dbo.BillFolderRunItem` (Filename, SharePoint ItemId, Result JSON). |
+| The SharePoint/Box adapter is new work | ⚠️ **To be removed (Chris, 2026-10-11); Box is not an intake.** As of 2026-10-08: **SharePoint bill-folder intake is LIVE** (`process_bill_folder`, 1-min timer → `/admin/bill-folder/tick`). The filename convention `{Project} - {Vendor} - {BillNumber} - {Desc} - {SubCostCode} - {Rate} - {BillDate}.pdf` **is the classifier today — a human types the code.** Box inbound = vendor-compliance docs only; there is no Box → Bill path. | The folder adapter exists. The prompt's "platform metadata" is already captured in `dbo.BillFolderRunItem` (Filename, SharePoint ItemId, Result JSON). |
 | Dedup exists | SHA-256 `FileHash` + `ReadAttachmentByHash`, honoured on 4 paths (email bridge, QBO attachable, Box compliance, extraction skip). **No unique index**; the manual-upload prevention is commented out (`entities/attachment/api/router.py` ~L299). | Partial. Not a blocker for this feature. |
 | Budget check = budgeted − committed − spent | `ReadBudgetVarianceByProjectId` (`entities/budget/sql/dbo.budget_variance.sql`) returns per-SCC `BudgetAmount`, `ActualCost`, `CostVariance`, `RemainingToDraw`. **No committed term. Drafts count toward ActualCost by policy.** | One sproc call away — but the check **must subtract the bill being scored** or a draft bill counts against itself (§5.4). |
 | Line items can be assembled from the document | Document Intelligence runs `prebuilt-layout` + key-value pairs **by decision** (DI is a sensor); typed fields are deliberately NULL. There are no typed line items anywhere. | "Assemble line-item descriptions + vendor + material keywords" is itself an extraction step (an LLM structured task), not a lookup. |
@@ -98,7 +116,8 @@ structured signal before text.
 **Change:**
 
 1. **Grain.** Predict per `BillLineItem`, not per bill. Define the target as `(ProjectId, SubCostCodeId)`
-   on the line. Folder-intake bills have one summary line; email-intake bills may have several.
+   on the line. Folder-intake bills have one summary line; email-intake bills may have several. (Both intakes are
+   gone or going — see D0 — but the ~20k historical lines remain the labelled backtest set.)
 2. **Project is predicted, not given.** On email intake nothing supplies it. The U-005 resolver already
    resolves Project from text shorthand and address; the vendor×project history (§5.5) is a second source.
    The budget check is gated on a resolved Project with confidence above the same bar.
@@ -138,11 +157,11 @@ Five new entities were requested. **Two** are needed (5.1 columns, 5.3 table); t
 
 ### 5.1 Provenance — columns on `dbo.Attachment`, not a new table
 ```
-SourceKind              NVARCHAR(20)  NULL   -- 'upload' | 'email' | 'sharepoint_folder' | 'box' | 'qbo_attachable' | 'agent'
+SourceKind              NVARCHAR(20)  NULL   -- 'upload' | 'email' | 'sharepoint_folder' (historical backfill only) | 'qbo_attachable' | 'agent'
 SourceEmailAttachmentId BIGINT        NULL   FK → dbo.EmailAttachment(Id)      -- carries sender/subject/body via EmailMessage
 SourceFolderRunItemId   BIGINT        NULL   FK → dbo.BillFolderRunItem(Id)    -- carries Filename, SharePoint ItemId, Result JSON
 SourceExpenseFolderRunItemId BIGINT   NULL   FK → dbo.ExpenseFolderRunItem(Id)
-SourceExternalId        NVARCHAR(255) NULL   -- Graph attachment id / SharePoint ItemId / Box file id, for idempotent re-ingest
+SourceExternalId        NVARCHAR(255) NULL   -- Graph attachment id / SharePoint ItemId, for idempotent re-ingest
 CHECK: at most one Source*Id non-NULL; SourceKind='upload' ⇒ all NULL
 ```
 `CreatedByUserId` / `CreatedDatetime` already give uploader and timestamp. The email body is **not** copied —
@@ -233,12 +252,12 @@ drop cleanly if AI Search replaces them. Prerequisite: SQL tier bump.
 | # | Unit | Depends on | Tier | Effort | Return |
 |---|---|---|---|---|---|
 | M0 | **U-535a** — configure DI endpoint + VNet, wire `extract/tick` on the `process_bill_folder` timer shape, reset the 200 failed, backfill 28,459 set-based | — | non-P0 | S (mostly config + a timer) | Unblocks *everything* text-based; also the search index the board already wants |
-| M1 | **Bill-line coding suggestion, suggestion-only** — 5.3 table, 5.5 sproc, resolver port (vendor×project → vendor → filename/`FindSubCostCodeForReply`), **backtest harness** replaying ~20k historical lines with `@AsOfDatetime` and a temporal split, reporting auto-clear / override / flag by confidence bucket | nothing (structured labels exist for all 20k bills) | non-P0 | M | The number that decides M4-vs-GBM; immediate reviewer value on folder-intake bills |
+| M1 | **Bill-line coding suggestion, suggestion-only** — 5.3 table, 5.5 sproc, resolver port (vendor×project → vendor → `FindSubCostCodeForReply`; the filename-convention source dies with the folder intake), **backtest harness** replaying ~20k historical lines with `@AsOfDatetime` and a temporal split, reporting auto-clear / override / flag by confidence bucket | nothing (structured labels exist for all 20k bills) | non-P0 | M | The number that decides M4-vs-GBM; reviewer value on whichever intake D0 picks |
 | M2 | **Budget cross-check + routing** — pure function over the variance sproc (5.4), `Route` enum, scored-bill exclusion | M1 | non-P0 | S | Conflict detection; the "unbudgeted code" flag the owner has asked for in other forms (U-632 suspense coding) |
-| M3 | **Stage-1 attachment-type classifier** — a `StructuredTask` on the cascade over the first ~4k chars of extracted text + filename, §4.5 vocabulary, writes 5.2 | M0 | non-P0 | S–M | Gate for M1 on email/Box intake; splits statements and multi-invoice PDFs before they become wrong bills |
+| M3 | **Stage-1 attachment-type classifier** — a `StructuredTask` on the cascade over the first ~4k chars of extracted text + filename, §4.5 vocabulary, writes 5.2 | M0 | non-P0 | S–M | Gate for M1 on document intake (D0); splits statements and multi-invoice PDFs before they become wrong bills |
 | M4 | **LLM path** — a `StructuredTask` given bill text + M1 history + M2 budget evidence; validator = SCC ∈ project's approved budget set *or* explicit `unbudgeted`; writes 5.3 with `Source='llm'` and the rationale | M1, M2, M0 | non-P0 (suggestion-only) | M | Covers the multi-code-vendor residual M1's backtest exposes |
 | M5 | **Pre-fill on fast path** — write `SubCostCodeId`/`ProjectId` onto the draft line when `Route='fast'` | M1–M4 + a read auto-clear metric on real volume | **P0-surface** (feeds draw packets) ⇒ Pass 3 | S | The actual time saving; held until the metric earns it, as U-005 v1 was |
-| M6 | **Provenance columns + backfill** (5.1) | — (can run any time) | non-P0 | S | Required before email revival; nice-to-have for folder intake |
+| M6 | **Provenance columns + backfill** (5.1) | — (can run any time) | non-P0 | S | Required before any document intake that D0 picks |
 | M7 | **Email intake revival** | the U-218f teardown rationale; M6; M3 | P0-surface if it creates Bills (`SourceEmailMessageId`, review submit) | M | The second adapter — only if the original reason for tearing it down is addressed |
 | M8 | **Embeddings** (5.7) + nearest-neighbour feature | M0, **U-535b** (else ~3k docs), SQL tier bump, and a backtest residual that looks text-separable | non-P0 | M–L | Unknown until M1 reports; may be zero |
 | — | **Learned model (GBM)** | M1 backtest showing a gap the resolver + M4 cannot close | — | L (new runtime surface) | Not scheduled |
@@ -253,10 +272,11 @@ touch disjoint files (scheduler + `entities/attachment` vs `entities/coding_sugg
 
 | # | Decision | Recommendation |
 |---|---|---|
+| D0 | **Which path brings Bills into build.one once SharePoint folder intake is removed?** Candidates: revived email intake (D3), manual upload in web/iOS, the QBO Bill pull. | **Decide before M1–M4 are scoped.** Where Bills come from decides what signal exists at prediction time (sender, filename, an already-coded QBO bill). First step: the §8 read-only measurement's bills-by-`IntakeSource` breakdown, which shows how Bills actually arrive today. |
 | D1 | Label grain: per `BillLineItem` `(Project, SCC)`, or the bill's dominant code? | **Line.** It is the ledger truth and what the draw package pivots on. |
-| D2 | Is Project an input or a prediction? | **Prediction** with its own confidence; the budget check is gated on it. Folder intake supplies it; email intake does not. |
+| D2 | Is Project an input or a prediction? | **Prediction** with its own confidence; the budget check is gated on it. The folder intake that supplied it is being removed. |
 | D3 | Revive the email intake torn down 2026-08-16? | **Not until the teardown rationale is recovered** (it is not in the U-218f session note). Then M7, after M3 + M6. |
-| D4 | Commitments: drop the feature, or book a Contract/commitment entity first? | **Drop from this design.** Vendor×project history (5.5) gives the same signal from data that exists. The entity is a product unit on its own merits. |
+| D4 | Commitments: drop the feature, or book a Contract/commitment entity first? | **Chris undecided (2026-10-11); revisit in planning.** Until then, **drop from this design.** Vendor×project history (5.5) gives the same signal from data that exists. The entity is a product unit on its own merits. |
 | D5 | Accept a **backtest gate** before any learned model? | **Yes.** M1's harness is the deliverable that decides; no GBM is scheduled. |
 | D6 | Suggestion-only (non-P0) first, or pre-fill (P0) from day one? | **Suggestion-only**, exactly as U-005 v1; promote (M5) on a read metric. |
 | D7 | Accept the SQL tier bump as a prerequisite for embeddings, or defer embeddings? | **Defer** until M1 reports; bump only if M8 is scheduled. |

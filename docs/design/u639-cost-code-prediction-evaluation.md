@@ -184,14 +184,14 @@ Human confirmation of the *type* is implicit in routing (a Bill created from it 
 to `AICategoryStatus='confirmed'` at that point. Retire `shared/classification/models.py::ClassificationType`
 into the same vocabulary rather than keeping two enums.
 
-### 5.3 Coding suggestion — `dbo.ExpenseCodingItem` repurposed and renamed (D8), Bill grain per D1; expense lines keep line grain
+### 5.3 Coding suggestion — `dbo.ExpenseCodingItem` repurposed and renamed to `dbo.CodingSuggestion` (D8): Bill, Expense, BillCredit
 Generalises `dbo.ExpenseCodingItem`'s suggested/confirmed shape across families **without** absorbing its
 QBO write-state (`SyncTokenAtSuggest`, `WrittenAt`, `WriteError`, `Claimed*`), which belongs to the Ramp
 recode path and is being re-homed by U-486 anyway.
 ```
 Id, PublicId, RowVersion, CompanyId DF 1, CreatedByUserId DF 17, CreatedDatetime, ModifiedDatetime   -- std
-TargetKind              NVARCHAR(20)  NOT NULL  -- 'bill' | 'expense_line'
-BillId                  BIGINT NULL FK;  ExpenseLineItemId BIGINT NULL FK   -- exactly one non-NULL (CHECK)
+TargetKind              NVARCHAR(20)  NOT NULL  -- 'bill' | 'bill_credit' | 'expense' (grain for expense: open, D8a)
+BillId                  BIGINT NULL FK;  BillCreditId BIGINT NULL FK;  ExpenseId / ExpenseLineItemId BIGINT NULL FK   -- exactly one non-NULL (CHECK)
 AttachmentId            BIGINT NULL FK           -- the document scored, if any
 VendorId                BIGINT NULL FK
 SuggestedProjectId      BIGINT NULL FK;  SuggestedSubCostCodeId BIGINT NULL FK
@@ -207,7 +207,7 @@ ConfirmedProjectId      BIGINT NULL;  ConfirmedSubCostCodeId BIGINT NULL
 WasOverridden           BIT NULL;  ConfirmedByUserId BIGINT NULL;  ConfirmedAt DATETIME2(3) NULL
 ConfirmedMixedCodes     BIT NULL             -- the approved Bill's lines carried >1 SCC (the per-Bill grain's known miss)
 PrefillState            NVARCHAR(12)  NULL   -- 'prefilled' | 'accepted' | 'changed' | 'untouched' (D6: an untouched pre-fill is not a confirmation)
-UQ (TargetKind, BillId, ExpenseLineItemId, ModelVersion)   -- one row per Bill (or expense line) per model version
+UQ (TargetKind, BillId, BillCreditId, Expense*Id, ModelVersion)   -- one row per target per model version
 ```
 **Confirmation hook (the label loop):** for `bill`, when the Bill's `dbo.Review` reaches Approved, read its
 dominant `(ProjectId, SubCostCodeId)` (largest line amount) at that instant into `Confirmed*`, set
@@ -284,7 +284,7 @@ touch disjoint files (scheduler + `entities/attachment` vs `entities/coding_sugg
 | D5 | Accept a **backtest gate** before any learned model? | ✅ **Decided (Chris, 2026-10-11): yes.** Build the history-based and LLM suggesters first, backtest them, and build a trained model only if the backtest shows a gap they cannot close. The harness is part of M1. **Two tiers (measured 2026-10-11):** history-based suggestions are backtested on all **19,224** labelled Bills (no documents needed); text-based suggestions only on the **3,706** with a linked PDF (2026: 3,087 of 3,170 = 97%; 2025: 588; 2022–2024: 31), and only after M0 extracts their text (117 have text today; attachment extraction status: 28,507 NULL · 1,051 pending · 200 failed · 170 completed). Older years join the text tier only if U-535b recovers their PDFs. **Chris (2026-10-11): they all exist** — every Project has a full archive of Bill, Expense, BillCredit and Invoice PDFs across Box, SharePoint and email, so U-535b is a *recover-and-link* job (match each archived PDF to its Bill), not a search for missing files. |
 | D6 | Suggestion-only (non-P0) first, or pre-fill (P0) from day one? | ✅ **Decided (Chris, 2026-10-11): pre-fill from day one;** the user changes a wrong value. Persist both the predicted and the finalized value as the learning signal (already the 5.3 shape: `Suggested*`, `Confirmed*`, `WasOverridden`). **Guards (EM, recorded with the decision):** (1) the Bill edit form auto-saves ~300 ms after any change, so a pre-filled value is persisted before the user looks — the field is shown as *suggested* with its confidence until touched or accepted; (2) a pre-fill never touched is recorded as **unreviewed** (`ConfirmedByUserId` NULL / a `PrefillState`), so it is not counted as a confirmation in the label loop or the acceptance rate; (3) the unit is **P0-surface** (it writes coding that flows into draw packages) ⇒ Pass 3 security review. M5 folds into M1. |
 | D7 | Accept the SQL tier bump as a prerequisite for embeddings, or defer embeddings? | ✅ **Decided (Chris, 2026-10-11): defer embeddings until after the backtest.** Build M0, M1 and M4 and run the D5 backtest first; add embeddings (M8) and the SQL tier bump only if the residual errors look like cases where similar past text would have helped. |
-| D8 | Should `CodingSuggestion` sit beside `ExpenseCodingItem` (two tables) or replace it? | ✅ **Decided (Chris, 2026-10-11): replace — repurpose `ExpenseCodingItem` into the one coding-suggestion table for Bills and expenses, with a table and entity rename.** U-486's phases have shipped (expense coding now runs through draft → review), so the main entanglement is gone; but the table still carries the QBO write-tracking columns (`QboPurchaseId`, `SyncTokenAtSuggest`, `WrittenAt`, `WriteError`, `Claimed*`) and backs the only sanctioned app→QBO expense write (the double-gated recode), so the rename/repurpose unit is **P0-surface** and must carry or deliberately relocate those columns. Footprint on trunk: `entities/expense_coding_item` (8 files), `integrations/intuit` (7), migrations (3), `entities/expense` (3), 6 tests; web: 6 files under the expense-coding pages. **New name: to confirm** (proposed `CodingSuggestion`). |
+| D8 | Should `CodingSuggestion` sit beside `ExpenseCodingItem` (two tables) or replace it? | ✅ **Decided (Chris, 2026-10-11): replace — repurpose `ExpenseCodingItem` into the one coding-suggestion table for Bills and expenses, with a table and entity rename.** U-486's phases have shipped (expense coding now runs through draft → review), so the main entanglement is gone; but the table still carries the QBO write-tracking columns (`QboPurchaseId`, `SyncTokenAtSuggest`, `WrittenAt`, `WriteError`, `Claimed*`) and backs the only sanctioned app→QBO expense write (the double-gated recode), so the rename/repurpose unit is **P0-surface** and must carry or deliberately relocate those columns. Footprint on trunk: `entities/expense_coding_item` (8 files), `integrations/intuit` (7), migrations (3), `entities/expense` (3), 6 tests; web: 6 files under the expense-coding pages. **Name decided (Chris, 2026-10-11): `CodingSuggestion`**, covering **Bill, Expense and BillCredit**. |
 | D9 | Stage-1 vocabulary = §4.5 (8 labels), with `lien_waiver` routing to a human? | **Yes**; a lien-waiver workflow is a separate product ask. |
 
 ---

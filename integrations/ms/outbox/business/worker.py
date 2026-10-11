@@ -506,7 +506,7 @@ class MsOutboxWorker:
                 extra={
                     "event_name": "ms.sharepoint.upload.completed_without_response_body",
                     "outbox_public_id": row.public_id,
-                    "filename": filename,
+                    "upload_filename": filename,
                 },
             )
             return None

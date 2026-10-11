@@ -239,7 +239,7 @@ class ExternalTimesheetImportService:
         try:
             rows, headers = self._read_csv(file_content)
         except Exception as exc:
-            logger.exception("external_timesheet.parse.failed", extra={"filename": filename})
+            logger.exception("external_timesheet.parse.failed", extra={"csv_filename": filename})
             result["errors"].append({"row_indices": [], "error": f"CSV parse failed: {exc}"})
             return result
 

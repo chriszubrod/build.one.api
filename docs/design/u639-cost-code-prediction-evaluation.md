@@ -115,8 +115,10 @@ structured signal before text.
 
 **Change:**
 
-1. **Grain.** Predict per `BillLineItem`, not per bill. Define the target as `(ProjectId, SubCostCodeId)`
-   on the line. Folder-intake bills have one summary line; email-intake bills may have several. (Both intakes are
+1. **Grain — per Bill (D1, Chris 2026-10-11).** Predict one `(ProjectId, SubCostCodeId)` per Bill; the
+   label is the Bill's **dominant** SubCostCode (the one carrying the most line amount). Accepting the
+   suggestion applies it to every line; individual lines stay editable. Only 3.76% of coded Bills mix codes
+   (2.27% of dollars off the dominant code — §8). The original per-line recommendation is superseded: Folder-intake bills have one summary line; email-intake bills may have several. (Both intakes are
    gone or going — see D0 — but the ~20k historical lines remain the labelled backtest set.)
 2. **Project is predicted, not given.** On email intake nothing supplies it. The U-005 resolver already
    resolves Project from text shorthand and address; the vendor×project history (§5.5) is a second source.
@@ -182,14 +184,14 @@ Human confirmation of the *type* is implicit in routing (a Bill created from it 
 to `AICategoryStatus='confirmed'` at that point. Retire `shared/classification/models.py::ClassificationType`
 into the same vocabulary rather than keeping two enums.
 
-### 5.3 Coding suggestion — one new line-grain table, `dbo.CodingSuggestion`
+### 5.3 Coding suggestion — one new table, `dbo.CodingSuggestion` (Bill grain per D1; expense lines keep line grain)
 Generalises `dbo.ExpenseCodingItem`'s suggested/confirmed shape across families **without** absorbing its
 QBO write-state (`SyncTokenAtSuggest`, `WrittenAt`, `WriteError`, `Claimed*`), which belongs to the Ramp
 recode path and is being re-homed by U-486 anyway.
 ```
 Id, PublicId, RowVersion, CompanyId DF 1, CreatedByUserId DF 17, CreatedDatetime, ModifiedDatetime   -- std
-TargetKind              NVARCHAR(20)  NOT NULL  -- 'bill_line' | 'expense_line'
-BillLineItemId          BIGINT NULL FK;  ExpenseLineItemId BIGINT NULL FK   -- exactly one non-NULL (CHECK)
+TargetKind              NVARCHAR(20)  NOT NULL  -- 'bill' | 'expense_line'
+BillId                  BIGINT NULL FK;  ExpenseLineItemId BIGINT NULL FK   -- exactly one non-NULL (CHECK)
 AttachmentId            BIGINT NULL FK           -- the document scored, if any
 VendorId                BIGINT NULL FK
 SuggestedProjectId      BIGINT NULL FK;  SuggestedSubCostCodeId BIGINT NULL FK
@@ -203,11 +205,12 @@ Route                   NVARCHAR(10)  NULL   -- 'fast' | 'llm' | 'human'
 ModelVersion            NVARCHAR(50)  NULL   -- resolver/sproc version or model artifact id; what "compounds as it runs" is measured against
 ConfirmedProjectId      BIGINT NULL;  ConfirmedSubCostCodeId BIGINT NULL
 WasOverridden           BIT NULL;  ConfirmedByUserId BIGINT NULL;  ConfirmedAt DATETIME2(3) NULL
-UQ (TargetKind, BillLineItemId, ExpenseLineItemId, ModelVersion)   -- one row per line per model version
+ConfirmedMixedCodes     BIT NULL             -- the approved Bill's lines carried >1 SCC (the per-Bill grain's known miss)
+UQ (TargetKind, BillId, ExpenseLineItemId, ModelVersion)   -- one row per Bill (or expense line) per model version
 ```
-**Confirmation hook (the label loop):** for `bill_line`, when the parent Bill's `dbo.Review` reaches
-Approved, read the line's `(ProjectId, SubCostCodeId)` at that instant into `Confirmed*`, set
-`WasOverridden`. Implement as a call from the review approval path **after** U-357/U-551 settle where that
+**Confirmation hook (the label loop):** for `bill`, when the Bill's `dbo.Review` reaches Approved, read its
+dominant `(ProjectId, SubCostCodeId)` (largest line amount) at that instant into `Confirmed*`, set
+`WasOverridden` and `ConfirmedMixedCodes`. Implement as a call from the review approval path **after** U-357/U-551 settle where that
 path lives — not as a trigger. Until then, a nightly reconciler on `Review` rows is acceptable and honest.
 
 ### 5.4 Budget-check result — not an entity
@@ -273,7 +276,7 @@ touch disjoint files (scheduler + `entities/attachment` vs `entities/coding_sugg
 | # | Decision | Recommendation |
 |---|---|---|
 | D0 | **Which path brings Bills into build.one once SharePoint folder intake is removed?** | ✅ **Decided (Chris, 2026-10-11): manual entry in the web app is the intake** (§8: person-entered Bills dominate since July; folder and email intake are already near zero). The predictor becomes a **suggestion in the Bill edit form** as each line is coded, not a pipeline that creates Bills. Consequences: Stage 1 (M3) and email revival (M7) leave the critical path; provenance (M6) is optional. |
-| D1 | Label grain: per `BillLineItem` `(Project, SCC)`, or the bill's dominant code? | **Line.** It is the ledger truth and what the draw package pivots on. |
+| D1 | Label grain: per `BillLineItem` `(Project, SCC)`, or the bill's dominant code? | ✅ **Decided (Chris, 2026-10-11): per Bill** — one suggestion per Bill, label = the dominant SCC by line amount, applied to every line on accept. Measured: 3.76% of coded Bills mix codes, 2.27% of dollars off the dominant code. The backtest reports mixed-code Bills separately. |
 | D2 | Is Project an input or a prediction? | **Prediction** with its own confidence; the budget check is gated on it. The folder intake that supplied it is being removed. |
 | D3 | Revive the email intake torn down 2026-08-16? | **Not until the teardown rationale is recovered** (it is not in the U-218f session note). Then M7, after M3 + M6. |
 | D4 | Commitments: drop the feature, or book a Contract/commitment entity first? | **Chris undecided (2026-10-11); revisit in planning.** Until then, **drop from this design.** Vendor×project history (5.5) gives the same signal from data that exists. The entity is a product unit on its own merits. |
@@ -312,7 +315,8 @@ vendor consistency: ≥90% → 7.0% of lines; 70–90% → 15.8%; 50–70% → 2
 **What it means.** Vendor history alone cannot carry the prediction: half of all coded lines come from vendors
 who use their own most common code less than half the time. The line's text (description, extracted
 document text) has to carry the rest, which raises the priority of M0 (extraction) and M4 (LLM path). M1's
-temporal backtest will give the honest (lower) number. Vendor×project beats vendor-only by 11 points, which
+temporal backtest will give the honest (lower) number. **Mixed-code Bills (D1 follow-up):** of 19,224 completed coded Bills, 1,018 have more than one line and 722
+(3.76%) carry more than one SCC; 2.27% of dollars sit off a Bill's dominant SCC. Vendor×project beats vendor-only by 11 points, which
 supports keeping project in the signal (D2, D4). Query: kept with the EM's session records; SELECT-only.
 
 ---

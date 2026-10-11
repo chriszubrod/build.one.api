@@ -153,7 +153,7 @@ def _do_request(method: str, url: str, *, headers: dict, json_body: Optional[dic
             retry_after = None
             logger.warning(
                 "DI %s %s raised %s (attempt %d/%d)",
-                method, url, e, attempt, _RETRY_ATTEMPTS,
+                method, url, type(e).__name__, attempt, _RETRY_ATTEMPTS,
             )
         # Out of attempts → exit loop and raise / return below.
         if attempt >= _RETRY_ATTEMPTS:

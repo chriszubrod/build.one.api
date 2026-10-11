@@ -1,11 +1,8 @@
 """U-187 — AttachmentExtractionService: text-layer-first, DI fallback (mocked),
 sync-proof VendorInvoiceNumber, idempotent skip; plus the pure invoice-number parser."""
 
-import io
 import json
 import types
-
-import pytest
 
 from entities.attachment.business.extraction_service import (
     AttachmentExtractionService,
@@ -13,6 +10,7 @@ from entities.attachment.business.extraction_service import (
     _extract_text_layer,
     _has_usable_text,
 )
+from tests._attachment_extraction_fakes import _FakeDI, _FakeRepo, _FakeStorage, _text_pdf_bytes
 
 
 # --- pure parser ----------------------------------------------------------- #
@@ -46,44 +44,6 @@ def test_parse_number_skips_non_numeric_candidate():
 # --- fakes ----------------------------------------------------------------- #
 
 
-class _FakeRepo:
-    def __init__(self):
-        self.calls = []
-
-    def update_extraction(self, **kwargs):
-        self.calls.append(kwargs)
-        return None
-
-
-class _FakeStorage:
-    def __init__(self, downloads=None, download_meta=None):
-        self._downloads = downloads or {}
-        self._meta = download_meta or {}
-        self.uploads = []
-
-    def download_file(self, blob_url):
-        if blob_url not in self._downloads:
-            raise KeyError(f"no such blob: {blob_url}")
-        return self._downloads[blob_url], self._meta.get(blob_url, {})
-
-    def upload_file(self, *, blob_name, file_content, content_type):
-        self.uploads.append({"blob_name": blob_name, "content_type": content_type})
-        return f"https://blob.example/{blob_name}"
-
-
-class _FakeDI:
-    def __init__(self, result=None, boom=False):
-        self.result = result
-        self.boom = boom
-        self.called = 0
-
-    def extract_invoice(self, content, content_type):
-        self.called += 1
-        if self.boom:
-            raise AssertionError("DI must NOT be called on the text-layer path")
-        return self.result
-
-
 def _attachment(**overrides):
     base = dict(
         id=1,
@@ -95,25 +55,11 @@ def _attachment(**overrides):
         extraction_status="pending",
         extracted_text_blob_url=None,
         category="bill_line_item",
+        parse_invoice_number=True,
+        claim_modified_datetime=None,
     )
     base.update(overrides)
     return types.SimpleNamespace(**base)
-
-
-def _text_pdf_bytes(lines):
-    reportlab = pytest.importorskip("reportlab")
-    from reportlab.pdfgen import canvas
-    from reportlab.lib.pagesizes import letter
-
-    buf = io.BytesIO()
-    c = canvas.Canvas(buf, pagesize=letter)
-    y = 720
-    for line in lines:
-        c.drawString(72, y, line)
-        y -= 20
-    c.showPage()
-    c.save()
-    return buf.getvalue()
 
 
 # --- text-layer path (no DI) ----------------------------------------------- #
@@ -125,21 +71,20 @@ def test_extract_text_layer_path_parses_number_and_never_calls_di():
 
     att = _attachment()
     repo = _FakeRepo()
-    storage = _FakeStorage(
-        downloads={att.blob_url: pdf},
-        download_meta={att.blob_url: {"content_type": "application/pdf"}},
-    )
-    di = _FakeDI(boom=True)  # asserts DI is not called
+    storage = _FakeStorage(downloads={att.blob_url: pdf})
+    di = _FakeDI(forbid=True)  # asserts DI is not called
     svc = AttachmentExtractionService(repo=repo, storage=storage, di=di)
 
     result = svc._extract(att)
 
     assert result["status"] == "completed"
+
+    assert storage.deleted == []  # never deletes a source or published blob
     assert result["method"] == "text_layer"
-    assert di.called == 0
+    assert di.text_calls == []
     assert len(storage.uploads) == 1  # extraction JSON persisted to blob
-    assert len(repo.calls) == 1
-    call = repo.calls[0]
+    assert len(repo.updates) == 1
+    call = repo.updates[0]
     assert call["extraction_status"] == "completed"
     assert "202980" in (call["vendor_invoice_number"] or "")
 
@@ -150,12 +95,9 @@ def test_extract_text_layer_path_parses_number_and_never_calls_di():
 def test_extract_di_fallback_for_image_only_scan():
     att = _attachment(content_type="image/png")
     repo = _FakeRepo()
-    storage = _FakeStorage(
-        downloads={att.blob_url: b"\x89PNG\r\n\x1a\n not-a-pdf raster bytes"},
-        download_meta={att.blob_url: {"content_type": "image/png"}},
-    )
+    storage = _FakeStorage(downloads={att.blob_url: b"\x89PNG\r\n\x1a\n not-a-pdf raster bytes"})
     di = _FakeDI(
-        result={
+        text_result={
             "content": "scanned invoice text",
             "pages_count": 1,
             "key_value_pairs": [{"key": "Invoice #", "value": "INV-9", "confidence": None}],
@@ -166,9 +108,11 @@ def test_extract_di_fallback_for_image_only_scan():
     result = svc._extract(att)
 
     assert result["status"] == "completed"
-    assert result["method"] == "document_intelligence"
-    assert di.called == 1
-    assert repo.calls[0]["vendor_invoice_number"] == "INV-9"
+
+    assert storage.deleted == []  # never deletes a source or published blob
+    assert result["method"] == "document_intelligence_read"
+    assert len(di.text_calls) == 1
+    assert repo.updates[0]["vendor_invoice_number"] == "INV-9"
 
 
 # --- idempotent skip ------------------------------------------------------- #
@@ -185,15 +129,17 @@ def test_extract_skips_when_completed_same_hash():
     storage = _FakeStorage(
         downloads={prior_blob: json.dumps({"source_file_hash": "hash-abc"}).encode("utf-8")},
     )
-    di = _FakeDI(boom=True)
+    di = _FakeDI(forbid=True)
     svc = AttachmentExtractionService(repo=repo, storage=storage, di=di)
 
     result = svc._extract(att)
 
     assert result["status"] == "skipped"
+
+    assert storage.deleted == []  # never deletes a source or published blob
     assert result["reason"] == "unchanged"
-    assert di.called == 0
-    assert repo.calls == []  # nothing re-persisted
+    assert di.text_calls == []
+    assert repo.updates == []  # nothing re-persisted
 
 
 def test_extract_reprocesses_when_hash_changed():
@@ -210,9 +156,8 @@ def test_extract_reprocesses_when_hash_changed():
             prior_blob: json.dumps({"source_file_hash": "hash-OLD"}).encode("utf-8"),
             att.blob_url: pdf,
         },
-        download_meta={att.blob_url: {"content_type": "application/pdf"}},
     )
-    svc = AttachmentExtractionService(repo=repo, storage=storage, di=_FakeDI(boom=True))
+    svc = AttachmentExtractionService(repo=repo, storage=storage, di=_FakeDI(forbid=True))
 
     result = svc._extract(att)
 
@@ -222,23 +167,16 @@ def test_extract_reprocesses_when_hash_changed():
 # --- extract_pending scoping ----------------------------------------------- #
 
 
-def test_extract_pending_scopes_to_pending_status_and_limit():
+def test_extract_pending_processes_rows_the_repo_returns(monkeypatch):
+    monkeypatch.setenv("ATTACHMENT_EXTRACTION_GROUPS", "bill")
     pdf = _text_pdf_bytes(["ACME SUPPLY COMPANY", "Invoice # 12345", "Total 10.00"])
     pending = _attachment(id=1, category="bill_line_item")
-    completed = _attachment(id=2, extraction_status="completed", category="bill_line_item")
-    null_status = _attachment(id=3, extraction_status=None, category="bill_line_item")
 
-    repo = _FakeRepo()
-    repo.read_pending_extraction = lambda: [pending, completed, null_status]
-    storage = _FakeStorage(
-        downloads={pending.blob_url: pdf},
-        download_meta={pending.blob_url: {"content_type": "application/pdf"}},
-    )
-    svc = AttachmentExtractionService(repo=repo, storage=storage, di=_FakeDI(boom=True))
+    repo = _FakeRepo(rows=[pending])
+    storage = _FakeStorage(downloads={pending.blob_url: pdf})
+    svc = AttachmentExtractionService(repo=repo, storage=storage, di=_FakeDI(forbid=True))
 
     out = svc.extract_pending(limit=10)
 
-    # Only the explicitly-'pending' row is processed (completed + NULL skipped).
-    assert out["pending_in_scope"] == 1
     assert out["processed"] == 1
     assert out["results"][0]["status"] == "completed"

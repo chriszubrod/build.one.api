@@ -1,34 +1,25 @@
-"""AttachmentExtractionService (U-187).
+"""AttachmentExtractionService (U-187, grouped and claim-based in U-535a).
 
-Runs text extraction against a single dbo.Attachment and persists the result
-into the previously-DEAD extraction fields (ExtractionStatus /
-ExtractedTextBlobUrl / ExtractedDatetime) plus the new sync-proof
-VendorInvoiceNumber column.
+Runs text extraction against dbo.Attachment rows and persists the result into the
+extraction fields (ExtractionStatus / ExtractedTextBlobUrl / ExtractedDatetime) plus
+the sync-proof VendorInvoiceNumber column.
 
 Design goals:
 
-- **Text-layer first, DI only for image-only scans.** Most source PDFs (vendor
-  invoices, statements) carry a real text layer — `pypdf` reads it for free. Only
-  a raster/image-only scan (a phone photo, an image wrapped into a PDF) falls
-  through to Azure Document Intelligence, which is the expensive path. This bounds
-  DI spend to the documents that genuinely need OCR.
-- **Failure-isolated.** Any error on one attachment marks that row 'failed' and is
-  contained — it never raises out of `extract_pending`, so one bad blob can't
-  abort a drain tick.
-- **Idempotent.** A row already 'completed' against the same file hash is skipped
-  (no re-download, no DI). Content changes always transit a fresh 'pending'
-  re-mark from the trigger, so a completed row reflects current content.
-- **Sync-proof number.** The freshly-parsed vendor invoice number is set directly;
-  the UPDATE sproc's CASE-WHEN keeps the existing value only when the incoming value
-  is NULL (a parse miss never wipes a good number). This deliberately does NOT route
-  through `preserve_human_edited_ref` (that helper is QBO-ref-specific). FOLLOW-UP:
-  protecting a genuine operator correction across re-extractions needs a
-  human-confirmed flag gating the write — not the QBO placeholder helper.
-
-The extraction trigger (mark 'pending') lives in the QBO-attachable connector and
-the receipt upload path; this service is the drain that turns pending rows into
-extracted text. It mirrors EmailAttachmentExtractionService but writes
-dbo.Attachment (not dbo.EmailAttachment).
+- **Text-layer first, DI only for image-only scans.** `pypdf` reads a real text layer
+  for free; only a raster/image-only scan falls through to Azure Document
+  Intelligence (`prebuilt-read`).
+- **Claimed before work.** Each row is claimed (status 'processing' with a lease) right
+  before its OCR, so an abandoned request can't cause the next tick to re-OCR the same
+  rows. A claimed row ends 'completed' or 'failed', or its lease expires and it is
+  reclaimed; terminal writes are guarded by the claim token.
+- **Failure-isolated, fixed codes.** One bad row never aborts the tick. Failures record
+  a fixed code plus at most the exception class name, never exception text or
+  document content, in ExtractionError, logs and the tick response.
+- **Invoice number only where it belongs.** The number is parsed only for attachments
+  linked to a Bill, BillCredit or Expense line and never for a W-9 (`TaxpayerAttachment`).
+  The claim procedure computes that flag.
+- **Idempotent.** A row already 'completed' against the same file hash is skipped.
 """
 from __future__ import annotations
 
@@ -36,37 +27,53 @@ import io
 import json
 import logging
 import re
+import uuid
+import warnings
 from typing import Optional
 
+import config
 from entities.attachment.business.model import Attachment
 from entities.attachment.persistence.repo import AttachmentRepository
+from integrations.azure.document_intelligence.external.client import (
+    DocumentIntelligenceConfigError,
+    DocumentIntelligenceError,
+)
 from shared.storage import AzureBlobStorage
 
 logger = logging.getLogger(__name__)
 
 
-# Attachment categories that represent source documents (bill/expense/invoice
-# support). The drain scopes to these so a stray pending mark on an unrelated
-# attachment can't pull the whole catalog through DI. Compared case-insensitively;
-# a falsy category (a bare receipt upload with no category) is allowed through.
-SOURCE_DOC_CATEGORIES = frozenset(
-    {
-        "bill_line_item",
-        "qbo_import",
-        "email_intake",
-        "expense",
-        "bill",
-        "bill_credit",
-        "invoice",
-        "receipt",
-    }
-)
+# Scope is by link table (see ClaimAttachmentsForExtraction), not category.
+# Each group is opt-in via ATTACHMENT_EXTRACTION_GROUPS.
+VALID_EXTRACTION_GROUPS = frozenset({"bill", "bill_credit", "expense", "w9", "coi", "license"})
+_GROUP_BY_KEY = {re.sub(r"[\s_-]", "", g): g for g in VALID_EXTRACTION_GROUPS}
+
+_CLAIM_LEASE_MINUTES = 15
 
 # Below this many non-whitespace characters the PDF text layer is treated as
 # absent (an image-only scan) and we fall through to Document Intelligence.
 _MIN_TEXT_LAYER_CHARS = 24
 
 _EXTRACTION_BLOB_PREFIX = "attachment-extractions"
+
+
+def parse_extraction_groups(raw: Optional[str]) -> list[str]:
+    """Map a comma-separated setting onto canonical group names.
+
+    Matching ignores case, whitespace, underscores and hyphens, so "BillCredit"
+    resolves to "bill_credit". Unknown names are dropped with a warning.
+    """
+    groups: list[str] = []
+    for part in (raw or "").split(","):
+        if not part.strip():
+            continue
+        canonical = _GROUP_BY_KEY.get(re.sub(r"[\s_-]", "", part.lower()))
+        if canonical is None:
+            logger.warning("attachment_extraction.unknown_group name=%s", part.strip())
+            continue
+        if canonical not in groups:
+            groups.append(canonical)
+    return groups
 
 
 class AttachmentExtractionService:
@@ -99,34 +106,38 @@ class AttachmentExtractionService:
         *,
         limit: int = 20,
     ) -> dict:
-        """Drain up to ``limit`` attachments explicitly marked 'pending'.
+        """Claim and drain up to ``limit`` PDFs linked to an enabled group.
 
-        Scoped to the source-doc categories (``SOURCE_DOC_CATEGORIES``). NULL-status
-        legacy rows returned by ReadAttachmentsPendingExtraction are deliberately
-        skipped — only rows a trigger set to 'pending' are processed, which is the
-        real cost bound.
+        Each row is claimed immediately before its work starts, so a row can never sit
+        claimed-but-unworked while the tick runs. With no enabled group this returns
+        without touching the repo. Each returned result carries only fixed fields
+        (see `_extract`).
         """
-        rows = self.repo.read_pending_extraction()
-        pending = [a for a in rows if self._is_pending_in_scope(a)]
-        limit = max(0, int(limit))
+        groups = parse_extraction_groups(config.Settings().attachment_extraction_groups)
+        if not groups:
+            return {"groups": [], "processed": 0, "results": []}
+
         results: list[dict] = []
-        for att in pending[:limit]:
+        for _ in range(max(0, int(limit))):
+            claimed = self.repo.claim_for_extraction(
+                groups=groups,
+                limit=1,
+                lease_minutes=_CLAIM_LEASE_MINUTES,
+            )
+            if not claimed:
+                break
+            att = claimed[0]
             try:
                 results.append(self._extract(att))
             except Exception as e:  # failure isolation: one bad row never aborts the tick
-                logger.exception(
-                    "attachment_extraction.tick_item_failed id=%s: %s", att.id, e
-                )
-                self._mark_failed(att, f"unexpected: {e}")
-                results.append(
-                    {"status": "failed", "attachment_id": att.id, "error": str(e)}
-                )
+                results.append(self._fail(att, "unexpected", e))
         return {
-            "pending_in_scope": len(pending),
+            "groups": groups,
             "processed": len(results),
             "results": results,
         }
 
+    # extract_by_id and extract_by_public_id never parse VendorInvoiceNumber (no W-9 knowledge, fails closed); unused in prod.
     def extract_by_id(self, attachment_id: int, *, force: bool = False) -> dict:
         attachment = self.repo.read_by_id(attachment_id)
         if not attachment:
@@ -143,8 +154,7 @@ class AttachmentExtractionService:
 
     def _extract(self, attachment: Attachment, *, force: bool = False) -> dict:
         if not attachment.blob_url:
-            self._mark_failed(attachment, "No blob_url on attachment — cannot extract")
-            return {"status": "failed", "reason": "no_blob_url", "attachment_id": attachment.id}
+            return self._fail(attachment, "no_blob_url")
 
         # Idempotent skip: already completed against this exact content.
         if not force and self._already_extracted_same_content(attachment):
@@ -157,11 +167,7 @@ class AttachmentExtractionService:
         try:
             content, metadata = self.storage.download_file(attachment.blob_url)
         except Exception as e:
-            logger.exception(
-                "attachment_extraction.blob_download_failed id=%s: %s", attachment.id, e
-            )
-            self._mark_failed(attachment, f"Blob download failed: {e}")
-            return {"status": "failed", "reason": "blob_download_error", "attachment_id": attachment.id}
+            return self._fail(attachment, "blob_download_error", e)
 
         content_type = (
             (metadata or {}).get("content_type")
@@ -176,66 +182,50 @@ class AttachmentExtractionService:
 
         # 2) DI fallback ONLY for image-only scans (no usable text layer).
         if not _has_usable_text(text):
-            di_result = self._run_di(attachment, content, content_type)
-            if di_result is None:
-                # _run_di already marked the row failed.
-                return {"status": "failed", "reason": "di_error", "attachment_id": attachment.id}
+            try:
+                di_result = self._run_di(content, content_type)
+            except DocumentIntelligenceConfigError as e:
+                return self._fail(attachment, "di_config_error", e)
+            except DocumentIntelligenceError as e:
+                return self._fail(attachment, "di_error", e)
             text = di_result["content"]
             pages_count = di_result["pages_count"]
             key_value_pairs = di_result["key_value_pairs"]
-            method = "document_intelligence"
+            method = "document_intelligence_read"
 
-        parsed_number = parse_vendor_invoice_number(key_value_pairs, text)
-        # Write the freshly-extracted number straight through. The setter's
-        # CASE-WHEN keeps the existing value when this is NULL (a parse miss never
-        # wipes a good number); a parsed value updates. We deliberately do NOT run
-        # this through preserve_human_edited_ref — that helper is QBO-ref-specific
-        # (it treats a stored "QBO-<id>" as human-edited), which is wrong here.
-        # FOLLOW-UP: to protect a genuine OPERATOR correction of VendorInvoiceNumber
-        # across re-extractions, add a human-confirmed flag and gate the write on it
-        # — do not fake it via the QBO placeholder helper.
+        # Written straight through: the setter's CASE-WHEN keeps the existing value when
+        # this is NULL, so a parse miss never wipes a good number. Not routed through
+        # preserve_human_edited_ref (QBO-ref-specific). FOLLOW-UP: protecting a genuine
+        # operator correction across re-extractions needs a human-confirmed flag.
+        parsed_number = (
+            parse_vendor_invoice_number(key_value_pairs, text)
+            if attachment.parse_invoice_number
+            else None
+        )
 
         try:
-            blob_url = self._persist_extraction_blob(
+            blob_name, blob_url = self._persist_extraction_blob(
                 attachment, text, key_value_pairs, pages_count, method
             )
         except Exception as e:
-            logger.exception(
-                "attachment_extraction.persist_blob_failed id=%s: %s", attachment.id, e
-            )
-            self._mark_failed(attachment, f"Persist extraction blob failed: {e}")
-            return {"status": "failed", "reason": "persist_error", "attachment_id": attachment.id}
+            return self._fail(attachment, "persist_error", e)
 
-        self.repo.update_extraction(
-            id=attachment.id,
+        return self._commit_terminal(
+            attachment,
+            {
+                "status": "completed",
+                "attachment_id": attachment.id,
+                "method": method,
+                "pages_count": pages_count,
+            },
             extraction_status="completed",
             extracted_text_blob_url=blob_url,
             vendor_invoice_number=parsed_number,
-        )
-        return {
-            "status": "completed",
-            "attachment_id": attachment.id,
-            "method": method,
-            "pages_count": pages_count,
-            "vendor_invoice_number": parsed_number,
-        }
-
-    def _run_di(self, attachment: Attachment, content: bytes, content_type: str) -> Optional[dict]:
-        from integrations.azure.document_intelligence.external.client import (
-            DocumentIntelligenceConfigError,
-            DocumentIntelligenceError,
+            orphan_blob=(blob_name, blob_url),
         )
 
-        try:
-            extracted = self.di.extract_invoice(content, content_type=content_type)
-        except DocumentIntelligenceConfigError as e:
-            logger.error("attachment_extraction.di_not_configured id=%s: %s", attachment.id, e)
-            self._mark_failed(attachment, f"DI not configured: {e}")
-            return None
-        except DocumentIntelligenceError as e:
-            logger.error("attachment_extraction.di_failed id=%s: %s", attachment.id, e)
-            self._mark_failed(attachment, str(e)[:1000])
-            return None
+    def _run_di(self, content: bytes, content_type: str) -> dict:
+        extracted = self.di.extract_text(content, content_type=content_type)
         return {
             "content": extracted.get("content") or "",
             "pages_count": int(extracted.get("pages_count") or 0),
@@ -249,7 +239,7 @@ class AttachmentExtractionService:
         key_value_pairs: list[dict],
         pages_count: int,
         method: str,
-    ) -> str:
+    ) -> tuple[str, str]:
         payload = {
             "attachment_public_id": str(attachment.public_id),
             "source_file_hash": attachment.file_hash,
@@ -269,13 +259,15 @@ class AttachmentExtractionService:
                 for kvp in (key_value_pairs or [])
             ],
         }
-        blob_name = f"{_EXTRACTION_BLOB_PREFIX}/{attachment.public_id}.json"
+        # Unique per write: a stale worker must never overwrite the blob a newer claim published.
+        blob_name = f"{_EXTRACTION_BLOB_PREFIX}/{attachment.public_id}/{uuid.uuid4().hex}.json"
         data = json.dumps(payload).encode("utf-8")
-        return self.storage.upload_file(
+        blob_url = self.storage.upload_file(
             blob_name=blob_name,
             file_content=data,
             content_type="application/json",
         )
+        return blob_name, blob_url
 
     def _already_extracted_same_content(self, attachment: Attachment) -> bool:
         """True when a prior extraction blob was written for this exact file hash.
@@ -294,29 +286,80 @@ class AttachmentExtractionService:
             return False
         return bool(prior) and prior.get("source_file_hash") == attachment.file_hash
 
-    def _mark_failed(self, attachment: Attachment, error: str) -> None:
-        try:
-            self.repo.update_extraction(
-                id=attachment.id,
-                extraction_status="failed",
-                extraction_error=str(error)[:1000],
-            )
-        except Exception:
-            logger.exception(
-                "attachment_extraction.mark_failed_persist_failed id=%s", attachment.id
-            )
+    def _fail(self, attachment: Attachment, code: str, exc: Optional[BaseException] = None) -> dict:
+        """Mark the row failed with a fixed code (+ exception class name only) and return the tick row."""
+        exc_name = type(exc).__name__ if exc is not None else None
+        error = code if exc_name is None else f"{code}:{exc_name}"
+        logger.error("attachment_extraction.failed id=%s code=%s exc=%s", attachment.id, code, exc_name)
+        return self._commit_terminal(
+            attachment,
+            {"status": "failed", "reason": code, "attachment_id": attachment.id},
+            extraction_status="failed",
+            extraction_error=error,
+        )
 
-    @staticmethod
-    def _is_pending_in_scope(attachment: Attachment) -> bool:
-        if (attachment.extraction_status or "").lower() != "pending":
-            return False
-        cat = (attachment.category or "").lower()
-        return (not cat) or (cat in SOURCE_DOC_CATEGORIES)
+    def _commit_terminal(
+        self,
+        attachment: Attachment,
+        outcome: dict,
+        *,
+        orphan_blob: Optional[tuple[str, str]] = None,
+        **fields,
+    ) -> dict:
+        """Write a terminal status guarded by the claim token, then return `outcome`.
+
+        Only the lease holder may finish a row. A write that matches nothing means the
+        lease was reclaimed, so the row is reported as claim_lost and left alone, and
+        `orphan_blob` (the blob this attempt just wrote, provably never published) is
+        deleted. A write that RAISES has an unknown outcome — the commit may have landed
+        before the acknowledgement was lost — so the blob is KEPT: the row may now
+        reference it. If it did not commit, the row stays 'processing' for the lease to
+        reclaim and the kept blob is an unreferenced orphan (storage debt, never current).
+        """
+        guard = {}
+        if attachment.claim_modified_datetime is not None:
+            guard = {
+                "expected_status": "processing",
+                "expected_modified_datetime": attachment.claim_modified_datetime,
+            }
+        try:
+            written = self.repo.update_extraction(id=attachment.id, **fields, **guard)
+        except Exception as e:
+            logger.error(
+                "attachment_extraction.terminal_write_failed id=%s exc=%s",
+                attachment.id,
+                type(e).__name__,
+            )
+            # Outcome unknown: never delete a blob the committed row may reference.
+            return {"status": "failed", "reason": "terminal_write_failed", "attachment_id": attachment.id}
+        if written is None:
+            logger.warning("attachment_extraction.claim_lost id=%s", attachment.id)
+            self._discard_blob(orphan_blob)
+            return {"status": "skipped", "reason": "claim_lost", "attachment_id": attachment.id}
+        return outcome
+
+    def _discard_blob(self, orphan_blob: Optional[tuple[str, str]]) -> None:
+        if orphan_blob is None:
+            return
+        blob_name, blob_url = orphan_blob
+        try:
+            self.storage.delete_file(blob_url)
+        except Exception as e:
+            logger.warning(
+                "attachment_extraction.orphan_blob_delete_failed blob=%s exc=%s",
+                blob_name,
+                type(e).__name__,
+            )
 
 
 # --------------------------------------------------------------------------- #
 # Pure helpers (module-level so they are unit-testable without I/O)
 # --------------------------------------------------------------------------- #
+
+# pypdf logs raw document byte excerpts when it meets malformed input. Silence it for the
+# whole process here; toggling the logger per call races across overlapping threads.
+logging.getLogger("pypdf").setLevel(logging.CRITICAL + 1)
+warnings.filterwarnings("ignore", module=r"pypdf(\..*)?")
 
 
 def _looks_like_pdf(content: bytes) -> bool:
@@ -346,7 +389,7 @@ def _extract_text_layer(content: bytes, content_type: str) -> tuple[str, int]:
                 parts.append("")
         return "\n".join(parts), len(reader.pages)
     except Exception as e:
-        logger.warning("attachment_extraction.text_layer_failed: %s", e)
+        logger.warning("attachment_extraction.text_layer_error exc=%s", type(e).__name__)
         return "", 0
 
 

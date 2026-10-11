@@ -1,6 +1,7 @@
 # Python Standard Library Imports
 import base64
 import logging
+from datetime import datetime
 from typing import Optional
 
 # Third-party Imports
@@ -51,6 +52,8 @@ class AttachmentRepository:
             # U-187: sync-proof vendor invoice number (may be absent on rows read
             # by mutation-sproc OUTPUTs that don't SELECT it — getattr default).
             vendor_invoice_number = getattr(row, 'VendorInvoiceNumber', None)
+            parse_invoice_number = bool(getattr(row, 'ParseInvoiceNumber', False))
+            claim_modified_datetime = getattr(row, 'ClaimModifiedDatetime', None)
             # U-279: dbo-native QBO identity — only ReadAttachmentById/
             # ByPublicId/ByQboIdAndRealmId select these; other Read*/mutation
             # OUTPUTs don't, hence the getattr default.
@@ -83,6 +86,7 @@ class AttachmentRepository:
                 extracted_text_blob_url=extracted_text_blob_url,
                 extraction_error=extraction_error,
                 extracted_datetime=extracted_datetime,
+                claim_modified_datetime=claim_modified_datetime,
                 ai_category=ai_category,
                 ai_category_confidence=float(ai_category_confidence) if ai_category_confidence else None,
                 ai_category_status=ai_category_status,
@@ -90,14 +94,15 @@ class AttachmentRepository:
                 ai_extracted_fields=ai_extracted_fields,
                 categorized_datetime=categorized_datetime,
                 vendor_invoice_number=vendor_invoice_number,
+                parse_invoice_number=parse_invoice_number,
                 qbo_id=qbo_id,
                 realm_id=realm_id,
             )
         except AttributeError as error:
-            logger.error(f"Attribute error during attachment mapping: {error}")
+            logger.error("Attribute error during attachment mapping: %s", type(error).__name__)
             raise map_database_error(error)
         except Exception as error:
-            logger.error(f"Unexpected error during attachment mapping: {error}")
+            logger.error("Unexpected error during attachment mapping: %s", type(error).__name__)
             raise map_database_error(error)
 
     def create(
@@ -388,6 +393,8 @@ class AttachmentRepository:
         extracted_text_blob_url: Optional[str] = None,
         extraction_error: Optional[str] = None,
         vendor_invoice_number: Optional[str] = None,
+        expected_status: Optional[str] = None,
+        expected_modified_datetime: Optional[datetime] = None,
     ) -> Optional[Attachment]:
         """
         Update extraction status and results for an attachment.
@@ -401,9 +408,11 @@ class AttachmentRepository:
                 preserves the existing value in the sproc (CASE-WHEN guard), so the
                 cheap 'pending' re-mark never wipes a previously parsed/corrected
                 number; a non-NULL value overwrites.
+            expected_status / expected_modified_datetime: U-535a claim guard. The
+                write applies only while the row still matches both; None when unguarded.
 
         Returns:
-            Updated Attachment or None if not found
+            Updated Attachment, or None if not found or the guard matched no row
         """
         try:
             with get_connection() as conn:
@@ -415,6 +424,8 @@ class AttachmentRepository:
                         "ExtractedTextBlobUrl": extracted_text_blob_url,
                         "ExtractionError": extraction_error,
                         "VendorInvoiceNumber": vendor_invoice_number,
+                        "ExpectedStatus": expected_status,
+                        "ExpectedModifiedDatetime": expected_modified_datetime,
                     }
                     call_procedure(
                         cursor=cursor,
@@ -426,15 +437,20 @@ class AttachmentRepository:
                 finally:
                     cursor.close()
         except Exception as error:
-            logger.error(f"Error during update extraction: {error}")
+            logger.error("Error during update extraction: %s", type(error).__name__)
             raise map_database_error(error)
 
-    def read_pending_extraction(self) -> list[Attachment]:
+    def claim_for_extraction(
+        self,
+        groups: list[str],
+        limit: int,
+        lease_minutes: int,
+    ) -> list[Attachment]:
         """
-        Read all attachments pending extraction.
+        Atomically claim up to ``limit`` PDFs linked to ``groups`` for extraction.
 
-        Returns:
-            List of Attachments with extraction_status = 'pending' or NULL
+        Claimed rows come back with extraction_status 'processing'. The connection
+        commits when the context exits, so the claim is durable before OCR starts.
         """
         try:
             with get_connection() as conn:
@@ -442,15 +458,84 @@ class AttachmentRepository:
                 try:
                     call_procedure(
                         cursor=cursor,
-                        name="ReadAttachmentsPendingExtraction",
-                        params={},
+                        name="ClaimAttachmentsForExtraction",
+                        params={
+                            "Groups": ",".join(groups),
+                            "Limit": limit,
+                            "LeaseMinutes": lease_minutes,
+                        },
                     )
                     rows = cursor.fetchall()
                     return [self._from_db(row) for row in rows if row]
                 finally:
                     cursor.close()
         except Exception as error:
-            logger.error(f"Error during read pending extraction: {error}")
+            logger.error("Error during claim for extraction: %s", type(error).__name__)
+            raise map_database_error(error)
+
+    def mark_pending_extraction_by_group(
+        self,
+        group: str,
+        include_failed: bool,
+        batch_size: int,
+        dry_run: bool,
+    ) -> dict:
+        """
+        Mark one extraction group's PDFs 'pending' in batches, committing after each.
+
+        A dry run is a single call that writes nothing. Otherwise the procedure is
+        called until it reports affected = 0.
+
+        Returns:
+            {affected (total across batches), group, never_extracted_pdfs, failed_pdfs,
+            already_pending, completed} with counts from the final call.
+        """
+        try:
+            with get_connection() as conn:
+
+                def _call(include_failed_now: bool):
+                    cursor = conn.cursor()
+                    try:
+                        call_procedure(
+                            cursor=cursor,
+                            name="MarkAttachmentsPendingExtractionByGroup",
+                            params={
+                                "Group": group,
+                                "IncludeFailed": include_failed_now,
+                                "BatchSize": batch_size,
+                                "DryRun": dry_run,
+                            },
+                        )
+                        row = cursor.fetchone()
+                    finally:
+                        cursor.close()
+                    conn.commit()
+                    return row
+
+                if dry_run:
+                    row = _call(include_failed)
+                    affected_total = row.affected
+                else:
+                    affected_total = 0
+                    # The failed reset runs once, first: a row the drain fails again mid-run
+                    # is not re-picked, and NULL rows cannot return to NULL, so the loop ends.
+                    if include_failed:
+                        affected_total += _call(True).affected
+                    while True:
+                        row = _call(False)
+                        affected_total += row.affected
+                        if row.affected == 0:
+                            break
+                return {
+                    "affected": affected_total,
+                    "group": row.group,
+                    "never_extracted_pdfs": row.never_extracted_pdfs,
+                    "failed_pdfs": row.failed_pdfs,
+                    "already_pending": row.already_pending,
+                    "completed": row.completed,
+                }
+        except Exception as error:
+            logger.error("Error during mark pending extraction by group: %s", type(error).__name__)
             raise map_database_error(error)
 
     def update_categorization(

@@ -16,6 +16,26 @@ import config
 logger = logging.getLogger(__name__)
 
 
+# Azure Storage error codes we expect to see. Anything else is logged as "unrecognized" so a
+# header can never carry arbitrary text (e.g. a TIN) into a log line.
+_KNOWN_AZURE_ERROR_CODES = frozenset({
+    "AccountIsDisabled", "AuthenticationFailed", "AuthorizationFailure",
+    "AuthorizationPermissionMismatch", "BlobAlreadyExists", "BlobNotFound", "ConditionNotMet",
+    "ContainerAlreadyExists", "ContainerBeingDeleted", "ContainerNotFound",
+    "InsufficientAccountPermissions", "InternalError", "InvalidHeaderValue", "InvalidRange",
+    "KeyBasedAuthenticationNotPermitted", "LeaseAlreadyPresent", "LeaseIdMissing", "Md5Mismatch",
+    "OperationTimedOut", "PublicAccessNotPermitted", "RequestBodyTooLarge", "ResourceNotFound",
+    "ServerBusy",
+})
+
+
+def _azure_error_code(response) -> str:
+    code = (response.headers.get("x-ms-error-code") or "") if response is not None else ""
+    if not code:
+        return ""
+    return code if code in _KNOWN_AZURE_ERROR_CODES else "unrecognized"
+
+
 class AzureBlobStorageError(Exception):
     """Base exception for Azure Blob Storage operations."""
     pass
@@ -197,10 +217,10 @@ class AzureBlobStorage:
             return self._build_url(blob_name, use_sas=False, container_name=container)  # Return URL without SAS token
             
         except httpx.HTTPStatusError as e:
-            logger.error(f"HTTP error uploading blob {blob_name}: {e.response.status_code} - {e.response.text}")
+            logger.error("HTTP error uploading blob %s: status=%s code=%s exc=%s", blob_name, e.response.status_code, _azure_error_code(e.response), type(e).__name__)
             raise AzureBlobStorageError(f"Failed to upload blob: {e.response.status_code}")
         except Exception as e:
-            logger.error(f"Error uploading blob {blob_name}: {e}")
+            logger.error("Error uploading blob %s: exc=%s", blob_name, type(e).__name__)
             raise AzureBlobStorageError(f"Failed to upload blob: {str(e)}")
 
     def _parse_blob_url(self, blob_url: str) -> Tuple[str, str]:
@@ -267,11 +287,17 @@ class AzureBlobStorage:
             return response.content, metadata
             
         except httpx.HTTPStatusError as e:
-            logger.error(f"HTTP error downloading blob {blob_url}: {e.response.status_code} - {e.response.text}")
+            logger.error("HTTP error downloading blob %s: status=%s code=%s exc=%s", self._blob_name_for_log(blob_url), e.response.status_code, _azure_error_code(e.response), type(e).__name__)
             raise AzureBlobStorageError(f"Failed to download blob: {e.response.status_code}")
         except Exception as e:
-            logger.error(f"Error downloading blob {blob_url}: {e}")
+            logger.error("Error downloading blob %s: exc=%s", self._blob_name_for_log(blob_url), type(e).__name__)
             raise AzureBlobStorageError(f"Failed to download blob: {str(e)}")
+
+    def _blob_name_for_log(self, blob_url: str) -> str:
+        try:
+            return self._parse_blob_url(blob_url)[1]
+        except Exception:
+            return "<unparsed>"
 
     def exists(self, blob_url: str) -> bool:
         """
@@ -352,10 +378,10 @@ class AzureBlobStorage:
             if e.response.status_code == 404:
                 logger.info(f"Blob {blob_url} not found (may already be deleted)")
                 return
-            logger.error(f"HTTP error deleting blob {blob_url}: {e.response.status_code} - {e.response.text}")
+            logger.error("HTTP error deleting blob %s: status=%s code=%s exc=%s", blob_name, e.response.status_code, _azure_error_code(e.response), type(e).__name__)
             raise AzureBlobStorageError(f"Failed to delete blob: {e.response.status_code}")
         except Exception as e:
-            logger.error(f"Error deleting blob {blob_url}: {e}")
+            logger.error("Error deleting blob %s: exc=%s", self._blob_name_for_log(blob_url), type(e).__name__)
             raise AzureBlobStorageError(f"Failed to delete blob: {str(e)}")
 
     def _ensure_container_exists(self, container_name: Optional[str] = None) -> None:
@@ -382,15 +408,13 @@ class AzureBlobStorage:
                 response = client.put(url, headers=headers)
                 # 201 = created, 409 = already exists
                 if response.status_code not in (201, 409):
-                    error_text = response.text if hasattr(response, 'text') else str(response.status_code)
-                    logger.error(f"Failed to create container: {response.status_code} - {error_text}")
+                    logger.error("Failed to create container %s: status=%s", container, response.status_code)
                     response.raise_for_status()
                 logger.info(f"Container '{container}' exists or was created successfully")
         except httpx.HTTPStatusError as e:
-            error_text = e.response.text if hasattr(e.response, 'text') else str(e.response.status_code)
-            logger.error(f"HTTP error creating container: {e.response.status_code} - {error_text}")
+            logger.error("HTTP error creating container: status=%s code=%s exc=%s", e.response.status_code, _azure_error_code(e.response), type(e).__name__)
             raise AzureBlobStorageError(f"Failed to create container: {e.response.status_code}")
         except Exception as e:
-            logger.error(f"Error creating container: {e}")
+            logger.error("Error creating container: exc=%s", type(e).__name__)
             raise AzureBlobStorageError(f"Failed to create container: {str(e)}")
 

@@ -151,6 +151,10 @@ class Settings(BaseSettings):
     azure_document_intelligence_key: Optional[str] = None
     # Override the API version if needed; the default tracks the current GA.
     azure_document_intelligence_api_version: str = "2024-11-30"
+    # Comma-separated attachment groups enabled for scheduled text extraction:
+    # bill, bill_credit, expense, w9, coi, license. Empty = extraction disabled.
+    # Env var ATTACHMENT_EXTRACTION_GROUPS.
+    attachment_extraction_groups: str = ""
 
     # Azure App Service default domain for the prod API. Used by smoke
     # scripts and any local tooling that needs to hit the deployed API.

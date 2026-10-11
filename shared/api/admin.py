@@ -737,16 +737,21 @@ async def email_poll_router():
 
 # U-187: Attachment text-extraction drain. Mirrors /email/extract's shape
 # (_require_drain_secret + _timed). Text-layer-first; DI only for image-only
-# scans, scoped to source-doc categories. Additive + localized — kept self-
+# scans, scoped by link-table group (ATTACHMENT_EXTRACTION_GROUPS). Additive + localized — kept self-
 # contained so it doesn't collide with sibling admin.py edits.
 @router.post("/attachment/extract/tick", dependencies=[Depends(_require_drain_secret)])
-async def attachment_extract_tick_router(limit: int = Query(20, ge=1, le=200)):
-    """Drain a bounded batch of Attachments marked for text extraction (U-187).
+async def attachment_extract_tick_router(limit: int = Query(5, ge=1, le=5)):
+    """Claim and extract up to `limit` Attachments marked for text extraction (U-187).
 
     Persists extracted text/KVP to blob + the dbo.Attachment extraction fields and
     parses a sync-proof VendorInvoiceNumber. Text-layer (pypdf) first; Document
     Intelligence only for image-only scans. Idempotent per attachment.
+
+    A failure returns only the exception class name: the message and traceback can
+    carry document text, so they are never logged or returned here.
     """
+    job = "attachment.extract.tick"
+
     def _run() -> dict[str, Any]:
         from entities.attachment.business.extraction_service import (
             AttachmentExtractionService,
@@ -754,7 +759,15 @@ async def attachment_extract_tick_router(limit: int = Query(20, ge=1, le=200)):
 
         return AttachmentExtractionService().extract_pending(limit=limit)
 
-    return await _timed("attachment.extract.tick", _run)
+    started = time.monotonic()
+    try:
+        result = await asyncio.to_thread(_run)
+    except Exception as error:
+        logger.error("admin.job.failed job=%s exc=%s", job, type(error).__name__)
+        return {"status": "error", "job": job, "error": type(error).__name__}
+    duration_ms = int((time.monotonic() - started) * 1000)
+    logger.info("admin.job.completed job=%s duration_ms=%d", job, duration_ms)
+    return {"status": "ok", "job": job, "duration_ms": duration_ms, "result": result}
 
 
 # --- Time Tracking agent ---------------------------------------------------- #

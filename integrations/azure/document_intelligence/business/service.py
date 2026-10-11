@@ -74,6 +74,24 @@ class DocumentIntelligenceService:
         analyze_result = analyze_document_bytes(content, content_type=content_type)
         return self._hoist_and_validate(analyze_result)
 
+    def extract_text(self, content: bytes, content_type: str) -> dict:
+        """Plain-text OCR via `prebuilt-read` (no key-value pairs, no tables).
+
+        Cheaper than `extract_invoice` for scanned PDFs whose text is all the
+        caller needs. Raises DocumentIntelligenceConfigError if DI is unconfigured.
+        """
+        analyze_result = analyze_document_bytes(
+            content,
+            content_type=content_type,
+            model_id="prebuilt-read",
+            features=None,
+        )
+        return {
+            "content": analyze_result.get("content") or "",
+            "pages_count": len(analyze_result.get("pages") or []),
+            "key_value_pairs": [],
+        }
+
     def _hoist_and_validate(self, analyze_result: dict) -> dict:
         """Reshape `prebuilt-layout` analyzeResult into a flat agent-
         friendly dict. No semantic interpretation — the agent does that.

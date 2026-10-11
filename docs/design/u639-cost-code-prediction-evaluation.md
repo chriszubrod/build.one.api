@@ -120,7 +120,7 @@ structured signal before text.
    suggestion applies it to every line; individual lines stay editable. Only 3.76% of coded Bills mix codes
    (2.27% of dollars off the dominant code — §8). The original per-line recommendation is superseded: Folder-intake bills have one summary line; email-intake bills may have several. (Both intakes are
    gone or going — see D0 — but the ~20k historical lines remain the labelled backtest set.)
-2. **Project is predicted, not given.** On email intake nothing supplies it. The U-005 resolver already
+2. **Project: input when chosen, predicted from the Bill's text when blank (D2, Chris 2026-10-11).** Superseded wording: on email intake nothing supplies it. The U-005 resolver already
    resolves Project from text shorthand and address; the vendor×project history (§5.5) is a second source.
    The budget check is gated on a resolved Project with confidence above the same bar.
 3. **Commitment linkage: remove from the feature vector.** There is nothing to link. The signal the prompt
@@ -277,7 +277,7 @@ touch disjoint files (scheduler + `entities/attachment` vs `entities/coding_sugg
 |---|---|---|
 | D0 | **Which path brings Bills into build.one once SharePoint folder intake is removed?** | ✅ **Decided (Chris, 2026-10-11): manual entry in the web app is the intake** (§8: person-entered Bills dominate since July; folder and email intake are already near zero). The predictor becomes a **suggestion in the Bill edit form** as each line is coded, not a pipeline that creates Bills. Consequences: Stage 1 (M3) and email revival (M7) leave the critical path; provenance (M6) is optional. |
 | D1 | Label grain: per `BillLineItem` `(Project, SCC)`, or the bill's dominant code? | ✅ **Decided (Chris, 2026-10-11): per Bill** — one suggestion per Bill, label = the dominant SCC by line amount, applied to every line on accept. Measured: 3.76% of coded Bills mix codes, 2.27% of dollars off the dominant code. The backtest reports mixed-code Bills separately. |
-| D2 | Is Project an input or a prediction? | **Prediction** with its own confidence; the budget check is gated on it. The folder intake that supplied it is being removed. |
+| D2 | Is Project an input or a prediction? | ✅ **Decided (Chris, 2026-10-11): input when the user has picked it, prediction when blank.** A chosen project is used as-is and never overridden (vendor×project history is 11 points stronger than vendor-only, §8); when blank, the project is predicted — **chiefly from the Bill's text** (job name / address on the document, the U-005 shorthand + address resolver), with vendor×project history as a second source — and suggested once per Bill (D1). A wrong project guess is corrected by the user picking the right one; that correction is a label (`Confirmed*`, `WasOverridden`). The budget check runs only against a chosen or confidently predicted project. |
 | D3 | Revive the email intake torn down 2026-08-16? | **Not until the teardown rationale is recovered** (it is not in the U-218f session note). Then M7, after M3 + M6. |
 | D4 | Commitments: drop the feature, or book a Contract/commitment entity first? | **Chris undecided (2026-10-11); revisit in planning.** Until then, **drop from this design.** Vendor×project history (5.5) gives the same signal from data that exists. The entity is a product unit on its own merits. |
 | D5 | Accept a **backtest gate** before any learned model? | **Yes.** M1's harness is the deliverable that decides; no GBM is scheduled. |

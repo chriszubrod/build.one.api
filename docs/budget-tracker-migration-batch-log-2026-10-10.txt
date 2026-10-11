@@ -1,0 +1,116 @@
+== BMB ==
+   BOX OK 200 - Rogers Build Projects/BMB 533 Belle Meade Blvd--2021--22/12 - Budgets
+   SP  OK /General/200 - Rogers Build Projects/BMB 533 Belle Meade Blvd--2021--22/12 - Budgets
+== CR ==
+   BOX OK 200 - Rogers Build Projects/CR 1025 Choate Rd--2023--87/12 - Budgets
+   SP  OK /General/200 - Rogers Build Projects/CR 1025 Choate Rd--2023--87/12 - Budgets
+== DFR ==
+   Box 12 - Budgets CREATED 426275746939
+   BOX OK 200 - Rogers Build Projects/DFR 8242 Duffield Road/12 - Budgets
+   SP 12 - Budgets 201 017ZKYN54A7DLGRNL5TJBYV5QQL54ZQVIE
+   SP  OK /General/200 - Rogers Build Projects/DFR 8242 Duffield Road/12 - Budgets
+== EAS ==
+   BOX OK 250 - Completed Rogers Build Projects/EAS 2109 18th Ave South--2021--14/12 - Budgets
+   SP  OK /General/250 - Completed Rogers Build Projects/EAS 2109 18th Ave South--2021--14/12 - Budgets
+== EASH ==
+   Box 12 - Budgets CREATED 426276778986
+   BOX OK 200 - Rogers Build Projects/EASH - 5866 E Ashland Dr/12 - Budgets
+== ED ==
+   BOX OK 200 - Rogers Build Projects/ED 2005 Earlington Dr--2021--35/12 - Budgets
+   SP  OK /General/200 - Rogers Build Projects/ED 2005 Earlington Dr--2021--35/12 - Budgets
+== EVR ==
+   BOX OK 200 - Rogers Build Projects/EVR 6315 E Valley Rd--2023--86/12 - Budgets
+   SP  OK /General/200 - Rogers Build Projects/EVR 6315 E Valley Rd--2023--86/12 - Budgets
+== FAR ==
+   BOX OK 200 - Rogers Build Projects/FAR 0 Hwy. 100 & Int. 840--2023--81/12 - Budgets
+   SP  OK /General/200 - Rogers Build Projects/FAR 0 Hwy. 100 & Int. 840--2023--81/12 - Budgets
+== GBC ==
+   BOX OK 200 - Rogers Build Projects/GBC 4031 Graybar Ct--2022-68/12 - Budgets
+   SP  OK /General/200 - Rogers Build Projects/GBC 4031 Graybar Ct--2022-68/12 - Budgets
+== GTD ==
+   BOX OK 200 - Rogers Build Projects/GTD 709 Georgetown Dr--2021--27/12 - Budgets
+   SP  OK /General/200 - Rogers Build Projects/GTD 709 Georgetown Dr--2021--27/12 - Budgets
+== HW ==
+   BOX OK 200 - Rogers Build Projects/HW 128 Hardingwoods Dr--2021--85/12 - Budgets
+   SP  OK /General/200 - Rogers Build Projects/HW 128 Hardingwoods Dr--2021--85/12 - Budgets
+== KD ==
+   BOX OK 200 - Rogers Build Projects/KD 1901 Kingsbury Dr--2022--53/12 - Budgets
+   SP  OK /General/200 - Rogers Build Projects/KD 1901 Kingsbury Dr--2022--53/12 - Budgets
+== KD-GARAGE ==
+   BOX OK 200 - Rogers Build Projects/KD-GARAGE 1901 Kingsbury Dr. - 2024/12 - Budgets
+   SP  OK /General/200 - Rogers Build Projects/KD-GARAGE 1901 Kingsbury Dr. - 2024/12 - Budgets
+== MGL ==
+   BOX OK 200 - Rogers Build Projects/MGL 6018 Martingale Lane--2021--15/12 - Budgets
+   SP  OK /General/200 - Rogers Build Projects/MGL 6018 Martingale Lane--2021--15/12 - Budgets
+== ML2 ==
+   BOX OK 200 - Rogers Build Projects/ML2 4512 Millrace Ln--2022--75/12 - Budgets
+   SP  OK /General/200 - Rogers Build Projects/ML2 4512 Millrace Ln--2022--75/12 - Budgets
+== NR ==
+   BOX OK 200 - Rogers Build Projects/NR 1101 Natchez Road--2021--44/12 - Budgets
+   SP  OK /General/200 - Rogers Build Projects/NR 1101 Natchez Road--2021--44/12 - Budgets
+== NR2 ==
+   BOX OK 200 - Rogers Build Projects/NR2 1105 Natchez Rd--2022--73/12 - Budgets
+   SP  OK /General/200 - Rogers Build Projects/NR2 1105 Natchez Rd--2022--73/12 - Budgets
+== OC3 ==
+   Box 12 - Budgets CREATED 426276592554
+   BOX OK 200 - Rogers Build Projects/OC3 1335 Otter Creek Rd--2025--/12 - Budgets
+   SP 12 - Budgets 201 017ZKYN53XA6XTS77COVHK6OFYYRP6UYQB
+   SP  OK /General/200 - Rogers Build Projects/OC3 1335 Otter Creek Rd--2025--/12 - Budgets
+== OHB ==
+   BOX OK 200 - Rogers Build Projects/OHB 1809 Old Hickory Blvd--2021--39/12 - Budgets
+   SP  OK /General/200 - Rogers Build Projects/OHB 1809 Old Hickory Blvd--2021--39/12 - Budgets
+== OHB2 ==
+   BOX OK 200 - Rogers Build Projects/OHB2 1917 Old Hickory Blvd--2022--60/12 - Budgets
+   SP  OK /General/200 - Rogers Build Projects/OHB2 1917 Old Hickory Blvd--2022--60/12 - Budgets
+== ONT-1 ==
+   BOX OK 200 - Rogers Build Projects/ONT-1 2474 Old Natchez Trace (Cabin 1)--2022--50/12 - Budgets
+   SP  OK /General/200 - Rogers Build Projects/ONT-1 2474 Old Natchez Trace (Cabin 1)--2022--50/12 - Budgets
+== ONT-2 ==
+   BOX OK 200 - Rogers Build Projects/ONT-2 2468 Old Natchez Trace (Cabin 2)--2022--51/12 - Budgets
+   SP  OK /General/200 - Rogers Build Projects/ONT-2 2468 Old Natchez Trace (Cabin 2)--2022--51/12 - Budgets
+== OVH ==
+   Box 12 - Budgets CREATED 426276143810
+   BOX OK 200 - Rogers Build Projects/OVH - 2031 Overhill Dr/12 - Budgets
+== PD ==
+   BOX OK 200 - Rogers Build Projects/PD 903 Pasedena Drive--2021--11/12 - Budgets
+   SP  OK /General/200 - Rogers Build Projects/PD 903 Pasedena Drive--2021--11/12 - Budgets
+== RBFO ==
+   BOX OK 200 - Rogers Build Projects/RBFO 0 Fairview Blvd. - Office--2022--78/12 - Budgets
+   SP  OK /General/200 - Rogers Build Projects/RBFO 0 Fairview Blvd. - Office--2022--78/12 - Budgets
+== SD2 ==
+   BOX OK 200 - Rogers Build Projects/SD2 1902 Shamrock Dr--2022--84/12 - Budgets
+   SP  OK /General/200 - Rogers Build Projects/SD2 1902 Shamrock Dr--2022--84/12 - Budgets
+== SEC ==
+   BOX OK 200 - Rogers Build Projects/SEC - 410 Saint Edmonds Ct/12 - Budgets
+   SP  OK /General/200 - Rogers Build Projects/SEC - 410 Saint Edmonds Ct/12 - Budgets
+== SHR2 ==
+   BOX OK 200 - Rogers Build Projects/SHR2 - 1601 S. Harpeth Road -- 2023 -- 89/12 - Budgets
+   SP  OK /General/200 - Rogers Build Projects/SHR2 - 1601 S. Harpeth Road -- 2023 -- 89/12 - Budgets
+== TGGT ==
+   BOX OK 200 - Rogers Build Projects/TGGT 1216 Taggartwood Road--2021--02/12 - Budgets
+   SP  OK /General/200 - Rogers Build Projects/TGGT 1216 Taggartwood Road--2021--02/12 - Budgets
+== THC ==
+   Box 12 - Budgets CREATED 426276208610
+   BOX OK 200 - Rogers Build Projects/THC 699 Thurrock Circle/12 - Budgets
+   SP 12 - Budgets 201 017ZKYN5Y7XFU2UQYKMJDLQQ3AP7WJ52JO
+   SP  OK /General/200 - Rogers Build Projects/THC 699 Thurrock Circle/12 - Budgets
+== WCD ==
+   BOX OK 200 - Rogers Build Projects/WCD 6432 Worchester Drive--2021--40/12 - Budgets
+   SP  OK /General/200 - Rogers Build Projects/WCD 6432 Worchester Drive--2021--40/12 - Budgets
+== WD2 ==
+   BOX OK 200 - Rogers Build Projects/WD2 5883 Willshire Dr--2022--76/12 - Budgets
+   SP  OK /General/200 - Rogers Build Projects/WD2 5883 Willshire Dr--2022--76/12 - Budgets
+== WD3 ==
+   BOX OK 200 - Rogers Build Projects/WD3 5898 Willshire Dr--2023--83/12 - Budgets
+   SP  OK /General/200 - Rogers Build Projects/WD3 5898 Willshire Dr--2023--83/12 - Budgets
+== WL2 ==
+   BOX OK 200 - Rogers Build Projects/WL2 4128 Wallace Ln--2023--82/12 - Budgets
+   SP  OK /General/200 - Rogers Build Projects/WL2 4128 Wallace Ln--2023--82/12 - Budgets
+== WRR2 ==
+   BOX OK 200 - Rogers Build Projects/WRR2 1075 Webb Ridge Rd. Addition--2022--61/12 - Budgets
+   SP  OK /General/200 - Rogers Build Projects/WRR2 1075 Webb Ridge Rd. Addition--2022--61/12 - Budgets
+== WRR3 ==
+   BOX OK 200 - Rogers Build Projects/WRR3 - 0 Webb Ridge Road Barndo/12 - Budgets
+   SP  OK /General/200 - Rogers Build Projects/WRR3 - 0 Webb Ridge Road Barndo/12 - Budgets
+
+SUMMARY: {"BMB": "ok", "CR": "ok", "DFR": "ok", "EAS": "ok", "EASH": "ok", "ED": "ok", "EVR": "ok", "FAR": "ok", "GBC": "ok", "GTD": "ok", "HW": "ok", "KD": "ok", "KD-GARAGE": "ok", "MGL": "ok", "ML2": "ok", "NR": "ok", "NR2": "ok", "OC3": "ok", "OHB": "ok", "OHB2": "ok", "ONT-1": "ok", "ONT-2": "ok", "OVH": "ok", "PD": "ok", "RBFO": "ok", "SD2": "ok", "SEC": "ok", "SHR2": "ok", "TGGT": "ok", "THC": "ok", "WCD": "ok", "WD2": "ok", "WD3": "ok", "WL2": "ok", "WRR2": "ok", "WRR3": "ok"}

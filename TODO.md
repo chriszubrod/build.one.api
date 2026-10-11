@@ -825,7 +825,7 @@ post-stamp: 39 tagged rows / 39 distinct col-Z keys. The draw's `SUMIFS(N:N, H:H
 (whole-column total reads $68,204,969.62; true value $67,723,199.74), and SharePoint has diverged from Box
 by 17 rows.
 
-- [ ] **P1 — enumerate + surgically clear the 17 extra rows.** Detect per CRITICAL #8: read col-Z, flag any
+- [x] **P1 — enumerate + surgically clear the 17 extra rows.** ✅ **RESOLVED by 2026-10-02** — the budget-tracker migration pre-flight read BR-MAIN's SharePoint DETAILS at 331 keys / 331 distinct (0 duplicates), identical to Box; the 17 rows were cleared by an earlier session (not this one). Original item kept below for the method. Detect per CRITICAL #8: read col-Z, flag any
   key appearing >1x, keep the H-tagged row, clear the others with `clear_excel_range(drive, item,
   'DETAILS', 'A{row}:Z{row}')` — it blanks in place and shifts nothing, so row order is irrelevant. Do it on
   prod (reliable Graph). Do NOT swap the SharePoint workbook for the Box copy (KI-39: the two have diverged
@@ -876,7 +876,7 @@ by 17 rows.
   completion run from that environment. NB this session's own runs saw `createSession succeeded but returned
   no session ID` — the documented gate-off/non-prod signature — while the used-range read still returned 200,
   which is the condition that actually governs (CRITICAL #8 bullet 1).
-- [ ] **P2 — sweep the other 27 mapped workbooks for the same signature.** The detect recipe is cheap
+- [ ] **P2 — sweep the other 27 mapped workbooks for the same signature.** **PARTIAL SWEEP DONE 2026-10-02→07 by the budget-tracker migration pre-flights** (ledger: `docs/budget-tracker-migration-ledger-2026-10.md`). Found so far — **HP (18):** 3 keys ×2 at r1972–1977, on BOTH copies (same rows → inherited from the SP→Box copy, not a Box drain); **HP2 (13):** Box 4 keys ×2 (r1125–1128 / r1150–1153), **SharePoint 33 keys duplicated, 3 of them tripled**, file still being edited 2026-10-07 — the BR-MAIN signature, live; **OHR2 (30):** Box 2 keys ×2 (D78B9C94 r147/149, 3BBBBFC4 r2535/2548), SP those 2 + 90ACEC03 r2932/2933; **SHT (28):** Box 1 key ×2 (CE61AD7E r397/398). **OL (23):** SharePoint 2 keys ×2 (85E4F35E r65/66, B7A677E8 r1181/1182), Box clean. **SSC2 (79):** Box key 738484B4 on r1379 (Ferguson bill 8567505-1) AND r1380 (credit CM106788) — the credit row carries the bill's key; SP clean. **Also SSC2-05 draw diverges: Box $32,610.11 vs SP $29,116.17** — Box-only keyless row r1666 ($3,493.94, col K 'SSC2-05', no vendor); establish whether it belongs on the draw (human edit on Box) before anyone reconciles the two copies. Clean: BR-MAIN, OHR2-CHAPEL, OHR2-GUEST, OL-PH, OL2, HE12, HE7, KA, KA2, SSC, SSC-POOL. Chris's call 2026-10-07: **log + book, do not clean during the migration** — each clean-up is its own gated unit (HP2 SP first: largest and live). The detect recipe is cheap
   (download → `_sanitize_workbook_bytes` → col-Z → count). If this is the blind-insert path rather than a
   one-off double-enqueue, BR-MAIN will not be the only tracker carrying it — the 2026-08-06 incident hit 8
   projects at once.
@@ -5553,3 +5553,42 @@ above in § U-503d/e residuals). Two items the reviews surfaced and this unit de
   integer digits (1e12 + 0.0003 → .0002) while still fitting DECIMAL(18,4); not a realistic
   quantity, but the debt is one numeric-type policy for the tool layer (~40 fields, ~8 files; needs
   a check that the LLM tool-schema export still emits `type: number`). Book as its own unit.
+
+## Budget-tracker migration spillover — booked 2026-10-09 (ledger: `docs/budget-tracker-migration-ledger-2026-10.md`)
+- [ ] **P2 — FP (35) cost code 98 rows below TOTAL EXPENSES on Box.** r3950/3951 (98.01, Wilmer Diaz $32.50 + Selvin Cordova $125,
+  2026.03.15.FP) have no category section in FP's tracker → appended after TOTAL EXPENSES. Draw SUMIFS count them; section subtotals
+  and the grand total do not. Same class as U-437's "25 live SubCostCodes have no row in the template". Fix = add a 98 section (human,
+  in Excel) or a sync rule for unknown categories — product call.
+- [ ] **P3 — the SP Excel path has no layout guard.** U-559's `_assert_details_layout` fences Box only; the SharePoint sync wrote 6 FP
+  rows into an old-template sheet for 6 months without complaint. Mirror the guard on the Graph insert path.
+- [ ] **P3 — TB3 (73) Box DETAIL key 2EBCDE9B sits on 7 rows (r1013–1019).** One line-item key hand-copied down 7 rows; dedup
+  treats all 7 as "present". Establish which row the key belongs to and clear the other 6 keys (operator work, both copies).
+- [ ] **P3 — TB3 (73) Box r3005: sub-cost-code '00' expense $413.61 appended after the draw block** (no '00' section) — same class as
+  the FP cost-code-98 item above.
+- [ ] **P1 — HA (128) expense QBO-76778 (VaVia Nashville, $715) has TWO line items in dbo.** ExpenseLineItem 99E4DE46…
+  (created 2026-09-23 with the expense) and 00D87E0A… (created 2026-10-02 12:55, same price/project). Box DETAILS carries 00D87E0A
+  (r49, drawn on HA-08); SharePoint carried 99E4DE46 until the 2026-10-10 refresh. Variance/budget reads double-count $715 on HA.
+  Likely the in-flight QBO pull re-creating a line (see memory `feedback_inflight_invoice_pull_recreates_deleted_lines`). Establish
+  which line QBO actually has, then remove the other through the service layer — and sweep for the same signature (expense with
+  two identical-price lines created days apart) across projects.
+- [ ] **P2 — Box expense uploads use the RAW attachment filename, not the completion-flow convention.**
+  `ExpenseService._enqueue_box_uploads` (entities/expense/business/service.py ~1967) passes `attachment.original_filename` (raw Ramp
+  names like `receipt_business_…pdf`) while the SharePoint path in the same completion (`_upload_attachments_to_module_folder`,
+  ~1686–1715) builds `EXP[-CR] - <proj abbr> - <vendor> - <ref#> - <desc|Multiple See Image> - <scc> - <price|total> - <MM-DD-YYYY>`.
+  The bill side already shares one helper (`BillService._build_module_filename`) between SharePoint and Box. Fix = extract the
+  expense block into `ExpenseService._build_module_filename` (pure refactor of the SharePoint path) and call it from
+  `_enqueue_box_uploads` too. Chris 2026-10-10: Box files must follow the convention. Every expense receipt pushed to Box since
+  2026-06-16 carries a raw name — decide whether to rename existing Box files (Box rename keeps the file id) after the fix ships.
+  WR (203) back-fill 2026-10-10 already re-queued with convention names (box.Outbox 10715–10719; raw-named 10706/08/10/12/14 cancelled).
+- [ ] **P3 — OVH (145) Box tracker draw OVH-01 is $945.01 below invoice OVH-01's line total.** After the 2026-10-10 back-fill
+  the tracker's OVH-01 tag sums to $17,849.50; invoice OVH-01 lines total $18,794.51 ($16,789.78 of them carry a source bill/expense;
+  the rest are manual/QBO-pulled lines with no source), invoice total $20,348.42 (fee on top). Reconcile line by line: which
+  invoice lines have no tracker row (likely the unsourced ones), and which hand-typed tracker rows tagged OVH-01 (e.g. Walker credit
+  805692 −$494.20) have no invoice line. Operator work on the Box copy (OVH is Box-only).
+- [ ] **P2 — U-559 DETAILS layout guard MISSES MCD's 2022 layout; and the SharePoint Excel path has NO guard at all.**
+  `_assert_details_layout` refused BPT's 2022 sheet but PASSES MCD's (`TRACKING DETAILS`: A CODE, B CATEGORY, … K "AMOUNT") because
+  it fires only on recognised header wording at the wrong column. Had MCD's Box tracker been mapped, every push would have landed
+  one-plus columns off silently. Meanwhile the SharePoint sync wrote 13 MCD rows (3 duplicated) below MCD's TOTAL row in modern
+  positions — invisible to every total — hand-repaired 2026-10-10. Fix both: make the guard positive-match the MODERN layout
+  (B Cost Code, C Sub Cost Code, H draw, N amount, Z key) and refuse anything else, and call it on the Graph insert/append path.
+  Same class as the FP 2022-original finding above.

@@ -1,7 +1,7 @@
 # U-639 — Cost-code prediction for bill lines: evaluation of the 2026-10-08 design prompt
 
 **Status:** DESIGN unit U-639 (Phase 1), claimed 2026-10-08. Nothing built. Terminology confirmed with Chris
-2026-10-11 (below). **All decisions D0–D9 made with Chris on 2026-10-11 (§7).** Remaining Phase-1 deliverable: the M1 backtest spec (§9).
+2026-10-11 (below). **All decisions D0–D9 made with Chris on 2026-10-11 (§7); M1 backtest spec written (§10). Phase 1 complete.**
 **Author:** `/em`, 2026-10-08. Every "exists / does not exist" claim below was checked against `build.one.api` on
 this date; the live counts are quoted from board rows U-535a / U-535b (measured 2026-09-24) and are perishable.
 **Input:** Chris's dictated prompt for an "automated cost-code prediction feature" (two intake adapters → Stage 1
@@ -330,10 +330,76 @@ multiple families (5.1, 5.3), and an architecture decision (deterministic-first 
 deferred). Therefore **two-phase**:
 
 - **Phase 1 — DESIGN unit = U-639** (this document). Deliverable: this file, revised against D1–D9,
-  plus the M1 backtest *spec* (metrics, temporal split, confidence buckets, acceptance threshold for M5).
+  plus the M1 backtest *spec* — **done: §10** (decision bars proposed, confirmed at M1's Gate 1).
   Claimed through the allocator in `BOARD.md` § Conventions (`OWNED U-639`, 2026-10-08).
 - **Phase 2 — build units**, each its own row, branch, and worktree, in the §6 order: M0 (already U-535a),
   M1, M2, M3, M4, M6; M5 and M7 after their stated gates; M8 only if M1's residual justifies it.
 
 ⛔ Gate 1 has not been crossed: nothing in the repo was modified except this file. Committed by explicit pathspec
 on Chris's approval, 2026-10-08; the `BOARD.md` row is U-639 in Ready / queued.
+
+---
+
+## 10. M1 backtest specification (D5)
+
+**Purpose.** Give an honest, reproducible accuracy figure for the suggesters before anything learned is built,
+and turn it into four decisions: whether the LLM path (M4) earns its cost, whether a trained model is ever
+needed (D5), whether embeddings are worth the SQL tier bump (D7), and what confidence the pre-fill shows (D6).
+
+### 10.1 What is scored
+- **Population (v1):** completed Bills (`IsDraft = 0`) with at least one coded line (19,224 on 2026-10-11).
+  BillCredits and Expenses join in a second run once `CodingSuggestion` covers them (M1a); same method.
+- **Label (D1):** the Bill's **dominant SubCostCode** — the SCC carrying the largest summed `ABS(Amount)` across
+  its lines (ties: the lowest line `Id`). **Project label (D2):** the `ProjectId` of that dominant-amount line.
+- **Mixed-code Bills** (more than one SCC; 3.76%) are scored on the dominant label **and** reported separately,
+  so the per-Bill grain's known miss is visible, never hidden in the average.
+
+### 10.2 Time and leakage
+- **The clock is `Bill.CreatedDatetime`** — when the Bill entered build.one, i.e. what was knowable when a
+  person would have seen the pre-fill. Not `BillDate` (vendor's date) and not completion time.
+- **Rolling origin, no training step:** every scored Bill is predicted using **only Bills created strictly
+  before it**, with itself excluded (`@AsOfDatetime`, `@ExcludeBillId` on the §5.5 sproc). Nothing about the
+  scored Bill — its own lines, codes, review outcome — reaches its features.
+- **Windows:**
+  - **Calibration window:** Bills created 2025-10-11 to 2026-04-10 — used only to fit the confidence mapping.
+  - **Evaluation window:** Bills created 2026-04-11 to 2026-10-10 — every reported number comes from here.
+  - History before 2025-10-11 is input only.
+- **Known residual leak, stated not fixed:** stored codes are the values *as they are now*, not as they were
+  at the time; a later recode of an older Bill leaks forward. Small (Bills are rarely re-coded after
+  completion) and noted in every report.
+
+### 10.3 Modes and suggesters
+- **Mode A — project chosen (D2):** the true project is given; predict the SCC.
+- **Mode B — project blank (D2):** predict project and SCC; report project accuracy separately.
+- **History suggester (M1), in resolution order:** vendor×project modal SCC → vendor modal SCC → none.
+  Minimum support: 3 prior Bills at that grain, else fall through. Raw score = smoothed modal share
+  `top / (total + 2)`; mapped to a calibrated confidence on the calibration window.
+- **Text suggester (M4):** text tier only (Bills whose PDF has extracted text — needs M0). Run on a **stratified
+  sample of 500** evaluation Bills (by vendor-consistency bucket and origin) to bound LLM spend; same prompt,
+  model and rung the production path will use, recorded in `ModelVersion`.
+- **Combined:** the production rule — history when its calibrated confidence clears the line, text otherwise.
+
+### 10.4 Metrics (evaluation window, per mode, per suggester)
+- **Coverage:** share of Bills that get any suggestion.
+- **Top-1 accuracy**, Bill-count-weighted **and dollar-weighted**; **top-3** (alternatives the form may show).
+- **Calibration:** accuracy per confidence decile against the stated confidence (a reliability table).
+- **Breakdowns:** by vendor-consistency bucket (§8), by origin (§8), cold-start vendors (< 3 prior Bills),
+  mixed-code Bills, and the 20 vendors with the most errors.
+- **Cost:** LLM tokens and dollars per 1,000 Bills for the text suggester.
+
+### 10.5 Decision rules (numbers are **proposed** — confirm at M1's Gate 1)
+| Question | Rule |
+|---|---|
+| Does M4 earn its cost? | Build/keep M4 if, on the text tier, combined top-1 beats history-only by **≥ 10 points** in Mode A. |
+| Trained model (D5)? | Only if combined top-1 in Mode A is below **85%** **and** an error review of 50 misses shows they are not text-reachable (i.e. structured features the suggesters don't use would fix them). |
+| Embeddings (D7)? | Only if ≥ **half** of 50 reviewed text-tier misses would be fixed by "a similar past Bill was coded to X". |
+| Pre-fill confidence shown (D6)? | Show the calibrated confidence; pre-fill always applies (D6), but values below **60%** calibrated confidence are styled as low-confidence. |
+| Live check after launch | Weekly from `CodingSuggestion.PrefillState`: if the live change rate exceeds the backtest error rate by **> 10 points for two weeks**, re-run the backtest and review. |
+
+### 10.6 How it runs
+- **Read-only, SELECT-only** against production, run on approval as the §8 measurement was; or against a
+  restored copy. It **never writes** `CodingSuggestion` rows; results go to a report file.
+- **Output per run:** a markdown report (the tables above) plus a CSV of per-Bill predictions, stamped with
+  the date, window boundaries and `ModelVersion`, kept under `docs/design/` beside this file.
+- **Reproducible:** the same windows and versions produce the same numbers; the harness is code in M1, reviewed
+  like any unit (P0-surface with M1, D6).

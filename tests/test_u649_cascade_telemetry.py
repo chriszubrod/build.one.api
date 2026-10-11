@@ -2,10 +2,10 @@
 
 Every run_ladder decision and every CascadeTransport rung decision emits one
 INFO record whose `extra` fields become customDimensions. The cascade loggers
-are raised to INFO in prod by enable_cascade_telemetry(); the root stays WARNING.
+are raised to INFO in prod by export_info_loggers(), driven by the registry in
+shared/observability.py; the root stays WARNING.
 """
 
-import ast
 import asyncio
 import json
 import logging
@@ -19,23 +19,21 @@ import pytest
 from intelligence.cascade.core import Attempt, CascadeResult, Rung, run_ladder
 from intelligence.observability import cascade_telemetry
 from intelligence.observability.cascade_telemetry import (
-    APP_INSIGHTS_ENV,
-    CASCADE_LOGGER_NAMES,
     LADDER_EVENT,
     TRANSPORT_EVENT,
-    enable_cascade_telemetry,
     ladder_event_fields,
 )
 from intelligence.observability.pricing import compute_cost_usd
 from intelligence.transport.base import Done, TextDelta, TransportError, Usage
 from intelligence.transport.cascade import CascadeTransport
+from shared.observability import EXPORTED_INFO_LOGGERS, export_info_loggers
 from tests.loop_test_helpers import ScriptedTransport, alist
 
 R1 = Rung("foundry", "DeepSeek-V4-Flash")
 R2 = Rung("anthropic", "claude-haiku-5-5")
 UNPRICED = Rung("anthropic", "made-up-model-9")
 
-_LOGGED_NAMES = (*CASCADE_LOGGER_NAMES, "intelligence.cascade.core")
+_LOGGED_NAMES = (*EXPORTED_INFO_LOGGERS, "intelligence.cascade.core")
 _STANDARD_RECORD_ATTRS = set(vars(logging.LogRecord("", 0, "", 0, "", None, None))) | {"message", "asctime"}
 
 
@@ -49,7 +47,7 @@ def restore_levels():
 
 @pytest.fixture
 def cascade_logs(caplog, restore_levels):
-    enable_cascade_telemetry()
+    export_info_loggers()
     yield caplog
 
 
@@ -240,7 +238,7 @@ class _RaisingSink(logging.Handler):
 @pytest.fixture
 def raising_log_sink(cascade_logs):
     sink = _RaisingSink()
-    loggers = [logging.getLogger(name) for name in CASCADE_LOGGER_NAMES]
+    loggers = [logging.getLogger(name) for name in EXPORTED_INFO_LOGGERS]
     for logger in loggers:
         logger.addHandler(sink)
     yield
@@ -533,44 +531,21 @@ def test_transport_extras_are_flat_and_omit_missing_error_code(cascade_logs):
     assert not hasattr(records[3], "error_code")
 
 
-def _level_snapshot():
-    levels = {"<root>": logging.getLogger().level}
-    for name, logger in logging.root.manager.loggerDict.items():
-        if not isinstance(logger, logging.PlaceHolder):
-            levels[name] = logger.level
-    return levels
-
-
-def test_enable_changes_only_the_two_named_loggers(restore_levels):
-    for name in CASCADE_LOGGER_NAMES:
-        logging.getLogger(name).setLevel(logging.WARNING)
-    before = _level_snapshot()
-
-    enable_cascade_telemetry()
-
-    after = _level_snapshot()
-    changed = {name for name in before.keys() | after.keys() if before.get(name) != after.get(name)}
-    assert changed == set(CASCADE_LOGGER_NAMES)
-    for name in CASCADE_LOGGER_NAMES:
-        assert logging.getLogger(name).level == logging.INFO
-    assert logging.getLogger("intelligence.cascade.core").getEffectiveLevel() == logging.INFO
-
-
 _ISOLATION_PROBE = """
 import json, logging
-from intelligence.observability.cascade_telemetry import CASCADE_LOGGER_NAMES, enable_cascade_telemetry
+from shared.observability import EXPORTED_INFO_LOGGERS, export_info_loggers
 
 def real_loggers():
     return {n for n, lg in logging.root.manager.loggerDict.items() if isinstance(lg, logging.Logger)}
 
 before = real_loggers()
-enable_cascade_telemetry()
-created = sorted(real_loggers() - before - set(CASCADE_LOGGER_NAMES))
+export_info_loggers()
+created = sorted(real_loggers() - before - set(EXPORTED_INFO_LOGGERS))
 print(json.dumps({n: logging.root.manager.loggerDict[n].level for n in created}))
 """
 
 
-def test_enable_leaves_every_logger_it_creates_at_notset():
+def test_export_leaves_every_logger_it_creates_at_notset():
     repo_root = Path(__file__).resolve().parent.parent
     completed = subprocess.run(
         [sys.executable, "-c", _ISOLATION_PROBE], cwd=repo_root, capture_output=True, text=True, check=True,
@@ -661,77 +636,3 @@ def test_exhausted_ladder_keeps_the_warning_line(caplog):
         if r.levelno == logging.WARNING and r.getMessage().startswith("cascade[test_task] EXHAUSTED 1 rungs")
     ]
     assert len(warnings) == 1
-
-
-def _callee_name(call):
-    func = call.func
-    if isinstance(func, ast.Name):
-        return func.id
-    if isinstance(func, ast.Attribute):
-        return func.attr
-    return None
-
-
-def test_app_insights_env_is_azures_connection_string_variable():
-    assert APP_INSIGHTS_ENV == "APPLICATIONINSIGHTS_CONNECTION_STRING"
-
-
-@pytest.mark.parametrize("environ", [{}, {APP_INSIGHTS_ENV: ""}], ids=["absent", "empty"])
-def test_configure_app_insights_is_a_no_op_without_a_connection_string(restore_levels, environ):
-    for name in CASCADE_LOGGER_NAMES:
-        logging.getLogger(name).setLevel(logging.WARNING)
-    calls = []
-
-    enabled = cascade_telemetry.configure_app_insights(environ=environ, configure=lambda **kw: calls.append(kw))
-
-    assert enabled is False
-    assert calls == []
-    for name in CASCADE_LOGGER_NAMES:
-        assert logging.getLogger(name).level == logging.WARNING
-
-
-def test_configure_app_insights_configures_azure_and_enables_cascade_logs(restore_levels):
-    for name in CASCADE_LOGGER_NAMES:
-        logging.getLogger(name).setLevel(logging.WARNING)
-    calls = []
-
-    enabled = cascade_telemetry.configure_app_insights(
-        environ={APP_INSIGHTS_ENV: "InstrumentationKey=test"}, configure=lambda **kw: calls.append(kw),
-    )
-
-    assert enabled is True
-    assert calls == [{"logger_name": "", "enable_live_metrics": False}]
-    for name in CASCADE_LOGGER_NAMES:
-        assert logging.getLogger(name).level == logging.INFO
-
-
-def _app_tree():
-    return ast.parse((Path(__file__).resolve().parent.parent / "app.py").read_text())
-
-
-def test_app_calls_configure_app_insights_once_at_module_level_before_fastapi():
-    tree = _app_tree()
-
-    calls = [n for n in ast.walk(tree) if isinstance(n, ast.Call) and _callee_name(n) == "configure_app_insights"]
-    module_statements = [
-        s for s in tree.body
-        if isinstance(s, ast.Expr) and isinstance(s.value, ast.Call) and _callee_name(s.value) == "configure_app_insights"
-    ]
-    fastapi_import = next(
-        i for i, s in enumerate(tree.body) if isinstance(s, ast.ImportFrom) and s.module == "fastapi"
-    )
-
-    assert len(calls) == 1
-    assert len(module_statements) == 1
-    assert tree.body.index(module_statements[0]) < fastapi_import
-
-
-def test_app_no_longer_configures_azure_monitor_or_cascade_logs_directly():
-    tree = _app_tree()
-
-    direct = [
-        n for n in ast.walk(tree)
-        if isinstance(n, ast.Call) and _callee_name(n) in {"configure_azure_monitor", "enable_cascade_telemetry"}
-    ]
-
-    assert direct == []

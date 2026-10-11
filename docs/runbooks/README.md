@@ -33,6 +33,8 @@ to run — no need to reverse-engineer the system under pressure.
 | [review-notification-failed.md](review-notification-failed.md) | Bill submitted for review but the expected notification didn't land in `invoice@rogersbuild.com`'s Drafts folder, or landed with wrong recipients / missing attachment |
 | [fanout-guard-suppressed-upload.md](fanout-guard-suppressed-upload.md) | A completed bill/expense/invoice document is missing from SharePoint or Box because a U-221 fan-out idempotency guard suppressed a legitimate re-upload |
 | [ramp-chaser.md](ramp-chaser.md) | Ramp receipt/memo chaser — follow-up table empty or stale, a cardholder not being chased, `recipient_changed` fired, turning the digest on or off safely |
+| [cascade-rung-outcomes.md](cascade-rung-outcomes.md) | Which cascade rung wins, its cost and latency (U-649) |
+| [observability-info-export.md](observability-info-export.md) | Which loggers reach App Insights at INFO, and how to add one (U-650) |
 
 ## Runbook format
 

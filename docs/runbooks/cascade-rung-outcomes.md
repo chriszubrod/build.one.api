@@ -25,10 +25,10 @@ If enrichment of a decision fails, the event is minimal (`event_name`, `task`,
 
 ## Scope
 
-Only the two cascade loggers (`intelligence.cascade`, `intelligence.transport.cascade`)
-are raised to INFO, and only when `APPLICATIONINSIGHTS_CONNECTION_STRING` is set
-(`configure_app_insights()`, called unconditionally from `app.py`). The root logger stays at WARNING, so
-request and library INFO noise is not exported. Local runs export nothing.
+The two cascade loggers (`intelligence.cascade`, `intelligence.transport.cascade`) are
+exported at INFO through the `EXPORTED_INFO_LOGGERS` registry in `shared/observability.py`,
+which `configure_app_insights()` applies only when `APPLICATIONINSIGHTS_CONNECTION_STRING` is set.
+The root logger stays at WARNING, so request and library INFO noise is not exported. Local runs export nothing.
 
 Events exist only from the deploy that shipped them forward. There is no backfill.
 

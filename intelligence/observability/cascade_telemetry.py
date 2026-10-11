@@ -4,46 +4,20 @@ The cascade emits one INFO record per decision (a finished ladder, or a rung
 transition in the transport). Each record's `extra` fields become App Insights
 customDimensions, so win rate, cost and latency can be queried per rung.
 
-Only the cascade loggers are raised to INFO. The root logger stays at WARNING so
-request and library INFO noise is not exported to App Insights.
+INFO export to App Insights is decided by EXPORTED_INFO_LOGGERS in
+shared/observability.py, which includes these loggers.
 
 Telemetry never breaks a cascade call: enrichment and logging failures are
 swallowed and degrade to a minimal event.
 """
 import json
 import logging
-import os
-from typing import Any, Callable, Optional
+from typing import Any, Optional
 
 from intelligence.observability.pricing import compute_cost_usd
 
-CASCADE_LOGGER_NAMES: tuple[str, ...] = ("intelligence.cascade", "intelligence.transport.cascade")
-
 LADDER_EVENT = "cascade.ladder.completed"
 TRANSPORT_EVENT = "cascade.transport.rung"
-
-APP_INSIGHTS_ENV = "APPLICATIONINSIGHTS_CONNECTION_STRING"
-
-
-def configure_app_insights(
-    environ: Optional[dict[str, str]] = None,
-    configure: Optional[Callable[..., Any]] = None,
-) -> bool:
-    env = os.environ if environ is None else environ
-    if not env.get(APP_INSIGHTS_ENV):
-        return False
-    if configure is None:
-        from azure.monitor.opentelemetry import configure_azure_monitor
-        configure = configure_azure_monitor
-    configure(logger_name="", enable_live_metrics=False)
-    enable_cascade_telemetry()
-    return True
-
-
-def enable_cascade_telemetry() -> None:
-    """Raise only the cascade loggers to INFO; the root stays WARNING so library INFO noise is not exported."""
-    for name in CASCADE_LOGGER_NAMES:
-        logging.getLogger(name).setLevel(logging.INFO)
 
 
 def flat_extra(fields: dict[str, Any]) -> dict[str, Any]:

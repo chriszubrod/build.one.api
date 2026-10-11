@@ -9,10 +9,9 @@ from starlette.requests import Request
 # Activates only when APPLICATIONINSIGHTS_CONNECTION_STRING is set (prod App
 # Service). Auto-instruments FastAPI requests, outbound httpx calls (QBO),
 # Python logging (including structured `extra={}` fields which surface as
-# customDimensions in App Insights), and Python exceptions. No code changes
-# needed in request handlers or the QBO client — the instrumentation sees
-# everything through the stdlib layers we already use.
-from intelligence.observability.cascade_telemetry import configure_app_insights
+# customDimensions in App Insights), and Python exceptions. Which loggers
+# export at INFO is set by EXPORTED_INFO_LOGGERS in shared/observability.py.
+from shared.observability import configure_app_insights
 configure_app_insights()
 
 # Third-party Imports

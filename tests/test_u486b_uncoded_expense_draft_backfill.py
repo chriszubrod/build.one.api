@@ -363,12 +363,12 @@ def test_new_sprocs_are_go_terminated_in_file():
 
 
 # ---------------------------------------------------------------------------
-# 8 — no existing sproc bodies modified (only two new names added)
+# 8 — the two U-486b sprocs are defined (registration of later sprocs is enforced by
+#     tests/test_entity_docstrings.py's `-- Sprocs:` contract header, not by this file)
 # ---------------------------------------------------------------------------
 
 
-def test_expense_sql_only_adds_two_new_sprocs():
+def test_expense_sql_defines_u486b_sprocs():
     names = _sproc_names_in_file(EXPENSE_SQL)
     assert PRE_U486B_SPROC_NAMES.issubset(names)
-    added = names - PRE_U486B_SPROC_NAMES
-    assert added == {DETECTION_SPROC, MARK_SPROC}
+    assert {DETECTION_SPROC, MARK_SPROC} <= names

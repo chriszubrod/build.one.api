@@ -198,27 +198,3 @@ def test_expense_specialist_allowlists_reviewer_reply_tools():
     assert "apply_expense_reviewer_decision" in expense_specialist.tools
     assert "find_sub_cost_code_for_reply" in expense_specialist.tools
 
-
-def test_find_expense_by_conversation_id_is_deliberately_NOT_allowlisted():
-    """The lookup tool exists but its ROUTE does not — keep it unregistered.
-
-    U-552 built `find_expense_by_conversation_id` correctly, but
-    `GET /api/v1/get/expense/find-by-conversation-id` is not implemented:
-    Bill has that route (`entities/bill/api/router.py`, backed by
-    `BillRepository.find_for_reviewer_reply`) and Expense has neither the route
-    nor the repo method. Registering the tool would arm a guaranteed 404 inside
-    an agent that writes approvals on money documents, and the failure would
-    read as a data problem rather than a missing endpoint.
-
-    ⛔ This test pins the ABSENCE on purpose. If you are here because it failed,
-    you either built the route — in which case register the tool and delete this
-    test — or you registered the tool without the route, which is the mistake
-    this test exists to stop. Do not "fix" it by loosening the assertion.
-    """
-    from intelligence.agents.expense_specialist.definition import expense_specialist
-    from entities.expense.intelligence import tools as expense_tools
-
-    # The tool is DEFINED ...
-    assert getattr(expense_tools, "find_expense_by_conversation_id", None) is not None
-    # ... and deliberately NOT reachable by the agent.
-    assert "find_expense_by_conversation_id" not in expense_specialist.tools

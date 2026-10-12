@@ -17,6 +17,7 @@ from shared.database import (
     map_database_error,
 )
 from shared.lifecycle.terminal_lock import reraise_if_sproc_status_locked
+from shared.api.money import to_decimal_or_none
 
 logger = logging.getLogger(__name__)
 
@@ -633,5 +634,45 @@ class ExpenseRepository:
                 expense_id,
                 error,
             )
+            raise map_database_error(error)
+
+    def find_for_reviewer_reply(
+        self,
+        conversation_id: Optional[str] = None,
+        reference_number_hint: Optional[str] = None,
+        project_hint: Optional[str] = None,
+    ) -> Optional[dict]:
+        """Slim lookup of the Expense a reviewer reply targets (U-565); match
+        semantics live in the `FindExpenseForReviewerReply` sproc. None when
+        nothing matched (including 0 or 2+ fuzzy candidates)."""
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(
+                    cursor=cursor,
+                    name="FindExpenseForReviewerReply",
+                    params={
+                        "ConversationId": conversation_id,
+                        "ReferenceNumberHint": reference_number_hint,
+                        "ProjectHint": project_hint,
+                    },
+                )
+                row = cursor.fetchone()
+                if not row:
+                    return None
+                return {
+                    "id": row.Id,
+                    "public_id": str(row.PublicId),
+                    "reference_number": row.ReferenceNumber,
+                    "total_amount": to_decimal_or_none(row.TotalAmount),
+                    "is_draft": bool(row.IsDraft),
+                    "created_datetime": row.CreatedDatetime,
+                    "vendor_name": row.VendorName,
+                    "source_email_message_id": row.SourceEmailMessageId,
+                    "conversation_id": row.ConversationId,
+                    "match_kind": row.MatchKind,
+                }
+        except Exception as error:
+            logger.error(f"Error in find_for_reviewer_reply (Expense): {error}")
             raise map_database_error(error)
 

@@ -304,6 +304,41 @@ async def get_expense_by_reference_number_and_vendor_router(reference_number: st
     )
 
 
+@router.get("/get/expense/find-by-conversation-id")
+def find_expense_by_conversation_id_router(
+    conversation_id: str = Query(..., description="MS Graph ConversationId from a polled email."),
+    reference_number_hint: Optional[str] = Query(
+        default=None,
+        description=(
+            "Optional reference number parsed from the reply subject. With "
+            "project_hint, enables fuzzy fallback when conversation_id misses."
+        ),
+    ),
+    project_hint: Optional[str] = Query(
+        default=None,
+        description=(
+            "Optional project name / address fragment parsed from the reply "
+            "body. Substring-matched against Project.Name."
+        ),
+    ),
+    current_user: dict = Depends(require_module_api(Modules.EXPENSES)),
+):
+    """Find the Expense an emailed reviewer reply is about (U-565).
+
+    Expense twin of `find_bill_by_conversation_id_router`; the strict
+    ConversationId match, the single-result fuzzy fallback and the slim payload
+    (public_id, reference_number, total_amount, is_draft, vendor_name,
+    source_email_message_id, conversation_id, match_kind) live in
+    `FindExpenseForReviewerReply`. Null when nothing matched.
+    """
+    result = ExpenseService().find_for_reviewer_reply(
+        conversation_id=conversation_id,
+        reference_number_hint=reference_number_hint,
+        project_hint=project_hint,
+    )
+    return item_response(result)
+
+
 @router.get("/get/expense/{public_id}/completion-result")
 def get_expense_completion_result_router(public_id: str, current_user: dict = Depends(require_module_api(Modules.EXPENSES))):
     """

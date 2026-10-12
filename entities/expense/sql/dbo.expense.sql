@@ -1,7 +1,7 @@
 -- Contract: dbo.Expense   (U-631; mirror of entities/expense/business/service.py docstring)
 -- Owns: Expense header CRUD, QBO identity, and coding-queue candidate reads.
 -- Invariants: UpdateExpenseById @RowVersion; FinalizeExpenseById draft guard; SET NOCOUNT ON mutations.
--- Sprocs: CountExpenses, CreateExpense, DeleteExpenseById, DeleteExpenseCascadeById, FinalizeExpenseById, MarkExpenseDraftForCoding, ReadExpenseById, ReadExpenseByPublicId, ReadExpenseByQboIdAndRealmId, ReadExpenseByReferenceNumberAndVendorId, ReadExpenseQboIdsByRealmId, ReadExpenses, ReadExpensesPaginated, ReadUncodedCompletedExpenseCandidates, SetExpenseQboIdentity, TransitionExpenseStatus, UpdateExpenseById
+-- Sprocs: CountExpenses, CreateExpense, DeleteExpenseById, DeleteExpenseCascadeById, FinalizeExpenseById, FindExpenseForReviewerReply, MarkExpenseDraftForCoding, ReadExpenseById, ReadExpenseByPublicId, ReadExpenseByQboIdAndRealmId, ReadExpenseByReferenceNumberAndVendorId, ReadExpenseQboIdsByRealmId, ReadExpenses, ReadExpensesPaginated, ReadUncodedCompletedExpenseCandidates, SetExpenseQboIdentity, TransitionExpenseStatus, UpdateExpenseById
 -- ===========================================================================
 -- ⛔ APPLY THIS FILE AND entities/review/sql/dbo.review.sql IN **ONE**
 --    TRANSACTION. NEITHER ORDER IS SAFE ON ITS OWN (U-467).
@@ -1455,6 +1455,91 @@ BEGIN
       AND [StatusOrigin] = N'qbo_pull';
 
     COMMIT TRANSACTION;
+END;
+GO
+
+
+-- FindExpenseForReviewerReply — superset of a strict ConversationId match with a
+-- fuzzy fallback for Wave 3 reviewer-reply processing (U-565; mirrors
+-- FindBillForReviewerReply in dbo.bill_create_source_email.sql).
+CREATE OR ALTER PROCEDURE FindExpenseForReviewerReply
+(
+    @ConversationId      NVARCHAR(255) = NULL,
+    @ReferenceNumberHint NVARCHAR(100) = NULL,
+    @ProjectHint         NVARCHAR(255) = NULL
+)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    DECLARE @MatchedExpenseId BIGINT       = NULL;
+    DECLARE @MatchKind        NVARCHAR(20) = NULL;
+
+    IF @ConversationId IS NOT NULL AND LTRIM(RTRIM(@ConversationId)) <> ''
+    BEGIN
+        SELECT TOP 1
+               @MatchedExpenseId = e.[Id],
+               @MatchKind        = 'conversation'
+        FROM dbo.[Expense] e
+        INNER JOIN dbo.[EmailMessage] em ON em.[Id] = e.[SourceEmailMessageId]
+        -- Graph ConversationId is case-sensitive but the column is CI-collated. The plain
+        -- compare seeks IX_EmailMessage_ConversationId (a COLLATE'd column cannot); the BIN
+        -- residual then drops case-twins. BIN-equal implies CI-equal, so the pair returns
+        -- exactly what the BIN compare alone would. Deeper fix (column collation) is booked.
+        WHERE em.[ConversationId] = @ConversationId
+          AND em.[ConversationId] COLLATE Latin1_General_BIN = @ConversationId
+        ORDER BY e.[CreatedDatetime] DESC;
+    END
+
+    IF @MatchedExpenseId IS NULL
+       AND @ReferenceNumberHint IS NOT NULL AND LTRIM(RTRIM(@ReferenceNumberHint)) <> ''
+       AND @ProjectHint         IS NOT NULL AND LTRIM(RTRIM(@ProjectHint))         <> ''
+    BEGIN
+        DECLARE @ReferenceNumberNorm NVARCHAR(100) =
+            LTRIM(RTRIM(@ReferenceNumberHint));
+        -- LIKE treats [...] as a character class — escape '[' before %/_ (those add brackets).
+        DECLARE @ProjectHintLike NVARCHAR(257) =
+            '%' + REPLACE(REPLACE(REPLACE(LOWER(LTRIM(RTRIM(@ProjectHint))), '[', '[[]'), '%', '[%]'), '_', '[_]') + '%';
+
+        DECLARE @CandidateIds TABLE (Id BIGINT);
+
+        INSERT INTO @CandidateIds
+        SELECT TOP 2 e.[Id]
+        FROM dbo.[Expense] e
+        WHERE e.[IsDraft] = 1
+          AND e.[ReferenceNumber] = @ReferenceNumberNorm
+          AND EXISTS (
+              SELECT 1
+              FROM dbo.[ExpenseLineItem] eli
+              INNER JOIN dbo.[Project] p ON p.[Id] = eli.[ProjectId]
+              WHERE eli.[ExpenseId] = e.[Id]
+                AND LOWER(p.[Name]) LIKE @ProjectHintLike
+          )
+        ORDER BY e.[CreatedDatetime] DESC;
+
+        IF (SELECT COUNT(*) FROM @CandidateIds) = 1
+        BEGIN
+            SELECT @MatchedExpenseId = Id FROM @CandidateIds;
+            SET @MatchKind = 'fuzzy';
+        END
+    END
+
+    SELECT
+        e.[Id]                                          AS Id,
+        e.[PublicId]                                    AS PublicId,
+        e.[ReferenceNumber]                             AS ReferenceNumber,
+        e.[TotalAmount]                                 AS TotalAmount,
+        e.[IsDraft]                                     AS IsDraft,
+        CONVERT(VARCHAR(19), e.[CreatedDatetime], 120)  AS CreatedDatetime,
+        v.[Name]                                        AS VendorName,
+        e.[SourceEmailMessageId]                        AS SourceEmailMessageId,
+        CASE WHEN @MatchKind = 'conversation' THEN em.[ConversationId] ELSE NULL END
+                                                        AS ConversationId,
+        @MatchKind                                      AS MatchKind
+    FROM dbo.[Expense] e
+    LEFT JOIN dbo.[Vendor] v        ON v.[Id]  = e.[VendorId]
+    LEFT JOIN dbo.[EmailMessage] em ON em.[Id] = e.[SourceEmailMessageId]
+    WHERE e.[Id] = @MatchedExpenseId;
 END;
 GO
 

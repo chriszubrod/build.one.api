@@ -21,6 +21,7 @@ Sprocs
   DeleteExpenseById
   DeleteExpenseCascadeById
   FinalizeExpenseById
+  FindExpenseForReviewerReply
   MarkExpenseDraftForCoding
   ReadActiveExpenseFolderRunItemIds
   ReadExpenseById
@@ -54,7 +55,7 @@ from entities.expense.business.model import Expense
 from entities.expense.persistence.repo import ExpenseRepository
 from entities.attachment.business.service import AttachmentService
 from entities.project.business.service import ProjectService
-from shared.access import assert_can_access_expense
+from shared.access import EntityNotAccessibleError, assert_can_access_expense
 from shared.api.money import details_ledger_amount
 from shared.authz import current_user_id, current_is_system_admin
 from shared.authz.delegation import assert_may_act_as
@@ -481,6 +482,35 @@ class ExpenseService:
             return None
         assert_can_access_expense(expense.id)
         return expense
+
+    def find_for_reviewer_reply(
+        self,
+        conversation_id: Optional[str] = None,
+        reference_number_hint: Optional[str] = None,
+        project_hint: Optional[str] = None,
+    ) -> Optional[dict]:
+        """Resolve which Expense an emailed reviewer reply targets (U-565)."""
+        row = self.repo.find_for_reviewer_reply(
+            conversation_id=conversation_id,
+            reference_number_hint=reference_number_hint,
+            project_hint=project_hint,
+        )
+        if row is None:
+            return None
+        try:
+            assert_can_access_expense(row["id"])
+        except EntityNotAccessibleError:
+            # Inaccessible ≡ not found: the caller gets the same null as a miss, so
+            # the hints cannot confirm that a draft exists outside their projects
+            # (the 404 mapping of this error elsewhere exists for the same reason).
+            # Logged (id only, no document data) so a service identity missing a
+            # UserProject row shows up in the logs instead of only as a flagged reply.
+            logger.warning(
+                "find_for_reviewer_reply: matched Expense %s is not accessible to the caller — answering as no match",
+                row["id"],
+            )
+            return None
+        return row
 
     def get_qbo_expense_url(self, expense_id: int) -> Optional[str]:
         """

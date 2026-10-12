@@ -2,6 +2,46 @@
 
 Carry-over items from sessions. Check off as done; prune anything stale.
 
+## U-565 spillover — the Expense reviewer-reply lookup shipped; the Bill twin now lags it (booked 2026-10-12)
+
+`GET /get/expense/find-by-conversation-id` + `FindExpenseForReviewerReply` landed as a mirror of Bill's chain — the
+THIRD hand copy of the strict+fuzzy reviewer-reply resolver (`FindContractLaborForReviewerReply` is the second) — with
+three fixes the other two copies lack. Booked here because the main checkout's `TODO.md` was held by a parallel session.
+The right follow-up is ONE "reviewer-reply resolver hardening" unit in this order: ConversationId column collation
+(migration 008) and delete the per-site COLLATE + its literal test pin; a `dbo.fn_LikeEscape` scalar used by all three
+fuzzy branches and the `[` fix ported to Bill and CL; the Bill route's access gate; then a shared Python helper once the
+three call paths are behaviourally identical.
+
+- [ ] **(P1, api) Backport to `FindBillForReviewerReply` AND `FindContractLaborForReviewerReply`** (`entities/bill/sql/dbo.bill_create_source_email.sql`):
+  (a) the strict `em.[ConversationId] = @ConversationId` compares under the column's case-insensitive collation while
+  Graph ids are case-sensitive — add the `COLLATE Latin1_General_BIN` residual conjunct the Expense sproc uses (keep the
+  plain `=` as the SARGable first conjunct so `IX_EmailMessage_ConversationId` still seeks); (b) `@ProjectHintLike`
+  escapes `%` and `_` but not `[` — escape `[` FIRST (`REPLACE(x, '[', '[[]')`). Mirror the Expense pins
+  (`tests/test_u565_expense_find_for_reviewer_reply.py`) as Bill tests. (c) the missing per-row gate on the Bill route is
+  already booked below (`GET /get/bill/find-by-conversation-id returns bill data with no per-row access gate`).
+- [ ] **(P2, api, deeper fix option) Recollate `dbo.EmailMessage.ConversationId` to `Latin1_General_BIN`** the way
+  migration `006_case_sensitive_graph_id_collation.sql` did for `GraphMessageId` / `InternetMessageId` — then neither
+  twin needs a per-site `COLLATE` and the index seeks natively. Needs the index rebuilt and every reader of the column
+  audited (`ReadEmailMessagesByConversationId`, contract_labor's reply resolver, the poll service upsert).
+- [ ] **(P3, tests) Promote the router test helpers** — `_full_path` / `_endpoint_for` / the `require_module_api`
+  closure probe exist in 7 test files (`test_review_route_rbac.py` is the fullest copy; U-565 imports from it). Lift
+  into `tests/route_text.py` next to `tests/sproc_text.py` and sweep the copies. Same sweep: `_sproc_names_in_file`
+  is duplicated between `test_u486b_…` and `test_u494_…` — belongs in `sproc_text.py` as `sproc_names(path)`.
+  Same shape of guard: `test_u494_dbo_native_line_identity_repoint.py` pins an exact sproc-name set for
+  `expense_coding_item` and will break on that entity's next sproc — onboard `expense_coding_item` to
+  `test_entity_docstrings.COVERED_ENTITIES` (a `-- Sprocs:` header) and relax the equality, as U-565 did for u486b.
+- [ ] **(P3, sql, shared Bill+Expense) Fuzzy-branch micro-efficiencies** — the table variable + `COUNT(*)` round trip
+  collapses to one `SELECT … CASE WHEN COUNT(*) = 1` over a `TOP 2` derived table; the final SELECT's `LEFT JOIN
+  EmailMessage` is dead on a fuzzy hit (capture the ConversationId in the strict branch instead). Microseconds; take
+  both twins together or not at all (the shape tests pin the current text).
+- [ ] **(watch, suite) `tests/test_u549_c2_service.py::test_week_of_tuesday_in_business_timezone_monday_late` fails
+  in a FULL run and passes alone** — seen 2026-10-12 (a Monday) on untouched `origin/master` `ba928bf7` as well as on
+  U-565's branch; order/day-dependent, not U-565's. Own it before it is read as a regression by the next unit.
+- [ ] **(deploy order, U-565)** prod apply is a surgical extract of the single `CREATE OR ALTER PROCEDURE
+  FindExpenseForReviewerReply` block — never the whole `dbo.expense.sql` (its header requires a joint transaction with
+  `dbo.review.sql`) — then the container. The emailed-expense chain still also needs the U-552 seed
+  (`intelligence/persistence/sql/seed.expense_agent.sql`) applied, or `apply_expense_reviewer_decision` 403s.
+
 ## ~~U-549 C1 — `update_draft` guard sproc never applied~~ — RESOLVED 2026-09-29
 
 `dbo.CountMsOutboxByEntityAndKind` **is live**, verified against `sys.objects` at U-567's Step 0. The

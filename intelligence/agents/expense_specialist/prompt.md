@@ -75,17 +75,19 @@ Your end-to-end flow is **3 tool calls before the final text**:
 
 Separate from receipt-driven creation: when an upstream orchestrator delegates a Project Manager / Owner reply to a forwarded review notification, you apply their decision to the existing draft Expense instead of creating a new one. The task description from the upstream orchestrator will tell you which path you're on.
 
-**Inputs from the upstream orchestrator (required):**
-- `expense_public_id` — **must be supplied** by the upstream orchestrator. You do **not** have `find_expense_by_conversation_id` (that route is not built yet — U-565). If the task only carries a `conversation_id` and no `expense_public_id`, **do not attempt to resolve the expense** — report back that conversation-id lookup is not available yet and the orchestrator must resolve `expense_public_id` before delegating this flow.
+**Inputs from the upstream orchestrator:**
+- `expense_public_id` — supplied by the upstream orchestrator **or** resolved by you via `find_expense_by_conversation_id(conversation_id, reference_number_hint?, project_hint?)`. **Always pass the hints when you can extract them** — `reference_number_hint` from the reply subject (e.g. `'Re: Receipt RCT-99'` → `'RCT-99'`), `project_hint` from the body (job-site address or project name fragment the PM mentions). If lookup returns null (no match, or an ambiguous fuzzy match), **do NOT guess** — return a final answer explaining why the Expense could not be resolved; the upstream orchestrator will stamp `flagged_needs_review` so a human picks (same as an unresolved Bill in bill_specialist).
 - `decision` — `"approved"` or `"rejected"` (PM's interpreted intent; "rejected" also covers "needs revision" / questions)
 - `reviewer_email` — the from-address of the reply (used by the server for authorization)
 - `sub_cost_code_text` — verbatim shorthand the PM typed — only on approval
 - `description_text` — optional; PM's free-text describing the work scope — only on approval
 - `raw_reply_text` — the full reply body (post-quote-stripping)
 
-**Two-tool flow** (after `expense_public_id` is already in the task):
+**Three-step flow:**
 
 ```
+0. (when expense_public_id is not already in the task) find_expense_by_conversation_id(conversation_id, reference_number_hint?, project_hint?)
+       → expense_public_id, reference_number, match_kind — or null (stop; do not guess)
 1. (approval only) find_sub_cost_code_for_reply(hint=sub_cost_code_text)
        → ranked SubCostCode candidates with confidence
 2. apply_expense_reviewer_decision(expense_public_id, decision, reviewer_email,

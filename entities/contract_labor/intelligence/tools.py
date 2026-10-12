@@ -308,12 +308,11 @@ class _ApplyReviewerDecisionArgs(BaseModel):
             "React review queue."
         ),
     )
-    reviewer_email_message_public_id: Optional[str] = Field(
-        default=None,
+    reviewer_email_message_public_id: str = Field(
+        ...,
         description=(
-            "The reply EmailMessage's public_id. Persisted to "
-            "Review.EmailMessageId so the React review queue can navigate "
-            "back to the source reply."
+            "Required. The inbound reply EmailMessage's public_id. The server "
+            "REFUSES apply without it — provenance must bind sender and thread."
         ),
     )
 
@@ -332,8 +331,7 @@ async def _apply_contract_labor_reviewer_decision(args: dict, ctx: ToolContext) 
         body['description'] = parsed.description
     if parsed.raw_reply_text is not None:
         body['raw_reply_text'] = parsed.raw_reply_text
-    if parsed.reviewer_email_message_public_id is not None:
-        body['reviewer_email_message_public_id'] = parsed.reviewer_email_message_public_id
+    body['reviewer_email_message_public_id'] = parsed.reviewer_email_message_public_id
     return await ctx.call_api(
         'POST',
         '/api/v1/contract-labor/apply-reviewer-decision',

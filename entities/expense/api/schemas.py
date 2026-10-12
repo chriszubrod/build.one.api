@@ -154,7 +154,7 @@ class ExpenseApplyReviewerDecisionRequest(BaseModel):
         default=None,
         description="PM reply body persisted to Review.Comments when non-empty."
     )
-    reviewer_email_message_public_id: Optional[str] = Field(
-        default=None,
-        description="Optional EmailMessage public id for audit linkage."
+    reviewer_email_message_public_id: str = Field(
+        ...,
+        description="Required inbound reply EmailMessage public id; the server refuses without provenance binding.",
     )

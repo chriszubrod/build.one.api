@@ -33,6 +33,7 @@ closes the half that lets an ordinary authenticated user forge.
 import inspect
 import logging
 import re
+from contextlib import contextmanager
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -217,9 +218,29 @@ def _bill_service_with_recipient(reviewer_user_id: int):
 
     svc = BillService(repo=MagicMock())
     svc.read_by_public_id = MagicMock(
-        return_value=SimpleNamespace(id=5, public_id="pub-5", is_draft=True, status="draft")
+        return_value=SimpleNamespace(
+            id=5,
+            public_id="pub-5",
+            is_draft=True,
+            status="draft",
+            source_email_message_id=50,
+        )
     )
     return svc
+
+
+@contextmanager
+def _u563_provenance_ok(*, reviewer_email: str = "pm@test.com"):
+    with patch(
+        "entities.email_message.business.service.EmailMessageService"
+    ) as Em:
+        Em.return_value.read_by_public_id.return_value = SimpleNamespace(
+            id=900,
+            folder="inbox",
+            from_address=reviewer_email,
+            conversation_id="bill-thread",
+        )
+        yield
 
 
 def _expense_service_with_recipient():
@@ -231,6 +252,7 @@ def _expense_service_with_recipient():
             id=101,
             public_id="exp-pub-5",
             is_draft=True,
+            source_email_message_id=50,
         )
     )
     return svc
@@ -253,13 +275,15 @@ def test_a_plain_user_forging_a_PM_expense_approval_is_refused_end_to_end():
             "entities.expense_line_item.business.service.ExpenseLineItemService"
         ) as Eli:
             with patch("entities.review.persistence.repo.ReviewRepository") as ReviewRepo:
-                with pytest.raises(IdentityAssertionRefused):
-                    svc.apply_reviewer_decision(
-                        expense_public_id="exp-pub-5",
-                        decision="approved",
-                        reviewer_email="pm@test.com",
-                        sub_cost_code_public_id="scc-1",
-                    )
+                with _u563_provenance_ok(reviewer_email="pm@test.com"):
+                    with pytest.raises(IdentityAssertionRefused):
+                        svc.apply_reviewer_decision(
+                            expense_public_id="exp-pub-5",
+                            decision="approved",
+                            reviewer_email="pm@test.com",
+                            sub_cost_code_public_id="scc-1",
+                            reviewer_email_message_public_id="em-reply",
+                        )
                 Eli.return_value.read_by_expense_id.assert_not_called()
                 Eli.return_value.update_by_public_id.assert_not_called()
                 ReviewRepo.return_value.create.assert_not_called()
@@ -278,13 +302,15 @@ def test_a_plain_user_forging_a_PM_approval_is_refused_end_to_end():
 
     with patch("entities.review.business.recipient_service.ReviewRecipientService") as Rec:
         Rec.return_value.resolve_for_bill.return_value = {"to": [pm], "cc": []}
-        with pytest.raises(IdentityAssertionRefused):
-            svc.apply_reviewer_decision(
-                bill_public_id="pub-5",
-                decision="approved",
-                reviewer_email="pm@test.com",
-                sub_cost_code_public_id="scc-1",
-            )
+        with _u563_provenance_ok(reviewer_email="pm@test.com"):
+            with pytest.raises(IdentityAssertionRefused):
+                svc.apply_reviewer_decision(
+                    bill_public_id="pub-5",
+                    decision="approved",
+                    reviewer_email="pm@test.com",
+                    sub_cost_code_public_id="scc-1",
+                    reviewer_email_message_public_id="em-reply",
+                )
 
 
 def test_the_agent_applying_the_same_decision_is_allowed_end_to_end():
@@ -301,15 +327,17 @@ def test_the_agent_applying_the_same_decision_is_allowed_end_to_end():
     with patch("entities.review.business.recipient_service.ReviewRecipientService") as Rec:
         Rec.return_value.resolve_for_bill.return_value = {"to": [pm], "cc": []}
         with system_authz():
-            # Fails LATER (on SubCostCode resolution) — the point is that it
-            # gets past the identity guard, which a plain user does not.
-            with pytest.raises(Exception) as e:
-                svc.apply_reviewer_decision(
-                    bill_public_id="pub-5",
-                    decision="approved",
-                    reviewer_email="pm@test.com",
-                    sub_cost_code_public_id="scc-1",
-                )
+            with _u563_provenance_ok(reviewer_email="pm@test.com"):
+                # Fails LATER (on SubCostCode resolution) — the point is that it
+                # gets past the identity guard, which a plain user does not.
+                with pytest.raises(Exception) as e:
+                    svc.apply_reviewer_decision(
+                        bill_public_id="pub-5",
+                        decision="approved",
+                        reviewer_email="pm@test.com",
+                        sub_cost_code_public_id="scc-1",
+                        reviewer_email_message_public_id="em-reply",
+                    )
     assert not isinstance(e.value, IdentityAssertionRefused), (
         "the agent was refused — U-459 broke the live reviewer-reply automation"
     )
@@ -328,13 +356,15 @@ def test_the_PM_applying_their_OWN_decision_is_allowed():
 
     with patch("entities.review.business.recipient_service.ReviewRecipientService") as Rec:
         Rec.return_value.resolve_for_bill.return_value = {"to": [pm], "cc": []}
-        with pytest.raises(Exception) as e:
-            svc.apply_reviewer_decision(
-                bill_public_id="pub-5",
-                decision="approved",
-                reviewer_email="pm@test.com",
-                sub_cost_code_public_id="scc-1",
-            )
+        with _u563_provenance_ok(reviewer_email="pm@test.com"):
+            with pytest.raises(Exception) as e:
+                svc.apply_reviewer_decision(
+                    bill_public_id="pub-5",
+                    decision="approved",
+                    reviewer_email="pm@test.com",
+                    sub_cost_code_public_id="scc-1",
+                    reviewer_email_message_public_id="em-reply",
+                )
     assert not isinstance(e.value, IdentityAssertionRefused)
 
 

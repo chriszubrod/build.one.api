@@ -52,6 +52,8 @@ class ErrorCode:
     # U-459. 403: the caller asserted a different person's identity without
     # delegation rights (the agent fleet / a system context).
     IDENTITY_ASSERTION_REFUSED = "identity_assertion_refused"
+    # U-563. 403: the inbound reply EmailMessage failed provenance binding.
+    REVIEWER_PROVENANCE_REFUSED = "reviewer_provenance_refused"
     # U-541 transactional POST /apply/review-decision/bill/{id}.
     NOT_A_REVIEWER = "not_a_reviewer"
     LINE_ROW_VERSION_STALE = "line_row_version_stale"

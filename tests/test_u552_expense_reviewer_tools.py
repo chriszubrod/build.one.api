@@ -133,6 +133,7 @@ def test_apply_without_sub_cost_code_surfaces_server_refusal():
                 "reviewer_email": "pm@test.com",
                 "sub_cost_code_public_id": None,
                 "raw_reply_text": "Approved — fuel",
+                "reviewer_email_message_public_id": "msg-pub-required",
             },
             ctx,
         )
@@ -152,7 +153,7 @@ def test_apply_without_sub_cost_code_surfaces_server_refusal():
         "sub_cost_code_public_id": None,
         "description": None,
         "raw_reply_text": "Approved — fuel",
-        "reviewer_email_message_public_id": None,
+        "reviewer_email_message_public_id": "msg-pub-required",
     }
 
 

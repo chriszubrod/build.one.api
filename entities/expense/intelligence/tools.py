@@ -742,15 +742,13 @@ class ApplyExpenseReviewerDecisionArgs(BaseModel):
             "shown to AP on rejection / needs-review."
         ),
     )
-    reviewer_email_message_public_id: Optional[str] = Field(
-        default=None,
+    reviewer_email_message_public_id: str = Field(
+        ...,
         description=(
-            "Public_id of the EmailMessage row for the PM's reply (the "
-            "same UUID email_specialist passed to you). Persisted on the "
-            "new Review row so the Web UI's final-review surface can "
-            "link directly to the reply email. If omitted the Review "
-            "row's EmailMessageId is left NULL (degraded but still "
-            "valid)."
+            "Required. Public_id of the inbound EmailMessage for the PM's reply "
+            "(the same UUID email_specialist passed to you). The server REFUSES "
+            "apply without it. The reply must be the reviewer's own inbound message: "
+            "its sender must equal reviewer_email (thread binding: U-563b)."
         ),
     )
 

@@ -177,14 +177,16 @@ _APPROVAL_WRITERS_NOT_YET_GATED = (
     "POST /advance/review/* requires only `can_submit`, and advancing from the "
     "last intermediate status lands on the FINAL (approved) one — design "
     "\u00a74.2 specifies `can_approve` for that transition; unification is LS-06c",
-    "POST /bill/{id}/apply-reviewer-decision requires only `can_update` and "
-    "takes `reviewer_email` from the request body, writing an approval "
-    "attributed to that person with nothing binding the authenticated caller "
-    "to the asserted reviewer",
+    "POST /bill/{id}/apply-reviewer-decision requires only `can_update` "
+    "(never `can_approve`); the caller is bound to the asserted reviewer via "
+    "assert_may_act_as (U-459), and reply provenance is bound via U-563 to an "
+    "inbound message whose From equals the reviewer — NOT to the review "
+    "thread, and From is not authenticated (both U-563b)",
     "POST /expense/{id}/apply-reviewer-decision requires only `can_update` "
-    "(never `can_approve`), takes `reviewer_email` from the request body, "
-    "and any delegated actor — system context, system admin, or an `IsAgent` "
-    "user — may write an approval attributed to a PM/Owner",
+    "(never `can_approve`); the caller is bound via assert_may_act_as (U-459), "
+    "and reply provenance is bound via U-563 to an inbound message whose From "
+    "equals the reviewer — NOT to the review thread, and From is not "
+    "authenticated (both U-563b)",
     "the gate is a PREFLIGHT, not a write boundary: completion is enqueued and "
     "finalized later without re-checking, and CompletionJob reclaim re-drives "
     "under system_authz — LS-02a moves enforcement into the write transaction",

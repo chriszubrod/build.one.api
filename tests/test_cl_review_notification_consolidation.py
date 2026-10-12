@@ -513,6 +513,11 @@ def _crew_apply_patches(monkeypatch, crew, *, single_cl_side_effect=None):
         return {"review_status": "Approved"}
 
     monkeypatch.setattr(svc, "_apply_decision_to_single_cl", _single)
+    # U-563: the wrapper binds the reply to every member before any write;
+    # these tests exercise the per-member loop, so the binding is satisfied here
+    # (its own refusals are covered in tests/test_u563_reviewer_reply_provenance.py).
+    monkeypatch.setattr(svc, "_expected_cl_reviewer_reply_conversation_id", lambda **kw: "cl-thread")
+    monkeypatch.setattr("shared.authz.provenance.bind_reviewer_reply_to_thread", lambda **kw: None)
     monkeypatch.setattr(
         "entities.contract_labor.business.service.ProjectService",
         lambda: types.SimpleNamespace(
@@ -635,6 +640,38 @@ def _line_item(
     )
 
 
+CL_REPLY_PUB = "cl-reply-em-pub"
+CL_REPLY_CONV = "AAQkCLReviewNotificationThreadExactCase"
+
+
+def _stub_cl_bound_reviewer_reply(monkeypatch, *, reviewer_email="pm@test.com"):
+    """Valid inbound reply + outbound notification anchor for _apply_decision_to_single_cl."""
+    monkeypatch.setattr(
+        "entities.email_message.business.service.EmailMessageService",
+        lambda: types.SimpleNamespace(
+            read_by_public_id=lambda **kw: types.SimpleNamespace(
+                id=901,
+                public_id=CL_REPLY_PUB,
+                folder="inbox",
+                from_address=reviewer_email,
+                conversation_id=CL_REPLY_CONV,
+            ),
+        ),
+    )
+    outbound = types.SimpleNamespace(
+        id=50,
+        processing_status="outbound",
+        subject="Contract Labor - TB3 - 2026-07-15",
+        conversation_id=CL_REPLY_CONV,
+    )
+    monkeypatch.setattr(
+        "entities.email_message.persistence.repo.EmailMessageRepository",
+        lambda: types.SimpleNamespace(
+            read_by_conversation_id=lambda **kw: [outbound],
+        ),
+    )
+
+
 def _apply_single_cl_patches(monkeypatch, svc, *, all_line_items, target_project_id=100):
     cl = types.SimpleNamespace(id=10, public_id="cl-1", status="submitted")
     project = types.SimpleNamespace(id=target_project_id, public_id="proj-a")
@@ -707,6 +744,19 @@ def _apply_single_cl_patches(monkeypatch, svc, *, all_line_items, target_project
         "mark_as_ready_via_review_approval",
         lambda **kw: ready_calls.append(kw) or cl,
     )
+    svc.repo.find_for_reviewer_reply = MagicMock(
+        return_value={
+            "project_public_id": "proj-a",
+            "work_date": "2026-07-15",
+            "match_kind": "conversation",
+        },
+    )
+    svc.repo.read_reviewable_crew_by_project_and_date = MagicMock(
+        return_value=[
+            {"contract_labor_public_id": "cl-1", "contract_labor_id": 10},
+        ],
+    )
+    _stub_cl_bound_reviewer_reply(monkeypatch, reviewer_email="pm@test.com")
     return ready_calls
 
 
@@ -729,6 +779,7 @@ def test_apply_delegates_ready_flip_to_choke_point(monkeypatch):
         decision="approved",
         reviewer_email="pm@test.com",
         sub_cost_code_public_id="scc-uuid",
+        reviewer_email_message_public_id=CL_REPLY_PUB,
     )
 
     assert ready_calls == [{"contract_labor_id": 10}]

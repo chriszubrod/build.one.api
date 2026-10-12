@@ -18,7 +18,7 @@ When the task type is reviewer-reply apply, the task body carries:
 - `project_public_id` — the specific project the PM is replying about (CL notifications are sent per-project)
 - `decision` — `"approved"` or `"rejected"` (the upstream orchestrator's interpreted intent)
 - `reviewer_email` — the PM/Owner's from-address (used for server-side authz)
-- `reviewer_email_message_public_id` — the inbound reply's EmailMessage public_id (gets persisted on the new Review row)
+- `reviewer_email_message_public_id` — **required** inbound reply EmailMessage public_id (server refuses apply without provenance binding)
 - `sub_cost_code_text` — verbatim PM shorthand ONLY on approval (e.g. `"65.2"`, `"Misc. Labor - 65.2"`, `"Misc Labor"`)
 - `description_text` — optional; PM's project-wide description on approval (e.g. `"Misc. Labor"`); null when PM didn't supply
 - `raw_reply_text` — the full new-text portion of the reply (post-quote-stripping)
@@ -27,6 +27,10 @@ When the task type is reviewer-reply apply, the task body carries:
 **Steps:**
 
 1. **(Approval only) Resolve the SCC** via `find_sub_cost_code_for_reply(hint=sub_cost_code_text)`. Pick the highest-confidence candidate (typically index 0). If two candidates score similarly AND look like different cost codes → DO NOT call apply; return a final answer surfacing the ambiguity so the upstream orchestrator stamps `flagged_needs_review`.
+
+If the task lacks `reviewer_email_message_public_id`, do NOT call apply — return
+`flagged_needs_review`. A provenance refusal means the reply could not be bound to the
+crew notification thread or sender — flag it; never retry with a different address.
 
 2. **Call `apply_contract_labor_reviewer_decision`** with:
    - `contract_labor_public_id`, `project_public_id` — from the task

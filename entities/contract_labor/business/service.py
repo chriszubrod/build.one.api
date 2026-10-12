@@ -490,6 +490,27 @@ class ContractLaborService:
                 f"already advanced past review; the human must edit directly)."
             )
 
+        from shared.authz.provenance import bind_reviewer_reply_to_thread
+
+        # U-563: bind the reply to EVERY crew member before ANY member is written.
+        # Each member's own write path re-checks (defence in depth), but a refusal
+        # discovered there would arrive after earlier members had committed — a
+        # 403 over a half-applied crew. Read-only; raises before the loop. A
+        # refusal inside the loop can then only be a race after this check, and
+        # is reported as an ordinary member failure.
+        for member in crew:
+            bind_reviewer_reply_to_thread(
+                reviewer_email=reviewer_email,
+                reviewer_email_message_public_id=reviewer_email_message_public_id,
+                expected_conversation_id=self._expected_cl_reviewer_reply_conversation_id(
+                    reviewer_email_message_public_id=reviewer_email_message_public_id,
+                    contract_labor_public_id=member.get("contract_labor_public_id"),
+                    project_public_id=project_public_id,
+                    project_id=int(project.id),
+                ),
+                what="a contract labor reviewer decision",
+            )
+
         applied: list[dict] = []
         failures: list[str] = []
         review_status_name: Optional[str] = None
@@ -670,6 +691,21 @@ class ContractLaborService:
                 f"{project_public_id} (must be Project Manager or Owner)."
             )
 
+        from shared.authz.provenance import bind_reviewer_reply_to_thread
+
+        expected_conversation_id = self._expected_cl_reviewer_reply_conversation_id(
+            reviewer_email_message_public_id=reviewer_email_message_public_id,
+            contract_labor_public_id=contract_labor_public_id,
+            project_public_id=project_public_id,
+            project_id=int(project.id),
+        )
+        bound_reply = bind_reviewer_reply_to_thread(
+            reviewer_email=reviewer_email,
+            reviewer_email_message_public_id=reviewer_email_message_public_id,
+            expected_conversation_id=expected_conversation_id,
+            what="a contract labor reviewer decision",
+        )
+
         # U-459 — bind the asserted reviewer to the authenticated caller.
         #
         # Everything above authorizes the EMAIL (it must belong to a PM/Owner on
@@ -747,14 +783,7 @@ class ContractLaborService:
                     "No declined ReviewStatus configured (expected one with IsDeclined=true)."
                 )
 
-        email_message_id: Optional[int] = None
-        if reviewer_email_message_public_id:
-            from entities.email_message.business.service import EmailMessageService
-            em = EmailMessageService().read_by_public_id(
-                public_id=reviewer_email_message_public_id,
-            )
-            if em is not None:
-                email_message_id = em.id
+        email_message_id: Optional[int] = bound_reply.id
 
         # ── Write Review row FIRST so audit intent is always captured ─
         # /code-review Unit 3 (bugs_correctness/errors_lifecycle): if we
@@ -874,6 +903,60 @@ class ContractLaborService:
             'contract_labor_id': cl.id,
             'ready_flipped': ready_flipped,
         }
+
+    def _expected_cl_reviewer_reply_conversation_id(
+        self,
+        *,
+        reviewer_email_message_public_id: Optional[str],
+        contract_labor_public_id: str,
+        project_public_id: str,
+        project_id: int,
+    ) -> Optional[str]:
+        """The review thread a reply may bind to, or None (→ refusal).
+
+        This is where the ContractLabor THREAD binding is decided: the strict
+        (conversation) branch of FindContractLaborForReviewerReply must map the
+        reply to this project and a crew containing this CL, AND an OUTBOUND
+        consolidated notification must sit on the reply's conversation with an
+        EXACTLY equal ConversationId (the sproc compares case-insensitively).
+        It returns the reply's own id, so the later equality check in
+        `bind_reviewer_reply_to_thread` is a backstop — never loosen this helper
+        to return something broader.
+        """
+        from entities.email_message.business.service import EmailMessageService
+        from entities.email_message.persistence.repo import EmailMessageRepository
+        from entities.review.business.cl_notification_service import (
+            CL_NOTIFICATION_SUBJECT_PREFIX,
+        )
+
+        pub = (reviewer_email_message_public_id or "").strip()
+        em = EmailMessageService().read_by_public_id(public_id=pub) if pub else None
+        if em is None or not em.conversation_id:
+            return None
+        reply_conv = em.conversation_id
+        resolver = self.repo.find_for_reviewer_reply(conversation_id=reply_conv)
+        if not resolver or resolver.get("match_kind") != "conversation":
+            return None
+        if str(resolver.get("project_public_id") or "") != str(project_public_id):
+            return None
+        work_date = resolver.get("work_date")
+        if not work_date:
+            return None
+        crew = self.repo.read_reviewable_crew_by_project_and_date(
+            project_id=project_id, work_date=str(work_date),
+        )
+        if not any(
+            str(m.get("contract_labor_public_id") or "") == str(contract_labor_public_id)
+            for m in crew
+        ):
+            return None
+        anchored = any(
+            (msg.processing_status or "") == "outbound"
+            and (msg.subject or "").startswith(CL_NOTIFICATION_SUBJECT_PREFIX)
+            and msg.conversation_id == reply_conv
+            for msg in EmailMessageRepository().read_by_conversation_id(conversation_id=reply_conv)
+        )
+        return reply_conv if anchored else None
 
     def find_for_reviewer_reply(
         self,

@@ -20,6 +20,23 @@ EXPENSE_PID = "exp-pub-1"
 REVIEWER_USER_ID = 20
 CALLER_USER_ID = 33
 SCC_PID = "scc-pub-9"
+REPLY_MSG_PUB = "em-reply-pub"
+REPLY_CONV = "expense-review-thread"
+
+
+@pytest.fixture(autouse=True)
+def _u563_reply_provenance():
+    """Valid inbound reply binding for every apply_reviewer_decision call."""
+    with patch(
+        "entities.email_message.business.service.EmailMessageService"
+    ) as Em:
+        Em.return_value.read_by_public_id.return_value = SimpleNamespace(
+            id=888,
+            folder="inbox",
+            from_address="pm@example.com",
+            conversation_id=REPLY_CONV,
+        )
+        yield Em
 
 
 def _pm_recipient() -> ResolvedRecipient:
@@ -42,6 +59,7 @@ def _expense_service_stub(*, is_draft: bool = True):
             id=101,
             public_id=EXPENSE_PID,
             is_draft=is_draft,
+            source_email_message_id=50,
         )
     )
     return svc
@@ -93,6 +111,7 @@ def test_approved_happy_path_stamps_scc_and_attributes_review_to_reviewer(
             reviewer_email="pm@example.com",
             sub_cost_code_public_id=SCC_PID,
             description="Job supplies",
+            reviewer_email_message_public_id=REPLY_MSG_PUB,
         )
 
     EliSvc.return_value.update_by_public_id.assert_called_once_with(
@@ -142,6 +161,7 @@ def test_approved_omitted_description_passes_none_not_blank(
             reviewer_email="pm@example.com",
             sub_cost_code_public_id=SCC_PID,
             description=None,
+            reviewer_email_message_public_id=REPLY_MSG_PUB,
         )
 
     _, kwargs = EliSvc.return_value.update_by_public_id.call_args
@@ -179,6 +199,7 @@ def test_reviewer_email_normalized_strip_and_lower(
             decision="approved",
             reviewer_email="  PM@Example.COM  ",
             sub_cost_code_public_id=SCC_PID,
+            reviewer_email_message_public_id=REPLY_MSG_PUB,
         )
 
     assert review_create.call_args.kwargs["user_id"] == REVIEWER_USER_ID
@@ -216,6 +237,7 @@ def test_rejected_multi_line_expense_succeeds_without_line_item_update(
             expense_public_id=EXPENSE_PID,
             decision="rejected",
             reviewer_email="pm@example.com",
+            reviewer_email_message_public_id=REPLY_MSG_PUB,
         )
 
     EliSvc.return_value.update_by_public_id.assert_not_called()
@@ -250,6 +272,7 @@ def test_rejected_zero_line_items_succeeds_without_line_item_update(
             expense_public_id=EXPENSE_PID,
             decision="rejected",
             reviewer_email="pm@example.com",
+            reviewer_email_message_public_id=REPLY_MSG_PUB,
         )
 
     EliSvc.return_value.update_by_public_id.assert_not_called()
@@ -271,6 +294,7 @@ def test_refuses_when_not_draft(RecipSvc):
                 decision="approved",
                 reviewer_email="pm@example.com",
                 sub_cost_code_public_id=SCC_PID,
+                reviewer_email_message_public_id=REPLY_MSG_PUB,
             )
 
 
@@ -302,6 +326,7 @@ def test_refuses_reviewer_email_not_on_empty_recipient_envelope(RecipSvc):
                 decision="approved",
                 reviewer_email="pm@example.com",
                 sub_cost_code_public_id=SCC_PID,
+                reviewer_email_message_public_id=REPLY_MSG_PUB,
             )
 
 
@@ -321,6 +346,7 @@ def test_refuses_zero_line_items(RecipSvc, EliSvc):
                 decision="approved",
                 reviewer_email="pm@example.com",
                 sub_cost_code_public_id=SCC_PID,
+                reviewer_email_message_public_id=REPLY_MSG_PUB,
             )
 
 
@@ -343,6 +369,7 @@ def test_refuses_multi_line_expense(RecipSvc, EliSvc):
                 decision="approved",
                 reviewer_email="pm@example.com",
                 sub_cost_code_public_id=SCC_PID,
+                reviewer_email_message_public_id=REPLY_MSG_PUB,
             )
 
 
@@ -361,6 +388,7 @@ def test_approved_without_sub_cost_code_refused(RecipSvc, EliSvc):
                 expense_public_id=EXPENSE_PID,
                 decision="approved",
                 reviewer_email="pm@example.com",
+                reviewer_email_message_public_id=REPLY_MSG_PUB,
             )
 
 
@@ -407,6 +435,7 @@ def test_raw_reply_text_none_leaves_comments_null(
             decision="rejected",
             reviewer_email="pm@example.com",
             raw_reply_text=None,
+            reviewer_email_message_public_id=REPLY_MSG_PUB,
         )
 
     assert review_create.call_args.kwargs["comments"] is None
@@ -437,6 +466,7 @@ def test_raw_reply_text_whitespace_becomes_null_comments(
             decision="rejected",
             reviewer_email="pm@example.com",
             raw_reply_text="   ",
+            reviewer_email_message_public_id=REPLY_MSG_PUB,
         )
 
     assert review_create.call_args.kwargs["comments"] is None
@@ -466,6 +496,7 @@ def test_raw_reply_text_is_stored_stripped(
             decision="rejected",
             reviewer_email="pm@example.com",
             raw_reply_text="  Please recode  ",
+            reviewer_email_message_public_id=REPLY_MSG_PUB,
         )
 
     assert review_create.call_args.kwargs["comments"] == "Please recode"
@@ -486,7 +517,12 @@ def test_reviewer_email_message_public_id_threads_to_review_row(
         "to": [_pm_recipient()],
         "cc": [],
     }
-    EmailSvc.return_value.read_by_public_id.return_value = SimpleNamespace(id=777)
+    EmailSvc.return_value.read_by_public_id.return_value = SimpleNamespace(
+        id=777,
+        folder="inbox",
+        from_address="pm@example.com",
+        conversation_id=REPLY_CONV,
+    )
     RsSvc.return_value.read_all.return_value = _approved_statuses()
     RsSvc.return_value.read_by_id.return_value = SimpleNamespace(name="Declined")
     review_create = ReviewRepo.return_value.create
@@ -540,6 +576,7 @@ def test_review_user_id_is_reviewer_not_caller(
         decision="approved",
         reviewer_email="pm@example.com",
         sub_cost_code_public_id=SCC_PID,
+        reviewer_email_message_public_id=REPLY_MSG_PUB,
     )
 
     assert review_create.call_args.kwargs["user_id"] == REVIEWER_USER_ID

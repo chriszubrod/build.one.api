@@ -980,6 +980,16 @@ class ExpenseService:
             )
         reviewer_user_id = match.user_id
 
+        from shared.authz.provenance import bind_reviewer_reply
+
+        # Thread binding deferred to U-563b: v2 review notification is a new
+        # email/conversation, not the expense's source intake thread.
+        bound_reply = bind_reviewer_reply(
+            reviewer_email=reviewer_email,
+            reviewer_email_message_public_id=reviewer_email_message_public_id,
+            what="an expense reviewer decision",
+        )
+
         delegated = assert_may_act_as(
             asserted_user_id=reviewer_user_id,
             what="apply a reviewer decision",
@@ -1046,15 +1056,7 @@ class ExpenseService:
                     "No declined ReviewStatus configured (expected one with IsDeclined=true)."
                 )
 
-        email_message_id: Optional[int] = None
-        if reviewer_email_message_public_id:
-            from entities.email_message.business.service import EmailMessageService
-
-            em = EmailMessageService().read_by_public_id(
-                public_id=reviewer_email_message_public_id
-            )
-            if em is not None:
-                email_message_id = em.id
+        email_message_id: Optional[int] = bound_reply.id
 
         new_review = ReviewRepository().create(
             review_status_id=target.id,

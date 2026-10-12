@@ -1380,6 +1380,16 @@ class BillService:
             )
         reviewer_user_id = match.user_id
 
+        from shared.authz.provenance import bind_reviewer_reply
+
+        # Thread binding deferred to U-563b: v2 review notification is a new
+        # email/conversation, not the bill's source intake thread.
+        bound_reply = bind_reviewer_reply(
+            reviewer_email=reviewer_email,
+            reviewer_email_message_public_id=reviewer_email_message_public_id,
+            what="a bill reviewer decision",
+        )
+
         # U-459 — bind the asserted reviewer to the authenticated caller.
         #
         # Everything above authorizes the EMAIL (it must belong to a PM/Owner on
@@ -1461,16 +1471,7 @@ class BillService:
                     "No declined ReviewStatus configured (expected one with IsDeclined=true)."
                 )
 
-        # Resolve the reviewer's reply EmailMessage so the new Review
-        # row references it (Wave 3 Phase E: per-row email link for the
-        # Web UI's final-review surface). NULL when caller didn't pass
-        # one (e.g., manual web-UI invocation rather than email-driven).
-        email_message_id: Optional[int] = None
-        if reviewer_email_message_public_id:
-            from entities.email_message.business.service import EmailMessageService
-            em = EmailMessageService().read_by_public_id(public_id=reviewer_email_message_public_id)
-            if em is not None:
-                email_message_id = em.id
+        email_message_id: Optional[int] = bound_reply.id
 
         # Insert a new Review row directly. Insert-only audit trail —
         # repeat replies at the same status are captured as duplicate

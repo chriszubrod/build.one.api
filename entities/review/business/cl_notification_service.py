@@ -35,6 +35,12 @@ from typing import Optional
 from integrations.ms.outbox.business.service import MsOutboxService
 from shared.database import call_procedure, get_connection, map_database_error
 
+# The consolidated CL review email subject prefix. The reply binding
+# (ContractLaborService._expected_cl_reviewer_reply_conversation_id) and the
+# FindContractLaborForReviewerReply sproc (LIKE 'Contract Labor - %') match on it.
+CL_NOTIFICATION_SUBJECT_PREFIX = "Contract Labor - "
+
+
 logger = logging.getLogger(__name__)
 
 
@@ -119,7 +125,7 @@ class ContractLaborReviewNotificationService:
             meta = project_meta[project_id]
             representative_cl_id = meta["representative_cl_id"]
             project_label = self._format_project_label(meta, project_id)
-            subject = f"Contract Labor - {project_label} - {work_date_str}"
+            subject = f"{CL_NOTIFICATION_SUBJECT_PREFIX}{project_label} - {work_date_str}"
 
             # ── CLAIM (dedup + straggler-manual + race guard) ────
             # Atomically insert the (project, date) token; only the

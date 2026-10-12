@@ -96,10 +96,11 @@ Separate from invoice-driven creation: when an upstream orchestrator delegates a
           status now {Approved/Declined}. {summary of any errors / fallbacks}"
 ```
 
-**ALWAYS pass `reviewer_email_message_public_id`** — the upstream orchestrator supplies it
-in your task body. The Web UI's final-review surface uses it to navigate from a
-Review row back to the source reply email. Omitting leaves the row's link NULL,
-which is recoverable but worse audit.
+**`reviewer_email_message_public_id` is REQUIRED.** If the task does not carry the
+inbound reply's EmailMessage public_id, do NOT call `apply_reviewer_decision` — return
+the `flagged_needs_review` outcome instead. A refusal naming provenance means the reply
+could not be bound to the PM's own inbound message (the sender must equal
+`reviewer_email`) — flag it; never retry with a different address.
 
 **SubCostCode resolution rules:**
 - Pick the highest-confidence candidate (typically index 0).

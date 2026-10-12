@@ -2,6 +2,34 @@
 
 Carry-over items from sessions. Check off as done; prune anything stale.
 
+## U-563 spillover — emailed reviewer decisions bound to the sender; thread + sender authentication still owed (booked 2026-10-12)
+
+U-563 made `reviewer_email_message_public_id` required on all three emailed-decision routes and binds it
+(`shared/authz/provenance.py`): the message must resolve, be in `inbox`, and its From must equal the asserted
+reviewer. ContractLabor also binds the THREAD (outbound consolidated notification, exact ConversationId).
+Bill and Expense do NOT — by product decision (Chris, 2026-10-12) — because the v2 review notification
+(2026-05-28, `notification_service.py`) is a new email, so a PM's reply never shares the source email's
+conversation. Booked here because the main checkout's `TODO.md` was held by a parallel session.
+
+- [ ] **(P1, U-563b) Thread anchor for Bill/Expense review emails.** Record each outbound review notification
+  (document, subject, sent-item / BCC-archive ConversationId) the way `ContractLaborNotification` does, then switch
+  Bill/Expense to `bind_reviewer_reply_to_thread`. Until then a REAL reply from PM X on bill A can be applied to bill
+  B where X is also a recipient (reachable only by delegated actors — the agent, system context, system admins —
+  after U-459). Note `ReconcileReviewEmailMessageLinks` still joins on the SOURCE conversation and so cannot link v2
+  notification archives either; fix it in the same unit.
+- [ ] **(P1, U-563b) Sender authentication.** The sender check trusts From as Graph reports it; nothing records
+  Authentication-Results / SPF / DKIM / DMARC. Persist the verdict at poll time and refuse unauthenticated senders.
+- [ ] **(P3) LOW notes from Pass 3:** the bind runs before `assert_may_act_as`, so a `can_update` caller holding a
+  message UUID can probe "sender does not match" as a sender oracle (move the bind after the identity check);
+  `read_by_conversation_id` caps at 50 rows, so a very long thread could push the CL anchor out (fails closed);
+  `EmailMessageService.read_by_public_id` is not tenant-scoped (fine single-tenant; revisit at Phase 10).
+- [ ] **(P3, efficiency) CL crew pre-bind does ~5 reads per member** (anchor + bind per member, all depending only on
+  the reply and project). Compute the anchor once and test membership with a set; keep the per-member re-check.
+- [ ] **(P3, sql) Push the exact-case compare into `FindContractLaborForReviewerReply`** (`COLLATE Latin1_General_BIN`
+  residual, as `FindExpenseForReviewerReply` does) and drop the Python thread scan; prove on prod data first.
+- [ ] **(P3, tests) Inbound-reply / outbound-notification stub factories** are hand-written in five test files; lift
+  `inbound_reply_em()` / `outbound_cl_notification()` into `tests/conftest.py`.
+
 ## U-565 spillover — the Expense reviewer-reply lookup shipped; the Bill twin now lags it (booked 2026-10-12)
 
 `GET /get/expense/find-by-conversation-id` + `FindExpenseForReviewerReply` landed as a mirror of Bill's chain — the

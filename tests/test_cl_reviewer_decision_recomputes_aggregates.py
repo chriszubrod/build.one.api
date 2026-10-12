@@ -122,6 +122,16 @@ class _FakeRepo:
         )
         return self.parent
 
+    def find_for_reviewer_reply(self, **kwargs):
+        return {
+            "project_public_id": "proj-a",
+            "work_date": "2026-08-24",
+            "match_kind": "conversation",
+        }
+
+    def read_reviewable_crew_by_project_and_date(self, *, project_id, work_date):
+        return [{"contract_labor_public_id": "cl-1", "contract_labor_id": 10}]
+
 
 def _harness(monkeypatch, *, lines, fail_ids=frozenset(), recompute_raises=False):
     """Wire a ContractLaborService whose only live collaborators are the two
@@ -193,6 +203,29 @@ def _harness(monkeypatch, *, lines, fail_ids=frozenset(), recompute_raises=False
     monkeypatch.setattr(
         svc, "mark_as_ready_via_review_approval", lambda **kw: parent,
     )
+    em_svc = MagicMock()
+    em_svc.read_by_public_id.return_value = types.SimpleNamespace(
+        id=888,
+        folder="inbox",
+        from_address="pm@test.com",
+        conversation_id="cl-review-thread",
+    )
+    monkeypatch.setattr(
+        "entities.email_message.business.service.EmailMessageService",
+        lambda: em_svc,
+    )
+    outbound = types.SimpleNamespace(
+        id=50,
+        processing_status="outbound",
+        subject="Contract Labor - proj-a - 2026-08-24",
+        conversation_id="cl-review-thread",
+    )
+    monkeypatch.setattr(
+        "entities.email_message.persistence.repo.EmailMessageRepository",
+        lambda: types.SimpleNamespace(
+            read_by_conversation_id=lambda **kw: [outbound],
+        ),
+    )
     return svc, repo, li_repo, parent
 
 
@@ -203,6 +236,7 @@ def _approve(svc, **overrides):
         decision="approved",
         reviewer_email="pm@test.com",
         sub_cost_code_public_id="scc-uuid",
+        reviewer_email_message_public_id="em-reply-pub",
     )
     kwargs.update(overrides)
     return svc._apply_decision_to_single_cl(**kwargs)
@@ -274,6 +308,7 @@ def test_rejection_does_not_touch_parent_aggregates(monkeypatch):
         project_public_id="proj-a",
         decision="rejected",
         reviewer_email="pm@test.com",
+        reviewer_email_message_public_id="em-reply-pub",
     )
 
     assert repo.calls == []

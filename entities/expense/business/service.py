@@ -81,6 +81,7 @@ from integrations.ms.sharepoint.drive.business.service import MsDriveService
 
 from shared.storage import AzureBlobStorage
 from shared.lifecycle.terminal_lock import assert_editable, is_exempt
+from shared.database import get_connection
 
 logger = logging.getLogger(__name__)
 
@@ -93,6 +94,26 @@ def _build_qbo_expense_url(*, qbo_id: str, realm_id: str, payment_type: str) -> 
     segment = "check" if payment_type == "Check" else "expense"
     return (
         f"https://app.qbo.intuit.com/app/{segment}?txnId={qbo_id}&realmId={realm_id}"
+    )
+
+
+
+def _refuse_unless_one_line(expense_public_id: str, line_count: int) -> None:
+    """An emailed decision codes the expense's ONE line; refuse anything else.
+
+    Shared by the fast path (before the transaction) and the under-lock recheck
+    (U-564), so both refusals read the same."""
+    if line_count == 1:
+        return
+    if line_count == 0:
+        raise ValueError(
+            f"Expense {expense_public_id} has no line items; a reviewer "
+            "decision cannot be auto-applied."
+        )
+    raise ValueError(
+        f"Expense {expense_public_id} has {line_count} line items; "
+        "a reviewer decision cannot be auto-applied to a multi-line "
+        "expense (would stamp one cost code over a manual split)."
     )
 
 
@@ -1001,20 +1022,12 @@ class ExpenseService:
             reviewer_user_id,
         )
 
+        eli_service = ExpenseLineItemService()
+        sole_line = None
+        scc_id: Optional[int] = None
         if decision == "approved":
-            eli_service = ExpenseLineItemService()
             line_items = eli_service.read_by_expense_id(expense_id=expense.id)
-            if len(line_items) != 1:
-                if not line_items:
-                    raise ValueError(
-                        f"Expense {expense_public_id} has no line items; a reviewer "
-                        "decision cannot be auto-applied."
-                    )
-                raise ValueError(
-                    f"Expense {expense_public_id} has {len(line_items)} line items; "
-                    "a reviewer decision cannot be auto-applied to a multi-line "
-                    "expense (would stamp one cost code over a manual split)."
-                )
+            _refuse_unless_one_line(expense_public_id, len(line_items))
             sole_line = line_items[0]
 
             if not sub_cost_code_public_id:
@@ -1026,12 +1039,7 @@ class ExpenseService:
                 raise ValueError(
                     f"SubCostCode with public_id '{sub_cost_code_public_id}' not found."
                 )
-            eli_service.update_by_public_id(
-                public_id=sole_line.public_id,
-                row_version=sole_line.row_version,
-                sub_cost_code_id=int(scc.id),
-                description=description if description is not None else None,
-            )
+            scc_id = int(scc.id)
 
         comments = (raw_reply_text or "").strip() or None
         review_status_service = ReviewStatusService()
@@ -1057,18 +1065,37 @@ class ExpenseService:
                 )
 
         email_message_id: Optional[int] = bound_reply.id
+        review_repo = ReviewRepository()
+        # Authenticated caller (agent vs PM self-serve) — user_id stays the reviewer.
+        actor_user_id = current_user_id.get()
 
-        new_review = ReviewRepository().create(
-            review_status_id=target.id,
-            user_id=reviewer_user_id,
-            comments=comments,
-            bill_id=None,
-            expense_id=expense.id,
-            bill_credit_id=None,
-            invoice_id=None,
-            email_message_id=email_message_id,
-            created_by_user_id=reviewer_user_id,
-        )
+        with get_connection() as conn:
+            review_repo.read_current_by_expense_id_for_update(expense.id, conn=conn)
+            if decision == "approved":
+                line_count = eli_service.count_by_expense_id_for_update(
+                    expense.id, conn=conn
+                )
+                # Re-checked under the lock: a line added since the fast path above.
+                _refuse_unless_one_line(expense_public_id, line_count)
+                eli_service.update_coding_in_transaction(
+                    line_item=sole_line,
+                    row_version=sole_line.row_version,
+                    sub_cost_code_id=scc_id,
+                    description=description,
+                    conn=conn,
+                )
+            new_review = review_repo.create(
+                review_status_id=target.id,
+                user_id=reviewer_user_id,
+                comments=comments,
+                bill_id=None,
+                expense_id=expense.id,
+                bill_credit_id=None,
+                invoice_id=None,
+                email_message_id=email_message_id,
+                created_by_user_id=actor_user_id,
+                conn=conn,
+            )
 
         rs = (
             review_status_service.read_by_id(id=new_review.review_status_id)

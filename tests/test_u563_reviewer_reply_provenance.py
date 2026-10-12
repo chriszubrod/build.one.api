@@ -28,6 +28,20 @@ def _clean_authz():
     clear_authz_context()
 
 
+@pytest.fixture(autouse=True)
+def _u564_reviewer_decision_transaction_conn():
+    """U-564: bill/expense apply_reviewer_decision uses one get_connection()."""
+    bill_conn = MagicMock(name="bill_review_conn")
+    expense_conn = MagicMock(name="expense_review_conn")
+    with patch("entities.bill.business.service.get_connection") as bill_gc:
+        with patch("entities.expense.business.service.get_connection") as exp_gc:
+            bill_gc.return_value.__enter__ = MagicMock(return_value=bill_conn)
+            bill_gc.return_value.__exit__ = MagicMock(return_value=False)
+            exp_gc.return_value.__enter__ = MagicMock(return_value=expense_conn)
+            exp_gc.return_value.__exit__ = MagicMock(return_value=False)
+            yield
+
+
 CONV = "AAQkADExampleThreadIdCaseSensitive"
 OTHER_CONV = "AAQkADTotallyDifferentNotificationThread"
 REPLY_PUB = "reply-em-pub-1"
@@ -424,7 +438,7 @@ def test_bill_approval_refusal_writes_nothing(
                 reviewer_email_message_public_id=reply_pub,
             )
 
-    BliSvc.return_value.update_by_public_id.assert_not_called()
+    BliSvc.return_value.update_coding_in_transaction.assert_not_called()
     review_create.assert_not_called()
 
 
@@ -480,6 +494,7 @@ def test_expense_accepts_reply_on_unrelated_conversation_thread_not_bound(
     EliSvc.return_value.read_by_expense_id.return_value = [
         SimpleNamespace(public_id="eli-1", row_version="rv")
     ]
+    EliSvc.return_value.count_by_expense_id_for_update.return_value = 1
     review_create = ReviewRepo.return_value.create
     review_create.return_value = SimpleNamespace(review_status_id=100)
 
@@ -558,7 +573,7 @@ def test_expense_approval_refusal_writes_nothing(
                 reviewer_email_message_public_id=reply_pub,
             )
 
-    EliSvc.return_value.update_by_public_id.assert_not_called()
+    EliSvc.return_value.update_coding_in_transaction.assert_not_called()
     review_create.assert_not_called()
 
 
@@ -589,7 +604,7 @@ def test_expense_refused_from_mismatch_writes_nothing(
                 reviewer_email=REVIEWER_EMAIL,
                 reviewer_email_message_public_id=REPLY_PUB,
             )
-    EliSvc.return_value.update_by_public_id.assert_not_called()
+    EliSvc.return_value.update_coding_in_transaction.assert_not_called()
     ReviewRepo.return_value.create.assert_not_called()
 
 

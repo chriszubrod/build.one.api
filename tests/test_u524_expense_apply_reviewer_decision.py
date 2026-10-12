@@ -39,6 +39,16 @@ def _u563_reply_provenance():
         yield Em
 
 
+@pytest.fixture(autouse=True)
+def _u564_single_transaction_conn():
+    """U-564: apply_reviewer_decision owns one get_connection() for line + review."""
+    mock_conn = MagicMock(name="expense_review_conn")
+    with patch("entities.expense.business.service.get_connection") as gc:
+        gc.return_value.__enter__ = MagicMock(return_value=mock_conn)
+        gc.return_value.__exit__ = MagicMock(return_value=False)
+        yield gc, mock_conn
+
+
 def _pm_recipient() -> ResolvedRecipient:
     return ResolvedRecipient(
         user_id=REVIEWER_USER_ID,
@@ -91,13 +101,16 @@ def test_approved_happy_path_stamps_scc_and_attributes_review_to_reviewer(
     EliSvc,
     RsSvc,
     ReviewRepo,
+    _u564_single_transaction_conn,
 ):
+    _, mock_conn = _u564_single_transaction_conn
     svc = _expense_service_stub()
     RecipSvc.return_value.resolve_for_expense.return_value = {
         "to": [_pm_recipient()],
         "cc": [],
     }
     EliSvc.return_value.read_by_expense_id.return_value = [_line_item()]
+    EliSvc.return_value.count_by_expense_id_for_update.return_value = 1
     SccSvc.return_value.read_by_public_id.return_value = SimpleNamespace(id=9001)
     RsSvc.return_value.read_all.return_value = _approved_statuses()
     RsSvc.return_value.read_by_id.return_value = SimpleNamespace(name="Approved")
@@ -114,14 +127,14 @@ def test_approved_happy_path_stamps_scc_and_attributes_review_to_reviewer(
             reviewer_email_message_public_id=REPLY_MSG_PUB,
         )
 
-    EliSvc.return_value.update_by_public_id.assert_called_once_with(
-        public_id="eli-pub-1",
-        row_version="rv1",
-        sub_cost_code_id=9001,
-        description="Job supplies",
-    )
+    coding_kw = EliSvc.return_value.update_coding_in_transaction.call_args.kwargs
+    assert coding_kw["sub_cost_code_id"] == 9001
+    assert coding_kw["description"] == "Job supplies"
+    assert coding_kw["row_version"] == "rv1"
+    assert coding_kw["conn"] is mock_conn
+    assert review_create.call_args.kwargs["conn"] is mock_conn
     assert review_create.call_args.kwargs["user_id"] == REVIEWER_USER_ID
-    assert review_create.call_args.kwargs["created_by_user_id"] == REVIEWER_USER_ID
+    assert review_create.call_args.kwargs["created_by_user_id"] is None
     assert review_create.call_args.kwargs["expense_id"] == 101
     assert review_create.call_args.kwargs["bill_id"] is None
     assert review_create.call_args.kwargs["review_status_id"] == 30
@@ -149,6 +162,7 @@ def test_approved_omitted_description_passes_none_not_blank(
         "cc": [],
     }
     EliSvc.return_value.read_by_expense_id.return_value = [_line_item()]
+    EliSvc.return_value.count_by_expense_id_for_update.return_value = 1
     SccSvc.return_value.read_by_public_id.return_value = SimpleNamespace(id=9001)
     RsSvc.return_value.read_all.return_value = _approved_statuses()
     RsSvc.return_value.read_by_id.return_value = SimpleNamespace(name="Approved")
@@ -164,7 +178,7 @@ def test_approved_omitted_description_passes_none_not_blank(
             reviewer_email_message_public_id=REPLY_MSG_PUB,
         )
 
-    _, kwargs = EliSvc.return_value.update_by_public_id.call_args
+    kwargs = EliSvc.return_value.update_coding_in_transaction.call_args.kwargs
     assert kwargs.get("description") is None
 
 
@@ -187,6 +201,7 @@ def test_reviewer_email_normalized_strip_and_lower(
         "cc": [],
     }
     EliSvc.return_value.read_by_expense_id.return_value = [_line_item()]
+    EliSvc.return_value.count_by_expense_id_for_update.return_value = 1
     SccSvc.return_value.read_by_public_id.return_value = SimpleNamespace(id=9001)
     RsSvc.return_value.read_all.return_value = _approved_statuses()
     RsSvc.return_value.read_by_id.return_value = SimpleNamespace(name="Approved")
@@ -240,7 +255,7 @@ def test_rejected_multi_line_expense_succeeds_without_line_item_update(
             reviewer_email_message_public_id=REPLY_MSG_PUB,
         )
 
-    EliSvc.return_value.update_by_public_id.assert_not_called()
+    EliSvc.return_value.update_coding_in_transaction.assert_not_called()
     assert review_create.call_args.kwargs["review_status_id"] == 100
     assert review_create.call_args.kwargs["user_id"] == REVIEWER_USER_ID
     assert result["decision_applied"] == "rejected"
@@ -275,7 +290,7 @@ def test_rejected_zero_line_items_succeeds_without_line_item_update(
             reviewer_email_message_public_id=REPLY_MSG_PUB,
         )
 
-    EliSvc.return_value.update_by_public_id.assert_not_called()
+    EliSvc.return_value.update_coding_in_transaction.assert_not_called()
     assert review_create.call_args.kwargs["review_status_id"] == 100
     assert result["decision_applied"] == "rejected"
 
@@ -563,6 +578,7 @@ def test_review_user_id_is_reviewer_not_caller(
         "cc": [],
     }
     EliSvc.return_value.read_by_expense_id.return_value = [_line_item()]
+    EliSvc.return_value.count_by_expense_id_for_update.return_value = 1
     SccSvc.return_value.read_by_public_id.return_value = SimpleNamespace(id=9001)
     RsSvc.return_value.read_all.return_value = _approved_statuses()
     RsSvc.return_value.read_by_id.return_value = SimpleNamespace(name="Approved")
@@ -581,3 +597,4 @@ def test_review_user_id_is_reviewer_not_caller(
 
     assert review_create.call_args.kwargs["user_id"] == REVIEWER_USER_ID
     assert review_create.call_args.kwargs["user_id"] != CALLER_USER_ID
+    assert review_create.call_args.kwargs["created_by_user_id"] == CALLER_USER_ID

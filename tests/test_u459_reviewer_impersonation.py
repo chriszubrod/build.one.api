@@ -285,7 +285,7 @@ def test_a_plain_user_forging_a_PM_expense_approval_is_refused_end_to_end():
                             reviewer_email_message_public_id="em-reply",
                         )
                 Eli.return_value.read_by_expense_id.assert_not_called()
-                Eli.return_value.update_by_public_id.assert_not_called()
+                Eli.return_value.update_coding_in_transaction.assert_not_called()
                 ReviewRepo.return_value.create.assert_not_called()
 
 

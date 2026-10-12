@@ -2,6 +2,32 @@
 
 Carry-over items from sessions. Check off as done; prune anything stale.
 
+## U-564 spillover — emailed decisions are atomic for Bill/Expense; ContractLabor and the shared shape remain (booked 2026-10-12)
+
+U-564 put the line-item coding and the Review insert of the emailed Bill and Expense decisions on ONE connection
+behind lock reads (new `ReadCurrentReviewByExpenseIdForUpdate`, `CountExpenseLineItemsByExpenseIdForUpdate`), and
+set `Review.CreatedByUserId` to the authenticated caller on Bill, Expense and ContractLabor (UserId stays the
+reviewer). Booked here because the main checkout's `TODO.md` was held by a parallel session.
+
+- [ ] **(P1, U-564b) ContractLabor's emailed decision is still several transactions** — Review row first, then N
+  line updates, an aggregate recompute and a status mirror, each committing on its own (`_apply_decision_to_single_cl`).
+  Needs conn-aware line-item, recompute and mark-ready seams before it can be one transaction.
+- [ ] **(P2, decision) Status resolution diverges from U-541.** The emailed paths filter `ReviewStatusService.read_all()`
+  by hand; U-541 uses `get_approved_status()` / `get_declined_statuses()`, which also require `IsActive` and refuse
+  ambiguity. Swapping changes behaviour, so it lands on all three writers at once (the U-524 spillover item 2).
+- [ ] **(P3, refactor) The Bill and Expense emailed paths are ~90% the same.** Lift `match_reviewer_by_email`,
+  `resolve_decision_target` and a short lock → line write → Review insert helper; keep U-541's body separate.
+- [ ] **(P3, altitude) `CreatedByUserId` is hand-defaulted at three direct `ReviewRepository.create` callers.** Give
+  `ReviewService.create` a `conn=` passthrough and route the emailed writers through it (relax the u454 source pin,
+  which only needs the call to reach `CreateReview`).
+- [ ] **(P3) Bill's emailed path does not recount lines under the lock** — it codes the first line by convention, so a
+  line added concurrently is not detected (the row version still protects the coded line). Decide whether the emailed
+  Bill path should refuse multi-line under the lock like Expense and U-541.
+- [ ] **(P3, efficiency) The status name is re-read after commit** (`ReviewStatusService.read_by_id`) though
+  `target.name` is in hand; one round trip per decision.
+- [ ] **(deploy order, U-564)** prod SQL first — the two new sprocs (surgical extract, never the whole base files) —
+  then the container. Without them the emailed Bill/Expense decision fails with a missing-procedure error.
+
 ## U-563 spillover — emailed reviewer decisions bound to the sender; thread + sender authentication still owed (booked 2026-10-12)
 
 U-563 made `reviewer_email_message_public_id` required on all three emailed-decision routes and binds it

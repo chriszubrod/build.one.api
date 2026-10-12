@@ -1,3 +1,5 @@
+-- Contract: dbo.ExpenseLineItem
+-- Sprocs: CountExpenseLineItemsByExpenseIdForUpdate, CreateExpenseLineItem, DeleteExpenseLineItemById, ReadExpenseLineItemByExpenseIdAndQboId, ReadExpenseLineItemById, ReadExpenseLineItemByPublicId, ReadExpenseLineItems, ReadExpenseLineItemsByExpenseId, SetExpenseLineItemQboIdentity, UpdateExpenseLineItemById
 GO
 
 IF OBJECT_ID('dbo.ExpenseLineItem', 'U') IS NULL
@@ -618,5 +620,19 @@ BEGIN
         [RealmId]
     FROM dbo.[ExpenseLineItem]
     WHERE [ExpenseId] = @ExpenseId AND [QboId] = @QboId;
+END;
+GO
+
+-- U-564: sole-line guard inside the same transaction as emailed review decide.
+CREATE OR ALTER PROCEDURE CountExpenseLineItemsByExpenseIdForUpdate
+(
+    @ExpenseId BIGINT
+)
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SELECT COUNT(*) AS [LineCount]
+    FROM dbo.[ExpenseLineItem] WITH (UPDLOCK, HOLDLOCK)
+    WHERE [ExpenseId] = @ExpenseId;
 END;
 GO

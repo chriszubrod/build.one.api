@@ -296,7 +296,12 @@ def test_the_direct_email_decision_writer_goes_through_the_same_sproc():
 
     src = _i.getsource(BillService.apply_reviewer_decision)
     executable = "\n".join(l.split("#")[0] for l in src.splitlines())
-    assert "ReviewRepository().create(" in executable
+    # U-564 holds the repository in a local so the line write and the Review
+    # insert share one connection; what matters is that the insert still goes
+    # through ReviewRepository.create (and so through CreateReview's lock).
+    assert "ReviewRepository()" in executable
+    assert re.search(r"\b(ReviewRepository\(\)|review_repo)\.create\(", executable)
+    assert "ReviewService" not in executable
 
 
 def test_the_sproc_refusal_is_translated_not_flattened_into_a_500():

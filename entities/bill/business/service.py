@@ -1408,7 +1408,9 @@ class BillService:
             reviewer_user_id,
         )
 
-        # 4. Approval → update the summary BillLineItem (SCC + description).
+        bli_service = BillLineItemService()
+        scc_id: Optional[int] = None
+        summary_line = None
         if decision == "approved":
             if not sub_cost_code_public_id:
                 raise ValueError(
@@ -1419,8 +1421,8 @@ class BillService:
                 raise ValueError(
                     f"SubCostCode with public_id '{sub_cost_code_public_id}' not found."
                 )
+            scc_id = int(scc.id)
 
-            bli_service = BillLineItemService()
             line_items = bli_service.read_by_bill_id(bill_id=bill.id)
             if not line_items:
                 raise ValueError(
@@ -1430,25 +1432,12 @@ class BillService:
             # BillLineItem carrying the attachment. If multiple lines exist
             # (rare, manual edits), apply to the first.
             summary_line = line_items[0]
-            bli_service.update_by_public_id(
-                public_id=summary_line.public_id,
-                row_version=summary_line.row_version,
-                sub_cost_code_id=int(scc.id),
-                description=description if description is not None else None,
-            )
 
-        # 5. Transition the Review state. Approval → advance; rejection
-        # → decline. Both write a new Review row (insert-only audit
-        # trail) with the reviewer as the user_id and the raw reply text
-        # as comments.
-        # Resolve the target ReviewStatus directly. Per the locked
-        # multi-reviewer semantics: every authorized reply is
-        # independently authoritative; latest reply wins; the only gate
-        # is `Bill.IsDraft` (above). An approval jumps straight to the
-        # terminal non-declined status ("Approved"); a rejection jumps
-        # to the declined status. We bypass build_advance_payload's
-        # one-step-per-reply chain because a PM approval IS the
-        # approval, not "moved to in-review".
+        # A PM approval IS the approval: jump straight to the terminal
+        # non-declined status (or to declined), bypassing build_advance_payload's
+        # one-step chain; every authorized reply is authoritative and the latest
+        # wins. Review rows are insert-only, so this is a new audit row, never an
+        # update.
         comments = (raw_reply_text or "").strip() or None
         review_statuses = ReviewStatusService().read_all()
         if decision == "approved":
@@ -1472,24 +1461,34 @@ class BillService:
                 )
 
         email_message_id: Optional[int] = bound_reply.id
+        review_repo = ReviewRepository()
+        # Authenticated caller (agent vs PM self-serve) — user_id stays the reviewer.
+        actor_user_id = current_user_id.get()
 
-        # Insert a new Review row directly. Insert-only audit trail —
-        # repeat replies at the same status are captured as duplicate
-        # audit rows, not no-ops. This matches the locked semantic
-        # ("interpret every reply") and gives us a per-reply trail.
-        new_review = ReviewRepository().create(
-            review_status_id=target.id,
-            user_id=reviewer_user_id,
-            comments=comments,
-            bill_id=bill.id,
-            expense_id=None,
-            bill_credit_id=None,
-            invoice_id=None,
-            email_message_id=email_message_id,
-            created_by_user_id=reviewer_user_id,
-        )
+        with get_connection() as conn:
+            review_repo.read_current_by_bill_id_for_update(bill.id, conn=conn)
+            if decision == "approved":
+                bli_service.update_coding_in_transaction(
+                    line_item=summary_line,
+                    row_version=summary_line.row_version,
+                    sub_cost_code_id=scc_id,
+                    description=description,
+                    conn=conn,
+                )
+            new_review = review_repo.create(
+                review_status_id=target.id,
+                user_id=reviewer_user_id,
+                comments=comments,
+                bill_id=bill.id,
+                expense_id=None,
+                bill_credit_id=None,
+                invoice_id=None,
+                email_message_id=email_message_id,
+                created_by_user_id=actor_user_id,
+                conn=conn,
+            )
 
-        # 6. Look up the new status name for the response payload.
+        # Look up the new status name for the response payload.
         rs = ReviewStatusService().read_by_id(id=new_review.review_status_id) if new_review.review_status_id else None
         new_status_name = rs.name if rs else None
 

@@ -802,7 +802,8 @@ class ContractLaborService:
             invoice_id=None,
             contract_labor_id=cl.id,
             email_message_id=email_message_id,
-            created_by_user_id=reviewer_user_id,
+            # Authenticated caller (agent vs PM self-serve) — user_id stays the reviewer.
+            created_by_user_id=current_user_id.get(),
         )
 
         # ── Approval only: update each matched line item ─────────────
@@ -872,7 +873,8 @@ class ContractLaborService:
         # enforces the fully-coded invariant for all callers). Mirrors
         # ReviewService.create() lines 95-111; replicated here because
         # we go through ReviewRepository.create directly (Bill mirror
-        # pattern for created_by_user_id=reviewer attribution).
+        # pattern: user_id = the reviewer, created_by_user_id = the
+        # authenticated caller since U-564).
         # Failure-isolated: log + continue; the Review row is the
         # authoritative audit and stands on its own.
         ready_flipped = False

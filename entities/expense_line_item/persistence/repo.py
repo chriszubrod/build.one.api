@@ -11,6 +11,7 @@ import pyodbc
 from entities.expense_line_item.business.model import ExpenseLineItem
 from shared.database import (
     call_procedure,
+    conn_ctx,
     get_connection,
     map_database_error,
 )
@@ -215,13 +216,23 @@ class ExpenseLineItemRepository:
             logger.error(f"Error during read expense line item by QBO identity: {error}")
             raise map_database_error(error)
 
-    def update_by_id(self, expense_line_item: ExpenseLineItem, *, allow_terminal_parent: bool = True) -> Optional[ExpenseLineItem]:
+    def update_by_id(
+        self,
+        expense_line_item: ExpenseLineItem,
+        *,
+        allow_terminal_parent: bool = True,
+        conn: Optional[pyodbc.Connection] = None,
+    ) -> Optional[ExpenseLineItem]:
         """
         Update an expense line item by ID.
         """
         try:
-            with get_connection() as conn:
-                cursor = conn.cursor()
+            # conn_ctx(None) would call shared.database.get_connection and bypass
+            # repo-module patches in tests/test_u446b_terminal_lock.py and
+            # tests/test_u457_lifecycle_for_expense_billcredit_invoice.py.
+            cm = conn_ctx(conn) if conn is not None else get_connection()
+            with cm as c:
+                cursor = c.cursor()
                 params = {
                     "Id": expense_line_item.id,
                     "RowVersion": expense_line_item.row_version_bytes,
@@ -295,6 +306,31 @@ class ExpenseLineItemRepository:
                 error, what="its line items cannot be deleted"
             )
             logger.error(f"Error during delete expense line item by ID: {error}")
+            raise map_database_error(error)
+
+    def count_by_expense_id_for_update(
+        self, expense_id: int, *, conn: Optional[pyodbc.Connection] = None
+    ) -> int:
+        try:
+            # conn_ctx(None) would call shared.database.get_connection and bypass
+            # repo-module patches in tests/test_u446b_terminal_lock.py and
+            # tests/test_u457_lifecycle_for_expense_billcredit_invoice.py.
+            cm = conn_ctx(conn) if conn is not None else get_connection()
+            with cm as c:
+                cursor = c.cursor()
+                call_procedure(
+                    cursor=cursor,
+                    name="CountExpenseLineItemsByExpenseIdForUpdate",
+                    params={"ExpenseId": expense_id},
+                )
+                row = cursor.fetchone()
+                if not row:
+                    return 0
+                return int(row.LineCount)
+        except Exception as error:
+            logger.error(
+                "Error during CountExpenseLineItemsByExpenseIdForUpdate: %s", error
+            )
             raise map_database_error(error)
 
     def set_qbo_identity(

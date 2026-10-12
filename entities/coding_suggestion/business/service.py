@@ -43,6 +43,36 @@ class CodingSuggestionService:
             created_by_user_id=created_by_user_id,
         )
 
+    def ensure_for_expense(
+        self,
+        *,
+        expense_id: int,
+        qbo_id: str,
+        realm_id: str,
+        created_by_user_id: Optional[int] = None,
+    ) -> bool:
+        """Seed this Expense's suggestion when its QBO Purchase still has an uncategorized line.
+
+        Returns True when the upsert ran. It is a MERGE on (RealmId, QboPurchaseQboId), so a
+        repeated or concurrent call never duplicates a row or resets its status (U-652a).
+        """
+        from integrations.intuit.qbo.purchase.persistence.repo import QboPurchaseRepository
+
+        qbo_purchase = QboPurchaseRepository().read_by_qbo_id_and_realm_id(qbo_id, realm_id)
+        if qbo_purchase is None or qbo_purchase.id is None:
+            return False
+        if self._count_uncategorized_purchase_lines(realm_id=realm_id, qbo_purchase_qbo_id=qbo_id) < 1:
+            return False
+        self.upsert_from_queue(
+            qbo_purchase_id=int(qbo_purchase.id),
+            qbo_purchase_qbo_id=qbo_id,
+            realm_id=realm_id,
+            vendor_qbo_id=qbo_purchase.entity_ref_value,
+            expense_id=expense_id,
+            created_by_user_id=created_by_user_id,
+        )
+        return True
+
     @staticmethod
     def _resolve_expense_id_for_purchase(
         *, qbo_purchase_qbo_id: str, realm_id: str

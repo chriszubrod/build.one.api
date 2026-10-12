@@ -654,9 +654,40 @@ class ExpenseService:
 
         coding_states = CodingSuggestionRepository().read_state_by_expense_ids([expense_id])
         coding_items = coding_states.get(expense_id) or []
+        coding_service = CodingSuggestionService()
+        seeded_suggestion = False
+        if not coding_items:
+            # U-652a: nothing creates suggestion rows since the coding cockpit was retired, so
+            # seed one here (gates on, Purchase still has an uncategorized line). Any failure
+            # leaves today's outcome: skipped / no_coding_items; the review submit never fails.
+            try:
+                from integrations.intuit.qbo.base.client import recode_write_gate_reason
+
+                if recode_write_gate_reason() is None:
+                    expense = self.read_by_id(expense_id)
+                    if expense is not None and expense.qbo_id and expense.realm_id:
+                        seeded_suggestion = coding_service.ensure_for_expense(
+                            expense_id=expense_id,
+                            qbo_id=expense.qbo_id,
+                            realm_id=expense.realm_id,
+                            created_by_user_id=user_id,
+                        )
+                    coding_states = CodingSuggestionRepository().read_state_by_expense_ids(
+                        [expense_id]
+                    )
+                    coding_items = coding_states.get(expense_id) or []
+            except Exception as exc:
+                logger.warning(
+                    "Expense coding suggestion seed on submit failed (%s)",
+                    type(exc).__name__,
+                )
+
         if not coding_items:
             summary["skipped"] = 1
-            summary["items"].append({"reason": "no_coding_items"})
+            skip_item: dict[str, Any] = {"reason": "no_coding_items"}
+            if seeded_suggestion:
+                skip_item["seeded_suggestion"] = True
+            summary["items"].append(skip_item)
             return summary
 
         seen_public_ids: set[str] = set()
@@ -674,12 +705,14 @@ class ExpenseService:
             return summary
 
         dominant = self._resolve_dominant_expense_coding_for_submit(expense_id=expense_id)
-        coding_service = CodingSuggestionService()
 
         for item in deduped:
             public_id = item.get("public_id")
             status = item.get("status")
             item_result: dict[str, Any] = {"public_id": public_id, "status": status}
+            if seeded_suggestion:
+                item_result["seeded_suggestion"] = True
+                seeded_suggestion = False
 
             if _is_terminal_status(status):
                 summary["skipped"] += 1

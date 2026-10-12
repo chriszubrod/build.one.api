@@ -133,11 +133,15 @@ def blind_index(value: str) -> Optional[str]:
     return hmac.new(key, value.encode("utf-8"), hashlib.sha256).hexdigest()
 
 
+# version(1) + timestamp(8) + IV(16) + one AES block(16) + HMAC(32)
+_FERNET_MIN_TOKEN_BYTES = 73
+
+
 def _looks_like_fernet(value: str) -> bool:
     """Check whether a string is structurally a Fernet token (base64, correct prefix byte)."""
     try:
-        raw = base64.urlsafe_b64decode(value)
-        return len(raw) >= 73 and raw[0:1] == b"\x80"
+        raw = base64.urlsafe_b64decode(value.encode())
+        return len(raw) >= _FERNET_MIN_TOKEN_BYTES and raw[0:1] == b"\x80"
     except Exception:
         return False
 
@@ -145,6 +149,10 @@ def _looks_like_fernet(value: str) -> bool:
 def decrypt_if_encrypted(value: Optional[str], *, field_name: str = "unknown") -> Optional[str]:
     """
     Decrypt a value if it is a Fernet ciphertext; otherwise return it as-is.
+
+    Plaintext is detected by shape (_looks_like_fernet) before any decrypt
+    attempt, so legacy plaintext rows never hit decrypt_sensitive_data or its
+    failure logging.
 
     Used by persistence layers transitioning from plaintext to encrypted
     storage. Existing plaintext rows continue to read correctly; once any
@@ -159,15 +167,15 @@ def decrypt_if_encrypted(value: Optional[str], *, field_name: str = "unknown") -
     """
     if not value:
         return value
+    if not _looks_like_fernet(value):
+        return value
     try:
         return decrypt_sensitive_data(value)
     except EncryptionError:
-        if _looks_like_fernet(value):
-            logger.error(
-                "decrypt_if_encrypted: field '%s' looks like Fernet ciphertext "
-                "but decryption failed — probable key mismatch. Refusing to "
-                "pass ciphertext through as plaintext.",
-                field_name,
-            )
-            raise
-        return value
+        logger.error(
+            "decrypt_if_encrypted: field '%s' looks like Fernet ciphertext "
+            "but decryption failed — probable key mismatch. Refusing to "
+            "pass ciphertext through as plaintext.",
+            field_name,
+        )
+        raise

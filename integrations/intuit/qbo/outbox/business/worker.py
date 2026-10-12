@@ -1085,41 +1085,32 @@ class QboOutboxWorker:
         if row.entity_type not in ("CodingSuggestion", "ExpenseCodingItem"):
             return
 
+        confirmation_seq = getattr(item, "confirmation_seq", None)
+
+        def _terminal_mark(mark_name: str, mark_fn, **kwargs) -> bool:
+            if mark_fn(row.entity_public_id, expected_confirmation_seq=confirmation_seq, **kwargs) is None:
+                logger.info(
+                    "coding_suggestion terminal mark skipped public_id=%s mark=%s",
+                    row.entity_public_id,
+                    mark_name,
+                )
+                return False
+            return True
+
         line_targets, resolve_error = self._resolve_recode_purchase_line_targets(row, item)
         if resolve_error == self._CONFIRMATION_SCOPE_CHANGED:
-            # Guarded by the version this worker read: a review submission that landed since
-            # (fresh confirmation + its own outbox row) must survive this stale refusal.
-            marked = svc.mark_changed_in_qbo(
-                row.entity_public_id,
-                expected_row_version=getattr(item, "row_version_bytes", None),
-            )
-            if marked is None:
-                # The guard missed. If only the confirming request's mark_enqueued moved the
-                # version (same confirmation: ConfirmedAt and source unchanged), re-apply on the
-                # current version so this job is not stranded 'enqueued'. A newer confirmation
-                # is left alone: it carries its own outbox row.
-                current = svc.read_by_public_id(row.entity_public_id)
-                if (
-                    current is not None
-                    and current.status in ("enqueued", "confirmed")
-                    and getattr(current, "confirmed_at", None) == getattr(item, "confirmed_at", None)
-                    and getattr(current, "confirmation_source", None)
-                    == getattr(item, "confirmation_source", None)
-                ):
-                    svc.mark_changed_in_qbo(
-                        row.entity_public_id,
-                        expected_row_version=getattr(current, "row_version_bytes", None),
-                    )
+            _terminal_mark("changed_in_qbo", svc.mark_changed_in_qbo)
             return
         if line_targets is None:  # incl. _MULTI_LINE_UNMAPPED_ERROR
-            svc.mark_error(
-                row.entity_public_id,
+            _terminal_mark(
+                "error",
+                svc.mark_error,
                 write_error=resolve_error or "recode_target_resolve_failed",
             )
             return
 
         if not line_targets:
-            svc.mark_error(row.entity_public_id, write_error="no_target_lines")
+            _terminal_mark("error", svc.mark_error, write_error="no_target_lines")
             return
 
         try:
@@ -1132,19 +1123,24 @@ class QboOutboxWorker:
         except (PurchaseChangedInQboError, QboSyncTokenMismatchError):
             # Both mean the live Purchase drifted from the coding decision — bounce
             # to re-review, fail closed (never reach the worker's refresh-and-retry).
-            svc.mark_changed_in_qbo(row.entity_public_id)
+            _terminal_mark("changed_in_qbo", svc.mark_changed_in_qbo)
             return
         except PurchaseRecodeMappingError as exc:
-            svc.mark_error(row.entity_public_id, write_error=str(exc))
+            _terminal_mark("error", svc.mark_error, write_error=str(exc))
             return
 
         status = result.get("status")
         if status in ("written", "already_recoded"):
-            svc.mark_written(row.entity_public_id, sync_token=result.get("sync_token"))
+            _terminal_mark(
+                "written",
+                svc.mark_written,
+                sync_token=result.get("sync_token"),
+            )
         elif status == "line_not_found":
-            svc.mark_changed_in_qbo(row.entity_public_id)
+            _terminal_mark("changed_in_qbo", svc.mark_changed_in_qbo)
         else:
-            svc.mark_error(
-                row.entity_public_id,
+            _terminal_mark(
+                "error",
+                svc.mark_error,
                 write_error=f"unexpected recode status: {status}",
             )

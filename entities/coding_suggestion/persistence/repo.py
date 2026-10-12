@@ -60,6 +60,7 @@ class CodingSuggestionRepository:
                 confirmed_mixed_codes=getattr(row, "ConfirmedMixedCodes", None),
                 prefill_state=getattr(row, "PrefillState", None),
                 confirmation_source=getattr(row, "ConfirmationSource", None),
+                confirmation_seq=getattr(row, "ConfirmationSeq", None),
                 flag_reason=getattr(row, "FlagReason", None),
                 flagged_at=getattr(row, "FlaggedAt", None),
                 written_at=getattr(row, "WrittenAt", None),
@@ -290,6 +291,7 @@ class CodingSuggestionRepository:
         self,
         public_id: str,
         sync_token: Optional[str] = None,
+        expected_confirmation_seq: Optional[int] = None,
     ) -> Optional[CodingSuggestion]:
         try:
             with get_connection() as conn:
@@ -300,6 +302,7 @@ class CodingSuggestionRepository:
                     params={
                         "PublicId": public_id,
                         "SyncToken": sync_token,
+                        "ExpectedConfirmationSeq": expected_confirmation_seq,
                     },
                 )
                 return self._from_db(cursor.fetchone())
@@ -356,7 +359,9 @@ class CodingSuggestionRepository:
             raise map_database_error(error)
 
     def mark_changed_in_qbo(
-        self, public_id: str, expected_row_version: Optional[bytes] = None
+        self,
+        public_id: str,
+        expected_confirmation_seq: Optional[int] = None,
     ) -> Optional[CodingSuggestion]:
         try:
             with get_connection() as conn:
@@ -364,7 +369,10 @@ class CodingSuggestionRepository:
                 call_procedure(
                     cursor=cursor,
                     name="MarkCodingSuggestionChangedInQbo",
-                    params={"PublicId": public_id, "ExpectedRowVersion": expected_row_version},
+                    params={
+                        "PublicId": public_id,
+                        "ExpectedConfirmationSeq": expected_confirmation_seq,
+                    },
                 )
                 return self._from_db(cursor.fetchone())
         except Exception as error:
@@ -401,6 +409,7 @@ class CodingSuggestionRepository:
         self,
         public_id: str,
         write_error: Optional[str] = None,
+        expected_confirmation_seq: Optional[int] = None,
     ) -> Optional[CodingSuggestion]:
         try:
             with get_connection() as conn:
@@ -411,6 +420,7 @@ class CodingSuggestionRepository:
                     params={
                         "PublicId": public_id,
                         "WriteError": write_error,
+                        "ExpectedConfirmationSeq": expected_confirmation_seq,
                     },
                 )
                 return self._from_db(cursor.fetchone())

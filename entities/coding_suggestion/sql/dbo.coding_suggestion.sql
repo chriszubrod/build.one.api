@@ -45,6 +45,7 @@ CREATE TABLE [dbo].[CodingSuggestion]
     [ConfirmedMixedCodes] BIT NULL,
     [PrefillState] NVARCHAR(12) NULL,
     [ConfirmationSource] NVARCHAR(20) NULL,   -- 'review_submit' | 'confirm_endpoint' (U-652): only review_submit may write per-line coding
+    [ConfirmationSeq] INT NOT NULL DEFAULT 0, -- U-652c: bumped on each confirmation; terminal marks guard on it
     [Status] NVARCHAR(30) NOT NULL DEFAULT 'pending',
     [FlagReason] NVARCHAR(1024) NULL,
     [FlaggedAt] DATETIME2(3) NULL,
@@ -87,6 +88,10 @@ GO
 
 IF COL_LENGTH('dbo.CodingSuggestion', 'ConfirmationSource') IS NULL
     ALTER TABLE dbo.[CodingSuggestion] ADD [ConfirmationSource] NVARCHAR(20) NULL;
+GO
+
+IF COL_LENGTH('dbo.CodingSuggestion', 'ConfirmationSeq') IS NULL
+    ALTER TABLE dbo.[CodingSuggestion] ADD [ConfirmationSeq] INT NOT NULL CONSTRAINT DF_CodingSuggestion_ConfirmationSeq DEFAULT 0;
 GO
 
 IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'UQ_CodingSuggestion_PublicId' AND object_id = OBJECT_ID('dbo.CodingSuggestion'))
@@ -206,6 +211,7 @@ BEGIN
         INSERTED.[ConfirmedMixedCodes],
         INSERTED.[PrefillState],
         INSERTED.[ConfirmationSource],
+        INSERTED.[ConfirmationSeq],
         INSERTED.[FlagReason],
         INSERTED.[FlaggedAt],
         INSERTED.[WrittenAt],
@@ -261,6 +267,7 @@ BEGIN
         cs.[ConfirmedMixedCodes],
         cs.[PrefillState],
         cs.[ConfirmationSource],
+        cs.[ConfirmationSeq],
         cs.[FlagReason],
         cs.[FlaggedAt],
         cs.[WrittenAt],
@@ -346,6 +353,7 @@ BEGIN
         cs.[ConfirmedMixedCodes],
         cs.[PrefillState],
         cs.[ConfirmationSource],
+        cs.[ConfirmationSeq],
         cs.[FlagReason],
         cs.[FlaggedAt],
         cs.[WrittenAt],
@@ -422,6 +430,7 @@ BEGIN
         cs.[ConfirmedMixedCodes],
         cs.[PrefillState],
         cs.[ConfirmationSource],
+        cs.[ConfirmationSeq],
         cs.[FlagReason],
         cs.[FlaggedAt],
         cs.[WrittenAt],
@@ -500,6 +509,7 @@ BEGIN
         cs.[ConfirmedMixedCodes],
         cs.[PrefillState],
         cs.[ConfirmationSource],
+        cs.[ConfirmationSeq],
         cs.[FlagReason],
         cs.[FlaggedAt],
         cs.[WrittenAt],
@@ -573,6 +583,7 @@ BEGIN
         cs.[ConfirmedMixedCodes],
         cs.[PrefillState],
         cs.[ConfirmationSource],
+        cs.[ConfirmationSeq],
         cs.[FlagReason],
         cs.[FlaggedAt],
         cs.[WrittenAt],
@@ -624,6 +635,7 @@ BEGIN
         [ConfirmedMixedCodes] = CASE WHEN @ConfirmedMixedCodes IS NOT NULL THEN @ConfirmedMixedCodes ELSE cs.[ConfirmedMixedCodes] END,
         [PrefillState] = CASE WHEN @PrefillState IS NOT NULL THEN @PrefillState ELSE cs.[PrefillState] END,
         [ConfirmationSource] = @ConfirmationSource,
+        [ConfirmationSeq] = cs.[ConfirmationSeq] + 1,
         [ConfirmedAt] = @Now,
         [SyncTokenAtSuggest] = CASE WHEN @ExpectedSyncToken IS NOT NULL THEN @ExpectedSyncToken ELSE cs.[SyncTokenAtSuggest] END,
         [Status] = COALESCE(@Status, cs.[Status]),
@@ -663,6 +675,7 @@ BEGIN
         cs.[ConfirmedMixedCodes],
         cs.[PrefillState],
         cs.[ConfirmationSource],
+        cs.[ConfirmationSeq],
         cs.[FlagReason],
         cs.[FlaggedAt],
         cs.[WrittenAt],
@@ -733,6 +746,7 @@ BEGIN
         cs.[ConfirmedMixedCodes],
         cs.[PrefillState],
         cs.[ConfirmationSource],
+        cs.[ConfirmationSeq],
         cs.[FlagReason],
         cs.[FlaggedAt],
         cs.[WrittenAt],
@@ -754,7 +768,8 @@ GO
 CREATE OR ALTER PROCEDURE MarkCodingSuggestionWritten
 (
     @PublicId UNIQUEIDENTIFIER,
-    @SyncToken NVARCHAR(50) = NULL
+    @SyncToken NVARCHAR(50) = NULL,
+    @ExpectedConfirmationSeq INT = NULL
 )
 AS
 BEGIN
@@ -773,7 +788,14 @@ BEGIN
         [ModifiedDatetime] = @Now,
         @UpdatedId = cs.[Id]
     FROM dbo.[CodingSuggestion] cs
-    WHERE cs.[PublicId] = @PublicId;
+    WHERE cs.[PublicId] = @PublicId
+      AND (
+          @ExpectedConfirmationSeq IS NULL
+          OR (
+              cs.[ConfirmationSeq] = @ExpectedConfirmationSeq
+              AND cs.[Status] IN (N'confirmed', N'enqueued')
+          )
+      );
 
     SELECT
         cs.[Id],
@@ -806,6 +828,7 @@ BEGIN
         cs.[ConfirmedMixedCodes],
         cs.[PrefillState],
         cs.[ConfirmationSource],
+        cs.[ConfirmationSeq],
         cs.[FlagReason],
         cs.[FlaggedAt],
         cs.[WrittenAt],
@@ -827,9 +850,10 @@ GO
 CREATE OR ALTER PROCEDURE MarkCodingSuggestionChangedInQbo
 (
     @PublicId UNIQUEIDENTIFIER,
-    -- U-652: the row version the caller read. When given, the mark applies only if the row is
-    -- unchanged since, so a stale worker never overwrites a newer confirmation.
-    @ExpectedRowVersion BINARY(8) = NULL
+    -- U-652 (superseded by U-652c's @ExpectedConfirmationSeq): kept only so the API image deployed
+    -- before U-652c keeps working during the deploy window. No current caller passes it; drop later.
+    @ExpectedRowVersion BINARY(8) = NULL,
+    @ExpectedConfirmationSeq INT = NULL
 )
 AS
 BEGIN
@@ -847,7 +871,14 @@ BEGIN
         @UpdatedId = cs.[Id]
     FROM dbo.[CodingSuggestion] cs
     WHERE cs.[PublicId] = @PublicId
-      AND (@ExpectedRowVersion IS NULL OR cs.[RowVersion] = @ExpectedRowVersion);
+      AND (@ExpectedRowVersion IS NULL OR cs.[RowVersion] = @ExpectedRowVersion)
+      AND (
+          @ExpectedConfirmationSeq IS NULL
+          OR (
+              cs.[ConfirmationSeq] = @ExpectedConfirmationSeq
+              AND cs.[Status] IN (N'confirmed', N'enqueued')
+          )
+      );
 
     SELECT
         cs.[Id],
@@ -880,6 +911,7 @@ BEGIN
         cs.[ConfirmedMixedCodes],
         cs.[PrefillState],
         cs.[ConfirmationSource],
+        cs.[ConfirmationSeq],
         cs.[FlagReason],
         cs.[FlaggedAt],
         cs.[WrittenAt],
@@ -901,7 +933,8 @@ GO
 CREATE OR ALTER PROCEDURE MarkCodingSuggestionError
 (
     @PublicId UNIQUEIDENTIFIER,
-    @WriteError NVARCHAR(1024) = NULL
+    @WriteError NVARCHAR(1024) = NULL,
+    @ExpectedConfirmationSeq INT = NULL
 )
 AS
 BEGIN
@@ -919,7 +952,14 @@ BEGIN
         [ModifiedDatetime] = @Now,
         @UpdatedId = cs.[Id]
     FROM dbo.[CodingSuggestion] cs
-    WHERE cs.[PublicId] = @PublicId;
+    WHERE cs.[PublicId] = @PublicId
+      AND (
+          @ExpectedConfirmationSeq IS NULL
+          OR (
+              cs.[ConfirmationSeq] = @ExpectedConfirmationSeq
+              AND cs.[Status] IN (N'confirmed', N'enqueued')
+          )
+      );
 
     SELECT
         cs.[Id],
@@ -952,6 +992,7 @@ BEGIN
         cs.[ConfirmedMixedCodes],
         cs.[PrefillState],
         cs.[ConfirmationSource],
+        cs.[ConfirmationSeq],
         cs.[FlagReason],
         cs.[FlaggedAt],
         cs.[WrittenAt],
@@ -1142,6 +1183,7 @@ BEGIN
         INSERTED.[ConfirmedMixedCodes],
         INSERTED.[PrefillState],
         INSERTED.[ConfirmationSource],
+        INSERTED.[ConfirmationSeq],
         INSERTED.[FlagReason],
         INSERTED.[FlaggedAt],
         INSERTED.[WrittenAt],

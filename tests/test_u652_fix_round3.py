@@ -233,16 +233,15 @@ def test_worker_refuses_multi_line_unless_confirmed_by_review_submit(source):
 def test_worker_marks_scope_change_changed_in_qbo_without_writing():
     item = _make_item()
     item.confirmation_source = "confirm_endpoint"
-    item.row_version_bytes = b"\x00\x00\x00\x00\x00\x00\x07\xd1"
+    item.confirmation_seq = 2
     worker = QboOutboxWorker()
     with patch("entities.coding_suggestion.business.service.CodingSuggestionService") as svc_cls, \
          patch("integrations.intuit.qbo.purchase.connector.expense.business.service.PurchaseExpenseConnector") as conn_cls, \
          patch.object(worker, "_read_uncategorized_staging_line_ids", return_value=["1", "2"]):
         svc_cls.return_value.read_by_public_id.return_value = item
         worker._handle_recode_purchase_line(_make_outbox())
-    # round 5: guarded by the row version the worker read, so a newer confirmation survives
     svc_cls.return_value.mark_changed_in_qbo.assert_called_once_with(
-        PUBLIC_ID, expected_row_version=b"\x00\x00\x00\x00\x00\x00\x07\xd1"
+        PUBLIC_ID, expected_confirmation_seq=2
     )
     svc_cls.return_value.mark_written.assert_not_called()
     conn_cls.return_value.recode_purchase_lines.assert_not_called()
@@ -265,42 +264,29 @@ def test_confirm_records_its_confirmation_source(_ref, _gate, allow_multi_line, 
     assert svc.record_confirmation.call_args.kwargs["confirmation_source"] == expected
 
 
-# --- round 6: a missed guarded mark must not strand the job --------------------------------
+# --- U-652c: stale ConfirmationSeq guard skips without reread/re-apply -----------------------
 
 
-def _scope_item(row_version, confirmed_at, status="confirmed", source="confirm_endpoint"):
+def test_scope_change_guard_miss_does_not_reread_or_reapply():
+    """A newer confirmation owns the row; the stale job logs and exits."""
+    import logging
+
     item = _make_item()
-    item.status = status
-    item.confirmation_source = source
-    item.confirmed_at = confirmed_at
-    item.row_version_bytes = row_version
-    return item
-
-
-def _run_scope_change(first_read, reread, mark_results):
+    item.confirmation_source = "confirm_endpoint"
+    item.confirmation_seq = 1
     worker = QboOutboxWorker()
     with patch("entities.coding_suggestion.business.service.CodingSuggestionService") as svc_cls, \
          patch("integrations.intuit.qbo.purchase.connector.expense.business.service.PurchaseExpenseConnector") as conn_cls, \
-         patch.object(worker, "_read_uncategorized_staging_line_ids", return_value=["1", "2"]):
+         patch.object(worker, "_read_uncategorized_staging_line_ids", return_value=["1", "2"]), \
+         patch.object(worker, "_resolve_recode_purchase_line_targets", return_value=(None, "confirmation_scope_changed")):
         svc = svc_cls.return_value
-        svc.read_by_public_id.side_effect = [first_read, reread]
-        svc.mark_changed_in_qbo.side_effect = mark_results
-        worker._handle_recode_purchase_line(_make_outbox())
+        svc.read_by_public_id.return_value = item
+        svc.mark_changed_in_qbo.return_value = None
+        with patch.object(logging.getLogger("integrations.intuit.qbo.outbox.business.worker"), "info") as log_info:
+            worker._handle_recode_purchase_line(_make_outbox())
+    svc.mark_changed_in_qbo.assert_called_once_with(
+        PUBLIC_ID, expected_confirmation_seq=1
+    )
+    assert svc.read_by_public_id.call_count == 1
     conn_cls.return_value.recode_purchase_lines.assert_not_called()
-    return svc
-
-
-def test_scope_change_reapplies_when_only_the_enqueue_follow_up_moved_the_version():
-    """Worker read 'confirmed' before the confirming request finished mark_enqueued; the guarded
-    mark misses. Same confirmation (ConfirmedAt unchanged) => re-apply on the current version."""
-    first = _scope_item(b"v1", "2026-10-12T10:00:00", status="confirmed")
-    again = _scope_item(b"v2", "2026-10-12T10:00:00", status="enqueued")
-    svc = _run_scope_change(first, again, [None, SimpleNamespace(status="changed_in_qbo")])
-    assert [c.kwargs["expected_row_version"] for c in svc.mark_changed_in_qbo.call_args_list] == [b"v1", b"v2"]
-
-
-def test_scope_change_leaves_a_newer_confirmation_alone():
-    first = _scope_item(b"v1", "2026-10-12T10:00:00")
-    newer = _scope_item(b"v2", "2026-10-12T10:05:00", status="enqueued", source="review_submit")
-    svc = _run_scope_change(first, newer, [None])
-    assert svc.mark_changed_in_qbo.call_count == 1
+    assert log_info.called

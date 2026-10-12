@@ -56,6 +56,7 @@ class CodingSuggestion:
     created_datetime: Optional[str]
     modified_datetime: Optional[str]
     confirmation_source: Optional[str] = None  # 'review_submit' | 'confirm_endpoint' (U-652)
+    confirmation_seq: Optional[int] = None  # U-652c: bumped on each confirmation
 
     @property
     def row_version_bytes(self) -> Optional[bytes]:

@@ -244,7 +244,9 @@ def test_worker_accepts_entity_type_coding_suggestion(mock_svc_cls, mock_connect
         QboOutboxWorker()._handle_recode_purchase_line(_make_outbox_row(entity_type="CodingSuggestion"))
 
     connector.recode_purchase_lines.assert_called_once()
-    svc.mark_written.assert_called_once_with(PUBLIC_ID, sync_token="6")
+    svc.mark_written.assert_called_once_with(
+        PUBLIC_ID, sync_token="6", expected_confirmation_seq=None
+    )
 
 
 @patch(

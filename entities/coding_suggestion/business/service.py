@@ -183,13 +183,23 @@ class CodingSuggestionService:
         self,
         public_id: str,
         sync_token: Optional[str] = None,
+        expected_confirmation_seq: Optional[int] = None,
     ) -> Optional[CodingSuggestion]:
-        return self.repo.mark_written(public_id, sync_token=sync_token)
+        return self.repo.mark_written(
+            public_id,
+            sync_token=sync_token,
+            expected_confirmation_seq=expected_confirmation_seq,
+        )
 
     def mark_changed_in_qbo(
-        self, public_id: str, expected_row_version: Optional[bytes] = None
+        self,
+        public_id: str,
+        expected_confirmation_seq: Optional[int] = None,
     ) -> Optional[CodingSuggestion]:
-        return self.repo.mark_changed_in_qbo(public_id, expected_row_version=expected_row_version)
+        return self.repo.mark_changed_in_qbo(
+            public_id,
+            expected_confirmation_seq=expected_confirmation_seq,
+        )
 
     _DEFAULT_EXTERNALLY_RESOLVED_REASON = (
         "recoded outside the cockpit; staging line replaced"
@@ -217,8 +227,13 @@ class CodingSuggestionService:
         self,
         public_id: str,
         write_error: Optional[str] = None,
+        expected_confirmation_seq: Optional[int] = None,
     ) -> Optional[CodingSuggestion]:
-        return self.repo.mark_error(public_id, write_error=write_error)
+        return self.repo.mark_error(
+            public_id,
+            write_error=write_error,
+            expected_confirmation_seq=expected_confirmation_seq,
+        )
 
     def confirm(
         self,

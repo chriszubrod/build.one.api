@@ -124,7 +124,9 @@ def test_handle_recode_written_calls_mark_written(mock_svc_cls, mock_connector_c
     QboOutboxWorker()._handle_recode_purchase_line(_make_outbox_row())
 
     connector.recode_purchase_lines.assert_called_once()
-    svc.mark_written.assert_called_once_with(PUBLIC_ID, sync_token="6")
+    svc.mark_written.assert_called_once_with(
+        PUBLIC_ID, sync_token="6", expected_confirmation_seq=None
+    )
 
 
 @patch(
@@ -145,7 +147,9 @@ def test_handle_recode_processes_confirmed_state_crash_window(mock_svc_cls, mock
     QboOutboxWorker()._handle_recode_purchase_line(_make_outbox_row())
 
     connector.recode_purchase_lines.assert_called_once()
-    svc.mark_written.assert_called_once_with(PUBLIC_ID, sync_token="6")
+    svc.mark_written.assert_called_once_with(
+        PUBLIC_ID, sync_token="6", expected_confirmation_seq=None
+    )
 
 
 @patch(
@@ -167,7 +171,9 @@ def test_handle_recode_purchase_changed_marks_changed_in_qbo(mock_svc_cls, mock_
 
     QboOutboxWorker()._handle_recode_purchase_line(_make_outbox_row())
 
-    svc.mark_changed_in_qbo.assert_called_once_with(PUBLIC_ID)
+    svc.mark_changed_in_qbo.assert_called_once_with(
+        PUBLIC_ID, expected_confirmation_seq=None
+    )
     svc.mark_written.assert_not_called()
     svc.mark_error.assert_not_called()
 
@@ -187,7 +193,9 @@ def test_handle_recode_sync_token_mismatch_marks_changed_in_qbo(mock_svc_cls, mo
 
     QboOutboxWorker()._handle_recode_purchase_line(_make_outbox_row())
 
-    svc.mark_changed_in_qbo.assert_called_once_with(PUBLIC_ID)
+    svc.mark_changed_in_qbo.assert_called_once_with(
+        PUBLIC_ID, expected_confirmation_seq=None
+    )
 
 
 @patch(
@@ -225,7 +233,9 @@ def test_handle_recode_line_not_found_marks_changed_in_qbo(mock_svc_cls, mock_co
 
     QboOutboxWorker()._handle_recode_purchase_line(_make_outbox_row())
 
-    svc.mark_changed_in_qbo.assert_called_once_with(PUBLIC_ID)
+    svc.mark_changed_in_qbo.assert_called_once_with(
+        PUBLIC_ID, expected_confirmation_seq=None
+    )
     connector.recode_purchase_lines.assert_called_once()
 
 

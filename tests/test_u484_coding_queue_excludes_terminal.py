@@ -1,8 +1,8 @@
-"""U-484 — exclude terminal ExpenseCodingItem statuses from the coding queue.
+"""U-484 — exclude terminal CodingSuggestion statuses from the coding queue.
 
 Pure-logic / source pins — no live DB. Finished work (`written`,
 `resolved_externally`) must not appear in the operator work list, while NULL-status
-rows (no ExpenseCodingItem yet) must stay visible so lazy reseed fires.
+rows (no CodingSuggestion yet) must stay visible so lazy reseed fires.
 """
 
 import re
@@ -33,12 +33,12 @@ FULL_CODING_STATUS_VOCABULARY = (
 )
 
 _TERMINAL_EXCLUSION_PATTERN = re.compile(
-    r"eci\.\[Status\]\s+IS\s+NULL\s+OR\s+eci\.\[Status\]\s+NOT\s+IN\s*\([^)]*\)",
+    r"cs\.\[Status\]\s+IS\s+NULL\s+OR\s+cs\.\[Status\]\s+NOT\s+IN\s*\([^)]*\)",
     re.IGNORECASE | re.DOTALL,
 )
 
 _GUARDED_NOT_IN_GROUP_PATTERN = re.compile(
-    r"\(\s*eci\.\[Status\]\s+IS\s+NULL\s+OR\s+eci\.\[Status\]\s+NOT\s+IN\s*\([^)]*\)\s*\)",
+    r"\(\s*cs\.\[Status\]\s+IS\s+NULL\s+OR\s+cs\.\[Status\]\s+NOT\s+IN\s*\([^)]*\)\s*\)",
     re.IGNORECASE | re.DOTALL,
 )
 
@@ -59,20 +59,20 @@ def _queue_join_on_and_where() -> tuple[str, str]:
     """Return (LEFT JOIN ... ON span, WHERE ... ORDER BY span) for the queue sproc."""
     body = _queue_body()
     join_match = re.search(
-        r"LEFT\s+JOIN\s+\[dbo\]\.\[ExpenseCodingItem\]\s+eci\s+ON\s+(.+?)\s+WHERE\b",
+        r"FROM\s+Ranked\s+r\s+LEFT\s+JOIN\s+\[dbo\]\.\[CodingSuggestion\]\s+cs\s+ON\s+(.+?)\s+WHERE\s+r\.\[Rn\]",
         body,
         re.IGNORECASE | re.DOTALL,
     )
     assert join_match is not None, (
-        "ReadExpenseCodingQueue must LEFT JOIN ExpenseCodingItem before WHERE"
+        "ReadExpenseCodingQueue must LEFT JOIN CodingSuggestion before WHERE"
     )
     where_match = re.search(
-        r"\bWHERE\b(.+?)\bORDER\s+BY\b",
+        r"FROM\s+Ranked\s+r\s+LEFT\s+JOIN\s+\[dbo\]\.\[CodingSuggestion\]\s+cs\s+ON\s+.+?\s+WHERE\s+r\.\[Rn\]\s*=\s*1(.*?)ORDER\s+BY",
         body,
         re.IGNORECASE | re.DOTALL,
     )
     assert where_match is not None, (
-        "ReadExpenseCodingQueue must have WHERE ... ORDER BY"
+        "ReadExpenseCodingQueue must have WHERE ... ORDER BY on the outer select"
     )
     return join_match.group(1), where_match.group(1)
 
@@ -80,13 +80,13 @@ def _queue_join_on_and_where() -> tuple[str, str]:
 def _terminal_exclusion_list(body: str) -> str:
     """Return the NOT IN (...) chunk for the queue's terminal-status exclusion."""
     match = re.search(
-        r"eci\.\[Status\]\s+IS\s+NULL\s+OR\s+eci\.\[Status\]\s+NOT\s+IN\s*\(([^)]+)\)",
+        r"cs\.\[Status\]\s+IS\s+NULL\s+OR\s+cs\.\[Status\]\s+NOT\s+IN\s*\(([^)]+)\)",
         body,
         re.IGNORECASE | re.DOTALL,
     )
     assert match is not None, (
         "ReadExpenseCodingQueue must use NULL-safe terminal exclusion "
-        "(eci.[Status] IS NULL OR eci.[Status] NOT IN (...))"
+        "(cs.[Status] IS NULL OR cs.[Status] NOT IN (...))"
     )
     return match.group(1)
 
@@ -99,11 +99,11 @@ def _terminal_exclusion_list(body: str) -> str:
 def test_queue_terminal_exclusion_is_null_safe():
     body = _queue_body()
     assert re.search(
-        r"eci\.\[Status\]\s+IS\s+NULL\s+OR\s+eci\.\[Status\]\s+NOT\s+IN\s*\(",
+        r"cs\.\[Status\]\s+IS\s+NULL\s+OR\s+cs\.\[Status\]\s+NOT\s+IN\s*\(",
         body,
         re.IGNORECASE,
     ), (
-        "ReadExpenseCodingQueue must guard NOT IN with eci.[Status] IS NULL OR — "
+        "ReadExpenseCodingQueue must guard NOT IN with cs.[Status] IS NULL OR — "
         "NULL NOT IN (...) drops unseeded LEFT JOIN rows and breaks lazy reseed"
     )
     guarded_spans = [
@@ -111,13 +111,13 @@ def test_queue_terminal_exclusion_is_null_safe():
     ]
     assert guarded_spans, (
         "ReadExpenseCodingQueue must wrap terminal exclusion in "
-        "(eci.[Status] IS NULL OR eci.[Status] NOT IN (...))"
+        "(cs.[Status] IS NULL OR cs.[Status] NOT IN (...))"
     )
-    for match in re.finditer(r"eci\.\[Status\]\s+NOT\s+IN", body, re.IGNORECASE):
+    for match in re.finditer(r"cs\.\[Status\]\s+NOT\s+IN", body, re.IGNORECASE):
         pos = match.start()
         in_guarded_group = any(start <= pos < end for start, end in guarded_spans)
         assert in_guarded_group, (
-            "Found eci.[Status] NOT IN outside its own (IS NULL OR NOT IN) group — "
+            "Found cs.[Status] NOT IN outside its own (IS NULL OR NOT IN) group — "
             "proximity to a neighbour guard is not sufficient; each NOT IN needs "
             "its own IS NULL OR within the same parenthesized expression"
         )
@@ -130,9 +130,9 @@ def test_queue_terminal_exclusion_is_null_safe():
 
 def test_queue_terminal_exclusion_in_where_not_join():
     join_on, where_clause = _queue_join_on_and_where()
-    assert not re.search(r"eci\.\[Status\]", join_on, re.IGNORECASE), (
-        "eci.[Status] must not appear in the LEFT JOIN ... ON clause — "
-        "join-clause filtering re-admits terminal rows with NULL eci columns "
+    assert not re.search(r"cs\.\[Status\]", join_on, re.IGNORECASE), (
+        "cs.[Status] must not appear in the LEFT JOIN ... ON clause — "
+        "join-clause filtering re-admits terminal rows with NULL cs columns "
         "(lazy reseed on already-seeded lines + COALESCE(NULL,NULL) scoping bypass)"
     )
     assert _TERMINAL_EXCLUSION_PATTERN.search(where_clause), (
@@ -149,7 +149,7 @@ def test_queue_terminal_exclusion_in_where_not_join():
 def test_queue_terminal_exclusion_and_not_or():
     _, where_clause = _queue_join_on_and_where()
     assert re.search(
-        r"\bAND\s*\(\s*eci\.\[Status\]\s+IS\s+NULL\s+OR\s+eci\.\[Status\]\s+NOT\s+IN",
+        r"\bAND\s*\(\s*cs\.\[Status\]\s+IS\s+NULL\s+OR\s+cs\.\[Status\]\s+NOT\s+IN",
         where_clause,
         re.IGNORECASE,
     ), (
@@ -157,7 +157,7 @@ def test_queue_terminal_exclusion_and_not_or():
         "OR would parse as (A AND B) OR C and admit non-58999 purchase lines"
     )
     assert not re.search(
-        r"\bOR\s*\(\s*eci\.\[Status\]\s+IS\s+NULL\s+OR\s+eci\.\[Status\]\s+NOT\s+IN",
+        r"\bOR\s*\(\s*cs\.\[Status\]\s+IS\s+NULL\s+OR\s+cs\.\[Status\]\s+NOT\s+IN",
         where_clause,
         re.IGNORECASE,
     ), (
@@ -186,7 +186,7 @@ class _FakeLineRepoReseed:
         return seq
 
 
-@patch("entities.expense_coding_item.business.service.ExpenseCodingItemService")
+@patch("entities.coding_suggestion.business.service.CodingSuggestionService")
 def test_lazy_reseed_fires_when_coding_item_missing(mock_coding_svc_cls):
     unseeded_row = {
         "qbo_purchase_id": 1,
@@ -211,7 +211,7 @@ def test_lazy_reseed_fires_when_coding_item_missing(mock_coding_svc_cls):
     assert result == [seeded_row]
 
 
-@patch("entities.expense_coding_item.business.service.ExpenseCodingItemService")
+@patch("entities.coding_suggestion.business.service.CodingSuggestionService")
 def test_lazy_reseed_skipped_when_all_rows_seeded(mock_coding_svc_cls):
     seeded_row = {
         "qbo_purchase_id": 1,
@@ -241,8 +241,8 @@ def test_queue_terminal_exclusion_vocabulary(status):
     body = _queue_body()
     exclusion_chunk = _terminal_exclusion_list(body).lower()
     if status is None:
-        assert re.search(r"eci\.\[Status\]\s+IS\s+NULL", body, re.IGNORECASE), (
-            "unseeded rows (NULL eci.[Status]) must be guarded by IS NULL, not NOT IN"
+        assert re.search(r"cs\.\[Status\]\s+IS\s+NULL", body, re.IGNORECASE), (
+            "unseeded rows (NULL cs.[Status]) must be guarded by IS NULL, not NOT IN"
         )
         assert "n'null'" not in exclusion_chunk, (
             "NULL must not appear in the NOT IN list — use IS NULL OR instead"
@@ -274,19 +274,38 @@ def test_metrics_total_target_lines_keeps_terminal_rows():
     assert total_subquery_match is not None
     total_subquery = total_subquery_match.group(0)
     collapsed = _collapse_whitespace(total_subquery)
-    assert _collapse_whitespace("eci.[Status] NOT IN") not in collapsed
+    assert _collapse_whitespace("cs.[Status] NOT IN") not in collapsed
     assert not re.search(
-        r"eci\.\[Status\]\s+IS\s+NULL\s+OR\s+eci\.\[Status\]\s+NOT\s+IN",
+        r"cs\.\[Status\]\s+IS\s+NULL\s+OR\s+cs\.\[Status\]\s+NOT\s+IN",
         total_subquery,
         re.IGNORECASE,
     ), "TotalTargetLines must NOT exclude terminal statuses (U-484 divergence)"
 
 
 def test_metrics_documents_intentional_divergence_from_queue():
-    raw = sproc_body(QUEUE_SQL, "ReadExpenseCodingMetrics")
-    assert re.search(r"U-484.*diverg", raw, re.IGNORECASE), (
-        "ReadExpenseCodingMetrics must document intentional U-484 divergence from queue"
+    """TotalTargetLines counts every 58999 line; queue excludes terminal cs rows."""
+    body = _metrics_body()
+    total_subquery_match = re.search(
+        r"SELECT\s+COUNT\(\*\).*?AS\s+\[TotalTargetLines\]",
+        body,
+        re.IGNORECASE | re.DOTALL,
     )
+    assert total_subquery_match is not None
+    total_subquery = total_subquery_match.group(0)
+    assert not re.search(
+        r"cs\.\[Status\]\s+IS\s+NULL\s+OR\s+cs\.\[Status\]\s+NOT\s+IN",
+        total_subquery,
+        re.IGNORECASE,
+    ), (
+        "ReadExpenseCodingMetrics TotalTargetLines must NOT apply the queue's "
+        "terminal-status exclusion (U-484 intentional divergence)"
+    )
+    queue_body = _queue_body()
+    assert re.search(
+        r"cs\.\[Status\]\s+IS\s+NULL\s+OR\s+cs\.\[Status\]\s+NOT\s+IN",
+        queue_body,
+        re.IGNORECASE,
+    ), "queue must still exclude terminal statuses so the divergence is real"
 
 
 # ---------------------------------------------------------------------------
@@ -310,7 +329,7 @@ def test_queue_sproc_starts_with_set_nocount_on_and_is_go_terminated():
 def test_landmine_scoping_counts_unchanged():
     sql = QUEUE_SQL.read_text()
     assert sql.count("dbo.UserCanAccessProject(") == 3
-    assert sql.count("COALESCE(eci.[ConfirmedProjectId], eci.[SuggestedProjectId]) IS NULL") == 3
+    assert sql.count("COALESCE(cs.[ConfirmedProjectId], cs.[SuggestedProjectId]) IS NULL") == 3
     assert sql.count("@ActorIsSystemAdmin = 1") == 3
 
 
@@ -320,8 +339,8 @@ def test_landmine_scoping_counts_unchanged():
 
 
 def test_suggest_pending_eligibility_triple():
-    from entities.expense_coding_item.business.suggestion_service import (
-        ExpenseCodingSuggestionService,
+    from entities.coding_suggestion.business.suggestion_service import (
+        CodingSuggestionEngine,
     )
 
     rows = [
@@ -347,7 +366,7 @@ def test_suggest_pending_eligibility_triple():
         },
     ]
 
-    svc = ExpenseCodingSuggestionService()
+    svc = CodingSuggestionEngine()
     svc.qbo_purchase_service = MagicMock()
     svc.qbo_purchase_service.get_expense_coding_queue.return_value = rows
     svc.coding_item_service = MagicMock()

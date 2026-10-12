@@ -576,16 +576,70 @@ class ExpenseService:
             )
             return None
 
-    def enqueue_coding_recode_on_submit(self, *, expense_id: int, user_id: int) -> dict:
-        """Enqueue surgical QBO recode for each open ExpenseCodingItem (U-486 C2).
+    def _resolve_dominant_expense_coding_for_submit(
+        self, *, expense_id: int
+    ) -> Optional[dict[str, Any]]:
+        """Dominant uncategorized line coding + mixed-code flag (U-652)."""
+        from shared.database import get_connection
 
-        Called from ReviewService on initial expense submit. Does not mutate review
-        state; callers must failure-isolate. All writes go through
-        ExpenseCodingItemService.confirm() — this method records nothing itself.
-        """
+        with get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT
+                    pl.[QboLineId],
+                    eli.[ProjectId],
+                    eli.[SubCostCodeId],
+                    eli.[Description],
+                    ABS(COALESCE(pl.[Amount], eli.[Amount], 0)) AS [AbsAmount]
+                FROM dbo.[Expense] e
+                INNER JOIN qbo.[Purchase] p
+                    ON p.[QboId] = e.[QboId]
+                   AND p.[RealmId] = e.[RealmId]
+                INNER JOIN qbo.[PurchaseLine] pl
+                    ON pl.[QboPurchaseId] = p.[Id]
+                   AND pl.[AccountRefName] LIKE N'%NEED TO CATEGORIZE%'
+                LEFT JOIN dbo.[ExpenseLineItem] eli
+                    ON eli.[ExpenseId] = e.[Id]
+                   AND eli.[QboId] = pl.[QboLineId]
+                   AND eli.[RealmId] = p.[RealmId]
+                WHERE e.[Id] = ?
+                ORDER BY [AbsAmount] DESC,
+                         TRY_CONVERT(BIGINT, pl.[QboLineId]) ASC,
+                         pl.[QboLineId] ASC
+                """,
+                expense_id,
+            )
+            rows = cursor.fetchall()
+
+        if not rows:
+            return None
+
+        line_codes: list[tuple[Optional[int], Optional[int]]] = []
+        dominant: Optional[dict[str, Any]] = None
+        for row in rows:
+            project_id = getattr(row, "ProjectId", None)
+            sub_cost_code_id = getattr(row, "SubCostCodeId", None)
+            line_codes.append((project_id, sub_cost_code_id))
+            if dominant is None:
+                dominant = {
+                    "project_id": project_id,
+                    "sub_cost_code_id": sub_cost_code_id,
+                    "description": getattr(row, "Description", None),
+                }
+
+        unique_codes = {
+            (p, s) for p, s in line_codes if p is not None and s is not None
+        }
+        assert dominant is not None
+        dominant["confirmed_mixed_codes"] = len(unique_codes) > 1
+        return dominant
+
+    def enqueue_coding_recode_on_submit(self, *, expense_id: int, user_id: int) -> dict:
+        """Enqueue one QBO recode per Expense CodingSuggestion (U-486 C2 / U-652)."""
         from entities.expense.api.router import EXPENSE_CODING_TERMINAL_STATUSES
-        from entities.expense_coding_item.business.service import ExpenseCodingItemService
-        from entities.expense_coding_item.persistence.repo import ExpenseCodingItemRepository
+        from entities.coding_suggestion.business.service import CodingSuggestionService
+        from entities.coding_suggestion.persistence.repo import CodingSuggestionRepository
 
         def _is_terminal_status(status: Optional[str]) -> bool:
             return status in EXPENSE_CODING_TERMINAL_STATUSES or status == "resolved_externally"
@@ -598,63 +652,31 @@ class ExpenseService:
             "items": [],
         }
 
-        coding_states = ExpenseCodingItemRepository().read_state_by_expense_ids([expense_id])
+        coding_states = CodingSuggestionRepository().read_state_by_expense_ids([expense_id])
         coding_items = coding_states.get(expense_id) or []
         if not coding_items:
             summary["skipped"] = 1
             summary["items"].append({"reason": "no_coding_items"})
             return summary
 
-        line_by_public_id: dict[str, dict[str, Any]] = {}
-        from shared.database import get_connection
-
-        try:
-            with get_connection() as conn:
-                cursor = conn.cursor()
-                cursor.execute(
-                    """
-                    SELECT
-                        eci.[PublicId],
-                        eli.[ProjectId],
-                        eli.[SubCostCodeId],
-                        eli.[Description]
-                    FROM dbo.[ExpenseCodingItem] eci
-                    INNER JOIN qbo.[PurchaseLine] pl
-                        ON pl.[Id] = eci.[QboPurchaseLineId]
-                    INNER JOIN qbo.[Purchase] p
-                        ON p.[Id] = pl.[QboPurchaseId]
-                    INNER JOIN dbo.[Expense] e
-                        ON e.[QboId] = p.[QboId]
-                       AND e.[RealmId] = p.[RealmId]
-                    INNER JOIN dbo.[ExpenseLineItem] eli
-                        ON eli.[ExpenseId] = e.[Id]
-                       AND eli.[QboId] = pl.[QboLineId]
-                       AND eli.[RealmId] = p.[RealmId]
-                    WHERE eli.[ExpenseId] = ?
-                    """,
-                    expense_id,
-                )
-                for row in cursor.fetchall():
-                    public_id = getattr(row, "PublicId", None)
-                    if public_id is None:
-                        continue
-                    line_by_public_id[str(public_id)] = {
-                        "project_id": getattr(row, "ProjectId", None),
-                        "sub_cost_code_id": getattr(row, "SubCostCodeId", None),
-                        "description": getattr(row, "Description", None),
-                    }
-        except Exception as error:
-            logger.exception(
-                "Failed to resolve expense line targets for coding recode "
-                "(expense_id=%s): %s",
-                expense_id,
-                error,
-            )
-            raise
-
-        coding_service = ExpenseCodingItemService()
-
+        seen_public_ids: set[str] = set()
+        deduped: list[dict] = []
         for item in coding_items:
+            public_id = item.get("public_id")
+            if not public_id or str(public_id) in seen_public_ids:
+                continue
+            seen_public_ids.add(str(public_id))
+            deduped.append(item)
+
+        if not deduped:
+            summary["skipped"] = 1
+            summary["items"].append({"reason": "no_coding_items"})
+            return summary
+
+        dominant = self._resolve_dominant_expense_coding_for_submit(expense_id=expense_id)
+        coding_service = CodingSuggestionService()
+
+        for item in deduped:
             public_id = item.get("public_id")
             status = item.get("status")
             item_result: dict[str, Any] = {"public_id": public_id, "status": status}
@@ -666,16 +688,15 @@ class ExpenseService:
                 summary["items"].append(item_result)
                 continue
 
-            line = line_by_public_id.get(str(public_id)) if public_id else None
-            if line is None:
+            if dominant is None:
                 summary["skipped"] += 1
                 item_result["outcome"] = "skipped"
                 item_result["reason"] = "line_mapping_missing"
                 summary["items"].append(item_result)
                 continue
 
-            project_id = line.get("project_id")
-            sub_cost_code_id = line.get("sub_cost_code_id")
+            project_id = dominant.get("project_id")
+            sub_cost_code_id = dominant.get("sub_cost_code_id")
             if not project_id or not sub_cost_code_id:
                 summary["skipped"] += 1
                 item_result["outcome"] = "skipped"
@@ -696,9 +717,11 @@ class ExpenseService:
                 public_id=public_id,
                 project_id=int(project_id),
                 sub_cost_code_id=int(sub_cost_code_id),
-                description=line.get("description"),
+                description=dominant.get("description"),
                 was_overridden=was_overridden,
                 user_id=user_id,
+                confirmed_mixed_codes=bool(dominant.get("confirmed_mixed_codes")),
+                allow_multi_line=True,
             )
             item_result["confirm"] = confirm_result
 

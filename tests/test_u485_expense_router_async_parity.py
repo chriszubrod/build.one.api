@@ -153,7 +153,7 @@ def test_get_expense_by_public_id_offload_sees_authz_context():
 
     with patch("entities.expense.api.router.ExpenseService", return_value=service), \
          patch("entities.review.persistence.repo.ReviewRepository", return_value=review_repo), \
-         patch("entities.expense_coding_item.persistence.repo.ExpenseCodingItemRepository", return_value=coding_repo):
+         patch("entities.coding_suggestion.persistence.repo.CodingSuggestionRepository", return_value=coding_repo):
         asyncio.run(get_expense_by_public_id_router(public_id="exp-5", current_user={}))
 
     assert captured == {
@@ -229,14 +229,14 @@ def test_claim_and_release_routes_are_not_registered():
 
 
 def test_expense_coding_service_lease_methods_still_exist():
-    from entities.expense_coding_item.business.service import ExpenseCodingItemService
+    from entities.coding_suggestion.business.service import CodingSuggestionService
 
-    assert callable(getattr(ExpenseCodingItemService, "claim", None))
-    assert callable(getattr(ExpenseCodingItemService, "release", None))
+    assert callable(getattr(CodingSuggestionService, "claim", None))
+    assert callable(getattr(CodingSuggestionService, "release", None))
 
 
 def test_confirm_router_still_calls_service_claim():
-    from entities.expense_coding_item.api.router import confirm_expense_coding_item_router
+    from entities.coding_suggestion.api.router import confirm_expense_coding_item_router
 
     source = inspect.getsource(confirm_expense_coding_item_router)
     assert "service.claim(" in source
@@ -265,7 +265,7 @@ def test_list_handler_response_keys_unchanged():
 
     with patch("entities.expense.api.router.ExpenseService", return_value=service), \
          patch("entities.review.persistence.repo.ReviewRepository", return_value=review_repo), \
-         patch("entities.expense_coding_item.persistence.repo.ExpenseCodingItemRepository", return_value=coding_repo):
+         patch("entities.coding_suggestion.persistence.repo.CodingSuggestionRepository", return_value=coding_repo):
         payload = asyncio.run(get_expenses_router(
             page=1,
             page_size=50,
@@ -305,7 +305,7 @@ def test_single_read_handler_response_keys_unchanged():
 
     with patch("entities.expense.api.router.ExpenseService", return_value=service), \
          patch("entities.review.persistence.repo.ReviewRepository", return_value=review_repo), \
-         patch("entities.expense_coding_item.persistence.repo.ExpenseCodingItemRepository", return_value=coding_repo):
+         patch("entities.coding_suggestion.persistence.repo.CodingSuggestionRepository", return_value=coding_repo):
         payload = asyncio.run(get_expense_by_public_id_router(
             public_id="exp-7",
             current_user={},

@@ -436,28 +436,34 @@ def _coding_item(*, confirmed_project_id=100):
         ),
         (
             "undecided_cost_plus",
-            SimpleNamespace(is_billable=False, billable_decided_at=None),
+            SimpleNamespace(
+                is_billable=False, billable_decided_at=None, project_id=100
+            ),
             _coding_item(),
             SimpleNamespace(is_cost_plus=True),
             True,
         ),
         (
             "undecided_flat_rate",
-            SimpleNamespace(is_billable=True, billable_decided_at=None),
+            SimpleNamespace(
+                is_billable=True, billable_decided_at=None, project_id=100
+            ),
             _coding_item(),
             SimpleNamespace(is_cost_plus=False),
             False,
         ),
         (
             "undecided_no_confirmed_project",
-            SimpleNamespace(is_billable=True, billable_decided_at=None),
+            SimpleNamespace(is_billable=True, billable_decided_at=None, project_id=None),
             _coding_item(confirmed_project_id=None),
             None,
             True,
         ),
         (
             "undecided_project_unknown_flag",
-            SimpleNamespace(is_billable=False, billable_decided_at=None),
+            SimpleNamespace(
+                is_billable=False, billable_decided_at=None, project_id=100
+            ),
             _coding_item(),
             SimpleNamespace(is_cost_plus=None),
             False,
@@ -468,7 +474,8 @@ def test_recode_is_billable_rule(case, local_line, item, project, is_billable_ex
     with patch(
         "entities.project.business.service.ProjectService"
     ) as mock_project_svc:
-        if project is not None and item.confirmed_project_id is not None:
+        line_project_id = getattr(local_line, "project_id", None)
+        if project is not None and line_project_id is not None:
             mock_project_svc.return_value.read_by_id.return_value = project
         result = QboOutboxWorker._recode_is_billable(item, local_line)
     assert result is is_billable_expected, case
@@ -476,7 +483,9 @@ def test_recode_is_billable_rule(case, local_line, item, project, is_billable_ex
 
 def test_recode_is_billable_project_read_failure_falls_back_to_line_value(caplog):
     item = _coding_item()
-    local_line = SimpleNamespace(is_billable=True, billable_decided_at=None)
+    local_line = SimpleNamespace(
+        is_billable=True, billable_decided_at=None, project_id=100
+    )
     with patch(
         "entities.project.business.service.ProjectService"
     ) as mock_project_svc:
@@ -534,16 +543,25 @@ def test_update_service_signature_accepts_the_router_payload_keys():
 def _run_drain(*, line, project):
     from tests.test_u492_recode_dbo_native_line_resolve import _make_coding_item, _make_outbox_row
     from integrations.intuit.qbo.outbox.business.worker import QboOutboxWorker
-    with patch("entities.expense_coding_item.business.service.ExpenseCodingItemService") as svc_cls, \
+    with patch("entities.coding_suggestion.business.service.CodingSuggestionService") as svc_cls, \
          patch("integrations.intuit.qbo.purchase.connector.expense.business.service.PurchaseExpenseConnector") as conn_cls, \
+         patch.object(
+             QboOutboxWorker,
+             "_read_uncategorized_staging_line_ids",
+             return_value=["1"],
+         ), \
          patch.object(QboOutboxWorker, "_resolve_recode_line_economics", return_value=(line, None)), \
          patch("entities.project.business.service.ProjectService") as proj_cls:
         svc_cls.return_value.read_by_public_id.return_value = _make_coding_item()
         proj_cls.return_value.read_by_id.return_value = project
+        worker = QboOutboxWorker()
+        if line is not None:
+            line.sub_cost_code_id = 101
+            line.project_id = 202
         connector = conn_cls.return_value
-        connector.recode_purchase_line.return_value = {"status": "written", "sync_token": "6"}
-        QboOutboxWorker()._handle_recode_purchase_line(_make_outbox_row())
-        return connector.recode_purchase_line.call_args.kwargs["is_billable"]
+        connector.recode_purchase_lines.return_value = {"status": "written", "sync_token": "6"}
+        worker._handle_recode_purchase_line(_make_outbox_row())
+        return connector.recode_purchase_lines.call_args.kwargs["lines"][0]["is_billable"]
 
 
 def _line(is_billable, decided):

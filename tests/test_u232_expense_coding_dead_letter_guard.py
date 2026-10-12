@@ -11,8 +11,8 @@ from unittest.mock import MagicMock, patch
 import pytest
 from fastapi import HTTPException
 
-from entities.expense_coding_item.api import router as router_mod
-from entities.expense_coding_item.api.schemas import ConfirmExpenseCodingItemRequest
+from entities.coding_suggestion.api import router as router_mod
+from entities.coding_suggestion.api.schemas import ConfirmCodingSuggestionRequest
 from integrations.intuit.qbo.outbox.business.service import QboOutboxDeadLetterExistsError
 from shared.authz import current_user_id
 
@@ -23,13 +23,13 @@ def test_confirm_expense_coding_router_refuses_with_409_when_dead_letter_exists(
     sub_cost_code = MagicMock(id=2)
 
     dead_letter_error = QboOutboxDeadLetterExistsError(
-        entity_type="ExpenseCodingItem",
+        entity_type="CodingSuggestion",
         entity_public_id="pub-1",
         kind="recode_purchase_line",
         dead_letter_public_id="dead-letter-outbox-9",
     )
 
-    body = ConfirmExpenseCodingItemRequest(
+    body = ConfirmCodingSuggestionRequest(
         project_public_id="proj-pub-1",
         sub_cost_code_public_id="scc-pub-1",
         description="desc",
@@ -38,13 +38,14 @@ def test_confirm_expense_coding_router_refuses_with_409_when_dead_letter_exists(
 
     token = current_user_id.set(17)
     try:
-        with patch.object(router_mod, "ExpenseCodingItemService") as service_cls, patch(
+        with patch.object(router_mod, "CodingSuggestionService") as service_cls, patch(
             "entities.project.business.service.ProjectService"
         ) as project_svc_cls, patch(
             "entities.sub_cost_code.business.service.SubCostCodeService"
         ) as scc_svc_cls:
             service_cls.return_value.read_by_public_id.return_value = existing
             service_cls.return_value.confirm.side_effect = dead_letter_error
+            service_cls.return_value.is_multi_line_purchase.return_value = False
             project_svc_cls.return_value.read_by_public_id.return_value = project
             scc_svc_cls.return_value.read_by_public_id.return_value = sub_cost_code
 

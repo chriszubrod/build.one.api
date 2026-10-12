@@ -377,7 +377,7 @@ class BillBillConnector:
     # (U-284v): this one, this file's own _get_qbo_vendor_ref (push),
     # PurchaseExpenseConnector._get_vendor_public_id,
     # VendorCreditBillCreditConnector._get_vendor_public_id,
-    # ExpenseCodingItemService._resolve_vendor_id. Hand-copied deliberately,
+    # CodingSuggestionService._resolve_vendor_id. Hand-copied deliberately,
     # mirroring _get_project_public_id's own precedent — see TODO.md's
     # U-005[reuse] entry before adding a 6th copy or consolidating.
     def _get_vendor_public_id(self, qbo_vendor_ref_value: str, realm_id: Optional[str] = None) -> Optional[str]:
@@ -894,7 +894,7 @@ class BillBillConnector:
     # (U-284v): this one (the only push-side one), this file's own
     # _get_vendor_public_id (pull), PurchaseExpenseConnector._get_vendor_public_id,
     # VendorCreditBillCreditConnector._get_vendor_public_id,
-    # ExpenseCodingItemService._resolve_vendor_id. Hand-copied deliberately,
+    # CodingSuggestionService._resolve_vendor_id. Hand-copied deliberately,
     # mirroring _get_project_public_id's own precedent — see TODO.md's
     # U-005[reuse] entry before adding a 6th copy or consolidating.
     def _get_qbo_vendor_ref(self, vendor_id: int) -> Optional[QboReferenceType]:

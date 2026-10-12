@@ -1375,7 +1375,7 @@ BEGIN
             p.[QboId] AS [PurchaseQboId],
             pl.[QboLineId],
             pl.[Id] AS [QboPurchaseLineId],
-            eci.[PublicId] AS [CodingItemPublicId],
+            cs.[PublicId] AS [CodingItemPublicId],
             -- U-491 round 2: ORDER BY eli.[Id] alone is not a total order.
             -- qbo.PurchaseLine has NO unique constraint on (QboPurchaseId, QboLineId)
             -- -- only two separate non-unique indexes -- so one ExpenseLineItem can
@@ -1398,8 +1398,11 @@ BEGIN
             ON pl.[QboPurchaseId] = p.[Id]
            AND pl.[QboLineId]     = eli.[QboId]
            AND eli.[RealmId]      = p.[RealmId]
-        LEFT JOIN dbo.[ExpenseCodingItem] eci
-            ON eci.[QboPurchaseLineId] = pl.[Id]
+        LEFT JOIN dbo.[CodingSuggestion] cs
+            ON cs.[TargetKind] = N'expense'
+           AND cs.[RealmId] = p.[RealmId]
+           AND cs.[QboPurchaseQboId] = p.[QboId]
+           AND (cs.[ExpenseId] = e.[Id] OR cs.[ExpenseId] IS NULL)
         WHERE e.[Status] = N'completed'
           AND e.[StatusOrigin] = N'qbo_pull'
           AND pl.[AccountRefName] LIKE N'%NEED TO CATEGORIZE%'

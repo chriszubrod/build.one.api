@@ -612,11 +612,11 @@ async def reconcile_expense_coding_externally_resolved_router(
     `apply=true` to mark each as `resolved_externally`.
     """
     def _run() -> dict[str, Any]:
-        from entities.expense_coding_item.business.service import ExpenseCodingItemService
+        from entities.coding_suggestion.business.service import CodingSuggestionService
         from shared.authz.context import system_authz
 
         with system_authz():
-            return ExpenseCodingItemService().reconcile_externally_resolved(
+            return CodingSuggestionService().reconcile_externally_resolved(
                 dry_run=not apply
             )
 

@@ -69,7 +69,7 @@ UNDOCUMENTED_ENTITIES: frozenset[str] = frozenset(
         "employee_labor",
         "employee_labor_line_item",
         "employee_project_rate",
-        "expense_coding_item",
+        "coding_suggestion",
         "expense_line_item",
         "expense_line_item_attachment",
         "integration",

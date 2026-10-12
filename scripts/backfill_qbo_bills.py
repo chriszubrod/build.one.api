@@ -49,7 +49,7 @@ CREATABLE = "genuinely_missing_creatable"
 # BillBillConnector._get_vendor_public_id (pull) + _get_qbo_vendor_ref
 # (push), PurchaseExpenseConnector._get_vendor_public_id,
 # VendorCreditBillCreditConnector._get_vendor_public_id,
-# ExpenseCodingItemService._resolve_vendor_id, and this script's sibling
+# CodingSuggestionService._resolve_vendor_id, and this script's sibling
 # copy in generate_payment_remittance.py — see TODO.md's U-005[reuse]
 # breadcrumb). Hand-copied deliberately per that unit's precedent, not
 # extracted.

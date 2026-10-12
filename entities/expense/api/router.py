@@ -120,7 +120,7 @@ def _current_review_for_expense(expense_id):
 def build_expense_coding_block(items: list[dict] | None) -> dict:
     """Compose the `coding` block for an expense read payload (U-480).
 
-    `needs_coding` derives from ExpenseCodingItem.Status only — never from
+    `needs_coding` derives from CodingSuggestion.Status only — never from
     ExpenseLineItem.SubCostCodeId (the post-recode / pre-pull window can leave
     the line coded locally while the coding item is still open).
     """
@@ -209,11 +209,11 @@ async def get_expenses_router(
         # ONE lookup for the whole page (U-457). Resolving per row is the N+1 that
         # Bill's slice avoided and pinned; the batch sproc exists for this.
         from entities.review.persistence.repo import ReviewRepository
-        from entities.expense_coding_item.persistence.repo import ExpenseCodingItemRepository
+        from entities.coding_suggestion.persistence.repo import CodingSuggestionRepository
         expense_ids = [e.id for e in expenses if e.id is not None]
         review_map = ReviewRepository().read_current_by_expense_ids(expense_ids) if expense_ids else {}
         coding_map = (
-            ExpenseCodingItemRepository().read_state_by_expense_ids(expense_ids)
+            CodingSuggestionRepository().read_state_by_expense_ids(expense_ids)
             if expense_ids
             else {}
         )
@@ -235,13 +235,13 @@ async def get_expenses_router(
     }
 
 
-from entities.expense_coding_item.api.router import (
+from entities.coding_suggestion.api.router import (
     get_expense_coding_metrics_router,
     get_expense_coding_queue_router,
 )
 
 # Literal `/get/expense/coding/*` segments MUST register before `/get/expense/{public_id}`
-# (app mounts this router before expense_coding_item — see U-481 / Bill parity).
+# (app mounts this router before coding_suggestion — see U-481 / Bill parity).
 router.add_api_route(
     "/get/expense/coding/queue",
     get_expense_coding_queue_router,
@@ -266,10 +266,10 @@ async def get_expense_public_id_coding_router(
         expense = ExpenseService().read_by_public_id(public_id=public_id)
         if not expense:
             return None
-        from entities.expense_coding_item.persistence.repo import ExpenseCodingItemRepository
+        from entities.coding_suggestion.persistence.repo import CodingSuggestionRepository
 
         coding_map = (
-            ExpenseCodingItemRepository().read_state_by_expense_ids([expense.id])
+            CodingSuggestionRepository().read_state_by_expense_ids([expense.id])
             if expense.id is not None
             else {}
         )
@@ -365,10 +365,10 @@ async def get_expense_by_public_id_router(public_id: str, current_user: dict = D
         expense = ExpenseService().read_by_public_id(public_id=public_id)
         if not expense:
             return None
-        from entities.expense_coding_item.persistence.repo import ExpenseCodingItemRepository
+        from entities.coding_suggestion.persistence.repo import CodingSuggestionRepository
 
         coding_map = (
-            ExpenseCodingItemRepository().read_state_by_expense_ids([expense.id])
+            CodingSuggestionRepository().read_state_by_expense_ids([expense.id])
             if expense.id is not None
             else {}
         )

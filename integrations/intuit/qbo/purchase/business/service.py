@@ -511,7 +511,7 @@ class QboPurchaseService:
     def get_expense_coding_queue(self, realm_id: Optional[str] = None) -> List[dict]:
         """
         Read the strict 58999 coding queue and idempotently seed missing
-        ExpenseCodingItem rows so every returned line carries coding state.
+        CodingSuggestion rows so every returned line carries coding state.
         """
         actor_user_id = current_user_id.get()
         actor_is_system_admin = current_is_system_admin.get()
@@ -524,16 +524,22 @@ class QboPurchaseService:
         if not needs_reseed:
             return rows
 
-        from entities.expense_coding_item.business.service import ExpenseCodingItemService
+        from entities.coding_suggestion.business.service import CodingSuggestionService
 
-        coding_service = ExpenseCodingItemService()
+        coding_service = CodingSuggestionService()
+        seeded_purchases: set[tuple[str, str]] = set()
         for row in rows:
             if row.get("coding_item_public_id") is not None:
                 continue
+            purchase_key = (
+                str(row.get("qbo_purchase_qbo_id") or ""),
+                str(row.get("realm_id") or ""),
+            )
+            if purchase_key in seeded_purchases:
+                continue
+            seeded_purchases.add(purchase_key)
             coding_service.upsert_from_queue(
                 qbo_purchase_id=row["qbo_purchase_id"],
-                qbo_purchase_line_id=row["qbo_purchase_line_id"],
-                qbo_line_id=row.get("qbo_line_id"),
                 qbo_purchase_qbo_id=row.get("qbo_purchase_qbo_id"),
                 realm_id=row.get("realm_id"),
                 vendor_qbo_id=row.get("vendor_qbo_id"),

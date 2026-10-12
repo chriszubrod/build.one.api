@@ -820,29 +820,32 @@ class QboOutboxWorker:
         )
 
     @staticmethod
-    def _recode_is_billable(item, local_line) -> Optional[bool]:
+    def _recode_is_billable(item, local_line, project_id=None) -> Optional[bool]:
         """Resolve Billable for expense-coding recode at drain time.
 
         A human-stamped ``billable_decided_at`` is authoritative. Otherwise seed
-        from the confirmed project's ``IsCostPlus`` when known; fall back to the
-        local line's current value. Seeding happens here (not on local write)
-        because an undecided local value would be reverted by the QBO pull
-        before this outbox row drains.
+        from the ``IsCostPlus`` of the project actually being WRITTEN to that line:
+        ``project_id`` when given (multi-line: the line's own ExpenseLineItem project),
+        else the suggestion's confirmed project (single line, as before U-652). Fall
+        back to the local line's current value when that project is unknown. Seeding
+        happens here (not on local write) because an undecided local value would be
+        reverted by the QBO pull before this outbox row drains.
         """
         if local_line is None:
             return None
         if getattr(local_line, "billable_decided_at", None) is not None:
             return local_line.is_billable
-        if item.confirmed_project_id is None:
+        effective_project_id = project_id if project_id is not None else getattr(item, "confirmed_project_id", None)
+        if effective_project_id is None:
             return local_line.is_billable
         try:
             from entities.project.business.service import ProjectService
 
-            project = ProjectService().read_by_id(int(item.confirmed_project_id))
+            project = ProjectService().read_by_id(int(effective_project_id))
         except Exception as exc:
             logger.warning(
                 "Could not read project %s for recode Billable seed: %s",
-                item.confirmed_project_id,
+                effective_project_id,
                 exc,
             )
             return local_line.is_billable
@@ -850,8 +853,15 @@ class QboOutboxWorker:
             return local_line.is_billable
         return bool(project.is_cost_plus)
 
+    _MULTI_LINE_UNMAPPED_ERROR = (
+        "multi_line_unmapped_expense_line_item"
+    )
+    # The purchase gained uncategorized lines after a confirm-endpoint confirmation: writing each
+    # line's stored coding would discard the code the user confirmed. Re-review instead (U-652).
+    _CONFIRMATION_SCOPE_CHANGED = "confirmation_scope_changed"
+
     def _resolve_recode_line_economics(
-        self, row: QboOutbox, item
+        self, row: QboOutbox, item, *, target_qbo_line_id: str
     ) -> tuple[Optional[object], Optional[str]]:
         from entities.expense.business.service import ExpenseService
         from entities.expense_line_item.business.service import ExpenseLineItemService
@@ -868,12 +878,12 @@ class QboOutboxWorker:
             return None, reason
 
         local_line = ExpenseLineItemService().read_by_qbo_identity(
-            coerce_id(expense.id), item.qbo_line_id
+            coerce_id(expense.id), target_qbo_line_id
         )
         if local_line is None:
             reason = (
                 f"no dbo.ExpenseLineItem for ExpenseId={expense.id} "
-                f"QboId={item.qbo_line_id!r}"
+                f"QboId={target_qbo_line_id!r}"
             )
             return None, reason
 
@@ -898,7 +908,7 @@ class QboOutboxWorker:
         ):
             reason = (
                 f"dbo.ExpenseLineItem for ExpenseId={expense.id} "
-                f"QboId={item.qbo_line_id!r} carries RealmId="
+                f"QboId={target_qbo_line_id!r} carries RealmId="
                 f"{line_realm!r} but this outbox row targets "
                 f"{row.realm_id!r} -- refusing to copy its economics "
                 f"across realms"
@@ -907,8 +917,152 @@ class QboOutboxWorker:
 
         return local_line, None
 
+    def _read_uncategorized_staging_line_ids(
+        self, *, qbo_purchase_qbo_id: str, realm_id: str
+    ) -> list[str]:
+        from shared.database import get_connection
+
+        with get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT pl.[QboLineId]
+                FROM [qbo].[PurchaseLine] pl
+                INNER JOIN [qbo].[Purchase] p ON pl.[QboPurchaseId] = p.[Id]
+                WHERE p.[QboId] = ?
+                  AND p.[RealmId] = ?
+                  AND pl.[AccountRefName] LIKE N'%NEED TO CATEGORIZE%'
+                ORDER BY pl.[QboLineId]
+                """,
+                qbo_purchase_qbo_id,
+                realm_id,
+            )
+            return [str(r[0]) for r in cursor.fetchall() if r[0] is not None]
+
+    def _record_recode_unresolved_line_economics(
+        self, row: QboOutbox, item, reason: str
+    ) -> None:
+        """Low-severity mapping issue when dbo-native economics cannot be resolved."""
+        try:
+            from integrations.intuit.qbo.base.reconciliation_recorder import (
+                record_mapping_issue,
+            )
+            from integrations.intuit.qbo.reconciliation.persistence.repo import (
+                ReconciliationIssueRepository,
+            )
+
+            logger.warning(
+                "Could not resolve local ExpenseLineItem for coding suggestion %s "
+                "(%s); proceeding without qty/rate/amount/is_billable",
+                row.entity_public_id,
+                reason,
+            )
+            # record_mapping_issue defaults severity="critical". That is
+            # wrong here: 76 of the ~77 unresolvable items are the
+            # already-booked "coding item with no local Expense" backlog,
+            # and every NULL-realm line is expected to resolve fine. Minting
+            # criticals for a known, tracked population is how a real signal
+            # gets tuned out. Every other critical recorder in this file
+            # RAISES immediately after; this one deliberately proceeds.
+            # entity_type stays "ExpenseCodingItem" so existing reconciliation
+            # history and filters keep matching (U-652).
+            record_mapping_issue(
+                ReconciliationIssueRepository(),
+                drift_type="missing_mapping",
+                entity_type="ExpenseCodingItem",
+                severity="low",
+                entity_public_id=row.entity_public_id,
+                qbo_id=item.qbo_purchase_qbo_id,
+                realm_id=row.realm_id or "",
+                details=(
+                    f"Expense coding recode for item {row.entity_public_id} could not "
+                    f"resolve dbo-native line economics ({reason}) — Qty/UnitPrice/"
+                    f"BillableStatus will not be stamped on the QBO Purchase line. "
+                    f"Proceeding with the recode anyway."
+                ),
+            )
+        except Exception as exc:
+            logger.warning(
+                "Could not resolve local ExpenseLineItem for coding suggestion %s: %s",
+                row.entity_public_id,
+                exc,
+                exc_info=True,
+            )
+
+    def _resolve_recode_purchase_line_targets(
+        self, row: QboOutbox, item
+    ) -> tuple[Optional[list[dict]], Optional[str]]:
+        realm_id = row.realm_id or item.realm_id or ""
+        uncategorized = self._read_uncategorized_staging_line_ids(
+            qbo_purchase_qbo_id=str(item.qbo_purchase_qbo_id or ""),
+            realm_id=realm_id,
+        )
+        if not uncategorized:
+            return [], None
+
+        single_line = len(uncategorized) == 1
+        if not single_line and getattr(item, "confirmation_source", None) != "review_submit":
+            return None, self._CONFIRMATION_SCOPE_CHANGED
+        resolved: list[dict] = []
+        missing_eli = 0
+        for qbo_line_id in uncategorized:
+            try:
+                local_line, reason = self._resolve_recode_line_economics(
+                    row, item, target_qbo_line_id=qbo_line_id
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Could not resolve economics for coding suggestion %s line %s: %s",
+                    row.entity_public_id,
+                    qbo_line_id,
+                    exc,
+                )
+                local_line, reason = None, "resolve_failed"
+            if single_line:
+                if local_line is None and reason and reason != "resolve_failed":
+                    self._record_recode_unresolved_line_economics(row, item, reason)
+                return [
+                    {
+                        "target_qbo_line_id": qbo_line_id,
+                        "sub_cost_code_id": item.confirmed_sub_cost_code_id,
+                        "project_id": item.confirmed_project_id,
+                        "description": item.confirmed_description,
+                        # getattr(None, ...) and _recode_is_billable(item, None) are None.
+                        "quantity": getattr(local_line, "quantity", None),
+                        "rate": getattr(local_line, "rate", None),
+                        "amount": getattr(local_line, "amount", None),
+                        "is_billable": self._recode_is_billable(item, local_line),
+                    }
+                ], None
+
+            if local_line is None:
+                missing_eli += 1
+                continue
+
+            sub_cost_code_id = getattr(local_line, "sub_cost_code_id", None)
+            project_id = getattr(local_line, "project_id", None)
+            if not sub_cost_code_id or not project_id:
+                return None, self._MULTI_LINE_UNMAPPED_ERROR
+
+            resolved.append(
+                {
+                    "target_qbo_line_id": qbo_line_id,
+                    "sub_cost_code_id": int(sub_cost_code_id),
+                    "project_id": int(project_id),
+                    "description": getattr(local_line, "description", None),
+                    "quantity": local_line.quantity,
+                    "rate": local_line.rate,
+                    "amount": local_line.amount,
+                    "is_billable": self._recode_is_billable(item, local_line, project_id=int(project_id)),
+                }
+            )
+
+        if missing_eli > 0:
+            return None, self._MULTI_LINE_UNMAPPED_ERROR
+        return resolved, None
+
     def _handle_recode_purchase_line(self, row: QboOutbox) -> None:
-        from entities.expense_coding_item.business.service import ExpenseCodingItemService
+        from entities.coding_suggestion.business.service import CodingSuggestionService
         from integrations.intuit.qbo.purchase.connector.expense.business.service import PurchaseExpenseConnector
         from integrations.intuit.qbo.purchase.connector.expense.business.errors import (
             PurchaseChangedInQboError,
@@ -916,7 +1070,7 @@ class QboOutboxWorker:
         )
         from integrations.intuit.qbo.base.errors import QboSyncTokenMismatchError
 
-        svc = ExpenseCodingItemService()
+        svc = CodingSuggestionService()
         item = svc.read_by_public_id(row.entity_public_id)
         if item is None:
             return
@@ -928,72 +1082,52 @@ class QboOutboxWorker:
         if item.status not in ("enqueued", "confirmed"):
             return
 
-        quantity = None
-        rate = None
-        amount = None
-        is_billable = None
-        try:
-            from integrations.intuit.qbo.base.reconciliation_recorder import record_mapping_issue
-            from integrations.intuit.qbo.reconciliation.persistence.repo import (
-                ReconciliationIssueRepository,
-            )
+        if row.entity_type not in ("CodingSuggestion", "ExpenseCodingItem"):
+            return
 
-            local_line, reason = self._resolve_recode_line_economics(row, item)
-            if local_line is not None:
-                quantity = local_line.quantity
-                rate = local_line.rate
-                amount = local_line.amount
-                is_billable = self._recode_is_billable(item, local_line)
-            else:
-                logger.warning(
-                    "Could not resolve local ExpenseLineItem for expense coding item %s "
-                    "(%s); proceeding without qty/rate/amount/is_billable",
-                    row.entity_public_id,
-                    reason,
-                )
-                record_mapping_issue(
-                    ReconciliationIssueRepository(),
-                    drift_type="missing_mapping",
-                    entity_type="ExpenseCodingItem",
-                    # record_mapping_issue defaults severity="critical". That is
-                    # wrong here: 76 of the ~77 unresolvable items are the
-                    # already-booked "coding item with no local Expense" backlog,
-                    # and every NULL-realm line is expected to resolve fine. Minting
-                    # criticals for a known, tracked population is how a real signal
-                    # gets tuned out. Every other critical recorder in this file
-                    # RAISES immediately after; this one deliberately proceeds.
-                    severity="low",
-                    entity_public_id=row.entity_public_id,
-                    qbo_id=item.qbo_purchase_qbo_id,
-                    realm_id=row.realm_id or "",
-                    details=(
-                        f"Expense coding recode for item {row.entity_public_id} could not "
-                        f"resolve dbo-native line economics ({reason}) — Qty/UnitPrice/"
-                        f"BillableStatus will not be stamped on the QBO Purchase line. "
-                        f"Proceeding with the recode anyway."
-                    ),
-                )
-        except Exception as exc:
-            logger.warning(
-                "Could not resolve local ExpenseLineItem for expense coding item %s: %s",
+        line_targets, resolve_error = self._resolve_recode_purchase_line_targets(row, item)
+        if resolve_error == self._CONFIRMATION_SCOPE_CHANGED:
+            # Guarded by the version this worker read: a review submission that landed since
+            # (fresh confirmation + its own outbox row) must survive this stale refusal.
+            marked = svc.mark_changed_in_qbo(
                 row.entity_public_id,
-                exc,
-                exc_info=True,
+                expected_row_version=getattr(item, "row_version_bytes", None),
             )
+            if marked is None:
+                # The guard missed. If only the confirming request's mark_enqueued moved the
+                # version (same confirmation: ConfirmedAt and source unchanged), re-apply on the
+                # current version so this job is not stranded 'enqueued'. A newer confirmation
+                # is left alone: it carries its own outbox row.
+                current = svc.read_by_public_id(row.entity_public_id)
+                if (
+                    current is not None
+                    and current.status in ("enqueued", "confirmed")
+                    and getattr(current, "confirmed_at", None) == getattr(item, "confirmed_at", None)
+                    and getattr(current, "confirmation_source", None)
+                    == getattr(item, "confirmation_source", None)
+                ):
+                    svc.mark_changed_in_qbo(
+                        row.entity_public_id,
+                        expected_row_version=getattr(current, "row_version_bytes", None),
+                    )
+            return
+        if line_targets is None:  # incl. _MULTI_LINE_UNMAPPED_ERROR
+            svc.mark_error(
+                row.entity_public_id,
+                write_error=resolve_error or "recode_target_resolve_failed",
+            )
+            return
+
+        if not line_targets:
+            svc.mark_error(row.entity_public_id, write_error="no_target_lines")
+            return
 
         try:
-            result = PurchaseExpenseConnector().recode_purchase_line(
+            result = PurchaseExpenseConnector().recode_purchase_lines(
                 realm_id=row.realm_id,
                 qbo_purchase_qbo_id=item.qbo_purchase_qbo_id,
-                target_qbo_line_id=item.qbo_line_id,
-                sub_cost_code_id=item.confirmed_sub_cost_code_id,
-                project_id=item.confirmed_project_id,
-                description=item.confirmed_description,
+                lines=line_targets,
                 expected_sync_token=item.sync_token_at_suggest or "",
-                quantity=quantity,
-                rate=rate,
-                amount=amount,
-                is_billable=is_billable,
             )
         except (PurchaseChangedInQboError, QboSyncTokenMismatchError):
             # Both mean the live Purchase drifted from the coding decision — bounce

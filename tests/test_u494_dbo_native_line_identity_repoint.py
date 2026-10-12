@@ -14,45 +14,46 @@ from entities.expense.business.service import ExpenseService
 from tests.sproc_text import REPO_ROOT, sproc_body, strip_sql_comments
 
 EXPENSE_SERVICE_PY = REPO_ROOT / "entities/expense/business/service.py"
-EXPENSE_CODING_SQL = REPO_ROOT / "entities/expense_coding_item/sql/dbo.expense_coding_item.sql"
-READ_STATE_SPROC = "ReadExpenseCodingStateByExpenseIds"
+EXPENSE_CODING_SQL = REPO_ROOT / "entities/coding_suggestion/sql/dbo.coding_suggestion.sql"
+READ_STATE_SPROC = "ReadCodingSuggestionStateByExpenseIds"
 
 PRE_U490_EXPENSE_CODING_SPROC_NAMES = frozenset(
     {
-        "UpsertExpenseCodingItem",
-        "ReadExpenseCodingItemByPublicId",
-        "RecordExpenseCodingSuggestion",
-        "RecordExpenseCodingFlag",
-        "ClaimExpenseCodingItem",
-        "ReleaseExpenseCodingItem",
-        "RecordExpenseCodingConfirmation",
-        "MarkExpenseCodingEnqueued",
-        "MarkExpenseCodingWritten",
-        "MarkExpenseCodingChangedInQbo",
-        "MarkExpenseCodingError",
-        "ReadExpenseCodingStateByExpenseIds",
-        "ReadExternallyResolvedCodingItemCandidates",
-        "MarkExpenseCodingResolvedExternally",
+        "UpsertCodingSuggestionForPurchase",
+        "ReadCodingSuggestionByPublicId",
+        "RecordCodingSuggestion",
+        "RecordCodingSuggestionFlag",
+        "ClaimCodingSuggestion",
+        "ReleaseCodingSuggestion",
+        "RecordCodingSuggestionConfirmation",
+        "MarkCodingSuggestionEnqueued",
+        "MarkCodingSuggestionWritten",
+        "MarkCodingSuggestionChangedInQbo",
+        "MarkCodingSuggestionError",
+        "ReadCodingSuggestionStateByExpenseIds",
+        "ReadExternallyResolvedCodingSuggestionCandidates",
+        "MarkCodingSuggestionResolvedExternally",
     }
 )
 
 READ_STATE_SELECT_COLUMNS = [
-    "eli.[ExpenseId]",
-    "eci.[PublicId] AS [CodingItemPublicId]",
-    "eci.[Status]",
-    "eci.[SuggestionConfidence]",
-    "eci.[SuggestedProjectId]",
-    "eci.[SuggestedSubCostCodeId]",
-    "eci.[ConfirmedProjectId]",
-    "eci.[ConfirmedSubCostCodeId]",
-    "eci.[FlagReason]",
+    "e.[Id] AS [ExpenseId]",
+    "cs.[PublicId] AS [CodingItemPublicId]",
+    "cs.[Status]",
+    "cs.[SuggestionConfidence]",
+    "cs.[SuggestedProjectId]",
+    "cs.[SuggestedSubCostCodeId]",
+    "cs.[ConfirmedProjectId]",
+    "cs.[ConfirmedSubCostCodeId]",
+    "cs.[FlagReason]",
 ]
 
 ENQUEUE_LINE_SELECT_COLUMNS = [
-    "eci.[PublicId]",
+    "pl.[QboLineId]",
     "eli.[ProjectId]",
     "eli.[SubCostCodeId]",
     "eli.[Description]",
+    "ABS(COALESCE(pl.[Amount], eli.[Amount], 0)) AS [AbsAmount]",
 ]
 
 
@@ -78,8 +79,16 @@ def _execute_sql_in_function(source: str, func_name: str) -> str:
 
 
 def _enqueue_recode_line_sql() -> str:
-    return _execute_sql_in_function(
-        EXPENSE_SERVICE_PY.read_text(), "enqueue_coding_recode_on_submit"
+    sql = _execute_sql_in_function(
+        EXPENSE_SERVICE_PY.read_text(),
+        "_resolve_dominant_expense_coding_for_submit",
+    )
+    sql = re.sub(r"\bN'", "'", sql)
+    return re.sub(
+        r"TRY_CONVERT\(BIGINT,\s*pl\.\[QboLineId\]\)",
+        "CAST(pl.[QboLineId] AS INTEGER)",
+        sql,
+        flags=re.IGNORECASE,
     )
 
 
@@ -102,19 +111,30 @@ def _read_state_join_sql() -> str:
     """Sproc SELECT with STRING_SPLIT replaced by a single expense-id filter."""
     body = strip_sql_comments(sproc_body(EXPENSE_CODING_SQL, READ_STATE_SPROC))
     select_match = re.search(
-        r"(SELECT\s+.*?FROM\s+dbo\.\[ExpenseCodingItem\].*?)(?:\s+WHERE\s+)",
+        r"(SELECT\s+.*?FROM\s+dbo\.\[CodingSuggestion\]\s+cs.*?)(?:\s+WHERE\s+)",
         body,
         re.DOTALL | re.IGNORECASE,
     )
     assert select_match is not None
     from_clause = select_match.group(1)
     from_clause = re.sub(
-        r"\s+INNER JOIN STRING_SPLIT\(.*?\)\s+s\s+ON\s+s\.value\s*<>\s*''\s+AND\s+eli\.\[ExpenseId\]\s*=\s*TRY_CAST\(LTRIM\(RTRIM\(s\.value\)\)\s+AS\s+BIGINT\)",
+        r"\s+INNER JOIN STRING_SPLIT\(.*?\)\s+s\s+ON\s+s\.value\s*<>\s*''\s+AND\s+e\.\[Id\]\s*=\s*TRY_CAST\(LTRIM\(RTRIM\(s\.value\)\)\s+AS\s+BIGINT\)",
         "",
         from_clause,
         flags=re.DOTALL | re.IGNORECASE,
     )
-    return from_clause + "\n    WHERE eli.[ExpenseId] = ?"
+    exists_match = re.search(
+        r"WHERE\s+EXISTS\s*\((.*?)\)\s+AND\s+\(\s*@ActorIsSystemAdmin",
+        body,
+        re.DOTALL | re.IGNORECASE,
+    )
+    assert exists_match is not None
+    return (
+        from_clause
+        + "\n    WHERE EXISTS ("
+        + exists_match.group(1)
+        + ")\n    AND e.[Id] = ?"
+    )
 
 
 def _sqlite_fixture_conn() -> sqlite3.Connection:
@@ -136,11 +156,16 @@ def _sqlite_fixture_conn() -> sqlite3.Connection:
             RealmId TEXT,
             ProjectId INTEGER,
             SubCostCodeId INTEGER,
-            Description TEXT
+            Description TEXT,
+            Amount REAL
         );
-        CREATE TABLE dbo.ExpenseCodingItem(
+        CREATE TABLE dbo.CodingSuggestion(
             Id INTEGER PRIMARY KEY,
             PublicId TEXT,
+            TargetKind TEXT,
+            RealmId TEXT,
+            QboPurchaseQboId TEXT,
+            ExpenseId INTEGER,
             QboPurchaseLineId INTEGER,
             Status TEXT,
             SuggestionConfidence REAL,
@@ -159,7 +184,9 @@ def _sqlite_fixture_conn() -> sqlite3.Connection:
         CREATE TABLE qbo.PurchaseLine(
             Id INTEGER PRIMARY KEY,
             QboPurchaseId INTEGER,
-            QboLineId TEXT
+            QboLineId TEXT,
+            AccountRefName TEXT,
+            Amount REAL
         );
         CREATE TABLE qbo.PurchaseLineExpenseLineItem(
             Id INTEGER PRIMARY KEY,
@@ -185,17 +212,19 @@ def test_enqueue_recode_resolves_line_without_map_row():
     conn.executescript(
         """
         INSERT INTO dbo.Expense VALUES (1, 'PUR-A', 'realm-1');
-        INSERT INTO dbo.ExpenseLineItem VALUES (101, 1, '1', 'realm-1', 77, 481, 'Fuel');
+        INSERT INTO dbo.ExpenseLineItem VALUES (101, 1, '1', 'realm-1', 77, 481, 'Fuel', 10.0);
         INSERT INTO qbo.Purchase VALUES (201, 'PUR-A', 'realm-1', 'CreditCard');
-        INSERT INTO qbo.PurchaseLine VALUES (301, 201, '1');
-        INSERT INTO dbo.ExpenseCodingItem VALUES (
-            1, 'ci-pub-1', 301, 'pending', NULL, NULL, NULL, NULL, NULL, NULL
+        INSERT INTO qbo.PurchaseLine VALUES (
+            301, 201, '1', 'Cost of construction : NEED TO CATEGORIZE', 10.0
+        );
+        INSERT INTO dbo.CodingSuggestion VALUES (
+            1, 'ci-pub-1', 'expense', 'realm-1', 'PUR-A', 1, 301,
+            'pending', NULL, NULL, NULL, NULL, NULL, NULL
         );
         """
     )
     rows = _run_sql(conn, _enqueue_recode_line_sql(), (1,))
     assert len(rows) == 1
-    assert rows[0]["PublicId"] == "ci-pub-1"
     assert rows[0]["ProjectId"] == 77
 
 
@@ -204,9 +233,9 @@ def test_payment_type_resolves_without_map_row():
     conn.executescript(
         """
         INSERT INTO dbo.Expense VALUES (1, 'PUR-A', 'realm-1');
-        INSERT INTO dbo.ExpenseLineItem VALUES (101, 1, '1', 'realm-1', NULL, NULL, NULL);
+        INSERT INTO dbo.ExpenseLineItem VALUES (101, 1, '1', 'realm-1', NULL, NULL, NULL, NULL);
         INSERT INTO qbo.Purchase VALUES (201, 'PUR-A', 'realm-1', 'Check');
-        INSERT INTO qbo.PurchaseLine VALUES (301, 201, '1');
+        INSERT INTO qbo.PurchaseLine VALUES (301, 201, '1', NULL, NULL);
         """
     )
     rows = _run_sql(conn, _payment_type_line_sql_for_sqlite(), (1,))
@@ -219,11 +248,14 @@ def test_read_state_sproc_resolves_without_map_row():
     conn.executescript(
         """
         INSERT INTO dbo.Expense VALUES (1, 'PUR-A', 'realm-1');
-        INSERT INTO dbo.ExpenseLineItem VALUES (101, 1, '1', 'realm-1', NULL, NULL, NULL);
+        INSERT INTO dbo.ExpenseLineItem VALUES (101, 1, '1', 'realm-1', NULL, NULL, NULL, NULL);
         INSERT INTO qbo.Purchase VALUES (201, 'PUR-A', 'realm-1', 'CreditCard');
-        INSERT INTO qbo.PurchaseLine VALUES (301, 201, '1');
-        INSERT INTO dbo.ExpenseCodingItem VALUES (
-            1, 'ci-pub-1', 301, 'pending', NULL, 10, 20, NULL, NULL, NULL
+        INSERT INTO qbo.PurchaseLine VALUES (
+            301, 201, '1', 'Cost of construction : NEED TO CATEGORIZE', NULL
+        );
+        INSERT INTO dbo.CodingSuggestion VALUES (
+            1, 'ci-pub-1', 'expense', 'realm-1', 'PUR-A', 1, 301,
+            'pending', NULL, 10, 20, NULL, NULL, NULL
         );
         """
     )
@@ -243,13 +275,16 @@ def test_enqueue_recode_parent_scoped_not_cross_purchase():
         """
         INSERT INTO dbo.Expense VALUES (1, 'PUR-A', 'realm-1'), (2, 'PUR-B', 'realm-1');
         INSERT INTO dbo.ExpenseLineItem VALUES
-          (101, 1, '1', 'realm-1', 77, 481, 'A line'),
-          (102, 2, '1', 'realm-1', 99, 999, 'B line');
+          (101, 1, '1', 'realm-1', 77, 481, 'A line', 10.0),
+          (102, 2, '1', 'realm-1', 99, 999, 'B line', 20.0);
         INSERT INTO qbo.Purchase VALUES (201, 'PUR-A', 'realm-1', 'CreditCard'),
                                         (202, 'PUR-B', 'realm-1', 'CreditCard');
-        INSERT INTO qbo.PurchaseLine VALUES (301, 201, '1'), (302, 202, '1');
-        INSERT INTO dbo.ExpenseCodingItem VALUES (
-            1, 'ci-pub-a', 301, 'pending', NULL, NULL, NULL, NULL, NULL, NULL
+        INSERT INTO qbo.PurchaseLine VALUES
+          (301, 201, '1', 'Cost of construction : NEED TO CATEGORIZE', 10.0),
+          (302, 202, '1', 'Cost of construction : NEED TO CATEGORIZE', 20.0);
+        INSERT INTO dbo.CodingSuggestion VALUES (
+            1, 'ci-pub-a', 'expense', 'realm-1', 'PUR-A', 1, 301,
+            'pending', NULL, NULL, NULL, NULL, NULL, NULL
         );
         """
     )
@@ -265,11 +300,13 @@ def test_payment_type_parent_scoped_not_cross_purchase():
         """
         INSERT INTO dbo.Expense VALUES (1, 'PUR-A', 'realm-1'), (2, 'PUR-B', 'realm-1');
         INSERT INTO dbo.ExpenseLineItem VALUES
-          (101, 1, '1', 'realm-1', NULL, NULL, NULL),
-          (102, 2, '1', 'realm-1', NULL, NULL, NULL);
+          (101, 1, '1', 'realm-1', NULL, NULL, NULL, NULL),
+          (102, 2, '1', 'realm-1', NULL, NULL, NULL, NULL);
         INSERT INTO qbo.Purchase VALUES (201, 'PUR-A', 'realm-1', 'Check'),
                                         (202, 'PUR-B', 'realm-1', 'Cash');
-        INSERT INTO qbo.PurchaseLine VALUES (301, 201, '1'), (302, 202, '1');
+        INSERT INTO qbo.PurchaseLine VALUES
+          (301, 201, '1', NULL, NULL),
+          (302, 202, '1', NULL, NULL);
         """
     )
     rows = _run_sql(conn, _payment_type_line_sql_for_sqlite(), (1,))
@@ -283,13 +320,16 @@ def test_read_state_parent_scoped_not_cross_purchase():
         """
         INSERT INTO dbo.Expense VALUES (1, 'PUR-A', 'realm-1'), (2, 'PUR-B', 'realm-1');
         INSERT INTO dbo.ExpenseLineItem VALUES
-          (101, 1, '1', 'realm-1', NULL, NULL, NULL),
-          (102, 2, '1', 'realm-1', NULL, NULL, NULL);
+          (101, 1, '1', 'realm-1', NULL, NULL, NULL, NULL),
+          (102, 2, '1', 'realm-1', NULL, NULL, NULL, NULL);
         INSERT INTO qbo.Purchase VALUES (201, 'PUR-A', 'realm-1', 'CreditCard'),
                                         (202, 'PUR-B', 'realm-1', 'CreditCard');
-        INSERT INTO qbo.PurchaseLine VALUES (301, 201, '1'), (302, 202, '1');
-        INSERT INTO dbo.ExpenseCodingItem VALUES (
-            1, 'ci-pub-a', 301, 'pending', NULL, 10, 20, NULL, NULL, NULL
+        INSERT INTO qbo.PurchaseLine VALUES
+          (301, 201, '1', 'Cost of construction : NEED TO CATEGORIZE', NULL),
+          (302, 202, '1', 'Cost of construction : NEED TO CATEGORIZE', NULL);
+        INSERT INTO dbo.CodingSuggestion VALUES (
+            1, 'ci-pub-a', 'expense', 'realm-1', 'PUR-A', 1, 301,
+            'pending', NULL, 10, 20, NULL, NULL, NULL
         );
         """
     )
@@ -392,7 +432,7 @@ def test_payment_type_still_returns_top_payment_type():
 def test_enqueue_recode_on_submit_still_returns_summary_dict():
     svc = ExpenseService()
     with patch(
-        "entities.expense_coding_item.persistence.repo.ExpenseCodingItemRepository.read_state_by_expense_ids",
+        "entities.coding_suggestion.persistence.repo.CodingSuggestionRepository.read_state_by_expense_ids",
         return_value={},
     ):
         summary = svc.enqueue_coding_recode_on_submit(expense_id=1, user_id=17)

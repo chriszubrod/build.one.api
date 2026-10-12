@@ -621,7 +621,7 @@ def extract_pdf_text(data: bytes) -> str:
 # BillBillConnector._get_vendor_public_id (pull) + _get_qbo_vendor_ref
 # (push), PurchaseExpenseConnector._get_vendor_public_id,
 # VendorCreditBillCreditConnector._get_vendor_public_id,
-# ExpenseCodingItemService._resolve_vendor_id, and this script's sibling
+# CodingSuggestionService._resolve_vendor_id, and this script's sibling
 # copy in backfill_qbo_bills.py — see TODO.md's U-005[reuse] breadcrumb).
 # Hand-copied deliberately per that unit's precedent, not extracted.
 def resolve_local_vendor_id(

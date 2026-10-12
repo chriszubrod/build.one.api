@@ -6,7 +6,7 @@ mapping-table read of any kind) by U-313 (Wave 5's "trust dbo alone" plan,
   - Bill push  (BillBillConnector._get_qbo_vendor_ref)
   - Purchase/Expense pull (PurchaseExpenseConnector._get_vendor_public_id)
   - VendorCredit pull (VendorCreditBillCreditConnector._get_vendor_public_id)
-  - Expense-coding cockpit (ExpenseCodingItemService._resolve_vendor_id)
+  - Expense-coding cockpit (CodingSuggestionService._resolve_vendor_id)
 
 Each now: direct dbo.Vendor.QboId/RealmId lookup, re-verified fresh via
 `identity_consistency.py::verify_identity_dbo_only` — a plain unlocked
@@ -265,16 +265,16 @@ def test_vendorcredit_get_vendor_public_id_swallows_errors_and_returns_none():
     assert connector._get_vendor_public_id("QV-1", "realm-1") is None
 
 
-# --- Section 5: ExpenseCodingItemService._resolve_vendor_id (pull) ---
+# --- Section 5: CodingSuggestionService._resolve_vendor_id (pull) ---
 
 
 VENDOR_SERVICE_PATH = "entities.vendor.business.service.VendorService"
 
 
 def _build_expense_coding_service():
-    from entities.expense_coding_item.business.service import ExpenseCodingItemService
+    from entities.coding_suggestion.business.service import CodingSuggestionService
 
-    return ExpenseCodingItemService()
+    return CodingSuggestionService()
 
 
 def test_expense_coding_resolve_vendor_id_verified_direct_hit():

@@ -16,67 +16,87 @@ AS
 BEGIN
     SET NOCOUNT ON;
 
+    ;WITH Uncategorized AS (
+        SELECT
+            p.[Id] AS [QboPurchaseId],
+            p.[PublicId] AS [QboPurchasePublicId],
+            p.[QboId] AS [QboPurchaseQboId],
+            p.[SyncToken],
+            p.[RealmId],
+            p.[EntityRefValue] AS [VendorQboId],
+            p.[EntityRefName] AS [VendorName],
+            p.[Credit],
+            p.[TotalAmt],
+            p.[TxnDate],
+            p.[DocNumber],
+            p.[PrivateNote],
+            pl.[Id] AS [QboPurchaseLineId],
+            pl.[QboLineId],
+            pl.[LineNum],
+            pl.[Amount] AS [LineAmount],
+            pl.[Description] AS [LineDescription]
+        FROM [qbo].[PurchaseLine] pl
+        INNER JOIN [qbo].[Purchase] p ON pl.[QboPurchaseId] = p.[Id]
+        WHERE pl.[AccountRefName] LIKE N'%NEED TO CATEGORIZE%'
+          AND (@RealmId IS NULL OR p.[RealmId] = @RealmId)
+    ),
+    Ranked AS (
+        -- One pass over Uncategorized: the per-purchase count is a window aggregate.
+        SELECT
+            u.*,
+            COUNT(*) OVER (PARTITION BY u.[QboPurchaseId]) AS [UncategorizedLineCount],
+            ROW_NUMBER() OVER (PARTITION BY u.[QboPurchaseId] ORDER BY u.[QboPurchaseLineId]) AS [Rn]
+        FROM Uncategorized u
+    )
     SELECT
-        p.[Id] AS [QboPurchaseId],
-        p.[PublicId] AS [QboPurchasePublicId],
-        p.[QboId] AS [QboPurchaseQboId],
-        p.[SyncToken],
-        p.[RealmId],
-        p.[EntityRefValue] AS [VendorQboId],
-        p.[EntityRefName] AS [VendorName],
-        p.[Credit],
-        p.[TotalAmt],
-        p.[TxnDate],
-        p.[DocNumber],
-        p.[PrivateNote],
-        pl.[Id] AS [QboPurchaseLineId],
-        pl.[QboLineId],
-        pl.[LineNum],
-        pl.[Amount] AS [LineAmount],
-        pl.[Description] AS [LineDescription],
-        eci.[PublicId] AS [CodingItemPublicId],
-        eci.[Status] AS [CodingStatus],
-        eci.[SuggestedProjectId],
-        eci.[SuggestedSubCostCodeId],
-        eci.[SuggestedDescription],
-        eci.[SuggestionSource],
-        eci.[SuggestionReason],
-        eci.[SuggestionConfidence],
-        eci.[ConfirmedProjectId],
-        eci.[ConfirmedSubCostCodeId],
-        eci.[ConfirmedDescription],
-        eci.[FlagReason],
-        eci.[VendorId] AS [CodingVendorId],
-        eci.[ClaimedByUserId],
-        eci.[ClaimedAt]
-    FROM [qbo].[PurchaseLine] pl
-    INNER JOIN [qbo].[Purchase] p ON pl.[QboPurchaseId] = p.[Id]
-    LEFT JOIN [dbo].[ExpenseCodingItem] eci ON eci.[QboPurchaseLineId] = pl.[Id]
-    WHERE pl.[AccountRefName] LIKE N'%NEED TO CATEGORIZE%'
-      AND (@RealmId IS NULL OR p.[RealmId] = @RealmId)
-      -- U-059: UserProject row-scoping (mirrors the Expense ledger). A coding
-      -- row has no committed Expense; its project is the coding item's resolved
-      -- project (Confirmed, else Suggested). Uncoded rows (no project yet) stay
-      -- visible to every EXPENSES user — the queue's whole purpose is triaging
-      -- them. Admins bypass. Non-admins see a coded row only via UserProject.
+        r.[QboPurchaseId],
+        r.[QboPurchasePublicId],
+        r.[QboPurchaseQboId],
+        r.[SyncToken],
+        r.[RealmId],
+        r.[VendorQboId],
+        r.[VendorName],
+        r.[Credit],
+        r.[TotalAmt],
+        r.[TxnDate],
+        r.[DocNumber],
+        r.[PrivateNote],
+        r.[QboPurchaseLineId],
+        r.[QboLineId],
+        r.[LineNum],
+        r.[LineAmount],
+        r.[LineDescription],
+        r.[UncategorizedLineCount],
+        cs.[PublicId] AS [CodingItemPublicId],
+        cs.[Status] AS [CodingStatus],
+        cs.[SuggestedProjectId],
+        cs.[SuggestedSubCostCodeId],
+        cs.[SuggestedDescription],
+        cs.[SuggestionSource],
+        cs.[SuggestionReason],
+        cs.[SuggestionConfidence],
+        cs.[ConfirmedProjectId],
+        cs.[ConfirmedSubCostCodeId],
+        cs.[ConfirmedDescription],
+        cs.[FlagReason],
+        cs.[VendorId] AS [CodingVendorId],
+        cs.[ClaimedByUserId],
+        cs.[ClaimedAt]
+    FROM Ranked r
+    LEFT JOIN [dbo].[CodingSuggestion] cs
+        ON cs.[TargetKind] = N'expense'
+       AND cs.[RealmId] = r.[RealmId]
+       AND cs.[QboPurchaseQboId] = r.[QboPurchaseQboId]
+    WHERE r.[Rn] = 1
       AND (
           @ActorIsSystemAdmin = 1
-          OR COALESCE(eci.[ConfirmedProjectId], eci.[SuggestedProjectId]) IS NULL
+          OR COALESCE(cs.[ConfirmedProjectId], cs.[SuggestedProjectId]) IS NULL
           OR dbo.UserCanAccessProject(
                  @ActorUserId, @ActorIsSystemAdmin,
-                 COALESCE(eci.[ConfirmedProjectId], eci.[SuggestedProjectId])) = 1
+                 COALESCE(cs.[ConfirmedProjectId], cs.[SuggestedProjectId])) = 1
       )
-      -- U-484: exclude terminal coding-item statuses from the work list (diverges
-      -- from ReadExpenseCodingMetrics TotalTargetLines — see that sproc's comment).
-      -- AccountRef stays at 58999 even after item-based recode, so Status is
-      -- authoritative.
-      -- NULL is explicit — LEFT JOIN rows with no ExpenseCodingItem yet must stay
-      -- visible or lazy reseed never fires (NULL NOT IN (...) drops them).
-      -- Keep confirmed/enqueued/error visible: dead-lettered recodes stay enqueued
-      -- forever with no ExpenseCodingItem-specific handler — hiding them would
-      -- make permanently-failed writes invisible (U-005 trap).
-      AND (eci.[Status] IS NULL OR eci.[Status] NOT IN (N'written', N'resolved_externally'))
-    ORDER BY TRY_CONVERT(DATE, p.[TxnDate], 23) DESC, p.[DocNumber], pl.[LineNum];
+      AND (cs.[Status] IS NULL OR cs.[Status] NOT IN (N'written', N'resolved_externally'))
+    ORDER BY TRY_CONVERT(DATE, r.[TxnDate], 23) DESC, r.[DocNumber], r.[LineNum];
 END;
 GO
 
@@ -97,51 +117,46 @@ BEGIN
         ELSE DATEADD(DAY, -@SinceDays, SYSUTCDATETIME())
     END;
 
-    -- TotalTargetLines hits the qbo.* staging tables (the live 58999 population,
-    -- never @SinceDays-filtered); the per-status counts are a single scan of the
-    -- instrumentation table via conditional aggregation. COUNT(CASE ... THEN 1 END)
-    -- returns 0 (not NULL) over an empty set, matching the old COUNT(*) semantics.
     SELECT
         (
-            -- U-484: intentional divergence from ReadExpenseCodingQueue — metrics is a
-            -- funnel whose TotalTargetLines denominator is all lines ever targeted;
-            -- the queue excludes written/resolved_externally as a work list. Keeping
-            -- finished rows here while AcceptedCount/OverriddenCount count written rows
-            -- prevents inflating the cockpit Auto-cleared % KPI.
             SELECT COUNT(*)
             FROM [qbo].[PurchaseLine] pl
             INNER JOIN [qbo].[Purchase] p ON pl.[QboPurchaseId] = p.[Id]
-            LEFT JOIN [dbo].[ExpenseCodingItem] eci ON eci.[QboPurchaseLineId] = pl.[Id]
+            LEFT JOIN [dbo].[CodingSuggestion] cs
+                ON cs.[TargetKind] = N'expense'
+               AND cs.[RealmId] = p.[RealmId]
+               AND cs.[QboPurchaseQboId] = p.[QboId]
             WHERE pl.[AccountRefName] LIKE N'%NEED TO CATEGORIZE%'
               AND (@RealmId IS NULL OR p.[RealmId] = @RealmId)
               AND (
                   @ActorIsSystemAdmin = 1
-                  OR COALESCE(eci.[ConfirmedProjectId], eci.[SuggestedProjectId]) IS NULL
+                  OR COALESCE(cs.[ConfirmedProjectId], cs.[SuggestedProjectId]) IS NULL
                   OR dbo.UserCanAccessProject(
                          @ActorUserId, @ActorIsSystemAdmin,
-                         COALESCE(eci.[ConfirmedProjectId], eci.[SuggestedProjectId])) = 1
+                         COALESCE(cs.[ConfirmedProjectId], cs.[SuggestedProjectId])) = 1
               )
         ) AS [TotalTargetLines],
-        COUNT(CASE WHEN eci.[Status] = N'pending' THEN 1 END) AS [PendingCount],
-        COUNT(CASE WHEN eci.[Status] = N'suggested' THEN 1 END) AS [SuggestedCount],
-        COUNT(CASE WHEN eci.[Status] = N'flagged' THEN 1 END) AS [FlaggedCount],
-        COUNT(CASE WHEN eci.[Status] = N'confirmed' THEN 1 END) AS [ConfirmedCount],
-        COUNT(CASE WHEN eci.[Status] = N'enqueued' THEN 1 END) AS [EnqueuedCount],
-        COUNT(CASE WHEN eci.[Status] = N'written' THEN 1 END) AS [WrittenCount],
-        COUNT(CASE WHEN eci.[Status] = N'changed_in_qbo' THEN 1 END) AS [ChangedInQboCount],
-        COUNT(CASE WHEN eci.[Status] = N'resolved_externally' THEN 1 END) AS [ResolvedExternallyCount],
-        COUNT(CASE WHEN eci.[Status] = N'error' THEN 1 END) AS [ErrorCount],
-        COUNT(CASE WHEN eci.[Status] = N'written' AND eci.[WasOverridden] = 0 THEN 1 END) AS [AcceptedCount],
-        COUNT(CASE WHEN eci.[Status] = N'written' AND eci.[WasOverridden] = 1 THEN 1 END) AS [OverriddenCount]
-    FROM [dbo].[ExpenseCodingItem] eci
-    WHERE (@RealmId IS NULL OR eci.[RealmId] = @RealmId)
-      AND (@SinceCutoff IS NULL OR eci.[CreatedDatetime] >= @SinceCutoff)
+        COUNT(CASE WHEN cs.[Status] = N'pending' THEN 1 END) AS [PendingCount],
+        COUNT(CASE WHEN cs.[Status] = N'suggested' THEN 1 END) AS [SuggestedCount],
+        COUNT(CASE WHEN cs.[Status] = N'flagged' THEN 1 END) AS [FlaggedCount],
+        COUNT(CASE WHEN cs.[Status] = N'confirmed' THEN 1 END) AS [ConfirmedCount],
+        COUNT(CASE WHEN cs.[Status] = N'enqueued' THEN 1 END) AS [EnqueuedCount],
+        COUNT(CASE WHEN cs.[Status] = N'written' THEN 1 END) AS [WrittenCount],
+        COUNT(CASE WHEN cs.[Status] = N'changed_in_qbo' THEN 1 END) AS [ChangedInQboCount],
+        COUNT(CASE WHEN cs.[Status] = N'resolved_externally' THEN 1 END) AS [ResolvedExternallyCount],
+        COUNT(CASE WHEN cs.[Status] = N'error' THEN 1 END) AS [ErrorCount],
+        COUNT(CASE WHEN cs.[Status] = N'written' AND cs.[WasOverridden] = 0 THEN 1 END) AS [AcceptedCount],
+        COUNT(CASE WHEN cs.[Status] = N'written' AND cs.[WasOverridden] = 1 THEN 1 END) AS [OverriddenCount]
+    FROM [dbo].[CodingSuggestion] cs
+    WHERE cs.[TargetKind] = N'expense'
+      AND (@RealmId IS NULL OR cs.[RealmId] = @RealmId)
+      AND (@SinceCutoff IS NULL OR cs.[CreatedDatetime] >= @SinceCutoff)
       AND (
           @ActorIsSystemAdmin = 1
-          OR COALESCE(eci.[ConfirmedProjectId], eci.[SuggestedProjectId]) IS NULL
+          OR COALESCE(cs.[ConfirmedProjectId], cs.[SuggestedProjectId]) IS NULL
           OR dbo.UserCanAccessProject(
                  @ActorUserId, @ActorIsSystemAdmin,
-                 COALESCE(eci.[ConfirmedProjectId], eci.[SuggestedProjectId])) = 1
+                 COALESCE(cs.[ConfirmedProjectId], cs.[SuggestedProjectId])) = 1
       );
 END;
 GO

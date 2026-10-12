@@ -10,13 +10,16 @@ import base64
 
 
 @dataclass
-class ExpenseCodingItem:
+class CodingSuggestion:
     id: Optional[int]
     public_id: Optional[str]
     row_version: Optional[str]
+    target_kind: Optional[str]
+    bill_id: Optional[int]
+    bill_credit_id: Optional[int]
+    expense_id: Optional[int]
+    attachment_id: Optional[int]
     qbo_purchase_id: Optional[int]
-    qbo_purchase_line_id: Optional[int]
-    qbo_line_id: Optional[str]
     qbo_purchase_qbo_id: Optional[str]
     realm_id: Optional[str]
     vendor_id: Optional[int]
@@ -29,12 +32,19 @@ class ExpenseCodingItem:
     suggestion_reason: Optional[str]
     suggestion_confidence: Optional[Decimal]
     suggested_at: Optional[str]
+    features_json: Optional[str]
+    budget_check: Optional[str]
+    budget_remaining: Optional[Decimal]
+    route: Optional[str]
+    model_version: Optional[str]
     confirmed_project_id: Optional[int]
     confirmed_sub_cost_code_id: Optional[int]
     confirmed_description: Optional[str]
     was_overridden: Optional[bool]
     confirmed_by_user_id: Optional[int]
     confirmed_at: Optional[str]
+    confirmed_mixed_codes: Optional[bool]
+    prefill_state: Optional[str]
     flag_reason: Optional[str]
     flagged_at: Optional[str]
     written_at: Optional[str]
@@ -45,6 +55,7 @@ class ExpenseCodingItem:
     created_by_user_id: Optional[int]
     created_datetime: Optional[str]
     modified_datetime: Optional[str]
+    confirmation_source: Optional[str] = None  # 'review_submit' | 'confirm_endpoint' (U-652)
 
     @property
     def row_version_bytes(self) -> Optional[bytes]:
@@ -56,4 +67,6 @@ class ExpenseCodingItem:
         data = asdict(self)
         if data.get("suggestion_confidence") is not None:
             data["suggestion_confidence"] = str(data["suggestion_confidence"])
+        if data.get("budget_remaining") is not None:
+            data["budget_remaining"] = str(data["budget_remaining"])
         return data

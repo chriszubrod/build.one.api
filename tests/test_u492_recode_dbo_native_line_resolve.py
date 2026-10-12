@@ -14,6 +14,7 @@ from tests.test_u488_recode_carries_qty_rate_billable import (
     TARGET_LINE_ID,
     _make_coding_item,
     _make_outbox_row,
+    _stub_uncategorized_staging_lines,
 )
 
 
@@ -25,7 +26,7 @@ def _run_handler_with_mocks(
     line_side_effect=None,
 ):
     patches = [
-        patch("entities.expense_coding_item.business.service.ExpenseCodingItemService"),
+        patch("entities.coding_suggestion.business.service.CodingSuggestionService"),
         patch(
             "integrations.intuit.qbo.purchase.connector.expense.business.service.PurchaseExpenseConnector"
         ),
@@ -52,11 +53,19 @@ def _run_handler_with_mocks(
         if line_side_effect is not None:
             eli_mock.read_by_qbo_identity.side_effect = line_side_effect
         else:
+            if line_return is not None:
+                for attr, val in (
+                    ("sub_cost_code_id", 101),
+                    ("project_id", 202),
+                    ("description", "line desc"),
+                ):
+                    if not hasattr(line_return, attr):
+                        setattr(line_return, attr, val)
             eli_mock.read_by_qbo_identity.return_value = line_return
 
         connector = MagicMock()
         mock_connector_cls.return_value = connector
-        connector.recode_purchase_line.return_value = {"status": "written", "sync_token": "6"}
+        connector.recode_purchase_lines.return_value = {"status": "written", "sync_token": "6"}
 
         QboOutboxWorker()._handle_recode_purchase_line(_make_outbox_row())
 
@@ -83,11 +92,11 @@ def test_s1_map_miss_population_resolves_economics():
         expense_return=SimpleNamespace(id=9001),
         line_return=line,
     )
-    kwargs = ctx.connector.recode_purchase_line.call_args.kwargs
-    assert kwargs["quantity"] == 2
-    assert kwargs["rate"] == Decimal("10.50")
-    assert kwargs["amount"] == Decimal("21.00")
-    assert kwargs["is_billable"] is False
+    line0 = ctx.connector.recode_purchase_lines.call_args.kwargs["lines"][0]
+    assert line0["quantity"] == 2
+    assert line0["rate"] == Decimal("10.50")
+    assert line0["amount"] == Decimal("21.00")
+    assert line0["is_billable"] is False
     ctx.record_mapping_issue.assert_not_called()
 
 
@@ -138,7 +147,9 @@ def test_s4_unresolvable_logs_records_issue_and_still_writes(caplog):
     assert call_kwargs["drift_type"] == "missing_mapping"
     assert call_kwargs["entity_type"] == "ExpenseCodingItem"
     assert call_kwargs["entity_public_id"] == PUBLIC_ID
-    ctx.connector.recode_purchase_line.assert_called_once()
+    ctx.connector.recode_purchase_lines.assert_called_once()
+    line0 = ctx.connector.recode_purchase_lines.call_args.kwargs["lines"][0]
+    assert line0["sub_cost_code_id"] == _make_coding_item().confirmed_sub_cost_code_id
     ctx.svc.mark_written.assert_called_once()
 
 
@@ -165,7 +176,7 @@ def test_s6_resolve_exception_logs_and_still_recodes(caplog):
 
     assert any("db blew up" in m or PUBLIC_ID in m for m in caplog.messages)
     ctx.record_mapping_issue.assert_not_called()
-    ctx.connector.recode_purchase_line.assert_called_once()
+    ctx.connector.recode_purchase_lines.assert_called_once()
     ctx.svc.mark_written.assert_called_once()
 
 
@@ -195,17 +206,16 @@ def test_s9_line_from_another_realm_is_refused_and_recorded():
         expense_return=SimpleNamespace(id=9001),
         line_return=line,
     )
-    kwargs = ctx.connector.recode_purchase_line.call_args.kwargs
-    assert kwargs["quantity"] is None, "cross-realm economics must not be sent"
-    assert kwargs["rate"] is None
-    assert kwargs["amount"] is None
-    assert kwargs["is_billable"] is None
-    # observable, not silent -- the whole point of the unit
+    kwargs = ctx.connector.recode_purchase_lines.call_args.kwargs
+    line0 = kwargs["lines"][0]
+    assert line0["quantity"] is None, "cross-realm economics must not be sent"
+    assert line0["rate"] is None
+    assert line0["amount"] is None
+    assert line0["is_billable"] is None
     ctx.record_mapping_issue.assert_called_once()
     details = ctx.record_mapping_issue.call_args.kwargs["details"]
     assert "a-different-realm" in details and "across realms" in details
-    # and the recode itself still proceeds (the approved unresolvable behaviour)
-    ctx.connector.recode_purchase_line.assert_called_once()
+    ctx.connector.recode_purchase_lines.assert_called_once()
     ctx.svc.mark_written.assert_called_once()
 
 
@@ -224,9 +234,9 @@ def test_s10_null_realm_line_still_resolves():
         expense_return=SimpleNamespace(id=9002),
         line_return=line,
     )
-    kwargs = ctx.connector.recode_purchase_line.call_args.kwargs
-    assert kwargs["quantity"] == 4
-    assert kwargs["amount"] == Decimal("10.00")
+    kwargs = ctx.connector.recode_purchase_lines.call_args.kwargs
+    assert kwargs["lines"][0]["quantity"] == 4
+    assert kwargs["lines"][0]["amount"] == Decimal("10.00")
     ctx.record_mapping_issue.assert_not_called()
 
 
@@ -243,9 +253,9 @@ def test_s11_matching_realm_line_resolves():
         expense_return=SimpleNamespace(id=9003),
         line_return=line,
     )
-    kwargs = ctx.connector.recode_purchase_line.call_args.kwargs
-    assert kwargs["quantity"] == 6
-    assert kwargs["is_billable"] is True
+    kwargs = ctx.connector.recode_purchase_lines.call_args.kwargs
+    assert kwargs["lines"][0]["quantity"] == 6
+    assert kwargs["lines"][0]["is_billable"] is True
     ctx.record_mapping_issue.assert_not_called()
 
 
@@ -314,7 +324,9 @@ def _resolve_with_mocks(*, expense_return, line_return):
         mock_eli_svc_cls.return_value.read_by_qbo_identity.return_value = line_return
         row = _make_outbox_row()
         item = _make_coding_item()
-        return QboOutboxWorker()._resolve_recode_line_economics(row, item)
+        return QboOutboxWorker()._resolve_recode_line_economics(
+            row, item, target_qbo_line_id=TARGET_LINE_ID
+        )
 
 
 @pytest.mark.parametrize(
@@ -441,7 +453,7 @@ def test_s17_precedence_line_none_vs_cross_realm():
 
 def test_s18_record_mapping_issue_failure_still_recodes():
     patches = [
-        patch("entities.expense_coding_item.business.service.ExpenseCodingItemService"),
+        patch("entities.coding_suggestion.business.service.CodingSuggestionService"),
         patch(
             "integrations.intuit.qbo.purchase.connector.expense.business.service.PurchaseExpenseConnector"
         ),
@@ -461,14 +473,14 @@ def test_s18_record_mapping_issue_failure_still_recodes():
         mock_expense_svc_cls.return_value.read_by_qbo_identity.return_value = None
         connector = MagicMock()
         mock_connector_cls.return_value = connector
-        connector.recode_purchase_line.return_value = {
+        connector.recode_purchase_lines.return_value = {
             "status": "written",
             "sync_token": "6",
         }
 
         QboOutboxWorker()._handle_recode_purchase_line(_make_outbox_row())
 
-        connector.recode_purchase_line.assert_called_once()
+        connector.recode_purchase_lines.assert_called_once()
         svc.mark_written.assert_called_once()
 
 
@@ -479,13 +491,11 @@ def test_s19_record_mapping_issue_import_stays_lazy_in_handler():
         0
     ]
     assert "record_mapping_issue" not in module_header
-    handler_source = inspect.getsource(
-        QboOutboxWorker._handle_recode_purchase_line
+    recorder_source = inspect.getsource(
+        QboOutboxWorker._record_recode_unresolved_line_economics
     )
-    assert (
-        "from integrations.intuit.qbo.base.reconciliation_recorder import record_mapping_issue"
-        in handler_source
-    )
+    assert "integrations.intuit.qbo.base.reconciliation_recorder" in recorder_source
+    assert "record_mapping_issue" in recorder_source
     helper_source = inspect.getsource(
         QboOutboxWorker._resolve_recode_line_economics
     )

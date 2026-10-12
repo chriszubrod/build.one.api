@@ -6,8 +6,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from entities.expense_coding_item.business.hint_extractor import extract_hints
-from entities.expense_coding_item.business.suggestion_service import ExpenseCodingSuggestionService
+from entities.coding_suggestion.business.hint_extractor import extract_hints
+from entities.coding_suggestion.business.suggestion_service import CodingSuggestionEngine
 
 
 def test_extract_hints_address_memo():
@@ -50,7 +50,7 @@ def _make_service(**overrides):
         "qbo_purchase_service": MagicMock(),
     }
     defaults.update(overrides)
-    return ExpenseCodingSuggestionService(**defaults)
+    return CodingSuggestionEngine(**defaults)
 
 
 def test_suggest_for_item_full_project_and_scc():

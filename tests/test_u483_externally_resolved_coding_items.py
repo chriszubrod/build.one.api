@@ -1,6 +1,6 @@
-"""U-483 — externally resolved expense coding items (orphaned staging lines).
+"""U-483 — externally resolved coding suggestions (orphaned staging lines).
 
-Pure-logic / source pins — no live DB. Orphaned dbo.ExpenseCodingItem rows whose
+Pure-logic / source pins — no live DB. Orphaned dbo.CodingSuggestion rows whose
 QboPurchaseLineId no longer exists in staging but whose parent purchase has no
 58999 lines left must transition to `resolved_externally`, tracked separately
 from cockpit `written` wins.
@@ -15,14 +15,14 @@ import pytest
 from tests.sproc_text import REPO_ROOT, sproc_body, sproc_params, strip_sql_comments
 
 EXPENSE_CODING_SQL = (
-    REPO_ROOT / "entities/expense_coding_item/sql/dbo.expense_coding_item.sql"
+    REPO_ROOT / "entities/coding_suggestion/sql/dbo.coding_suggestion.sql"
 )
 METRICS_SQL = (
     REPO_ROOT / "integrations/intuit/qbo/purchase/sql/qbo.expense_coding_queue.sql"
 )
 
-DETECTION_SPROC = "ReadExternallyResolvedCodingItemCandidates"
-MARK_SPROC = "MarkExpenseCodingResolvedExternally"
+DETECTION_SPROC = "ReadExternallyResolvedCodingSuggestionCandidates"
+MARK_SPROC = "MarkCodingSuggestionResolvedExternally"
 
 ALLOWED_TRANSITION_FROM = frozenset(
     {"pending", "suggested", "flagged", "changed_in_qbo"}
@@ -56,126 +56,76 @@ def test_detection_sproc_requires_no_need_to_categorize_lines_left():
         body,
         re.IGNORECASE,
     ), (
-        "ReadExternallyResolvedCodingItemCandidates must NOT EXISTS over parent "
+        "ReadExternallyResolvedCodingSuggestionCandidates must NOT EXISTS over parent "
         "PurchaseLine rows still at NEED TO CATEGORIZE — without it, outstanding "
         "work would be closed as externally resolved"
     )
 
 
-def _detection_sproc_arms() -> tuple[str, str]:
-    """Return (arm1, arm2) text split on the first UNION in the detection sproc."""
-    body = strip_sql_comments(sproc_body(EXPENSE_CODING_SQL, DETECTION_SPROC))
-    parts = re.split(r"\bUNION\b", body, maxsplit=1, flags=re.IGNORECASE)
-    assert len(parts) >= 2, (
-        "ReadExternallyResolvedCodingItemCandidates must UNION a second arm "
-        "(in-place external recode) with the orphaned-line arm"
-    )
-    return parts[0], parts[1]
-
-
 def test_detection_sproc_arm1_requires_missing_purchase_line_row():
-    arm1, _ = _detection_sproc_arms()
-    assert not re.search(
-        r"eci\.\[QboPurchaseLineId\]",
-        arm1,
-        re.IGNORECASE,
-    ), (
-        "Arm 1 must not key on staging PK QboPurchaseLineId — after U-497b the "
-        "MERGE dedupe key is dbo-native and a stale PK can refresh"
+    body = strip_sql_comments(sproc_body(EXPENSE_CODING_SQL, DETECTION_SPROC))
+    assert "QboPurchaseLineId" not in body
+    assert re.search(r"cs\.\[QboPurchaseQboId\]", body, re.IGNORECASE)
+    assert "NOT EXISTS" in body.upper()
+
+
+def test_detection_sproc_placeholder_test_requires_item_ref_and_label():
+    """A genuine placeholder is the 58999 label AND no ItemRef: label-only would leave
+    item-based recodes done in QBO (U-484) permanently open."""
+    body = strip_sql_comments(sproc_body(EXPENSE_CODING_SQL, DETECTION_SPROC))
+    m = re.search(
+        r"NOT\s+EXISTS\s*\((.*?AccountRefName\]\s+LIKE\s+N'%NEED TO CATEGORIZE%'.*?)\)",
+        body,
+        re.IGNORECASE | re.DOTALL,
     )
+    assert m, "detection must NOT EXISTS over genuine placeholders on the purchase"
+    assert re.search(r"ItemRefValue\]\s+IS\s+NULL", m.group(1), re.IGNORECASE), (
+        "the placeholder test must require ItemRefValue IS NULL"
+    )
+    assert not re.search(r"ItemRefValue\]\s+IS\s+NOT\s+NULL", body, re.IGNORECASE), (
+        "no arm may accept a purchase because ONE line was item-recoded"
+    )
+
+
+def test_detection_sproc_arm2_is_per_line_not_parent_58999_guard():
+    """Purchase-grain guard: parent purchase must have zero 58999 staging lines left."""
+    body = strip_sql_comments(sproc_body(EXPENSE_CODING_SQL, DETECTION_SPROC))
+    assert re.search(
+        r"p\.\[QboId\]\s*=\s*cs\.\[QboPurchaseQboId\]",
+        body,
+        re.I,
+    ), "detection must bind staging purchase header to cs purchase identity"
     assert re.search(
         r"NOT\s+EXISTS\s*\(\s*"
         r"SELECT\s+1\s+"
         r"FROM\s+\[qbo\]\.\[Purchase\]\s+p\s+"
         r"INNER\s+JOIN\s+\[qbo\]\.\[PurchaseLine\]\s+pl\s+"
         r"ON\s+pl\.\[QboPurchaseId\]\s*=\s*p\.\[Id\]\s+"
-        r"WHERE\s+p\.\[QboId\]\s*=\s*eci\.\[QboPurchaseQboId\]\s+"
-        r"AND\s+p\.\[RealmId\]\s*=\s*eci\.\[RealmId\]\s+"
-        r"AND\s+pl\.\[QboLineId\]\s*=\s*eci\.\[QboLineId\]",
-        arm1,
+        r"WHERE\s+p\.\[QboId\]\s*=\s*cs\.\[QboPurchaseQboId\]\s+"
+        r"AND\s+p\.\[RealmId\]\s*=\s*cs\.\[RealmId\]\s+"
+        r"AND\s+pl\.\[AccountRefName\]\s+LIKE\s+N'%NEED TO CATEGORIZE%'",
+        body,
         re.IGNORECASE | re.DOTALL,
-    ), (
-        "Arm 1 must require no live qbo.PurchaseLine under the purchase carries "
-        "this coding item's QboLineId (dbo-native orphaned line)"
-    )
-
-
-def test_detection_sproc_arm2_placeholder_test_requires_item_ref_and_label():
-    _, arm2 = _detection_sproc_arms()
-    assert re.search(
-        r"AccountRefName\]\s+LIKE\s+N'%NEED TO CATEGORIZE%'",
-        arm2,
-        re.IGNORECASE,
-    ), "Arm 2 must test the 58999 AccountRefName label for still-a-placeholder"
-    assert re.search(
-        r"ItemRefValue\]\s+IS\s+NULL",
-        arm2,
-        re.IGNORECASE,
-    ), (
-        "Arm 2 must also test ItemRefValue IS NULL — label-only would leave "
-        "cockpit item-based recodes (U-484) permanently open"
-    )
-    assert re.search(
-        r"NOT\s*\(\s*"
-        r"[^)]*AccountRefName\][^)]*LIKE[^)]*NEED TO CATEGORIZE[^)]*"
-        r"AND[^)]*ItemRefValue\][^)]*IS\s+NULL[^)]*\)",
-        arm2,
-        re.IGNORECASE | re.DOTALL,
-    ), (
-        "Arm 2 placeholder negation must AND both AccountRefName and ItemRefValue "
-        "inside one NOT (...)"
-    )
-
-
-def test_detection_sproc_arm2_is_per_line_not_parent_58999_guard():
-    _, arm2 = _detection_sproc_arms()
-    assert re.search(
-        r"(?:pl\.\[Id\]\s*=\s*eci\.\[QboPurchaseLineId\]"
-        r"|eci\.\[QboPurchaseLineId\]\s*=\s*pl\.\[Id\])",
-        arm2,
-        re.IGNORECASE,
-    ), "Arm 2 must bind to THIS coding item's staging line (per-line safety)"
-    assert not re.search(
-        r"NOT\s+EXISTS\s*\(\s*"
-        r"SELECT\s+1\s+"
-        r"FROM\s+\[qbo\]\.\[Purchase\]\s+p\s+"
-        r"INNER\s+JOIN\s+\[qbo\]\.\[PurchaseLine\]\s+pl\s+"
-        r"ON\s+pl\.\[QboPurchaseId\]\s*=\s*p\.\[Id\][^)]*"
-        r"NEED TO CATEGORIZE",
-        arm2,
-        re.IGNORECASE | re.DOTALL,
-    ), (
-        "Arm 2 must NOT copy Arm 1's parent-level 'no 58999 anywhere on the "
-        "purchase' guard — multi-line purchases close coded lines independently"
     )
 
 
 def test_detection_sproc_non_terminal_status_filter_on_both_arms():
     body = strip_sql_comments(sproc_body(EXPENSE_CODING_SQL, DETECTION_SPROC))
     status_filters = list(
-        re.finditer(r"eci\.\[Status\]\s+IN\s*\(([^)]+)\)", body, re.IGNORECASE)
+        re.finditer(r"cs\.\[Status\]\s+IN\s*\(([^)]+)\)", body, re.IGNORECASE)
     )
-    assert len(status_filters) >= 2, (
-        "Both UNION arms must apply the non-terminal eci.[Status] IN (...) filter"
-    )
+    assert len(status_filters) >= 1
     for match in status_filters:
         chunk = match.group(1).lower()
         for forbidden in ("written", "resolved_externally"):
-            assert forbidden not in chunk, (
-                f"Detection sproc must never emit {forbidden!r} candidates"
-            )
+            assert forbidden not in chunk
         for allowed in ALLOWED_TRANSITION_FROM:
             assert f"n'{allowed}'" in chunk or f"'{allowed}'" in chunk
 
 
-def test_detection_sproc_deduplicates_union_arms():
+def test_detection_sproc_is_single_arm_at_purchase_grain():
     body = strip_sql_comments(sproc_body(EXPENSE_CODING_SQL, DETECTION_SPROC))
-    assert re.search(r"\bUNION\b", body, re.IGNORECASE), (
-        "Combine arms with UNION (implicit DISTINCT) so a row cannot appear twice"
-    )
-    assert not re.search(r"\bUNION\s+ALL\b", body, re.IGNORECASE), (
-        "UNION ALL would duplicate candidates that satisfy both arms"
-    )
+    assert "UNION" not in body.upper()
 
 
 # ---------------------------------------------------------------------------
@@ -187,11 +137,11 @@ def test_mark_sproc_only_transitions_from_non_terminal_statuses():
     body = strip_sql_comments(sproc_body(EXPENSE_CODING_SQL, MARK_SPROC))
     for status in ALLOWED_TRANSITION_FROM:
         assert _status_in_list(body, status), (
-            f"MarkExpenseCodingResolvedExternally must allow transition from {status!r}"
+            f"MarkCodingSuggestionResolvedExternally must allow transition from {status!r}"
         )
     for status in FORBIDDEN_TRANSITION_FROM:
         assert not _status_in_list(body, status), (
-            f"MarkExpenseCodingResolvedExternally must NOT transition from {status!r}"
+            f"MarkCodingSuggestionResolvedExternally must NOT transition from {status!r}"
         )
 
 
@@ -228,7 +178,7 @@ def test_metrics_acceptance_counts_stay_written_only():
 
 
 def test_reconcile_externally_resolved_defaults_to_dry_run_without_marking():
-    from entities.expense_coding_item.business.service import ExpenseCodingItemService
+    from entities.coding_suggestion.business.service import CodingSuggestionService
 
     candidates = [
         {
@@ -239,7 +189,7 @@ def test_reconcile_externally_resolved_defaults_to_dry_run_without_marking():
             "qbo_line_id": "1",
         }
     ]
-    svc = ExpenseCodingItemService()
+    svc = CodingSuggestionService()
     svc.repo = MagicMock()
     svc.repo.read_externally_resolved_candidates.return_value = candidates
 
@@ -250,7 +200,7 @@ def test_reconcile_externally_resolved_defaults_to_dry_run_without_marking():
 
 
 def test_reconcile_externally_resolved_apply_calls_mark_for_each_candidate():
-    from entities.expense_coding_item.business.service import ExpenseCodingItemService
+    from entities.coding_suggestion.business.service import CodingSuggestionService
 
     candidates = [
         {
@@ -268,7 +218,7 @@ def test_reconcile_externally_resolved_apply_calls_mark_for_each_candidate():
             "qbo_line_id": "2",
         },
     ]
-    svc = ExpenseCodingItemService()
+    svc = CodingSuggestionService()
     svc.repo = MagicMock()
     svc.repo.read_externally_resolved_candidates.return_value = candidates
     svc.repo.mark_resolved_externally.side_effect = [MagicMock(), None]

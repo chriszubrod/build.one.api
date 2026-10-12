@@ -349,7 +349,7 @@ class VendorCreditBillCreditConnector:
     # One of FIVE near-identical dbo-first/legacy-fallback vendor-ref resolvers
     # (U-284v): this one, BillBillConnector._get_vendor_public_id (pull) +
     # _get_qbo_vendor_ref (push), PurchaseExpenseConnector._get_vendor_public_id,
-    # ExpenseCodingItemService._resolve_vendor_id. Hand-copied deliberately,
+    # CodingSuggestionService._resolve_vendor_id. Hand-copied deliberately,
     # mirroring _get_project_public_id's own precedent — see TODO.md's
     # U-005[reuse] entry before adding a 6th copy or consolidating.
     def _get_vendor_public_id(self, qbo_vendor_ref_value: Optional[str], realm_id: Optional[str] = None) -> Optional[str]:

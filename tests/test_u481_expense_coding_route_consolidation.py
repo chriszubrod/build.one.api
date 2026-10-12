@@ -168,7 +168,7 @@ def test_alias_routes_marked_deprecated(method, alias_path, canonical_path):
 @pytest.mark.parametrize("method,path", SINGLE_SPELLING_ONLY)
 def test_claim_and_release_routes_are_gone_in_both_spellings(method, path):
     # Chris, 2026-09-18: drop the two unused HTTP routes, keep the service lease
-    # (confirm() auto-claims via ExpenseCodingItemService.claim).
+    # (confirm() auto-claims via CodingSuggestionService.claim).
     paths = _route_paths(method)
     assert path not in paths, f"legacy route still registered: {method} {path}"
     alt = path.replace("/expense-coding/", "/expense/coding/")

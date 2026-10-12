@@ -66,5 +66,5 @@ def test_all_three_scans_retain_userproject_scoping():
     versa). Same discipline as the U-057/U-062 copy-paste-drift guards."""
     sql = _SQL_FILE.read_text()
     assert sql.count("dbo.UserCanAccessProject(") == 3
-    assert sql.count("COALESCE(eci.[ConfirmedProjectId], eci.[SuggestedProjectId]) IS NULL") == 3
+    assert sql.count("COALESCE(cs.[ConfirmedProjectId], cs.[SuggestedProjectId]) IS NULL") == 3
     assert sql.count("@ActorIsSystemAdmin = 1") == 3

@@ -9,8 +9,8 @@ from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
-from entities.expense_coding_item.business.model import ExpenseCodingItem
-from entities.expense_coding_item.business.service import ExpenseCodingItemService
+from entities.coding_suggestion.business.model import CodingSuggestion
+from entities.coding_suggestion.business.service import CodingSuggestionService
 from integrations.intuit.qbo.purchase.persistence.repo import QboPurchaseLineRepository
 from shared.api.responses import item_response, list_response
 
@@ -18,13 +18,16 @@ from shared.api.responses import item_response, list_response
 def test_expense_coding_item_row_version_roundtrip():
     original_bytes = b"\x01\x02\x03\x04\x05\x06\x07\x08"
     encoded = base64.b64encode(original_bytes).decode("ascii")
-    item = ExpenseCodingItem(
+    item = CodingSuggestion(
         id=1,
         public_id="00000000-0000-0000-0000-000000000001",
         row_version=encoded,
+        target_kind="expense",
+        bill_id=None,
+        bill_credit_id=None,
+        expense_id=None,
+        attachment_id=None,
         qbo_purchase_id=10,
-        qbo_purchase_line_id=20,
-        qbo_line_id="1",
         qbo_purchase_qbo_id="123",
         realm_id="realm",
         vendor_id=None,
@@ -37,12 +40,19 @@ def test_expense_coding_item_row_version_roundtrip():
         suggestion_reason=None,
         suggestion_confidence=None,
         suggested_at=None,
+        features_json=None,
+        budget_check=None,
+        budget_remaining=None,
+        route=None,
+        model_version=None,
         confirmed_project_id=None,
         confirmed_sub_cost_code_id=None,
         confirmed_description=None,
         was_overridden=None,
         confirmed_by_user_id=None,
         confirmed_at=None,
+        confirmed_mixed_codes=None,
+        prefill_state=None,
         flag_reason=None,
         flagged_at=None,
         written_at=None,
@@ -202,12 +212,21 @@ def test_expense_coding_queue_row_mapper_keys():
 
 
 def _confirm_fake_item():
-    # confirm() reads only realm_id (enqueue) and qbo_purchase_id (sync-token snapshot).
-    return SimpleNamespace(realm_id="realm-1", qbo_purchase_id=1)
+    # confirm() reads realm_id, qbo_purchase_qbo_id (multi-line guard), qbo_purchase_id (sync token).
+    return SimpleNamespace(
+        realm_id="realm-1",
+        qbo_purchase_id=1,
+        qbo_purchase_qbo_id="purchase-1",
+    )
 
 
 def _setup_confirm_gate_mocks(monkeypatch, *, writes_allowed: bool, recode_writes_enabled: bool):
-    svc = ExpenseCodingItemService()
+    monkeypatch.setattr(
+        CodingSuggestionService,
+        "_count_uncategorized_purchase_lines",
+        staticmethod(lambda **kwargs: 1),
+    )
+    svc = CodingSuggestionService()
     svc.read_by_public_id = MagicMock(return_value=_confirm_fake_item())
     record_spy = MagicMock()
     svc.record_confirmation = record_spy
@@ -286,7 +305,7 @@ def test_confirm_both_gates_on_enqueues(monkeypatch):
     record_spy.assert_called_once()
     mock_outbox_instance.enqueue.assert_called_once_with(
         kind="recode_purchase_line",
-        entity_type="ExpenseCodingItem",
+        entity_type="CodingSuggestion",
         entity_public_id="eci-1",
         realm_id="realm-1",
     )

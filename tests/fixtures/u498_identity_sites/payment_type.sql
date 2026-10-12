@@ -1,0 +1,1 @@
+SELECT TOP 1 p.[PaymentType] FROM dbo.[Expense] e INNER JOIN dbo.[ExpenseLineItem] eli ON eli.[ExpenseId] = e.[Id] INNER JOIN qbo.[Purchase] p ON p.[QboId] = e.[QboId] AND p.[RealmId] = e.[RealmId] INNER JOIN qbo.[PurchaseLine] pl ON pl.[QboPurchaseId] = p.[Id] AND pl.[QboLineId] = eli.[QboId] AND eli.[RealmId] = p.[RealmId] WHERE e.[Id] = ? AND e.[RealmId] IS NOT NULL

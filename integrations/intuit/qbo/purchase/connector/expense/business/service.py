@@ -332,7 +332,7 @@ class PurchaseExpenseConnector:
     # One of FIVE near-identical dbo-first/legacy-fallback vendor-ref resolvers
     # (U-284v): this one, BillBillConnector._get_vendor_public_id (pull) +
     # _get_qbo_vendor_ref (push), VendorCreditBillCreditConnector
-    # ._get_vendor_public_id, ExpenseCodingItemService._resolve_vendor_id.
+    # ._get_vendor_public_id, CodingSuggestionService._resolve_vendor_id.
     # Hand-copied deliberately, mirroring _get_project_public_id's own
     # precedent — see TODO.md's U-005[reuse] entry before adding a 6th copy
     # or consolidating.
@@ -429,11 +429,37 @@ class PurchaseExpenseConnector:
         amount: Optional[Decimal] = None,
         is_billable: Optional[bool] = None,
     ) -> dict:
-        """
-        Surgically recode one 58999 placeholder Purchase line to ItemBasedExpenseLineDetail.
+        """Single-line wrapper around recode_purchase_lines (U-652)."""
+        return self.recode_purchase_lines(
+            realm_id=realm_id,
+            qbo_purchase_qbo_id=qbo_purchase_qbo_id,
+            lines=[
+                {
+                    "target_qbo_line_id": target_qbo_line_id,
+                    "sub_cost_code_id": sub_cost_code_id,
+                    "project_id": project_id,
+                    "description": description,
+                    "quantity": quantity,
+                    "rate": rate,
+                    "amount": amount,
+                    "is_billable": is_billable,
+                }
+            ],
+            expected_sync_token=expected_sync_token,
+        )
 
-        Round-trips the raw QBO Purchase JSON; mutates only the target line dict in place.
-        Performs no local DB or qbo.* cache writes.
+    def recode_purchase_lines(
+        self,
+        *,
+        realm_id: str,
+        qbo_purchase_qbo_id: str,
+        lines: list[dict],
+        expected_sync_token: str,
+    ) -> dict:
+        """
+        Surgically recode one or more 58999 placeholder Purchase lines in a single QBO update.
+
+        Round-trips the raw QBO Purchase JSON once; mutates only target line dicts in place.
         """
         from integrations.intuit.qbo.base.errors import QboSyncTokenMismatchError
         from integrations.intuit.qbo.purchase.connector.expense.business.errors import (
@@ -442,35 +468,51 @@ class PurchaseExpenseConnector:
         )
         from integrations.intuit.qbo.purchase.external.client import QboPurchaseClient
 
+        if not lines:
+            return {"status": "already_recoded", "sync_token": expected_sync_token}
+
         with QboPurchaseClient(realm_id=realm_id) as client:
             raw = client.get_purchase_raw(qbo_purchase_qbo_id)
-            lines = raw.get("Line") or []
+            raw_lines = raw.get("Line") or []
             live_sync_token = str(raw.get("SyncToken"))
 
-            target = next(
-                (line for line in lines if str(line.get("Id")) == str(target_qbo_line_id)),
-                None,
-            )
-            if target is None:
-                return {"status": "line_not_found", "sync_token": live_sync_token}
-
-            # If the line already left 58999, it was recoded by someone (or a prior
-            # run). Idempotent success only when it carries OUR intended item;
-            # any other coding is a foreign edit -> fail closed to re-review.
-            if not self._raw_line_is_categorize_placeholder(target):
-                existing_ref = self._get_qbo_item_ref(sub_cost_code_id, realm_id)
-                if (
-                    target.get("DetailType") == "ItemBasedExpenseLineDetail"
-                    and existing_ref is not None
-                    and (target.get("ItemBasedExpenseLineDetail") or {}).get("ItemRef", {}).get("value")
-                    == existing_ref.value
-                ):
-                    return {"status": "already_recoded", "sync_token": live_sync_token}
-                raise PurchaseChangedInQboError(
-                    qbo_purchase_qbo_id=qbo_purchase_qbo_id,
-                    expected_sync_token=str(expected_sync_token),
-                    actual_sync_token=live_sync_token,
+            pending_specs: list[tuple[dict, dict, object]] = []
+            for spec in lines:
+                target_qbo_line_id = str(spec["target_qbo_line_id"])
+                sub_cost_code_id = spec["sub_cost_code_id"]
+                target = next(
+                    (line for line in raw_lines if str(line.get("Id")) == target_qbo_line_id),
+                    None,
                 )
+                if target is None:
+                    return {"status": "line_not_found", "sync_token": live_sync_token}
+
+                if not self._raw_line_is_categorize_placeholder(target):
+                    existing_ref = self._get_qbo_item_ref(sub_cost_code_id, realm_id)
+                    if (
+                        target.get("DetailType") == "ItemBasedExpenseLineDetail"
+                        and existing_ref is not None
+                        and (target.get("ItemBasedExpenseLineDetail") or {})
+                        .get("ItemRef", {})
+                        .get("value")
+                        == existing_ref.value
+                    ):
+                        continue
+                    # Off the placeholder and not carrying our Item: changed in QBO.
+                    raise PurchaseChangedInQboError(
+                        qbo_purchase_qbo_id=qbo_purchase_qbo_id,
+                        expected_sync_token=str(expected_sync_token),
+                        actual_sync_token=live_sync_token,
+                    )
+
+                item_ref = self._get_qbo_item_ref(sub_cost_code_id, realm_id)
+                if item_ref is None:
+                    raise PurchaseRecodeMappingError(sub_cost_code_id=sub_cost_code_id)
+
+                pending_specs.append((spec, target, item_ref))
+
+            if not pending_specs:
+                return {"status": "already_recoded", "sync_token": live_sync_token}
 
             # Still on the placeholder: any drift from our snapshot token means the
             # Purchase changed in QBO since queueing -> fail closed.
@@ -481,63 +523,18 @@ class PurchaseExpenseConnector:
                     actual_sync_token=live_sync_token,
                 )
 
-            item_ref = self._get_qbo_item_ref(sub_cost_code_id, realm_id)
-            if item_ref is None:
-                raise PurchaseRecodeMappingError(sub_cost_code_id=sub_cost_code_id)
-
-            customer_ref = self._get_qbo_customer_ref(project_id) if project_id else None
-
-            old = target.get("AccountBasedExpenseLineDetail") or {}
-            item_detail: dict = {
-                "ItemRef": {"value": item_ref.value, "name": item_ref.name},
-            }
-            if customer_ref is not None:
-                item_detail["CustomerRef"] = {
-                    "value": customer_ref.value,
-                    "name": customer_ref.name,
-                }
-            elif old.get("CustomerRef"):
-                item_detail["CustomerRef"] = old["CustomerRef"]
-            for carry_key in ("ClassRef", "TaxCodeRef", "MarkupInfo"):
-                if old.get(carry_key) is not None:
-                    item_detail[carry_key] = old[carry_key]
-
-            from shared.api.money import round_money, to_decimal_or_none
-
-            qty_dec = to_decimal_or_none(quantity)
-            rate_dec = to_decimal_or_none(rate)
-            amount_dec = to_decimal_or_none(amount)
-            if (
-                qty_dec is not None
-                and rate_dec is not None
-                and amount_dec is not None
-                and qty_dec != 0
-                and rate_dec != 0
-                and amount_dec != 0
-                and round_money(qty_dec * rate_dec) == round_money(amount_dec)
-            ):
-                item_detail["Qty"] = float(qty_dec)
-                item_detail["UnitPrice"] = float(rate_dec)
-
-            if is_billable is True:
-                # Billable only against the CONFIRMED project's own customer.
-                # A CustomerRef carried forward from the placeholder line may
-                # belong to someone else (Ramp imports, prior coding); stamping
-                # Billable on it would bill the wrong customer (U-099, Codex P1).
-                if customer_ref is not None:
-                    item_detail["BillableStatus"] = "Billable"
-                else:
-                    item_detail["BillableStatus"] = "NotBillable"
-            elif is_billable is False:
-                item_detail["BillableStatus"] = "NotBillable"
-            elif old.get("BillableStatus") is not None:
-                item_detail["BillableStatus"] = old["BillableStatus"]
-
-            target["DetailType"] = "ItemBasedExpenseLineDetail"
-            target["ItemBasedExpenseLineDetail"] = item_detail
-            target.pop("AccountBasedExpenseLineDetail", None)
-            if description is not None:
-                target["Description"] = description
+            for spec, target, item_ref in pending_specs:
+                self._apply_recode_mutation_to_raw_line(
+                    target,
+                    item_ref=item_ref,
+                    project_id=spec.get("project_id"),
+                    description=spec.get("description"),
+                    quantity=spec.get("quantity"),
+                    rate=spec.get("rate"),
+                    amount=spec.get("amount"),
+                    is_billable=spec.get("is_billable"),
+                    realm_id=realm_id,
+                )
 
             # Strip QBO response-only fields before echoing the document back on
             # a full update — MetaData is server-owned, and domain/sparse are read
@@ -558,8 +555,73 @@ class PurchaseExpenseConnector:
             "status": "written",
             "sync_token": str(updated.get("SyncToken")),
             "qbo_purchase_qbo_id": qbo_purchase_qbo_id,
-            "target_qbo_line_id": target_qbo_line_id,
         }
+
+    def _apply_recode_mutation_to_raw_line(
+        self,
+        target: dict,
+        *,
+        item_ref,
+        project_id: Optional[int],
+        description: Optional[str],
+        quantity: Optional[Union[int, Decimal]],
+        rate: Optional[Decimal],
+        amount: Optional[Decimal],
+        is_billable: Optional[bool],
+        realm_id: str,
+    ) -> None:
+        customer_ref = self._get_qbo_customer_ref(project_id) if project_id else None
+        old = target.get("AccountBasedExpenseLineDetail") or {}
+        item_detail: dict = {
+            "ItemRef": {"value": item_ref.value, "name": item_ref.name},
+        }
+        if customer_ref is not None:
+            item_detail["CustomerRef"] = {
+                "value": customer_ref.value,
+                "name": customer_ref.name,
+            }
+        elif old.get("CustomerRef"):
+            item_detail["CustomerRef"] = old["CustomerRef"]
+        for carry_key in ("ClassRef", "TaxCodeRef", "MarkupInfo"):
+            if old.get(carry_key) is not None:
+                item_detail[carry_key] = old[carry_key]
+
+        from shared.api.money import round_money, to_decimal_or_none
+
+        qty_dec = to_decimal_or_none(quantity)
+        rate_dec = to_decimal_or_none(rate)
+        amount_dec = to_decimal_or_none(amount)
+        if (
+            qty_dec is not None
+            and rate_dec is not None
+            and amount_dec is not None
+            and qty_dec != 0
+            and rate_dec != 0
+            and amount_dec != 0
+            and round_money(qty_dec * rate_dec) == round_money(amount_dec)
+        ):
+            item_detail["Qty"] = float(qty_dec)
+            item_detail["UnitPrice"] = float(rate_dec)
+
+        if is_billable is True:
+            # Billable only against the CONFIRMED project's own customer.
+            # A CustomerRef carried forward from the placeholder line may
+            # belong to someone else (Ramp imports, prior coding); stamping
+            # Billable on it would bill the wrong customer (U-099, Codex P1).
+            if customer_ref is not None:
+                item_detail["BillableStatus"] = "Billable"
+            else:
+                item_detail["BillableStatus"] = "NotBillable"
+        elif is_billable is False:
+            item_detail["BillableStatus"] = "NotBillable"
+        elif old.get("BillableStatus") is not None:
+            item_detail["BillableStatus"] = old["BillableStatus"]
+
+        target["DetailType"] = "ItemBasedExpenseLineDetail"
+        target["ItemBasedExpenseLineDetail"] = item_detail
+        target.pop("AccountBasedExpenseLineDetail", None)
+        if description is not None:
+            target["Description"] = description
 
     @staticmethod
     def _raw_line_is_categorize_placeholder(line_dict: dict) -> bool:

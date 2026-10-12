@@ -86,9 +86,13 @@ def _sqlite_fixture_conn() -> sqlite3.Connection:
             QboId TEXT,
             RealmId TEXT
         );
-        CREATE TABLE dbo.ExpenseCodingItem(
+        CREATE TABLE dbo.CodingSuggestion(
             Id INTEGER PRIMARY KEY,
             PublicId TEXT,
+            TargetKind TEXT,
+            RealmId TEXT,
+            QboPurchaseQboId TEXT,
+            ExpenseId INTEGER,
             QboPurchaseLineId INTEGER
         );
         CREATE TABLE qbo.Purchase(
@@ -154,7 +158,7 @@ def test_detection_sproc_parent_scoping_equalities():
     body = _detection_sproc_body_stripped()
     # [RealmId] appears 3x in this sproc — token presence is vacuous for legs.
     assert body.count("[RealmId]") >= 3
-    assert body.count("[ExpenseId]") == 1
+    assert body.count("[ExpenseId]") >= 1
     for leg, why in PARENT_SCOPING_EQUALITIES:
         assert leg in flat, f"missing `{leg}` ({why})"
 

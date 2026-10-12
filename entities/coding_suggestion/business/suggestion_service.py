@@ -5,9 +5,9 @@ from types import SimpleNamespace
 from typing import Any, Optional
 
 # Local Imports
-from entities.expense_coding_item.business.hint_extractor import extract_hints
-from entities.expense_coding_item.business.service import ExpenseCodingItemService
-from entities.expense_coding_item.persistence.repo import ExpenseCodingItemRepository
+from entities.coding_suggestion.business.hint_extractor import extract_hints
+from entities.coding_suggestion.business.service import CodingSuggestionService
+from entities.coding_suggestion.persistence.repo import CodingSuggestionRepository
 from entities.project.business.service import ProjectService
 from entities.sub_cost_code.business.service import SubCostCodeService
 from integrations.intuit.qbo.base.cost_code_resolver import (
@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 _PROJECT_CODE_CONFIDENCE = Decimal("0.95")
 
 
-class ExpenseCodingSuggestionService:
+class CodingSuggestionEngine:
     """Deterministic suggestion engine for expense coding queue items (Phase B)."""
 
     def __init__(
@@ -28,15 +28,15 @@ class ExpenseCodingSuggestionService:
         *,
         project_service: Optional[ProjectService] = None,
         sub_cost_code_service: Optional[SubCostCodeService] = None,
-        coding_item_service: Optional[ExpenseCodingItemService] = None,
-        suggestion_repo: Optional[ExpenseCodingItemRepository] = None,
+        coding_item_service: Optional[CodingSuggestionService] = None,
+        suggestion_repo: Optional[CodingSuggestionRepository] = None,
         resolve_qbo_item_ref=None,
         qbo_purchase_service: Optional[QboPurchaseService] = None,
     ):
         self.project_service = project_service or ProjectService()
         self.sub_cost_code_service = sub_cost_code_service or SubCostCodeService()
-        self.coding_item_service = coding_item_service or ExpenseCodingItemService()
-        self.suggestion_repo = suggestion_repo or ExpenseCodingItemRepository()
+        self.coding_item_service = coding_item_service or CodingSuggestionService()
+        self.suggestion_repo = suggestion_repo or CodingSuggestionRepository()
         # U-307c: resolves "SubCostCode has a writable QBO item" dbo-natively
         # (dbo.SubCostCode.QboId IS NOT NULL) instead of an ItemSubCostCode
         # mapping-table read -- injectable so tests don't need a live resolver.
@@ -167,7 +167,7 @@ class ExpenseCodingSuggestionService:
 
         for row in to_process:
             # vendor_id (dbo keyspace) is projected by the queue read-model via the
-            # ExpenseCodingItem join — no per-row re-fetch needed.
+            # CodingSuggestion join — no per-row re-fetch needed.
             item = SimpleNamespace(
                 public_id=row["coding_item_public_id"],
                 private_note=row.get("private_note"),

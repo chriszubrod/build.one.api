@@ -8,28 +8,32 @@ from typing import Optional
 import pyodbc
 
 # Local Imports
-from entities.expense_coding_item.business.model import ExpenseCodingItem
+from entities.coding_suggestion.business.model import CodingSuggestion
 from shared.database import call_procedure, get_connection, map_database_error
 
 logger = logging.getLogger(__name__)
 
 
-class ExpenseCodingItemRepository:
-    """Repository for ExpenseCodingItem persistence."""
+class CodingSuggestionRepository:
+    """Repository for CodingSuggestion persistence."""
 
-    def _from_db(self, row: Optional[pyodbc.Row]) -> Optional[ExpenseCodingItem]:
+    def _from_db(self, row: Optional[pyodbc.Row]) -> Optional[CodingSuggestion]:
         if not row:
             return None
         try:
             row_version_bytes = getattr(row, "RowVersion", None)
             suggestion_confidence = getattr(row, "SuggestionConfidence", None)
-            return ExpenseCodingItem(
+            budget_remaining = getattr(row, "BudgetRemaining", None)
+            return CodingSuggestion(
                 id=getattr(row, "Id", None),
                 public_id=str(row.PublicId) if getattr(row, "PublicId", None) else None,
                 row_version=base64.b64encode(row_version_bytes).decode("ascii") if row_version_bytes else None,
+                target_kind=getattr(row, "TargetKind", None),
+                bill_id=getattr(row, "BillId", None),
+                bill_credit_id=getattr(row, "BillCreditId", None),
+                expense_id=getattr(row, "ExpenseId", None),
+                attachment_id=getattr(row, "AttachmentId", None),
                 qbo_purchase_id=getattr(row, "QboPurchaseId", None),
-                qbo_purchase_line_id=getattr(row, "QboPurchaseLineId", None),
-                qbo_line_id=getattr(row, "QboLineId", None),
                 qbo_purchase_qbo_id=getattr(row, "QboPurchaseQboId", None),
                 realm_id=getattr(row, "RealmId", None),
                 vendor_id=getattr(row, "VendorId", None),
@@ -42,12 +46,20 @@ class ExpenseCodingItemRepository:
                 suggestion_reason=getattr(row, "SuggestionReason", None),
                 suggestion_confidence=Decimal(str(suggestion_confidence)) if suggestion_confidence is not None else None,
                 suggested_at=getattr(row, "SuggestedAt", None),
+                features_json=getattr(row, "FeaturesJson", None),
+                budget_check=getattr(row, "BudgetCheck", None),
+                budget_remaining=Decimal(str(budget_remaining)) if budget_remaining is not None else None,
+                route=getattr(row, "Route", None),
+                model_version=getattr(row, "ModelVersion", None),
                 confirmed_project_id=getattr(row, "ConfirmedProjectId", None),
                 confirmed_sub_cost_code_id=getattr(row, "ConfirmedSubCostCodeId", None),
                 confirmed_description=getattr(row, "ConfirmedDescription", None),
                 was_overridden=getattr(row, "WasOverridden", None),
                 confirmed_by_user_id=getattr(row, "ConfirmedByUserId", None),
                 confirmed_at=getattr(row, "ConfirmedAt", None),
+                confirmed_mixed_codes=getattr(row, "ConfirmedMixedCodes", None),
+                prefill_state=getattr(row, "PrefillState", None),
+                confirmation_source=getattr(row, "ConfirmationSource", None),
                 flag_reason=getattr(row, "FlagReason", None),
                 flagged_at=getattr(row, "FlaggedAt", None),
                 written_at=getattr(row, "WrittenAt", None),
@@ -60,56 +72,61 @@ class ExpenseCodingItemRepository:
                 modified_datetime=getattr(row, "ModifiedDatetime", None),
             )
         except AttributeError as error:
-            logger.error(f"Attribute error during expense coding item mapping: {error}")
+            logger.error(f"Attribute error during coding suggestion mapping: {error}")
             raise map_database_error(error)
         except Exception as error:
-            logger.error(f"Unexpected error during expense coding item mapping: {error}")
+            logger.error(f"Unexpected error during coding suggestion mapping: {error}")
             raise map_database_error(error)
 
     def upsert_from_queue(
         self,
         *,
         qbo_purchase_id: int,
-        qbo_purchase_line_id: int,
-        qbo_line_id: str,
         qbo_purchase_qbo_id: str,
         realm_id: str,
         vendor_id: Optional[int] = None,
+        expense_id: Optional[int] = None,
         created_by_user_id: Optional[int] = None,
-    ) -> Optional[ExpenseCodingItem]:
+        qbo_purchase_line_id: Optional[int] = None,
+        qbo_line_id: Optional[str] = None,
+    ) -> Optional[CodingSuggestion]:
+        del qbo_purchase_line_id, qbo_line_id
         try:
             with get_connection() as conn:
                 cursor = conn.cursor()
                 call_procedure(
                     cursor=cursor,
-                    name="UpsertExpenseCodingItem",
+                    name="UpsertCodingSuggestionForPurchase",
                     params={
                         "QboPurchaseId": qbo_purchase_id,
-                        "QboPurchaseLineId": qbo_purchase_line_id,
-                        "QboLineId": qbo_line_id,
                         "QboPurchaseQboId": qbo_purchase_qbo_id,
                         "RealmId": realm_id,
                         "VendorId": vendor_id,
+                        "ExpenseId": expense_id,
                         "CreatedByUserId": created_by_user_id,
                     },
                 )
                 return self._from_db(cursor.fetchone())
         except Exception as error:
-            logger.error(f"Error upserting expense coding item for line {qbo_purchase_line_id}: {error}")
+            logger.error(
+                "Error upserting coding suggestion for purchase %s: %s",
+                qbo_purchase_qbo_id,
+                error,
+            )
             raise map_database_error(error)
 
-    def read_by_public_id(self, public_id: str) -> Optional[ExpenseCodingItem]:
+    def read_by_public_id(self, public_id: str) -> Optional[CodingSuggestion]:
         try:
             with get_connection() as conn:
                 cursor = conn.cursor()
                 call_procedure(
                     cursor=cursor,
-                    name="ReadExpenseCodingItemByPublicId",
+                    name="ReadCodingSuggestionByPublicId",
                     params={"PublicId": public_id},
                 )
                 return self._from_db(cursor.fetchone())
         except Exception as error:
-            logger.error(f"Error reading expense coding item {public_id}: {error}")
+            logger.error(f"Error reading coding suggestion {public_id}: {error}")
             raise map_database_error(error)
 
     def record_suggestion(
@@ -124,13 +141,13 @@ class ExpenseCodingItemRepository:
         suggestion_confidence: Optional[Decimal] = None,
         sync_token_at_suggest: Optional[str] = None,
         status: Optional[str] = None,
-    ) -> Optional[ExpenseCodingItem]:
+    ) -> Optional[CodingSuggestion]:
         try:
             with get_connection() as conn:
                 cursor = conn.cursor()
                 call_procedure(
                     cursor=cursor,
-                    name="RecordExpenseCodingSuggestion",
+                    name="RecordCodingSuggestion",
                     params={
                         "PublicId": public_id,
                         "SuggestedProjectId": suggested_project_id,
@@ -147,7 +164,7 @@ class ExpenseCodingItemRepository:
                 )
                 return self._from_db(cursor.fetchone())
         except Exception as error:
-            logger.error(f"Error recording suggestion for expense coding item {public_id}: {error}")
+            logger.error(f"Error recording suggestion for coding suggestion {public_id}: {error}")
             raise map_database_error(error)
 
     def record_flag(
@@ -156,13 +173,13 @@ class ExpenseCodingItemRepository:
         reason: str,
         modified_by_user_id: Optional[int] = None,
         only_from_pending_like: bool = False,
-    ) -> Optional[ExpenseCodingItem]:
+    ) -> Optional[CodingSuggestion]:
         try:
             with get_connection() as conn:
                 cursor = conn.cursor()
                 call_procedure(
                     cursor=cursor,
-                    name="RecordExpenseCodingFlag",
+                    name="RecordCodingSuggestionFlag",
                     params={
                         "PublicId": public_id,
                         "FlagReason": reason,
@@ -172,7 +189,7 @@ class ExpenseCodingItemRepository:
                 )
                 return self._from_db(cursor.fetchone())
         except Exception as error:
-            logger.error(f"Error flagging expense coding item {public_id}: {error}")
+            logger.error(f"Error flagging coding suggestion {public_id}: {error}")
             raise map_database_error(error)
 
     def claim(
@@ -180,13 +197,13 @@ class ExpenseCodingItemRepository:
         public_id: str,
         user_id: int,
         reclaim_after_seconds: int = 900,
-    ) -> Optional[ExpenseCodingItem]:
+    ) -> Optional[CodingSuggestion]:
         try:
             with get_connection() as conn:
                 cursor = conn.cursor()
                 call_procedure(
                     cursor=cursor,
-                    name="ClaimExpenseCodingItem",
+                    name="ClaimCodingSuggestion",
                     params={
                         "PublicId": public_id,
                         "UserId": user_id,
@@ -195,16 +212,16 @@ class ExpenseCodingItemRepository:
                 )
                 return self._from_db(cursor.fetchone())
         except Exception as error:
-            logger.error(f"Error claiming expense coding item {public_id}: {error}")
+            logger.error(f"Error claiming coding suggestion {public_id}: {error}")
             raise map_database_error(error)
 
-    def release(self, public_id: str, user_id: int) -> Optional[ExpenseCodingItem]:
+    def release(self, public_id: str, user_id: int) -> Optional[CodingSuggestion]:
         try:
             with get_connection() as conn:
                 cursor = conn.cursor()
                 call_procedure(
                     cursor=cursor,
-                    name="ReleaseExpenseCodingItem",
+                    name="ReleaseCodingSuggestion",
                     params={
                         "PublicId": public_id,
                         "UserId": user_id,
@@ -212,7 +229,7 @@ class ExpenseCodingItemRepository:
                 )
                 return self._from_db(cursor.fetchone())
         except Exception as error:
-            logger.error(f"Error releasing expense coding item {public_id}: {error}")
+            logger.error(f"Error releasing coding suggestion {public_id}: {error}")
             raise map_database_error(error)
 
     def record_confirmation(
@@ -226,13 +243,16 @@ class ExpenseCodingItemRepository:
         confirmed_by_user_id: Optional[int] = None,
         expected_sync_token: Optional[str] = None,
         status: Optional[str] = None,
-    ) -> Optional[ExpenseCodingItem]:
+        confirmed_mixed_codes: Optional[bool] = None,
+        prefill_state: Optional[str] = None,
+        confirmation_source: Optional[str] = None,
+    ) -> Optional[CodingSuggestion]:
         try:
             with get_connection() as conn:
                 cursor = conn.cursor()
                 call_procedure(
                     cursor=cursor,
-                    name="RecordExpenseCodingConfirmation",
+                    name="RecordCodingSuggestionConfirmation",
                     params={
                         "PublicId": public_id,
                         "ConfirmedProjectId": confirmed_project_id,
@@ -242,38 +262,41 @@ class ExpenseCodingItemRepository:
                         "ConfirmedByUserId": confirmed_by_user_id,
                         "ExpectedSyncToken": expected_sync_token,
                         "Status": status,
+                        "ConfirmedMixedCodes": confirmed_mixed_codes,
+                        "PrefillState": prefill_state,
+                        "ConfirmationSource": confirmation_source,
                     },
                 )
                 return self._from_db(cursor.fetchone())
         except Exception as error:
-            logger.error(f"Error recording confirmation for expense coding item {public_id}: {error}")
+            logger.error(f"Error recording confirmation for coding suggestion {public_id}: {error}")
             raise map_database_error(error)
 
-    def mark_enqueued(self, public_id: str) -> Optional[ExpenseCodingItem]:
+    def mark_enqueued(self, public_id: str) -> Optional[CodingSuggestion]:
         try:
             with get_connection() as conn:
                 cursor = conn.cursor()
                 call_procedure(
                     cursor=cursor,
-                    name="MarkExpenseCodingEnqueued",
+                    name="MarkCodingSuggestionEnqueued",
                     params={"PublicId": public_id},
                 )
                 return self._from_db(cursor.fetchone())
         except Exception as error:
-            logger.error(f"Error marking expense coding item {public_id} enqueued: {error}")
+            logger.error(f"Error marking coding suggestion {public_id} enqueued: {error}")
             raise map_database_error(error)
 
     def mark_written(
         self,
         public_id: str,
         sync_token: Optional[str] = None,
-    ) -> Optional[ExpenseCodingItem]:
+    ) -> Optional[CodingSuggestion]:
         try:
             with get_connection() as conn:
                 cursor = conn.cursor()
                 call_procedure(
                     cursor=cursor,
-                    name="MarkExpenseCodingWritten",
+                    name="MarkCodingSuggestionWritten",
                     params={
                         "PublicId": public_id,
                         "SyncToken": sync_token,
@@ -281,7 +304,7 @@ class ExpenseCodingItemRepository:
                 )
                 return self._from_db(cursor.fetchone())
         except Exception as error:
-            logger.error(f"Error marking expense coding item {public_id} written: {error}")
+            logger.error(f"Error marking coding suggestion {public_id} written: {error}")
             raise map_database_error(error)
 
     def read_externally_resolved_candidates(self) -> list[dict]:
@@ -290,7 +313,7 @@ class ExpenseCodingItemRepository:
                 cursor = conn.cursor()
                 call_procedure(
                     cursor=cursor,
-                    name="ReadExternallyResolvedCodingItemCandidates",
+                    name="ReadExternallyResolvedCodingSuggestionCandidates",
                     params={},
                 )
                 return [
@@ -311,13 +334,13 @@ class ExpenseCodingItemRepository:
         self,
         public_id: str,
         reason: Optional[str] = None,
-    ) -> Optional[ExpenseCodingItem]:
+    ) -> Optional[CodingSuggestion]:
         try:
             with get_connection() as conn:
                 cursor = conn.cursor()
                 call_procedure(
                     cursor=cursor,
-                    name="MarkExpenseCodingResolvedExternally",
+                    name="MarkCodingSuggestionResolvedExternally",
                     params={
                         "PublicId": public_id,
                         "WriteError": reason,
@@ -326,24 +349,26 @@ class ExpenseCodingItemRepository:
                 return self._from_db(cursor.fetchone())
         except Exception as error:
             logger.error(
-                "Error marking expense coding item %s resolved_externally: %s",
+                "Error marking coding suggestion %s resolved_externally: %s",
                 public_id,
                 error,
             )
             raise map_database_error(error)
 
-    def mark_changed_in_qbo(self, public_id: str) -> Optional[ExpenseCodingItem]:
+    def mark_changed_in_qbo(
+        self, public_id: str, expected_row_version: Optional[bytes] = None
+    ) -> Optional[CodingSuggestion]:
         try:
             with get_connection() as conn:
                 cursor = conn.cursor()
                 call_procedure(
                     cursor=cursor,
-                    name="MarkExpenseCodingChangedInQbo",
-                    params={"PublicId": public_id},
+                    name="MarkCodingSuggestionChangedInQbo",
+                    params={"PublicId": public_id, "ExpectedRowVersion": expected_row_version},
                 )
                 return self._from_db(cursor.fetchone())
         except Exception as error:
-            logger.error(f"Error marking expense coding item {public_id} changed_in_qbo: {error}")
+            logger.error(f"Error marking coding suggestion {public_id} changed_in_qbo: {error}")
             raise map_database_error(error)
 
     def read_vendor_dominant_sub_cost_code(self, vendor_id: int) -> Optional[dict]:
@@ -376,13 +401,13 @@ class ExpenseCodingItemRepository:
         self,
         public_id: str,
         write_error: Optional[str] = None,
-    ) -> Optional[ExpenseCodingItem]:
+    ) -> Optional[CodingSuggestion]:
         try:
             with get_connection() as conn:
                 cursor = conn.cursor()
                 call_procedure(
                     cursor=cursor,
-                    name="MarkExpenseCodingError",
+                    name="MarkCodingSuggestionError",
                     params={
                         "PublicId": public_id,
                         "WriteError": write_error,
@@ -390,7 +415,7 @@ class ExpenseCodingItemRepository:
                 )
                 return self._from_db(cursor.fetchone())
         except Exception as error:
-            logger.error(f"Error marking expense coding item {public_id} error: {error}")
+            logger.error(f"Error marking coding suggestion {public_id} error: {error}")
             raise map_database_error(error)
 
     def read_state_by_expense_ids(self, expense_ids: list[int]) -> dict[int, list[dict]]:
@@ -409,7 +434,7 @@ class ExpenseCodingItemRepository:
                 cursor = conn.cursor()
                 call_procedure(
                     cursor=cursor,
-                    name="ReadExpenseCodingStateByExpenseIds",
+                    name="ReadCodingSuggestionStateByExpenseIds",
                     params={
                         "ExpenseIds": csv,
                         "ActorUserId": current_user_id.get(),

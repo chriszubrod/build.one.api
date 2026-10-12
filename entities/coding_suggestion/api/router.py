@@ -6,12 +6,12 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 # Local Imports
-from entities.expense_coding_item.api.schemas import (
-    ConfirmExpenseCodingItemRequest,
-    FlagExpenseCodingItemRequest,
+from entities.coding_suggestion.api.schemas import (
+    ConfirmCodingSuggestionRequest,
+    FlagCodingSuggestionRequest,
 )
-from entities.expense_coding_item.business.service import ExpenseCodingItemService
-from entities.expense_coding_item.business.suggestion_service import ExpenseCodingSuggestionService
+from entities.coding_suggestion.business.service import CodingSuggestionService
+from entities.coding_suggestion.business.suggestion_service import CodingSuggestionEngine
 from integrations.intuit.qbo.base.client import recode_write_gate_reason
 from integrations.intuit.qbo.outbox.business.service import QboOutboxDeadLetterExistsError
 from integrations.intuit.qbo.purchase.business.service import QboPurchaseService
@@ -54,7 +54,7 @@ def suggest_expense_coding_items_router(
     _: dict = Depends(require_module_api(Modules.EXPENSES, "can_update")),
 ):
     try:
-        counts = ExpenseCodingSuggestionService().suggest_pending(
+        counts = CodingSuggestionEngine().suggest_pending(
             realm_id=realm_id,
             max_items=max_items,
         )
@@ -97,7 +97,7 @@ def get_expense_coding_metrics_router(
 )
 def flag_expense_coding_item_router(
     public_id: str,
-    body: FlagExpenseCodingItemRequest,
+    body: FlagCodingSuggestionRequest,
     _: dict = Depends(require_module_api(Modules.EXPENSES, "can_update")),
 ):
     user_id = current_user_id.get()
@@ -105,19 +105,20 @@ def flag_expense_coding_item_router(
         raise HTTPException(status_code=401, detail="Authenticated user required.")
 
     try:
-        flagged = ExpenseCodingItemService().record_flag(
+        flagged = CodingSuggestionService().record_flag(
             public_id=public_id,
             reason=body.reason,
             modified_by_user_id=user_id,
         )
     except Exception as error:
-        logger.exception("Failed to flag expense coding item %s.", public_id)
+        logger.exception("Failed to flag coding suggestion %s.", public_id)
         raise_database_error(error)
 
     if flagged is None:
         raise_not_found("Expense coding item")
 
-    return item_response(flagged.to_dict())
+    payload = CodingSuggestionService().to_api_dict(flagged)
+    return item_response(payload)
 
 
 @router.post("/expense/coding/{public_id}/confirm")
@@ -128,23 +129,36 @@ def flag_expense_coding_item_router(
 )
 def confirm_expense_coding_item_router(
     public_id: str,
-    body: ConfirmExpenseCodingItemRequest,
+    body: ConfirmCodingSuggestionRequest,
     _: dict = Depends(require_module_api(Modules.EXPENSES, "can_update")),
 ):
     user_id = current_user_id.get()
     if user_id is None:
         raise HTTPException(status_code=401, detail="Authenticated user required.")
 
-    service = ExpenseCodingItemService()
+    service = CodingSuggestionService()
     existing = service.read_by_public_id(public_id)
     if existing is None:
         raise_not_found("Expense coding item")
 
+    # U-652: refuse a multi-line purchase before ANY write (the claim is a write).
+    try:
+        multi_line = service.is_multi_line_purchase(existing)
+    except Exception as error:
+        logger.exception("Failed to count purchase lines for coding suggestion %s.", public_id)
+        raise_database_error(error)
+    if multi_line:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="multi_line_purchase_confirm_unsupported",
+        )
+
+    claimed_here = False
     if existing.claimed_by_user_id != user_id:
         try:
             claimed = service.claim(public_id=public_id, user_id=user_id)
         except Exception as error:
-            logger.exception("Failed to claim expense coding item %s before confirm.", public_id)
+            logger.exception("Failed to claim coding suggestion %s before confirm.", public_id)
             raise_database_error(error)
 
         if claimed is None:
@@ -152,6 +166,7 @@ def confirm_expense_coding_item_router(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="Expense coding item is currently claimed by another user.",
             )
+        claimed_here = True
 
     from entities.project.business.service import ProjectService
     from entities.sub_cost_code.business.service import SubCostCodeService
@@ -176,12 +191,24 @@ def confirm_expense_coding_item_router(
     except QboOutboxDeadLetterExistsError as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
     except Exception as error:
-        logger.exception("Failed to confirm expense coding item %s.", public_id)
+        logger.exception("Failed to confirm coding suggestion %s.", public_id)
         raise_database_error(error)
 
     result_status = result.get("status")
     if result_status == "not_found":
         raise_not_found("Expense coding item")
+    if result_status == "multi_line_unsupported":
+        # A second uncategorized line appeared after the pre-check (concurrent QBO pull).
+        # Give back a claim taken by THIS request so the refusal locks nobody out.
+        if claimed_here:
+            try:
+                service.release(public_id=public_id, user_id=user_id)
+            except Exception:
+                logger.exception("Failed to release claim on coding suggestion %s after refusal.", public_id)
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=result.get("reason", "multi_line_purchase_confirm_unsupported"),
+        )
     if result_status in ("invalid", "mapping_missing", "writes_disabled"):
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -192,7 +219,7 @@ def confirm_expense_coding_item_router(
     if item is None:
         raise_not_found("Expense coding item")
 
-    payload = item.to_dict()
+    payload = service.to_api_dict(item)
     payload["enqueued"] = result.get("enqueued", False)
 
     return item_response(payload)

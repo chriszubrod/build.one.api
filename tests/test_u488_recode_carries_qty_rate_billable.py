@@ -240,17 +240,26 @@ def test_carry_forward_refs_excludes_blind_billable_status():
 # --- 7. Handler: unresolvable local line still recodes ---
 
 
+@pytest.fixture(autouse=True)
+def _stub_uncategorized_staging_lines(monkeypatch):
+    monkeypatch.setattr(
+        QboOutboxWorker,
+        "_read_uncategorized_staging_line_ids",
+        lambda self, **kwargs: [TARGET_LINE_ID],
+    )
+
+
 def _make_coding_item(**overrides):
     base = {
         "public_id": PUBLIC_ID,
         "status": "enqueued",
         "qbo_purchase_qbo_id": PURCHASE_QBO_ID,
-        "qbo_line_id": TARGET_LINE_ID,
-        "qbo_purchase_line_id": 999,
+        "qbo_purchase_id": 999,
         "confirmed_sub_cost_code_id": SUB_COST_CODE_ID,
         "confirmed_project_id": 202,
         "confirmed_description": "recode desc",
         "sync_token_at_suggest": SYNC_TOKEN,
+        "realm_id": REALM_ID,
     }
     base.update(overrides)
     return SimpleNamespace(**base)
@@ -262,7 +271,7 @@ def _make_outbox_row():
         public_id="outbox-1",
         row_version="abc",
         kind="recode_purchase_line",
-        entity_type="ExpenseCodingItem",
+        entity_type="CodingSuggestion",
         entity_public_id=PUBLIC_ID,
         realm_id=REALM_ID,
         request_id="req-1",
@@ -276,7 +285,7 @@ def _make_outbox_row():
 @patch(
     "integrations.intuit.qbo.purchase.connector.expense.business.service.PurchaseExpenseConnector"
 )
-@patch("entities.expense_coding_item.business.service.ExpenseCodingItemService")
+@patch("entities.coding_suggestion.business.service.CodingSuggestionService")
 def test_handler_unresolvable_local_line_still_recodes(
     mock_svc_cls, mock_connector_cls, mock_expense_svc_cls, mock_eli_svc_cls
 ):
@@ -290,16 +299,17 @@ def test_handler_unresolvable_local_line_still_recodes(
 
     connector = MagicMock()
     mock_connector_cls.return_value = connector
-    connector.recode_purchase_line.return_value = {"status": "written", "sync_token": "6"}
+    connector.recode_purchase_lines.return_value = {"status": "written", "sync_token": "6"}
 
     QboOutboxWorker()._handle_recode_purchase_line(_make_outbox_row())
 
-    connector.recode_purchase_line.assert_called_once()
-    kwargs = connector.recode_purchase_line.call_args.kwargs
-    assert kwargs.get("quantity") is None
-    assert kwargs.get("rate") is None
-    assert kwargs.get("amount") is None
-    assert kwargs.get("is_billable") is None
+    connector.recode_purchase_lines.assert_called_once()
+    kwargs = connector.recode_purchase_lines.call_args.kwargs
+    line0 = kwargs["lines"][0]
+    assert line0.get("quantity") is None
+    assert line0.get("rate") is None
+    assert line0.get("amount") is None
+    assert line0.get("is_billable") is None
     svc.mark_written.assert_called_once()
 
 
@@ -308,7 +318,7 @@ def test_handler_unresolvable_local_line_still_recodes(
 @patch(
     "integrations.intuit.qbo.purchase.connector.expense.business.service.PurchaseExpenseConnector"
 )
-@patch("entities.expense_coding_item.business.service.ExpenseCodingItemService")
+@patch("entities.coding_suggestion.business.service.CodingSuggestionService")
 def test_handler_resolves_local_line_economics(
     mock_svc_cls, mock_connector_cls, mock_expense_svc_cls, mock_eli_svc_cls
 ):
@@ -325,23 +335,26 @@ def test_handler_resolves_local_line_economics(
         rate=Decimal("21.94"),
         amount=Decimal("21.94"),
         is_billable=True,
+        sub_cost_code_id=SUB_COST_CODE_ID,
+        project_id=202,
+        description="recode desc",
     )
     mock_eli_svc_cls.return_value.read_by_qbo_identity.return_value = line
 
     connector = MagicMock()
     mock_connector_cls.return_value = connector
-    connector.recode_purchase_line.return_value = {"status": "written", "sync_token": "6"}
+    connector.recode_purchase_lines.return_value = {"status": "written", "sync_token": "6"}
 
     QboOutboxWorker()._handle_recode_purchase_line(_make_outbox_row())
 
     mock_eli_svc_cls.return_value.read_by_qbo_identity.assert_called_once_with(
         42, TARGET_LINE_ID
     )
-    kwargs = connector.recode_purchase_line.call_args.kwargs
-    assert kwargs["quantity"] == 1
-    assert kwargs["rate"] == Decimal("21.94")
-    assert kwargs["amount"] == Decimal("21.94")
-    assert kwargs["is_billable"] is True
+    line0 = connector.recode_purchase_lines.call_args.kwargs["lines"][0]
+    assert line0["quantity"] == 1
+    assert line0["rate"] == Decimal("21.94")
+    assert line0["amount"] == Decimal("21.94")
+    assert line0["is_billable"] is True
 
 
 # --- 8. Untouched behaviour ---

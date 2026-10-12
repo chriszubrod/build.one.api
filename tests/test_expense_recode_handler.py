@@ -9,7 +9,9 @@ from integrations.intuit.qbo.purchase.connector.expense.business.errors import (
     PurchaseChangedInQboError,
     PurchaseRecodeMappingError,
 )
-from entities.expense_coding_item.business.service import ExpenseCodingItemService
+from entities.coding_suggestion.business.service import CodingSuggestionService
+
+import pytest
 
 
 PUBLIC_ID = "11111111-1111-1111-1111-111111111111"
@@ -21,7 +23,6 @@ def _make_item(*, status="enqueued", sync_token_at_suggest="5"):
         public_id=PUBLIC_ID,
         status=status,
         qbo_purchase_qbo_id="purchase-123",
-        qbo_line_id="1",
         confirmed_sub_cost_code_id=101,
         confirmed_project_id=202,
         confirmed_description="recode desc",
@@ -31,13 +32,37 @@ def _make_item(*, status="enqueued", sync_token_at_suggest="5"):
     )
 
 
+@pytest.fixture(autouse=True)
+def _stub_recode_targets(monkeypatch):
+    monkeypatch.setattr(
+        QboOutboxWorker,
+        "_resolve_recode_purchase_line_targets",
+        lambda self, row, item: (_default_line_targets(), None),
+    )
+
+
+def _default_line_targets():
+    return [
+        {
+            "target_qbo_line_id": "1",
+            "sub_cost_code_id": 101,
+            "project_id": 202,
+            "description": "recode desc",
+            "quantity": None,
+            "rate": None,
+            "amount": None,
+            "is_billable": None,
+        }
+    ]
+
+
 def _make_outbox_row():
     return QboOutbox(
         id=1,
         public_id="outbox-1",
         row_version="abc",
         kind="recode_purchase_line",
-        entity_type="ExpenseCodingItem",
+        entity_type="CodingSuggestion",
         entity_public_id=PUBLIC_ID,
         realm_id=REALM_ID,
         request_id="req-1",
@@ -56,7 +81,7 @@ def test_confirm_mapping_missing_no_confirmation_or_enqueue(
     _mock_recode_writes_allowed,
     _mock_writes_allowed,
 ):
-    svc = ExpenseCodingItemService()
+    svc = CodingSuggestionService()
     svc.read_by_public_id = MagicMock(return_value=_make_item(status="suggested"))
     svc.record_confirmation = MagicMock()
 
@@ -83,7 +108,7 @@ def test_confirm_mapping_missing_no_confirmation_or_enqueue(
 @patch(
     "integrations.intuit.qbo.purchase.connector.expense.business.service.PurchaseExpenseConnector"
 )
-@patch("entities.expense_coding_item.business.service.ExpenseCodingItemService")
+@patch("entities.coding_suggestion.business.service.CodingSuggestionService")
 def test_handle_recode_written_calls_mark_written(mock_svc_cls, mock_connector_cls):
     svc = MagicMock()
     mock_svc_cls.return_value = svc
@@ -91,21 +116,21 @@ def test_handle_recode_written_calls_mark_written(mock_svc_cls, mock_connector_c
 
     connector = MagicMock()
     mock_connector_cls.return_value = connector
-    connector.recode_purchase_line.return_value = {
+    connector.recode_purchase_lines.return_value = {
         "status": "written",
         "sync_token": "6",
     }
 
     QboOutboxWorker()._handle_recode_purchase_line(_make_outbox_row())
 
-    connector.recode_purchase_line.assert_called_once()
+    connector.recode_purchase_lines.assert_called_once()
     svc.mark_written.assert_called_once_with(PUBLIC_ID, sync_token="6")
 
 
 @patch(
     "integrations.intuit.qbo.purchase.connector.expense.business.service.PurchaseExpenseConnector"
 )
-@patch("entities.expense_coding_item.business.service.ExpenseCodingItemService")
+@patch("entities.coding_suggestion.business.service.CodingSuggestionService")
 def test_handle_recode_processes_confirmed_state_crash_window(mock_svc_cls, mock_connector_cls):
     """An outbox row whose item is still 'confirmed' (enqueue succeeded but mark_enqueued
     did not) MUST still be written — not silently skipped (lost-write window)."""
@@ -115,18 +140,18 @@ def test_handle_recode_processes_confirmed_state_crash_window(mock_svc_cls, mock
 
     connector = MagicMock()
     mock_connector_cls.return_value = connector
-    connector.recode_purchase_line.return_value = {"status": "written", "sync_token": "6"}
+    connector.recode_purchase_lines.return_value = {"status": "written", "sync_token": "6"}
 
     QboOutboxWorker()._handle_recode_purchase_line(_make_outbox_row())
 
-    connector.recode_purchase_line.assert_called_once()
+    connector.recode_purchase_lines.assert_called_once()
     svc.mark_written.assert_called_once_with(PUBLIC_ID, sync_token="6")
 
 
 @patch(
     "integrations.intuit.qbo.purchase.connector.expense.business.service.PurchaseExpenseConnector"
 )
-@patch("entities.expense_coding_item.business.service.ExpenseCodingItemService")
+@patch("entities.coding_suggestion.business.service.CodingSuggestionService")
 def test_handle_recode_purchase_changed_marks_changed_in_qbo(mock_svc_cls, mock_connector_cls):
     svc = MagicMock()
     mock_svc_cls.return_value = svc
@@ -134,7 +159,7 @@ def test_handle_recode_purchase_changed_marks_changed_in_qbo(mock_svc_cls, mock_
 
     connector = MagicMock()
     mock_connector_cls.return_value = connector
-    connector.recode_purchase_line.side_effect = PurchaseChangedInQboError(
+    connector.recode_purchase_lines.side_effect = PurchaseChangedInQboError(
         qbo_purchase_qbo_id="purchase-123",
         expected_sync_token="5",
         actual_sync_token="9",
@@ -150,7 +175,7 @@ def test_handle_recode_purchase_changed_marks_changed_in_qbo(mock_svc_cls, mock_
 @patch(
     "integrations.intuit.qbo.purchase.connector.expense.business.service.PurchaseExpenseConnector"
 )
-@patch("entities.expense_coding_item.business.service.ExpenseCodingItemService")
+@patch("entities.coding_suggestion.business.service.CodingSuggestionService")
 def test_handle_recode_sync_token_mismatch_marks_changed_in_qbo(mock_svc_cls, mock_connector_cls):
     svc = MagicMock()
     mock_svc_cls.return_value = svc
@@ -158,7 +183,7 @@ def test_handle_recode_sync_token_mismatch_marks_changed_in_qbo(mock_svc_cls, mo
 
     connector = MagicMock()
     mock_connector_cls.return_value = connector
-    connector.recode_purchase_line.side_effect = QboSyncTokenMismatchError("stale")
+    connector.recode_purchase_lines.side_effect = QboSyncTokenMismatchError("stale")
 
     QboOutboxWorker()._handle_recode_purchase_line(_make_outbox_row())
 
@@ -168,7 +193,7 @@ def test_handle_recode_sync_token_mismatch_marks_changed_in_qbo(mock_svc_cls, mo
 @patch(
     "integrations.intuit.qbo.purchase.connector.expense.business.service.PurchaseExpenseConnector"
 )
-@patch("entities.expense_coding_item.business.service.ExpenseCodingItemService")
+@patch("entities.coding_suggestion.business.service.CodingSuggestionService")
 def test_handle_recode_mapping_error_marks_error(mock_svc_cls, mock_connector_cls):
     svc = MagicMock()
     mock_svc_cls.return_value = svc
@@ -176,7 +201,7 @@ def test_handle_recode_mapping_error_marks_error(mock_svc_cls, mock_connector_cl
 
     connector = MagicMock()
     mock_connector_cls.return_value = connector
-    connector.recode_purchase_line.side_effect = PurchaseRecodeMappingError(sub_cost_code_id=101)
+    connector.recode_purchase_lines.side_effect = PurchaseRecodeMappingError(sub_cost_code_id=101)
 
     QboOutboxWorker()._handle_recode_purchase_line(_make_outbox_row())
 
@@ -188,7 +213,7 @@ def test_handle_recode_mapping_error_marks_error(mock_svc_cls, mock_connector_cl
 @patch(
     "integrations.intuit.qbo.purchase.connector.expense.business.service.PurchaseExpenseConnector"
 )
-@patch("entities.expense_coding_item.business.service.ExpenseCodingItemService")
+@patch("entities.coding_suggestion.business.service.CodingSuggestionService")
 def test_handle_recode_line_not_found_marks_changed_in_qbo(mock_svc_cls, mock_connector_cls):
     svc = MagicMock()
     mock_svc_cls.return_value = svc
@@ -196,18 +221,18 @@ def test_handle_recode_line_not_found_marks_changed_in_qbo(mock_svc_cls, mock_co
 
     connector = MagicMock()
     mock_connector_cls.return_value = connector
-    connector.recode_purchase_line.return_value = {"status": "line_not_found"}
+    connector.recode_purchase_lines.return_value = {"status": "line_not_found"}
 
     QboOutboxWorker()._handle_recode_purchase_line(_make_outbox_row())
 
     svc.mark_changed_in_qbo.assert_called_once_with(PUBLIC_ID)
-    connector.recode_purchase_line.assert_called_once()
+    connector.recode_purchase_lines.assert_called_once()
 
 
 @patch(
     "integrations.intuit.qbo.purchase.connector.expense.business.service.PurchaseExpenseConnector"
 )
-@patch("entities.expense_coding_item.business.service.ExpenseCodingItemService")
+@patch("entities.coding_suggestion.business.service.CodingSuggestionService")
 def test_handle_recode_skips_when_not_enqueued(mock_svc_cls, mock_connector_cls):
     svc = MagicMock()
     mock_svc_cls.return_value = svc
@@ -218,7 +243,7 @@ def test_handle_recode_skips_when_not_enqueued(mock_svc_cls, mock_connector_cls)
 
     QboOutboxWorker()._handle_recode_purchase_line(_make_outbox_row())
 
-    connector.recode_purchase_line.assert_not_called()
+    connector.recode_purchase_lines.assert_not_called()
     svc.mark_written.assert_not_called()
     svc.mark_changed_in_qbo.assert_not_called()
     svc.mark_error.assert_not_called()

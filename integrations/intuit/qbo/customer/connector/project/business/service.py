@@ -463,7 +463,7 @@ class CustomerProjectConnector:
     # through qbo.CustomerProject instead, and the five vendor-ref resolvers
     # (U-284v) through qbo.VendorVendor. Same dbo-first / verify shape as all
     # nine, but returns a LOCAL INT rather than a public_id — like
-    # ExpenseCodingItemService._resolve_vendor_id — because its result is
+    # CodingSuggestionService._resolve_vendor_id — because its result is
     # WRITTEN to dbo.Project.CustomerId by _apply_project_fields_and_sync, not
     # just used as a lookup key.
     # Hand-copied deliberately, mirroring _get_project_public_id's own precedent;

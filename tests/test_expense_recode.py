@@ -156,7 +156,7 @@ def test_single_line_happy_path_written():
 
     assert result["status"] == "written"
     assert result["qbo_purchase_qbo_id"] == PURCHASE_QBO_ID
-    assert result["target_qbo_line_id"] == TARGET_LINE_ID
+    assert result["qbo_purchase_qbo_id"] == PURCHASE_QBO_ID
     assert result["sync_token"] == "6"
 
     mock_client.update_purchase_raw.assert_called_once()

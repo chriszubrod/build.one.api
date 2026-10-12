@@ -56,28 +56,18 @@ def _coding_state_item(
 
 
 @contextmanager
-def _mock_line_mapping(*, rows):
-    """rows: list of (public_id, project_id, sub_cost_code_id, description)"""
-
-    class _Row:
-        def __init__(self, public_id, project_id, sub_cost_code_id, description):
-            self.PublicId = public_id
-            self.ProjectId = project_id
-            self.SubCostCodeId = sub_cost_code_id
-            self.Description = description
-
-    mock_cursor = MagicMock()
-    mock_cursor.fetchall.return_value = [
-        _Row(pid, proj, scc, desc) for pid, proj, scc, desc in rows
-    ]
-    mock_conn = MagicMock()
-    mock_conn.cursor.return_value = mock_cursor
-    mock_cm = MagicMock()
-    mock_cm.__enter__.return_value = mock_conn
-    mock_cm.__exit__.return_value = False
-
-    with patch("shared.database.get_connection", return_value=mock_cm):
-        yield mock_cursor
+def _mock_dominant(*, project_id, sub_cost_code_id, description=None, mixed=False):
+    with patch.object(
+        ExpenseService,
+        "_resolve_dominant_expense_coding_for_submit",
+        return_value={
+            "project_id": project_id,
+            "sub_cost_code_id": sub_cost_code_id,
+            "description": description,
+            "confirmed_mixed_codes": mixed,
+        },
+    ):
+        yield
 
 
 # ---------------------------------------------------------------------------
@@ -94,12 +84,10 @@ def test_initial_submit_calls_confirm_with_line_item_coding():
     )
 
     with patch(
-        "entities.expense_coding_item.persistence.repo.ExpenseCodingItemRepository.read_state_by_expense_ids",
+        "entities.coding_suggestion.persistence.repo.CodingSuggestionRepository.read_state_by_expense_ids",
         return_value={expense_id: [state]},
-    ), _mock_line_mapping(
-        rows=[("ci-pub-1", 77, 481, "Fuel at site")],
-    ), patch(
-        "entities.expense_coding_item.business.service.ExpenseCodingItemService.confirm",
+    ), _mock_dominant(project_id=77, sub_cost_code_id=481, description="Fuel at site"), patch(
+        "entities.coding_suggestion.business.service.CodingSuggestionService.confirm",
         return_value={"status": "writes_disabled", "reason": "recode_writes_disabled"},
     ) as mock_confirm:
         svc.enqueue_coding_recode_on_submit(expense_id=expense_id, user_id=17)
@@ -111,6 +99,8 @@ def test_initial_submit_calls_confirm_with_line_item_coding():
         description="Fuel at site",
         was_overridden=True,
         user_id=17,
+        confirmed_mixed_codes=False,
+        allow_multi_line=True,
     )
 
 
@@ -142,12 +132,14 @@ def test_was_overridden_truth_table(
     )
 
     with patch(
-        "entities.expense_coding_item.persistence.repo.ExpenseCodingItemRepository.read_state_by_expense_ids",
+        "entities.coding_suggestion.persistence.repo.CodingSuggestionRepository.read_state_by_expense_ids",
         return_value={55: [state]},
-    ), _mock_line_mapping(
-        rows=[("ci-pub-1", line_project, line_scc, "desc")],
+    ), _mock_dominant(
+        project_id=line_project,
+        sub_cost_code_id=line_scc,
+        description="desc",
     ), patch(
-        "entities.expense_coding_item.business.service.ExpenseCodingItemService.confirm",
+        "entities.coding_suggestion.business.service.CodingSuggestionService.confirm",
         return_value={"status": "writes_disabled"},
     ) as mock_confirm:
         svc.enqueue_coding_recode_on_submit(expense_id=55, user_id=17)
@@ -261,10 +253,10 @@ def test_enqueue_method_counts_writes_disabled():
     state = _coding_state_item()
 
     with patch(
-        "entities.expense_coding_item.persistence.repo.ExpenseCodingItemRepository.read_state_by_expense_ids",
+        "entities.coding_suggestion.persistence.repo.CodingSuggestionRepository.read_state_by_expense_ids",
         return_value={55: [state]},
-    ), _mock_line_mapping(rows=[("ci-pub-1", 77, 481, None)]), patch(
-        "entities.expense_coding_item.business.service.ExpenseCodingItemService.confirm",
+    ), _mock_dominant(project_id=77, sub_cost_code_id=481), patch(
+        "entities.coding_suggestion.business.service.CodingSuggestionService.confirm",
         return_value={"status": "writes_disabled", "reason": "recode_writes_disabled"},
     ):
         summary = svc.enqueue_coding_recode_on_submit(expense_id=55, user_id=17)
@@ -284,10 +276,10 @@ def test_terminal_coding_items_never_confirmed(terminal_status):
     state = _coding_state_item(status=terminal_status)
 
     with patch(
-        "entities.expense_coding_item.persistence.repo.ExpenseCodingItemRepository.read_state_by_expense_ids",
+        "entities.coding_suggestion.persistence.repo.CodingSuggestionRepository.read_state_by_expense_ids",
         return_value={55: [state]},
-    ), _mock_line_mapping(rows=[("ci-pub-1", 77, 481, "x")]), patch(
-        "entities.expense_coding_item.business.service.ExpenseCodingItemService.confirm",
+    ), _mock_dominant(project_id=77, sub_cost_code_id=481, description="x"), patch(
+        "entities.coding_suggestion.business.service.CodingSuggestionService.confirm",
     ) as mock_confirm:
         summary = svc.enqueue_coding_recode_on_submit(expense_id=55, user_id=17)
 
@@ -309,12 +301,14 @@ def test_missing_project_or_sub_cost_code_skipped(project_id, sub_cost_code_id):
     state = _coding_state_item()
 
     with patch(
-        "entities.expense_coding_item.persistence.repo.ExpenseCodingItemRepository.read_state_by_expense_ids",
+        "entities.coding_suggestion.persistence.repo.CodingSuggestionRepository.read_state_by_expense_ids",
         return_value={55: [state]},
-    ), _mock_line_mapping(
-        rows=[("ci-pub-1", project_id, sub_cost_code_id, "desc")],
+    ), _mock_dominant(
+        project_id=project_id,
+        sub_cost_code_id=sub_cost_code_id,
+        description="desc",
     ), patch(
-        "entities.expense_coding_item.business.service.ExpenseCodingItemService.confirm",
+        "entities.coding_suggestion.business.service.CodingSuggestionService.confirm",
     ) as mock_confirm:
         summary = svc.enqueue_coding_recode_on_submit(expense_id=55, user_id=17)
 
@@ -331,10 +325,10 @@ def test_no_coding_items_clean_skip():
     svc = ExpenseService()
 
     with patch(
-        "entities.expense_coding_item.persistence.repo.ExpenseCodingItemRepository.read_state_by_expense_ids",
+        "entities.coding_suggestion.persistence.repo.CodingSuggestionRepository.read_state_by_expense_ids",
         return_value={},
     ), patch(
-        "entities.expense_coding_item.business.service.ExpenseCodingItemService.confirm",
+        "entities.coding_suggestion.business.service.CodingSuggestionService.confirm",
     ) as mock_confirm:
         summary = svc.enqueue_coding_recode_on_submit(expense_id=55, user_id=17)
 

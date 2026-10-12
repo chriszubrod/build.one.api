@@ -2,7 +2,7 @@
 
 Pure-logic / source pins — no live DB. The ledger and coding cockpit must agree
 on whether an expense still needs coding; `needs_coding` derives from
-ExpenseCodingItem.Status, never from ExpenseLineItem.SubCostCodeId.
+CodingSuggestion.Status, never from ExpenseLineItem.SubCostCodeId.
 """
 
 import asyncio
@@ -17,7 +17,7 @@ import pytest
 from tests.sproc_text import REPO_ROOT, sproc_body, sproc_params, strip_sql_comments
 
 EXPENSE_CODING_SQL = (
-    REPO_ROOT / "entities/expense_coding_item/sql/dbo.expense_coding_item.sql"
+    REPO_ROOT / "entities/coding_suggestion/sql/dbo.coding_suggestion.sql"
 )
 
 # Full vocabulary — a new DB status must update this set or tests fail loudly.
@@ -51,7 +51,7 @@ def _coding_item(**over):
 
 
 # ---------------------------------------------------------------------------
-# 1 — needs_coding follows ExpenseCodingItem.Status, not SubCostCodeId
+# 1 — needs_coding follows CodingSuggestion.Status, not SubCostCodeId
 # ---------------------------------------------------------------------------
 
 
@@ -130,7 +130,7 @@ def test_list_handler_calls_coding_repo_exactly_once_for_multi_row_page():
 
     with patch("entities.expense.api.router.ExpenseService", return_value=service), \
          patch("entities.review.persistence.repo.ReviewRepository", return_value=review_repo), \
-         patch("entities.expense_coding_item.persistence.repo.ExpenseCodingItemRepository", return_value=coding_repo):
+         patch("entities.coding_suggestion.persistence.repo.CodingSuggestionRepository", return_value=coding_repo):
         asyncio.run(get_expenses_router(
             page=1,
             page_size=50,
@@ -152,14 +152,14 @@ def test_list_handler_calls_coding_repo_exactly_once_for_multi_row_page():
 
 
 def test_read_expense_coding_state_sproc_declares_actor_params():
-    params = sproc_params(EXPENSE_CODING_SQL, "ReadExpenseCodingStateByExpenseIds")
+    params = sproc_params(EXPENSE_CODING_SQL, "ReadCodingSuggestionStateByExpenseIds")
     assert "@ActorUserId" in params
     assert "@ActorIsSystemAdmin" in params
 
 
 def test_read_expense_coding_state_sproc_uses_user_can_access_project():
     body = strip_sql_comments(
-        sproc_body(EXPENSE_CODING_SQL, "ReadExpenseCodingStateByExpenseIds")
+        sproc_body(EXPENSE_CODING_SQL, "ReadCodingSuggestionStateByExpenseIds")
     )
     assert "UserCanAccessProject" in body
 
@@ -182,7 +182,7 @@ def test_read_expense_coding_state_sproc_resolves_lines_dbo_natively():
     on line id alone cross-matches across purchases.
     """
     body = strip_sql_comments(
-        sproc_body(EXPENSE_CODING_SQL, "ReadExpenseCodingStateByExpenseIds")
+        sproc_body(EXPENSE_CODING_SQL, "ReadCodingSuggestionStateByExpenseIds")
     )
     assert "PurchaseLineExpenseLineItem" not in body, (
         "the retired mapping table has no writer since U-364 — resolve dbo-natively"
@@ -193,11 +193,11 @@ def test_read_expense_coding_state_sproc_resolves_lines_dbo_natively():
     # body` survives deleting any one of them — measured, not assumed.
     flat = " ".join(body.split())
     for leg, why in (
-        ("p.[Id] = pl.[QboPurchaseId]", "line must reach its parent purchase"),
-        ("e.[QboId] = p.[QboId]", "purchase->expense identity"),
-        ("e.[RealmId] = p.[RealmId]", "realm scopes purchase->expense"),
+        ("pl.[QboPurchaseId] = p.[Id]", "line must reach its parent purchase"),
+        ("p.[QboId] = e.[QboId]", "purchase->expense identity"),
+        ("p.[RealmId] = e.[RealmId]", "realm scopes purchase->expense"),
         ("eli.[ExpenseId] = e.[Id]", "line must belong to THIS expense"),
-        ("eli.[QboId] = pl.[QboLineId]", "line identity from the staging line"),
+        ("pl.[QboLineId] = eli.[QboId]", "line identity from the staging line"),
         ("eli.[RealmId] = p.[RealmId]", "realm scopes the line match"),
     ):
         assert leg in flat, (
@@ -221,14 +221,14 @@ def test_read_expense_coding_state_sproc_does_not_filter_on_the_lines_sub_cost_c
     the expense line's SubCostCodeId.
     """
     body = strip_sql_comments(
-        sproc_body(EXPENSE_CODING_SQL, "ReadExpenseCodingStateByExpenseIds")
+        sproc_body(EXPENSE_CODING_SQL, "ReadCodingSuggestionStateByExpenseIds")
     )
     # Strip the SELECT list: everything from WHERE onward is predicate territory.
     idx = body.upper().find("WHERE")
     predicate = body[idx:] if idx != -1 else body
     assert "subcostcodeid" not in predicate.lower(), (
-        "ReadExpenseCodingStateByExpenseIds must not PREDICATE on a SubCostCodeId — "
-        "needs_coding derives from ExpenseCodingItem.Status only. Filtering out "
+        "ReadCodingSuggestionStateByExpenseIds must not PREDICATE on a SubCostCodeId — "
+        "needs_coding derives from CodingSuggestion.Status only. Filtering out "
         "already-healed lines here recreates the post-recode/pre-pull lie one layer "
         "below the Python guard, where test_sub_cost_code_on_the_line_does_not_clear_"
         "needs_coding cannot see it."
@@ -236,7 +236,7 @@ def test_read_expense_coding_state_sproc_does_not_filter_on_the_lines_sub_cost_c
 
 
 def test_read_expense_coding_state_sproc_starts_with_set_nocount_on():
-    body = sproc_body(EXPENSE_CODING_SQL, "ReadExpenseCodingStateByExpenseIds")
+    body = sproc_body(EXPENSE_CODING_SQL, "ReadCodingSuggestionStateByExpenseIds")
     after_as = body.split("AS", 1)[1]
     assert "SET NOCOUNT ON" in after_as.split("BEGIN", 1)[1][:80]
 
@@ -266,7 +266,7 @@ def test_list_response_keeps_lifecycle_keys_and_adds_coding():
 
     with patch("entities.expense.api.router.ExpenseService", return_value=service), \
          patch("entities.review.persistence.repo.ReviewRepository", return_value=review_repo), \
-         patch("entities.expense_coding_item.persistence.repo.ExpenseCodingItemRepository", return_value=coding_repo):
+         patch("entities.coding_suggestion.persistence.repo.CodingSuggestionRepository", return_value=coding_repo):
         data = asyncio.run(get_expenses_router(
             page=1,
             page_size=50,

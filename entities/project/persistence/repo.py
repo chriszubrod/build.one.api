@@ -265,7 +265,7 @@ class ProjectRepository:
                     is_cost_plus=_is_cost_plus(row),
                 )
         except Exception as error:
-            logger.error(f"Error during read project by abbreviation: {error}")
+            logger.error("Error during read project by abbreviation: %s", type(error).__name__)
             raise map_database_error(error)
 
     def find_for_invoice(self, *, address_hint: Optional[str] = None,
@@ -306,7 +306,7 @@ class ProjectRepository:
                     })
                 return out
         except Exception as error:
-            logger.error(f"Error during find_project_for_invoice: {error}")
+            logger.error("Error during find_project_for_invoice: %s", type(error).__name__)
             raise map_database_error(error)
 
     def update_by_id(self, project: Project) -> Optional[Project]:

@@ -224,17 +224,21 @@ approved line; `no_budget` if the project has no active budget; `no_project` if 
 "specific open commitment" tightening in the prompt has no data and is dropped.
 
 ### 5.5 Vendor-history sproc — port, with the two things the expense version lacks
-`ReadVendorDominantSubCostCode` has no as-of date and no project narrowing. The bill-line port:
+`ReadVendorDominantSubCostCode` (expense lines) has no as-of date and counts line-grain votes. The bill port
+(U-653a, Chris 2026-10-13) uses **Bill-grain dominant votes** and **`Bill.CreatedDatetime`** as the clock
+(§10.2), not `BillDate`:
 ```
-ReadVendorDominantSubCostCodeForBills(@VendorId, @ProjectId BIGINT = NULL, @AsOfDatetime DATETIME2 = NULL, @ExcludeBillId BIGINT = NULL)
-  source: dbo.BillLineItem ⋈ dbo.Bill  WHERE Bill.IsDraft = 0 AND BillLineItem.IsDraft = 0
-          AND SubCostCodeId IS NOT NULL AND (@ProjectId IS NULL OR ProjectId = @ProjectId)
-          AND (@AsOfDatetime IS NULL OR Bill.BillDate < @AsOfDatetime) AND Bill.Id <> ISNULL(@ExcludeBillId, -1)
-  returns: SubCostCodeId, TopCount, SecondCount, TotalCount   -- confidence = Top/Total; margin = (Top−Second)/Total
+ReadVendorDominantSubCostCodeForBills(@VendorId, @ProjectId BIGINT = NULL, @AsOfDatetime DATETIME2(3) = NULL, @ExcludeBillId BIGINT = NULL)
+  source: completed Bills (Bill.IsDraft = 0) for @VendorId with CreatedDatetime < @AsOfDatetime (strict) and Id <> @ExcludeBillId
+  per Bill: dominant SubCostCode = largest summed ABS(Amount) across lines (NULL SCC ignored); tie → lowest line Id;
+            dominant Project = ProjectId on the lowest-Id line carrying that SCC
+  when @ProjectId is set: keep only Bills whose dominant Project = @ProjectId
+  each prior Bill votes once with its dominant SubCostCode; minimum support TotalCount >= 3 distinct Bills
+  returns: TopSubCostCodeId, TopCount, SecondCount, TotalCount, Number, Name — or no row when TotalCount < 3
+ReadVendorDominantProjectForBills(@VendorId, @AsOfDatetime, @ExcludeBillId) — same population/rule; votes dominant ProjectId (Mode B)
 ```
-`@AsOfDatetime` is what makes the backtest honest (no future leakage); `@ProjectId` is the commitment-shaped
-signal without a commitment entity; `@ExcludeBillId` keeps the scored bill out of its own history. Resolution
-order: vendor×project (≥3 priors) → vendor (≥3 priors) → flag.
+`@AsOfDatetime` + `@ExcludeBillId` keep the backtest honest (§10.2); `@ProjectId` is the vendor×project
+signal without a commitment entity. Resolution order in Python: vendor×project (≥3 priors) → vendor (≥3 priors) → flag.
 
 ### 5.6 Raw-document record — not a new entity
 `dbo.Attachment` **is** the normalized raw-document record. `EmailMessage`/`EmailAttachment` and
@@ -357,6 +361,9 @@ needed (D5), whether embeddings are worth the SQL tier bump (D7), and what confi
 ### 10.2 Time and leakage
 - **The clock is `Bill.CreatedDatetime`** — when the Bill entered build.one, i.e. what was knowable when a
   person would have seen the pre-fill. Not `BillDate` (vendor's date) and not completion time.
+  Bill list/read sprocs stringify `CreatedDatetime` to whole seconds (`CONVERT(VARCHAR(19), …, 120)`); the
+  backtest harness must read the raw `DATETIME2(3)` column (or an sproc that returns it) so millisecond
+  ordering matches SQL Server's `< @AsOfDatetime` cutoff.
 - **Rolling origin, no training step:** every scored Bill is predicted using **only Bills created strictly
   before it**, with itself excluded (`@AsOfDatetime`, `@ExcludeBillId` on the §5.5 sproc). Nothing about the
   scored Bill — its own lines, codes, review outcome — reaches its features.

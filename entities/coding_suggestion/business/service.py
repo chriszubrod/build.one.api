@@ -6,8 +6,17 @@ from typing import Optional
 # Third-party Imports
 
 # Local Imports
-from entities.coding_suggestion.business.model import CodingSuggestion
+from entities.coding_suggestion.business.model import (
+    CodingSuggestion,
+    VendorDominantProjectForBills,
+    VendorDominantSubCostCodeForBills,
+)
 from entities.coding_suggestion.persistence.repo import CodingSuggestionRepository
+from shared.access import (
+    EntityNotAccessibleError,
+    assert_can_access_bill,
+    assert_can_access_project,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -17,6 +26,81 @@ class CodingSuggestionService:
 
     def __init__(self):
         self.repo = CodingSuggestionRepository()
+
+    def upsert_for_bill(
+        self,
+        *,
+        bill_id: int,
+        vendor_id: Optional[int] = None,
+        suggested_project_id: Optional[int] = None,
+        suggested_sub_cost_code_id: Optional[int] = None,
+        suggestion_source: Optional[str] = None,
+        suggestion_reason: Optional[str] = None,
+        suggestion_confidence: Optional[Decimal] = None,
+        features_json: Optional[str] = None,
+        model_version: Optional[str] = None,
+        prefill_state: Optional[str] = None,
+        created_by_user_id: Optional[int] = None,
+        replace: bool = False,
+    ) -> Optional[CodingSuggestion]:
+        assert_can_access_bill(bill_id)
+        return self.repo.upsert_for_bill(
+            bill_id=bill_id,
+            vendor_id=vendor_id,
+            suggested_project_id=suggested_project_id,
+            suggested_sub_cost_code_id=suggested_sub_cost_code_id,
+            suggestion_source=suggestion_source,
+            suggestion_reason=suggestion_reason,
+            suggestion_confidence=suggestion_confidence,
+            features_json=features_json,
+            model_version=model_version,
+            prefill_state=prefill_state,
+            created_by_user_id=created_by_user_id,
+            replace=replace,
+        )
+
+    def read_by_bill_id(self, bill_id: int) -> Optional[CodingSuggestion]:
+        assert_can_access_bill(bill_id)
+        return self.repo.read_by_bill_id(bill_id)
+
+    def read_vendor_dominant_sub_cost_code_for_bills(
+        self,
+        vendor_id: int,
+        *,
+        project_id: Optional[int] = None,
+        as_of=None,
+        exclude_bill_id: Optional[int] = None,
+    ) -> Optional[VendorDominantSubCostCodeForBills]:
+        # A caller-supplied project must be one the actor can see. Vendor-wide history
+        # (no project) is an aggregate: one SCC id plus counts, no project identity.
+        assert_can_access_project(project_id)
+        return self.repo.read_vendor_dominant_sub_cost_code_for_bills(
+            vendor_id,
+            project_id=project_id,
+            as_of=as_of,
+            exclude_bill_id=exclude_bill_id,
+        )
+
+    def read_vendor_dominant_project_for_bills(
+        self,
+        vendor_id: int,
+        *,
+        as_of=None,
+        exclude_bill_id: Optional[int] = None,
+    ) -> Optional[VendorDominantProjectForBills]:
+        result = self.repo.read_vendor_dominant_project_for_bills(
+            vendor_id,
+            as_of=as_of,
+            exclude_bill_id=exclude_bill_id,
+        )
+        # Never reveal a predicted project (or its vendor association) the actor
+        # cannot access: suggest nothing instead. Admin/system callers bypass.
+        if result is not None:
+            try:
+                assert_can_access_project(result.top_project_id)
+            except EntityNotAccessibleError:
+                return None
+        return result
 
     def upsert_from_queue(
         self,

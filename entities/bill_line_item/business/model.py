@@ -28,6 +28,7 @@ class BillLineItem:
     markup: Optional[Decimal]
     price: Optional[Decimal]
     is_draft: Optional[bool]
+    coding_prefill_state: Optional[str] = None
     qbo_id: Optional[str] = None
     realm_id: Optional[str] = None
 

@@ -26,7 +26,12 @@ _ADDRESS_RE = re.compile(
 _CARD_TAIL_RE = re.compile(r"^\d{3,6}$")
 
 
-def extract_hints(memo_text: str | None) -> dict:
+def extract_bill_hints(memo_text: str | None) -> dict:
+    """Parse a bill memo — every `` - `` segment is scanned (no cardholder skip)."""
+    return extract_hints(memo_text, scan_all_segments=True)
+
+
+def extract_hints(memo_text: str | None, *, scan_all_segments: bool = False) -> dict:
     """Parse a Ramp/QBO PrivateNote memo into structured coding hints.
 
     Returns:
@@ -57,8 +62,12 @@ def extract_hints(memo_text: str | None) -> dict:
     address_hint: Optional[str] = None
     description_segments: list[str] = []
 
-    # Skip the leading cardholder-name segment when the memo has multiple segments.
-    scan_segments = segments[1:] if len(segments) > 1 else segments
+    # Expense memos: skip the leading cardholder-name segment when there are several.
+    # Bills pass scan_all_segments=True via extract_bill_hints.
+    if scan_all_segments:
+        scan_segments = segments
+    else:
+        scan_segments = segments[1:] if len(segments) > 1 else segments
 
     for segment in scan_segments:
         if _CARD_TAIL_RE.match(segment):

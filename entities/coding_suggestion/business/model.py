@@ -10,6 +10,25 @@ import base64
 
 
 @dataclass
+class VendorDominantSubCostCodeForBills:
+    top_sub_cost_code_id: int
+    top_count: int
+    second_count: int
+    total_count: int
+    public_id: Optional[str]
+    number: Optional[str]
+    name: Optional[str]
+
+
+@dataclass
+class VendorDominantProjectForBills:
+    top_project_id: int
+    top_count: int
+    second_count: int
+    total_count: int
+
+
+@dataclass
 class CodingSuggestion:
     id: Optional[int]
     public_id: Optional[str]

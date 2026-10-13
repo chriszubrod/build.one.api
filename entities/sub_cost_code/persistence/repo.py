@@ -305,7 +305,7 @@ class SubCostCodeRepository:
                     })
                 return out
         except Exception as error:
-            logger.error(f"Error during find_sub_cost_code_for_reply: {error}")
+            logger.error("Error during find_sub_cost_code_for_reply: %s", type(error).__name__)
             raise map_database_error(error)
 
     def delete_by_id(self, id: int) -> Optional[SubCostCode]:

@@ -1250,7 +1250,7 @@ class BillService:
             # rather than the 409 a bare row-version miss would produce.
             allow_terminal_parent=is_exempt(_via_completion_pipeline),
         )
-        
+
         return updated_bill
 
     def _assert_no_duplicate_on_complete(self, bill, public_id: str) -> None:
@@ -1928,6 +1928,20 @@ class BillService:
                     "errors": [{"step": "finalize_bill", "error": "Bill deleted during finalization"}],
                 }
             logger.info(f"Bill {public_id} finalized (IsDraft=0)")
+            # U-653a: the first real completion is the SINGLE recording point — every
+            # path out of draft (review submit, email / transactional / fast-path approvals)
+            # ends here with the lines final. A retry on an already-completed Bill must not
+            # replace the historical snapshot, so record only on the draft -> completed flip.
+            # Known limits (Chris, 2026-10-13): (1) two overlapping Complete requests can both
+            # pass this check and record twice — harmless, both compute from the same frozen
+            # lines and history; (2) a Bill approved but never completed gets no snapshot here
+            # — U-653d's reconciler records one for any non-draft Bill that lacks it.
+            if bill.is_draft:
+                from entities.coding_suggestion.business.bill_suggestion_service import (
+                    record_bill_coding_suggestion_on_save,
+                )
+
+                record_bill_coding_suggestion_on_save(finalized_bill)
         except Exception as e:
             logger.exception(f"Error finalizing bill {public_id}")
             return {

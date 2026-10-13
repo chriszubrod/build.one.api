@@ -70,6 +70,19 @@ CREATE INDEX IX_BillLineItem_PublicId ON [dbo].[BillLineItem] ([PublicId]);
 END
 GO
 
+IF OBJECT_ID('dbo.BillLineItem', 'U') IS NOT NULL
+   AND NOT EXISTS (
+       SELECT 1 FROM sys.indexes
+       WHERE name = 'IX_BillLineItem_BillId_SubCostCodeId'
+         AND object_id = OBJECT_ID('dbo.BillLineItem')
+   )
+BEGIN
+    CREATE NONCLUSTERED INDEX [IX_BillLineItem_BillId_SubCostCodeId]
+        ON dbo.[BillLineItem] ([BillId], [SubCostCodeId])
+        INCLUDE ([Amount], [ProjectId]);
+END
+GO
+
 -- U-238b added QboId/RealmId + UQ_BillLineItem_BillId_QboId live via
 -- scripts/migrations/238b_qbo_identity_lines.sql but never ported the DDL into
 -- this base file (the same from-scratch-build gap U-277/U-290 found and fixed
@@ -95,6 +108,28 @@ IF OBJECT_ID('dbo.BillLineItem', 'U') IS NOT NULL AND NOT EXISTS (
 )
 BEGIN
     CREATE UNIQUE INDEX UQ_BillLineItem_BillId_QboId ON [dbo].[BillLineItem] ([BillId], [QboId]) WHERE [QboId] IS NOT NULL;
+END
+GO
+
+IF OBJECT_ID('dbo.BillLineItem', 'U') IS NOT NULL
+   AND COL_LENGTH('dbo.BillLineItem', 'CodingPrefillState') IS NULL
+BEGIN
+    ALTER TABLE [dbo].[BillLineItem] ADD [CodingPrefillState] NVARCHAR(12) NULL;
+END
+GO
+
+IF OBJECT_ID('dbo.BillLineItem', 'U') IS NOT NULL
+   AND NOT EXISTS (
+       SELECT 1 FROM sys.check_constraints
+       WHERE name = 'CK_BillLineItem_CodingPrefillState'
+         AND parent_object_id = OBJECT_ID('dbo.BillLineItem')
+   )
+BEGIN
+    ALTER TABLE [dbo].[BillLineItem] WITH CHECK ADD CONSTRAINT [CK_BillLineItem_CodingPrefillState]
+        CHECK (
+            [CodingPrefillState] IS NULL
+            OR [CodingPrefillState] IN (N'prefilled', N'accepted', N'changed')
+        );
 END
 GO
 
@@ -172,6 +207,7 @@ CREATE OR ALTER PROCEDURE CreateBillLineItem
     @Markup DECIMAL(18,4) NULL,
     @Price DECIMAL(18,2) NULL,
     @IsDraft BIT = 1,
+    @CodingPrefillState NVARCHAR(12) = NULL,
     @CreatedByUserId BIGINT = NULL,
     @AllowTerminalParent BIT = 0
 )
@@ -208,7 +244,7 @@ BEGIN
 
     DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();
 
-    INSERT INTO dbo.[BillLineItem] ([CreatedDatetime], [ModifiedDatetime], [BillId], [SubCostCodeId], [ProjectId], [Description], [Quantity], [Rate], [Amount], [IsBillable], [IsBilled], [Markup], [Price], [IsDraft], [CreatedByUserId])
+    INSERT INTO dbo.[BillLineItem] ([CreatedDatetime], [ModifiedDatetime], [BillId], [SubCostCodeId], [ProjectId], [Description], [Quantity], [Rate], [Amount], [IsBillable], [IsBilled], [Markup], [Price], [IsDraft], [CodingPrefillState], [CreatedByUserId])
     OUTPUT
         INSERTED.[Id],
         INSERTED.[PublicId],
@@ -226,8 +262,9 @@ BEGIN
         INSERTED.[IsBilled],
         INSERTED.[Markup],
         INSERTED.[Price],
-        INSERTED.[IsDraft]
-    VALUES (@Now, @Now, @BillId, @SubCostCodeId, @ProjectId, @Description, @Quantity, @Rate, @Amount, @IsBillable, @IsBilled, @Markup, @Price, @IsDraft, COALESCE(@CreatedByUserId, 17));
+        INSERTED.[IsDraft],
+        INSERTED.[CodingPrefillState]
+    VALUES (@Now, @Now, @BillId, @SubCostCodeId, @ProjectId, @Description, @Quantity, @Rate, @Amount, @IsBillable, @IsBilled, @Markup, @Price, @IsDraft, @CodingPrefillState, COALESCE(@CreatedByUserId, 17));
 
     COMMIT TRANSACTION;
 END;
@@ -272,7 +309,8 @@ BEGIN
         bli.[IsBilled],
         bli.[Markup],
         bli.[Price],
-        bli.[IsDraft]
+        bli.[IsDraft],
+        bli.[CodingPrefillState]
     FROM dbo.[BillLineItem] bli
     WHERE dbo.UserCanAccessBill(@ActorUserId, @ActorIsSystemAdmin, bli.[BillId]) = 1
     ORDER BY bli.[CreatedDatetime] DESC;
@@ -310,6 +348,7 @@ BEGIN
         [Markup],
         [Price],
         [IsDraft],
+        [CodingPrefillState],
         [QboId],
         [RealmId]
     FROM dbo.[BillLineItem]
@@ -347,6 +386,7 @@ BEGIN
         [Markup],
         [Price],
         [IsDraft],
+        [CodingPrefillState],
         [QboId],
         [RealmId]
     FROM dbo.[BillLineItem]
@@ -386,6 +426,7 @@ BEGIN
         [Markup],
         [Price],
         [IsDraft],
+        [CodingPrefillState],
         [QboId],
         [RealmId]
     FROM dbo.[BillLineItem]
@@ -416,6 +457,8 @@ CREATE OR ALTER PROCEDURE UpdateBillLineItemById
     @Markup DECIMAL(18,4) NULL,
     @Price DECIMAL(18,2) NULL,
     @IsDraft BIT = NULL,
+    -- CodingPrefillState: NULL preserves the stored value (clients cannot clear back to NULL).
+    @CodingPrefillState NVARCHAR(12) = NULL,
     @AllowTerminalParent BIT = 0
 )
 AS
@@ -489,7 +532,8 @@ BEGIN
         [IsBilled] = @IsBilled,
         [Markup] = @Markup,
         [Price] = @Price,
-        [IsDraft] = CASE WHEN @IsDraft IS NULL THEN [IsDraft] ELSE @IsDraft END
+        [IsDraft] = CASE WHEN @IsDraft IS NULL THEN [IsDraft] ELSE @IsDraft END,
+        [CodingPrefillState] = CASE WHEN @CodingPrefillState IS NULL THEN [CodingPrefillState] ELSE @CodingPrefillState END
     OUTPUT
         INSERTED.[Id],
         INSERTED.[PublicId],
@@ -508,6 +552,7 @@ BEGIN
         INSERTED.[Markup],
         INSERTED.[Price],
         INSERTED.[IsDraft],
+        INSERTED.[CodingPrefillState],
         INSERTED.[QboId],
         INSERTED.[RealmId]
     WHERE [Id] = @Id AND [RowVersion] = @RowVersion;
@@ -739,7 +784,8 @@ BEGIN
         [IsBilled],
         [Markup],
         [Price],
-        [IsDraft]
+        [IsDraft],
+        [CodingPrefillState]
     FROM dbo.[BillLineItem]
     WHERE [ProjectId] = @ProjectId
     ORDER BY [CreatedDatetime] DESC;
@@ -868,6 +914,7 @@ BEGIN
         [Markup],
         [Price],
         [IsDraft],
+        [CodingPrefillState],
         [QboId],
         [RealmId]
     FROM dbo.[BillLineItem]

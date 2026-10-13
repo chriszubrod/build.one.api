@@ -57,6 +57,7 @@ class BillLineItemRepository:
                 markup=Decimal(str(getattr(row, "Markup", None))) if getattr(row, "Markup", None) is not None else None,
                 price=Decimal(str(getattr(row, "Price", None))) if getattr(row, "Price", None) is not None else None,
                 is_draft=bool(getattr(row, "IsDraft", True)) if getattr(row, "IsDraft", None) is not None else None,
+                coding_prefill_state=getattr(row, "CodingPrefillState", None),
                 qbo_id=getattr(row, "QboId", None),
                 realm_id=getattr(row, "RealmId", None),
             )
@@ -67,7 +68,7 @@ class BillLineItemRepository:
             logger.error(f"Unexpected error during bill line item mapping: {error}")
             raise map_database_error(error)
 
-    def create(self, *, bill_id: int, sub_cost_code_id: Optional[int] = None, project_id: Optional[int] = None, description: Optional[str] = None, quantity: Optional[Decimal] = None, rate: Optional[Decimal] = None, amount: Optional[Decimal] = None, is_billable: Optional[bool] = None, is_billed: Optional[bool] = None, markup: Optional[Decimal] = None, price: Optional[Decimal] = None, is_draft: bool = True, created_by_user_id: Optional[int] = None, allow_terminal_parent: bool = True) -> BillLineItem:
+    def create(self, *, bill_id: int, sub_cost_code_id: Optional[int] = None, project_id: Optional[int] = None, description: Optional[str] = None, quantity: Optional[Decimal] = None, rate: Optional[Decimal] = None, amount: Optional[Decimal] = None, is_billable: Optional[bool] = None, is_billed: Optional[bool] = None, markup: Optional[Decimal] = None, price: Optional[Decimal] = None, is_draft: bool = True, coding_prefill_state: Optional[str] = None, created_by_user_id: Optional[int] = None, allow_terminal_parent: bool = True) -> BillLineItem:
         """
         Create a new bill line item.
 
@@ -79,25 +80,28 @@ class BillLineItemRepository:
         try:
             with get_connection() as conn:
                 cursor = conn.cursor()
+                params = {
+                    "BillId": bill_id,
+                    "SubCostCodeId": sub_cost_code_id,
+                    "ProjectId": project_id,
+                    "Description": description,
+                    "Quantity": Decimal(str(quantity)) if quantity is not None else None,
+                    "Rate": Decimal(str(rate)) if rate is not None else None,
+                    "Amount": Decimal(str(amount)) if amount is not None else None,
+                    "IsBillable": 1 if is_billable else 0 if is_billable is not None else None,
+                    "IsBilled": 1 if is_billed else 0 if is_billed is not None else None,
+                    "Markup": Decimal(str(markup)) if markup is not None else None,
+                    "Price": Decimal(str(price)) if price is not None else None,
+                    "IsDraft": 1 if is_draft else 0,
+                    "CreatedByUserId": created_by_user_id,
+                    "AllowTerminalParent": 1 if allow_terminal_parent else 0,
+                }
+                if coding_prefill_state is not None:
+                    params["CodingPrefillState"] = coding_prefill_state
                 call_procedure(
                     cursor=cursor,
                     name="CreateBillLineItem",
-                    params={
-                        "BillId": bill_id,
-                        "SubCostCodeId": sub_cost_code_id,
-                        "ProjectId": project_id,
-                        "Description": description,
-                        "Quantity": Decimal(str(quantity)) if quantity is not None else None,
-                        "Rate": Decimal(str(rate)) if rate is not None else None,
-                        "Amount": Decimal(str(amount)) if amount is not None else None,
-                        "IsBillable": 1 if is_billable else 0 if is_billable is not None else None,
-                        "IsBilled": 1 if is_billed else 0 if is_billed is not None else None,
-                        "Markup": Decimal(str(markup)) if markup is not None else None,
-                        "Price": Decimal(str(price)) if price is not None else None,
-                        "IsDraft": 1 if is_draft else 0,
-                        "CreatedByUserId": created_by_user_id,
-                        "AllowTerminalParent": 1 if allow_terminal_parent else 0,
-                    },
+                    params=params,
                 )
                 row = cursor.fetchone()
                 if not row:
@@ -311,6 +315,9 @@ class BillLineItemRepository:
                 # Only include IsDraft if it's explicitly set (not None)
                 if bill_line_item.is_draft is not None:
                     params["IsDraft"] = 1 if bill_line_item.is_draft else 0
+                coding_prefill_state = getattr(bill_line_item, "coding_prefill_state", None)
+                if coding_prefill_state is not None:
+                    params["CodingPrefillState"] = coding_prefill_state
                 call_procedure(
                     cursor=cursor,
                     name="UpdateBillLineItemById",

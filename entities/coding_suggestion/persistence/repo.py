@@ -1,6 +1,7 @@
 # Python Standard Library Imports
 import base64
 import logging
+from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Optional
 
@@ -8,10 +9,23 @@ from typing import Optional
 import pyodbc
 
 # Local Imports
-from entities.coding_suggestion.business.model import CodingSuggestion
+from entities.coding_suggestion.business.model import (
+    CodingSuggestion,
+    VendorDominantProjectForBills,
+    VendorDominantSubCostCodeForBills,
+)
 from shared.database import call_procedure, get_connection, map_database_error
 
 logger = logging.getLogger(__name__)
+
+
+def _normalize_as_of_datetime(as_of):
+    """History cutoffs: aware datetimes → UTC naive; naive datetimes → unchanged (UTC)."""
+    if as_of is None:
+        return None
+    if isinstance(as_of, datetime) and as_of.tzinfo is not None:
+        return as_of.astimezone(timezone.utc).replace(tzinfo=None)
+    return as_of
 
 
 class CodingSuggestionRepository:
@@ -73,10 +87,10 @@ class CodingSuggestionRepository:
                 modified_datetime=getattr(row, "ModifiedDatetime", None),
             )
         except AttributeError as error:
-            logger.error(f"Attribute error during coding suggestion mapping: {error}")
+            logger.error("Attribute error during coding suggestion mapping: %s", type(error).__name__)
             raise map_database_error(error)
         except Exception as error:
-            logger.error(f"Unexpected error during coding suggestion mapping: {error}")
+            logger.error("Unexpected error during coding suggestion mapping: %s", type(error).__name__)
             raise map_database_error(error)
 
     def upsert_from_queue(
@@ -377,6 +391,152 @@ class CodingSuggestionRepository:
                 return self._from_db(cursor.fetchone())
         except Exception as error:
             logger.error(f"Error marking coding suggestion {public_id} changed_in_qbo: {error}")
+            raise map_database_error(error)
+
+    def upsert_for_bill(
+        self,
+        *,
+        bill_id: int,
+        vendor_id: Optional[int] = None,
+        suggested_project_id: Optional[int] = None,
+        suggested_sub_cost_code_id: Optional[int] = None,
+        suggestion_source: Optional[str] = None,
+        suggestion_reason: Optional[str] = None,
+        suggestion_confidence: Optional[Decimal] = None,
+        features_json: Optional[str] = None,
+        model_version: Optional[str] = None,
+        prefill_state: Optional[str] = None,
+        created_by_user_id: Optional[int] = None,
+        replace: bool = False,
+    ) -> Optional[CodingSuggestion]:
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(
+                    cursor=cursor,
+                    name="UpsertCodingSuggestionForBill",
+                    params={
+                        "BillId": bill_id,
+                        "VendorId": vendor_id,
+                        "SuggestedProjectId": suggested_project_id,
+                        "SuggestedSubCostCodeId": suggested_sub_cost_code_id,
+                        "SuggestionSource": suggestion_source,
+                        "SuggestionReason": suggestion_reason,
+                        "SuggestionConfidence": (
+                            Decimal(str(suggestion_confidence))
+                            if suggestion_confidence is not None
+                            else None
+                        ),
+                        "FeaturesJson": features_json,
+                        "ModelVersion": model_version,
+                        "PrefillState": prefill_state,
+                        "CreatedByUserId": created_by_user_id,
+                        "ReplaceSuggestion": 1 if replace else 0,
+                    },
+                )
+                return self._from_db(cursor.fetchone())
+        except Exception as error:
+            logger.error(
+                "Error upserting coding suggestion for bill %s: %s",
+                bill_id,
+                type(error).__name__,
+            )
+            raise map_database_error(error)
+
+    def read_by_bill_id(self, bill_id: int) -> Optional[CodingSuggestion]:
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(
+                    cursor=cursor,
+                    name="ReadCodingSuggestionByBillId",
+                    params={"BillId": bill_id},
+                )
+                return self._from_db(cursor.fetchone())
+        except Exception as error:
+            logger.error(
+                "Error reading coding suggestion for bill %s: %s",
+                bill_id,
+                type(error).__name__,
+            )
+            raise map_database_error(error)
+
+    def read_vendor_dominant_sub_cost_code_for_bills(
+        self,
+        vendor_id: int,
+        *,
+        project_id: Optional[int] = None,
+        as_of=None,
+        exclude_bill_id: Optional[int] = None,
+    ) -> Optional[VendorDominantSubCostCodeForBills]:
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(
+                    cursor=cursor,
+                    name="ReadVendorDominantSubCostCodeForBills",
+                    params={
+                        "VendorId": vendor_id,
+                        "ProjectId": project_id,
+                        "AsOfDatetime": _normalize_as_of_datetime(as_of),
+                        "ExcludeBillId": exclude_bill_id,
+                    },
+                )
+                row = cursor.fetchone()
+                if not row:
+                    return None
+                scc_public = getattr(row, "SubCostCodePublicId", None)
+                return VendorDominantSubCostCodeForBills(
+                    top_sub_cost_code_id=int(row.TopSubCostCodeId),
+                    top_count=int(row.TopCount),
+                    second_count=int(row.SecondCount),
+                    total_count=int(row.TotalCount),
+                    public_id=str(scc_public) if scc_public is not None else None,
+                    number=getattr(row, "Number", None),
+                    name=getattr(row, "Name", None),
+                )
+        except Exception as error:
+            logger.error(
+                "Error reading bill dominant sub cost code for vendor %s: %s",
+                vendor_id,
+                type(error).__name__,
+            )
+            raise map_database_error(error)
+
+    def read_vendor_dominant_project_for_bills(
+        self,
+        vendor_id: int,
+        *,
+        as_of=None,
+        exclude_bill_id: Optional[int] = None,
+    ) -> Optional[VendorDominantProjectForBills]:
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(
+                    cursor=cursor,
+                    name="ReadVendorDominantProjectForBills",
+                    params={
+                        "VendorId": vendor_id,
+                        "AsOfDatetime": _normalize_as_of_datetime(as_of),
+                        "ExcludeBillId": exclude_bill_id,
+                    },
+                )
+                row = cursor.fetchone()
+                if not row:
+                    return None
+                return VendorDominantProjectForBills(
+                    top_project_id=int(row.TopProjectId),
+                    top_count=int(row.TopCount),
+                    second_count=int(row.SecondCount),
+                    total_count=int(row.TotalCount),
+                )
+        except Exception as error:
+            logger.error(
+                "Error reading bill dominant project for vendor %s: %s",
+                vendor_id,
+                type(error).__name__,
+            )
             raise map_database_error(error)
 
     def read_vendor_dominant_sub_cost_code(self, vendor_id: int) -> Optional[dict]:

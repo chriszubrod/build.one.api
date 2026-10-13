@@ -89,7 +89,7 @@ class BillLineItemService:
             bill_id=bill_id, bill_public_id=bill_public_id, what=what, exempt=exempt
         )
 
-    def create(self, *, tenant_id: int = None, bill_public_id: str, sub_cost_code_id: Optional[int] = None, project_public_id: Optional[str] = None, description: Optional[str] = None, quantity: Optional[Decimal] = None, rate: Optional[Decimal] = None, amount: Optional[Decimal] = None, is_billable: Optional[bool] = None, is_billed: Optional[bool] = None, markup: Optional[Decimal] = None, price: Optional[Decimal] = None, is_draft: bool = True, _via_internal_pipeline: bool = False) -> BillLineItem:
+    def create(self, *, tenant_id: int = None, bill_public_id: str, sub_cost_code_id: Optional[int] = None, project_public_id: Optional[str] = None, description: Optional[str] = None, quantity: Optional[Decimal] = None, rate: Optional[Decimal] = None, amount: Optional[Decimal] = None, is_billable: Optional[bool] = None, is_billed: Optional[bool] = None, markup: Optional[Decimal] = None, price: Optional[Decimal] = None, is_draft: bool = True, coding_prefill_state: Optional[str] = None, _via_internal_pipeline: bool = False) -> BillLineItem:
         """
         Create a new bill line item.
         """
@@ -137,6 +137,7 @@ class BillLineItemService:
             markup=markup,
             price=price,
             is_draft=is_draft,
+            coding_prefill_state=coding_prefill_state,
             created_by_user_id=current_user_id.get(),
         )
 
@@ -239,6 +240,7 @@ class BillLineItemService:
         markup: float = None,
         price: float = None,
         is_draft: bool = None,
+        coding_prefill_state: Optional[str] = None,
         _via_internal_pipeline: bool = False,
     ) -> Optional[BillLineItem]:
         """
@@ -312,6 +314,8 @@ class BillLineItemService:
             existing.price = Decimal(str(price))
         if is_draft is not None:
             existing.is_draft = is_draft
+        if coding_prefill_state is not None:
+            existing.coding_prefill_state = coding_prefill_state
 
         try:
             return self.repo.update_by_id(

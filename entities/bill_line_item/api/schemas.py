@@ -1,9 +1,11 @@
 # Python Standard Library Imports
-from typing import Optional
 from decimal import Decimal
+from typing import Literal, Optional
 
 # Third-party Imports
 from pydantic import BaseModel, Field
+
+CodingPrefillStateLiteral = Literal["prefilled", "accepted", "changed"]
 
 # Local Imports
 
@@ -64,6 +66,10 @@ class BillLineItemCreate(BaseModel):
     is_draft: Optional[bool] = Field(
         default=True,
         description="Whether the bill line item is a draft."
+    )
+    coding_prefill_state: Optional[CodingPrefillStateLiteral] = Field(
+        default=None,
+        description="Per-line coding pre-fill lifecycle (prefilled | accepted | changed).",
     )
 
 
@@ -126,4 +132,8 @@ class BillLineItemUpdate(BaseModel):
     is_draft: Optional[bool] = Field(
         default=None,
         description="Whether the bill line item is a draft."
+    )
+    coding_prefill_state: Optional[CodingPrefillStateLiteral] = Field(
+        default=None,
+        description="Per-line coding pre-fill lifecycle (prefilled | accepted | changed).",
     )

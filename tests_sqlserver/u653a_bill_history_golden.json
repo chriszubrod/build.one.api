@@ -1,0 +1,332 @@
+{
+  "cases": {
+    "proj:v100-asof-2026-01-01": null,
+    "proj:v100-asof-2026-12-31": {
+      "SecondCount": 0,
+      "TopCount": 3,
+      "TopProjectId": 10,
+      "TotalCount": 3
+    },
+    "proj:v100-asof-none": {
+      "SecondCount": 0,
+      "TopCount": 3,
+      "TopProjectId": 10,
+      "TotalCount": 3
+    },
+    "proj:v100-plain": {
+      "SecondCount": 0,
+      "TopCount": 3,
+      "TopProjectId": 10,
+      "TotalCount": 3
+    },
+    "proj:v200-asof-mid": {
+      "SecondCount": 0,
+      "TopCount": 3,
+      "TopProjectId": 10,
+      "TotalCount": 3
+    },
+    "proj:v200-excl-first": {
+      "SecondCount": 0,
+      "TopCount": 3,
+      "TopProjectId": 10,
+      "TotalCount": 3
+    },
+    "proj:v200-plain": {
+      "SecondCount": 0,
+      "TopCount": 4,
+      "TopProjectId": 10,
+      "TotalCount": 4
+    },
+    "proj:v300-plain": null,
+    "proj:v400-plain": {
+      "SecondCount": 1,
+      "TopCount": 3,
+      "TopProjectId": 10,
+      "TotalCount": 4
+    },
+    "proj:v801-plain": {
+      "SecondCount": 0,
+      "TopCount": 3,
+      "TopProjectId": 10,
+      "TotalCount": 3
+    },
+    "proj:v802-plain": {
+      "SecondCount": 0,
+      "TopCount": 3,
+      "TopProjectId": 10,
+      "TotalCount": 3
+    },
+    "proj:v803-plain": {
+      "SecondCount": 0,
+      "TopCount": 3,
+      "TopProjectId": 30,
+      "TotalCount": 3
+    },
+    "proj:v804-plain": {
+      "SecondCount": 2,
+      "TopCount": 3,
+      "TopProjectId": 20,
+      "TotalCount": 5
+    },
+    "proj:v804-projects": {
+      "SecondCount": 2,
+      "TopCount": 3,
+      "TopProjectId": 20,
+      "TotalCount": 5
+    },
+    "proj:v805-asof-excl": {
+      "SecondCount": 0,
+      "TopCount": 4,
+      "TopProjectId": 40,
+      "TotalCount": 4
+    },
+    "proj:v805-excl-id31": {
+      "SecondCount": 0,
+      "TopCount": 4,
+      "TopProjectId": 40,
+      "TotalCount": 4
+    },
+    "proj:v805-excl-id33": {
+      "SecondCount": 0,
+      "TopCount": 4,
+      "TopProjectId": 40,
+      "TotalCount": 4
+    },
+    "proj:v805-excl-none": {
+      "SecondCount": 0,
+      "TopCount": 5,
+      "TopProjectId": 40,
+      "TotalCount": 5
+    },
+    "proj:v805-plain": {
+      "SecondCount": 0,
+      "TopCount": 5,
+      "TopProjectId": 40,
+      "TotalCount": 5
+    },
+    "proj:v806-insufficient": null,
+    "proj:v806-plain": null,
+    "proj:v807-plain": null,
+    "scc:v100-asof-2026-01-01": null,
+    "scc:v100-asof-2026-12-31": {
+      "Name": "Name-B",
+      "Number": "B",
+      "SecondCount": 0,
+      "TopCount": 3,
+      "TopSubCostCodeId": 2,
+      "TotalCount": 3
+    },
+    "scc:v100-asof-none": {
+      "Name": "Name-B",
+      "Number": "B",
+      "SecondCount": 0,
+      "TopCount": 3,
+      "TopSubCostCodeId": 2,
+      "TotalCount": 3
+    },
+    "scc:v100-plain": {
+      "Name": "Name-B",
+      "Number": "B",
+      "SecondCount": 0,
+      "TopCount": 3,
+      "TopSubCostCodeId": 2,
+      "TotalCount": 3
+    },
+    "scc:v200-asof-full-excl": {
+      "Name": "Name-A",
+      "Number": "A",
+      "SecondCount": 0,
+      "TopCount": 3,
+      "TopSubCostCodeId": 1,
+      "TotalCount": 3
+    },
+    "scc:v200-asof-mid": {
+      "Name": "Name-A",
+      "Number": "A",
+      "SecondCount": 0,
+      "TopCount": 3,
+      "TopSubCostCodeId": 1,
+      "TotalCount": 3
+    },
+    "scc:v200-plain": {
+      "Name": "Name-A",
+      "Number": "A",
+      "SecondCount": 0,
+      "TopCount": 4,
+      "TopSubCostCodeId": 1,
+      "TotalCount": 4
+    },
+    "scc:v300-plain": null,
+    "scc:v400-plain": {
+      "Name": "Name-A",
+      "Number": "A",
+      "SecondCount": 1,
+      "TopCount": 3,
+      "TopSubCostCodeId": 1,
+      "TotalCount": 4
+    },
+    "scc:v400-proj10": {
+      "Name": "Name-A",
+      "Number": "A",
+      "SecondCount": 1,
+      "TopCount": 2,
+      "TopSubCostCodeId": 1,
+      "TotalCount": 3
+    },
+    "scc:v400-proj20": null,
+    "scc:v400-proj99": null,
+    "scc:v801-plain": {
+      "Name": "Name-A",
+      "Number": "A",
+      "SecondCount": 0,
+      "TopCount": 3,
+      "TopSubCostCodeId": 1,
+      "TotalCount": 3
+    },
+    "scc:v802-plain": {
+      "Name": "Name-A",
+      "Number": "A",
+      "SecondCount": 0,
+      "TopCount": 3,
+      "TopSubCostCodeId": 1,
+      "TotalCount": 3
+    },
+    "scc:v803-plain": {
+      "Name": "Name-A",
+      "Number": "A",
+      "SecondCount": 0,
+      "TopCount": 3,
+      "TopSubCostCodeId": 1,
+      "TotalCount": 3
+    },
+    "scc:v803-tie": {
+      "Name": "Name-A",
+      "Number": "A",
+      "SecondCount": 0,
+      "TopCount": 3,
+      "TopSubCostCodeId": 1,
+      "TotalCount": 3
+    },
+    "scc:v804-plain": {
+      "Name": "Name-B",
+      "Number": "B",
+      "SecondCount": 2,
+      "TopCount": 3,
+      "TopSubCostCodeId": 2,
+      "TotalCount": 5
+    },
+    "scc:v805-asof-excl": {
+      "Name": "Name-C",
+      "Number": "C",
+      "SecondCount": 0,
+      "TopCount": 4,
+      "TopSubCostCodeId": 3,
+      "TotalCount": 4
+    },
+    "scc:v805-excl-id31": {
+      "Name": "Name-C",
+      "Number": "C",
+      "SecondCount": 0,
+      "TopCount": 4,
+      "TopSubCostCodeId": 3,
+      "TotalCount": 4
+    },
+    "scc:v805-excl-id33": {
+      "Name": "Name-C",
+      "Number": "C",
+      "SecondCount": 0,
+      "TopCount": 4,
+      "TopSubCostCodeId": 3,
+      "TotalCount": 4
+    },
+    "scc:v805-excl-none": {
+      "Name": "Name-C",
+      "Number": "C",
+      "SecondCount": 0,
+      "TopCount": 5,
+      "TopSubCostCodeId": 3,
+      "TotalCount": 5
+    },
+    "scc:v805-plain": {
+      "Name": "Name-C",
+      "Number": "C",
+      "SecondCount": 0,
+      "TopCount": 5,
+      "TopSubCostCodeId": 3,
+      "TotalCount": 5
+    },
+    "scc:v806-insufficient": null,
+    "scc:v806-plain": null,
+    "scc:v807-plain": null
+  },
+  "meta": {
+    "bill_ids": {
+      "100": [
+        1,
+        2,
+        3
+      ],
+      "200": [
+        4,
+        5,
+        6,
+        7
+      ],
+      "300": [
+        8,
+        9,
+        10
+      ],
+      "400": [
+        11,
+        12,
+        13,
+        14
+      ],
+      "801": [
+        15,
+        16,
+        17,
+        18
+      ],
+      "802": [
+        19,
+        20,
+        21,
+        22
+      ],
+      "803": [
+        23,
+        24,
+        25
+      ],
+      "804": [
+        26,
+        27,
+        28,
+        29,
+        30
+      ],
+      "805": [
+        31,
+        32,
+        33,
+        34,
+        35
+      ],
+      "806": [
+        36,
+        37
+      ],
+      "807": [
+        38
+      ]
+    },
+    "scc_public": {
+      "1": "11111111-1111-1111-1111-000000000001",
+      "2": "11111111-1111-1111-1111-000000000002",
+      "3": "11111111-1111-1111-1111-000000000003",
+      "4": "11111111-1111-1111-1111-000000000004"
+    }
+  }
+}

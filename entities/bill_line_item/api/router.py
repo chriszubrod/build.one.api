@@ -40,6 +40,7 @@ def create_bill_line_item_router(body: BillLineItemCreate, current_user: dict = 
             "markup": to_decimal_or_none(body.markup),
             "price": to_decimal_or_none(body.price),
             "is_draft": body.is_draft if body.is_draft is not None else True,
+            "coding_prefill_state": body.coding_prefill_state,
         },
         workflow_type="bill_line_item_create",
     )
@@ -130,6 +131,7 @@ def update_bill_line_item_by_public_id_router(public_id: str, body: BillLineItem
             "markup": to_decimal_or_none(body.markup),
             "price": to_decimal_or_none(body.price),
             "is_draft": body.is_draft,
+            "coding_prefill_state": body.coding_prefill_state,
         },
         workflow_type="bill_line_item_update",
     )

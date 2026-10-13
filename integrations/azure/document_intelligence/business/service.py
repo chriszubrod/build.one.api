@@ -38,7 +38,8 @@ read directly:
       # callers don't crash on the new shape.
       "validation": {"is_valid": True, "issues": []},
 
-      "raw": {...},   # full DI analyzeResult, persisted to DiResultJson
+      "raw": {...},   # full DI analyzeResult (unmasked for agents; SQL cache is reduced — see
+                      # project_analyze_result_for_cache)
     }
 
 The previous prebuilt-invoice + typed-field hoist logic has been replaced
@@ -96,6 +97,7 @@ class DocumentIntelligenceService:
         """Reshape `prebuilt-layout` analyzeResult into a flat agent-
         friendly dict. No semantic interpretation — the agent does that.
         """
+        # keep in step: the cache stores only what project_analyze_result_for_cache reads
         return {
             "content":         analyze_result.get("content") or "",
             "key_value_pairs": _flatten_key_value_pairs(analyze_result),
@@ -119,6 +121,109 @@ class DocumentIntelligenceService:
 
 
 # ─── DI response unpacking helpers ──────────────────────────────────────────
+
+
+def _di_int(value: object) -> int | None:
+    if isinstance(value, int) and not isinstance(value, bool):
+        return value
+    return None
+
+
+def _di_str(value: object) -> str | None:
+    return value if isinstance(value, str) else None
+
+
+def project_analyze_result_for_cache(raw: dict) -> dict:
+    """Reduced analyzeResult shape stored in EmailAttachment.DiResultJson.
+
+    Keeps only fields the cache reader uses (content, page stubs, keyValuePairs,
+    tables). Never raises on malformed input.
+    """
+    if not isinstance(raw, dict):
+        return {}
+    reduced: dict = {}
+
+    content = raw.get("content")
+    if isinstance(content, str):
+        reduced["content"] = content
+
+    pages_raw = raw.get("pages")
+    if isinstance(pages_raw, list):
+        stubs: list[dict] = []
+        for idx, page in enumerate(pages_raw):
+            page_number = idx + 1
+            if isinstance(page, dict):
+                pn = _di_int(page.get("pageNumber"))
+                if pn is not None:
+                    page_number = pn
+            stubs.append({"pageNumber": page_number})
+        reduced["pages"] = stubs
+
+    kvps_out: list[dict] = []
+    kvps_raw = raw.get("keyValuePairs")
+    if isinstance(kvps_raw, list):
+        for kvp in kvps_raw:
+            if not isinstance(kvp, dict):
+                kvps_out.append({"key": {"content": None}, "value": None, "confidence": None})
+                continue
+            key_obj = kvp.get("key")
+            key_content = (
+                _di_str(key_obj.get("content")) if isinstance(key_obj, dict) else None
+            )
+            kvp_out: dict = {"key": {"content": key_content}}
+            if "value" not in kvp:
+                kvp_out["value"] = None
+            else:
+                val_obj = kvp.get("value")
+                if val_obj is None:
+                    kvp_out["value"] = None
+                elif isinstance(val_obj, dict):
+                    val_content = _di_str(val_obj.get("content"))
+                    kvp_out["value"] = {"content": val_content}
+                else:
+                    kvp_out["value"] = {"content": None}
+            conf = kvp.get("confidence")
+            if isinstance(conf, (int, float)) and not isinstance(conf, bool):
+                kvp_out["confidence"] = conf
+            else:
+                kvp_out["confidence"] = None
+            kvps_out.append(kvp_out)
+        reduced["keyValuePairs"] = kvps_out
+
+    tables_out: list[dict] = []
+    tables_raw = raw.get("tables")
+    if isinstance(tables_raw, list):
+        for table in tables_raw:
+            if not isinstance(table, dict):
+                continue
+            table_out: dict = {}
+            row_count = _di_int(table.get("rowCount"))
+            col_count = _di_int(table.get("columnCount"))
+            if row_count is not None:
+                table_out["rowCount"] = row_count
+            if col_count is not None:
+                table_out["columnCount"] = col_count
+            cells_out: list[dict] = []
+            cells_raw = table.get("cells")
+            if isinstance(cells_raw, list):
+                for cell in cells_raw:
+                    if not isinstance(cell, dict):
+                        continue
+                    cell_out: dict = {}
+                    ri = _di_int(cell.get("rowIndex"))
+                    ci = _di_int(cell.get("columnIndex"))
+                    if ri is not None:
+                        cell_out["rowIndex"] = ri
+                    if ci is not None:
+                        cell_out["columnIndex"] = ci
+                    cell_content = _di_str(cell.get("content"))
+                    cell_out["content"] = cell_content
+                    cells_out.append(cell_out)
+            table_out["cells"] = cells_out
+            tables_out.append(table_out)
+        reduced["tables"] = tables_out
+
+    return reduced
 
 
 def _flatten_key_value_pairs(analyze_result: dict) -> list[dict]:

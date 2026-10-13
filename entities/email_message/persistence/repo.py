@@ -16,6 +16,7 @@ EmailAttachmentRepository:
   - update_extraction (DI result + parsed fields + status)
 """
 import base64
+import json
 import logging
 from datetime import datetime
 from decimal import Decimal
@@ -23,10 +24,91 @@ from typing import Optional
 
 import pyodbc
 
+from entities.attachment.business.tin_redaction import mask_tins, mask_tins_in_fields
 from entities.email_message.business.model import EmailMessage, EmailAttachment
+from integrations.azure.document_intelligence.business.service import (
+    project_analyze_result_for_cache,
+)
 from shared.database import call_procedure, get_connection, map_database_error
 
 logger = logging.getLogger(__name__)
+
+_TextSlot = tuple[dict, str, bool | None]
+
+
+def _collect_di_text_slots(reduced: dict) -> tuple[list[str], list[_TextSlot | None]]:
+    """Walk the reduced analyzeResult in cache-read order and collect mask inputs."""
+    fields: list[str] = []
+    slots: list[_TextSlot | None] = []
+
+    if "content" in reduced:
+        content = reduced["content"]
+        was_none = content is None
+        fields.append("" if was_none else content)
+        slots.append((reduced, "content", was_none))
+
+    for kvp in reduced.get("keyValuePairs") or []:
+        key_content = kvp.get("key", {}).get("content")
+        was_none_key = key_content is None
+        fields.append("" if was_none_key else key_content)
+        slots.append((kvp["key"], "content", was_none_key))
+
+        if kvp.get("value") is None:
+            fields.append("")
+            slots.append(None)
+            continue
+        val_content = kvp["value"].get("content")
+        was_none_val = val_content is None
+        fields.append("" if was_none_val else val_content)
+        slots.append((kvp["value"], "content", was_none_val))
+
+    for table in reduced.get("tables") or []:
+        for cell in table.get("cells") or []:
+            cell_content = cell.get("content")
+            was_none = cell_content is None
+            fields.append("" if was_none else cell_content)
+            slots.append((cell, "content", was_none))
+
+    return fields, slots
+
+
+def _write_back_masked_slots(
+    masked_fields: list[str], slots: list[_TextSlot | None]
+) -> None:
+    for masked, slot in zip(masked_fields, slots):
+        if slot is None:
+            continue
+        container, key, was_none = slot
+        if was_none:
+            container[key] = None if masked == "" else masked
+        else:
+            container[key] = masked
+
+
+def mask_di_result_for_persistence(raw: dict) -> tuple[dict, int]:
+    """Project DI analyzeResult to the cache shape and mask kept text jointly."""
+    if not isinstance(raw, dict):
+        return {}, 0
+    reduced = project_analyze_result_for_cache(raw)
+    fields, slots = _collect_di_text_slots(reduced)
+    if not fields:
+        return reduced, 0
+    masked_fields, count = mask_tins_in_fields(fields, aggressive=False)
+    _write_back_masked_slots(masked_fields, slots)
+    return reduced, count
+
+
+def mask_di_result_json_for_persistence(di_result_json: str) -> str:
+    """Mask TIN shapes in a DiResultJson payload before it reaches SQL."""
+    try:
+        parsed = json.loads(di_result_json)
+    except json.JSONDecodeError:
+        parsed = None
+    if isinstance(parsed, dict):
+        masked, _ = mask_di_result_for_persistence(parsed)
+        return json.dumps(masked)
+    masked, _ = mask_tins(di_result_json, aggressive=True)
+    return masked
 
 
 class EmailMessageRepository:
@@ -648,6 +730,8 @@ class EmailAttachmentRepository:
         columns; preserves ExtractionStatus, DiResultJson, DiModel, etc.
         Used by the email_specialist's record_extracted_fields tool after
         the agent reads DI's prebuilt-layout output and pulls out fields."""
+        if di_vendor_name is not None:
+            di_vendor_name, _ = mask_tins(di_vendor_name, aggressive=False)
         try:
             with get_connection() as conn:
                 cursor = conn.cursor()
@@ -663,7 +747,7 @@ class EmailAttachmentRepository:
                 })
                 return cursor.fetchone() is not None
         except Exception as error:
-            logger.error(f"Error updating email attachment extracted fields: {error}")
+            logger.error("Error updating email attachment extracted fields: %s", type(error).__name__)
             raise map_database_error(error)
 
     def update_extraction(self, *, id: int, extraction_status: str,
@@ -678,6 +762,15 @@ class EmailAttachmentRepository:
                           di_total_amount: Optional[Decimal] = None,
                           di_currency: Optional[str] = None,
                           last_error: Optional[str] = None) -> bool:
+        if di_result_json is not None:
+            di_result_json = mask_di_result_json_for_persistence(di_result_json)
+        if di_vendor_name is not None:
+            di_vendor_name, _ = mask_tins(di_vendor_name, aggressive=False)
+        # Accepted trade-off (Chris, 2026-10-13): EIN-shaped invoice numbers in DI content
+        # may be masked in DiResultJson before DiInvoiceNumber is recorded on the row.
+        # DiInvoiceNumber itself stays unmasked for downstream matching (Attachment.VendorInvoiceNumber).
+        # Email DI is always masked non-aggressively here (attachments carry no taxpayer flag).
+        # Fresh extraction responses returned to agents stay unmasked (agent history: U-535l).
         try:
             with get_connection() as conn:
                 cursor = conn.cursor()
@@ -698,5 +791,36 @@ class EmailAttachmentRepository:
                 })
                 return cursor.fetchone() is not None
         except Exception as error:
-            logger.error(f"Error updating email attachment extraction: {error}")
+            logger.error("Error updating email attachment extraction: %s", type(error).__name__)
+            raise map_database_error(error)
+
+    def update_di_result_json(
+        self,
+        *,
+        id: int,
+        di_result_json: str,
+        expected_row_version: bytes,
+    ) -> bool:
+        """Narrow remask write — optimistic guard on the RowVersion read with the value.
+
+        RowVersion is exact; comparing NVARCHAR(MAX) text is not (trailing spaces and the
+        case-insensitive collation compare equal), so a concurrent edit could be overwritten."""
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    """
+                    UPDATE dbo.[EmailAttachment]
+                    SET [DiResultJson] = CAST(? AS NVARCHAR(MAX)),
+                        ModifiedDatetime = SYSUTCDATETIME()
+                    WHERE Id = ?
+                      AND [RowVersion] = ?
+                    """,
+                    di_result_json,
+                    id,
+                    expected_row_version,
+                )
+                return cursor.rowcount == 1
+        except Exception as error:
+            logger.error("Error updating email attachment DiResultJson: %s", type(error).__name__)
             raise map_database_error(error)

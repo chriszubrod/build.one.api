@@ -528,7 +528,7 @@ def test_expense_created_by_is_authenticated_caller_user_id_is_reviewer(
 @patch("entities.sub_cost_code.business.service.SubCostCodeService")
 @patch("entities.contract_labor.business.service.ProjectService")
 @patch("entities.contract_labor.persistence.line_item_repo.ContractLaborLineItemRepository")
-@patch("shared.database.get_connection")
+@patch("entities.contract_labor.business.service.get_connection")
 def test_contract_labor_created_by_is_authenticated_caller(
     get_conn,
     LiRepo,
@@ -576,6 +576,8 @@ def test_contract_labor_created_by_is_authenticated_caller(
     LiRepo.return_value.update_by_id.return_value = SimpleNamespace(id=1)
     RsSvc.return_value.read_all.return_value = _approved_statuses()
     RsSvc.return_value.read_by_id.return_value = SimpleNamespace(name="Approved")
+    ReviewRepo.return_value.read_current_by_contract_labor_id_for_update.return_value = None
+    LiRepo.return_value.read_by_contract_labor_id.return_value = []
     ReviewRepo.return_value.create.return_value = SimpleNamespace(
         id=900,
         review_status_id=100,
@@ -621,6 +623,9 @@ def test_contract_labor_created_by_is_authenticated_caller(
         # The PARENT row is what serialises two decisions on one expense.
         ("entities/review/sql/dbo.review.sql", "ReadCurrentReviewByExpenseIdForUpdate",
          "FROM dbo.[Expense] WITH (UPDLOCK, HOLDLOCK)"),
+        # U-564b: the ContractLabor decision serialises on its parent row too.
+        ("entities/review/sql/dbo.review.sql", "ReadCurrentReviewByContractLaborIdForUpdate",
+         "FROM dbo.[ContractLabor] WITH (UPDLOCK, HOLDLOCK)"),
     ],
 )
 def test_new_sprocs_take_the_lock(sql_rel, sproc_name, locked):

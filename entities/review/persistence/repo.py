@@ -306,6 +306,15 @@ class ReviewRepository:
             {"ContractLaborId": contract_labor_id},
         )
 
+    def read_current_by_contract_labor_id_for_update(
+        self, contract_labor_id: int, *, conn: Optional[pyodbc.Connection] = None
+    ) -> Optional[Review]:
+        return self._read_current(
+            "ReadCurrentReviewByContractLaborIdForUpdate",
+            {"ContractLaborId": contract_labor_id},
+            conn=conn,
+        )
+
     def read_current_by_bill_ids(self, bill_ids: list[int]) -> dict[int, Review]:
         """Batch lookup of the latest Review per Bill. Returns
         {bill_id: Review}; bills with no Review row are absent from the

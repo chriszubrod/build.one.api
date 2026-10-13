@@ -30,6 +30,30 @@ checkout's `TODO.md` was held by a parallel session.
 - Outbox payload parsing in `provenance.py` (`json.loads` + literal `conversation_id`/`subject` keys) is a FOURTH reader
   of the MS outbox's private payload — added to the U-568 read-seam inventory on the board rather than fixed here.
 
+## U-564b spillover — ContractLabor emailed decision is one transaction per crew member (booked 2026-10-12)
+
+New `ReadCurrentReviewByContractLaborIdForUpdate` locks the parent first; the Review row, line coding, aggregate
+recompute and ready flip share one connection, and the ready check re-reads every line inside it. Note the deliberate
+contract change: a ready-flip conflict now rolls the whole member back instead of being skipped. Booked here because the
+main checkout's `TODO.md` was held by a parallel session.
+
+- [ ] **(P3, api) Re-check ContractLabor status under the new lock.** The `pending_review`/`submitted` guard reads
+  `cl.status` BEFORE the lock and is not repeated after it, so a CL flipped to `ready` in that window still gets a Review
+  and re-coded lines. Pre-existing race, narrow; fix by `read_by_id(cl.id, conn=conn)` right after the lock read and
+  repeating the guard.
+- [ ] **(P3, api) The `conn_ctx(conn) if conn is not None else get_connection()` ternary now has ~12 copies** (CL repos,
+  review, expense_line_item) only because tests patch each repo module's `get_connection`. Make the seam patchable once
+  (patch `shared.database.get_connection` in tests, or give `conn_ctx` a factory) and collapse every site to
+  `with conn_ctx(conn) as c`.
+- [ ] **(P3, api) Give CL line coding the sibling shape.** Bill/Expense call a narrow `update_coding_in_transaction`; CL
+  passes 13 fields through `update_by_id` per line while holding the lock. Add the coding-only method; consider a
+  set-based sproc coding every matched line in one statement, a lock-only parent sproc (the ForUpdate read's Review
+  projection is discarded by every caller), and returning `UncodedCount` from `UpdateContractLaborAggregates` to drop
+  the ready-check re-read.
+- [ ] **(P3, tests) One shared fake-DB scaffold for the decision-transaction tests.** `tests/test_u564b_cl_decision_single_transaction.py`
+  copies ~300 lines of `tests/test_u564_reviewer_decision_single_transaction.py` (`_FakeConn`, `_FakeCursor`,
+  `_real_chain`, …); the three CL real-chain tests and the two ready-flip tests also repeat ~35/45-line bodies.
+
 ## U-564 spillover — emailed decisions are atomic for Bill/Expense; ContractLabor and the shared shape remain (booked 2026-10-12)
 
 U-564 put the line-item coding and the Review insert of the emailed Bill and Expense decisions on ONE connection
@@ -37,7 +61,7 @@ behind lock reads (new `ReadCurrentReviewByExpenseIdForUpdate`, `CountExpenseLin
 set `Review.CreatedByUserId` to the authenticated caller on Bill, Expense and ContractLabor (UserId stays the
 reviewer). Booked here because the main checkout's `TODO.md` was held by a parallel session.
 
-- [ ] **(P1, U-564b) ContractLabor's emailed decision is still several transactions** — Review row first, then N
+- [x] **(P1, U-564b) ContractLabor's emailed decision is still several transactions** DONE 2026-10-12 (U-564b: one transaction per crew member; spillover booked at the top) — Review row first, then N
   line updates, an aggregate recompute and a status mirror, each committing on its own (`_apply_decision_to_single_cl`).
   Needs conn-aware line-item, recompute and mark-ready seams before it can be one transaction.
 - [ ] **(P2, decision) Status resolution diverges from U-541.** The emailed paths filter `ReviewStatusService.read_all()`

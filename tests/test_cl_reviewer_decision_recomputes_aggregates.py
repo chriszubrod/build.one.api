@@ -81,10 +81,10 @@ class _FakeLineItemRepo:
         self.lines = list(lines)
         self.fail_ids = set(fail_ids)
 
-    def read_by_contract_labor_id(self, *, contract_labor_id):
+    def read_by_contract_labor_id(self, contract_labor_id, *, conn=None):
         return list(self.lines)
 
-    def update_by_id(self, *, id, **fields):
+    def update_by_id(self, *, id, conn=None, **fields):
         if id in self.fail_ids:
             raise RuntimeError("row-version conflict")
         target = next(li for li in self.lines if li.id == id)
@@ -106,10 +106,13 @@ class _FakeRepo:
         self.raises = raises
         self.calls = []
 
-    def update_by_id(self, contract_labor):
+    def update_by_id(self, contract_labor, *, conn=None):
         return contract_labor
 
-    def update_aggregates(self, *, id):
+    def read_by_id(self, contract_labor_id, *, conn=None):
+        return self.parent
+
+    def update_aggregates(self, *, id, conn=None):
         self.calls.append(id)
         if self.raises:
             raise RuntimeError("sproc unavailable")
@@ -177,8 +180,8 @@ def _harness(monkeypatch, *, lines, fail_ids=frozenset(), recompute_raises=False
     conn.cursor.return_value = cursor
     conn.__enter__ = lambda self: conn
     conn.__exit__ = lambda *a: None
-    monkeypatch.setattr("shared.database.get_connection", lambda: conn)
-    monkeypatch.setattr("shared.database.call_procedure", lambda **kw: None)
+    monkeypatch.setattr("entities.contract_labor.business.service.get_connection", lambda: conn)
+    monkeypatch.setattr("entities.contract_labor.business.service.call_procedure", lambda **kw: None)
 
     approved = types.SimpleNamespace(id=1, name="Approved", is_final=True, is_declined=False)
     declined = types.SimpleNamespace(id=2, name="Declined", is_final=True, is_declined=True)
@@ -189,16 +192,18 @@ def _harness(monkeypatch, *, lines, fail_ids=frozenset(), recompute_raises=False
             read_by_id=lambda id: approved if id == 1 else declined,
         ),
     )
+    review_repo = types.SimpleNamespace(
+        read_current_by_contract_labor_id_for_update=lambda *a, **kw: None,
+        create=lambda **kw: types.SimpleNamespace(
+            id=99,
+            review_status_id=kw["review_status_id"],
+            status_is_final=True,
+            status_is_declined=(kw["review_status_id"] == 2),
+        ),
+    )
     monkeypatch.setattr(
         "entities.review.persistence.repo.ReviewRepository",
-        lambda: types.SimpleNamespace(
-            create=lambda **kw: types.SimpleNamespace(
-                id=99,
-                review_status_id=kw["review_status_id"],
-                status_is_final=True,
-                status_is_declined=(kw["review_status_id"] == 2),
-            ),
-        ),
+        lambda: review_repo,
     )
     monkeypatch.setattr(
         svc, "mark_as_ready_via_review_approval", lambda **kw: parent,
@@ -269,33 +274,29 @@ def test_approval_leaves_parent_total_equal_to_sum_of_line_items(monkeypatch):
 # ─── Ordering + failure isolation ────────────────────────────────────────
 
 
-def test_partial_line_failure_still_recomputes_before_raising(monkeypatch):
-    """When some lines applied and others didn't, the parent must match what
-    actually landed — so the recompute runs BEFORE the partial-failure raise."""
+def test_line_failure_aborts_whole_member_no_partial_coding(monkeypatch):
+    """U-564b: a row-version conflict on any line rolls back the whole member."""
     lines = [
         _line(1, hours=7.0, price=590.63),
         _line(2, hours=3.0, price=253.13),
     ]
-    svc, repo, _li_repo, parent = _harness(monkeypatch, lines=lines, fail_ids={2})
+    svc, repo, li_repo, parent = _harness(monkeypatch, lines=lines, fail_ids={2})
 
-    with pytest.raises(ValueError, match="partial-failure"):
+    with pytest.raises(ValueError, match="line_item_id=2"):
         _approve(svc)
 
-    assert repo.calls == [10]
-    assert parent.total_amount == 843.76
+    assert repo.calls == []
+    assert li_repo.lines[1].sub_cost_code_id is None
+    assert parent.total_amount == float(STALE_PARENT_TOTAL)
 
 
-def test_recompute_failure_does_not_undo_the_applied_decision(monkeypatch):
-    """The Review row is written and the lines are coded before the recompute.
-    A recompute blow-up must not surface as a retryable error — the retry would
-    fail the status guard on a CL that has already advanced."""
+def test_recompute_failure_inside_transaction_propagates(monkeypatch):
+    """When conn is threaded, recompute failures abort the decision transaction."""
     lines = [_line(1, hours=7.0, price=590.63)]
     svc, _repo, li_repo, _parent = _harness(monkeypatch, lines=lines, recompute_raises=True)
 
-    result = _approve(svc)
-
-    assert result["decision_applied"] == "approved"
-    assert li_repo.lines[0].sub_cost_code_id == 555
+    with pytest.raises(RuntimeError, match="sproc unavailable"):
+        _approve(svc)
 
 
 def test_rejection_does_not_touch_parent_aggregates(monkeypatch):

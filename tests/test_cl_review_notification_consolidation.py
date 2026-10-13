@@ -706,11 +706,11 @@ def _apply_single_cl_patches(monkeypatch, svc, *, all_line_items, target_project
     conn.__enter__ = lambda self: conn
     conn.__exit__ = lambda *a: None
     monkeypatch.setattr(
-        "shared.database.get_connection",
+        "entities.contract_labor.business.service.get_connection",
         lambda: conn,
     )
     monkeypatch.setattr(
-        "shared.database.call_procedure",
+        "entities.contract_labor.business.service.call_procedure",
         lambda **kw: None,
     )
 
@@ -735,7 +735,10 @@ def _apply_single_cl_patches(monkeypatch, svc, *, all_line_items, target_project
     )
     monkeypatch.setattr(
         "entities.review.persistence.repo.ReviewRepository",
-        lambda: types.SimpleNamespace(create=lambda **kw: new_review),
+        lambda: types.SimpleNamespace(
+            read_current_by_contract_labor_id_for_update=lambda *a, **kw: None,
+            create=lambda **kw: new_review,
+        ),
     )
 
     ready_calls = []
@@ -782,7 +785,8 @@ def test_apply_delegates_ready_flip_to_choke_point(monkeypatch):
         reviewer_email_message_public_id=CL_REPLY_PUB,
     )
 
-    assert ready_calls == [{"contract_labor_id": 10}]
+    assert len(ready_calls) == 1
+    assert ready_calls[0]["contract_labor_id"] == 10
 
 
 # --- the invariant itself, tested on the choke point (all callers) ---

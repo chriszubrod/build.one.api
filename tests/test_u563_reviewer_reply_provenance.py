@@ -738,8 +738,8 @@ def _cl_svc_harness(monkeypatch):
     conn.cursor.return_value = cursor
     conn.__enter__ = lambda self: conn
     conn.__exit__ = lambda *a: None
-    monkeypatch.setattr("shared.database.get_connection", lambda: conn)
-    monkeypatch.setattr("shared.database.call_procedure", lambda **kw: None)
+    monkeypatch.setattr("entities.contract_labor.business.service.get_connection", lambda: conn)
+    monkeypatch.setattr("entities.contract_labor.business.service.call_procedure", lambda **kw: None)
     approved = SimpleNamespace(id=1, name="Approved", is_final=True, is_declined=False)
     declined = SimpleNamespace(id=2, name="Declined", is_final=False, is_declined=True)
     monkeypatch.setattr(
@@ -759,7 +759,10 @@ def _cl_svc_harness(monkeypatch):
     )
     monkeypatch.setattr(
         "entities.review.persistence.repo.ReviewRepository",
-        lambda: SimpleNamespace(create=review_create),
+        lambda: SimpleNamespace(
+            create=review_create,
+            read_current_by_contract_labor_id_for_update=lambda *a, **kw: None,
+        ),
     )
     return svc, repo, review_create, parent
 
@@ -907,7 +910,7 @@ def test_cl_approval_refusal_writes_nothing(monkeypatch):
         ),
     )
     recompute = MagicMock()
-    monkeypatch.setattr(svc, "recompute_aggregates", recompute)
+    monkeypatch.setattr(svc.repo, "update_aggregates", recompute)
     ready = MagicMock()
     monkeypatch.setattr(svc, "mark_as_ready_via_review_approval", ready)
 

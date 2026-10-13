@@ -11,6 +11,7 @@ import pyodbc
 from entities.contract_labor.business.model import ContractLaborLineItem
 from shared.database import (
     call_procedure,
+    conn_ctx,
     get_connection,
     map_database_error,
 )
@@ -110,13 +111,19 @@ class ContractLaborLineItemRepository:
             logger.error(f"Error during create contract labor line item: {error}")
             raise map_database_error(error)
 
-    def read_by_contract_labor_id(self, contract_labor_id: int) -> List[ContractLaborLineItem]:
+    def read_by_contract_labor_id(
+        self,
+        contract_labor_id: int,
+        *,
+        conn: Optional[pyodbc.Connection] = None,
+    ) -> List[ContractLaborLineItem]:
         """
         Read all line items for a contract labor entry.
         """
         try:
-            with get_connection() as conn:
-                cursor = conn.cursor()
+            cm = conn_ctx(conn) if conn is not None else get_connection()
+            with cm as c:
+                cursor = c.cursor()
                 call_procedure(
                     cursor=cursor,
                     name="ReadContractLaborLineItemsByContractLaborId",
@@ -180,13 +187,17 @@ class ContractLaborLineItemRepository:
         is_billable: bool = True,
         is_overhead: bool = False,
         bill_line_item_id: Optional[int] = None,
+        conn: Optional[pyodbc.Connection] = None,
     ) -> Optional[ContractLaborLineItem]:
         """
         Update a line item by ID.
         """
         try:
-            with get_connection() as conn:
-                cursor = conn.cursor()
+            # conn_ctx(None) would call shared.database.get_connection and bypass
+            # repo-module patches in transactional decision tests.
+            cm = conn_ctx(conn) if conn is not None else get_connection()
+            with cm as c:
+                cursor = c.cursor()
                 call_procedure(
                     cursor=cursor,
                     name="UpdateContractLaborLineItemById",

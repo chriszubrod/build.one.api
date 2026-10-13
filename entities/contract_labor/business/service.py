@@ -46,6 +46,7 @@ from typing import Optional, Tuple
 from decimal import Decimal
 
 # Third-party Imports
+import pyodbc
 
 # Local Imports
 from entities.contract_labor.business.model import ContractLabor
@@ -61,6 +62,7 @@ from shared.api.money import labor_price_two_shot
 from shared.authz import current_user_id, current_is_system_admin
 
 from shared.authz.delegation import assert_may_act_as
+from shared.database import call_procedure, get_connection
 
 logger = logging.getLogger(__name__)
 
@@ -626,7 +628,6 @@ class ContractLaborService:
         from entities.review.persistence.repo import ReviewRepository
         from entities.review_status.business.service import ReviewStatusService
         from entities.sub_cost_code.business.service import SubCostCodeService
-        from shared.database import call_procedure, get_connection
 
         if decision not in ('approved', 'rejected'):
             raise ValueError(
@@ -725,11 +726,10 @@ class ContractLaborService:
         )
 
         # ── Approval prework: resolve SCC + load line items ──────────
-        # Validate the SCC + collect target line items BEFORE writing the
-        # Review row. We want the SCC-not-found / no-matching-lines errors
-        # to abort EARLY (no audit row written for a decision the system
-        # can't apply). Once the Review row exists, partial line-item
-        # failures are reported but the audit intent is preserved.
+        # Validate the SCC + collect target line items BEFORE the
+        # transaction opens, so SCC-not-found / no-matching-lines errors
+        # abort early and nothing is written. Inside the transaction the
+        # member is all-or-nothing (U-564b).
         scc_id: Optional[int] = None
         matched_lines: list = []
         if decision == 'approved':
@@ -785,112 +785,72 @@ class ContractLaborService:
 
         email_message_id: Optional[int] = bound_reply.id
 
-        # ── Write Review row FIRST so audit intent is always captured ─
-        # /code-review Unit 3 (bugs_correctness/errors_lifecycle): if we
-        # wrote line items first and a mid-loop row-version conflict
-        # raised, the audit trail would be silently empty while half the
-        # lines were mutated. Reversing the order means partial line-item
-        # failures still leave the Review row in place so AP can see what
-        # was attempted + reconcile the split state from the React queue.
-        new_review = ReviewRepository().create(
-            review_status_id=target.id,
-            user_id=reviewer_user_id,
-            comments=comments,
-            bill_id=None,
-            expense_id=None,
-            bill_credit_id=None,
-            invoice_id=None,
-            contract_labor_id=cl.id,
-            email_message_id=email_message_id,
-            # Authenticated caller (agent vs PM self-serve) — user_id stays the reviewer.
-            created_by_user_id=current_user_id.get(),
-        )
-
-        # ── Approval only: update each matched line item ─────────────
-        # Per-line try/except so a single row-version conflict on one
-        # line doesn't silently abort the rest. Collect failures into a
-        # structured list and raise at the end if any. The Review row is
-        # already written (above) so the audit trail records the
-        # decision regardless of how many lines actually applied.
-        #
-        # NOTE: when `description` is supplied on an approval that
-        # matches multiple line items on the same project, every
-        # matched line's description is overwritten with the same
-        # string — this flattens distinct per-line descriptions. The
-        # tool prompt documents this; agents pass `description` only
-        # when the PM's intent is clearly project-wide.
-        if decision == 'approved' and matched_lines:
-            line_failures: list[str] = []
-            for li in matched_lines:
-                try:
-                    li_repo.update_by_id(
-                        id=li.id,
-                        row_version=li.row_version_bytes,
-                        line_date=li.line_date,
-                        project_id=li.project_id,
-                        sub_cost_code_id=scc_id,
-                        description=description if description is not None else li.description,
-                        hours=li.hours,
-                        rate=li.rate,
-                        markup=li.markup,
-                        price=li.price,
-                        # Use the project's canonical `is not False`
-                        # phrasing per CLAUDE.md project_conventions
-                        # (handles None → default-billable=True correctly).
-                        is_billable=(li.is_billable is not False),
-                        is_overhead=bool(li.is_overhead) if li.is_overhead is not None else False,
-                        bill_line_item_id=li.bill_line_item_id,
-                    )
-                except Exception as line_error:
-                    line_failures.append(
-                        f"line_item_id={li.id}: {type(line_error).__name__}: {line_error}"
-                    )
-                    logger.warning(
-                        "apply_reviewer_decision partial-update on CL %s line %s: %s",
-                        contract_labor_public_id, li.id, line_error,
-                    )
-
-            # U-424: we just mutated line items, so the parent owes a
-            # recompute (see recompute_aggregates). Runs BEFORE the
-            # partial-failure raise on purpose — when some lines applied
-            # and others didn't, the parent must still match whatever
-            # actually landed.
-            self.recompute_aggregates(contract_labor_id=cl.id)
-
-            if line_failures:
-                raise ValueError(
-                    f"ContractLabor {contract_labor_public_id} apply partial-failure: "
-                    f"Review row was created (id={new_review.id}) but "
-                    f"{len(line_failures)}/{len(matched_lines)} line items failed "
-                    f"to update. AP must reconcile via React queue. "
-                    f"Failures: {'; '.join(line_failures)}"
-                )
-
-        # ── Auto-mirror Review → ContractLabor.status ──────────────
-        # When the new Review row lands at an approved final state
-        # (IsFinal=true, IsDeclined=false), flip CL.Status → ready via
-        # mark_as_ready_via_review_approval (the shared choke point that
-        # enforces the fully-coded invariant for all callers). Mirrors
-        # ReviewService.create() lines 95-111; replicated here because
-        # we go through ReviewRepository.create directly (Bill mirror
-        # pattern: user_id = the reviewer, created_by_user_id = the
-        # authenticated caller since U-564).
-        # Failure-isolated: log + continue; the Review row is the
-        # authoritative audit and stands on its own.
+        review_repo = ReviewRepository()
+        actor_user_id = current_user_id.get()
         ready_flipped = False
-        if new_review.status_is_final and not new_review.status_is_declined:
-            try:
-                updated_cl = self.mark_as_ready_via_review_approval(
-                    contract_labor_id=cl.id,
-                )
-                if updated_cl is not None and updated_cl.status == "ready":
-                    ready_flipped = True
-            except Exception:
-                logger.exception(
-                    "Failed to mirror ContractLabor.status after Review approval "
-                    "via apply_reviewer_decision (cl_id=%s, review_id=%s)",
-                    cl.id, new_review.id,
-                )
+
+        # ── One transaction per crew member (U-564b) ─────────────────
+        # All validation is complete. Lock the parent, then write the
+        # Review row, line coding, parent recompute and the optional ready
+        # flip on ONE connection — any failure rolls back the whole member
+        # so AP never sees half-coded state.
+        with get_connection() as conn:
+            review_repo.read_current_by_contract_labor_id_for_update(
+                cl.id, conn=conn,
+            )
+            new_review = review_repo.create(
+                review_status_id=target.id,
+                user_id=reviewer_user_id,
+                comments=comments,
+                bill_id=None,
+                expense_id=None,
+                bill_credit_id=None,
+                invoice_id=None,
+                contract_labor_id=cl.id,
+                email_message_id=email_message_id,
+                created_by_user_id=actor_user_id,
+                conn=conn,
+            )
+
+            if decision == 'approved':  # matched_lines is non-empty (validated above)
+                for li in matched_lines:
+                    try:
+                        li_repo.update_by_id(
+                            id=li.id,
+                            row_version=li.row_version_bytes,
+                            line_date=li.line_date,
+                            project_id=li.project_id,
+                            sub_cost_code_id=scc_id,
+                            description=description if description is not None else li.description,
+                            hours=li.hours,
+                            rate=li.rate,
+                            markup=li.markup,
+                            price=li.price,
+                            is_billable=(li.is_billable is not False),
+                            is_overhead=bool(li.is_overhead) if li.is_overhead is not None else False,
+                            bill_line_item_id=li.bill_line_item_id,
+                            conn=conn,
+                        )
+                    except Exception as line_error:
+                        # Abort the whole member — partial coding is the defect
+                        # U-564b removes; the transaction rolls back with it.
+                        raise ValueError(
+                            f"ContractLabor {contract_labor_public_id} line_item_id={li.id} "
+                            f"failed to update: {type(line_error).__name__}: {line_error}"
+                        ) from line_error
+
+                # Inside the transaction a recompute failure must abort the
+                # member, so call the repo directly rather than the
+                # failure-isolated recompute_aggregates choke point.
+                self.repo.update_aggregates(id=cl.id, conn=conn)
+
+                if new_review.status_is_final and not new_review.status_is_declined:
+                    updated_cl = self.mark_as_ready_via_review_approval(
+                        contract_labor_id=cl.id,
+                        conn=conn,
+                    )
+                    if updated_cl is not None and updated_cl.status == "ready":
+                        ready_flipped = True
 
         rs = ReviewStatusService().read_by_id(id=new_review.review_status_id) if new_review.review_status_id else None
         new_status_name = rs.name if rs else None
@@ -1031,8 +991,10 @@ class ContractLaborService:
         same spirit as mark_as_ready_via_review_approval below: every path
         that mutates ContractLaborLineItem must call this, and the failure
         policy lives here once instead of being re-decided per caller.
-        Callers today: PUT /{public_id}/bill (router), the reviewer-approval
-        path, and update_by_public_id. The fourth writer is SQL —
+        Callers today: PUT /{public_id}/bill (router) and update_by_public_id.
+        The reviewer-approval path (U-564b) calls repo.update_aggregates
+        directly inside its member transaction, where a failure must roll
+        the decision back rather than be swallowed here. The fourth writer is SQL —
         dbo.AggregateTimeEntryOnSubmit EXECs the same sproc directly, since
         it does raw DML on the line-item table and never reaches this layer.
 
@@ -1061,7 +1023,12 @@ class ContractLaborService:
             )
             return None
 
-    def mark_as_ready_via_review_approval(self, *, contract_labor_id: int) -> Optional[ContractLabor]:
+    def mark_as_ready_via_review_approval(
+        self,
+        *,
+        contract_labor_id: int,
+        conn: Optional[pyodbc.Connection] = None,
+    ) -> Optional[ContractLabor]:
         """
         Flip status to 'ready' after Review reaches an approved (IsFinal=1,
         IsDeclined=0) state. Enforced for ALL callers (ReviewService.create,
@@ -1082,7 +1049,7 @@ class ContractLaborService:
             ContractLaborLineItemRepository,
         )
 
-        existing = self.repo.read_by_id(contract_labor_id)
+        existing = self.repo.read_by_id(contract_labor_id, conn=conn)
         if not existing:
             return None
         if existing.status == "ready" or existing.status == "billed":
@@ -1090,6 +1057,7 @@ class ContractLaborService:
 
         all_lines = ContractLaborLineItemRepository().read_by_contract_labor_id(
             contract_labor_id=contract_labor_id,
+            conn=conn,
         )
         uncoded_count = sum(
             1 for li in all_lines
@@ -1105,7 +1073,7 @@ class ContractLaborService:
             return existing
 
         existing.status = "ready"
-        return self.repo.update_by_id(existing)
+        return self.repo.update_by_id(existing, conn=conn)
 
     def bulk_mark_as_ready(self, public_ids: list[str]) -> dict:
         """

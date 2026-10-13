@@ -11,6 +11,7 @@ import pyodbc
 from entities.contract_labor.business.model import ContractLabor
 from shared.database import (
     call_procedure,
+    conn_ctx,
     get_connection,
     map_database_error,
 )
@@ -193,13 +194,18 @@ class ContractLaborRepository:
             logger.error(f"Error during read all contract labors: {error}")
             raise map_database_error(error)
 
-    def read_by_id(self, id: int) -> Optional[ContractLabor]:
+    def read_by_id(
+        self, id: int, *, conn: Optional[pyodbc.Connection] = None
+    ) -> Optional[ContractLabor]:
         """
         Read a contract labor entry by ID.
         """
         try:
-            with get_connection() as conn:
-                cursor = conn.cursor()
+            # conn_ctx(None) would call shared.database.get_connection and bypass
+            # repo-module patches in transactional decision tests.
+            cm = conn_ctx(conn) if conn is not None else get_connection()
+            with cm as c:
+                cursor = c.cursor()
                 call_procedure(
                     cursor=cursor,
                     name="ReadContractLaborById",
@@ -420,13 +426,16 @@ class ContractLaborRepository:
             logger.error(f"Error during count contract labors: {error}")
             raise map_database_error(error)
 
-    def update_by_id(self, contract_labor: ContractLabor) -> Optional[ContractLabor]:
+    def update_by_id(
+        self, contract_labor: ContractLabor, *, conn: Optional[pyodbc.Connection] = None
+    ) -> Optional[ContractLabor]:
         """
         Update a contract labor entry by ID.
         """
         try:
-            with get_connection() as conn:
-                cursor = conn.cursor()
+            cm = conn_ctx(conn) if conn is not None else get_connection()
+            with cm as c:
+                cursor = c.cursor()
                 params = {
                     "Id": contract_labor.id,
                     "RowVersion": contract_labor.row_version_bytes,
@@ -637,7 +646,9 @@ class ContractLaborRepository:
             logger.error(f"Error during update contract labor bill info: {error}")
             raise map_database_error(error)
 
-    def update_aggregates(self, *, id: int) -> Optional[ContractLabor]:
+    def update_aggregates(
+        self, *, id: int, conn: Optional[pyodbc.Connection] = None
+    ) -> Optional[ContractLabor]:
         """
         Recompute parent aggregates (TotalHours, TotalAmount, HourlyRate, Markup)
         from the child ContractLaborLineItem rows. Call AFTER applying line-item
@@ -648,8 +659,9 @@ class ContractLaborRepository:
         the client.
         """
         try:
-            with get_connection() as conn:
-                cursor = conn.cursor()
+            cm = conn_ctx(conn) if conn is not None else get_connection()
+            with cm as c:
+                cursor = c.cursor()
                 call_procedure(
                     cursor=cursor,
                     name="UpdateContractLaborAggregates",

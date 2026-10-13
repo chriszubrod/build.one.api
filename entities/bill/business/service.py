@@ -302,6 +302,7 @@ class BillService:
                line_is_billable: Optional[bool] = None,
                line_sub_cost_code_id: Optional[int] = None,
                line_project_public_id: Optional[str] = None,
+               line_coding_prefill_state: Optional[str] = None,
                submit_for_review: Optional[bool] = None) -> Bill:
         """
         Create a new bill.
@@ -538,6 +539,8 @@ class BillService:
                     line_kwargs["sub_cost_code_id"] = line_sub_cost_code_id
                 if line_project_public_id is not None:
                     line_kwargs["project_public_id"] = line_project_public_id
+                if line_coding_prefill_state is not None:
+                    line_kwargs["coding_prefill_state"] = line_coding_prefill_state
                 placeholder_line_item = self.bill_line_item_service.create(**line_kwargs)
                 self.bill_line_item_attachment_service.create(
                     tenant_id=tenant_id,

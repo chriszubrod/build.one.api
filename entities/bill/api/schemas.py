@@ -6,6 +6,7 @@ from decimal import Decimal
 from pydantic import BaseModel, Field
 
 # Local Imports
+from entities.bill_line_item.api.schemas import CodingPrefillStateLiteral
 
 
 class BillCreate(BaseModel):
@@ -98,6 +99,13 @@ class BillCreate(BaseModel):
     line_project_public_id: Optional[str] = Field(
         default=None,
         description="UUID of the Project for this line."
+    )
+    line_coding_prefill_state: Optional[CodingPrefillStateLiteral] = Field(
+        default=None,
+        description=(
+            "Cost-code prefill signal for the placeholder line: "
+            "'prefilled' | 'accepted' | 'changed'. UI-only audit metric."
+        ),
     )
     submit_for_review: Optional[bool] = Field(
         default=None,

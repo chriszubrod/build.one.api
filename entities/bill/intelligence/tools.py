@@ -858,7 +858,8 @@ class ApplyReviewerDecisionArgs(BaseModel):
             "Required. Public_id of the inbound EmailMessage for the PM's reply "
             "(the same UUID email_specialist passed to you). The server REFUSES "
             "apply without it. The reply must be the reviewer's own inbound message: "
-            "its sender must equal reviewer_email (thread binding: U-563b)."
+            "its sender must equal reviewer_email and it must sit on this "
+            "bill's review-notification email thread (U-563b)."
         ),
     )
 

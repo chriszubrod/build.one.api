@@ -1380,11 +1380,11 @@ class BillService:
             )
         reviewer_user_id = match.user_id
 
-        from shared.authz.provenance import bind_reviewer_reply
+        from shared.authz.provenance import bind_reviewer_reply_to_review_thread
 
-        # Thread binding deferred to U-563b: v2 review notification is a new
-        # email/conversation, not the bill's source intake thread.
-        bound_reply = bind_reviewer_reply(
+        bound_reply = bind_reviewer_reply_to_review_thread(
+            entity_type="Bill",
+            entity_public_id=bill_public_id,
             reviewer_email=reviewer_email,
             reviewer_email_message_public_id=reviewer_email_message_public_id,
             what="a bill reviewer decision",

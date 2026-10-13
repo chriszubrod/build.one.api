@@ -180,13 +180,14 @@ _APPROVAL_WRITERS_NOT_YET_GATED = (
     "POST /bill/{id}/apply-reviewer-decision requires only `can_update` "
     "(never `can_approve`); the caller is bound to the asserted reviewer via "
     "assert_may_act_as (U-459), and reply provenance is bound via U-563 to an "
-    "inbound message whose From equals the reviewer — NOT to the review "
-    "thread, and From is not authenticated (both U-563b)",
+    "inbound message whose From equals the reviewer and that sits on this "
+    "bill's review-notification thread (U-563b); From is not authenticated "
+    "(U-563b part 2)",
     "POST /expense/{id}/apply-reviewer-decision requires only `can_update` "
     "(never `can_approve`); the caller is bound via assert_may_act_as (U-459), "
     "and reply provenance is bound via U-563 to an inbound message whose From "
-    "equals the reviewer — NOT to the review thread, and From is not "
-    "authenticated (both U-563b)",
+    "equals the reviewer on this expense's review-notification thread "
+    "(U-563b); From is not authenticated (U-563b part 2)",
     "the gate is a PREFLIGHT, not a write boundary: completion is enqueued and "
     "finalized later without re-checking, and CompletionJob reclaim re-drives "
     "under system_authz — LS-02a moves enforcement into the write transaction",

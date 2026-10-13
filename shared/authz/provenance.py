@@ -1,16 +1,22 @@
 """U-563 — bind emailed reviewer decisions to a real inbound reply.
 
 Per entity:
-- **Bill / Expense** — inbound reply only: required EmailMessage public id,
-  row resolves, folder ``inbox``, and ``From`` matches ``reviewer_email``
-  (normalised). Thread/conversation is **not** bound (v2 review notification
-  starts a new Graph conversation; thread anchor deferred to U-563b).
+- **Bill / Expense** — inbound reply: required EmailMessage public id, row
+  resolves, folder ``inbox``, ``From`` matches ``reviewer_email`` (normalised),
+  and the reply must sit on this document's review-notification thread. The
+  primary anchor is the draft ``conversation_id`` recorded on completed
+  ``send_mail`` MS outbox payloads when the notification draft was created
+  (U-579; mailbox- and subject-independent). **Legacy fallback** (notifications
+  enqueued before that stamp): an outbound ``sentitems`` message on the reply
+  conversation whose subject exactly matches a completed ``send_mail`` payload
+  subject — weaker (shared subjects, sent-items poll, edited draft subjects).
 - **Contract Labor** — same inbound checks plus the reply must sit on the
   outbound consolidated notification thread (case-sensitive ``ConversationId``
   match against the stored outbound ``EmailMessage``).
 
 The sender check trusts the ``From`` address as Microsoft Graph reports it.
-Authentication-Results / SPF / DKIM / DMARC evidence is not recorded (U-563b).
+Authentication-Results / SPF / DKIM / DMARC evidence is not recorded (U-563b
+part 2).
 
 Replies whose ``ConversationId`` did not survive the round trip (fuzzy-only
 matches) cannot be bound automatically — fail closed and route to a human.
@@ -18,9 +24,38 @@ matches) cannot be bound automatically — fail closed and route to a human.
 
 from __future__ import annotations
 
-from typing import Optional
+import json
+import logging
+from datetime import datetime
+from typing import Optional, Set
 
 from shared.api.errors import ApiError, ErrorCode
+
+logger = logging.getLogger(__name__)
+
+# U-579 (conversation-id stamp) deployed 2026-09-29; only notifications created before this may use the subject fallback.
+# The cutoff is a UTC day boundary (MsOutbox.CreatedDatetime is SYSUTCDATETIME()).
+LEGACY_THREAD_FALLBACK_CUTOFF = "2026-09-30 00:00:00"
+
+_CREATED_DT_FORMAT = "%Y-%m-%d %H:%M:%S"
+_LEGACY_CUTOFF_DT = datetime.strptime(LEGACY_THREAD_FALLBACK_CUTOFF, _CREATED_DT_FORMAT)
+
+
+def _is_legacy_notification_row(created_datetime: object) -> bool:
+    if not isinstance(created_datetime, str) or not created_datetime.strip():
+        return False
+    try:
+        parsed = datetime.strptime(created_datetime.strip(), _CREATED_DT_FORMAT)
+    except ValueError:
+        return False
+    return parsed < _LEGACY_CUTOFF_DT
+
+
+def _row_matches_entity(row, entity_public_id: str) -> bool:
+    row_pid = getattr(row, "entity_public_id", None)
+    if isinstance(row_pid, str) and row_pid.strip():
+        return row_pid.strip().lower() == (entity_public_id or "").strip().lower()
+    return True
 
 class ReviewerProvenanceRefused(ApiError):
     """The supplied reply EmailMessage failed provenance binding."""
@@ -43,8 +78,7 @@ def bind_reviewer_reply(
 
     Required id, resolves, folder 'inbox', From == reviewer_email (normalised).
     Returns the EmailMessage. Raises ReviewerProvenanceRefused naming which check
-    failed (non-leaky — no entity ids in the refusal text). Does NOT bind the
-    thread: Bill/Expense use this alone until U-563b anchors their review thread.
+    failed (non-leaky — no entity ids in the refusal text).
     """
     from entities.email_message.business.service import EmailMessageService
 
@@ -77,6 +111,93 @@ def bind_reviewer_reply(
     return em
 
 
+def expected_review_thread_conversation_ids(
+    entity_type: str,
+    entity_public_id: str,
+    reply_conversation_id: str,
+) -> Set[str]:
+    """Conversation ids where this document's review notification was sent.
+
+    Reads completed ``send_mail`` MS outbox rows for ``(entity_type,
+    entity_public_id)``. When any row carries a non-empty string
+    ``conversation_id`` in its payload (U-579 draft stamp), returns
+    ``{reply_conversation_id}`` only if that id is in the recorded set (exact,
+    case-sensitive); otherwise returns empty without consulting subjects or
+    EmailMessages. When no row carries a recorded ``conversation_id`` (legacy
+    notifications), falls back to matching an outbound ``sentitems`` message on
+    ``reply_conversation_id`` whose subject exactly equals a payload ``subject``.
+    """
+    from entities.email_message.persistence.repo import EmailMessageRepository
+    from integrations.ms.outbox.persistence.repo import MsOutboxRepository
+
+    reply_conv = (reply_conversation_id or "").strip()
+    if not reply_conv:
+        return set()
+
+    recorded: set[str] = set()
+    notification_subjects: set[str] = set()
+    rows = MsOutboxRepository().read_completed_by_entity(
+        entity_type=entity_type,
+        entity_public_id=entity_public_id,
+        kind="send_mail",
+    )
+    for row in rows:
+        row_kind = getattr(row, "kind", None)
+        if isinstance(row_kind, str) and row_kind.strip() and row_kind != "send_mail":
+            continue
+        if not _row_matches_entity(row, entity_public_id):
+            continue
+        raw = getattr(row, "payload", None)
+        if not raw:
+            continue
+        try:
+            parsed = json.loads(raw)
+        except (json.JSONDecodeError, TypeError, ValueError):
+            continue
+        if not isinstance(parsed, dict):
+            continue
+        conv_id = parsed.get("conversation_id")
+        if isinstance(conv_id, str) and conv_id.strip():
+            recorded.add(conv_id)
+        if _is_legacy_notification_row(getattr(row, "created_datetime", None)):
+            subject = parsed.get("subject")
+            if isinstance(subject, str) and subject.strip():
+                notification_subjects.add(subject)
+
+    if recorded:
+        return {reply_conv} if reply_conv in recorded else set()
+
+    if not notification_subjects:
+        return set()
+
+    logger.warning(
+        "review_thread.legacy_subject_fallback",
+        extra={
+            "event_name": "review_thread.legacy_subject_fallback",
+            "entity_type": entity_type,
+            "entity_public_id": entity_public_id,
+        },
+    )
+
+    confirmed: set[str] = set()
+    for msg in EmailMessageRepository().read_by_conversation_id(
+        conversation_id=reply_conv,
+    ):
+        folder = (getattr(msg, "folder", None) or "").strip().lower()
+        if folder != "sentitems":
+            continue
+        if (getattr(msg, "processing_status", None) or "") != "outbound":
+            continue
+        if (getattr(msg, "subject", None) or "") not in notification_subjects:
+            continue
+        msg_conv = getattr(msg, "conversation_id", None)
+        if msg_conv != reply_conv:
+            continue
+        if msg_conv:
+            confirmed.add(msg_conv)
+    return confirmed
+
+
 def bind_reviewer_reply_to_thread(
     *,
     reviewer_email: str,
@@ -87,9 +208,9 @@ def bind_reviewer_reply_to_thread(
     """`bind_reviewer_reply`, then require the reply to sit on the document's
     review thread: `expected_conversation_id` must be non-blank and equal the
     reply's ConversationId EXACTLY (Graph ids are case-sensitive). Callers own
-    how the expected thread is derived — for ContractLabor that derivation is
-    where the case-sensitive anchor check lives (see
-    `ContractLaborService._expected_cl_reviewer_reply_conversation_id`)."""
+    how the expected thread is derived — Bill/Expense go through
+    `bind_reviewer_reply_to_review_thread` instead; ContractLabor uses
+    `ContractLaborService._expected_cl_reviewer_reply_conversation_id`."""
     em = bind_reviewer_reply(
         reviewer_email=reviewer_email,
         reviewer_email_message_public_id=reviewer_email_message_public_id,
@@ -103,5 +224,36 @@ def bind_reviewer_reply_to_thread(
     if em.conversation_id != expected:
         raise ReviewerProvenanceRefused(
             f"Cannot apply {what}: the reply is not on this document's email thread."
+        )
+    return em
+
+
+def bind_reviewer_reply_to_review_thread(
+    *,
+    entity_type: str,
+    entity_public_id: str,
+    reviewer_email: str,
+    reviewer_email_message_public_id: Optional[str],
+    what: str,
+):
+    """Bill/Expense entry point (U-563b): bind the reply (required id, resolves,
+    inbound inbox, From == reviewer) ONCE, then require its conversation to be
+    one where this document's review notification was sent
+    (`expected_review_thread_conversation_ids`). The cheap sender/folder checks
+    run before any outbox read; refusal order matches `bind_reviewer_reply_to_thread`."""
+    em = bind_reviewer_reply(
+        reviewer_email=reviewer_email,
+        reviewer_email_message_public_id=reviewer_email_message_public_id,
+        what=what,
+    )
+    reply_conv = em.conversation_id or ""
+    thread_ids = expected_review_thread_conversation_ids(
+        entity_type=entity_type,
+        entity_public_id=entity_public_id,
+        reply_conversation_id=reply_conv,
+    )
+    if not reply_conv or reply_conv not in thread_ids:
+        raise ReviewerProvenanceRefused(
+            f"Cannot apply {what}: the reply is not on this document's review email thread."
         )
     return em

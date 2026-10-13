@@ -234,13 +234,21 @@ def _u563_provenance_ok(*, reviewer_email: str = "pm@test.com"):
     with patch(
         "entities.email_message.business.service.EmailMessageService"
     ) as Em:
-        Em.return_value.read_by_public_id.return_value = SimpleNamespace(
-            id=900,
-            folder="inbox",
-            from_address=reviewer_email,
-            conversation_id="bill-thread",
-        )
-        yield
+        with patch(
+            "shared.authz.provenance.expected_review_thread_conversation_ids",
+            side_effect=lambda **_kw: (
+                {_kw["reply_conversation_id"]}
+                if _kw.get("reply_conversation_id")
+                else set()
+            ),
+        ):
+            Em.return_value.read_by_public_id.return_value = SimpleNamespace(
+                id=900,
+                folder="inbox",
+                from_address=reviewer_email,
+                conversation_id="bill-thread",
+            )
+            yield
 
 
 def _expense_service_with_recipient():

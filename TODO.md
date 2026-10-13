@@ -2,6 +2,34 @@
 
 Carry-over items from sessions. Check off as done; prune anything stale.
 
+## U-563b spillover — Bill/Expense replies bind to their own review thread (booked 2026-10-12)
+
+`bind_reviewer_reply_to_review_thread` (`shared/authz/provenance.py`) now requires an emailed Bill/Expense reply to sit
+on a conversation the MS outbox recorded for THAT document's review notification (exact, case-sensitive). A subject +
+Sent Items fallback survives only for notifications created before 2026-09-30 UTC. Booked here because the main
+checkout's `TODO.md` was held by a parallel session.
+
+- [ ] **(P2, api) Delete the legacy subject fallback** once no Bill/Expense review notified before 2026-09-30 is still
+  open. One read-only query (open reviews whose only completed `send_mail` rows predate the cutoff) decides it; after
+  that the branch is dead code on an authz path. Until then the known residual holds: two pre-cutoff documents with
+  IDENTICAL subjects and a shared PM can cross-bind (pinned by `test_helper_legacy_identical_subjects_cross_bind_residual`).
+- [ ] **(P3, api) Prove the anchor on prod data.** Read-only: for a few stamped `send_mail` rows compare
+  `payload.conversation_id` with the PM reply's `EmailMessage.ConversationId`. Every mismatch fails CLOSED (refused,
+  routed to a human), so this is confidence, not a hole. A reply from a client that strips Thread-Index would be refused.
+- [ ] **(P2, api) `ReconcileReviewEmailMessageLinks` still joins on the SOURCE conversation** and so cannot link v2
+  notification archives (re-booked from the U-563b item above; it was never in that unit's scope).
+- [ ] **(P3, api) Earlier review rounds' threads stay valid.** Every completed `send_mail` row counts, and nothing
+  consumes a reply, so a round-1 reply still binds in round 2 ("latest reply wins"). Pre-existing; belongs with U-357/U-371.
+- [ ] **(P3, api) ContractLabor reads the reply N times per crew.** `_expected_cl_reviewer_reply_conversation_id` reads
+  the reply, then `bind_reviewer_reply` reads it again, once per crew member. Hoist the reply read + resolver out of the
+  member loop and reuse the read-once shape of `bind_reviewer_reply_to_review_thread`.
+- [ ] **(P3, tests) Consolidate reviewer-reply fakes.** `_bill_svc`/`_expense_svc`/`_pm_recipient`/`_inbound_reply`/
+  `_sent_notification` are duplicated between `tests/test_u563_reviewer_reply_provenance.py` and
+  `tests/test_u563b_review_thread_anchor.py`; the same `reply_conversation_id` stub lambda is hand-copied in the U-459
+  and U-524 tests. Move them to one helper module under `tests/`.
+- Outbox payload parsing in `provenance.py` (`json.loads` + literal `conversation_id`/`subject` keys) is a FOURTH reader
+  of the MS outbox's private payload — added to the U-568 read-seam inventory on the board rather than fixed here.
+
 ## U-564 spillover — emailed decisions are atomic for Bill/Expense; ContractLabor and the shared shape remain (booked 2026-10-12)
 
 U-564 put the line-item coding and the Review insert of the emailed Bill and Expense decisions on ONE connection
@@ -37,7 +65,7 @@ Bill and Expense do NOT — by product decision (Chris, 2026-10-12) — because 
 (2026-05-28, `notification_service.py`) is a new email, so a PM's reply never shares the source email's
 conversation. Booked here because the main checkout's `TODO.md` was held by a parallel session.
 
-- [ ] **(P1, U-563b) Thread anchor for Bill/Expense review emails.** Record each outbound review notification
+- [x] **(P1, U-563b) Thread anchor for Bill/Expense review emails.** DONE 2026-10-12 — anchored on the conversation id the outbox worker records at draft creation (U-579), not a new notification table; `ReconcileReviewEmailMessageLinks` re-booked below as its own item. Record each outbound review notification
   (document, subject, sent-item / BCC-archive ConversationId) the way `ContractLaborNotification` does, then switch
   Bill/Expense to `bind_reviewer_reply_to_thread`. Until then a REAL reply from PM X on bill A can be applied to bill
   B where X is also a recipient (reachable only by delegated actors — the agent, system context, system admins —

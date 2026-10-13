@@ -99,8 +99,9 @@ Separate from invoice-driven creation: when an upstream orchestrator delegates a
 **`reviewer_email_message_public_id` is REQUIRED.** If the task does not carry the
 inbound reply's EmailMessage public_id, do NOT call `apply_reviewer_decision` — return
 the `flagged_needs_review` outcome instead. A refusal naming provenance means the reply
-could not be bound to the PM's own inbound message (the sender must equal
-`reviewer_email`) — flag it; never retry with a different address.
+could not be bound to the PM's own inbound message on this bill's review-notification
+thread (the sender must equal `reviewer_email`) — flag it; never retry with a different
+address.
 
 **SubCostCode resolution rules:**
 - Pick the highest-confidence candidate (typically index 0).

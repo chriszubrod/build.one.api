@@ -87,6 +87,19 @@ def _u563_provenance_ok(reviewer_email: str = "pm@example.com"):
     )
 
 
+@pytest.fixture(autouse=True)
+def _u563b_review_thread_anchor():
+    with patch(
+        "shared.authz.provenance.expected_review_thread_conversation_ids",
+        side_effect=lambda **_kw: (
+            {_kw["reply_conversation_id"]}
+            if _kw.get("reply_conversation_id")
+            else set()
+        ),
+    ):
+        yield
+
+
 def _bill_service_stub(*, bill_id: int = 7):
     from entities.bill.business.service import BillService
 

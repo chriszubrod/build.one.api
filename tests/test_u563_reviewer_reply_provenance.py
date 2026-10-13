@@ -29,6 +29,20 @@ def _clean_authz():
 
 
 @pytest.fixture(autouse=True)
+def _default_empty_outbox_and_conversation_poll():
+    """Bill/Expense apply paths read completed outbox rows before bind."""
+    with patch(
+        "integrations.ms.outbox.persistence.repo.MsOutboxRepository",
+        return_value=MagicMock(read_completed_by_entity=MagicMock(return_value=[])),
+    ):
+        with patch(
+            "entities.email_message.persistence.repo.EmailMessageRepository",
+            return_value=MagicMock(read_by_conversation_id=MagicMock(return_value=[])),
+        ):
+            yield
+
+
+@pytest.fixture(autouse=True)
 def _u564_reviewer_decision_transaction_conn():
     """U-564: bill/expense apply_reviewer_decision uses one get_connection()."""
     bill_conn = MagicMock(name="bill_review_conn")
@@ -47,6 +61,8 @@ OTHER_CONV = "AAQkADTotallyDifferentNotificationThread"
 REPLY_PUB = "reply-em-pub-1"
 REVIEWER_EMAIL = "pm@example.com"
 CL_OUTBOUND_SUBJECT = "Contract Labor - TB3 - 2026-08-24"
+BILL_NOTIF_SUBJECT = "Review notification subject bill"
+EXP_NOTIF_SUBJECT = "Review notification subject expense"
 
 
 def _inbound_em(**overrides):
@@ -125,6 +141,62 @@ def _cl_outbound_repo_patch(*, reply_conv: str, outbound_conv: str):
         return_value=MagicMock(
             read_by_conversation_id=MagicMock(
                 return_value=[_outbound_notification_em(conversation_id=outbound_conv)],
+            ),
+        ),
+    )
+
+
+def _be_outbound_em(*, conversation_id: str, subject: str):
+    return SimpleNamespace(
+        id=51,
+        folder="sentitems",
+        processing_status="outbound",
+        subject=subject,
+        conversation_id=conversation_id,
+    )
+
+
+def _be_thread_anchor_patch(
+    *,
+    entity_type: str,
+    entity_public_id: str,
+    reply_conv: str,
+    notification_subject: str,
+    anchored: bool,
+):
+    """Stub completed send_mail outbox + sent-items poll for Bill/Expense thread bind."""
+    import json
+
+    outbox_rows = (
+        [
+            SimpleNamespace(
+                payload=json.dumps(
+                    {
+                        "subject": notification_subject,
+                        "conversation_id": reply_conv,
+                    }
+                ),
+            )
+        ]
+        if anchored
+        else []
+    )
+    conv_msgs = (
+        [_be_outbound_em(conversation_id=reply_conv, subject=notification_subject)]
+        if anchored
+        else []
+    )
+    return (
+        patch(
+            "integrations.ms.outbox.persistence.repo.MsOutboxRepository",
+            return_value=MagicMock(
+                read_completed_by_entity=MagicMock(return_value=outbox_rows),
+            ),
+        ),
+        patch(
+            "entities.email_message.persistence.repo.EmailMessageRepository",
+            return_value=MagicMock(
+                read_by_conversation_id=MagicMock(return_value=conv_msgs),
             ),
         ),
     )
@@ -292,7 +364,7 @@ def test_the_service_calls_bind_reviewer_reply(module, cls, method):
     svc_cls = getattr(importlib.import_module(module), cls)
     src = inspect.getsource(getattr(svc_cls, method))
     executable = "\n".join(l.split("#")[0] for l in src.splitlines())
-    assert re.search(r"bind_reviewer_reply(_to_thread)?\(", executable), (
+    assert re.search(r"bind_reviewer_reply(_to_thread|_to_review_thread)?\(", executable), (
         f"{cls}.{method} does not bind reviewer reply provenance (U-563)"
     )
 
@@ -319,11 +391,20 @@ def test_bill_happy_path_review_row_carries_bound_message_id(
     review_create = ReviewRepo.return_value.create
     review_create.return_value = SimpleNamespace(review_status_id=30)
 
+    ob_patch, em_patch = _be_thread_anchor_patch(
+        entity_type="Bill",
+        entity_public_id="bill-pub-5",
+        reply_conv=CONV,
+        notification_subject=BILL_NOTIF_SUBJECT,
+        anchored=True,
+    )
     with (
         system_authz(),
         _patch_reply_em(_inbound_em()) as EmailSvc,
         patch("entities.bill.business.service.SubCostCodeService") as Scc,
         patch("entities.review_status.business.service.ReviewStatusService") as Rs,
+        ob_patch,
+        em_patch,
     ):
         Scc.return_value.read_by_public_id.return_value = SimpleNamespace(id=9001)
         Rs.return_value.read_all.return_value = [
@@ -331,7 +412,7 @@ def test_bill_happy_path_review_row_carries_bound_message_id(
         ]
         Rs.return_value.read_by_id.return_value = SimpleNamespace(name="Approved")
         EmailSvc.return_value.read_by_public_id.return_value = _inbound_em(
-            conversation_id=OTHER_CONV,
+            conversation_id=CONV,
         )
         result = svc.apply_reviewer_decision(
             bill_public_id="bill-pub-5",
@@ -348,10 +429,9 @@ def test_bill_happy_path_review_row_carries_bound_message_id(
 @patch("entities.review.persistence.repo.ReviewRepository")
 @patch("entities.bill_line_item.business.service.BillLineItemService")
 @patch("entities.review.business.recipient_service.ReviewRecipientService")
-def test_bill_accepts_reply_on_unrelated_conversation_thread_not_bound(
+def test_bill_refuses_reply_on_unrelated_conversation(
     RecipSvc, BliSvc, ReviewRepo,
 ):
-    """v2 review notification starts a new thread — not the bill source email."""
     svc = _bill_svc(source_email_message_id=99)
     RecipSvc.return_value.resolve_for_bill.return_value = {
         "to": [_pm_recipient()],
@@ -361,31 +441,36 @@ def test_bill_accepts_reply_on_unrelated_conversation_thread_not_bound(
         SimpleNamespace(public_id="bli-1", row_version="rv")
     ]
     review_create = ReviewRepo.return_value.create
-    review_create.return_value = SimpleNamespace(review_status_id=30)
 
+    ob_patch, em_patch = _be_thread_anchor_patch(
+        entity_type="Bill",
+        entity_public_id="bill-pub-5",
+        reply_conv=OTHER_CONV,
+        notification_subject=BILL_NOTIF_SUBJECT,
+        anchored=False,
+    )
     with (
         system_authz(),
         _patch_reply_em(_inbound_em()) as EmailSvc,
         patch("entities.bill.business.service.SubCostCodeService") as Scc,
-        patch("entities.review_status.business.service.ReviewStatusService") as Rs,
+        ob_patch,
+        em_patch,
     ):
         Scc.return_value.read_by_public_id.return_value = SimpleNamespace(id=9001)
-        Rs.return_value.read_all.return_value = [
-            SimpleNamespace(id=30, is_final=True, is_declined=False),
-        ]
-        Rs.return_value.read_by_id.return_value = SimpleNamespace(name="Approved")
         EmailSvc.return_value.read_by_public_id.return_value = _inbound_em(
             conversation_id=OTHER_CONV,
         )
-        svc.apply_reviewer_decision(
-            bill_public_id="bill-pub-5",
-            decision="approved",
-            reviewer_email=REVIEWER_EMAIL,
-            sub_cost_code_public_id="scc-pub",
-            reviewer_email_message_public_id=REPLY_PUB,
-        )
+        with pytest.raises(ReviewerProvenanceRefused):
+            svc.apply_reviewer_decision(
+                bill_public_id="bill-pub-5",
+                decision="approved",
+                reviewer_email=REVIEWER_EMAIL,
+                sub_cost_code_public_id="scc-pub",
+                reviewer_email_message_public_id=REPLY_PUB,
+            )
 
-    review_create.assert_called_once()
+    BliSvc.return_value.update_coding_in_transaction.assert_not_called()
+    review_create.assert_not_called()
 
 
 @pytest.mark.parametrize(
@@ -465,9 +550,18 @@ def test_expense_happy_path_review_row_carries_bound_message_id(
     review_create = ReviewRepo.return_value.create
     review_create.return_value = SimpleNamespace(review_status_id=100)
 
+    ob_patch, em_patch = _be_thread_anchor_patch(
+        entity_type="Expense",
+        entity_public_id="exp-pub-1",
+        reply_conv=CONV,
+        notification_subject=EXP_NOTIF_SUBJECT,
+        anchored=True,
+    )
     with (
         system_authz(),
         _patch_reply_em(_inbound_em()) as EmailSvc,
+        ob_patch,
+        em_patch,
     ):
         EmailSvc.return_value.read_by_public_id.return_value = _inbound_em()
         svc.apply_reviewer_decision(
@@ -483,7 +577,7 @@ def test_expense_happy_path_review_row_carries_bound_message_id(
 @patch("entities.review.persistence.repo.ReviewRepository")
 @patch("entities.expense_line_item.business.service.ExpenseLineItemService")
 @patch("entities.review.business.recipient_service.ReviewRecipientService")
-def test_expense_accepts_reply_on_unrelated_conversation_thread_not_bound(
+def test_expense_refuses_reply_on_unrelated_conversation(
     RecipSvc, EliSvc, ReviewRepo,
 ):
     svc = _expense_svc()
@@ -496,31 +590,36 @@ def test_expense_accepts_reply_on_unrelated_conversation_thread_not_bound(
     ]
     EliSvc.return_value.count_by_expense_id_for_update.return_value = 1
     review_create = ReviewRepo.return_value.create
-    review_create.return_value = SimpleNamespace(review_status_id=100)
 
+    ob_patch, em_patch = _be_thread_anchor_patch(
+        entity_type="Expense",
+        entity_public_id="exp-pub-1",
+        reply_conv=OTHER_CONV,
+        notification_subject=EXP_NOTIF_SUBJECT,
+        anchored=False,
+    )
     with (
         system_authz(),
         _patch_reply_em(_inbound_em()) as EmailSvc,
         patch("entities.expense.business.service.SubCostCodeService") as Scc,
-        patch("entities.review_status.business.service.ReviewStatusService") as Rs,
+        ob_patch,
+        em_patch,
     ):
         Scc.return_value.read_by_public_id.return_value = SimpleNamespace(id=9001)
-        Rs.return_value.read_all.return_value = [
-            SimpleNamespace(id=30, is_final=True, is_declined=False),
-        ]
-        Rs.return_value.read_by_id.return_value = SimpleNamespace(name="Approved")
         EmailSvc.return_value.read_by_public_id.return_value = _inbound_em(
             conversation_id=OTHER_CONV,
         )
-        svc.apply_reviewer_decision(
-            expense_public_id="exp-pub-1",
-            decision="approved",
-            reviewer_email=REVIEWER_EMAIL,
-            sub_cost_code_public_id="scc-pub",
-            reviewer_email_message_public_id=REPLY_PUB,
-        )
+        with pytest.raises(ReviewerProvenanceRefused):
+            svc.apply_reviewer_decision(
+                expense_public_id="exp-pub-1",
+                decision="approved",
+                reviewer_email=REVIEWER_EMAIL,
+                sub_cost_code_public_id="scc-pub",
+                reviewer_email_message_public_id=REPLY_PUB,
+            )
 
-    review_create.assert_called_once()
+    EliSvc.return_value.update_coding_in_transaction.assert_not_called()
+    review_create.assert_not_called()
 
 
 @pytest.mark.parametrize(
@@ -754,7 +853,7 @@ def test_cl_refuses_outbound_conversation_id_case_mismatch(monkeypatch):
 
 
 def test_cl_refuses_reply_on_different_conversation_than_notification(monkeypatch):
-    """Bill/Expense accept unrelated threads; CL binds to the outbound notification."""
+    """CL binds to the outbound notification thread (Bill/Expense do the same since U-563b)."""
     svc, repo, review_create, _parent = _cl_svc_harness(monkeypatch)
 
     with (

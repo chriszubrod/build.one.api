@@ -40,6 +40,19 @@ def _u563_reply_provenance():
 
 
 @pytest.fixture(autouse=True)
+def _u563b_review_thread_anchor():
+    with patch(
+        "shared.authz.provenance.expected_review_thread_conversation_ids",
+        side_effect=lambda **_kw: (
+            {_kw["reply_conversation_id"]}
+            if _kw.get("reply_conversation_id")
+            else set()
+        ),
+    ):
+        yield
+
+
+@pytest.fixture(autouse=True)
 def _u564_single_transaction_conn():
     """U-564: apply_reviewer_decision owns one get_connection() for line + review."""
     mock_conn = MagicMock(name="expense_review_conn")
@@ -526,6 +539,7 @@ def test_reviewer_email_message_public_id_threads_to_review_row(
     EmailSvc,
     RsSvc,
     ReviewRepo,
+    _u563_reply_provenance,
 ):
     svc = _expense_service_stub()
     RecipSvc.return_value.resolve_for_expense.return_value = {
@@ -551,9 +565,7 @@ def test_reviewer_email_message_public_id_threads_to_review_row(
             reviewer_email_message_public_id="em-pub-42",
         )
 
-    EmailSvc.return_value.read_by_public_id.assert_called_once_with(
-        public_id="em-pub-42"
-    )
+    EmailSvc.return_value.read_by_public_id.assert_called_once_with(public_id="em-pub-42")
     assert review_create.call_args.kwargs["email_message_id"] == 777
 
 

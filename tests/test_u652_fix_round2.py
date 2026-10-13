@@ -135,6 +135,10 @@ def test_confirm_router_multi_line_returns_409_fixed_code(_ref, _gate):
     ), patch(
         "entities.coding_suggestion.api.router.current_user_id"
     ) as uid, patch(
+        "entities.coding_suggestion.api.router._assert_can_access_coding_suggestion"
+    ), patch(
+        "entities.coding_suggestion.api.router.assert_can_access_project"
+    ), patch(
         "entities.project.business.service.ProjectService"
     ) as proj_svc, patch(
         "entities.sub_cost_code.business.service.SubCostCodeService"

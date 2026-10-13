@@ -18,7 +18,7 @@ from shared.authz import current_user_id
 
 
 def test_confirm_expense_coding_router_refuses_with_409_when_dead_letter_exists():
-    existing = MagicMock(claimed_by_user_id=17)
+    existing = MagicMock(claimed_by_user_id=17, expense_id=None)
     project = MagicMock(id=1)
     sub_cost_code = MagicMock(id=2)
 
@@ -38,7 +38,9 @@ def test_confirm_expense_coding_router_refuses_with_409_when_dead_letter_exists(
 
     token = current_user_id.set(17)
     try:
-        with patch.object(router_mod, "CodingSuggestionService") as service_cls, patch(
+        with patch.object(router_mod, "CodingSuggestionService") as service_cls, patch.object(
+            router_mod, "assert_can_access_project"
+        ), patch(
             "entities.project.business.service.ProjectService"
         ) as project_svc_cls, patch(
             "entities.sub_cost_code.business.service.SubCostCodeService"

@@ -15,6 +15,11 @@ from entities.coding_suggestion.business.suggestion_service import CodingSuggest
 from integrations.intuit.qbo.base.client import recode_write_gate_reason
 from integrations.intuit.qbo.outbox.business.service import QboOutboxDeadLetterExistsError
 from integrations.intuit.qbo.purchase.business.service import QboPurchaseService
+from shared.access import (
+    EntityNotAccessibleError,
+    assert_can_access_expense,
+    assert_can_access_project,
+)
 from shared.api.responses import item_response, list_response, raise_database_error, raise_not_found
 from shared.authz import current_user_id
 from shared.rbac import require_module_api
@@ -23,6 +28,25 @@ from shared.rbac_constants import Modules
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1", tags=["api", "expense-coding"])
+
+
+def _coding_suggestion_scope_project_id(suggestion) -> Optional[int]:
+    """Project used to scope a suggestion without an ExpenseId (matches read model)."""
+    # Direct attribute access fails closed on a rename; mirrors COALESCE(Confirmed, Suggested).
+    confirmed = suggestion.confirmed_project_id
+    return confirmed if confirmed is not None else suggestion.suggested_project_id
+
+
+def _assert_can_access_coding_suggestion(suggestion) -> None:
+    """Enforce the same scope as ReadCodingSuggestionStateByExpenseIds."""
+    try:
+        expense_id = suggestion.expense_id
+        if expense_id is not None:
+            assert_can_access_expense(expense_id)
+        else:
+            assert_can_access_project(_coding_suggestion_scope_project_id(suggestion))
+    except EntityNotAccessibleError:
+        raise_not_found("Expense coding item")
 
 
 @router.get(
@@ -104,8 +128,15 @@ def flag_expense_coding_item_router(
     if user_id is None:
         raise HTTPException(status_code=401, detail="Authenticated user required.")
 
+    service = CodingSuggestionService()
+    existing = service.read_by_public_id(public_id)
+    if existing is None:
+        raise_not_found("Expense coding item")
+
+    _assert_can_access_coding_suggestion(existing)
+
     try:
-        flagged = CodingSuggestionService().record_flag(
+        flagged = service.record_flag(
             public_id=public_id,
             reason=body.reason,
             modified_by_user_id=user_id,
@@ -117,7 +148,7 @@ def flag_expense_coding_item_router(
     if flagged is None:
         raise_not_found("Expense coding item")
 
-    payload = CodingSuggestionService().to_api_dict(flagged)
+    payload = service.to_api_dict(flagged)
     return item_response(payload)
 
 
@@ -140,6 +171,26 @@ def confirm_expense_coding_item_router(
     existing = service.read_by_public_id(public_id)
     if existing is None:
         raise_not_found("Expense coding item")
+
+    _assert_can_access_coding_suggestion(existing)
+
+    from entities.project.business.service import ProjectService
+    from entities.sub_cost_code.business.service import SubCostCodeService
+
+    project = ProjectService().read_by_public_id(body.project_public_id)
+    if project is None:
+        raise_not_found("Project")
+
+    # Defense in depth: the project read above is already access-filtered, so an inaccessible
+    # project normally arrives as "not found"; keep the same body if the two filters ever diverge.
+    try:
+        assert_can_access_project(project.id)
+    except EntityNotAccessibleError:
+        raise_not_found("Project")
+
+    sub_cost_code = SubCostCodeService().read_by_public_id(body.sub_cost_code_public_id)
+    if sub_cost_code is None:
+        raise_not_found("Sub cost code")
 
     # U-652: refuse a multi-line purchase before ANY write (the claim is a write).
     try:
@@ -167,17 +218,6 @@ def confirm_expense_coding_item_router(
                 detail="Expense coding item is currently claimed by another user.",
             )
         claimed_here = True
-
-    from entities.project.business.service import ProjectService
-    from entities.sub_cost_code.business.service import SubCostCodeService
-
-    project = ProjectService().read_by_public_id(body.project_public_id)
-    if project is None:
-        raise_not_found("Project")
-
-    sub_cost_code = SubCostCodeService().read_by_public_id(body.sub_cost_code_public_id)
-    if sub_cost_code is None:
-        raise_not_found("Sub cost code")
 
     try:
         result = service.confirm(

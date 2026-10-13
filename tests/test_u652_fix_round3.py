@@ -151,8 +151,14 @@ def test_confirm_router_refuses_multi_line_before_claim():
         description="x", was_overridden=False,
     )
     with patch("entities.coding_suggestion.api.router.CodingSuggestionService", return_value=service), \
-         patch("entities.coding_suggestion.api.router.current_user_id") as uid:
+         patch("entities.coding_suggestion.api.router.current_user_id") as uid, \
+         patch("entities.coding_suggestion.api.router._assert_can_access_coding_suggestion"), \
+         patch("entities.coding_suggestion.api.router.assert_can_access_project"), \
+         patch("entities.project.business.service.ProjectService") as ps, \
+         patch("entities.sub_cost_code.business.service.SubCostCodeService") as scs:
         uid.get.return_value = 17
+        ps.return_value.read_by_public_id.return_value = SimpleNamespace(id=10)
+        scs.return_value.read_by_public_id.return_value = SimpleNamespace(id=20)
         with pytest.raises(HTTPException) as exc:
             confirm_expense_coding_item_router(PUBLIC_ID, body, _={"can_update": True})
     assert exc.value.status_code == 409
@@ -172,6 +178,8 @@ def _route_with(service):
     )
     with patch("entities.coding_suggestion.api.router.CodingSuggestionService", return_value=service), \
          patch("entities.coding_suggestion.api.router.current_user_id") as uid, \
+         patch("entities.coding_suggestion.api.router._assert_can_access_coding_suggestion"), \
+         patch("entities.coding_suggestion.api.router.assert_can_access_project"), \
          patch("entities.project.business.service.ProjectService") as ps, \
          patch("entities.sub_cost_code.business.service.SubCostCodeService") as scs:
         uid.get.return_value = 17

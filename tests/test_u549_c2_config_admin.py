@@ -204,9 +204,27 @@ def fake_ramp_chaser_digest_service():
     ):
         if name not in sys.modules:
             sys.modules[name] = types.ModuleType(name)
-    sys.modules["entities.ramp_chaser_digest.business.digest_service"] = digest_mod
+    # ⛔ RESTORE the original module object, never pop it. Popping makes the next
+    # import build a FRESH module, while any test that did
+    # `from ...digest_service import RampChaserDigestService` at collection time
+    # still holds the class from the ORIGINAL module. A later
+    # `patch("...digest_service.datetime")` then patches the fresh module and
+    # SILENTLY DOES NOTHING to the class under test.
+    #
+    # That is not hypothetical: it made
+    # test_week_of_tuesday_in_business_timezone_monday_late vacuous from the day
+    # it was written. It passed for two weeks only because the real clock was in
+    # the week it hardcoded, and started failing on 2026-10-13 when the real
+    # Tuesday moved away from the asserted date — i.e. the Monday-late timezone
+    # boundary was never actually under test.
+    _MODPATH = "entities.ramp_chaser_digest.business.digest_service"
+    _original = sys.modules.get(_MODPATH)
+    sys.modules[_MODPATH] = digest_mod
     yield mock_svc
-    sys.modules.pop("entities.ramp_chaser_digest.business.digest_service", None)
+    if _original is not None:
+        sys.modules[_MODPATH] = _original
+    else:
+        sys.modules.pop(_MODPATH, None)
 
 
 def test_ramp_chaser_digest_success_envelope_mocks_service(

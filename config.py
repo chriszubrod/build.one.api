@@ -205,6 +205,13 @@ class Settings(BaseSettings):
     # deliberate, so the chase lands in the Inbox and not only in Sent Items.
     ramp_chaser_cc_email: Optional[str] = None
 
+    # Standing BCC on every chaser digest — the archive copy, COMMA-SEPARATED.
+    # The invoice mailbox belongs here rather than on the CC: the crew should not
+    # see an internal archive address on a message asking them to act, while the
+    # owner stays on the visible CC because his presence IS the escalation signal.
+    # The cardholder is never BCC'd onto their own digest even if listed.
+    ramp_chaser_bcc_email: Optional[str] = None
+
     # Intelligence Layer — provider API keys
     anthropic_api_key: Optional[str] = None
     # Azure AI Foundry (OpenAI-compatible chat-completions; DeepSeek + GPT-5.4

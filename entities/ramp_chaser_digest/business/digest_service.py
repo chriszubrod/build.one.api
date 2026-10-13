@@ -458,12 +458,14 @@ class RampChaserDigestService:
         )
 
         cc = self._resolve_cc(settings, cardholder_email=email)
+        bcc = self._resolve_bcc(settings, cardholder_email=email)
 
         result = MsOutboxService().enqueue_send_mail(
             entity_type=_ENTITY_TYPE,
             entity_public_id=str(digest.public_id),
             to_addresses=[{"email": email, "name": card_holder_name}],
             cc_addresses=cc,
+            bcc_addresses=bcc,
             subject=subject,
             body=body,
             body_type=RAMP_CHASER_DIGEST_BODY_TYPE,
@@ -637,6 +639,50 @@ class RampChaserDigestService:
         return part[0] if part else "there"
 
     @staticmethod
+    def _parse_recipient_list(raw, *, skip_email: str, name: str) -> list:
+        """Shared parser for the standing CC and BCC lists.
+
+        One implementation on purpose: the CC and BCC lists must agree on
+        comma-splitting, trimming, case-insensitive de-duplication and — the
+        rule that matters — never addressing the cardholder their own digest.
+        Two copies would be free to drift on exactly that guard.
+        """
+        raw = (raw or "").strip()
+        if not raw:
+            return []
+        skip = (skip_email or "").strip().lower()
+        out, seen = [], set()
+        for part in raw.split(","):
+            addr = part.strip()
+            if not addr:
+                continue
+            low = addr.lower()
+            if low == skip or low in seen:
+                continue
+            seen.add(low)
+            out.append({"email": addr, "name": name})
+        return out
+
+    @staticmethod
+    def _resolve_bcc(settings, *, cardholder_email: str) -> list:
+        """Standing BCC list — the archive copy, hidden from the cardholder.
+
+        The invoice mailbox lives here rather than on the CC so the crew do not
+        see an internal archive address on a message asking THEM to act; the
+        owner stays on the visible CC, because his presence is the escalation
+        signal and is meant to be seen.
+
+        NB the invoice mailbox is also the /me SENDER, so this is a self-BCC:
+        the message already reaches its Sent Items, and the BCC adds an Inbox
+        copy. Deliberate, same as the CC entry it replaced.
+        """
+        return RampChaserDigestService._parse_recipient_list(
+            getattr(settings, "ramp_chaser_bcc_email", None),
+            skip_email=cardholder_email,
+            name="Archive",
+        )
+
+    @staticmethod
     def _resolve_cc(settings, *, cardholder_email: str) -> list:
         """Standing CC list for every chaser digest.
 
@@ -650,21 +696,11 @@ class RampChaserDigestService:
         rather than only in Sent Items — but it means the address appears twice
         in the conversation, which is expected, not a bug.
         """
-        raw = (getattr(settings, "ramp_chaser_cc_email", None) or "").strip()
-        if not raw:
-            return []
-        skip = cardholder_email.strip().lower()
-        out, seen = [], set()
-        for part in raw.split(","):
-            addr = part.strip()
-            if not addr:
-                continue
-            low = addr.lower()
-            if low == skip or low in seen:
-                continue
-            seen.add(low)
-            out.append({"email": addr, "name": "Owner"})
-        return out
+        return RampChaserDigestService._parse_recipient_list(
+            getattr(settings, "ramp_chaser_cc_email", None),
+            skip_email=cardholder_email,
+            name="Owner",
+        )
 
     @staticmethod
     def _stamp_outcome_only(digest_repo, digest_row, outcome: str) -> None:

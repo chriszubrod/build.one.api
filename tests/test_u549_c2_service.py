@@ -728,3 +728,46 @@ def test_resolve_cc_takes_a_comma_separated_list(configured, cardholder, expecte
     got = RampChaserDigestService._resolve_cc(settings, cardholder_email=cardholder)
     assert [e["email"] for e in got] == expected
     assert all(e.get("name") for e in got), "every CC entry needs a display name"
+
+
+def test_bcc_is_resolved_and_passed_to_the_outbox(mocks, draft_mode, monkeypatch):
+    """The archive copy must ride as BCC, hidden from the cardholder.
+
+    The invoice mailbox moved off the CC deliberately: the crew should not see an
+    internal archive address on a message asking THEM to act, while the owner
+    stays on the visible CC because his presence is the escalation signal.
+    """
+    monkeypatch.setenv("RAMP_CHASER_CC_EMAIL", "austin@rogersbuild.com")
+    monkeypatch.setenv("RAMP_CHASER_BCC_EMAIL", "invoice@rogersbuild.com")
+    mocks.follow_up_repo.read_unresolved.return_value = [_follow_up()]
+
+    RampChaserDigestService().run_for_week("2026-09-29")
+
+    kwargs = mocks.ms_outbox_svc.enqueue_send_mail.call_args.kwargs
+    assert [e["email"] for e in kwargs["cc_addresses"]] == ["austin@rogersbuild.com"]
+    assert [e["email"] for e in kwargs["bcc_addresses"]] == ["invoice@rogersbuild.com"]
+    # the archive address must NOT leak onto the visible CC
+    assert "invoice@rogersbuild.com" not in [e["email"] for e in kwargs["cc_addresses"]]
+
+
+@pytest.mark.parametrize(
+    "configured,cardholder,expected",
+    [
+        pytest.param("", "pat@x.com", [], id="unset-no-bcc"),
+        pytest.param("invoice@rogersbuild.com", "pat@x.com",
+                     ["invoice@rogersbuild.com"], id="single"),
+        pytest.param(" a@x.com , b@x.com ,", "pat@x.com",
+                     ["a@x.com", "b@x.com"], id="list-trimmed-and-empties-dropped"),
+        pytest.param("a@x.com,A@X.COM", "pat@x.com", ["a@x.com"], id="case-insensitive-dedupe"),
+        # ⛔ same guard as the CC: never address the cardholder their own digest
+        pytest.param("invoice@rogersbuild.com,pat@x.com", "pat@x.com",
+                     ["invoice@rogersbuild.com"], id="cardholder-stripped"),
+        pytest.param("PAT@X.COM", " pat@x.com ", [], id="cardholder-stripped-case-and-space"),
+    ],
+)
+def test_resolve_bcc_shares_the_cc_parser_semantics(configured, cardholder, expected):
+    """BCC and CC go through ONE parser, so the cardholder guard cannot drift."""
+    settings = SimpleNamespace(ramp_chaser_bcc_email=configured)
+    got = RampChaserDigestService._resolve_bcc(settings, cardholder_email=cardholder)
+    assert [e["email"] for e in got] == expected
+    assert all(e.get("name") for e in got)

@@ -19,6 +19,9 @@ Design goals:
 - **Invoice number only where it belongs.** The number is parsed only for attachments
   linked to a Bill, BillCredit or Expense line and never for a W-9 (`TaxpayerAttachment`).
   The claim procedure computes that flag.
+- **TIN-safe extraction JSON.** Persisted blob text and key-value pairs are masked for
+  taxpayer ids before upload (W-9s: every digit; other documents: SSN and EIN
+  shapes); the JSON never stores an unmasked taxpayer-id pattern.
 - **Idempotent.** A row already 'completed' against the same file hash is skipped.
 """
 from __future__ import annotations
@@ -33,6 +36,7 @@ from typing import Optional
 
 import config
 from entities.attachment.business.model import Attachment
+from entities.attachment.business.tin_redaction import mask_tins, mask_tins_in_kvps
 from entities.attachment.persistence.repo import AttachmentRepository
 from integrations.azure.document_intelligence.external.client import (
     DocumentIntelligenceConfigError,
@@ -55,6 +59,7 @@ _CLAIM_LEASE_MINUTES = 15
 _MIN_TEXT_LAYER_CHARS = 24
 
 _EXTRACTION_BLOB_PREFIX = "attachment-extractions"
+REDACTION_VERSION = "u535g-v3"
 
 
 def parse_extraction_groups(raw: Optional[str]) -> list[str]:
@@ -156,7 +161,9 @@ class AttachmentExtractionService:
         if not attachment.blob_url:
             return self._fail(attachment, "no_blob_url")
 
-        # Idempotent skip: already completed against this exact content.
+        prior_extracted_blob_url = attachment.extracted_text_blob_url
+
+        # Idempotent skip: already completed against this exact content + redaction version.
         if not force and self._already_extracted_same_content(attachment):
             return {
                 "status": "skipped",
@@ -210,7 +217,7 @@ class AttachmentExtractionService:
         except Exception as e:
             return self._fail(attachment, "persist_error", e)
 
-        return self._commit_terminal(
+        outcome = self._commit_terminal(
             attachment,
             {
                 "status": "completed",
@@ -223,6 +230,13 @@ class AttachmentExtractionService:
             vendor_invoice_number=parsed_number,
             orphan_blob=(blob_name, blob_url),
         )
+        if (
+            outcome.get("status") == "completed"
+            and prior_extracted_blob_url
+            and prior_extracted_blob_url != blob_url
+        ):
+            self._delete_blob_quietly(prior_extracted_blob_url, "prior_blob_delete_failed id=%s", attachment.id)
+        return outcome
 
     def _run_di(self, content: bytes, content_type: str) -> dict:
         extracted = self.di.extract_text(content, content_type=content_type)
@@ -240,9 +254,18 @@ class AttachmentExtractionService:
         pages_count: int,
         method: str,
     ) -> tuple[str, str]:
+        """Mask taxpayer ids, then upload. The ONLY writer of extraction JSON, so the
+        redaction_version stamp is always true of what it stamps."""
+        aggressive = attachment.is_taxpayer_document is not False  # unknown => fail closed
+        text, tins_masked = mask_tins(text, aggressive=aggressive)
+        key_value_pairs, kvp_count = mask_tins_in_kvps(key_value_pairs, aggressive=aggressive)
+        tins_masked += kvp_count
+        if tins_masked > 0:
+            logger.info("attachment_extraction.tins_masked id=%s count=%s", attachment.id, tins_masked)
         payload = {
             "attachment_public_id": str(attachment.public_id),
             "source_file_hash": attachment.file_hash,
+            "redaction_version": REDACTION_VERSION,
             "method": method,
             "pages_count": pages_count,
             "content": text or "",
@@ -256,7 +279,7 @@ class AttachmentExtractionService:
                         else None
                     ),
                 }
-                for kvp in (key_value_pairs or [])
+                for kvp in key_value_pairs
             ],
         }
         # Unique per write: a stale worker must never overwrite the blob a newer claim published.
@@ -284,7 +307,11 @@ class AttachmentExtractionService:
             prior = json.loads(content)
         except Exception:
             return False
-        return bool(prior) and prior.get("source_file_hash") == attachment.file_hash
+        return (
+            bool(prior)
+            and prior.get("source_file_hash") == attachment.file_hash
+            and prior.get("redaction_version") == REDACTION_VERSION
+        )
 
     def _fail(self, attachment: Attachment, code: str, exc: Optional[BaseException] = None) -> dict:
         """Mark the row failed with a fixed code (+ exception class name only) and return the tick row."""
@@ -342,14 +369,14 @@ class AttachmentExtractionService:
         if orphan_blob is None:
             return
         blob_name, blob_url = orphan_blob
+        self._delete_blob_quietly(blob_url, "orphan_blob_delete_failed blob=%s", blob_name)
+
+    def _delete_blob_quietly(self, blob_url: str, event: str, ref) -> None:
+        """Best-effort delete; a failure logs the event, its ref and the exception class only."""
         try:
             self.storage.delete_file(blob_url)
         except Exception as e:
-            logger.warning(
-                "attachment_extraction.orphan_blob_delete_failed blob=%s exc=%s",
-                blob_name,
-                type(e).__name__,
-            )
+            logger.warning("attachment_extraction." + event + " exc=%s", ref, type(e).__name__)
 
 
 # --------------------------------------------------------------------------- #

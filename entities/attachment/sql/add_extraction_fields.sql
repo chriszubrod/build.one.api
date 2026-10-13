@@ -290,7 +290,8 @@ BEGIN
                OR EXISTS (SELECT 1 FROM dbo.[BillCreditLineItemAttachment] AS x WHERE x.[AttachmentId] = a.[Id])
                OR EXISTS (SELECT 1 FROM dbo.[ExpenseLineItemAttachment] AS x WHERE x.[AttachmentId] = a.[Id]))
              AND NOT EXISTS (SELECT 1 FROM dbo.[TaxpayerAttachment] AS x WHERE x.[AttachmentId] = a.[Id])
-            THEN 1 ELSE 0 END AS BIT) AS [ParseInvoiceNumber]
+            THEN 1 ELSE 0 END AS BIT) AS [ParseInvoiceNumber],
+        CAST(CASE WHEN EXISTS (SELECT 1 FROM dbo.[TaxpayerAttachment] AS x WHERE x.[AttachmentId] = a.[Id]) THEN 1 ELSE 0 END AS BIT) AS [IsTaxpayerDocument]
     FROM dbo.[Attachment] AS a
     INNER JOIN @Claimed AS k ON k.[Id] = a.[Id]
     ORDER BY a.[CreatedDatetime] ASC, a.[Id] ASC;

@@ -53,6 +53,9 @@ class AttachmentRepository:
             # by mutation-sproc OUTPUTs that don't SELECT it — getattr default).
             vendor_invoice_number = getattr(row, 'VendorInvoiceNumber', None)
             parse_invoice_number = bool(getattr(row, 'ParseInvoiceNumber', False))
+            is_taxpayer_document = getattr(row, 'IsTaxpayerDocument', None)
+            if is_taxpayer_document is not None:
+                is_taxpayer_document = bool(is_taxpayer_document)
             claim_modified_datetime = getattr(row, 'ClaimModifiedDatetime', None)
             # U-279: dbo-native QBO identity — only ReadAttachmentById/
             # ByPublicId/ByQboIdAndRealmId select these; other Read*/mutation
@@ -95,6 +98,7 @@ class AttachmentRepository:
                 categorized_datetime=categorized_datetime,
                 vendor_invoice_number=vendor_invoice_number,
                 parse_invoice_number=parse_invoice_number,
+                is_taxpayer_document=is_taxpayer_document,
                 qbo_id=qbo_id,
                 realm_id=realm_id,
             )

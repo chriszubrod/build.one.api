@@ -49,6 +49,8 @@ class Attachment:
     vendor_invoice_number: Optional[str] = None
     # U-535a: set by ClaimAttachmentsForExtraction; False on a W-9 so its text is never parsed for an invoice number.
     parse_invoice_number: bool = False
+    # U-535g: True when linked via TaxpayerAttachment (claim proc); None when column absent — fail closed on mask.
+    is_taxpayer_document: Optional[bool] = None
     # U-535a: DATETIME2(3) claim token from ClaimAttachmentsForExtraction; guards the terminal write.
     claim_modified_datetime: Optional[datetime] = None
     # U-279: dbo-native QBO identity (U-238c columns, read sproc added U-279).

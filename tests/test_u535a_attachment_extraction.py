@@ -128,6 +128,7 @@ def _att(id, *, content_type="image/png", extraction_status="processing", parse_
         category=None,
         description=None,
         parse_invoice_number=parse_invoice_number,
+        is_taxpayer_document=False,
         claim_modified_datetime=CLAIM_TOKEN,
     )
     base.update(overrides)
@@ -390,7 +391,7 @@ W9_LINES = [
 def test_w9_text_is_never_parsed_for_an_invoice_number(monkeypatch):
     monkeypatch.setenv(ENV, "w9")
     pdf = _text_pdf_bytes(W9_LINES)
-    att = _att(1, content_type="application/pdf", parse_invoice_number=False)
+    att = _att(1, content_type="application/pdf", parse_invoice_number=False, is_taxpayer_document=True)
     repo = _FakeRepo(rows=[att])
     storage = _FakeStorage(downloads={att.blob_url: pdf})
 
@@ -706,6 +707,19 @@ def test_repo_claim_maps_parse_flag_and_defaults_false(monkeypatch):
     assert all(a.extraction_status == "processing" for a in claimed)
 
 
+def test_repo_claim_maps_is_taxpayer_document(monkeypatch):
+    rows = [
+        _db_row(IsTaxpayerDocument=1),
+        _db_row(Id=2, IsTaxpayerDocument=0),
+        _db_row(Id=3),
+    ]
+    _patch_repo_db(monkeypatch, _FakeCursor(rows=rows))
+
+    claimed = repo_mod.AttachmentRepository().claim_for_extraction(groups=["w9"], limit=5, lease_minutes=15)
+
+    assert [a.is_taxpayer_document for a in claimed] == [True, False, None]
+
+
 class _BatchCursor:
     def __init__(self, row):
         self._row = row
@@ -905,6 +919,10 @@ def check_claim_parse_flag(body):
     assert sq("AND NOT EXISTS (SELECT 1 FROM dbo.[TaxpayerAttachment] AS x WHERE x.[AttachmentId] = a.[Id])") in tail
     for t in ("BillLineItemAttachment", "BillCreditLineItemAttachment", "ExpenseLineItemAttachment"):
         assert sq(f"EXISTS (SELECT 1 FROM dbo.[{t}] AS x WHERE x.[AttachmentId] = a.[Id])") in tail, t
+    assert sq("AS [IsTaxpayerDocument]") in tail
+    assert sq(
+        "EXISTS (SELECT 1 FROM dbo.[TaxpayerAttachment] AS x WHERE x.[AttachmentId] = a.[Id])"
+    ) in tail
     assert sq("INNER JOIN @Claimed AS k ON k.[Id] = a.[Id]") in tail
     assert sq("ORDER BY a.[CreatedDatetime] ASC, a.[Id] ASC") in tail
 

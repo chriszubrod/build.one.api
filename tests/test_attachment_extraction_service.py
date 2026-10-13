@@ -5,6 +5,7 @@ import json
 import types
 
 from entities.attachment.business.extraction_service import (
+    REDACTION_VERSION,
     AttachmentExtractionService,
     parse_vendor_invoice_number,
     _extract_text_layer,
@@ -56,6 +57,7 @@ def _attachment(**overrides):
         extracted_text_blob_url=None,
         category="bill_line_item",
         parse_invoice_number=True,
+        is_taxpayer_document=False,
         claim_modified_datetime=None,
     )
     base.update(overrides)
@@ -126,8 +128,13 @@ def test_extract_skips_when_completed_same_hash():
         file_hash="hash-abc",
     )
     repo = _FakeRepo()
+
     storage = _FakeStorage(
-        downloads={prior_blob: json.dumps({"source_file_hash": "hash-abc"}).encode("utf-8")},
+        downloads={
+            prior_blob: json.dumps(
+                {"source_file_hash": "hash-abc", "redaction_version": REDACTION_VERSION}
+            ).encode("utf-8"),
+        },
     )
     di = _FakeDI(forbid=True)
     svc = AttachmentExtractionService(repo=repo, storage=storage, di=di)

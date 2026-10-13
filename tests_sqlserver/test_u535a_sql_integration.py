@@ -336,6 +336,20 @@ def test_parse_flag_is_clear_when_the_attachment_is_also_a_w9(conns, repo):
     assert claimed.parse_invoice_number is False
 
 
+def test_is_taxpayer_document_flag_from_taxpayer_vs_bill_link(conns, repo):
+    a, _ = conns
+    w9_att = _seed(a, link="TaxpayerAttachment")
+    bill_att = _seed(a, link="BillLineItemAttachment")
+    a.commit()
+
+    w9_claimed = repo.claim_for_extraction(groups=["w9"], limit=10, lease_minutes=15)
+    bill_claimed = repo.claim_for_extraction(groups=["bill"], limit=10, lease_minutes=15)
+
+    by_id = {c.id: c for c in w9_claimed + bill_claimed}
+    assert by_id[w9_att].is_taxpayer_document is True
+    assert by_id[bill_att].is_taxpayer_document is False
+
+
 @pytest.mark.parametrize("table", ["CertificateOfInsurance", "BusinessLicenseAttachment", "ContractorsLicenseAttachment", "TaxpayerAttachment"])
 def test_parse_flag_is_clear_for_coi_license_and_w9_only(conns, repo, table):
     a, _ = conns

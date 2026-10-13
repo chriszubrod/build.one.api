@@ -11,6 +11,7 @@ from typing import Optional
 import pyodbc
 from pydantic import BaseModel
 
+from intelligence.persistence.redaction import mask_agent_free_text
 from shared.database import call_procedure, get_connection, map_database_error
 
 
@@ -92,7 +93,8 @@ class AgentApprovalRequestRepo:
                         "TurnId": turn_id,
                         "RequestId": request_id,
                         "ToolName": tool_name,
-                        "Summary": summary,
+                        "Summary": mask_agent_free_text(summary),
+                        # Executable tool payload — deliberately unmasked (masking corrupts bill numbers, etc.).
                         "ProposedInput": proposed_input,
                     },
                 )

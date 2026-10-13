@@ -90,7 +90,9 @@ async def load_chain_history(session_id: int) -> list[Message]:
             for tc in tool_calls:
                 try:
                     tc_input = json.loads(tc.tool_input) if tc.tool_input else {}
-                except json.JSONDecodeError:
+                except (json.JSONDecodeError, RecursionError, ValueError):
+                    # Unparseable / too deeply nested / over the int-digit limit: replay
+                    # the call with empty input rather than failing the whole history.
                     tc_input = {}
                 if tc.tool_use_id and tc.tool_name:
                     assistant_blocks.append(

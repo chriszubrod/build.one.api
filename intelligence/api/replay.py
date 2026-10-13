@@ -125,7 +125,8 @@ async def tail_session(session_public_id: str) -> AsyncIterator[LoopEvent]:
                             if call.tool_input
                             else {}
                         )
-                    except json.JSONDecodeError:
+                    except (json.JSONDecodeError, RecursionError, ValueError):
+                        # Same tolerance as history.load_chain_history.
                         tool_input = {}
                     yield ToolCallStart(
                         id=tool_use_id,

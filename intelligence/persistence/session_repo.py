@@ -14,6 +14,7 @@ from typing import Optional
 import pyodbc
 from pydantic import BaseModel
 
+from intelligence.persistence.redaction import mask_agent_free_text, mask_agent_text
 from shared.database import call_procedure, get_connection, map_database_error
 
 
@@ -162,7 +163,7 @@ class AgentSessionRepo:
                         "PreviousSessionId": previous_session_id,
                         "Model": model,
                         "Provider": provider,
-                        "UserMessage": user_message,
+                        "UserMessage": mask_agent_free_text(user_message),
                         "SystemPrompt": system_prompt,
                     },
                 )
@@ -226,7 +227,7 @@ class AgentSessionRepo:
                     name="FailAgentSession",
                     params={
                         "Id": id,
-                        "ErrorMessage": error_message,
+                        "ErrorMessage": mask_agent_free_text(error_message),
                         "TotalInputTokens": total_input_tokens,
                         "TotalOutputTokens": total_output_tokens,
                         "TotalCacheCreationInputTokens": total_cache_creation_input_tokens,
@@ -384,7 +385,7 @@ class AgentTurnRepo:
                         "InputTokens": input_tokens,
                         "OutputTokens": output_tokens,
                         "StopReason": stop_reason,
-                        "AssistantText": assistant_text,
+                        "AssistantText": mask_agent_free_text(assistant_text),
                         "CacheCreationInputTokens": cache_creation_input_tokens,
                         "CacheReadInputTokens": cache_read_input_tokens,
                         "CostUsd": cost_usd,
@@ -465,7 +466,7 @@ class AgentToolCallRepo:
                         "TurnId": turn_id,
                         "ToolUseId": tool_use_id,
                         "ToolName": tool_name,
-                        "ToolInput": tool_input,
+                        "ToolInput": mask_agent_text(tool_input),
                     },
                 )
                 row = cursor.fetchone()
@@ -487,7 +488,7 @@ class AgentToolCallRepo:
                     name="CompleteAgentToolCall",
                     params={
                         "Id": id,
-                        "ToolOutput": tool_output,
+                        "ToolOutput": mask_agent_text(tool_output),
                         "IsError": 1 if is_error else 0,
                     },
                 )

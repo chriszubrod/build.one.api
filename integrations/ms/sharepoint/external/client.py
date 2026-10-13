@@ -598,19 +598,6 @@ def move_item(
         return _error_response(e, extra={"item": None})
 
 
-def delete_item(drive_id: str, item_id: str) -> dict:
-    """Delete a file or folder from a drive."""
-    try:
-        with MsGraphClient() as client:
-            client.delete(
-                f"drives/{drive_id}/items/{item_id}",
-                operation_name="driveitem.delete",
-            )
-        return {"message": "Item deleted successfully", "status_code": 204}
-    except MsGraphError as e:
-        logger.error(f"Error deleting item {item_id}: {e}")
-        return _error_response(e)
-
 
 def create_folder(drive_id: str, parent_item_id: str, folder_name: str) -> dict:
     """

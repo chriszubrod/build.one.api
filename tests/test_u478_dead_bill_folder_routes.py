@@ -1,29 +1,16 @@
-"""U-478 — delete four dead Bill folder-intake routes and one dead helper.
+"""U-656 — SharePoint bill/expense folder intake retired (U-478 dead routes stay gone).
 
-The four routes (`/process/bill-folder-pending`, `-single`, `-prepare`, `-move`)
-and `_run_single_file_processing` have zero callers. Two are booked defects:
-
-- `POST /process/bill-folder-single` writes `_folder_processing_results`, a
-  name defined nowhere in the repo since run state moved to `dbo.BillFolderRun`.
-  It NameError's on 100% of calls, inside the handler, before the background
-  task is even queued. Repairing it is a second processing path in parallel
-  with the live queue (bare uuid4() is never inserted into BillFolderRun, so a
-  client would poll a status route that 404s — and there is no status route).
-- `POST /process/bill-folder-move` is gated on default `can_read`, and its
-  name-conflict branch reaches `sp_client.delete_item`, so a view-only AP clerk
-  could permanently delete a PDF from the SharePoint processed folder. Deleting
-  the route removes the exposure outright.
-
-Live single-file processing is already
-`enqueue_bill_folder_run` → `POST /admin/bill-folder/tick` →
-`BillFolderProcessor.process_single_item`. The three routes with live callers
-in BillList.tsx (`POST /process/bill-folder`, `GET /process/bill-folder/{run_id}`,
-`GET /get/bill-folder-summary`) stay.
+Manual web entry is the only intake path. dbo.BillFolderRun* tables remain for
+history/backtest; Python processors, admin ticks, and API folder routes must not
+come back.
 """
 
 from __future__ import annotations
 
+import importlib.util
 from pathlib import Path
+
+import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 ROUTER_PATH = REPO_ROOT / "entities/bill/api/router.py"
@@ -41,15 +28,23 @@ DELETED_HANDLERS = (
     "move_file_to_processed_router",
     "_run_single_file_processing",
 )
-SURVIVING_PATHS = (
-    "/process/bill-folder",
-    "/process/bill-folder/{run_id}",
-    "/get/bill-folder-summary",
+
+RETIRED_FOLDER_ROUTE_FRAGMENTS = (
+    "bill-folder",
+    "expense-folder",
 )
-SURVIVING_HANDLERS = (
-    "process_bill_folder_router",
-    "get_bill_folder_status_router",
-    "get_bill_folder_summary_router",
+
+RETIRED_MODULES = (
+    "entities.bill.business.folder_processor",
+    "entities.expense.business.folder_processor",
+    "entities.bill.persistence.folder_run_repo",
+    "entities.expense.persistence.folder_run_repo",
+    "integrations.ms.sharepoint.driveitem.connector.bill_folder.api",
+    "integrations.ms.sharepoint.driveitem.connector.bill_folder.business",
+    "integrations.ms.sharepoint.driveitem.connector.bill_folder.persistence",
+    "integrations.ms.sharepoint.driveitem.connector.expense_folder.api",
+    "integrations.ms.sharepoint.driveitem.connector.expense_folder.business",
+    "integrations.ms.sharepoint.driveitem.connector.expense_folder.persistence",
 )
 
 
@@ -57,11 +52,7 @@ def _router_src() -> str:
     return ROUTER_PATH.read_text()
 
 
-def _folder_route_paths(router) -> set[str]:
-    return {route.path for route in router.routes if "folder" in getattr(route, "path", "")}
-
-
-def test_deleted_paths_and_handlers_absent_from_source():
+def test_u478_deleted_paths_and_handlers_absent_from_bill_router_source():
     src = _router_src()
     for path in DELETED_PATHS:
         assert path not in src, f"dead path still in router.py: {path}"
@@ -69,46 +60,22 @@ def test_deleted_paths_and_handlers_absent_from_source():
         assert name not in src, f"dead handler still in router.py: {name}"
 
 
-def test_folder_processing_results_absent_from_source():
-    """The NameError is the regression that matters: the name must be gone.
-
-    An unreferenced leftover would still blow up if a future handler wrote it.
-    """
+def test_folder_processing_results_absent_from_bill_router_source():
     src = _router_src()
-    count = src.count("_folder_processing_results")
-    assert count == 0, (
-        f"_folder_processing_results still appears {count} time(s) in router.py"
+    assert src.count("_folder_processing_results") == 0
+
+
+def test_no_bill_or_expense_folder_routes_registered():
+    from app import app
+
+    paths = {getattr(route, "path", "") for route in app.routes}
+    hits = sorted(
+        p for p in paths if any(frag in p for frag in RETIRED_FOLDER_ROUTE_FRAGMENTS)
     )
+    assert hits == [], f"retired folder routes still registered: {hits}"
 
 
-def test_surviving_routes_present_in_source():
-    src = _router_src()
-    for path in SURVIVING_PATHS:
-        assert path in src, f"live path missing from router.py: {path}"
-    for name in SURVIVING_HANDLERS:
-        assert name in src, f"live handler missing from router.py: {name}"
-
-
-def test_router_exposes_surviving_folder_paths_only():
-    """Walk the registered FastAPI routes, not just source text.
-
-    Catches a decorator delete that left the function, or the reverse.
-    """
-    import entities.bill.api.router as bill_router
-
-    prefix = bill_router.router.prefix.rstrip("/")
-    expected = {f"{prefix}{path}" for path in SURVIVING_PATHS}
-    deleted = {f"{prefix}{path}" for path in DELETED_PATHS}
-    actual = _folder_route_paths(bill_router.router)
-    assert actual == expected
-    assert actual.isdisjoint(deleted)
-
-
-def test_live_single_file_path_is_process_single_item():
-    """Tripwire: the queue path this unit relies on as the replacement."""
-    from entities.bill.business.folder_processor import BillFolderProcessor
-
-    assert callable(getattr(BillFolderProcessor, "process_single_item", None)), (
-        "BillFolderProcessor.process_single_item is the live single-file path; "
-        "do not delete it without replacing the intake drain"
-    )
+@pytest.mark.parametrize("module_name", RETIRED_MODULES)
+def test_retired_folder_intake_modules_not_importable(module_name: str):
+    spec = importlib.util.find_spec(module_name)
+    assert spec is None, f"retired module still on disk: {module_name}"

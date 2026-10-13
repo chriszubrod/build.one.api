@@ -30,8 +30,8 @@ class ReviewNotificationService:
         (HEIC -> PDF, octet-stream -> application/pdf) are what's on the
         bill. The reviewer sees that file, not whatever Graph still has
         on the original vendor email.
-      - Bills with no `SourceEmailMessageId` (manual UI, bill_folder
-        intake, agent-synthesized) are no longer silently skipped — they
+      - Bills with no `SourceEmailMessageId` (manual UI, the retired
+        bill_folder intake, agent-synthesized) are no longer silently skipped — they
         get the same review email as email-sourced bills.
 
     Failure semantics: every step is wrapped in an outer try/except. A

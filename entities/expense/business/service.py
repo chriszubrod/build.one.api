@@ -1,7 +1,7 @@
 """Entity contract — Expense.   (maintained with the code; checked by tests/test_entity_docstrings.py)
 
 Owns
-  dbo.Expense card/AP spend header; ExpenseFolderRun/ExpenseFolderRunItem folder intake queue.
+  dbo.Expense card/AP spend header.
   ExpenseLineItem rows and attachments are owned by the expense_line_item entity.
 Invariants
   RBAC: Modules.EXPENSES require_module_api; assert_can_access_expense (dbo.UserCanAccessExpense).
@@ -11,35 +11,23 @@ External writes
   MS sharepoint_upload / excel insert|append on complete (ALLOW_MS_WRITES).
   Box push_blob / update_box_excel on complete (ALLOW_BOX_WRITES).
 Sprocs
-  AutoFailStaleExpenseFolderRuns
-  CheckAndCompleteExpenseFolderRun
-  ClaimNextExpenseFolderRunItem
   CountExpenses
   CreateExpense
-  CreateExpenseFolderRun
-  CreateExpenseFolderRunItem
   DeleteExpenseById
   DeleteExpenseCascadeById
   FinalizeExpenseById
   FindExpenseForReviewerReply
   MarkExpenseDraftForCoding
-  ReadActiveExpenseFolderRunItemIds
   ReadExpenseById
   ReadExpenseByPublicId
   ReadExpenseByQboIdAndRealmId
   ReadExpenseByReferenceNumberAndVendorId
-  ReadExpenseFolderRunAggregateByPublicId
-  ReadExpenseFolderRunByPublicId
-  ReadExpenseFolderRunItemErrorsByRunPublicId
   ReadExpenseQboIdsByRealmId
   ReadExpenses
   ReadExpensesPaginated
   ReadUncodedCompletedExpenseCandidates
   SetExpenseQboIdentity
   UpdateExpenseById
-  UpdateExpenseFolderRunByPublicId
-  UpdateExpenseFolderRunItemOnFailure
-  UpdateExpenseFolderRunItemOnSuccess
 """
 # Python Standard Library Imports
 import logging

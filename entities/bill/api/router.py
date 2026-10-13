@@ -2,12 +2,10 @@
 import asyncio
 from datetime import date
 import logging
-import threading
-import time
 
 # Third-party Imports
 from typing import Optional
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Response, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
 # Aliased because GET /get/bills takes a `status` QUERY PARAM that shadows the
 # module inside that function (CLAUDE.md: no var-shadow).
 from fastapi import status as http_status
@@ -16,10 +14,6 @@ from fastapi.responses import JSONResponse
 # Local Imports
 from entities.bill.api.schemas import BillCreate, BillUpdate
 from entities.bill.business.service import BillService
-from entities.bill.persistence.folder_run_repo import (
-    BillFolderRunItemRepository,
-    BillFolderRunRepository,
-)
 from entities.bill.persistence.repo import BillRepository
 from entities.vendor.persistence.repo import VendorRepository
 from shared.api.auth_user import resolve_user_id
@@ -38,10 +32,6 @@ from entities.review.business.model import ParentType
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1", tags=["api", "bill"])
-
-_FOLDER_SUMMARY_TTL_SECONDS = 300.0
-_folder_summary_cache: dict[int, tuple[float, dict]] = {}
-_folder_summary_lock = threading.Lock()
 
 
 def _with_vendor_public_id(data):
@@ -641,155 +631,3 @@ def complete_bill_router(
         status_code=status.HTTP_202_ACCEPTED,
         content=accepted_response(public_id, "bill_public_id"),
     )
-
-
-# ---------------------------------------------------------------------------
-# Bill Folder Processing — queue-driven, one file per Function-App tick.
-# ---------------------------------------------------------------------------
-# POST enumerates the SharePoint source folder and inserts one
-# BillFolderRunItem per PDF (status='queued'). The build.one.scheduler
-# Function App POSTs /admin/bill-folder/tick every 30s; each tick claims
-# ONE item, processes it end-to-end, and returns. No background task in
-# the web process; no long-running HTTP request; cross-worker safe.
-
-_folder_run_repo = BillFolderRunRepository()
-_folder_run_item_repo = BillFolderRunItemRepository()
-
-
-@router.post("/process/bill-folder")
-def process_bill_folder_router(
-    current_user: dict = Depends(require_module_api(Modules.BILLS)),
-):
-    """
-    Enqueue a bill-folder run. Lists the source folder, inserts one
-    BillFolderRunItem per PDF in 'queued' status, and returns 202 with
-    the run_id. The scheduler drains the queue asynchronously; clients
-    poll GET /api/v1/process/bill-folder/{run_id} for progress.
-    """
-    from entities.bill.business.folder_processor import (
-        BillFolderEnumerationError,
-        enqueue_bill_folder_run,
-    )
-
-    try:
-        result = enqueue_bill_folder_run(dedup_active=False)
-    except BillFolderEnumerationError as error:
-        raise HTTPException(status_code=502, detail=f"Failed to enumerate source folder: {error}")
-
-    return JSONResponse(status_code=status.HTTP_202_ACCEPTED, content=result)
-
-
-@router.get("/process/bill-folder/{run_id}")
-def get_bill_folder_status_router(
-    run_id: str,
-    current_user: dict = Depends(require_module_api(Modules.BILLS)),
-):
-    """
-    Poll progress for a bill-folder run. Returns aggregate item counts
-    (queued / processing / completed / skipped / failed) plus the
-    currently-processing filename when one is in flight.
-    """
-    agg = _folder_run_item_repo.read_aggregate(run_public_id=run_id)
-    if agg is None:
-        raise HTTPException(status_code=404, detail="Run not found")
-
-    payload: dict = {
-        "status": agg.run_status,
-        "files_total": agg.files_total,
-        "files_queued": agg.files_queued,
-        "files_processing": agg.files_processing,
-        "files_processed": agg.files_processed,
-        "files_skipped": agg.files_skipped,
-        "files_failed": agg.files_failed,
-        "current_file": agg.current_file,
-        # Legacy aliases so older clients still work until the UI is updated.
-        "files_found": agg.files_total,
-        "bills_created": agg.files_processed,
-    }
-
-    if agg.run_status in ("completed", "failed"):
-        errors = _folder_run_item_repo.read_errors(run_public_id=run_id)
-        payload["errors"] = [
-            f"{e.filename}: {e.last_error or e.status}"
-            for e in errors
-        ]
-
-    return payload
-
-
-@router.get("/get/bill-folder-summary")
-def get_bill_folder_summary_router(
-    response: Response,
-    current_user: dict = Depends(require_module_api(Modules.BILLS)),
-):
-    """Get summary of the linked SharePoint bill source folder."""
-    company_id = 1
-
-    with _folder_summary_lock:
-        cached = _folder_summary_cache.get(company_id)
-    if cached is not None:
-        expires_at, payload = cached
-        if time.monotonic() < expires_at:
-            response.headers["X-Cache"] = "hit"
-            return item_response(payload)
-
-    response.headers["X-Cache"] = "miss"
-    try:
-        from integrations.ms.sharepoint.driveitem.connector.bill_folder.business.service import DriveItemBillFolderConnector
-        from integrations.ms.sharepoint.external import client as sp_client
-
-        connector = DriveItemBillFolderConnector()
-        source_folder = connector.get_folder(company_id, "source")
-
-        if not source_folder:
-            payload = {"is_linked": False}
-        else:
-            drive_id = source_folder.get("drive_id")
-            item_id = source_folder.get("item_id")
-
-            file_count = 0
-            folder_name = source_folder.get("name")
-            folder_web_url = source_folder.get("web_url")
-
-            if drive_id and item_id:
-                # Get fresh metadata from Graph API (stored web_url may be stale)
-                try:
-                    item_meta = sp_client.get_drive_item(drive_id, item_id)
-                    if item_meta.get("status_code") == 200:
-                        live_item = item_meta.get("item", {})
-                        folder_name = live_item.get("name") or folder_name
-                        folder_web_url = live_item.get("web_url") or folder_web_url
-                except Exception as e:
-                    logger.warning("Failed to get folder metadata: %s", e)
-
-                try:
-                    children = sp_client.list_drive_item_children(drive_id, item_id)
-                    if children.get("status_code") == 200:
-                        for child in children.get("items", []):
-                            name = child.get("name", "")
-                            if child.get("item_type") == "file" and (name.lower().endswith(".pdf") or "." not in name):
-                                file_count += 1
-                except Exception as e:
-                    logger.warning("Failed to count files in source folder: %s", e)
-
-            payload = {
-                "is_linked": True,
-                "folder_name": folder_name,
-                "folder_web_url": folder_web_url,
-                "file_count": file_count,
-            }
-
-        with _folder_summary_lock:
-            _folder_summary_cache[company_id] = (
-                time.monotonic() + _FOLDER_SUMMARY_TTL_SECONDS,
-                payload,
-            )
-        return item_response(payload)
-    except Exception as e:
-        logger.exception("Error getting bill folder summary")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-# U-478: removed dead pending/single/prepare/move routes and the in-process
-# single-file helper. Live: enqueue → /admin/bill-folder/tick → process_single_item.
-# Do not re-add: -single NameError'd; -move let can_read callers delete PDFs.

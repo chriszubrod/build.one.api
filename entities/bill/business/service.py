@@ -1,7 +1,7 @@
 """Entity contract — Bill.   (maintained with the code; checked by tests/test_entity_docstrings.py)
 
 Owns
-  dbo.Bill vendor A/P document; BillFolderRun/BillFolderRunItem intake queue (persistence in folder_run_repo).
+  dbo.Bill vendor A/P document.
   Line items and attachments live in bill_line_item / child entities, not this service package.
 Invariants
   RBAC: API gated Modules.BILLS via require_module_api; reads/mutations use assert_can_access_bill (dbo.UserCanAccessBill).
@@ -13,20 +13,14 @@ External writes
   MS sharepoint_upload / excel insert|append via ms outbox (ALLOW_MS_WRITES).
   Box push_blob / update_box_excel via box outbox (ALLOW_BOX_WRITES).
 Sprocs
-  AutoFailStaleBillFolderRuns
-  CheckAndCompleteBillFolderRun
-  ClaimNextBillFolderRunItem
   CountBills
   CreateBill
-  CreateBillFolderRun
-  CreateBillFolderRunItem
   DeleteBillById
   DeleteBillCascadeById
   FinalizeBillById
   FindBillForReviewerReply
   GetBillCompletionResult
   LinkBillSourceEmailMessage
-  ReadActiveBillFolderRunItemIds
   ReadBillByBillNumber
   ReadBillByBillNumberAndVendorId
   ReadBillByConversationId
@@ -34,18 +28,12 @@ Sprocs
   ReadBillByPublicId
   ReadBillByQboIdAndRealmId
   ReadBillFirstLineItemProjects
-  ReadBillFolderRunAggregateByPublicId
-  ReadBillFolderRunByPublicId
-  ReadBillFolderRunItemErrorsByRunPublicId
   ReadBillQboLinkInfo
   ReadBillSlimBySourceEmailMessageId
   ReadBills
   ReadBillsPaginated
   SetBillQboIdentity
   UpdateBillById
-  UpdateBillFolderRunByPublicId
-  UpdateBillFolderRunItemOnFailure
-  UpdateBillFolderRunItemOnSuccess
   UpsertBillCompletionResult
 """
 # Python Standard Library Imports
@@ -596,10 +584,9 @@ class BillService:
         # it in via their email reply (the reviewer-reply automation hooks
         # parse it back out).
         #
-        # The bill-folder pipeline doesn't pass user_id and therefore never
-        # reaches this hook regardless — folder bills land as plain drafts
-        # and the user must click Submit for Review on the BillEdit page
-        # after coding the line items. Manual UI creates are the same shape.
+        # Manual UI creates don't pass user_id and therefore never reach
+        # this hook — they land as plain drafts and the user must click
+        # Submit for Review on the BillEdit page after coding the line items.
         #
         # The notification hook itself lives in ReviewService.create's Bill
         # block, so any future caller that writes a Submitted Review row

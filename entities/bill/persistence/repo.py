@@ -395,7 +395,7 @@ class BillRepository:
     def link_source_email_message(self, *, bill_id: int, source_email_message_id: int) -> bool:
         """Idempotent backfill of Bill.SourceEmailMessageId. Used by
         BillService.create() when a duplicate is detected: if the
-        existing Bill came in via a non-email path (e.g. bill_folder)
+        existing Bill came in via a non-email path (e.g. manual UI entry)
         and has no source email linked, this stamps the link so the
         email-driven dedup audit trail is preserved.
 

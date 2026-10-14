@@ -22,7 +22,11 @@ from shared.api.money import to_decimal_or_none
 from shared.api.responses import list_response, item_response, accepted_response, raise_workflow_error, raise_not_found
 from shared.lifecycle.terminal_lock import StatusLockedError
 from shared.authz.provenance import recorded_review_conversation_ids
-from entities.email_message.business.service import MailboxPollService, ReviewReplyCopyError
+from entities.email_message.business.service import (
+    MailboxPollService,
+    ReviewReplyCopyError,
+    review_reply_item,
+)
 from shared.database import get_connection
 from shared.lifecycle.resolver import LIFECYCLE_STATUSES, attach_lifecycle
 from shared.lifecycle.completion_gate import HoldingCodeRefused
@@ -436,18 +440,7 @@ def sync_review_replies_router(
             err.message,
         )
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY)
-    data = [
-        {
-            "email_message_public_id": m.public_id,
-            "from_address": m.from_address,
-            "from_name": m.from_name,
-            "received_datetime": m.received_datetime,
-            "subject": m.subject,
-            "body_preview": m.body_preview,
-        }
-        for m in messages
-    ]
-    return list_response(data)
+    return list_response([review_reply_item(m) for m in messages])
 
 
 @router.get("/get/bill/{public_id}")

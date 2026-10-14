@@ -60,6 +60,17 @@ logger = logging.getLogger(__name__)
 REVIEWER_REPLY_STATUS = "reviewer_reply"
 
 
+def review_reply_item(m: EmailMessage) -> dict:
+    return {
+        "email_message_public_id": m.public_id,
+        "from_address": m.from_address,
+        "from_name": m.from_name,
+        "received_datetime": m.received_datetime,
+        "subject": m.subject,
+        "body_preview": m.body_preview,
+    }
+
+
 def _email_poll_paused() -> bool:
     """True when operator set PAUSE_EMAIL_POLL (same values as /admin/email/poll)."""
     pause_flag = (os.environ.get("PAUSE_EMAIL_POLL") or "").strip().lower()
@@ -727,6 +738,7 @@ class MailboxPollService:
         for conversation_id in ids:
             escaped = conversation_id.replace("'", "''")
             filter_query = (
+                # Graph requires the $orderby property to appear in $filter.
                 "receivedDateTime ge 2000-01-01T00:00:00Z and "
                 f"conversationId eq '{escaped}'"
             )
@@ -759,22 +771,21 @@ class MailboxPollService:
                     ingest_errors[0],
                 )
 
-        seen: dict[int, EmailMessage] = {}
+        seen: set[int] = set()
         ordered: list[EmailMessage] = []
-        em_repo = EmailMessageRepository()
         for conversation_id in ids:
-            for msg in em_repo.read_by_conversation_id(
+            for msg in self.message_repo.read_by_conversation_id(
                 conversation_id=conversation_id,
                 max_rows=500,
             ):
-                folder = (getattr(msg, "folder", None) or "").strip().lower()
+                folder = (msg.folder or "").strip().lower()
                 if folder != "inbox":
                     continue
-                mid = getattr(msg, "id", None)
+                mid = msg.id
                 if mid is not None and mid in seen:
                     continue
                 if mid is not None:
-                    seen[mid] = msg
+                    seen.add(mid)
                 ordered.append(msg)
 
         ordered.sort(

@@ -144,13 +144,10 @@ def _recorded_and_legacy_subjects_from_send_mail_rows(
     return recorded, notification_subjects
 
 
-def recorded_review_conversation_ids(
+def _send_mail_review_rows(
     entity_type: str,
     entity_public_id: str,
-) -> set[str]:
-    """Non-empty ``conversation_id`` values from completed ``send_mail`` outbox
-    payloads for this document (exact, case-sensitive). Same row filters as
-    ``expected_review_thread_conversation_ids`` uses for its recorded path."""
+) -> tuple[set[str], set[str]]:
     from integrations.ms.outbox.persistence.repo import MsOutboxRepository
 
     rows = MsOutboxRepository().read_completed_by_entity(
@@ -158,9 +155,19 @@ def recorded_review_conversation_ids(
         entity_public_id=entity_public_id,
         kind="send_mail",
     )
-    recorded, _ = _recorded_and_legacy_subjects_from_send_mail_rows(
+    return _recorded_and_legacy_subjects_from_send_mail_rows(
         rows, entity_public_id,
     )
+
+
+def recorded_review_conversation_ids(
+    entity_type: str,
+    entity_public_id: str,
+) -> set[str]:
+    """Non-empty ``conversation_id`` values from completed ``send_mail`` outbox
+    payloads for this document (exact, case-sensitive). Same row filters as
+    ``expected_review_thread_conversation_ids`` uses for its recorded path."""
+    recorded, _ = _send_mail_review_rows(entity_type, entity_public_id)
     return recorded
 
 
@@ -181,19 +188,13 @@ def expected_review_thread_conversation_ids(
     ``reply_conversation_id`` whose subject exactly equals a payload ``subject``.
     """
     from entities.email_message.persistence.repo import EmailMessageRepository
-    from integrations.ms.outbox.persistence.repo import MsOutboxRepository
 
     reply_conv = (reply_conversation_id or "").strip()
     if not reply_conv:
         return set()
 
-    rows = MsOutboxRepository().read_completed_by_entity(
-        entity_type=entity_type,
-        entity_public_id=entity_public_id,
-        kind="send_mail",
-    )
-    recorded, notification_subjects = _recorded_and_legacy_subjects_from_send_mail_rows(
-        rows, entity_public_id,
+    recorded, notification_subjects = _send_mail_review_rows(
+        entity_type, entity_public_id,
     )
 
     if recorded:

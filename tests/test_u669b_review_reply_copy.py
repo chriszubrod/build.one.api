@@ -2,15 +2,15 @@
 
 from __future__ import annotations
 
+import importlib
 import inspect
 import json
-from datetime import datetime
+from contextlib import contextmanager
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
 from fastapi import HTTPException
-from fastapi.params import Depends as DependsParam
 from fastapi.testclient import TestClient
 
 from app import app
@@ -19,6 +19,9 @@ from entities.email_message.business.service import MailboxPollService
 from shared.access import EntityNotAccessibleError
 from shared.api.errors import ApiError, ErrorCode
 from shared.api.responses import STATUS_LOCKED_PREFIX, list_response
+from shared.rbac_constants import Modules
+from tests.test_review_route_rbac import _assert_current_user_rbac
+from tests.test_u563b_review_thread_anchor import _outbox_row, _outbox_row_raw_payload
 
 REVIEWER_REPLY_STATUS = "reviewer_reply"
 
@@ -34,27 +37,33 @@ PRE_CUTOFF = "2026-09-29 12:00:00"
 BILL_SYNC_PATH = f"/api/v1/bill/{BILL_PID}/review-replies/sync"
 EXP_SYNC_PATH = f"/api/v1/expense/{EXP_PID}/review-replies/sync"
 
+SYNC_ROUTE = (
+    (
+        "entities.bill.api.router",
+        "BillService",
+        "Bill",
+        BILL_PID,
+        "Bills",
+        BILL_SYNC_PATH,
+        "Bill",
+        1,
+    ),
+    (
+        "entities.expense.api.router",
+        "ExpenseService",
+        "Expense",
+        EXP_PID,
+        Modules.EXPENSES,
+        EXP_SYNC_PATH,
+        "Expense",
+        99,
+    ),
+)
 
-def _outbox_row(
-    *,
-    entity_type: str,
-    entity_public_id: str,
-    conversation_id: str | None = None,
-    kind: str = "send_mail",
-    payload_override: dict | None = None,
-):
-    payload_obj: dict = {"mode": "draft"}
-    if payload_override is not None:
-        payload_obj = payload_override
-    elif conversation_id is not None:
-        payload_obj["conversation_id"] = conversation_id
-    return SimpleNamespace(
-        kind=kind,
-        entity_type=entity_type,
-        entity_public_id=entity_public_id,
-        payload=json.dumps(payload_obj),
-        created_datetime=PRE_CUTOFF,
-    )
+
+@pytest.fixture(autouse=True)
+def _clear_pause_email_poll_env(monkeypatch):
+    monkeypatch.delenv("PAUSE_EMAIL_POLL", raising=False)
 
 
 @pytest.fixture
@@ -83,6 +92,51 @@ def _patch_outbox(rows):
     ), outbox_mock
 
 
+@contextmanager
+def _patch_copy_review_thread_graph(
+    svc,
+    *,
+    settings,
+    list_mock,
+    ingest_mock=None,
+    message_repo=None,
+):
+    with patch(
+        "entities.email_message.business.service.config.Settings",
+        return_value=settings,
+    ), patch(
+        "entities.email_message.business.service.mail_client.list_messages",
+        list_mock,
+    ):
+        ingest_patch = (
+            patch.object(svc, "_ingest_messages", ingest_mock)
+            if ingest_mock is not None
+            else None
+        )
+        repo_patch = (
+            patch.object(svc, "message_repo", message_repo)
+            if message_repo is not None
+            else None
+        )
+        if ingest_patch is not None:
+            ingest_patch.start()
+        if repo_patch is not None:
+            repo_patch.start()
+        try:
+            yield
+        finally:
+            if repo_patch is not None:
+                repo_patch.stop()
+            if ingest_patch is not None:
+                ingest_patch.stop()
+
+
+def _stub_ingest_message_repos(svc):
+    svc.message_repo.read_by_graph_message_id = MagicMock(return_value=None)
+    svc.message_repo.upsert = MagicMock(return_value=SimpleNamespace(id=1))
+    svc.attachment_repo.read_by_email_message_id = MagicMock(return_value=[])
+
+
 # ---------------------------------------------------------------------------
 # recorded_review_conversation_ids
 # ---------------------------------------------------------------------------
@@ -96,11 +150,15 @@ def test_recorded_review_conversation_ids_returns_exact_ids_for_entity():
             entity_type="Bill",
             entity_public_id=BILL_PID,
             conversation_id=RECORDED_CONV,
+            subject=None,
+            created_datetime=PRE_CUTOFF,
         ),
         _outbox_row(
             entity_type="Bill",
             entity_public_id=BILL_PID,
             conversation_id="AAQkADSecondThread",
+            subject=None,
+            created_datetime=PRE_CUTOFF,
         ),
     ]
     ob_patch, outbox_mock = _patch_outbox(rows)
@@ -124,11 +182,15 @@ def test_recorded_review_conversation_ids_ignores_other_entity_rows():
             entity_type="Bill",
             entity_public_id="other-bill-pub",
             conversation_id=OTHER_ENTITY_CONV,
+            subject=None,
+            created_datetime=PRE_CUTOFF,
         ),
         _outbox_row(
             entity_type="Bill",
             entity_public_id=BILL_PID,
             conversation_id=RECORDED_CONV,
+            subject=None,
+            created_datetime=PRE_CUTOFF,
         ),
     ]
     with _patch_outbox(rows)[0]:
@@ -144,12 +206,16 @@ def test_recorded_review_conversation_ids_skips_non_send_mail_kind_on_row():
             entity_public_id=BILL_PID,
             conversation_id=RECORDED_CONV,
             kind="send_mail",
+            subject=None,
+            created_datetime=PRE_CUTOFF,
         ),
         _outbox_row(
             entity_type="Bill",
             entity_public_id=BILL_PID,
             conversation_id="AAQkADWrongKind",
             kind="update_excel",
+            subject=None,
+            created_datetime=PRE_CUTOFF,
         ),
     ]
     with _patch_outbox(rows)[0]:
@@ -169,13 +235,9 @@ def test_recorded_review_conversation_ids_skips_non_send_mail_kind_on_row():
 def test_recorded_review_conversation_ids_skips_bad_payloads(payload):
     from shared.authz.provenance import recorded_review_conversation_ids
 
-    row = SimpleNamespace(
-        kind="send_mail",
-        entity_type="Bill",
-        entity_public_id=BILL_PID,
-        payload=payload,
-        created_datetime=PRE_CUTOFF,
-    )
+    row = _outbox_row_raw_payload(payload)
+    row.entity_public_id = BILL_PID
+    row.created_datetime = PRE_CUTOFF
     with _patch_outbox([row])[0]:
         assert recorded_review_conversation_ids("Bill", BILL_PID) == set()
 
@@ -191,6 +253,8 @@ def test_recorded_and_expected_helpers_consistent_on_recorded_fixture():
             entity_type="Bill",
             entity_public_id=BILL_PID,
             conversation_id=RECORDED_CONV,
+            subject=None,
+            created_datetime=PRE_CUTOFF,
         ),
     ]
     ob_patch, _ = _patch_outbox(rows)
@@ -270,12 +334,12 @@ def test_copy_review_thread_replies_filter_escaping_and_ingest():
         read_by_conversation_id=MagicMock(return_value=[sent_row, inbox_row])
     )
 
-    with patch("entities.email_message.business.service.config.Settings", return_value=settings), patch(
-        "entities.email_message.business.service.mail_client.list_messages",
-        list_mock,
-    ), patch.object(svc, "_ingest_messages", ingest_mock), patch(
-        "entities.email_message.business.service.EmailMessageRepository",
-        return_value=em_repo,
+    with _patch_copy_review_thread_graph(
+        svc,
+        settings=settings,
+        list_mock=list_mock,
+        ingest_mock=ingest_mock,
+        message_repo=em_repo,
     ):
         result = svc.copy_review_thread_replies([CONV_WITH_QUOTE])
 
@@ -356,12 +420,12 @@ def test_copy_review_thread_replies_two_conversations_dedupes_and_sorts(caplog):
         )
     )
 
-    with patch("entities.email_message.business.service.config.Settings", return_value=settings), patch(
-        "entities.email_message.business.service.mail_client.list_messages",
-        list_mock,
-    ), patch.object(svc, "_ingest_messages", ingest_mock), patch(
-        "entities.email_message.business.service.EmailMessageRepository",
-        return_value=em_repo,
+    with _patch_copy_review_thread_graph(
+        svc,
+        settings=settings,
+        list_mock=list_mock,
+        ingest_mock=ingest_mock,
+        message_repo=em_repo,
     ), caplog.at_level("WARNING"):
         result = svc.copy_review_thread_replies([CONV_A, CONV_B])
 
@@ -405,10 +469,12 @@ def test_copy_review_thread_replies_raises_when_email_poll_paused(
     list_mock = MagicMock()
     ingest_mock = MagicMock()
 
-    with patch("entities.email_message.business.service.config.Settings", return_value=settings), patch(
-        "entities.email_message.business.service.mail_client.list_messages",
-        list_mock,
-    ), patch.object(svc, "_ingest_messages", ingest_mock):
+    with _patch_copy_review_thread_graph(
+        svc,
+        settings=settings,
+        list_mock=list_mock,
+        ingest_mock=ingest_mock,
+    ):
         with pytest.raises(ReviewReplyCopyError) as exc_info:
             svc.copy_review_thread_replies([RECORDED_CONV])
 
@@ -442,12 +508,12 @@ def test_copy_review_thread_replies_runs_when_email_poll_not_paused(
     ingest_mock = MagicMock(return_value=(1, 0, []))
     em_repo = MagicMock(read_by_conversation_id=MagicMock(return_value=[inbox_row]))
 
-    with patch("entities.email_message.business.service.config.Settings", return_value=settings), patch(
-        "entities.email_message.business.service.mail_client.list_messages",
-        list_mock,
-    ), patch.object(svc, "_ingest_messages", ingest_mock), patch(
-        "entities.email_message.business.service.EmailMessageRepository",
-        return_value=em_repo,
+    with _patch_copy_review_thread_graph(
+        svc,
+        settings=settings,
+        list_mock=list_mock,
+        ingest_mock=ingest_mock,
+        message_repo=em_repo,
     ):
         result = svc.copy_review_thread_replies([RECORDED_CONV])
 
@@ -463,7 +529,10 @@ def test_copy_review_thread_replies_non_200_raises():
     settings = SimpleNamespace(invoice_inbox_email=MAILBOX)
     list_mock = MagicMock(return_value={"status_code": 503, "message": "graph down"})
 
-    with patch("entities.email_message.business.service.config.Settings", return_value=settings), patch(
+    with patch(
+        "entities.email_message.business.service.config.Settings",
+        return_value=settings,
+    ), patch(
         "entities.email_message.business.service.mail_client.list_messages",
         list_mock,
     ):
@@ -481,51 +550,43 @@ def _minimal_graph_summary(message_id: str = "graph-msg-1"):
     return {"message_id": message_id, "categories": []}
 
 
-def test_ingest_messages_default_status_none_inbox_is_pending():
+@pytest.mark.parametrize(
+    "folder,default_status,expected",
+    [
+        ("inbox", None, "pending"),
+        ("sentitems", None, "outbound"),
+        ("inbox", REVIEWER_REPLY_STATUS, REVIEWER_REPLY_STATUS),
+    ],
+)
+def test_ingest_messages_default_processing_status(folder, default_status, expected):
     svc = MailboxPollService()
-    svc.message_repo.read_by_graph_message_id = MagicMock(return_value=None)
-    svc.message_repo.upsert = MagicMock(return_value=SimpleNamespace(id=1))
-    svc.attachment_repo.read_by_email_message_id = MagicMock(return_value=[])
+    _stub_ingest_message_repos(svc)
 
     with patch(
         "entities.email_message.business.service.mail_client.get_message",
         return_value={
             "status_code": 200,
-            "email": {"conversation_id": "c1", "from_email": "vendor@x.com"},
+            "email": {
+                "conversation_id": "c1",
+                "from_email": "vendor@x.com" if folder == "inbox" else None,
+            },
         },
     ):
-        svc._ingest_messages(
-            messages=[_minimal_graph_summary()],
-            mailbox=MAILBOX,
-            folder="inbox",
-        )
+        kwargs = {
+            "messages": [_minimal_graph_summary()],
+            "mailbox": MAILBOX,
+            "folder": folder,
+        }
+        if default_status is not None:
+            kwargs["default_status"] = default_status
+        svc._ingest_messages(**kwargs)
 
-    assert svc.message_repo.upsert.call_args.kwargs["default_processing_status"] == "pending"
-
-
-def test_ingest_messages_default_status_none_sentitems_is_outbound():
-    svc = MailboxPollService()
-    svc.message_repo.read_by_graph_message_id = MagicMock(return_value=None)
-    svc.message_repo.upsert = MagicMock(return_value=SimpleNamespace(id=1))
-
-    with patch(
-        "entities.email_message.business.service.mail_client.get_message",
-        return_value={"status_code": 200, "email": {"conversation_id": "c1"}},
-    ):
-        svc._ingest_messages(
-            messages=[_minimal_graph_summary()],
-            mailbox=MAILBOX,
-            folder="sentitems",
-        )
-
-    assert svc.message_repo.upsert.call_args.kwargs["default_processing_status"] == "outbound"
+    assert svc.message_repo.upsert.call_args.kwargs["default_processing_status"] == expected
 
 
 def test_ingest_messages_download_attachments_false_skips_attachment_work():
     svc = MailboxPollService()
-    svc.message_repo.read_by_graph_message_id = MagicMock(return_value=None)
-    svc.message_repo.upsert = MagicMock(return_value=SimpleNamespace(id=1))
-    svc.attachment_repo.read_by_email_message_id = MagicMock(return_value=[])
+    _stub_ingest_message_repos(svc)
 
     with patch(
         "entities.email_message.business.service.mail_client.get_message",
@@ -552,9 +613,7 @@ def test_ingest_messages_download_attachments_false_skips_attachment_work():
 
 def test_ingest_messages_download_attachments_true_still_downloads():
     svc = MailboxPollService()
-    svc.message_repo.read_by_graph_message_id = MagicMock(return_value=None)
-    svc.message_repo.upsert = MagicMock(return_value=SimpleNamespace(id=1))
-    svc.attachment_repo.read_by_email_message_id = MagicMock(return_value=[])
+    _stub_ingest_message_repos(svc)
 
     with patch(
         "entities.email_message.business.service.mail_client.get_message",
@@ -599,71 +658,64 @@ def test_ingest_messages_self_sent_dropped_with_reviewer_reply_status():
     svc.message_repo.upsert.assert_not_called()
 
 
-def test_ingest_messages_explicit_default_status_passed_to_upsert():
-    svc = MailboxPollService()
-    svc.message_repo.read_by_graph_message_id = MagicMock(return_value=None)
-    svc.message_repo.upsert = MagicMock(return_value=SimpleNamespace(id=1))
-    svc.attachment_repo.read_by_email_message_id = MagicMock(return_value=[])
+# ---------------------------------------------------------------------------
+# Bill / Expense route — sync_review_replies_router
+# ---------------------------------------------------------------------------
 
-    with patch(
-        "entities.email_message.business.service.mail_client.get_message",
-        return_value={
-            "status_code": 200,
-            "email": {"conversation_id": "c1", "from_email": "pm@example.com"},
-        },
-    ):
-        svc._ingest_messages(
-            messages=[_minimal_graph_summary()],
-            mailbox=MAILBOX,
-            folder="inbox",
-            default_status=REVIEWER_REPLY_STATUS,
-        )
 
-    assert (
-        svc.message_repo.upsert.call_args.kwargs["default_processing_status"]
-        == REVIEWER_REPLY_STATUS
+def _draft_entity(public_id: str):
+    entity = MagicMock()
+    entity.public_id = public_id
+    entity.is_draft = True
+    return entity
+
+
+@pytest.mark.parametrize(
+    "router_module_name,service_attr,entity_type,public_id,module,sync_path,entity_label,entity_id",
+    SYNC_ROUTE,
+    ids=["bill", "expense"],
+)
+def test_sync_route_rbac(
+    router_module_name,
+    service_attr,
+    entity_type,
+    public_id,
+    module,
+    sync_path,
+    entity_label,
+    entity_id,
+):
+    router = importlib.import_module(router_module_name)
+    _assert_current_user_rbac(
+        router.sync_review_replies_router,
+        module,
+        "can_update",
     )
 
 
-# ---------------------------------------------------------------------------
-# Bill route — sync_review_replies_router
-# ---------------------------------------------------------------------------
-
-
-def _assert_rbac(endpoint, *, module_name: str):
-    sig = inspect.signature(endpoint)
-    param = sig.parameters["current_user"]
-    assert isinstance(param.default, DependsParam)
-    inner = param.default.dependency
-    assert inner.__qualname__ == "require_module_api.<locals>._dependency"
-    nonlocals = inspect.getclosurevars(inner).nonlocals
-    assert nonlocals.get("module_name") == module_name
-    assert nonlocals.get("permission") == "can_update"
-
-
-def _draft_bill():
-    bill = MagicMock()
-    bill.public_id = BILL_PID
-    bill.is_draft = True
-    return bill
-
-
-def test_bill_sync_route_rbac():
-    from entities.bill.api import router as bill_router
-
-    _assert_rbac(bill_router.sync_review_replies_router, module_name="Bills")
-
-
-def test_bill_sync_route_404_not_found():
-    from entities.bill.api import router as bill_router
-
-    with patch.object(bill_router, "BillService") as bill_svc, patch.object(
-        bill_router, "recorded_review_conversation_ids"
-    ) as recorded, patch.object(bill_router, "MailboxPollService") as poll_svc:
-        bill_svc.return_value.read_by_public_id.return_value = None
+@pytest.mark.parametrize(
+    "router_module_name,service_attr,entity_type,public_id,module,sync_path,entity_label,entity_id",
+    SYNC_ROUTE,
+    ids=["bill", "expense"],
+)
+def test_sync_route_404_not_found(
+    router_module_name,
+    service_attr,
+    entity_type,
+    public_id,
+    module,
+    sync_path,
+    entity_label,
+    entity_id,
+):
+    router = importlib.import_module(router_module_name)
+    with patch.object(router, service_attr) as entity_svc, patch.object(
+        router, "recorded_review_conversation_ids"
+    ) as recorded, patch.object(router, "MailboxPollService") as poll_svc:
+        entity_svc.return_value.read_by_public_id.return_value = None
         with pytest.raises(ApiError) as exc_info:
-            bill_router.sync_review_replies_router(
-                public_id=BILL_PID,
+            router.sync_review_replies_router(
+                public_id=public_id,
                 current_user={"sub": "u"},
             )
         assert exc_info.value.status_code == 404
@@ -671,18 +723,31 @@ def test_bill_sync_route_404_not_found():
         poll_svc.assert_not_called()
 
 
-def test_bill_sync_route_422_status_locked_when_not_draft():
-    from entities.bill.api import router as bill_router
-
-    with patch.object(bill_router, "BillService") as bill_svc, patch.object(
-        bill_router, "recorded_review_conversation_ids"
-    ) as recorded, patch.object(bill_router, "MailboxPollService") as poll_svc:
-        bill_svc.return_value.read_by_public_id.return_value = MagicMock(
-            is_draft=False, public_id=BILL_PID
+@pytest.mark.parametrize(
+    "router_module_name,service_attr,entity_type,public_id,module,sync_path,entity_label,entity_id",
+    SYNC_ROUTE,
+    ids=["bill", "expense"],
+)
+def test_sync_route_422_status_locked_when_not_draft(
+    router_module_name,
+    service_attr,
+    entity_type,
+    public_id,
+    module,
+    sync_path,
+    entity_label,
+    entity_id,
+):
+    router = importlib.import_module(router_module_name)
+    with patch.object(router, service_attr) as entity_svc, patch.object(
+        router, "recorded_review_conversation_ids"
+    ) as recorded, patch.object(router, "MailboxPollService") as poll_svc:
+        entity_svc.return_value.read_by_public_id.return_value = MagicMock(
+            is_draft=False, public_id=public_id
         )
         with pytest.raises(ApiError) as exc_info:
-            bill_router.sync_review_replies_router(
-                public_id=BILL_PID,
+            router.sync_review_replies_router(
+                public_id=public_id,
                 current_user={"sub": "u"},
             )
         assert exc_info.value.status_code == 422
@@ -692,249 +757,197 @@ def test_bill_sync_route_422_status_locked_when_not_draft():
         poll_svc.assert_not_called()
 
 
-def test_bill_sync_route_422_no_recorded_thread():
-    from entities.bill.api import router as bill_router
-
-    with patch.object(bill_router, "BillService") as bill_svc, patch.object(
-        bill_router, "recorded_review_conversation_ids",
+@pytest.mark.parametrize(
+    "router_module_name,service_attr,entity_type,public_id,module,sync_path,entity_label,entity_id",
+    SYNC_ROUTE,
+    ids=["bill", "expense"],
+)
+def test_sync_route_422_no_recorded_thread(
+    router_module_name,
+    service_attr,
+    entity_type,
+    public_id,
+    module,
+    sync_path,
+    entity_label,
+    entity_id,
+):
+    router = importlib.import_module(router_module_name)
+    with patch.object(router, service_attr) as entity_svc, patch.object(
+        router, "recorded_review_conversation_ids",
         return_value=set(),
-    ) as recorded, patch.object(bill_router, "MailboxPollService") as poll_svc:
-        bill_svc.return_value.read_by_public_id.return_value = _draft_bill()
+    ) as recorded, patch.object(router, "MailboxPollService") as poll_svc:
+        entity_svc.return_value.read_by_public_id.return_value = _draft_entity(public_id)
         with pytest.raises(HTTPException) as exc_info:
-            bill_router.sync_review_replies_router(
-                public_id=BILL_PID,
+            router.sync_review_replies_router(
+                public_id=public_id,
                 current_user={"sub": "u"},
             )
         assert exc_info.value.status_code == 422
         assert exc_info.value.detail == "no recorded review thread for this document"
-        recorded.assert_called_once_with("Bill", BILL_PID)
+        recorded.assert_called_once_with(entity_type, public_id)
         poll_svc.assert_not_called()
 
 
-def test_bill_sync_route_502_on_copy_error(caplog):
-    from entities.bill.api import router as bill_router
+@pytest.mark.parametrize(
+    "router_module_name,service_attr,entity_type,public_id,module,sync_path,entity_label,entity_id,"
+    "copy_err_status,copy_err_msg,log_fragment",
+    [
+        (
+            *SYNC_ROUTE[0],
+            502,
+            "graph",
+            "502",
+        ),
+        (
+            *SYNC_ROUTE[1],
+            503,
+            "fail",
+            "503",
+        ),
+    ],
+    ids=["bill", "expense"],
+)
+def test_sync_route_502_on_copy_error(
+    caplog,
+    router_module_name,
+    service_attr,
+    entity_type,
+    public_id,
+    module,
+    sync_path,
+    entity_label,
+    entity_id,
+    copy_err_status,
+    copy_err_msg,
+    log_fragment,
+):
     from entities.email_message.business.service import ReviewReplyCopyError
 
-    with patch.object(bill_router, "BillService") as bill_svc, patch.object(
-        bill_router, "recorded_review_conversation_ids",
+    router = importlib.import_module(router_module_name)
+    with patch.object(router, service_attr) as entity_svc, patch.object(
+        router, "recorded_review_conversation_ids",
         return_value={RECORDED_CONV},
-    ) as recorded, patch.object(bill_router, "MailboxPollService") as poll_svc:
-        bill_svc.return_value.read_by_public_id.return_value = _draft_bill()
+    ) as recorded, patch.object(router, "MailboxPollService") as poll_svc:
+        entity_svc.return_value.read_by_public_id.return_value = _draft_entity(public_id)
         poll_svc.return_value.copy_review_thread_replies.side_effect = ReviewReplyCopyError(
-            502, "graph"
+            copy_err_status, copy_err_msg
         )
         with caplog.at_level("WARNING"), pytest.raises(HTTPException) as exc_info:
-            bill_router.sync_review_replies_router(
-                public_id=BILL_PID,
+            router.sync_review_replies_router(
+                public_id=public_id,
                 current_user={"sub": "u"},
             )
         assert exc_info.value.status_code == 502
-        recorded.assert_called_once_with("Bill", BILL_PID)
-        assert any("502" in r.message and "graph" in r.message for r in caplog.records)
+        recorded.assert_called_once_with(entity_type, public_id)
+        assert any(
+            log_fragment in r.message and copy_err_msg in r.message
+            for r in caplog.records
+        )
 
 
-def test_bill_sync_route_200_envelope():
-    from entities.bill.api import router as bill_router
-
-    em = EmailMessage(
-        public_id="reply-pub",
-        from_address="pm@example.com",
-        from_name="PM",
-        received_datetime="2026-10-01T12:00:00Z",
-        subject="Re: bill",
-        body_preview="approved",
-    )
-    with patch.object(bill_router, "BillService") as bill_svc, patch.object(
-        bill_router, "recorded_review_conversation_ids",
+@pytest.mark.parametrize(
+    "router_module_name,service_attr,entity_type,public_id,module,sync_path,entity_label,entity_id,"
+    "em_kwargs,expected_item",
+    [
+        (
+            *SYNC_ROUTE[0],
+            {
+                "public_id": "reply-pub",
+                "from_address": "pm@example.com",
+                "from_name": "PM",
+                "received_datetime": "2026-10-01T12:00:00Z",
+                "subject": "Re: bill",
+                "body_preview": "approved",
+            },
+            {
+                "email_message_public_id": "reply-pub",
+                "from_address": "pm@example.com",
+                "from_name": "PM",
+                "received_datetime": "2026-10-01T12:00:00Z",
+                "subject": "Re: bill",
+                "body_preview": "approved",
+            },
+        ),
+        (
+            *SYNC_ROUTE[1],
+            {
+                "public_id": "exp-reply",
+                "from_address": "owner@example.com",
+                "from_name": "Owner",
+                "received_datetime": "2026-10-02T09:00:00Z",
+                "subject": "Re: expense",
+                "body_preview": "reject",
+            },
+            {
+                "email_message_public_id": "exp-reply",
+                "from_address": "owner@example.com",
+                "from_name": "Owner",
+                "received_datetime": "2026-10-02T09:00:00Z",
+                "subject": "Re: expense",
+                "body_preview": "reject",
+            },
+        ),
+    ],
+    ids=["bill", "expense"],
+)
+def test_sync_route_200_envelope(
+    router_module_name,
+    service_attr,
+    entity_type,
+    public_id,
+    module,
+    sync_path,
+    entity_label,
+    entity_id,
+    em_kwargs,
+    expected_item,
+):
+    router = importlib.import_module(router_module_name)
+    em = EmailMessage(**em_kwargs)
+    with patch.object(router, service_attr) as entity_svc, patch.object(
+        router, "recorded_review_conversation_ids",
         return_value={RECORDED_CONV},
-    ) as recorded, patch.object(bill_router, "MailboxPollService") as poll_svc:
-        bill_svc.return_value.read_by_public_id.return_value = _draft_bill()
+    ) as recorded, patch.object(router, "MailboxPollService") as poll_svc:
+        entity_svc.return_value.read_by_public_id.return_value = _draft_entity(public_id)
         poll_svc.return_value.copy_review_thread_replies.return_value = [em]
 
-        body = bill_router.sync_review_replies_router(
-            public_id=BILL_PID,
+        body = router.sync_review_replies_router(
+            public_id=public_id,
             current_user={"sub": "u"},
         )
 
-    item = {
-        "email_message_public_id": "reply-pub",
-        "from_address": "pm@example.com",
-        "from_name": "PM",
-        "received_datetime": "2026-10-01T12:00:00Z",
-        "subject": "Re: bill",
-        "body_preview": "approved",
-    }
-    assert body == list_response([item])
-    recorded.assert_called_once_with("Bill", BILL_PID)
+    assert body == list_response([expected_item])
+    recorded.assert_called_once_with(entity_type, public_id)
     poll_svc.return_value.copy_review_thread_replies.assert_called_once_with({RECORDED_CONV})
 
 
-def test_bill_sync_route_integration_entity_not_accessible_404(
-    api_client, clear_dependency_overrides
+@pytest.mark.parametrize(
+    "router_module_name,service_attr,entity_type,public_id,module,sync_path,entity_label,entity_id",
+    SYNC_ROUTE,
+    ids=["bill", "expense"],
+)
+def test_sync_route_integration_entity_not_accessible_404(
+    api_client,
+    clear_dependency_overrides,
+    router_module_name,
+    service_attr,
+    entity_type,
+    public_id,
+    module,
+    sync_path,
+    entity_label,
+    entity_id,
 ):
-    from entities.bill.api import router as bill_router
-
-    _override_sync_rbac(bill_router)
-    with patch.object(bill_router, "BillService") as bill_svc, patch.object(
-        bill_router, "MailboxPollService"
+    router = importlib.import_module(router_module_name)
+    _override_sync_rbac(router)
+    with patch.object(router, service_attr) as entity_svc, patch.object(
+        router, "MailboxPollService"
     ) as poll_svc:
-        bill_svc.return_value.read_by_public_id.side_effect = EntityNotAccessibleError(
-            "Bill", 1
+        entity_svc.return_value.read_by_public_id.side_effect = EntityNotAccessibleError(
+            entity_label, entity_id
         )
-        response = api_client.post(BILL_SYNC_PATH)
-    assert response.status_code == 404
-    assert response.json()["error_code"] == ErrorCode.NOT_FOUND
-    poll_svc.assert_not_called()
-
-
-# ---------------------------------------------------------------------------
-# Expense route
-# ---------------------------------------------------------------------------
-
-
-def _draft_expense():
-    exp = MagicMock()
-    exp.public_id = EXP_PID
-    exp.is_draft = True
-    return exp
-
-
-def test_expense_sync_route_rbac():
-    from entities.expense.api import router as expense_router
-    from shared.rbac_constants import Modules
-
-    _assert_rbac(
-        expense_router.sync_review_replies_router,
-        module_name=Modules.EXPENSES,
-    )
-
-
-def test_expense_sync_route_404_not_found():
-    from entities.expense.api import router as expense_router
-
-    with patch.object(expense_router, "ExpenseService") as exp_svc, patch.object(
-        expense_router, "recorded_review_conversation_ids"
-    ) as recorded, patch.object(expense_router, "MailboxPollService") as poll_svc:
-        exp_svc.return_value.read_by_public_id.return_value = None
-        with pytest.raises(ApiError) as exc_info:
-            expense_router.sync_review_replies_router(
-                public_id=EXP_PID,
-                current_user={"sub": "u"},
-            )
-        assert exc_info.value.status_code == 404
-        recorded.assert_not_called()
-        poll_svc.assert_not_called()
-
-
-def test_expense_sync_route_422_status_locked_when_not_draft():
-    from entities.expense.api import router as expense_router
-
-    exp = MagicMock(is_draft=False, public_id=EXP_PID)
-    with patch.object(expense_router, "ExpenseService") as exp_svc, patch.object(
-        expense_router, "recorded_review_conversation_ids"
-    ) as recorded, patch.object(expense_router, "MailboxPollService") as poll_svc:
-        exp_svc.return_value.read_by_public_id.return_value = exp
-        with pytest.raises(ApiError) as exc_info:
-            expense_router.sync_review_replies_router(
-                public_id=EXP_PID,
-                current_user={"sub": "u"},
-            )
-        assert exc_info.value.status_code == 422
-        assert exc_info.value.error_code == ErrorCode.STATUS_LOCKED
-        recorded.assert_not_called()
-        poll_svc.assert_not_called()
-
-
-def test_expense_sync_route_422_no_thread():
-    from entities.expense.api import router as expense_router
-
-    with patch.object(expense_router, "ExpenseService") as exp_svc, patch.object(
-        expense_router, "recorded_review_conversation_ids",
-        return_value=set(),
-    ) as recorded, patch.object(expense_router, "MailboxPollService") as poll_svc:
-        exp_svc.return_value.read_by_public_id.return_value = _draft_expense()
-        with pytest.raises(HTTPException) as exc_info:
-            expense_router.sync_review_replies_router(
-                public_id=EXP_PID,
-                current_user={"sub": "u"},
-            )
-        assert exc_info.value.status_code == 422
-        assert exc_info.value.detail == "no recorded review thread for this document"
-        recorded.assert_called_once_with("Expense", EXP_PID)
-        poll_svc.assert_not_called()
-
-
-def test_expense_sync_route_502(caplog):
-    from entities.expense.api import router as expense_router
-    from entities.email_message.business.service import ReviewReplyCopyError
-
-    with patch.object(expense_router, "ExpenseService") as exp_svc, patch.object(
-        expense_router, "recorded_review_conversation_ids",
-        return_value={RECORDED_CONV},
-    ) as recorded, patch.object(expense_router, "MailboxPollService") as poll_svc:
-        exp_svc.return_value.read_by_public_id.return_value = _draft_expense()
-        poll_svc.return_value.copy_review_thread_replies.side_effect = ReviewReplyCopyError(
-            503, "fail"
-        )
-        with caplog.at_level("WARNING"), pytest.raises(HTTPException) as exc_info:
-            expense_router.sync_review_replies_router(
-                public_id=EXP_PID,
-                current_user={"sub": "u"},
-            )
-        assert exc_info.value.status_code == 502
-        recorded.assert_called_once_with("Expense", EXP_PID)
-        assert any("503" in r.message and "fail" in r.message for r in caplog.records)
-
-
-def test_expense_sync_route_200_envelope():
-    from entities.expense.api import router as expense_router
-
-    em = EmailMessage(
-        public_id="exp-reply",
-        from_address="owner@example.com",
-        from_name="Owner",
-        received_datetime="2026-10-02T09:00:00Z",
-        subject="Re: expense",
-        body_preview="reject",
-    )
-    with patch.object(expense_router, "ExpenseService") as exp_svc, patch.object(
-        expense_router, "recorded_review_conversation_ids",
-        return_value={RECORDED_CONV},
-    ) as recorded, patch.object(expense_router, "MailboxPollService") as poll_svc:
-        exp_svc.return_value.read_by_public_id.return_value = _draft_expense()
-        poll_svc.return_value.copy_review_thread_replies.return_value = [em]
-
-        body = expense_router.sync_review_replies_router(
-            public_id=EXP_PID,
-            current_user={"sub": "u"},
-        )
-
-    item = {
-        "email_message_public_id": "exp-reply",
-        "from_address": "owner@example.com",
-        "from_name": "Owner",
-        "received_datetime": "2026-10-02T09:00:00Z",
-        "subject": "Re: expense",
-        "body_preview": "reject",
-    }
-    assert body == list_response([item])
-    recorded.assert_called_once_with("Expense", EXP_PID)
-    poll_svc.return_value.copy_review_thread_replies.assert_called_once_with({RECORDED_CONV})
-
-
-def test_expense_sync_route_integration_entity_not_accessible_404(
-    api_client, clear_dependency_overrides
-):
-    from entities.expense.api import router as expense_router
-
-    _override_sync_rbac(expense_router)
-    with patch.object(expense_router, "ExpenseService") as exp_svc, patch.object(
-        expense_router, "MailboxPollService"
-    ) as poll_svc:
-        exp_svc.return_value.read_by_public_id.side_effect = EntityNotAccessibleError(
-            "Expense", 99
-        )
-        response = api_client.post(EXP_SYNC_PATH)
+        response = api_client.post(sync_path)
     assert response.status_code == 404
     assert response.json()["error_code"] == ErrorCode.NOT_FOUND
     poll_svc.assert_not_called()

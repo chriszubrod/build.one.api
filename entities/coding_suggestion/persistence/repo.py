@@ -15,20 +15,8 @@ from entities.coding_suggestion.business.model import (
     VendorDominantSubCostCodeForBills,
 )
 from shared.database import call_procedure, get_connection, map_database_error
-from shared.db_constraints import _has_error_number
 
 logger = logging.getLogger(__name__)
-
-_BUDGET_UPSERT_PARAM_KEYS = frozenset({"BudgetCheck", "BudgetRemaining"})
-
-
-def _upsert_bill_rejects_budget_params(error: Exception) -> bool:
-    """SQL 8144/8145 when UpsertCodingSuggestionForBill lacks budget columns."""
-    if not isinstance(error, pyodbc.Error):
-        return False
-    text = str(error)
-    return _has_error_number(text, "8144") or _has_error_number(text, "8145")
-
 
 def _normalize_as_of_datetime(as_of):
     """History cutoffs: aware datetimes → UTC naive; naive datetimes → unchanged (UTC)."""
@@ -447,34 +435,13 @@ class CodingSuggestionRepository:
                     params["BudgetCheck"] = budget_check
                 if budget_remaining is not None:
                     params["BudgetRemaining"] = Decimal(str(budget_remaining))
-                # SQL-first rollout is intended; retry without budget params for older procs.
-                budget_params_sent = bool(params.keys() & _BUDGET_UPSERT_PARAM_KEYS)
-                try:
-                    call_procedure(
-                        cursor=cursor,
-                        name="UpsertCodingSuggestionForBill",
-                        params=params,
-                    )
-                except pyodbc.Error as proc_error:
-                    if budget_params_sent and _upsert_bill_rejects_budget_params(
-                        proc_error
-                    ):
-                        logger.warning(
-                            "UpsertCodingSuggestionForBill budget params rejected: %s",
-                            type(proc_error).__name__,
-                        )
-                        fallback_params = {
-                            key: value
-                            for key, value in params.items()
-                            if key not in _BUDGET_UPSERT_PARAM_KEYS
-                        }
-                        call_procedure(
-                            cursor=cursor,
-                            name="UpsertCodingSuggestionForBill",
-                            params=fallback_params,
-                        )
-                    else:
-                        raise
+                # SQL first: the proc must carry @BudgetCheck/@BudgetRemaining before
+                # this code deploys (a proc that lacks them fails loudly here).
+                call_procedure(
+                    cursor=cursor,
+                    name="UpsertCodingSuggestionForBill",
+                    params=params,
+                )
                 return self._from_db(cursor.fetchone())
         except Exception as error:
             logger.error(

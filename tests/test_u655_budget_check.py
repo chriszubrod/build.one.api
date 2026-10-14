@@ -639,18 +639,19 @@ class TestR1RegressionFixes:
         assert result.remaining == Decimal("500.00")
         assert result.evidence["bill_amount"] == Decimal("100")
 
-    def test_r1_2_upsert_retries_without_budget_on_8145(self, monkeypatch):
+    def test_u655b_upsert_rejected_budget_params_fail_loudly(self, monkeypatch):
+        """U-655b: no silent retry without the budget params — a proc that lacks
+        them is a deploy-order defect and must surface, not drop budget data."""
         calls = []
 
         def fake_call_procedure(*, cursor, name, params):
             calls.append(dict(params))
-            if "BudgetCheck" in params:
-                raise pyodbc.Error(
-                    "42000",
-                    "[42000] [Microsoft][ODBC Driver 18 for SQL Server]"
-                    "[SQL Server]@BudgetCheck is not a parameter for procedure "
-                    "'UpsertCodingSuggestionForBill'. (8145)",
-                )
+            raise pyodbc.Error(
+                "42000",
+                "[42000] [Microsoft][ODBC Driver 18 for SQL Server]"
+                "[SQL Server]@BudgetCheck is not a parameter for procedure "
+                "'UpsertCodingSuggestionForBill'. (8145)",
+            )
 
         monkeypatch.setattr(
             "entities.coding_suggestion.persistence.repo.call_procedure",
@@ -665,14 +666,12 @@ class TestR1RegressionFixes:
             ),
         )
         from entities.coding_suggestion.persistence.repo import CodingSuggestionRepository
+        from shared.database import DatabaseOperationError
 
-        CodingSuggestionRepository().upsert_for_bill(
-            bill_id=1,
-            budget_check="no_budget",
-        )
-        assert len(calls) == 2
-        assert "BudgetCheck" in calls[0]
-        assert "BudgetCheck" not in calls[1]
+        with pytest.raises(DatabaseOperationError):
+            CodingSuggestionRepository().upsert_for_bill(bill_id=1, budget_check="no_budget")
+        assert len(calls) == 1
+        assert calls[0]["BudgetCheck"] == "no_budget"
 
     def test_r1_2_upsert_does_not_retry_other_sql_errors(self, monkeypatch):
         def fake_call_procedure(*, cursor, name, params):

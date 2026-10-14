@@ -2,7 +2,9 @@
 import logging
 
 # Third-party Imports
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
+from typing import Optional
+
+from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File
 from fastapi.responses import Response
 
 # Local Imports
@@ -16,8 +18,13 @@ from integrations.ms.sharepoint.driveitem.api.schemas import (
     DriveItemProjectExcelPushDataRequest,
     DriveItemProjectExcelAppendRowsRequest,
     DriveItemProjectExcelClearRangeRequest,
+    SharePointMappingHealthResponse,
+    SharePointMappingHealthRow,
+    classify_sharepoint_mapping_health_status,
 )
 from integrations.ms.sharepoint.driveitem.business.service import MsDriveItemService
+from integrations.ms.sharepoint.driveitem.persistence.repo import MsDriveItemRepository
+from shared.authz import current_is_system_admin, current_user_id
 from integrations.ms.sharepoint.driveitem.connector.project.business.service import DriveItemProjectConnector
 from integrations.ms.sharepoint.driveitem.connector.vendor.business.service import DriveItemVendorConnector
 from integrations.ms.sharepoint.driveitem.connector.project_module.business.service import DriveItemProjectModuleConnector
@@ -314,6 +321,62 @@ def unlink_item_router(
 # =============================================================================
 # DriveItem-Project Connector Endpoints
 # =============================================================================
+
+
+@router.get("/connector/mapping-health")
+def sharepoint_mapping_health_router(
+    status: Optional[str] = Query(
+        default=None,
+        description="Filter by mapping health status: ok, partial, or unmapped",
+    ),
+    current_user: dict = Depends(require_module_api(Modules.QBO_SYNC)),
+):
+    """
+    Read-only audit of SharePoint / Excel project mappings for projects with
+    bill or expense line-item activity. Sorted by 90-day line volume descending.
+    """
+    if status is not None and status not in ("ok", "partial", "unmapped"):
+        raise HTTPException(
+            status_code=422,
+            detail="status must be one of: ok, partial, unmapped",
+        )
+
+    repo = MsDriveItemRepository()
+    raw_rows = repo.read_sharepoint_mapping_health_rows(
+        actor_user_id=current_user_id.get(),
+        actor_is_system_admin=current_is_system_admin.get(),
+    )
+
+    items: list[SharePointMappingHealthRow] = []
+    for row in raw_rows:
+        row_status = classify_sharepoint_mapping_health_status(
+            has_root=row["has_root"],
+            has_bills_folder=row["has_bills_folder"],
+            has_expenses_folder=row["has_expenses_folder"],
+            has_invoices_folder=row["has_invoices_folder"],
+            has_bill_credits_folder=row["has_bill_credits_folder"],
+            has_excel=row["has_excel"],
+        )
+        if status is not None and row_status != status:
+            continue
+        items.append(
+            SharePointMappingHealthRow(
+                status=row_status,
+                **row,
+            )
+        )
+
+    items.sort(
+        key=lambda r: (r.expense_lines_90d + r.bill_lines_90d, r.project_id),
+        reverse=True,
+    )
+
+    payload = SharePointMappingHealthResponse(items=items, count=len(items))
+    return {
+        "message": f"Found {len(items)} project(s)",
+        "status_code": 200,
+        "data": payload.model_dump(),
+    }
 
 
 @router.post("/connector/project")

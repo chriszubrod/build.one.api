@@ -361,6 +361,81 @@ END;
 GO
 
 
-    @PublicId = '0143726e-1155-47b4-9750-f5ea4362a605';
+GO
 
+-- Actor-scoped like dbo.ReadProjects: system admins see all; non-admins only
+-- UserProject rows; NULL @ActorUserId matches no rows (fail closed).
+CREATE OR ALTER PROCEDURE ReadSharePointProjectMappingHealth
+(
+    @ActorUserId BIGINT = NULL,
+    @ActorIsSystemAdmin BIT = 0
+)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    DECLARE @Since DATETIME2(3) = DATEADD(day, -90, SYSUTCDATETIME());
+
+    ;WITH ActiveProjects AS (
+        SELECT DISTINCT [ProjectId]
+        FROM [dbo].[BillLineItem]
+        WHERE [ProjectId] IS NOT NULL
+        UNION
+        SELECT DISTINCT [ProjectId]
+        FROM [dbo].[ExpenseLineItem]
+        WHERE [ProjectId] IS NOT NULL
+    ),
+    BillCounts AS (
+        SELECT [ProjectId], COUNT(*) AS BillLines90d
+        FROM [dbo].[BillLineItem]
+        WHERE [ProjectId] IS NOT NULL
+          AND [CreatedDatetime] >= @Since
+        GROUP BY [ProjectId]
+    ),
+    ExpenseCounts AS (
+        SELECT [ProjectId], COUNT(*) AS ExpenseLines90d
+        FROM [dbo].[ExpenseLineItem]
+        WHERE [ProjectId] IS NOT NULL
+          AND [CreatedDatetime] >= @Since
+        GROUP BY [ProjectId]
+    )
+    SELECT
+        p.[Id] AS ProjectId,
+        p.[Name] AS ProjectName,
+        CASE WHEN dip.[Id] IS NOT NULL THEN 1 ELSE 0 END AS HasRoot,
+        CASE WHEN m_bills.[Id] IS NOT NULL THEN 1 ELSE 0 END AS HasBillsFolder,
+        CASE WHEN m_exp.[Id] IS NOT NULL THEN 1 ELSE 0 END AS HasExpensesFolder,
+        CASE WHEN m_inv.[Id] IS NOT NULL THEN 1 ELSE 0 END AS HasInvoicesFolder,
+        CASE WHEN m_bc.[Id] IS NOT NULL THEN 1 ELSE 0 END AS HasBillCreditsFolder,
+        CASE WHEN dex.[Id] IS NOT NULL THEN 1 ELSE 0 END AS HasExcel,
+        dex.[WorksheetName] AS WorksheetName,
+        ISNULL(bc.[BillLines90d], 0) AS BillLines90d,
+        ISNULL(ec.[ExpenseLines90d], 0) AS ExpenseLines90d
+    FROM [dbo].[Project] p
+    INNER JOIN ActiveProjects ap ON ap.[ProjectId] = p.[Id]
+    LEFT JOIN [ms].[DriveItemProject] dip ON dip.[ProjectId] = p.[Id]
+    LEFT JOIN [dbo].[Module] mod_bills ON mod_bills.[Name] = N'Bills'
+    LEFT JOIN [ms].[DriveItemProjectModule] m_bills
+        ON m_bills.[ProjectId] = p.[Id] AND m_bills.[ModuleId] = mod_bills.[Id]
+    LEFT JOIN [dbo].[Module] mod_exp ON mod_exp.[Name] = N'Expenses'
+    LEFT JOIN [ms].[DriveItemProjectModule] m_exp
+        ON m_exp.[ProjectId] = p.[Id] AND m_exp.[ModuleId] = mod_exp.[Id]
+    LEFT JOIN [dbo].[Module] mod_inv ON mod_inv.[Name] = N'Invoices'
+    LEFT JOIN [ms].[DriveItemProjectModule] m_inv
+        ON m_inv.[ProjectId] = p.[Id] AND m_inv.[ModuleId] = mod_inv.[Id]
+    LEFT JOIN [dbo].[Module] mod_bc ON mod_bc.[Name] = N'Bill Credits'
+    LEFT JOIN [ms].[DriveItemProjectModule] m_bc
+        ON m_bc.[ProjectId] = p.[Id] AND m_bc.[ModuleId] = mod_bc.[Id]
+    LEFT JOIN [ms].[DriveItemProjectExcel] dex ON dex.[ProjectId] = p.[Id]
+    LEFT JOIN BillCounts bc ON bc.[ProjectId] = p.[Id]
+    LEFT JOIN ExpenseCounts ec ON ec.[ProjectId] = p.[Id]
+    WHERE
+        @ActorIsSystemAdmin = 1
+        OR EXISTS (
+            SELECT 1 FROM dbo.[UserProject] up
+            WHERE up.[UserId] = @ActorUserId AND up.[ProjectId] = p.[Id]
+        )
+    ORDER BY (ISNULL(bc.[BillLines90d], 0) + ISNULL(ec.[ExpenseLines90d], 0)) DESC, p.[Id];
+END;
+GO
 

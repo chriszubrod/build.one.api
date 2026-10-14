@@ -35,6 +35,28 @@ from shared.api.money import to_decimal_or_none
 logger = logging.getLogger(__name__)
 
 
+def _record_project_mapping_missing_ms_issue(
+    *,
+    entity_type: str,
+    entity_public_id: str,
+    project_id: int,
+    mapping_kind: str,
+    details: str,
+) -> None:
+    try:
+        from integrations.ms.reconciliation.business.service import MsReconciliationIssueService
+
+        MsReconciliationIssueService().flag_project_mapping_missing(
+            entity_type=entity_type,
+            entity_public_id=entity_public_id,
+            project_id=project_id,
+            mapping_kind=mapping_kind,
+            details=details,
+        )
+    except Exception:
+        logger.exception("ms.reconcile.project_mapping_missing.record_failed")
+
+
 class BillCreditCompleteService:
     """
     Service for orchestrating the complete bill credit process:
@@ -419,6 +441,13 @@ class BillCreditCompleteService:
             )
             
             if not module_folder:
+                _record_project_mapping_missing_ms_issue(
+                    entity_type="BillCredit",
+                    entity_public_id=str(bill_credit.public_id),
+                    project_id=project_id,
+                    mapping_kind="module_folder",
+                    details=f"Module folder not linked for project {project_id}",
+                )
                 return {
                     "success": False,
                     "message": f"Module folder not linked for project {project_id}",
@@ -656,6 +685,13 @@ class BillCreditCompleteService:
             excel_mapping = self.project_excel_connector.get_excel_for_project(project_id=project_id)
 
             if not excel_mapping:
+                _record_project_mapping_missing_ms_issue(
+                    entity_type="BillCredit",
+                    entity_public_id=str(bill_credit.public_id),
+                    project_id=project_id,
+                    mapping_kind="excel",
+                    details=f"Excel workbook not linked for project {project_id}",
+                )
                 return {
                     "success": False,
                     "message": f"Excel workbook not linked for project {project_id}",
@@ -921,6 +957,14 @@ class BillCreditCompleteService:
             # --- resolve workbook location (once) ---
             excel_mapping = self.project_excel_connector.get_excel_for_project(project_id=project_id)
             if not excel_mapping:
+                first_bill_credit, _ = bill_credit_line_pairs[0]
+                _record_project_mapping_missing_ms_issue(
+                    entity_type="BillCredit",
+                    entity_public_id=str(first_bill_credit.public_id),
+                    project_id=project_id,
+                    mapping_kind="excel",
+                    details=f"Excel not linked for project {project_id}",
+                )
                 return {"success": False, "message": f"Excel not linked for project {project_id}", "synced_count": 0, "errors": [{"error": f"Excel not linked for project {project_id}"}]}
 
             worksheet_name = excel_mapping.get("worksheet_name")

@@ -287,4 +287,22 @@ BEGIN
 END;
 GO
 
+
+-- Narrow audit read: TenantId only, no token columns (avoids Fernet decrypt on hot paths).
+-- Returns at most two rows ordered by Id so callers can treat 2+ auth rows as ambiguous.
+CREATE OR ALTER PROCEDURE ReadMsAuthTenantIdsForAudit
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    BEGIN TRANSACTION;
+
+    SELECT TOP 2 [TenantId]
+    FROM ms.Auth
+    ORDER BY [Id] ASC;
+
+    COMMIT TRANSACTION;
+END;
+GO
+
     @TenantId = 'test-tenant-id';

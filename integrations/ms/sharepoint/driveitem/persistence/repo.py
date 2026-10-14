@@ -1,7 +1,7 @@
 # Python Standard Library Imports
 import base64
 import logging
-from typing import Optional
+from typing import Any, List, Optional
 
 # Third-party Imports
 import pyodbc
@@ -246,6 +246,54 @@ class MsDriveItemRepository:
                 return self._from_db(row)
         except Exception as error:
             logger.error("Error during update ms drive item by public ID: %s", error)
+            raise map_database_error(error)
+
+    def read_sharepoint_mapping_health_rows(
+        self,
+        *,
+        actor_user_id: Optional[int] = None,
+        actor_is_system_admin: bool = False,
+    ) -> List[dict[str, Any]]:
+        """
+        One row per project with bill or expense line-item activity, including
+        SharePoint / Excel mapping flags and 90-day line counts (set-based).
+        """
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(
+                    cursor=cursor,
+                    name="ReadSharePointProjectMappingHealth",
+                    params={
+                        "ActorUserId": actor_user_id,
+                        "ActorIsSystemAdmin": 1 if actor_is_system_admin else 0,
+                    },
+                )
+                rows = cursor.fetchall()
+                results: List[dict[str, Any]] = []
+                for row in rows:
+                    if not row:
+                        continue
+                    results.append(
+                        {
+                            "project_id": int(getattr(row, "ProjectId", 0)),
+                            "project_name": getattr(row, "ProjectName", None) or "",
+                            "has_root": bool(getattr(row, "HasRoot", 0)),
+                            "has_bills_folder": bool(getattr(row, "HasBillsFolder", 0)),
+                            "has_expenses_folder": bool(getattr(row, "HasExpensesFolder", 0)),
+                            "has_invoices_folder": bool(getattr(row, "HasInvoicesFolder", 0)),
+                            "has_bill_credits_folder": bool(
+                                getattr(row, "HasBillCreditsFolder", 0)
+                            ),
+                            "has_excel": bool(getattr(row, "HasExcel", 0)),
+                            "worksheet_name": getattr(row, "WorksheetName", None),
+                            "expense_lines_90d": int(getattr(row, "ExpenseLines90d", 0) or 0),
+                            "bill_lines_90d": int(getattr(row, "BillLines90d", 0) or 0),
+                        }
+                    )
+                return results
+        except Exception as error:
+            logger.error("Error during read sharepoint mapping health: %s", error)
             raise map_database_error(error)
 
     def delete_by_public_id(self, public_id: str) -> Optional[MsDriveItem]:

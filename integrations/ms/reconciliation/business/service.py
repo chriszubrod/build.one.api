@@ -8,6 +8,9 @@ from integrations.ms.reconciliation.persistence.repo import MsReconciliationIssu
 
 logger = logging.getLogger(__name__)
 
+# Successfully resolved audit tenant only — never cache ``unknown`` or failures.
+_memoized_audit_tenant_id: Optional[str] = None
+
 
 class MsReconciliationIssueService:
     """
@@ -66,6 +69,82 @@ class MsReconciliationIssueService:
             },
         )
         return issue
+
+    def flag_project_mapping_missing(
+        self,
+        *,
+        entity_type: str,
+        entity_public_id: str,
+        project_id: int,
+        mapping_kind: str,
+        details: str,
+        tenant_id: Optional[str] = None,
+        reconcile_run_id: Optional[str] = None,
+    ) -> MsReconciliationIssue:
+        """
+        Bill/Expense/BillCredit completion could not file to SharePoint or Excel
+        because the project has no mapping for that integration surface.
+        Severity `high` — recoverable once the project is mapped and the step
+        is re-driven; `critical` stays reserved for dead-letter.
+
+        When ``tenant_id`` is omitted, it is resolved from the stored MsAuth
+        record. If none can be resolved, the literal ``unknown`` is stored so
+        audit rows stay visibly unattributed rather than blank.
+        """
+        if tenant_id is None:
+            tenant_id = self._resolve_tenant_id_for_audit()
+        if not tenant_id:
+            tenant_id = "unknown"
+        enriched_details = (
+            f"project_id={project_id}; mapping_kind={mapping_kind}; {details}"
+        )
+        issue = self.repo.create(
+            drift_type="project_mapping_missing",
+            severity="high",
+            action="flagged",
+            entity_type=entity_type,
+            entity_public_id=entity_public_id,
+            tenant_id=tenant_id,
+            details=enriched_details,
+            reconcile_run_id=reconcile_run_id,
+        )
+        logger.warning(
+            "ms.reconcile.drift.flagged",
+            extra={
+                "event_name": "ms.reconcile.drift.flagged",
+                "drift_type": "project_mapping_missing",
+                "severity": "high",
+                "entity_type": entity_type,
+                "entity_public_id": entity_public_id,
+                "tenant_id": tenant_id,
+                "project_id": project_id,
+                "mapping_kind": mapping_kind,
+                "issue_public_id": issue.public_id,
+            },
+        )
+        return issue
+
+    @staticmethod
+    def _resolve_tenant_id_for_audit() -> Optional[str]:
+        """
+        TenantId-only read off ``ms.Auth`` — no token hydration or decrypt.
+
+        Memoized per process when a single unambiguous tenant is resolved; ``unknown``
+        and transient failures are not cached.
+        """
+        global _memoized_audit_tenant_id
+        if _memoized_audit_tenant_id is not None:
+            return _memoized_audit_tenant_id
+        try:
+            from integrations.ms.auth.persistence.repo import MsAuthRepository
+
+            tenant_id = MsAuthRepository().read_tenant_id()
+            if tenant_id:
+                _memoized_audit_tenant_id = tenant_id
+            return tenant_id
+        except Exception:
+            logger.exception("ms.reconcile.tenant_resolve_failed")
+            return None
 
     def flag_dead_letter(
         self,

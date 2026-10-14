@@ -91,6 +91,28 @@ from shared.authz.delegation import assert_may_act_as
 logger = logging.getLogger(__name__)
 
 
+def _record_project_mapping_missing_ms_issue(
+    *,
+    entity_type: str,
+    entity_public_id: str,
+    project_id: int,
+    mapping_kind: str,
+    details: str,
+) -> None:
+    try:
+        from integrations.ms.reconciliation.business.service import MsReconciliationIssueService
+
+        MsReconciliationIssueService().flag_project_mapping_missing(
+            entity_type=entity_type,
+            entity_public_id=entity_public_id,
+            project_id=project_id,
+            mapping_kind=mapping_kind,
+            details=details,
+        )
+    except Exception:
+        logger.exception("ms.reconcile.project_mapping_missing.record_failed")
+
+
 def find_insertion_row_for_subcostcode(worksheet_values: List[List[Any]], target_subcostcode: str) -> Optional[int]:
     """
     Find the row number where a new line item should be inserted based on SubCostCode.
@@ -2448,7 +2470,13 @@ class BillService:
             excel_mapping = self.project_excel_connector.get_excel_for_project(project_id=project_id)
 
             if not excel_mapping:
-
+                _record_project_mapping_missing_ms_issue(
+                    entity_type="Bill",
+                    entity_public_id=str(bill.public_id),
+                    project_id=project_id,
+                    mapping_kind="excel",
+                    details=f"Excel workbook not linked for project {project_id}",
+                )
                 return {
                     "success": False,
                     "message": f"Excel workbook not linked for project {project_id}",
@@ -2743,6 +2771,14 @@ class BillService:
             # --- resolve workbook location (once) ---
             excel_mapping = self.project_excel_connector.get_excel_for_project(project_id=project_id)
             if not excel_mapping:
+                first_bill, _ = bill_line_pairs[0]
+                _record_project_mapping_missing_ms_issue(
+                    entity_type="Bill",
+                    entity_public_id=str(first_bill.public_id),
+                    project_id=project_id,
+                    mapping_kind="excel",
+                    details=f"Excel not linked for project {project_id}",
+                )
                 return {"success": False, "message": f"Excel not linked for project {project_id}", "synced_count": 0, "errors": [{"error": f"Excel not linked for project {project_id}"}]}
 
             worksheet_name = excel_mapping.get("worksheet_name")
@@ -3089,6 +3125,13 @@ class BillService:
             )
             
             if not module_folder:
+                _record_project_mapping_missing_ms_issue(
+                    entity_type="Bill",
+                    entity_public_id=str(bill.public_id),
+                    project_id=project_id,
+                    mapping_kind="module_folder",
+                    details=f"Module folder not linked for project {project_id}",
+                )
                 return {
                     "success": False,
                     "message": f"Module folder not linked for project {project_id}",

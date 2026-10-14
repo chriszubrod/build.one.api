@@ -1,5 +1,5 @@
 # Python Standard Library Imports
-from typing import Optional, List
+from typing import Literal, Optional, List
 
 # Third-party Imports
 from pydantic import BaseModel, Field
@@ -301,3 +301,67 @@ class DriveItemProjectExcelClearRangeRequest(BaseModel):
         min_length=1,
         description="Excel range address to clear (e.g., 'A1:D4')"
     )
+
+
+MappingHealthStatus = Literal["ok", "partial", "unmapped"]
+
+
+def classify_sharepoint_mapping_health_status(
+    *,
+    has_root: bool,
+    has_bills_folder: bool,
+    has_expenses_folder: bool,
+    has_invoices_folder: bool,
+    has_bill_credits_folder: bool,
+    has_excel: bool,
+) -> MappingHealthStatus:
+    """
+    Classify SharePoint mapping completeness for a project.
+
+    Bill-credits module folder is reported but deliberately excluded from `ok`
+    (healthy projects often omit it).
+    """
+    ok_required = (
+        has_root
+        and has_bills_folder
+        and has_expenses_folder
+        and has_invoices_folder
+        and has_excel
+    )
+    if ok_required:
+        return "ok"
+    any_mapping = any(
+        (
+            has_root,
+            has_bills_folder,
+            has_expenses_folder,
+            has_invoices_folder,
+            has_bill_credits_folder,
+            has_excel,
+        )
+    )
+    if not any_mapping:
+        return "unmapped"
+    return "partial"
+
+
+class SharePointMappingHealthRow(BaseModel):
+    """Per-project SharePoint / Excel mapping health."""
+
+    project_id: int
+    project_name: str
+    has_root: bool
+    has_bills_folder: bool
+    has_expenses_folder: bool
+    has_invoices_folder: bool
+    has_bill_credits_folder: bool
+    has_excel: bool
+    worksheet_name: Optional[str] = None
+    expense_lines_90d: int
+    bill_lines_90d: int
+    status: MappingHealthStatus
+
+
+class SharePointMappingHealthResponse(BaseModel):
+    items: List[SharePointMappingHealthRow]
+    count: int

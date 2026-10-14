@@ -106,6 +106,31 @@ class MsAuthRepository:
             logger.error("Error during read all ms auths: %s", error)
             raise map_database_error(error)
 
+    def read_tenant_id(self) -> Optional[str]:
+        """
+        Resolve the MS tenant id for audit rows without reading or decrypting tokens.
+
+        Uses the lowest-``Id`` auth row when exactly one ``ms.Auth`` row exists. When
+        zero rows exist, returns ``None``. When more than one row exists, returns
+        ``None`` (prefer ``unknown`` over a wrong tenant).
+        """
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(
+                    cursor=cursor,
+                    name="ReadMsAuthTenantIdsForAudit",
+                    params={},
+                )
+                rows = cursor.fetchall()
+                if len(rows) != 1:
+                    return None
+                tenant_id = getattr(rows[0], "TenantId", None)
+                return tenant_id if tenant_id else None
+        except Exception as error:
+            logger.error("Error during read ms auth tenant id: %s", error)
+            raise map_database_error(error)
+
     def read_by_id(self, id: int) -> Optional[MsAuth]:
             """
             Read a MsAuth by ID.

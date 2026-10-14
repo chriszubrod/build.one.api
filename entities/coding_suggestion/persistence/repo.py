@@ -15,8 +15,19 @@ from entities.coding_suggestion.business.model import (
     VendorDominantSubCostCodeForBills,
 )
 from shared.database import call_procedure, get_connection, map_database_error
+from shared.db_constraints import _has_error_number
 
 logger = logging.getLogger(__name__)
+
+_BUDGET_UPSERT_PARAM_KEYS = frozenset({"BudgetCheck", "BudgetRemaining"})
+
+
+def _upsert_bill_rejects_budget_params(error: Exception) -> bool:
+    """SQL 8144/8145 when UpsertCodingSuggestionForBill lacks budget columns."""
+    if not isinstance(error, pyodbc.Error):
+        return False
+    text = str(error)
+    return _has_error_number(text, "8144") or _has_error_number(text, "8145")
 
 
 def _normalize_as_of_datetime(as_of):
@@ -406,34 +417,64 @@ class CodingSuggestionRepository:
         features_json: Optional[str] = None,
         model_version: Optional[str] = None,
         prefill_state: Optional[str] = None,
+        budget_check: Optional[str] = None,
+        budget_remaining: Optional[Decimal] = None,
         created_by_user_id: Optional[int] = None,
         replace: bool = False,
     ) -> Optional[CodingSuggestion]:
         try:
             with get_connection() as conn:
                 cursor = conn.cursor()
-                call_procedure(
-                    cursor=cursor,
-                    name="UpsertCodingSuggestionForBill",
-                    params={
-                        "BillId": bill_id,
-                        "VendorId": vendor_id,
-                        "SuggestedProjectId": suggested_project_id,
-                        "SuggestedSubCostCodeId": suggested_sub_cost_code_id,
-                        "SuggestionSource": suggestion_source,
-                        "SuggestionReason": suggestion_reason,
-                        "SuggestionConfidence": (
-                            Decimal(str(suggestion_confidence))
-                            if suggestion_confidence is not None
-                            else None
-                        ),
-                        "FeaturesJson": features_json,
-                        "ModelVersion": model_version,
-                        "PrefillState": prefill_state,
-                        "CreatedByUserId": created_by_user_id,
-                        "ReplaceSuggestion": 1 if replace else 0,
-                    },
-                )
+                params: dict = {
+                    "BillId": bill_id,
+                    "VendorId": vendor_id,
+                    "SuggestedProjectId": suggested_project_id,
+                    "SuggestedSubCostCodeId": suggested_sub_cost_code_id,
+                    "SuggestionSource": suggestion_source,
+                    "SuggestionReason": suggestion_reason,
+                    "SuggestionConfidence": (
+                        Decimal(str(suggestion_confidence))
+                        if suggestion_confidence is not None
+                        else None
+                    ),
+                    "FeaturesJson": features_json,
+                    "ModelVersion": model_version,
+                    "PrefillState": prefill_state,
+                    "CreatedByUserId": created_by_user_id,
+                    "ReplaceSuggestion": 1 if replace else 0,
+                }
+                if budget_check is not None:
+                    params["BudgetCheck"] = budget_check
+                if budget_remaining is not None:
+                    params["BudgetRemaining"] = Decimal(str(budget_remaining))
+                # SQL-first rollout is intended; retry without budget params for older procs.
+                budget_params_sent = bool(params.keys() & _BUDGET_UPSERT_PARAM_KEYS)
+                try:
+                    call_procedure(
+                        cursor=cursor,
+                        name="UpsertCodingSuggestionForBill",
+                        params=params,
+                    )
+                except pyodbc.Error as proc_error:
+                    if budget_params_sent and _upsert_bill_rejects_budget_params(
+                        proc_error
+                    ):
+                        logger.warning(
+                            "UpsertCodingSuggestionForBill budget params rejected: %s",
+                            type(proc_error).__name__,
+                        )
+                        fallback_params = {
+                            key: value
+                            for key, value in params.items()
+                            if key not in _BUDGET_UPSERT_PARAM_KEYS
+                        }
+                        call_procedure(
+                            cursor=cursor,
+                            name="UpsertCodingSuggestionForBill",
+                            params=fallback_params,
+                        )
+                    else:
+                        raise
                 return self._from_db(cursor.fetchone())
         except Exception as error:
             logger.error(

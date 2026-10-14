@@ -6,10 +6,14 @@ import json
 import logging
 from dataclasses import dataclass
 from decimal import Decimal
-from typing import Any, Optional, Sequence
+from typing import Any, Mapping, Optional, Sequence
 
 from entities.bill.business.model import Bill
 from entities.bill_line_item.business.model import BillLineItem
+from entities.coding_suggestion.business.budget_check import (
+    evaluate_budget_for_suggestion,
+    project_confident_for_suggestion,
+)
 from entities.coding_suggestion.business.hint_extractor import extract_bill_hints
 from entities.coding_suggestion.business.model import VendorDominantSubCostCodeForBills
 from entities.coding_suggestion.business.service import CodingSuggestionService
@@ -42,6 +46,9 @@ class BillSuggestion:
     total_count: Optional[int]
     model_version: str = MODEL_VERSION
     predicted_project: bool = False
+    budget_check: Optional[str] = None
+    budget_remaining: Optional[Decimal] = None
+    budget_evidence: Optional[Mapping[str, Decimal]] = None
 
 
 def _smoothed_share(top_count: int, total_count: int) -> Decimal:
@@ -138,8 +145,43 @@ def bill_suggestion_to_features_json(suggestion: BillSuggestion) -> str:
         "project_id": suggestion.project_id,
         "sub_cost_code_id": suggestion.sub_cost_code_id,
         "predicted_project": suggestion.predicted_project,
+        "budget_check": suggestion.budget_check,
+        "budget_remaining": (
+            str(suggestion.budget_remaining)
+            if suggestion.budget_remaining is not None
+            else None
+        ),
     }
+    if suggestion.budget_evidence:
+        for key, value in suggestion.budget_evidence.items():
+            payload[key] = str(value)
     return json.dumps(payload, sort_keys=True)
+
+
+def apply_budget_check_to_suggestion(
+    suggestion: BillSuggestion,
+    lines: Sequence[BillLineItem],
+    *,
+    chosen_project_id: Optional[int] = None,
+    amount_override: Optional[Decimal] = None,
+) -> BillSuggestion:
+    """Mutates suggestion in place with budget_check / budget_remaining (failure-isolated by callers)."""
+    confident = project_confident_for_suggestion(
+        suggestion.project_id,
+        chosen_project_id=chosen_project_id,
+        confidence=suggestion.confidence,
+    )
+    result = evaluate_budget_for_suggestion(
+        suggestion.project_id,
+        suggestion.sub_cost_code_id,
+        lines=lines,
+        project_confident=confident,
+        amount_override=amount_override,
+    )
+    suggestion.budget_check = result.check
+    suggestion.budget_remaining = result.remaining
+    suggestion.budget_evidence = dict(result.evidence) if result.evidence else None
+    return suggestion
 
 
 def chosen_project_id_from_lines(lines: Sequence[BillLineItem]) -> Optional[int]:
@@ -326,8 +368,23 @@ def record_bill_coding_suggestion_on_save(
             memo=bill.memo,
             exclude_bill_id=bill.id,
         )
+        try:
+            apply_budget_check_to_suggestion(
+                suggestion,
+                lines,
+                chosen_project_id=project_id,
+            )
+        except Exception as error:
+            logger.warning(
+                "Bill coding budget check failed for bill %s: %s",
+                getattr(bill, "public_id", None),
+                type(error).__name__,
+            )
+            suggestion.budget_check = None
+            suggestion.budget_remaining = None
+            suggestion.budget_evidence = None
         svc = coding_suggestion_service or CodingSuggestionService()
-        svc.upsert_for_bill(
+        upsert_kwargs: dict[str, Any] = dict(
             bill_id=bill.id,
             vendor_id=bill.vendor_id,
             suggested_project_id=suggestion.project_id,
@@ -341,6 +398,11 @@ def record_bill_coding_suggestion_on_save(
             created_by_user_id=current_user_id.get(),
             replace=True,
         )
+        if suggestion.budget_check is not None:
+            upsert_kwargs["budget_check"] = suggestion.budget_check
+        if suggestion.budget_remaining is not None:
+            upsert_kwargs["budget_remaining"] = suggestion.budget_remaining
+        svc.upsert_for_bill(**upsert_kwargs)
     except Exception as error:
         logger.warning(
             "Bill coding suggestion record failed for bill %s: %s",

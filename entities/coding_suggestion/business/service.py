@@ -40,6 +40,8 @@ class CodingSuggestionService:
         features_json: Optional[str] = None,
         model_version: Optional[str] = None,
         prefill_state: Optional[str] = None,
+        budget_check: Optional[str] = None,
+        budget_remaining: Optional[Decimal] = None,
         created_by_user_id: Optional[int] = None,
         replace: bool = False,
     ) -> Optional[CodingSuggestion]:
@@ -55,6 +57,8 @@ class CodingSuggestionService:
             features_json=features_json,
             model_version=model_version,
             prefill_state=prefill_state,
+            budget_check=budget_check,
+            budget_remaining=budget_remaining,
             created_by_user_id=created_by_user_id,
             replace=replace,
         )

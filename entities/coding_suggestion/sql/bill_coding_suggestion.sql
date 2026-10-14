@@ -218,6 +218,8 @@ CREATE OR ALTER PROCEDURE UpsertCodingSuggestionForBill
     @FeaturesJson NVARCHAR(MAX) = NULL,
     @ModelVersion NVARCHAR(50) = NULL,
     @PrefillState NVARCHAR(12) = NULL,
+    @BudgetCheck NVARCHAR(20) = NULL,
+    @BudgetRemaining DECIMAL(18,2) = NULL,
     @CreatedByUserId BIGINT = NULL,
     @ReplaceSuggestion BIT = 0
 )
@@ -283,6 +285,16 @@ BEGIN
                 WHEN @PrefillState IS NOT NULL THEN @PrefillState
                 ELSE target.[PrefillState]
             END,
+            [BudgetCheck] = CASE
+                WHEN @ReplaceSuggestion = 1 THEN @BudgetCheck
+                WHEN @BudgetCheck IS NOT NULL THEN @BudgetCheck
+                ELSE target.[BudgetCheck]
+            END,
+            [BudgetRemaining] = CASE
+                WHEN @ReplaceSuggestion = 1 THEN @BudgetRemaining
+                WHEN @BudgetRemaining IS NOT NULL THEN @BudgetRemaining
+                ELSE target.[BudgetRemaining]
+            END,
             [SuggestedAt] = @Now,
             [ModifiedDatetime] = @Now
     WHEN NOT MATCHED THEN
@@ -298,6 +310,8 @@ BEGIN
             [FeaturesJson],
             [ModelVersion],
             [PrefillState],
+            [BudgetCheck],
+            [BudgetRemaining],
             [SuggestedAt],
             [Status],
             [CreatedByUserId],
@@ -316,6 +330,8 @@ BEGIN
             @FeaturesJson,
             @ModelVersion,
             @PrefillState,
+            @BudgetCheck,
+            @BudgetRemaining,
             @Now,
             N'pending',
             COALESCE(@CreatedByUserId, 17),
@@ -360,6 +376,8 @@ BEGIN
         cs.[ConfirmedAt],
         cs.[ConfirmedMixedCodes],
         cs.[PrefillState],
+        cs.[BudgetCheck],
+        cs.[BudgetRemaining],
         cs.[ConfirmationSource],
         cs.[ConfirmationSeq],
         cs.[FlagReason],
@@ -420,6 +438,8 @@ BEGIN
         cs.[ConfirmedAt],
         cs.[ConfirmedMixedCodes],
         cs.[PrefillState],
+        cs.[BudgetCheck],
+        cs.[BudgetRemaining],
         cs.[ConfirmationSource],
         cs.[ConfirmationSeq],
         cs.[FlagReason],

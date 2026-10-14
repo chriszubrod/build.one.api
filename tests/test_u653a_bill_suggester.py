@@ -486,12 +486,16 @@ class TestRecordOnSave:
         suggester = MagicMock()
         suggester.suggest.return_value = suggestion
 
-        record_bill_coding_suggestion_on_save(
-            bill,
-            suggester=suggester,
-            coding_suggestion_service=coding_svc,
-            line_item_service=line_svc,
-        )
+        with patch(
+            "entities.coding_suggestion.business.bill_suggestion_service.apply_budget_check_to_suggestion",
+            side_effect=lambda s, *_a, **_k: s,
+        ):
+            record_bill_coding_suggestion_on_save(
+                bill,
+                suggester=suggester,
+                coding_suggestion_service=coding_svc,
+                line_item_service=line_svc,
+            )
 
         suggester.suggest.assert_called_once_with(
             vendor_id=3,

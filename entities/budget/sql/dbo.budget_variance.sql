@@ -3,6 +3,9 @@
 --
 -- ReadBudgetVarianceByProjectId: one row per SubCostCode touched by the
 -- budget, any cost actual, or any draw — budgeted vs actual cost vs drawn.
+-- Optional @SubCostCodeId (NULL default): when set, each aggregate family
+-- restricts to lines whose grouped SCC key matches that id (same ISNULL/COALESCE
+-- expression as GROUP BY; sentinel -1 never matches a real id).
 -- ReadBudgetListRollups: per-budget contract value + drawn for the list page.
 --
 -- POLICY (locked 2026-06-11, see umbrella memory project_budget_entity.md):
@@ -59,7 +62,8 @@ CREATE OR ALTER PROCEDURE ReadBudgetVarianceByProjectId
     @ProjectId          BIGINT,
     @BudgetId           BIGINT = NULL,
     @ActorUserId        BIGINT = NULL,
-    @ActorIsSystemAdmin BIT    = NULL
+    @ActorIsSystemAdmin BIT    = NULL,
+    @SubCostCodeId      BIGINT = NULL
 )
 AS
 BEGIN
@@ -94,6 +98,8 @@ BEGIN
         INNER JOIN dbo.[BudgetRevision] br ON br.[Id] = bli.[BudgetRevisionId]
         WHERE br.[BudgetId] = @BudgetId
           AND br.[Status] = 'approved'
+          AND (@SubCostCodeId IS NULL
+               OR ISNULL(bli.[SubCostCodeId], -1) = @SubCostCodeId)
         GROUP BY ISNULL(bli.[SubCostCodeId], -1)
     ),
     BillAgg AS (
@@ -101,6 +107,8 @@ BEGIN
                SUM(ISNULL([Amount], 0)) AS [BillCost]
         FROM dbo.[BillLineItem]
         WHERE [ProjectId] = @ProjectId          -- drafts included per policy
+          AND (@SubCostCodeId IS NULL
+               OR ISNULL([SubCostCodeId], -1) = @SubCostCodeId)
         GROUP BY ISNULL([SubCostCodeId], -1)
     ),
     ExpenseAgg AS (
@@ -112,6 +120,8 @@ BEGIN
         FROM dbo.[ExpenseLineItem] eli
         INNER JOIN dbo.[Expense] e ON e.[Id] = eli.[ExpenseId]
         WHERE eli.[ProjectId] = @ProjectId      -- drafts included per policy
+          AND (@SubCostCodeId IS NULL
+               OR ISNULL(eli.[SubCostCodeId], -1) = @SubCostCodeId)
         GROUP BY ISNULL(eli.[SubCostCodeId], -1)
     ),
     CreditAgg AS (
@@ -121,6 +131,8 @@ BEGIN
                SUM(ISNULL([Amount], 0)) AS [CreditCost]
         FROM dbo.[BillCreditLineItem]
         WHERE [ProjectId] = @ProjectId          -- drafts included per policy
+          AND (@SubCostCodeId IS NULL
+               OR ISNULL([SubCostCodeId], -1) = @SubCostCodeId)
         GROUP BY ISNULL([SubCostCodeId], -1)
     ),
     ContractLaborAgg AS (
@@ -134,6 +146,8 @@ BEGIN
         WHERE [ProjectId] = @ProjectId
           AND [IsOverhead] = 0
           AND ([BillLineItemId] IS NULL OR [IsBillable] = 0)
+          AND (@SubCostCodeId IS NULL
+               OR ISNULL([SubCostCodeId], -1) = @SubCostCodeId)
         GROUP BY ISNULL([SubCostCodeId], -1)
     ),
     EmployeeLaborAgg AS (
@@ -143,6 +157,8 @@ BEGIN
         FROM dbo.[EmployeeLaborLineItem]
         WHERE [ProjectId] = @ProjectId
           AND [IsOverhead] = 0                  -- ALL statuses incl. 'invoiced'
+          AND (@SubCostCodeId IS NULL
+               OR ISNULL([SubCostCodeId], -1) = @SubCostCodeId)
         GROUP BY ISNULL([SubCostCodeId], -1)
     ),
     DrawnAgg AS (
@@ -172,6 +188,9 @@ BEGIN
         LEFT JOIN dbo.[EmployeeLaborLineItem] elli ON elli.[Id] = ili.[EmployeeLaborLineItemId]
         WHERE i.[ProjectId] = @ProjectId
           AND i.[IsDraft] = 0                   -- strict drawn policy
+          AND (@SubCostCodeId IS NULL
+               OR ISNULL(COALESCE(ili.[SubCostCodeId], bli.[SubCostCodeId], eli.[SubCostCodeId],
+                          bcli.[SubCostCodeId], elli.[SubCostCodeId]), -1) = @SubCostCodeId)
         GROUP BY ISNULL(COALESCE(ili.[SubCostCodeId], bli.[SubCostCodeId], eli.[SubCostCodeId],
                           bcli.[SubCostCodeId], elli.[SubCostCodeId]), -1)
     ),

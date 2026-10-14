@@ -218,6 +218,7 @@ def evaluate_budget_for_suggestion(
         budget_id=int(budget.id),
         actor_user_id=current_user_id.get(),
         actor_is_system_admin=current_is_system_admin.get(),
+        sub_cost_code_id=int(sub_cost_code_id),
     )
 
     return compute_budget_check(

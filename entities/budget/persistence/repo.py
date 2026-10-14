@@ -152,24 +152,30 @@ class BudgetRepository:
         budget_id: Optional[int] = None,
         actor_user_id: Optional[int] = None,
         actor_is_system_admin: Optional[bool] = None,
+        sub_cost_code_id: Optional[int] = None,
     ) -> list[dict]:
         """SCC-grain variance rows (budget vs actual cost vs drawn). Decimals
         come back as Decimal from pyodbc and are preserved — NEVER float.
         Empty list when the actor can't access the project (fail-closed).
         budget_id pins the budget side to the caller's resolved Budget so an
-        archived budget never reports a different live budget's revisions."""
+        archived budget never reports a different live budget's revisions.
+        sub_cost_code_id, when set, restricts the sproc to that SCC only (omitted
+        from the param dict when None so older deployed procs stay safe)."""
         try:
             with get_connection() as conn:
                 cursor = conn.cursor()
+                params = {
+                    "ProjectId": project_id,
+                    "BudgetId": budget_id,
+                    "ActorUserId": actor_user_id,
+                    "ActorIsSystemAdmin": _bit(actor_is_system_admin),
+                }
+                if sub_cost_code_id is not None:
+                    params["SubCostCodeId"] = sub_cost_code_id
                 call_procedure(
                     cursor=cursor,
                     name="ReadBudgetVarianceByProjectId",
-                    params={
-                        "ProjectId": project_id,
-                        "BudgetId": budget_id,
-                        "ActorUserId": actor_user_id,
-                        "ActorIsSystemAdmin": _bit(actor_is_system_admin),
-                    },
+                    params=params,
                 )
                 columns = [c[0] for c in cursor.description]
                 return [dict(zip(columns, row)) for row in cursor.fetchall()]

@@ -111,6 +111,59 @@ def bind_reviewer_reply(
     return em
 
 
+def _recorded_and_legacy_subjects_from_send_mail_rows(
+    rows,
+    entity_public_id: str,
+) -> tuple[set[str], set[str]]:
+    """Parse completed send_mail outbox rows — recorded conversation ids plus
+    legacy notification subjects (pre-cutoff rows only)."""
+    recorded: set[str] = set()
+    notification_subjects: set[str] = set()
+    for row in rows:
+        row_kind = getattr(row, "kind", None)
+        if isinstance(row_kind, str) and row_kind.strip() and row_kind != "send_mail":
+            continue
+        if not _row_matches_entity(row, entity_public_id):
+            continue
+        raw = getattr(row, "payload", None)
+        if not raw:
+            continue
+        try:
+            parsed = json.loads(raw)
+        except (json.JSONDecodeError, TypeError, ValueError):
+            continue
+        if not isinstance(parsed, dict):
+            continue
+        conv_id = parsed.get("conversation_id")
+        if isinstance(conv_id, str) and conv_id.strip():
+            recorded.add(conv_id)
+        if _is_legacy_notification_row(getattr(row, "created_datetime", None)):
+            subject = parsed.get("subject")
+            if isinstance(subject, str) and subject.strip():
+                notification_subjects.add(subject)
+    return recorded, notification_subjects
+
+
+def recorded_review_conversation_ids(
+    entity_type: str,
+    entity_public_id: str,
+) -> set[str]:
+    """Non-empty ``conversation_id`` values from completed ``send_mail`` outbox
+    payloads for this document (exact, case-sensitive). Same row filters as
+    ``expected_review_thread_conversation_ids`` uses for its recorded path."""
+    from integrations.ms.outbox.persistence.repo import MsOutboxRepository
+
+    rows = MsOutboxRepository().read_completed_by_entity(
+        entity_type=entity_type,
+        entity_public_id=entity_public_id,
+        kind="send_mail",
+    )
+    recorded, _ = _recorded_and_legacy_subjects_from_send_mail_rows(
+        rows, entity_public_id,
+    )
+    return recorded
+
+
 def expected_review_thread_conversation_ids(
     entity_type: str,
     entity_public_id: str,
@@ -134,35 +187,14 @@ def expected_review_thread_conversation_ids(
     if not reply_conv:
         return set()
 
-    recorded: set[str] = set()
-    notification_subjects: set[str] = set()
     rows = MsOutboxRepository().read_completed_by_entity(
         entity_type=entity_type,
         entity_public_id=entity_public_id,
         kind="send_mail",
     )
-    for row in rows:
-        row_kind = getattr(row, "kind", None)
-        if isinstance(row_kind, str) and row_kind.strip() and row_kind != "send_mail":
-            continue
-        if not _row_matches_entity(row, entity_public_id):
-            continue
-        raw = getattr(row, "payload", None)
-        if not raw:
-            continue
-        try:
-            parsed = json.loads(raw)
-        except (json.JSONDecodeError, TypeError, ValueError):
-            continue
-        if not isinstance(parsed, dict):
-            continue
-        conv_id = parsed.get("conversation_id")
-        if isinstance(conv_id, str) and conv_id.strip():
-            recorded.add(conv_id)
-        if _is_legacy_notification_row(getattr(row, "created_datetime", None)):
-            subject = parsed.get("subject")
-            if isinstance(subject, str) and subject.strip():
-                notification_subjects.add(subject)
+    recorded, notification_subjects = _recorded_and_legacy_subjects_from_send_mail_rows(
+        rows, entity_public_id,
+    )
 
     if recorded:
         return {reply_conv} if reply_conv in recorded else set()

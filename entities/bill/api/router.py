@@ -20,6 +20,9 @@ from shared.api.auth_user import resolve_user_id
 from shared.api.errors import ApiError, ErrorCode
 from shared.api.money import to_decimal_or_none
 from shared.api.responses import list_response, item_response, accepted_response, raise_workflow_error, raise_not_found
+from shared.lifecycle.terminal_lock import StatusLockedError
+from shared.authz.provenance import recorded_review_conversation_ids
+from entities.email_message.business.service import MailboxPollService, ReviewReplyCopyError
 from shared.database import get_connection
 from shared.lifecycle.resolver import LIFECYCLE_STATUSES, attach_lifecycle
 from shared.lifecycle.completion_gate import HoldingCodeRefused
@@ -402,6 +405,49 @@ def apply_reviewer_decision_router(
         return item_response(result)
     except ValueError as error:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(error))
+
+
+@router.post("/bill/{public_id}/review-replies/sync")
+def sync_review_replies_router(
+    public_id: str,
+    current_user: dict = Depends(require_module_api(Modules.BILLS, "can_update")),
+):
+    """On-demand copy of reviewer inbox replies for this bill's review thread."""
+    bill = BillService().read_by_public_id(public_id=public_id)
+    if bill is None:
+        raise_not_found("Bill")
+    if bill.is_draft is not True:
+        raise_workflow_error(
+            str(StatusLockedError("Review replies can only be synced for a draft document.")),
+            "Review reply sync refused",
+        )
+    conversation_ids = recorded_review_conversation_ids("Bill", public_id)
+    if not conversation_ids:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="no recorded review thread for this document",
+        )
+    try:
+        messages = MailboxPollService().copy_review_thread_replies(conversation_ids)
+    except ReviewReplyCopyError as err:
+        logger.warning(
+            "copy_review_thread_replies failed status=%s message=%s",
+            err.status_code,
+            err.message,
+        )
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY)
+    data = [
+        {
+            "email_message_public_id": m.public_id,
+            "from_address": m.from_address,
+            "from_name": m.from_name,
+            "received_datetime": m.received_datetime,
+            "subject": m.subject,
+            "body_preview": m.body_preview,
+        }
+        for m in messages
+    ]
+    return list_response(data)
 
 
 @router.get("/get/bill/{public_id}")

@@ -21,6 +21,9 @@ from entities.expense.business.service import ExpenseService
 from shared.api.errors import ApiError, ErrorCode
 from shared.api.responses import list_response, item_response, accepted_response, raise_workflow_error, raise_not_found
 from shared.lifecycle.completion_gate import HoldingCodeRefused
+from shared.lifecycle.terminal_lock import StatusLockedError
+from shared.authz.provenance import recorded_review_conversation_ids
+from entities.email_message.business.service import MailboxPollService, ReviewReplyCopyError
 from shared.lifecycle.resolver import LIFECYCLE_STATUSES, attach_lifecycle
 from shared.rbac import require_module_api
 from shared.rbac_constants import Modules
@@ -590,6 +593,49 @@ def apply_reviewer_decision_router(
         raise HTTPException(
             status_code=http_status.HTTP_400_BAD_REQUEST, detail=str(error)
         )
+
+
+@router.post("/expense/{public_id}/review-replies/sync")
+def sync_review_replies_router(
+    public_id: str,
+    current_user: dict = Depends(require_module_api(Modules.EXPENSES, "can_update")),
+):
+    """On-demand copy of reviewer inbox replies for this expense's review thread."""
+    expense = ExpenseService().read_by_public_id(public_id=public_id)
+    if expense is None:
+        raise_not_found("Expense")
+    if expense.is_draft is not True:
+        raise_workflow_error(
+            str(StatusLockedError("Review replies can only be synced for a draft document.")),
+            "Review reply sync refused",
+        )
+    conversation_ids = recorded_review_conversation_ids("Expense", public_id)
+    if not conversation_ids:
+        raise HTTPException(
+            status_code=http_status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="no recorded review thread for this document",
+        )
+    try:
+        messages = MailboxPollService().copy_review_thread_replies(conversation_ids)
+    except ReviewReplyCopyError as err:
+        logger.warning(
+            "copy_review_thread_replies failed status=%s message=%s",
+            err.status_code,
+            err.message,
+        )
+        raise HTTPException(status_code=http_status.HTTP_502_BAD_GATEWAY)
+    data = [
+        {
+            "email_message_public_id": m.public_id,
+            "from_address": m.from_address,
+            "from_name": m.from_name,
+            "received_datetime": m.received_datetime,
+            "subject": m.subject,
+            "body_preview": m.body_preview,
+        }
+        for m in messages
+    ]
+    return list_response(data)
 
 
 @router.post("/complete/expense/{public_id}")

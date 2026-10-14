@@ -16,6 +16,9 @@ MailboxPollService
        attachment to Azure Blob Storage, upsert EmailAttachment rows.
     4. Return a summary `{polled, new_messages, attachments_uploaded,
        errors[]}` so the admin endpoint can surface counts.
+  ``copy_review_thread_replies`` — on-demand inbox copy for recorded
+  review-thread conversation ids (reviewer replies for Bill/Expense
+  provenance); rows use status ``reviewer_reply`` so no agent claims them.
 
 EmailAttachmentExtractionService
   Runs Document Intelligence against a single EmailAttachment row,
@@ -28,10 +31,11 @@ EmailAttachmentExtractionService
 """
 import json
 import logging
+import os
 import re
 import uuid
 from decimal import Decimal
-from typing import Optional
+from typing import Iterable, Optional
 
 import config
 from entities.email_message.business.categories import has_outcome
@@ -52,6 +56,23 @@ from shared.authz import current_user_id
 from shared.storage import AzureBlobStorage
 
 logger = logging.getLogger(__name__)
+
+REVIEWER_REPLY_STATUS = "reviewer_reply"
+
+
+def _email_poll_paused() -> bool:
+    """True when operator set PAUSE_EMAIL_POLL (same values as /admin/email/poll)."""
+    pause_flag = (os.environ.get("PAUSE_EMAIL_POLL") or "").strip().lower()
+    return pause_flag in ("true", "1", "yes")
+
+
+class ReviewReplyCopyError(Exception):
+    """Graph list or configuration failure during review-reply copy."""
+
+    def __init__(self, status_code: int, message: str = ""):
+        self.status_code = status_code
+        self.message = message
+        super().__init__(message or f"review reply copy failed: {status_code}")
 
 
 class EmailMessageService:
@@ -677,8 +698,94 @@ class MailboxPollService:
         EmailMessage row arrived after the Review was created."""
         return self.message_repo.reconcile_review_email_message_links()
 
+    def copy_review_thread_replies(
+        self, conversation_ids: Iterable[str],
+    ) -> list[EmailMessage]:
+        """Copy inbox messages on the given Graph conversation ids from the
+        invoice inbox into ``dbo.EmailMessage``.
+
+        Only inbox folder messages are listed and returned. Newly inserted rows
+        are stored with processing status ``reviewer_reply`` so no agent runner
+        or recovery sproc ever claims them; an existing row keeps its current
+        status. Inserting newer rows advances ``MAX(ReceivedDatetime)``, the
+        watermark of the dormant forward poll (``/admin/email/poll``).
+        """
+        ids = [c.strip() for c in conversation_ids if isinstance(c, str) and c.strip()]
+        if not ids:
+            return []
+
+        if _email_poll_paused():
+            raise ReviewReplyCopyError(
+                503, "email ingestion is paused (PAUSE_EMAIL_POLL)"
+            )
+
+        settings = config.Settings()
+        mailbox = settings.invoice_inbox_email
+        if not mailbox:
+            raise ReviewReplyCopyError(503, "invoice_inbox_email is not configured")
+
+        for conversation_id in ids:
+            escaped = conversation_id.replace("'", "''")
+            filter_query = (
+                "receivedDateTime ge 2000-01-01T00:00:00Z and "
+                f"conversationId eq '{escaped}'"
+            )
+            list_result = mail_client.list_messages(
+                folder="inbox",
+                top=50,
+                filter_query=filter_query,
+                order_by="receivedDateTime desc",
+                mailbox=mailbox,
+            )
+            if list_result.get("status_code") != 200:
+                raise ReviewReplyCopyError(
+                    list_result.get("status_code", 500),
+                    list_result.get("message", "list_messages failed"),
+                )
+            messages = list_result.get("messages", [])
+            _new, _attach, ingest_errors = self._ingest_messages(
+                messages=messages,
+                mailbox=mailbox,
+                folder="inbox",
+                default_status=REVIEWER_REPLY_STATUS,
+                download_attachments=False,
+            )
+            if ingest_errors:
+                logger.warning(
+                    "copy_review_thread_replies ingest errors conversation_id=%s "
+                    "count=%s first=%s",
+                    conversation_id,
+                    len(ingest_errors),
+                    ingest_errors[0],
+                )
+
+        seen: dict[int, EmailMessage] = {}
+        ordered: list[EmailMessage] = []
+        em_repo = EmailMessageRepository()
+        for conversation_id in ids:
+            for msg in em_repo.read_by_conversation_id(
+                conversation_id=conversation_id,
+                max_rows=500,
+            ):
+                folder = (getattr(msg, "folder", None) or "").strip().lower()
+                if folder != "inbox":
+                    continue
+                mid = getattr(msg, "id", None)
+                if mid is not None and mid in seen:
+                    continue
+                if mid is not None:
+                    seen[mid] = msg
+                ordered.append(msg)
+
+        ordered.sort(
+            key=lambda m: (m.received_datetime or "", m.id or 0),
+        )
+        return ordered
+
     def _ingest_messages(self, *, messages: list[dict], mailbox: str,
-                         folder: str = "inbox"
+                         folder: str = "inbox",
+                         default_status: Optional[str] = None,
+                         download_attachments: bool = True,
                          ) -> tuple[int, int, list[dict]]:
         """Inner ingestion loop shared by `poll_invoice_inbox` /
         `backfill_day` (folder=inbox) and `poll_invoice_sent` /
@@ -697,7 +804,8 @@ class MailboxPollService:
             hand them to the email_specialist agent.
         """
         is_sent = (folder == "sentitems")
-        default_status = "outbound" if is_sent else "pending"
+        if default_status is None:
+            default_status = "outbound" if is_sent else "pending"
 
         new_count = 0
         attach_count = 0
@@ -773,11 +881,11 @@ class MailboxPollService:
                 if not existing:
                     new_count += 1
 
-                # Sent-folder rows: skip attachment download. The forward
-                # carries the original vendor PDF, which is already in
-                # our blob store from the inbound side; re-downloading
-                # would duplicate without value.
-                if is_sent:
+                # Sent-folder rows and explicit no-download callers: skip
+                # attachment download. The forward carries the original vendor
+                # PDF, which is already in our blob store from the inbound side;
+                # re-downloading would duplicate without value.
+                if is_sent or not download_attachments:
                     continue
 
                 # Walk attachments — download each, push to blob, persist row.

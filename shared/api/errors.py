@@ -14,6 +14,8 @@ clients key on. Later lifecycle phases append here (`status_locked`,
 
 from __future__ import annotations
 
+from math import isfinite
+
 from fastapi import FastAPI, HTTPException
 from fastapi.encoders import jsonable_encoder
 from fastapi.exception_handlers import http_exception_handler as _fastapi_http_exception_handler
@@ -105,10 +107,24 @@ async def http_exception_handler(request: Request, exc: StarletteHTTPException):
     )
 
 
+def _json_safe(obj: object) -> object:
+    """Pydantic echoes raw inputs (and ctx values) in 422 detail; a JSON 1e400 decodes
+    to inf, which the response renders with allow_nan=False -> HTTP 500. Runs AFTER
+    jsonable_encoder, so every value is already a dict, list, str, number, bool or
+    None and a non-finite float (key or value) is the only thing left to fix."""
+    if isinstance(obj, float) and not isfinite(obj):
+        return "nan" if obj != obj else ("-inf" if obj < 0 else "inf")
+    if isinstance(obj, dict):
+        return {_json_safe(k): _json_safe(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_json_safe(v) for v in obj]
+    return obj
+
+
 async def request_validation_handler(request: Request, exc: RequestValidationError):
     # Byte-identical to FastAPI's default (422 + jsonable_encoder(exc.errors()) as
     # `detail`), plus the sibling key — so the contract holds for every error body.
-    return error_response(422, jsonable_encoder(exc.errors()), ErrorCode.VALIDATION_ERROR)
+    return error_response(422, _json_safe(jsonable_encoder(exc.errors())), ErrorCode.VALIDATION_ERROR)
 
 
 async def entity_not_accessible_handler(request: Request, exc: EntityNotAccessibleError):

@@ -1,13 +1,12 @@
 # Python Standard Library Imports
 import logging
 from decimal import Decimal, InvalidOperation
-from math import isfinite
 from typing import Optional
 from uuid import UUID
 
 # Third-party Imports
 from fastapi import APIRouter, Depends
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, field_validator
 
 # Local Imports
 from entities.bill.business.service import BillService
@@ -34,18 +33,6 @@ class BillCodingSuggestRequest(BaseModel):
     memo: Optional[str] = None
     bill_public_id: Optional[UUID] = None
     amount: Optional[Decimal] = Field(default=None, ge=0)
-
-    @model_validator(mode="before")
-    @classmethod
-    def _stringify_non_finite_amount(cls, data):
-        # JSON 1e400 decodes to float inf. Pydantic echoes the raw input in the
-        # 422 body, and inf/nan there is not JSON-serializable -> HTTP 500. As a
-        # string it still fails _coerce_amount, but the error body renders.
-        if isinstance(data, dict):
-            amount = data.get("amount")
-            if isinstance(amount, float) and not isfinite(amount):
-                data = {**data, "amount": str(amount)}
-        return data
 
     @field_validator("amount", mode="before")
     @classmethod

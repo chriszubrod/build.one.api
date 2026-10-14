@@ -58,6 +58,7 @@ class EmailMessageRepository:
                 agent_session_id=getattr(row, "AgentSessionId", None),
                 web_link=getattr(row, "WebLink", None),
                 has_attachments=bool(getattr(row, "HasAttachments", False)),
+                folder=getattr(row, "Folder", None),
                 agent_classification=getattr(row, "AgentClassification", None),
                 agent_classification_reason=getattr(row, "AgentClassificationReason", None),
                 agent_decided_action=getattr(row, "AgentDecidedAction", None),

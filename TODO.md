@@ -1035,6 +1035,13 @@ manual date-window runs), 8 never staged. A fresh `vendorcredit` watermark prove
   rows = $2,223.75, keys 266/266, 0 dups; 10 files to `15 - Draw Requests/WVA-20/` on both. Fee row
   ($289.09, cost code 90) left for Chris to hand-enter per WVA convention. Packet warning: the WVA-18 Trend
   column does not foot (residual $92,145.32 — pre-existing, see the "stored totals above line sums" item).
+  **Delta 2026-10-15:** Chris removed Superior Woodwork #2683 ($650, BLI 25153) in QBO at 09:04 PT → live 13 lines,
+  $1,778.34, fee $204.59 (13% × $1,573.75). Staged from live + connector (links preserved); ILI 35125 deleted
+  after `_reset_source_as_unbilled` (BLI 25153 IsBilled → False; its PDF link kept); stale H tag cleared on both
+  workbooks via `InvoiceDrawDeltaService.apply_removals` (1 confident, 0 ambiguous); packet regenerated (17 pp,
+  skipped 0) and re-delivered (SP packet replaced, 8 skipped; Box re-versioned). Matrix: live = dbo = 13 /
+  $1,778.34, 8 sourced = 8 billed = 8 H-tagged on SP and Box. **Open (Chris):** Box fee row 2611 still $289.09 →
+  $204.59; SharePoint has no WVA-20 fee row yet; obsolete Superior PDF still in both `15 - Draw Requests/WVA-20/`.
 
 ## BR-MAIN-30 follow-ups (booked 2026-10-07, InvoiceAgent run)
 

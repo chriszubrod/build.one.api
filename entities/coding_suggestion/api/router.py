@@ -20,7 +20,9 @@ from shared.access import (
     assert_can_access_expense,
     assert_can_access_project,
 )
+from shared.api.errors import ApiError, ErrorCode
 from shared.api.responses import item_response, list_response, raise_database_error, raise_not_found
+from shared.lifecycle.completion_gate import HoldingCodeRefused
 from shared.authz import current_user_id
 from shared.rbac import require_module_api
 from shared.rbac_constants import Modules
@@ -230,6 +232,16 @@ def confirm_expense_coding_item_router(
         )
     except QboOutboxDeadLetterExistsError as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
+    except HoldingCodeRefused:
+        if claimed_here:
+            try:
+                service.release(public_id=public_id, user_id=user_id)
+            except Exception:
+                logger.exception(
+                    "Failed to release claim on coding suggestion %s after refusal.",
+                    public_id,
+                )
+        raise
     except Exception as error:
         logger.exception("Failed to confirm coding suggestion %s.", public_id)
         raise_database_error(error)

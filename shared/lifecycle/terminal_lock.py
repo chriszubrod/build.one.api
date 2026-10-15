@@ -175,6 +175,18 @@ def reraise_if_sproc_status_locked(error: Exception, *, what: str) -> None:
         raise StatusLockedError(what) from error
 
 
+# U-632 — holding / suspense sub cost code (IsHoldingCode=1, e.g. Number 00.02).
+SPROC_HOLDING_CODE_TOKEN = "HOLDING_CODE:"
+
+
+def reraise_if_sproc_holding_code(error: Exception, *, what: str) -> None:
+    """Map a sproc HOLDING_CODE RAISERROR to `HoldingCodeRefused` (422 + holding_code)."""
+    if SPROC_HOLDING_CODE_TOKEN in str(error):
+        from shared.lifecycle.completion_gate import HoldingCodeRefused
+
+        raise HoldingCodeRefused(what) from error
+
+
 def is_terminal(status: Optional[str], *, is_draft: Optional[bool] = None) -> bool:
     """Whether a document is in its terminal state.
 

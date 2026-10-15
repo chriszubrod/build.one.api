@@ -64,6 +64,15 @@ def _clean_gate_env(monkeypatch):
         monkeypatch.delenv(var, raising=False)
 
 
+@pytest.fixture(autouse=True)
+def _review_advance_skips_holding_line_db(monkeypatch):
+    """U-632: fast-path/advance holding gate is tested in test_u632_fix1."""
+    monkeypatch.setattr(
+        "entities.sub_cost_code.business.holding_lines.parent_has_holding_line",
+        lambda *_a, **_k: False,
+    )
+
+
 def _review(kind):
     return SimpleNamespace(review_kind=kind)
 

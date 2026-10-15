@@ -13,6 +13,8 @@ from shared.access import assert_can_access_project
 from shared.authz import current_user_id
 
 from shared.lifecycle.terminal_lock import StatusLockedError
+from shared.lifecycle.completion_gate import HoldingCodeRefused
+from entities.sub_cost_code.business.service import SubCostCodeService
 
 logger = logging.getLogger(__name__)
 
@@ -76,6 +78,29 @@ class InvoiceLineItemService:
         if source_type == "BillCreditLineItem":
             price = _signed_for_billcredit(price)
             amount = _signed_for_billcredit(amount)
+
+        effective_scc_id = sub_cost_code_id
+        if source_type == "BillLineItem" and bill_line_item_id:
+            from entities.bill_line_item.business.service import BillLineItemService
+
+            bli = BillLineItemService().read_by_id(bill_line_item_id)
+            effective_scc_id = bli.sub_cost_code_id if bli else sub_cost_code_id
+        elif source_type == "ExpenseLineItem" and expense_line_item_id:
+            from entities.expense_line_item.business.service import ExpenseLineItemService
+
+            eli = ExpenseLineItemService().read_by_id(expense_line_item_id)
+            effective_scc_id = eli.sub_cost_code_id if eli else sub_cost_code_id
+        elif source_type == "BillCreditLineItem" and bill_credit_line_item_id:
+            from entities.bill_credit_line_item.business.service import BillCreditLineItemService
+
+            cli = BillCreditLineItemService().read_by_id(bill_credit_line_item_id)
+            effective_scc_id = cli.sub_cost_code_id if cli else sub_cost_code_id
+
+        if SubCostCodeService().is_holding_code(effective_scc_id):
+            raise HoldingCodeRefused(
+                "Invoice lines cannot be added while coded to the suspense sub cost code. "
+                "Recode the source line first."
+            )
 
         return self.repo.create(
             invoice_id=invoice.id,

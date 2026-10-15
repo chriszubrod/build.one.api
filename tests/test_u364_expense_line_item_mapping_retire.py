@@ -103,6 +103,9 @@ def _build_connector():
     connector.reconciliation_repo = reconciliation_repo
     connector._get_sub_cost_code_id = Mock(return_value=None)
     connector._get_project_public_id = Mock(return_value=None)
+    connector.expense_service = Mock(
+        read_by_id=Mock(return_value=SimpleNamespace(status="draft", qbo_id="qbo-e"))
+    )
     return connector, line_svc, reconciliation_repo
 
 

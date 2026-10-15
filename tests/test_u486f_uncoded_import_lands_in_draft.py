@@ -57,8 +57,13 @@ def _line(*, account_ref_name=None, item_ref_value=None, line_id=1):
 def _build_connector():
     expense_service = Mock()
     expense_service.repo = Mock()
+    sub_cost_code_service = Mock()
+    sub_cost_code_service.read_by_qbo_identity.return_value = None
     with patch(LINE_CONNECTOR_PATH, return_value=Mock()):
-        connector = PurchaseExpenseConnector(expense_service=expense_service)
+        connector = PurchaseExpenseConnector(
+            expense_service=expense_service,
+            sub_cost_code_service=sub_cost_code_service,
+        )
     connector._get_vendor_public_id = Mock(return_value="vendor-pub-1")
     connector._sync_line_items = Mock()
     return connector, expense_service

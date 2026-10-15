@@ -163,6 +163,20 @@ BEGIN
         RETURN;
     END
 
+    DECLARE @ExpenseStatus NVARCHAR(20) = NULL;
+    SELECT @ExpenseStatus = [Status] FROM dbo.[Expense] WHERE [Id] = @ExpenseId;
+    IF @ExpenseStatus = N'approved'
+       AND @SubCostCodeId IS NOT NULL
+       AND EXISTS (
+           SELECT 1 FROM dbo.[SubCostCode] scc
+           WHERE scc.[Id] = @SubCostCodeId AND scc.[IsHoldingCode] = 1
+       )
+    BEGIN
+        COMMIT TRANSACTION;
+        RAISERROR('HOLDING_CODE: suspense sub cost code cannot be written onto an approved Expense line.', 16, 1);
+        RETURN;
+    END
+
     DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();
 
     INSERT INTO dbo.[ExpenseLineItem] ([CreatedDatetime], [ModifiedDatetime], [ExpenseId], [SubCostCodeId], [ProjectId], [Description], [Quantity], [Rate], [Amount], [IsBillable], [IsBilled], [BillableDecidedByUserId], [BillableDecidedAt], [Markup], [Price], [IsDraft], [CreatedByUserId])
@@ -412,6 +426,20 @@ BEGIN
         BEGIN
             COMMIT TRANSACTION;
             RAISERROR('STATUS_LOCKED: the line items of a completed Expense cannot be changed.', 16, 1);
+            RETURN;
+        END
+
+        DECLARE @TargetExpenseStatus NVARCHAR(20) = NULL;
+        SELECT @TargetExpenseStatus = [Status] FROM dbo.[Expense] WHERE [Id] = @ExpenseId;
+        IF @TargetExpenseStatus = N'approved'
+           AND @SubCostCodeId IS NOT NULL
+           AND EXISTS (
+               SELECT 1 FROM dbo.[SubCostCode] scc
+               WHERE scc.[Id] = @SubCostCodeId AND scc.[IsHoldingCode] = 1
+           )
+        BEGIN
+            COMMIT TRANSACTION;
+            RAISERROR('HOLDING_CODE: suspense sub cost code cannot be written onto an approved Expense line.', 16, 1);
             RETURN;
         END
     END

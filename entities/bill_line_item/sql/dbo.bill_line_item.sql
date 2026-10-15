@@ -242,6 +242,20 @@ BEGIN
         RETURN;
     END
 
+    DECLARE @BillStatus NVARCHAR(20) = NULL;
+    SELECT @BillStatus = [Status] FROM dbo.[Bill] WHERE [Id] = @BillId;
+    IF @BillStatus = N'approved'
+       AND @SubCostCodeId IS NOT NULL
+       AND EXISTS (
+           SELECT 1 FROM dbo.[SubCostCode] scc
+           WHERE scc.[Id] = @SubCostCodeId AND scc.[IsHoldingCode] = 1
+       )
+    BEGIN
+        COMMIT TRANSACTION;
+        RAISERROR('HOLDING_CODE: suspense sub cost code cannot be written onto an approved Bill line.', 16, 1);
+        RETURN;
+    END
+
     DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();
 
     INSERT INTO dbo.[BillLineItem] ([CreatedDatetime], [ModifiedDatetime], [BillId], [SubCostCodeId], [ProjectId], [Description], [Quantity], [Rate], [Amount], [IsBillable], [IsBilled], [Markup], [Price], [IsDraft], [CodingPrefillState], [CreatedByUserId])
@@ -512,6 +526,20 @@ BEGIN
         BEGIN
             COMMIT TRANSACTION;
             RAISERROR('STATUS_LOCKED: the line items of a completed Bill cannot be changed.', 16, 1);
+            RETURN;
+        END
+
+        DECLARE @TargetBillStatus NVARCHAR(20) = NULL;
+        SELECT @TargetBillStatus = [Status] FROM dbo.[Bill] WHERE [Id] = @BillId;
+        IF @TargetBillStatus = N'approved'
+           AND @SubCostCodeId IS NOT NULL
+           AND EXISTS (
+               SELECT 1 FROM dbo.[SubCostCode] scc
+               WHERE scc.[Id] = @SubCostCodeId AND scc.[IsHoldingCode] = 1
+           )
+        BEGIN
+            COMMIT TRANSACTION;
+            RAISERROR('HOLDING_CODE: suspense sub cost code cannot be written onto an approved Bill line.', 16, 1);
             RETURN;
         END
     END

@@ -10,7 +10,11 @@ this file is in the guard's _SKIP_FILES because its own forwards are variable-ty
 import logging
 from typing import Any, Optional
 
-from integrations.intuit.qbo.base.drift_types import KNOWN_DRIFT_TYPES
+from integrations.intuit.qbo.base.drift_types import (
+    DRIFT_HOLDING_CODE_ON_APPROVED,
+    DRIFT_HOLDING_CODE_ON_COMPLETED,
+    KNOWN_DRIFT_TYPES,
+)
 from integrations.intuit.qbo.reconciliation.persistence.repo import ReconciliationIssueRepository
 
 logger = logging.getLogger(__name__)
@@ -78,6 +82,80 @@ def record_mapping_issue(
         logger.warning(details)
     except Exception as exc:
         logger.error(f"Failed to record reconciliation issue: {exc}. Details: {details}")
+
+
+def _record_deduped(
+    repo: ReconciliationIssueRepository,
+    *,
+    drift_type: str,
+    entity_type: str,
+    entity_public_id: Optional[str],
+    qbo_id: Optional[str],
+    realm_id: str,
+    details: str,
+) -> None:
+    try:
+        existing = set(
+            repo.read_unresolved_issue_keys_by_drift_type(drift_type)
+        )
+        key = (realm_id or "", entity_type, qbo_id)
+        if key in existing:
+            return
+    except Exception as exc:
+        logger.warning(
+            "Could not dedupe reconciliation issue %s: %s", drift_type, exc
+        )
+    record_mapping_issue(
+        repo,
+        drift_type=drift_type,
+        entity_type=entity_type,
+        entity_public_id=entity_public_id,
+        qbo_id=qbo_id,
+        realm_id=realm_id,
+        details=details,
+    )
+
+
+def record_holding_code_on_approved_deduped(
+    repo: ReconciliationIssueRepository,
+    *,
+    entity_type: str,
+    entity_public_id: Optional[str],
+    qbo_id: Optional[str],
+    realm_id: str,
+    details: str,
+) -> None:
+    """Record holding_code_on_approved at most once per (realm, entity_type, qbo_id)."""
+    _record_deduped(
+        repo,
+        drift_type=DRIFT_HOLDING_CODE_ON_APPROVED,
+        entity_type=entity_type,
+        entity_public_id=entity_public_id,
+        qbo_id=qbo_id,
+        realm_id=realm_id,
+        details=details,
+    )
+
+
+def record_holding_code_on_completed_deduped(
+    repo: ReconciliationIssueRepository,
+    *,
+    entity_type: str,
+    entity_public_id: Optional[str],
+    qbo_id: Optional[str],
+    realm_id: str,
+    details: str,
+) -> None:
+    """Record holding_code_on_completed at most once per (realm, entity_type, qbo_id)."""
+    _record_deduped(
+        repo,
+        drift_type=DRIFT_HOLDING_CODE_ON_COMPLETED,
+        entity_type=entity_type,
+        entity_public_id=entity_public_id,
+        qbo_id=qbo_id,
+        realm_id=realm_id,
+        details=details,
+    )
 
 
 def build_duplicate_qbo_identity_conflict_desc(

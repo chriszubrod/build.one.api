@@ -46,8 +46,83 @@ from entities.module.business.service import ModuleService
 from shared.api.money import to_decimal_or_none
 
 from shared.lifecycle.terminal_lock import StatusLockedError
+from shared.lifecycle.completion_gate import HoldingCodeRefused
+from entities.sub_cost_code.business.service import SubCostCodeService
 
 logger = logging.getLogger(__name__)
+
+# Billable picker SQL (U-632) — module constants so tests_sqlserver executes the same text.
+BILLABLE_READY_BILL_LINE_ITEMS_SQL = """
+                SELECT bli.Id, bli.PublicId, bli.Description, bli.Amount, bli.Markup, bli.Price,
+                       b.PublicId AS ParentPublicId, b.BillNumber AS ParentNumber,
+                       b.BillDate AS SourceDate, v.Name AS VendorName,
+                       scc.Number AS SubCostCodeNumber, scc.Name AS SubCostCodeName,
+                       att_first.PublicId AS AttachmentPublicId
+                FROM dbo.BillLineItem bli
+                JOIN dbo.Bill b ON b.Id = bli.BillId
+                LEFT JOIN dbo.Vendor v ON v.Id = b.VendorId
+                LEFT JOIN dbo.SubCostCode scc ON scc.Id = bli.SubCostCodeId
+                OUTER APPLY (
+                    SELECT TOP 1 a.PublicId
+                    FROM dbo.BillLineItemAttachment blia
+                    JOIN dbo.Attachment a ON a.Id = blia.AttachmentId
+                    WHERE blia.BillLineItemId = bli.Id
+                    ORDER BY a.Id
+                ) att_first
+                WHERE bli.ProjectId = ?
+                  AND bli.IsBillable = 1
+                  AND (bli.IsBilled = 0 OR bli.IsBilled IS NULL)
+                  AND bli.IsDraft = 0
+                  AND ISNULL(scc.[IsHoldingCode], 0) = 0
+            """
+
+BILLABLE_READY_EXPENSE_LINE_ITEMS_SQL = """
+                SELECT eli.Id, eli.PublicId, eli.Description, eli.Amount, eli.Markup, eli.Price,
+                       e.PublicId AS ParentPublicId, e.ReferenceNumber AS ParentNumber,
+                       e.ExpenseDate AS SourceDate, v.Name AS VendorName,
+                       scc.Number AS SubCostCodeNumber, scc.Name AS SubCostCodeName,
+                       att_first.PublicId AS AttachmentPublicId
+                FROM dbo.ExpenseLineItem eli
+                JOIN dbo.Expense e ON e.Id = eli.ExpenseId
+                LEFT JOIN dbo.Vendor v ON v.Id = e.VendorId
+                LEFT JOIN dbo.SubCostCode scc ON scc.Id = eli.SubCostCodeId
+                OUTER APPLY (
+                    SELECT TOP 1 a.PublicId
+                    FROM dbo.ExpenseLineItemAttachment elia
+                    JOIN dbo.Attachment a ON a.Id = elia.AttachmentId
+                    WHERE elia.ExpenseLineItemId = eli.Id
+                    ORDER BY a.Id
+                ) att_first
+                WHERE eli.ProjectId = ?
+                  AND eli.IsBillable = 1
+                  AND (eli.IsBilled = 0 OR eli.IsBilled IS NULL)
+                  AND eli.IsDraft = 0
+                  AND ISNULL(scc.[IsHoldingCode], 0) = 0
+            """
+
+BILLABLE_READY_BILL_CREDIT_LINE_ITEMS_SQL = """
+                SELECT bcli.Id, bcli.PublicId, bcli.Description, bcli.Amount, bcli.BillableAmount,
+                       bc.PublicId AS ParentPublicId, bc.CreditNumber AS ParentNumber,
+                       bc.CreditDate AS SourceDate, v.Name AS VendorName,
+                       scc.Number AS SubCostCodeNumber, scc.Name AS SubCostCodeName,
+                       att_first.PublicId AS AttachmentPublicId
+                FROM dbo.BillCreditLineItem bcli
+                JOIN dbo.BillCredit bc ON bc.Id = bcli.BillCreditId
+                LEFT JOIN dbo.Vendor v ON v.Id = bc.VendorId
+                LEFT JOIN dbo.SubCostCode scc ON scc.Id = bcli.SubCostCodeId
+                OUTER APPLY (
+                    SELECT TOP 1 a.PublicId
+                    FROM dbo.BillCreditLineItemAttachment bclia
+                    JOIN dbo.Attachment a ON a.Id = bclia.AttachmentId
+                    WHERE bclia.BillCreditLineItemId = bcli.Id
+                    ORDER BY a.Id
+                ) att_first
+                WHERE bcli.ProjectId = ?
+                  AND bcli.IsBillable = 1
+                  AND (bcli.IsBilled = 0 OR bcli.IsBilled IS NULL)
+                  AND bcli.IsDraft = 0
+                  AND ISNULL(scc.[IsHoldingCode], 0) = 0
+            """
 
 
 def _col_letter_to_index(letters: str) -> int:
@@ -473,6 +548,46 @@ class InvoiceService:
         # dbo.Invoice.QboId/RealmId die with the row.
         return self.repo.delete_by_id(existing.id)
 
+    def _source_line_sub_cost_code_id(self, line_item) -> Optional[int]:
+        """SCC on the linked source line only (ignores the invoice line's own SCC)."""
+        if line_item.source_type == "BillLineItem" and line_item.bill_line_item_id:
+            from entities.bill_line_item.business.service import BillLineItemService
+
+            bli = BillLineItemService().read_by_id(line_item.bill_line_item_id)
+            return bli.sub_cost_code_id if bli else None
+        if line_item.source_type == "ExpenseLineItem" and line_item.expense_line_item_id:
+            from entities.expense_line_item.business.service import ExpenseLineItemService
+
+            eli = ExpenseLineItemService().read_by_id(line_item.expense_line_item_id)
+            return eli.sub_cost_code_id if eli else None
+        if line_item.source_type == "BillCreditLineItem" and line_item.bill_credit_line_item_id:
+            from entities.bill_credit_line_item.business.service import BillCreditLineItemService
+
+            cli = BillCreditLineItemService().read_by_id(line_item.bill_credit_line_item_id)
+            return cli.sub_cost_code_id if cli else None
+        return None
+
+    def invoice_has_holding_line(self, invoice_id: int) -> bool:
+        """True when any line's own SCC OR its source line's SCC is a holding code.
+
+        Both are checked: the QBO push resolves a source-backed line's item from the
+        source line, so a real code stamped on the invoice line does not clear it.
+        """
+        line_items = self.invoice_line_item_service.read_by_invoice_id(invoice_id=invoice_id)
+        scc_svc = SubCostCodeService()
+        return any(
+            scc_svc.is_holding_code(li.sub_cost_code_id)
+            or scc_svc.is_holding_code(self._source_line_sub_cost_code_id(li))
+            for li in line_items
+        )
+
+    def _assert_no_holding_code_on_complete(self, invoice_id: int) -> None:
+        if self.invoice_has_holding_line(invoice_id):
+            raise HoldingCodeRefused(
+                "This invoice cannot be completed while any line remains on the suspense "
+                "sub cost code. Recode those lines first."
+            )
+
     def complete_invoice(self, public_id: str) -> dict:
         """
         Finalize an invoice: set is_draft=False on the invoice and all line items.
@@ -487,6 +602,8 @@ class InvoiceService:
 
         # Finalize invoice
         try:
+            self._assert_no_holding_code_on_complete(invoice.id)
+
             project = self.project_service.read_by_id(id=invoice.project_id) if invoice.project_id else None
             project_public_id = project.public_id if project else None
 
@@ -516,6 +633,8 @@ class InvoiceService:
                     "invoice_finalized": False,
                     "errors": [{"step": "finalize_invoice", "error": "Row version conflict"}],
                 }
+        except HoldingCodeRefused:
+            raise
         except Exception as e:
             logger.exception(f"Error finalizing invoice {public_id}")
             return {
@@ -1402,28 +1521,7 @@ class InvoiceService:
         with get_connection() as conn:
             cursor = conn.cursor()
 
-            cursor.execute("""
-                SELECT bli.Id, bli.PublicId, bli.Description, bli.Amount, bli.Markup, bli.Price,
-                       b.PublicId AS ParentPublicId, b.BillNumber AS ParentNumber,
-                       b.BillDate AS SourceDate, v.Name AS VendorName,
-                       scc.Number AS SubCostCodeNumber, scc.Name AS SubCostCodeName,
-                       att_first.PublicId AS AttachmentPublicId
-                FROM dbo.BillLineItem bli
-                JOIN dbo.Bill b ON b.Id = bli.BillId
-                LEFT JOIN dbo.Vendor v ON v.Id = b.VendorId
-                LEFT JOIN dbo.SubCostCode scc ON scc.Id = bli.SubCostCodeId
-                OUTER APPLY (
-                    SELECT TOP 1 a.PublicId
-                    FROM dbo.BillLineItemAttachment blia
-                    JOIN dbo.Attachment a ON a.Id = blia.AttachmentId
-                    WHERE blia.BillLineItemId = bli.Id
-                    ORDER BY a.Id
-                ) att_first
-                WHERE bli.ProjectId = ?
-                  AND bli.IsBillable = 1
-                  AND (bli.IsBilled = 0 OR bli.IsBilled IS NULL)
-                  AND bli.IsDraft = 0
-            """, [project_id])
+            cursor.execute(BILLABLE_READY_BILL_LINE_ITEMS_SQL, [project_id])
             for row in cursor.fetchall():
                 if row.Id not in already_linked_bill:
                     items.append({
@@ -1443,28 +1541,7 @@ class InvoiceService:
                         "attachment_public_id": str(row.AttachmentPublicId) if row.AttachmentPublicId else "",
                     })
 
-            cursor.execute("""
-                SELECT eli.Id, eli.PublicId, eli.Description, eli.Amount, eli.Markup, eli.Price,
-                       e.PublicId AS ParentPublicId, e.ReferenceNumber AS ParentNumber,
-                       e.ExpenseDate AS SourceDate, v.Name AS VendorName,
-                       scc.Number AS SubCostCodeNumber, scc.Name AS SubCostCodeName,
-                       att_first.PublicId AS AttachmentPublicId
-                FROM dbo.ExpenseLineItem eli
-                JOIN dbo.Expense e ON e.Id = eli.ExpenseId
-                LEFT JOIN dbo.Vendor v ON v.Id = e.VendorId
-                LEFT JOIN dbo.SubCostCode scc ON scc.Id = eli.SubCostCodeId
-                OUTER APPLY (
-                    SELECT TOP 1 a.PublicId
-                    FROM dbo.ExpenseLineItemAttachment elia
-                    JOIN dbo.Attachment a ON a.Id = elia.AttachmentId
-                    WHERE elia.ExpenseLineItemId = eli.Id
-                    ORDER BY a.Id
-                ) att_first
-                WHERE eli.ProjectId = ?
-                  AND eli.IsBillable = 1
-                  AND (eli.IsBilled = 0 OR eli.IsBilled IS NULL)
-                  AND eli.IsDraft = 0
-            """, [project_id])
+            cursor.execute(BILLABLE_READY_EXPENSE_LINE_ITEMS_SQL, [project_id])
             for row in cursor.fetchall():
                 if row.Id not in already_linked_expense:
                     items.append({
@@ -1484,28 +1561,7 @@ class InvoiceService:
                         "attachment_public_id": str(row.AttachmentPublicId) if row.AttachmentPublicId else "",
                     })
 
-            cursor.execute("""
-                SELECT bcli.Id, bcli.PublicId, bcli.Description, bcli.Amount, bcli.BillableAmount,
-                       bc.PublicId AS ParentPublicId, bc.CreditNumber AS ParentNumber,
-                       bc.CreditDate AS SourceDate, v.Name AS VendorName,
-                       scc.Number AS SubCostCodeNumber, scc.Name AS SubCostCodeName,
-                       att_first.PublicId AS AttachmentPublicId
-                FROM dbo.BillCreditLineItem bcli
-                JOIN dbo.BillCredit bc ON bc.Id = bcli.BillCreditId
-                LEFT JOIN dbo.Vendor v ON v.Id = bc.VendorId
-                LEFT JOIN dbo.SubCostCode scc ON scc.Id = bcli.SubCostCodeId
-                OUTER APPLY (
-                    SELECT TOP 1 a.PublicId
-                    FROM dbo.BillCreditLineItemAttachment bclia
-                    JOIN dbo.Attachment a ON a.Id = bclia.AttachmentId
-                    WHERE bclia.BillCreditLineItemId = bcli.Id
-                    ORDER BY a.Id
-                ) att_first
-                WHERE bcli.ProjectId = ?
-                  AND bcli.IsBillable = 1
-                  AND (bcli.IsBilled = 0 OR bcli.IsBilled IS NULL)
-                  AND bcli.IsDraft = 0
-            """, [project_id])
+            cursor.execute(BILLABLE_READY_BILL_CREDIT_LINE_ITEMS_SQL, [project_id])
             for row in cursor.fetchall():
                 if row.Id not in already_linked_credit:
                     items.append({

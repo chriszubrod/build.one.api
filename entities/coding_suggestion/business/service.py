@@ -12,6 +12,7 @@ from entities.coding_suggestion.business.model import (
     VendorDominantSubCostCodeForBills,
 )
 from entities.coding_suggestion.persistence.repo import CodingSuggestionRepository
+from entities.sub_cost_code.business.holding_lines import assert_no_holding_on_lines
 from shared.access import (
     EntityNotAccessibleError,
     assert_can_access_bill,
@@ -380,6 +381,49 @@ class CodingSuggestionService:
                 "reason": "multi_line_purchase_confirm_unsupported",
             }
 
+        expense_id = getattr(item, "expense_id", None) or self._resolve_expense_id_for_purchase(
+            qbo_purchase_qbo_id=item.qbo_purchase_qbo_id or "",
+            realm_id=item.realm_id or "",
+        )
+        if expense_id is not None:
+            from entities.expense_line_item.business.service import (
+                ExpenseLineItemService,
+            )
+            from integrations.intuit.qbo.base.ids import coerce_id
+
+            eli_svc = ExpenseLineItemService()
+            elis = eli_svc.read_by_expense_id(expense_id=expense_id)
+            recoded_line_ids: set[int] = set()
+            uncategorized_qbo_line_ids = self._uncategorized_staging_qbo_line_ids(
+                realm_id=item.realm_id or "",
+                qbo_purchase_qbo_id=item.qbo_purchase_qbo_id or "",
+            )
+            if uncategorized_count == 1 and len(uncategorized_qbo_line_ids) == 1:
+                local = eli_svc.read_by_qbo_identity(
+                    coerce_id(expense_id), uncategorized_qbo_line_ids[0]
+                )
+                if local is not None and local.id is not None:
+                    recoded_line_ids.add(int(local.id))
+            elif allow_multi_line and uncategorized_qbo_line_ids:
+                for qbo_line_id in uncategorized_qbo_line_ids:
+                    local = eli_svc.read_by_qbo_identity(
+                        coerce_id(expense_id), qbo_line_id
+                    )
+                    if local is not None and local.id is not None:
+                        recoded_line_ids.add(int(local.id))
+            other_lines = [
+                li
+                for li in elis
+                if getattr(li, "id", None) not in recoded_line_ids
+            ]
+            assert_no_holding_on_lines(
+                other_lines,
+                message=(
+                    "This expense cannot be recoded while any line remains on the suspense "
+                    "sub cost code. Recode those lines first."
+                ),
+            )
+
         expected_sync_token = None
         try:
             from integrations.intuit.qbo.purchase.persistence.repo import QboPurchaseRepository
@@ -426,6 +470,31 @@ class CodingSuggestionService:
             realm_id=item.realm_id or "",
             qbo_purchase_qbo_id=item.qbo_purchase_qbo_id or "",
         ) > 1
+
+    @staticmethod
+    def _uncategorized_staging_qbo_line_ids(
+        *, realm_id: str, qbo_purchase_qbo_id: str
+    ) -> list[str]:
+        if not realm_id or not qbo_purchase_qbo_id:
+            return []
+        from shared.database import get_connection
+
+        with get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT pl.[QboLineId]
+                FROM [qbo].[PurchaseLine] pl
+                INNER JOIN [qbo].[Purchase] p ON pl.[QboPurchaseId] = p.[Id]
+                WHERE p.[QboId] = ?
+                  AND p.[RealmId] = ?
+                  AND pl.[AccountRefName] LIKE N'%NEED TO CATEGORIZE%'
+                ORDER BY pl.[QboLineId]
+                """,
+                qbo_purchase_qbo_id,
+                realm_id,
+            )
+            return [str(r[0]) for r in cursor.fetchall() if r[0] is not None]
 
     @staticmethod
     def _count_uncategorized_purchase_lines(

@@ -48,6 +48,7 @@ class SubCostCodeRepository:
                 qbo_active=getattr(row, "QboActive", None),
                 qbo_id=getattr(row, "QboId", None),
                 realm_id=getattr(row, "RealmId", None),
+                is_holding_code=bool(getattr(row, "IsHoldingCode", False)),
             )
         except AttributeError as error:
             logger.error(f"Attribute error during from db: {error}")
@@ -109,6 +110,22 @@ class SubCostCodeRepository:
                 return [self._from_db(row) for row in rows if row]
         except Exception as error:
             logger.error(f"Error during read all sub cost codes: {error}")
+            raise map_database_error(error)
+
+    def read_holding_sub_cost_code_ids(self) -> List[int]:
+        """All SubCostCode.Id rows flagged IsHoldingCode (U-632)."""
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(
+                    cursor=cursor,
+                    name="ReadHoldingSubCostCodeIds",
+                    params={},
+                )
+                rows = cursor.fetchall()
+                return [int(row.Id) for row in rows if row]
+        except Exception as error:
+            logger.error(f"Error during read holding sub cost code ids: {error}")
             raise map_database_error(error)
 
     def read_by_id(self, id: int) -> Optional[SubCostCode]:

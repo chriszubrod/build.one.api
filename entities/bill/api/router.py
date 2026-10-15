@@ -22,6 +22,7 @@ from shared.api.money import to_decimal_or_none
 from shared.api.responses import list_response, item_response, accepted_response, raise_workflow_error, raise_not_found
 from shared.database import get_connection
 from shared.lifecycle.resolver import LIFECYCLE_STATUSES, attach_lifecycle
+from shared.lifecycle.completion_gate import HoldingCodeRefused
 from shared.rbac import require_module_api
 from shared.rbac_constants import Modules
 from core.workflow.api.process_engine import ProcessEngine, TriggerContext, EventType, Channel
@@ -586,6 +587,19 @@ def _run_complete_bill(public_id: str, job_public_id: str | None = None, force: 
                     f"completion returned {result.get('status_code')} before enqueue: "
                     f"{result.get('message')}",
                 )
+    except HoldingCodeRefused as e:
+        result = {
+            "status_code": 422,
+            "message": e.detail,
+            "bill_finalized": False,
+            "file_uploads": {},
+            "excel_syncs": {},
+            "qbo_sync": {},
+            "errors": [{"step": "finalize_bill", "error_code": ErrorCode.HOLDING_CODE}],
+        }
+        BillRepository().set_completion_result(public_id, result)
+        if job_public_id:
+            job_service.mark_failure(job_public_id, e.detail, max_attempts=1)
     except Exception as e:
         logger.exception("Complete bill background task failed: public_id=%s", public_id)
         if job_public_id:
@@ -621,6 +635,11 @@ def complete_bill_router(
         current_user=current_user,
         resolve_review=lambda: _current_review_for_bill(bill.id),
     )
+
+    try:
+        bill_service._assert_no_holding_code_on_complete(bill.id)
+    except HoldingCodeRefused:
+        raise
 
     from entities.completion_job.business.service import CompletionJobService
 

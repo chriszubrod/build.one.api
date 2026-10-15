@@ -8,10 +8,14 @@ from entities.invoice.api.router import complete_invoice_router
 
 
 def _patch_bill_deps(monkeypatch):
-    bill = SimpleNamespace(is_draft=True)
+    bill = SimpleNamespace(id=1, is_draft=True)
     monkeypatch.setattr(
         "entities.bill.business.service.BillService.read_by_public_id",
         lambda self, public_id: bill,
+    )
+    monkeypatch.setattr(
+        "entities.bill.business.service.BillService._assert_no_holding_code_on_complete",
+        lambda self, bill_id: None,
     )
     return bill
 
@@ -64,10 +68,14 @@ def test_complete_bill_skips_background_task_when_job_coalesced(monkeypatch):
 
 
 def test_complete_expense_enqueues_job_before_background_task(monkeypatch):
-    expense = SimpleNamespace(is_draft=True)
+    expense = SimpleNamespace(id=1, is_draft=True)
     monkeypatch.setattr(
         "entities.expense.business.service.ExpenseService.read_by_public_id",
         lambda self, public_id: expense,
+    )
+    monkeypatch.setattr(
+        "entities.expense.business.service.ExpenseService._assert_no_holding_code_on_complete",
+        lambda self, expense_id: None,
     )
     call_order = []
     job = SimpleNamespace(public_id="job-public-id", was_created=True)
@@ -94,10 +102,14 @@ def test_complete_expense_enqueues_job_before_background_task(monkeypatch):
 
 
 def test_complete_expense_skips_background_task_when_job_coalesced(monkeypatch):
-    expense = SimpleNamespace(is_draft=True)
+    expense = SimpleNamespace(id=1, is_draft=True)
     monkeypatch.setattr(
         "entities.expense.business.service.ExpenseService.read_by_public_id",
         lambda self, public_id: expense,
+    )
+    monkeypatch.setattr(
+        "entities.expense.business.service.ExpenseService._assert_no_holding_code_on_complete",
+        lambda self, expense_id: None,
     )
     job = SimpleNamespace(public_id="job-public-id", was_created=False)
 

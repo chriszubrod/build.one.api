@@ -17,6 +17,16 @@ _PURCHASE_REPO = "integrations.intuit.qbo.purchase.persistence.repo.QboPurchaseR
 _EXPENSE_READ = "entities.expense.business.service.ExpenseService.read_by_id"
 
 
+@pytest.fixture(autouse=True)
+def _mock_expense_line_items_for_enqueue_holding_gate(monkeypatch):
+    eli = MagicMock()
+    eli.read_by_expense_id.return_value = []
+    monkeypatch.setattr(
+        "entities.expense_line_item.business.service.ExpenseLineItemService",
+        lambda *a, **k: eli,
+    )
+
+
 def _expense(*, expense_id=55, qbo_id="P-100", realm_id="realm-1"):
     return SimpleNamespace(id=expense_id, qbo_id=qbo_id, realm_id=realm_id)
 

@@ -45,13 +45,14 @@ this module does no caching of its own.
 # Python Standard Library Imports
 import logging
 from dataclasses import dataclass
-from typing import Optional
+from typing import Optional, Sequence
 
 # Local Imports
 from entities.sub_cost_code.business.model import SubCostCode
 from entities.sub_cost_code.business.service import SubCostCodeService
 from entities.cost_code.business.model import CostCode
 from entities.cost_code.business.service import CostCodeService
+from shared.lifecycle.completion_gate import HoldingCodeRefused
 
 logger = logging.getLogger(__name__)
 
@@ -121,9 +122,46 @@ def resolve_qbo_item_ref(
 
     scc_service = sub_cost_code_service or SubCostCodeService()
     sub_cost_code = scc_service.read_by_id(sub_cost_code_id)
+    if sub_cost_code and getattr(sub_cost_code, "is_holding_code", False):
+        raise HoldingCodeRefused(
+            "The suspense sub cost code cannot be pushed to QuickBooks. Recode the line first."
+        )
     if not sub_cost_code or not sub_cost_code.qbo_id:
         return None
     if realm_id and sub_cost_code.realm_id != realm_id:
         return None
 
     return QboItemRef(value=sub_cost_code.qbo_id, name=sub_cost_code.name)
+
+
+def qbo_item_ref_resolves_to_holding(
+    qbo_item_ref_value: Optional[str],
+    realm_id: Optional[str] = None,
+    *,
+    sub_cost_code_service: Optional[SubCostCodeService] = None,
+) -> bool:
+    """True when a QBO Item ref resolves to a dbo SubCostCode flagged IsHoldingCode (U-632)."""
+    sub_cost_code = resolve_dbo_sub_cost_code(
+        qbo_item_ref_value,
+        realm_id,
+        sub_cost_code_service=sub_cost_code_service,
+    )
+    return bool(sub_cost_code and sub_cost_code.is_holding_code)
+
+
+def qbo_lines_include_holding(
+    lines: Sequence[object],
+    realm_id: Optional[str],
+    *,
+    sub_cost_code_service: Optional[SubCostCodeService] = None,
+) -> bool:
+    """True when any QBO line's Item ref resolves to a holding SCC (U-632)."""
+    scc_service = sub_cost_code_service or SubCostCodeService()
+    return any(
+        qbo_item_ref_resolves_to_holding(
+            getattr(line, "item_ref_value", None),
+            realm_id,
+            sub_cost_code_service=scc_service,
+        )
+        for line in (lines or [])
+    )

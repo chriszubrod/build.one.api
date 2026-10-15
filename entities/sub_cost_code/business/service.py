@@ -17,6 +17,7 @@ class SubCostCodeService:
     def __init__(self, repo: Optional[SubCostCodeRepository] = None):
         """Initialize the SubCostCodeService."""
         self.repo = repo or SubCostCodeRepository()
+        self._holding_sub_cost_code_ids: Optional[frozenset[int]] = None
 
     def create(self, *, tenant_id: int = 1, number: str, name: str, description: Optional[str] = None, cost_code_id: int, aliases: Optional[str] = None) -> SubCostCode:
         """
@@ -35,6 +36,21 @@ class SubCostCodeService:
         Read a sub cost code by ID.
         """
         return self.repo.read_by_id(id)
+
+    def holding_sub_cost_code_ids(self) -> frozenset[int]:
+        """Memoized on this service instance only (one ReadHoldingSubCostCodeIds per instance)."""
+        if self._holding_sub_cost_code_ids is None:
+            self._holding_sub_cost_code_ids = frozenset(
+                self.repo.read_holding_sub_cost_code_ids()
+            )
+        return self._holding_sub_cost_code_ids
+
+    def is_holding_code(self, sub_cost_code_id: Optional[int]) -> bool:
+        """True when the SCC is flagged suspense/holding (e.g. Number 00.02). None -> False."""
+        return (
+            sub_cost_code_id is not None
+            and sub_cost_code_id in self.holding_sub_cost_code_ids()
+        )
 
     def read_by_public_id(self, public_id: str) -> Optional[SubCostCode]:
         """

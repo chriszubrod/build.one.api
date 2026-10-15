@@ -22,6 +22,11 @@ DRIFT_INVOICE_DRAW_MISMATCH = "invoice_draw_mismatch"
 DRIFT_BILLABLE_STATUS_DRIFT = "billable_status_drift"
 DRIFT_QBO_LINKED_NOT_COMPLETED = "qbo_linked_not_completed"
 
+# U-632: QBO pull left a completed document with a suspense/holding SCC line — status unchanged.
+DRIFT_HOLDING_CODE_ON_COMPLETED = "holding_code_on_completed"
+# U-632: QBO pull resolved holding SCC onto an approved (not completed) parent — local SCC kept.
+DRIFT_HOLDING_CODE_ON_APPROVED = "holding_code_on_approved"
+
 # --- Per-connector mapping-issue recorder ---
 DRIFT_ORPHANED_BILL_BILL_MAPPING = "orphaned_bill_bill_mapping"
 DRIFT_DUPLICATE_QBO_BILL_DOCNUMBER = "duplicate_qbo_bill_docnumber"
@@ -154,4 +159,6 @@ KNOWN_DRIFT_TYPES: FrozenSet[str] = frozenset({
     DRIFT_ORPHAN_BLI_LINE_ITEM, DRIFT_BLI_LINE_READOPT_FAILED, DRIFT_BLI_LINE_CREATE_FAILED,
     DRIFT_BLI_LINE_PUSH_STAMP_FAILED,
     DRIFT_ORPHAN_ELI_LINE_ITEM, DRIFT_ELI_LINE_READOPT_FAILED, DRIFT_ELI_LINE_CREATE_FAILED,
+    DRIFT_HOLDING_CODE_ON_COMPLETED,
+    DRIFT_HOLDING_CODE_ON_APPROVED,
 })

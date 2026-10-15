@@ -24,6 +24,14 @@ PROJECT_ID = 9
 CL_ID = 50
 
 
+@pytest.fixture(autouse=True)
+def _u632_is_holding_code_defaults_false(monkeypatch):
+    monkeypatch.setattr(
+        "entities.sub_cost_code.business.service.SubCostCodeService.is_holding_code",
+        lambda self, sub_cost_code_id: False,
+    )
+
+
 class _ConnTracker:
     def __init__(self):
         self.conn = MagicMock(name="tracked_conn")
@@ -477,7 +485,9 @@ def test_cl_real_chain_approval_all_writes_share_transaction(monkeypatch):
             id=PROJECT_ID, public_id=PROJ_PID
         )
         _wire_review_status(RsSvc)
-        SccSvc.return_value.read_by_public_id.return_value = SimpleNamespace(id=9001)
+        SccSvc.return_value.read_by_public_id.return_value = SimpleNamespace(
+            id=9001, is_holding_code=False
+        )
         svc._expected_cl_reviewer_reply_conversation_id = MagicMock(
             return_value="cl-review-thread"
         )
@@ -542,7 +552,9 @@ def test_cl_real_chain_second_line_failure_rolls_back_whole_member(monkeypatch):
             id=PROJECT_ID, public_id=PROJ_PID
         )
         _wire_review_status(RsSvc)
-        SccSvc.return_value.read_by_public_id.return_value = SimpleNamespace(id=9001)
+        SccSvc.return_value.read_by_public_id.return_value = SimpleNamespace(
+            id=9001, is_holding_code=False
+        )
         svc._expected_cl_reviewer_reply_conversation_id = MagicMock(
             return_value="cl-review-thread"
         )
@@ -595,7 +607,9 @@ def test_cl_real_chain_aggregate_failure_rolls_back(monkeypatch):
             id=PROJECT_ID, public_id=PROJ_PID
         )
         _wire_review_status(RsSvc)
-        SccSvc.return_value.read_by_public_id.return_value = SimpleNamespace(id=9001)
+        SccSvc.return_value.read_by_public_id.return_value = SimpleNamespace(
+            id=9001, is_holding_code=False
+        )
         svc._expected_cl_reviewer_reply_conversation_id = MagicMock(
             return_value="cl-review-thread"
         )
@@ -734,7 +748,9 @@ def test_ready_flip_uses_in_transaction_read_when_pre_lock_still_uncoded(
         status_is_final=True,
         status_is_declined=False,
     )
-    SccSvc.return_value.read_by_public_id.return_value = SimpleNamespace(id=9001)
+    SccSvc.return_value.read_by_public_id.return_value = SimpleNamespace(
+        id=9001, is_holding_code=False
+    )
 
     with system_authz(), _u563_provenance_ok():
         result = svc._apply_decision_to_single_cl(
@@ -782,7 +798,9 @@ def test_ready_flip_defers_when_in_transaction_read_still_uncoded(
         status_is_final=True,
         status_is_declined=False,
     )
-    SccSvc.return_value.read_by_public_id.return_value = SimpleNamespace(id=9001)
+    SccSvc.return_value.read_by_public_id.return_value = SimpleNamespace(
+        id=9001, is_holding_code=False
+    )
 
     with system_authz(), _u563_provenance_ok():
         result = svc._apply_decision_to_single_cl(

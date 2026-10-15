@@ -17,7 +17,10 @@ from shared.database import (
     retry_on_transient,
 )
 
-from shared.lifecycle.terminal_lock import reraise_if_sproc_status_locked
+from shared.lifecycle.terminal_lock import (
+    reraise_if_sproc_holding_code,
+    reraise_if_sproc_status_locked,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -111,6 +114,12 @@ class BillLineItemRepository:
         except Exception as error:
             reraise_if_sproc_status_locked(
                 error, what="line items cannot be added to it"
+            )
+            reraise_if_sproc_holding_code(
+                error,
+                what=(
+                    "Suspense sub cost code cannot be written onto an approved bill line."
+                ),
             )
             logger.error(f"Error during create bill line item: {error}")
             raise map_database_error(error)
@@ -338,6 +347,12 @@ class BillLineItemRepository:
         except Exception as error:
             reraise_if_sproc_status_locked(
                 error, what="its line items cannot be changed"
+            )
+            reraise_if_sproc_holding_code(
+                error,
+                what=(
+                    "Suspense sub cost code cannot be written onto an approved bill line."
+                ),
             )
             logger.error(f"Error during update bill line item by ID: {error}")
             raise map_database_error(error)

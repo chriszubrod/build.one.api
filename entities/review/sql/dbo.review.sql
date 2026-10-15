@@ -557,6 +557,38 @@ BEGIN
         RETURN;
     END
 
+    -- U-632: refuse approval while any parent line remains on suspense/holding SCC.
+    IF @ReviewKind = N'approved'
+    BEGIN
+        IF @BillId IS NOT NULL
+           AND EXISTS (
+               SELECT 1
+               FROM dbo.[BillLineItem] bli
+               INNER JOIN dbo.[SubCostCode] scc ON scc.[Id] = bli.[SubCostCodeId]
+               WHERE bli.[BillId] = @BillId
+                 AND scc.[IsHoldingCode] = 1
+           )
+        BEGIN
+            COMMIT TRANSACTION;
+            RAISERROR('HOLDING_CODE: this bill cannot be approved while any line remains on the suspense sub cost code.', 16, 1);
+            RETURN;
+        END
+
+        IF @ExpenseId IS NOT NULL
+           AND EXISTS (
+               SELECT 1
+               FROM dbo.[ExpenseLineItem] eli
+               INNER JOIN dbo.[SubCostCode] scc ON scc.[Id] = eli.[SubCostCodeId]
+               WHERE eli.[ExpenseId] = @ExpenseId
+                 AND scc.[IsHoldingCode] = 1
+           )
+        BEGIN
+            COMMIT TRANSACTION;
+            RAISERROR('HOLDING_CODE: this expense cannot be approved while any line remains on the suspense sub cost code.', 16, 1);
+            RETURN;
+        END
+    END
+
     INSERT INTO dbo.[Review] (
         [CreatedDatetime], [ModifiedDatetime],
         [ReviewStatusId], [UserId], [Comments],

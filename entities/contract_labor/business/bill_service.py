@@ -25,6 +25,9 @@ from entities.attachment.business.service import AttachmentService
 from entities.vendor.business.service import VendorService
 from entities.project.business.service import ProjectService
 from entities.sub_cost_code.business.service import SubCostCodeService
+from entities.sub_cost_code.business.holding_lines import (
+    contract_labor_entry_has_holding_code,
+)
 from shared.storage import AzureBlobStorage
 
 logger = logging.getLogger(__name__)
@@ -248,6 +251,16 @@ class ContractLaborBillService:
 
         for entry in vendor_entries:
             line_items = self.line_item_repo.read_by_contract_labor_id(contract_labor_id=entry.id)
+            if contract_labor_entry_has_holding_code(
+                entry, line_items=line_items, scc_svc=self.scc_service
+            ):
+                result.setdefault("skipped_entries", []).append(
+                    {
+                        "contract_labor_id": entry.id,
+                        "reason": "holding_code_on_line",
+                    }
+                )
+                continue
             entry_added = False
             for li in line_items:
                 li_project_id = li.project_id
@@ -922,6 +935,10 @@ class ContractLaborBillService:
 
         for entry in vendor_entries:
             line_items = self.line_item_repo.read_by_contract_labor_id(contract_labor_id=entry.id)
+            if contract_labor_entry_has_holding_code(
+                entry, line_items=line_items, scc_svc=self.scc_service
+            ):
+                continue
 
             for li in line_items:
                 pid = li.project_id

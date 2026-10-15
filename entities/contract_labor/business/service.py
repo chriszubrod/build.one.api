@@ -53,6 +53,10 @@ from entities.contract_labor.business.model import ContractLabor
 from entities.contract_labor.persistence.repo import ContractLaborRepository
 from entities.vendor.business.service import VendorService
 from entities.project.business.service import ProjectService
+from entities.sub_cost_code.business.holding_lines import (
+    assert_no_holding_on_lines,
+    assert_no_holding_sub_cost_codes,
+)
 from entities.sub_cost_code.business.service import SubCostCodeService
 from shared.access import (
     EntityNotAccessibleError,
@@ -63,6 +67,7 @@ from shared.authz import current_user_id, current_is_system_admin
 
 from shared.authz.delegation import assert_may_act_as
 from shared.database import call_procedure, get_connection
+from shared.lifecycle.completion_gate import HoldingCodeRefused
 
 logger = logging.getLogger(__name__)
 
@@ -517,6 +522,7 @@ class ContractLaborService:
         failures: list[str] = []
         review_status_name: Optional[str] = None
         ready_flipped_count = 0
+
         for member in crew:
             cl_public_id = member.get("contract_labor_public_id")
             try:
@@ -534,6 +540,8 @@ class ContractLaborService:
                 review_status_name = result.get('review_status') or review_status_name
                 if result.get('ready_flipped'):
                     ready_flipped_count += 1
+            except HoldingCodeRefused:
+                raise
             except Exception as member_error:
                 failures.append(
                     f"{cl_public_id} ({member.get('employee_name')}): "
@@ -743,6 +751,11 @@ class ContractLaborService:
                     f"SubCostCode with public_id '{sub_cost_code_public_id}' not found."
                 )
             scc_id = int(scc.id)
+            if getattr(scc, "is_holding_code", False):
+                raise HoldingCodeRefused(
+                    "Contract labor cannot be approved while coded to the suspense "
+                    "sub cost code. Recode those lines first."
+                )
 
             li_repo = ContractLaborLineItemRepository()
             line_items = li_repo.read_by_contract_labor_id(contract_labor_id=cl.id)
@@ -974,6 +987,31 @@ class ContractLaborService:
         # Validate required fields
         if not existing.vendor_id:
             raise ValueError("Vendor is required before marking as ready.")
+        scc_svc = SubCostCodeService()
+        from entities.contract_labor.persistence.line_item_repo import (
+            ContractLaborLineItemRepository,
+        )
+
+        cl_lines = ContractLaborLineItemRepository().read_by_contract_labor_id(
+            contract_labor_id=existing.id
+        )
+        assert_no_holding_on_lines(
+            cl_lines,
+            message=(
+                "Contract labor cannot be marked ready while any line remains on the "
+                "suspense sub cost code (00.02). Recode those lines first."
+            ),
+            scc_svc=scc_svc,
+        )
+        if existing.sub_cost_code_id:
+            assert_no_holding_sub_cost_codes(
+                [existing.sub_cost_code_id],
+                message=(
+                    "Contract labor cannot be marked ready while coded to the suspense "
+                    "sub cost code (00.02). Recode first."
+                ),
+                scc_svc=scc_svc,
+            )
         if not existing.sub_cost_code_id:
             raise ValueError("SubCostCode is required before marking as ready.")
         if not existing.hourly_rate:
@@ -1059,9 +1097,12 @@ class ContractLaborService:
             contract_labor_id=contract_labor_id,
             conn=conn,
         )
+        scc_svc = SubCostCodeService()
         uncoded_count = sum(
-            1 for li in all_lines
-            if li.project_id is not None and li.sub_cost_code_id is None
+            1
+            for li in all_lines
+            if scc_svc.is_holding_code(li.sub_cost_code_id)
+            or (li.project_id is not None and li.sub_cost_code_id is None)
         )
         if uncoded_count:
             logger.info(
@@ -1094,6 +1135,14 @@ class ContractLaborService:
                     errors.append({"public_id": public_id, "error": "Entry not found"})
             except ValueError as e:
                 errors.append({"public_id": public_id, "error": str(e)})
+            except HoldingCodeRefused as e:
+                errors.append(
+                    {
+                        "public_id": public_id,
+                        "error": e.detail,
+                        "reason": "holding_code",
+                    }
+                )
             except Exception as e:
                 logger.error(f"Error marking {public_id} as ready: {e}")
                 errors.append({"public_id": public_id, "error": str(e)})

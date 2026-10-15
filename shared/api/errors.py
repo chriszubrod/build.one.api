@@ -62,6 +62,8 @@ class ErrorCode:
     REVIEW_STATE_STALE = "review_state_stale"
     IDEMPOTENCY_KEY_CONFLICT = "idempotency_key_conflict"
     MULTI_LINE_NOT_SUPPORTED = "multi_line_not_supported"
+    # U-632 suspense / holding sub cost code (00.02) — must not complete or approve.
+    HOLDING_CODE = "holding_code"
 
 
 class ApiError(HTTPException):

@@ -101,7 +101,10 @@ def _bli(bli_id=600, public_id=None):
 def _wire_minimal(svc, vendor, projects, sccs, ready_entries, line_items_by_cl):
     svc.vendor_service = types.SimpleNamespace(read_all=lambda: [vendor])
     svc.project_service = types.SimpleNamespace(read_all=lambda: projects)
-    svc.scc_service = types.SimpleNamespace(read_all=lambda: sccs)
+    svc.scc_service = types.SimpleNamespace(
+        read_all=lambda: sccs,
+        is_holding_code=lambda _sid: False,
+    )
     svc.cl_service = types.SimpleNamespace(
         read_by_status=lambda status, billing_period_start=None: ready_entries
     )

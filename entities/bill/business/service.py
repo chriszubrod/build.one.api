@@ -48,7 +48,13 @@ from typing import Any, List, Optional
 # Local Imports
 from shared.access import assert_can_access_bill
 from shared.authz import current_user_id, current_is_system_admin
-from shared.lifecycle.terminal_lock import assert_editable, is_exempt, StatusLockedError
+from shared.lifecycle.terminal_lock import (
+    assert_editable,
+    is_exempt,
+    StatusLockedError,
+    reraise_if_sproc_holding_code,
+)
+from shared.lifecycle.completion_gate import HoldingCodeRefused
 # errors.py is a stdlib-only leaf — safe at module top despite this file's
 # lazy-import convention for circular service deps.
 from integrations.intuit.qbo.base.errors import QboBudgetExceededError, QboWriteRefusedError
@@ -61,6 +67,10 @@ from entities.bill_line_item_attachment.persistence.repo import BillLineItemAtta
 from entities.payment_term.business.service import PaymentTermService
 from entities.project.business.service import ProjectService
 from entities.vendor.business.service import VendorService
+from entities.sub_cost_code.business.holding_lines import (
+    assert_no_holding_on_lines,
+    assert_no_holding_sub_cost_codes,
+)
 from entities.sub_cost_code.business.service import SubCostCodeService
 from entities.module.business.service import ModuleService
 
@@ -1278,6 +1288,18 @@ class BillService:
 
         return updated_bill
 
+    def _assert_no_holding_code_on_complete(self, bill_id: int) -> None:
+        """Refuse completion when any line is coded to a holding/suspense SCC (U-632)."""
+        line_items = self.bill_line_item_service.read_by_bill_id(bill_id=bill_id)
+        assert_no_holding_on_lines(
+            line_items,
+            message=(
+                "This bill cannot be completed while any line remains on the suspense "
+                "sub cost code. Recode those lines first."
+            ),
+            scc_svc=SubCostCodeService(),
+        )
+
     def _assert_no_duplicate_on_complete(self, bill, public_id: str) -> None:
         """Refuse to finalize a draft that duplicates an existing bill.
 
@@ -1434,6 +1456,11 @@ class BillService:
                     f"SubCostCode with public_id '{sub_cost_code_public_id}' not found."
                 )
             scc_id = int(scc.id)
+            if getattr(scc, "is_holding_code", False):
+                raise HoldingCodeRefused(
+                    "This bill cannot be approved while coded to the suspense "
+                    "sub cost code. Recode those lines first."
+                )
 
             line_items = bli_service.read_by_bill_id(bill_id=bill.id)
             if not line_items:
@@ -1444,6 +1471,21 @@ class BillService:
             # BillLineItem carrying the attachment. If multiple lines exist
             # (rare, manual edits), apply to the first.
             summary_line = line_items[0]
+            summary_id = getattr(summary_line, "id", None)
+            if summary_id is not None:
+                other_line_scc_ids = [
+                    li.sub_cost_code_id
+                    for li in line_items
+                    if getattr(li, "id", None) != summary_id
+                ]
+                assert_no_holding_sub_cost_codes(
+                    other_line_scc_ids,
+                    message=(
+                        "This bill cannot be approved while any line remains on the "
+                        "suspense sub cost code. Recode those lines first."
+                    ),
+                    scc_svc=SubCostCodeService(),
+                )
 
         # A PM approval IS the approval: jump straight to the terminal
         # non-declined status (or to declined), bypassing build_advance_payload's
@@ -1579,6 +1621,11 @@ class BillService:
                     f"SubCostCode with public_id '{sub_cost_code_public_id}' not found."
                 )
             scc_id = int(scc.id)
+            if getattr(scc, "is_holding_code", False):
+                raise HoldingCodeRefused(
+                    "This bill cannot be approved while coded to the suspense "
+                    "sub cost code. Recode those lines first."
+                )
 
         rs_service = ReviewStatusService()
         if decision == "approved":
@@ -1939,6 +1986,7 @@ class BillService:
             # Extracted to _assert_no_duplicate_on_complete so dropping the
             # field-write did not silently drop the duplicate check with it.
             self._assert_no_duplicate_on_complete(bill, public_id)
+            self._assert_no_holding_code_on_complete(bill.id)
 
             finalized_bill = self.repo.finalize_by_id(id=bill.id)
             if not finalized_bill:
@@ -1967,7 +2015,16 @@ class BillService:
                 )
 
                 record_bill_coding_suggestion_on_save(finalized_bill)
+        except HoldingCodeRefused:
+            raise
         except Exception as e:
+            reraise_if_sproc_holding_code(
+                e,
+                what=(
+                    "This bill cannot be completed while any line remains on the suspense "
+                    "sub cost code. Recode those lines first."
+                ),
+            )
             logger.exception(f"Error finalizing bill {public_id}")
             return {
                 "status_code": 500,

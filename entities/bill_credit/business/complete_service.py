@@ -15,7 +15,9 @@ from entities.bill_credit_line_item_attachment.business.service import BillCredi
 from entities.attachment.business.service import AttachmentService
 from entities.project.business.service import ProjectService
 from entities.vendor.business.service import VendorService
+from entities.sub_cost_code.business.holding_lines import assert_no_holding_on_lines
 from entities.sub_cost_code.business.service import SubCostCodeService
+from shared.lifecycle.completion_gate import HoldingCodeRefused
 from entities.module.business.service import ModuleService
 from integrations.ms.sharepoint.driveitem.connector.project_excel.business.service import DriveItemProjectExcelConnector
 from integrations.ms.sharepoint.driveitem.connector.project_module.business.service import DriveItemProjectModuleConnector
@@ -79,6 +81,19 @@ class BillCreditCompleteService:
         self.driveitem_service = MsDriveItemService()
         self.drive_repo = MsDriveRepository()
 
+    def _assert_no_holding_code_on_complete(self, bill_credit_id: int) -> None:
+        line_items = self.bill_credit_line_item_service.read_by_bill_credit_id(
+            bill_credit_id=bill_credit_id
+        )
+        assert_no_holding_on_lines(
+            line_items,
+            message=(
+                "This bill credit cannot be completed while any line remains on the suspense "
+                "sub cost code. Recode those lines first."
+            ),
+            scc_svc=self.sub_cost_code_service,
+        )
+
     def complete_bill_credit(self, public_id: str) -> dict:
         """
         Complete a bill credit: finalize and upload attachments to module folders.
@@ -137,6 +152,8 @@ class BillCreditCompleteService:
                         "file_uploads": {},
                         "errors": [{"step": "finalize_bill_credit", "error": "Vendor not found"}]
                     }
+
+                self._assert_no_holding_code_on_complete(bill_credit.id)
                 
                 finalized_bill_credit = self.bill_credit_service.update_by_public_id(
                     public_id=public_id,
@@ -165,6 +182,8 @@ class BillCreditCompleteService:
                     "file_uploads": {},
                     "errors": [{"step": "finalize_bill_credit", "error": "Row version conflict after retries"}]
                 }
+        except HoldingCodeRefused:
+            raise
         except Exception as e:
             logger.exception(f"Error finalizing bill credit {public_id}")
             return {

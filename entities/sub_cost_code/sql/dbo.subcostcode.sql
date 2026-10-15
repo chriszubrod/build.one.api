@@ -78,6 +78,14 @@ BEGIN
 END
 GO
 
+-- U-632: suspense / holding sub cost code flag (migration-only; not exposed on Create/Update).
+IF COL_LENGTH('dbo.SubCostCode', 'IsHoldingCode') IS NULL
+BEGIN
+    ALTER TABLE [dbo].[SubCostCode] ADD [IsHoldingCode] BIT NOT NULL
+        CONSTRAINT [DF_SubCostCode_IsHoldingCode] DEFAULT 0;
+END
+GO
+
 -- Idempotent column add for existing environments. Live since migration
 -- 238c_qbo_identity_reference.sql; declared here so a fresh environment
 -- built from just the base file matches prod (U-289, mirrors U-277's fix
@@ -136,7 +144,8 @@ AS
         sc.[Aliases],
         sc.[QboActive],
         sc.[QboId],
-        sc.[RealmId]
+        sc.[RealmId],
+        sc.[IsHoldingCode]
     FROM dbo.[SubCostCode] sc;
 GO
 
@@ -533,5 +542,14 @@ BEGIN
     SELECT * FROM dbo.[vw_SubCostCode]
     WHERE [QboId] = @QboId
       AND (([RealmId] = @RealmId) OR ([RealmId] IS NULL AND @RealmId IS NULL));
+END;
+GO
+
+-- U-632: ids of suspense/holding sub cost codes (IsHoldingCode = 1).
+CREATE OR ALTER PROCEDURE ReadHoldingSubCostCodeIds
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SELECT [Id] FROM dbo.[SubCostCode] WHERE [IsHoldingCode] = 1;
 END;
 GO

@@ -222,6 +222,33 @@ class BillLineItemConnector:
             else:
                 logger.debug(f"No SubCostCode resolved for QboItem ref {qbo_bill_line.item_ref_value}")
 
+        parent_approved = getattr(bill, "status", None) == "approved"
+        qbo_resolved_holding = bool(sub_cost_code and sub_cost_code.is_holding_code)
+
+        def _record_holding_on_approved(details: str) -> None:
+            from integrations.intuit.qbo.base.reconciliation_recorder import (
+                record_holding_code_on_approved_deduped,
+            )
+
+            record_holding_code_on_approved_deduped(
+                self.reconciliation_repo,
+                entity_type="Bill",
+                entity_public_id=str(bill.public_id) if bill.public_id else None,
+                qbo_id=str(getattr(bill, "qbo_id", None) or ""),
+                realm_id=realm_id or "",
+                details=details,
+            )
+
+        def _write_sub_cost_code_id(direct: BillLineItem) -> Optional[int]:
+            if parent_approved and qbo_resolved_holding:
+                _record_holding_on_approved(
+                    f"QBO pull left approved Bill {bill_id} line {direct.id} with "
+                    f"QBO-resolved holding SCC; kept local SubCostCodeId "
+                    f"{direct.sub_cost_code_id}."
+                )
+                return direct.sub_cost_code_id
+            return sub_cost_code_id
+
         # Look up Project from QBO Customer reference (customer_ref can be a job/sub-customer which maps to Project)
         project_public_id = None
         if qbo_bill_line.customer_ref_value:
@@ -252,7 +279,7 @@ class BillLineItemConnector:
             updated = self.bill_line_item_service.update_by_public_id(
                 direct.public_id,
                 bill_public_id=bill_public_id,
-                sub_cost_code_id=sub_cost_code_id,
+                sub_cost_code_id=_write_sub_cost_code_id(direct),
                 project_public_id=project_public_id,
                 description=description,
                 quantity=qty,
@@ -339,9 +366,17 @@ class BillLineItemConnector:
                     f"missing, so its dbo-native identity stamp could not land and "
                     f"the line would be an unfindable orphan. Holding for retry."
                 )
+            create_scc_id = sub_cost_code_id
+            if parent_approved and qbo_resolved_holding:
+                # No local code to keep on a new line: land it uncoded and flag it.
+                create_scc_id = None
+                _record_holding_on_approved(
+                    f"QBO pull created a line on approved Bill {bill_id} from QBO line "
+                    f"{qbo_bill_line.qbo_line_id} with a holding SCC; landed uncoded."
+                )
             return self.bill_line_item_service.create(
                 bill_public_id=bill_public_id,
-                sub_cost_code_id=sub_cost_code_id,
+                sub_cost_code_id=create_scc_id,
                 project_public_id=project_public_id,
                 description=description,
                 quantity=qty,

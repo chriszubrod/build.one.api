@@ -21,3 +21,9 @@ class SubCostCodeUpdate(BaseModel):
     description: Optional[str] = Field(default=None, max_length=255, description="The description of the sub cost code.")
     cost_code_public_id: str = Field(min_length=1, description="The public ID of the parent cost code.")
     aliases: Optional[str] = Field(default=None, max_length=500, description="Pipe-delimited alias values for matching (e.g. '01.1|1.1').")
+
+
+class SubCostCodeRead(BaseModel):
+    """Read-only API shape; `is_holding_code` is migration-maintained (not writable via API)."""
+
+    is_holding_code: bool = False

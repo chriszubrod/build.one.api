@@ -9,9 +9,15 @@ from entities.review.business.model import ParentType, Review
 from entities.review.persistence.repo import ReviewRepository
 from entities.review_status.business.service import ReviewStatusService
 from shared.authz import current_user_id
+from entities.sub_cost_code.business.holding_lines import refuse_if_parent_has_holding_line
 from shared.lifecycle.terminal_lock import assert_editable
 
 logger = logging.getLogger(__name__)
+
+_HOLDING_APPROVAL_REFUSAL_MESSAGE = (
+    "This document cannot be approved while any line remains on the "
+    "suspense sub cost code. Recode those lines first."
+)
 
 
 class ReviewTransitionError(Exception):
@@ -414,6 +420,13 @@ class ReviewService:
                 "Cannot advance: no next review status is configured."
             )
 
+        if nxt.is_final and not nxt.is_declined:
+            refuse_if_parent_has_holding_line(
+                parent_type,
+                parent_id,
+                message=_HOLDING_APPROVAL_REFUSAL_MESSAGE,
+            )
+
         return self._build_payload(
             parent_type=parent_type,
             parent_id=parent_id,
@@ -490,6 +503,12 @@ class ReviewService:
             raise ReviewTransitionError(
                 "No final review status is configured; cannot approve."
             )
+
+        refuse_if_parent_has_holding_line(
+            parent_type,
+            parent_id,
+            message=_HOLDING_APPROVAL_REFUSAL_MESSAGE,
+        )
 
         return self._build_payload(
             parent_type=parent_type,

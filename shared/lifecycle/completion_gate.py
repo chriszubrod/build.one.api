@@ -86,6 +86,13 @@ class CompletionRefused(ApiError):
         super().__init__(status_code=422, detail=message, error_code=error_code)
 
 
+class HoldingCodeRefused(CompletionRefused):
+    """Document still coded to suspense SCC 00.02 — complete/approve refused (422)."""
+
+    def __init__(self, message: str):
+        super().__init__(message, error_code=ErrorCode.HOLDING_CODE)
+
+
 def completion_gate_for(parent_type: str) -> str:
     """The configured gate for one entity, or `off`.
 

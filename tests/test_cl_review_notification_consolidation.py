@@ -24,6 +24,15 @@ from tests.test_sproc_nocount_shape_guard import strip_comments_and_strings
 from tests.test_sproc_single_source import _sproc_body
 
 
+@pytest.fixture(autouse=True)
+def _u632_is_holding_code_defaults_false(monkeypatch):
+    monkeypatch.setattr(
+        "entities.sub_cost_code.business.service.SubCostCodeService.is_holding_code",
+        lambda self, sub_cost_code_id: False,
+    )
+
+
+
 def _submitted_line(
     cl_id,
     name,

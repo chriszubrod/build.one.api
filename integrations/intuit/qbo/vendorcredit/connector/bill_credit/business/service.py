@@ -16,12 +16,17 @@ from entities.bill_credit_line_item.business.service import BillCreditLineItemSe
 from entities.vendor.business.service import VendorService
 from integrations.intuit.qbo.base.pull_race import guard_lines_present
 from integrations.intuit.qbo.base.compensation import rollback_orphan_header
-from integrations.intuit.qbo.base.reconciliation_recorder import record_mapping_issue
+from integrations.intuit.qbo.base.reconciliation_recorder import (
+    record_holding_code_on_completed_deduped,
+    record_mapping_issue,
+)
 from integrations.intuit.qbo.base.field_ownership import preserve_human_edited_ref, qbo_ref_or_placeholder
 from integrations.intuit.qbo.base.identity_consistency import verify_identity_dbo_only
 from integrations.intuit.qbo.base.identity_fastpath import run_identity_fastpath_dbo_only
 from integrations.intuit.qbo.base.ids import coerce_id
 from integrations.intuit.qbo.reconciliation.persistence.repo import ReconciliationIssueRepository
+from integrations.intuit.qbo.base.cost_code_resolver import qbo_lines_include_holding
+from entities.sub_cost_code.business.service import SubCostCodeService
 
 logger = logging.getLogger(__name__)
 
@@ -56,11 +61,13 @@ class VendorCreditBillCreditConnector:
         vendor_service: Optional[VendorService] = None,
         reconciliation_repo: Optional[ReconciliationIssueRepository] = None,
         line_item_connector: Optional[VendorCreditLineItemConnector] = None,
+        sub_cost_code_service: Optional[SubCostCodeService] = None,
     ):
         self.bill_credit_service = bill_credit_service or BillCreditService()
         self.bill_credit_line_item_service = bill_credit_line_item_service or BillCreditLineItemService()
         self.vendor_service = vendor_service or VendorService()
         self.reconciliation_repo = reconciliation_repo or ReconciliationIssueRepository()
+        self.sub_cost_code_service = sub_cost_code_service
         # Run-scoped (U-229): built once here and reused across every credit processed by
         # this connector instance, so VendorCreditLineItemConnector._sub_cost_code_cache
         # persists for the whole pull run instead of resetting per credit. Mirrors
@@ -119,7 +126,10 @@ class VendorCreditBillCreditConnector:
                     qbo_lines=qbo_lines,
                 ),
                 resolve_candidate=lambda: self._create_bill_credit(
-                    qbo_vc=qbo_vc, vendor_public_id=vendor_public_id, credit_number=credit_number,
+                    qbo_vc=qbo_vc,
+                    vendor_public_id=vendor_public_id,
+                    credit_number=credit_number,
+                    qbo_lines=qbo_lines,
                 ),
                 stamp_identity=lambda candidate: self._stamp_bill_credit_identity(
                     candidate, qbo_vc=qbo_vc, qbo_lines=qbo_lines,
@@ -199,10 +209,38 @@ class VendorCreditBillCreditConnector:
         if updated is None:
             return None
         self._sync_line_items(updated.id, updated.public_id, qbo_lines, qbo_vc.realm_id)
+        if not bool(getattr(bill_credit, "is_draft", True)) and self._qbo_vendor_credit_lines_include_holding(
+            qbo_lines, qbo_vc.realm_id
+        ):
+            record_holding_code_on_completed_deduped(
+                self.reconciliation_repo,
+                entity_type="BillCredit",
+                entity_public_id=str(updated.public_id) if updated.public_id else None,
+                qbo_id=str(qbo_vc.qbo_id) if qbo_vc.qbo_id else None,
+                realm_id=qbo_vc.realm_id or "",
+                details=(
+                    f"QBO pull left completed BillCredit {updated.id} with at least one line "
+                    f"resolved to suspense/holding sub cost code 00.02; status unchanged."
+                ),
+            )
         return updated
 
+    def _qbo_vendor_credit_lines_include_holding(
+        self, qbo_lines: List[QboVendorCreditLine], realm_id: Optional[str]
+    ) -> bool:
+        return qbo_lines_include_holding(
+            qbo_lines,
+            realm_id,
+            sub_cost_code_service=self.sub_cost_code_service or SubCostCodeService(),
+        )
+
     def _create_bill_credit(
-        self, *, qbo_vc: QboVendorCredit, vendor_public_id: str, credit_number: str,
+        self,
+        *,
+        qbo_vc: QboVendorCredit,
+        vendor_public_id: str,
+        credit_number: str,
+        qbo_lines: List[QboVendorCreditLine],
     ) -> Optional[BillCredit]:
         """
         `resolve_candidate` for the dbo-only fast path's MISS branch (U-353):
@@ -215,13 +253,14 @@ class VendorCreditBillCreditConnector:
         `UQ_BillCredit_VendorId_CreditNumber` at the DB layer.
         """
         logger.info(f"No existing BillCredit found. Creating new BillCredit from QboVendorCredit {qbo_vc.id}")
+        born_draft = self._qbo_vendor_credit_lines_include_holding(qbo_lines, qbo_vc.realm_id)
         return self.bill_credit_service.create(
             vendor_public_id=vendor_public_id,
             credit_date=qbo_vc.txn_date,
             credit_number=credit_number,
             total_amount=to_decimal_or_none(qbo_vc.total_amt),
             memo=qbo_vc.private_note,
-            is_draft=False,
+            is_draft=born_draft,
         )
 
     def _stamp_bill_credit_identity(

@@ -100,6 +100,7 @@ class PurchaseLineExpenseLineItemConnector:
         qbo_customer_repo: Optional[QboCustomerRepository] = None,
         project_service: Optional[ProjectService] = None,
         reconciliation_repo: Optional[ReconciliationIssueRepository] = None,
+        expense_service=None,
     ):
         """Initialize the PurchaseLineExpenseLineItemConnector."""
         self.expense_line_item_service = expense_line_item_service or ExpenseLineItemService()
@@ -123,6 +124,11 @@ class PurchaseLineExpenseLineItemConnector:
         self.qbo_customer_repo = qbo_customer_repo or QboCustomerRepository()
         self.project_service = project_service or ProjectService()
         self.reconciliation_repo = reconciliation_repo or ReconciliationIssueRepository()
+        if expense_service is None:
+            from entities.expense.business.service import ExpenseService
+
+            expense_service = ExpenseService()
+        self.expense_service = expense_service
         # U-364: qbo.PurchaseLineExpenseLineItem's mapping repo/model/create_mapping/
         # fingerprint-adopt are retired -- dbo.ExpenseLineItem.QboId/RealmId (U-238b)
         # is the sole identity store going forward. Unlike customer_project_repo/
@@ -179,10 +185,43 @@ class PurchaseLineExpenseLineItemConnector:
                 f"Line.Id - cannot resolve or stamp dbo-native line identity; skipping."
             )
 
+        expense = self.expense_service.read_by_id(expense_id)
+        parent_approved = (
+            expense is not None and getattr(expense, "status", None) == "approved"
+        )
+
         # Resolve sub_cost_code from item reference
         sub_cost_code_id = None
+        resolved_holding = False
+        scc_service = self.sub_cost_code_service or SubCostCodeService()
         if qbo_line.item_ref_value:
             sub_cost_code_id = self._get_sub_cost_code_id(qbo_line.item_ref_value, realm_id)
+            if sub_cost_code_id is not None:
+                resolved_holding = scc_service.is_holding_code(sub_cost_code_id)
+
+        def _record_holding_on_approved(details: str) -> None:
+            from integrations.intuit.qbo.base.reconciliation_recorder import (
+                record_holding_code_on_approved_deduped,
+            )
+
+            record_holding_code_on_approved_deduped(
+                self.reconciliation_repo,
+                entity_type="Expense",
+                entity_public_id=expense_public_id,
+                qbo_id=str(getattr(expense, "qbo_id", None) or "") if expense else "",
+                realm_id=realm_id or "",
+                details=details,
+            )
+
+        def _write_sub_cost_code_id(direct: ExpenseLineItem) -> Optional[int]:
+            if parent_approved and resolved_holding:
+                _record_holding_on_approved(
+                    f"QBO pull left approved Expense {expense_id} line {direct.id} "
+                    f"with QBO-resolved holding SCC; kept local SubCostCodeId "
+                    f"{direct.sub_cost_code_id}."
+                )
+                return direct.sub_cost_code_id
+            return sub_cost_code_id
 
         # Resolve project from customer reference
         project_public_id = None
@@ -257,7 +296,7 @@ class PurchaseLineExpenseLineItemConnector:
             updated = self.expense_line_item_service.update_by_public_id(
                 direct.public_id,
                 row_version=direct.row_version,
-                sub_cost_code_id=sub_cost_code_id,
+                sub_cost_code_id=_write_sub_cost_code_id(direct),
                 project_public_id=project_public_id,
                 description=description,
                 quantity=update_qty,
@@ -354,9 +393,17 @@ class PurchaseLineExpenseLineItemConnector:
                     f"realm_id is missing, so its dbo-native identity stamp could not "
                     f"land and the line would be an unfindable orphan. Holding for retry."
                 )
+            create_scc_id = sub_cost_code_id
+            if parent_approved and resolved_holding:
+                # No local code to keep on a new line: land it uncoded and flag it.
+                create_scc_id = None
+                _record_holding_on_approved(
+                    f"QBO pull created a line on approved Expense {expense_id} from QBO "
+                    f"line {qbo_line.qbo_line_id} with a holding SCC; landed uncoded."
+                )
             return self.expense_line_item_service.create(
                 expense_public_id=expense_public_id,
-                sub_cost_code_id=sub_cost_code_id,
+                sub_cost_code_id=create_scc_id,
                 project_public_id=project_public_id,
                 description=description,
                 quantity=default_qty,

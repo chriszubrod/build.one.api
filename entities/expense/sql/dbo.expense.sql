@@ -824,6 +824,25 @@ BEGIN
     SET NOCOUNT ON;
     BEGIN TRANSACTION;
 
+    DECLARE @LockExpenseId BIGINT = NULL;
+    SELECT @LockExpenseId = [Id]
+    FROM dbo.[Expense] WITH (UPDLOCK, HOLDLOCK)
+    WHERE [Id] = @Id;
+
+    IF EXISTS (SELECT 1 FROM dbo.[Expense] WHERE [Id] = @Id AND [Status] <> 'completed')
+       AND EXISTS (
+        SELECT 1
+        FROM dbo.[ExpenseLineItem] eli
+        INNER JOIN dbo.[SubCostCode] scc ON scc.[Id] = eli.[SubCostCodeId]
+        WHERE eli.[ExpenseId] = @Id
+          AND scc.[IsHoldingCode] = 1
+    )
+    BEGIN
+        COMMIT TRANSACTION;
+        RAISERROR('HOLDING_CODE: this Expense has suspense sub cost code lines; recode them before completing.', 16, 1);
+        RETURN;
+    END;
+
     UPDATE dbo.[Expense]
     SET [Status] = 'completed',
         [StatusDatetime] = SYSUTCDATETIME(),
@@ -1294,6 +1313,33 @@ BEGIN
     BEGIN TRANSACTION;
 
     DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();
+
+    DECLARE @LockExpenseId BIGINT = NULL;
+    SELECT @LockExpenseId = [Id]
+    FROM dbo.[Expense] WITH (UPDLOCK, HOLDLOCK)
+    WHERE [Id] = @Id;
+
+    IF @ToStatus IN (N'approved', N'completed')
+       AND EXISTS (
+           SELECT 1
+           FROM dbo.[Expense] e
+           WHERE e.[Id] = @Id
+             AND e.[Status] IN (SELECT LTRIM(RTRIM(value)) FROM STRING_SPLIT(@FromStatuses, ','))
+             AND e.[Status] <> @ToStatus
+             AND e.[Status] <> 'completed'
+       )
+       AND EXISTS (
+           SELECT 1
+           FROM dbo.[ExpenseLineItem] eli
+           INNER JOIN dbo.[SubCostCode] scc ON scc.[Id] = eli.[SubCostCodeId]
+           WHERE eli.[ExpenseId] = @Id
+             AND scc.[IsHoldingCode] = 1
+       )
+    BEGIN
+        COMMIT TRANSACTION;
+        RAISERROR('HOLDING_CODE: this Expense has suspense sub cost code lines; recode them before completing.', 16, 1);
+        RETURN;
+    END;
 
     UPDATE dbo.[Expense]
     SET [Status] = @ToStatus,

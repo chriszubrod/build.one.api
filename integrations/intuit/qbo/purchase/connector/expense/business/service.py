@@ -18,8 +18,14 @@ from integrations.intuit.qbo.base.identity_consistency import verify_identity_db
 from integrations.intuit.qbo.base.field_ownership import preserve_human_edited_ref, qbo_ref_or_placeholder
 from integrations.intuit.qbo.base.identity_fastpath import run_identity_fastpath_dbo_only
 from integrations.intuit.qbo.base.ids import coerce_id
-from integrations.intuit.qbo.base.reconciliation_recorder import record_mapping_issue
-from integrations.intuit.qbo.base.cost_code_resolver import resolve_qbo_item_ref
+from integrations.intuit.qbo.base.reconciliation_recorder import (
+    record_holding_code_on_completed_deduped,
+    record_mapping_issue,
+)
+from integrations.intuit.qbo.base.cost_code_resolver import (
+    qbo_lines_include_holding,
+    resolve_qbo_item_ref,
+)
 from integrations.intuit.qbo.reconciliation.persistence.repo import ReconciliationIssueRepository
 from entities.sub_cost_code.business.service import SubCostCodeService
 
@@ -169,6 +175,20 @@ class PurchaseExpenseConnector:
                 sync_token=getattr(qbo_purchase, "sync_token", None),
             )
             self._sync_line_items(expense_id, updated.public_id, qbo_purchase_lines, qbo_purchase.realm_id)
+            if not bool(getattr(direct, "is_draft", True)) and self._qbo_purchase_lines_include_holding(
+                qbo_purchase_lines, qbo_purchase.realm_id
+            ):
+                record_holding_code_on_completed_deduped(
+                    self.reconciliation_repo,
+                    entity_type="Expense",
+                    entity_public_id=str(updated.public_id) if updated.public_id else None,
+                    qbo_id=str(qbo_purchase.qbo_id) if qbo_purchase.qbo_id else None,
+                    realm_id=qbo_purchase.realm_id or "",
+                    details=(
+                        f"QBO pull left completed Expense {updated.id} with at least one line "
+                        f"resolved to suspense/holding sub cost code 00.02; status unchanged."
+                    ),
+                )
             return updated
 
         outcome = run_identity_fastpath_dbo_only(
@@ -234,18 +254,30 @@ class PurchaseExpenseConnector:
             total_amount=qbo_purchase.total_amt,
             memo=qbo_purchase.private_note,
             is_credit=qbo_purchase.credit or False,
-            status=self._initial_status_for_purchase_lines(lines),
+            status=self._initial_status_for_purchase_lines(lines, realm_id),
             status_origin="qbo_pull",
             status_source_ref=status_source_ref,
         )
 
-    @staticmethod
-    def _initial_status_for_purchase_lines(lines: List[QboPurchaseLine]) -> str:
-        """`draft` when any line is genuinely uncoded 58999; else `completed`."""
+    def _qbo_purchase_lines_include_holding(
+        self, lines: List[QboPurchaseLine], realm_id: Optional[str]
+    ) -> bool:
+        return qbo_lines_include_holding(
+            lines,
+            realm_id,
+            sub_cost_code_service=self.sub_cost_code_service or SubCostCodeService(),
+        )
+
+    def _initial_status_for_purchase_lines(
+        self, lines: List[QboPurchaseLine], realm_id: Optional[str]
+    ) -> str:
+        """`draft` when any line is uncoded 58999 or resolves to holding SCC; else `completed`."""
         if any(
             PurchaseExpenseConnector._qbo_purchase_line_is_uncoded_58999_placeholder(line)
             for line in lines
         ):
+            return "draft"
+        if self._qbo_purchase_lines_include_holding(lines, realm_id):
             return "draft"
         return "completed"
 

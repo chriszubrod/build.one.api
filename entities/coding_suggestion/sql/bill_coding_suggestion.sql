@@ -113,7 +113,9 @@ BEGIN
     FilteredVotes AS (
         SELECT bv.[SubCostCodeId]
         FROM BillVote bv
-        WHERE @ProjectId IS NULL OR bv.[DominantProjectId] = @ProjectId
+        INNER JOIN dbo.[SubCostCode] scc ON scc.[Id] = bv.[SubCostCodeId]
+        WHERE (@ProjectId IS NULL OR bv.[DominantProjectId] = @ProjectId)
+          AND ISNULL(scc.[IsHoldingCode], 0) = 0
     ),
     VoteCounts AS (
         SELECT

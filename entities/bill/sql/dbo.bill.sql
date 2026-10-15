@@ -1319,6 +1319,25 @@ BEGIN
     SET NOCOUNT ON;
     BEGIN TRANSACTION;
 
+    DECLARE @LockBillId BIGINT = NULL;
+    SELECT @LockBillId = [Id]
+    FROM dbo.[Bill] WITH (UPDLOCK, HOLDLOCK)
+    WHERE [Id] = @Id;
+
+    IF EXISTS (SELECT 1 FROM dbo.[Bill] WHERE [Id] = @Id AND [Status] <> 'completed')
+       AND EXISTS (
+        SELECT 1
+        FROM dbo.[BillLineItem] bli
+        INNER JOIN dbo.[SubCostCode] scc ON scc.[Id] = bli.[SubCostCodeId]
+        WHERE bli.[BillId] = @Id
+          AND scc.[IsHoldingCode] = 1
+    )
+    BEGIN
+        COMMIT TRANSACTION;
+        RAISERROR('HOLDING_CODE: this Bill has suspense sub cost code lines; recode them before completing.', 16, 1);
+        RETURN;
+    END;
+
     -- U-445: writes BOTH columns. Not optional — CK_Bill_Status_IsDraft rejects
     -- any row where `Status = 'completed'` and `IsDraft = 1` disagree, so an
     -- IsDraft-only write here would now fail outright rather than drift.
@@ -1466,6 +1485,33 @@ BEGIN
     BEGIN TRANSACTION;
 
     DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();
+
+    DECLARE @LockBillId BIGINT = NULL;
+    SELECT @LockBillId = [Id]
+    FROM dbo.[Bill] WITH (UPDLOCK, HOLDLOCK)
+    WHERE [Id] = @Id;
+
+    IF @ToStatus IN (N'approved', N'completed')
+       AND EXISTS (
+           SELECT 1
+           FROM dbo.[Bill] b
+           WHERE b.[Id] = @Id
+             AND b.[Status] IN (SELECT LTRIM(RTRIM(value)) FROM STRING_SPLIT(@FromStatuses, ','))
+             AND b.[Status] <> @ToStatus
+             AND b.[Status] <> 'completed'
+       )
+       AND EXISTS (
+           SELECT 1
+           FROM dbo.[BillLineItem] bli
+           INNER JOIN dbo.[SubCostCode] scc ON scc.[Id] = bli.[SubCostCodeId]
+           WHERE bli.[BillId] = @Id
+             AND scc.[IsHoldingCode] = 1
+       )
+    BEGIN
+        COMMIT TRANSACTION;
+        RAISERROR('HOLDING_CODE: this Bill has suspense sub cost code lines; recode them before completing.', 16, 1);
+        RETURN;
+    END;
 
     UPDATE dbo.[Bill]
     SET [Status] = @ToStatus,

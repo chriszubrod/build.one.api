@@ -9,7 +9,10 @@ import pyodbc
 # Local Imports
 from entities.review.business.model import Review
 from entities.review.business.recipient_model import ResolvedRecipient
-from shared.lifecycle.terminal_lock import reraise_if_sproc_status_locked
+from shared.lifecycle.terminal_lock import (
+    reraise_if_sproc_holding_code,
+    reraise_if_sproc_status_locked,
+)
 from shared.database import (
     call_procedure,
     conn_ctx,
@@ -126,6 +129,13 @@ class ReviewRepository:
             # contract.
             reraise_if_sproc_status_locked(
                 error, what="its review cannot be changed once the document is completed"
+            )
+            reraise_if_sproc_holding_code(
+                error,
+                what=(
+                    "This document cannot be approved while any line remains on the "
+                    "suspense sub cost code. Recode those lines first."
+                ),
             )
             logger.error(f"Error during create review: {error}")
             raise map_database_error(error)

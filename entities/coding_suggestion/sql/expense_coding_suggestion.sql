@@ -37,10 +37,12 @@ BEGIN
         SELECT eli.[SubCostCodeId]
         FROM dbo.[ExpenseLineItem] eli
         INNER JOIN dbo.[Expense] e ON eli.[ExpenseId] = e.[Id]
+        INNER JOIN dbo.[SubCostCode] scc ON scc.[Id] = eli.[SubCostCodeId]
         WHERE e.[VendorId] = @VendorId
           AND e.[IsDraft] = 0
           AND eli.[IsDraft] = 0        -- guard both: finalization flips parent before lines
           AND eli.[SubCostCodeId] IS NOT NULL
+          AND ISNULL(scc.[IsHoldingCode], 0) = 0
     ),
     Counts AS (
         SELECT

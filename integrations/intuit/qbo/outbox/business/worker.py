@@ -438,6 +438,12 @@ class QboOutboxWorker:
         )
         last_error = f"Unexpected {type(error).__name__}: {error}"
 
+        from shared.lifecycle.completion_gate import HoldingCodeRefused
+
+        if isinstance(error, HoldingCodeRefused):
+            self._dead_letter(row, f"HoldingCodeRefused: {error}")
+            return
+
         # Mirrors base/sync_outcome.py::record_projection_error's hold-vs-skip policy
         # for this same classifier: retryable errors retry; a plain ValueError is the
         # connectors' permanent-data-issue convention and dead-letters; anything else
@@ -1069,6 +1075,7 @@ class QboOutboxWorker:
             PurchaseRecodeMappingError,
         )
         from integrations.intuit.qbo.base.errors import QboSyncTokenMismatchError
+        from shared.lifecycle.completion_gate import HoldingCodeRefused
 
         svc = CodingSuggestionService()
         item = svc.read_by_public_id(row.entity_public_id)
@@ -1127,6 +1134,11 @@ class QboOutboxWorker:
             return
         except PurchaseRecodeMappingError as exc:
             _terminal_mark("error", svc.mark_error, write_error=str(exc))
+            return
+        except HoldingCodeRefused as exc:
+            _terminal_mark(
+                "error", svc.mark_error, write_error=f"HoldingCodeRefused: {exc.detail}"
+            )
             return
 
         status = result.get("status")

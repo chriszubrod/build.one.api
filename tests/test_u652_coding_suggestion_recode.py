@@ -13,6 +13,16 @@ from integrations.intuit.qbo.purchase.connector.expense.business.errors import (
     PurchaseChangedInQboError,
 )
 from integrations.intuit.qbo.purchase.connector.expense.business.service import PurchaseExpenseConnector
+@pytest.fixture(autouse=True)
+def _mock_expense_line_items_for_enqueue_holding_gate(monkeypatch):
+    eli = MagicMock()
+    eli.read_by_expense_id.return_value = []
+    monkeypatch.setattr(
+        "entities.expense_line_item.business.service.ExpenseLineItemService",
+        lambda *a, **k: eli,
+    )
+
+
 from tests.test_expense_recode import (
     CATEGORIZE_ACCOUNT,
     FAKE_ITEM_REF,

@@ -96,6 +96,15 @@ class CodingSuggestionEngine:
                 )
                 scc_source = "vendor_history"
 
+        if (
+            sub_cost_code_id is not None
+            and self.sub_cost_code_service.is_holding_code(sub_cost_code_id) is True
+        ):
+            sub_cost_code_id = None
+            scc_confidence = None
+            scc_reason = None
+            scc_source = None
+
         if sub_cost_code_id is not None:
             qbo_item_ref = self.resolve_qbo_item_ref(sub_cost_code_id, realm_id)
             if qbo_item_ref is None:

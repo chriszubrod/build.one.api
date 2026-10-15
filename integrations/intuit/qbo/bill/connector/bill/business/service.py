@@ -33,10 +33,16 @@ from integrations.intuit.qbo.base.field_ownership import preserve_human_edited_r
 from integrations.intuit.qbo.base.identity_consistency import verify_identity_dbo_only
 from integrations.intuit.qbo.base.identity_fastpath import run_identity_fastpath_dbo_only
 from integrations.intuit.qbo.base.ids import coerce_id
-from integrations.intuit.qbo.base.reconciliation_recorder import record_mapping_issue
-from integrations.intuit.qbo.base.cost_code_resolver import resolve_qbo_item_ref
-from integrations.intuit.qbo.reconciliation.persistence.repo import ReconciliationIssueRepository
+from integrations.intuit.qbo.base.reconciliation_recorder import (
+    record_holding_code_on_completed_deduped,
+    record_mapping_issue,
+)
+from integrations.intuit.qbo.base.cost_code_resolver import (
+    qbo_lines_include_holding,
+    resolve_qbo_item_ref,
+)
 from entities.sub_cost_code.business.service import SubCostCodeService
+from integrations.intuit.qbo.reconciliation.persistence.repo import ReconciliationIssueRepository
 
 logger = logging.getLogger(__name__)
 
@@ -225,6 +231,20 @@ class BillBillConnector:
                 sync_token=getattr(qbo_bill, "sync_token", None),
             )
             self._sync_line_items(bill_id, qbo_bill_lines, qbo_bill.realm_id)
+            if not bool(getattr(direct, "is_draft", True)) and self._qbo_bill_lines_include_holding(
+                qbo_bill_lines, qbo_bill.realm_id
+            ):
+                record_holding_code_on_completed_deduped(
+                    self.reconciliation_repo,
+                    entity_type="Bill",
+                    entity_public_id=str(updated.public_id) if updated.public_id else None,
+                    qbo_id=str(qbo_bill.qbo_id) if qbo_bill.qbo_id else None,
+                    realm_id=qbo_bill.realm_id or "",
+                    details=(
+                        f"QBO pull left completed Bill {updated.id} with at least one line "
+                        f"resolved to suspense/holding sub cost code 00.02; status unchanged."
+                    ),
+                )
             return updated
 
         outcome = run_identity_fastpath_dbo_only(
@@ -237,6 +257,7 @@ class BillBillConnector:
             apply_fields=_apply_bill_fields,
             resolve_candidate=lambda: self._create_bill(
                 qbo_bill=qbo_bill,
+                qbo_bill_lines=qbo_bill_lines,
                 vendor_public_id=vendor_public_id,
                 bill_number=bill_number,
                 bill_date=bill_date,
@@ -259,10 +280,20 @@ class BillBillConnector:
             )
         return outcome.entity
 
+    def _qbo_bill_lines_include_holding(
+        self, qbo_bill_lines: List[QboBillLine], realm_id: Optional[str]
+    ) -> bool:
+        return qbo_lines_include_holding(
+            qbo_bill_lines,
+            realm_id,
+            sub_cost_code_service=self.sub_cost_code_service or SubCostCodeService(),
+        )
+
     def _create_bill(
         self,
         *,
         qbo_bill: QboBill,
+        qbo_bill_lines: List[QboBillLine],
         vendor_public_id: str,
         bill_number: str,
         bill_date: str,
@@ -279,6 +310,7 @@ class BillBillConnector:
         check) is what protects against a concurrent duplicate.
         """
         logger.info(f"Creating new Bill from QboBill {qbo_bill.id}: bill_number={bill_number}")
+        born_draft = self._qbo_bill_lines_include_holding(qbo_bill_lines, qbo_bill.realm_id)
         return self.bill_service.create(
             vendor_public_id=vendor_public_id,
             bill_date=bill_date,
@@ -286,7 +318,7 @@ class BillBillConnector:
             bill_number=bill_number,
             total_amount=total_amount,
             memo=memo,
-            is_draft=False,
+            is_draft=born_draft,
             # QBO-origin bills have no local PDF; the universal attachment rule
             # does not apply. Line items are created by _stamp_bill_identity's
             # own _sync_line_items call below, not by create()'s

@@ -12,6 +12,16 @@ from entities.review.business.service import ReviewService
 LIVE_FIRST_STATUS_ID = 1
 
 
+@pytest.fixture(autouse=True)
+def _mock_expense_line_items_for_enqueue_holding_gate(monkeypatch):
+    eli = MagicMock()
+    eli.read_by_expense_id.return_value = []
+    monkeypatch.setattr(
+        "entities.expense_line_item.business.service.ExpenseLineItemService",
+        lambda *a, **k: eli,
+    )
+
+
 def _first_status():
     return SimpleNamespace(id=LIVE_FIRST_STATUS_ID, name="Submitted", sort_order=10)
 

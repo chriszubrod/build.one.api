@@ -24,7 +24,7 @@ from core.workflow.api.process_engine import (
     TriggerContext,
 )
 from shared.api.auth_user import resolve_user_id
-from shared.api.errors import ApiError
+from shared.api.errors import ApiError, ErrorCode
 from shared.api.responses import (
     item_response,
     list_response,
@@ -36,6 +36,7 @@ from entities.bill.business.service import (
     BillService,
 )
 from shared.lifecycle.terminal_lock import StatusLockedError
+from shared.lifecycle.completion_gate import HoldingCodeRefused
 from shared.rbac import require_module_api
 from shared.rbac_constants import Modules
 
@@ -116,6 +117,8 @@ def _do_action(
         raise_workflow_error(str(locked), f"Failed to {action} review")
     except ReviewTransitionError as e:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
+    except HoldingCodeRefused:
+        raise
 
     return _execute_create(payload, current_user, f"Failed to {action} review")
 
@@ -213,6 +216,8 @@ def apply_review_decision_bill_router(
             detail=err.detail,
             error_code=err.error_code,
         )
+    except HoldingCodeRefused:
+        raise
     except ReviewStatusShapeError as exc:
         raise_workflow_error(str(exc), "Failed to apply review decision")
     except StatusLockedError as locked:

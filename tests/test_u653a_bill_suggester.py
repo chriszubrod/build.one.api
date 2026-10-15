@@ -615,6 +615,8 @@ class TestRound2:
         done = MagicMock(id=1, public_id="00000000-0000-0000-0000-000000000001", is_draft=False, status="completed")
         svc.read_by_public_id = MagicMock(return_value=done)
         svc._assert_no_duplicate_on_complete = MagicMock()
+        svc.bill_line_item_service = MagicMock()
+        svc.bill_line_item_service.read_by_bill_id.return_value = []
         svc.vendor_service = MagicMock()
         svc.repo = MagicMock()
         svc.repo.finalize_by_id.return_value = done
@@ -635,6 +637,8 @@ class TestRound2:
         finalized = MagicMock(id=2, public_id=draft.public_id, is_draft=False, status="completed")
         svc.read_by_public_id = MagicMock(return_value=draft)
         svc._assert_no_duplicate_on_complete = MagicMock()
+        svc.bill_line_item_service = MagicMock()
+        svc.bill_line_item_service.read_by_bill_id.return_value = []
         svc.vendor_service = MagicMock()
         svc.repo = MagicMock()
         svc.repo.finalize_by_id.return_value = finalized

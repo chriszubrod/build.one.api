@@ -20,6 +20,7 @@ from entities.expense.api.schemas import (
 from entities.expense.business.service import ExpenseService
 from shared.api.errors import ApiError, ErrorCode
 from shared.api.responses import list_response, item_response, accepted_response, raise_workflow_error, raise_not_found
+from shared.lifecycle.completion_gate import HoldingCodeRefused
 from shared.lifecycle.resolver import LIFECYCLE_STATUSES, attach_lifecycle
 from shared.rbac import require_module_api
 from shared.rbac_constants import Modules
@@ -519,6 +520,20 @@ def _run_complete_expense(public_id: str, job_public_id: str | None = None, forc
                     f"completion returned {result.get('status_code')} before enqueue: "
                     f"{result.get('message')}",
                 )
+    except HoldingCodeRefused as e:
+        failure_result = {
+            "status_code": 422,
+            "message": e.detail,
+            "expense_finalized": False,
+            "file_uploads": {},
+            "excel_syncs": {},
+            "qbo_sync": {},
+            "errors": [{"step": "complete_expense", "error_code": ErrorCode.HOLDING_CODE}],
+        }
+        expires_at = time.time() + _EXPENSE_COMPLETION_CACHE_TTL_SEC
+        _EXPENSE_COMPLETION_RESULT_CACHE[public_id] = {"result": failure_result, "expires_at": expires_at}
+        if job_public_id:
+            job_service.mark_failure(job_public_id, e.detail, max_attempts=1)
     except Exception as e:
         logger.exception("Complete expense background task failed: public_id=%s", public_id)
         failure_result = {
@@ -605,6 +620,12 @@ def complete_expense_router(
         current_user=current_user,
         resolve_review=lambda: _current_review_for_expense(expense.id),
     )
+
+    expense_service = ExpenseService()
+    try:
+        expense_service._assert_no_holding_code_on_complete(expense.id)
+    except HoldingCodeRefused:
+        raise
 
     from entities.completion_job.business.service import CompletionJobService
 

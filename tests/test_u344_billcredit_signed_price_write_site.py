@@ -58,6 +58,30 @@ from integrations.intuit.qbo.invoice.connector.invoice_line_item.business.servic
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
+@pytest.fixture(autouse=True)
+def _u632_ili_source_sub_cost_code_reads(monkeypatch):
+    """InvoiceLineItemService.create now resolves source SCC for holding gate (U-632)."""
+    bli = SimpleNamespace(sub_cost_code_id=1)
+    eli = SimpleNamespace(sub_cost_code_id=1)
+    bcli = SimpleNamespace(sub_cost_code_id=1)
+    monkeypatch.setattr(
+        "entities.bill_line_item.business.service.BillLineItemService.read_by_id",
+        lambda self, id: bli,
+    )
+    monkeypatch.setattr(
+        "entities.expense_line_item.business.service.ExpenseLineItemService.read_by_id",
+        lambda self, id: eli,
+    )
+    monkeypatch.setattr(
+        "entities.bill_credit_line_item.business.service.BillCreditLineItemService.read_by_id",
+        lambda self, id: bcli,
+    )
+    monkeypatch.setattr(
+        "entities.sub_cost_code.business.service.SubCostCodeService.is_holding_code",
+        lambda self, scc_id: False,
+    )
+
+
 # ── Part 1: read-side prerequisite (budget_variance.sql) ────────────────────
 
 _BUDGET_VARIANCE_SQL_PATH = REPO_ROOT / "entities" / "budget" / "sql" / "dbo.budget_variance.sql"

@@ -18,7 +18,10 @@ from entities.contract_labor.api.schemas import (
     ContractLaborBillUpdate,
 )
 from entities.contract_labor.persistence.line_item_repo import ContractLaborLineItemRepository
+from entities.sub_cost_code.business.holding_lines import assert_no_holding_sub_cost_codes
 from shared.api.responses import list_response, item_response, raise_workflow_error, raise_not_found
+from shared.lifecycle.completion_gate import HoldingCodeRefused
+from shared.api.errors import ApiError, ErrorCode
 from shared.authz import current_user_id
 from shared.rbac import require_module_api
 from shared.rbac_constants import Modules
@@ -192,6 +195,8 @@ def apply_reviewer_decision_router(
         return item_response(result)
     except ValueError as error:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(error))
+    except HoldingCodeRefused:
+        raise
 
 
 @router.get("/find-by-conversation-id")
@@ -503,6 +508,20 @@ def update_contract_labor_bill(public_id: str, bill_update: ContractLaborBillUpd
         entry = service.read_by_public_id(public_id=public_id)
         if not entry:
             raise_not_found("Contract labor entry")
+
+        # Status is optional on this PUT (the sproc keeps the current one when it is
+        # omitted), so gate on the status the entry will HAVE, and on the header SCC
+        # as well as the lines — the same predicate /mark-ready uses.
+        effective_status = bill_update.status or entry.status
+        if effective_status in ("ready", "billed"):
+            assert_no_holding_sub_cost_codes(
+                [entry.sub_cost_code_id]
+                + [item_data.sub_cost_code_id for item_data in bill_update.line_items],
+                message=(
+                    "Contract labor cannot be marked ready or billed while any line "
+                    "remains on the suspense sub cost code."
+                ),
+            )
 
         # Update the entry's bill fields
         import base64

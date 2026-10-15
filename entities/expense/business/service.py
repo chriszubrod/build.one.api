@@ -48,6 +48,11 @@ from shared.api.money import details_ledger_amount
 from shared.authz import current_user_id, current_is_system_admin
 from shared.authz.delegation import assert_may_act_as
 from entities.vendor.business.service import VendorService
+from entities.sub_cost_code.business.holding_lines import (
+    any_holding_sub_cost_code,
+    assert_no_holding_on_lines,
+    sub_cost_code_ids_from_lines,
+)
 from entities.sub_cost_code.business.service import SubCostCodeService
 from entities.module.business.service import ModuleService
 
@@ -68,7 +73,8 @@ from integrations.ms.sharepoint.external.client import (
 from integrations.ms.sharepoint.drive.business.service import MsDriveService
 
 from shared.storage import AzureBlobStorage
-from shared.lifecycle.terminal_lock import assert_editable, is_exempt
+from shared.lifecycle.terminal_lock import assert_editable, is_exempt, reraise_if_sproc_holding_code
+from shared.lifecycle.completion_gate import HoldingCodeRefused
 from shared.database import get_connection
 
 logger = logging.getLogger(__name__)
@@ -735,6 +741,14 @@ class ExpenseService:
             summary["items"].append({"reason": "no_coding_items"})
             return summary
 
+        eli_svc = self.expense_line_item_service
+        if eli_svc is not None:
+            elis = eli_svc.read_by_expense_id(expense_id=expense_id)
+            if any_holding_sub_cost_code(sub_cost_code_ids_from_lines(elis)):
+                summary["skipped"] = 1
+                summary["items"].append({"reason": "holding_code_on_line"})
+                return summary
+
         dominant = self._resolve_dominant_expense_coding_for_submit(expense_id=expense_id)
 
         for item in deduped:
@@ -1050,6 +1064,11 @@ class ExpenseService:
                     f"SubCostCode with public_id '{sub_cost_code_public_id}' not found."
                 )
             scc_id = int(scc.id)
+            if getattr(scc, "is_holding_code", False):
+                raise HoldingCodeRefused(
+                    "This expense cannot be approved while coded to the suspense "
+                    "sub cost code. Recode those lines first."
+                )
 
         comments = (raw_reply_text or "").strip() or None
         review_status_service = ReviewStatusService()
@@ -1122,6 +1141,18 @@ class ExpenseService:
             "expense_public_id": expense_public_id,
         }
 
+    def _assert_no_holding_code_on_complete(self, expense_id: int) -> None:
+        """Refuse completion when any line is coded to a holding/suspense SCC (U-632)."""
+        line_items = self.expense_line_item_service.read_by_expense_id(expense_id=expense_id)
+        assert_no_holding_on_lines(
+            line_items,
+            message=(
+                "This expense cannot be completed while any line remains on the suspense "
+                "sub cost code. Recode those lines first."
+            ),
+            scc_svc=SubCostCodeService(),
+        )
+
     def complete_expense(self, public_id: str) -> dict:
         """
         Complete an expense: finalize, upload attachments to module folders, sync to Excel, push to QBO.
@@ -1182,6 +1213,9 @@ class ExpenseService:
                     "errors": [{"step": "finalize_expense", "error": "Vendor not found"}],
                 }
 
+            if hasattr(self, "_expense_line_item_service"):
+                self._assert_no_holding_code_on_complete(expense.id)
+
             finalized = self.repo.finalize_by_id(id=expense.id)
             if not finalized:
                 return {
@@ -1194,7 +1228,16 @@ class ExpenseService:
                     "errors": [{"step": "finalize_expense", "error": "Expense deleted during finalization"}],
                 }
             logger.info(f"Expense {public_id} finalized (Status=completed)")
+        except HoldingCodeRefused:
+            raise
         except Exception as e:
+            reraise_if_sproc_holding_code(
+                e,
+                what=(
+                    "This expense cannot be completed while any line remains on the suspense "
+                    "sub cost code. Recode those lines first."
+                ),
+            )
             logger.exception(f"Error finalizing expense {public_id}")
             return {
                 "status_code": 500,

@@ -92,6 +92,30 @@ def _retry_delay(attempt: int, retry_after: Optional[float] = None) -> float:
     return jittered
 
 
+# The per-surface suffixes a Foundry URL may already carry. Longest first, so
+# `/anthropic/v1` is stripped whole rather than leaving `/anthropic`.
+_FOUNDRY_SURFACE_SUFFIXES = ("/anthropic/v1", "/anthropic", "/models")
+
+
+def foundry_resource_root(endpoint: str) -> str:
+    """Collapse any Foundry URL to its resource root (`https://<res>.services.ai.azure.com`).
+
+    Accepts the Azure AI Foundry *project* endpoint (`.../api/projects/<proj>`),
+    the bare root, or a surface base (`.../models`, `.../anthropic`,
+    `.../anthropic/v1`). Each surface (OpenAI-compatible `/models`, Anthropic
+    Messages `/anthropic`) is then built on the root.
+    """
+    ep = (endpoint or "").strip()
+    if "/api/projects/" in ep:
+        ep = ep.split("/api/projects/")[0]
+    ep = ep.rstrip("/")
+    for suffix in _FOUNDRY_SURFACE_SUFFIXES:
+        if ep.lower().endswith(suffix):
+            ep = ep[: -len(suffix)]
+            break
+    return ep.rstrip("/")
+
+
 class FoundryTransport:
     def __init__(
         self,
@@ -111,19 +135,9 @@ class FoundryTransport:
         self._timeout = timeout
 
     def _models_base(self) -> str:
-        """Resolve the resource-level `/models` inference base from whatever
-        FOUNDRY_ENDPOINT is set to. The Azure AI Foundry *project* endpoint
-        (`https://<res>.services.ai.azure.com/api/projects/<proj>`), the bare
-        resource root, and an explicit `.../models` base all collapse to
-        `https://<res>.services.ai.azure.com/models` — the OpenAI-compatible
+        """The resource-level `/models` inference base — the OpenAI-compatible
         chat-completions surface that serves every deployment (model-in-body)."""
-        ep = self._endpoint
-        if "/api/projects/" in ep:
-            ep = ep.split("/api/projects/")[0]
-        ep = ep.rstrip("/")
-        if ep.endswith("/models"):
-            ep = ep[: -len("/models")]
-        return f"{ep}/models"
+        return f"{foundry_resource_root(self._endpoint)}/models"
 
     def _url(self) -> str:
         return f"{self._models_base()}/chat/completions?api-version={self._api_version}"

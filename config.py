@@ -214,6 +214,17 @@ class Settings(BaseSettings):
 
     # Intelligence Layer — provider API keys
     anthropic_api_key: Optional[str] = None
+    # Azure AI Foundry — Anthropic Messages API for Claude deployments on the
+    # same resource (e.g. claude-haiku-5-5 on buildonefoundry). Resource base
+    # up to and including `/anthropic`; trailing slashes are stripped. When
+    # unset, every Anthropic model uses api.anthropic.com (today's behaviour).
+    anthropic_foundry_base_url: Optional[str] = None
+    # Key for the Foundry Anthropic route; when unset, falls back to
+    # `foundry_api_key` (same Azure resource key as the OpenAI-compat transport).
+    anthropic_foundry_api_key: Optional[str] = None
+    # Comma-separated Anthropic model ids routed through Foundry when the base
+    # URL is set (default: haiku 5.5 only — Sonnet stays on api.anthropic.com).
+    anthropic_foundry_models: str = "claude-haiku-5-5"
     # Azure AI Foundry (OpenAI-compatible chat-completions; DeepSeek + GPT-5.4
     # family). `foundry_endpoint` is the base that the transport appends
     # `/chat/completions` to — e.g. https://<resource>.services.ai.azure.com/models

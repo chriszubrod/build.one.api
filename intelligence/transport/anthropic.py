@@ -34,6 +34,7 @@ import httpx
 import config
 from intelligence.messages.convert import to_anthropic_request
 from intelligence.messages.types import Message, RedactedThinking, Thinking
+from intelligence.transport.foundry import foundry_resource_root
 from intelligence.transport.base import (
     Done,
     TextDelta,
@@ -50,7 +51,7 @@ from intelligence.transport.base import (
 
 logger = logging.getLogger(__name__)
 
-ANTHROPIC_URL = "https://api.anthropic.com/v1/messages"
+ANTHROPIC_DIRECT_URL = "https://api.anthropic.com/v1/messages"
 ANTHROPIC_VERSION = "2023-06-01"
 
 # Transient upstream conditions worth retrying. Anthropic returns 529
@@ -160,8 +161,47 @@ def _build_request_body(
     return body
 
 
+def _normalize_anthropic_foundry_base(base: str) -> str:
+    """Canonical Foundry Anthropic base: `<resource root>/anthropic`.
+
+    Same root derivation as the Foundry chat transport, so any form
+    FOUNDRY_ENDPOINT accepts (project endpoint, `/models`, `/anthropic`,
+    `/anthropic/v1`) lands on the same Messages URL."""
+    return f"{foundry_resource_root(base)}/anthropic"
+
+
+def _anthropic_foundry_model_set(models_csv: str) -> frozenset[str]:
+    return frozenset(m.strip() for m in models_csv.split(",") if m.strip())
+
+
+def _resolve_messages_route(
+    model: str,
+    *,
+    direct_api_key: Optional[str],
+) -> tuple[str, Optional[str], Optional[str]]:
+    """Return (messages_url, api_key, missing_setting_name).
+
+    ``missing_setting_name`` is an env-var-style label when the chosen route
+    has no key; no request should be sent in that case."""
+    settings = config.Settings()
+    base = (settings.anthropic_foundry_base_url or "").strip()
+    if base and model in _anthropic_foundry_model_set(settings.anthropic_foundry_models):
+        url = f"{_normalize_anthropic_foundry_base(base)}/v1/messages"
+        key = settings.anthropic_foundry_api_key or settings.foundry_api_key
+        if not key:
+            return url, None, "ANTHROPIC_FOUNDRY_API_KEY"
+        return url, key, None
+    if not direct_api_key:
+        return ANTHROPIC_DIRECT_URL, None, "ANTHROPIC_API_KEY"
+    return ANTHROPIC_DIRECT_URL, direct_api_key, None
+
+
 class AnthropicTransport:
-    def __init__(self, api_key: Optional[str] = None, timeout: float = 120.0):
+    def __init__(
+        self,
+        api_key: Optional[str] = None,
+        timeout: float = 120.0,
+    ):
         self._api_key = api_key or config.Settings().anthropic_api_key
         self._timeout = timeout
 
@@ -174,17 +214,21 @@ class AnthropicTransport:
         tools: Optional[list[dict[str, Any]]] = None,
         extra_body: Optional[dict[str, Any]] = None,
     ) -> AsyncIterator[TransportEvent]:
-        if not self._api_key:
+        body = _build_request_body(messages, model, system, max_tokens, tools, extra_body)
+
+        post_url, api_key, missing_setting = _resolve_messages_route(
+            model,
+            direct_api_key=self._api_key,
+        )
+        if missing_setting:
             yield TransportError(
-                message="ANTHROPIC_API_KEY is not configured",
+                message=f"{missing_setting} is not configured",
                 code="missing_api_key",
             )
             return
 
-        body = _build_request_body(messages, model, system, max_tokens, tools, extra_body)
-
         headers = {
-            "x-api-key": self._api_key,
+            "x-api-key": api_key,
             "anthropic-version": ANTHROPIC_VERSION,
             "content-type": "application/json",
         }
@@ -195,7 +239,7 @@ class AnthropicTransport:
             resp_ctx = None
             for attempt in range(_MAX_RETRIES + 1):
                 resp_ctx = client.stream(
-                    "POST", ANTHROPIC_URL, headers=headers, json=body
+                    "POST", post_url, headers=headers, json=body
                 )
                 resp = await resp_ctx.__aenter__()
                 if resp.status_code == 200:

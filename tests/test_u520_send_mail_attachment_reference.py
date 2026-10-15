@@ -571,7 +571,7 @@ def test_reference_fetch_503_schedules_retry_not_dead_letter():
     with patch.object(
         MsOutboxWorker,
         "_fetch_blob",
-        side_effect=AzureBlobStorageError("Failed to download blob: 503"),
+        side_effect=AzureBlobStorageError("download blob", status_code=503),
     ), patch(_CREATE_DRAFT) as draft, patch.object(
         MsOutboxWorker, "_escalate_dead_letter"
     ):
@@ -594,7 +594,7 @@ def test_reference_fetch_404_raises_non_retryable_and_does_not_send():
     with patch.object(
         MsOutboxWorker,
         "_fetch_blob",
-        side_effect=AzureBlobStorageError("Failed to download blob: 404"),
+        side_effect=AzureBlobStorageError("download blob", status_code=404),
     ), patch(_CREATE_DRAFT, return_value=_ok_draft()) as draft:
         with pytest.raises(MsNotFoundError) as exc_info:
             worker._handle_send_mail(_mail_row(), _send_payload(attachment))
@@ -624,7 +624,7 @@ def test_reference_fetch_404_dead_letters_on_attempt_1():
     with patch.object(
         MsOutboxWorker,
         "_fetch_blob",
-        side_effect=AzureBlobStorageError("Failed to download blob: 404"),
+        side_effect=AzureBlobStorageError("download blob", status_code=404),
     ), patch(_CREATE_DRAFT) as draft, patch.object(
         MsOutboxWorker, "_escalate_dead_letter"
     ) as escalate:

@@ -1193,20 +1193,23 @@ class MsOutboxWorker:
     @staticmethod
     def _is_permanent_blob_miss(exc: BaseException) -> bool:
         """True iff this fetch failure means the blob is gone (HTTP 404)."""
+        from shared.storage import AzureBlobStorageError
+
         seen: set[int] = set()
         current: Optional[BaseException] = exc
         while current is not None and id(current) not in seen:
             seen.add(id(current))
+            if isinstance(current, AzureBlobStorageError):
+                status = getattr(current, "status_code", None)
+                if status == 404:
+                    return True
+                if status is not None:
+                    return False
             if getattr(current, "http_status", None) == 404:
                 return True
             response = getattr(current, "response", None)
             if response is not None and getattr(response, "status_code", None) == 404:
                 return True
-            # AzureBlobStorage.download_file wraps HTTPStatusError as
-            # AzureBlobStorageError("Failed to download blob: 404").
-            if type(current).__name__ == "AzureBlobStorageError":
-                if str(current).rstrip().endswith("404"):
-                    return True
             current = current.__cause__ or current.__context__
         return False
 

@@ -1,6 +1,7 @@
 # Python Standard Library Imports
 import functools
 import logging
+import re
 import pyodbc
 import time
 from contextlib import contextmanager
@@ -10,7 +11,11 @@ from typing import Callable, Optional, TypeVar, Any
 
 # Local Imports
 import config
-from shared.db_constraints import ConstraintViolation, classify_constraint_violation
+from shared.db_constraints import (
+    ConstraintViolation,
+    classify_constraint_violation,
+    looks_like_unique_violation,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -35,17 +40,98 @@ def _get_db_config():
     }
 
 
+_SQL_ERROR_NUMBER_RE = re.compile(r"\((\d{3,5})\)")
+_SQL_EXEC_DIRECT_TRAILING_RE = re.compile(r"\((\d{3,5})\)\s*\(SQLExecDirectW\)")
+_SQL_EXEC_DIRECT_STRIP_RE = re.compile(r"\s*\(\d{3,5}\)\s*\(SQLExecDirectW\).*")
+
+_ODBC_DRIVER_MARKERS = ("[Microsoft]", "ODBC Driver", "[SQL Server]")
+
+
+def extract_sql_error_number(text: str) -> Optional[str]:
+    """Trailing SQL Server native error number in ODBC driver text, e.g. '(547)' before ``(SQLExecDirectW)``."""
+    match = _SQL_EXEC_DIRECT_TRAILING_RE.search(text)
+    if match:
+        return match.group(1)
+    matches = list(_SQL_ERROR_NUMBER_RE.finditer(text))
+    if not matches:
+        return None
+    return matches[-1].group(1)
+
+
+def _looks_like_odbc_driver_text(error_text: str) -> bool:
+    """Strong ODBC/SQL Server driver markers only (avoid bracket codes in app text)."""
+    if not error_text:
+        return False
+    return any(marker in error_text for marker in _ODBC_DRIVER_MARKERS)
+
+
+def _redacted_driver_message(category: str, error_text: str) -> str:
+    """Client/log-safe str() for mapped DB errors — never echoes bound parameter values."""
+    number = extract_sql_error_number(error_text)
+    # User RAISERROR (50000) carries app-owned text without ODBC parameter binding.
+    if number == "50000":
+        inner = _sql_server_message_from_odbc(error_text)
+        if inner:
+            return inner
+    if number:
+        return f"{category} ({number})"
+    return category
+
+
+def _mapped_error_message(category: str, error: Exception, error_text: str) -> str:
+    """Redact driver/parameter text; preserve app-owned messages (repo guardrails, etc.)."""
+    if isinstance(error, pyodbc.Error) or _looks_like_odbc_driver_text(error_text):
+        return _redacted_driver_message(category, error_text)
+    if error_text:
+        return f"{category}: {error_text}"
+    return category
+
+
+def _sql_server_message_from_odbc(error_text: str) -> Optional[str]:
+    marker = "][SQL Server]"
+    idx = error_text.find(marker)
+    if idx == -1:
+        return None
+    tail = error_text[idx + len(marker) :].strip()
+    if not tail:
+        return None
+    tail = _SQL_EXEC_DIRECT_STRIP_RE.sub("", tail).strip()
+    tail = tail.rstrip("')").rstrip("'").strip()
+    return tail or None
+
+
+def format_exception_for_log(error: Exception) -> str:
+    """Safe one-line summary for logs (class + SQL error number when present)."""
+    if isinstance(error, DatabaseError):
+        from shared.observability import redact_log_text
+
+        return redact_log_text(str(error))
+    error_text = str(error)
+    if isinstance(error, pyodbc.Error) or _looks_like_odbc_driver_text(error_text):
+        return _redacted_driver_message(type(error).__name__, error_text)
+    return type(error).__name__
+
+
 class DatabaseError(Exception):
     pass
 
 class DatabaseConnectionError(DatabaseError):
-    pass
+    def __init__(self, message: str, *, original: Optional[str] = None):
+        self.original = original if original is not None else message
+        super().__init__(message)
+
 
 class DatabaseOperationError(DatabaseError):
-    pass
+    """Mapped operation failure; str() is redacted, .original keeps driver text for handlers."""
+
+    def __init__(self, message: str, *, original: Optional[str] = None):
+        self.original = original if original is not None else message
+        super().__init__(message)
 
 class DatabaseConcurrencyError(DatabaseError):
-    pass
+    def __init__(self, message: str, *, original: Optional[str] = None):
+        self.original = original if original is not None else message
+        super().__init__(message)
 
 
 class RowVersionConflictError(DatabaseConcurrencyError):
@@ -57,7 +143,9 @@ class RecordNotFoundError(DatabaseError):
 
 
 class DatabaseTimeoutError(DatabaseError):
-    pass
+    def __init__(self, message: str, *, original: Optional[str] = None):
+        self.original = original if original is not None else message
+        super().__init__(message)
 
 
 class DatabaseConstraintError(DatabaseError):
@@ -185,20 +273,35 @@ def map_database_error(error: Exception) -> DatabaseError:
         'connection', 'connect', 'network', 'timeout', 'unreachable',
         'login failed', 'authentication', 'server not found'
     ]):
-        return DatabaseConnectionError(f"Database connection failed: {error}")
-    
+        return DatabaseConnectionError(
+            _mapped_error_message("Database connection failed", error, error_text),
+            original=error_text,
+        )
+
     # Timeout errors
     if any(keyword in error_message for keyword in [
         'timeout', 'timed out', 'expired'
     ]):
-        return DatabaseTimeoutError(f"Database operation timed out: {error}")
-    
-    # Concurrency errors
+        return DatabaseTimeoutError(
+            _mapped_error_message("Database operation timed out", error, error_text),
+            original=error_text,
+        )
+
+    # Concurrency errors — phrase-only unique violations (no error number) can false-match
+    # 'lock' in index names; keep ConcurrencyError type but preserve str() text for classify.
     if any(keyword in error_message for keyword in CONCURRENCY_KEYWORDS):
-        return DatabaseConcurrencyError(f"Concurrency violation: {error}")
-    
+        msg = _mapped_error_message("Concurrency violation", error, error_text)
+        if looks_like_unique_violation(error_text) and not _looks_like_odbc_driver_text(
+            error_text
+        ):
+            msg = f"Concurrency violation: {error_text}"
+        return DatabaseConcurrencyError(msg, original=error_text)
+
     # Default to general operation error
-    return DatabaseOperationError(f"Database operation failed: {error}")
+    return DatabaseOperationError(
+        _mapped_error_message("Database operation failed", error, error_text),
+        original=error_text,
+    )
 
 
 # Transient error codes that are safe to retry
@@ -282,16 +385,29 @@ def retry_on_transient(
                     
                     if not is_transient_error(e):
                         # Non-transient error, don't retry
-                        logger.error(f"Non-transient database error in {func.__name__}: {e}")
+                        logger.error(
+                            "Non-transient database error in %s: %s",
+                            func.__name__,
+                            format_exception_for_log(e),
+                        )
                         raise
                     
                     if attempt >= max_retries:
-                        logger.error(f"Max retries ({max_retries}) exceeded for {func.__name__}: {e}")
+                        logger.error(
+                            "Max retries (%s) exceeded for %s: %s",
+                            max_retries,
+                            func.__name__,
+                            format_exception_for_log(e),
+                        )
                         raise
                     
                     logger.warning(
-                        f"Transient error in {func.__name__} (attempt {attempt + 1}/{max_retries + 1}): {e}. "
-                        f"Retrying in {delay:.1f}s..."
+                        "Transient error in %s (attempt %s/%s): %s. Retrying in %.1fs...",
+                        func.__name__,
+                        attempt + 1,
+                        max_retries + 1,
+                        format_exception_for_log(e),
+                        delay,
                     )
                     time.sleep(delay)
                     delay = min(delay * backoff_factor, max_delay)
@@ -345,12 +461,19 @@ def with_retry(
                 raise
             
             if attempt >= max_retries:
-                logger.error(f"Max retries ({max_retries}) exceeded: {e}")
+                logger.error(
+                    "Max retries (%s) exceeded: %s",
+                    max_retries,
+                    format_exception_for_log(e),
+                )
                 raise
             
             logger.warning(
-                f"Transient error (attempt {attempt + 1}/{max_retries + 1}): {e}. "
-                f"Retrying in {delay:.1f}s..."
+                "Transient error (attempt %s/%s): %s. Retrying in %.1fs...",
+                attempt + 1,
+                max_retries + 1,
+                format_exception_for_log(e),
+                delay,
             )
             time.sleep(delay)
             delay = min(delay * backoff_factor, max_delay)

@@ -31,7 +31,6 @@ import json
 import logging
 import re
 import uuid
-import warnings
 from typing import Optional
 
 import config
@@ -383,10 +382,10 @@ class AttachmentExtractionService:
 # Pure helpers (module-level so they are unit-testable without I/O)
 # --------------------------------------------------------------------------- #
 
-# pypdf logs raw document byte excerpts when it meets malformed input. Silence it for the
-# whole process here; toggling the logger per call races across overlapping threads.
-logging.getLogger("pypdf").setLevel(logging.CRITICAL + 1)
-warnings.filterwarnings("ignore", module=r"pypdf(\..*)?")
+# CLI / script entry points do not import app.py; keep pypdf silenced via shared helper.
+from shared.observability import silence_pypdf_loggers
+
+silence_pypdf_loggers()
 
 
 def _looks_like_pdf(content: bytes) -> bool:

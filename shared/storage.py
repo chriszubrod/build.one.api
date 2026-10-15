@@ -37,8 +37,42 @@ def _azure_error_code(response) -> str:
 
 
 class AzureBlobStorageError(Exception):
-    """Base exception for Azure Blob Storage operations."""
-    pass
+    """Blob operation failure safe for callers/logs — never wraps inner exception text."""
+
+    def __init__(
+        self,
+        operation: str,
+        *,
+        status_code: Optional[int] = None,
+        error_code: Optional[str] = None,
+        cause: Optional[BaseException] = None,
+    ):
+        self.operation = operation
+        self.status_code = status_code
+        self.error_code = error_code or ""
+        parts = [f"{operation} failed"]
+        if self.error_code:
+            parts.append(f"code={self.error_code}")
+        if status_code is not None:
+            parts.append(f"status={status_code}")
+        super().__init__(" ".join(parts))
+        if cause is not None:
+            self.__cause__ = cause
+
+
+def _raise_blob_error(
+    operation: str,
+    *,
+    status_code: Optional[int] = None,
+    error_code: Optional[str] = None,
+    cause: Optional[BaseException] = None,
+) -> None:
+    raise AzureBlobStorageError(
+        operation,
+        status_code=status_code,
+        error_code=error_code,
+        cause=cause,
+    )
 
 
 class AzureBlobStorage:
@@ -217,11 +251,17 @@ class AzureBlobStorage:
             return self._build_url(blob_name, use_sas=False, container_name=container)  # Return URL without SAS token
             
         except httpx.HTTPStatusError as e:
-            logger.error("HTTP error uploading blob %s: status=%s code=%s exc=%s", blob_name, e.response.status_code, _azure_error_code(e.response), type(e).__name__)
-            raise AzureBlobStorageError(f"Failed to upload blob: {e.response.status_code}")
+            azure_code = _azure_error_code(e.response)
+            logger.error("HTTP error uploading blob %s: status=%s code=%s exc=%s", blob_name, e.response.status_code, azure_code, type(e).__name__)
+            _raise_blob_error(
+                "upload blob",
+                status_code=e.response.status_code,
+                error_code=azure_code,
+                cause=e,
+            )
         except Exception as e:
             logger.error("Error uploading blob %s: exc=%s", blob_name, type(e).__name__)
-            raise AzureBlobStorageError(f"Failed to upload blob: {str(e)}")
+            _raise_blob_error("upload blob", cause=e)
 
     def _parse_blob_url(self, blob_url: str) -> Tuple[str, str]:
         """
@@ -245,7 +285,7 @@ class AzureBlobStorage:
             blob_name = unquote(path_parts[0])
             return self.container_name, blob_name
         else:
-            raise AzureBlobStorageError(f"Invalid blob URL format: {blob_url}")
+            raise AzureBlobStorageError("parse blob URL")
 
     def download_file(self, blob_url: str) -> Tuple[bytes, dict]:
         """
@@ -287,11 +327,17 @@ class AzureBlobStorage:
             return response.content, metadata
             
         except httpx.HTTPStatusError as e:
-            logger.error("HTTP error downloading blob %s: status=%s code=%s exc=%s", self._blob_name_for_log(blob_url), e.response.status_code, _azure_error_code(e.response), type(e).__name__)
-            raise AzureBlobStorageError(f"Failed to download blob: {e.response.status_code}")
+            azure_code = _azure_error_code(e.response)
+            logger.error("HTTP error downloading blob %s: status=%s code=%s exc=%s", self._blob_name_for_log(blob_url), e.response.status_code, azure_code, type(e).__name__)
+            _raise_blob_error(
+                "download blob",
+                status_code=e.response.status_code,
+                error_code=azure_code,
+                cause=e,
+            )
         except Exception as e:
             logger.error("Error downloading blob %s: exc=%s", self._blob_name_for_log(blob_url), type(e).__name__)
-            raise AzureBlobStorageError(f"Failed to download blob: {str(e)}")
+            _raise_blob_error("download blob", cause=e)
 
     def _blob_name_for_log(self, blob_url: str) -> str:
         try:
@@ -340,11 +386,21 @@ class AzureBlobStorage:
         except httpx.HTTPStatusError as e:
             if e.response.status_code == 404:
                 return False
-            logger.error(f"HTTP error checking blob existence {blob_url}: {e.response.status_code}")
-            raise AzureBlobStorageError(f"Failed to check blob existence: {e.response.status_code}")
+            azure_code = _azure_error_code(e.response)
+            logger.error(
+                "HTTP error checking blob existence: status=%s code=%s",
+                e.response.status_code,
+                azure_code,
+            )
+            _raise_blob_error(
+                "check blob existence",
+                status_code=e.response.status_code,
+                error_code=azure_code,
+                cause=e,
+            )
         except Exception as e:
-            logger.error(f"Error checking blob existence {blob_url}: {e}")
-            raise AzureBlobStorageError(f"Failed to check blob existence: {str(e)}")
+            logger.error("Error checking blob existence: exc=%s", type(e).__name__)
+            _raise_blob_error("check blob existence", cause=e)
 
     def delete_file(self, blob_url: str) -> None:
         """
@@ -378,11 +434,17 @@ class AzureBlobStorage:
             if e.response.status_code == 404:
                 logger.info(f"Blob {blob_url} not found (may already be deleted)")
                 return
-            logger.error("HTTP error deleting blob %s: status=%s code=%s exc=%s", blob_name, e.response.status_code, _azure_error_code(e.response), type(e).__name__)
-            raise AzureBlobStorageError(f"Failed to delete blob: {e.response.status_code}")
+            azure_code = _azure_error_code(e.response)
+            logger.error("HTTP error deleting blob %s: status=%s code=%s exc=%s", blob_name, e.response.status_code, azure_code, type(e).__name__)
+            _raise_blob_error(
+                "delete blob",
+                status_code=e.response.status_code,
+                error_code=azure_code,
+                cause=e,
+            )
         except Exception as e:
             logger.error("Error deleting blob %s: exc=%s", self._blob_name_for_log(blob_url), type(e).__name__)
-            raise AzureBlobStorageError(f"Failed to delete blob: {str(e)}")
+            _raise_blob_error("delete blob", cause=e)
 
     def _ensure_container_exists(self, container_name: Optional[str] = None) -> None:
         """Ensure the container exists, create if it doesn't."""
@@ -412,9 +474,15 @@ class AzureBlobStorage:
                     response.raise_for_status()
                 logger.info(f"Container '{container}' exists or was created successfully")
         except httpx.HTTPStatusError as e:
-            logger.error("HTTP error creating container: status=%s code=%s exc=%s", e.response.status_code, _azure_error_code(e.response), type(e).__name__)
-            raise AzureBlobStorageError(f"Failed to create container: {e.response.status_code}")
+            azure_code = _azure_error_code(e.response)
+            logger.error("HTTP error creating container: status=%s code=%s exc=%s", e.response.status_code, azure_code, type(e).__name__)
+            _raise_blob_error(
+                "create container",
+                status_code=e.response.status_code,
+                error_code=azure_code,
+                cause=e,
+            )
         except Exception as e:
             logger.error("Error creating container: exc=%s", type(e).__name__)
-            raise AzureBlobStorageError(f"Failed to create container: {str(e)}")
+            _raise_blob_error("create container", cause=e)
 

@@ -490,14 +490,11 @@ def test_sentinel_never_reaches_logs_error_column_or_tick_response(case, monkeyp
 
 @pytest.fixture
 def import_time_silencing():
-    """Re-run extraction_service's import-time pypdf silencing inside a scope of its own.
+    """Apply shared observability pypdf silencing (U-535d) in a warnings scope pytest won't discard."""
+    from shared.observability import silence_pypdf_loggers
 
-    pytest imports test modules inside catch_warnings, which discards the warnings filter
-    the module installs at import. Reloading inside a separate scope keeps the filter live
-    for the test, as it is in the running process.
-    """
     with warnings.catch_warnings():
-        importlib.reload(es)
+        silence_pypdf_loggers()
         yield
 
 

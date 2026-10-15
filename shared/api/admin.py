@@ -16,6 +16,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Path, Query, stat
 import config
 from integrations.intuit.qbo.base.locking import qbo_sync_lock
 from shared.authz import set_authz_context
+from shared.database import format_exception_for_log
 from shared.rbac import require_module_api
 from shared.rbac_constants import Modules
 
@@ -85,8 +86,18 @@ async def _require_drain_secret(x_drain_secret: Optional[str] = Header(default=N
     )
 
 
-async def _timed(job_name: str, sync_fn) -> dict[str, Any]:
-    """Run a blocking callable off the event loop and return a timing envelope."""
+async def _timed(
+    job_name: str,
+    sync_fn,
+    *,
+    error_response: bool = False,
+) -> dict[str, Any]:
+    """Run a blocking callable off the event loop and return a timing envelope.
+
+    Failures log only the exception class and surface ``format_exception_for_log``
+    in HTTP detail / error envelopes — never driver or document text.
+    ``error_response`` returns a JSON error envelope instead of raising HTTP 500.
+    """
     started = time.monotonic()
     try:
         result = await asyncio.to_thread(sync_fn)
@@ -103,10 +114,18 @@ async def _timed(job_name: str, sync_fn) -> dict[str, Any]:
         raise
     except Exception as error:
         duration_ms = int((time.monotonic() - started) * 1000)
-        logger.exception("admin.job.failed job=%s duration_ms=%d", job_name, duration_ms)
+        logger.error(
+            "admin.job.failed job=%s duration_ms=%d exc=%s",
+            job_name,
+            duration_ms,
+            type(error).__name__,
+        )
+        err_detail = format_exception_for_log(error)
+        if error_response:
+            return {"status": "error", "job": job_name, "error": err_detail}
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"{job_name} failed after {duration_ms}ms: {error}",
+            detail=f"{job_name} failed after {duration_ms}ms: {err_detail}",
         )
 
 
@@ -141,13 +160,13 @@ async def drain_outbox_router():
             summary["qbo"] = "ok"
         except Exception as error:
             logger.exception("qbo.outbox.drain.failed")
-            summary["qbo"] = {"error": str(error)}
+            summary["qbo"] = {"error": format_exception_for_log(error)}
         try:
             MsOutboxWorker().drain_once()
             summary["ms"] = "ok"
         except Exception as error:
             logger.exception("ms.outbox.drain.failed")
-            summary["ms"] = {"error": str(error)}
+            summary["ms"] = {"error": format_exception_for_log(error)}
         return summary
 
     return await _timed("outbox.drain", _run)
@@ -167,7 +186,7 @@ async def drain_qbo_outbox_router():
             return {"qbo": "ok"}
         except Exception as error:
             logger.exception("qbo.outbox.drain.failed")
-            return {"qbo": {"error": str(error)}}
+            return {"qbo": {"error": format_exception_for_log(error)}}
 
     return await _timed("outbox.drain.qbo", _run)
 
@@ -185,7 +204,7 @@ async def drain_ms_outbox_router():
             return {"ms": "ok"}
         except Exception as error:
             logger.exception("ms.outbox.drain.failed")
-            return {"ms": {"error": str(error)}}
+            return {"ms": {"error": format_exception_for_log(error)}}
 
     return await _timed("outbox.drain.ms", _run)
 
@@ -258,7 +277,7 @@ async def drain_box_outbox_router():
             return BoxOutboxWorker().drain_all(max_rows=20, time_budget_seconds=20.0)
         except Exception as error:
             logger.exception("box.outbox.drain.failed")
-            return {"error": f"{type(error).__name__}: {error}"}
+            return {"error": format_exception_for_log(error)}
 
     return await _timed("box_outbox_drain", _run)
 
@@ -594,7 +613,7 @@ async def reconcile_box_router():
             return BoxReconcileService().run()
         except Exception as error:
             logger.exception("box.reconcile.failed")
-            return {"error": f"{type(error).__name__}: {error}"}
+            return {"error": format_exception_for_log(error)}
 
     return await _timed("reconcile.box", _run)
 
@@ -747,11 +766,10 @@ async def attachment_extract_tick_router(limit: int = Query(5, ge=1, le=5)):
     parses a sync-proof VendorInvoiceNumber. Text-layer (pypdf) first; Document
     Intelligence only for image-only scans. Idempotent per attachment.
 
-    A failure returns only the exception class name: the message and traceback can
-    carry document text, so they are never logged or returned here.
+    On failure the tick JSON ``error`` field is ``format_exception_for_log`` output
+    (exception class and SQL error number when present); message and traceback are
+    never logged or returned.
     """
-    job = "attachment.extract.tick"
-
     def _run() -> dict[str, Any]:
         from entities.attachment.business.extraction_service import (
             AttachmentExtractionService,
@@ -759,15 +777,7 @@ async def attachment_extract_tick_router(limit: int = Query(5, ge=1, le=5)):
 
         return AttachmentExtractionService().extract_pending(limit=limit)
 
-    started = time.monotonic()
-    try:
-        result = await asyncio.to_thread(_run)
-    except Exception as error:
-        logger.error("admin.job.failed job=%s exc=%s", job, type(error).__name__)
-        return {"status": "error", "job": job, "error": type(error).__name__}
-    duration_ms = int((time.monotonic() - started) * 1000)
-    logger.info("admin.job.completed job=%s duration_ms=%d", job, duration_ms)
-    return {"status": "ok", "job": job, "duration_ms": duration_ms, "result": result}
+    return await _timed("attachment.extract.tick", _run, error_response=True)
 
 
 # --- Time Tracking agent ---------------------------------------------------- #

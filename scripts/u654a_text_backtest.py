@@ -16,6 +16,7 @@ import csv
 import json
 import random
 import re
+import time
 from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import date, datetime
@@ -1045,6 +1046,10 @@ def write_report_and_outputs(
         )
     if metrics.get("scored_bill_count") is not None:
         lines.append(f"- Bills scored (text cascade finished): {metrics['scored_bill_count']}")
+    if metrics.get("blob_unreadable_count"):
+        lines.append(
+            f"- Bills dropped (text blob unreadable after retries): {metrics['blob_unreadable_count']}"
+        )
     if metrics.get("mode_a_n") is not None:
         lines.append(
             f"- Metric denominators: Mode A n={metrics['mode_a_n']}, Mode B n={metrics.get('mode_b_n')}"
@@ -1263,6 +1268,51 @@ async def run_text_cascade_batch(
                 int(cost_state.get("cascade_error_count", 0)) + 1
             )
     return results_out
+
+
+# A text blob that times out (no HTTP status), 5xx or 429 is transient: retry it.
+# Anything else (404, auth) is permanent and surfaces immediately.
+_BLOB_READ_ATTEMPTS = 3
+# A run that loses more than this share of its sample to unreadable blobs is
+# INCOMPLETE: the verdict would rest on a smaller, possibly skewed sample.
+MAX_UNREADABLE_SHARE = 0.02
+_BLOB_READ_BACKOFF_SECONDS = (2.0, 5.0)
+
+
+def _blob_error_is_transient(exc: BaseException) -> bool:
+    status = getattr(exc, "status_code", None)
+    return status is None or status == 429 or status >= 500
+
+
+def read_text_blob_with_retry(
+    read: Callable[[str], str],
+    url: str,
+    *,
+    sleep: Callable[[float], None] = time.sleep,
+) -> str:
+    """Read one extracted-text blob, retrying transient storage failures.
+
+    U-654c: a single ConnectTimeout on one of 500 blobs aborted the whole run
+    before any model call. Raises the last error when retries are exhausted.
+    """
+    from shared.storage import AzureBlobStorageError
+
+    for attempt in range(_BLOB_READ_ATTEMPTS):
+        try:
+            return read(url)
+        except AzureBlobStorageError as exc:
+            if attempt == _BLOB_READ_ATTEMPTS - 1 or not _blob_error_is_transient(exc):
+                raise
+            sleep(_BLOB_READ_BACKOFF_SECONDS[min(attempt, len(_BLOB_READ_BACKOFF_SECONDS) - 1)])
+    raise AssertionError("unreachable")
+
+
+def run_status_after_unreadable(run_status: str, *, unreadable: int, sampled: int) -> str:
+    """A complete run that dropped more than MAX_UNREADABLE_SHARE of its sample
+    to unreadable blobs is incomplete (no KEEP/DROP verdict)."""
+    if run_status == "complete" and unreadable > MAX_UNREADABLE_SHARE * sampled:
+        return "incomplete"
+    return run_status
 
 
 def execute_run(build_work: Callable[[], None], run_cascades: Callable[[], None]) -> str:
@@ -1580,11 +1630,23 @@ def main(argv: list[str] | None = None) -> int:
             )
         )
 
+    unreadable_bill_ids: set[int] = set()
+
     def build_work() -> None:
+        from shared.storage import AzureBlobStorageError
+
         for row in scored:
             bill = row.bill
             priors = priors_for_bill(vendor_votes, bill)
-            bill_text = read_blob(bill.extracted_text_blob_url)
+            try:
+                bill_text = read_text_blob_with_retry(read_blob, bill.extracted_text_blob_url)
+            except AzureBlobStorageError as exc:
+                if not _blob_error_is_transient(exc):
+                    raise  # auth / 404 / config: stop the run, never a silent drop
+                # Still timing out after retries: drop the Bill rather than abort the
+                # run. Counted and reported; it is never scored.
+                unreadable_bill_ids.add(bill.bill_id)
+                continue
             vname = ref.vendor_names.get(bill.vendor_id, "")
             candidate_sccs = build_candidate_sccs_for_bill(
                 ref.scc_by_id,
@@ -1619,6 +1681,13 @@ def main(argv: list[str] | None = None) -> int:
             work.append((bill, "B", row.stratum, payload_b))
 
     run_status = execute_run(build_work, run_cascades_on_work)
+    if unreadable_bill_ids:
+        scored = [row for row in scored if row.bill.bill_id not in unreadable_bill_ids]
+        kept_sample = [(b, s) for b, s in sample if b.bill_id not in unreadable_bill_ids]
+        catalog_diag = catalog_diagnostics_for_sample(kept_sample, ref)
+        run_status = run_status_after_unreadable(
+            run_status, unreadable=len(unreadable_bill_ids), sampled=len(sample)
+        )
 
     for row in scored:
         row.text_a = results.get((row.bill.bill_id, "A"))
@@ -1660,6 +1729,7 @@ def main(argv: list[str] | None = None) -> int:
         cost_overshoot_usd=cost_overshoot_usd,
         run_status=run_status,
     )
+    metrics["blob_unreadable_count"] = len(unreadable_bill_ids)
     stamp = datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
     write_report_and_outputs(
         out_dir=args.out_dir,

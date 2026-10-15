@@ -1222,3 +1222,66 @@ def test_r4_report_shows_per_mode_denominators():
     assert "- Bills scored (text cascade finished): 1" in text
     assert "- Metric denominators: Mode A n=1, Mode B n=0" in text
     assert "Bills scored (Mode A text cascade)" not in text
+
+
+def _blob_error(status):
+    from shared.storage import AzureBlobStorageError
+
+    return AzureBlobStorageError("download blob", status_code=status)
+
+
+def test_u654c_read_text_blob_retries_transient_then_succeeds():
+    calls = {"n": 0}
+    sleeps = []
+
+    def read(url):
+        calls["n"] += 1
+        if calls["n"] < 3:
+            raise _blob_error(None)  # ConnectTimeout carries no HTTP status
+        return "text"
+
+    assert u654a.read_text_blob_with_retry(read, "u", sleep=sleeps.append) == "text"
+    assert calls["n"] == 3
+    assert len(sleeps) == 2
+
+
+def test_u654c_read_text_blob_gives_up_after_retries():
+    from shared.storage import AzureBlobStorageError
+
+    calls = {"n": 0}
+
+    def read(url):
+        calls["n"] += 1
+        raise _blob_error(503)
+
+    with pytest.raises(AzureBlobStorageError):
+        u654a.read_text_blob_with_retry(read, "u", sleep=lambda s: None)
+    assert calls["n"] == u654a._BLOB_READ_ATTEMPTS
+
+
+def test_u654c_read_text_blob_does_not_retry_permanent_errors():
+    from shared.storage import AzureBlobStorageError
+
+    calls = {"n": 0}
+
+    def read(url):
+        calls["n"] += 1
+        raise _blob_error(404)
+
+    with pytest.raises(AzureBlobStorageError):
+        u654a.read_text_blob_with_retry(read, "u", sleep=lambda s: None)
+    assert calls["n"] == 1
+
+
+@pytest.mark.parametrize(
+    "status, unreadable, sampled, expected",
+    [
+        ("complete", 0, 500, "complete"),
+        ("complete", 10, 500, "complete"),  # exactly 2%: still complete
+        ("complete", 11, 500, "incomplete"),
+        ("complete", 500, 500, "incomplete"),  # e.g. every blob unreadable
+        ("partial", 0, 500, "partial"),  # an interrupt keeps its own status
+    ],
+)
+def test_u654c_too_many_unreadable_blobs_make_the_run_incomplete(status, unreadable, sampled, expected):
+    assert u654a.run_status_after_unreadable(status, unreadable=unreadable, sampled=sampled) == expected

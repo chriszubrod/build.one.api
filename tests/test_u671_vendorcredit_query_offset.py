@@ -104,4 +104,12 @@ def test_incremental_clients_import_the_shared_formatter(path):
         and any(a.name == "_format_datetime_for_qbo_query" for a in n.names)
         for n in ast.walk(tree)
     )
-    assert imported, f"{path.relative_to(REPO_ROOT)} filters on LastUpdatedTime without the shared formatter"
+    called = any(
+        isinstance(n, ast.Call)
+        and isinstance(n.func, ast.Name)
+        and n.func.id == "_format_datetime_for_qbo_query"
+        for n in ast.walk(tree)
+    )
+    assert imported and called, (
+        f"{path.relative_to(REPO_ROOT)} filters on LastUpdatedTime without calling the shared formatter"
+    )

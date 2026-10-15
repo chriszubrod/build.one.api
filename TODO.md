@@ -978,6 +978,64 @@ by 17 rows.
   and each holds rows the other lacks). Re-read col-Z afterward and confirm 305/305.
 - [ ] **P2 — establish how they got there.** The insert flurry sits in `ms.Outbox` around 2026-09-09 21:39
   and 2026-09-10 00:06-00:34 (`Kind='insert_excel_row'`, EntityType Bill/BillBatch/ExpenseBatch, all
+## QBO vendor-credit incremental pull is DEAD — client drops the UTC offset (found 2026-10-14, WVA-20 run)
+
+**Root cause (proven against live QBO).** `integrations/intuit/qbo/vendorcredit/external/client.py`
+keeps a PRIVATE `_format_datetime_for_qbo_query` (`dt.strftime("%Y-%m-%dT%H:%M:%S")`, no offset) — the
+10th copy U-254 never collapsed because it was not byte-identical. `dbo.Sync` watermarks are UTC; QBO reads
+an offset-less timestamp as Pacific. Live test: `MetaData.LastUpdatedTime > '2026-10-06T17:00:00'` returned
+the same 3 rows as `…-07:00` and excluded VC 77338 (updated 17:53 UTC); `…+00:00` returned 4 incl. 77338.
+So every 15-min tick queries "updated after now+7h" → nothing. Present since `b320cce0` (2026-04-21).
+Evidence it is systemic: of 74 live 2026 credits, 67 were staged in bursts (median 147 h after creation —
+manual date-window runs), 8 never staged. A fresh `vendorcredit` watermark proves nothing.
+
+- [x] 🔴 **Fix — U-671, landed on master `55a90e8a` 2026-10-15, NOT DEPLOYED** (live image `e26583e4` is 24
+  commits behind master). Private formatter deleted; the client calls the shared helper. Tests:
+  `tests/test_u671_vendorcredit_query_offset.py` + an AST guard in `tests/test_qbo_format_datetime_for_qbo_query.py`
+  (no QBO entity client may define its own formatter; incremental clients must call the shared one). Mutations
+  M1-M3 RED; suite 6,880 green. Same bug was finding #7 (P1) in `docs/qbo-pull-sync-audit-2026-06-18.md` and was
+  never fixed. Pass-3 note: `POST /sync/qbo-vendorcredits` used to 400 on a garbage `last_updated_time` (the
+  old formatter parsed it); it now forwards it unparsed, like `start_date`/`end_date` already were — read-only
+  QBO query, QBO_SYNC-gated, no escalation. Optional hardening: a `fromisoformat` validator on all three
+  fields of `QboVendorCreditSyncRequest`.
+- [ ] 🟡 **Pull-health detector (U-671 Pass-1 finding):** nothing alerts when an incremental pull fetches zero
+  rows for days while its watermark advances — this one did for six months. Compare live entity counts
+  (`SELECT COUNT(*) FROM <Entity> WHERE MetaData.LastUpdatedTime > <7d ago>`) against staged rows in the daily
+  reconcile and record a ReconciliationIssue on a gap.
+- [x] 🔴 **Backfill — done 2026-10-15 by QBO id (not a date window), deploy held.** The date-window path never
+  used the formatter, so it did not need the deploy; onboarding by id avoided re-projecting the 67 credits
+  already present (+ the pull's DETAILS/SharePoint/Box fan-out for each). `get_vendor_credit` →
+  `upsert_from_external` → `VendorCreditBillCreditConnector`, write gates CLOSED. All 7 verified against LIVE QBO
+  (vendor, number, date, total, line amount, project): 72434→BillCredit 478 (OL 65.03) · 75478→479 · 73393→480
+  (OHR2 65.02) · 74743→481 · 74666→482 · 73531→483 (TB3 40.00) · 73489→484 (TB3 40.00); 75478/74743/74666 are
+  account-based crew reimbursements (51900, no project/SCC — same as QBO). Documents: 478 ingested + linked
+  (attachable 1000003254); 480/483/484 were refused as attachable identity conflicts (QBO re-uploads of PDFs
+  already held as Attachments 28312/28286/28287 on the original bills) and were LINKED to those existing rows —
+  they are backcharge evidence (Clean Living #800, Protos #5152, Protos #5153). 479/481/482 have NO attachable
+  in live QBO (server-side parent filter: 0, while it returned 1 for each of the other three).
+- [x] **DETAILS rows + `14 - Invoices` uploads for the 4 project credits — done 2026-10-15 (Chris's call).**
+  `BillCreditCompleteService.sync_to_excel_workbook` (SharePoint, direct) + `_enqueue_box_excel` +
+  `_upload_attachments_to_module_folder` + `_enqueue_box_uploads`, after a SharePoint pre-flight read per tracker
+  (200, keys populated, 0 short rows, keys absent). Verified on BOTH workbooks by downloading/reading cells: each
+  credit present exactly once, negative, in its cost-code section — OL row 2125/2122 (SP/Box) −$1,100 cc 65 ·
+  OHR2 3027/3026 −$1,250 cc 65 · TB3 1946+1947 −$1,965 / −$15,780 cc 40. 12/12 outbox rows `done`; files in
+  the projects' SharePoint Bill Credits folders (convention names) and Box `14 - Invoices[ & Receipts]` (raw
+  names — the known Box-filename convention gap). Pre-existing duplicate col-Z keys left untouched (SP: OL 2,
+  OHR2 3, TB3 6 extra rows) — not from this run; book a cleanup if wanted.
+- [ ] 🟡 **Second class — local credits with no QBO identity never project.** QBO 70271 ↔ dbo BillCredit 417
+  (#2545, Nashville Siteworks, WVA, HasBeenBilled) and QBO 76729 ↔ dbo 461 (#2026.08.17.TB3, Bluebird) are
+  staged, but the dbo-only identity fast path misses (no QboId) and a create collides on (vendor, number).
+  Needs identity adoption (stamp QboId/RealmId on the existing row after verifying content), not a re-create.
+- [ ] 🟢 `sync_attachables_for_vendor_credit` still pages the whole realm (~21k, ~10 min) — U-433.
+
+- [x] **Run record — WVA-20 shipped 2026-10-14** (QBO 77570, 14 lines, $2,512.84, dated 10/16). 9 sourced
+  lines (7 bills, NES expense, Stephens credit −$113.04) + 4 CL markup derivatives + 13% fee $289.09
+  (= 13% × $2,223.75). VC 77338 onboarded by hand (BillCredit 477 / BCLI 981, attachment 30422). Packet
+  18 pp / skipped 0 — no G702/G703 (project 46 has no Budget or Contract; expected). SP + Box each 9 H-tagged
+  rows = $2,223.75, keys 266/266, 0 dups; 10 files to `15 - Draw Requests/WVA-20/` on both. Fee row
+  ($289.09, cost code 90) left for Chris to hand-enter per WVA convention. Packet warning: the WVA-18 Trend
+  column does not foot (residual $92,145.32 — pre-existing, see the "stored totals above line sums" item).
+
 ## BR-MAIN-30 follow-ups (booked 2026-10-07, InvoiceAgent run)
 
 - [ ] **Chris to research — Associated Masonry vendor credit `0464398-IN-C` (QBO VendorCredit 76433, -$4,035.59, 2026-09-10).**

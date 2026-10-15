@@ -1,10 +1,9 @@
 # Python Standard Library Imports
 import logging
-from datetime import datetime
 from typing import List, Optional
 
 # Local Imports
-from integrations.intuit.qbo.base.client import QboHttpClient
+from integrations.intuit.qbo.base.client import QboHttpClient, _format_datetime_for_qbo_query
 from integrations.intuit.qbo.base.paging import page_all_record_ids
 from integrations.intuit.qbo.vendorcredit.external.schemas import (
     QboVendorCredit,
@@ -47,20 +46,6 @@ class QboVendorCreditClient:
     def __exit__(self, exc_type, exc_val, exc_tb) -> None:
         self.close()
 
-    @staticmethod
-    def _format_datetime_for_qbo_query(dt_input) -> str:
-        """Format datetime for QBO query WHERE clause."""
-        if isinstance(dt_input, str):
-            try:
-                dt = datetime.fromisoformat(dt_input.replace("Z", "+00:00"))
-            except ValueError:
-                dt = datetime.strptime(dt_input[:19], "%Y-%m-%d %H:%M:%S")
-        elif isinstance(dt_input, datetime):
-            dt = dt_input
-        else:
-            raise ValueError(f"Unsupported datetime type: {type(dt_input)}")
-        return dt.strftime("%Y-%m-%dT%H:%M:%S")
-
     # ------------------------------------------------------------------ #
     # Retrieval
     # ------------------------------------------------------------------ #
@@ -85,7 +70,7 @@ class QboVendorCreditClient:
         where_clauses: List[str] = []
 
         if last_updated_time:
-            formatted_time = self._format_datetime_for_qbo_query(last_updated_time)
+            formatted_time = _format_datetime_for_qbo_query(last_updated_time, logger=logger)
             where_clauses.append(f"MetaData.LastUpdatedTime > '{formatted_time}'")
 
         if start_date:

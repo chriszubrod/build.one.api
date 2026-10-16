@@ -54,3 +54,19 @@ Reports and machine outputs include **numeric identifiers only** — Bill/Vendor
 ```
 
 All tests use fakes (no DB, no LLM, no Azure).
+
+## Result — prod run 2026-10-16 (complete)
+
+Report: [`u654a_report_20261016T044342Z.md`](u654a_report_20261016T044342Z.md) · summary: [`u654a_summary_20261016T044342Z.json`](u654a_summary_20261016T044342Z.json). 500 Bills, seed 654, window 2026-04-11..2026-10-10, $7.46.
+
+| Measure | History | Text | Combined |
+|---|---|---|---|
+| Mode A top-1 (Bills) | 54.2% | 58.4% | **63.4%** |
+| Mode A top-1 ($) | 48.2% | 64.8% | 65.0% |
+| Cold start (n=83) | 0.0% | 44.6% | — |
+| Mixed-code (n=83) | 36.1% | 53.0% | 50.6% |
+| Mode B project top-1 | 12.7% | **94.2%** | — |
+
+- **§10.5 M4 verdict: DO NOT wire** — combined beat history by 9.2 points against a 10-point bar. History still wins every stratum at ≥ 50% vendor consistency.
+- **Run history.** The first leg ran while the host was offline: 426 network-failed cascades looked like `needs_human`. They were re-run with U-654d `--resume-from`, which took `needs_human` from 426 to 9. This report is the merged, complete run. The per-Bill predictions CSV (numeric ids only) is not committed, matching U-653b.
+- **Decision (Chris, 2026-10-16, option b).** Wire the text suggester only where it wins: cold start, weak or mixed history (runtime proxy: history raw score < 0.60) and project prediction. Built as U-654b and deployed behind `BILL_CODING_TEXT_ENABLED` (default off). The flag stays off until U-674 (untouched pre-fill guard) ships.

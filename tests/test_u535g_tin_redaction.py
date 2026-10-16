@@ -9,6 +9,7 @@ import types
 import pytest
 
 from entities.attachment.business.extraction_service import (
+    EXTRACTION_BLOB_KEYS,
     REDACTION_VERSION,
     AttachmentExtractionService,
 )
@@ -536,6 +537,8 @@ def test_persist_extraction_blob_masks_without_caller_help(is_taxpayer_document)
     _assert_no_unmasked_tin_in_payload(raw)
     payload = json.loads(raw)
     assert payload["redaction_version"] == REDACTION_VERSION
+    # Readers (U-654b) trust the stamp only for exactly this key set.
+    assert set(payload) == EXTRACTION_BLOB_KEYS
     if is_taxpayer_document is False:
         assert payload["key_value_pairs"][0]["value"] == _EIN_MASKED
     else:

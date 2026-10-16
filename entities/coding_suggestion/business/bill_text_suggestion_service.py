@@ -11,7 +11,10 @@ from types import SimpleNamespace
 from typing import Any, Callable, Optional
 
 import config
-from entities.attachment.business.extraction_service import REDACTION_VERSION
+from entities.attachment.business.extraction_service import (
+    EXTRACTION_BLOB_KEYS,
+    REDACTION_VERSION,
+)
 from entities.coding_suggestion.business.bill_suggestion_service import (
     _HISTORY_SOURCES,
     HISTORY_STRONG_RAW_SCORE,
@@ -111,13 +114,19 @@ def blob_has_current_redaction(blob_text: str) -> bool:
     """True only for an extraction blob stamped by the current TIN-masking writer.
 
     The whole blob goes to Foundry, so a blob written before U-535g (no stamp, or an
-    older one) — or anything that is not the extraction JSON envelope — fails closed.
+    older one), one carrying keys the current writer never writes (a stamped legacy
+    blob still holding pages / paragraphs / tables), or anything that is not the
+    extraction JSON envelope fails closed.
     """
     try:
         envelope = json.loads(blob_text)
     except ValueError:
         return False
-    return isinstance(envelope, dict) and envelope.get("redaction_version") == REDACTION_VERSION
+    return (
+        isinstance(envelope, dict)
+        and envelope.get("redaction_version") == REDACTION_VERSION
+        and set(envelope) <= EXTRACTION_BLOB_KEYS
+    )
 
 
 def build_runtime_payload(
@@ -233,7 +242,8 @@ async def _process_one_claim(
         if not blob_has_current_redaction(bill_text):
             # Never send text the current masking has not been applied to. A U-535h
             # re-mask keeps the same ExtractedDatetime, so these rows are not re-claimed
-            # on their own; delete the row to retry once the blob is re-masked.
+            # on their own; delete the row to retry once the blob is re-masked (legacy
+            # pages/paragraphs/tables blobs pass only after the U-672 re-mask fix).
             return _finish_skipped(STALE_REDACTION)
 
         catalog = (catalog_loader or _load_catalog_from_db)(as_of)

@@ -672,6 +672,15 @@ def test_r3_blob_has_current_redaction():
     assert not svc.blob_has_current_redaction(json.dumps(["x"]))
 
 
+def test_r4_stamped_blob_with_legacy_keys_is_refused():
+    for legacy_key in ("pages", "paragraphs", "tables"):
+        envelope = {"content": "x", "redaction_version": REDACTION_VERSION, legacy_key: ["EIN 12-3456789"]}
+        assert not svc.blob_has_current_redaction(json.dumps(envelope))
+        out, repo, mock_cascade = _run_tick_with(json.dumps(envelope).encode("utf-8"), _accepted(0.9, 0.9))
+        mock_cascade.assert_not_called()
+        assert out["skipped_reason"] == svc.STALE_REDACTION
+
+
 def test_r3_stale_redaction_blob_never_reaches_the_model():
     stale_blobs = [
         json.dumps({"content": "EIN 12-3456789"}).encode("utf-8"),

@@ -59,6 +59,18 @@ _MIN_TEXT_LAYER_CHARS = 24
 
 _EXTRACTION_BLOB_PREFIX = "attachment-extractions"
 REDACTION_VERSION = "u535g-v3"
+# The exact top-level keys _persist_extraction_blob writes. The redaction stamp is a
+# true claim only for a blob of this shape: pre-U-535a blobs also carried pages /
+# paragraphs / tables, which repeat the document text unmasked.
+EXTRACTION_BLOB_KEYS = frozenset({
+    "attachment_public_id",
+    "source_file_hash",
+    "redaction_version",
+    "method",
+    "pages_count",
+    "content",
+    "key_value_pairs",
+})
 
 
 def parse_extraction_groups(raw: Optional[str]) -> list[str]:

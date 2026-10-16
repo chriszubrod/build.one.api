@@ -8,6 +8,7 @@ Invariants
   Money: total_amount is coerced Decimal(str(...)) on update; line pricing is owned by bill_line_item (create only passes Decimal line_markup/line_price through).
   Concurrency: UpdateBillById takes @RowVersion; finalize uses draft guard instead of rowversion.
   Cascade: delete_by_public_id uses DeleteBillCascadeById for dependent rows.
+  Review: a line whose CodingPrefillState is still 'prefilled' (an untouched suggestion) blocks Submit for Review, the create-time auto-submit and Complete with 422 unreviewed_prefill (U-674); suspense-coded lines block Complete (U-632).
 External writes
   sync_bill_to_qbo via qbo outbox (ALLOW_QBO_WRITES).
   MS sharepoint_upload / excel insert|append via ms outbox (ALLOW_MS_WRITES).
@@ -54,7 +55,12 @@ from shared.lifecycle.terminal_lock import (
     StatusLockedError,
     reraise_if_sproc_holding_code,
 )
-from shared.lifecycle.completion_gate import HoldingCodeRefused
+from shared.lifecycle.completion_gate import CompletionRefused, HoldingCodeRefused, UnreviewedPrefillRefused
+from entities.bill_line_item.business.prefill_guard import (
+    UNREVIEWED_PREFILL_STATE,
+    assert_no_unreviewed_prefill,
+    unreviewed_prefill_message,
+)
 # errors.py is a stdlib-only leaf — safe at module top despite this file's
 # lazy-import convention for circular service deps.
 from integrations.intuit.qbo.base.errors import QboBudgetExceededError, QboWriteRefusedError
@@ -371,6 +377,15 @@ class BillService:
         # we always validate it. Fail fast before touching any DB.
         if require_attachment and not attachment_public_id:
             raise ValueError("Attachment is required. Upload a PDF first and pass attachment_public_id.")
+        # U-674: the create-time auto-submit below must not carry an untouched
+        # pre-filled code into review. Refused before anything is written.
+        self.assert_create_submit_reviewed(
+            line_coding_prefill_state=line_coding_prefill_state,
+            is_draft=is_draft,
+            user_id=user_id,
+            line_project_public_id=line_project_public_id,
+            submit_for_review=submit_for_review,
+        )
         attachment = None
         if attachment_public_id:
             attachment = self.attachment_service.read_by_public_id(public_id=attachment_public_id)
@@ -635,7 +650,12 @@ class BillService:
         # through to the standard gate below — preserving the email
         # pipeline's existing fire-on-create-with-project behavior, and
         # the manual UI's Submit For Review button explicit-on path.
-        if is_draft and user_id is not None and line_project_public_id is not None and submit_for_review is not False:
+        if self._create_auto_submits(
+            is_draft=is_draft,
+            user_id=user_id,
+            line_project_public_id=line_project_public_id,
+            submit_for_review=submit_for_review,
+        ):
             try:
                 from entities.review.business.service import ReviewService
                 from entities.review_status.business.service import ReviewStatusService
@@ -1288,9 +1308,55 @@ class BillService:
 
         return updated_bill
 
-    def _assert_no_holding_code_on_complete(self, bill_id: int) -> None:
-        """Refuse completion when any line is coded to a holding/suspense SCC (U-632)."""
+    @staticmethod
+    def _create_auto_submits(
+        *,
+        is_draft: bool,
+        user_id: Optional[int],
+        line_project_public_id: Optional[str],
+        submit_for_review: Optional[bool],
+    ) -> bool:
+        """Whether create() writes a Submitted review row (see the gate's comment in create)."""
+        return (
+            is_draft
+            and user_id is not None
+            and line_project_public_id is not None
+            and submit_for_review is not False
+        )
+
+    @classmethod
+    def assert_create_submit_reviewed(
+        cls,
+        *,
+        line_coding_prefill_state: Optional[str],
+        is_draft: bool,
+        user_id: Optional[int],
+        line_project_public_id: Optional[str],
+        submit_for_review: Optional[bool],
+    ) -> None:
+        """U-674: refuse a create that would auto-submit an untouched pre-filled code."""
+        if line_coding_prefill_state == UNREVIEWED_PREFILL_STATE and cls._create_auto_submits(
+            is_draft=is_draft,
+            user_id=user_id,
+            line_project_public_id=line_project_public_id,
+            submit_for_review=submit_for_review,
+        ):
+            raise UnreviewedPrefillRefused(unreviewed_prefill_message(1, action="submitted for review"))
+
+    def _assert_completable_lines(self, bill_id: int, *, check_prefill: bool = True) -> None:
+        """Refuse completion on a suspense-coded line (U-632) or an untouched pre-fill (U-674).
+
+        `check_prefill=False` for a re-drive of an already-completed Bill: its lines were
+        final before this guard existed, and refusing would dead-letter the outbox re-run."""
         line_items = self.bill_line_item_service.read_by_bill_id(bill_id=bill_id)
+        if check_prefill:
+            assert_no_unreviewed_prefill(line_items, action="completed")
+        self._assert_no_holding_code_on_complete(bill_id, line_items=line_items)
+
+    def _assert_no_holding_code_on_complete(self, bill_id: int, *, line_items=None) -> None:
+        """Refuse completion when any line is coded to a holding/suspense SCC (U-632)."""
+        if line_items is None:
+            line_items = self.bill_line_item_service.read_by_bill_id(bill_id=bill_id)
         assert_no_holding_on_lines(
             line_items,
             message=(
@@ -1986,7 +2052,7 @@ class BillService:
             # Extracted to _assert_no_duplicate_on_complete so dropping the
             # field-write did not silently drop the duplicate check with it.
             self._assert_no_duplicate_on_complete(bill, public_id)
-            self._assert_no_holding_code_on_complete(bill.id)
+            self._assert_completable_lines(bill.id, check_prefill=bool(bill.is_draft))
 
             finalized_bill = self.repo.finalize_by_id(id=bill.id)
             if not finalized_bill:
@@ -2015,7 +2081,7 @@ class BillService:
                 )
 
                 record_bill_coding_suggestion_on_save(finalized_bill)
-        except HoldingCodeRefused:
+        except CompletionRefused:
             raise
         except Exception as e:
             reraise_if_sproc_holding_code(

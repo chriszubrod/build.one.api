@@ -14,7 +14,7 @@ def _patch_bill_deps(monkeypatch):
         lambda self, public_id: bill,
     )
     monkeypatch.setattr(
-        "entities.bill.business.service.BillService._assert_no_holding_code_on_complete",
+        "entities.bill.business.service.BillService._assert_completable_lines",
         lambda self, bill_id: None,
     )
     return bill

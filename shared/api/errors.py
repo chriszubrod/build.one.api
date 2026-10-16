@@ -64,6 +64,8 @@ class ErrorCode:
     MULTI_LINE_NOT_SUPPORTED = "multi_line_not_supported"
     # U-632 suspense / holding sub cost code (00.02) — must not complete or approve.
     HOLDING_CODE = "holding_code"
+    # U-674. A line's cost code is still an untouched pre-fill — submit/complete refused.
+    UNREVIEWED_PREFILL = "unreviewed_prefill"
 
 
 class ApiError(HTTPException):

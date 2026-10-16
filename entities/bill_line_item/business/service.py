@@ -19,6 +19,7 @@ from entities.bill_line_item.persistence.repo import BillLineItemRepository
 from entities.sub_cost_code.business.service import SubCostCodeService
 from entities.project.business.service import ProjectService
 from entities.bill.business.service import BillService
+from entities.bill_line_item.business.prefill_guard import UNREVIEWED_PREFILL_STATE
 
 logger = logging.getLogger(__name__)
 
@@ -353,6 +354,12 @@ class BillLineItemService:
     ) -> BillLineItem:
         """Apply reviewer SCC coding on one line inside a caller-owned transaction."""
         line_item.row_version = row_version
+        # U-674: the reviewer has now chosen this line's code, so an untouched
+        # pre-fill is reviewed — kept ('accepted') or replaced ('changed').
+        if getattr(line_item, "coding_prefill_state", None) == UNREVIEWED_PREFILL_STATE:
+            line_item.coding_prefill_state = (
+                "accepted" if line_item.sub_cost_code_id == sub_cost_code_id else "changed"
+            )
         line_item.sub_cost_code_id = sub_cost_code_id
         if description is not None:
             line_item.description = description

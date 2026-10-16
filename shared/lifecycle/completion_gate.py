@@ -93,6 +93,13 @@ class HoldingCodeRefused(CompletionRefused):
         super().__init__(message, error_code=ErrorCode.HOLDING_CODE)
 
 
+class UnreviewedPrefillRefused(CompletionRefused):
+    """A line still carries an untouched cost-code pre-fill — submit/complete refused (422)."""
+
+    def __init__(self, message: str):
+        super().__init__(message, error_code=ErrorCode.UNREVIEWED_PREFILL)
+
+
 def completion_gate_for(parent_type: str) -> str:
     """The configured gate for one entity, or `off`.
 

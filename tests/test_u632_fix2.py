@@ -398,6 +398,10 @@ def test_f2_build_advance_payload_refuses_holding_on_final_status():
     ), patch(
         "entities.sub_cost_code.business.holding_lines.parent_has_holding_line",
         return_value=True,
+    ), patch(
+        # U-674 reads the Bill's lines on advance; none carry an untouched pre-fill here.
+        "entities.bill_line_item.business.service.BillLineItemService.read_by_bill_id",
+        return_value=[],
     ):
         with pytest.raises(HoldingCodeRefused):
             svc.build_advance_payload(

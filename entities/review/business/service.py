@@ -352,6 +352,16 @@ class ReviewService:
             is_draft = None  # ContractLabor has no IsDraft column at all
         assert_editable(status=status, is_draft=is_draft, what=what)
 
+    @staticmethod
+    def _refuse_bill_unreviewed_prefill(parent_type: str, parent_id: int, *, action: str) -> None:
+        """U-674: an untouched cost-code pre-fill is not a reviewed code (Bill only)."""
+        if parent_type != ParentType.BILL:
+            return
+        from entities.bill_line_item.business.prefill_guard import assert_no_unreviewed_prefill
+        from entities.bill_line_item.business.service import BillLineItemService
+
+        assert_no_unreviewed_prefill(BillLineItemService().read_by_bill_id(bill_id=parent_id), action=action)
+
     def build_submit_payload(
         self,
         *,
@@ -379,6 +389,8 @@ class ReviewService:
             raise ReviewTransitionError(
                 "No initial review status is configured."
             )
+
+        self._refuse_bill_unreviewed_prefill(parent_type, parent_id, action="submitted for review")
 
         return self._build_payload(
             parent_type=parent_type,
@@ -419,6 +431,8 @@ class ReviewService:
             raise ReviewTransitionError(
                 "Cannot advance: no next review status is configured."
             )
+
+        self._refuse_bill_unreviewed_prefill(parent_type, parent_id, action="moved forward in review")
 
         if nxt.is_final and not nxt.is_declined:
             refuse_if_parent_has_holding_line(

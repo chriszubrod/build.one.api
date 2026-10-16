@@ -29,7 +29,7 @@ from entities.email_message.business.service import (
 )
 from shared.database import get_connection
 from shared.lifecycle.resolver import LIFECYCLE_STATUSES, attach_lifecycle
-from shared.lifecycle.completion_gate import HoldingCodeRefused
+from shared.lifecycle.completion_gate import CompletionRefused
 from shared.rbac import require_module_api
 from shared.rbac_constants import Modules
 from core.workflow.api.process_engine import ProcessEngine, TriggerContext, EventType, Channel
@@ -127,6 +127,15 @@ async def create_bill_router(
     # an already-completed document that skipped completion entirely.
     is_draft = True
     user_id = resolve_user_id(current_user)
+    # U-674: refuse here (a clean 422) rather than inside the workflow engine, which
+    # would wrap the service's identical refusal into a generic workflow error.
+    BillService.assert_create_submit_reviewed(
+        line_coding_prefill_state=body.line_coding_prefill_state,
+        is_draft=is_draft,
+        user_id=user_id,
+        line_project_public_id=body.line_project_public_id,
+        submit_for_review=body.submit_for_review,
+    )
 
     # Derive intake source from the caller's username. Agent users are
     # provisioned with usernames ending in "_agent" (per the agent-as-user
@@ -626,7 +635,7 @@ def _run_complete_bill(public_id: str, job_public_id: str | None = None, force: 
                     f"completion returned {result.get('status_code')} before enqueue: "
                     f"{result.get('message')}",
                 )
-    except HoldingCodeRefused as e:
+    except CompletionRefused as e:
         result = {
             "status_code": 422,
             "message": e.detail,
@@ -634,7 +643,7 @@ def _run_complete_bill(public_id: str, job_public_id: str | None = None, force: 
             "file_uploads": {},
             "excel_syncs": {},
             "qbo_sync": {},
-            "errors": [{"step": "finalize_bill", "error_code": ErrorCode.HOLDING_CODE}],
+            "errors": [{"step": "finalize_bill", "error_code": e.error_code}],
         }
         BillRepository().set_completion_result(public_id, result)
         if job_public_id:
@@ -663,6 +672,10 @@ def complete_bill_router(
     if not getattr(bill, "is_draft", True):
         raise HTTPException(status_code=400, detail="Bill is already completed")
 
+    # Line checks first (U-632 suspense code, U-674 untouched pre-fill): the gate's
+    # approver fast-path RECORDS an approval, which must not land on a refused bill.
+    bill_service._assert_completable_lines(bill.id)
+
     # U-458 completion gate. No-op while LIFECYCLE_COMPLETION_GATE_BILL is unset
     # or `off` (the shipped default) — it returns before resolving the review.
     # Placed AFTER the already-completed check and BEFORE the enqueue so a
@@ -674,11 +687,6 @@ def complete_bill_router(
         current_user=current_user,
         resolve_review=lambda: _current_review_for_bill(bill.id),
     )
-
-    try:
-        bill_service._assert_no_holding_code_on_complete(bill.id)
-    except HoldingCodeRefused:
-        raise
 
     from entities.completion_job.business.service import CompletionJobService
 

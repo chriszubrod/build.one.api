@@ -122,7 +122,7 @@ def test_complete_bill_router_refuses_holding_before_enqueue():
     ), patch(
         "entities.completion_job.business.service.CompletionJobService"
     ) as job_cls:
-        svc._assert_no_holding_code_on_complete.side_effect = HoldingCodeRefused("x")
+        svc._assert_completable_lines.side_effect = HoldingCodeRefused("x")
         with pytest.raises(ApiError) as exc:
             complete_bill_router(
                 public_id="b1",

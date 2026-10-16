@@ -2,6 +2,48 @@
 
 Carry-over items from sessions. Check off as done; prune anything stale.
 
+## U-669 spillover — emailed reviewer approvals: Folder read fix + on-demand reply copy (booked 2026-10-14)
+
+Shipped scope: U-669a loads `EmailMessage.Folder` on read (mapper + 4 read sprocs); U-669b adds
+`POST /bill|expense/{id}/review-replies/sync` (on-demand copy of a document's recorded review-thread replies,
+status `reviewer_reply`). Reviewer leg was degraded (Codex workspace out of credits): F2 Opus subagents + mutation.
+
+- [ ] **U-669 · stale duplicate sprocs (P3, Pass 1 + altitude).** `entities/email_message/sql/dbo.email_message_recipients.sql`
+  redefines `ReadEmailMessageById` / `ByPublicId` / `ByGraphMessageId` WITHOUT `[Folder]` (and a stale `UpsertEmailMessage`
+  missing `@Folder`/`@CreatedByUserId`/`@DefaultProcessingStatus`). ⛔ Never run that file: it would silently undo U-669a
+  (every emailed decision refused again) and break ingest. Fix: pointer stubs + drop the entries from
+  `tests/sproc_drift_ledger.py`, and widen the U-669a guard to every file defining these sprocs.
+- [ ] **U-669 · Folder on the remaining read paths (P3).** `UpsertEmailMessage` OUTPUT, `ClaimNextPendingEmailMessage` and the
+  hand-built mappers in `update_status` / `read_by_conversation_id` don't go through `_from_db` / don't project Folder.
+  Altitude fix: a "read-sproc projection ⊇ columns `_from_db` reads" parity test (model: `tests/test_update_read_column_parity.py`).
+- [ ] **U-669 · binder accepts any reviewer message on the thread (security note, pre-existing in U-563).** Provenance proves a
+  reply EXISTS, not what it SAYS: an out-of-office auto-reply or a rejection can be cited for `approved`. Harden: refuse
+  `Auto-Submitted`≠`no` on copy; bind decision text to the reply body. Pairs with U-563c (sender authentication).
+- [ ] **U-669 · cross-document reply visibility (P3).** If several documents' notifications ever share a conversation
+  (forward-style notifications), syncing A returns B's reply previews. Same property as the binder; not reachable for
+  post-2026-05-28 new-email notifications.
+- [ ] **U-669 · pause maps to 502 (P3).** `PAUSE_EMAIL_POLL` / mailbox-unconfigured raise `ReviewReplyCopyError(503)` but the
+  routes return a bare 502. Map 503→503 with a short detail.
+- [ ] **U-669 · dormant-poll watermark (P3).** Each copied reply advances `MAX(ReceivedDatetime)`; if `/admin/email/poll` is ever
+  run again it skips everything between the old watermark and the newest copied reply. The 2026-10-14 stopgap already moved
+  it 08-16 → 10-13. Any intake revival (U-639d / M7) must backfill by day deliberately.
+- [ ] **U-669 · legacy pending backlog (M7 hazard).** 3,761 inbox rows sit at `ProcessingStatus='pending'` from before the
+  2026-08-16 teardown (+56 from the 10-13 stopgap). An agent runner revived under M7 would claim them all. Mark them
+  non-claimable before any revival.
+- [ ] **U-669 · pre-cutoff notifications (P3/UX).** `recorded_review_conversation_ids` has no legacy path, so drafts whose
+  notification predates 2026-09-30 get 422 "no recorded review thread" from the sync route although the binder still
+  accepts them via its subject fallback.
+- [ ] **U-669 · long threads (P3).** DB read is `TOP 500 ORDER BY ReceivedDatetime ASC` (oldest, sentitems included);
+  Graph `has_more` ignored.
+- [ ] **U-669c · Contract Labor.** CL anchors its reply thread differently (consolidated notification); the sync route is
+  Bill/Expense only. Coordinate with the labor-review-updates session.
+- [ ] **U-669 · agent-tool wiring.** The bill/expense intelligence tools don't call the sync route before
+  `apply-reviewer-decision` yet.
+- [ ] **U-669 · Pass 2 follow-ups.** One `env_pause_flag()` in `shared/env_flags.py` for the five hand-copied
+  true/1/yes parses (admin.py ×3, box worker, email service); hoist the RBAC-override test helper into `tests/conftest.py`
+  (3rd copy); a shared `shared/api/review_replies.py` route helper so the two sync routes become thin wrappers.
+- [ ] **Nit (build.one.mcp).** `tools/email_message.py:52` documents `folder` example `'sent'`; the stored value is `'sentitems'`.
+
 ## U-563b spillover — Bill/Expense replies bind to their own review thread (booked 2026-10-12)
 
 `bind_reviewer_reply_to_review_thread` (`shared/authz/provenance.py`) now requires an emailed Bill/Expense reply to sit

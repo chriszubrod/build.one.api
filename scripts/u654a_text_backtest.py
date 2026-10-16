@@ -1220,6 +1220,9 @@ def load_prior_text_results(
                 winning_rung=rung,
                 # A placeholder attempt keeps a needs_human result counted in
                 # aggregate_rung_usage (it counts only cascades that attempted).
+                # The CSV cannot tell a cascade ERROR (no attempts, not counted in
+                # rung usage originally) from an exhausted ladder, so a reload may
+                # count the earlier leg's errors as needs_human (documented residual).
                 attempts=[] if rung else [Attempt(rung=Rung("foundry", "resumed"), accepted=False)],
             )
 
@@ -1688,6 +1691,10 @@ def main(argv: list[str] | None = None) -> int:
         cost_state["usd"] += float(prior_usage.get("cost_usd") or 0.0)
         prior_tokens["input_tokens"] = int(prior_usage.get("input_tokens") or 0)
         prior_tokens["output_tokens"] = int(prior_usage.get("output_tokens") or 0)
+        # Carry the earlier leg's counters so the merged report covers the whole sample.
+        prior_metrics = json.loads(prior_summary_path.read_text(encoding="utf-8"))["metrics"]
+        for key in ("throttle_retry_count", "throttle_failure_count", "cascade_error_count", "call_timeout_count"):
+            cost_state[key] = int(cost_state.get(key, 0)) + int(prior_metrics.get(key) or 0)
         print(f"Resuming: {len(prior)} (Bill, mode) results reused; prior spend ${cost_state['usd']:.4f}")
 
     blob_storage: list[Any] = []  # one client for the whole run, created on first read
@@ -1797,7 +1804,11 @@ def main(argv: list[str] | None = None) -> int:
     cap_tripped = state.cap_tripped
     cost_overshoot_usd = state.cost_overshoot_usd
 
-    cascades = [r.cascade for r in results.values()]
+    # Counted over the scored Bills only, so a Bill dropped on a resume (its blob
+    # unreadable) cannot leave a reloaded half behind in the counts.
+    cascades = [
+        t.cascade for row in scored for t in (row.text_a, row.text_b) if t is not None
+    ]
     usage = {
         "input_tokens": prior_tokens["input_tokens"],
         "output_tokens": prior_tokens["output_tokens"],

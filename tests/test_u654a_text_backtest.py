@@ -1285,3 +1285,70 @@ def test_u654c_read_text_blob_does_not_retry_permanent_errors():
 )
 def test_u654c_too_many_unreadable_blobs_make_the_run_incomplete(status, unreadable, sampled, expected):
     assert u654a.run_status_after_unreadable(status, unreadable=unreadable, sampled=sampled) == expected
+
+
+def test_u654d_resume_reloads_exactly_the_finished_results(tmp_path):
+    """A predictions CSV written by the run reloads into the same text results."""
+    bill_a = _bill(1, 1, "2026-05-01T10:00:00", 10)
+    bill_b = _bill(2, 1, "2026-05-02T10:00:00", 11)
+    accepted = u654a.TextAttemptResult(
+        "A", CascadeResult(True, False, {}, 0.9, Rung("foundry", "gpt-5.4-nano"), []), predicted_scc_id=10
+    )
+    human = u654a.TextAttemptResult(
+        "A",
+        CascadeResult(False, True, None, None, None, [Attempt(rung=Rung("foundry", "x"), accepted=False)]),
+        predicted_scc_id=None,
+    )
+    rows = [
+        u654a.ScoredTextBill(
+            bill=bill_a, stratum="cold_start",
+            history_a=ModePrediction("A", 10, 10, "h", None, [], 0),
+            history_b=ModePrediction("B", 10, 10, "h", None, [], 0),
+            text_a=accepted,
+        ),
+        u654a.ScoredTextBill(
+            bill=bill_b, stratum="cold_start",
+            history_a=ModePrediction("A", 11, 10, "h", None, [], 0),
+            history_b=ModePrediction("B", 11, 10, "h", None, [], 0),
+            text_a=human,  # needs_human
+            text_b=None,  # never finished: must not be reloaded
+        ),
+    ]
+    metrics = u654a.build_metrics(
+        rows, cascades=[accepted.cascade, human.cascade],
+        usage_totals={"input_tokens": 0, "output_tokens": 0, "cost_usd": 0.0},
+        cap_tripped=False, scored_bill_count=2, unscored_bill_count=0,
+        throttle_retry_count=0, throttle_failure_count=0, cascade_error_count=0,
+        duplicate_scc_number_count=0, duplicate_project_abbrev_count=0,
+    )
+    _report, csv_path, _json = u654a.write_report_and_outputs(
+        out_dir=tmp_path, stamp="t", scored=rows, metrics=metrics, dry_info=None,
+        eval_since=u654a.DEFAULT_EVAL_SINCE, eval_until=u654a.DEFAULT_EVAL_UNTIL,
+    )
+    prior = u654a.load_prior_text_results(csv_path)
+    assert set(prior) == {(1, "A"), (2, "A")}  # (1,"B") and (2,"B") never ran
+    assert prior[(1, "A")].predicted_scc_id == 10
+    assert prior[(1, "A")].cascade.winning_rung.model == "gpt-5.4-nano"
+    assert prior[(2, "A")].cascade.needs_human is True
+    # needs_human still counts in rung usage after a reload
+    assert u654a.aggregate_rung_usage([prior[(2, "A")].cascade]) == {"needs_human": 1}
+
+
+def test_u654d_a_stalled_call_is_left_unscored(monkeypatch):
+    import asyncio
+
+    async def hang(*_a, **_k):
+        await asyncio.sleep(3600)
+
+    monkeypatch.setattr(u654a, "CASCADE_CALL_TIMEOUT_SECONDS", 0.05)
+    monkeypatch.setattr(u654a, "run_bill_coding_suggestion", hang)
+    monkeypatch.setattr(u654a, "estimate_call_cost_usd", lambda _m: 0.0)
+    cost_state = {"usd": 0.0, "stopped": False, "scc_number_to_id": {}, "proj_abbrev_to_id": {}}
+    work = [(_bill(1, 1, "2026-05-01T10:00:00", 10), "A", "cold_start", {})]
+    out = asyncio.run(
+        u654a.run_text_cascade_batch(
+            work, transport_for=lambda _p: None, concurrency=1, max_cost_usd=10.0, cost_state=cost_state
+        )
+    )
+    assert out == {}  # unscored, so the run is INCOMPLETE and resumable
+    assert cost_state["call_timeout_count"] == 1

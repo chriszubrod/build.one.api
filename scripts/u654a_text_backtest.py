@@ -34,7 +34,7 @@ from intelligence.cascade.bill_coding import (
     run_bill_coding_suggestion,
     truncate_bill_text,
 )
-from intelligence.cascade.core import CascadeResult
+from intelligence.cascade.core import Attempt, CascadeResult, Rung
 from intelligence.observability.pricing import compute_cost_usd
 from intelligence.transport.base import Usage
 from scripts.sync_helper import assert_cli_system_admin
@@ -1046,6 +1046,11 @@ def write_report_and_outputs(
         )
     if metrics.get("scored_bill_count") is not None:
         lines.append(f"- Bills scored (text cascade finished): {metrics['scored_bill_count']}")
+    if metrics.get("call_timeout_count"):
+        lines.append(
+            f"- Cascade calls timed out (left unscored; resume with --resume-from): "
+            f"{metrics['call_timeout_count']}"
+        )
     if metrics.get("blob_unreadable_count"):
         lines.append(
             f"- Bills dropped (text blob unreadable after retries): {metrics['blob_unreadable_count']}"
@@ -1188,6 +1193,48 @@ def _failed_cascade_result() -> CascadeResult:
     )
 
 
+# U-654d: one cascade (up to 3 rungs + retries) normally takes seconds; a call
+# still open after this is a stalled connection, not a slow model.
+CASCADE_CALL_TIMEOUT_SECONDS = 300.0
+
+
+def load_prior_text_results(
+    csv_path: Path,
+) -> dict[tuple[int, str], TextAttemptResult]:
+    """Rebuild the finished (Bill, mode) text results from an earlier run's
+    predictions CSV (U-654d resume). A text row exists only for a (Bill, mode)
+    whose cascade ran to its own end, so these are exactly the scored ones."""
+    out: dict[tuple[int, str], TextAttemptResult] = {}
+    with csv_path.open(encoding="utf-8") as fh:
+        for row in csv.DictReader(fh):
+            if row.get("suggester") != "text":
+                continue
+            needs_human = row.get("needs_human") == "1"
+            model = (row.get("winning_rung") or "").strip()
+            rung = Rung("foundry", model) if model else None
+            cascade = CascadeResult(
+                accepted=not needs_human and rung is not None,
+                needs_human=needs_human,
+                result=None,
+                confidence=None,
+                winning_rung=rung,
+                # A placeholder attempt keeps a needs_human result counted in
+                # aggregate_rung_usage (it counts only cascades that attempted).
+                attempts=[] if rung else [Attempt(rung=Rung("foundry", "resumed"), accepted=False)],
+            )
+
+            def _int(v: str) -> Optional[int]:
+                return int(v) if (v or "").strip() else None
+
+            out[(int(row["BillId"]), row["mode"])] = TextAttemptResult(
+                mode=row["mode"],
+                cascade=cascade,
+                predicted_scc_id=_int(row.get("predicted_scc_id", "")),
+                predicted_project_id=_int(row.get("predicted_project_id", "")),
+            )
+    return out
+
+
 async def run_text_cascade_batch(
     work: Sequence[tuple[TextBillRow, str, str, dict[str, Any]]],
     *,
@@ -1218,9 +1265,19 @@ async def run_text_cascade_batch(
             try:
                 delay = 1.0
                 for throttle_try in range(5):
-                    cascade = await run_bill_coding_suggestion(
-                        payload, transport_for=transport_for
-                    )
+                    try:
+                        cascade = await asyncio.wait_for(
+                            run_bill_coding_suggestion(payload, transport_for=transport_for),
+                            timeout=CASCADE_CALL_TIMEOUT_SECONDS,
+                        )
+                    except asyncio.TimeoutError:
+                        # A stalled connection (e.g. the host slept) is not a model
+                        # answer: leave this (Bill, mode) unscored so the run is
+                        # INCOMPLETE and --resume-from picks it up.
+                        cost_state["call_timeout_count"] = (
+                            int(cost_state.get("call_timeout_count", 0)) + 1
+                        )
+                        return
                     apply_cascade_spend(cascade, cost_state)
                     if cascade.accepted:
                         break
@@ -1547,6 +1604,16 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Call the cascade (default: dry-run only)",
     )
+    ap.add_argument(
+        "--resume-from",
+        type=Path,
+        default=None,
+        help=(
+            "An earlier run's u654a_predictions_*.csv (same seed/window/sample): its "
+            "finished (Bill, mode) results are reused and only the rest are run; its "
+            "summary JSON beside it supplies the spend already incurred."
+        ),
+    )
     args = ap.parse_args(argv)
 
     validate_windows(
@@ -1603,6 +1670,25 @@ def main(argv: list[str] | None = None) -> int:
         "proj_abbrev_to_id": ref.proj_abbrev_to_id,
     }
     results: dict[tuple[int, str], TextAttemptResult] = {}
+    prior_tokens = {"input_tokens": 0, "output_tokens": 0}
+    if args.resume_from:
+        prior = load_prior_text_results(args.resume_from)
+        sample_ids = {b.bill_id for b, _ in sample}
+        stray = {bid for bid, _ in prior} - sample_ids
+        if stray:
+            raise SystemExit(
+                f"--resume-from has {len(stray)} Bill(s) outside this sample; "
+                "seed, window or sample size differ from the earlier run"
+            )
+        results.update(prior)
+        prior_summary_path = args.resume_from.with_name(
+            args.resume_from.name.replace("predictions", "summary")
+        ).with_suffix(".json")
+        prior_usage = json.loads(prior_summary_path.read_text(encoding="utf-8"))["metrics"]["usage"]
+        cost_state["usd"] += float(prior_usage.get("cost_usd") or 0.0)
+        prior_tokens["input_tokens"] = int(prior_usage.get("input_tokens") or 0)
+        prior_tokens["output_tokens"] = int(prior_usage.get("output_tokens") or 0)
+        print(f"Resuming: {len(prior)} (Bill, mode) results reused; prior spend ${cost_state['usd']:.4f}")
 
     blob_storage: list[Any] = []  # one client for the whole run, created on first read
 
@@ -1637,6 +1723,9 @@ def main(argv: list[str] | None = None) -> int:
 
         for row in scored:
             bill = row.bill
+            todo_modes = [m for m in ("A", "B") if (bill.bill_id, m) not in results]
+            if not todo_modes:
+                continue  # resumed: both modes already finished, no blob read
             priors = priors_for_bill(vendor_votes, bill)
             try:
                 bill_text = read_text_blob_with_retry(read_blob, bill.extracted_text_blob_url)
@@ -1677,8 +1766,10 @@ def main(argv: list[str] | None = None) -> int:
                 candidate_sccs=candidate_sccs,
                 candidate_projects=proj_candidates,
             )
-            work.append((bill, "A", row.stratum, payload_a))
-            work.append((bill, "B", row.stratum, payload_b))
+            if "A" in todo_modes:
+                work.append((bill, "A", row.stratum, payload_a))
+            if "B" in todo_modes:
+                work.append((bill, "B", row.stratum, payload_b))
 
     run_status = execute_run(build_work, run_cascades_on_work)
     if unreadable_bill_ids:
@@ -1707,7 +1798,11 @@ def main(argv: list[str] | None = None) -> int:
     cost_overshoot_usd = state.cost_overshoot_usd
 
     cascades = [r.cascade for r in results.values()]
-    usage = {"input_tokens": 0, "output_tokens": 0, "cost_usd": cost_state["usd"]}
+    usage = {
+        "input_tokens": prior_tokens["input_tokens"],
+        "output_tokens": prior_tokens["output_tokens"],
+        "cost_usd": cost_state["usd"],
+    }
     for c in cascades:
         for att in c.attempts:
             usage["input_tokens"] += att.usage.input_tokens
@@ -1730,6 +1825,7 @@ def main(argv: list[str] | None = None) -> int:
         run_status=run_status,
     )
     metrics["blob_unreadable_count"] = len(unreadable_bill_ids)
+    metrics["call_timeout_count"] = int(cost_state.get("call_timeout_count", 0))
     stamp = datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
     write_report_and_outputs(
         out_dir=args.out_dir,

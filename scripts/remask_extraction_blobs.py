@@ -20,7 +20,12 @@ from typing import Any, Callable, Optional, Protocol
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from entities.attachment.business.extraction_service import REDACTION_VERSION
+from entities.attachment.business.extraction_service import (
+    EXTRACTION_BLOB_KEYS,
+    EXTRACTION_KVP_KEYS,
+    REDACTION_VERSION,
+    extraction_payload_is_current,
+)
 from entities.attachment.business.tin_redaction import mask_tins, mask_tins_in_kvps
 from scripts.sync_helper import assert_cli_system_admin
 from shared.database import get_connection
@@ -122,10 +127,15 @@ def _validate_payload_shape(payload: dict) -> None:
 
 
 def remask_payload(payload: dict, *, aggressive: bool) -> tuple[dict, bool]:
-    """Return (new_payload, masking_changed). Does not short-circuit on redaction_version."""
+    """Return (new_payload, masking_changed). Does not short-circuit on redaction_version.
+
+    The payload is rebuilt from the current writer's fixed key set: pre-U-535a blobs also
+    carry pages / paragraphs / tables, which repeat the document text unmasked, and the
+    stamp written here must be as true as the writer's (U-672). Dropping such a key, or
+    an unknown field inside a key/value pair, counts as a masking change."""
     _validate_payload_shape(payload)
-    new_payload = dict(payload)
-    masking_changed = False
+    new_payload = {k: v for k, v in payload.items() if k in EXTRACTION_BLOB_KEYS}
+    masking_changed = len(new_payload) != len(payload)
 
     if "content" in payload:
         content = payload["content"]
@@ -137,6 +147,9 @@ def remask_payload(payload: dict, *, aggressive: bool) -> tuple[dict, bool]:
     if "key_value_pairs" in payload:
         kvps = payload["key_value_pairs"]
         masked_kvps, _ = mask_tins_in_kvps(kvps, aggressive=aggressive)
+        masked_kvps = [
+            {k: v for k, v in kvp.items() if k in EXTRACTION_KVP_KEYS} for kvp in masked_kvps
+        ]
         new_payload["key_value_pairs"] = masked_kvps
         if masked_kvps != kvps:
             masking_changed = True
@@ -205,7 +218,7 @@ def _process_row(
 ) -> _RowOutcome:
     try:
         payload = _download_json_with_retries(storage, row.extracted_text_blob_url)
-        if payload.get("redaction_version") == REDACTION_VERSION:
+        if extraction_payload_is_current(payload):
             return _RowOutcome(attachment_id=row.id, bucket="current")
 
         new_payload, masking_changed = remask_payload(payload, aggressive=row.is_taxpayer_document)

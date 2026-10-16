@@ -7,7 +7,7 @@ import re
 from typing import Optional
 import pytest
 
-from entities.attachment.business.extraction_service import REDACTION_VERSION
+from entities.attachment.business.extraction_service import REDACTION_VERSION, extraction_payload_is_current
 from scripts.remask_extraction_blobs import (
     _DOWNLOAD_ATTEMPTS,
     PayloadValidationError,
@@ -172,19 +172,62 @@ def test_remask_payload_taxpayer_masks_all_digits_and_drops_kvps():
     assert new_payload["pages_count"] == 1
 
 
-def test_remask_payload_non_taxpayer_masks_shapes_and_kvps_keeps_other_fields():
+def test_remask_payload_non_taxpayer_masks_shapes_and_kvps_drops_unknown_fields():
     payload = {
         "content": f"Vendor {_EIN}",
-        "key_value_pairs": [{"key": "SSN", "value": _SSN, "confidence": None}],
-        "extra_field": "keep-me",
+        "key_value_pairs": [{"key": "SSN", "value": _SSN, "confidence": None, "spans": [_SSN]}],
+        "extra_field": "drop-me",
+        "method": "pypdf",
         "redaction_version": "legacy",
     }
     new_payload, changed = remask_payload(payload, aggressive=False)
     assert changed is True
     assert _EIN_MASKED in new_payload["content"]
-    assert new_payload["key_value_pairs"][0]["value"] == _SSN_MASKED
-    assert new_payload["extra_field"] == "keep-me"
+    assert new_payload["key_value_pairs"] == [{"key": "SSN", "value": _SSN_MASKED, "confidence": None}]
+    assert set(new_payload) == {"content", "key_value_pairs", "method", "redaction_version"}
     assert new_payload["redaction_version"] == REDACTION_VERSION
+
+
+# --- U-672: pre-U-535a blobs repeat the text in pages / paragraphs / tables -- #
+
+
+def _legacy_payload(text: str) -> dict:
+    """The shape of the 170 pre-2026-08-01 prod blobs (key set confirmed read-only)."""
+    return {
+        "content": text,
+        "key_value_pairs": [],
+        "pages": [{"page_number": 1, "lines": [text]}],
+        "paragraphs": [{"content": text}],
+        "tables": [{"cells": [{"content": text}]}],
+    }
+
+
+@pytest.mark.parametrize("aggressive", [True, False])
+def test_u672_legacy_text_keys_are_dropped_and_count_as_changed(aggressive):
+    new_payload, changed = remask_payload(_legacy_payload(f"EIN {_EIN} SSN {_SSN}"), aggressive=aggressive)
+    assert changed is True
+    assert set(new_payload) == {"content", "key_value_pairs", "redaction_version"}
+    raw = json.dumps(new_payload)
+    assert _SSN not in raw and _EIN not in raw
+    assert extraction_payload_is_current(new_payload)
+
+
+def test_u672_legacy_keys_dropped_even_when_content_is_already_clean():
+    _new_payload, changed = remask_payload(_legacy_payload("no ids here"), aggressive=False)
+    assert changed is True  # rewritten on a plain --apply, not only with --stamp-all
+
+
+def test_u672_stamped_blob_with_legacy_keys_is_not_current_and_is_rewritten():
+    storage = _FakeStorage()
+    url = "https://acct.blob.core.windows.net/c/stamped-legacy.json"
+    stamped = {**_legacy_payload(f"EIN {_EIN}"), "redaction_version": REDACTION_VERSION}
+    storage.seed(url, stamped)
+    summary = run_remask([_row(1, url=url)], storage=storage, apply=True)
+    assert summary["counts"]["changed"] == 1
+    assert len(storage.upload_calls) == 1
+    raw, _ = storage.download_file(url)
+    assert _EIN.encode() not in raw
+    assert extraction_payload_is_current(json.loads(raw))
 
 
 def test_remask_payload_already_masked_non_taxpayer_no_content_change():
@@ -399,3 +442,30 @@ def test_main_summary_never_leaks_tin(capsys):
         apply=False,
     )
     _assert_output_has_no_raw_tin(capsys.readouterr().out)
+
+
+@pytest.mark.parametrize(
+    "payload_tail",
+    [
+        {"key_value_pairs": [{"key": "k", "value": "v", "spans": ["12-3456789"]}]},
+        {"key_value_pairs": [{"key": {"content": "12-3456789"}, "value": "v"}]},
+        {"key_value_pairs": "not-a-list"},
+        {"content": ["12-3456789"]},
+    ],
+)
+def test_u672_stamp_is_not_current_with_unwritten_nested_shapes(payload_tail):
+    payload = {"content": "x", "key_value_pairs": [], "redaction_version": REDACTION_VERSION, **payload_tail}
+    assert not extraction_payload_is_current(payload)
+
+
+def test_u672_writer_shaped_payload_is_current():
+    payload = {
+        "attachment_public_id": "a",
+        "source_file_hash": "h",
+        "redaction_version": REDACTION_VERSION,
+        "method": "text_layer",
+        "pages_count": 1,
+        "content": "x",
+        "key_value_pairs": [{"key": "k", "value": None, "confidence": "0.9"}],
+    }
+    assert extraction_payload_is_current(payload)

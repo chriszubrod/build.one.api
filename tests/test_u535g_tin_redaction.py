@@ -300,7 +300,16 @@ def _w9_pdf_with_ssn() -> bytes:
     )
 
 
-@pytest.mark.parametrize("prior_payload", [{}, {"redaction_version": "legacy"}, {"redaction_version": None}])
+@pytest.mark.parametrize(
+    "prior_payload",
+    [
+        {},
+        {"redaction_version": "legacy"},
+        {"redaction_version": None},
+        # U-672: stamped, but carrying a pre-U-535a text key the current writer never writes.
+        {"redaction_version": REDACTION_VERSION, "paragraphs": [{"content": "x"}]},
+    ],
+)
 def test_reextract_when_hash_matches_but_redaction_version_stale(prior_payload):
     prior_blob = "https://blob.example/attachment-extractions/stale.json"
     pdf = _w9_pdf_with_ssn()

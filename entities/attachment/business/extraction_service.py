@@ -71,6 +71,28 @@ EXTRACTION_BLOB_KEYS = frozenset({
     "content",
     "key_value_pairs",
 })
+# The fields _persist_extraction_blob writes inside each key_value_pairs entry.
+EXTRACTION_KVP_KEYS = frozenset({"key", "value", "confidence"})
+
+
+def extraction_payload_is_current(payload: object) -> bool:
+    """True only for an extraction blob the current writer could have produced: the
+    current redaction stamp and no keys outside its fixed set. Every reader that trusts
+    the stamp (the freshness check, the U-535h re-mask, the U-654b text tick) uses this."""
+    if not (
+        isinstance(payload, dict)
+        and payload.get("redaction_version") == REDACTION_VERSION
+        and set(payload) <= EXTRACTION_BLOB_KEYS
+        and isinstance(payload.get("content", ""), str)
+    ):
+        return False
+    kvps = payload.get("key_value_pairs", [])
+    return isinstance(kvps, list) and all(
+        isinstance(kvp, dict)
+        and set(kvp) <= EXTRACTION_KVP_KEYS
+        and all(kvp.get(f) is None or isinstance(kvp.get(f), str) for f in ("key", "value"))
+        for kvp in kvps
+    )
 
 
 def parse_extraction_groups(raw: Optional[str]) -> list[str]:
@@ -318,11 +340,7 @@ class AttachmentExtractionService:
             prior = json.loads(content)
         except Exception:
             return False
-        return (
-            bool(prior)
-            and prior.get("source_file_hash") == attachment.file_hash
-            and prior.get("redaction_version") == REDACTION_VERSION
-        )
+        return extraction_payload_is_current(prior) and prior.get("source_file_hash") == attachment.file_hash
 
     def _fail(self, attachment: Attachment, code: str, exc: Optional[BaseException] = None) -> dict:
         """Mark the row failed with a fixed code (+ exception class name only) and return the tick row."""

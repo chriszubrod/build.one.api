@@ -388,7 +388,10 @@ class TestBillCodingSuggestEndpoint:
                     with patch(
                         "entities.coding_suggestion.api.bill_router.BillCodingSuggester"
                     ) as Suggester:
-                        Suggester.return_value.suggest.return_value = suggestion
+                        Suggester.return_value.suggest_with_text_tier.return_value = (
+                            suggestion,
+                            "none",
+                        )
                         body = BillCodingSuggestRequest(
                             vendor_public_id=UUID("550e8400-e29b-41d4-a716-446655440001"),
                             project_public_id=UUID("550e8400-e29b-41d4-a716-446655440002"),
@@ -484,7 +487,7 @@ class TestRecordOnSave:
         line_svc = MagicMock()
         line_svc.read_by_bill_id.return_value = lines
         suggester = MagicMock()
-        suggester.suggest.return_value = suggestion
+        suggester.suggest_with_text_tier.return_value = (suggestion, "none")
 
         with patch(
             "entities.coding_suggestion.business.bill_suggestion_service.apply_budget_check_to_suggestion",
@@ -497,11 +500,12 @@ class TestRecordOnSave:
                 line_item_service=line_svc,
             )
 
-        suggester.suggest.assert_called_once_with(
+        suggester.suggest_with_text_tier.assert_called_once_with(
             vendor_id=3,
             project_id=10,
             memo="note",
             exclude_bill_id=7,
+            bill_id=7,
         )
         coding_svc.upsert_for_bill.assert_called_once()
         kwargs = coding_svc.upsert_for_bill.call_args.kwargs
@@ -517,7 +521,7 @@ class TestRecordOnSave:
         line_svc = MagicMock()
         line_svc.read_by_bill_id.return_value = []
         suggester = MagicMock()
-        suggester.suggest.side_effect = RuntimeError("boom")
+        suggester.suggest_with_text_tier.side_effect = RuntimeError("boom")
 
         record_bill_coding_suggestion_on_save(
             bill,

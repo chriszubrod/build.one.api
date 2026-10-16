@@ -242,6 +242,21 @@ class TestProjectConfident:
             confidence=Decimal("0.59"),
         )
 
+    def test_project_confidence_separate_from_text_scc_confidence(self):
+        """U-654b D2: high text SCC confidence must not satisfy a weak history project."""
+        assert not project_confident_for_suggestion(
+            10,
+            chosen_project_id=None,
+            confidence=Decimal("0.95"),
+            project_confidence=Decimal("0.40"),
+        )
+        assert project_confident_for_suggestion(
+            10,
+            chosen_project_id=None,
+            confidence=Decimal("0.40"),
+            project_confidence=Decimal("0.65"),
+        )
+
 
 class TestEvaluateBudgetLoader:
     def test_draft_budget_yields_no_budget_without_variance_read(self):
@@ -384,7 +399,10 @@ class TestSuggestEndpointBudget:
                 with patch(
                     "entities.coding_suggestion.api.bill_router.BillCodingSuggester"
                 ) as Sugg:
-                    Sugg.return_value.suggest.return_value = suggestion
+                    Sugg.return_value.suggest_with_text_tier.return_value = (
+                            suggestion,
+                            "none",
+                        )
                     with patch(
                         "entities.coding_suggestion.api.bill_router.apply_budget_check_to_suggestion"
                     ) as apply_bc:
@@ -419,7 +437,10 @@ class TestSuggestEndpointBudget:
                         with patch(
                             "entities.coding_suggestion.api.bill_router.BillCodingSuggester"
                         ) as Sugg:
-                            Sugg.return_value.suggest.return_value = suggestion
+                            Sugg.return_value.suggest_with_text_tier.return_value = (
+                            suggestion,
+                            "none",
+                        )
                             with patch(
                                 "entities.coding_suggestion.api.bill_router.apply_budget_check_to_suggestion"
                             ) as apply_bc:
@@ -454,7 +475,10 @@ class TestSuggestEndpointBudget:
                         with patch(
                             "entities.coding_suggestion.api.bill_router.BillCodingSuggester"
                         ) as Sugg:
-                            Sugg.return_value.suggest.return_value = suggestion
+                            Sugg.return_value.suggest_with_text_tier.return_value = (
+                            suggestion,
+                            "none",
+                        )
                             with patch(
                                 "entities.coding_suggestion.api.bill_router.apply_budget_check_to_suggestion"
                             ) as apply_bc:
@@ -485,7 +509,10 @@ class TestSuggestEndpointBudget:
                 with patch(
                     "entities.coding_suggestion.api.bill_router.BillCodingSuggester"
                 ) as Sugg:
-                    Sugg.return_value.suggest.return_value = suggestion
+                    Sugg.return_value.suggest_with_text_tier.return_value = (
+                            suggestion,
+                            "none",
+                        )
                     with patch(
                         "entities.coding_suggestion.api.bill_router.apply_budget_check_to_suggestion",
                         side_effect=RuntimeError("db down"),
@@ -548,7 +575,7 @@ class TestRecordOnSaveBudget:
         line_svc = MagicMock()
         line_svc.read_by_bill_id.return_value = lines
         suggester = MagicMock()
-        suggester.suggest.return_value = suggestion
+        suggester.suggest_with_text_tier.return_value = (suggestion, "none")
 
         with patch(
             "entities.coding_suggestion.business.bill_suggestion_service.apply_budget_check_to_suggestion",
@@ -738,7 +765,10 @@ class TestR1RegressionFixes:
                         with patch(
                             "entities.coding_suggestion.api.bill_router.BillCodingSuggester"
                         ) as Sugg:
-                            Sugg.return_value.suggest.return_value = suggestion
+                            Sugg.return_value.suggest_with_text_tier.return_value = (
+                            suggestion,
+                            "none",
+                        )
                             with patch(
                                 "entities.coding_suggestion.api.bill_router.apply_budget_check_to_suggestion"
                             ) as apply_bc:
@@ -791,7 +821,7 @@ class TestR1RegressionFixes:
         line_svc = MagicMock()
         line_svc.read_by_bill_id.return_value = lines
         suggester = MagicMock()
-        suggester.suggest.return_value = suggestion
+        suggester.suggest_with_text_tier.return_value = (suggestion, "none")
 
         with patch(
             "entities.coding_suggestion.business.bill_suggestion_service.apply_budget_check_to_suggestion",
@@ -944,7 +974,7 @@ class TestR2RegressionFixes:
         line_svc = MagicMock()
         line_svc.read_by_bill_id.return_value = lines
         suggester = MagicMock()
-        suggester.suggest.return_value = suggestion
+        suggester.suggest_with_text_tier.return_value = (suggestion, "none")
 
         budget_result = BudgetCheckResult(
             check="fits",
@@ -1004,7 +1034,10 @@ class TestR2EmHardening:
             PS.return_value.read_by_id.return_value = project
             BS.return_value.read_by_public_id.return_value = bill
             BLS.return_value.read_by_bill_id.return_value = lines
-            Sugg.return_value.suggest.return_value = suggestion
+            Sugg.return_value.suggest_with_text_tier.return_value = (
+                            suggestion,
+                            "none",
+                        )
             suggest_bill_coding_router(
                 body=BillCodingSuggestRequest(
                     vendor_public_id=UUID("550e8400-e29b-41d4-a716-446655440001"),

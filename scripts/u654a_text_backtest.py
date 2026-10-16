@@ -34,17 +34,24 @@ from intelligence.cascade.bill_coding import (
     run_bill_coding_suggestion,
     truncate_bill_text,
 )
+from intelligence.cascade.bill_coding_payload import (
+    build_candidate_projects_for_bill,
+    build_candidate_sccs_for_bill,
+    build_history_evidence,
+    build_payload,
+    resolve_text_prediction,
+)
 from intelligence.cascade.core import Attempt, CascadeResult, Rung
 from intelligence.observability.pricing import compute_cost_usd
 from intelligence.transport.base import Usage
 from scripts.sync_helper import assert_cli_system_admin
+from intelligence.cascade.bill_coding_payload import PriorBillVote
 from scripts.u653b_backtest import (
     DEFAULT_EVAL_SINCE,
     DEFAULT_EVAL_UNTIL,
     MIN_PRIOR_BILLS,
     BillRow,
     ModePrediction,
-    PriorBillVote,
     _consistency_bucket,
     _count_votes,
     _date_only,
@@ -353,63 +360,6 @@ def projects_with_bills_before(
     return rows
 
 
-def build_history_evidence(
-    priors: Sequence[PriorBillVote],
-    scc_by_id: dict[int, SccRef],
-    *,
-    project_id: Optional[int] = None,
-    top_n: int = 5,
-) -> list[dict[str, Any]]:
-    counts: dict[int, int] = defaultdict(int)
-    filtered = [
-        p
-        for p in priors
-        if project_id is None
-        or (p.dominant_project_id is not None and p.dominant_project_id == project_id)
-    ]
-    for p in filtered:
-        counts[p.dominant_scc_id] += 1
-    ranked = sorted(counts.items(), key=lambda x: (-x[1], x[0]))[:top_n]
-    evidence: list[dict[str, Any]] = []
-    for scc_id, cnt in ranked:
-        ref = scc_by_id.get(scc_id)
-        if ref is None:
-            continue
-        evidence.append(
-            {"scc_number": ref.number, "scc_name": ref.name, "count": cnt}
-        )
-    return evidence
-
-
-def build_candidate_sccs_for_bill(
-    scc_by_id: dict[int, SccRef],
-    *,
-    as_of: datetime,
-    ambiguous_numbers: frozenset[str],
-) -> list[dict[str, str]]:
-    suspense_norm = normalize_scc_number(SUSPENSE_SCC_NUMBER)
-    out: list[dict[str, str]] = []
-    for ref in sorted(scc_by_id.values(), key=lambda r: r.number):
-        if ref.created >= as_of:
-            continue
-        if ref.number in ambiguous_numbers or ref.number == suspense_norm:
-            continue
-        out.append({"number": ref.number, "name": ref.name})
-    return out
-
-
-def build_candidate_projects_for_bill(
-    projects: list[dict[str, str]],
-    *,
-    ambiguous_abbrevs: frozenset[str],
-) -> list[dict[str, str]]:
-    return [
-        row
-        for row in projects
-        if normalize_project_abbreviation(row["abbreviation"]) not in ambiguous_abbrevs
-    ]
-
-
 def count_eval_populations(
     all_bills: Sequence[BillRow],
     text_bills: Sequence[TextBillRow],
@@ -522,49 +472,6 @@ def catalog_diagnostics_for_sample(
         "text_catalog_size_min_per_bill": min(sizes) if sizes else 0,
         "text_catalog_size_median_per_bill": median,
     }
-
-
-def build_payload(
-    bill: TextBillRow,
-    *,
-    bill_text: str,
-    vendor_name: str,
-    mode: str,
-    priors: Sequence[PriorBillVote],
-    scc_by_id: dict[int, SccRef],
-    candidate_sccs: list[dict[str, str]],
-    candidate_projects: Optional[list[dict[str, str]]],
-) -> dict[str, Any]:
-    project_id = bill.label_project_id if mode == "A" else None
-    return {
-        "vendor_name": vendor_name,
-        "bill_text": truncate_bill_text(bill_text),
-        "history_evidence": build_history_evidence(
-            priors, scc_by_id, project_id=project_id
-        ),
-        "candidate_sccs": candidate_sccs,
-        "candidate_projects": candidate_projects,
-    }
-
-
-def resolve_text_prediction(
-    cascade: CascadeResult,
-    *,
-    scc_number_to_id: dict[str, int],
-    proj_abbrev_to_id: dict[str, int],
-) -> tuple[Optional[int], Optional[int]]:
-    if not cascade.accepted or cascade.result is None:
-        return None, None
-    res = cascade.result
-    scc_num = res.get("scc_number")
-    scc_id = None
-    if isinstance(scc_num, str):
-        scc_id = scc_number_to_id.get(normalize_scc_number(scc_num))
-    proj = res.get("project_abbreviation")
-    proj_id = None
-    if isinstance(proj, str) and normalize_project_abbreviation(proj):
-        proj_id = proj_abbrev_to_id.get(normalize_project_abbreviation(proj))
-    return scc_id, proj_id
 
 
 def classify_stratum(priors: Sequence[PriorBillVote], mixed_code: bool) -> str:
@@ -1330,41 +1237,18 @@ async def run_text_cascade_batch(
     return results_out
 
 
-# A text blob that times out (no HTTP status), 5xx or 429 is transient: retry it.
-# Anything else (404, auth) is permanent and surfaces immediately.
-_BLOB_READ_ATTEMPTS = 3
+from shared.text_blob_read import (
+    _BLOB_READ_ATTEMPTS,
+    blob_error_is_transient,
+    read_text_blob_with_retry,
+)
+
 # A run that loses more than this share of its sample to unreadable blobs is
 # INCOMPLETE: the verdict would rest on a smaller, possibly skewed sample.
 MAX_UNREADABLE_SHARE = 0.02
-_BLOB_READ_BACKOFF_SECONDS = (2.0, 5.0)
 
-
-def _blob_error_is_transient(exc: BaseException) -> bool:
-    status = getattr(exc, "status_code", None)
-    return status is None or status == 429 or status >= 500
-
-
-def read_text_blob_with_retry(
-    read: Callable[[str], str],
-    url: str,
-    *,
-    sleep: Callable[[float], None] = time.sleep,
-) -> str:
-    """Read one extracted-text blob, retrying transient storage failures.
-
-    U-654c: a single ConnectTimeout on one of 500 blobs aborted the whole run
-    before any model call. Raises the last error when retries are exhausted.
-    """
-    from shared.storage import AzureBlobStorageError
-
-    for attempt in range(_BLOB_READ_ATTEMPTS):
-        try:
-            return read(url)
-        except AzureBlobStorageError as exc:
-            if attempt == _BLOB_READ_ATTEMPTS - 1 or not _blob_error_is_transient(exc):
-                raise
-            sleep(_BLOB_READ_BACKOFF_SECONDS[min(attempt, len(_BLOB_READ_BACKOFF_SECONDS) - 1)])
-    raise AssertionError("unreachable")
+# Backward-compatible alias for tests that patch u654a._blob_error_is_transient.
+_blob_error_is_transient = blob_error_is_transient
 
 
 def run_status_after_unreadable(run_status: str, *, unreadable: int, sampled: int) -> str:

@@ -28,6 +28,7 @@ from entities.coding_suggestion.business.bill_suggestion_service import (
     _smoothed_share,
 )
 from entities.coding_suggestion.persistence.repo import CodingSuggestionRepository
+from intelligence.cascade.bill_coding_payload import PriorBillVote
 from scripts.sync_helper import assert_cli_system_admin
 from shared.database import get_connection
 
@@ -125,14 +126,6 @@ INNER JOIN SccCounts sc ON sc.[BillId] = b.[Id]
 WHERE b.[IsDraft] = 0
 ORDER BY b.[CreatedDatetime], b.[Id]
 """
-
-@dataclass(frozen=True)
-class PriorBillVote:
-    bill_id: int
-    created: datetime
-    dominant_scc_id: int
-    dominant_project_id: Optional[int]
-
 
 @dataclass(frozen=True)
 class BillRow:

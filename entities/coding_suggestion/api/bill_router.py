@@ -79,6 +79,7 @@ def _suggestion_to_api_payload(suggestion) -> dict:
             if suggestion.budget_remaining is not None
             else None
         ),
+        "text_status": suggestion.text_status,
     }
 
 
@@ -114,12 +115,15 @@ def suggest_bill_coding_router(
         exclude_bill_id = bill.id
         budget_lines = BillLineItemService().read_by_bill_id(bill.id)
 
-    suggestion = BillCodingSuggester().suggest(
+    suggester = BillCodingSuggester()
+    suggestion, text_status = suggester.suggest_with_text_tier(
         vendor_id=int(vendor.id),
         project_id=project_id,
         memo=body.memo,
         exclude_bill_id=exclude_bill_id,
+        bill_id=exclude_bill_id,
     )
+    suggestion.text_status = text_status
 
     try:
         apply_budget_check_to_suggestion(

@@ -236,9 +236,12 @@ def project_confident_for_suggestion(
     *,
     chosen_project_id: Optional[int],
     confidence: Optional[Decimal],
+    project_confidence: Optional[Decimal] = None,
 ) -> bool:
-    """Caller-chosen project (must match suggestion) or confidence >= 0.60 otherwise —
-    the same gate for predicted and memo projects."""
+    """Caller-chosen project (must match suggestion) or project confidence >= 0.60 otherwise.
+
+    ``project_confidence`` gates the project when it differs from SCC/text confidence (U-654b).
+    """
     if chosen_project_id is not None:
         return (
             suggestion_project_id is not None
@@ -246,6 +249,7 @@ def project_confident_for_suggestion(
         )
     if suggestion_project_id is None:
         return False
-    if confidence is None:
+    gate = project_confidence if project_confidence is not None else confidence
+    if gate is None:
         return False
-    return confidence >= LOW_PROJECT_CONFIDENCE
+    return gate >= LOW_PROJECT_CONFIDENCE

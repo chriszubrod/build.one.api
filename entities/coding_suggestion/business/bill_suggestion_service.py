@@ -6,8 +6,9 @@ import json
 import logging
 from dataclasses import dataclass
 from decimal import Decimal
-from typing import Any, Mapping, Optional, Sequence
+from typing import Any, Literal, Mapping, Optional, Sequence
 
+import config
 from entities.bill.business.model import Bill
 from entities.bill_line_item.business.model import BillLineItem
 from entities.coding_suggestion.business.budget_check import (
@@ -17,6 +18,11 @@ from entities.coding_suggestion.business.budget_check import (
 from entities.coding_suggestion.business.hint_extractor import extract_bill_hints
 from entities.coding_suggestion.business.model import VendorDominantSubCostCodeForBills
 from entities.coding_suggestion.business.service import CodingSuggestionService
+from entities.coding_suggestion.persistence.bill_text_suggestion_repo import (
+    BillLatestTextExtractionState,
+    BillTextCodingSuggestionRepository,
+    BillTextCodingSuggestionRow,
+)
 from entities.bill_line_item.business.service import BillLineItemService
 from entities.project.business.service import ProjectService
 from entities.sub_cost_code.business.service import SubCostCodeService
@@ -28,6 +34,10 @@ logger = logging.getLogger(__name__)
 MODEL_VERSION = "u653a-history-v1"
 
 _PROJECT_CODE_CONFIDENCE = Decimal("0.95")
+HISTORY_STRONG_RAW_SCORE = Decimal("0.60")
+_HISTORY_SOURCES = frozenset({"vendor_history", "vendor_project_history"})
+TEXT_LLM_SUGGESTION_REASON = "Suggested from the bill's document text"
+TextTierStatus = Literal["ready", "pending", "none"]
 
 
 @dataclass
@@ -49,6 +59,11 @@ class BillSuggestion:
     budget_check: Optional[str] = None
     budget_remaining: Optional[Decimal] = None
     budget_evidence: Optional[Mapping[str, Decimal]] = None
+    text_used: bool = False
+    text_mode: Optional[str] = None
+    text_model: Optional[str] = None
+    text_status: Optional[str] = None
+    project_confidence: Optional[Decimal] = None
 
 
 def _smoothed_share(top_count: int, total_count: int) -> Decimal:
@@ -155,7 +170,198 @@ def bill_suggestion_to_features_json(suggestion: BillSuggestion) -> str:
     if suggestion.budget_evidence:
         for key, value in suggestion.budget_evidence.items():
             payload[key] = str(value)
+    if suggestion.text_used:
+        payload["text_used"] = True
+        payload["text_mode"] = suggestion.text_mode
+        payload["text_model"] = suggestion.text_model
     return json.dumps(payload, sort_keys=True)
+
+
+def history_blocks_text_tier(suggestion: BillSuggestion) -> bool:
+    """Strong vendor history SCC wins over stored text (U-654a §10.3 combined Mode A)."""
+    if suggestion.sub_cost_code_id is None:
+        return False
+    if suggestion.source not in _HISTORY_SOURCES:
+        return False
+    raw = suggestion.raw_score
+    return raw is not None and raw >= HISTORY_STRONG_RAW_SCORE
+
+
+def _text_row_matches_current_extraction(
+    text_row: BillTextCodingSuggestionRow,
+    extraction: BillLatestTextExtractionState,
+) -> bool:
+    latest = extraction.latest_completed_extracted_datetime
+    if latest is None:
+        return False
+    if text_row.extracted_datetime != latest:
+        return False
+    latest_att = extraction.latest_completed_attachment_id
+    if latest_att is not None and text_row.attachment_id != latest_att:
+        return False
+    return True
+
+
+def _resolve_accessible_text_project_id(
+    project_id: Optional[int],
+    *,
+    project_service: ProjectService,
+) -> Optional[int]:
+    if project_id is None:
+        return None
+    project = project_service.read_by_id(int(project_id))
+    if project is None or project.id is None:
+        return None
+    try:
+        assert_can_access_project(int(project.id))
+    except EntityNotAccessibleError:
+        return None
+    return int(project.id)
+
+
+def _bill_suggestion_from_text_row(
+    text_row: BillTextCodingSuggestionRow,
+    *,
+    sub_cost_code_service: SubCostCodeService,
+    output_project_id: Optional[int],
+    predicted_project: bool,
+) -> Optional[BillSuggestion]:
+    scc_id = text_row.sub_cost_code_id
+    if scc_id is None:
+        return None
+    scc = sub_cost_code_service.read_by_id(int(scc_id))
+    if scc is None:
+        return None
+    if sub_cost_code_service.is_holding_code(int(scc_id)):
+        return None
+    return BillSuggestion(
+        project_id=output_project_id,
+        sub_cost_code_id=int(scc_id),
+        sub_cost_code_public_id=str(scc.public_id) if scc.public_id else None,
+        sub_cost_code_number=scc.number,
+        sub_cost_code_name=scc.name,
+        source="llm",
+        reason=TEXT_LLM_SUGGESTION_REASON,
+        confidence=text_row.confidence,
+        raw_score=None,
+        top_count=None,
+        second_count=None,
+        total_count=None,
+        model_version=text_row.model_version,
+        predicted_project=predicted_project,
+        text_used=True,
+        text_mode=text_row.mode,
+        text_model=text_row.winning_model,
+    )
+
+
+def compute_text_tier_status(
+    *,
+    history_blocked: bool,
+    text_row: Optional[BillTextCodingSuggestionRow],
+    extraction: Optional[BillLatestTextExtractionState],
+) -> TextTierStatus:
+    """Status when the text result is NOT applied: "pending" while one may still arrive."""
+    if text_row is None:
+        incomplete = extraction is not None and extraction.has_incomplete_extraction
+        return "pending" if incomplete and not history_blocked else "none"
+    if text_row.status == "pending":
+        return "pending"
+    if text_row.status != "done" or history_blocked or extraction is None:
+        return "none"
+    stale = not _text_row_matches_current_extraction(text_row, extraction)
+    return "pending" if extraction.has_incomplete_extraction or stale else "none"
+
+
+def apply_bill_text_tier_to_suggestion(
+    history_suggestion: BillSuggestion,
+    *,
+    bill_id: Optional[int],
+    request_project_id: Optional[int],
+    text_repo: Optional[BillTextCodingSuggestionRepository] = None,
+    sub_cost_code_service: Optional[SubCostCodeService] = None,
+    project_service: Optional[ProjectService] = None,
+    text_enabled: Optional[bool] = None,
+) -> tuple[BillSuggestion, TextTierStatus]:
+    """Merge stored text-tier SCC (and optional Mode-B project) over cold/weak history."""
+    enabled = (
+        text_enabled
+        if text_enabled is not None
+        else config.Settings().bill_coding_text_enabled
+    )
+    if not enabled or bill_id is None:
+        return history_suggestion, "none"
+
+    repository = text_repo or BillTextCodingSuggestionRepository()
+    scc_svc = sub_cost_code_service or SubCostCodeService()
+    proj_svc = project_service or ProjectService()
+
+    history_blocked = history_blocks_text_tier(history_suggestion)
+    try:
+        text_row = repository.read_by_bill_id(int(bill_id))
+        # A blocked status never consults the extraction, so skip that read.
+        extraction = (
+            None if history_blocked else repository.read_latest_text_extraction_state(int(bill_id))
+        )
+    except Exception as error:
+        logger.warning(
+            "bill text tier read failed bill_id=%s err=%s",
+            bill_id,
+            type(error).__name__,
+        )
+        return history_suggestion, "none"
+
+    def _history_only() -> tuple[BillSuggestion, TextTierStatus]:
+        return history_suggestion, compute_text_tier_status(
+            history_blocked=history_blocked,
+            text_row=text_row,
+            extraction=extraction,
+        )
+
+    if history_blocked:
+        return _history_only()
+
+    usable_done = (
+        text_row is not None
+        and text_row.status == "done"
+        and text_row.sub_cost_code_id is not None
+        and _text_row_matches_current_extraction(text_row, extraction)
+    )
+    if not usable_done:
+        return _history_only()
+
+    project_confidence = history_suggestion.raw_score or history_suggestion.confidence
+    if request_project_id is not None:
+        output_project = request_project_id
+        predicted_project = False
+        project_confidence = None
+    elif text_row.mode == "B":
+        output_project = None
+        predicted_project = False
+        if text_row.project_id is not None:
+            accessible = _resolve_accessible_text_project_id(
+                text_row.project_id,
+                project_service=proj_svc,
+            )
+            if accessible is not None:
+                output_project = accessible
+                predicted_project = True
+                project_confidence = text_row.confidence
+    else:
+        output_project = history_suggestion.project_id
+        predicted_project = history_suggestion.predicted_project
+
+    text_suggestion = _bill_suggestion_from_text_row(
+        text_row,
+        sub_cost_code_service=scc_svc,
+        output_project_id=output_project,
+        predicted_project=predicted_project,
+    )
+    if text_suggestion is None:
+        return _history_only()
+
+    text_suggestion.project_confidence = project_confidence
+    return text_suggestion, "ready"
 
 
 def apply_budget_check_to_suggestion(
@@ -170,6 +376,7 @@ def apply_budget_check_to_suggestion(
         suggestion.project_id,
         chosen_project_id=chosen_project_id,
         confidence=suggestion.confidence,
+        project_confidence=suggestion.project_confidence,
     )
     result = evaluate_budget_for_suggestion(
         suggestion.project_id,
@@ -265,6 +472,35 @@ class BillCodingSuggester:
             return memo_suggestion
 
         return _none_suggestion(project_id=output_project)
+
+    def suggest_with_text_tier(
+        self,
+        *,
+        vendor_id: int,
+        project_id: Optional[int] = None,
+        memo: Optional[str] = None,
+        as_of=None,
+        exclude_bill_id: Optional[int] = None,
+        bill_id: Optional[int] = None,
+        text_repo: Optional[BillTextCodingSuggestionRepository] = None,
+        text_enabled: Optional[bool] = None,
+    ) -> tuple[BillSuggestion, TextTierStatus]:
+        history = self.suggest(
+            vendor_id=vendor_id,
+            project_id=project_id,
+            memo=memo,
+            as_of=as_of,
+            exclude_bill_id=exclude_bill_id,
+        )
+        return apply_bill_text_tier_to_suggestion(
+            history,
+            bill_id=bill_id,
+            request_project_id=project_id,
+            text_repo=text_repo,
+            sub_cost_code_service=self.sub_cost_code_service,
+            project_service=self.project_service,
+            text_enabled=text_enabled,
+        )
 
     def _suggest_from_memo(
         self,
@@ -362,11 +598,12 @@ def record_bill_coding_suggestion_on_save(
         lines = line_svc.read_by_bill_id(bill.id)
         project_id = chosen_project_id_from_lines(lines)
         engine = suggester or BillCodingSuggester()
-        suggestion = engine.suggest(
+        suggestion, _text_status = engine.suggest_with_text_tier(
             vendor_id=int(bill.vendor_id),
             project_id=project_id,
             memo=bill.memo,
             exclude_bill_id=bill.id,
+            bill_id=bill.id,
         )
         try:
             apply_budget_check_to_suggestion(

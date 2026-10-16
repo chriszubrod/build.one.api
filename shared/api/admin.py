@@ -780,6 +780,20 @@ async def attachment_extract_tick_router(limit: int = Query(5, ge=1, le=5)):
     return await _timed("attachment.extract.tick", _run, error_response=True)
 
 
+@router.post("/bill/coding/text/tick", dependencies=[Depends(_require_drain_secret)])
+async def bill_coding_text_tick_router(limit: int = Query(1, ge=1, le=5)):
+    """Claim and run up to `limit` bill text-tier coding suggestions (U-654b)."""
+
+    def _run() -> dict[str, Any]:
+        from entities.coding_suggestion.business.bill_text_suggestion_service import (
+            run_bill_text_coding_tick_sync,
+        )
+
+        return run_bill_text_coding_tick_sync(limit=limit)
+
+    return await _timed("bill.coding.text.tick", _run, error_response=True)
+
+
 # --- Time Tracking agent ---------------------------------------------------- #
 
 

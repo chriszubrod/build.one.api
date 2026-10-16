@@ -232,6 +232,12 @@ class Settings(BaseSettings):
     foundry_endpoint: Optional[str] = None
     foundry_api_version: Optional[str] = None
 
+    # Bill text-tier SCC suggestion (U-654b). Default off — scheduler tick is a
+    # no-op until explicitly enabled. Cap counts cascade completions (done +
+    # failed) per UTC calendar day across all tick invocations.
+    bill_coding_text_enabled: bool = False
+    bill_coding_text_daily_call_cap: int = 200
+
     # Intelligence Layer — internal API base URL
     # Agents call their own API surface as HTTP clients so they go through
     # the same RBAC, ProcessEngine routing, and audit logs as human users.

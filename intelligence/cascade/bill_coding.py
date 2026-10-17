@@ -29,6 +29,24 @@ BILL_CODING_FOUNDRY_LADDER: tuple[Rung, ...] = (
     Rung("foundry", "gpt-5.4-mini"),
 )
 
+CLAUDE_HAIKU_LADDER: tuple[Rung, ...] = (Rung("anthropic", "claude-haiku-5-5"),)
+CLAUDE_SONNET_LADDER: tuple[Rung, ...] = (Rung("anthropic", "claude-sonnet-5-5"),)
+
+BACKTEST_LADDERS: dict[str, tuple[Rung, ...]] = {
+    "foundry": BILL_CODING_FOUNDRY_LADDER,
+    "claude-haiku": CLAUDE_HAIKU_LADDER,
+    "claude-sonnet": CLAUDE_SONNET_LADDER,
+}
+
+
+def ladder_by_name(name: str) -> tuple[Rung, ...]:
+    try:
+        return BACKTEST_LADDERS[name]
+    except KeyError as exc:
+        raise ValueError(
+            f"unknown ladder {name!r}; expected one of {sorted(BACKTEST_LADDERS)}"
+        ) from exc
+
 ALLOWED_PAYLOAD_KEYS = frozenset({
     "vendor_name",
     "bill_text",
@@ -165,10 +183,13 @@ async def run_bill_coding_suggestion(
     payload: dict[str, Any],
     *,
     transport_for=None,
+    ladder: tuple[Rung, ...] | None = None,
 ) -> CascadeResult:
     """Run the bill coding ladder with payload-aware catalog validation."""
     def validate(result: dict[str, Any]) -> tuple[bool, str]:
         return validate_bill_coding_result(result, payload=payload)
 
     task = dataclasses.replace(BILL_CODING_SUGGESTION_TASK, validate=validate)
+    if ladder is not None:
+        task = dataclasses.replace(task, ladder=ladder)
     return await run_cascade(task, payload, transport_for=transport_for)

@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import time
-from typing import Callable
+from typing import Any, Callable
 
 _BLOB_READ_ATTEMPTS = 3
 _BLOB_READ_BACKOFF_SECONDS = (2.0, 5.0)
@@ -34,3 +34,18 @@ def read_text_blob_with_retry(
                 ]
             )
     raise AssertionError("unreachable")
+
+
+def make_text_blob_reader(storage_holder: list[Any] | None = None) -> Callable[[str], str]:
+    """Return a read(url) closure that lazily constructs one AzureBlobStorage."""
+    holder: list[Any] = storage_holder if storage_holder is not None else []
+
+    def read_blob(url: str) -> str:
+        if not holder:
+            from shared.storage import AzureBlobStorage
+
+            holder.append(AzureBlobStorage())
+        data, _meta = holder[0].download_file(url)
+        return data.decode("utf-8", errors="replace")
+
+    return read_blob

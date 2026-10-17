@@ -8,13 +8,18 @@ import pytest
 from intelligence.cascade import bill_coding as bill_coding_mod
 from intelligence.cascade.bill_coding import (
     ALLOWED_PAYLOAD_KEYS,
-    BILL_TEXT_CHAR_BUDGET,
-    SUSPENSE_SCC_NUMBER,
+    BILL_CODING_FOUNDRY_LADDER,
     BILL_CODING_SUGGESTION_TASK,
+    BILL_TEXT_CHAR_BUDGET,
+    CLAUDE_HAIKU_LADDER,
+    SUSPENSE_SCC_NUMBER,
+    ladder_by_name,
     normalize_scc_number,
+    run_bill_coding_suggestion,
     truncate_bill_text,
     validate_bill_coding_result,
 )
+from intelligence.cascade.core import CascadeResult, Rung
 
 
 def _sample_payload(**overrides):
@@ -184,3 +189,42 @@ def test_r2_p3_validator_fails_closed_without_payload_context():
         }
     )
     assert not ok and reason == "no_payload_context"
+
+
+def test_ladder_by_name_known_and_unknown():
+    assert ladder_by_name("foundry") == BILL_CODING_FOUNDRY_LADDER
+    assert ladder_by_name("claude-haiku") == CLAUDE_HAIKU_LADDER
+    with pytest.raises(ValueError, match="unknown ladder"):
+        ladder_by_name("not-a-ladder")
+
+
+def test_run_bill_coding_suggestion_ladder_override():
+    import asyncio
+    from unittest.mock import patch
+
+    payload = _sample_payload()
+    captured: dict[str, object] = {}
+
+    async def fake_run_cascade(task, _payload, transport_for=None):
+        captured["ladder"] = task.ladder
+        return CascadeResult(
+            accepted=True,
+            needs_human=False,
+            result={
+                "scc_number": "03.01",
+                "project_abbreviation": None,
+                "confidence": 0.9,
+                "rationale": "ok",
+            },
+            confidence=0.9,
+            winning_rung=task.ladder[0],
+            attempts=[],
+        )
+
+    with patch("intelligence.cascade.bill_coding.run_cascade", side_effect=fake_run_cascade):
+        asyncio.run(run_bill_coding_suggestion(payload))
+        assert captured["ladder"] == BILL_CODING_FOUNDRY_LADDER
+
+        captured.clear()
+        asyncio.run(run_bill_coding_suggestion(payload, ladder=CLAUDE_HAIKU_LADDER))
+        assert captured["ladder"] == CLAUDE_HAIKU_LADDER

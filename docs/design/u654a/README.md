@@ -34,6 +34,8 @@ From the API repo root (`.env` for read-only DB; system-admin CLI context):
 | `--max-cost-usd` | 10 | Stops STARTING new Bills once the next call could exceed it; Bills already in flight finish, so spend can overshoot by up to about concurrency × one full ladder (× throttle retries) — the overshoot is reported. Skipped Bills stay unscored ⇒ INCOMPLETE |
 | `--concurrency` | 4 | Parallel cascade calls (429/rate-limit backoff on throttled cascade attempts) |
 | `--out-dir` | `docs/design/u654a` | Report + CSV + JSON |
+| `--ladder` | `foundry` | `foundry` (default production Foundry ladder), `claude-haiku`, or `claude-sonnet` for Claude API backtests |
+| `--resume-from` | — | Prior `u654a_predictions_<ladder>_<stamp>.csv`; **must match** `--ladder` |
 
 Dry-run first: confirm population sizes, stratum counts, and estimated cost. The script uses a read-only transaction (rollback after SELECTs), same as U-653b. Live runs always write report + spend; interrupted runs are stamped **PARTIAL**. Ctrl-C while texts are still being read makes no model call at all.
 
@@ -43,9 +45,9 @@ Reports and machine outputs include **numeric identifiers only** — Bill/Vendor
 
 ## Outputs (timestamped under `--out-dir`)
 
-- `u654a_report_<stamp>.md` — coverage, precision, top-1 (Bill- and dollar-weighted) for history, text, and combined; Mode B project accuracy; mixed-code accuracy over all sampled mixed-code Bills; per-stratum table; throttling retries/failures; rung usage; §10.5 verdict (or INCOMPLETE).
-- `u654a_predictions_<stamp>.csv` — per-Bill numeric predictions only.
-- `u654a_summary_<stamp>.json` — aggregate metrics, `cap_tripped`, scored/unscored counts, usage.
+- `u654a_report_<ladder>_<stamp>.md` — coverage, precision, top-1 (Bill- and dollar-weighted) for history, text, and combined; Mode B project accuracy; mixed-code accuracy over all sampled mixed-code Bills; per-stratum table; throttling retries/failures; rung usage; §10.5 verdict (or INCOMPLETE).
+- `u654a_predictions_<ladder>_<stamp>.csv` — per-Bill numeric predictions only (`winning_rung_provider` distinguishes Foundry vs Anthropic).
+- `u654a_summary_<ladder>_<stamp>.json` — aggregate metrics, `ladder`, `cap_tripped`, scored/unscored counts, usage.
 
 ## Tests
 

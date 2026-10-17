@@ -179,7 +179,7 @@ def test_cost_cap_stops_before_exceeding():
     payload = {"vendor_name": "v", "bill_text": "t", "history_evidence": [], "candidate_sccs": [], "candidate_projects": None}
     work = [(bill, "A", "cold_start", payload), (bill, "B", "cold_start", payload)]
 
-    async def fake_cascade(_payload, transport_for=None):
+    async def fake_cascade(_payload, transport_for=None, ladder=None):
         return CascadeResult(
             accepted=True,
             needs_human=False,
@@ -335,7 +335,7 @@ def test_r1_p1_2_throttled_cascade_attempt_retries_without_needs_human_only():
     )
     calls = {"n": 0}
 
-    async def fake_run(_payload, transport_for=None):
+    async def fake_run(_payload, transport_for=None, ladder=None):
         calls["n"] += 1
         return throttled if calls["n"] == 1 else ok
 
@@ -700,7 +700,7 @@ def test_r2_n1_cascade_batch_writes_through_out_dict_for_partial_runs():
     work = [(bill1, "A", "cold_start", payload)]
     shared: dict[tuple[int, str], u654a.TextAttemptResult] = {}
 
-    async def fake_cascade(_payload, transport_for=None):
+    async def fake_cascade(_payload, transport_for=None, ladder=None):
         return CascadeResult(
             True,
             False,
@@ -767,7 +767,7 @@ def test_r2_n2_throttle_retry_only_when_not_accepted_bills_all_tries():
     )
     calls = {"n": 0}
 
-    async def fake_run(_payload, transport_for=None):
+    async def fake_run(_payload, transport_for=None, ladder=None):
         calls["n"] += 1
         return escalated_ok
 
@@ -824,7 +824,7 @@ def test_r2_n4_exception_mid_retry_still_bills_earlier_try_spend():
     )
     calls = {"n": 0}
 
-    async def fake_run(_payload, transport_for=None):
+    async def fake_run(_payload, transport_for=None, ladder=None):
         calls["n"] += 1
         if calls["n"] == 1:
             return throttled
@@ -972,7 +972,7 @@ def test_r2_n6_overshoot_with_all_bills_scored_is_not_cap_tripped():
     }
     work = [(bill, "A", "cold_start", payload)]
 
-    async def fake_cascade(_payload, transport_for=None):
+    async def fake_cascade(_payload, transport_for=None, ladder=None):
         return CascadeResult(
             True,
             False,
@@ -1079,7 +1079,7 @@ def test_r3_new1_cap_starved_run_is_incomplete_with_no_verdict():
     bills = [_bill(i, 1, f"2026-05-0{i}T10:00:00", 10) for i in range(1, 5)]
     work = [(b, m, "s", _r3_payload()) for b in bills for m in ("A", "B")]
 
-    async def expensive(_payload, transport_for=None):
+    async def expensive(_payload, transport_for=None, ladder=None):
         return _r3_cascade(accepted=True)
 
     cost_state = _r3_cost_state()
@@ -1100,7 +1100,7 @@ def test_r3_new2_cap_blocked_retry_leaves_the_bill_unscored():
     bill = _bill(1, 1, "2026-05-01T10:00:00", 10)
     work = [(bill, "A", "s", _r3_payload())]
 
-    async def throttled(_payload, transport_for=None):
+    async def throttled(_payload, transport_for=None, ladder=None):
         return _r3_cascade(accepted=False, error="HTTP 429")
 
     cost_state = _r3_cost_state()
@@ -1342,7 +1342,7 @@ def test_u654d_a_stalled_call_is_left_unscored(monkeypatch):
 
     monkeypatch.setattr(u654a, "CASCADE_CALL_TIMEOUT_SECONDS", 0.05)
     monkeypatch.setattr(u654a, "run_bill_coding_suggestion", hang)
-    monkeypatch.setattr(u654a, "estimate_call_cost_usd", lambda _m: 0.0)
+    monkeypatch.setattr(u654a, "estimate_ladder_first_rung_cost_usd", lambda _l: 0.0)
     cost_state = {"usd": 0.0, "stopped": False, "scc_number_to_id": {}, "proj_abbrev_to_id": {}}
     work = [(_bill(1, 1, "2026-05-01T10:00:00", 10), "A", "cold_start", {})]
     out = asyncio.run(
@@ -1352,3 +1352,238 @@ def test_u654d_a_stalled_call_is_left_unscored(monkeypatch):
     )
     assert out == {}  # unscored, so the run is INCOMPLETE and resumable
     assert cost_state["call_timeout_count"] == 1
+
+
+def test_dry_run_input_tokens_grow_with_larger_scc_catalog():
+    from datetime import datetime
+
+    small_ref = u654a.ReferenceData(
+        scc_by_id={
+            1: u654a.SccRef(1, "03.01", "A", datetime(2026, 1, 1)),
+        },
+        scc_number_to_id={"03.01": 1},
+        proj_by_id={},
+        proj_abbrev_to_id={},
+        vendor_names={1: "V"},
+        ambiguous_scc_numbers=frozenset(),
+        ambiguous_project_abbrevs=frozenset(),
+        duplicate_scc_number_count=0,
+        duplicate_project_abbrev_count=0,
+    )
+    big_ref = u654a.ReferenceData(
+        scc_by_id={
+            i: u654a.SccRef(i, f"{i:02d}.01", f"Name{i}", datetime(2026, 1, 1))
+            for i in range(1, 400)
+        },
+        scc_number_to_id={f"{i:02d}.01": i for i in range(1, 400)},
+        proj_by_id={},
+        proj_abbrev_to_id={},
+        vendor_names={1: "V"},
+        ambiguous_scc_numbers=frozenset(),
+        ambiguous_project_abbrevs=frozenset(),
+        duplicate_scc_number_count=0,
+        duplicate_project_abbrev_count=0,
+    )
+    sample = [(_bill(1, 1, "2026-05-01T10:00:00", 10), "cold_start")]
+    votes = {1: []}
+    small = u654a.estimate_dry_run_input_tokens_per_call(
+        sample, ref=small_ref, vendor_votes=votes
+    )
+    big = u654a.estimate_dry_run_input_tokens_per_call(
+        sample, ref=big_ref, vendor_votes=votes
+    )
+    assert big > small
+
+
+def test_claude_haiku_cost_estimate_uses_pricing_table():
+    ladder = u654a.ladder_by_name("claude-haiku")
+    cost = u654a.estimate_ladder_first_rung_cost_usd(ladder, input_tokens=4500)
+    assert cost > 0
+    assert "claude-haiku-5-5" not in u654a.RUNG_PRICE_USD_PER_MTOK
+
+
+def test_dry_run_cost_uses_selected_ladder_first_rung():
+    sample = [(_bill(1, 1, "2026-05-01T10:00:00", 1), "cold_start")]
+    foundry = u654a.dry_run_summary(
+        sample, sample_size=1, populations={}, ladder_name="foundry"
+    )
+    haiku = u654a.dry_run_summary(
+        sample, sample_size=1, populations={}, ladder_name="claude-haiku"
+    )
+    assert foundry["ladder"] == "foundry"
+    assert haiku["ladder"] == "claude-haiku"
+    assert haiku["estimated_cost_usd_first_rung_only"] < foundry[
+        "estimated_cost_usd_first_rung_only"
+    ]
+
+
+def test_write_outputs_include_ladder_in_filenames(tmp_path):
+    row = u654a.ScoredTextBill(
+        bill=_bill(1, 1, "2026-05-01T10:00:00", 10),
+        stratum="cold_start",
+        history_a=ModePrediction("A", 10, 10, "h", None, [], 0),
+        history_b=ModePrediction("B", 10, 10, "h", None, [], 0),
+    )
+    metrics = u654a.build_metrics(
+        [row],
+        cascades=[],
+        usage_totals={"input_tokens": 0, "output_tokens": 0, "cost_usd": 0.0},
+        cap_tripped=False,
+        scored_bill_count=1,
+        unscored_bill_count=0,
+        throttle_retry_count=0,
+        throttle_failure_count=0,
+        cascade_error_count=0,
+        duplicate_scc_number_count=0,
+        duplicate_project_abbrev_count=0,
+    )
+    report, csv_path, json_path = u654a.write_report_and_outputs(
+        out_dir=tmp_path,
+        stamp="t",
+        scored=[row],
+        metrics=metrics,
+        dry_info=None,
+        eval_since=u654a.DEFAULT_EVAL_SINCE,
+        eval_until=u654a.DEFAULT_EVAL_UNTIL,
+        ladder_name="claude-sonnet",
+    )
+    assert "claude-sonnet" in report.name
+    assert "claude-sonnet" in csv_path.name
+    assert "claude-sonnet" in json_path.name
+
+
+def test_resume_refuses_mismatched_ladder(tmp_path):
+    csv_path = tmp_path / "u654a_predictions_claude-haiku_t.csv"
+    csv_path.write_text(
+        "BillId,VendorId,mode,suggester,predicted_scc_id,label_scc_id,"
+        "predicted_project_id,label_project_id,correct_scc,correct_project,"
+        "stratum,winning_rung,winning_rung_provider,needs_human\n",
+        encoding="utf-8",
+    )
+    summary = tmp_path / "u654a_summary_claude-haiku_t.json"
+    summary.write_text(
+        json.dumps(
+            {
+                "ladder": "claude-haiku",
+                "metrics": {
+                    "usage": {"cost_usd": 0.0, "input_tokens": 0, "output_tokens": 0},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    with patch.object(u654a, "load_bills_from_db", return_value=[]):
+        with patch.object(u654a, "load_blob_urls_from_db", return_value={}):
+            with patch.object(u654a, "merge_text_bills", return_value=[]):
+                with patch.object(u654a, "build_vendor_priors", return_value={}):
+                    with patch.object(u654a, "count_eval_populations", return_value={}):
+                        with patch.object(u654a, "stratified_sample", return_value=[]):
+                            with patch.object(u654a, "load_reference_data") as mock_ref:
+                                mock_ref.return_value = u654a.ReferenceData(
+                                    scc_by_id={},
+                                    scc_number_to_id={},
+                                    proj_by_id={},
+                                    proj_abbrev_to_id={},
+                                    vendor_names={},
+                                    ambiguous_scc_numbers=frozenset(),
+                                    ambiguous_project_abbrevs=frozenset(),
+                                    duplicate_scc_number_count=0,
+                                    duplicate_project_abbrev_count=0,
+                                )
+                                with pytest.raises(SystemExit, match="ladder"):
+                                    u654a.main(
+                                        [
+                                            "--run",
+                                            "--sample-size",
+                                            "0",
+                                            "--resume-from",
+                                            str(csv_path),
+                                            "--ladder",
+                                            "foundry",
+                                        ]
+                                    )
+
+
+def test_ladder_threads_into_cascade_call():
+    import asyncio
+    from intelligence.cascade.bill_coding import CLAUDE_SONNET_LADDER
+
+    payload = {"vendor_name": "v", "bill_text": "t", "history_evidence": [], "candidate_sccs": [], "candidate_projects": None}
+    work = [(_bill(1, 1, "2026-05-01T10:00:00", 1), "A", "cold_start", payload)]
+    seen: dict[str, object] = {}
+
+    async def fake_run(payload, transport_for=None, ladder=None):
+        seen["ladder"] = ladder
+        return CascadeResult(
+            accepted=True,
+            needs_human=False,
+            result={
+                "scc_number": "03.01",
+                "project_abbreviation": None,
+                "confidence": 0.9,
+                "rationale": "x",
+            },
+            confidence=0.9,
+            winning_rung=Rung("anthropic", "claude-sonnet-5-5"),
+            attempts=[],
+        )
+
+    cost_state = {
+        "usd": 0.0,
+        "stopped": False,
+        "scc_number_to_id": {},
+        "proj_abbrev_to_id": {},
+    }
+    with patch.object(u654a, "run_bill_coding_suggestion", side_effect=fake_run):
+        asyncio.run(
+            u654a.run_text_cascade_batch(
+                work,
+                transport_for=lambda _p: MagicMock(),
+                concurrency=1,
+                max_cost_usd=10.0,
+                cost_state=cost_state,
+                ladder=CLAUDE_SONNET_LADDER,
+            )
+        )
+    assert seen["ladder"] == CLAUDE_SONNET_LADDER
+
+
+def test_aggregate_rung_usage_counts_anthropic():
+    c = CascadeResult(
+        accepted=True,
+        needs_human=False,
+        result={},
+        confidence=0.9,
+        winning_rung=Rung("anthropic", "claude-haiku-5-5"),
+        attempts=[],
+    )
+    assert u654a.aggregate_rung_usage([c]) == {"claude-haiku-5-5": 1}
+
+
+def test_bill_cascade_spend_fallback_uses_winning_rung_provider_for_claude():
+    cascade = CascadeResult(
+        accepted=True,
+        needs_human=False,
+        result={},
+        confidence=0.9,
+        winning_rung=Rung("anthropic", "claude-haiku-5-5"),
+        attempts=[],
+    )
+    with patch.object(u654a, "estimate_call_cost_usd", return_value=0.042) as mock:
+        spend = u654a.bill_cascade_spend_usd(cascade)
+    assert spend == 0.042
+    mock.assert_called_once_with("claude-haiku-5-5", provider="anthropic")
+
+
+def test_bill_cascade_spend_fallback_foundry_provider_unchanged():
+    cascade = CascadeResult(
+        accepted=True,
+        needs_human=False,
+        result={},
+        confidence=0.9,
+        winning_rung=Rung("foundry", "DeepSeek-V4-Flash"),
+        attempts=[],
+    )
+    with patch.object(u654a, "estimate_call_cost_usd", return_value=0.01) as mock:
+        assert u654a.bill_cascade_spend_usd(cascade) == 0.01
+    mock.assert_called_once_with("DeepSeek-V4-Flash", provider="foundry")

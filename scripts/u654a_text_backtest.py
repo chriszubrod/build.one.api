@@ -29,11 +29,14 @@ from intelligence.cascade.bill_coding import (
     BILL_CODING_SUGGESTION_TASK,
     BILL_TEXT_CHAR_BUDGET,
     SUSPENSE_SCC_NUMBER,
+    BACKTEST_LADDERS,
+    ladder_by_name,
     normalize_project_abbreviation,
     normalize_scc_number,
     run_bill_coding_suggestion,
     truncate_bill_text,
 )
+from intelligence.observability.pricing import PRICING
 from intelligence.cascade.bill_coding_payload import (
     build_candidate_projects_for_bill,
     build_candidate_sccs_for_bill,
@@ -82,6 +85,8 @@ RUNG_PRICE_USD_PER_MTOK: dict[str, tuple[float, float]] = {
     "gpt-5.4-nano": (0.20, 1.25),
     "gpt-5.4-mini": (0.75, 4.50),
 }
+
+DEFAULT_BACKTEST_LADDER_NAME = "foundry"
 
 M4_MODE_A_MARGIN = Decimal("0.10")
 # §10.3 combined rule: history wins when raw smoothed modal share clears this bar (U-639 §10.5).
@@ -419,7 +424,10 @@ def bill_cascade_spend_usd(cascade: CascadeResult) -> float:
             if c:
                 total += c
     if total == 0.0 and cascade.winning_rung:
-        total = estimate_call_cost_usd(cascade.winning_rung.model)
+        total = estimate_call_cost_usd(
+            cascade.winning_rung.model,
+            provider=cascade.winning_rung.provider,
+        )
     return total
 
 
@@ -549,14 +557,71 @@ def stratified_sample(
     return picked[:sample_size]
 
 
-def estimate_call_cost_usd(rung_model: str) -> float:
+def estimate_payload_input_tokens(payload: dict[str, Any]) -> int:
+    """Heuristic: serialized user payload chars / 4 (Foundry runs ~18k+ with full SCC catalog)."""
+    return max(1, len(json.dumps(payload, ensure_ascii=False)) // 4)
+
+
+def estimate_call_cost_usd(
+    rung_model: str,
+    *,
+    provider: str = "foundry",
+    input_tokens: int | None = None,
+) -> float:
     rates = RUNG_PRICE_USD_PER_MTOK.get(rung_model)
+    if not rates:
+        mp = PRICING.get(provider, {}).get(rung_model)
+        if mp is not None:
+            rates = (mp.input, mp.output)
     if not rates:
         return 0.0
     inp, out = rates
-    return (
-        _ESTIMATE_INPUT_TOKENS_PER_CALL * inp + _ESTIMATE_OUTPUT_TOKENS_PER_CALL * out
-    ) / 1_000_000.0
+    in_tok = input_tokens if input_tokens is not None else _ESTIMATE_INPUT_TOKENS_PER_CALL
+    return (in_tok * inp + _ESTIMATE_OUTPUT_TOKENS_PER_CALL * out) / 1_000_000.0
+
+
+def estimate_ladder_first_rung_cost_usd(
+    ladder: tuple[Rung, ...],
+    *,
+    input_tokens: int | None = None,
+) -> float:
+    if not ladder:
+        return 0.0
+    first = ladder[0]
+    return estimate_call_cost_usd(
+        first.model, provider=first.provider, input_tokens=input_tokens
+    )
+
+
+def estimate_dry_run_input_tokens_per_call(
+    sample: Sequence[tuple[TextBillRow, str]],
+    *,
+    ref: "ReferenceData",
+    vendor_votes: dict[int, list[PriorBillVote]],
+) -> int:
+    if not sample:
+        return _ESTIMATE_INPUT_TOKENS_PER_CALL
+    per_call: list[int] = []
+    for bill, _stratum in sample:
+        priors = priors_for_bill(vendor_votes, bill)
+        candidate_sccs = build_candidate_sccs_for_bill(
+            ref.scc_by_id,
+            as_of=bill.created,
+            ambiguous_numbers=ref.ambiguous_scc_numbers,
+        )
+        vname = ref.vendor_names.get(bill.vendor_id, "")
+        payload = build_payload(
+            bill,
+            bill_text="",
+            vendor_name=vname,
+            mode="A",
+            priors=priors,
+            scc_by_id=ref.scc_by_id,
+            candidate_sccs=candidate_sccs,
+            candidate_projects=None,
+        )
+        per_call.append(estimate_payload_input_tokens(payload))
+    return max(per_call)
 
 
 def dry_run_summary(
@@ -564,6 +629,10 @@ def dry_run_summary(
     *,
     sample_size: int,
     populations: dict[str, int],
+    ladder_name: str = DEFAULT_BACKTEST_LADDER_NAME,
+    ladder: tuple[Rung, ...] | None = None,
+    ref: Optional["ReferenceData"] = None,
+    vendor_votes: Optional[dict[int, list[PriorBillVote]]] = None,
 ) -> dict[str, Any]:
     by_stratum: dict[str, int] = defaultdict(int)
     mixed = 0
@@ -573,17 +642,25 @@ def dry_run_summary(
         if b.mixed_code:
             mixed += 1
     calls = len(sample) * 2  # Mode A + Mode B
-    cost_per_call = estimate_call_cost_usd(BILL_CODING_FOUNDRY_LADDER[0].model)
-    est_cost = calls * cost_per_call
-    est_tokens = calls * (
-        _ESTIMATE_INPUT_TOKENS_PER_CALL + _ESTIMATE_OUTPUT_TOKENS_PER_CALL
+    resolved_ladder = ladder if ladder is not None else ladder_by_name(ladder_name)
+    input_per_call = _ESTIMATE_INPUT_TOKENS_PER_CALL
+    if ref is not None and vendor_votes is not None and sample:
+        input_per_call = estimate_dry_run_input_tokens_per_call(
+            sample, ref=ref, vendor_votes=vendor_votes
+        )
+    cost_per_call = estimate_ladder_first_rung_cost_usd(
+        resolved_ladder, input_tokens=input_per_call
     )
+    est_cost = calls * cost_per_call
+    est_tokens = calls * (input_per_call + _ESTIMATE_OUTPUT_TOKENS_PER_CALL)
     return {
         **populations,
+        "ladder": ladder_name,
         "sample_requested": sample_size,
         "sample_selected": len(sample),
         "stratum_counts": dict(by_stratum),
         "mixed_code_bills_in_sample": mixed,
+        "estimated_input_tokens_per_call": input_per_call,
         "estimated_cascade_calls": calls,
         "estimated_tokens": est_tokens,
         "estimated_cost_usd_first_rung_only": round(est_cost, 4),
@@ -830,14 +907,17 @@ def write_report_and_outputs(
     eval_until: date,
     run_status: str = "complete",
     populations: Optional[dict[str, int]] = None,
+    ladder_name: str = DEFAULT_BACKTEST_LADDER_NAME,
 ) -> tuple[Path, Path, Path]:
     out_dir.mkdir(parents=True, exist_ok=True)
-    report_path = out_dir / f"u654a_report_{stamp}.md"
-    csv_path = out_dir / f"u654a_predictions_{stamp}.csv"
-    json_path = out_dir / f"u654a_summary_{stamp}.json"
+    file_stamp = f"{ladder_name}_{stamp}"
+    report_path = out_dir / f"u654a_report_{file_stamp}.md"
+    csv_path = out_dir / f"u654a_predictions_{file_stamp}.csv"
+    json_path = out_dir / f"u654a_summary_{file_stamp}.json"
 
     summary = {
         "model_version": MODEL_VERSION,
+        "ladder": ladder_name,
         "evaluation_window": {"since": str(eval_since), "until": str(eval_until)},
         "run_status": run_status,
         "populations": populations or {},
@@ -866,6 +946,7 @@ def write_report_and_outputs(
                 "correct_project",
                 "stratum",
                 "winning_rung",
+                "winning_rung_provider",
                 "needs_human",
             ]
         )
@@ -918,6 +999,9 @@ def write_report_and_outputs(
                             cascade.winning_rung.model
                             if cascade and cascade.winning_rung
                             else "",
+                            cascade.winning_rung.provider
+                            if cascade and cascade.winning_rung
+                            else "",
                             "1"
                             if cascade and cascade.needs_human
                             else ("0" if cascade else ""),
@@ -932,6 +1016,7 @@ def write_report_and_outputs(
         "",
         f"- ModelVersion: `{MODEL_VERSION}`",
         f"- Task: `{BILL_CODING_SUGGESTION_TASK.name}`",
+        f"- Ladder: `{ladder_name}`",
         f"- Run status: {run_status}",
         f"- Evaluation window: {eval_since} .. {eval_until}",
         f"- Sample size: {len(scored)}",
@@ -1105,8 +1190,83 @@ def _failed_cascade_result() -> CascadeResult:
 CASCADE_CALL_TIMEOUT_SECONDS = 300.0
 
 
+async def run_capped_cascade(
+    call: Callable[[], Any],
+    *,
+    est: float,
+    cost_state: dict[str, Any],
+    max_cost_usd: float,
+) -> CascadeResult | None:
+    """One cascade attempt with cap, throttle backoff, and timeout. None = leave unscored."""
+    if cost_state.get("stopped"):
+        return None
+    if cost_state["usd"] + est > max_cost_usd:
+        cost_state["stopped"] = True
+        return None
+    cascade: CascadeResult = _failed_cascade_result()
+    try:
+        delay = 1.0
+        for throttle_try in range(5):
+            try:
+                cascade = await asyncio.wait_for(
+                    call(),
+                    timeout=CASCADE_CALL_TIMEOUT_SECONDS,
+                )
+            except asyncio.TimeoutError:
+                cost_state["call_timeout_count"] = (
+                    int(cost_state.get("call_timeout_count", 0)) + 1
+                )
+                return None
+            apply_cascade_spend(cascade, cost_state)
+            if cascade.accepted:
+                break
+            if not cascade_has_throttling(cascade) or throttle_try >= 4:
+                if cascade_has_throttling(cascade):
+                    cost_state["throttle_failure_count"] = (
+                        int(cost_state.get("throttle_failure_count", 0)) + 1
+                    )
+                break
+            if cost_state["usd"] + est > max_cost_usd:
+                cost_state["stopped"] = True
+                return None
+            cost_state["throttle_retry_count"] = (
+                int(cost_state.get("throttle_retry_count", 0)) + 1
+            )
+            jitter = random.uniform(0, 0.5)
+            await asyncio.sleep(min(delay + jitter, 30.0))
+            delay = min(delay * 2, 30.0)
+    except Exception:
+        cost_state["cascade_error_count"] = (
+            int(cost_state.get("cascade_error_count", 0)) + 1
+        )
+        cascade = _failed_cascade_result()
+    if cost_state["usd"] > max_cost_usd:
+        cost_state["stopped"] = True
+    return cascade
+
+
+def _rung_from_prior_csv(
+    model: str,
+    provider: str,
+    *,
+    ladder_name: str | None,
+) -> Rung | None:
+    if not model:
+        return None
+    prov = (provider or "").strip()
+    if prov:
+        return Rung(prov, model)
+    if ladder_name and ladder_name.startswith("claude"):
+        return Rung("anthropic", model)
+    if model in PRICING.get("anthropic", {}):
+        return Rung("anthropic", model)
+    return Rung("foundry", model)
+
+
 def load_prior_text_results(
     csv_path: Path,
+    *,
+    ladder_name: str | None = None,
 ) -> dict[tuple[int, str], TextAttemptResult]:
     """Rebuild the finished (Bill, mode) text results from an earlier run's
     predictions CSV (U-654d resume). A text row exists only for a (Bill, mode)
@@ -1118,7 +1278,9 @@ def load_prior_text_results(
                 continue
             needs_human = row.get("needs_human") == "1"
             model = (row.get("winning_rung") or "").strip()
-            rung = Rung("foundry", model) if model else None
+            provider = (row.get("winning_rung_provider") or "").strip()
+            rung = _rung_from_prior_csv(model, provider, ladder_name=ladder_name)
+            resume_provider = rung.provider if rung else "foundry"
             cascade = CascadeResult(
                 accepted=not needs_human and rung is not None,
                 needs_human=needs_human,
@@ -1130,7 +1292,9 @@ def load_prior_text_results(
                 # The CSV cannot tell a cascade ERROR (no attempts, not counted in
                 # rung usage originally) from an exhausted ladder, so a reload may
                 # count the earlier leg's errors as needs_human (documented residual).
-                attempts=[] if rung else [Attempt(rung=Rung("foundry", "resumed"), accepted=False)],
+                attempts=[] if rung else [
+                    Attempt(rung=Rung(resume_provider, "resumed"), accepted=False)
+                ],
             )
 
             def _int(v: str) -> Optional[int]:
@@ -1152,8 +1316,10 @@ async def run_text_cascade_batch(
     concurrency: int,
     max_cost_usd: float,
     cost_state: dict[str, Any],
+    ladder: tuple[Rung, ...] | None = None,
     out: Optional[dict[tuple[int, str], TextAttemptResult]] = None,
 ) -> dict[tuple[int, str], TextAttemptResult]:
+    resolved_ladder = ladder if ladder is not None else BILL_CODING_FOUNDRY_LADDER
     sem = asyncio.Semaphore(concurrency)
     results_out: dict[tuple[int, str], TextAttemptResult] = (
         out if out is not None else {}
@@ -1167,54 +1333,22 @@ async def run_text_cascade_batch(
             # cascade that ran to its own end (accepted, or genuinely failed) is scored.
             if cost_state.get("stopped"):
                 return
-            est = estimate_call_cost_usd(BILL_CODING_FOUNDRY_LADDER[0].model)
+            est = estimate_ladder_first_rung_cost_usd(resolved_ladder)
             if cost_state["usd"] + est > max_cost_usd:
                 cost_state["stopped"] = True
                 return
-            cascade: CascadeResult = _failed_cascade_result()
-            try:
-                delay = 1.0
-                for throttle_try in range(5):
-                    try:
-                        cascade = await asyncio.wait_for(
-                            run_bill_coding_suggestion(payload, transport_for=transport_for),
-                            timeout=CASCADE_CALL_TIMEOUT_SECONDS,
-                        )
-                    except asyncio.TimeoutError:
-                        # A stalled connection (e.g. the host slept) is not a model
-                        # answer: leave this (Bill, mode) unscored so the run is
-                        # INCOMPLETE and --resume-from picks it up.
-                        cost_state["call_timeout_count"] = (
-                            int(cost_state.get("call_timeout_count", 0)) + 1
-                        )
-                        return
-                    apply_cascade_spend(cascade, cost_state)
-                    if cascade.accepted:
-                        break
-                    if not cascade_has_throttling(cascade) or throttle_try >= 4:
-                        if cascade_has_throttling(cascade):
-                            cost_state["throttle_failure_count"] = (
-                                int(cost_state.get("throttle_failure_count", 0)) + 1
-                            )
-                        break
-                    if cost_state["usd"] + est > max_cost_usd:
-                        # The cap blocks the retry: this Bill did not finish — leave it
-                        # unscored (its earlier tries are already billed).
-                        cost_state["stopped"] = True
-                        return
-                    cost_state["throttle_retry_count"] = (
-                        int(cost_state.get("throttle_retry_count", 0)) + 1
-                    )
-                    jitter = random.uniform(0, 0.5)
-                    await asyncio.sleep(min(delay + jitter, 30.0))
-                    delay = min(delay * 2, 30.0)
-            except Exception:
-                cost_state["cascade_error_count"] = (
-                    int(cost_state.get("cascade_error_count", 0)) + 1
-                )
-                cascade = _failed_cascade_result()
-            if cost_state["usd"] > max_cost_usd:
-                cost_state["stopped"] = True
+            cascade = await run_capped_cascade(
+                lambda: run_bill_coding_suggestion(
+                    payload,
+                    transport_for=transport_for,
+                    ladder=resolved_ladder,
+                ),
+                est=est,
+                cost_state=cost_state,
+                max_cost_usd=max_cost_usd,
+            )
+            if cascade is None:
+                return
             scc_id, proj_id = resolve_text_prediction(
                 cascade,
                 scc_number_to_id=cost_state["scc_number_to_id"],
@@ -1240,6 +1374,7 @@ async def run_text_cascade_batch(
 from shared.text_blob_read import (
     _BLOB_READ_ATTEMPTS,
     blob_error_is_transient,
+    make_text_blob_reader,
     read_text_blob_with_retry,
 )
 
@@ -1492,6 +1627,12 @@ def main(argv: list[str] | None = None) -> int:
         help="Call the cascade (default: dry-run only)",
     )
     ap.add_argument(
+        "--ladder",
+        choices=sorted(BACKTEST_LADDERS),
+        default=DEFAULT_BACKTEST_LADDER_NAME,
+        help="Cascade ladder for text suggester (default: foundry)",
+    )
+    ap.add_argument(
         "--resume-from",
         type=Path,
         default=None,
@@ -1502,6 +1643,7 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     args = ap.parse_args(argv)
+    selected_ladder = ladder_by_name(args.ladder)
 
     validate_windows(
         date(2025, 10, 11),
@@ -1532,7 +1674,13 @@ def main(argv: list[str] | None = None) -> int:
     catalog_diag = catalog_diagnostics_for_sample(sample, ref)
     dry_info = {
         **dry_run_summary(
-            sample, sample_size=args.sample_size, populations=populations
+            sample,
+            sample_size=args.sample_size,
+            populations=populations,
+            ladder_name=args.ladder,
+            ladder=selected_ladder,
+            ref=ref,
+            vendor_votes=vendor_votes,
         ),
         **{
             k: v
@@ -1559,7 +1707,16 @@ def main(argv: list[str] | None = None) -> int:
     results: dict[tuple[int, str], TextAttemptResult] = {}
     prior_tokens = {"input_tokens": 0, "output_tokens": 0}
     if args.resume_from:
-        prior = load_prior_text_results(args.resume_from)
+        prior_summary_path = args.resume_from.with_name(
+            args.resume_from.name.replace("predictions", "summary")
+        ).with_suffix(".json")
+        prior_summary = json.loads(prior_summary_path.read_text(encoding="utf-8"))
+        prior_ladder = prior_summary.get("ladder", DEFAULT_BACKTEST_LADDER_NAME)
+        if prior_ladder != args.ladder:
+            raise SystemExit(
+                f"--resume-from ladder {prior_ladder!r} differs from --ladder {args.ladder!r}"
+            )
+        prior = load_prior_text_results(args.resume_from, ladder_name=prior_ladder)
         sample_ids = {b.bill_id for b, _ in sample}
         stray = {bid for bid, _ in prior} - sample_ids
         if stray:
@@ -1568,28 +1725,18 @@ def main(argv: list[str] | None = None) -> int:
                 "seed, window or sample size differ from the earlier run"
             )
         results.update(prior)
-        prior_summary_path = args.resume_from.with_name(
-            args.resume_from.name.replace("predictions", "summary")
-        ).with_suffix(".json")
-        prior_usage = json.loads(prior_summary_path.read_text(encoding="utf-8"))["metrics"]["usage"]
+        prior_usage = prior_summary["metrics"]["usage"]
         cost_state["usd"] += float(prior_usage.get("cost_usd") or 0.0)
         prior_tokens["input_tokens"] = int(prior_usage.get("input_tokens") or 0)
         prior_tokens["output_tokens"] = int(prior_usage.get("output_tokens") or 0)
         # Carry the earlier leg's counters so the merged report covers the whole sample.
-        prior_metrics = json.loads(prior_summary_path.read_text(encoding="utf-8"))["metrics"]
+        prior_metrics = prior_summary["metrics"]
         for key in ("throttle_retry_count", "throttle_failure_count", "cascade_error_count", "call_timeout_count"):
             cost_state[key] = int(cost_state.get(key, 0)) + int(prior_metrics.get(key) or 0)
         print(f"Resuming: {len(prior)} (Bill, mode) results reused; prior spend ${cost_state['usd']:.4f}")
 
-    blob_storage: list[Any] = []  # one client for the whole run, created on first read
-
-    def read_blob(url: str) -> str:
-        if not blob_storage:
-            from shared.storage import AzureBlobStorage
-
-            blob_storage.append(AzureBlobStorage())
-        data, _meta = blob_storage[0].download_file(url)
-        return data.decode("utf-8", errors="replace")
+    blob_storage: list[Any] = []
+    read_blob = make_text_blob_reader(blob_storage)
 
     from intelligence.transport import registry as transport_registry
 
@@ -1603,6 +1750,7 @@ def main(argv: list[str] | None = None) -> int:
                 concurrency=args.concurrency,
                 max_cost_usd=args.max_cost_usd,
                 cost_state=cost_state,
+                ladder=selected_ladder,
                 out=results,
             )
         )
@@ -1732,9 +1880,10 @@ def main(argv: list[str] | None = None) -> int:
         eval_until=args.eval_until,
         run_status=run_status,
         populations=populations,
+        ladder_name=args.ladder,
     )
     print(
-        f"U-654a run {run_status}; cost USD ~ {usage['cost_usd']:.4f} "
+        f"U-654a run {run_status} ladder={args.ladder}; cost USD ~ {usage['cost_usd']:.4f} "
         f"(scored={scored_bill_count}, unscored={unscored_bill_count})"
     )
     return 0

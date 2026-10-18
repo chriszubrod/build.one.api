@@ -2,6 +2,28 @@
 
 Carry-over items from sessions. Check off as done; prune anything stale.
 
+## U-676b/c residuals — bill drop-to-prefill (booked 2026-10-18, Gate 2)
+
+API (`entities/bill/business/read_attachment_service.py`, `entities/attachment/business/extraction_service.py`):
+- [ ] **No per-attachment result cache.** Each drop runs two Claude calls (header + cost code); re-posting the
+      same attachment spends again and can drain the $6.45/day cap. Cache the result per (attachment, file hash).
+      Drop-path coding calls are also not recorded against `BILL_CODING_TEXT_DAILY_CALL_CAP` (only the $ cap applies).
+- [ ] **Wire the live tick to `predict_text_coding`.** The drop path uses the shared function; the tick's
+      `_process_one_claim` still has its own copy of catalog load → payload → cascade → resolve.
+- [ ] **Confidence formatting differs from the tick** (`bill_suggestion_from_text_cascade` uses `Decimal(str(float))`).
+- [ ] **A drop blob later linked as a W-9 keeps standard masking**: background `_extract` treats any current blob
+      as done; a relink to `TaxpayerAttachment` does not re-mask aggressively (same class as master's relink gap).
+- [ ] Catalog TTL cache; an `ExtractionPolicy` object instead of loose masking/parse flags; consolidate
+      `vendor_name_resolver` with `BillExtractionMapper` and move the fuzzy matcher to `shared/`; key the vendor
+      cache by company (latent until a 2nd Company); `dbo.Attachment.CompanyId` defaults to 1 and
+      `CreateAttachment` does not pass it.
+- [ ] Shallow tests: `test_blocking_work_runs_off_event_loop_thread` records only the link-state call.
+
+Web (`build.one.web/src/pages/bills/BillCreate.tsx`): move the read/prefill state machine into a
+`useBillAttachmentRead` hook (~250 lines out of BillCreate), a `useLatestRef` helper for the 8 mirror refs, a
+generic `PrefillMeta<F>` for header + line-1 prefill, and a `mode: "file"` option on `applySuggestionToLines`
+(U-676c Pass 2 items 7–13). Header acceptance is enforced in the browser only (Gate 1 decision).
+
 ## U-676f residuals — Claude spend metering (booked 2026-10-18, Gate 2)
 
 All P3; none lets Foundry run when it shouldn't or the cap overrun materially. Code: `intelligence/transport/anthropic.py`,

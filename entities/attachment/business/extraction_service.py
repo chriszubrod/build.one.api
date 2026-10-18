@@ -31,7 +31,8 @@ import json
 import logging
 import re
 import uuid
-from typing import Optional
+from datetime import datetime, timedelta, timezone
+from typing import Any, Optional
 
 import config
 from entities.attachment.business.model import Attachment
@@ -71,6 +72,8 @@ EXTRACTION_BLOB_KEYS = frozenset({
     "content",
     "key_value_pairs",
 })
+_EXTRACTION_BLOB_OPTIONAL_KEYS = frozenset({"masking"})
+_ALLOWED_EXTRACTION_BLOB_KEYS = EXTRACTION_BLOB_KEYS | _EXTRACTION_BLOB_OPTIONAL_KEYS
 # The fields _persist_extraction_blob writes inside each key_value_pairs entry.
 EXTRACTION_KVP_KEYS = frozenset({"key", "value", "confidence"})
 
@@ -82,7 +85,7 @@ def extraction_payload_is_current(payload: object) -> bool:
     if not (
         isinstance(payload, dict)
         and payload.get("redaction_version") == REDACTION_VERSION
-        and set(payload) <= EXTRACTION_BLOB_KEYS
+        and set(payload) <= _ALLOWED_EXTRACTION_BLOB_KEYS
         and isinstance(payload.get("content", ""), str)
     ):
         return False
@@ -188,6 +191,44 @@ class AttachmentExtractionService:
             raise ValueError(f"Attachment not found: {public_id}")
         return self._extract(attachment, force=force)
 
+    def extract_for_bill_drop_prefill(
+        self,
+        attachment: Attachment,
+        *,
+        is_taxpayer_document: bool,
+    ) -> dict:
+        """Sync extraction for bill-create drop (U-676b).
+
+        Invoice files use standard TIN masking; taxpayer-linked files use aggressive
+        masking. Reuses a current completed extraction when present; does not fight a
+        background ``processing`` lease.
+        """
+        aggressive = bool(is_taxpayer_document)
+        if not attachment.blob_url:
+            return self._bill_drop_fail(attachment, "no_blob_url", aggressive=aggressive)
+
+        reused = self._bill_drop_reusable_payload(attachment, aggressive=aggressive)
+        if reused is not None:
+            return self._completed_outcome_from_payload(attachment, reused, reused=True)
+
+        fresh = self.repo.read_by_id(int(attachment.id))
+        if fresh is not None:
+            attachment = fresh
+            reused = self._bill_drop_reusable_payload(attachment, aggressive=aggressive)
+            if reused is not None:
+                return self._completed_outcome_from_payload(attachment, reused, reused=True)
+
+        status = (attachment.extraction_status or "").lower()
+        if status == "processing" and self._processing_lease_fresh(attachment):
+            return {
+                "status": "failed",
+                "reason": "processing_in_flight",
+                "attachment_id": attachment.id,
+            }
+
+        outcome = self._bill_drop_extract(attachment, aggressive=aggressive)
+        return self._prefill_outcome_with_text(attachment, outcome, aggressive=aggressive)
+
     # -- core ---------------------------------------------------------------- #
 
     def _extract(self, attachment: Attachment, *, force: bool = False) -> dict:
@@ -271,6 +312,121 @@ class AttachmentExtractionService:
             self._delete_blob_quietly(prior_extracted_blob_url, "prior_blob_delete_failed id=%s", attachment.id)
         return outcome
 
+    def _bill_drop_extract(
+        self,
+        attachment: Attachment,
+        *,
+        aggressive: bool,
+    ) -> dict:
+        """Bill-drop sync extraction (masking + invoice number); not used by the sweep.
+
+        Only MASKED text ever leaves this method: a reused blob's content, or the text
+        returned by the masking writer. Never the raw text layer / DI output."""
+        if not attachment.blob_url:
+            return self._bill_drop_fail(attachment, "no_blob_url", aggressive=aggressive)
+
+        prior_extracted_blob_url = attachment.extracted_text_blob_url
+        reused = self._bill_drop_reusable_payload(attachment, aggressive=aggressive)
+        if reused is not None:
+            return self._completed_outcome_from_payload(attachment, reused, reused=True)
+
+        try:
+            content, metadata = self.storage.download_file(attachment.blob_url)
+        except Exception as e:
+            return self._bill_drop_fail(attachment, "blob_download_error", e, aggressive=aggressive)
+
+        content_type = (
+            (metadata or {}).get("content_type")
+            or attachment.content_type
+            or "application/pdf"
+        )
+        text, pages_count = _extract_text_layer(content, content_type)
+        method = "text_layer"
+        key_value_pairs: list[dict] = []
+        if not _has_usable_text(text):
+            try:
+                di_result = self._run_di(content, content_type)
+            except DocumentIntelligenceConfigError as e:
+                return self._bill_drop_fail(attachment, "di_config_error", e, aggressive=aggressive)
+            except DocumentIntelligenceError as e:
+                return self._bill_drop_fail(attachment, "di_error", e, aggressive=aggressive)
+            text = di_result["content"]
+            pages_count = di_result["pages_count"]
+            key_value_pairs = di_result["key_value_pairs"]
+            method = "document_intelligence_read"
+
+        parsed_number = parse_vendor_invoice_number(key_value_pairs, text)
+
+        try:
+            blob_name, blob_url, masked_text = self._persist_bill_drop_extraction_blob(
+                attachment,
+                text,
+                key_value_pairs,
+                pages_count,
+                method,
+                aggressive=aggressive,
+            )
+        except Exception as e:
+            return self._bill_drop_fail(attachment, "persist_error", e, aggressive=aggressive)
+
+        outcome = self._commit_terminal(
+            attachment,
+            {
+                "status": "completed",
+                "attachment_id": attachment.id,
+                "method": method,
+                "pages_count": pages_count,
+            },
+            extraction_status="completed",
+            extracted_text_blob_url=blob_url,
+            vendor_invoice_number=parsed_number,
+            orphan_blob=(blob_name, blob_url),
+        )
+        if (
+            outcome.get("status") == "completed"
+            and prior_extracted_blob_url
+            and prior_extracted_blob_url != blob_url
+        ):
+            self._delete_blob_quietly(
+                prior_extracted_blob_url,
+                "prior_blob_delete_failed id=%s",
+                attachment.id,
+            )
+        if outcome.get("reason") == "claim_lost":
+            refetched = self.repo.read_by_id(int(attachment.id))
+            if refetched is not None:
+                reused = self._bill_drop_reusable_payload(refetched, aggressive=aggressive)
+                if reused is not None:
+                    return self._completed_outcome_from_payload(refetched, reused, reused=True)
+        if outcome.get("status") == "completed":
+            outcome = dict(outcome)
+            outcome["masked_text"] = masked_text
+            outcome["redaction_version"] = REDACTION_VERSION
+            outcome["extracted_text_blob_url"] = blob_url
+        return outcome
+
+    def _completed_outcome_from_payload(
+        self,
+        attachment: Attachment,
+        prior: dict[str, Any],
+        *,
+        reused: bool = False,
+    ) -> dict:
+        text = prior.get("content") or ""
+        if not _has_usable_text(text):
+            return {"status": "failed", "reason": "no_text", "attachment_id": attachment.id}
+        outcome: dict[str, Any] = {
+            "status": "completed",
+            "attachment_id": attachment.id,
+            "method": prior.get("method"),
+            "masked_text": text,
+            "redaction_version": prior.get("redaction_version"),
+            "extracted_text_blob_url": attachment.extracted_text_blob_url,
+        }
+        if reused:
+            outcome["reused"] = True
+        return outcome
+
     def _run_di(self, content: bytes, content_type: str) -> dict:
         extracted = self.di.extract_text(content, content_type=content_type)
         return {
@@ -325,6 +481,53 @@ class AttachmentExtractionService:
         )
         return blob_name, blob_url
 
+    def _persist_bill_drop_extraction_blob(
+        self,
+        attachment: Attachment,
+        text: str,
+        key_value_pairs: list[dict],
+        pages_count: int,
+        method: str,
+        *,
+        aggressive: bool,
+    ) -> tuple[str, str, str]:
+        """Mask, upload, and return (blob_name, blob_url, masked_text) — the caller sends
+        the returned masked text onward, never its own raw copy."""
+        text, tins_masked = mask_tins(text, aggressive=aggressive)
+        key_value_pairs, kvp_count = mask_tins_in_kvps(key_value_pairs, aggressive=aggressive)
+        tins_masked += kvp_count
+        if tins_masked > 0:
+            logger.info("attachment_extraction.tins_masked id=%s count=%s", attachment.id, tins_masked)
+        payload = {
+            "attachment_public_id": str(attachment.public_id),
+            "source_file_hash": attachment.file_hash,
+            "redaction_version": REDACTION_VERSION,
+            "method": method,
+            "pages_count": pages_count,
+            "content": text or "",
+            "key_value_pairs": [
+                {
+                    "key": kvp.get("key"),
+                    "value": kvp.get("value"),
+                    "confidence": (
+                        str(kvp.get("confidence"))
+                        if kvp.get("confidence") is not None
+                        else None
+                    ),
+                }
+                for kvp in key_value_pairs
+            ],
+            "masking": "aggressive" if aggressive else "standard",
+        }
+        blob_name = f"{_EXTRACTION_BLOB_PREFIX}/{attachment.public_id}/{uuid.uuid4().hex}.json"
+        data = json.dumps(payload).encode("utf-8")
+        blob_url = self.storage.upload_file(
+            blob_name=blob_name,
+            file_content=data,
+            content_type="application/json",
+        )
+        return blob_name, blob_url, text or ""
+
     def _already_extracted_same_content(self, attachment: Attachment) -> bool:
         """True when a prior extraction blob was written for this exact file hash.
 
@@ -341,6 +544,93 @@ class AttachmentExtractionService:
         except Exception:
             return False
         return extraction_payload_is_current(prior) and prior.get("source_file_hash") == attachment.file_hash
+
+    def _bill_drop_reusable_payload(
+        self,
+        attachment: Attachment,
+        *,
+        aggressive: bool,
+    ) -> Optional[dict[str, Any]]:
+        if (attachment.extraction_status or "").lower() != "completed":
+            return None
+        if not attachment.extracted_text_blob_url or not attachment.file_hash:
+            return None
+        try:
+            content, _ = self.storage.download_file(attachment.extracted_text_blob_url)
+            prior = json.loads(content)
+        except Exception:
+            return None
+        if not (
+            extraction_payload_is_current(prior)
+            and prior.get("source_file_hash") == attachment.file_hash
+        ):
+            return None
+        if not self._blob_masking_matches(prior, aggressive=aggressive):
+            return None
+        return prior
+
+    @staticmethod
+    def _blob_masking_matches(prior: dict, *, aggressive: bool) -> bool:
+        """May a caller needing ``aggressive`` masking reuse this blob?
+
+        Every current blob masks at least the standard SSN/EIN shapes, so a standard
+        caller may reuse any of them. A blob without a ``masking`` key was written by the
+        background path, which masks standard OR aggressive depending on the row — so an
+        aggressive caller may reuse only a blob explicitly marked aggressive."""
+        if not aggressive:
+            return True
+        return prior.get("masking") == "aggressive"
+
+    def _processing_lease_fresh(self, attachment: Attachment) -> bool:
+        stamp = _coerce_attachment_timestamp(
+            attachment.modified_datetime or attachment.claim_modified_datetime
+        )
+        if stamp is None:
+            return False
+        age = datetime.now(timezone.utc) - stamp
+        return age < timedelta(minutes=_CLAIM_LEASE_MINUTES)
+
+    def _prefill_outcome_with_text(
+        self, attachment: Attachment, outcome: dict, *, aggressive: bool
+    ) -> dict:
+        if outcome.get("status") != "completed":
+            return outcome
+        masked = outcome.get("masked_text")
+        if masked is None:
+            reused = self._bill_drop_reusable_payload(attachment, aggressive=aggressive)
+            if reused is not None:
+                return self._completed_outcome_from_payload(attachment, reused)
+            return {"status": "failed", "reason": "blob_read", "attachment_id": attachment.id}
+        outcome = dict(outcome)
+        if "redaction_version" not in outcome:
+            outcome["redaction_version"] = REDACTION_VERSION
+        if "extracted_text_blob_url" not in outcome:
+            outcome["extracted_text_blob_url"] = attachment.extracted_text_blob_url
+        return outcome
+
+    def _bill_drop_fail(
+        self,
+        attachment: Attachment,
+        code: str,
+        exc: Optional[BaseException] = None,
+        *,
+        aggressive: bool = True,
+    ) -> dict:
+        try:
+            refetched = self.repo.read_by_id(int(attachment.id))
+        except Exception:
+            refetched = None
+        if refetched is not None and (
+            (refetched.extraction_status or "").lower() == "completed"
+        ):
+            reused = self._bill_drop_reusable_payload(refetched, aggressive=aggressive)
+            if reused is not None:
+                return self._completed_outcome_from_payload(refetched, reused, reused=True)
+            return {
+                "status": "completed",
+                "attachment_id": attachment.id,
+            }
+        return self._fail(attachment, code, exc)
 
     def _fail(self, attachment: Attachment, code: str, exc: Optional[BaseException] = None) -> dict:
         """Mark the row failed with a fixed code (+ exception class name only) and return the tick row."""
@@ -411,6 +701,24 @@ class AttachmentExtractionService:
 # --------------------------------------------------------------------------- #
 # Pure helpers (module-level so they are unit-testable without I/O)
 # --------------------------------------------------------------------------- #
+
+def _coerce_attachment_timestamp(stamp: object) -> Optional[datetime]:
+    """Parse sproc ModifiedDatetime (naive UTC string) or tolerate datetime."""
+    if stamp is None:
+        return None
+    if isinstance(stamp, datetime):
+        dt = stamp
+    elif isinstance(stamp, str):
+        try:
+            dt = datetime.strptime(stamp.strip(), "%Y-%m-%d %H:%M:%S")
+        except ValueError:
+            return None
+    else:
+        return None
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
 
 # CLI / script entry points do not import app.py; keep pypdf silenced via shared helper.
 from shared.observability import silence_pypdf_loggers

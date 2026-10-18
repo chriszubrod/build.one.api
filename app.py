@@ -71,6 +71,7 @@ from entities.device_token.api.router import router as device_token_api_router
 from entities.dashboard.api.router import router as dashboard_api_router
 from entities.attachment.api.router import router as attachment_api_router
 from entities.bill.api.router import router as bill_api_router
+from entities.bill.api.read_attachment_router import router as bill_read_attachment_api_router
 from entities.bill_line_item.api.router import router as bill_line_item_api_router
 from entities.bill_line_item_attachment.api.router import router as bill_line_item_attachment_api_router
 from entities.expense.api.router import router as expense_api_router
@@ -286,6 +287,7 @@ app.include_router(user_module_api_router)
 app.include_router(dashboard_api_router)
 app.include_router(attachment_api_router)
 app.include_router(bill_api_router)
+app.include_router(bill_read_attachment_api_router)
 app.include_router(bill_line_item_api_router)
 app.include_router(bill_line_item_attachment_api_router)
 app.include_router(expense_api_router)

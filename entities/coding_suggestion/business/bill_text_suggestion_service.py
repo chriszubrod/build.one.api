@@ -125,13 +125,13 @@ def blob_has_current_redaction(blob_text: str) -> bool:
 
 def build_runtime_payload(
     *,
-    claim: BillTextCodingClaim,
     bill_text: str,
     catalog: CatalogSnapshot,
     history_rows: Any,
+    chosen_project_id: Optional[int],
+    as_of: datetime,
 ) -> tuple[dict[str, Any], str]:
-    mode = "A" if claim.chosen_project_id is not None else "B"
-    as_of = _catalog_as_of(claim)
+    mode = "A" if chosen_project_id is not None else "B"
     candidate_sccs = build_candidate_sccs_for_bill(
         catalog.scc_by_id,
         as_of=as_of,
@@ -250,10 +250,11 @@ async def _process_one_claim(
             exclude_bill_id=claim.bill_id,
         )
         payload, mode = build_runtime_payload(
-            claim=claim,
             bill_text=bill_text,
             catalog=catalog,
             history_rows=history_rows,
+            chosen_project_id=claim.chosen_project_id,
+            as_of=as_of,
         )
 
         cascade_ran = True
@@ -462,6 +463,69 @@ def _load_catalog_from_db(as_of: datetime) -> CatalogSnapshot:
         candidate_projects=candidate_projects,
         vendor_name=vendor_name,
     )
+
+
+def load_catalog_from_db(as_of: datetime) -> CatalogSnapshot:
+    return _load_catalog_from_db(as_of)
+
+
+async def predict_text_coding(
+    *,
+    bill_text: str,
+    vendor_id: int,
+    chosen_project_id: Optional[int],
+    as_of: datetime,
+    exclude_bill_id: Optional[int] = None,
+    text_repo: Optional[BillTextCodingSuggestionRepository] = None,
+    suggester: Optional[BillCodingSuggester] = None,
+    transport_for: Optional[Callable[[str], Any]] = None,
+) -> tuple[Optional[Any], Optional[str]]:
+    """Run the text-tier cascade; return (BillSuggestion|None, stopped_reason)."""
+    from entities.coding_suggestion.business.bill_suggestion_service import (
+        BillSuggestion,
+        bill_suggestion_from_text_cascade,
+    )
+
+    settings = config.Settings()
+    cap = int(settings.bill_coding_text_daily_call_cap)
+    if cap <= 0:
+        return None, None
+    repository = text_repo or BillTextCodingSuggestionRepository()
+    if repository.count_calls_today() >= cap:
+        return None, "daily_cap"
+
+    catalog = load_catalog_from_db(as_of)
+    vendor_name = _read_vendor_name(vendor_id)
+    if vendor_name:
+        catalog = replace(catalog, vendor_name=vendor_name)
+    history_rows = repository.read_vendor_scc_counts(
+        vendor_id,
+        project_id=chosen_project_id,
+        as_of=as_of,
+        exclude_bill_id=exclude_bill_id,
+    )
+    payload, mode = build_runtime_payload(
+        bill_text=bill_text,
+        catalog=catalog,
+        history_rows=history_rows,
+        chosen_project_id=chosen_project_id,
+        as_of=as_of,
+    )
+    cascade = await run_bill_coding_suggestion(payload, transport_for=transport_for)
+    if cascade.stopped_reason == "daily_cap":
+        return None, "daily_cap"
+    if not cascade.accepted or cascade.result is None:
+        return None, None
+    engine = suggester or BillCodingSuggester()
+    suggestion = bill_suggestion_from_text_cascade(
+        cascade,
+        catalog=catalog,
+        mode=mode,
+        chosen_project_id=chosen_project_id,
+        project_service=engine.project_service,
+        sub_cost_code_service=engine.sub_cost_code_service,
+    )
+    return suggestion, None
 
 
 def run_bill_text_coding_tick_sync(**kwargs: Any) -> dict[str, Any]:

@@ -61,6 +61,9 @@ verified base==live. For a fresh database, follow the build order below.
 6. **`entities/attachment/sql/dbo.attachment.sql` (second pass)** — idempotent
    `CREATE OR ALTER`; all 12 sprocs apply with the full column set.
 
+7. **`entities/attachment/sql/dbo.attachment_link_state.sql`** — `ReadAttachmentLinkState`
+   (U-676b bill-create drop gate; depends on link tables + `ms.DriveItemAttachment` existing).
+
 ## Superseded stubs
 
 `update_procedures_with_extraction.sql` carries a SUPERSEDED banner (U-148) and

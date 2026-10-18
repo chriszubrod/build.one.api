@@ -15,6 +15,14 @@ from entities.coding_suggestion.business.bill_suggestion_service import (
     BillCodingSuggester,
     apply_budget_check_to_suggestion,
 )
+from entities.coding_suggestion.business.presenters import suggestion_to_api_payload
+
+
+def _suggestion_to_api_payload(suggestion) -> dict:
+    return suggestion_to_api_payload(
+        suggestion,
+        project_service_factory=lambda: ProjectService(),
+    )
 from entities.project.business.service import ProjectService
 from entities.vendor.business.service import VendorService
 from shared.access import EntityNotAccessibleError, assert_can_access_project
@@ -49,38 +57,6 @@ class BillCodingSuggestRequest(BaseModel):
         if not dec.is_finite():
             raise ValueError("amount must be a finite decimal number")
         return dec
-
-
-def _suggestion_to_api_payload(suggestion) -> dict:
-    project_public_id = None
-    project_name = None
-    if suggestion.project_id is not None:
-        project = ProjectService().read_by_id(suggestion.project_id)
-        if project is not None:
-            project_public_id = project.public_id
-            project_name = project.name
-
-    confidence = (
-        str(suggestion.confidence) if suggestion.confidence is not None else None
-    )
-    return {
-        "project_public_id": project_public_id,
-        "project_name": project_name,
-        "sub_cost_code_public_id": suggestion.sub_cost_code_public_id,
-        "sub_cost_code_number": suggestion.sub_cost_code_number,
-        "sub_cost_code_name": suggestion.sub_cost_code_name,
-        "source": suggestion.source,
-        "reason": suggestion.reason,
-        "confidence": confidence,
-        "model_version": suggestion.model_version,
-        "budget_check": suggestion.budget_check,
-        "budget_remaining": (
-            str(suggestion.budget_remaining)
-            if suggestion.budget_remaining is not None
-            else None
-        ),
-        "text_status": suggestion.text_status,
-    }
 
 
 @router.post("/bill/coding/suggest")

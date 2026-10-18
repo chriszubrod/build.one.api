@@ -342,7 +342,7 @@ class BillExtractionMapper:
                         continue
 
                     # Fuzzy match
-                    match, score = self._fuzzy_match(cand_name, vendor_pairs)
+                    match, score = self.fuzzy_match_entity_names(cand_name, vendor_pairs)
                     if match and score >= 0.5:
                         combined = cand_conf * score
                         if combined > best_combined:
@@ -388,7 +388,7 @@ class BillExtractionMapper:
                     result.note(f"Payment terms exact match: {term.name}")
                 else:
                     all_terms = term_svc.read_all()
-                    match, score = self._fuzzy_match(
+                    match, score = self.fuzzy_match_entity_names(
                         result.payment_terms_raw,
                         [(t.public_id, t.name) for t in all_terms],
                     )
@@ -413,7 +413,7 @@ class BillExtractionMapper:
                     (scc.id, f"{scc.number} {scc.name}" if scc.number else scc.name)
                     for scc in all_sccs if scc.name
                 ]
-                match, score = self._fuzzy_match(result.sub_cost_code_hint, scc_pairs)
+                match, score = self.fuzzy_match_entity_names(result.sub_cost_code_hint, scc_pairs)
                 if match and score >= 0.4:
                     matched_scc = next((s for s in all_sccs if s.id == match[0]), None)
                     if matched_scc:
@@ -827,8 +827,8 @@ class BillExtractionMapper:
     # Fuzzy matching
     # -----------------------------------------------------------------------
 
-    def _fuzzy_match(
-        self,
+    @staticmethod
+    def fuzzy_match_entity_names(
         query: str,
         candidates: list[tuple[str, str]],  # List of (id, name)
         threshold: float = 0.0,

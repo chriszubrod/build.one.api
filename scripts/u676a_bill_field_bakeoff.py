@@ -629,17 +629,13 @@ def resolve_vendor_from_name(
     confidence: float = 0.9,
 ) -> Optional[str]:
     """Map LLM vendor_name through the same matcher as Arm A (never trust model ids)."""
-    if not vendor_name or not str(vendor_name).strip():
-        return None
-    stub = BillExtractionResult(
-        vendor_name=vendor_name.strip(),
-        vendor_confidence=confidence,
-        vendor_candidates=[(vendor_name.strip(), confidence)],
+    from entities.vendor.business.vendor_name_resolver import (
+        resolve_vendor_public_id_from_name,
     )
-    resolved = mapper.resolve_entities(stub)
-    if resolved.vendor_match:
-        return resolved.vendor_match.public_id
-    return None
+
+    return resolve_vendor_public_id_from_name(
+        vendor_name, mapper, confidence=confidence
+    )
 
 
 def _raw_scalar_fields_from_result(

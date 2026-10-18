@@ -97,10 +97,11 @@ def test_claim_next_parses_varchar_millisecond_datetimes():
     )
     catalog = _catalog(scc_by_id={1: scc})
     payload, _mode = svc.build_runtime_payload(
-        claim=claim,
         bill_text="x",
         catalog=catalog,
         history_rows=[],
+        chosen_project_id=claim.chosen_project_id,
+        as_of=claim.created_datetime,
     )
     assert payload["candidate_sccs"]
 
@@ -365,7 +366,11 @@ def test_catalog_as_of_uses_created_datetime_not_bill_date():
         scc_number_to_id={"03.01": 1, "04.01": 2},
     )
     payload, _ = svc.build_runtime_payload(
-        claim=claim, bill_text="x", catalog=catalog, history_rows=[]
+        bill_text="x",
+        catalog=catalog,
+        history_rows=[],
+        chosen_project_id=claim.chosen_project_id,
+        as_of=claim.created_datetime,
     )
     numbers = {row["number"] for row in payload["candidate_sccs"]}
     assert "03.01" in numbers

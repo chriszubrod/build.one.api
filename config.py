@@ -238,6 +238,10 @@ class Settings(BaseSettings):
     bill_coding_text_enabled: bool = False
     bill_coding_text_daily_call_cap: int = 200
 
+    # Bill create drop-to-prefill synchronous read (U-676b). Default off.
+    bill_drop_prefill_enabled: bool = False
+    bill_drop_prefill_timeout_seconds: int = 25
+
     # Intelligence Layer — internal API base URL
     # Agents call their own API surface as HTTP clients so they go through
     # the same RBAC, ProcessEngine routing, and audit logs as human users.

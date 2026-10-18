@@ -712,3 +712,35 @@ class AttachmentRepository:
             logger.error(f"Error during set attachment qbo identity: {error}")
             raise map_database_error(error)
 
+    def read_link_state(self, attachment_id: int) -> tuple[bool, bool]:
+        """IsLinked / IsTaxpayer for U-676b fresh-upload gate (ReadAttachmentLinkState)."""
+        from shared.authz.context import (
+            current_company_id,
+            current_is_system_admin,
+            current_user_id,
+        )
+
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                try:
+                    call_procedure(
+                        cursor=cursor,
+                        name="ReadAttachmentLinkState",
+                        params={
+                            "AttachmentId": attachment_id,
+                            "ActorUserId": current_user_id.get(),
+                            "CompanyId": current_company_id.get(),
+                            "IsSystemAdmin": 1 if current_is_system_admin.get() else 0,
+                        },
+                    )
+                    row = cursor.fetchone()
+                    if not row:
+                        return False, False
+                    return bool(row.IsLinked), bool(row.IsTaxpayer)
+                finally:
+                    cursor.close()
+        except Exception as error:
+            logger.error(f"Error during read attachment link state: {error}")
+            raise map_database_error(error)
+

@@ -202,7 +202,7 @@ def _text_row_matches_current_extraction(
     return True
 
 
-def _resolve_accessible_text_project_id(
+def resolve_accessible_text_project_id(
     project_id: Optional[int],
     *,
     project_service: ProjectService,
@@ -217,6 +217,58 @@ def _resolve_accessible_text_project_id(
     except EntityNotAccessibleError:
         return None
     return int(project.id)
+
+
+def bill_suggestion_from_text_cascade(
+    cascade,
+    *,
+    catalog,
+    mode: str,
+    chosen_project_id: Optional[int],
+    project_service: ProjectService,
+    sub_cost_code_service: SubCostCodeService,
+) -> Optional[BillSuggestion]:
+    from entities.coding_suggestion.business.bill_text_suggestion_service import MODEL_VERSION
+    from intelligence.cascade.bill_coding_payload import resolve_text_prediction
+
+    scc_id, proj_id = resolve_text_prediction(
+        cascade,
+        scc_number_to_id=catalog.scc_number_to_id,
+        proj_abbrev_to_id=catalog.proj_abbrev_to_id,
+    )
+    if scc_id is None:
+        return None
+    scc = sub_cost_code_service.read_by_id(int(scc_id))
+    if scc is None or sub_cost_code_service.is_holding_code(int(scc_id)):
+        return None
+    out_project = proj_id if mode == "B" else chosen_project_id
+    out_project = resolve_accessible_text_project_id(
+        out_project,
+        project_service=project_service,
+    )
+    confidence = (
+        Decimal(str(cascade.confidence)) if cascade.confidence is not None else None
+    )
+    winning_model = cascade.winning_rung.model if cascade.winning_rung else None
+    return BillSuggestion(
+        project_id=out_project,
+        sub_cost_code_id=int(scc_id),
+        sub_cost_code_public_id=str(scc.public_id) if scc.public_id else None,
+        sub_cost_code_number=scc.number,
+        sub_cost_code_name=scc.name,
+        source="llm",
+        reason=TEXT_LLM_SUGGESTION_REASON,
+        confidence=confidence,
+        raw_score=None,
+        top_count=None,
+        second_count=None,
+        total_count=None,
+        model_version=MODEL_VERSION,
+        predicted_project=mode == "B" and out_project is not None,
+        text_used=True,
+        text_mode=mode,
+        text_model=winning_model,
+    )
 
 
 def _bill_suggestion_from_text_row(
@@ -339,7 +391,7 @@ def apply_bill_text_tier_to_suggestion(
         output_project = None
         predicted_project = False
         if text_row.project_id is not None:
-            accessible = _resolve_accessible_text_project_id(
+            accessible = resolve_accessible_text_project_id(
                 text_row.project_id,
                 project_service=proj_svc,
             )
@@ -646,3 +698,6 @@ def record_bill_coding_suggestion_on_save(
             getattr(bill, "public_id", None),
             type(error).__name__,
         )
+
+
+_resolve_accessible_text_project_id = resolve_accessible_text_project_id

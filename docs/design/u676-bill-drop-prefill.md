@@ -85,6 +85,26 @@ Production routing for bill text coding and bill header extraction:
 - **Fix round 1 (2026-10-18)**: the budget gate and spend metering live in `AnthropicTransport.stream` (every Claude caller, including `CascadeTransport` and direct agent pins). `run_ladder` only enforces `fallback_only` (skip Foundry when an earlier attempt returned `claude_unavailable:daily_cap`). Spend reads fail closed after 10 minutes without a good DB row; writes retry via an in-process unsaved buffer. The bill text tick returns `capped` without claiming or finalizing when the daily cap stops work.
 - **Fix round 2 (2026-10-18)**: HTTP 402 / credit-balance 400 and partial SSE usage always run through `post_call_metering` (one `finally` per HTTP attempt; retries do not double-meter). Claude routed via `ANTHROPIC_FOUNDRY_BASE_URL` is still gated and counted against the same Claude daily cap (conservative; not configured in prod). Spend writes hold a process lock and flush per-day unsaved buffers; an ambiguous write (committed then connection dropped) can double-count spend in DB (over-count is the safe direction). Unknown Anthropic model ids are costed at Sonnet 5.5 rates. `CASCADE_*` and `CLAUDE_DAILY_SPEND_CAP_USD` env values are parsed as strings so invalid values cannot crash `Settings()`.
 
+## U-676b — as built (2026-10-18)
+
+- **Endpoint:** `POST /api/v1/bill/read-attachment` (`entities/bill/api/read_attachment_router.py`), registered in `app.py`.
+- **Flag:** `BILL_DROP_PREFILL_ENABLED` (default off). Off → envelope `status: disabled`, no extraction or model calls.
+- **RBAC:** `Modules.BILLS` / `can_create`. Fresh uploads only — linked attachments return generic 404.
+- **Link gate:** `dbo.ReadAttachmentLinkState` (`entities/attachment/sql/dbo.attachment_link_state.sql`) via `AttachmentRepository.read_link_state` — one row `(IsLinked, IsTaxpayer)` across all attachment link tables (incl. `ms.DriveItemAttachment`). DB errors fail closed: treat as linked (404) and taxpayer (aggressive masking).
+- **Timeout:** `BILL_DROP_PREFILL_TIMEOUT_SECONDS` (default 25) via `asyncio.wait_for`; blocking I/O on `asyncio.to_thread`.
+- **Text:** `AttachmentExtractionService.extract_for_bill_drop_prefill` — invoice masking unless taxpayer-linked; persists U-535g extraction JSON; reuses current completed blob. If background extraction holds `processing`, the service polls the row every 1 s (off the event loop) until completion or the same timeout budget → `timeout`.
+- **Header:** `run_bill_header_extraction` on masked text; vendor match via `vendor_name_resolver` (60s vendor-list cache); per-field confidence from cascade (vendor = min(cascade, match score)).
+- **Coding:** History-first when request includes `project_public_id` and history raw ≥ 0.60; else `run_bill_coding_suggestion` Mode A/B. Response `coding` matches `POST /bill/coding/suggest` (`_suggestion_to_api_payload`).
+- **Budget:** Claude daily cap → `ai_unavailable` (no Foundry spend); no separate text-tier daily call counter on this path.
+- **Orchestration:** `entities/bill/business/read_attachment_service.py` (`run_bill_read_attachment_with_timeout`, `AttachmentNotReadable` → 404).
+- **Background extraction:** `_extract` / `_fail` match origin/master; bill-drop race recovery and masking-aware reuse live only in `extract_for_bill_drop_prefill` / `_bill_drop_*` helpers.
+- **Ownership:** `ReadAttachmentLinkState` filters by `@ActorUserId`, `@CompanyId`, `@IsSystemAdmin`. `dbo.Attachment.CompanyId` defaults to `1` and `CreateAttachment` does not pass it today — multi-company uploads would need that threaded (no code change in this round).
+- **Text coding:** shared `predict_text_coding` + `bill_suggestion_from_text_cascade`; API payload via `presenters.suggestion_to_api_payload`.
+
+### Follow-ups (deferred)
+
+- Catalog TTL cache; `ExtractionPolicy` object; vendor-resolver / mapper consolidation + fuzzy matcher to `shared/`; `_VendorPairCache`; vendor cache keyed by company.
+
 ### Round 3 (2026-10-18) — metering order and operator notes
 
 - **Metering happens before the terminal event.** `AnthropicTransport.stream` records spend and opens the

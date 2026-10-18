@@ -2,6 +2,26 @@
 
 Carry-over items from sessions. Check off as done; prune anything stale.
 
+## U-676f residuals — Claude spend metering (booked 2026-10-18, Gate 2)
+
+All P3; none lets Foundry run when it shouldn't or the cap overrun materially. Code: `intelligence/transport/anthropic.py`,
+`intelligence/cascade/claude_budget.py`; design notes in `docs/design/u676-bill-drop-prefill.md` (U-676f section).
+
+- [ ] **Partial output under-counted on mid-reply errors.** An in-stream `error` event (or dropped connection) after
+      `message_start` but before `message_delta` meters input tokens only; output tokens already generated are lost.
+      Small (output is short for these jobs). Fix: count streamed text deltas as an output-token estimate, or meter the
+      larger of the two.
+- [ ] **Ambiguous write double-counts.** `AddLlmDailySpend` commits but the reply is lost (timeout / dropped connection)
+      → the amount goes back to unsaved and is added again. Over-count = safe direction (cap trips early). Fix only if
+      it shows up: an idempotency key per write.
+- [ ] **Manual downward correction of `LlmDailySpend` is ignored by running workers** until the UTC day rolls over or
+      the API restarts (each worker keeps the largest total seen for the day). Operator note, documented; fix only if
+      we start correcting totals by hand.
+- [ ] **Dynamic daily cap** (Chris, 2026-10-18): cap = (monthly promotional credit − month-to-date spend) ÷ days
+      remaining, instead of the static $200/31 = $6.45. `ReadLlmSpendForRange` already exists for the month-to-date sum.
+- [ ] **Shared error-kind classifier.** The backtests (`scripts/u654a_text_backtest.py`, `scripts/u676a_bill_field_bakeoff.py`)
+      and `claude_budget._is_credit_exhausted_error` each classify transport errors; consolidate into one helper.
+
 ## U-669 spillover — emailed reviewer approvals: Folder read fix + on-demand reply copy (booked 2026-10-14)
 
 Shipped scope: U-669a loads `EmailMessage.Folder` on read (mapper + 4 read sprocs); U-669b adds

@@ -1,0 +1,252 @@
+{
+  "model_version": "u676a-bill-header-bakeoff-v1",
+  "arms": "A,B,C",
+  "evaluation_window": {
+    "since": "2026-04-11",
+    "until": "2026-10-10"
+  },
+  "run_status": "complete",
+  "populations": {
+    "eval_window_bill_population": 1903,
+    "intake_stratum_counts": {
+      "other": 1292,
+      "agent": 82,
+      "manual": 529
+    }
+  },
+  "sample_size": 200,
+  "metrics": {
+    "arms": "A,B,C",
+    "cap_tripped": false,
+    "scored_bill_count": 200,
+    "unscored_bill_count": 0,
+    "blob_skip_unreadable": 0,
+    "blob_skip_unparseable": 0,
+    "blob_skip_stale": 0,
+    "blob_skip_total": 0,
+    "arm_a_error_count": 0,
+    "arm_a_note": "Arm A measured on stored text + key/value pairs only \u2014 no DI tables (U-535a blob shape).",
+    "fields": {
+      "vendor": {
+        "arm_a": {
+          "accuracy": 0.23,
+          "coverage": 0.395,
+          "n_scored": 200
+        },
+        "by_stratum": {
+          "agent": {
+            "n": 66,
+            "arm_a_accuracy": 0.21212121212121213,
+            "arm_b_accuracy": 0.9090909090909091,
+            "arm_c_accuracy": 0.9090909090909091
+          },
+          "manual": {
+            "n": 67,
+            "arm_a_accuracy": 0.23880597014925373,
+            "arm_b_accuracy": 0.835820895522388,
+            "arm_c_accuracy": 0.8059701492537313
+          },
+          "other": {
+            "n": 67,
+            "arm_a_accuracy": 0.23880597014925373,
+            "arm_b_accuracy": 0.8059701492537313,
+            "arm_c_accuracy": 0.746268656716418
+          }
+        },
+        "arm_b": {
+          "accuracy": 0.85,
+          "coverage": 0.89,
+          "n_scored": 200
+        },
+        "arm_c": {
+          "accuracy": 0.82,
+          "coverage": 0.85,
+          "n_scored": 200
+        }
+      },
+      "bill_number": {
+        "arm_a": {
+          "accuracy": 0.13,
+          "coverage": 0.335,
+          "n_scored": 200
+        },
+        "by_stratum": {
+          "agent": {
+            "n": 66,
+            "arm_a_accuracy": 0.07575757575757576,
+            "arm_b_accuracy": 0.8636363636363636,
+            "arm_c_accuracy": 0.7575757575757576
+          },
+          "manual": {
+            "n": 67,
+            "arm_a_accuracy": 0.13432835820895522,
+            "arm_b_accuracy": 0.8208955223880597,
+            "arm_c_accuracy": 0.7313432835820896
+          },
+          "other": {
+            "n": 67,
+            "arm_a_accuracy": 0.1791044776119403,
+            "arm_b_accuracy": 0.7910447761194029,
+            "arm_c_accuracy": 0.6865671641791045
+          }
+        },
+        "arm_b": {
+          "accuracy": 0.825,
+          "coverage": 0.965,
+          "n_scored": 200
+        },
+        "arm_c": {
+          "accuracy": 0.725,
+          "coverage": 0.93,
+          "n_scored": 200
+        }
+      },
+      "bill_date": {
+        "arm_a": {
+          "accuracy": 0.665,
+          "coverage": 0.88,
+          "n_scored": 200
+        },
+        "by_stratum": {
+          "agent": {
+            "n": 66,
+            "arm_a_accuracy": 0.6818181818181818,
+            "arm_b_accuracy": 0.9696969696969697,
+            "arm_c_accuracy": 0.9696969696969697
+          },
+          "manual": {
+            "n": 67,
+            "arm_a_accuracy": 0.6567164179104478,
+            "arm_b_accuracy": 0.9552238805970149,
+            "arm_c_accuracy": 0.8955223880597015
+          },
+          "other": {
+            "n": 67,
+            "arm_a_accuracy": 0.6567164179104478,
+            "arm_b_accuracy": 0.8656716417910447,
+            "arm_c_accuracy": 0.8507462686567164
+          }
+        },
+        "arm_b": {
+          "accuracy": 0.93,
+          "coverage": 0.98,
+          "n_scored": 200
+        },
+        "arm_c": {
+          "accuracy": 0.905,
+          "coverage": 0.945,
+          "n_scored": 200
+        }
+      },
+      "amount": {
+        "arm_a": {
+          "accuracy": 0.465,
+          "coverage": 0.605,
+          "n_scored": 200
+        },
+        "by_stratum": {
+          "agent": {
+            "n": 66,
+            "arm_a_accuracy": 0.4393939393939394,
+            "arm_b_accuracy": 0.8939393939393939,
+            "arm_c_accuracy": 0.8787878787878788
+          },
+          "manual": {
+            "n": 67,
+            "arm_a_accuracy": 0.47761194029850745,
+            "arm_b_accuracy": 0.9850746268656716,
+            "arm_c_accuracy": 0.8955223880597015
+          },
+          "other": {
+            "n": 67,
+            "arm_a_accuracy": 0.47761194029850745,
+            "arm_b_accuracy": 0.9104477611940298,
+            "arm_c_accuracy": 0.9253731343283582
+          }
+        },
+        "arm_b": {
+          "accuracy": 0.93,
+          "coverage": 0.995,
+          "n_scored": 200
+        },
+        "arm_c": {
+          "accuracy": 0.9,
+          "coverage": 0.945,
+          "n_scored": 200
+        }
+      }
+    },
+    "description_nonempty_share": {
+      "arm_a": 0.0,
+      "arm_b": 1.0,
+      "arm_c": 0.95
+    },
+    "extraction_method": {
+      "n_with_method": 200,
+      "text_layer_share": 0.925,
+      "document_intelligence_share": 0.075,
+      "shares": {
+        "text_layer": 0.925,
+        "document_intelligence_read": 0.075
+      }
+    },
+    "latency": {
+      "arm_a_ms_p50": 6,
+      "arm_a_ms_p90": 364,
+      "arm_b_latency_ms_p50": 4733,
+      "arm_b_latency_ms_p90": 6287,
+      "arm_b_latency_ms_max": 8523,
+      "arm_c_latency_ms_p50": 1888,
+      "arm_c_latency_ms_p90": 2591,
+      "arm_c_latency_ms_max": 3361,
+      "arm_b_cost_per_doc_mean_usd": 0.000197,
+      "arm_b_cost_total_usd": 0.039382,
+      "arm_c_cost_per_doc_mean_usd": 0.003252,
+      "arm_c_cost_total_usd": 0.650422,
+      "llm_arms_cost_total_usd": 0.689804
+    },
+    "verdict": {
+      "status": "complete",
+      "fields": {
+        "vendor": {
+          "winner": "B",
+          "arm_a_accuracy": 0.23,
+          "arm_b_accuracy": 0.85,
+          "arm_c_accuracy": 0.82,
+          "below_bar": false
+        },
+        "bill_number": {
+          "winner": "B",
+          "arm_a_accuracy": 0.13,
+          "arm_b_accuracy": 0.825,
+          "arm_c_accuracy": 0.725,
+          "below_bar": false
+        },
+        "bill_date": {
+          "winner": "B",
+          "arm_a_accuracy": 0.665,
+          "arm_b_accuracy": 0.93,
+          "arm_c_accuracy": 0.905,
+          "below_bar": false
+        },
+        "amount": {
+          "winner": "B",
+          "arm_a_accuracy": 0.465,
+          "arm_b_accuracy": 0.93,
+          "arm_c_accuracy": 0.9,
+          "below_bar": false
+        }
+      }
+    },
+    "usage": {
+      "cost_usd": 0.6898040000000003,
+      "throttle_retry_count": 0,
+      "throttle_failure_count": 0,
+      "cascade_error_count": 0,
+      "call_timeout_count": 0
+    },
+    "claude_ladder": "claude-sonnet"
+  },
+  "dry_run": null,
+  "claude_ladder": "claude-sonnet"
+}

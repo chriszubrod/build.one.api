@@ -1,0 +1,130 @@
+{
+  "model_version": "u654a-text-backtest-v1",
+  "ladder": "claude-haiku",
+  "evaluation_window": {
+    "since": "2026-04-11",
+    "until": "2026-10-10"
+  },
+  "run_status": "complete",
+  "populations": {
+    "eval_window_bill_population": 2548,
+    "text_tier_bill_population": 2367
+  },
+  "sample_size": 500,
+  "cap_tripped": false,
+  "scored_bill_count": 500,
+  "unscored_bill_count": 0,
+  "metrics": {
+    "cap_tripped": false,
+    "scored_bill_count": 500,
+    "unscored_bill_count": 0,
+    "mode_a_n": 500,
+    "mode_b_n": 500,
+    "mode_a": {
+      "history": {
+        "coverage": 0.832,
+        "precision": 0.6514423076923077,
+        "top1_bill": 0.542,
+        "top1_dollar": 0.4820699979675269,
+        "project_top1": null
+      },
+      "text": {
+        "coverage": 0.22,
+        "precision": 0.5909090909090909,
+        "top1_bill": 0.13,
+        "top1_dollar": 0.04475651487126248,
+        "project_top1": null
+      },
+      "combined": {
+        "coverage": 0.58,
+        "precision": 0.7620689655172413,
+        "top1_bill": 0.442,
+        "top1_dollar": 0.36854594597791523,
+        "project_top1": null
+      }
+    },
+    "mode_b": {
+      "history": {
+        "coverage": 0.832,
+        "precision": 0.5552884615384616,
+        "top1_bill": 0.462,
+        "top1_dollar": 0.49674287627069486,
+        "project_top1": 0.12740384615384615
+      },
+      "text": {
+        "coverage": 0.192,
+        "precision": 0.8229166666666666,
+        "top1_bill": 0.158,
+        "top1_dollar": 0.09979987025897871,
+        "project_top1": 0.9736842105263158
+      }
+    },
+    "stratum_mode_a": {
+      "50-70%": {
+        "n": 83,
+        "history_top1": 0.6626506024096386,
+        "text_top1": 0.07228915662650602
+      },
+      "70-90%": {
+        "n": 85,
+        "history_top1": 0.8352941176470589,
+        "text_top1": 0.11764705882352941
+      },
+      "<50%": {
+        "n": 83,
+        "history_top1": 0.4457831325301205,
+        "text_top1": 0.1686746987951807
+      },
+      ">=90%": {
+        "n": 83,
+        "history_top1": 0.9397590361445783,
+        "text_top1": 0.3493975903614458
+      },
+      "cold_start": {
+        "n": 83,
+        "history_top1": 0.0,
+        "text_top1": 0.060240963855421686
+      },
+      "mixed_code": {
+        "n": 83,
+        "history_top1": 0.3614457831325301,
+        "text_top1": 0.012048192771084338
+      }
+    },
+    "mixed_code_all": {
+      "n": 83,
+      "history_top1": 0.3614457831325301,
+      "text_top1": 0.012048192771084338,
+      "combined_top1": 0.1686746987951807
+    },
+    "rung_usage": {
+      "claude-haiku-5-5": 961,
+      "needs_human": 39
+    },
+    "needs_human_count": 794,
+    "throttle_retry_count": 0,
+    "throttle_failure_count": 0,
+    "cascade_error_count": 0,
+    "duplicate_scc_number_count": 0,
+    "duplicate_project_abbrev_count": 0,
+    "usage": {
+      "input_tokens": 16975409,
+      "output_tokens": 114555,
+      "cost_usd": 1.7548169999999996
+    },
+    "cost_overshoot_usd": null,
+    "combined_vs_history_catalog_eligible": {
+      "n": 500,
+      "history_top1_bill": 0.542,
+      "combined_top1_bill": 0.442,
+      "delta_top1_bill": -0.1
+    },
+    "label_not_in_text_catalog_count": 0,
+    "text_catalog_size_min_per_bill": 474,
+    "text_catalog_size_median_per_bill": 474,
+    "verdict_m4": "\u00a710.5 M4: DO NOT wire text \u2014 Mode A combined top-1 44.2% vs history-only 54.2% (delta -10.0%, need \u2265 10%)",
+    "blob_unreadable_count": 0,
+    "call_timeout_count": 0
+  },
+  "dry_run": null
+}

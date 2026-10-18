@@ -72,3 +72,10 @@ Report: [`u654a_report_20261016T044342Z.md`](u654a_report_20261016T044342Z.md) �
 - **§10.5 M4 verdict: DO NOT wire** — combined beat history by 9.2 points against a 10-point bar. History still wins every stratum at ≥ 50% vendor consistency.
 - **Run history.** The first leg ran while the host was offline: 426 network-failed cascades looked like `needs_human`. They were re-run with U-654d `--resume-from`, which took `needs_human` from 426 to 9. This report is the merged, complete run. The per-Bill predictions CSV (numeric ids only) is not committed, matching U-653b.
 - **Decision (Chris, 2026-10-16, option b).** Wire the text suggester only where it wins: cold start, weak or mixed history (runtime proxy: history raw score < 0.60) and project prediction. Built as U-654b and deployed behind `BILL_CODING_TEXT_ENABLED` (default off). The flag stays off until U-674 (untouched pre-fill guard) ships.
+
+## Result — Claude Haiku 5.5 ladder (U-654e), prod run 2026-10-17
+
+Report: [`u654a_report_claude-haiku_20261017T115318Z.md`](u654a_report_claude-haiku_20261017T115318Z.md) · summary: [`u654a_summary_claude-haiku_20261017T115318Z.json`](u654a_summary_claude-haiku_20261017T115318Z.json). Same 500 Bills as the Foundry run, single Haiku rung, $1.75.
+
+- **Inconclusive, not a rejection.** Haiku cleared the 0.85 confidence bar on only 22% (Mode A) / 19% (Mode B) of calls (794 needs_human, 0 task errors); when it did, it was right 59% (Mode A, 65/110) and 82% (Mode B, 79/96) of the time — Foundry-level precision. The bar was set for the Foundry ladder and its below-bar answers were not recorded, so the report's "DO NOT wire" (combined 44.2%) reflects the threshold, not the model.
+- Next (U-676e): keep every Claude answer with its confidence and score at several bars, then re-run.

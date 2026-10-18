@@ -90,3 +90,11 @@ Report: [`u654a_report_claude-haiku_20261018T014430Z.md`](u654a_report_claude-ha
 - **Haiku is clearly below Foundry on the cost code**: best bar 0.5 → text top-1 41.2% (Foundry 58.4%), precision ~48% (Foundry ~59%); combined 55.0% (+0.8 over history 54.2%; Foundry combined 63.4%). Confidence escalation cannot rescue it — it is wrong while confident.
 - **Haiku matches Foundry on project prediction**: 94.8% (Foundry 94.2%).
 - **Decisions (Chris, 2026-10-18):** project prediction → Haiku; cost code → measure Sonnet 5.5 (full 500 Bills, $15 cap) before choosing its ladder.
+
+## Claude Sonnet 5.5 (U-676e), 2026-10-18 — INCOMPLETE (cost cap)
+
+Report: [`u654a_report_claude-sonnet_20261018T021338Z.md`](u654a_report_claude-sonnet_20261018T021338Z.md) · summary: [`u654a_summary_claude-sonnet_20261018T021338Z.json`](u654a_summary_claude-sonnet_20261018T021338Z.json). The $15 cap stopped it at 213 of 500 Bills (~$0.07/Bill — the cost-code prompt carries the 474-code catalog, ~17k input tokens per call; the pre-run $13 estimate was wrong).
+
+- On the 213 scored: best bar 0.5 → text top-1 **42.3%**, combined 55.4% (+1.4 over history); at 0.85 precision 75% but coverage 26%; project prediction 95–98%; failures 41 validation / 4 parse of 426.
+- **Sonnet is no better than Haiku and ~16 points below Foundry (58.4%)** — larger than any sample imbalance from the partial draw.
+- **Decision (Chris, 2026-10-18): cost code stays on the Foundry ladder, no Claude rung.** Cost rule: Claude credit is promotional and resets monthly; Foundry is cash — Claude goes first only where it matches Foundry.

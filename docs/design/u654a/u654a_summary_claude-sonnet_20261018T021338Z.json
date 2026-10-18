@@ -1,0 +1,277 @@
+{
+  "model_version": "u654a-text-backtest-v1",
+  "ladder": "claude-sonnet",
+  "evaluation_window": {
+    "since": "2026-04-11",
+    "until": "2026-10-10"
+  },
+  "run_status": "incomplete",
+  "populations": {
+    "eval_window_bill_population": 2548,
+    "text_tier_bill_population": 2367
+  },
+  "sample_size": 500,
+  "cap_tripped": true,
+  "scored_bill_count": 213,
+  "unscored_bill_count": 287,
+  "metrics": {
+    "cap_tripped": true,
+    "scored_bill_count": 213,
+    "unscored_bill_count": 287,
+    "mode_a_n": 213,
+    "mode_b_n": 213,
+    "mode_a": {
+      "history": {
+        "coverage": 0.7934272300469484,
+        "precision": 0.6804733727810651,
+        "top1_bill": 0.539906103286385,
+        "top1_dollar": 0.48202534906235345,
+        "project_top1": null
+      },
+      "text": {
+        "coverage": 0.2535211267605634,
+        "precision": 0.7592592592592593,
+        "top1_bill": 0.19248826291079812,
+        "top1_dollar": 0.11146060846378229,
+        "project_top1": null
+      },
+      "combined": {
+        "coverage": 0.6056338028169014,
+        "precision": 0.7596899224806202,
+        "top1_bill": 0.460093896713615,
+        "top1_dollar": 0.40236980375811465,
+        "project_top1": null
+      }
+    },
+    "mode_b": {
+      "history": {
+        "coverage": 0.7934272300469484,
+        "precision": 0.5680473372781065,
+        "top1_bill": 0.4507042253521127,
+        "top1_dollar": 0.44157085472693164,
+        "project_top1": 0.14201183431952663
+      },
+      "text": {
+        "coverage": 0.2300469483568075,
+        "precision": 0.8979591836734694,
+        "top1_bill": 0.20657276995305165,
+        "top1_dollar": 0.08043977910661161,
+        "project_top1": 0.9772727272727273
+      }
+    },
+    "stratum_mode_a": {
+      "50-70%": {
+        "n": 33,
+        "history_top1": 0.6363636363636364,
+        "text_top1": 0.09090909090909091
+      },
+      "70-90%": {
+        "n": 35,
+        "history_top1": 0.8,
+        "text_top1": 0.17142857142857143
+      },
+      "<50%": {
+        "n": 45,
+        "history_top1": 0.5333333333333333,
+        "text_top1": 0.2222222222222222
+      },
+      ">=90%": {
+        "n": 38,
+        "history_top1": 0.9473684210526315,
+        "text_top1": 0.4473684210526316
+      },
+      "cold_start": {
+        "n": 43,
+        "history_top1": 0.0,
+        "text_top1": 0.09302325581395349
+      },
+      "mixed_code": {
+        "n": 19,
+        "history_top1": 0.3157894736842105,
+        "text_top1": 0.05263157894736842
+      }
+    },
+    "mixed_code_all": {
+      "n": 19,
+      "history_top1": 0.3157894736842105,
+      "text_top1": 0.05263157894736842,
+      "combined_top1": 0.15789473684210525
+    },
+    "rung_usage": {
+      "claude-sonnet-5-5": 422,
+      "needs_human": 4
+    },
+    "needs_human_count": 323,
+    "throttle_retry_count": 0,
+    "throttle_failure_count": 0,
+    "harness_retry_by_kind": {},
+    "cascade_error_count": 0,
+    "call_failures_by_kind": {
+      "none": 381,
+      "validation": 41,
+      "parse": 4
+    },
+    "confidence_bar_sweep": {
+      "bars": [
+        0.5,
+        0.6,
+        0.7,
+        0.8,
+        0.85,
+        0.9
+      ],
+      "mode_a": {
+        "0.5": {
+          "text": {
+            "coverage": 0.9107981220657277,
+            "precision": 0.4639175257731959,
+            "top1_bill": 0.4225352112676056,
+            "top1_dollar": 0.4231489658810601,
+            "project_top1": null
+          },
+          "combined_top1_bill": 0.5539906103286385,
+          "combined_delta_vs_history": 0.014084507042253521
+        },
+        "0.6": {
+          "text": {
+            "coverage": 0.6384976525821596,
+            "precision": 0.5441176470588235,
+            "top1_bill": 0.3474178403755869,
+            "top1_dollar": 0.3580533375627303,
+            "project_top1": null
+          },
+          "combined_top1_bill": 0.5070422535211268,
+          "combined_delta_vs_history": -0.03286384976525822
+        },
+        "0.7": {
+          "text": {
+            "coverage": 0.4835680751173709,
+            "precision": 0.6504854368932039,
+            "top1_bill": 0.3145539906103286,
+            "top1_dollar": 0.32323817235256047,
+            "project_top1": null
+          },
+          "combined_top1_bill": 0.49295774647887325,
+          "combined_delta_vs_history": -0.046948356807511735
+        },
+        "0.8": {
+          "text": {
+            "coverage": 0.4788732394366197,
+            "precision": 0.6568627450980392,
+            "top1_bill": 0.3145539906103286,
+            "top1_dollar": 0.32323817235256047,
+            "project_top1": null
+          },
+          "combined_top1_bill": 0.49295774647887325,
+          "combined_delta_vs_history": -0.046948356807511735
+        },
+        "0.85": {
+          "text": {
+            "coverage": 0.26291079812206575,
+            "precision": 0.75,
+            "top1_bill": 0.19718309859154928,
+            "top1_dollar": 0.1242671145061425,
+            "project_top1": null
+          },
+          "combined_top1_bill": 0.460093896713615,
+          "combined_delta_vs_history": -0.07981220657276995
+        },
+        "0.9": {
+          "text": {
+            "coverage": 0.24413145539906103,
+            "precision": 0.7692307692307693,
+            "top1_bill": 0.18779342723004694,
+            "top1_dollar": 0.10277546531812226,
+            "project_top1": null
+          },
+          "combined_top1_bill": 0.460093896713615,
+          "combined_delta_vs_history": -0.07981220657276995
+        }
+      },
+      "mode_b": {
+        "0.5": {
+          "text": {
+            "coverage": 0.9061032863849765,
+            "precision": 0.5077720207253886,
+            "top1_bill": 0.460093896713615,
+            "top1_dollar": 0.4896545351778993,
+            "project_top1": 0.9520958083832335
+          },
+          "combined_top1_bill": 0.5446009389671361
+        },
+        "0.6": {
+          "text": {
+            "coverage": 0.704225352112676,
+            "precision": 0.58,
+            "top1_bill": 0.4084507042253521,
+            "top1_dollar": 0.4296076577662317,
+            "project_top1": 0.9621212121212122
+          },
+          "combined_top1_bill": 0.5117370892018779
+        },
+        "0.7": {
+          "text": {
+            "coverage": 0.49295774647887325,
+            "precision": 0.6952380952380952,
+            "top1_bill": 0.3427230046948357,
+            "top1_dollar": 0.31020301681690227,
+            "project_top1": 0.978021978021978
+          },
+          "combined_top1_bill": 0.48826291079812206
+        },
+        "0.8": {
+          "text": {
+            "coverage": 0.4694835680751174,
+            "precision": 0.7,
+            "top1_bill": 0.3286384976525822,
+            "top1_dollar": 0.27707969711704106,
+            "project_top1": 0.9770114942528736
+          },
+          "combined_top1_bill": 0.4788732394366197
+        },
+        "0.85": {
+          "text": {
+            "coverage": 0.2347417840375587,
+            "precision": 0.9,
+            "top1_bill": 0.2112676056338028,
+            "top1_dollar": 0.08063741037269742,
+            "project_top1": 0.9777777777777777
+          },
+          "combined_top1_bill": 0.4272300469483568
+        },
+        "0.9": {
+          "text": {
+            "coverage": 0.19248826291079812,
+            "precision": 0.9024390243902439,
+            "top1_bill": 0.17370892018779344,
+            "top1_dollar": 0.04010408751294283,
+            "project_top1": 0.9722222222222222
+          },
+          "combined_top1_bill": 0.4225352112676056
+        }
+      },
+      "best_combined_top1_bar_mode_a": 0.5
+    },
+    "duplicate_scc_number_count": 0,
+    "duplicate_project_abbrev_count": 0,
+    "usage": {
+      "input_tokens": 7254643,
+      "output_tokens": 52817,
+      "cost_usd": 15.037455999999995
+    },
+    "cost_overshoot_usd": 0.03745599999999527,
+    "combined_vs_history_catalog_eligible": {
+      "n": 213,
+      "history_top1_bill": 0.539906103286385,
+      "combined_top1_bill": 0.460093896713615,
+      "delta_top1_bill": -0.07981220657276995
+    },
+    "label_not_in_text_catalog_count": 0,
+    "text_catalog_size_min_per_bill": 474,
+    "text_catalog_size_median_per_bill": 474,
+    "verdict_m4": "\u00a710.5 M4: INCOMPLETE \u2014 run status 'incomplete'; metrics restricted to scored Bills; M4 gate not evaluated (no KEEP/DROP)",
+    "blob_unreadable_count": 0,
+    "call_timeout_count": 0
+  },
+  "dry_run": null
+}

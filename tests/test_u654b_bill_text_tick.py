@@ -8,11 +8,23 @@ from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
+
 from entities.coding_suggestion.business import bill_text_suggestion_service as svc
 from entities.coding_suggestion.business.bill_suggestion_service import BillSuggestion
 from entities.coding_suggestion.persistence.bill_text_suggestion_repo import BillTextCodingClaim
 from entities.attachment.business.extraction_service import REDACTION_VERSION
 from intelligence.cascade.core import CascadeResult, Rung
+
+
+@pytest.fixture(autouse=True)
+def _claude_budget_not_stopped():
+    with patch.object(
+        svc.claude_budget,
+        "is_claude_day_stopped_async",
+        new=AsyncMock(return_value=False),
+    ):
+        yield
 
 
 def _blob(content: str) -> bytes:
@@ -723,3 +735,37 @@ def test_r3_error_before_the_model_call_does_not_count():
     mock_cascade.assert_not_called()
     assert out["status"] == "failed"
     assert repo.complete.call_args.kwargs["record_call"] is False
+
+
+def test_claude_daily_cap_before_claim_returns_capped_without_claim():
+    repo = MagicMock()
+    repo.count_calls_today.return_value = 0
+    with patch.object(svc.config, "Settings") as mock_settings:
+        mock_settings.return_value.bill_coding_text_enabled = True
+        mock_settings.return_value.bill_coding_text_daily_call_cap = 200
+        mock_settings.return_value.foundry_api_key = "k"
+        mock_settings.return_value.foundry_endpoint = "https://x"
+        with patch.object(
+            svc.claude_budget,
+            "is_claude_day_stopped_async",
+            new=AsyncMock(return_value=True),
+        ):
+            out = asyncio.run(svc.run_bill_text_coding_tick(repo=repo))
+    assert out["status"] == "capped"
+    repo.claim_next.assert_not_called()
+
+def test_cascade_daily_cap_stopped_leaves_row_unfinalized():
+    cap_result = CascadeResult(
+        accepted=False,
+        needs_human=True,
+        result=None,
+        confidence=None,
+        winning_rung=None,
+        attempts=[],
+        stopped_reason="daily_cap",
+    )
+    out, repo, mock_cascade = _run_tick_with(_blob("x"), cap_result)
+    mock_cascade.assert_called_once()
+    repo.complete.assert_not_called()
+    assert out["status"] == "capped"
+    assert out["bill_id"] == 42

@@ -18,10 +18,16 @@ from contextvars import ContextVar
 from typing import Any
 
 from intelligence.cascade.core import CascadeResult, Rung, StructuredTask, run_cascade
+from intelligence.cascade.ladder_config import (
+    DEFAULT_BILL_CODING_SUGGESTION_LADDER,
+    DEFAULT_BILL_CODING_SUGGESTION_THRESHOLD,
+    resolve_ladder,
+    resolve_threshold,
+)
 
 BILL_TEXT_CHAR_BUDGET = 6000
 SUSPENSE_SCC_NUMBER = "00.02"
-BILL_CODING_THRESHOLD = 0.85
+BILL_CODING_THRESHOLD = DEFAULT_BILL_CODING_SUGGESTION_THRESHOLD
 
 BILL_CODING_FOUNDRY_LADDER: tuple[Rung, ...] = (
     Rung("foundry", "DeepSeek-V4-Flash"),
@@ -175,7 +181,7 @@ BILL_CODING_SUGGESTION_TASK = StructuredTask(
     threshold=BILL_CODING_THRESHOLD,
     build_user_message=_build_user_message,
     validate=_validate,
-    ladder=BILL_CODING_FOUNDRY_LADDER,
+    ladder=DEFAULT_BILL_CODING_SUGGESTION_LADDER,
 )
 
 
@@ -190,6 +196,14 @@ async def run_bill_coding_suggestion(
         return validate_bill_coding_result(result, payload=payload)
 
     task = dataclasses.replace(BILL_CODING_SUGGESTION_TASK, validate=validate)
-    if ladder is not None:
+    if ladder is None:
+        resolved_ladder = resolve_ladder(
+            "bill_coding_suggestion", DEFAULT_BILL_CODING_SUGGESTION_LADDER,
+        )
+        resolved_threshold = resolve_threshold("bill_coding_suggestion", BILL_CODING_THRESHOLD)
+        task = dataclasses.replace(
+            task, ladder=resolved_ladder, threshold=resolved_threshold,
+        )
+    else:
         task = dataclasses.replace(task, ladder=ladder)
     return await run_cascade(task, payload, transport_for=transport_for)

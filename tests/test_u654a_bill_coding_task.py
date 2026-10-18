@@ -223,7 +223,9 @@ def test_run_bill_coding_suggestion_ladder_override():
 
     with patch("intelligence.cascade.bill_coding.run_cascade", side_effect=fake_run_cascade):
         asyncio.run(run_bill_coding_suggestion(payload))
-        assert captured["ladder"] == BILL_CODING_FOUNDRY_LADDER
+        from intelligence.cascade.ladder_config import DEFAULT_BILL_CODING_SUGGESTION_LADDER
+
+        assert captured["ladder"] == DEFAULT_BILL_CODING_SUGGESTION_LADDER
 
         captured.clear()
         asyncio.run(run_bill_coding_suggestion(payload, ladder=CLAUDE_HAIKU_LADDER))

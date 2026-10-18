@@ -32,6 +32,7 @@ from typing import Any, AsyncIterator, Optional, Tuple, Union
 import httpx
 
 import config
+from intelligence.cascade import claude_budget
 from intelligence.messages.convert import to_anthropic_request
 from intelligence.messages.types import Message, RedactedThinking, Thinking
 from intelligence.transport.foundry import foundry_resource_root
@@ -221,9 +222,24 @@ class AnthropicTransport:
             direct_api_key=self._api_key,
         )
         if missing_setting:
+            code = (
+                "claude_unavailable:no_key"
+                if missing_setting == "ANTHROPIC_API_KEY"
+                else "missing_api_key"
+            )
+            if code == "claude_unavailable:no_key":
+                claude_budget.warn_no_api_key_once()
             yield TransportError(
                 message=f"{missing_setting} is not configured",
-                code="missing_api_key",
+                code=code,
+            )
+            return
+
+        skip = await claude_budget.pre_call_gate(has_api_key=True)
+        if skip:
+            yield TransportError(
+                message=f"claude budget gate: {skip}",
+                code=f"claude_unavailable:{skip}",
             )
             return
 
@@ -233,56 +249,114 @@ class AnthropicTransport:
             "content-type": "application/json",
         }
 
+        stream_error: Optional[str] = None
+        live_usage: list[Usage] = [Usage()]
+        http_attempted = False
+        metered = False
+
+        async def _meter(error: Optional[str], final_usage: Optional[Usage] = None) -> None:
+            # Meter exactly once per request, BEFORE the terminal event reaches the
+            # consumer: a consumer that stops reading on Done / TransportError must
+            # already see the breaker open and the spend recorded (U-676f r3).
+            nonlocal metered
+            if metered or not http_attempted:
+                return
+            metered = True
+            meter_usage = (
+                final_usage
+                if final_usage is not None and _has_tokens(final_usage)
+                else live_usage[0]
+            )
+            try:
+                await claude_budget.post_call_metering(
+                    usage=meter_usage, model=model, error=error,
+                )
+            except Exception as exc:
+                # Metering must never change what the transport returns: a
+                # finished Claude answer stays an answer (no Foundry fallback).
+                logger.warning(
+                    "anthropic transport: metering failed: %s", type(exc).__name__,
+                )
+
         async with httpx.AsyncClient(timeout=httpx.Timeout(
             connect=10.0, read=self._timeout, write=30.0, pool=10.0,
         )) as client:
-            resp_ctx = None
-            for attempt in range(_MAX_RETRIES + 1):
-                resp_ctx = client.stream(
-                    "POST", post_url, headers=headers, json=body
-                )
-                resp = await resp_ctx.__aenter__()
-                if resp.status_code == 200:
-                    break
-                # Non-200 — decide: retry or surface.
-                err_body = await resp.aread()
-                try:
-                    retry_after_raw = resp.headers.get("retry-after")
-                    retry_after = (
-                        float(retry_after_raw) if retry_after_raw else None
-                    )
-                except (TypeError, ValueError):
-                    retry_after = None
-                status = resp.status_code
-                await resp_ctx.__aexit__(None, None, None)
-                resp_ctx = None
-
-                if (
-                    status in _RETRYABLE_STATUSES
-                    and attempt < _MAX_RETRIES
-                ):
-                    delay = _retry_delay(attempt, retry_after)
-                    logger.info(
-                        "anthropic transport: retrying after HTTP %s "
-                        "(attempt %d/%d, sleeping %.1fs)",
-                        status, attempt + 1, _MAX_RETRIES + 1, delay,
-                    )
-                    await asyncio.sleep(delay)
-                    continue
-
-                yield TransportError(
-                    message=f"HTTP {status}: {err_body.decode(errors='replace')[:500]}",
-                    code=f"http_{status}",
-                )
-                return
-
-            # resp_ctx is the successful (200) context; process + close.
             try:
-                async for ev in _sse_to_events(_parse_sse(resp), model):
-                    yield ev
-            finally:
-                if resp_ctx is not None:
+                resp_ctx = None
+                for attempt in range(_MAX_RETRIES + 1):
+                    resp_ctx = client.stream(
+                        "POST", post_url, headers=headers, json=body,
+                    )
+                    resp = await resp_ctx.__aenter__()
+                    http_attempted = True
+                    if resp.status_code == 200:
+                        try:
+                            async for ev in _sse_to_events(
+                                _parse_sse(resp), model, live_usage,
+                            ):
+                                if isinstance(ev, Done):
+                                    await _meter(None, ev.usage)
+                                elif isinstance(ev, TransportError):
+                                    stream_error = (
+                                        f"{ev.code}: {ev.message}"
+                                        if ev.code
+                                        else ev.message
+                                    )
+                                    await _meter(stream_error)
+                                yield ev
+                        finally:
+                            if resp_ctx is not None:
+                                await resp_ctx.__aexit__(None, None, None)
+                            resp_ctx = None
+                        break
+
+                    err_body = await resp.aread()
+                    try:
+                        retry_after_raw = resp.headers.get("retry-after")
+                        retry_after = (
+                            float(retry_after_raw) if retry_after_raw else None
+                        )
+                    except (TypeError, ValueError):
+                        retry_after = None
+                    status = resp.status_code
                     await resp_ctx.__aexit__(None, None, None)
+                    resp_ctx = None
+
+                    if (
+                        status in _RETRYABLE_STATUSES
+                        and attempt < _MAX_RETRIES
+                    ):
+                        delay = _retry_delay(attempt, retry_after)
+                        logger.info(
+                            "anthropic transport: retrying after HTTP %s "
+                            "(attempt %d/%d, sleeping %.1fs)",
+                            status, attempt + 1, _MAX_RETRIES + 1, delay,
+                        )
+                        await asyncio.sleep(delay)
+                        continue
+
+                    code = f"http_{status}"
+                    err_text = err_body.decode(errors="replace")[:500]
+                    stream_error = f"{code}: {err_text}"
+                    await _meter(stream_error)
+                    yield TransportError(message=err_text, code=code)
+                    return
+            except Exception as exc:
+                stream_error = f"{type(exc).__name__}: {exc}"
+                raise
+            finally:
+                # Paths that never reached a terminal event (truncated stream,
+                # exception, consumer aclose mid-stream) meter what was seen.
+                await _meter(stream_error)
+
+
+def _has_tokens(usage: Usage) -> bool:
+    return bool(
+        usage.input_tokens
+        or usage.output_tokens
+        or usage.cache_creation_input_tokens
+        or usage.cache_read_input_tokens
+    )
 
 
 async def _parse_sse(resp: httpx.Response) -> AsyncIterator[Tuple[str, dict]]:
@@ -330,6 +404,7 @@ _OpenBlock = Union[_ToolBuf, _ThinkingBuf, RedactedThinking]
 async def _sse_to_events(
     events: AsyncIterator[Tuple[str, dict]],
     model: str,
+    live_usage: Optional[list[Usage]] = None,
 ) -> AsyncIterator[TransportEvent]:
     """Pure translation of parsed (event, data) pairs into TransportEvents.
 
@@ -343,7 +418,6 @@ async def _sse_to_events(
     async for event_name, data in events:
         if event_name == "message_start":
             msg = data.get("message", {}) or {}
-            yield TurnStart(model=msg.get("model", model))
             u = msg.get("usage", {}) or {}
             usage = Usage(
                 input_tokens=u.get("input_tokens", 0),
@@ -351,6 +425,11 @@ async def _sse_to_events(
                 cache_creation_input_tokens=u.get("cache_creation_input_tokens", 0),
                 cache_read_input_tokens=u.get("cache_read_input_tokens", 0),
             )
+            # Before the yield: a consumer that stops right after TurnStart
+            # must still have the billed input tokens metered.
+            if live_usage is not None:
+                live_usage[0] = usage
+            yield TurnStart(model=msg.get("model", model))
         elif event_name == "content_block_start":
             idx = data.get("index", 0)
             block = data.get("content_block", {}) or {}
@@ -400,6 +479,8 @@ async def _sse_to_events(
             u = data.get("usage", {}) or {}
             if "output_tokens" in u:
                 usage = usage.model_copy(update={"output_tokens": u["output_tokens"]})
+                if live_usage is not None:
+                    live_usage[0] = usage
         elif event_name == "message_stop":
             yield TurnEnd(stop_reason=stop_reason)
             yield Done(usage=usage)

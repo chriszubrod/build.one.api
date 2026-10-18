@@ -275,6 +275,16 @@ class Settings(BaseSettings):
     time_tracking_agent_username: Optional[str] = None
     time_tracking_agent_password: Optional[str] = None
 
+    # U-676f — Claude-first cascade budget (UTC day; per-process cache/breaker).
+    # Parsed in claude_budget / ladder_config (invalid env → code default + warning).
+    claude_daily_spend_cap_usd: Optional[str] = None  # default 6.45; "0" = disabled
+    claude_credit_breaker_minutes: Optional[str] = None  # default 60; must be > 0
+    claude_spend_cache_seconds: Optional[str] = None  # default 30; 0 = no cache
+    cascade_ladder_bill_coding_suggestion: Optional[str] = None
+    cascade_ladder_bill_header_extraction: Optional[str] = None
+    cascade_threshold_bill_coding_suggestion: Optional[str] = None
+    cascade_threshold_bill_header_extraction: Optional[str] = None
+
     model_config = SettingsConfigDict(
         env_file=".env",
         extra="ignore"  # This allows extra fields to be ignored

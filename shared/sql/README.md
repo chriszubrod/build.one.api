@@ -109,3 +109,9 @@ These migration files no longer carry UDF bodies (U-051):
 `UserCanAccessTimeEntry` moved here from `entities/time_entry/sql/dbo.time_entry.sql`
 in U-051. It has no SQL callers (its consumer is `shared/access.py` at runtime),
 so the move is build-order safe.
+
+## LLM daily spend (U-676f)
+
+- `dbo.llm_daily_spend.sql` — `dbo.LlmDailySpend` + `AddLlmDailySpend` /
+  `ReadLlmDailySpend` / `ReadLlmSpendForRange`. No FK dependencies; may be applied
+  any time after core `dbo` schema exists.

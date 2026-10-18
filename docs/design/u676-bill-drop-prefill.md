@@ -71,3 +71,34 @@ A read-only offline bake-off on ~200 completed bills that have a PDF, ground tru
 - iOS / email reviewer surfaces showing the suggestion (the prediction now reaches reviewers as the line's code).
 - Expense and BillCredit drop-to-prefill.
 - Server-side recording of header-field acceptance.
+
+## U-676f — Claude-first cascade policy (2026-10-18)
+
+Production routing for bill text coding and bill header extraction:
+
+- **Claude first** on promotional credit (Haiku 5.5 first rung for both tasks).
+- **Azure Foundry is fallback-only** (`fallback_only` rungs): cash models run only when Claude did not return a parseable result (error, timeout, unparseable JSON). Low confidence after a successful parse does **not** escalate to Foundry.
+- **Daily Claude spend cap** (default `$200/31` ≈ `$6.45` UTC day, `dbo.LlmDailySpend`). When cap is reached, Claude rungs skip and **Foundry fallback rungs do not run** (no cash spend for the rest of the UTC day). Legacy ladders without `fallback_only` (e.g. `DEFAULT_LADDER` for agents) still run non-Claude rungs.
+- **Out-of-credit breaker**: HTTP 402 / `billing_error` / credit-balance 400 opens a 60-minute process-local block; Claude rungs skip with `claude_unavailable:credit` and Foundry fallback may run. One warning per block, no response bodies in logs.
+- **Rollback**: `CASCADE_LADDER_BILL_CODING_SUGGESTION=foundry:DeepSeek-V4-Flash,foundry:gpt-5.4-nano,foundry:gpt-5.4-mini` and `CASCADE_THRESHOLD_BILL_CODING_SUGGESTION=0.85` restores pre-U-676f bill text behaviour.
+- **Process-local** breaker and 30s spend-read cache (each gunicorn worker is independent).
+- **Fix round 1 (2026-10-18)**: the budget gate and spend metering live in `AnthropicTransport.stream` (every Claude caller, including `CascadeTransport` and direct agent pins). `run_ladder` only enforces `fallback_only` (skip Foundry when an earlier attempt returned `claude_unavailable:daily_cap`). Spend reads fail closed after 10 minutes without a good DB row; writes retry via an in-process unsaved buffer. The bill text tick returns `capped` without claiming or finalizing when the daily cap stops work.
+- **Fix round 2 (2026-10-18)**: HTTP 402 / credit-balance 400 and partial SSE usage always run through `post_call_metering` (one `finally` per HTTP attempt; retries do not double-meter). Claude routed via `ANTHROPIC_FOUNDRY_BASE_URL` is still gated and counted against the same Claude daily cap (conservative; not configured in prod). Spend writes hold a process lock and flush per-day unsaved buffers; an ambiguous write (committed then connection dropped) can double-count spend in DB (over-count is the safe direction). Unknown Anthropic model ids are costed at Sonnet 5.5 rates. `CASCADE_*` and `CLAUDE_DAILY_SPEND_CAP_USD` env values are parsed as strings so invalid values cannot crash `Settings()`.
+
+### Round 3 (2026-10-18) — metering order and operator notes
+
+- **Metering happens before the terminal event.** `AnthropicTransport.stream` records spend and opens the
+  credit breaker *before* it yields `Done` or a `TransportError`, exactly once per request, so a consumer that
+  stops reading on that event (e.g. `CascadeTransport`) already sees the breaker open for its next rung. Paths
+  with no terminal event (truncated stream, exception, consumer close) meter what was seen in `finally`.
+  A metering failure is logged and never replaces the answer — a finished Claude reply never falls back to Foundry.
+- **Spend writes never hold the lock across the DB call.** Amounts move unsaved → in-flight under the lock, are
+  written without it, then settled; readers take the same lock, so a gate check never misses an amount in
+  motion (in-flight spend counts toward the cap until its write settles). Unsaved spend
+  from an earlier UTC day is retried under its own `SpendDate`.
+- **Settings** `CLAUDE_CREDIT_BREAKER_MINUTES` (1–10080, default 60) and `CLAUDE_SPEND_CACHE_SECONDS`
+  (≥ 0, default 30; 0 = read every call) are parsed leniently: a bad value logs one warning and uses the default.
+- **Operator note — lowering `LlmDailySpend` by hand.** Each worker keeps the *largest* total it has seen for the
+  day (totals only ever grow), so a manual downward correction does not take effect in running workers until the
+  UTC day rolls over or the API restarts.
+- **Known over-count:** a write that commits but whose reply is lost is retried and counted twice (safe direction).

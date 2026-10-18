@@ -15,14 +15,17 @@ from datetime import date
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
-from intelligence.cascade.bill_coding import (
-    BILL_CODING_FOUNDRY_LADDER,
-    truncate_bill_text,
-)
+from intelligence.cascade.bill_coding import truncate_bill_text
 from intelligence.cascade.core import CascadeResult, Rung, StructuredTask, run_cascade
+from intelligence.cascade.ladder_config import (
+    DEFAULT_BILL_HEADER_EXTRACTION_LADDER,
+    DEFAULT_BILL_HEADER_EXTRACTION_THRESHOLD,
+    resolve_ladder,
+    resolve_threshold,
+)
 
 BILL_HEADER_TEXT_CHAR_BUDGET = 6000
-BILL_HEADER_THRESHOLD = 0.5
+BILL_HEADER_THRESHOLD = DEFAULT_BILL_HEADER_EXTRACTION_THRESHOLD
 MAX_DESCRIPTION_LEN = 120
 MAX_VENDOR_NAME_LEN = 200
 MAX_BILL_NUMBER_LEN = 80
@@ -66,6 +69,43 @@ def _parse_iso_date(value: str) -> bool:
         return False
 
 
+def _coerce_bill_number(val: Any) -> tuple[str | None, str | None]:
+    if val is None:
+        return None, None
+    if isinstance(val, bool):
+        return None, "bill_number must be string or null"
+    if isinstance(val, float):
+        return None, "bill_number must be string or null"
+    if isinstance(val, int):
+        if val < 0:
+            return None, "bill_number must be string or null"
+        return str(val), None
+    if isinstance(val, str):
+        return val, None
+    return None, "bill_number must be string or null"
+
+
+def _coerce_total_amount(val: Any) -> tuple[str | None, str | None]:
+    if val is None:
+        return None, None
+    if isinstance(val, bool):
+        return None, "total_amount must be decimal string or null"
+    try:
+        if isinstance(val, str):
+            dec = Decimal(val.strip())
+        elif isinstance(val, (int, float)):
+            dec = Decimal(str(val))
+        else:
+            return None, "total_amount must be decimal string or null"
+    except (InvalidOperation, AttributeError):
+        return None, "total_amount not numeric"
+    if not dec.is_finite():
+        return None, "total_amount not numeric"
+    if dec < 0 or dec >= Decimal("10000000000"):
+        return None, "total_amount negative" if dec < 0 else "total_amount too large"
+    return format(dec.normalize(), "f"), None
+
+
 def validate_bill_header_result(result: dict[str, Any]) -> tuple[bool, str]:
     """Deterministic gate for parsed model JSON."""
     conf = result.get("confidence")
@@ -74,7 +114,6 @@ def validate_bill_header_result(result: dict[str, Any]) -> tuple[bool, str]:
 
     for key, max_len in (
         ("vendor_name", MAX_VENDOR_NAME_LEN),
-        ("bill_number", MAX_BILL_NUMBER_LEN),
         ("description", MAX_DESCRIPTION_LEN),
     ):
         val = result.get(key)
@@ -85,21 +124,24 @@ def validate_bill_header_result(result: dict[str, Any]) -> tuple[bool, str]:
         if len(val) > max_len:
             return False, f"{key} exceeds max length"
 
+    bn, bn_err = _coerce_bill_number(result.get("bill_number"))
+    if bn_err:
+        return False, bn_err
+    if bn is not None:
+        result["bill_number"] = bn
+        if len(bn) > MAX_BILL_NUMBER_LEN:
+            return False, "bill_number exceeds max length"
+
     bd = result.get("bill_date")
     if bd is not None:
         if not isinstance(bd, str) or not _parse_iso_date(bd):
             return False, "invalid bill_date"
 
-    amt = result.get("total_amount")
+    amt, amt_err = _coerce_total_amount(result.get("total_amount"))
+    if amt_err:
+        return False, amt_err
     if amt is not None:
-        if not isinstance(amt, str):
-            return False, "total_amount must be decimal string or null"
-        try:
-            dec = Decimal(amt.strip())
-        except (InvalidOperation, AttributeError):
-            return False, "total_amount not numeric"
-        if dec < 0:
-            return False, "total_amount negative"
+        result["total_amount"] = amt
 
     extra = set(result.keys()) - _RESULT_KEYS
     if extra:
@@ -127,7 +169,7 @@ BILL_HEADER_EXTRACTION_TASK = StructuredTask(
     threshold=BILL_HEADER_THRESHOLD,
     build_user_message=_build_user_message,
     validate=validate_bill_header_result,
-    ladder=BILL_CODING_FOUNDRY_LADDER,
+    ladder=DEFAULT_BILL_HEADER_EXTRACTION_LADDER,
 )
 
 
@@ -139,6 +181,16 @@ async def run_bill_header_extraction(
 ) -> CascadeResult:
     """Run the bill header extraction ladder."""
     task = BILL_HEADER_EXTRACTION_TASK
-    if ladder is not None:
+    if ladder is None:
+        task = dataclasses.replace(
+            task,
+            ladder=resolve_ladder(
+                "bill_header_extraction", DEFAULT_BILL_HEADER_EXTRACTION_LADDER,
+            ),
+            threshold=resolve_threshold(
+                "bill_header_extraction", BILL_HEADER_THRESHOLD,
+            ),
+        )
+    else:
         task = dataclasses.replace(task, ladder=ladder)
     return await run_cascade(task, payload, transport_for=transport_for)

@@ -21,6 +21,7 @@ from entities.coding_suggestion.persistence.bill_text_suggestion_repo import (
     BillTextCodingClaim,
     BillTextCodingSuggestionRepository,
 )
+from intelligence.cascade import claude_budget
 from intelligence.cascade.bill_coding import (
     SUSPENSE_SCC_NUMBER,
     normalize_project_abbreviation,
@@ -257,6 +258,8 @@ async def _process_one_claim(
 
         cascade_ran = True
         cascade = await run_bill_coding_suggestion(payload, transport_for=transport_for)
+        if cascade.stopped_reason == "daily_cap":
+            return _tick_result(status="capped", bill_id=claim.bill_id)
         if not cascade.accepted or cascade.result is None:
             _finalize_complete(
                 status="failed",
@@ -355,6 +358,8 @@ async def run_bill_text_coding_tick(
     for _ in range(max(1, int(limit))):
         if repository.count_calls_today() >= cap:
             return _tick_result(status="cap_reached", bill_id=last.get("bill_id"))
+        if await claude_budget.is_claude_day_stopped_async():
+            return _tick_result(status="capped", bill_id=last.get("bill_id"))
         claim = repository.claim_next()
         if claim is None:
             return last

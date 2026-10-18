@@ -29,6 +29,9 @@ class Rung:
     provider: str          # transport-registry key: "foundry" | "anthropic"
     model: str             # deployment name (Foundry) / model id (Anthropic)
     max_tokens: int = 1024
+    # When True, run only if no earlier rung returned a parseable result AND the
+    # daily Claude spend cap has not stopped the cascade (cash fallback).
+    fallback_only: bool = False
 
 
 # Cheapest-first by blended $/MTok ((input + output) / 2) per
@@ -99,6 +102,7 @@ class CascadeResult:
     attempts: list[Attempt]
     accepted_via: Optional[str] = None   # "threshold" | "consensus" when accepted
     winning_index: Optional[int] = None  # 1-based position in attempts of the attempt that produced `result`
+    stopped_reason: Optional[str] = None  # "daily_cap" when cascade stopped on the daily spend cap
 
 
 async def run_cascade(
@@ -155,10 +159,24 @@ async def run_ladder(
     """
     attempts: list[Attempt] = []
     agree: dict[Any, int] = {}   # validated label -> count, for consensus
+    had_parseable_result = False
+    daily_cap_stopped = False
+
     for rung in rungs:
+        if rung.fallback_only and (
+            had_parseable_result or daily_cap_stopped
+        ):
+            _append_skipped_rung(
+                attempts, rung, name, reason="fallback_only",
+            )
+            continue
+
         t0 = time.perf_counter()
         parsed, confidence, usage, error = await execute(rung)
         latency_ms = int((time.perf_counter() - t0) * 1000)
+
+        if _attempt_error_code(error) == "claude_unavailable:daily_cap":
+            daily_cap_stopped = True
 
         if error or parsed is None:
             attempts.append(Attempt(
@@ -171,6 +189,8 @@ async def run_ladder(
                 name, rung.provider, rung.model, error, latency_ms,
             )
             continue
+
+        had_parseable_result = True
 
         validated, vreason = validate(parsed)
         accepted = validated and confidence is not None and confidence >= threshold
@@ -219,9 +239,44 @@ async def run_ladder(
         winning_rung=best.rung if best else None,
         attempts=attempts,
         winning_index=next((i + 1 for i, a in enumerate(attempts) if a is best), None),
+        stopped_reason=(
+            "daily_cap"
+            if daily_cap_stopped and not any(a.accepted for a in attempts)
+            else None
+        ),
     )
     log_ladder_outcome(logger, name, outcome)
     return outcome
+
+
+def _attempt_error_code(error: Optional[str]) -> Optional[str]:
+    if not error or not isinstance(error, str):
+        return None
+    if error.startswith("claude_unavailable:"):
+        rest = error[len("claude_unavailable:"):]
+        token = rest.split(":", 1)[0]
+        return f"claude_unavailable:{token}"
+    if error.startswith("http_"):
+        return error.split(":", 1)[0]
+    return None
+
+
+def _append_skipped_rung(
+    attempts: list[Attempt],
+    rung: Rung,
+    name: str,
+    *,
+    reason: str,
+) -> None:
+    attempts.append(Attempt(
+        rung=rung, accepted=False, latency_ms=0,
+        error=f"skipped:{reason}",
+    ))
+    log_safely(
+        logger, logging.INFO,
+        "cascade[%s] rung %s/%s -> skip (%s)",
+        name, rung.provider, rung.model, reason,
+    )
 
 
 def _best_attempt(attempts: list[Attempt]) -> Optional[Attempt]:
@@ -256,7 +311,10 @@ async def _complete_structured(
             elif isinstance(ev, Done):
                 usage = ev.usage
             elif isinstance(ev, TransportError):
-                error = f"{ev.code}: {ev.message}" if ev.code else ev.message
+                if ev.code and ev.code.startswith("claude_unavailable:"):
+                    error = ev.code
+                else:
+                    error = f"{ev.code}: {ev.message}" if ev.code else ev.message
     except Exception as exc:  # transport blew up mid-stream
         error = f"{type(exc).__name__}: {exc}"
 

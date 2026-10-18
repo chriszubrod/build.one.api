@@ -349,15 +349,16 @@ def test_r1_p1_2_throttled_cascade_attempt_retries_without_needs_human_only():
     }
     with patch.object(u654a, "run_bill_coding_suggestion", side_effect=fake_run):
         with patch.object(u654a, "estimate_call_cost_usd", return_value=0.01):
-            out = asyncio.run(
-                u654a.run_text_cascade_batch(
-                    work,
-                    transport_for=lambda _p: MagicMock(),
-                    concurrency=1,
-                    max_cost_usd=10.0,
-                    cost_state=cost_state,
+            with patch.object(asyncio, "sleep", new_callable=AsyncMock):
+                out = asyncio.run(
+                    u654a.run_text_cascade_batch(
+                        work,
+                        transport_for=lambda _p: MagicMock(),
+                        concurrency=1,
+                        max_cost_usd=10.0,
+                        cost_state=cost_state,
+                    )
                 )
-            )
     assert calls["n"] == 2
     assert cost_state["throttle_retry_count"] == 1
     assert out[(1, "A")].predicted_scc_id == 1
@@ -1412,9 +1413,212 @@ def test_dry_run_cost_uses_selected_ladder_first_rung():
     )
     assert foundry["ladder"] == "foundry"
     assert haiku["ladder"] == "claude-haiku"
-    assert haiku["estimated_cost_usd_first_rung_only"] < foundry[
-        "estimated_cost_usd_first_rung_only"
+    assert haiku["estimated_input_tokens_per_call"] >= u654a.CLAUDE_DRY_RUN_INPUT_TOKENS_FLOOR
+
+
+def test_claude_haiku_dry_run_cost_floor_500_bills_modes_a_and_b():
+    sample = [
+        (_bill(i, 1, f"2026-05-{min(i, 28):02d}T10:00:00", 1), "cold_start")
+        for i in range(1, 501)
     ]
+    dry = u654a.dry_run_summary(
+        sample, sample_size=500, populations={}, ladder_name="claude-haiku"
+    )
+    assert dry["estimated_cascade_calls"] == 1000
+    cost = dry["estimated_cost_usd_first_rung_only"]
+    assert 1.7 <= cost <= 1.8
+
+
+def test_error_kind_mapping_http_statuses():
+    assert u654a.error_kind_from_error_string("http_429: x")[0] == "rate_limit"
+    assert u654a.error_kind_from_error_string("http_529: x") == ("overloaded", 529)
+    assert u654a.error_kind_from_error_string("http_400: x")[0] == "bad_request"
+    assert u654a.error_kind_from_error_string("http_401: x")[0] == "auth"
+    assert u654a.error_kind_from_error_string("http_500: x")[0] == "server"
+    assert u654a.error_kind_from_error_string("read timeout")[0] == "timeout"
+
+
+def test_harness_retries_429_recalls_with_cap_precheck():
+    import asyncio
+
+    bill = _bill(1, 1, "2026-05-01T10:00:00", 1)
+    throttled = CascadeResult(
+        False,
+        True,
+        None,
+        None,
+        None,
+        [
+            Attempt(
+                rung=Rung("anthropic", "claude-haiku-5-5"),
+                accepted=False,
+                error="http_429: rate limited",
+            )
+        ],
+    )
+    ok = CascadeResult(
+        True,
+        False,
+        {"scc_number": "03.01", "confidence": 0.95, "rationale": "x"},
+        0.95,
+        Rung("anthropic", "claude-haiku-5-5"),
+        [],
+    )
+    calls = {"n": 0}
+
+    async def fake():
+        calls["n"] += 1
+        return throttled if calls["n"] == 1 else ok
+
+    cost_state = {"usd": 0.0, "stopped": False}
+    with patch.object(u654a, "estimate_call_cost_usd", return_value=0.01):
+        with patch.object(asyncio, "sleep", new_callable=AsyncMock):
+            out = asyncio.run(
+                u654a.run_capped_cascade(
+                    fake, est=0.01, cost_state=cost_state, max_cost_usd=10.0
+                )
+            )
+    assert calls["n"] == 2
+    assert out is not None and out.accepted
+    assert cost_state["throttle_retry_count"] == 1
+
+
+def test_harness_does_not_retry_http_400():
+    import asyncio
+
+    bad = CascadeResult(
+        False,
+        True,
+        None,
+        None,
+        None,
+        [
+            Attempt(
+                rung=Rung("anthropic", "claude-haiku-5-5"),
+                accepted=False,
+                error="http_400: bad request",
+            )
+        ],
+    )
+    calls = {"n": 0}
+
+    async def fake():
+        calls["n"] += 1
+        return bad
+
+    cost_state = {"usd": 0.0, "stopped": False}
+    with patch.object(u654a, "estimate_call_cost_usd", return_value=0.01):
+        with patch.object(asyncio, "sleep", new_callable=AsyncMock) as sleep_mock:
+            asyncio.run(
+                u654a.run_capped_cascade(
+                    fake, est=0.01, cost_state=cost_state, max_cost_usd=10.0
+                )
+            )
+    assert calls["n"] == 1
+    sleep_mock.assert_not_called()
+
+
+def test_needs_human_keeps_raw_prediction_accepted_metrics_unchanged():
+    rows = [
+        u654a.ScoredTextBill(
+            bill=_bill(1, 1, "2026-05-01T10:00:00", 10),
+            stratum=">=90%",
+            history_a=ModePrediction("A", 10, 10, "vendor_history", Decimal("0.5"), [], 5),
+            history_b=ModePrediction("B", 10, 10, "vendor_history", Decimal("0.5"), [], 5),
+            text_a=u654a.TextAttemptResult(
+                "A",
+                CascadeResult(
+                    False,
+                    True,
+                    {
+                        "scc_number": "03.01",
+                        "project_abbreviation": None,
+                        "confidence": 0.70,
+                        "rationale": "x",
+                    },
+                    0.70,
+                    Rung("foundry", "DeepSeek-V4-Flash"),
+                    [],
+                ),
+                predicted_scc_id=None,
+                raw_predicted_scc_id=11,
+                raw_confidence=0.70,
+            ),
+        ),
+    ]
+    text_m = u654a.compute_suggester_metrics(rows, mode="A", source="text")
+    assert text_m.top1_bill == Decimal("0")
+    assert rows[0].text_a.raw_predicted_scc_id == 11
+
+
+def test_confidence_bar_sweep_hand_computed():
+    row = u654a.ScoredTextBill(
+        bill=_bill(1, 1, "2026-05-01T10:00:00", 10),
+        stratum="cold_start",
+        history_a=ModePrediction("A", 10, 10, "vendor_history", Decimal("0.5"), [], 5),
+        history_b=ModePrediction("B", 10, 10, "vendor_history", Decimal("0.5"), [], 5),
+        text_a=u654a.TextAttemptResult(
+            "A",
+            CascadeResult(True, False, {}, 0.9, None, []),
+            predicted_scc_id=None,
+            raw_predicted_scc_id=10,
+            raw_confidence=0.75,
+        ),
+    )
+    sweep = u654a.confidence_bar_sweep([row])
+    at_70 = sweep["mode_a"]["0.7"]["text"]["top1_bill"]
+    at_80 = sweep["mode_a"]["0.8"]["text"]["top1_bill"]
+    assert at_70 == Decimal("1")
+    assert at_80 == Decimal("0")
+
+
+def test_claude_concurrency_honoured_in_main_batch():
+    import asyncio
+
+    payload = {
+        "vendor_name": "v",
+        "bill_text": "t",
+        "history_evidence": [],
+        "candidate_sccs": [],
+        "candidate_projects": None,
+    }
+    work = [
+        (_bill(i, 1, "2026-05-01T10:00:00", 1), "A", "cold_start", payload)
+        for i in range(1, 5)
+    ]
+    inflight = {"n": 0, "max": 0}
+
+    async def fake_run(_payload, transport_for=None, ladder=None):
+        inflight["n"] += 1
+        inflight["max"] = max(inflight["max"], inflight["n"])
+        await asyncio.sleep(0.01)
+        inflight["n"] -= 1
+        return CascadeResult(
+            True,
+            False,
+            {"scc_number": "03.01", "confidence": 0.9, "rationale": "x"},
+            0.9,
+            Rung("anthropic", "claude-haiku-5-5"),
+            [],
+        )
+
+    cost_state = {
+        "usd": 0.0,
+        "stopped": False,
+        "scc_number_to_id": {"03.01": 1},
+        "proj_abbrev_to_id": {},
+    }
+    with patch.object(u654a, "run_bill_coding_suggestion", side_effect=fake_run):
+        asyncio.run(
+            u654a.run_text_cascade_batch(
+                work,
+                transport_for=lambda _p: MagicMock(),
+                concurrency=2,
+                max_cost_usd=10.0,
+                cost_state=cost_state,
+            )
+        )
+    assert inflight["max"] <= 2
 
 
 def test_write_outputs_include_ladder_in_filenames(tmp_path):
@@ -1587,3 +1791,351 @@ def test_bill_cascade_spend_fallback_foundry_provider_unchanged():
     with patch.object(u654a, "estimate_call_cost_usd", return_value=0.01) as mock:
         assert u654a.bill_cascade_spend_usd(cascade) == 0.01
     mock.assert_called_once_with("DeepSeek-V4-Flash", provider="foundry")
+
+
+@pytest.mark.parametrize(
+    "err,expected",
+    [
+        ("overloaded_error: Overloaded", ("overloaded", 529)),
+        ("rate_limit_error: try again", ("rate_limit", 429)),
+        ("api_error: internal", ("server", 500)),
+        ("invalid_request_error: bad", ("bad_request", 400)),
+        ("authentication_error: no key", ("auth", 401)),
+        ("permission_error: denied", ("auth", 403)),
+        ("not_found_error: missing", ("not_found", 404)),
+        ("request_too_large: huge body", ("too_large", 413)),
+        ("http_529: overloaded", ("overloaded", 529)),
+    ],
+)
+def test_error_kind_instream_and_http(err, expected):
+    assert u654a.error_kind_from_error_string(err) == expected
+
+
+def test_cascade_call_error_summary_parse_and_validation():
+    from intelligence.cascade.core import Attempt, CascadeResult, Rung
+
+    rung = Rung("anthropic", "claude-haiku-5-5")
+    parse_c = CascadeResult(
+        False,
+        True,
+        None,
+        None,
+        None,
+        [Attempt(rung=rung, accepted=False, error="no parseable result")],
+    )
+    assert u654a.cascade_call_error_summary(parse_c) == ("parse", None)
+    val_c = CascadeResult(
+        False,
+        True,
+        {"scc_number": "x", "confidence": 0.5},
+        0.5,
+        None,
+        [
+            Attempt(
+                rung=rung,
+                accepted=False,
+                validated=False,
+                validation_reason="bad scc",
+                result={"scc_number": "x"},
+                confidence=0.5,
+            )
+        ],
+    )
+    assert u654a.cascade_call_error_summary(val_c) == ("validation", None)
+
+
+@pytest.mark.parametrize("err", ["http_529: x", "overloaded_error: Overloaded"])
+def test_harness_retries_529_and_instream_overloaded(err):
+    import asyncio
+
+    throttled = CascadeResult(
+        False,
+        True,
+        None,
+        None,
+        None,
+        [Attempt(rung=Rung("anthropic", "claude-haiku-5-5"), accepted=False, error=err)],
+    )
+    ok = CascadeResult(
+        True,
+        False,
+        {"scc_number": "03.01", "confidence": 0.95, "rationale": "x"},
+        0.95,
+        Rung("anthropic", "claude-haiku-5-5"),
+        [],
+    )
+    calls = {"n": 0}
+
+    async def fake():
+        calls["n"] += 1
+        return throttled if calls["n"] == 1 else ok
+
+    cost_state = {"usd": 0.0, "stopped": False}
+    with patch.object(u654a, "estimate_call_cost_usd", return_value=0.01):
+        with patch.object(asyncio, "sleep", new_callable=AsyncMock):
+            out = asyncio.run(
+                u654a.run_capped_cascade(
+                    fake, est=0.01, cost_state=cost_state, max_cost_usd=10.0
+                )
+            )
+    assert calls["n"] == 2
+    assert out is not None and out.accepted
+
+
+def test_harness_exhausts_rate_limit_retries_with_backoff():
+    import asyncio
+
+    throttled = CascadeResult(
+        False,
+        True,
+        None,
+        None,
+        None,
+        [
+            Attempt(
+                rung=Rung("anthropic", "claude-haiku-5-5"),
+                accepted=False,
+                error="http_429: limited",
+            )
+        ],
+    )
+    calls = {"n": 0}
+
+    async def fake():
+        calls["n"] += 1
+        return throttled
+
+    cost_state: dict[str, object] = {"usd": 0.0, "stopped": False}
+    sleeps: list[float] = []
+
+    async def record_sleep(secs: float) -> None:
+        sleeps.append(secs)
+
+    with patch.object(u654a, "estimate_call_cost_usd", return_value=0.01):
+        with patch.object(asyncio, "sleep", side_effect=record_sleep):
+            asyncio.run(
+                u654a.run_capped_cascade(
+                    fake, est=0.01, cost_state=cost_state, max_cost_usd=10.0
+                )
+            )
+    assert calls["n"] == 5
+    assert sleeps == [5.0, 15.0, 30.0, 60.0]
+    assert cost_state["harness_retry_by_kind"] == {"rate_limit": 4}
+    assert cost_state["throttle_failure_count"] == 1
+
+
+def test_run_capped_cascade_stops_when_spend_plus_est_exceeds_cap():
+    import asyncio
+
+    throttled = CascadeResult(
+        False,
+        True,
+        None,
+        None,
+        None,
+        [
+            Attempt(
+                Rung("foundry", "DeepSeek-V4-Flash"),
+                accepted=False,
+                error="http_429: limited",
+            )
+        ],
+    )
+    calls = {"n": 0}
+
+    async def fake():
+        calls["n"] += 1
+        return throttled
+
+    cost_state = {"usd": 0.0, "stopped": False}
+    with patch.object(u654a, "bill_cascade_spend_usd", return_value=6.0):
+        out = asyncio.run(
+            u654a.run_capped_cascade(
+                fake, est=5.0, cost_state=cost_state, max_cost_usd=10.0
+            )
+        )
+    assert calls["n"] == 1
+    assert out is None
+    assert cost_state["stopped"] is True
+
+
+def test_harness_does_not_retry_400_whose_body_mentions_rate_limit():
+    import asyncio
+
+    bad = CascadeResult(
+        False,
+        True,
+        None,
+        None,
+        None,
+        [
+            Attempt(
+                rung=Rung("anthropic", "claude-haiku-5-5"),
+                accepted=False,
+                error="http_400: rate limit exceeded (429)",
+            )
+        ],
+    )
+    calls = {"n": 0}
+
+    async def fake():
+        calls["n"] += 1
+        return bad
+
+    cost_state = {"usd": 0.0, "stopped": False}
+    with patch.object(u654a, "estimate_call_cost_usd", return_value=0.01):
+        with patch.object(asyncio, "sleep", new_callable=AsyncMock) as sleep_mock:
+            asyncio.run(
+                u654a.run_capped_cascade(
+                    fake, est=0.01, cost_state=cost_state, max_cost_usd=10.0
+                )
+            )
+    assert calls["n"] == 1
+    sleep_mock.assert_not_called()
+    assert u654a.error_kind_from_error_string(bad.attempts[0].error)[0] == "bad_request"
+
+
+def test_per_row_spend_sums_harness_recall_attempts():
+    import asyncio
+
+    rung = Rung("anthropic", "claude-haiku-5-5")
+    first = CascadeResult(
+        False,
+        True,
+        None,
+        None,
+        None,
+        [
+            Attempt(
+                rung=rung,
+                accepted=False,
+                error="http_429: x",
+                usage=Usage(input_tokens=100, output_tokens=10),
+            )
+        ],
+    )
+    second = CascadeResult(
+        True,
+        False,
+        {"scc_number": "03.01", "confidence": 0.9, "rationale": "x"},
+        0.9,
+        rung,
+        [Attempt(rung, True, usage=Usage(input_tokens=200, output_tokens=20))],
+    )
+    calls = {"n": 0}
+
+    async def fake():
+        calls["n"] += 1
+        return first if calls["n"] == 1 else second
+
+    cost_state = {"usd": 0.0, "stopped": False}
+
+    with patch.object(u654a, "bill_cascade_spend_usd", side_effect=[0.1, 0.2, 0.3]):
+        with patch.object(asyncio, "sleep", new_callable=AsyncMock):
+            out = asyncio.run(
+                u654a.run_capped_cascade(
+                    fake, est=0.01, cost_state=cost_state, max_cost_usd=10.0
+                )
+            )
+    assert out is not None
+    assert len(out.attempts) == 2
+    assert cost_state["usd"] == pytest.approx(0.3)
+
+
+def test_confidence_sweep_mode_b_includes_combined_top1():
+    row = u654a.ScoredTextBill(
+        bill=_bill(1, 1, "2026-05-01T10:00:00", 10),
+        stratum="cold_start",
+        history_a=ModePrediction("A", 10, 10, "vendor_history", Decimal("0.5"), [], 5),
+        history_b=ModePrediction("B", 10, 10, "vendor_history", Decimal("0.70"), [], 5),
+        text_b=u654a.TextAttemptResult(
+            "B",
+            CascadeResult(True, False, {}, 0.9, None, []),
+            predicted_scc_id=10,
+            raw_predicted_scc_id=10,
+            raw_confidence=0.75,
+        ),
+    )
+    sweep = u654a.confidence_bar_sweep([row])
+    assert sweep["mode_b"]["0.7"]["combined_top1_bill"] == Decimal("1")
+
+
+def test_privacy_refuses_non_sweep_row_with_prose_after_bar():
+    with tempfile.TemporaryDirectory() as tmp:
+        p = Path(tmp) / "r.md"
+        p.write_text("| 0.85 | This is free text prose here |\n", encoding="utf-8")
+        with pytest.raises(ValueError, match="forbidden"):
+            u654a.assert_outputs_privacy_safe(p)
+
+
+def test_llm_backtest_cascade_concurrency_selection():
+    assert (
+        u654a.llm_backtest_cascade_concurrency(
+            "claude-haiku", concurrency=4, claude_concurrency=1
+        )
+        == 1
+    )
+    assert (
+        u654a.llm_backtest_cascade_concurrency(
+            "foundry", concurrency=4, claude_concurrency=1
+        )
+        == 4
+    )
+
+
+def test_main_passes_claude_concurrency_to_batch(tmp_path):
+    fake_bills = [
+        BillRow(
+            bill_id=1,
+            vendor_id=1,
+            created=datetime.fromisoformat("2026-05-01T10:00:00"),
+            label_scc_id=1,
+            label_project_id=10,
+            total_abs_amount=Decimal("100"),
+            mixed_code=False,
+        )
+    ]
+    empty_ref = u654a.ReferenceData(
+        scc_by_id={1: u654a.SccRef(1, "03.01", "A", datetime(2026, 1, 1))},
+        scc_number_to_id={"03.01": 1},
+        proj_by_id={},
+        proj_abbrev_to_id={},
+        vendor_names={1: "v"},
+        ambiguous_scc_numbers=frozenset(),
+        ambiguous_project_abbrevs=frozenset(),
+        duplicate_scc_number_count=0,
+        duplicate_project_abbrev_count=0,
+    )
+    seen: dict[str, int] = {}
+
+    async def fake_batch(*_a, concurrency=0, **_k):
+        seen["concurrency"] = concurrency
+
+    with patch.object(u654a, "load_bills_from_db", return_value=fake_bills):
+        with patch.object(u654a, "load_blob_urls_from_db", return_value={1: "https://x"}):
+            with patch.object(u654a, "load_reference_data", return_value=empty_ref):
+                with patch.object(u654a, "read_text_blob_with_retry", return_value="bill text"):
+                    with patch.object(u654a, "run_text_cascade_batch", side_effect=fake_batch):
+                        with patch.object(u654a, "execute_run") as mock_exec:
+                            def run_build(build, cascades):
+                                build()
+                                cascades()
+
+                            mock_exec.side_effect = run_build
+                            with patch.object(u654a, "assert_cli_system_admin"):
+                                u654a.main(
+                                    [
+                                        "--out-dir",
+                                        str(tmp_path),
+                                        "--run",
+                                        "--sample-size",
+                                        "1",
+                                        "--ladder",
+                                        "claude-haiku",
+                                        "--claude-concurrency",
+                                        "1",
+                                        "--concurrency",
+                                        "4",
+                                    ]
+                                )
+    assert seen["concurrency"] == 1

@@ -55,6 +55,7 @@ from scripts.u654a_text_backtest import (
     _json_default,
     assert_outputs_privacy_safe,
     bill_cascade_spend_usd,
+    cascade_call_error_summary,
     estimate_ladder_first_rung_cost_usd,
     estimate_payload_input_tokens,
     execute_run,
@@ -73,7 +74,9 @@ DEFAULT_SAMPLE_SIZE = 200
 DEFAULT_SEED = 676
 DEFAULT_MAX_COST_USD = 10.0
 DEFAULT_CONCURRENCY = 4
+DEFAULT_CLAUDE_CONCURRENCY = 2
 DEFAULT_ARMS = "A,B"
+HEADER_CONFIDENCE_BAR_SWEEP_BARS: tuple[float, ...] = (0.30, 0.40, 0.50, 0.60, 0.70, 0.80)
 DEFAULT_CLAUDE_LADDER = "claude-haiku"
 ACCURACY_BAR = Decimal("0.80")
 AMOUNT_TOLERANCE = Decimal("0.01")
@@ -195,6 +198,16 @@ class ArmPrediction:
     arm_error: bool = False
     cascade: Optional[CascadeResult] = None
     spend_usd: float = 0.0
+    raw_confidence: Optional[float] = None
+    error_kind: str = "none"
+    http_status: Optional[int] = None
+    raw_vendor_correct: Optional[bool] = None
+    raw_bill_number_correct: Optional[bool] = None
+    raw_bill_date_correct: Optional[bool] = None
+    raw_amount_correct: Optional[bool] = None
+    raw_description_nonempty: Optional[bool] = None
+    raw_vendor_resolve_failed: bool = False
+    accepted_vendor_resolve_failed: bool = False
 
 
 @dataclass
@@ -489,6 +502,17 @@ def _dry_run_input_tokens_per_llm_call(
     return user_tokens + system_tokens
 
 
+def llm_arm_concurrency(
+    arm_key: str,
+    *,
+    concurrency: int,
+    claude_concurrency: int,
+) -> int:
+    if arm_key == "C":
+        return claude_concurrency
+    return concurrency
+
+
 def dry_run_summary(
     sample: Sequence[tuple[HeaderBillRow, str]],
     *,
@@ -526,10 +550,9 @@ def dry_run_summary(
         if arm_key not in arms:
             continue
         ladder = llm_arm_ladders[arm_key]
-        cost = calls * estimate_ladder_first_rung_cost_usd(
-            ladder, input_tokens=input_per_call
-        )
-        est_tokens = calls * (input_per_call + _ESTIMATE_OUTPUT_TOKENS_PER_CALL)
+        tokens = input_per_call
+        cost = calls * estimate_ladder_first_rung_cost_usd(ladder, input_tokens=tokens)
+        est_tokens = calls * (tokens + _ESTIMATE_OUTPUT_TOKENS_PER_CALL)
         out[f"estimated_cascade_calls_arm_{arm_key.lower()}"] = calls
         out[f"estimated_tokens_arm_{arm_key.lower()}"] = est_tokens
         out[f"estimated_cost_usd_arm_{arm_key.lower()}_first_rung_only"] = round(cost, 6)
@@ -619,22 +642,128 @@ def resolve_vendor_from_name(
     return None
 
 
+def _raw_scalar_fields_from_result(
+    r: dict[str, Any],
+) -> tuple[Optional[str], Optional[str], Optional[Decimal], bool]:
+    bn = r.get("bill_number") if isinstance(r.get("bill_number"), str) else None
+    bd = r.get("bill_date") if isinstance(r.get("bill_date"), str) else None
+    amt: Optional[Decimal] = None
+    raw_amt = r.get("total_amount")
+    if raw_amt is not None and str(raw_amt).strip():
+        try:
+            amt = Decimal(str(raw_amt).strip())
+        except Exception:
+            amt = None
+    desc = r.get("description")
+    desc_ok = isinstance(desc, str) and bool(desc.strip())
+    return bn, bd, amt, desc_ok
+
+
+def _resolve_cascade_vendor(
+    cascade: CascadeResult,
+    mapper: BillExtractionMapper,
+) -> tuple[Optional[str], bool]:
+    """Return (vendor_public_id, resolve_failed)."""
+    if not cascade.result or not isinstance(cascade.result, dict):
+        return None, False
+    r = cascade.result
+    vendor_name = (
+        r.get("vendor_name") if isinstance(r.get("vendor_name"), str) else None
+    )
+    if not vendor_name or not vendor_name.strip():
+        return None, False
+    try:
+        vid = resolve_vendor_from_name(
+            vendor_name,
+            mapper,
+            confidence=LLM_VENDOR_MATCH_CONFIDENCE,
+        )
+        return vid, False
+    except Exception:
+        return None, True
+
+
+def _raw_result_field_nonempty(r: dict[str, Any], field: str) -> bool:
+    """Non-empty check aligned with _raw_scalar_fields_from_result / vendor string gate."""
+    if field == "vendor":
+        vn = r.get("vendor_name")
+        return isinstance(vn, str) and bool(vn.strip())
+    if field == "bill_number":
+        bn = r.get("bill_number")
+        return isinstance(bn, str) and bool(bn.strip())
+    if field == "bill_date":
+        bd = r.get("bill_date")
+        return isinstance(bd, str) and bool(bd.strip())
+    if field == "amount":
+        raw = r.get("total_amount")
+        return raw is not None and str(raw).strip() != ""
+    return False
+
+
+def populate_raw_field_correctness(
+    pred: ArmPrediction,
+    cascade: CascadeResult,
+    truth: HeaderTruth,
+    mapper: BillExtractionMapper,
+) -> Optional[str]:
+    """Resolve raw vendor once and store per-field raw correctness on the prediction."""
+    if not cascade.result or not isinstance(cascade.result, dict):
+        return None
+    vendor, resolve_failed = _resolve_cascade_vendor(cascade, mapper)
+    pred.raw_vendor_resolve_failed = resolve_failed
+    bn, bd, amt, desc_ok = _raw_scalar_fields_from_result(cascade.result)
+    pred.raw_vendor_correct = (
+        False
+        if pred.raw_vendor_resolve_failed
+        else score_vendor(vendor, truth.vendor_public_id)
+        if vendor
+        else False
+    )
+    if bill_number_is_scorable(truth.bill_number):
+        pred.raw_bill_number_correct = (
+            score_bill_number(bn, truth.bill_number) if bn else False
+        )
+    pred.raw_bill_date_correct = (
+        score_bill_date(bd, truth.bill_date) if bd else False
+    )
+    if amount_is_scorable(truth.total_amount):
+        pred.raw_amount_correct = (
+            score_amount(amt, truth.total_amount) if amt is not None else False
+        )
+    pred.raw_description_nonempty = desc_ok
+    return vendor
+
+
 def arm_prediction_from_cascade(
-    cascade: CascadeResult, mapper: BillExtractionMapper
+    cascade: CascadeResult,
+    mapper: BillExtractionMapper,
+    *,
+    truth: Optional[HeaderTruth] = None,
 ) -> ArmPrediction:
     pred = ArmPrediction()
     pred.latency_ms = sum(a.latency_ms for a in cascade.attempts)
     pred.spend_usd = bill_cascade_spend_usd(cascade)
     pred.cascade = cascade
+    pred.raw_confidence = cascade.confidence
+    err_kind, http_status = cascade_call_error_summary(cascade)
+    pred.error_kind = err_kind
+    pred.http_status = http_status
+    resolved_vendor: Optional[str] = None
+    if cascade.result and isinstance(cascade.result, dict):
+        if truth is not None:
+            resolved_vendor = populate_raw_field_correctness(pred, cascade, truth, mapper)
+        if cascade.accepted:
+            if truth is None:
+                resolved_vendor, failed = _resolve_cascade_vendor(cascade, mapper)
+                pred.accepted_vendor_resolve_failed = failed
+            elif pred.raw_vendor_resolve_failed:
+                resolved_vendor = None
+                pred.accepted_vendor_resolve_failed = True
     if not cascade.accepted or not cascade.result:
         pred.arm_error = True
         return pred
     r = cascade.result
-    pred.vendor_public_id = resolve_vendor_from_name(
-        r.get("vendor_name") if isinstance(r, dict) else None,
-        mapper,
-        confidence=LLM_VENDOR_MATCH_CONFIDENCE,
-    )
+    pred.vendor_public_id = resolved_vendor
     if isinstance(r, dict):
         pred.bill_number = r.get("bill_number")
         pred.bill_date = r.get("bill_date")
@@ -903,6 +1032,8 @@ def build_metrics(
     if "C" in arms:
         desc_share["arm_c"] = description_nonempty_share(scored_rows, "C")
 
+    vendor_resolve = aggregate_vendor_resolve_failures(scored_rows, arms=arms)
+
     return {
         "arms": arms_signature(arms),
         "cap_tripped": cap_tripped,
@@ -919,6 +1050,9 @@ def build_metrics(
         "extraction_method": extraction_method_shares(scored_rows),
         "latency": latency_summary(scored_rows),
         "verdict": field_verdict(scored_rows, run_status=run_status, arms=arms),
+        "call_failures_by_arm": aggregate_arm_call_failures(scored_rows, arms=arms),
+        "confidence_bar_sweep": header_confidence_bar_sweep(scored_rows, arms=arms),
+        **vendor_resolve,
     }
 
 
@@ -926,6 +1060,178 @@ def _flag(value: bool | None) -> str:
     if value is None:
         return ""
     return "1" if value else "0"
+
+
+def _raw_extraction_values(
+    cascade: CascadeResult,
+    mapper: BillExtractionMapper,
+) -> tuple[
+    Optional[str],
+    Optional[str],
+    Optional[str],
+    Optional[Decimal],
+    bool,
+]:
+    if not cascade.result or not isinstance(cascade.result, dict):
+        return None, None, None, None, False
+    vendor, _failed = _resolve_cascade_vendor(cascade, mapper)
+    bn, bd, amt, desc_ok = _raw_scalar_fields_from_result(cascade.result)
+    return vendor, bn, bd, amt, desc_ok
+
+
+def aggregate_vendor_resolve_failures(
+    rows: Sequence[ScoredHeaderBill],
+    *,
+    arms: frozenset[str],
+) -> dict[str, int]:
+    raw_failed = 0
+    accepted_failed = 0
+    for row in rows:
+        if row.blob_skip_reason:
+            continue
+        for arm in ("B", "C"):
+            if arm not in arms:
+                continue
+            pred = _arm_prediction(row, arm)
+            if pred is None or not _llm_arm_scored(row, arm):
+                continue
+            if pred.raw_vendor_resolve_failed:
+                raw_failed += 1
+            if pred.accepted_vendor_resolve_failed:
+                accepted_failed += 1
+    return {
+        "raw_vendor_resolve_failed": raw_failed,
+        "accepted_vendor_resolve_failed": accepted_failed,
+    }
+
+
+def _raw_field_correct(
+    row: ScoredHeaderBill,
+    arm: str,
+    field: str,
+    *,
+    bar: float | None = None,
+) -> str:
+    pred = _arm_prediction(row, arm)
+    if pred is None or pred.cascade is None or not _llm_arm_scored(row, arm):
+        return ""
+    if bar is not None:
+        if pred.raw_confidence is None or pred.raw_confidence < bar:
+            return ""
+    truth = row.truth
+    if field == "vendor":
+        if pred.raw_vendor_correct is None:
+            return ""
+        return _flag(pred.raw_vendor_correct)
+    if field == "bill_number":
+        if not bill_number_is_scorable(truth.bill_number):
+            return ""
+        if pred.raw_bill_number_correct is None:
+            return ""
+        return _flag(pred.raw_bill_number_correct)
+    if field == "bill_date":
+        if pred.raw_bill_date_correct is None:
+            return ""
+        return _flag(pred.raw_bill_date_correct)
+    if field == "amount":
+        if not amount_is_scorable(truth.total_amount):
+            return ""
+        if pred.raw_amount_correct is None:
+            return ""
+        return _flag(pred.raw_amount_correct)
+    if field == "description":
+        if pred.raw_description_nonempty is None:
+            return ""
+        return _flag(pred.raw_description_nonempty)
+    return ""
+
+
+def _raw_prediction_nonempty(pred: ArmPrediction, field: str) -> bool:
+    if not pred.cascade or not isinstance(pred.cascade.result, dict):
+        return False
+    r = pred.cascade.result
+    if field == "description":
+        return pred.raw_description_nonempty is True
+    return _raw_result_field_nonempty(r, field)
+
+
+def _raw_field_accuracy_at_bar(
+    rows: Sequence[ScoredHeaderBill],
+    arm: str,
+    field: str,
+    bar: float,
+) -> tuple[Optional[Decimal], Decimal, Optional[Decimal]]:
+    correct = 0
+    denom = 0
+    covered = 0
+    for row in rows:
+        if row.blob_skip_reason or not _llm_arm_scored(row, arm):
+            continue
+        if field == "bill_number" and not bill_number_is_scorable(row.truth.bill_number):
+            continue
+        if field == "amount" and not amount_is_scorable(row.truth.total_amount):
+            continue
+        pred = _arm_prediction(row, arm)
+        if pred is None:
+            continue
+        denom += 1
+        at_bar = pred.raw_confidence is not None and pred.raw_confidence >= bar
+        if at_bar and _raw_prediction_nonempty(pred, field):
+            covered += 1
+            flag = _raw_field_correct(row, arm, field, bar=bar)
+            if flag == "1":
+                correct += 1
+    acc = Decimal(correct) / Decimal(denom) if denom else None
+    cov = Decimal(covered) / Decimal(denom) if denom else Decimal("0")
+    prec = Decimal(correct) / Decimal(covered) if covered else None
+    return acc, cov, prec
+
+
+def header_confidence_bar_sweep(
+    rows: Sequence[ScoredHeaderBill],
+    *,
+    arms: frozenset[str],
+) -> dict[str, Any]:
+    scored_rows = [r for r in rows if not r.blob_skip_reason]
+    fields = ("vendor", "bill_number", "bill_date", "amount")
+    out: dict[str, Any] = {"bars": list(HEADER_CONFIDENCE_BAR_SWEEP_BARS), "arms": {}}
+    for arm in ("B", "C"):
+        if arm not in arms:
+            continue
+        arm_rows: dict[str, Any] = {}
+        for bar in HEADER_CONFIDENCE_BAR_SWEEP_BARS:
+            per_field: dict[str, Any] = {}
+            for fname in fields:
+                acc, cov, prec = _raw_field_accuracy_at_bar(
+                    scored_rows, arm, fname, bar
+                )
+                per_field[fname] = {
+                    "accuracy": acc,
+                    "coverage": cov,
+                    "precision": prec,
+                }
+            arm_rows[str(bar)] = per_field
+        out["arms"][arm] = arm_rows
+    return out
+
+
+def aggregate_arm_call_failures(
+    rows: Sequence[ScoredHeaderBill],
+    *,
+    arms: frozenset[str],
+) -> dict[str, dict[str, int]]:
+    counts: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
+    for row in rows:
+        if row.blob_skip_reason:
+            continue
+        for arm in ("B", "C"):
+            if arm not in arms:
+                continue
+            pred = _arm_prediction(row, arm)
+            if pred is None or not _llm_arm_scored(row, arm):
+                continue
+            counts[arm][pred.error_kind or "none"] += 1
+    return {arm: dict(kind_counts) for arm, kind_counts in counts.items()}
 
 
 def _per_doc_csv_fieldnames(arms: frozenset[str]) -> list[str]:
@@ -950,6 +1256,9 @@ def _per_doc_csv_fieldnames(arms: frozenset[str]) -> list[str]:
                 f"arm_{low}_spend_usd",
                 f"arm_{low}_winning_rung",
                 f"arm_{low}_needs_human",
+                f"arm_{low}_error_kind",
+                f"arm_{low}_http_status",
+                f"arm_{low}_raw_confidence",
             ]
         )
     base.append("bill_number_scorable")
@@ -966,6 +1275,16 @@ def _per_doc_csv_fieldnames(arms: frozenset[str]) -> list[str]:
                 f"description_{low}_nonempty",
             ]
         )
+        if low in ("b", "c"):
+            base.extend(
+                [
+                    f"raw_vendor_{low}_correct",
+                    f"raw_bill_number_{low}_correct",
+                    f"raw_bill_date_{low}_correct",
+                    f"raw_amount_{low}_correct",
+                    f"raw_description_{low}_nonempty",
+                ]
+            )
     return base
 
 
@@ -1033,6 +1352,9 @@ def scored_row_to_csv_dict(row: ScoredHeaderBill, *, arms: frozenset[str]) -> di
                     f"arm_{low}_spend_usd": "",
                     f"arm_{low}_winning_rung": "",
                     f"arm_{low}_needs_human": "",
+                    f"arm_{low}_error_kind": "",
+                    f"arm_{low}_http_status": "",
+                    f"arm_{low}_raw_confidence": "",
                 }
             )
         elif pred:
@@ -1049,6 +1371,27 @@ def scored_row_to_csv_dict(row: ScoredHeaderBill, *, arms: frozenset[str]) -> di
                 if pred.cascade and pred.cascade.needs_human
                 else ("0" if pred.cascade else "")
             )
+            out[f"arm_{low}_error_kind"] = pred.error_kind or ""
+            out[f"arm_{low}_http_status"] = (
+                str(pred.http_status) if pred.http_status is not None else ""
+            )
+            out[f"arm_{low}_raw_confidence"] = (
+                f"{pred.raw_confidence:.4f}" if pred.raw_confidence is not None else ""
+            )
+            for fname in (
+                "vendor",
+                "bill_number",
+                "bill_date",
+                "amount",
+                "description",
+            ):
+                key = fname if fname != "description" else "description"
+                col = (
+                    f"raw_{key}_{low}_correct"
+                    if fname != "description"
+                    else f"raw_description_{low}_nonempty"
+                )
+                out[col] = _raw_field_correct(row, arm, fname)
         out.update(_csv_correctness_for_arm(row, arm))
     out.update(_csv_correctness_for_arm(row, "A"))
     return out
@@ -1139,6 +1482,53 @@ def write_report_and_outputs(
     for k, v in lat.items():
         lines.append(f"- {k}: {v}")
 
+    failures = metrics.get("call_failures_by_arm") or {}
+    if failures:
+        lines.append("")
+        lines.append("## Call failures by kind")
+        lines.append("")
+        for arm_key in sorted(failures):
+            lines.append(f"- Arm {arm_key}: `{json.dumps(failures[arm_key])}`")
+
+    raw_v_fail = metrics.get("raw_vendor_resolve_failed")
+    acc_v_fail = metrics.get("accepted_vendor_resolve_failed")
+    if raw_v_fail or acc_v_fail:
+        lines.append("")
+        lines.append("## Vendor resolution")
+        lines.append("")
+        lines.append(f"- vendor lookups failed: {raw_v_fail or 0}")
+        if acc_v_fail:
+            lines.append(f"- accepted vendor lookups failed: {acc_v_fail}")
+
+    sweep = metrics.get("confidence_bar_sweep") or {}
+    if sweep.get("arms"):
+        lines.append("")
+        lines.append("## Confidence-bar sweep (raw LLM predictions)")
+        lines.append("")
+        for arm_key, bars in (sweep.get("arms") or {}).items():
+            lines.append(f"### Arm {arm_key}")
+            lines.append("")
+            lines.append("| Bar | vendor acc | vendor cov | bill# acc | amount acc |")
+            lines.append("|-----|------------|------------|-----------|------------|")
+            for bar in HEADER_CONFIDENCE_BAR_SWEEP_BARS:
+                row = bars.get(str(bar)) or {}
+                v = row.get("vendor") or {}
+                bn = row.get("bill_number") or {}
+                amt = row.get("amount") or {}
+
+                def _pct_dec(vv: Any) -> str:
+                    if vv is None:
+                        return "n/a"
+                    if isinstance(vv, Decimal):
+                        return f"{vv:.2%}"
+                    return f"{float(vv):.2%}"
+
+                lines.append(
+                    f"| {bar:.2f} | {_pct_dec(v.get('accuracy'))} | {_pct_dec(v.get('coverage'))} | "
+                    f"{_pct_dec(bn.get('accuracy'))} | {_pct_dec(amt.get('accuracy'))} |"
+                )
+            lines.append("")
+
     report_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
     assert_outputs_privacy_safe(csv_path)
@@ -1176,7 +1566,9 @@ async def run_llm_arm_batch(
             )
             if cascade is None:
                 return
-            out[bill.bill_id] = arm_prediction_from_cascade(cascade, mapper)
+            out[bill.bill_id] = arm_prediction_from_cascade(
+                cascade, mapper, truth=truth_from_row(bill)
+            )
 
     await asyncio.gather(*[one(w) for w in work], return_exceptions=True)
 
@@ -1223,6 +1615,12 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--out-dir", type=Path, default=Path("docs/design/u676a"))
     ap.add_argument("--max-cost-usd", type=float, default=DEFAULT_MAX_COST_USD)
     ap.add_argument("--concurrency", type=int, default=DEFAULT_CONCURRENCY)
+    ap.add_argument(
+        "--claude-concurrency",
+        type=int,
+        default=DEFAULT_CLAUDE_CONCURRENCY,
+        help="Parallel in-flight calls for arm C (Claude ladder; default: 2)",
+    )
     ap.add_argument("--run", action="store_true", help="Execute arms (default: dry-run)")
     ap.add_argument(
         "--arms",
@@ -1355,12 +1753,17 @@ def main(argv: list[str] | None = None) -> int:
             work = llm_work[arm_key]
             if not work:
                 continue
+            arm_concurrency = llm_arm_concurrency(
+                arm_key,
+                concurrency=args.concurrency,
+                claude_concurrency=args.claude_concurrency,
+            )
             asyncio.run(
                 run_llm_arm_batch(
                     work,
                     ladder=llm_ladders[arm_key],
                     transport_for=transport,
-                    concurrency=args.concurrency,
+                    concurrency=arm_concurrency,
                     max_cost_usd=args.max_cost_usd,
                     cost_state=cost_state,
                     mapper=shared_mapper_local,
@@ -1415,6 +1818,7 @@ def main(argv: list[str] | None = None) -> int:
         "cost_usd": cost_state["usd"],
         "throttle_retry_count": cost_state.get("throttle_retry_count", 0),
         "throttle_failure_count": cost_state.get("throttle_failure_count", 0),
+        "harness_retry_by_kind": dict(cost_state.get("harness_retry_by_kind") or {}),
         "cascade_error_count": cost_state.get("cascade_error_count", 0),
         "call_timeout_count": cost_state.get("call_timeout_count", 0),
     }

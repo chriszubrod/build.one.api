@@ -32,7 +32,8 @@ From the API repo root (`.env` for read-only DB; system-admin CLI context):
 | `--sample-size` | 500 | Stratified sample cap |
 | `--seed` | 654 | Reproducible stratified draw |
 | `--max-cost-usd` | 10 | Stops STARTING new Bills once the next call could exceed it; Bills already in flight finish, so spend can overshoot by up to about concurrency × one full ladder (× throttle retries) — the overshoot is reported. Skipped Bills stay unscored ⇒ INCOMPLETE |
-| `--concurrency` | 4 | Parallel cascade calls (429/rate-limit backoff on throttled cascade attempts) |
+| `--concurrency` | 4 | Parallel cascade calls (Foundry ladders) |
+| `--claude-concurrency` | 2 | Parallel cascade calls when `--ladder` is `claude-*` |
 | `--out-dir` | `docs/design/u654a` | Report + CSV + JSON |
 | `--ladder` | `foundry` | `foundry` (default production Foundry ladder), `claude-haiku`, or `claude-sonnet` for Claude API backtests |
 | `--resume-from` | — | Prior `u654a_predictions_<ladder>_<stamp>.csv`; **must match** `--ladder` |
@@ -45,8 +46,8 @@ Reports and machine outputs include **numeric identifiers only** — Bill/Vendor
 
 ## Outputs (timestamped under `--out-dir`)
 
-- `u654a_report_<ladder>_<stamp>.md` — coverage, precision, top-1 (Bill- and dollar-weighted) for history, text, and combined; Mode B project accuracy; mixed-code accuracy over all sampled mixed-code Bills; per-stratum table; throttling retries/failures; rung usage; §10.5 verdict (or INCOMPLETE).
-- `u654a_predictions_<ladder>_<stamp>.csv` — per-Bill numeric predictions only (`winning_rung_provider` distinguishes Foundry vs Anthropic).
+- `u654a_report_<ladder>_<stamp>.md` — coverage, precision, top-1 (Bill- and dollar-weighted) for history, text, and combined; Mode B project accuracy; mixed-code accuracy over all sampled mixed-code Bills; per-stratum table; **call failures by kind**; **confidence-bar sweep** on raw text predictions; harness rate-limit retries; rung usage; §10.5 verdict (or INCOMPLETE).
+- `u654a_predictions_<ladder>_<stamp>.csv` — per-Bill numeric predictions only (`winning_rung_provider` distinguishes Foundry vs Anthropic). Text rows include accepted predictions plus **raw** below-bar predictions (`raw_*`, `error_kind`, `http_status` — no error message bodies).
 - `u654a_summary_<ladder>_<stamp>.json` — aggregate metrics, `ladder`, `cap_tripped`, scored/unscored counts, usage.
 
 ## Tests
@@ -78,4 +79,5 @@ Report: [`u654a_report_20261016T044342Z.md`](u654a_report_20261016T044342Z.md) �
 Report: [`u654a_report_claude-haiku_20261017T115318Z.md`](u654a_report_claude-haiku_20261017T115318Z.md) · summary: [`u654a_summary_claude-haiku_20261017T115318Z.json`](u654a_summary_claude-haiku_20261017T115318Z.json). Same 500 Bills as the Foundry run, single Haiku rung, $1.75.
 
 - **Inconclusive, not a rejection.** Haiku cleared the 0.85 confidence bar on only 22% (Mode A) / 19% (Mode B) of calls (794 needs_human, 0 task errors); when it did, it was right 59% (Mode A, 65/110) and 82% (Mode B, 79/96) of the time — Foundry-level precision. The bar was set for the Foundry ladder and its below-bar answers were not recorded, so the report's "DO NOT wire" (combined 44.2%) reflects the threshold, not the model.
-- Next (U-676e): keep every Claude answer with its confidence and score at several bars, then re-run.
+- **U-676e harness (2026-10-17):** records `error_kind` / `http_status` per call, harness-level 429/529 retries (5s→60s), raw below-bar predictions + confidence-bar sweep in reports/CSV; Claude dry-run cost floors at ~17k input tokens/call (~$1.7–1.8 for 500 Bills × Mode A+B on Haiku).
+- **Haiku call failures (cause unknown):** the 2026-10-17 run’s 166 fast failures were **not** HTTP 429/529 — the harness retries those with ≥2.25 s of backoff (observed median latency ~206 ms; throttle counters were 0). Likely a **non-retried** HTTP status (400/401/403/404/413) or an **in-stream** Anthropic error; the next run records `error_kind` / `http_status` per call for diagnosis.

@@ -75,6 +75,7 @@ DEFAULT_SAMPLE_SIZE = 500
 DEFAULT_SEED = 654
 DEFAULT_MAX_COST_USD = 10.0
 DEFAULT_CONCURRENCY = 4
+DEFAULT_CLAUDE_CONCURRENCY = 2
 
 # Per-million-token estimates for dry-run budgeting — confirm against Foundry list prices.
 # intelligence/observability/pricing.PRICING is authoritative at run time.
@@ -92,7 +93,23 @@ M4_MODE_A_MARGIN = Decimal("0.10")
 # §10.3 combined rule: history wins when raw smoothed modal share clears this bar (U-639 §10.5).
 COMBINED_HISTORY_RAW_SCORE_THRESHOLD = Decimal("0.60")
 
-_THROTTLE_RE = re.compile(r"429|rate\s*limit|throttl", re.I)
+_HTTP_STATUS_IN_ERROR_RE = re.compile(r"http_(\d+)", re.I)
+# Anthropic SSE in-stream errors use type prefixes before the first colon (e.g. overloaded_error: …).
+_INSTREAM_ERROR_PREFIX_KIND: tuple[tuple[re.Pattern[str], str, int], ...] = (
+    (re.compile(r"rate[\s_\-]*limit", re.I), "rate_limit", 429),
+    (re.compile(r"overload", re.I), "overloaded", 529),
+    (re.compile(r"^api[\s_\-]*error", re.I), "server", 500),
+    (re.compile(r"invalid[\s_\-]*request", re.I), "bad_request", 400),
+    (re.compile(r"authentication", re.I), "auth", 401),
+    (re.compile(r"permission", re.I), "auth", 403),
+    (re.compile(r"not[\s_\-]*found", re.I), "not_found", 404),
+    (re.compile(r"request[\s_\-]*too[\s_\-]*large", re.I), "too_large", 413),
+)
+
+# Measured ~17k input tokens/call on 2026-10-17 Claude Haiku backtest (incl. SCC catalog).
+CLAUDE_DRY_RUN_INPUT_TOKENS_FLOOR = 17_000
+HARNESS_RATE_LIMIT_BACKOFF_SECONDS: tuple[float, ...] = (5.0, 15.0, 30.0, 60.0)
+CONFIDENCE_BAR_SWEEP_BARS: tuple[float, ...] = (0.50, 0.60, 0.70, 0.80, 0.85, 0.90)
 
 _STRATA_ORDER = (
     "cold_start",
@@ -197,6 +214,11 @@ class TextAttemptResult:
     predicted_scc_id: Optional[int]
     predicted_project_id: Optional[int] = None
     source: str = "llm_text"
+    raw_predicted_scc_id: Optional[int] = None
+    raw_predicted_project_id: Optional[int] = None
+    raw_confidence: Optional[float] = None
+    error_kind: str = "none"
+    http_status: Optional[int] = None
 
 
 @dataclass
@@ -405,10 +427,164 @@ def combined_mode_a_predicted_scc(
 
 def cascade_has_throttling(cascade: CascadeResult) -> bool:
     for att in cascade.attempts:
-        err = att.error or ""
-        if _THROTTLE_RE.search(err):
+        kind, _ = error_kind_from_error_string(att.error)
+        if kind in ("rate_limit", "overloaded"):
             return True
     return False
+
+
+def _instream_error_kind(err: str) -> tuple[str, Optional[int]] | None:
+    head = err.split(":", 1)[0].strip()
+    for pattern, kind, status in _INSTREAM_ERROR_PREFIX_KIND:
+        if pattern.search(head):
+            return kind, status
+    return None
+
+
+def error_kind_from_error_string(err: str | None) -> tuple[str, Optional[int]]:
+    """Map transport/cascade error text to a privacy-safe kind + HTTP status (no message body)."""
+    if not err:
+        return "none", None
+    if "no parseable" in err.lower():
+        return "parse", None
+    match = _HTTP_STATUS_IN_ERROR_RE.search(err)
+    if match:
+        status = int(match.group(1))
+    else:
+        instream = _instream_error_kind(err)
+        if instream is not None:
+            return instream
+        if re.search(r"\b429\b", err):
+            status = 429
+        elif re.search(r"\b529\b", err):
+            status = 529
+        elif re.search(r"\b503\b", err):
+            status = 503
+        elif re.search(r"\b400\b", err):
+            status = 400
+        elif re.search(r"\b401\b", err):
+            status = 401
+        elif re.search(r"\b403\b", err):
+            status = 403
+        elif re.search(r"\b413\b", err):
+            status = 413
+        elif re.search(r"\b404\b", err):
+            status = 404
+        else:
+            if re.search(r"timeout", err, re.I):
+                return "timeout", None
+            return "transport_other", None
+    if status == 429:
+        return "rate_limit", status
+    if status in (529, 503):
+        return "overloaded", status
+    if status == 400:
+        return "bad_request", status
+    if status in (401, 403):
+        return "auth", status
+    if status == 404:
+        return "not_found", status
+    if status == 413:
+        return "too_large", status
+    if 500 <= status <= 599:
+        return "server", status
+    return "transport_other", status
+
+
+def cascade_call_error_summary(cascade: CascadeResult) -> tuple[str, Optional[int]]:
+    """Primary error kind for a finished cascade (accepted calls → none)."""
+    if cascade.accepted:
+        return "none", None
+    for att in reversed(cascade.attempts):
+        if att.error:
+            kind, status = error_kind_from_error_string(att.error)
+            if kind != "transport_other" or status is not None:
+                return kind, status
+        if att.result is not None and not att.validated:
+            return "validation", None
+    for att in reversed(cascade.attempts):
+        if att.error and "no parseable" in att.error.lower():
+            return "parse", None
+    if cascade.result is not None:
+        return "none", None
+    if not cascade.attempts:
+        return "transport_other", None
+    return "none", None
+
+
+def cascade_only_rate_or_overloaded_failures(cascade: CascadeResult) -> bool:
+    """True when every attempt failed at transport with rate-limit or overload only."""
+    if cascade.accepted or not cascade.attempts:
+        return False
+    saw_transport = False
+    for att in cascade.attempts:
+        if att.error:
+            kind, _ = error_kind_from_error_string(att.error)
+            if kind not in ("rate_limit", "overloaded"):
+                return False
+            saw_transport = True
+        elif att.result is not None or att.confidence is not None:
+            return False
+    return saw_transport
+
+
+def resolve_raw_text_prediction(
+    cascade: CascadeResult,
+    *,
+    scc_number_to_id: dict[str, int],
+    proj_abbrev_to_id: dict[str, int],
+) -> tuple[Optional[int], Optional[int], Optional[float]]:
+    if cascade.result is None:
+        return None, None, cascade.confidence
+    shim = CascadeResult(
+        accepted=True,
+        needs_human=False,
+        result=cascade.result,
+        confidence=cascade.confidence,
+        winning_rung=cascade.winning_rung,
+        attempts=[],
+    )
+    scc_id, proj_id = resolve_text_prediction(
+        shim,
+        scc_number_to_id=scc_number_to_id,
+        proj_abbrev_to_id=proj_abbrev_to_id,
+    )
+    return scc_id, proj_id, cascade.confidence
+
+
+def llm_backtest_cascade_concurrency(
+    ladder_name: str,
+    *,
+    concurrency: int,
+    claude_concurrency: int,
+) -> int:
+    """Parallel in-flight cascades for a backtest ladder (Claude vs Foundry)."""
+    if ladder_name.startswith("claude"):
+        return claude_concurrency
+    return concurrency
+
+
+def _ladder_uses_claude(
+    ladder: tuple[Rung, ...] | None,
+    *,
+    ladder_name: str | None = None,
+) -> bool:
+    if ladder_name and ladder_name.startswith("claude"):
+        return True
+    if ladder and ladder[0].provider == "anthropic":
+        return True
+    return False
+
+
+def floor_dry_run_input_tokens(
+    input_tokens: int,
+    *,
+    ladder: tuple[Rung, ...] | None = None,
+    ladder_name: str | None = None,
+) -> int:
+    if _ladder_uses_claude(ladder, ladder_name=ladder_name):
+        return max(input_tokens, CLAUDE_DRY_RUN_INPUT_TOKENS_FLOOR)
+    return input_tokens
 
 
 def bill_cascade_spend_usd(cascade: CascadeResult) -> float:
@@ -648,6 +824,9 @@ def dry_run_summary(
         input_per_call = estimate_dry_run_input_tokens_per_call(
             sample, ref=ref, vendor_votes=vendor_votes
         )
+    input_per_call = floor_dry_run_input_tokens(
+        input_per_call, ladder=resolved_ladder, ladder_name=ladder_name
+    )
     cost_per_call = estimate_ladder_first_rung_cost_usd(
         resolved_ladder, input_tokens=input_per_call
     )
@@ -675,6 +854,16 @@ class SuggesterMetrics:
     top1_bill: Optional[Decimal]
     top1_dollar: Optional[Decimal]
     project_top1: Optional[Decimal] = None
+
+
+def _metrics_to_dict(m: SuggesterMetrics) -> dict[str, Any]:
+    return {
+        "coverage": m.coverage,
+        "precision": m.precision,
+        "top1_bill": m.top1_bill,
+        "top1_dollar": m.top1_dollar,
+        "project_top1": m.project_top1,
+    }
 
 
 def _predicted_scc_id(
@@ -763,6 +952,211 @@ def compute_suggester_metrics(
         top1_dollar=_dollar_accuracy(all_bills),
         project_top1=proj,
     )
+
+
+def combined_mode_b_predicted_scc(
+    history: ModePrediction,
+    text: Optional[TextAttemptResult],
+) -> Optional[int]:
+    if (
+        history.predicted_scc_id is not None
+        and history.raw_score is not None
+        and history.raw_score >= COMBINED_HISTORY_RAW_SCORE_THRESHOLD
+    ):
+        return history.predicted_scc_id
+    if text is None:
+        return None
+    return text.predicted_scc_id
+
+
+def combined_mode_b_predicted_scc_at_bar(
+    history: ModePrediction,
+    text: Optional[TextAttemptResult],
+    bar: float,
+) -> Optional[int]:
+    if (
+        history.predicted_scc_id is not None
+        and history.raw_score is not None
+        and history.raw_score >= COMBINED_HISTORY_RAW_SCORE_THRESHOLD
+    ):
+        return history.predicted_scc_id
+    if text is None or text.raw_confidence is None or text.raw_confidence < bar:
+        return None
+    return text.raw_predicted_scc_id
+
+
+def combined_mode_a_predicted_scc_at_bar(
+    history: ModePrediction,
+    text: Optional[TextAttemptResult],
+    bar: float,
+) -> Optional[int]:
+    if (
+        history.predicted_scc_id is not None
+        and history.raw_score is not None
+        and history.raw_score >= COMBINED_HISTORY_RAW_SCORE_THRESHOLD
+    ):
+        return history.predicted_scc_id
+    if text is None or text.raw_confidence is None or text.raw_confidence < bar:
+        return None
+    return text.raw_predicted_scc_id
+
+
+def _raw_text_scc_at_bar(
+    text: Optional[TextAttemptResult],
+    bar: float,
+) -> Optional[int]:
+    if text is None or text.raw_confidence is None or text.raw_confidence < bar:
+        return None
+    return text.raw_predicted_scc_id
+
+
+def _top1_pairs_raw_at_bar(
+    rows: Sequence[ScoredTextBill],
+    *,
+    mode: str,
+    bar: float,
+    denominator: str,
+) -> list[tuple[bool, Decimal]]:
+    pairs: list[tuple[bool, Decimal]] = []
+    for row in rows:
+        text = row.text_a if mode == "A" else row.text_b
+        pred_scc = _raw_text_scc_at_bar(text, bar)
+        if denominator == "covered":
+            if pred_scc is None:
+                continue
+            pairs.append((pred_scc == row.bill.label_scc_id, row.bill.total_abs_amount))
+        elif denominator == "all":
+            ok = pred_scc is not None and pred_scc == row.bill.label_scc_id
+            pairs.append((ok, row.bill.total_abs_amount))
+        else:
+            raise ValueError(denominator)
+    return pairs
+
+
+def _top1_pairs_combined_at_bar(
+    rows: Sequence[ScoredTextBill],
+    *,
+    mode: str,
+    bar: float,
+    denominator: str,
+) -> list[tuple[bool, Decimal]]:
+    pairs: list[tuple[bool, Decimal]] = []
+    for row in rows:
+        if mode == "A":
+            pred_scc = combined_mode_a_predicted_scc_at_bar(
+                row.history_a, row.text_a, bar
+            )
+        else:
+            pred_scc = combined_mode_b_predicted_scc_at_bar(
+                row.history_b, row.text_b, bar
+            )
+        if denominator == "covered":
+            if pred_scc is None:
+                continue
+            pairs.append((pred_scc == row.bill.label_scc_id, row.bill.total_abs_amount))
+        elif denominator == "all":
+            ok = pred_scc is not None and pred_scc == row.bill.label_scc_id
+            pairs.append((ok, row.bill.total_abs_amount))
+        else:
+            raise ValueError(denominator)
+    return pairs
+
+
+def compute_text_metrics_at_bar(
+    rows: Sequence[ScoredTextBill],
+    *,
+    mode: str,
+    bar: float,
+) -> SuggesterMetrics:
+    n = len(rows)
+    covered = _top1_pairs_raw_at_bar(rows, mode=mode, bar=bar, denominator="covered")
+    all_bills = _top1_pairs_raw_at_bar(rows, mode=mode, bar=bar, denominator="all")
+    coverage = Decimal(len(covered)) / Decimal(n) if n else Decimal("0")
+    proj = None
+    if mode == "B":
+        proj_pairs: list[tuple[bool, Decimal]] = []
+        for row in rows:
+            if row.bill.label_project_id is None or row.text_b is None:
+                continue
+            if row.text_b.raw_confidence is None or row.text_b.raw_confidence < bar:
+                continue
+            pred_pid = row.text_b.raw_predicted_project_id
+            if pred_pid is None:
+                continue
+            proj_pairs.append(
+                (pred_pid == row.bill.label_project_id, row.bill.total_abs_amount)
+            )
+        proj = _weighted_accuracy(proj_pairs) if proj_pairs else None
+    return SuggesterMetrics(
+        coverage=coverage,
+        precision=_weighted_accuracy(covered),
+        top1_bill=_weighted_accuracy(all_bills),
+        top1_dollar=_dollar_accuracy(all_bills),
+        project_top1=proj,
+    )
+
+
+def compute_combined_metrics_at_bar(
+    rows: Sequence[ScoredTextBill],
+    *,
+    mode: str,
+    bar: float,
+) -> SuggesterMetrics:
+    n = len(rows)
+    covered = _top1_pairs_combined_at_bar(
+        rows, mode=mode, bar=bar, denominator="covered"
+    )
+    all_bills = _top1_pairs_combined_at_bar(rows, mode=mode, bar=bar, denominator="all")
+    coverage = Decimal(len(covered)) / Decimal(n) if n else Decimal("0")
+    return SuggesterMetrics(
+        coverage=coverage,
+        precision=_weighted_accuracy(covered),
+        top1_bill=_weighted_accuracy(all_bills),
+        top1_dollar=_dollar_accuracy(all_bills),
+        project_top1=None,
+    )
+
+
+def confidence_bar_sweep(rows: Sequence[ScoredTextBill]) -> dict[str, Any]:
+    rows_a = [r for r in rows if r.text_a is not None]
+    rows_b = [r for r in rows if r.text_b is not None]
+    hist_a = compute_suggester_metrics(rows_a, mode="A", source="history")
+    sweep: dict[str, Any] = {"bars": list(CONFIDENCE_BAR_SWEEP_BARS), "mode_a": {}, "mode_b": {}}
+    best_bar: Optional[float] = None
+    best_top1: Optional[Decimal] = None
+    for bar in CONFIDENCE_BAR_SWEEP_BARS:
+        text_a = compute_text_metrics_at_bar(rows_a, mode="A", bar=bar)
+        combined_a = compute_combined_metrics_at_bar(rows_a, mode="A", bar=bar)
+        delta = None
+        if combined_a.top1_bill is not None and hist_a.top1_bill is not None:
+            delta = combined_a.top1_bill - hist_a.top1_bill
+        sweep["mode_a"][str(bar)] = {
+            "text": _metrics_to_dict(text_a),
+            "combined_top1_bill": combined_a.top1_bill,
+            "combined_delta_vs_history": delta,
+        }
+        if combined_a.top1_bill is not None and (
+            best_top1 is None or combined_a.top1_bill > best_top1
+        ):
+            best_top1 = combined_a.top1_bill
+            best_bar = bar
+        text_b = compute_text_metrics_at_bar(rows_b, mode="B", bar=bar)
+        combined_b = compute_combined_metrics_at_bar(rows_b, mode="B", bar=bar)
+        sweep["mode_b"][str(bar)] = {
+            "text": _metrics_to_dict(text_b),
+            "combined_top1_bill": combined_b.top1_bill,
+        }
+    sweep["best_combined_top1_bar_mode_a"] = best_bar
+    return sweep
+
+
+def aggregate_call_failures_by_kind(
+    attempts: Iterable[TextAttemptResult],
+) -> dict[str, int]:
+    counts: dict[str, int] = defaultdict(int)
+    for item in attempts:
+        counts[item.error_kind or "none"] += 1
+    return dict(counts)
 
 
 def stratum_table(
@@ -869,13 +1263,33 @@ def _looks_like_free_text(value: str) -> bool:
 
 
 def _looks_like_free_text_in_markdown(text: str) -> bool:
+    """Free-text guard for markdown tables, except confidence-bar sweep data rows."""
+    in_confidence_sweep = False
     for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("| Bar | Mode A text cov |"):
+            in_confidence_sweep = True
+            continue
+        if stripped.startswith("| Bar | Mode B text cov |"):
+            in_confidence_sweep = True
+            continue
+        if in_confidence_sweep and not stripped.startswith("|"):
+            in_confidence_sweep = False
         if not line.startswith("|") or "|" not in line[1:]:
             continue
         if set(line.replace("|", "").replace("-", "").strip()) <= {":", " "}:
             continue
         cells = [c.strip() for c in line.strip("|").split("|")]
-        if any(c.lower() in ("suggester", "coverage", "precision", "stratum") for c in cells):
+        if any(
+            c.lower() in ("suggester", "coverage", "precision", "stratum", "bar")
+            for c in cells
+        ):
+            continue
+        if (
+            in_confidence_sweep
+            and len(cells) >= 5
+            and re.fullmatch(r"0\.\d+", (cells[0] or "").strip())
+        ):
             continue
         for cell in cells:
             if cell and cell not in ("n/a", "0", "1") and len(cell.split()) >= 3:
@@ -948,6 +1362,13 @@ def write_report_and_outputs(
                 "winning_rung",
                 "winning_rung_provider",
                 "needs_human",
+                "raw_predicted_scc_id",
+                "raw_predicted_project_id",
+                "raw_confidence",
+                "raw_correct_scc",
+                "raw_correct_project",
+                "error_kind",
+                "http_status",
             ]
         )
         for row in scored:
@@ -981,6 +1402,35 @@ def write_report_and_outputs(
                             if pred_proj == row.bill.label_project_id
                             else "0"
                         )
+                    raw_scc = ""
+                    raw_proj = ""
+                    raw_conf = ""
+                    raw_correct_scc = ""
+                    raw_correct_proj = ""
+                    err_kind = ""
+                    http_st = ""
+                    if source == "text" and text is not None:
+                        if text.raw_predicted_scc_id is not None:
+                            raw_scc = str(text.raw_predicted_scc_id)
+                            raw_correct_scc = (
+                                "1"
+                                if text.raw_predicted_scc_id == row.bill.label_scc_id
+                                else "0"
+                            )
+                        if text.raw_predicted_project_id is not None:
+                            raw_proj = str(text.raw_predicted_project_id)
+                        if mode == "B" and text.raw_predicted_project_id is not None:
+                            raw_correct_proj = (
+                                "1"
+                                if text.raw_predicted_project_id
+                                == row.bill.label_project_id
+                                else "0"
+                            )
+                        if text.raw_confidence is not None:
+                            raw_conf = f"{text.raw_confidence:.4f}"
+                        err_kind = text.error_kind or ""
+                        if text.http_status is not None:
+                            http_st = str(text.http_status)
                     w.writerow(
                         [
                             row.bill.bill_id,
@@ -1005,6 +1455,13 @@ def write_report_and_outputs(
                             "1"
                             if cascade and cascade.needs_human
                             else ("0" if cascade else ""),
+                            raw_scc,
+                            raw_proj,
+                            raw_conf,
+                            raw_correct_scc,
+                            raw_correct_proj,
+                            err_kind,
+                            http_st,
                         ]
                     )
 
@@ -1120,8 +1577,9 @@ def write_report_and_outputs(
             json.dumps(metrics["rung_usage"], indent=2),
             "",
             f"- needs_human count: {metrics['needs_human_count']}",
-            f"- throttled cascade retries: {metrics.get('throttle_retry_count', 0)}",
+            f"- harness rate-limit retries: {metrics.get('throttle_retry_count', 0)}",
             f"- throttled final failures: {metrics.get('throttle_failure_count', 0)}",
+            f"- harness retries by kind: {json.dumps(metrics.get('harness_retry_by_kind') or {})}",
             f"- cascade task errors: {metrics.get('cascade_error_count', 0)}",
             f"- duplicate SCC numbers excluded: {metrics.get('duplicate_scc_number_count', 0)}",
             f"- duplicate project abbrevs excluded: {metrics.get('duplicate_project_abbrev_count', 0)}",
@@ -1137,8 +1595,48 @@ def write_report_and_outputs(
             f"- Total tokens out: {metrics['usage']['output_tokens']}",
             f"- Total cost USD: {metrics['usage']['cost_usd']:.4f}",
             "",
+            "### Call failures by kind (text cascade)",
+            "",
+            json.dumps(metrics.get("call_failures_by_kind") or {}, indent=2),
+            "",
+            "### Confidence-bar sweep (raw predictions; §10.5 verdict unchanged)",
+            "",
         ]
     )
+    sweep = metrics.get("confidence_bar_sweep") or {}
+    best_bar = sweep.get("best_combined_top1_bar_mode_a")
+    if best_bar is not None:
+        lines.append(
+            f"- Mode A combined top-1 maximized at confidence bar **{best_bar}** "
+            "(history when raw score ≥ 60%, else text at bar)"
+        )
+        lines.append("")
+    lines.append("| Bar | Mode A text cov | Mode A text prec | Mode A text top-1 | Mode A combined top-1 | Δ vs hist |")
+    lines.append("|-----|-----------------|------------------|-------------------|----------------------|-----------|")
+    for bar in CONFIDENCE_BAR_SWEEP_BARS:
+        row = (sweep.get("mode_a") or {}).get(str(bar)) or {}
+        text_m = row.get("text") or {}
+        delta = row.get("combined_delta_vs_history")
+        lines.append(
+            f"| {bar:.2f} | {pct(text_m.get('coverage'))} | {pct(text_m.get('precision'))} | "
+            f"{pct(text_m.get('top1_bill'))} | {pct(row.get('combined_top1_bill'))} | "
+            f"{pct(delta) if delta is not None else 'n/a'} |"
+        )
+    lines.extend(
+        [
+            "",
+            "| Bar | Mode B text cov | Mode B text top-1 | Mode B project top-1 | Mode B combined top-1 |",
+            "|-----|-----------------|-------------------|----------------------|------------------------|",
+        ]
+    )
+    for bar in CONFIDENCE_BAR_SWEEP_BARS:
+        row = (sweep.get("mode_b") or {}).get(str(bar)) or {}
+        text_m = row.get("text") or {}
+        lines.append(
+            f"| {bar:.2f} | {pct(text_m.get('coverage'))} | {pct(text_m.get('top1_bill'))} | "
+            f"{pct(text_m.get('project_top1'))} | {pct(row.get('combined_top1_bill'))} |"
+        )
+    lines.append("")
     cat_cmp = metrics.get("combined_vs_history_catalog_eligible")
     if cat_cmp and cat_cmp.get("n", 0) > 0:
         lines.extend(
@@ -1190,6 +1688,12 @@ def _failed_cascade_result() -> CascadeResult:
 CASCADE_CALL_TIMEOUT_SECONDS = 300.0
 
 
+def _record_harness_retry(cost_state: dict[str, Any], kind: str) -> None:
+    cost_state["throttle_retry_count"] = int(cost_state.get("throttle_retry_count", 0)) + 1
+    by_kind: dict[str, int] = cost_state.setdefault("harness_retry_by_kind", {})
+    by_kind[kind] = int(by_kind.get(kind, 0)) + 1
+
+
 async def run_capped_cascade(
     call: Callable[[], Any],
     *,
@@ -1197,16 +1701,26 @@ async def run_capped_cascade(
     cost_state: dict[str, Any],
     max_cost_usd: float,
 ) -> CascadeResult | None:
-    """One cascade attempt with cap, throttle backoff, and timeout. None = leave unscored."""
+    """One cascade with cap, timeout, and harness-level rate-limit re-calls. None = leave unscored."""
     if cost_state.get("stopped"):
         return None
     if cost_state["usd"] + est > max_cost_usd:
         cost_state["stopped"] = True
         return None
     cascade: CascadeResult = _failed_cascade_result()
+    merged_attempts: list[Attempt] = []
     try:
-        delay = 1.0
-        for throttle_try in range(5):
+        max_attempts = 1 + len(HARNESS_RATE_LIMIT_BACKOFF_SECONDS)
+        for attempt_idx in range(max_attempts):
+            if attempt_idx > 0:
+                if cost_state["usd"] + est > max_cost_usd:
+                    cost_state["stopped"] = True
+                    return None
+                prev_kind, _ = cascade_call_error_summary(cascade)
+                if prev_kind not in ("rate_limit", "overloaded"):
+                    break
+                _record_harness_retry(cost_state, prev_kind)
+                await asyncio.sleep(HARNESS_RATE_LIMIT_BACKOFF_SECONDS[attempt_idx - 1])
             try:
                 cascade = await asyncio.wait_for(
                     call(),
@@ -1217,29 +1731,24 @@ async def run_capped_cascade(
                     int(cost_state.get("call_timeout_count", 0)) + 1
                 )
                 return None
+            merged_attempts.extend(cascade.attempts)
             apply_cascade_spend(cascade, cost_state)
             if cascade.accepted:
                 break
-            if not cascade_has_throttling(cascade) or throttle_try >= 4:
-                if cascade_has_throttling(cascade):
-                    cost_state["throttle_failure_count"] = (
-                        int(cost_state.get("throttle_failure_count", 0)) + 1
-                    )
+            if not cascade_only_rate_or_overloaded_failures(cascade):
                 break
-            if cost_state["usd"] + est > max_cost_usd:
-                cost_state["stopped"] = True
-                return None
-            cost_state["throttle_retry_count"] = (
-                int(cost_state.get("throttle_retry_count", 0)) + 1
-            )
-            jitter = random.uniform(0, 0.5)
-            await asyncio.sleep(min(delay + jitter, 30.0))
-            delay = min(delay * 2, 30.0)
+            if attempt_idx >= len(HARNESS_RATE_LIMIT_BACKOFF_SECONDS):
+                cost_state["throttle_failure_count"] = (
+                    int(cost_state.get("throttle_failure_count", 0)) + 1
+                )
+                break
     except Exception:
         cost_state["cascade_error_count"] = (
             int(cost_state.get("cascade_error_count", 0)) + 1
         )
         cascade = _failed_cascade_result()
+    if merged_attempts:
+        cascade.attempts = merged_attempts
     if cost_state["usd"] > max_cost_usd:
         cost_state["stopped"] = True
     return cascade
@@ -1354,11 +1863,22 @@ async def run_text_cascade_batch(
                 scc_number_to_id=cost_state["scc_number_to_id"],
                 proj_abbrev_to_id=cost_state["proj_abbrev_to_id"],
             )
+            raw_scc, raw_proj, raw_conf = resolve_raw_text_prediction(
+                cascade,
+                scc_number_to_id=cost_state["scc_number_to_id"],
+                proj_abbrev_to_id=cost_state["proj_abbrev_to_id"],
+            )
+            err_kind, http_status = cascade_call_error_summary(cascade)
             results_out[(bill.bill_id, mode)] = TextAttemptResult(
                 mode=mode,
                 cascade=cascade,
                 predicted_scc_id=scc_id,
                 predicted_project_id=proj_id,
+                raw_predicted_scc_id=raw_scc,
+                raw_predicted_project_id=raw_proj,
+                raw_confidence=raw_conf,
+                error_kind=err_kind,
+                http_status=http_status,
             )
 
     tasks = [one(w) for w in work]
@@ -1500,6 +2020,7 @@ def build_metrics(
     catalog_diagnostics: Optional[dict[str, Any]] = None,
     cost_overshoot_usd: Optional[float] = None,
     run_status: str = "complete",
+    harness_retry_by_kind: Optional[dict[str, int]] = None,
 ) -> dict[str, Any]:
     restrict = cap_tripped or run_status != "complete"
     rows_a = metric_rows_for_mode(scored, mode="A", restrict=restrict)
@@ -1574,7 +2095,15 @@ def build_metrics(
         "needs_human_count": needs_human,
         "throttle_retry_count": throttle_retry_count,
         "throttle_failure_count": throttle_failure_count,
+        "harness_retry_by_kind": dict(harness_retry_by_kind or {}),
         "cascade_error_count": cascade_error_count,
+        "call_failures_by_kind": aggregate_call_failures_by_kind(
+            t
+            for row in scored
+            for t in (row.text_a, row.text_b)
+            if t is not None
+        ),
+        "confidence_bar_sweep": confidence_bar_sweep(scored),
         "duplicate_scc_number_count": duplicate_scc_number_count,
         "duplicate_project_abbrev_count": duplicate_project_abbrev_count,
         "usage": usage_totals,
@@ -1587,16 +2116,6 @@ def build_metrics(
             run_status=run_status,
             cap_tripped=cap_tripped,
         ),
-    }
-
-
-def _metrics_to_dict(m: SuggesterMetrics) -> dict[str, Any]:
-    return {
-        "coverage": m.coverage,
-        "precision": m.precision,
-        "top1_bill": m.top1_bill,
-        "top1_dollar": m.top1_dollar,
-        "project_top1": m.project_top1,
     }
 
 
@@ -1621,6 +2140,12 @@ def main(argv: list[str] | None = None) -> int:
         default=DEFAULT_MAX_COST_USD,
     )
     ap.add_argument("--concurrency", type=int, default=DEFAULT_CONCURRENCY)
+    ap.add_argument(
+        "--claude-concurrency",
+        type=int,
+        default=DEFAULT_CLAUDE_CONCURRENCY,
+        help="Parallel in-flight calls for Claude ladders (default: 2)",
+    )
     ap.add_argument(
         "--run",
         action="store_true",
@@ -1740,6 +2265,12 @@ def main(argv: list[str] | None = None) -> int:
 
     from intelligence.transport import registry as transport_registry
 
+    cascade_concurrency = llm_backtest_cascade_concurrency(
+        args.ladder,
+        concurrency=args.concurrency,
+        claude_concurrency=args.claude_concurrency,
+    )
+
     def run_cascades_on_work() -> None:
         if not work:
             return
@@ -1747,7 +2278,7 @@ def main(argv: list[str] | None = None) -> int:
             run_text_cascade_batch(
                 work,
                 transport_for=transport_registry.get_transport,
-                concurrency=args.concurrency,
+                concurrency=cascade_concurrency,
                 max_cost_usd=args.max_cost_usd,
                 cost_state=cost_state,
                 ladder=selected_ladder,
@@ -1866,6 +2397,7 @@ def main(argv: list[str] | None = None) -> int:
         catalog_diagnostics=catalog_diag,
         cost_overshoot_usd=cost_overshoot_usd,
         run_status=run_status,
+        harness_retry_by_kind=dict(cost_state.get("harness_retry_by_kind") or {}),
     )
     metrics["blob_unreadable_count"] = len(unreadable_bill_ids)
     metrics["call_timeout_count"] = int(cost_state.get("call_timeout_count", 0))

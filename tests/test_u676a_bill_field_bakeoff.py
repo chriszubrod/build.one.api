@@ -295,7 +295,7 @@ def test_arm_c_scoring_uses_same_rules_as_b():
         attempts=[],
     )
     with patch.object(u676a, "resolve_vendor_from_name", return_value=truth.vendor_public_id):
-        pred = u676a.arm_b_from_cascade(cascade, mapper)
+        pred = u676a.arm_b_from_cascade(cascade, mapper, truth=truth)
     row = u676a.ScoredHeaderBill(
         bill=_bill_row(),
         stratum="manual",
@@ -429,6 +429,7 @@ def test_llm_vendor_match_uses_fixed_confidence_not_model():
                 attempts=[],
             ),
             mapper,
+            truth=u676a.truth_from_row(_bill_row()),
         )
     mock.assert_called_once()
     assert mock.call_args.kwargs.get("confidence") == u676a.LLM_VENDOR_MATCH_CONFIDENCE
@@ -525,3 +526,457 @@ def test_dry_run_token_estimate_uses_char_budget_not_first_line():
     )
     assert dry["estimated_input_tokens_per_call_is_upper_bound"] is True
     assert dry["estimated_input_tokens_per_call"] == t_short
+
+
+def test_error_kind_and_status_on_arm_prediction():
+    from intelligence.cascade.core import Attempt, CascadeResult, Rung
+
+    cascade = CascadeResult(
+        False,
+        True,
+        None,
+        None,
+        None,
+        [
+            Attempt(
+                rung=Rung("anthropic", "claude-haiku-5-5"),
+                accepted=False,
+                error="http_429: limited",
+            )
+        ],
+    )
+    pred = u676a.arm_prediction_from_cascade(cascade, BillExtractionMapper())
+    assert pred.error_kind == "rate_limit"
+    assert pred.http_status == 429
+
+
+def test_needs_human_raw_correctness_in_csv_without_accepted_values():
+    from intelligence.cascade.core import CascadeResult, Rung
+
+    truth = u676a.truth_from_row(_bill_row())
+    cascade = CascadeResult(
+        False,
+        True,
+        {
+            "vendor_name": "Real Vendor",
+            "bill_number": "INV-100",
+            "bill_date": "2026-05-01",
+            "total_amount": "100.00",
+            "description": "line",
+            "confidence": 0.55,
+        },
+        0.55,
+        Rung("anthropic", "claude-haiku-5-5"),
+        [],
+    )
+    with patch.object(u676a, "resolve_vendor_from_name", return_value=truth.vendor_public_id):
+        pred = u676a.arm_prediction_from_cascade(
+            cascade, BillExtractionMapper(), truth=truth
+        )
+        row = u676a.ScoredHeaderBill(
+            bill=_bill_row(),
+            stratum="manual",
+            truth=truth,
+            init_arm_b=pred,
+            llm_arms_scored=frozenset({"B"}),
+        )
+        m_before = u676a._field_accuracy_coverage([row], "B", "vendor")
+        assert m_before.n_scored == 1
+        assert m_before.accuracy == Decimal("0")
+        csv_row = u676a.scored_row_to_csv_dict(row, arms=frozenset({"A", "B"}))
+    assert csv_row["vendor_b_correct"] == "0"
+    assert csv_row["raw_vendor_b_correct"] == "1"
+    assert csv_row["arm_b_error_kind"] == "none"
+
+
+def test_header_confidence_bar_sweep_fixture():
+    from intelligence.cascade.core import CascadeResult, Rung
+
+    truth = u676a.truth_from_row(_bill_row())
+    good = CascadeResult(
+        False,
+        True,
+        {
+            "vendor_name": "V",
+            "bill_number": "INV-100",
+            "bill_date": "2026-05-01",
+            "total_amount": "100.00",
+            "confidence": 0.55,
+        },
+        0.55,
+        Rung("foundry", "DeepSeek-V4-Flash"),
+        [],
+    )
+    with patch.object(u676a, "resolve_vendor_from_name", return_value=truth.vendor_public_id):
+        pred = u676a.arm_prediction_from_cascade(
+            good, BillExtractionMapper(), truth=truth
+        )
+        row = u676a.ScoredHeaderBill(
+            bill=_bill_row(),
+            stratum="manual",
+            truth=truth,
+            init_arm_b=pred,
+            llm_arms_scored=frozenset({"B"}),
+        )
+        sweep = u676a.header_confidence_bar_sweep([row], arms=frozenset({"B"}))
+    assert sweep["arms"]["B"]["0.5"]["vendor"]["accuracy"] == Decimal("1")
+    assert sweep["arms"]["B"]["0.6"]["vendor"]["accuracy"] == Decimal("0")
+
+
+def test_claude_arm_uses_claude_concurrency():
+    import asyncio
+
+    inflight = {"n": 0, "max": 0}
+    bill = _bill_row()
+
+    async def fake_header(*_a, **_k):
+        inflight["n"] += 1
+        inflight["max"] = max(inflight["max"], inflight["n"])
+        await asyncio.sleep(0.01)
+        inflight["n"] -= 1
+        from intelligence.cascade.core import CascadeResult, Rung
+
+        return CascadeResult(
+            True,
+            False,
+            {
+                "vendor_name": "v",
+                "bill_number": "1",
+                "bill_date": "2026-05-01",
+                "total_amount": "1",
+                "description": "d",
+                "confidence": 0.9,
+            },
+            0.9,
+            Rung("anthropic", "claude-haiku-5-5"),
+            [],
+        )
+
+    work = [(bill, {"bill_text": "x"})] * 4
+    cost_state = {"usd": 0.0, "stopped": False}
+    with patch.object(u676a, "run_bill_header_extraction", side_effect=fake_header):
+        asyncio.run(
+            u676a.run_llm_arm_batch(
+                work,
+                ladder=u676a.llm_arm_ladder_map("claude-haiku")["C"],
+                transport_for=lambda _p: MagicMock(),
+                concurrency=2,
+                max_cost_usd=10.0,
+                cost_state=cost_state,
+                mapper=BillExtractionMapper(),
+                out={},
+            )
+        )
+    assert inflight["max"] <= 2
+
+
+def test_raw_field_accuracy_at_bar_denominator_and_precision():
+    from intelligence.cascade.core import CascadeResult, Rung
+
+    truth = u676a.truth_from_row(_bill_row())
+    rows = []
+    for i in range(10):
+        conf = 0.90 if i < 3 else 0.40
+        cascade = CascadeResult(
+            False,
+            True,
+            {
+                "vendor_name": "V",
+                "bill_number": "INV-100",
+                "bill_date": "2026-05-01",
+                "total_amount": "100.00",
+                "confidence": conf,
+            },
+            conf,
+            Rung("foundry", "DeepSeek-V4-Flash"),
+            [],
+        )
+        with patch.object(u676a, "resolve_vendor_from_name", return_value=truth.vendor_public_id):
+            pred = u676a.arm_prediction_from_cascade(
+                cascade, BillExtractionMapper(), truth=truth
+            )
+        rows.append(
+            u676a.ScoredHeaderBill(
+                bill=_bill_row(bill_id=i + 1),
+                stratum="manual",
+                truth=truth,
+                init_arm_b=pred,
+                llm_arms_scored=frozenset({"B"}),
+            )
+        )
+    acc, cov, prec = u676a._raw_field_accuracy_at_bar(rows, "B", "vendor", 0.85)
+    assert acc == Decimal("0.3")
+    assert cov == Decimal("0.3")
+    assert prec == Decimal("1")
+
+
+def test_vendor_resolution_at_most_once_per_prediction_in_sweep():
+    from intelligence.cascade.core import CascadeResult, Rung
+
+    truth = u676a.truth_from_row(_bill_row())
+    cascade = CascadeResult(
+        False,
+        True,
+        {
+            "vendor_name": "V",
+            "bill_number": "INV-100",
+            "bill_date": "2026-05-01",
+            "total_amount": "100.00",
+            "confidence": 0.55,
+        },
+        0.55,
+        Rung("foundry", "DeepSeek-V4-Flash"),
+        [],
+    )
+    resolve_count = {"n": 0}
+    real = u676a.resolve_vendor_from_name
+
+    def counting(*args, **kwargs):
+        resolve_count["n"] += 1
+        return real(*args, **kwargs)
+
+    with patch.object(u676a, "resolve_vendor_from_name", side_effect=counting):
+        pred = u676a.arm_prediction_from_cascade(
+            cascade, BillExtractionMapper(), truth=truth
+        )
+        row = u676a.ScoredHeaderBill(
+            bill=_bill_row(),
+            stratum="manual",
+            truth=truth,
+            init_arm_b=pred,
+            llm_arms_scored=frozenset({"B"}),
+        )
+        u676a.header_confidence_bar_sweep([row], arms=frozenset({"B"}))
+        u676a.scored_row_to_csv_dict(row, arms=frozenset({"B"}))
+    assert resolve_count["n"] == 1
+
+
+def test_u676a_dry_run_arm_c_uses_payload_tokens_not_17k_floor():
+    sample = [(_bill_row(), "manual")]
+    dry = u676a.dry_run_summary(
+        sample,
+        sample_size=1,
+        populations={},
+        arms=frozenset({"A", "B", "C"}),
+        claude_ladder_name="claude-haiku",
+    )
+    per_call = u676a._dry_run_input_tokens_per_llm_call(sample)
+    assert per_call < u654a_tokens.CLAUDE_DRY_RUN_INPUT_TOKENS_FLOOR
+    assert dry["estimated_input_tokens_per_call"] == per_call
+    assert (
+        dry["estimated_tokens_arm_c"]
+        == per_call + u654a_tokens._ESTIMATE_OUTPUT_TOKENS_PER_CALL
+    )
+
+
+def test_arm_prediction_spend_sums_harness_recalls():
+    from intelligence.cascade.core import Attempt, CascadeResult, Rung
+
+    rung = Rung("anthropic", "claude-haiku-5-5")
+    merged = CascadeResult(
+        True,
+        False,
+        {
+            "vendor_name": "V",
+            "bill_number": "INV-100",
+            "bill_date": "2026-05-01",
+            "total_amount": "100.00",
+            "confidence": 0.9,
+        },
+        0.9,
+        rung,
+        [
+            Attempt(rung, False, error="http_429: x", usage=__import__("intelligence.transport.base", fromlist=["Usage"]).Usage(input_tokens=1000)),
+            Attempt(rung, True, usage=__import__("intelligence.transport.base", fromlist=["Usage"]).Usage(input_tokens=2000)),
+        ],
+    )
+    with patch.object(u676a, "bill_cascade_spend_usd", return_value=0.42):
+        pred = u676a.arm_prediction_from_cascade(
+            merged, BillExtractionMapper(), truth=u676a.truth_from_row(_bill_row())
+        )
+    assert pred.spend_usd == pytest.approx(0.42)
+
+
+def test_llm_arm_concurrency_selection():
+    assert u676a.llm_arm_concurrency("C", concurrency=4, claude_concurrency=1) == 1
+    assert u676a.llm_arm_concurrency("B", concurrency=4, claude_concurrency=1) == 4
+
+
+def test_header_confidence_bar_sweep_non_string_raw_fields():
+    """Integer / non-string raw LLM fields must not crash the confidence-bar sweep."""
+    from intelligence.cascade.core import CascadeResult, Rung
+
+    truth = u676a.truth_from_row(_bill_row())
+    cascade = CascadeResult(
+        False,
+        True,
+        {
+            "vendor_name": 999,
+            "bill_number": 12345,
+            "bill_date": date(2026, 5, 1),
+            "total_amount": "100.00",
+            "confidence": 0.55,
+        },
+        0.55,
+        Rung("foundry", "DeepSeek-V4-Flash"),
+        [],
+    )
+    with patch.object(u676a, "resolve_vendor_from_name", return_value=truth.vendor_public_id):
+        pred = u676a.arm_prediction_from_cascade(
+            cascade, BillExtractionMapper(), truth=truth
+        )
+    row = u676a.ScoredHeaderBill(
+        bill=_bill_row(),
+        stratum="manual",
+        truth=truth,
+        init_arm_b=pred,
+        llm_arms_scored=frozenset({"B"}),
+    )
+    sweep = u676a.header_confidence_bar_sweep([row], arms=frozenset({"B"}))
+    assert sweep["arms"]["B"]["0.5"]["bill_number"]["coverage"] == Decimal("0")
+    assert pred.raw_bill_number_correct is False
+    assert u676a._raw_prediction_nonempty(pred, "bill_number") is False
+    assert u676a._raw_prediction_nonempty(pred, "vendor") is False
+    assert u676a._raw_prediction_nonempty(pred, "amount") is True
+
+
+def test_vendor_db_error_still_scores_other_raw_fields_and_counts_failure():
+    from intelligence.cascade.core import CascadeResult, Rung
+
+    truth = u676a.truth_from_row(_bill_row())
+    cascade = CascadeResult(
+        False,
+        True,
+        {
+            "vendor_name": "Real Vendor",
+            "bill_number": "INV-100",
+            "bill_date": "2026-05-01",
+            "total_amount": "100.00",
+            "confidence": 0.55,
+        },
+        0.55,
+        Rung("foundry", "DeepSeek-V4-Flash"),
+        [],
+    )
+
+    def boom(*_a, **_k):
+        raise RuntimeError("vendor db down")
+
+    with patch.object(u676a, "resolve_vendor_from_name", side_effect=boom):
+        pred = u676a.arm_prediction_from_cascade(
+            cascade, BillExtractionMapper(), truth=truth
+        )
+    assert pred.raw_vendor_resolve_failed is True
+    assert pred.raw_vendor_correct is False
+    assert pred.raw_bill_number_correct is True
+    assert pred.raw_bill_date_correct is True
+    assert pred.raw_amount_correct is True
+    row = u676a.ScoredHeaderBill(
+        bill=_bill_row(),
+        stratum="manual",
+        truth=truth,
+        init_arm_b=pred,
+        llm_arms_scored=frozenset({"B"}),
+    )
+    metrics = u676a.build_metrics(
+        [row],
+        run_status="complete",
+        cap_tripped=False,
+        scored_bill_count=1,
+        unscored_bill_count=0,
+        blob_skip_unreadable=0,
+        blob_skip_unparseable=0,
+        blob_skip_stale=0,
+        arm_a_errors=0,
+        arms=frozenset({"A", "B"}),
+    )
+    assert metrics["raw_vendor_resolve_failed"] == 1
+    with tempfile.TemporaryDirectory() as tmp:
+        paths = u676a.write_report_and_outputs(
+            out_dir=Path(tmp),
+            stamp="vfail",
+            scored=[row],
+            metrics=metrics,
+            dry_info=None,
+            eval_since=u676a.DEFAULT_EVAL_SINCE,
+            eval_until=u676a.DEFAULT_EVAL_UNTIL,
+        )
+        report = paths[0].read_text(encoding="utf-8")
+    assert "vendor lookups failed: 1" in report
+
+
+def test_accepted_cascade_resolves_vendor_without_truth():
+    from intelligence.cascade.core import CascadeResult, Rung
+
+    vid = "11111111-1111-1111-1111-111111111111"
+    cascade = CascadeResult(
+        True,
+        False,
+        {
+            "vendor_name": "Real Vendor",
+            "bill_number": "INV-100",
+            "bill_date": "2026-05-01",
+            "total_amount": "100.00",
+            "confidence": 0.9,
+        },
+        0.9,
+        Rung("foundry", "DeepSeek-V4-Flash"),
+        [],
+    )
+    with patch.object(u676a, "resolve_vendor_from_name", return_value=vid) as mock:
+        pred = u676a.arm_prediction_from_cascade(cascade, BillExtractionMapper())
+    mock.assert_called_once()
+    assert pred.vendor_public_id == vid
+    assert not pred.arm_error
+
+
+def test_main_uses_distinct_concurrency_for_arms_b_and_c(tmp_path):
+    fake = [_bill_row()]
+    seen: dict[str, int] = {}
+
+    async def fake_batch(_work, *, ladder, concurrency=0, **_k):
+        key = "C" if ladder[0].provider == "anthropic" else "B"
+        seen[key] = concurrency
+
+    from entities.attachment.business.extraction_service import REDACTION_VERSION
+
+    payload_json = json.dumps(
+        {
+            "content": "t",
+            "key_value_pairs": [],
+            "redaction_version": REDACTION_VERSION,
+            "attachment_public_id": "00000000-0000-0000-0000-000000000001",
+            "source_file_hash": "a",
+            "method": "text_layer",
+            "pages_count": 1,
+        }
+    )
+    with patch.object(u676a, "load_header_bills_from_db", return_value=fake):
+        with patch.object(u676a, "read_text_blob_with_retry", return_value=payload_json):
+            with patch.object(u676a, "run_llm_arm_batch", side_effect=fake_batch):
+                with patch.object(u676a, "execute_run") as mock_exec:
+                    def run_build(build, llm):
+                        build()
+                        llm()
+
+                    mock_exec.side_effect = run_build
+                    with patch.object(u676a, "assert_cli_system_admin"):
+                        u676a.main(
+                            [
+                                "--out-dir",
+                                str(tmp_path),
+                                "--run",
+                                "--sample-size",
+                                "1",
+                                "--arms",
+                                "A,B,C",
+                                "--claude-ladder",
+                                "claude-haiku",
+                                "--claude-concurrency",
+                                "1",
+                                "--concurrency",
+                                "4",
+                            ]
+                        )
+    assert seen.get("B") == 4
+    assert seen.get("C") == 1

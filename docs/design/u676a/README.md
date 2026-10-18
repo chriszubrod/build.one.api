@@ -16,7 +16,7 @@ From repo root (system-admin CLI context, prod DB read-only with rollback):
 ./.venv/bin/python -m scripts.u676a_bill_field_bakeoff --run --arms A,B,C --claude-ladder claude-haiku
 ```
 
-Defaults: eval window from U-653b (`--eval-since` / `--eval-until`), sample 200, seed 676, arms `A,B`, outputs under `docs/design/u676a/`. `--max-cost-usd` applies to **B+C LLM spend combined**.
+Defaults: eval window from U-653b (`--eval-since` / `--eval-until`), sample 200, seed 676, arms `A,B`, outputs under `docs/design/u676a/`. `--max-cost-usd` applies to **B+C LLM spend combined**. `--concurrency` controls arm B (Foundry); `--claude-concurrency` (default 2) controls arm C.
 
 Intake strata in reports: **manual** / **agent** / **other** (QBO-pulled, NULL intake, email, etc.).
 
@@ -26,7 +26,7 @@ There is **no resume**: every `--run` re-scores the full sample. At ~200 docs an
 
 - `u676a_report_<stamp>.md` — summary + verdicts (complete runs only)
 - `u676a_summary_<stamp>.json` — metrics JSON
-- `u676a_per_doc_<stamp>.csv` — Bill ids, booleans, latencies, costs only (privacy asserted)
+- `u676a_per_doc_<stamp>.csv` — Bill ids, booleans, latencies, costs, `error_kind` / `http_status`, raw-confidence correctness columns (privacy asserted; no field values)
 
 Partial runs (SIGINT, cost cap, or high blob-skip share) still write stamped outputs with `run_status` ≠ `complete` and verdicts withheld.
 
@@ -44,5 +44,5 @@ Same 200 Bills (seed 676; 1,903 eligible), arm A = rules on stored text + KV onl
 | Cost per Bill | — | $0.0002 | $0.0033 | — |
 
 - Reports: [`u676a_report_20261017T140130Z.md`](u676a_report_20261017T140130Z.md) (arm C = Haiku), [`u676a_report_20261018T010007Z.md`](u676a_report_20261018T010007Z.md) (arm C = Sonnet). Arm B repeated within a point across both runs (85/83.5/92.5/93 → 85/82.5/93/93).
-- **The Haiku arm is invalid:** 166 of 200 calls failed fast at the API (median 206 ms, most likely rate limiting on the org; the harness did not record error codes). On the 34 that succeeded it matched Foundry (vendor 79%, number 88%, date 94%, amount 100%) — too few to decide. Sonnet had 10 failed calls (counted as misses).
+- **The Haiku arm is invalid:** 166 of 200 calls failed fast at the API (median 206 ms). Cause **unknown** — not HTTP 429/529 (the harness retries those with ≥2.25 s of backoff; throttle counters were 0). Likely a non-retried status (400/401/403/404/413) or an in-stream error; U-676e records `error_kind` / `http_status` on the next run. On the 34 that succeeded it matched Foundry (vendor 79%, number 88%, date 94%, amount 100%) — too few to decide. Sonnet had 10 failed calls (counted as misses).
 - Read: Foundry is the most accurate; Sonnet is close on vendor/date/amount, weaker on bill number, and ~2.5× faster. Rules are out. Next: a harness round that records error codes, backs off on rate limits and keeps below-threshold Claude answers with confidence, then a fair Haiku re-run (U-676e).

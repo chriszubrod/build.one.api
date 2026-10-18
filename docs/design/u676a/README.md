@@ -46,3 +46,11 @@ Same 200 Bills (seed 676; 1,903 eligible), arm A = rules on stored text + KV onl
 - Reports: [`u676a_report_20261017T140130Z.md`](u676a_report_20261017T140130Z.md) (arm C = Haiku), [`u676a_report_20261018T010007Z.md`](u676a_report_20261018T010007Z.md) (arm C = Sonnet). Arm B repeated within a point across both runs (85/83.5/92.5/93 → 85/82.5/93/93).
 - **The Haiku arm is invalid:** 166 of 200 calls failed fast at the API (median 206 ms). Cause **unknown** — not HTTP 429/529 (the harness retries those with ≥2.25 s of backoff; throttle counters were 0). Likely a non-retried status (400/401/403/404/413) or an in-stream error; U-676e records `error_kind` / `http_status` on the next run. On the 34 that succeeded it matched Foundry (vendor 79%, number 88%, date 94%, amount 100%) — too few to decide. Sonnet had 10 failed calls (counted as misses).
 - Read: Foundry is the most accurate; Sonnet is close on vendor/date/amount, weaker on bill number, and ~2.5× faster. Rules are out. Next: a harness round that records error codes, backs off on rate limits and keeps below-threshold Claude answers with confidence, then a fair Haiku re-run (U-676e).
+
+## Re-run with failure kinds + confidence sweep (U-676e), 2026-10-18
+
+Report: [`u676a_report_20261018T015204Z.md`](u676a_report_20261018T015204Z.md) · summary: [`u676a_summary_20261018T015204Z.json`](u676a_summary_20261018T015204Z.json). Same 200 Bills; arm C = Haiku 5.5, `--claude-concurrency 2`; $0.07.
+
+- **No API failures** this time (Haiku: 182 `none`, 18 `validation`); the 2026-10-17 fast failures were transient.
+- **Haiku's raw answers match Foundry** at bars 0.3–0.4 — vendor 85.5% / bill number 85.5% / amount 92.5% (Foundry 85.0 / 85.5 / 92.5) — at **1.25 s p50 vs 4.6 s**, $0.00017 vs $0.00020 per Bill. Accepted-only Haiku is lower (77.5 / 76.5 / 84.5) purely because 18 answers holding correct values failed our validator — a too-strict format rule, to fix before wiring.
+- **Decision (Chris, 2026-10-18): header extraction ladder = Haiku 5.5 → Sonnet 5.5 → Foundry** (U-676f/U-676b).

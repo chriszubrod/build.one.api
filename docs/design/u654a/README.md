@@ -81,3 +81,12 @@ Report: [`u654a_report_claude-haiku_20261017T115318Z.md`](u654a_report_claude-ha
 - **Inconclusive, not a rejection.** Haiku cleared the 0.85 confidence bar on only 22% (Mode A) / 19% (Mode B) of calls (794 needs_human, 0 task errors); when it did, it was right 59% (Mode A, 65/110) and 82% (Mode B, 79/96) of the time — Foundry-level precision. The bar was set for the Foundry ladder and its below-bar answers were not recorded, so the report's "DO NOT wire" (combined 44.2%) reflects the threshold, not the model.
 - **U-676e harness (2026-10-17):** records `error_kind` / `http_status` per call, harness-level 429/529 retries (5s→60s), raw below-bar predictions + confidence-bar sweep in reports/CSV; Claude dry-run cost floors at ~17k input tokens/call (~$1.7–1.8 for 500 Bills × Mode A+B on Haiku).
 - **Haiku call failures (cause unknown):** the 2026-10-17 run’s 166 fast failures were **not** HTTP 429/529 — the harness retries those with ≥2.25 s of backoff (observed median latency ~206 ms; throttle counters were 0). Likely a **non-retried** HTTP status (400/401/403/404/413) or an **in-stream** Anthropic error; the next run records `error_kind` / `http_status` per call for diagnosis.
+
+## Re-run with failure kinds + confidence sweep (U-676e), Claude Haiku 5.5, 2026-10-18
+
+Report: [`u654a_report_claude-haiku_20261018T014430Z.md`](u654a_report_claude-haiku_20261018T014430Z.md) · summary: [`u654a_summary_claude-haiku_20261018T014430Z.json`](u654a_summary_claude-haiku_20261018T014430Z.json). Same 500 Bills; $1.76.
+
+- Failures: 871 `none`, 45 `parse`, 84 `validation` (13% of Haiku answers unusable as returned).
+- **Haiku is clearly below Foundry on the cost code**: best bar 0.5 → text top-1 41.2% (Foundry 58.4%), precision ~48% (Foundry ~59%); combined 55.0% (+0.8 over history 54.2%; Foundry combined 63.4%). Confidence escalation cannot rescue it — it is wrong while confident.
+- **Haiku matches Foundry on project prediction**: 94.8% (Foundry 94.2%).
+- **Decisions (Chris, 2026-10-18):** project prediction → Haiku; cost code → measure Sonnet 5.5 (full 500 Bills, $15 cap) before choosing its ladder.

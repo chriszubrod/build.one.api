@@ -1,0 +1,544 @@
+{
+  "model_version": "u676a-bill-header-bakeoff-v1",
+  "arms": "A,B,C",
+  "evaluation_window": {
+    "since": "2026-04-11",
+    "until": "2026-10-10"
+  },
+  "run_status": "complete",
+  "populations": {
+    "eval_window_bill_population": 1903,
+    "intake_stratum_counts": {
+      "other": 1292,
+      "agent": 82,
+      "manual": 529
+    }
+  },
+  "sample_size": 200,
+  "metrics": {
+    "arms": "A,B,C",
+    "cap_tripped": false,
+    "scored_bill_count": 200,
+    "unscored_bill_count": 0,
+    "blob_skip_unreadable": 0,
+    "blob_skip_unparseable": 0,
+    "blob_skip_stale": 0,
+    "blob_skip_total": 0,
+    "arm_a_error_count": 0,
+    "arm_a_note": "Arm A measured on stored text + key/value pairs only \u2014 no DI tables (U-535a blob shape).",
+    "fields": {
+      "vendor": {
+        "arm_a": {
+          "accuracy": 0.23,
+          "coverage": 0.395,
+          "n_scored": 200
+        },
+        "by_stratum": {
+          "agent": {
+            "n": 66,
+            "arm_a_accuracy": 0.21212121212121213,
+            "arm_b_accuracy": 0.9242424242424242,
+            "arm_c_accuracy": 0.8939393939393939
+          },
+          "manual": {
+            "n": 67,
+            "arm_a_accuracy": 0.23880597014925373,
+            "arm_b_accuracy": 0.835820895522388,
+            "arm_c_accuracy": 0.746268656716418
+          },
+          "other": {
+            "n": 67,
+            "arm_a_accuracy": 0.23880597014925373,
+            "arm_b_accuracy": 0.7910447761194029,
+            "arm_c_accuracy": 0.6865671641791045
+          }
+        },
+        "arm_b": {
+          "accuracy": 0.85,
+          "coverage": 0.895,
+          "n_scored": 200
+        },
+        "arm_c": {
+          "accuracy": 0.775,
+          "coverage": 0.8,
+          "n_scored": 200
+        }
+      },
+      "bill_number": {
+        "arm_a": {
+          "accuracy": 0.13,
+          "coverage": 0.335,
+          "n_scored": 200
+        },
+        "by_stratum": {
+          "agent": {
+            "n": 66,
+            "arm_a_accuracy": 0.07575757575757576,
+            "arm_b_accuracy": 0.8636363636363636,
+            "arm_c_accuracy": 0.8484848484848485
+          },
+          "manual": {
+            "n": 67,
+            "arm_a_accuracy": 0.13432835820895522,
+            "arm_b_accuracy": 0.8656716417910447,
+            "arm_c_accuracy": 0.7164179104477612
+          },
+          "other": {
+            "n": 67,
+            "arm_a_accuracy": 0.1791044776119403,
+            "arm_b_accuracy": 0.835820895522388,
+            "arm_c_accuracy": 0.7313432835820896
+          }
+        },
+        "arm_b": {
+          "accuracy": 0.855,
+          "coverage": 0.97,
+          "n_scored": 200
+        },
+        "arm_c": {
+          "accuracy": 0.765,
+          "coverage": 0.875,
+          "n_scored": 200
+        }
+      },
+      "bill_date": {
+        "arm_a": {
+          "accuracy": 0.665,
+          "coverage": 0.88,
+          "n_scored": 200
+        },
+        "by_stratum": {
+          "agent": {
+            "n": 66,
+            "arm_a_accuracy": 0.6818181818181818,
+            "arm_b_accuracy": 0.9848484848484849,
+            "arm_c_accuracy": 0.9242424242424242
+          },
+          "manual": {
+            "n": 67,
+            "arm_a_accuracy": 0.6567164179104478,
+            "arm_b_accuracy": 0.9552238805970149,
+            "arm_c_accuracy": 0.7611940298507462
+          },
+          "other": {
+            "n": 67,
+            "arm_a_accuracy": 0.6567164179104478,
+            "arm_b_accuracy": 0.8805970149253731,
+            "arm_c_accuracy": 0.746268656716418
+          }
+        },
+        "arm_b": {
+          "accuracy": 0.94,
+          "coverage": 0.985,
+          "n_scored": 200
+        },
+        "arm_c": {
+          "accuracy": 0.81,
+          "coverage": 0.885,
+          "n_scored": 200
+        }
+      },
+      "amount": {
+        "arm_a": {
+          "accuracy": 0.465,
+          "coverage": 0.605,
+          "n_scored": 200
+        },
+        "by_stratum": {
+          "agent": {
+            "n": 66,
+            "arm_a_accuracy": 0.4393939393939394,
+            "arm_b_accuracy": 0.8939393939393939,
+            "arm_c_accuracy": 0.8636363636363636
+          },
+          "manual": {
+            "n": 67,
+            "arm_a_accuracy": 0.47761194029850745,
+            "arm_b_accuracy": 0.9850746268656716,
+            "arm_c_accuracy": 0.835820895522388
+          },
+          "other": {
+            "n": 67,
+            "arm_a_accuracy": 0.47761194029850745,
+            "arm_b_accuracy": 0.8955223880597015,
+            "arm_c_accuracy": 0.835820895522388
+          }
+        },
+        "arm_b": {
+          "accuracy": 0.925,
+          "coverage": 0.99,
+          "n_scored": 200
+        },
+        "arm_c": {
+          "accuracy": 0.845,
+          "coverage": 0.89,
+          "n_scored": 200
+        }
+      }
+    },
+    "description_nonempty_share": {
+      "arm_a": 0.0,
+      "arm_b": 1.0,
+      "arm_c": 0.895
+    },
+    "extraction_method": {
+      "n_with_method": 200,
+      "text_layer_share": 0.925,
+      "document_intelligence_share": 0.075,
+      "shares": {
+        "text_layer": 0.925,
+        "document_intelligence_read": 0.075
+      }
+    },
+    "latency": {
+      "arm_a_ms_p50": 7,
+      "arm_a_ms_p90": 376,
+      "arm_b_latency_ms_p50": 4618,
+      "arm_b_latency_ms_p90": 6321,
+      "arm_b_latency_ms_max": 10427,
+      "arm_c_latency_ms_p50": 1250,
+      "arm_c_latency_ms_p90": 1875,
+      "arm_c_latency_ms_max": 6310,
+      "arm_b_cost_per_doc_mean_usd": 0.000195,
+      "arm_b_cost_total_usd": 0.039008,
+      "arm_c_cost_per_doc_mean_usd": 0.000173,
+      "arm_c_cost_total_usd": 0.034601,
+      "llm_arms_cost_total_usd": 0.073609
+    },
+    "verdict": {
+      "status": "complete",
+      "fields": {
+        "vendor": {
+          "winner": "B",
+          "arm_a_accuracy": 0.23,
+          "arm_b_accuracy": 0.85,
+          "arm_c_accuracy": 0.775,
+          "below_bar": false
+        },
+        "bill_number": {
+          "winner": "B",
+          "arm_a_accuracy": 0.13,
+          "arm_b_accuracy": 0.855,
+          "arm_c_accuracy": 0.765,
+          "below_bar": false
+        },
+        "bill_date": {
+          "winner": "B",
+          "arm_a_accuracy": 0.665,
+          "arm_b_accuracy": 0.94,
+          "arm_c_accuracy": 0.81,
+          "below_bar": false
+        },
+        "amount": {
+          "winner": "B",
+          "arm_a_accuracy": 0.465,
+          "arm_b_accuracy": 0.925,
+          "arm_c_accuracy": 0.845,
+          "below_bar": false
+        }
+      }
+    },
+    "call_failures_by_arm": {
+      "B": {
+        "none": 200
+      },
+      "C": {
+        "none": 182,
+        "validation": 18
+      }
+    },
+    "confidence_bar_sweep": {
+      "bars": [
+        0.3,
+        0.4,
+        0.5,
+        0.6,
+        0.7,
+        0.8
+      ],
+      "arms": {
+        "B": {
+          "0.3": {
+            "vendor": {
+              "accuracy": 0.85,
+              "coverage": 0.96,
+              "precision": 0.8854166666666666
+            },
+            "bill_number": {
+              "accuracy": 0.855,
+              "coverage": 0.97,
+              "precision": 0.8814432989690721
+            },
+            "bill_date": {
+              "accuracy": 0.94,
+              "coverage": 0.985,
+              "precision": 0.9543147208121827
+            },
+            "amount": {
+              "accuracy": 0.925,
+              "coverage": 0.99,
+              "precision": 0.9343434343434344
+            }
+          },
+          "0.4": {
+            "vendor": {
+              "accuracy": 0.85,
+              "coverage": 0.96,
+              "precision": 0.8854166666666666
+            },
+            "bill_number": {
+              "accuracy": 0.855,
+              "coverage": 0.97,
+              "precision": 0.8814432989690721
+            },
+            "bill_date": {
+              "accuracy": 0.94,
+              "coverage": 0.985,
+              "precision": 0.9543147208121827
+            },
+            "amount": {
+              "accuracy": 0.925,
+              "coverage": 0.99,
+              "precision": 0.9343434343434344
+            }
+          },
+          "0.5": {
+            "vendor": {
+              "accuracy": 0.85,
+              "coverage": 0.96,
+              "precision": 0.8854166666666666
+            },
+            "bill_number": {
+              "accuracy": 0.855,
+              "coverage": 0.97,
+              "precision": 0.8814432989690721
+            },
+            "bill_date": {
+              "accuracy": 0.94,
+              "coverage": 0.985,
+              "precision": 0.9543147208121827
+            },
+            "amount": {
+              "accuracy": 0.925,
+              "coverage": 0.99,
+              "precision": 0.9343434343434344
+            }
+          },
+          "0.6": {
+            "vendor": {
+              "accuracy": 0.85,
+              "coverage": 0.955,
+              "precision": 0.8900523560209425
+            },
+            "bill_number": {
+              "accuracy": 0.85,
+              "coverage": 0.965,
+              "precision": 0.8808290155440415
+            },
+            "bill_date": {
+              "accuracy": 0.935,
+              "coverage": 0.98,
+              "precision": 0.9540816326530612
+            },
+            "amount": {
+              "accuracy": 0.925,
+              "coverage": 0.985,
+              "precision": 0.9390862944162437
+            }
+          },
+          "0.7": {
+            "vendor": {
+              "accuracy": 0.83,
+              "coverage": 0.93,
+              "precision": 0.8924731182795699
+            },
+            "bill_number": {
+              "accuracy": 0.83,
+              "coverage": 0.94,
+              "precision": 0.8829787234042553
+            },
+            "bill_date": {
+              "accuracy": 0.915,
+              "coverage": 0.96,
+              "precision": 0.953125
+            },
+            "amount": {
+              "accuracy": 0.915,
+              "coverage": 0.965,
+              "precision": 0.9481865284974094
+            }
+          },
+          "0.8": {
+            "vendor": {
+              "accuracy": 0.71,
+              "coverage": 0.78,
+              "precision": 0.9102564102564102
+            },
+            "bill_number": {
+              "accuracy": 0.715,
+              "coverage": 0.8,
+              "precision": 0.89375
+            },
+            "bill_date": {
+              "accuracy": 0.775,
+              "coverage": 0.8,
+              "precision": 0.96875
+            },
+            "amount": {
+              "accuracy": 0.77,
+              "coverage": 0.8,
+              "precision": 0.9625
+            }
+          }
+        },
+        "C": {
+          "0.3": {
+            "vendor": {
+              "accuracy": 0.855,
+              "coverage": 0.945,
+              "precision": 0.9047619047619048
+            },
+            "bill_number": {
+              "accuracy": 0.855,
+              "coverage": 0.97,
+              "precision": 0.8814432989690721
+            },
+            "bill_date": {
+              "accuracy": 0.885,
+              "coverage": 0.975,
+              "precision": 0.9076923076923077
+            },
+            "amount": {
+              "accuracy": 0.925,
+              "coverage": 0.99,
+              "precision": 0.9343434343434344
+            }
+          },
+          "0.4": {
+            "vendor": {
+              "accuracy": 0.855,
+              "coverage": 0.945,
+              "precision": 0.9047619047619048
+            },
+            "bill_number": {
+              "accuracy": 0.855,
+              "coverage": 0.97,
+              "precision": 0.8814432989690721
+            },
+            "bill_date": {
+              "accuracy": 0.885,
+              "coverage": 0.975,
+              "precision": 0.9076923076923077
+            },
+            "amount": {
+              "accuracy": 0.925,
+              "coverage": 0.99,
+              "precision": 0.9343434343434344
+            }
+          },
+          "0.5": {
+            "vendor": {
+              "accuracy": 0.85,
+              "coverage": 0.94,
+              "precision": 0.9042553191489362
+            },
+            "bill_number": {
+              "accuracy": 0.85,
+              "coverage": 0.965,
+              "precision": 0.8808290155440415
+            },
+            "bill_date": {
+              "accuracy": 0.885,
+              "coverage": 0.975,
+              "precision": 0.9076923076923077
+            },
+            "amount": {
+              "accuracy": 0.925,
+              "coverage": 0.98,
+              "precision": 0.9438775510204082
+            }
+          },
+          "0.6": {
+            "vendor": {
+              "accuracy": 0.845,
+              "coverage": 0.935,
+              "precision": 0.9037433155080213
+            },
+            "bill_number": {
+              "accuracy": 0.845,
+              "coverage": 0.96,
+              "precision": 0.8802083333333334
+            },
+            "bill_date": {
+              "accuracy": 0.88,
+              "coverage": 0.97,
+              "precision": 0.9072164948453608
+            },
+            "amount": {
+              "accuracy": 0.92,
+              "coverage": 0.975,
+              "precision": 0.9435897435897436
+            }
+          },
+          "0.7": {
+            "vendor": {
+              "accuracy": 0.8,
+              "coverage": 0.885,
+              "precision": 0.903954802259887
+            },
+            "bill_number": {
+              "accuracy": 0.765,
+              "coverage": 0.88,
+              "precision": 0.8693181818181818
+            },
+            "bill_date": {
+              "accuracy": 0.8,
+              "coverage": 0.88,
+              "precision": 0.9090909090909091
+            },
+            "amount": {
+              "accuracy": 0.87,
+              "coverage": 0.89,
+              "precision": 0.9775280898876404
+            }
+          },
+          "0.8": {
+            "vendor": {
+              "accuracy": 0.785,
+              "coverage": 0.87,
+              "precision": 0.9022988505747126
+            },
+            "bill_number": {
+              "accuracy": 0.76,
+              "coverage": 0.865,
+              "precision": 0.8786127167630058
+            },
+            "bill_date": {
+              "accuracy": 0.795,
+              "coverage": 0.865,
+              "precision": 0.9190751445086706
+            },
+            "amount": {
+              "accuracy": 0.86,
+              "coverage": 0.875,
+              "precision": 0.9828571428571429
+            }
+          }
+        }
+      }
+    },
+    "raw_vendor_resolve_failed": 0,
+    "accepted_vendor_resolve_failed": 0,
+    "usage": {
+      "cost_usd": 0.07360900000000002,
+      "throttle_retry_count": 0,
+      "throttle_failure_count": 0,
+      "harness_retry_by_kind": {},
+      "cascade_error_count": 0,
+      "call_timeout_count": 0
+    },
+    "claude_ladder": "claude-haiku"
+  },
+  "dry_run": null,
+  "claude_ladder": "claude-haiku"
+}

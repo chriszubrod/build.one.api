@@ -72,3 +72,10 @@ def test_filler_strip_idempotent():
         once = format_short_description(raw)
         twice = format_short_description(once)
         assert once == twice, raw
+
+
+def test_filler_stripped_after_the_five_word_cut():
+    from entities.bill.business.description_format import format_short_description
+    out = format_short_description("Oak Trim Lumber Stain Purchase Receipt")
+    assert out == "Oak Trim Lumber Stain"
+    assert format_short_description(out) == out

@@ -86,7 +86,9 @@ def format_short_description(text: str | None) -> str | None:
     if not collapsed:
         return None
     words = _strip_trailing_filler_words(collapsed.split(" "))
-    words = words[:5]
+    # Re-strip after the 5-word cut: the cut can leave a filler word last
+    # ("Oak Trim Lumber Stain Purchase Receipt" -> "... Stain Purchase").
+    words = _strip_trailing_filler_words(words[:5])
     titled = [_capitalize_word(word) for word in words if word]
     if not titled:
         return None

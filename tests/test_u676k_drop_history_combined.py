@@ -475,3 +475,33 @@ def test_chosen_project_strong_history_skips_model():
         )
     predict_mock.assert_not_awaited()
     assert out["coding"]["source"] == "vendor_project_history"
+
+
+def test_chosen_project_coding_daily_cap_keeps_header_fields_partial():
+    """With a chosen project and weak history, a daily-capped coding call keeps the header
+    fields and returns status "partial" with no coding (header already read; the web keeps
+    the fields). Deliberate since U-676k fix round 1 (was ai_unavailable with empty fields)."""
+    history = _weak_history(source="vendor_project_history")
+    suggester = MagicMock()
+    suggester.suggest.return_value = history
+    suggester.project_service = MagicMock()
+    suggester.sub_cost_code_service = MagicMock()
+    with patch.object(
+        ras, "predict_text_coding", new=AsyncMock(return_value=(None, "daily_cap"))
+    ) as predict_mock, patch.object(ras, "ProjectService") as PS, patch.object(
+        ras, "assert_can_access_project"
+    ):
+        PS.return_value.read_by_public_id.return_value = SimpleNamespace(
+            id=100, public_id=PROJ_UUID, name="P"
+        )
+        out = asyncio.run(
+            ras.run_bill_read_attachment(
+                attachment_public_id=ATT_UUID,
+                project_public_id=UUID(PROJ_UUID),
+                suggester=suggester,
+            )
+        )
+    predict_mock.assert_awaited_once()
+    assert out["status"] == "partial"
+    assert out["coding"] is None
+    assert out["fields"]["bill_number"]["value"]  # header kept

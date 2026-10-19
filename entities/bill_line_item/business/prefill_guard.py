@@ -22,8 +22,8 @@ def count_unreviewed_prefill(lines: Sequence[object]) -> int:
 def unreviewed_prefill_message(count: int, *, action: str) -> str:
     noun = "suggested cost code has" if count == 1 else "suggested cost codes have"
     return (
-        f"{count} {noun} not been reviewed. Submit the bill for review from "
-        "Bill Edit to record the review."
+        f"{count} {noun} not been reviewed. Submitting the bill for review "
+        "records the review."
     )
 
 

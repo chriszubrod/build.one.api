@@ -15,6 +15,7 @@ import pytest
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
+from entities.attachment.persistence.repo import AttachmentLinkState
 from entities.attachment.business.extraction_service import (
     AttachmentExtractionService,
     REDACTION_VERSION,
@@ -35,6 +36,8 @@ from intelligence.cascade.core import CascadeResult, Rung
 ATT_UUID = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
 PROJ_UUID = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
 VENDOR_UUID = "cccccccc-cccc-cccc-cccc-cccccccccccc"
+
+
 
 
 @pytest.fixture
@@ -171,7 +174,7 @@ def test_linked_attachment_404(client_can_create):
             attachment_service=MagicMock(read_by_public_id=MagicMock(return_value=att)),
         )
 
-    with patch.object(ras, "read_attachment_link_state", return_value=(True, False)):
+    with patch.object(ras, "read_attachment_link_state", return_value=AttachmentLinkState(True, False, True)):
         with patch(
             "entities.bill.api.read_attachment_router.run_bill_read_attachment_with_timeout",
             side_effect=_run,
@@ -217,7 +220,7 @@ def test_header_cascade_daily_cap_ai_unavailable():
     with patch.object(ras, "AttachmentService") as AS, patch.object(
         ras, "AttachmentExtractionService"
     ) as ES, patch.object(
-        ras, "read_attachment_link_state", return_value=(False, False)
+        ras, "read_attachment_link_state", return_value=AttachmentLinkState(False, False, True)
     ), patch(
         "entities.bill.business.read_attachment_service.run_bill_header_extraction",
         new=AsyncMock(
@@ -343,7 +346,7 @@ def test_ok_vendor_matched_header_and_history_coding():
 
     with patch.object(ras, "AttachmentService") as AS, patch.object(
         ras, "AttachmentExtractionService"
-    ) as ES, patch.object(ras, "read_attachment_link_state", return_value=(False, False)), patch.object(
+    ) as ES, patch.object(ras, "read_attachment_link_state", return_value=AttachmentLinkState(False, False, True)), patch.object(
         ras, "resolve_vendor_match_from_name"
     ) as rvm, patch.object(ras, "predict_text_coding", new=AsyncMock()) as predict_mock, patch(
         "entities.bill.business.read_attachment_service.run_bill_header_extraction",
@@ -391,7 +394,7 @@ def test_vendor_unmatched_coding_null_status_ok():
     with patch.object(ras, "AttachmentService") as AS, patch.object(
         ras, "AttachmentExtractionService"
     ) as ES, patch.object(
-        ras, "read_attachment_link_state", return_value=(False, False)
+        ras, "read_attachment_link_state", return_value=AttachmentLinkState(False, False, True)
     ), patch.object(ras, "resolve_vendor_match_from_name", return_value=None), patch(
         "entities.bill.business.read_attachment_service.run_bill_header_extraction",
         new=AsyncMock(return_value=_ok_header_cascade(vendor_name="Unknown Co")),
@@ -459,7 +462,7 @@ def test_text_coding_mode_b_shape_matches_suggest_payload():
     with patch.object(ras, "AttachmentService") as AS, patch.object(
         ras, "AttachmentExtractionService"
     ) as ES, patch.object(
-        ras, "read_attachment_link_state", return_value=(False, False)
+        ras, "read_attachment_link_state", return_value=AttachmentLinkState(False, False, True)
     ), patch.object(ras, "resolve_vendor_match_from_name") as rvm, patch.object(
         ras,
         "predict_text_coding",
@@ -547,7 +550,7 @@ def test_inaccessible_predicted_project_dropped():
     with patch.object(ras, "AttachmentService") as AS, patch.object(
         ras, "AttachmentExtractionService"
     ) as ES, patch.object(
-        ras, "read_attachment_link_state", return_value=(False, False)
+        ras, "read_attachment_link_state", return_value=AttachmentLinkState(False, False, True)
     ), patch.object(ras, "resolve_vendor_match_from_name") as rvm, patch.object(
         ras,
         "predict_text_coding",
@@ -604,7 +607,7 @@ def test_no_bill_text_in_logs(caplog):
     with patch.object(ras, "AttachmentService") as AS, patch.object(
         ras, "AttachmentExtractionService"
     ) as ES, patch.object(
-        ras, "read_attachment_link_state", return_value=(False, False)
+        ras, "read_attachment_link_state", return_value=AttachmentLinkState(False, False, True)
     ), patch.object(ras, "resolve_vendor_match_from_name", return_value=None), patch(
         "entities.bill.business.read_attachment_service.run_bill_header_extraction",
         new=AsyncMock(return_value=_ok_header_cascade()),
@@ -629,7 +632,7 @@ def test_link_state_db_error_fail_closed_not_found():
     with patch.object(ras, "AttachmentService") as AS, patch.object(
         ras, "AttachmentRepository"
     ) as Repo:
-        Repo.return_value.read_link_state.side_effect = RuntimeError("db down")
+        Repo.return_value.read_link_state_with_ownership.side_effect = RuntimeError("db down")
         AS.return_value.read_by_public_id.return_value = att
         with pytest.raises(AttachmentNotReadable):
             asyncio.run(ras.run_bill_read_attachment(attachment_public_id=ATT_UUID))
@@ -648,7 +651,7 @@ def test_processing_in_flight_waits_then_reuses():
     with patch.object(ras, "AttachmentService") as AS, patch.object(
         ras, "AttachmentExtractionService"
     ) as ES, patch.object(
-        ras, "read_attachment_link_state", return_value=(False, False)
+        ras, "read_attachment_link_state", return_value=AttachmentLinkState(False, False, True)
     ), patch(
         "entities.bill.business.read_attachment_service.run_bill_header_extraction",
         new=AsyncMock(return_value=_ok_header_cascade()),
@@ -684,7 +687,7 @@ def test_header_needs_human_still_returns_fields():
     with patch.object(ras, "AttachmentService") as AS, patch.object(
         ras, "AttachmentExtractionService"
     ) as ES, patch.object(
-        ras, "read_attachment_link_state", return_value=(False, False)
+        ras, "read_attachment_link_state", return_value=AttachmentLinkState(False, False, True)
     ), patch.object(ras, "resolve_vendor_match_from_name", return_value=None), patch(
         "entities.bill.business.read_attachment_service.run_bill_header_extraction",
         new=AsyncMock(return_value=low_conf),
@@ -748,7 +751,7 @@ def test_text_coding_mode_a_asserts_project_access():
     with patch.object(ras, "AttachmentService") as AS, patch.object(
         ras, "AttachmentExtractionService"
     ) as ES, patch.object(
-        ras, "read_attachment_link_state", return_value=(False, False)
+        ras, "read_attachment_link_state", return_value=AttachmentLinkState(False, False, True)
     ), patch.object(ras, "resolve_vendor_match_from_name") as rvm, patch.object(
         ras,
         "predict_text_coding",
@@ -794,7 +797,7 @@ def test_mode_a_inaccessible_project_404():
     with patch.object(ras, "AttachmentService") as AS, patch.object(
         ras, "AttachmentExtractionService"
     ) as ES, patch.object(
-        ras, "read_attachment_link_state", return_value=(False, False)
+        ras, "read_attachment_link_state", return_value=AttachmentLinkState(False, False, True)
     ), patch.object(ras, "resolve_vendor_match_from_name") as rvm, patch(
         "entities.bill.business.read_attachment_service.run_bill_header_extraction",
         new=AsyncMock(return_value=_ok_header_cascade()),
@@ -856,7 +859,7 @@ def test_coding_error_yields_partial_with_header():
     with patch.object(ras, "AttachmentService") as AS, patch.object(
         ras, "AttachmentExtractionService"
     ) as ES, patch.object(
-        ras, "read_attachment_link_state", return_value=(False, False)
+        ras, "read_attachment_link_state", return_value=AttachmentLinkState(False, False, True)
     ), patch.object(ras, "resolve_vendor_match_from_name") as rvm, patch.object(
         ras, "predict_text_coding", side_effect=RuntimeError("boom")
     ), patch(
@@ -1050,7 +1053,7 @@ def test_all_null_header_is_unreadable_not_partial():
     with patch.object(ras, "AttachmentService") as AS, patch.object(
         ras, "AttachmentExtractionService"
     ) as ES, patch.object(
-        ras, "read_attachment_link_state", return_value=(False, False)
+        ras, "read_attachment_link_state", return_value=AttachmentLinkState(False, False, True)
     ), patch(
         "entities.bill.business.read_attachment_service.run_bill_header_extraction",
         new=AsyncMock(return_value=empty_cascade),
@@ -1071,7 +1074,7 @@ def test_total_amount_two_decimal_string():
     with patch.object(ras, "AttachmentService") as AS, patch.object(
         ras, "AttachmentExtractionService"
     ) as ES, patch.object(
-        ras, "read_attachment_link_state", return_value=(False, False)
+        ras, "read_attachment_link_state", return_value=AttachmentLinkState(False, False, True)
     ), patch.object(ras, "resolve_vendor_match_from_name", return_value=None), patch(
         "entities.bill.business.read_attachment_service.run_bill_header_extraction",
         new=AsyncMock(return_value=cascade),
@@ -1172,7 +1175,7 @@ def test_blocking_work_runs_off_event_loop_thread():
 
     def track_link_state(aid):
         worker_threads.append(threading.get_ident())
-        return False, False
+        return AttachmentLinkState(False, False, True)
 
     main_ident = threading.get_ident()
 
@@ -1197,7 +1200,7 @@ def test_blocking_work_runs_off_event_loop_thread():
 def test_ownership_non_owner_404():
     att = _attachment()
     with patch.object(ras, "AttachmentService") as AS, patch.object(
-        ras, "read_attachment_link_state", return_value=(True, False)
+        ras, "read_attachment_link_state", return_value=AttachmentLinkState(True, False, True)
     ):
         AS.return_value.read_by_public_id.return_value = att
         with pytest.raises(AttachmentNotReadable):
@@ -1219,7 +1222,7 @@ def test_contextvars_reach_link_state_call():
         repo = kwargs.get("repo")
         if repo is not None and hasattr(repo, "read_link_state"):
             seen["repo"] = repo
-        return False, False
+        return AttachmentLinkState(False, False, True)
 
     with patch.object(ras, "AttachmentService") as AS, patch.object(
         ras, "read_attachment_link_state", side_effect=capture_link_state
@@ -1454,7 +1457,7 @@ def test_read_attachment_sends_only_masked_text_to_the_model(monkeypatch):
 
     monkeypatch.setattr(ras, "run_bill_header_extraction", fake_header)
     monkeypatch.setattr(
-        ras, "read_attachment_link_state", MagicMock(return_value=(False, False))
+        ras, "read_attachment_link_state", MagicMock(return_value=AttachmentLinkState(False, False, True))
     )
     att_svc = MagicMock()
     att_svc.read_by_public_id.return_value = att

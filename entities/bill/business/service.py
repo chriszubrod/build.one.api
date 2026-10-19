@@ -217,6 +217,14 @@ def _build_qbo_bill_url(qbo_id: str, realm_id: str) -> str:
     return f"https://app.qbo.intuit.com/app/bill?txnId={qbo_id}&realmId={realm_id}"
 
 
+class DuplicateBillError(ValueError):
+    """Vendor + bill number + date duplicate on create (message unchanged for HTTP callers)."""
+
+    def __init__(self, message: str, *, existing_bill_public_id: Optional[str] = None):
+        super().__init__(message)
+        self.existing_bill_public_id = existing_bill_public_id
+
+
 class BillReviewDecisionApplyError(Exception):
     """HTTP-mappable refusal for POST /apply/review-decision/bill/{id}."""
 
@@ -524,11 +532,12 @@ class BillService:
                             f"Bill but failed: {link_error})"
                         )
 
-                raise ValueError(
+                raise DuplicateBillError(
                     f"A bill with BillNumber '{bill_number}' and this date "
                     f"already exists for this vendor "
                     f"(Bill.PublicId={existing.public_id}, IsDraft={existing.is_draft}). "
-                    f"Please update the existing bill instead of creating a new one.{link_msg}"
+                    f"Please update the existing bill instead of creating a new one.{link_msg}",
+                    existing_bill_public_id=str(existing.public_id),
                 )
 
         bill = self.repo.create(
@@ -1285,8 +1294,13 @@ class BillService:
             existing.bill_date = bill_date
         if due_date is not None:
             existing.due_date = due_date
+        is_completed = getattr(existing, "status", None) == "completed"
         if bill_number is not None:
-            existing.bill_number = bill_number
+            if _via_completion_pipeline and is_completed:
+                existing.bill_number = bill_number
+            else:
+                stripped = str(bill_number).strip()
+                existing.bill_number = stripped if stripped else None
         if total_amount is not None:
             existing.total_amount = Decimal(str(total_amount))
         if memo is not None:

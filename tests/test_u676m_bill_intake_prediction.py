@@ -14,6 +14,7 @@ import pytest
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
+from entities.attachment.persistence.repo import AttachmentLinkState
 from entities.bill.business import read_attachment_service as ras
 from entities.bill.business.model import Bill
 from entities.bill.business.service import BillService
@@ -50,6 +51,8 @@ from shared.access import EntityNotAccessibleError
 
 ATT_UUID = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
 BILL_UUID = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+
+
 
 
 def _bill(**kw) -> Bill:
@@ -135,7 +138,7 @@ def test_persist_called_with_expected_fields_on_read():
     with patch.object(ras, "config") as cfg, patch.object(
         ras.claude_budget, "is_claude_day_stopped_async", new=AsyncMock(return_value=False)
     ), patch.object(ras, "AttachmentService") as att_cls, patch.object(
-        ras, "read_attachment_link_state", return_value=(False, False)
+        ras, "read_attachment_link_state", return_value=AttachmentLinkState(False, False, True)
     ), patch.object(
         ras, "_extract_with_inflight_wait",
         new=AsyncMock(return_value={"status": "timeout"}),
@@ -161,7 +164,7 @@ def _baseline_timeout_payload() -> dict:
     with patch.object(ras, "config") as cfg, patch.object(
         ras.claude_budget, "is_claude_day_stopped_async", new=AsyncMock(return_value=False)
     ), patch.object(ras, "AttachmentService") as att_cls, patch.object(
-        ras, "read_attachment_link_state", return_value=(False, False)
+        ras, "read_attachment_link_state", return_value=AttachmentLinkState(False, False, True)
     ), patch.object(
         ras, "_extract_with_inflight_wait",
         new=AsyncMock(return_value={"status": "timeout"}),
@@ -187,7 +190,7 @@ def test_read_payload_unchanged_when_build_raises():
     with patch.object(ras, "config") as cfg, patch.object(
         ras.claude_budget, "is_claude_day_stopped_async", new=AsyncMock(return_value=False)
     ), patch.object(ras, "AttachmentService") as att_cls, patch.object(
-        ras, "read_attachment_link_state", return_value=(False, False)
+        ras, "read_attachment_link_state", return_value=AttachmentLinkState(False, False, True)
     ), patch.object(
         ras, "_extract_with_inflight_wait",
         new=AsyncMock(return_value={"status": "timeout"}),
@@ -215,7 +218,7 @@ def test_read_payload_unchanged_when_upsert_raises():
     with patch.object(ras, "config") as cfg, patch.object(
         ras.claude_budget, "is_claude_day_stopped_async", new=AsyncMock(return_value=False)
     ), patch.object(ras, "AttachmentService") as att_cls, patch.object(
-        ras, "read_attachment_link_state", return_value=(False, False)
+        ras, "read_attachment_link_state", return_value=AttachmentLinkState(False, False, True)
     ), patch.object(
         ras, "_extract_with_inflight_wait",
         new=AsyncMock(return_value={"status": "timeout"}),
@@ -251,7 +254,7 @@ def test_record_read_runs_in_dedicated_pool_with_request_context():
     with patch.object(ras, "config") as cfg, patch.object(
         ras.claude_budget, "is_claude_day_stopped_async", new=AsyncMock(return_value=False)
     ), patch.object(ras, "AttachmentService") as att_cls, patch.object(
-        ras, "read_attachment_link_state", return_value=(False, False)
+        ras, "read_attachment_link_state", return_value=AttachmentLinkState(False, False, True)
     ), patch.object(
         ras, "_extract_with_inflight_wait",
         new=AsyncMock(return_value={"status": "timeout"}),
@@ -297,7 +300,7 @@ def test_read_path_does_not_refresh_attachment_after_extract():
     with patch.object(ras, "config") as cfg, patch.object(
         ras.claude_budget, "is_claude_day_stopped_async", new=AsyncMock(return_value=False)
     ), patch.object(ras, "AttachmentService") as att_cls, patch.object(
-        ras, "read_attachment_link_state", return_value=(False, False)
+        ras, "read_attachment_link_state", return_value=AttachmentLinkState(False, False, True)
     ), patch.object(
         ras, "_extract_with_inflight_wait",
         new=AsyncMock(return_value={"status": "timeout"}),
@@ -966,7 +969,7 @@ def _baseline_ok_read_payload(
         ), patch.object(ras, "AttachmentService") as att_cls, patch.object(
             ras, "AttachmentExtractionService"
         ) as ES, patch.object(
-            ras, "read_attachment_link_state", return_value=(False, False)
+            ras, "read_attachment_link_state", return_value=AttachmentLinkState(False, False, True)
         ), patch.object(ras, "resolve_vendor_match_from_name") as rvm, patch(
             "entities.bill.business.read_attachment_service.run_bill_header_extraction",
             new=AsyncMock(return_value=_ok_header_cascade()),
@@ -1088,7 +1091,7 @@ def test_slow_record_read_does_not_delay_or_change_ok_payload():
         ), patch.object(ras, "AttachmentService") as att_cls, patch.object(
             ras, "AttachmentExtractionService"
         ) as ES, patch.object(
-            ras, "read_attachment_link_state", return_value=(False, False)
+            ras, "read_attachment_link_state", return_value=AttachmentLinkState(False, False, True)
         ), patch.object(ras, "resolve_vendor_match_from_name") as rvm, patch(
             "entities.bill.business.read_attachment_service.run_bill_header_extraction",
             new=AsyncMock(return_value=_ok_header_cascade()),
@@ -1158,7 +1161,7 @@ def test_record_read_task_retained_until_done():
         with patch.object(ras, "config") as cfg, patch.object(
             ras.claude_budget, "is_claude_day_stopped_async", new=AsyncMock(return_value=False)
         ), patch.object(ras, "AttachmentService") as att_cls, patch.object(
-            ras, "read_attachment_link_state", return_value=(False, False)
+            ras, "read_attachment_link_state", return_value=AttachmentLinkState(False, False, True)
         ), patch.object(
             ras, "_extract_with_inflight_wait",
             new=AsyncMock(return_value={"status": "timeout"}),
@@ -1345,7 +1348,7 @@ def _read_with_coding_failure(*, mode_a: bool) -> tuple[dict, dict]:
     proj_uuid = UUID("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")
     with _prefill_settings_patch(), patch.object(ras, "AttachmentService") as AS, patch.object(
         ras, "AttachmentExtractionService"
-    ) as ES, patch.object(ras, "read_attachment_link_state", return_value=(False, False)
+    ) as ES, patch.object(ras, "read_attachment_link_state", return_value=AttachmentLinkState(False, False, True)
     ), patch.object(ras, "resolve_vendor_match_from_name") as rvm, patch(
         "entities.bill.business.read_attachment_service.run_bill_header_extraction",
         new=AsyncMock(return_value=_ok_header_cascade()),

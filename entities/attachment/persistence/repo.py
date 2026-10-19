@@ -2,7 +2,7 @@
 import base64
 import logging
 from datetime import datetime
-from typing import Optional
+from typing import Optional, NamedTuple
 
 # Third-party Imports
 import pyodbc
@@ -18,6 +18,14 @@ from shared.database import (
 from shared.lifecycle.terminal_lock import reraise_if_sproc_status_locked
 
 logger = logging.getLogger(__name__)
+
+
+class AttachmentLinkState(NamedTuple):
+    """Result of dbo.ReadAttachmentLinkState (IsOwned added by U-676p)."""
+
+    is_linked: bool
+    is_taxpayer: bool
+    is_owned: bool
 
 
 class AttachmentRepository:
@@ -714,6 +722,14 @@ class AttachmentRepository:
 
     def read_link_state(self, attachment_id: int) -> tuple[bool, bool]:
         """IsLinked / IsTaxpayer for U-676b fresh-upload gate (ReadAttachmentLinkState)."""
+        state = self.read_link_state_with_ownership(attachment_id)
+        return state.is_linked, state.is_taxpayer
+
+    def read_link_state_with_ownership(self, attachment_id: int) -> "AttachmentLinkState":
+        """IsLinked / IsTaxpayer / IsOwned from ReadAttachmentLinkState (U-676p).
+
+        Fails closed: a missing row reads as linked, not taxpayer-safe, and not owned.
+        """
         from shared.authz.context import (
             current_company_id,
             current_is_system_admin,
@@ -736,11 +752,15 @@ class AttachmentRepository:
                     )
                     row = cursor.fetchone()
                     if not row:
-                        return False, False
-                    return bool(row.IsLinked), bool(row.IsTaxpayer)
+                        return AttachmentLinkState(is_linked=True, is_taxpayer=True, is_owned=False)
+                    return AttachmentLinkState(
+                        is_linked=bool(row.IsLinked),
+                        is_taxpayer=bool(row.IsTaxpayer),
+                        is_owned=bool(getattr(row, "IsOwned", False)),
+                    )
                 finally:
                     cursor.close()
         except Exception as error:
-            logger.error(f"Error during read attachment link state: {error}")
+            logger.error("Error during read attachment link state: %s", type(error).__name__)
             raise map_database_error(error)
 

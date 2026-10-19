@@ -3,7 +3,7 @@
 --   @ActorUserId BIGINT = NULL,
 --   @CompanyId BIGINT = NULL,
 --   @IsSystemAdmin BIT = 0
--- ) -> one row (IsLinked BIT, IsTaxpayer BIT).
+-- ) -> one row (IsLinked BIT, IsTaxpayer BIT, IsOwned BIT).
 -- IsLinked: not readable by caller (ownership / company) OR AttachmentId appears in any parent link table:
 --   dbo.AssetAttachment, dbo.BillCreditLineItemAttachment, dbo.BillLineItemAttachment,
 --   dbo.BillTextCodingSuggestion, dbo.BusinessLicenseAttachment, dbo.CertificateOfInsurance,
@@ -12,6 +12,9 @@
 --   ms.DriveItemAttachment, box.File.
 --   (dbo.MsMessageAttachment.AttachmentId is Graph metadata NVARCHAR — not dbo.Attachment.Id.)
 -- IsTaxpayer: AttachmentId appears in dbo.TaxpayerAttachment (masking hint; also counts as linked).
+-- IsOwned (U-676p): the caller may read this attachment — system admin, or creator in the caller's
+--   company (the same @IsReadable that IsLinked folds in). Lets a caller tell "mine but linked"
+--   from "not mine" without a second ownership predicate anywhere else.
 -- Build: entities/attachment/sql/README.md
 
 GO
@@ -112,6 +115,7 @@ BEGIN
                 THEN 1
                 ELSE 0
             END AS BIT
-        ) AS IsTaxpayer;
+        ) AS IsTaxpayer,
+        @IsReadable AS IsOwned;
 END;
 GO

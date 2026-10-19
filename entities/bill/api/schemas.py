@@ -1,5 +1,5 @@
 # Python Standard Library Imports
-from typing import Optional
+from typing import Literal, Optional
 from decimal import Decimal
 
 # Third-party Imports
@@ -7,6 +7,8 @@ from pydantic import BaseModel, Field
 
 # Local Imports
 from entities.bill_line_item.api.schemas import CodingPrefillStateLiteral
+
+BillCreateIntakeSource = Literal["pdf_drop", "pdf_upload"]
 
 
 class BillCreate(BaseModel):
@@ -119,14 +121,22 @@ class BillCreate(BaseModel):
             "leave this unset → existing behavior preserved."
         )
     )
+    intake_source: Optional[BillCreateIntakeSource] = Field(
+        default=None,
+        description=(
+            "Optional intake channel for bill-create read paths (pdf_drop | pdf_upload). "
+            "When omitted the router derives manual/agent from the JWT username."
+        ),
+    )
 
 
 class BillUpdate(BaseModel):
     row_version: str = Field(
         description="The row version of the bill (base64 encoded)."
     )
-    vendor_public_id: str = Field(
-        description="The vendor public ID of the bill."
+    vendor_public_id: Optional[str] = Field(
+        default=None,
+        description="The vendor public ID of the bill. Omit on draft autosave to keep existing.",
     )
     payment_term_public_id: Optional[str] = Field(
         default=None,
@@ -138,9 +148,13 @@ class BillUpdate(BaseModel):
     due_date: str = Field(
         description="The due date of the bill."
     )
-    bill_number: str = Field(
+    bill_number: Optional[str] = Field(
+        default=None,
         max_length=50,
-        description="The bill number of the bill."
+        description=(
+            "The bill number of the bill. Non-completed bills may omit or send "
+            "blank (stored as NULL). Completed bills follow the completion pipeline rules."
+        ),
     )
     total_amount: Optional[Decimal] = Field(
         default=None,

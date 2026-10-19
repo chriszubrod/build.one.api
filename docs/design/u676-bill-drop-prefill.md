@@ -171,3 +171,32 @@ Before blob download, `_process_one_claim` loads the intake row by `attachment_i
 ### Accuracy
 
 - `scripts/u676m_prediction_accuracy.py` — read-only markdown report from `ReadBillIntakePredictionsForAccuracy` (per-field match rates, overall, top vendors, mean cost/latency). Apply SQL base file to prod before first report.
+
+## U-676p — Bills list PDF drop → draft (2026-10-19)
+
+**Goal:** Drop a PDF on the web Bills **list** page → one synchronous API call runs the U-676 read pipeline, creates (or reopens) a **draft** bill with the PDF attached, and the client navigates to `/bill/:id/edit` for review.
+
+### API
+
+- `POST /api/v1/bill/draft-from-attachment` — `Modules.BILLS` `can_create`. Body: `{ attachment_public_id }`. Response item envelope: `{ bill_public_id, existing, existing_reason, read_status }` where `existing_reason` is `same_pdf`, `same_vendor_number_date`, or null.
+
+### Service flow (`draft_from_attachment_service`)
+
+1. **Gate (before the lock)** — `gate_attachment_for_bill_read`: one `ReadAttachmentByPublicId` + one `dbo.ReadAttachmentLinkState`. The sproc's `IsOwned` column (system admin, or creator in the caller's company — the same `@IsReadable` that `IsLinked` folds in) decides ownership; not owned / missing → the same generic 404, **before** any hash lookup and before the per-hash lock (no same-PDF oracle on another user's upload; an unowned id never waits on someone else's lock). Ownership lives only in the sproc — there is no Python copy of the rule. Any error reading link state fails closed (linked, taxpayer, not owned).
+2. **Per-hash lock** — in-process `asyncio.Lock` per SHA-256 (WeakValueDictionary, so a held lock is never evicted). **Residual cross-worker race:** two gunicorn workers can still create two drafts for the same PDF in the same moment.
+3. **Same-PDF dedup** — `ReadDraftBillByAttachmentHash`, **including** the dropped attachment (idempotent retry). Pure drafts only (`IsDraft=1`, `Status='draft'`), actor-scoped via `dbo.UserCanAccessBill`, `TOP 1 … ORDER BY b.Id DESC`. Inaccessible matches behave as no match. **No read, no create** when matched.
+4. **Link re-check under the lock** — a second `ReadAttachmentLinkState`: an attachment linked since the gate (another request or flow) → 404, so it can never be attached to a second bill. This is the only reason the draft path reads link state twice; `/bill/read-attachment` reads it once.
+5. **Read** — `run_bill_read_attachment_with_timeout(..., pre_gated=(attachment, is_taxpayer))`, `intake_source=list_drop`; the read skips its own gate (`pre_gated` is not reachable from any HTTP body).
+6. **Create** — `BillService.create` (**create-driven** vendor/number/date dedup only). On `DuplicateBillError` when the read **included** a bill date: accessible duplicate → existing (`same_vendor_number_date`); inaccessible duplicate → retry with `bill_number=None` (vendor/date kept). The response is indistinguishable from a normal create (no id in the body), but the draft visibly lacks the number the read found — a one-bit residual, the same bit `/create/bill`'s duplicate message already exposes (booked separately). When the read **omitted** bill_date, the draft is dated **today in `business_timezone`**; an accessible duplicate on that today-defaulted triple does **not** reopen the other bill — retry with `bill_number=None` instead (today must not manufacture a dedup hit).
+
+### Draft edit affordances
+
+- `BillUpdate`: `vendor_public_id` and `bill_number` optional for autosave on **non-completed** bills; blank/whitespace bill number stored as NULL. **Completed** bills updated via the QBO completion pipeline keep prior bill-number write semantics (QBO pull may pass empty/whitespace; stored as sent — not stripped to NULL).
+- `BillCreate`: optional `intake_source` restricted to `pdf_drop` | `pdf_upload` for create-page read parity; list drop uses the dedicated endpoint.
+
+### SQL
+
+- `ReadDraftBillByAttachmentHash` — canonical home: `entities/bill_line_item_attachment/sql/dbo.bill_line_item_attachment.sql`.
+- `IX_BillLineItemAttachment_AttachmentId` (same file, guarded) — attachment→bill lookups seek instead of scanning under a locking read.
+- `dbo.ReadAttachmentLinkState` gains `IsOwned` (`entities/attachment/sql/dbo.attachment_link_state.sql`). Readers read by name, so the added column is backward-compatible; apply it **before** the API image that reads it.
+- `UpsertBillIntakePrediction` (U-676m) binds BillId from an existing BillLineItemAttachment link — looked up before the MERGE (so the returned row is right) and re-applied after it (closes the link-committed-mid-upsert race).

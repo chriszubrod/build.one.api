@@ -349,6 +349,39 @@ END;
 GO
 
 
+-- Contract: dbo.BillLineItemAttachment (U-676p: ReadDraftBillByAttachmentHash)
+-- Sprocs: ReadDraftBillByAttachmentHash (see also Create/Read/Delete sprocs in this file)
+
+-- U-676p: find an accessible pure draft bill already linked to the same PDF hash.
+-- Only Status='draft' (not submitted/in_review/completed). Includes the dropped
+-- attachment so a retry after a successful create returns the same draft.
+CREATE OR ALTER PROCEDURE ReadDraftBillByAttachmentHash
+(
+    @FileHash NVARCHAR(64),
+    @ActorUserId BIGINT = NULL,
+    @ActorIsSystemAdmin BIT = NULL
+)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    BEGIN TRANSACTION;
+
+    SELECT TOP 1 b.[PublicId]
+    FROM dbo.[Attachment] a
+    INNER JOIN dbo.[BillLineItemAttachment] blia ON blia.[AttachmentId] = a.[Id]
+    INNER JOIN dbo.[BillLineItem] li ON li.[Id] = blia.[BillLineItemId]
+    INNER JOIN dbo.[Bill] b ON b.[Id] = li.[BillId]
+    WHERE a.[FileHash] = @FileHash
+      AND b.[IsDraft] = 1
+      AND b.[Status] = 'draft'
+      AND dbo.UserCanAccessBill(@ActorUserId, @ActorIsSystemAdmin, b.[Id]) = 1
+    ORDER BY b.[Id] DESC;
+
+    COMMIT TRANSACTION;
+END;
+GO
+
 -- U-446b. "Is this Attachment evidence for a completed Bill?"
 --
 -- The terminal lock guards the LINK row (BillLineItemAttachment), but the
@@ -396,5 +429,13 @@ GO
 IF NOT EXISTS (SELECT 1 FROM sys.objects WHERE name = 'UQ_BillLineItemAttachment_BillLineItemId' AND parent_object_id = OBJECT_ID('dbo.BillLineItemAttachment'))
 BEGIN
     ALTER TABLE [dbo].[BillLineItemAttachment] ADD CONSTRAINT [UQ_BillLineItemAttachment_BillLineItemId] UNIQUE ([BillLineItemId]);
+END
+GO
+
+-- U-676p: attachment → bill lookups (ReadDraftBillByAttachmentHash, the U-676m prediction bind)
+-- seek instead of scanning the table under a locking read.
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_BillLineItemAttachment_AttachmentId' AND object_id = OBJECT_ID('dbo.BillLineItemAttachment'))
+BEGIN
+    CREATE NONCLUSTERED INDEX [IX_BillLineItemAttachment_AttachmentId] ON [dbo].[BillLineItemAttachment] ([AttachmentId]) INCLUDE ([BillLineItemId]);
 END
 GO

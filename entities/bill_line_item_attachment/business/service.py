@@ -1,3 +1,14 @@
+"""Entity contract — BillLineItemAttachment (partial; U-676p lookup).
+
+Owns
+  dbo.BillLineItemAttachment — 1:1 link from BillLineItem to Attachment evidence.
+Invariants
+  Each BillLineItem has at most one attachment link (UQ on BillLineItemId).
+External writes
+  None.
+Sprocs
+  ReadDraftBillByAttachmentHash
+"""
 # Python Standard Library Imports
 from typing import Optional
 
@@ -130,6 +141,22 @@ class BillLineItemAttachmentService:
         
         bill_line_item_id = int(bill_line_item.id)
         return self.repo.read_by_bill_line_item_id(bill_line_item_id=bill_line_item_id)
+
+    def read_draft_bill_public_id_by_attachment_hash(
+        self,
+        *,
+        file_hash: str,
+    ) -> Optional[str]:
+        """
+        Same-PDF dedup for list drop (U-676p): pure draft bills only.
+
+        Inaccessible matches return None (fail closed, no existence leak).
+        """
+        return self.repo.read_draft_bill_public_id_by_attachment_hash(
+            file_hash=file_hash,
+            actor_user_id=current_user_id.get(),
+            actor_is_system_admin=current_is_system_admin.get(),
+        )
 
     def read_by_bill_line_item_ids(self, bill_line_item_public_ids: list[str]) -> list[BillLineItemAttachment]:
         """

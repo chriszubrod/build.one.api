@@ -17,7 +17,7 @@ from uuid import UUID
 import config
 from entities.attachment.business.extraction_service import AttachmentExtractionService
 from entities.attachment.business.service import AttachmentService
-from entities.attachment.persistence.repo import AttachmentRepository
+from entities.attachment.persistence.repo import AttachmentLinkState, AttachmentRepository
 from entities.coding_suggestion.business.bill_suggestion_service import (
     BillCodingSuggester,
     BillSuggestion,
@@ -153,16 +153,49 @@ def read_attachment_link_state(
     attachment_id: int,
     *,
     repo: Optional[AttachmentRepository] = None,
-) -> tuple[bool, bool]:
-    """Return (is_linked, is_taxpayer). Fail closed on DB error (linked + taxpayer)."""
+) -> AttachmentLinkState:
+    """One ReadAttachmentLinkState call: (is_linked, is_taxpayer, is_owned).
+
+    Fails closed on any error: linked, taxpayer (mask everything), not owned.
+    """
     try:
-        return (repo or AttachmentRepository()).read_link_state(attachment_id)
+        return (repo or AttachmentRepository()).read_link_state_with_ownership(attachment_id)
     except Exception as error:
         logger.warning(
             "bill_read_attachment.link_state_failed err=%s",
             type(error).__name__,
         )
-        return True, True
+        return AttachmentLinkState(is_linked=True, is_taxpayer=True, is_owned=False)
+
+
+async def gate_attachment_for_bill_read(
+    attachment_public_id: str,
+    *,
+    attachment_service: Optional[AttachmentService] = None,
+    attachment: Any = None,
+    timing_ms: Optional[dict[str, int]] = None,
+) -> tuple[Any, AttachmentLinkState]:
+    """Resolve the attachment and read its link state ONCE; 404 unless the caller owns it.
+
+    Ownership is the sproc's own rule (IsOwned: system admin, or creator in the caller's
+    company). Linked-ness is returned, not enforced: the read endpoint refuses a linked
+    attachment, the list-drop path first checks for the caller's own existing draft.
+    """
+    att_svc = attachment_service or AttachmentService()
+    step = time.monotonic()
+    if attachment is None:
+        attachment = await asyncio.to_thread(att_svc.read_by_public_id, attachment_public_id)
+    if timing_ms is not None:
+        timing_ms["attachment"] = int((time.monotonic() - step) * 1000)
+    if attachment is None or attachment.id is None:
+        raise AttachmentNotReadable("not_found")
+    step = time.monotonic()
+    state = await asyncio.to_thread(read_attachment_link_state, int(attachment.id))
+    if timing_ms is not None:
+        timing_ms["link_state"] = int((time.monotonic() - step) * 1000)
+    if not state.is_owned:
+        raise AttachmentNotReadable("not_found")
+    return attachment, state
 
 
 async def _extract_with_inflight_wait(
@@ -462,6 +495,7 @@ async def run_bill_read_attachment(
     intake_source: str = "pdf_drop",
     extraction_service: Optional[AttachmentExtractionService] = None,
     attachment_service: Optional[AttachmentService] = None,
+    pre_gated: Optional[tuple[Any, bool]] = None,
     suggester: Optional[BillCodingSuggester] = None,
     transport_for: Optional[Callable[[str], Any]] = None,
     settings: Optional[Any] = None,
@@ -524,22 +558,20 @@ async def run_bill_read_attachment(
         return result
 
     att_svc = attachment_service or AttachmentService()
-    step = time.monotonic()
-    attachment = await asyncio.to_thread(
-        att_svc.read_by_public_id, attachment_public_id
-    )
-    timing_ms["attachment"] = int((time.monotonic() - step) * 1000)
-    if attachment is None or attachment.id is None:
-        raise AttachmentNotReadable("not_found")
+    if pre_gated is not None:
+        # The caller (the list-drop service) already ran gate_attachment_for_bill_read and
+        # refused a linked attachment; never reachable from an HTTP request body.
+        attachment, is_taxpayer = pre_gated
+        timing_ms["attachment"] = 0
+        timing_ms["link_state"] = 0
+    else:
+        attachment, state = await gate_attachment_for_bill_read(
+            attachment_public_id, attachment_service=att_svc, timing_ms=timing_ms
+        )
+        if state.is_linked:
+            raise AttachmentNotReadable("not_found")
+        is_taxpayer = state.is_taxpayer
     attachment_id_for_log = int(attachment.id)
-
-    step = time.monotonic()
-    is_linked, is_taxpayer = await asyncio.to_thread(
-        read_attachment_link_state, attachment_id_for_log
-    )
-    timing_ms["link_state"] = int((time.monotonic() - step) * 1000)
-    if is_linked:
-        raise AttachmentNotReadable("not_found")
 
     persist_enabled = True
 
@@ -825,6 +857,7 @@ async def run_bill_read_attachment_with_timeout(
     project_public_id: Optional[UUID] = None,
     intake_source: str = "pdf_drop",
     settings: Optional[Any] = None,
+    pre_gated: Optional[tuple[Any, bool]] = None,
 ) -> dict[str, Any]:
     cfg = settings or config.Settings()
     timeout = max(1, int(cfg.bill_drop_prefill_timeout_seconds))
@@ -835,6 +868,7 @@ async def run_bill_read_attachment_with_timeout(
                 project_public_id=project_public_id,
                 intake_source=intake_source,
                 settings=cfg,
+                pre_gated=pre_gated,
             ),
             timeout=timeout,
         )

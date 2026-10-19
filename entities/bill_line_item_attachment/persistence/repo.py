@@ -216,6 +216,40 @@ class BillLineItemAttachmentRepository:
             logger.error(f"Error during read bill line item attachments by public IDs: {error}")
             raise map_database_error(error)
 
+    def read_draft_bill_public_id_by_attachment_hash(
+        self,
+        *,
+        file_hash: str,
+        actor_user_id: Optional[int] = None,
+        actor_is_system_admin: Optional[bool] = None,
+    ) -> Optional[str]:
+        """Accessible pure-draft bill public id for the same PDF content hash, or None."""
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                try:
+                    call_procedure(
+                        cursor=cursor,
+                        name="ReadDraftBillByAttachmentHash",
+                        params={
+                            "FileHash": file_hash,
+                            "ActorUserId": actor_user_id,
+                            "ActorIsSystemAdmin": _bit(actor_is_system_admin),
+                        },
+                    )
+                    row = cursor.fetchone()
+                    if not row:
+                        return None
+                    return str(row.PublicId)
+                finally:
+                    cursor.close()
+        except Exception as error:
+            logger.error(
+                "Error during read draft bill by attachment hash: %s",
+                type(error).__name__,
+            )
+            raise map_database_error(error)
+
     def count_by_attachment_id(self, attachment_id: int) -> int:
         """
         Count how many BillLineItemAttachment records reference a given AttachmentId.

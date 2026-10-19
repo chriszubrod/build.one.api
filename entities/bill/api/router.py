@@ -142,8 +142,11 @@ async def create_bill_router(
     # convention); everyone else is treated as a manual UI/API caller.
     # Scripts that bypass this router pass intake_source explicitly.
     username = current_user.get("username") or ""
-    intake_source = "agent" if username.endswith("_agent") else "manual"
     intake_source_detail = username or None
+    if body.intake_source is not None:
+        intake_source = body.intake_source
+    else:
+        intake_source = "agent" if username.endswith("_agent") else "manual"
 
     context = TriggerContext(
         trigger_type=EventType.API_CALL,
@@ -271,8 +274,8 @@ async def get_bills_router(
             # combinations without extra round-trips from React.
             review_map = review_repo.read_current_by_bill_ids(bill_ids) if bill_ids else {}
             # Vendor PublicId echo (U-409) — bills carry only the integer
-            # vendor_id, but BillUpdate.vendor_public_id is REQUIRED, so iOS
-            # can't build a legal update body from a read alone. One batch
+            # vendor_id; BillUpdate.vendor_public_id is optional on drafts but
+            # iOS still needs the echo to build update bodies. One batch
             # ReadVendors call on this same connection, not N+1.
             vendor_ids = [b.vendor_id for b in bills if b.vendor_id]
             vendor_public_id_map = vendor_repo.read_public_ids_by_ids(vendor_ids, conn=conn) if vendor_ids else {}

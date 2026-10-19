@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, patch
 
 from intelligence.cascade.core import CascadeResult, Rung
 
+from entities.attachment.persistence.repo import AttachmentLinkState
 from entities.bill.business import read_attachment_service as ras
 
 
@@ -107,7 +108,7 @@ def test_run_returns_seven_field_keys():
     with patch.object(ras, "AttachmentService") as AS, patch.object(
         ras, "AttachmentExtractionService"
     ) as ES, patch.object(
-        ras, "read_attachment_link_state", return_value=(False, False)
+        ras, "read_attachment_link_state", return_value=AttachmentLinkState(False, False, True)
     ), patch.object(ras, "resolve_vendor_match_from_name", return_value=None), patch(
         "entities.bill.business.read_attachment_service.run_bill_header_extraction",
         new=AsyncMock(return_value=cascade),

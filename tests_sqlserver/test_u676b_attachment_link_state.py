@@ -281,3 +281,33 @@ def test_reapply_sql_idempotent(conn):
     _exec_file(cur, LINK_STATE_SQL)
     linked, taxpayer = _link_state(cur, 900009)
     assert linked is False and taxpayer is False
+
+
+def _is_owned(cur, attachment_id: int, **kw) -> bool:
+    rows = _exec_rows(
+        cur,
+        "EXEC dbo.ReadAttachmentLinkState @AttachmentId=?, @ActorUserId=?, @CompanyId=?, @IsSystemAdmin=?",
+        attachment_id,
+        kw.get("actor_user_id", 17),
+        kw.get("company_id", 1),
+        1 if kw.get("is_system_admin") else 0,
+    )
+    return bool(rows[0].IsOwned)
+
+
+def test_u676p_is_owned_separates_mine_but_linked_from_not_mine(conn):
+    cur = conn.cursor()
+    cur.execute(
+        "INSERT INTO dbo.Attachment (Id, CreatedByUserId, CompanyId) VALUES (900030, 17, 1)"
+    )
+    cur.execute("INSERT INTO dbo.BillLineItemAttachment (AttachmentId) VALUES (900030)")
+    # Mine and linked: IsLinked=1 and IsOwned=1.
+    assert _link_state(cur, 900030)[0] is True
+    assert _is_owned(cur, 900030) is True
+    # Other user, other company: not owned (IsLinked also 1, as before).
+    assert _is_owned(cur, 900030, actor_user_id=99) is False
+    assert _is_owned(cur, 900030, company_id=2) is False
+    # System admin owns everything; NULL actor/company owns nothing.
+    assert _is_owned(cur, 900030, actor_user_id=99, is_system_admin=True) is True
+    assert _is_owned(cur, 900030, actor_user_id=None) is False
+    assert _is_owned(cur, 900030, company_id=None) is False

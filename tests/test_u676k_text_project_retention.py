@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from entities.attachment.persistence.repo import AttachmentLinkState
 from entities.bill.business import read_attachment_service as ras
 from entities.coding_suggestion.business.bill_suggestion_service import BillSuggestion
 from intelligence.cascade.core import CascadeResult, Rung
@@ -15,6 +16,8 @@ from intelligence.cascade.core import CascadeResult, Rung
 ATT_UUID = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
 PROJ_UUID = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
 VENDOR_UUID = "cccccccc-cccc-cccc-cccc-cccccccccccc"
+
+
 
 
 def _ok_header_cascade():
@@ -108,7 +111,7 @@ def test_project_only_text_prediction_drives_history_on_p():
     with patch.object(ras, "AttachmentService") as AS, patch.object(
         ras, "AttachmentExtractionService"
     ) as ES, patch.object(
-        ras, "read_attachment_link_state", return_value=(False, False)
+        ras, "read_attachment_link_state", return_value=AttachmentLinkState(False, False, True)
     ), patch(
         "entities.bill.business.read_attachment_service.run_bill_header_extraction",
         new=AsyncMock(return_value=_ok_header_cascade()),

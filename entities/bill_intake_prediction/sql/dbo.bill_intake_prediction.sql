@@ -170,12 +170,23 @@ BEGIN
         RETURN;
     END
 
+    -- Same deterministic link lookup as the post-MERGE re-bind below; read here so the
+    -- returned row is right in the normal case.
+    DECLARE @LinkedBillId BIGINT = (
+        SELECT TOP (1) li.[BillId]
+        FROM dbo.[BillLineItemAttachment] blia WITH (READCOMMITTEDLOCK)
+        INNER JOIN dbo.[BillLineItem] li ON li.[Id] = blia.[BillLineItemId]
+        WHERE blia.[AttachmentId] = @AttachmentId
+        ORDER BY li.[Id] DESC
+    );
+
     MERGE dbo.[BillIntakePrediction] WITH (HOLDLOCK) AS target
     USING (SELECT @AttachmentId AS AttachmentId) AS source
     ON target.[AttachmentId] = source.AttachmentId
     WHEN MATCHED AND target.[BillId] IS NULL AND target.[FinalizedDatetime] IS NULL THEN
         UPDATE SET
             [ModifiedDatetime] = @Now,
+            [BillId] = @LinkedBillId,
             [ExtractedDatetime] = @ExtractedDatetime,
             [IntakeSource] = @IntakeSource,
             [ModelVersion] = @ModelVersion,
@@ -202,7 +213,7 @@ BEGIN
     WHEN NOT MATCHED THEN
         INSERT
             ([CreatedDatetime], [ModifiedDatetime], [CreatedByUserId], [AttachmentId],
-             [ExtractedDatetime], [IntakeSource], [ModelVersion], [Status],
+             [BillId], [ExtractedDatetime], [IntakeSource], [ModelVersion], [Status],
              [PredVendorId], [PredVendorExtractedName], [PredBillNumber], [PredBillDate],
              [PredTotalAmount], [PredDescription], [PredSubCostCodeId], [PredProjectId],
              [CodingMode], [CodingChosenProjectId], [HeaderConfidence], [HeaderModel],
@@ -210,7 +221,7 @@ BEGIN
              [InputTokens], [OutputTokens], [CostUsd])
         VALUES
             (@Now, @Now, COALESCE(@CreatedByUserId, 17), @AttachmentId,
-             @ExtractedDatetime, @IntakeSource, @ModelVersion, @Status,
+             @LinkedBillId, @ExtractedDatetime, @IntakeSource, @ModelVersion, @Status,
              @PredVendorId, @PredVendorExtractedName, @PredBillNumber, @PredBillDate,
              @PredTotalAmount, @PredDescription, @PredSubCostCodeId, @PredProjectId,
              @CodingMode, @CodingChosenProjectId, @HeaderConfidence, @HeaderModel,
@@ -256,6 +267,29 @@ BEGIN
         INSERTED.[FinalProjectId],
         INSERTED.[FinalizedDatetime],
         INSERTED.[RejectReason];
+
+    -- Re-bind after the MERGE (U-676p): a link that committed between the lookup above and
+    -- the MERGE would otherwise leave BillId NULL for good (the create path's
+    -- BindBillIntakePredictionToBill already ran as a no-op). READCOMMITTEDLOCK so an RCSI
+    -- snapshot can't miss it; same TOP (1) ordering as above.
+    UPDATE dbo.[BillIntakePrediction]
+    SET [BillId] = (
+            SELECT TOP (1) li.[BillId]
+            FROM dbo.[BillLineItemAttachment] blia WITH (READCOMMITTEDLOCK)
+            INNER JOIN dbo.[BillLineItem] li ON li.[Id] = blia.[BillLineItemId]
+            WHERE blia.[AttachmentId] = @AttachmentId
+            ORDER BY li.[Id] DESC
+        ),
+        [ModifiedDatetime] = @Now
+    WHERE [AttachmentId] = @AttachmentId
+      AND [BillId] IS NULL
+      AND [FinalizedDatetime] IS NULL
+      AND EXISTS (
+            SELECT 1
+            FROM dbo.[BillLineItemAttachment] blia WITH (READCOMMITTEDLOCK)
+            INNER JOIN dbo.[BillLineItem] li ON li.[Id] = blia.[BillLineItemId]
+            WHERE blia.[AttachmentId] = @AttachmentId
+        );
 
     COMMIT TRANSACTION;
 END;

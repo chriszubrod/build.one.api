@@ -15,6 +15,7 @@ from uuid import UUID
 
 import pytest
 
+from entities.attachment.persistence.repo import AttachmentLinkState
 from entities.bill.business import read_attachment_service as ras
 from entities.bill.business.read_attachment_service import AttachmentNotReadable
 from entities.coding_suggestion.business.bill_suggestion_service import BillSuggestion
@@ -29,6 +30,9 @@ from intelligence.cascade.core import CascadeResult, Rung
 ATT_UUID = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
 PROJ_UUID = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
 VENDOR_UUID = "cccccccc-cccc-cccc-cccc-cccccccccccc"
+
+
+
 
 GOLDEN_STRONG_HISTORY = {
     "coding": {
@@ -256,7 +260,7 @@ def test_timing_log_emitted_without_bill_text(caplog):
         with patch.object(ras, "AttachmentService") as AS, patch.object(
             ras, "AttachmentExtractionService"
         ) as ES, patch.object(
-            ras, "read_attachment_link_state", return_value=(False, False)
+            ras, "read_attachment_link_state", return_value=AttachmentLinkState(False, False, True)
         ), patch(
             "entities.bill.business.read_attachment_service.run_bill_header_extraction",
             new=AsyncMock(return_value=_ok_header_cascade()),
@@ -318,7 +322,7 @@ def test_inaccessible_project_404_before_any_model_call():
         with patch.object(ras, "AttachmentService") as AS, patch.object(
             ras, "AttachmentExtractionService"
         ) as ES, patch.object(
-            ras, "read_attachment_link_state", return_value=(False, False)
+            ras, "read_attachment_link_state", return_value=AttachmentLinkState(False, False, True)
         ), patch(
             "entities.bill.business.read_attachment_service.run_bill_header_extraction",
             new=AsyncMock(),
@@ -392,7 +396,7 @@ def test_catalog_load_starts_before_header_finishes():
         with patch.object(ras, "AttachmentService") as AS, patch.object(
             ras, "AttachmentExtractionService"
         ) as ES, patch.object(
-            ras, "read_attachment_link_state", return_value=(False, False)
+            ras, "read_attachment_link_state", return_value=AttachmentLinkState(False, False, True)
         ), patch(
             "entities.bill.business.read_attachment_service.run_bill_header_extraction",
             new=AsyncMock(side_effect=_slow_header),
@@ -448,7 +452,7 @@ def test_prefetch_tasks_drained_on_outer_timeout_with_failing_prefetch():
             with patch.object(ras, "AttachmentService") as AS, patch.object(
                 ras, "AttachmentExtractionService"
             ) as ES, patch.object(
-                ras, "read_attachment_link_state", return_value=(False, False)
+                ras, "read_attachment_link_state", return_value=AttachmentLinkState(False, False, True)
             ), patch.object(
                 ras, "load_catalog_from_db", side_effect=_catalog_raises
             ), patch(
@@ -480,7 +484,7 @@ def test_prefetch_tasks_drained_when_header_raises_with_failing_catalog():
             with patch.object(ras, "AttachmentService") as AS, patch.object(
                 ras, "AttachmentExtractionService"
             ) as ES, patch.object(
-                ras, "read_attachment_link_state", return_value=(False, False)
+                ras, "read_attachment_link_state", return_value=AttachmentLinkState(False, False, True)
             ), patch.object(
                 ras, "load_catalog_from_db", side_effect=_catalog_raises
             ), patch(
@@ -599,7 +603,7 @@ def test_chosen_project_strong_history_cancels_catalog_prefetch(caplog):
         with patch.object(ras, "AttachmentService") as AS, patch.object(
             ras, "AttachmentExtractionService"
         ) as ES, patch.object(
-            ras, "read_attachment_link_state", return_value=(False, False)
+            ras, "read_attachment_link_state", return_value=AttachmentLinkState(False, False, True)
         ), patch(
             "entities.bill.business.read_attachment_service.run_bill_header_extraction",
             new=AsyncMock(return_value=_ok_header_cascade()),
@@ -671,7 +675,7 @@ def test_dedupe_suggest_once_no_vendor_reread_single_catalog_load():
         with patch.object(ras, "AttachmentService") as AS, patch.object(
             ras, "AttachmentExtractionService"
         ) as ES, patch.object(
-            ras, "read_attachment_link_state", return_value=(False, False)
+            ras, "read_attachment_link_state", return_value=AttachmentLinkState(False, False, True)
         ), patch(
             "entities.bill.business.read_attachment_service.run_bill_header_extraction",
             new=AsyncMock(return_value=_ok_header_cascade()),
@@ -818,7 +822,7 @@ def test_golden_equivalence(history, text, project_uuid, expected):
         with patch.object(ras, "AttachmentService") as AS, patch.object(
             ras, "AttachmentExtractionService"
         ) as ES, patch.object(
-            ras, "read_attachment_link_state", return_value=(False, False)
+            ras, "read_attachment_link_state", return_value=AttachmentLinkState(False, False, True)
         ), patch(
             "entities.bill.business.read_attachment_service.run_bill_header_extraction",
             new=AsyncMock(return_value=_ok_header_cascade()),

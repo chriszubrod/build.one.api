@@ -73,7 +73,12 @@ def _drop_all(cur) -> None:
     ):
         cur.execute(f"IF OBJECT_ID('{proc}', 'P') IS NOT NULL DROP PROCEDURE {proc}")
     cur.execute("IF OBJECT_ID('dbo.BillIntakePrediction', 'U') IS NOT NULL DROP TABLE dbo.BillIntakePrediction")
-    for tbl in ("dbo.Attachment", "dbo.Bill"):
+    for tbl in (
+        "dbo.BillLineItemAttachment",
+        "dbo.BillLineItem",
+        "dbo.Attachment",
+        "dbo.Bill",
+    ):
         cur.execute(f"IF OBJECT_ID('{tbl}', 'U') IS NOT NULL DROP TABLE {tbl}")
 
 
@@ -87,6 +92,14 @@ def _install_schema(cur) -> None:
         CREATE TABLE dbo.Attachment (
             Id BIGINT IDENTITY(1,1) NOT NULL PRIMARY KEY,
             ExtractedDatetime DATETIME2(3) NULL
+        );
+        CREATE TABLE dbo.BillLineItem (
+            Id BIGINT NOT NULL PRIMARY KEY,
+            BillId BIGINT NOT NULL
+        );
+        CREATE TABLE dbo.BillLineItemAttachment (
+            BillLineItemId BIGINT NOT NULL,
+            AttachmentId BIGINT NOT NULL
         );
         """
     )
@@ -360,6 +373,116 @@ def test_delete_bill_leaves_prediction_row(conn):
     cur.execute("DELETE FROM dbo.Bill WHERE Id=?", bill_id)
     cur.execute("SELECT COUNT(*) FROM dbo.BillIntakePrediction WHERE AttachmentId=?", att_id)
     assert cur.fetchone()[0] == 1
+
+
+def test_upsert_insert_sets_bill_id_when_link_exists(conn):
+    cur = conn.cursor()
+    att_id = _insert_attachment(cur, "2026-05-01 12:00:00")
+    bill_id = _insert_bill(cur)
+    cur.execute(
+        "INSERT INTO dbo.BillLineItem (Id, BillId) VALUES (?, ?)",
+        9001,
+        bill_id,
+    )
+    cur.execute(
+        "INSERT INTO dbo.BillLineItemAttachment (BillLineItemId, AttachmentId) VALUES (?, ?)",
+        9001,
+        att_id,
+    )
+    cur.execute(
+        """
+        EXEC dbo.UpsertBillIntakePrediction
+            @AttachmentId=?,
+            @IntakeSource='list_drop',
+            @ModelVersion='v1',
+            @Status='ok',
+            @PredBillNumber='INV-LINK'
+        """,
+        att_id,
+    )
+    row = cur.fetchone()
+    assert row.BillId == bill_id
+
+
+def test_upsert_matched_row_post_merge_rebinds_when_link_exists(conn):
+    """Post-MERGE re-derive binds BillId when a link exists but MERGE saw NULL."""
+    cur = conn.cursor()
+    att_id = _insert_attachment(cur, "2026-05-01 12:00:00")
+    bill_id = _insert_bill(cur)
+    cur.execute(
+        """
+        EXEC dbo.UpsertBillIntakePrediction
+            @AttachmentId=?,
+            @IntakeSource='pdf_drop',
+            @ModelVersion='v1',
+            @Status='ok',
+            @PredBillNumber='UNBOUND'
+        """,
+        att_id,
+    )
+    cur.fetchone()
+    cur.execute(
+        "INSERT INTO dbo.BillLineItem (Id, BillId) VALUES (?, ?)",
+        9003,
+        bill_id,
+    )
+    cur.execute(
+        "INSERT INTO dbo.BillLineItemAttachment (BillLineItemId, AttachmentId) VALUES (?, ?)",
+        9003,
+        att_id,
+    )
+    cur.execute(
+        """
+        EXEC dbo.UpsertBillIntakePrediction
+            @AttachmentId=?,
+            @IntakeSource='list_drop',
+            @ModelVersion='v1',
+            @Status='partial',
+            @PredBillNumber='BOUND-LATE'
+        """,
+        att_id,
+    )
+    cur.fetchone()
+    cur.execute("SELECT BillId, PredBillNumber FROM dbo.BillIntakePrediction WHERE AttachmentId=?", att_id)
+    row = cur.fetchone()
+    assert row[0] == bill_id
+    assert row[1] == "BOUND-LATE"
+
+
+def test_bind_then_late_upsert_insert_stays_bound(conn):
+    """BillService.bind may run before background record_read inserts the row."""
+    cur = conn.cursor()
+    att_id = _insert_attachment(cur, "2026-05-01 12:00:00")
+    bill_id = _insert_bill(cur)
+    cur.execute(
+        "INSERT INTO dbo.BillLineItem (Id, BillId) VALUES (?, ?)",
+        9002,
+        bill_id,
+    )
+    cur.execute(
+        "INSERT INTO dbo.BillLineItemAttachment (BillLineItemId, AttachmentId) VALUES (?, ?)",
+        9002,
+        att_id,
+    )
+    cur.execute(
+        "EXEC dbo.BindBillIntakePredictionToBill @AttachmentId=?, @BillId=?",
+        att_id,
+        bill_id,
+    )
+    assert cur.fetchone() is None
+    cur.execute(
+        """
+        EXEC dbo.UpsertBillIntakePrediction
+            @AttachmentId=?,
+            @IntakeSource='list_drop',
+            @ModelVersion='v1',
+            @Status='ok',
+            @PredBillNumber='LATE'
+        """,
+        att_id,
+    )
+    row = cur.fetchone()
+    assert row.BillId == bill_id
 
 
 def test_cost_usd_decimal_round_trip(conn):

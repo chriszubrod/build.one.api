@@ -522,6 +522,7 @@ async def predict_text_coding(
     transport_for: Optional[Callable[[str], Any]] = None,
     catalog: Optional[CatalogSnapshot] = None,
     vendor_name: Optional[str] = None,
+    retain_accessible_project: bool = False,
 ) -> tuple[Optional[Any], Optional[str]]:
     """Run the text-tier cascade; return (BillSuggestion|None, stopped_reason)."""
     from entities.coding_suggestion.business.bill_suggestion_service import (
@@ -572,6 +573,56 @@ async def predict_text_coding(
         project_service=engine.project_service,
         sub_cost_code_service=engine.sub_cost_code_service,
     )
+    if (
+        retain_accessible_project
+        and suggestion is None
+        and mode == "B"
+        and cascade.accepted
+        and cascade.result is not None
+    ):
+        from entities.coding_suggestion.business.bill_suggestion_service import (
+            BillSuggestion,
+            TEXT_LLM_SUGGESTION_REASON,
+            resolve_accessible_text_project_id,
+        )
+
+        _scc_id, proj_id = resolve_text_prediction(
+            cascade,
+            scc_number_to_id=catalog.scc_number_to_id,
+            proj_abbrev_to_id=catalog.proj_abbrev_to_id,
+        )
+        out_project = resolve_accessible_text_project_id(
+            proj_id,
+            project_service=engine.project_service,
+        )
+        if out_project is not None:
+            confidence = (
+                Decimal(str(cascade.confidence))
+                if cascade.confidence is not None
+                else None
+            )
+            winning_model = (
+                cascade.winning_rung.model if cascade.winning_rung else None
+            )
+            suggestion = BillSuggestion(
+                project_id=out_project,
+                sub_cost_code_id=None,
+                sub_cost_code_public_id=None,
+                sub_cost_code_number=None,
+                sub_cost_code_name=None,
+                source="llm",
+                reason=TEXT_LLM_SUGGESTION_REASON,
+                confidence=confidence,
+                raw_score=None,
+                top_count=None,
+                second_count=None,
+                total_count=None,
+                model_version=MODEL_VERSION,
+                predicted_project=True,
+                text_used=True,
+                text_mode=mode,
+                text_model=winning_model,
+            )
     return suggestion, None
 
 

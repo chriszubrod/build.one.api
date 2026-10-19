@@ -1,4 +1,4 @@
-"""U-676k: bill drop read-attachment history-first cost code (combined rule)."""
+"""U-676k: bill drop read-attachment history+text combined rule (true-project history)."""
 from __future__ import annotations
 
 import asyncio
@@ -15,6 +15,7 @@ from intelligence.cascade.core import CascadeResult, Rung
 
 ATT_UUID = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
 PROJ_UUID = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+PROJ_Y_UUID = "cccccccc-cccc-cccc-cccc-cccccccccccc"
 VENDOR_UUID = "cccccccc-cccc-cccc-cccc-cccccccccccc"
 
 
@@ -72,6 +73,25 @@ def _strong_history(**kw):
     return BillSuggestion(**base)
 
 
+def _weak_history(**kw):
+    base = dict(
+        project_id=None,
+        sub_cost_code_id=None,
+        sub_cost_code_public_id=None,
+        sub_cost_code_number=None,
+        sub_cost_code_name=None,
+        source="none",
+        reason=None,
+        confidence=None,
+        raw_score=Decimal("0.40"),
+        top_count=None,
+        second_count=None,
+        total_count=None,
+    )
+    base.update(kw)
+    return BillSuggestion(**base)
+
+
 def _text_llm(*, project_id=100, scc_id=502):
     return BillSuggestion(
         project_id=project_id,
@@ -97,6 +117,7 @@ def _enable_flag():
         s = MagicMock()
         s.bill_drop_prefill_enabled = True
         s.bill_drop_prefill_timeout_seconds = 25
+        s.bill_coding_text_daily_call_cap = 100
         mock_settings.return_value = s
         yield s
 
@@ -131,15 +152,107 @@ def _pipeline_mocks():
         from entities.vendor.business.vendor_name_resolver import VendorResolveMatch
 
         rvm.return_value = VendorResolveMatch(
-            public_id=VENDOR_UUID, name="Acme", confidence=0.8
+            public_id=VENDOR_UUID,
+            name="Acme",
+            confidence=0.8,
+            vendor_id=10,
         )
         with patch.object(ras, "VendorService") as VS:
             VS.return_value.read_by_public_id.return_value = vendor
             yield
 
 
-def test_strong_history_no_project_cost_from_history_project_from_model():
-    history = _strong_history()
+def test_strong_history_on_model_project_y_uses_history_scc():
+    """History keyed on model project Y, not vendor-dominant X."""
+    history_y = _strong_history(
+        project_id=100,
+        sub_cost_code_number="07.300",
+        sub_cost_code_name="On Y",
+        source="vendor_project_history",
+    )
+    history_x = _strong_history(project_id=200)
+    text = _text_llm(project_id=100)
+    suggester = MagicMock()
+    suggester.project_service = MagicMock()
+    suggester.sub_cost_code_service = MagicMock()
+
+    def _suggest(*, vendor_id, project_id, **kwargs):
+        if project_id == 100:
+            return history_y
+        if project_id == 200:
+            return history_x
+        return _weak_history()
+
+    suggester.suggest.side_effect = _suggest
+
+    with patch.object(
+        ras,
+        "predict_text_coding",
+        new=AsyncMock(return_value=(text, None)),
+    ) as predict_mock, patch(
+        "entities.coding_suggestion.business.presenters.ProjectService"
+    ) as PSapi, patch.object(
+        ras, "resolve_accessible_text_project_id", side_effect=lambda pid, **_: pid
+    ):
+        PSapi.return_value.read_by_id.return_value = SimpleNamespace(
+            id=100, public_id=PROJ_UUID, name="Proj"
+        )
+        out = asyncio.run(
+            ras.run_bill_read_attachment(
+                attachment_public_id=ATT_UUID,
+                suggester=suggester,
+            )
+        )
+    predict_mock.assert_awaited_once()
+    assert suggester.suggest.call_count == 1
+    assert suggester.suggest.call_args.kwargs["project_id"] == 100
+    assert out["coding"]["source"] == "vendor_project_history"
+    assert out["coding"]["sub_cost_code_number"] == "07.300"
+    assert out["coding"]["project_public_id"] == PROJ_UUID
+
+
+def test_strong_on_dominant_x_weak_on_model_y_uses_model_scc():
+    history_x = _strong_history(project_id=200)
+    history_y = _weak_history(project_id=100)
+    text = _text_llm(project_id=100)
+    suggester = MagicMock()
+    suggester.project_service = MagicMock()
+    suggester.sub_cost_code_service = MagicMock()
+
+    def _suggest(*, vendor_id, project_id, **kwargs):
+        if project_id == 100:
+            return history_y
+        if project_id == 200:
+            return history_x
+        return _weak_history()
+
+    suggester.suggest.side_effect = _suggest
+
+    with patch.object(
+        ras,
+        "predict_text_coding",
+        new=AsyncMock(return_value=(text, None)),
+    ), patch(
+        "entities.coding_suggestion.business.presenters.ProjectService"
+    ) as PSapi, patch.object(
+        ras, "resolve_accessible_text_project_id", side_effect=lambda pid, **_: pid
+    ):
+        PSapi.return_value.read_by_id.return_value = SimpleNamespace(
+            id=100, public_id=PROJ_UUID, name="Proj"
+        )
+        out = asyncio.run(
+            ras.run_bill_read_attachment(
+                attachment_public_id=ATT_UUID,
+                suggester=suggester,
+            )
+        )
+    assert out["coding"]["source"] == "llm"
+    assert out["coding"]["sub_cost_code_number"] == "06.200"
+    assert out["coding"]["project_public_id"] == PROJ_UUID
+
+
+def test_strong_history_no_project_cost_from_history_on_true_project():
+    history = _strong_history(project_id=100)
     text = _text_llm(project_id=100)
     suggester = MagicMock()
     suggester.suggest.return_value = history
@@ -165,20 +278,26 @@ def test_strong_history_no_project_cost_from_history_project_from_model():
             )
         )
     predict_mock.assert_awaited_once()
+    assert suggester.suggest.call_args.kwargs["project_id"] == 100
     assert out["coding"]["source"] == "vendor_history"
     assert out["coding"]["sub_cost_code_number"] == "05.100"
     assert out["coding"]["sub_cost_code_number"] != "06.200"
     assert out["coding"]["project_public_id"] == PROJ_UUID
 
 
-def test_strong_history_model_no_project_falls_back_to_accessible_history_project():
-    history = _strong_history(project_id=200)
+def test_model_no_project_strong_no_project_history_used():
+    history_nop = _strong_history(project_id=200)
     text = _text_llm(project_id=None, scc_id=502)
     suggester = MagicMock()
-    suggester.suggest.return_value = history
     suggester.project_service = MagicMock()
     suggester.sub_cost_code_service = MagicMock()
-    hist_proj_uuid = "dddddddd-dddd-dddd-dddd-dddddddddddd"
+
+    def _suggest(*, vendor_id, project_id, **kwargs):
+        if project_id is None:
+            return history_nop
+        return _weak_history()
+
+    suggester.suggest.side_effect = _suggest
 
     with patch.object(
         ras,
@@ -190,7 +309,7 @@ def test_strong_history_model_no_project_falls_back_to_accessible_history_projec
         ras, "resolve_accessible_text_project_id", side_effect=lambda pid, **_: pid
     ):
         PSapi.return_value.read_by_id.return_value = SimpleNamespace(
-            id=200, public_id=hist_proj_uuid, name="Hist"
+            id=200, public_id=PROJ_Y_UUID, name="Hist"
         )
         out = asyncio.run(
             ras.run_bill_read_attachment(
@@ -199,14 +318,13 @@ def test_strong_history_model_no_project_falls_back_to_accessible_history_projec
             )
         )
     assert out["coding"]["source"] == "vendor_history"
-    assert out["coding"]["project_public_id"] == hist_proj_uuid
+    assert out["coding"]["project_public_id"] == PROJ_Y_UUID
 
 
-def test_strong_history_model_no_project_history_project_inaccessible():
-    history = _strong_history(project_id=999)
-    text = _text_llm(project_id=None)
+def test_model_no_project_weak_no_project_history_uses_model_scc_no_project():
+    text = _text_llm(project_id=None, scc_id=502)
     suggester = MagicMock()
-    suggester.suggest.return_value = history
+    suggester.suggest.return_value = _weak_history()
     suggester.project_service = MagicMock()
     suggester.sub_cost_code_service = MagicMock()
 
@@ -217,37 +335,87 @@ def test_strong_history_model_no_project_history_project_inaccessible():
     ), patch(
         "entities.coding_suggestion.business.presenters.ProjectService"
     ) as PSapi, patch.object(
-        ras, "resolve_accessible_text_project_id", return_value=None
+        ras, "resolve_accessible_text_project_id", side_effect=lambda pid, **_: pid
     ):
-        PSapi.return_value.read_by_id.return_value = None
+        PSapi.return_value.read_by_id.return_value = SimpleNamespace(
+            id=100, public_id=PROJ_UUID, name="Proj"
+        )
         out = asyncio.run(
             ras.run_bill_read_attachment(
                 attachment_public_id=ATT_UUID,
                 suggester=suggester,
             )
         )
-    assert out["coding"]["source"] == "vendor_history"
+    assert out["coding"]["source"] == "llm"
+    assert out["coding"]["sub_cost_code_number"] == "06.200"
     assert out["coding"]["project_public_id"] is None
 
 
+def test_coding_daily_cap_keeps_headers_and_strong_no_project_history():
+    history_nop = _strong_history(project_id=200)
+    suggester = MagicMock()
+    suggester.suggest.return_value = history_nop
+    suggester.project_service = MagicMock()
+    suggester.sub_cost_code_service = MagicMock()
+
+    with patch.object(
+        ras,
+        "predict_text_coding",
+        new=AsyncMock(return_value=(None, "daily_cap")),
+    ), patch(
+        "entities.coding_suggestion.business.presenters.ProjectService"
+    ) as PSapi, patch.object(
+        ras, "resolve_accessible_text_project_id", side_effect=lambda pid, **_: pid
+    ):
+        PSapi.return_value.read_by_id.return_value = SimpleNamespace(
+            id=200, public_id=PROJ_Y_UUID, name="Hist"
+        )
+        out = asyncio.run(
+            ras.run_bill_read_attachment(
+                attachment_public_id=ATT_UUID,
+                suggester=suggester,
+            )
+        )
+    assert out["status"] == "partial"
+    assert out["fields"]["bill_number"]["value"] == "INV-1"
+    assert out["coding"]["source"] == "vendor_history"
+    assert out["message"] is None
+
+
+def test_coding_exception_keeps_headers_and_strong_no_project_history():
+    history_nop = _strong_history(project_id=200)
+    suggester = MagicMock()
+    suggester.suggest.return_value = history_nop
+    suggester.project_service = MagicMock()
+    suggester.sub_cost_code_service = MagicMock()
+
+    with patch.object(
+        ras,
+        "predict_text_coding",
+        new=AsyncMock(side_effect=RuntimeError("boom")),
+    ), patch(
+        "entities.coding_suggestion.business.presenters.ProjectService"
+    ) as PSapi, patch.object(
+        ras, "resolve_accessible_text_project_id", side_effect=lambda pid, **_: pid
+    ):
+        PSapi.return_value.read_by_id.return_value = SimpleNamespace(
+            id=200, public_id=PROJ_Y_UUID, name="Hist"
+        )
+        out = asyncio.run(
+            ras.run_bill_read_attachment(
+                attachment_public_id=ATT_UUID,
+                suggester=suggester,
+            )
+        )
+    assert out["status"] == "partial"
+    assert out["fields"]["vendor"]["extracted_name"] == "Acme Supply"
+    assert out["coding"]["sub_cost_code_number"] == "05.100"
+
+
 def test_weak_history_model_decides_cost_code():
-    weak = BillSuggestion(
-        project_id=None,
-        sub_cost_code_id=None,
-        sub_cost_code_public_id=None,
-        sub_cost_code_number=None,
-        sub_cost_code_name=None,
-        source="none",
-        reason=None,
-        confidence=None,
-        raw_score=Decimal("0.40"),
-        top_count=None,
-        second_count=None,
-        total_count=None,
-    )
     text = _text_llm()
     suggester = MagicMock()
-    suggester.suggest.return_value = weak
+    suggester.suggest.return_value = _weak_history()
     suggester.project_service = MagicMock()
     suggester.sub_cost_code_service = MagicMock()
 

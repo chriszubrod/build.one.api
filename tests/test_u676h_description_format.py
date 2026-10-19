@@ -20,7 +20,7 @@ from entities.bill.business.description_format import format_short_description
         ('3/4" plywood', '3/4" Plywood'),
         ("PVC pipe", "PVC Pipe"),
         ("2x4 lumber", "2x4 Lumber"),
-        ("Acme LLC invoice", "Acme LLC"),
+        ("Acme LLC invoice", "Acme LLC Invoice"),
         ("O'Neil roofing", "O'Neil Roofing"),
         ("re-roof main house", "Re-roof Main House"),
         ("café résumé", "Café Résumé"),

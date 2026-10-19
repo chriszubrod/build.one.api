@@ -317,26 +317,89 @@ def _suggestion_from_history(
     return suggestion
 
 
-def _drop_strong_history_combined_suggestion(
+def _history_strong_for_project(
     history_suggestion: BillSuggestion,
-    text_suggestion: Optional[BillSuggestion],
     *,
+    project_id: int,
     project_service: ProjectService,
 ) -> BillSuggestion:
-    """U-676k: history SCC when raw ≥ 0.60; project from text Mode B, else history."""
-    history_resolved = _suggestion_from_history(
+    """Strong vendor history SCC on project P; project field is P (access-checked)."""
+    resolved = _suggestion_from_history(
         history_suggestion,
         project_service=project_service,
     )
-    project_id: Optional[int] = None
-    if text_suggestion is not None and text_suggestion.project_id is not None:
-        project_id = resolve_accessible_text_project_id(
+    accessible = resolve_accessible_text_project_id(
+        project_id,
+        project_service=project_service,
+    )
+    return replace(resolved, project_id=accessible)
+
+
+def _drop_coding_after_text_model(
+    *,
+    text_suggestion: Optional[BillSuggestion],
+    engine: BillCodingSuggester,
+    vendor_id: int,
+    as_of: datetime,
+    project_service: ProjectService,
+    model_unavailable: bool,
+) -> Optional[BillSuggestion]:
+    """U-676k: Mode B project first; history keyed on true project P, else no-project fallback."""
+    if model_unavailable:
+        history_nop = engine.suggest(
+            vendor_id=vendor_id,
+            project_id=None,
+            memo=None,
+            as_of=as_of,
+            exclude_bill_id=None,
+        )
+        if history_blocks_text_tier(history_nop):
+            return _suggestion_from_history(
+                history_nop,
+                project_service=project_service,
+            )
+        return None
+
+    text_project: Optional[int] = None
+    if text_suggestion is not None:
+        text_project = resolve_accessible_text_project_id(
             text_suggestion.project_id,
             project_service=project_service,
         )
-    if project_id is None:
-        project_id = history_resolved.project_id
-    return replace(history_resolved, project_id=project_id)
+
+    if text_project is not None:
+        history_for_p = engine.suggest(
+            vendor_id=vendor_id,
+            project_id=text_project,
+            memo=None,
+            as_of=as_of,
+            exclude_bill_id=None,
+        )
+        if history_blocks_text_tier(history_for_p):
+            return _history_strong_for_project(
+                history_for_p,
+                project_id=text_project,
+                project_service=project_service,
+            )
+        if text_suggestion is not None and text_suggestion.sub_cost_code_id is not None:
+            return replace(text_suggestion, project_id=text_project)
+        return None
+
+    history_nop = engine.suggest(
+        vendor_id=vendor_id,
+        project_id=None,
+        memo=None,
+        as_of=as_of,
+        exclude_bill_id=None,
+    )
+    if history_blocks_text_tier(history_nop):
+        return _suggestion_from_history(
+            history_nop,
+            project_service=project_service,
+        )
+    if text_suggestion is not None and text_suggestion.sub_cost_code_id is not None:
+        return replace(text_suggestion, project_id=None)
+    return None
 
 
 def _resolve_status(
@@ -524,28 +587,6 @@ async def run_bill_read_attachment(
         project_service = engine.project_service
 
         step = time.monotonic()
-        history_suggestion = await asyncio.to_thread(
-            lambda: engine.suggest(
-                vendor_id=int(vendor_id),
-                project_id=chosen_project_id,
-                memo=None,
-                as_of=as_of,
-                exclude_bill_id=None,
-            )
-        )
-        timing_ms["history"] = int((time.monotonic() - step) * 1000)
-
-        eligible, skip_reason = await asyncio.to_thread(
-            history_eligible_for_text,
-            vendor_id=int(vendor_id),
-            chosen_project_id=chosen_project_id,
-            as_of=as_of,
-            exclude_bill_id=None,
-            suggester=engine,
-            precomputed_suggestion=history_suggestion,
-        )
-
-        step = time.monotonic()
         prefetched_catalog: Optional[CatalogSnapshot] = None
         if catalog_task is not None:
             try:
@@ -559,64 +600,102 @@ async def run_bill_read_attachment(
             cap_task = None
 
         suggestion: Optional[BillSuggestion] = None
-        strong_history_drop = (
-            chosen_project_id is None
-            and history_blocks_text_tier(history_suggestion)
-        )
-        if not eligible and skip_reason == "history_strong":
-            suggestion = await asyncio.to_thread(
-                _suggestion_from_history,
-                history_suggestion,
-                project_service=project_service,
-            )
-        elif strong_history_drop or eligible:
+
+        if chosen_project_id is not None:
             step = time.monotonic()
+            history_suggestion = await asyncio.to_thread(
+                lambda: engine.suggest(
+                    vendor_id=int(vendor_id),
+                    project_id=chosen_project_id,
+                    memo=None,
+                    as_of=as_of,
+                    exclude_bill_id=None,
+                )
+            )
+            timing_ms["history"] = int((time.monotonic() - step) * 1000)
+
+            eligible, skip_reason = await asyncio.to_thread(
+                history_eligible_for_text,
+                vendor_id=int(vendor_id),
+                chosen_project_id=chosen_project_id,
+                as_of=as_of,
+                exclude_bill_id=None,
+                suggester=engine,
+                precomputed_suggestion=history_suggestion,
+            )
+
+            if not eligible and skip_reason == "history_strong":
+                suggestion = await asyncio.to_thread(
+                    _suggestion_from_history,
+                    history_suggestion,
+                    project_service=project_service,
+                )
+            elif eligible:
+                step = time.monotonic()
+                try:
+                    text_suggestion, stopped = await predict_text_coding(
+                        bill_text=masked_text,
+                        vendor_id=int(vendor_id),
+                        chosen_project_id=chosen_project_id,
+                        as_of=as_of,
+                        suggester=engine,
+                        transport_for=transport_for,
+                        catalog=prefetched_catalog,
+                        vendor_name=vendor_name_for_catalog,
+                    )
+                    if stopped == "daily_cap":
+                        coding_error = True
+                    else:
+                        suggestion = text_suggestion
+                except Exception as error:
+                    logger.warning(
+                        "bill_read_attachment.coding_failed err=%s",
+                        type(error).__name__,
+                    )
+                    coding_error = True
+                timing_ms["coding_llm"] = int((time.monotonic() - step) * 1000)
+        else:
+            step = time.monotonic()
+            text_suggestion: Optional[BillSuggestion] = None
+            model_unavailable = False
             try:
                 text_suggestion, stopped = await predict_text_coding(
                     bill_text=masked_text,
                     vendor_id=int(vendor_id),
-                    chosen_project_id=chosen_project_id,
+                    chosen_project_id=None,
                     as_of=as_of,
                     suggester=engine,
                     transport_for=transport_for,
                     catalog=prefetched_catalog,
                     vendor_name=vendor_name_for_catalog,
+                    retain_accessible_project=True,
                 )
                 if stopped == "daily_cap":
-                    return _finish(
-                        _result_shell(
-                            "ai_unavailable",
-                            message=MSG_AI_PAUSED,
-                            fields=fields,
-                            model=model_id,
-                        ),
-                        attachment_id=attachment_id_for_log,
-                    )
+                    model_unavailable = True
+                    text_suggestion = None
             except Exception as error:
                 logger.warning(
                     "bill_read_attachment.coding_failed err=%s",
                     type(error).__name__,
                 )
                 coding_error = True
+                model_unavailable = True
                 text_suggestion = None
             timing_ms["coding_llm"] = int((time.monotonic() - step) * 1000)
+            if model_unavailable:
+                coding_error = True
 
-            if strong_history_drop:
-                if not coding_error:
-                    suggestion = await asyncio.to_thread(
-                        _drop_strong_history_combined_suggestion,
-                        history_suggestion,
-                        text_suggestion,
-                        project_service=project_service,
-                    )
-                else:
-                    suggestion = await asyncio.to_thread(
-                        _suggestion_from_history,
-                        history_suggestion,
-                        project_service=project_service,
-                    )
-            elif eligible and not coding_error:
-                suggestion = text_suggestion
+            step = time.monotonic()
+            suggestion = await asyncio.to_thread(
+                _drop_coding_after_text_model,
+                text_suggestion=text_suggestion,
+                engine=engine,
+                vendor_id=int(vendor_id),
+                as_of=as_of,
+                project_service=project_service,
+                model_unavailable=model_unavailable,
+            )
+            timing_ms["history"] = int((time.monotonic() - step) * 1000)
 
         if suggestion is not None and suggestion.sub_cost_code_id is not None:
             suggestion.text_status = "ready"

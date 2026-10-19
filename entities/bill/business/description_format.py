@@ -8,18 +8,7 @@ FORMAT_SHORT_DESCRIPTION_MAX_LEN = 60
 _TRAILING_PUNCT_RE = re.compile(r"[\s.,;:!?\-–—…]+(?:\.{2,})?$")
 _LEADING_CAP_SKIP = frozenset("\"'([{<")
 _KNOWN_ABBREV_WORDS = frozenset({"etc.", "inc.", "co.", "ltd."})
-_TRAILING_FILLER_WORDS = frozenset(
-    {
-        "purchase",
-        "purchases",
-        "order",
-        "invoice",
-        "bill",
-        "payment",
-        "charge",
-        "charges",
-    }
-)
+_TRAILING_FILLER_WORDS = frozenset({"purchase", "purchases"})
 
 
 def _strip_trailing_filler_words(words: list[str]) -> list[str]:
@@ -109,5 +98,8 @@ def format_short_description(text: str | None) -> str | None:
         result = truncate_at_word_boundary(result, FORMAT_SHORT_DESCRIPTION_MAX_LEN)
         if len(result) > FORMAT_SHORT_DESCRIPTION_MAX_LEN:
             result = result[:FORMAT_SHORT_DESCRIPTION_MAX_LEN].rstrip()
+        result = _strip_trailing_punct(result)
+        post_cut_words = _strip_trailing_filler_words(result.split(" "))
+        result = " ".join(post_cut_words)
         result = _strip_trailing_punct(result)
     return result or None

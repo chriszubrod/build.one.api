@@ -24,6 +24,7 @@ from entities.coding_suggestion.persistence.bill_text_suggestion_repo import (
     BillTextCodingSuggestionRepository,
 )
 from intelligence.cascade import claude_budget
+from intelligence.cascade.core import CascadeResult
 from intelligence.cascade.bill_coding import (
     SUSPENSE_SCC_NUMBER,
     normalize_project_abbreviation,
@@ -43,6 +44,7 @@ from shared.text_blob_read import read_text_blob_with_retry
 logger = logging.getLogger(__name__)
 
 MODEL_VERSION = "u654b-text-v1"
+
 
 _CATALOG_CACHE_TTL_SECONDS = 60.0
 _catalog_lock = threading.Lock()
@@ -243,6 +245,49 @@ async def _process_one_claim(
         )
         if not eligible:
             return _finish_skipped(skip_reason)
+
+        from entities.bill_intake_prediction.business.service import (
+            BillIntakePredictionService,
+            tick_can_reuse_prediction,
+        )
+
+        intake_prediction = None
+        try:
+            intake_prediction = BillIntakePredictionService().read_by_attachment_id(
+                claim.attachment_id
+            )
+        except Exception as error:
+            logger.warning(
+                "bill_text_coding_tick intake_prediction_lookup_failed bill_id=%s err=%s",
+                claim.bill_id,
+                type(error).__name__,
+            )
+        tick_mode = "A" if claim.chosen_project_id is not None else "B"
+        if intake_prediction is not None and tick_can_reuse_prediction(
+            intake_prediction,
+            extracted_datetime=claim.extracted_datetime,
+            chosen_project_id=claim.chosen_project_id,
+            vendor_id=claim.vendor_id,
+        ):
+            mode = tick_mode
+            out_project = (
+                intake_prediction.pred_project_id if mode == "B" else None
+            )
+            if not _finalize_complete(
+                status="done",
+                sub_cost_code_id=intake_prediction.pred_sub_cost_code_id,
+                project_id=out_project,
+                confidence=intake_prediction.coding_confidence,
+                mode=mode,
+                winning_model=intake_prediction.coding_model,
+                record_call=False,
+            ):
+                return _tick_result(
+                    status="failed",
+                    bill_id=claim.bill_id,
+                    failure_reason="complete_refused",
+                )
+            return _tick_result(status="done", bill_id=claim.bill_id)
 
         def _read_blob(url: str) -> str:
             content_bytes, _meta = storage.download_file(url)
@@ -524,8 +569,8 @@ async def predict_text_coding(
     catalog: Optional[CatalogSnapshot] = None,
     vendor_name: Optional[str] = None,
     retain_accessible_project: bool = False,
-) -> tuple[Optional[Any], Optional[str]]:
-    """Run the text-tier cascade; return (BillSuggestion|None, stopped_reason)."""
+) -> tuple[Optional[Any], Optional[str], Optional[CascadeResult]]:
+    """Run the text-tier cascade; return (BillSuggestion|None, stopped_reason, coding cascade)."""
     from entities.coding_suggestion.business.bill_suggestion_service import (
         BillSuggestion,
         bill_suggestion_from_text_cascade,
@@ -534,12 +579,12 @@ async def predict_text_coding(
     settings = config.Settings()
     cap = int(settings.bill_coding_text_daily_call_cap)
     if cap <= 0:
-        return None, None
+        return None, None, None
     repository = text_repo or BillTextCodingSuggestionRepository()
     # Every DB read below runs off the event loop (U-676l): this coroutine serves live
     # requests, and a sync pyodbc call here would stall every request on the worker.
     if await asyncio.to_thread(repository.count_calls_today) >= cap:
-        return None, "daily_cap"
+        return None, "daily_cap", None
 
     if catalog is None:
         catalog = await asyncio.to_thread(load_catalog_from_db, as_of)
@@ -565,71 +610,73 @@ async def predict_text_coding(
     )
     cascade = await run_bill_coding_suggestion(payload, transport_for=transport_for)
     if cascade.stopped_reason == "daily_cap":
-        return None, "daily_cap"
+        return None, "daily_cap", cascade
     if not cascade.accepted or cascade.result is None:
-        return None, None
-    engine = suggester or BillCodingSuggester()
-    suggestion = await asyncio.to_thread(
-        bill_suggestion_from_text_cascade,
-        cascade,
-        catalog=catalog,
-        mode=mode,
-        chosen_project_id=chosen_project_id,
-        project_service=engine.project_service,
-        sub_cost_code_service=engine.sub_cost_code_service,
+        return None, None, cascade
+    confidence = (
+        Decimal(str(cascade.confidence)) if cascade.confidence is not None else None
     )
-    if (
-        retain_accessible_project
-        and suggestion is None
-        and mode == "B"
-        and cascade.accepted
-        and cascade.result is not None
-    ):
-        from entities.coding_suggestion.business.bill_suggestion_service import (
-            BillSuggestion,
-            TEXT_LLM_SUGGESTION_REASON,
-            resolve_accessible_text_project_id,
-        )
-
-        _scc_id, proj_id = resolve_text_prediction(
+    winning_model = cascade.winning_rung.model if cascade.winning_rung else None
+    engine = suggester or BillCodingSuggester()
+    # Any failure after the cascade ran carries it, so the caller can still record its
+    # cost/tokens (U-676m) — the caller's error handling is otherwise unchanged.
+    try:
+        suggestion = await asyncio.to_thread(
+            bill_suggestion_from_text_cascade,
             cascade,
-            scc_number_to_id=catalog.scc_number_to_id,
-            proj_abbrev_to_id=catalog.proj_abbrev_to_id,
-        )
-        out_project = await asyncio.to_thread(
-            resolve_accessible_text_project_id,
-            proj_id,
+            catalog=catalog,
+            mode=mode,
+            chosen_project_id=chosen_project_id,
             project_service=engine.project_service,
+            sub_cost_code_service=engine.sub_cost_code_service,
         )
-        if out_project is not None:
-            confidence = (
-                Decimal(str(cascade.confidence))
-                if cascade.confidence is not None
-                else None
+        if (
+            retain_accessible_project
+            and suggestion is None
+            and mode == "B"
+            and cascade.accepted
+            and cascade.result is not None
+        ):
+            from entities.coding_suggestion.business.bill_suggestion_service import (
+                BillSuggestion,
+                TEXT_LLM_SUGGESTION_REASON,
+                resolve_accessible_text_project_id,
             )
-            winning_model = (
-                cascade.winning_rung.model if cascade.winning_rung else None
+
+            _scc_id, proj_id = resolve_text_prediction(
+                cascade,
+                scc_number_to_id=catalog.scc_number_to_id,
+                proj_abbrev_to_id=catalog.proj_abbrev_to_id,
             )
-            suggestion = BillSuggestion(
-                project_id=out_project,
-                sub_cost_code_id=None,
-                sub_cost_code_public_id=None,
-                sub_cost_code_number=None,
-                sub_cost_code_name=None,
-                source="llm",
-                reason=TEXT_LLM_SUGGESTION_REASON,
-                confidence=confidence,
-                raw_score=None,
-                top_count=None,
-                second_count=None,
-                total_count=None,
-                model_version=MODEL_VERSION,
-                predicted_project=True,
-                text_used=True,
-                text_mode=mode,
-                text_model=winning_model,
+            out_project = await asyncio.to_thread(
+                resolve_accessible_text_project_id,
+                proj_id,
+                project_service=engine.project_service,
             )
-    return suggestion, None
+            if out_project is not None:
+                suggestion = BillSuggestion(
+                    project_id=out_project,
+                    sub_cost_code_id=None,
+                    sub_cost_code_public_id=None,
+                    sub_cost_code_number=None,
+                    sub_cost_code_name=None,
+                    source="llm",
+                    reason=TEXT_LLM_SUGGESTION_REASON,
+                    confidence=confidence,
+                    raw_score=None,
+                    top_count=None,
+                    second_count=None,
+                    total_count=None,
+                    model_version=MODEL_VERSION,
+                    predicted_project=True,
+                    text_used=True,
+                    text_mode=mode,
+                    text_model=winning_model,
+                )
+    except Exception as error:
+        error.coding_cascade = cascade  # type: ignore[attr-defined]
+        raise
+    return suggestion, None, cascade
 
 
 def run_bill_text_coding_tick_sync(**kwargs: Any) -> dict[str, Any]:

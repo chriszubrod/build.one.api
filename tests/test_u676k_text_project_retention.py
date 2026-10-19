@@ -115,7 +115,7 @@ def test_project_only_text_prediction_drives_history_on_p():
     ), patch.object(ras, "resolve_vendor_match_from_name") as rvm, patch.object(
         ras,
         "predict_text_coding",
-        new=AsyncMock(return_value=(text_project_only, None)),
+        new=AsyncMock(return_value=(text_project_only, None, None)),
     ), patch(
         "entities.coding_suggestion.business.presenters.ProjectService"
     ) as PSapi, patch.object(

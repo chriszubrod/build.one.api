@@ -25,6 +25,7 @@ from tests.sql_corpus import iter_repo_sql_files
 
 COVERED_ENTITIES = [
     "bill",
+    "bill_intake_prediction",
     "expense",
     "invoice",
     "contract_labor",

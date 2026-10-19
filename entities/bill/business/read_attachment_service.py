@@ -2,11 +2,15 @@
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import logging
+import threading
 import time
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import replace
 from datetime import datetime, timezone
 from decimal import Decimal, ROUND_HALF_UP, InvalidOperation
+from functools import partial
 from typing import Any, Callable, Optional
 from uuid import UUID
 
@@ -37,10 +41,52 @@ from intelligence.cascade.bill_header_extraction import (
     run_bill_header_extraction,
     validate_bill_header_result,
 )
+from entities.bill_intake_prediction.business.service import (
+    BillIntakePredictionService,
+    INTAKE_SOURCES,
+)
 from intelligence.cascade.core import CascadeResult
 from shared.access import EntityNotAccessibleError, assert_can_access_project
 
 logger = logging.getLogger(__name__)
+
+# Background record_read (U-676m): its own small pool so a slow DB cannot starve the
+# default executor the read path itself uses; strong refs keep tasks alive until done;
+# a cap drops recording (telemetry only) rather than queueing without bound.
+_RECORD_READ_MAX_PENDING = 50
+_record_read_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="intake-record")
+# Executor futures (not asyncio ones): their done-callback fires in the worker thread even
+# if the scheduling event loop has closed, so an entry can never leak and silently fill
+# the cap. Guarded by a lock because callbacks run off the loop.
+_record_read_tasks: set[Future] = set()
+_record_read_lock = threading.Lock()
+
+
+def _record_read_done(future: Future) -> None:
+    with _record_read_lock:
+        _record_read_tasks.discard(future)
+    if future.cancelled():
+        return
+    exc = future.exception()
+    if exc is not None:
+        logger.warning("bill_read_attachment.record_read_failed err=%s", type(exc).__name__)
+
+
+def _schedule_record_read(intake_svc: BillIntakePredictionService, **kwargs: Any) -> None:
+    try:
+        with _record_read_lock:
+            if len(_record_read_tasks) >= _RECORD_READ_MAX_PENDING:
+                logger.warning("bill_read_attachment.record_read_skipped reason=backlog")
+                return
+            # The executor does not copy contextvars — carry the request's context
+            # (current_user_id → CreatedByUserId) explicitly.
+            ctx = contextvars.copy_context()
+            future = _record_read_executor.submit(ctx.run, partial(intake_svc.record_read, **kwargs))
+            _record_read_tasks.add(future)
+        future.add_done_callback(_record_read_done)
+    except Exception as error:  # e.g. executor shut down at interpreter exit
+        logger.warning("bill_read_attachment.record_read_not_scheduled err=%s", type(error).__name__)
+
 
 LLM_VENDOR_MATCH_CONFIDENCE = 0.9
 
@@ -413,12 +459,17 @@ async def run_bill_read_attachment(
     *,
     attachment_public_id: str,
     project_public_id: Optional[UUID] = None,
+    intake_source: str = "pdf_drop",
     extraction_service: Optional[AttachmentExtractionService] = None,
     attachment_service: Optional[AttachmentService] = None,
     suggester: Optional[BillCodingSuggester] = None,
     transport_for: Optional[Callable[[str], Any]] = None,
     settings: Optional[Any] = None,
+    intake_prediction_service: Optional[BillIntakePredictionService] = None,
 ) -> dict[str, Any]:
+    if intake_source not in INTAKE_SOURCES:
+        raise ValueError("invalid intake_source")
+
     cfg = settings or config.Settings()
     if not cfg.bill_drop_prefill_enabled:
         return _result_shell("disabled")
@@ -429,13 +480,41 @@ async def run_bill_read_attachment(
     request_start = time.monotonic()
     timing_ms: dict[str, int] = {}
     attachment_id_for_log = 0
+    persist_enabled = False
+    header_cascade: Optional[CascadeResult] = None
+    coding_cascade: Optional[CascadeResult] = None
+    coding_suggestion: Optional[BillSuggestion] = None
+    header_model_id: Optional[str] = None
+    vendor_id_for_persist: Optional[int] = None
+    vendor_extracted_name: Optional[str] = None
+    chosen_project_id_for_persist: Optional[int] = None
+    fields_for_persist: dict[str, Any] = _empty_fields()
+    intake_svc = intake_prediction_service or BillIntakePredictionService()
 
-    def _finish(
+    async def _finish(
         result: dict[str, Any],
         *,
         attachment_id: int = 0,
     ) -> dict[str, Any]:
         timing_ms["total"] = int((time.monotonic() - request_start) * 1000)
+        if persist_enabled and attachment_id:
+            status = str(result.get("status", "unknown"))
+            if status != "disabled":
+                _schedule_record_read(
+                    intake_svc,
+                    attachment_id=attachment_id,
+                    intake_source=intake_source,
+                    status=status,
+                    timing_ms=dict(timing_ms),
+                    fields=result.get("fields") or fields_for_persist,
+                    suggestion=coding_suggestion,
+                    chosen_project_id=chosen_project_id_for_persist,
+                    header_cascade=header_cascade,
+                    coding_cascade=coding_cascade,
+                    header_model=header_model_id,
+                    vendor_id=vendor_id_for_persist,
+                    vendor_extracted_name=vendor_extracted_name,
+                )
         if attachment_id:
             _log_read_attachment_timing(
                 attachment_id=attachment_id,
@@ -462,6 +541,8 @@ async def run_bill_read_attachment(
     if is_linked:
         raise AttachmentNotReadable("not_found")
 
+    persist_enabled = True
+
     # Naive UTC, like the DB timestamps the tick compares against.
     as_of = datetime.now(timezone.utc).replace(tzinfo=None)
     catalog_task: Optional[asyncio.Task[CatalogSnapshot]] = asyncio.create_task(
@@ -486,19 +567,19 @@ async def run_bill_read_attachment(
         )
         timing_ms["extract"] = int((time.monotonic() - step) * 1000)
         if extract_out.get("status") == "timeout":
-            return _finish(
+            return await _finish(
                 _result_shell("timeout", message=MSG_COULDNT_READ_IN_TIME),
                 attachment_id=attachment_id_for_log,
             )
         if extract_out.get("status") != "completed":
-            return _finish(
+            return await _finish(
                 _result_shell("unreadable"),
                 attachment_id=attachment_id_for_log,
             )
 
         masked_text = extract_out.get("masked_text") or ""
         if not masked_text.strip():
-            return _finish(
+            return await _finish(
                 _result_shell("unreadable"),
                 attachment_id=attachment_id_for_log,
             )
@@ -511,6 +592,8 @@ async def run_bill_read_attachment(
                 raise
             project_task = None
 
+        chosen_project_id_for_persist = chosen_project_id
+
         step = time.monotonic()
         try:
             header_cascade = await run_bill_header_extraction(
@@ -522,14 +605,14 @@ async def run_bill_read_attachment(
                 "bill_read_attachment.header_failed err=%s",
                 type(error).__name__,
             )
-            return _finish(
+            return await _finish(
                 _result_shell("unreadable", message=MSG_COULDNT_READ, fields=_empty_fields()),
                 attachment_id=attachment_id_for_log,
             )
         timing_ms["header_llm"] = int((time.monotonic() - step) * 1000)
 
         if header_cascade.stopped_reason == "daily_cap":
-            return _finish(
+            return await _finish(
                 _result_shell("ai_unavailable", message=MSG_AI_PAUSED),
                 attachment_id=attachment_id_for_log,
             )
@@ -539,12 +622,15 @@ async def run_bill_read_attachment(
             _header_from_cascade,
             header_cascade,
         )
+        fields_for_persist = fields
+        header_model_id = model_id
         timing_ms["vendor_match"] = int((time.monotonic() - step) * 1000)
         coding_payload: Optional[dict] = None
         coding_error = False
 
         vendor_id: Optional[int] = None
         vendor_name_for_catalog: Optional[str] = None
+        vendor_extracted_name = fields["vendor"].get("extracted_name")
         if vendor_match is not None:
             vendor_id = vendor_match.vendor_id
             vendor_name_for_catalog = vendor_match.name or None
@@ -557,6 +643,7 @@ async def run_bill_read_attachment(
                     vendor_id = int(vendor.id)
                     if not vendor_name_for_catalog:
                         vendor_name_for_catalog = vendor.name or None
+            vendor_id_for_persist = vendor_id
 
         if vendor_id is not None:
             engine = suggester or BillCodingSuggester()
@@ -609,7 +696,7 @@ async def run_bill_read_attachment(
                     timing_ms["catalog"] = int((time.monotonic() - step) * 1000)
                     step = time.monotonic()
                     try:
-                        text_suggestion, stopped = await predict_text_coding(
+                        text_suggestion, stopped, coding_cascade_result = await predict_text_coding(
                             bill_text=masked_text,
                             vendor_id=int(vendor_id),
                             chosen_project_id=chosen_project_id,
@@ -619,6 +706,8 @@ async def run_bill_read_attachment(
                             catalog=prefetched_catalog,
                             vendor_name=vendor_name_for_catalog,
                         )
+                        if coding_cascade_result is not None:
+                            coding_cascade = coding_cascade_result
                         if stopped == "daily_cap":
                             coding_error = True
                         else:
@@ -628,6 +717,9 @@ async def run_bill_read_attachment(
                             "bill_read_attachment.coding_failed err=%s",
                             type(error).__name__,
                         )
+                        cascade_from_error = getattr(error, "coding_cascade", None)
+                        if cascade_from_error is not None:
+                            coding_cascade = cascade_from_error
                         coding_error = True
                     timing_ms["coding_llm"] = int((time.monotonic() - step) * 1000)
             else:
@@ -645,7 +737,7 @@ async def run_bill_read_attachment(
                 text_suggestion: Optional[BillSuggestion] = None
                 model_unavailable = False
                 try:
-                    text_suggestion, stopped = await predict_text_coding(
+                    text_suggestion, stopped, coding_cascade_result = await predict_text_coding(
                         bill_text=masked_text,
                         vendor_id=int(vendor_id),
                         chosen_project_id=None,
@@ -656,6 +748,8 @@ async def run_bill_read_attachment(
                         vendor_name=vendor_name_for_catalog,
                         retain_accessible_project=True,
                     )
+                    if coding_cascade_result is not None:
+                        coding_cascade = coding_cascade_result
                     if stopped == "daily_cap":
                         model_unavailable = True
                         text_suggestion = None
@@ -664,6 +758,9 @@ async def run_bill_read_attachment(
                         "bill_read_attachment.coding_failed err=%s",
                         type(error).__name__,
                     )
+                    cascade_from_error = getattr(error, "coding_cascade", None)
+                    if cascade_from_error is not None:
+                        coding_cascade = cascade_from_error
                     coding_error = True
                     model_unavailable = True
                     text_suggestion = None
@@ -683,6 +780,7 @@ async def run_bill_read_attachment(
                 )
                 timing_ms["history"] = int((time.monotonic() - step) * 1000)
 
+            coding_suggestion = suggestion
             if suggestion is not None and suggestion.sub_cost_code_id is not None:
                 suggestion.text_status = "ready"
                 step = time.monotonic()
@@ -697,7 +795,7 @@ async def run_bill_read_attachment(
             coding_payload=coding_payload,
         )
         if status == "unreadable":
-            return _finish(
+            return await _finish(
                 _result_shell(
                     "unreadable",
                     message=MSG_COULDNT_READ,
@@ -708,7 +806,7 @@ async def run_bill_read_attachment(
                 attachment_id=attachment_id_for_log,
             )
 
-        return _finish(
+        return await _finish(
             _result_shell(
                 status,
                 fields=fields,
@@ -725,6 +823,7 @@ async def run_bill_read_attachment_with_timeout(
     *,
     attachment_public_id: str,
     project_public_id: Optional[UUID] = None,
+    intake_source: str = "pdf_drop",
     settings: Optional[Any] = None,
 ) -> dict[str, Any]:
     cfg = settings or config.Settings()
@@ -734,6 +833,7 @@ async def run_bill_read_attachment_with_timeout(
             run_bill_read_attachment(
                 attachment_public_id=attachment_public_id,
                 project_public_id=project_public_id,
+                intake_source=intake_source,
                 settings=cfg,
             ),
             timeout=timeout,

@@ -12,6 +12,7 @@ swallowed and degrade to a minimal event.
 """
 import json
 import logging
+from decimal import Decimal
 from typing import Any, Optional
 
 from intelligence.observability.pricing import compute_cost_usd
@@ -104,6 +105,27 @@ def _attempt_cost(attempt: Any) -> Optional[float]:
 
 def _sum_usage(attempts: list, field: str) -> int:
     return sum(getattr(a.usage, field) for a in attempts if a.usage is not None)
+
+
+def cascade_usage_totals(
+    result: Any,
+) -> tuple[int, int, Optional[Decimal]]:
+    """Sum tokens and USD cost for one cascade (None cost if any attempt price unknown)."""
+    if result is None:
+        return 0, 0, None
+    attempts = result.attempts
+    costs = [_attempt_cost(a) for a in attempts]
+    if any(c is None for c in costs):
+        cost_usd: Optional[Decimal] = None
+    elif not costs:
+        cost_usd = Decimal("0")
+    else:
+        cost_usd = Decimal(str(round(sum(costs), 6)))
+    return (
+        _sum_usage(attempts, "input_tokens"),
+        _sum_usage(attempts, "output_tokens"),
+        cost_usd,
+    )
 
 
 def _attempt_json(attempt: Any) -> dict[str, Any]:

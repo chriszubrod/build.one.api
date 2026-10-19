@@ -144,3 +144,30 @@ Production routing for bill text coding and bill header extraction:
   day (totals only ever grow), so a manual downward correction does not take effect in running workers until the
   UTC day rolls over or the API restarts.
 - **Known over-count:** a write that commits but whose reply is lost is retried and counted twice (safe direction).
+
+## U-676m — persist intake predictions (2026-10-19)
+
+**Goal:** When `POST /api/v1/bill/read-attachment` runs, store header + coding predictions on `dbo.BillIntakePrediction` (one row per attachment, re-read overwrites). Bind to the bill on create; snapshot **final** header + attachment-line coding on the draft→completed flip; reuse matching predictions in the U-654b text tick; expose predictions on the edit page; report accuracy offline.
+
+### Data model
+
+- Table `dbo.BillIntakePrediction` — predicted fields, cascade metadata (models, confidences, tokens, cost, timing JSON), optional `Final*` columns after complete. `RejectReason` is a placeholder (nothing writes it in U-676m).
+- Sprocs: `UpsertBillIntakePrediction` (MERGE on `AttachmentId`), `BindBillIntakePredictionToBill`, `RecordBillIntakePredictionFinal` (once guard on `FinalizedDatetime`), `ReadBillIntakePredictionByBillId` / `ByAttachmentId`, `ReadBillIntakePredictionsForAccuracy`.
+
+### Write paths
+
+1. **Read (failure-isolated):** After the read payload is assembled, a single upsert runs; exceptions are logged without driver text and do not change the HTTP body. Persist for every non-`disabled` status once the attachment passed the link gate (including `timeout` / `unreadable` / `ai_unavailable`). Optional request field `intake_source` (`pdf_drop` default; `pdf_upload` | `list_drop`).
+2. **Create (failure-isolated):** After `BillLineItemAttachment` is linked, `BindBillIntakePredictionToBill` sets `BillId` where still null.
+3. **Complete (failure-isolated, draft→completed only):** Alongside `record_bill_coding_suggestion_on_save`, `RecordBillIntakePredictionFinal` captures vendor, bill number/date/total, and SubCostCode/Project from the line that carries the PDF (else first line).
+
+### Text tick reuse
+
+Before blob download, `_process_one_claim` loads the intake row by `attachment_id`. Reuse (complete with `record_call=False`, no model) when `ExtractedDatetime`, text `ModelVersion`, status `ok`/`partial`, `PredSubCostCodeId`, and coding mode/chosen project match the claim.
+
+### API
+
+- `GET /api/v1/bill/{public_id}/intake-prediction` — `Modules.BILLS` `can_read` + bill access guard; returns predicted fields only (no cost/tokens/timing/final). 404 when inaccessible or absent.
+
+### Accuracy
+
+- `scripts/u676m_prediction_accuracy.py` — read-only markdown report from `ReadBillIntakePredictionsForAccuracy` (per-field match rates, overall, top vendors, mean cost/latency). Apply SQL base file to prod before first report.

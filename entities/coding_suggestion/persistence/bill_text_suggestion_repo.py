@@ -10,31 +10,9 @@ from typing import Any, Optional, Sequence
 import pyodbc
 
 from shared.database import call_procedure, get_connection, map_database_error
+from shared.db_datetime import parse_db_datetime as _parse_datetime
 
 logger = logging.getLogger(__name__)
-
-
-def _parse_datetime(value: Any) -> Optional[datetime]:
-    if value is None:
-        return None
-    if isinstance(value, datetime):
-        return value
-    text = str(value).strip()
-    if not text:
-        return None
-    if text.endswith("Z"):
-        text = text[:-1] + "+00:00"
-    for fmt in (
-        "%Y-%m-%d %H:%M:%S.%f",
-        "%Y-%m-%dT%H:%M:%S.%f",
-        "%Y-%m-%d %H:%M:%S",
-        "%Y-%m-%dT%H:%M:%S",
-    ):
-        try:
-            return datetime.strptime(text[:26], fmt)
-        except ValueError:
-            continue
-    return None
 
 
 @dataclass(frozen=True)

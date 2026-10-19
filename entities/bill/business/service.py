@@ -608,6 +608,23 @@ class BillService:
                     )
                 raise ValueError(f"Failed to attach PDF to new bill: {attach_error}")
 
+            attachment_id = getattr(attachment, "id", None) if attachment else None
+            if attachment_id is not None:
+                try:
+                    from entities.bill_intake_prediction.business.service import (
+                        BillIntakePredictionService,
+                    )
+
+                    BillIntakePredictionService().bind_attachment_to_bill_failure_isolated(
+                        attachment_id=int(attachment_id),
+                        bill_id=int(bill.id),
+                    )
+                except Exception as error:
+                    logger.warning(
+                        "bill_intake_prediction.bind_import_failed err=%s",
+                        type(error).__name__,
+                    )
+
         # Auto-Submit hook. Creating a draft bill IS submitting it for review
         # — when the caller has supplied enough data for the reviewer email
         # to resolve real recipients. The gate:
@@ -2081,6 +2098,36 @@ class BillService:
                 )
 
                 record_bill_coding_suggestion_on_save(finalized_bill)
+                try:
+                    from entities.bill_intake_prediction.business.service import (
+                        BillIntakePredictionService,
+                        resolve_intake_final_line,
+                    )
+
+                    intake_svc = BillIntakePredictionService()
+                    prediction = intake_svc.read_by_bill_id(int(bill.id))
+                    line_items = self.bill_line_item_service.read_by_bill_id(
+                        bill_id=bill.id
+                    )
+                    final_line = resolve_intake_final_line(
+                        line_items,
+                        target_attachment_id=(
+                            prediction.attachment_id if prediction else None
+                        ),
+                        read_attachment_links_for_line_items=(
+                            self.bill_line_item_attachment_service.read_by_bill_line_item_ids
+                        ),
+                    )
+                    intake_svc.record_final_on_complete_failure_isolated(
+                        bill=finalized_bill,
+                        line=final_line,
+                    )
+                except Exception as error:
+                    logger.warning(
+                        "bill_intake_prediction.complete_hook_failed bill_id=%s err=%s",
+                        getattr(bill, "id", None),
+                        type(error).__name__,
+                    )
         except CompletionRefused:
             raise
         except Exception as e:

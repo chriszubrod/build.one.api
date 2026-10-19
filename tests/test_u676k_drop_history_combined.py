@@ -188,7 +188,7 @@ def test_strong_history_on_model_project_y_uses_history_scc():
     with patch.object(
         ras,
         "predict_text_coding",
-        new=AsyncMock(return_value=(text, None)),
+        new=AsyncMock(return_value=(text, None, None)),
     ) as predict_mock, patch(
         "entities.coding_suggestion.business.presenters.ProjectService"
     ) as PSapi, patch.object(
@@ -231,7 +231,7 @@ def test_strong_on_dominant_x_weak_on_model_y_uses_model_scc():
     with patch.object(
         ras,
         "predict_text_coding",
-        new=AsyncMock(return_value=(text, None)),
+        new=AsyncMock(return_value=(text, None, None)),
     ), patch(
         "entities.coding_suggestion.business.presenters.ProjectService"
     ) as PSapi, patch.object(
@@ -262,7 +262,7 @@ def test_strong_history_no_project_cost_from_history_on_true_project():
     with patch.object(
         ras,
         "predict_text_coding",
-        new=AsyncMock(return_value=(text, None)),
+        new=AsyncMock(return_value=(text, None, None)),
     ) as predict_mock, patch(
         "entities.coding_suggestion.business.presenters.ProjectService"
     ) as PSapi, patch.object(
@@ -302,7 +302,7 @@ def test_model_no_project_strong_no_project_history_used():
     with patch.object(
         ras,
         "predict_text_coding",
-        new=AsyncMock(return_value=(text, None)),
+        new=AsyncMock(return_value=(text, None, None)),
     ), patch(
         "entities.coding_suggestion.business.presenters.ProjectService"
     ) as PSapi, patch.object(
@@ -331,7 +331,7 @@ def test_model_no_project_weak_no_project_history_uses_model_scc_no_project():
     with patch.object(
         ras,
         "predict_text_coding",
-        new=AsyncMock(return_value=(text, None)),
+        new=AsyncMock(return_value=(text, None, None)),
     ), patch(
         "entities.coding_suggestion.business.presenters.ProjectService"
     ) as PSapi, patch.object(
@@ -361,7 +361,7 @@ def test_coding_daily_cap_keeps_headers_and_strong_no_project_history():
     with patch.object(
         ras,
         "predict_text_coding",
-        new=AsyncMock(return_value=(None, "daily_cap")),
+        new=AsyncMock(return_value=(None, "daily_cap", None)),
     ), patch(
         "entities.coding_suggestion.business.presenters.ProjectService"
     ) as PSapi, patch.object(
@@ -422,7 +422,7 @@ def test_weak_history_model_decides_cost_code():
     with patch.object(
         ras,
         "predict_text_coding",
-        new=AsyncMock(return_value=(text, None)),
+        new=AsyncMock(return_value=(text, None, None)),
     ) as predict_mock, patch(
         "entities.coding_suggestion.business.presenters.ProjectService"
     ) as PSapi, patch.object(
@@ -487,7 +487,7 @@ def test_chosen_project_coding_daily_cap_keeps_header_fields_partial():
     suggester.project_service = MagicMock()
     suggester.sub_cost_code_service = MagicMock()
     with patch.object(
-        ras, "predict_text_coding", new=AsyncMock(return_value=(None, "daily_cap"))
+        ras, "predict_text_coding", new=AsyncMock(return_value=(None, "daily_cap", None))
     ) as predict_mock, patch.object(ras, "ProjectService") as PS, patch.object(
         ras, "assert_can_access_project"
     ):

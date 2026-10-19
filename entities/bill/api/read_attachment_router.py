@@ -12,6 +12,7 @@ from entities.bill.business.read_attachment_service import (
     AttachmentNotReadable,
     run_bill_read_attachment_with_timeout,
 )
+from entities.bill_intake_prediction.business.service import IntakeSource
 from shared.api.responses import item_response, raise_not_found
 from shared.rbac import require_module_api
 from shared.rbac_constants import Modules
@@ -24,6 +25,7 @@ router = APIRouter(prefix="/api/v1", tags=["api", "bill"])
 class BillReadAttachmentRequest(BaseModel):
     attachment_public_id: UUID
     project_public_id: Optional[UUID] = Field(default=None)
+    intake_source: IntakeSource = "pdf_drop"
 
 
 @router.post("/bill/read-attachment")
@@ -35,6 +37,7 @@ async def read_bill_attachment_router(
         result = await run_bill_read_attachment_with_timeout(
             attachment_public_id=str(body.attachment_public_id),
             project_public_id=body.project_public_id,
+            intake_source=body.intake_source,
         )
     except AttachmentNotReadable:
         raise_not_found("Attachment")

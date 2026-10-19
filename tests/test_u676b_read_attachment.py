@@ -463,7 +463,7 @@ def test_text_coding_mode_b_shape_matches_suggest_payload():
     ), patch.object(ras, "resolve_vendor_match_from_name") as rvm, patch.object(
         ras,
         "predict_text_coding",
-        new=AsyncMock(return_value=(text_suggestion, None)),
+        new=AsyncMock(return_value=(text_suggestion, None, None)),
     ) as predict_mock, patch(
         "entities.bill.business.read_attachment_service.run_bill_header_extraction",
         new=AsyncMock(return_value=_ok_header_cascade()),
@@ -551,7 +551,7 @@ def test_inaccessible_predicted_project_dropped():
     ), patch.object(ras, "resolve_vendor_match_from_name") as rvm, patch.object(
         ras,
         "predict_text_coding",
-        new=AsyncMock(return_value=(text_suggestion, None)),
+        new=AsyncMock(return_value=(text_suggestion, None, None)),
     ), patch(
         "entities.bill.business.read_attachment_service.run_bill_header_extraction",
         new=AsyncMock(return_value=_ok_header_cascade()),
@@ -752,7 +752,7 @@ def test_text_coding_mode_a_asserts_project_access():
     ), patch.object(ras, "resolve_vendor_match_from_name") as rvm, patch.object(
         ras,
         "predict_text_coding",
-        new=AsyncMock(return_value=(text_suggestion, None)),
+        new=AsyncMock(return_value=(text_suggestion, None, None)),
     ), patch(
         "entities.bill.business.read_attachment_service.run_bill_header_extraction",
         new=AsyncMock(return_value=_ok_header_cascade()),

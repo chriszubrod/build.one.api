@@ -261,7 +261,7 @@ def test_timing_log_emitted_without_bill_text(caplog):
             "entities.bill.business.read_attachment_service.run_bill_header_extraction",
             new=AsyncMock(return_value=_ok_header_cascade()),
         ), patch.object(ras, "resolve_vendor_match_from_name") as rvm, patch.object(
-            ras, "predict_text_coding", new=AsyncMock(return_value=(_text_llm(), None))
+            ras, "predict_text_coding", new=AsyncMock(return_value=(_text_llm(), None, None))
         ), patch(
             "entities.coding_suggestion.business.presenters.ProjectService"
         ) as PSapi, patch.object(
@@ -399,7 +399,7 @@ def test_catalog_load_starts_before_header_finishes():
         ), patch.object(ras, "load_catalog_from_db", side_effect=_slow_catalog), patch.object(
             ras, "resolve_vendor_match_from_name"
         ) as rvm, patch.object(
-            ras, "predict_text_coding", new=AsyncMock(return_value=(_text_llm(), None))
+            ras, "predict_text_coding", new=AsyncMock(return_value=(_text_llm(), None, None))
         ), patch(
             "entities.coding_suggestion.business.presenters.ProjectService"
         ) as PSapi, patch.object(
@@ -682,7 +682,7 @@ def test_dedupe_suggest_once_no_vendor_reread_single_catalog_load():
         ) as rvn, patch.object(
             ras,
             "predict_text_coding",
-            new=AsyncMock(return_value=(_text_llm(), None)),
+            new=AsyncMock(return_value=(_text_llm(), None, None)),
         ) as predict_mock, patch(
             "entities.coding_suggestion.business.presenters.ProjectService"
         ) as PSapi, patch.object(
@@ -811,7 +811,7 @@ def test_golden_equivalence(history, text, project_uuid, expected):
     suggester.project_service = MagicMock()
     suggester.sub_cost_code_service = MagicMock()
 
-    predict = AsyncMock(return_value=(txt, None)) if txt is not None else AsyncMock()
+    predict = AsyncMock(return_value=(txt, None, None)) if txt is not None else AsyncMock()
 
     with patch.object(ras.config, "Settings") as ms:
         ms.return_value = _settings_mock()

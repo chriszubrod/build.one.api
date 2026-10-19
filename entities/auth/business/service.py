@@ -83,6 +83,13 @@ def _base64url_decode(data: str) -> bytes:
     padding = "=" * (-len(data) % 4)
     return base64.urlsafe_b64decode(data + padding)
 
+def _as_naive_utc(value: datetime) -> datetime:
+    """Naive UTC, the kind pyodbc reads back from a DATETIME2 column."""
+    if value.tzinfo is None:
+        return value
+    return value.astimezone(timezone.utc).replace(tzinfo=None)
+
+
 def _coerce_datetime(value) -> Optional[datetime]:
     if isinstance(value, datetime):
         return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
@@ -792,12 +799,14 @@ class AuthService:
             revoked_in_grace = False
 
             if stored:
+                # Stored timestamps are DATETIME2, read back naive UTC; compare like with like (U-677).
+                db_now = _as_naive_utc(now)
                 if stored.revoked_datetime:
-                    delta = (now - stored.revoked_datetime).total_seconds()
+                    delta = (db_now - _as_naive_utc(stored.revoked_datetime)).total_seconds()
                     if delta > REVOKED_GRACE_SECONDS:
                         raise ValueError("Refresh token has been revoked.")
                     revoked_in_grace = True  # Within grace: issue new tokens, skip revoke step
-                elif stored.expires_datetime and stored.expires_datetime <= now:
+                elif stored.expires_datetime and _as_naive_utc(stored.expires_datetime) <= db_now:
                     raise ValueError("Refresh token has expired.")
             else:
                 logger.info("Legacy refresh token accepted for migration for %s", auth.public_id)

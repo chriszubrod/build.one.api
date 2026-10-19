@@ -2,8 +2,11 @@
 from __future__ import annotations
 
 import asyncio
+import gc
 import json
 import logging
+import threading
+import time
 from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -202,8 +205,8 @@ def _reset_catalog_cache():
 
 @pytest.fixture(autouse=True)
 def _prefetch_db_fakes():
-    """Background cap/catalog prefetch must never hit real DB in these tests."""
-    with patch.object(ras, "BillTextCodingSuggestionRepository") as repo, patch.object(
+    """Background catalog prefetch must never hit real DB in these tests."""
+    with patch.object(
         ras,
         "load_catalog_from_db",
         return_value=CatalogSnapshot(
@@ -216,8 +219,26 @@ def _prefetch_db_fakes():
             vendor_name="",
         ),
     ):
-        repo.return_value.count_calls_today.return_value = 0
-        yield repo
+        yield
+
+
+def _run_on_persistent_loop(coro):
+    """Run coroutine on a fresh loop that outlives the call (task leak detection)."""
+    never_retrieved: list[dict] = []
+    loop = asyncio.new_event_loop()
+
+    def _handler(_loop, context):
+        if context.get("message", "").startswith("Task exception was never retrieved"):
+            never_retrieved.append(context)
+
+    loop.set_exception_handler(_handler)
+    try:
+        return loop.run_until_complete(coro), never_retrieved
+    finally:
+        loop.run_until_complete(asyncio.sleep(0))
+        gc.collect()
+        loop.run_until_complete(asyncio.sleep(0))
+        loop.close()
 
 
 def test_timing_log_emitted_without_bill_text(caplog):
@@ -406,11 +427,133 @@ def test_catalog_load_starts_before_header_finishes():
     assert events.index("catalog_start") < events.index("header_end")
 
 
-def test_early_unreadable_cancels_prefetch_without_runtime_warning():
+def test_prefetch_tasks_drained_on_outer_timeout_with_failing_prefetch():
     att = _attachment()
 
     def _catalog_raises(_as_of):
+        time.sleep(0.05)
         raise RuntimeError("catalog boom")
+
+    settings = _settings_mock()
+    settings.bill_drop_prefill_timeout_seconds = 1
+
+    def _slow_extract_long(*_a, **_k):
+        time.sleep(1.5)
+        return {"status": "completed", "masked_text": "body"}
+
+    async def _run():
+        with patch.object(ras.config, "Settings") as ms:
+            ms.return_value = settings
+            with patch.object(ras, "AttachmentService") as AS, patch.object(
+                ras, "AttachmentExtractionService"
+            ) as ES, patch.object(
+                ras, "read_attachment_link_state", return_value=(False, False)
+            ), patch.object(
+                ras, "load_catalog_from_db", side_effect=_catalog_raises
+            ), patch(
+                "entities.bill.business.read_attachment_service.run_bill_header_extraction",
+                new=AsyncMock(),
+            ):
+                AS.return_value.read_by_public_id.return_value = att
+                ES.return_value.extract_for_bill_drop_prefill.side_effect = _slow_extract_long
+                return await ras.run_bill_read_attachment_with_timeout(
+                    attachment_public_id=ATT_UUID,
+                    settings=settings,
+                )
+
+    out, leaks = _run_on_persistent_loop(_run())
+    assert out["status"] == "timeout"
+    assert leaks == []
+
+
+def test_prefetch_tasks_drained_when_header_raises_with_failing_catalog():
+    att = _attachment()
+
+    def _catalog_raises(_as_of):
+        time.sleep(0.05)
+        raise RuntimeError("catalog boom")
+
+    async def _run():
+        with patch.object(ras.config, "Settings") as ms:
+            ms.return_value = _settings_mock()
+            with patch.object(ras, "AttachmentService") as AS, patch.object(
+                ras, "AttachmentExtractionService"
+            ) as ES, patch.object(
+                ras, "read_attachment_link_state", return_value=(False, False)
+            ), patch.object(
+                ras, "load_catalog_from_db", side_effect=_catalog_raises
+            ), patch(
+                "entities.bill.business.read_attachment_service.run_bill_header_extraction",
+                new=AsyncMock(side_effect=RuntimeError("header boom")),
+            ):
+                AS.return_value.read_by_public_id.return_value = att
+                ES.return_value.extract_for_bill_drop_prefill.return_value = {
+                    "status": "completed",
+                    "masked_text": "body",
+                }
+                return await ras.run_bill_read_attachment(attachment_public_id=ATT_UUID)
+
+    out, leaks = _run_on_persistent_loop(_run())
+    assert out["status"] == "unreadable"
+    assert leaks == []
+
+
+def test_outer_cancellation_propagates_during_prefetch_cleanup():
+    att = _attachment()
+
+    def _slow_catalog(_as_of):
+        time.sleep(0.4)
+        return CatalogSnapshot(
+            scc_by_id={},
+            scc_number_to_id={},
+            ambiguous_scc_numbers=frozenset(),
+            proj_abbrev_to_id={},
+            ambiguous_project_abbrevs=frozenset(),
+            candidate_projects=[],
+            vendor_name="",
+        )
+
+    def _slow_extract(*_a, **_k):
+        time.sleep(0.4)
+        return {"status": "completed", "masked_text": "body"}
+
+    async def _run():
+        with patch.object(ras.config, "Settings") as ms:
+            ms.return_value = _settings_mock()
+            with patch.object(ras, "AttachmentService") as AS, patch.object(
+                ras, "AttachmentExtractionService"
+            ) as ES, patch.object(
+                ras, "read_attachment_link_state", return_value=(False, False)
+            ), patch.object(
+                ras, "load_catalog_from_db", side_effect=_slow_catalog
+            ), patch(
+                "entities.bill.business.read_attachment_service.run_bill_header_extraction",
+                new=AsyncMock(return_value=_ok_header_cascade()),
+            ):
+                AS.return_value.read_by_public_id.return_value = att
+                ES.return_value.extract_for_bill_drop_prefill.side_effect = _slow_extract
+                return await asyncio.wait_for(
+                    ras.run_bill_read_attachment(attachment_public_id=ATT_UUID),
+                    timeout=0.05,
+                )
+
+    with pytest.raises(asyncio.TimeoutError):
+        _run_on_persistent_loop(_run())
+
+
+def test_count_calls_today_at_most_once_not_on_event_loop_thread():
+    att = _attachment()
+    history = _strong_history()
+    suggester = MagicMock()
+    suggester.suggest.return_value = history
+    suggester.project_service = MagicMock()
+    suggester.sub_cost_code_service = MagicMock()
+    main_thread = threading.get_ident()
+    call_threads: list[int] = []
+
+    def _track_cap():
+        call_threads.append(threading.get_ident())
+        return 0
 
     with patch.object(ras.config, "Settings") as ms:
         ms.return_value = _settings_mock()
@@ -418,15 +561,100 @@ def test_early_unreadable_cancels_prefetch_without_runtime_warning():
             ras, "AttachmentExtractionService"
         ) as ES, patch.object(
             ras, "read_attachment_link_state", return_value=(False, False)
-        ), patch.object(ras, "load_catalog_from_db", side_effect=_catalog_raises):
+        ), patch(
+            "entities.bill.business.read_attachment_service.run_bill_header_extraction",
+            new=AsyncMock(return_value=_ok_header_cascade()),
+        ), patch.object(ras, "resolve_vendor_match_from_name") as rvm, patch(
+            "entities.coding_suggestion.business.bill_text_suggestion_service.BillTextCodingSuggestionRepository"
+        ) as repo_cls, patch.object(
+            ras, "predict_text_coding", new=AsyncMock(return_value=(_text_llm(), None))
+        ), patch(
+            "entities.coding_suggestion.business.presenters.ProjectService"
+        ) as PSapi, patch.object(
+            ras, "resolve_accessible_text_project_id", side_effect=lambda pid, **_: pid
+        ):
+            repo_cls.return_value.count_calls_today.side_effect = _track_cap
+            repo_cls.return_value.read_vendor_scc_counts.return_value = []
             AS.return_value.read_by_public_id.return_value = att
             ES.return_value.extract_for_bill_drop_prefill.return_value = {
-                "status": "failed",
+                "status": "completed",
+                "masked_text": "invoice body",
             }
-            out = asyncio.run(
-                ras.run_bill_read_attachment(attachment_public_id=ATT_UUID)
+            rvm.return_value = VendorResolveMatch(
+                public_id=VENDOR_UUID, name="Acme", confidence=0.8, vendor_id=10
             )
-    assert out["status"] == "unreadable"
+            PSapi.return_value.read_by_id.return_value = SimpleNamespace(
+                id=100, public_id=PROJ_UUID, name="Proj"
+            )
+            asyncio.run(
+                ras.run_bill_read_attachment(
+                    attachment_public_id=ATT_UUID,
+                    suggester=suggester,
+                )
+            )
+
+    assert repo_cls.return_value.count_calls_today.call_count <= 1
+    assert main_thread not in call_threads
+
+
+def test_chosen_project_strong_history_cancels_catalog_prefetch(caplog):
+    att = _attachment()
+    hist = _strong_history(source="vendor_project_history")
+    suggester = MagicMock()
+    suggester.suggest.return_value = hist
+    suggester.project_service = MagicMock()
+    suggester.sub_cost_code_service = MagicMock()
+    caplog.set_level(logging.INFO, logger=ras.logger.name)
+
+    with patch.object(ras.config, "Settings") as ms:
+        ms.return_value = _settings_mock()
+        with patch.object(ras, "AttachmentService") as AS, patch.object(
+            ras, "AttachmentExtractionService"
+        ) as ES, patch.object(
+            ras, "read_attachment_link_state", return_value=(False, False)
+        ), patch(
+            "entities.bill.business.read_attachment_service.run_bill_header_extraction",
+            new=AsyncMock(return_value=_ok_header_cascade()),
+        ), patch.object(ras, "resolve_vendor_match_from_name") as rvm, patch.object(
+            ras, "predict_text_coding", new=AsyncMock()
+        ) as predict_mock, patch.object(ras, "ProjectService") as PS, patch.object(
+            ras, "assert_can_access_project"
+        ), patch(
+            "entities.coding_suggestion.business.presenters.ProjectService"
+        ) as PSapi, patch.object(
+            ras, "resolve_accessible_text_project_id", side_effect=lambda pid, **_: pid
+        ):
+            AS.return_value.read_by_public_id.return_value = att
+            ES.return_value.extract_for_bill_drop_prefill.return_value = {
+                "status": "completed",
+                "masked_text": "invoice body",
+            }
+            rvm.return_value = VendorResolveMatch(
+                public_id=VENDOR_UUID, name="Acme", confidence=0.8, vendor_id=10
+            )
+            PS.return_value.read_by_public_id.return_value = SimpleNamespace(
+                id=100, public_id=PROJ_UUID, name="P"
+            )
+            PSapi.return_value.read_by_id.return_value = SimpleNamespace(
+                id=100, public_id=PROJ_UUID, name="Proj"
+            )
+            out = asyncio.run(
+                ras.run_bill_read_attachment(
+                    attachment_public_id=ATT_UUID,
+                    project_public_id=UUID(PROJ_UUID),
+                    suggester=suggester,
+                )
+            )
+
+    assert out["status"] == "ok"
+    predict_mock.assert_not_awaited()
+    timing_lines = [
+        r.message
+        for r in caplog.records
+        if r.message.startswith("bill_read_attachment.timing")
+    ]
+    assert len(timing_lines) == 1
+    assert "catalog=0" in timing_lines[0]
 
 
 def test_dedupe_suggest_once_no_vendor_reread_single_catalog_load():
@@ -527,6 +755,34 @@ def test_catalog_cache_hit_and_expiry():
     t["now"] += 61.0
     load_catalog_from_db(as_of)
     assert calls["n"] == 2
+    configure_catalog_cache_for_tests()
+
+
+def test_catalog_cache_keeps_at_most_one_entry():
+    from datetime import datetime, timezone
+
+    from entities.coding_suggestion.business import bill_text_suggestion_service as bts
+
+    t = {"now": 1000.0}
+
+    def loader(as_of):
+        return CatalogSnapshot(
+            scc_by_id={},
+            scc_number_to_id={},
+            ambiguous_scc_numbers=frozenset(),
+            proj_abbrev_to_id={},
+            ambiguous_project_abbrevs=frozenset(),
+            candidate_projects=[],
+            vendor_name=str(as_of.minute),
+        )
+
+    configure_catalog_cache_for_tests(now_fn=lambda: t["now"], loader=loader)
+    a = datetime(2026, 5, 1, 12, 0, 0).replace(tzinfo=None)
+    b = datetime(2026, 5, 1, 12, 1, 0).replace(tzinfo=None)
+    load_catalog_from_db(a)
+    load_catalog_from_db(b)
+    with bts._catalog_lock:
+        assert len(bts._catalog_cache) == 1
     configure_catalog_cache_for_tests()
 
 

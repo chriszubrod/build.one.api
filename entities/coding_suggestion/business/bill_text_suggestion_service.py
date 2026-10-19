@@ -506,6 +506,7 @@ def load_catalog_from_db(as_of: datetime) -> CatalogSnapshot:
     loader = _catalog_loader_override or _load_catalog_from_db
     snap = loader(as_of)
     with _catalog_lock:
+        _catalog_cache.clear()
         _catalog_cache[key] = (now, snap)
     return snap
 

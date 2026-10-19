@@ -6,6 +6,7 @@ import gc
 import json
 import logging
 import threading
+from datetime import datetime
 import time
 from decimal import Decimal
 from types import SimpleNamespace
@@ -498,11 +499,56 @@ def test_prefetch_tasks_drained_when_header_raises_with_failing_catalog():
     assert leaks == []
 
 
-def test_outer_cancellation_propagates_during_prefetch_cleanup():
-    att = _attachment()
+def test_await_or_cancel_tasks_reraises_the_requests_own_cancellation():
+    """If the request itself is cancelled (outer wait_for) while cleanup waits on a child
+    that is slow to cancel, the cancellation must propagate — not be swallowed into a
+    normal return after the deadline."""
 
-    def _slow_catalog(_as_of):
-        time.sleep(0.4)
+    async def resistant_child():
+        try:
+            await asyncio.sleep(10)
+        except asyncio.CancelledError:
+            await asyncio.sleep(0.3)
+            raise
+
+    async def request_body():
+        child = asyncio.create_task(resistant_child())
+        await asyncio.sleep(0)
+        await ras._await_or_cancel_tasks(child)
+        return "returned normally"
+
+    async def main():
+        outer = asyncio.create_task(request_body())
+        await asyncio.sleep(0.05)  # the request is now waiting inside the cleanup gather
+        outer.cancel()
+        try:
+            return await outer
+        except asyncio.CancelledError:
+            return "cancelled"
+
+    result, unhandled = _run_on_persistent_loop(main())
+    assert result == "cancelled"
+    assert unhandled == []
+
+
+def test_predict_text_coding_db_reads_run_off_the_event_loop():
+    """The real predict_text_coding: the daily-cap count runs exactly once, and it and the
+    other DB reads run on worker threads, never on the event-loop thread."""
+    from entities.coding_suggestion.business import bill_text_suggestion_service as bts
+
+    seen: dict[str, int] = {}
+    repo = MagicMock()
+
+    def _cap():
+        seen["cap"] = threading.get_ident()
+        return 0
+
+    def _counts(*_a, **_k):
+        seen["counts"] = threading.get_ident()
+        return []
+
+    def _catalog(_as_of):
+        seen["catalog"] = threading.get_ident()
         return CatalogSnapshot(
             scc_by_id={},
             scc_number_to_id={},
@@ -513,88 +559,30 @@ def test_outer_cancellation_propagates_during_prefetch_cleanup():
             vendor_name="",
         )
 
-    def _slow_extract(*_a, **_k):
-        time.sleep(0.4)
-        return {"status": "completed", "masked_text": "body"}
+    async def _cascade(_payload, **_kw):
+        seen["loop"] = threading.get_ident()
+        return SimpleNamespace(stopped_reason=None, accepted=False, result=None)
 
-    async def _run():
-        with patch.object(ras.config, "Settings") as ms:
-            ms.return_value = _settings_mock()
-            with patch.object(ras, "AttachmentService") as AS, patch.object(
-                ras, "AttachmentExtractionService"
-            ) as ES, patch.object(
-                ras, "read_attachment_link_state", return_value=(False, False)
-            ), patch.object(
-                ras, "load_catalog_from_db", side_effect=_slow_catalog
-            ), patch(
-                "entities.bill.business.read_attachment_service.run_bill_header_extraction",
-                new=AsyncMock(return_value=_ok_header_cascade()),
-            ):
-                AS.return_value.read_by_public_id.return_value = att
-                ES.return_value.extract_for_bill_drop_prefill.side_effect = _slow_extract
-                return await asyncio.wait_for(
-                    ras.run_bill_read_attachment(attachment_public_id=ATT_UUID),
-                    timeout=0.05,
-                )
-
-    with pytest.raises(asyncio.TimeoutError):
-        _run_on_persistent_loop(_run())
-
-
-def test_count_calls_today_at_most_once_not_on_event_loop_thread():
-    att = _attachment()
-    history = _strong_history()
-    suggester = MagicMock()
-    suggester.suggest.return_value = history
-    suggester.project_service = MagicMock()
-    suggester.sub_cost_code_service = MagicMock()
-    main_thread = threading.get_ident()
-    call_threads: list[int] = []
-
-    def _track_cap():
-        call_threads.append(threading.get_ident())
-        return 0
-
-    with patch.object(ras.config, "Settings") as ms:
-        ms.return_value = _settings_mock()
-        with patch.object(ras, "AttachmentService") as AS, patch.object(
-            ras, "AttachmentExtractionService"
-        ) as ES, patch.object(
-            ras, "read_attachment_link_state", return_value=(False, False)
-        ), patch(
-            "entities.bill.business.read_attachment_service.run_bill_header_extraction",
-            new=AsyncMock(return_value=_ok_header_cascade()),
-        ), patch.object(ras, "resolve_vendor_match_from_name") as rvm, patch(
-            "entities.coding_suggestion.business.bill_text_suggestion_service.BillTextCodingSuggestionRepository"
-        ) as repo_cls, patch.object(
-            ras, "predict_text_coding", new=AsyncMock(return_value=(_text_llm(), None))
-        ), patch(
-            "entities.coding_suggestion.business.presenters.ProjectService"
-        ) as PSapi, patch.object(
-            ras, "resolve_accessible_text_project_id", side_effect=lambda pid, **_: pid
-        ):
-            repo_cls.return_value.count_calls_today.side_effect = _track_cap
-            repo_cls.return_value.read_vendor_scc_counts.return_value = []
-            AS.return_value.read_by_public_id.return_value = att
-            ES.return_value.extract_for_bill_drop_prefill.return_value = {
-                "status": "completed",
-                "masked_text": "invoice body",
-            }
-            rvm.return_value = VendorResolveMatch(
-                public_id=VENDOR_UUID, name="Acme", confidence=0.8, vendor_id=10
+    repo.count_calls_today.side_effect = _cap
+    repo.read_vendor_scc_counts.side_effect = _counts
+    with patch.object(bts, "load_catalog_from_db", side_effect=_catalog), patch.object(
+        bts, "run_bill_coding_suggestion", new=_cascade
+    ), patch.object(bts.config, "Settings") as settings_cls:
+        settings_cls.return_value = MagicMock(bill_coding_text_daily_call_cap=200)
+        asyncio.run(
+            bts.predict_text_coding(
+                bill_text="invoice body",
+                vendor_id=10,
+                chosen_project_id=None,
+                as_of=datetime(2026, 10, 19, 12, 0, 0),
+                text_repo=repo,
+                vendor_name="Acme",
             )
-            PSapi.return_value.read_by_id.return_value = SimpleNamespace(
-                id=100, public_id=PROJ_UUID, name="Proj"
-            )
-            asyncio.run(
-                ras.run_bill_read_attachment(
-                    attachment_public_id=ATT_UUID,
-                    suggester=suggester,
-                )
-            )
-
-    assert repo_cls.return_value.count_calls_today.call_count <= 1
-    assert main_thread not in call_threads
+        )
+    assert repo.count_calls_today.call_count == 1
+    assert {"cap", "counts", "catalog", "loop"} <= set(seen)
+    for key in ("cap", "counts", "catalog"):
+        assert seen[key] != seen["loop"], f"{key} ran on the event-loop thread"
 
 
 def test_chosen_project_strong_history_cancels_catalog_prefetch(caplog):

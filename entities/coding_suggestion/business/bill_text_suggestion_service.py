@@ -536,18 +536,21 @@ async def predict_text_coding(
     if cap <= 0:
         return None, None
     repository = text_repo or BillTextCodingSuggestionRepository()
-    if repository.count_calls_today() >= cap:
+    # Every DB read below runs off the event loop (U-676l): this coroutine serves live
+    # requests, and a sync pyodbc call here would stall every request on the worker.
+    if await asyncio.to_thread(repository.count_calls_today) >= cap:
         return None, "daily_cap"
 
     if catalog is None:
-        catalog = load_catalog_from_db(as_of)
+        catalog = await asyncio.to_thread(load_catalog_from_db, as_of)
     if vendor_name:
         catalog = replace(catalog, vendor_name=vendor_name)
     elif not catalog.vendor_name:
-        loaded_name = _read_vendor_name(vendor_id)
+        loaded_name = await asyncio.to_thread(_read_vendor_name, vendor_id)
         if loaded_name:
             catalog = replace(catalog, vendor_name=loaded_name)
-    history_rows = repository.read_vendor_scc_counts(
+    history_rows = await asyncio.to_thread(
+        repository.read_vendor_scc_counts,
         vendor_id,
         project_id=chosen_project_id,
         as_of=as_of,
@@ -566,7 +569,8 @@ async def predict_text_coding(
     if not cascade.accepted or cascade.result is None:
         return None, None
     engine = suggester or BillCodingSuggester()
-    suggestion = bill_suggestion_from_text_cascade(
+    suggestion = await asyncio.to_thread(
+        bill_suggestion_from_text_cascade,
         cascade,
         catalog=catalog,
         mode=mode,
@@ -592,7 +596,8 @@ async def predict_text_coding(
             scc_number_to_id=catalog.scc_number_to_id,
             proj_abbrev_to_id=catalog.proj_abbrev_to_id,
         )
-        out_project = resolve_accessible_text_project_id(
+        out_project = await asyncio.to_thread(
+            resolve_accessible_text_project_id,
             proj_id,
             project_service=engine.project_service,
         )

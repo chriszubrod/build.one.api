@@ -33,7 +33,7 @@ def test_refusal_is_a_422_completion_refusal_with_its_own_code():
     assert exc.value.status_code == 422
     assert exc.value.error_code == ErrorCode.UNREVIEWED_PREFILL
     assert "1 suggested cost code has not been reviewed" in exc.value.detail
-    assert "Submitting the bill for review records the review" in exc.value.detail
+    assert "Confirm or change each suggested cost code" in exc.value.detail
 
 
 def test_reviewed_lines_pass():

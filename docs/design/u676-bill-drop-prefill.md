@@ -77,7 +77,7 @@ A read-only offline bake-off on ~200 completed bills that have a PDF, ground tru
 Production routing for bill text coding and bill header extraction:
 
 - **Claude first** on promotional credit (Haiku 5.5 first rung for both tasks).
-- **Azure Foundry is fallback-only** (`fallback_only` rungs): cash models run only when Claude did not return a parseable result (error, timeout, unparseable JSON). Low confidence after a successful parse does **not** escalate to Foundry.
+- **Azure Foundry is fallback-only** (`fallback_only` rungs): cash models run only when Claude did not return a valid result (error, timeout, unparseable JSON, or — since U-676n — parsed JSON that fails the task validator, e.g. a code outside `candidate_sccs`). A valid answer below the confidence bar does **not** escalate to Foundry.
 - **Daily Claude spend cap** (default `$200/31` ≈ `$6.45` UTC day, `dbo.LlmDailySpend`). When cap is reached, Claude rungs skip and **Foundry fallback rungs do not run** (no cash spend for the rest of the UTC day). Legacy ladders without `fallback_only` (e.g. `DEFAULT_LADDER` for agents) still run non-Claude rungs.
 - **Out-of-credit breaker**: HTTP 402 / `billing_error` / credit-balance 400 opens a 60-minute process-local block; Claude rungs skip with `claude_unavailable:credit` and Foundry fallback may run. One warning per block, no response bodies in logs.
 - **Rollback**: `CASCADE_LADDER_BILL_CODING_SUGGESTION=foundry:DeepSeek-V4-Flash,foundry:gpt-5.4-nano,foundry:gpt-5.4-mini` and `CASCADE_THRESHOLD_BILL_CODING_SUGGESTION=0.85` restores pre-U-676f bill text behaviour.

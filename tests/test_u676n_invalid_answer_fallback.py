@@ -98,3 +98,46 @@ def test_long_rationale_no_longer_rejects():
 
 def test_prompt_no_longer_asks_for_rationale():
     assert "rationale" not in bill_coding._SYSTEM_PROMPT.lower()
+
+
+SONNET = Rung("anthropic", "claude-sonnet-5-5")
+
+
+def _run_generic(rungs, outcomes, *, threshold=0.4):
+    calls: list[Rung] = []
+
+    async def execute(rung):
+        calls.append(rung)
+        return outcomes[rung]
+
+    def validate(parsed):
+        return (parsed.get("ok") is True, "ok" if parsed.get("ok") else "bad")
+
+    result = asyncio.run(run_ladder(rungs, execute, validate, threshold, "test"))
+    return result, calls
+
+
+def test_header_ladder_invalid_haiku_then_valid_low_sonnet_skips_fallback():
+    invalid = ({"ok": False}, 0.9, Usage(), None)
+    low = ({"ok": True}, 0.1, Usage(), None)
+    result, calls = _run_generic((HAIKU, SONNET, DEEP), {HAIKU: invalid, SONNET: low})
+    assert calls == [HAIKU, SONNET]
+    assert result.needs_human
+    assert result.attempts[2].error == "skipped:fallback_only"
+
+
+def test_invalid_then_daily_cap_still_skips_fallback():
+    invalid = ({"ok": False}, 0.9, Usage(), None)
+    cap = (None, None, Usage(), "claude_unavailable:daily_cap")
+    result, calls = _run_generic((HAIKU, SONNET, DEEP), {HAIKU: invalid, SONNET: cap})
+    assert calls == [HAIKU, SONNET]
+    assert result.stopped_reason == "daily_cap"
+    assert result.attempts[2].error == "skipped:fallback_only"
+
+
+def test_header_ladder_both_claude_invalid_runs_fallback():
+    invalid = ({"ok": False}, 0.9, Usage(), None)
+    good = ({"ok": True}, 0.9, Usage(), None)
+    result, calls = _run_generic((HAIKU, SONNET, DEEP), {HAIKU: invalid, SONNET: invalid, DEEP: good})
+    assert calls == [HAIKU, SONNET, DEEP]
+    assert result.accepted and result.winning_rung == DEEP

@@ -97,4 +97,4 @@ Report: [`u654a_report_claude-sonnet_20261018T021338Z.md`](u654a_report_claude-s
 
 - On the 213 scored: best bar 0.5 → text top-1 **42.3%**, combined 55.4% (+1.4 over history); at 0.85 precision 75% but coverage 26%; project prediction 95–98%; failures 41 validation / 4 parse of 426.
 - **Sonnet is no better than Haiku and ~16 points below Foundry (58.4%)** — larger than any sample imbalance from the partial draw.
-- **Decision (Chris, 2026-10-18, superseded by U-676f):** production bill text coding and bill header extraction are **Claude-first** (Haiku 5.5 first rung); Azure Foundry is **fallback-only** when Claude does not return a parseable result. See `docs/design/u676-bill-drop-prefill.md` § U-676f.
+- **Decision (Chris, 2026-10-18, superseded by U-676f):** production bill text coding and bill header extraction are **Claude-first** (Haiku 5.5 first rung); Azure Foundry is **fallback-only** when Claude does not return a valid result (U-676n: parsed-but-invalid counts as no answer). See `docs/design/u676-bill-drop-prefill.md` § U-676f.

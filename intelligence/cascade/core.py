@@ -29,8 +29,9 @@ class Rung:
     provider: str          # transport-registry key: "foundry" | "anthropic"
     model: str             # deployment name (Foundry) / model id (Anthropic)
     max_tokens: int = 1024
-    # When True, run only if no earlier rung returned a parseable result AND the
-    # daily Claude spend cap has not stopped the cascade (cash fallback).
+    # When True, run only if no earlier rung returned a VALID result (an error, an
+    # unparseable or a parsed-but-invalid reply all count as no answer; U-676n) AND
+    # the daily Claude spend cap has not stopped the cascade (cash fallback).
     fallback_only: bool = False
 
 

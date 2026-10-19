@@ -318,7 +318,9 @@ async def run_bill_read_attachment(
                     raise AttachmentNotReadable("not_found") from None
                 chosen_project_id = int(project.id)
 
-            as_of = datetime.now(timezone.utc)
+            # Naive UTC, like the DB timestamps (SubCostCode.CreatedDatetime, Bill.CreatedDatetime)
+            # it is compared with — the tick's as_of is a DB value of the same kind.
+            as_of = datetime.now(timezone.utc).replace(tzinfo=None)
             engine = suggester or BillCodingSuggester()
             project_service = engine.project_service
 

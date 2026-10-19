@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Optional, Sequence
 
 from intelligence.cascade.bill_coding import (
@@ -57,6 +57,10 @@ def build_candidate_sccs_for_bill(
     as_of: datetime,
     ambiguous_numbers: frozenset[str],
 ) -> list[dict[str, str]]:
+    # Catalog timestamps are naive UTC (DB DATETIME2). Normalise an aware cutoff instead of
+    # letting the comparison raise TypeError (U-676g: the drop path passed an aware now()).
+    if as_of.tzinfo is not None:
+        as_of = as_of.astimezone(timezone.utc).replace(tzinfo=None)
     suspense_norm = normalize_scc_number(SUSPENSE_SCC_NUMBER)
     out: list[dict[str, str]] = []
     for ref in sorted(scc_by_id.values(), key=lambda r: r.number):

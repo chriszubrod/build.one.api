@@ -114,9 +114,17 @@ Production routing for bill text coding and bill header extraction:
 - **Drop path cost code — history-first combined rule:** On `run_bill_read_attachment` when the request has **no** `project_public_id`, vendor history with a cost code and raw smoothed share **≥ 0.60** (`HISTORY_STRONG_RAW_SCORE`) sets the **SubCostCode** from history (`source` = the history source for the web label). The **project** still comes from the text cascade (Mode B) when the model returns an accessible project; otherwise the accessible history project, else none. Below the bar, Haiku decides the cost code with history as prompt evidence (unchanged). With a chosen project, strong history still wins without a model call (unchanged). The background text tick (`U-654b`) is unchanged.
 - **Why combined on drop:** U-654a Haiku backtest — text-only top-1 **41.2%** vs history **54.2%**; combined **55.0%** (+0.8 over history). Haiku project prediction **94.8%** (Foundry 94.2%), so split SCC/project on the drop path matches measured production behaviour.
 
+## U-676l — as built (2026-10-19)
+
+- **Timing:** one INFO line per successful pipeline completion — `bill_read_attachment.timing` with integer ms for `attachment`, `link_state`, `extract`, `header_llm`, `vendor_match`, `history`, `catalog`, `coding_llm`, `payload`, `total`, plus `status`. Only the attachment internal id is logged (no vendor names, bill text, or public ids).
+- **Fail-fast project access:** when `project_public_id` is present, resolve + `assert_can_access_project` run after extraction succeeds and **before** `run_bill_header_extraction` (inaccessible → 404, zero model calls).
+- **Concurrency:** after the link gate passes, prefetch starts in parallel with extraction and the header Haiku call: `load_catalog_from_db(as_of)`, text-tier daily call-count check, and (when requested) chosen-project access resolution. Catalog and cap tasks are cancelled cleanly on early exit (`unreadable`, `timeout`, header failure). Catalog is awaited only in the vendor-matched coding branch.
+- **De-duplication:** one `BillCodingSuggester.suggest` per request — passed into `history_eligible_for_text` as `precomputed_suggestion` (tick unchanged). Vendor internal id + name come from `VendorResolveMatch` (vendor list cache carries id); no post-match `VendorService.read_by_public_id` or `_read_vendor_name` on the drop path when id is known. Prefetched catalog is passed into `predict_text_coding`.
+- **Catalog cache:** 60 s in-process TTL on `load_catalog_from_db`, keyed by `as_of` truncated to the minute (thread-safe; shared with any caller of `load_catalog_from_db`, including the text tick — same snapshot for the same minute).
+
 ### Follow-ups (deferred)
 
-- Catalog TTL cache; `ExtractionPolicy` object; vendor-resolver / mapper consolidation + fuzzy matcher to `shared/`; `_VendorPairCache`; vendor cache keyed by company.
+- `ExtractionPolicy` object; vendor-resolver / mapper consolidation + fuzzy matcher to `shared/`; `_VendorPairCache`; vendor cache keyed by company.
 
 ### Round 3 (2026-10-18) — metering order and operator notes
 

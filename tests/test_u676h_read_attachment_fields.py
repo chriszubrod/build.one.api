@@ -22,7 +22,7 @@ def _cascade(result: dict) -> CascadeResult:
 
 def test_header_maps_short_long_reference():
     with patch.object(ras, "resolve_vendor_match_from_name", return_value=None):
-        fields, ok, _model = ras._header_from_cascade(
+        fields, ok, _model, _vm = ras._header_from_cascade(
             _cascade(
                 {
                     "vendor_name": None,
@@ -45,7 +45,7 @@ def test_header_maps_short_long_reference():
 
 def test_long_description_fallback_formats_short_line():
     with patch.object(ras, "resolve_vendor_match_from_name", return_value=None):
-        fields, ok, _ = ras._header_from_cascade(
+        fields, ok, _, _vm = ras._header_from_cascade(
             _cascade(
                 {
                     "vendor_name": "Acme",
@@ -68,7 +68,7 @@ def test_long_description_fallback_formats_short_line():
 
 def test_legacy_description_only_formats_short_from_long():
     with patch.object(ras, "resolve_vendor_match_from_name", return_value=None):
-        fields, ok, _ = ras._header_from_cascade(
+        fields, ok, _, _vm = ras._header_from_cascade(
             _cascade(
                 {
                     "vendor_name": "Acme",

@@ -21,9 +21,15 @@ from entities.coding_suggestion.business.bill_suggestion_service import (
     resolve_accessible_text_project_id,
 )
 from entities.coding_suggestion.business.bill_text_suggestion_service import (
+    CatalogSnapshot,
     history_eligible_for_text,
+    load_catalog_from_db,
     predict_text_coding,
 )
+from entities.coding_suggestion.persistence.bill_text_suggestion_repo import (
+    BillTextCodingSuggestionRepository,
+)
+from entities.vendor.business.vendor_name_resolver import VendorResolveMatch
 from entities.coding_suggestion.business.presenters import suggestion_to_api_payload
 from entities.project.business.service import ProjectService
 from entities.vendor.business.service import VendorService
@@ -142,7 +148,11 @@ async def _extract_with_inflight_wait(
                 attachment = refreshed
 
 
-def _header_from_cascade(cascade: CascadeResult) -> tuple[dict[str, Any], bool, Optional[str]]:
+def _header_from_cascade(
+    cascade: CascadeResult,
+    *,
+    vendor_match_ms: Optional[list[int]] = None,
+) -> tuple[dict[str, Any], bool, Optional[str], Optional[VendorResolveMatch]]:
     fields = _empty_fields()
     model_id: Optional[str] = None
     if cascade.winning_rung is not None:
@@ -159,13 +169,14 @@ def _header_from_cascade(cascade: CascadeResult) -> tuple[dict[str, Any], bool, 
                 if isinstance(attempt.result, dict):
                     raw = attempt.result
                     break
+    vendor_match: Optional[VendorResolveMatch] = None
     if raw is None:
-        return fields, False, model_id
+        return fields, False, model_id, vendor_match
 
     header = dict(raw)
     ok, _reason = validate_bill_header_result(header)
     if not ok:
-        return fields, False, model_id
+        return fields, False, model_id, vendor_match
 
     overall = float(header.get("confidence") or 0.0)
     vendor_name = (
@@ -173,11 +184,15 @@ def _header_from_cascade(cascade: CascadeResult) -> tuple[dict[str, Any], bool, 
     )
     fields["vendor"]["extracted_name"] = vendor_name
 
+    vm_start = time.monotonic()
     match = resolve_vendor_match_from_name(
         vendor_name,
         confidence=LLM_VENDOR_MATCH_CONFIDENCE,
         cascade_confidence=overall,
     )
+    if vendor_match_ms is not None:
+        vendor_match_ms.append(int((time.monotonic() - vm_start) * 1000))
+    vendor_match = match
     if match is not None:
         fields["vendor"]["value"] = {"public_id": match.public_id, "name": match.name}
         fields["vendor"]["confidence"] = _conf_str(match.confidence)
@@ -231,7 +246,61 @@ def _header_from_cascade(cascade: CascadeResult) -> tuple[dict[str, Any], bool, 
             "reference",
         )
     ) or fields["vendor"]["extracted_name"] is not None
-    return fields, header_ok, model_id
+    return fields, header_ok, model_id, vendor_match
+
+
+async def _resolve_chosen_project_id(
+    project_public_id: Optional[UUID],
+) -> Optional[int]:
+    if project_public_id is None:
+        return None
+    project = await asyncio.to_thread(
+        ProjectService().read_by_public_id, str(project_public_id)
+    )
+    if project is None or project.id is None:
+        raise AttachmentNotReadable("not_found")
+    try:
+        await asyncio.to_thread(assert_can_access_project, int(project.id))
+    except EntityNotAccessibleError:
+        raise AttachmentNotReadable("not_found") from None
+    return int(project.id)
+
+
+async def _await_or_cancel_tasks(*tasks: Optional[asyncio.Task]) -> None:
+    for task in tasks:
+        if task is None:
+            continue
+        if not task.done():
+            task.cancel()
+        try:
+            await task
+        except (asyncio.CancelledError, Exception):
+            pass
+
+
+def _log_read_attachment_timing(
+    *,
+    attachment_id: int,
+    timing_ms: dict[str, int],
+    status: str,
+) -> None:
+    logger.info(
+        "bill_read_attachment.timing attachment_id=%s attachment=%d link_state=%d "
+        "extract=%d header_llm=%d vendor_match=%d history=%d catalog=%d coding_llm=%d "
+        "payload=%d total=%d status=%s",
+        attachment_id,
+        timing_ms.get("attachment", 0),
+        timing_ms.get("link_state", 0),
+        timing_ms.get("extract", 0),
+        timing_ms.get("header_llm", 0),
+        timing_ms.get("vendor_match", 0),
+        timing_ms.get("history", 0),
+        timing_ms.get("catalog", 0),
+        timing_ms.get("coding_llm", 0),
+        timing_ms.get("payload", 0),
+        timing_ms.get("total", 0),
+        status,
+    )
 
 
 def _suggestion_from_history(
@@ -300,21 +369,68 @@ async def run_bill_read_attachment(
     if await claude_budget.is_claude_day_stopped_async():
         return _result_shell("ai_unavailable", message=MSG_AI_PAUSED)
 
+    request_start = time.monotonic()
+    timing_ms: dict[str, int] = {}
+    attachment_id_for_log = 0
+    final_status = "unknown"
+
+    def _finish(
+        result: dict[str, Any],
+        *,
+        attachment_id: int = 0,
+    ) -> dict[str, Any]:
+        timing_ms["total"] = int((time.monotonic() - request_start) * 1000)
+        if attachment_id:
+            _log_read_attachment_timing(
+                attachment_id=attachment_id,
+                timing_ms=timing_ms,
+                status=str(result.get("status", final_status)),
+            )
+        return result
+
     att_svc = attachment_service or AttachmentService()
+    step = time.monotonic()
     attachment = await asyncio.to_thread(
         att_svc.read_by_public_id, attachment_public_id
     )
+    timing_ms["attachment"] = int((time.monotonic() - step) * 1000)
     if attachment is None or attachment.id is None:
         raise AttachmentNotReadable("not_found")
+    attachment_id_for_log = int(attachment.id)
 
+    step = time.monotonic()
     is_linked, is_taxpayer = await asyncio.to_thread(
-        read_attachment_link_state, int(attachment.id)
+        read_attachment_link_state, attachment_id_for_log
     )
+    timing_ms["link_state"] = int((time.monotonic() - step) * 1000)
     if is_linked:
         raise AttachmentNotReadable("not_found")
 
+    # Naive UTC, like the DB timestamps the tick compares against.
+    as_of = datetime.now(timezone.utc).replace(tzinfo=None)
+    catalog_task: Optional[asyncio.Task[CatalogSnapshot]] = asyncio.create_task(
+        asyncio.to_thread(load_catalog_from_db, as_of)
+    )
+
+    async def _prefetch_text_cap_state() -> dict[str, Any]:
+        cap = int(cfg.bill_coding_text_daily_call_cap)
+        if cap <= 0:
+            return {"at_cap": True}
+        repo = BillTextCodingSuggestionRepository()
+        return {"at_cap": repo.count_calls_today() >= cap}
+
+    cap_task: Optional[asyncio.Task[dict[str, Any]]] = asyncio.create_task(
+        _prefetch_text_cap_state()
+    )
+    project_task: Optional[asyncio.Task[Optional[int]]] = None
+    if project_public_id is not None:
+        project_task = asyncio.create_task(
+            _resolve_chosen_project_id(project_public_id)
+        )
+
     ext_svc = extraction_service or AttachmentExtractionService()
     deadline = time.monotonic() + max(1, int(cfg.bill_drop_prefill_timeout_seconds))
+    step = time.monotonic()
     extract_out = await _extract_with_inflight_wait(
         ext_svc=ext_svc,
         att_svc=att_svc,
@@ -322,118 +438,170 @@ async def run_bill_read_attachment(
         is_taxpayer=is_taxpayer,
         deadline=deadline,
     )
+    timing_ms["extract"] = int((time.monotonic() - step) * 1000)
     if extract_out.get("status") == "timeout":
-        return _result_shell("timeout", message=MSG_COULDNT_READ_IN_TIME)
+        await _await_or_cancel_tasks(catalog_task, cap_task, project_task)
+        return _finish(
+            _result_shell("timeout", message=MSG_COULDNT_READ_IN_TIME),
+            attachment_id=attachment_id_for_log,
+        )
     if extract_out.get("status") != "completed":
-        return _result_shell("unreadable")
+        await _await_or_cancel_tasks(catalog_task, cap_task, project_task)
+        return _finish(
+            _result_shell("unreadable"),
+            attachment_id=attachment_id_for_log,
+        )
 
     masked_text = extract_out.get("masked_text") or ""
     if not masked_text.strip():
-        return _result_shell("unreadable")
+        await _await_or_cancel_tasks(catalog_task, cap_task, project_task)
+        return _finish(
+            _result_shell("unreadable"),
+            attachment_id=attachment_id_for_log,
+        )
 
+    chosen_project_id: Optional[int] = None
+    if project_task is not None:
+        try:
+            chosen_project_id = await project_task
+        except AttachmentNotReadable:
+            await _await_or_cancel_tasks(catalog_task, cap_task)
+            raise
+        project_task = None
+
+    step = time.monotonic()
     try:
         header_cascade = await run_bill_header_extraction(
             {"bill_text": masked_text},
             transport_for=transport_for,
         )
     except Exception as error:
+        await _await_or_cancel_tasks(catalog_task, cap_task)
         logger.warning(
             "bill_read_attachment.header_failed err=%s",
             type(error).__name__,
         )
-        return _result_shell("unreadable", message=MSG_COULDNT_READ, fields=_empty_fields())
+        return _finish(
+            _result_shell("unreadable", message=MSG_COULDNT_READ, fields=_empty_fields()),
+            attachment_id=attachment_id_for_log,
+        )
+    timing_ms["header_llm"] = int((time.monotonic() - step) * 1000)
 
     if header_cascade.stopped_reason == "daily_cap":
-        return _result_shell("ai_unavailable", message=MSG_AI_PAUSED)
+        await _await_or_cancel_tasks(catalog_task, cap_task)
+        return _finish(
+            _result_shell("ai_unavailable", message=MSG_AI_PAUSED),
+            attachment_id=attachment_id_for_log,
+        )
 
-    fields, header_ok, model_id = await asyncio.to_thread(
-        _header_from_cascade, header_cascade
+    vendor_match_ms: list[int] = []
+    fields, header_ok, model_id, vendor_match = await asyncio.to_thread(
+        _header_from_cascade,
+        header_cascade,
+        vendor_match_ms=vendor_match_ms,
     )
+    timing_ms["vendor_match"] = vendor_match_ms[0] if vendor_match_ms else 0
     coding_payload: Optional[dict] = None
     coding_error = False
 
-    vendor_public_id = (
-        fields["vendor"]["value"]["public_id"] if fields["vendor"]["value"] else None
-    )
-    if vendor_public_id:
-        vendor_svc = VendorService()
-        vendor = await asyncio.to_thread(
-            vendor_svc.read_by_public_id, vendor_public_id
-        )
-        if vendor is not None and vendor.id is not None:
-            chosen_project_id: Optional[int] = None
-            if project_public_id is not None:
-                project = await asyncio.to_thread(
-                    ProjectService().read_by_public_id, str(project_public_id)
-                )
-                if project is None or project.id is None:
-                    raise AttachmentNotReadable("not_found")
-                try:
-                    await asyncio.to_thread(assert_can_access_project, int(project.id))
-                except EntityNotAccessibleError:
-                    raise AttachmentNotReadable("not_found") from None
-                chosen_project_id = int(project.id)
-
-            # Naive UTC, like the DB timestamps (SubCostCode.CreatedDatetime, Bill.CreatedDatetime)
-            # it is compared with — the tick's as_of is a DB value of the same kind.
-            as_of = datetime.now(timezone.utc).replace(tzinfo=None)
-            engine = suggester or BillCodingSuggester()
-            project_service = engine.project_service
-
-            history_suggestion = await asyncio.to_thread(
-                lambda: engine.suggest(
-                    vendor_id=int(vendor.id),
-                    project_id=chosen_project_id,
-                    memo=None,
-                    as_of=as_of,
-                    exclude_bill_id=None,
-                )
+    vendor_id: Optional[int] = None
+    vendor_name_for_catalog: Optional[str] = None
+    if vendor_match is not None:
+        vendor_id = vendor_match.vendor_id
+        vendor_name_for_catalog = vendor_match.name or None
+        if vendor_id is None and fields["vendor"]["value"]:
+            vendor_public_id = fields["vendor"]["value"]["public_id"]
+            vendor = await asyncio.to_thread(
+                VendorService().read_by_public_id, vendor_public_id
             )
+            if vendor is not None and vendor.id is not None:
+                vendor_id = int(vendor.id)
+                if not vendor_name_for_catalog:
+                    vendor_name_for_catalog = vendor.name or None
 
-            eligible, skip_reason = await asyncio.to_thread(
-                history_eligible_for_text,
-                vendor_id=int(vendor.id),
-                chosen_project_id=chosen_project_id,
+    if vendor_id is not None:
+        engine = suggester or BillCodingSuggester()
+        project_service = engine.project_service
+
+        step = time.monotonic()
+        history_suggestion = await asyncio.to_thread(
+            lambda: engine.suggest(
+                vendor_id=int(vendor_id),
+                project_id=chosen_project_id,
+                memo=None,
                 as_of=as_of,
                 exclude_bill_id=None,
-                suggester=engine,
             )
+        )
+        timing_ms["history"] = int((time.monotonic() - step) * 1000)
 
-            suggestion: Optional[BillSuggestion] = None
-            strong_history_drop = (
-                chosen_project_id is None
-                and history_blocks_text_tier(history_suggestion)
+        eligible, skip_reason = await asyncio.to_thread(
+            history_eligible_for_text,
+            vendor_id=int(vendor_id),
+            chosen_project_id=chosen_project_id,
+            as_of=as_of,
+            exclude_bill_id=None,
+            suggester=engine,
+            precomputed_suggestion=history_suggestion,
+        )
+
+        step = time.monotonic()
+        prefetched_catalog: Optional[CatalogSnapshot] = None
+        if catalog_task is not None:
+            try:
+                prefetched_catalog = await catalog_task
+            except Exception:
+                prefetched_catalog = None
+            catalog_task = None
+        timing_ms["catalog"] = int((time.monotonic() - step) * 1000)
+        if cap_task is not None:
+            await _await_or_cancel_tasks(cap_task)
+            cap_task = None
+
+        suggestion: Optional[BillSuggestion] = None
+        strong_history_drop = (
+            chosen_project_id is None
+            and history_blocks_text_tier(history_suggestion)
+        )
+        if not eligible and skip_reason == "history_strong":
+            suggestion = await asyncio.to_thread(
+                _suggestion_from_history,
+                history_suggestion,
+                project_service=project_service,
             )
-            if not eligible and skip_reason == "history_strong":
-                suggestion = await asyncio.to_thread(
-                    _suggestion_from_history,
-                    history_suggestion,
-                    project_service=project_service,
+        elif strong_history_drop or eligible:
+            step = time.monotonic()
+            try:
+                text_suggestion, stopped = await predict_text_coding(
+                    bill_text=masked_text,
+                    vendor_id=int(vendor_id),
+                    chosen_project_id=chosen_project_id,
+                    as_of=as_of,
+                    suggester=engine,
+                    transport_for=transport_for,
+                    catalog=prefetched_catalog,
+                    vendor_name=vendor_name_for_catalog,
                 )
-            elif strong_history_drop:
-                text_suggestion: Optional[BillSuggestion] = None
-                try:
-                    text_suggestion, stopped = await predict_text_coding(
-                        bill_text=masked_text,
-                        vendor_id=int(vendor.id),
-                        chosen_project_id=chosen_project_id,
-                        as_of=as_of,
-                        suggester=engine,
-                        transport_for=transport_for,
-                    )
-                    if stopped == "daily_cap":
-                        return _result_shell(
+                if stopped == "daily_cap":
+                    return _finish(
+                        _result_shell(
                             "ai_unavailable",
                             message=MSG_AI_PAUSED,
                             fields=fields,
                             model=model_id,
-                        )
-                except Exception as error:
-                    logger.warning(
-                        "bill_read_attachment.coding_failed err=%s",
-                        type(error).__name__,
+                        ),
+                        attachment_id=attachment_id_for_log,
                     )
-                    coding_error = True
+            except Exception as error:
+                logger.warning(
+                    "bill_read_attachment.coding_failed err=%s",
+                    type(error).__name__,
+                )
+                coding_error = True
+                text_suggestion = None
+            timing_ms["coding_llm"] = int((time.monotonic() - step) * 1000)
+
+            if strong_history_drop:
                 if not coding_error:
                     suggestion = await asyncio.to_thread(
                         _drop_strong_history_combined_suggestion,
@@ -447,35 +615,18 @@ async def run_bill_read_attachment(
                         history_suggestion,
                         project_service=project_service,
                     )
-            elif eligible:
-                try:
-                    suggestion, stopped = await predict_text_coding(
-                        bill_text=masked_text,
-                        vendor_id=int(vendor.id),
-                        chosen_project_id=chosen_project_id,
-                        as_of=as_of,
-                        suggester=engine,
-                        transport_for=transport_for,
-                    )
-                    if stopped == "daily_cap":
-                        return _result_shell(
-                            "ai_unavailable",
-                            message=MSG_AI_PAUSED,
-                            fields=fields,
-                            model=model_id,
-                        )
-                except Exception as error:
-                    logger.warning(
-                        "bill_read_attachment.coding_failed err=%s",
-                        type(error).__name__,
-                    )
-                    coding_error = True
+            elif eligible and not coding_error:
+                suggestion = text_suggestion
 
-            if suggestion is not None and suggestion.sub_cost_code_id is not None:
-                suggestion.text_status = "ready"
-                coding_payload = await asyncio.to_thread(
-                    suggestion_to_api_payload, suggestion
-                )
+        if suggestion is not None and suggestion.sub_cost_code_id is not None:
+            suggestion.text_status = "ready"
+            step = time.monotonic()
+            coding_payload = await asyncio.to_thread(
+                suggestion_to_api_payload, suggestion
+            )
+            timing_ms["payload"] = int((time.monotonic() - step) * 1000)
+    else:
+        await _await_or_cancel_tasks(catalog_task, cap_task)
 
     status = _resolve_status(
         header_ok=header_ok,
@@ -483,19 +634,25 @@ async def run_bill_read_attachment(
         coding_payload=coding_payload,
     )
     if status == "unreadable":
-        return _result_shell(
-            "unreadable",
-            message=MSG_COULDNT_READ,
+        return _finish(
+            _result_shell(
+                "unreadable",
+                message=MSG_COULDNT_READ,
+                fields=fields,
+                coding=coding_payload,
+                model=model_id,
+            ),
+            attachment_id=attachment_id_for_log,
+        )
+
+    return _finish(
+        _result_shell(
+            status,
             fields=fields,
             coding=coding_payload,
             model=model_id,
-        )
-
-    return _result_shell(
-        status,
-        fields=fields,
-        coding=coding_payload,
-        model=model_id,
+        ),
+        attachment_id=attachment_id_for_log,
     )
 
 

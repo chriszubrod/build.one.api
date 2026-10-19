@@ -13,7 +13,7 @@ _FUZZY_MIN_SCORE = 0.5
 _COMBINED_MIN_SCORE = 0.35
 
 _cache_at: float = 0.0
-_cache_pairs: list[tuple[str, str]] = []
+_cache_pairs: list[tuple[str, str, Optional[int]]] = []
 _now_fn: Callable[[], float] = time.monotonic
 _vendor_list_loader: Optional[Callable[[], list]] = None
 
@@ -33,15 +33,21 @@ def configure_vendor_list_cache_for_tests(
         _now_fn = time.monotonic
 
 
-def _load_vendor_pairs() -> list[tuple[str, str]]:
+def _load_vendor_pairs() -> list[tuple[str, str, Optional[int]]]:
     if _vendor_list_loader is not None:
         vendors = _vendor_list_loader()
     else:
         vendors = VendorService().read_all()
-    return [(str(v.public_id), v.name or "") for v in vendors if v.public_id]
+    out: list[tuple[str, str, Optional[int]]] = []
+    for v in vendors:
+        if not v.public_id:
+            continue
+        vid = getattr(v, "id", None)
+        out.append((str(v.public_id), v.name or "", int(vid) if vid is not None else None))
+    return out
 
 
-def _vendor_pairs_cached() -> list[tuple[str, str]]:
+def _vendor_pairs_cached() -> list[tuple[str, str, Optional[int]]]:
     global _cache_at, _cache_pairs
     now = _now_fn()
     if _cache_pairs and (now - _cache_at) < _VENDOR_LIST_TTL_SECONDS:
@@ -53,23 +59,23 @@ def _vendor_pairs_cached() -> list[tuple[str, str]]:
 
 def _match_vendor_in_pairs(
     vendor_name: str,
-    vendor_pairs: list[tuple[str, str]],
+    vendor_pairs: list[tuple[str, str, Optional[int]]],
     *,
     confidence: float,
-) -> Optional[tuple[str, str, float]]:
+) -> Optional[tuple[str, str, Optional[int], float]]:
     """Pure matcher: case-insensitive exact, then BillExtractionMapper fuzzy thresholds."""
     name = vendor_name.strip()
     if not name or not vendor_pairs:
         return None
 
     candidates = [(name, confidence)]
-    best_match: Optional[tuple[str, str]] = None
+    best_match: Optional[tuple[str, str, Optional[int]]] = None
     best_combined = 0.0
     for cand_name, cand_conf in candidates:
-        exact_match: Optional[tuple[str, str]] = None
-        for public_id, vname in vendor_pairs:
+        exact_match: Optional[tuple[str, str, Optional[int]]] = None
+        for public_id, vname, vid in vendor_pairs:
             if vname and vname.strip().lower() == cand_name.strip().lower():
-                exact_match = (public_id, vname)
+                exact_match = (public_id, vname, vid)
                 break
         if exact_match is not None:
             combined = cand_conf * 0.99
@@ -78,15 +84,17 @@ def _match_vendor_in_pairs(
                 best_match = exact_match
             continue
 
-        match, score = BillExtractionMapper.fuzzy_match_entity_names(cand_name, vendor_pairs)
+        fuzzy_pairs = [(pid, vname) for pid, vname, _vid in vendor_pairs]
+        match, score = BillExtractionMapper.fuzzy_match_entity_names(cand_name, fuzzy_pairs)
         if match and score >= _FUZZY_MIN_SCORE:
             combined = cand_conf * score
             if combined > best_combined:
                 best_combined = combined
-                best_match = match
+                vid_by_pid = {pid: vid for pid, _n, vid in vendor_pairs}
+                best_match = (match[0], match[1], vid_by_pid.get(match[0]))
 
     if best_match and best_combined >= _COMBINED_MIN_SCORE:
-        return best_match[0], best_match[1], best_combined
+        return best_match[0], best_match[1], best_match[2], best_combined
     return None
 
 
@@ -126,6 +134,7 @@ class VendorResolveMatch:
     public_id: str
     name: str
     confidence: float
+    vendor_id: Optional[int] = None
 
 
 def resolve_vendor_match_from_name(
@@ -153,6 +162,7 @@ def resolve_vendor_match_from_name(
             resolved.vendor_match.name,
             float(resolved.vendor_match.confidence),
             cascade_confidence,
+            vendor_id=getattr(resolved.vendor_match, "id", None),
         )
 
     matched = _match_vendor_in_pairs(
@@ -162,7 +172,9 @@ def resolve_vendor_match_from_name(
     )
     if matched is None:
         return None
-    return _finalize_vendor_match(matched[0], matched[1], float(matched[2]), cascade_confidence)
+    return _finalize_vendor_match(
+        matched[0], matched[1], float(matched[3]), cascade_confidence, vendor_id=matched[2]
+    )
 
 
 def _finalize_vendor_match(
@@ -170,6 +182,8 @@ def _finalize_vendor_match(
     name: str,
     vendor_score: float,
     cascade_confidence: Optional[float],
+    *,
+    vendor_id: Optional[int] = None,
 ) -> VendorResolveMatch:
     if cascade_confidence is not None:
         vendor_score = min(float(cascade_confidence), vendor_score)
@@ -177,4 +191,5 @@ def _finalize_vendor_match(
         public_id=str(public_id),
         name=name,
         confidence=vendor_score,
+        vendor_id=vendor_id,
     )

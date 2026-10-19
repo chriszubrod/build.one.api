@@ -818,7 +818,10 @@ def test_mode_a_inaccessible_project_404():
                 ras,
                 "assert_can_access_project",
                 side_effect=ras.EntityNotAccessibleError("Project", 100),
-            ):
+            ), patch(
+                "entities.bill.business.read_attachment_service.run_bill_header_extraction",
+                new=AsyncMock(),
+            ) as header_mock:
                 with pytest.raises(AttachmentNotReadable):
                     asyncio.run(
                         ras.run_bill_read_attachment(
@@ -826,6 +829,7 @@ def test_mode_a_inaccessible_project_404():
                             project_public_id=UUID(PROJ_UUID),
                         )
                     )
+                header_mock.assert_not_awaited()
 
 
 def test_coding_error_yields_partial_with_header():

@@ -4,6 +4,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import threading
+import time
 from dataclasses import dataclass, replace
 from datetime import datetime
 from decimal import Decimal
@@ -42,6 +44,31 @@ logger = logging.getLogger(__name__)
 
 MODEL_VERSION = "u654b-text-v1"
 
+_CATALOG_CACHE_TTL_SECONDS = 60.0
+_catalog_lock = threading.Lock()
+_catalog_cache: dict[datetime, tuple[float, CatalogSnapshot]] = {}
+_catalog_now_fn: Callable[[], float] = time.monotonic
+_catalog_loader_override: Optional[Callable[[datetime], CatalogSnapshot]] = None
+
+
+def configure_catalog_cache_for_tests(
+    *,
+    now_fn: Optional[Callable[[], float]] = None,
+    loader: Optional[Callable[[datetime], CatalogSnapshot]] = None,
+) -> None:
+    global _catalog_cache, _catalog_now_fn, _catalog_loader_override
+    with _catalog_lock:
+        _catalog_cache = {}
+    _catalog_loader_override = loader
+    if now_fn is not None:
+        _catalog_now_fn = now_fn
+    elif loader is None:
+        _catalog_now_fn = time.monotonic
+
+
+def _catalog_cache_key(as_of: datetime) -> datetime:
+    return as_of.replace(second=0, microsecond=0)
+
 
 def foundry_is_configured() -> bool:
     settings = config.Settings()
@@ -78,16 +105,20 @@ def history_eligible_for_text(
     as_of: datetime,
     exclude_bill_id: int,
     suggester: Optional[BillCodingSuggester] = None,
+    precomputed_suggestion: Optional[Any] = None,
 ) -> tuple[bool, Optional[str]]:
     """Return (eligible, skip_reason). eligible=True means run the cascade."""
-    engine = suggester or BillCodingSuggester()
-    suggestion = engine.suggest(
-        vendor_id=vendor_id,
-        project_id=chosen_project_id,
-        memo=None,
-        as_of=as_of,
-        exclude_bill_id=exclude_bill_id,
-    )
+    if precomputed_suggestion is not None:
+        suggestion = precomputed_suggestion
+    else:
+        engine = suggester or BillCodingSuggester()
+        suggestion = engine.suggest(
+            vendor_id=vendor_id,
+            project_id=chosen_project_id,
+            memo=None,
+            as_of=as_of,
+            exclude_bill_id=exclude_bill_id,
+        )
     if suggestion.source not in _HISTORY_SOURCES:
         return True, None
     if chosen_project_id is None:
@@ -466,7 +497,17 @@ def _load_catalog_from_db(as_of: datetime) -> CatalogSnapshot:
 
 
 def load_catalog_from_db(as_of: datetime) -> CatalogSnapshot:
-    return _load_catalog_from_db(as_of)
+    key = _catalog_cache_key(as_of)
+    now = _catalog_now_fn()
+    with _catalog_lock:
+        hit = _catalog_cache.get(key)
+        if hit is not None and (now - hit[0]) < _CATALOG_CACHE_TTL_SECONDS:
+            return hit[1]
+    loader = _catalog_loader_override or _load_catalog_from_db
+    snap = loader(as_of)
+    with _catalog_lock:
+        _catalog_cache[key] = (now, snap)
+    return snap
 
 
 async def predict_text_coding(
@@ -479,6 +520,8 @@ async def predict_text_coding(
     text_repo: Optional[BillTextCodingSuggestionRepository] = None,
     suggester: Optional[BillCodingSuggester] = None,
     transport_for: Optional[Callable[[str], Any]] = None,
+    catalog: Optional[CatalogSnapshot] = None,
+    vendor_name: Optional[str] = None,
 ) -> tuple[Optional[Any], Optional[str]]:
     """Run the text-tier cascade; return (BillSuggestion|None, stopped_reason)."""
     from entities.coding_suggestion.business.bill_suggestion_service import (
@@ -494,10 +537,14 @@ async def predict_text_coding(
     if repository.count_calls_today() >= cap:
         return None, "daily_cap"
 
-    catalog = load_catalog_from_db(as_of)
-    vendor_name = _read_vendor_name(vendor_id)
+    if catalog is None:
+        catalog = load_catalog_from_db(as_of)
     if vendor_name:
         catalog = replace(catalog, vendor_name=vendor_name)
+    elif not catalog.vendor_name:
+        loaded_name = _read_vendor_name(vendor_id)
+        if loaded_name:
+            catalog = replace(catalog, vendor_name=loaded_name)
     history_rows = repository.read_vendor_scc_counts(
         vendor_id,
         project_id=chosen_project_id,

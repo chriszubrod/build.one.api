@@ -43,6 +43,19 @@ def _vendor_votes_from_bills(bills: list[BillRow]) -> dict[int, list[PriorBillVo
     return u654a.build_vendor_priors(bills)
 
 
+def _work(
+    bill: u654a.TextBillRow,
+    mode: str,
+    stratum: str,
+    payload: dict,
+    *,
+    candidate_scc_narrowed: bool = False,
+) -> u654a.TextCascadeWorkItem:
+    return u654a.TextCascadeWorkItem(
+        bill, mode, stratum, payload, candidate_scc_narrowed
+    )
+
+
 def test_history_evidence_uses_supplied_priors_only():
     scc_by_id = {
         1: u654a.SccRef(1, "03.01", "Framing", datetime(2026, 1, 1)),
@@ -177,7 +190,10 @@ def test_dry_run_does_not_call_cascade():
 def test_cost_cap_stops_before_exceeding():
     bill = _bill(1, 1, "2026-05-01T10:00:00", 1)
     payload = {"vendor_name": "v", "bill_text": "t", "history_evidence": [], "candidate_sccs": [], "candidate_projects": None}
-    work = [(bill, "A", "cold_start", payload), (bill, "B", "cold_start", payload)]
+    work = [
+        _work(bill, "A", "cold_start", payload),
+        _work(bill, "B", "cold_start", payload),
+    ]
 
     async def fake_cascade(_payload, transport_for=None, ladder=None):
         return CascadeResult(
@@ -304,7 +320,7 @@ def test_r1_p1_2_throttled_cascade_attempt_retries_without_needs_human_only():
         "candidate_sccs": [{"number": "03.01", "name": "x"}],
         "candidate_projects": None,
     }
-    work = [(bill, "A", "cold_start", payload)]
+    work = [_work(bill, "A", "cold_start", payload)]
     throttled = CascadeResult(
         False,
         True,
@@ -469,7 +485,7 @@ def test_r1_p2_3_cascade_exception_still_records_text_miss():
         "candidate_sccs": [],
         "candidate_projects": None,
     }
-    work = [(bill, "A", "cold_start", payload)]
+    work = [_work(bill, "A", "cold_start", payload)]
 
     async def boom(_payload, transport_for=None):
         raise RuntimeError("transport down")
@@ -698,7 +714,7 @@ def test_r2_n1_cascade_batch_writes_through_out_dict_for_partial_runs():
         "candidate_sccs": [{"number": "03.01", "name": "x"}],
         "candidate_projects": None,
     }
-    work = [(bill1, "A", "cold_start", payload)]
+    work = [_work(bill1, "A", "cold_start", payload)]
     shared: dict[tuple[int, str], u654a.TextAttemptResult] = {}
 
     async def fake_cascade(_payload, transport_for=None, ladder=None):
@@ -743,7 +759,7 @@ def test_r2_n2_throttle_retry_only_when_not_accepted_bills_all_tries():
         "candidate_sccs": [{"number": "03.01", "name": "x"}],
         "candidate_projects": None,
     }
-    work = [(bill, "A", "cold_start", payload)]
+    work = [_work(bill, "A", "cold_start", payload)]
     rung = Rung("foundry", "DeepSeek-V4-Flash")
     escalated_ok = CascadeResult(
         True,
@@ -807,7 +823,7 @@ def test_r2_n4_exception_mid_retry_still_bills_earlier_try_spend():
         "candidate_sccs": [{"number": "03.01", "name": "x"}],
         "candidate_projects": None,
     }
-    work = [(bill, "A", "cold_start", payload)]
+    work = [_work(bill, "A", "cold_start", payload)]
     throttled = CascadeResult(
         False,
         True,
@@ -971,7 +987,7 @@ def test_r2_n6_overshoot_with_all_bills_scored_is_not_cap_tripped():
         "candidate_sccs": [{"number": "03.01", "name": "x"}],
         "candidate_projects": None,
     }
-    work = [(bill, "A", "cold_start", payload)]
+    work = [_work(bill, "A", "cold_start", payload)]
 
     async def fake_cascade(_payload, transport_for=None, ladder=None):
         return CascadeResult(
@@ -1078,7 +1094,7 @@ def _r3_rows(bills) -> list:
 
 def test_r3_new1_cap_starved_run_is_incomplete_with_no_verdict():
     bills = [_bill(i, 1, f"2026-05-0{i}T10:00:00", 10) for i in range(1, 5)]
-    work = [(b, m, "s", _r3_payload()) for b in bills for m in ("A", "B")]
+    work = [_work(b, m, "s", _r3_payload()) for b in bills for m in ("A", "B")]
 
     async def expensive(_payload, transport_for=None, ladder=None):
         return _r3_cascade(accepted=True)
@@ -1099,7 +1115,7 @@ def test_r3_new1_cap_starved_run_is_incomplete_with_no_verdict():
 
 def test_r3_new2_cap_blocked_retry_leaves_the_bill_unscored():
     bill = _bill(1, 1, "2026-05-01T10:00:00", 10)
-    work = [(bill, "A", "s", _r3_payload())]
+    work = [_work(bill, "A", "s", _r3_payload())]
 
     async def throttled(_payload, transport_for=None, ladder=None):
         return _r3_cascade(accepted=False, error="HTTP 429")
@@ -1345,7 +1361,7 @@ def test_u654d_a_stalled_call_is_left_unscored(monkeypatch):
     monkeypatch.setattr(u654a, "run_bill_coding_suggestion", hang)
     monkeypatch.setattr(u654a, "estimate_ladder_first_rung_cost_usd", lambda _l: 0.0)
     cost_state = {"usd": 0.0, "stopped": False, "scc_number_to_id": {}, "proj_abbrev_to_id": {}}
-    work = [(_bill(1, 1, "2026-05-01T10:00:00", 10), "A", "cold_start", {})]
+    work = [_work(_bill(1, 1, "2026-05-01T10:00:00", 10), "A", "cold_start", {})]
     out = asyncio.run(
         u654a.run_text_cascade_batch(
             work, transport_for=lambda _p: None, concurrency=1, max_cost_usd=10.0, cost_state=cost_state
@@ -1387,10 +1403,10 @@ def test_dry_run_input_tokens_grow_with_larger_scc_catalog():
     )
     sample = [(_bill(1, 1, "2026-05-01T10:00:00", 10), "cold_start")]
     votes = {1: []}
-    small = u654a.estimate_dry_run_input_tokens_per_call(
+    small, _ = u654a.estimate_dry_run_payload_stats(
         sample, ref=small_ref, vendor_votes=votes
     )
-    big = u654a.estimate_dry_run_input_tokens_per_call(
+    big, _ = u654a.estimate_dry_run_payload_stats(
         sample, ref=big_ref, vendor_votes=votes
     )
     assert big > small
@@ -1583,7 +1599,7 @@ def test_claude_concurrency_honoured_in_main_batch():
         "candidate_projects": None,
     }
     work = [
-        (_bill(i, 1, "2026-05-01T10:00:00", 1), "A", "cold_start", payload)
+        _work(_bill(i, 1, "2026-05-01T10:00:00", 1), "A", "cold_start", payload)
         for i in range(1, 5)
     ]
     inflight = {"n": 0, "max": 0}
@@ -1713,7 +1729,7 @@ def test_ladder_threads_into_cascade_call():
     from intelligence.cascade.bill_coding import CLAUDE_SONNET_LADDER
 
     payload = {"vendor_name": "v", "bill_text": "t", "history_evidence": [], "candidate_sccs": [], "candidate_projects": None}
-    work = [(_bill(1, 1, "2026-05-01T10:00:00", 1), "A", "cold_start", payload)]
+    work = [_work(_bill(1, 1, "2026-05-01T10:00:00", 1), "A", "cold_start", payload)]
     seen: dict[str, object] = {}
 
     async def fake_run(payload, transport_for=None, ladder=None):
@@ -2139,3 +2155,578 @@ def test_main_passes_claude_concurrency_to_batch(tmp_path):
                                     ]
                                 )
     assert seen["concurrency"] == 1
+
+
+def test_dry_run_summary_records_candidate_scc_mode():
+    dry = u654a.dry_run_summary([], sample_size=0, populations={})
+    assert dry["candidate_sccs"] == "full"
+
+
+def test_claude_dry_run_narrowed_skips_17k_token_floor():
+    early = datetime(2026, 1, 1)
+    ref = u654a.ReferenceData(
+        scc_by_id={
+            i: u654a.SccRef(i, f"43.{i:02d}", f"n{i}", early)
+            for i in range(1, 6)
+        },
+        scc_number_to_id={f"43.{i:02d}": i for i in range(1, 6)},
+        proj_by_id={},
+        proj_abbrev_to_id={},
+        vendor_names={1: "V"},
+        ambiguous_scc_numbers=frozenset(),
+        ambiguous_project_abbrevs=frozenset(),
+        duplicate_scc_number_count=0,
+        duplicate_project_abbrev_count=0,
+    )
+    bill = u654a.TextBillRow(
+        bill_id=1,
+        vendor_id=1,
+        created=datetime(2026, 5, 1),
+        label_scc_id=1,
+        label_project_id=10,
+        total_abs_amount=Decimal("100"),
+        mixed_code=False,
+        extracted_text_blob_url="https://x",
+    )
+    priors = [
+        u654a.PriorBillVote(9, datetime(2026, 4, 1), 1, 10),
+        u654a.PriorBillVote(8, datetime(2026, 4, 2), 2, 10),
+        u654a.PriorBillVote(7, datetime(2026, 4, 3), 3, 10),
+    ]
+    vendor_votes = {1: priors}
+    sample = [(bill, "cold_start")]
+    full_dry = u654a.dry_run_summary(
+        sample,
+        sample_size=1,
+        populations={},
+        ladder_name="claude-haiku",
+        ref=ref,
+        vendor_votes=vendor_votes,
+        candidate_scc_mode="full",
+    )
+    narrow_dry = u654a.dry_run_summary(
+        sample,
+        sample_size=1,
+        populations={},
+        ladder_name="claude-haiku",
+        ref=ref,
+        vendor_votes=vendor_votes,
+        candidate_scc_mode="narrowed",
+    )
+    assert full_dry["estimated_input_tokens_per_call"] >= u654a.CLAUDE_DRY_RUN_INPUT_TOKENS_FLOOR
+    assert narrow_dry["estimated_input_tokens_per_call"] < u654a.CLAUDE_DRY_RUN_INPUT_TOKENS_FLOOR
+    assert narrow_dry["mean_candidate_scc_count"] == 5.0
+
+
+def test_run_text_cascade_batch_records_candidate_scc_metadata():
+    import asyncio
+
+    payload = {
+        "vendor_name": "v",
+        "bill_text": "t",
+        "history_evidence": [],
+        "candidate_sccs": [{"number": "03.01", "name": "x"}],
+        "candidate_projects": None,
+    }
+    work = [
+        _work(
+            _bill(1, 1, "2026-05-01T10:00:00", 1),
+            "A",
+            "cold_start",
+            payload,
+            candidate_scc_narrowed=True,
+        )
+    ]
+    ok = CascadeResult(
+        True,
+        False,
+        {"scc_number": "03.01", "confidence": 0.9, "rationale": "x"},
+        0.9,
+        Rung("anthropic", "claude-haiku-5-5"),
+        [],
+    )
+    cost_state = {
+        "usd": 0.0,
+        "stopped": False,
+        "scc_number_to_id": {"03.01": 1},
+        "proj_abbrev_to_id": {},
+    }
+    with patch.object(u654a, "run_bill_coding_suggestion", return_value=ok):
+        out = asyncio.run(
+            u654a.run_text_cascade_batch(
+                work,
+                transport_for=lambda _p: MagicMock(),
+                concurrency=1,
+                max_cost_usd=10.0,
+                cost_state=cost_state,
+            )
+        )
+    assert out[(1, "A")].candidate_scc_count == 1
+    assert out[(1, "A")].candidate_scc_narrowed is True
+
+
+def test_dry_run_narrowed_estimate_uses_mean_not_max():
+    early = datetime(2026, 1, 1)
+    big_ref = u654a.ReferenceData(
+        scc_by_id={
+            i: u654a.SccRef(i, f"{i:02d}.01", f"n{i}", early)
+            for i in range(1, 201)
+        },
+        scc_number_to_id={f"{i:02d}.01": i for i in range(1, 201)},
+        proj_by_id={},
+        proj_abbrev_to_id={},
+        vendor_names={1: "V"},
+        ambiguous_scc_numbers=frozenset(),
+        ambiguous_project_abbrevs=frozenset(),
+        duplicate_scc_number_count=0,
+        duplicate_project_abbrev_count=0,
+    )
+    cold = _bill(1, 2, "2026-05-01T10:00:00", 1)
+    warm = _bill(2, 1, "2026-05-02T10:00:00", 2)
+    priors = [
+        PriorBillVote(9, datetime(2026, 4, 1), 1, 10),
+        PriorBillVote(8, datetime(2026, 4, 2), 2, 10),
+        PriorBillVote(7, datetime(2026, 4, 3), 3, 10),
+    ]
+    sample = [(cold, "cold_start"), (warm, "mixed_code")]
+    vendor_votes = {1: priors}
+    full_dry = u654a.dry_run_summary(
+        sample,
+        sample_size=2,
+        populations={},
+        ladder_name="claude-haiku",
+        ref=big_ref,
+        vendor_votes=vendor_votes,
+        candidate_scc_mode="full",
+    )
+    narrow_dry = u654a.dry_run_summary(
+        sample,
+        sample_size=2,
+        populations={},
+        ladder_name="claude-haiku",
+        ref=big_ref,
+        vendor_votes=vendor_votes,
+        candidate_scc_mode="narrowed",
+    )
+    per_bill_tokens: list[int] = []
+    for bill, _stratum in sample:
+        priors = u654a.priors_for_bill(vendor_votes, bill)
+        cands, _ = u654a.resolve_candidate_sccs_for_bill(
+            big_ref, bill, priors, candidate_scc_mode="narrowed"
+        )
+        payload = u654a.build_payload(
+            bill,
+            bill_text="",
+            vendor_name="V",
+            mode="A",
+            priors=priors,
+            scc_by_id=big_ref.scc_by_id,
+            candidate_sccs=cands,
+            candidate_projects=None,
+        )
+        per_bill_tokens.append(u654a.estimate_payload_input_tokens(payload))
+    full_per_call: list[int] = []
+    for bill, _stratum in sample:
+        priors = u654a.priors_for_bill(vendor_votes, bill)
+        cands, _ = u654a.resolve_candidate_sccs_for_bill(
+            big_ref, bill, priors, candidate_scc_mode="full"
+        )
+        payload = u654a.build_payload(
+            bill,
+            bill_text="",
+            vendor_name="V",
+            mode="A",
+            priors=priors,
+            scc_by_id=big_ref.scc_by_id,
+            candidate_sccs=cands,
+            candidate_projects=None,
+        )
+        full_per_call.append(u654a.estimate_payload_input_tokens(payload))
+    full_in, _ = u654a.estimate_dry_run_payload_stats(
+        sample, ref=big_ref, vendor_votes=vendor_votes, candidate_scc_mode="full"
+    )
+    mean_tokens = round(sum(per_bill_tokens) / len(per_bill_tokens))
+    assert full_in == max(full_per_call)
+    assert full_dry["estimated_input_tokens_per_call"] >= u654a.CLAUDE_DRY_RUN_INPUT_TOKENS_FLOOR
+    assert narrow_dry["estimated_input_tokens_per_call"] < full_dry["estimated_input_tokens_per_call"]
+    assert (
+        narrow_dry["estimated_input_tokens_per_call"]
+        == mean_tokens + u654a.DRY_RUN_NARROWED_PROMPT_OVERHEAD_TOKENS
+    )
+    assert mean_tokens < max(per_bill_tokens)
+
+
+def test_dry_run_full_mode_mixed_sample_uses_max_not_mean():
+    early = datetime(2026, 1, 1)
+    ref = u654a.ReferenceData(
+        scc_by_id={
+            i: u654a.SccRef(i, f"{i:02d}.01", f"n{i}", early)
+            for i in range(1, 201)
+        },
+        scc_number_to_id={f"{i:02d}.01": i for i in range(1, 201)},
+        proj_by_id={},
+        proj_abbrev_to_id={},
+        vendor_names={1: "V", 2: "V"},
+        ambiguous_scc_numbers=frozenset(),
+        ambiguous_project_abbrevs=frozenset(),
+        duplicate_scc_number_count=0,
+        duplicate_project_abbrev_count=0,
+    )
+    cold = _bill(1, 2, "2026-05-01T10:00:00", 1)
+    warm = _bill(2, 1, "2026-05-02T10:00:00", 2)
+    priors = [
+        PriorBillVote(9, datetime(2026, 4, 1), 1, 10),
+        PriorBillVote(8, datetime(2026, 4, 2), 2, 10),
+        PriorBillVote(7, datetime(2026, 4, 3), 3, 10),
+    ]
+    sample = [(cold, "cold_start"), (warm, "mixed_code")]
+    vendor_votes = {1: priors}
+    full_in, _ = u654a.estimate_dry_run_payload_stats(
+        sample, ref=ref, vendor_votes=vendor_votes, candidate_scc_mode="full"
+    )
+    per_bill: list[int] = []
+    for bill, _stratum in sample:
+        priors_b = u654a.priors_for_bill(vendor_votes, bill)
+        cands, _ = u654a.resolve_candidate_sccs_for_bill(
+            ref, bill, priors_b, candidate_scc_mode="full"
+        )
+        payload = u654a.build_payload(
+            bill,
+            bill_text="",
+            vendor_name="V",
+            mode="A",
+            priors=priors_b,
+            scc_by_id=ref.scc_by_id,
+            candidate_sccs=cands,
+            candidate_projects=None,
+        )
+        per_bill.append(u654a.estimate_payload_input_tokens(payload))
+    assert full_in == max(per_bill)
+    assert full_in > round(sum(per_bill) / len(per_bill))
+
+
+def test_narrowed_cold_start_dry_run_not_below_mean_plus_allowance():
+    early = datetime(2026, 1, 1)
+    ref = u654a.ReferenceData(
+        scc_by_id={
+            i: u654a.SccRef(i, f"{i:02d}.01", f"n{i}", early)
+            for i in range(1, 51)
+        },
+        scc_number_to_id={f"{i:02d}.01": i for i in range(1, 51)},
+        proj_by_id={},
+        proj_abbrev_to_id={},
+        vendor_names={1: "V"},
+        ambiguous_scc_numbers=frozenset(),
+        ambiguous_project_abbrevs=frozenset(),
+        duplicate_scc_number_count=0,
+        duplicate_project_abbrev_count=0,
+    )
+    sample = [(_bill(1, 1, "2026-05-01T10:00:00", 1), "cold_start")]
+    vendor_votes: dict[int, list[PriorBillVote]] = {1: []}
+    bill, _stratum = sample[0]
+    priors = u654a.priors_for_bill(vendor_votes, bill)
+    full_cands, _ = u654a.resolve_candidate_sccs_for_bill(
+        ref, bill, priors, candidate_scc_mode="full"
+    )
+    payload = u654a.build_payload(
+        bill,
+        bill_text="",
+        vendor_name="V",
+        mode="A",
+        priors=priors,
+        scc_by_id=ref.scc_by_id,
+        candidate_sccs=full_cands,
+        candidate_projects=None,
+    )
+    full_payload_mean = u654a.estimate_payload_input_tokens(payload)
+    narrow_in, _ = u654a.estimate_dry_run_payload_stats(
+        sample, ref=ref, vendor_votes=vendor_votes, candidate_scc_mode="narrowed"
+    )
+    assert narrow_in >= full_payload_mean + u654a.DRY_RUN_NARROWED_PROMPT_OVERHEAD_TOKENS
+
+
+def test_catalog_diagnostics_narrowing_miss_and_full_catalog_eligibility():
+    early = datetime(2026, 1, 1)
+    ref = u654a.ReferenceData(
+        scc_by_id={
+            10: u654a.SccRef(10, "99.01", "label", early),
+            11: u654a.SccRef(11, "43.00", "a", early),
+            12: u654a.SccRef(12, "43.10", "b", early),
+            13: u654a.SccRef(13, "65.10", "c", early),
+        },
+        scc_number_to_id={"99.01": 10, "43.00": 11, "43.10": 12, "65.10": 13},
+        proj_by_id={},
+        proj_abbrev_to_id={},
+        vendor_names={1: "V"},
+        ambiguous_scc_numbers=frozenset(),
+        ambiguous_project_abbrevs=frozenset(),
+        duplicate_scc_number_count=0,
+        duplicate_project_abbrev_count=0,
+    )
+    bill = _bill(1, 1, "2026-05-01T10:00:00", 10)
+    priors = [
+        PriorBillVote(8, datetime(2026, 4, 1), 11, 10),
+        PriorBillVote(9, datetime(2026, 4, 2), 12, 10),
+        PriorBillVote(10, datetime(2026, 4, 3), 13, 10),
+    ]
+    diag = u654a.catalog_diagnostics_for_sample(
+        [(bill, "cold_start")],
+        ref,
+        vendor_votes={1: priors},
+        candidate_scc_mode="narrowed",
+    )
+    assert diag["label_not_in_text_catalog_count"] == 0
+    assert diag["narrowing_miss_count"] == 1
+
+
+def test_resume_refuses_mismatched_candidate_sccs(tmp_path):
+    csv_path = tmp_path / "u654a_predictions_claude-haiku_t.csv"
+    csv_path.write_text(
+        "BillId,VendorId,mode,suggester,predicted_scc_id,label_scc_id,"
+        "predicted_project_id,label_project_id,correct_scc,correct_project,"
+        "stratum,winning_rung,winning_rung_provider,needs_human\n",
+        encoding="utf-8",
+    )
+    summary = tmp_path / "u654a_summary_claude-haiku_t.json"
+    summary.write_text(
+        json.dumps(
+            {
+                "ladder": "claude-haiku",
+                "candidate_sccs": "full",
+                "metrics": {
+                    "usage": {"cost_usd": 0.0, "input_tokens": 0, "output_tokens": 0},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    with patch.object(u654a, "load_bills_from_db", return_value=[]):
+        with patch.object(u654a, "load_blob_urls_from_db", return_value={}):
+            with patch.object(u654a, "merge_text_bills", return_value=[]):
+                with patch.object(u654a, "build_vendor_priors", return_value={}):
+                    with patch.object(u654a, "count_eval_populations", return_value={}):
+                        with patch.object(u654a, "stratified_sample", return_value=[]):
+                            with patch.object(u654a, "load_reference_data") as mock_ref:
+                                mock_ref.return_value = u654a.ReferenceData(
+                                    scc_by_id={},
+                                    scc_number_to_id={},
+                                    proj_by_id={},
+                                    proj_abbrev_to_id={},
+                                    vendor_names={},
+                                    ambiguous_scc_numbers=frozenset(),
+                                    ambiguous_project_abbrevs=frozenset(),
+                                    duplicate_scc_number_count=0,
+                                    duplicate_project_abbrev_count=0,
+                                )
+                                with pytest.raises(SystemExit, match="candidate_sccs"):
+                                    u654a.main(
+                                        [
+                                            "--run",
+                                            "--sample-size",
+                                            "0",
+                                            "--resume-from",
+                                            str(csv_path),
+                                            "--ladder",
+                                            "claude-haiku",
+                                            "--candidate-sccs",
+                                            "narrowed",
+                                        ]
+                                    )
+
+
+def test_load_prior_text_results_preserves_candidate_scc_columns(tmp_path):
+    bill_a = _bill(1, 1, "2026-05-01T10:00:00", 10)
+    accepted = u654a.TextAttemptResult(
+        "A",
+        CascadeResult(True, False, {}, 0.9, Rung("foundry", "gpt-5.4-nano"), []),
+        predicted_scc_id=10,
+        candidate_scc_count=42,
+        candidate_scc_narrowed=True,
+    )
+    rows = [
+        u654a.ScoredTextBill(
+            bill=bill_a,
+            stratum="cold_start",
+            history_a=ModePrediction("A", 10, 10, "h", None, [], 0),
+            history_b=ModePrediction("B", 10, 10, "h", None, [], 0),
+            text_a=accepted,
+        ),
+    ]
+    metrics = u654a.build_metrics(
+        rows,
+        cascades=[accepted.cascade],
+        usage_totals={"input_tokens": 0, "output_tokens": 0, "cost_usd": 0.0},
+        cap_tripped=False,
+        scored_bill_count=1,
+        unscored_bill_count=0,
+        throttle_retry_count=0,
+        throttle_failure_count=0,
+        cascade_error_count=0,
+        duplicate_scc_number_count=0,
+        duplicate_project_abbrev_count=0,
+    )
+    _report, csv_path, _json = u654a.write_report_and_outputs(
+        out_dir=tmp_path,
+        stamp="t",
+        scored=rows,
+        metrics=metrics,
+        dry_info=None,
+        eval_since=u654a.DEFAULT_EVAL_SINCE,
+        eval_until=u654a.DEFAULT_EVAL_UNTIL,
+    )
+    prior = u654a.load_prior_text_results(csv_path)
+    assert prior[(1, "A")].candidate_scc_count == 42
+    assert prior[(1, "A")].candidate_scc_narrowed is True
+
+
+def test_mean_input_tokens_per_cascade_counts_resumed_and_new():
+    resumed = u654a.TextAttemptResult(
+        "A",
+        CascadeResult(True, False, {}, 0.9, Rung("foundry", "gpt-5.4-nano"), []),
+        predicted_scc_id=10,
+        candidate_scc_count=None,
+    )
+    fresh = u654a.TextAttemptResult(
+        "B",
+        CascadeResult(
+            True,
+            False,
+            {},
+            0.9,
+            Rung("foundry", "gpt-5.4-nano"),
+            [
+                Attempt(
+                    rung=Rung("foundry", "gpt-5.4-nano"),
+                    accepted=True,
+                    usage=Usage(input_tokens=100, output_tokens=10),
+                ),
+                Attempt(
+                    rung=Rung("foundry", "gpt-5.4-mini"),
+                    accepted=True,
+                    usage=Usage(input_tokens=200, output_tokens=10),
+                ),
+            ],
+        ),
+        predicted_scc_id=10,
+        candidate_scc_count=3,
+    )
+    row = u654a.ScoredTextBill(
+        bill=_bill(1, 1, "2026-05-01T10:00:00", 10),
+        stratum="cold_start",
+        history_a=ModePrediction("A", 10, 10, "h", None, [], 0),
+        history_b=ModePrediction("B", 10, 10, "h", None, [], 0),
+        text_a=resumed,
+        text_b=fresh,
+    )
+    usage = {"input_tokens": 1300, "output_tokens": 0, "cost_usd": 0.0}
+    stats = u654a.aggregate_prompt_size_stats(
+        [row], usage, candidate_scc_mode="narrowed"
+    )
+    assert stats["text_cascade_count"] == 2
+    assert stats["mean_input_tokens_per_cascade"] == 650.0
+
+
+def test_main_threads_candidate_sccs_into_mode_a_and_b_work(tmp_path):
+    fake_bills = [
+        BillRow(
+            bill_id=1,
+            vendor_id=1,
+            created=datetime.fromisoformat("2026-05-01T10:00:00"),
+            label_scc_id=1,
+            label_project_id=10,
+            total_abs_amount=Decimal("100"),
+            mixed_code=False,
+        )
+    ]
+    early = datetime(2026, 1, 1)
+    ref = u654a.ReferenceData(
+        scc_by_id={
+            1: u654a.SccRef(1, "01.01", "a", early),
+            2: u654a.SccRef(2, "02.01", "b", early),
+            3: u654a.SccRef(3, "03.01", "c", early),
+            4: u654a.SccRef(4, "99.01", "z", early),
+        },
+        scc_number_to_id={"01.01": 1, "02.01": 2, "03.01": 3, "99.01": 4},
+        proj_by_id={},
+        proj_abbrev_to_id={},
+        vendor_names={1: "v"},
+        ambiguous_scc_numbers=frozenset(),
+        ambiguous_project_abbrevs=frozenset(),
+        duplicate_scc_number_count=0,
+        duplicate_project_abbrev_count=0,
+    )
+    priors = [
+        PriorBillVote(9, datetime(2026, 4, 1), 1, 10),
+        PriorBillVote(8, datetime(2026, 4, 2), 2, 10),
+        PriorBillVote(7, datetime(2026, 4, 3), 3, 10),
+    ]
+    captured: dict[str, object] = {}
+
+    async def fake_batch(work, *, out=None, **_k):
+        captured["work"] = work
+        dest: dict[tuple[int, str], u654a.TextAttemptResult] = (
+            out if out is not None else {}
+        )
+        for item in work:
+            dest[(item.bill.bill_id, item.mode)] = u654a.TextAttemptResult(
+                item.mode,
+                CascadeResult(
+                    True,
+                    False,
+                    {},
+                    0.9,
+                    Rung("foundry", "DeepSeek-V4-Flash"),
+                    [],
+                ),
+                predicted_scc_id=1,
+                candidate_scc_count=len(item.payload["candidate_sccs"]),
+                candidate_scc_narrowed=item.candidate_scc_narrowed,
+            )
+        return dest
+
+    with patch.object(u654a, "load_bills_from_db", return_value=fake_bills):
+        with patch.object(u654a, "load_blob_urls_from_db", return_value={1: "https://x"}):
+            with patch.object(u654a, "load_reference_data", return_value=ref):
+                with patch.object(u654a, "build_vendor_priors", return_value={1: priors}):
+                    with patch.object(u654a, "read_text_blob_with_retry", return_value="bill text"):
+                        with patch.object(u654a, "run_text_cascade_batch", side_effect=fake_batch):
+                            with patch.object(u654a, "execute_run") as mock_exec:
+                                def run_build(build, cascades):
+                                    build()
+                                    cascades()
+
+                                mock_exec.side_effect = run_build
+                                with patch.object(u654a, "assert_cli_system_admin"):
+                                    u654a.main(
+                                        [
+                                            "--out-dir",
+                                            str(tmp_path),
+                                            "--run",
+                                            "--sample-size",
+                                            "1",
+                                            "--ladder",
+                                            "foundry",
+                                            "--candidate-sccs",
+                                            "narrowed",
+                                        ]
+                                    )
+    work = captured["work"]
+    assert len(work) == 2
+    modes = {item.mode for item in work}
+    assert modes == {"A", "B"}
+    for item in work:
+        assert len(item.payload["candidate_sccs"]) == 3
+        assert item.candidate_scc_narrowed is True
+        assert "_harness" not in json.dumps(item.payload)
+
+    csv_files = list(tmp_path.glob("u654a_predictions_*.csv"))
+    assert len(csv_files) == 1
+    import csv as csv_mod
+
+    with csv_files[0].open(encoding="utf-8") as fh:
+        rows = list(csv_mod.DictReader(fh))
+    text_rows = [r for r in rows if r.get("suggester") == "text"]
+    assert len(text_rows) == 2
+    for row in text_rows:
+        assert row["candidate_scc_count"] == "3"
+        assert row["candidate_scc_narrowed"] == "1"

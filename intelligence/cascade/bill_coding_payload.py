@@ -72,6 +72,53 @@ def build_candidate_sccs_for_bill(
     return out
 
 
+def narrow_candidate_sccs(
+    full_candidates: Sequence[dict[str, str]],
+    vendor_history_scc_numbers: Sequence[str],
+    *,
+    min_history: int = 3,
+) -> tuple[list[dict[str, str]], bool]:
+    """Shrink the SCC catalog slice using vendor history + sibling families (U-676o)."""
+    full_norm_numbers = {
+        normalize_scc_number(row["number"]) for row in full_candidates
+    }
+    distinct_in_full: set[str] = set()
+    families: set[str] = set()
+    for raw in vendor_history_scc_numbers:
+        norm = normalize_scc_number(raw)
+        if not norm or norm not in full_norm_numbers:
+            continue
+        distinct_in_full.add(norm)
+        families.add(norm.partition(".")[0])
+    if len(distinct_in_full) < min_history:
+        return list(full_candidates), False
+
+    out: list[dict[str, str]] = []
+    for row in full_candidates:
+        norm = normalize_scc_number(row["number"])
+        if norm.partition(".")[0] in families:
+            out.append(row)
+    if not out:
+        return list(full_candidates), False
+    return out, True
+
+
+def vendor_history_scc_numbers_from_priors(
+    priors: Sequence[PriorBillVote],
+    scc_by_id: dict[int, Any],
+) -> list[str]:
+    """Distinct SCC numbers from prior bills (order not significant for narrowing)."""
+    out: set[str] = set()
+    for p in priors:
+        ref = scc_by_id.get(p.dominant_scc_id)
+        if ref is None:
+            continue
+        num = str(ref.number)
+        if normalize_scc_number(num):
+            out.add(num)
+    return list(out)
+
+
 def build_candidate_projects_for_bill(
     projects: list[dict[str, str]],
     *,

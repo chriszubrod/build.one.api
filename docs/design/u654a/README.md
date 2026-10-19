@@ -36,6 +36,7 @@ From the API repo root (`.env` for read-only DB; system-admin CLI context):
 | `--claude-concurrency` | 2 | Parallel cascade calls when `--ladder` is `claude-*` |
 | `--out-dir` | `docs/design/u654a` | Report + CSV + JSON |
 | `--ladder` | `foundry` | `foundry` (default production Foundry ladder), `claude-haiku`, or `claude-sonnet` for Claude API backtests |
+| `--candidate-sccs` | `full` | `full` (entire as-of catalog slice) or `narrowed` (U-676o vendor-history families — measurement only; live tick stays `full`) |
 | `--resume-from` | — | Prior `u654a_predictions_<ladder>_<stamp>.csv`; **must match** `--ladder` |
 
 Dry-run first: confirm population sizes, stratum counts, and estimated cost. The script uses a read-only transaction (rollback after SELECTs), same as U-653b. Live runs always write report + spend; interrupted runs are stamped **PARTIAL**. Ctrl-C while texts are still being read makes no model call at all.
@@ -50,10 +51,49 @@ Reports and machine outputs include **numeric identifiers only** — Bill/Vendor
 - `u654a_predictions_<ladder>_<stamp>.csv` — per-Bill numeric predictions only (`winning_rung_provider` distinguishes Foundry vs Anthropic). Text rows include accepted predictions plus **raw** below-bar predictions (`raw_*`, `error_kind`, `http_status` — no error message bodies).
 - `u654a_summary_<ladder>_<stamp>.json` — aggregate metrics, `ladder`, `cap_tripped`, scored/unscored counts, usage.
 
+## U-676o — narrowed SubCostCode candidates (measurement)
+
+Prod bill lines (last 12 months) use a small vendor-specific SCC set most of the time; the text cascade still sends the full ~474-code catalog (~17k input tokens on Claude Haiku). **U-676o does not change production** — it adds a backtest arm and pure helpers so we can measure accuracy and prompt size before any live narrowing.
+
+**Rule (`narrow_candidate_sccs`):** count only prior SubCostCode numbers that are **present in the as-of full catalog** toward the **≥ 3 distinct** threshold. When the threshold is met, keep full-catalog rows whose normalized number shares a **family** with one of those in-catalog history codes (family = part before the first `.`, e.g. `43.00` / `43.10` / `43.20`). Fewer than 3 in-catalog distinct codes, or a narrowed list that would be empty → full catalog unchanged (`narrowed=False`). Order matches the full list; nothing outside the as-of catalog slice is added.
+
+**History source (measurement arm only):** the backtest builds vendor history from **`priors_for_bill`** — all prior bills for the vendor as-of the bill, with no top-5 cap and no project filter. **Production** `build_runtime_payload` still uses **`ReadVendorSccCountsForBills`** (project-scoped in Mode A, top-5 in history evidence). A future live narrowing switch needs its own vendor-wide history read; this unit does not add one.
+
+**Compare arms (same seed/window/sample):**
+
+```bash
+# Full catalog (default; Claude dry-run cost uses ~17k input-token floor)
+./.venv/bin/python -m scripts.u654a_text_backtest --ladder claude-haiku --sample-size 500
+
+# Narrowed candidates (dry-run cost uses measured payload size, no 17k floor)
+./.venv/bin/python -m scripts.u654a_text_backtest --ladder claude-haiku --sample-size 500 --candidate-sccs narrowed
+```
+
+**Dry-run token math (U-676o fix round 2):** `full` mode keeps the origin/master rule — **max** serialized user payload over the sample (then the ~17k Claude floor). `narrowed` mode uses the **mean** payload plus `DRY_RUN_NARROWED_PROMPT_OVERHEAD_TOKENS` in `scripts/u654a_text_backtest.py`: worst-case bill text (`BILL_TEXT_CHAR_BUDGET` chars ÷ 4) plus the bill-coding system prompt (chars ÷ 4), matching `estimate_payload_input_tokens`. No 17k floor on narrowed. Caveat: on a non-Claude (Foundry) ladder the full arm has neither the floor nor this allowance, so its dry-run estimate can sit below the narrowed arm's when little narrows; compare arms on the Claude ladders, or read actual `input_tokens` from a `--run`.
+
+After Gate approval, add `--run` to each. Reports/summary JSON stamp `candidate_sccs`; predictions CSV adds `candidate_scc_count` and `candidate_scc_narrowed`. Catalog-eligibility (M4 denominator) always uses the **full** as-of catalog in both arms; summary/report also include **`narrowing_miss_count`** (label in full catalog but absent from the narrowed candidate list). Compare **SubCostCode candidate prompt size (U-676o)** in the markdown report (mean candidate count and mean input tokens **per CASCADE**, all rungs including escalations) plus Mode A/B top-1 between arms.
+
+**Results (2026-10-19, Haiku 5.5, seed 654, same 500 bills, Mode A + B = 1,000 cascades per arm):**
+
+| | full (474) | narrowed (mean 204, median 107) |
+|---|---|---|
+| Cost | $1.75 | **$0.90** |
+| Input tokens / cascade | 16,958 | **8,454** |
+| Wall time (concurrency 2) | 23.6 min | 22.5 min |
+| Text SCC top-1, Mode A | 39.8% | **41.0%** |
+| Text SCC top-1, Mode B | 40.0% | **44.4%** |
+| Combined top-1, Mode A | 54.6% | **56.0%** (history-only 54.2%) |
+| Project top-1, Mode B | **94.0%** | 91.3% |
+| Validation / parse failures | 84 / 53 | **55 / 34** |
+| needs_human | 220 | **174** |
+| narrowing_miss_count | — | 31 (6.2%) |
+
+Narrowed halves the cost and is at least as accurate on SubCostCode (fewer out-of-catalog answers); the Mode B project dip is within noise at n=500 but should be watched. Text-only remains well below vendor history where history exists (M4 verdict unchanged). **Decision (Chris, 2026-10-19):** switch the live path to narrowed candidates in a follow-up unit, which must add a vendor-wide as-of history read (live history today is top-5 and project-scoped in Mode A).
+
 ## Tests
 
 ```bash
-./.venv/bin/python -m pytest -o addopts="" -p no:cacheprovider -q tests/test_u654a_text_backtest.py tests/test_u654a_bill_coding_task.py
+./.venv/bin/python -m pytest -o addopts="" -p no:cacheprovider -q tests/test_u654a_text_backtest.py tests/test_u654a_bill_coding_task.py tests/test_u676o_narrow_candidate_sccs.py
 ```
 
 All tests use fakes (no DB, no LLM, no Azure).

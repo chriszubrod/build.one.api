@@ -42,7 +42,9 @@ from intelligence.cascade.bill_coding_payload import (
     build_candidate_sccs_for_bill,
     build_history_evidence,
     build_payload,
+    narrow_candidate_sccs,
     resolve_text_prediction,
+    vendor_history_scc_numbers_from_priors,
 )
 from intelligence.cascade.core import Attempt, CascadeResult, Rung
 from intelligence.observability.pricing import compute_cost_usd
@@ -88,6 +90,13 @@ RUNG_PRICE_USD_PER_MTOK: dict[str, tuple[float, float]] = {
 }
 
 DEFAULT_BACKTEST_LADDER_NAME = "foundry"
+DEFAULT_CANDIDATE_SCC_MODE = "full"
+
+# Narrowed dry-run: user JSON omits bill_text (empty in estimate); add worst-case bill text +
+# system prompt using the same chars/4 heuristic as estimate_payload_input_tokens (U-676o).
+DRY_RUN_NARROWED_PROMPT_OVERHEAD_TOKENS = max(
+    1, BILL_TEXT_CHAR_BUDGET // 4
+) + max(1, len(BILL_CODING_SUGGESTION_TASK.system_prompt) // 4)
 
 M4_MODE_A_MARGIN = Decimal("0.10")
 # §10.3 combined rule: history wins when raw smoothed modal share clears this bar (U-639 §10.5).
@@ -219,6 +228,17 @@ class TextAttemptResult:
     raw_confidence: Optional[float] = None
     error_kind: str = "none"
     http_status: Optional[int] = None
+    candidate_scc_count: Optional[int] = None
+    candidate_scc_narrowed: Optional[bool] = None
+
+
+@dataclass(frozen=True)
+class TextCascadeWorkItem:
+    bill: TextBillRow
+    mode: str
+    stratum: str
+    payload: dict[str, Any]
+    candidate_scc_narrowed: bool = False
 
 
 @dataclass
@@ -581,10 +601,33 @@ def floor_dry_run_input_tokens(
     *,
     ladder: tuple[Rung, ...] | None = None,
     ladder_name: str | None = None,
+    candidate_scc_mode: str = DEFAULT_CANDIDATE_SCC_MODE,
 ) -> int:
+    if candidate_scc_mode != "full":
+        return input_tokens
     if _ladder_uses_claude(ladder, ladder_name=ladder_name):
         return max(input_tokens, CLAUDE_DRY_RUN_INPUT_TOKENS_FLOOR)
     return input_tokens
+
+
+def resolve_candidate_sccs_for_bill(
+    ref: "ReferenceData",
+    bill: TextBillRow,
+    priors: Sequence[PriorBillVote],
+    *,
+    candidate_scc_mode: str = DEFAULT_CANDIDATE_SCC_MODE,
+) -> tuple[list[dict[str, str]], bool]:
+    full = build_candidate_sccs_for_bill(
+        ref.scc_by_id,
+        as_of=bill.created,
+        ambiguous_numbers=ref.ambiguous_scc_numbers,
+    )
+    if candidate_scc_mode == "full":
+        return full, False
+    if candidate_scc_mode == "narrowed":
+        history_nums = vendor_history_scc_numbers_from_priors(priors, ref.scc_by_id)
+        return narrow_candidate_sccs(full, history_nums)
+    raise ValueError(f"unknown candidate_scc_mode {candidate_scc_mode!r}")
 
 
 def bill_cascade_spend_usd(cascade: CascadeResult) -> float:
@@ -627,21 +670,39 @@ def label_scc_number_for_bill(
 def catalog_diagnostics_for_sample(
     sample: Sequence[tuple[TextBillRow, str]],
     ref: ReferenceData,
+    *,
+    vendor_votes: Optional[dict[int, list[PriorBillVote]]] = None,
+    candidate_scc_mode: str = DEFAULT_CANDIDATE_SCC_MODE,
 ) -> dict[str, Any]:
     sizes: list[int] = []
     label_not_in = 0
     label_not_in_ids: set[int] = set()
+    narrowing_miss = 0
+    votes = vendor_votes or {}
     for bill, _stratum in sample:
-        catalog = build_candidate_sccs_for_bill(
+        priors = priors_for_bill(votes, bill)
+        full_catalog = build_candidate_sccs_for_bill(
             ref.scc_by_id,
             as_of=bill.created,
             ambiguous_numbers=ref.ambiguous_scc_numbers,
         )
-        sizes.append(len(catalog))
+        text_catalog, _narrowed = resolve_candidate_sccs_for_bill(
+            ref,
+            bill,
+            priors,
+            candidate_scc_mode=candidate_scc_mode,
+        )
+        sizes.append(len(text_catalog))
+        full_numbers = {c["number"] for c in full_catalog}
         label_num = label_scc_number_for_bill(bill, ref.scc_by_id)
-        if label_num is None or label_num not in {c["number"] for c in catalog}:
+        if label_num is None or label_num not in full_numbers:
             label_not_in += 1
             label_not_in_ids.add(bill.bill_id)
+        elif (
+            candidate_scc_mode == "narrowed"
+            and label_num not in {c["number"] for c in text_catalog}
+        ):
+            narrowing_miss += 1
     sizes_sorted = sorted(sizes)
     mid = len(sizes_sorted) // 2
     if not sizes_sorted:
@@ -650,12 +711,15 @@ def catalog_diagnostics_for_sample(
         median = sizes_sorted[mid]
     else:
         median = (sizes_sorted[mid - 1] + sizes_sorted[mid]) // 2  # floored, int
-    return {
+    out: dict[str, Any] = {
         "label_not_in_text_catalog_count": label_not_in,
         "label_not_in_catalog_bill_ids": label_not_in_ids,
         "text_catalog_size_min_per_bill": min(sizes) if sizes else 0,
         "text_catalog_size_median_per_bill": median,
     }
+    if candidate_scc_mode == "narrowed":
+        out["narrowing_miss_count"] = narrowing_miss
+    return out
 
 
 def classify_stratum(priors: Sequence[PriorBillVote], mixed_code: bool) -> str:
@@ -769,22 +833,31 @@ def estimate_ladder_first_rung_cost_usd(
     )
 
 
-def estimate_dry_run_input_tokens_per_call(
+def estimate_dry_run_payload_stats(
     sample: Sequence[tuple[TextBillRow, str]],
     *,
     ref: "ReferenceData",
     vendor_votes: dict[int, list[PriorBillVote]],
-) -> int:
+    candidate_scc_mode: str = DEFAULT_CANDIDATE_SCC_MODE,
+) -> tuple[int, float]:
+    """Input-token estimate and mean candidate_scc count over the sample.
+
+    Full mode: max payload tokens (origin/master dry-run). Narrowed mode: mean payload
+    tokens plus DRY_RUN_NARROWED_PROMPT_OVERHEAD_TOKENS (bill text + system prompt).
+    """
     if not sample:
-        return _ESTIMATE_INPUT_TOKENS_PER_CALL
+        return _ESTIMATE_INPUT_TOKENS_PER_CALL, 0.0
     per_call: list[int] = []
+    cand_counts: list[int] = []
     for bill, _stratum in sample:
         priors = priors_for_bill(vendor_votes, bill)
-        candidate_sccs = build_candidate_sccs_for_bill(
-            ref.scc_by_id,
-            as_of=bill.created,
-            ambiguous_numbers=ref.ambiguous_scc_numbers,
+        candidate_sccs, _ = resolve_candidate_sccs_for_bill(
+            ref,
+            bill,
+            priors,
+            candidate_scc_mode=candidate_scc_mode,
         )
+        cand_counts.append(len(candidate_sccs))
         vname = ref.vendor_names.get(bill.vendor_id, "")
         payload = build_payload(
             bill,
@@ -797,7 +870,11 @@ def estimate_dry_run_input_tokens_per_call(
             candidate_projects=None,
         )
         per_call.append(estimate_payload_input_tokens(payload))
-    return max(per_call)
+    mean_cands = sum(cand_counts) / len(cand_counts)
+    if candidate_scc_mode == "full":
+        return max(per_call), mean_cands
+    mean_in = round(sum(per_call) / len(per_call))
+    return mean_in + DRY_RUN_NARROWED_PROMPT_OVERHEAD_TOKENS, mean_cands
 
 
 def dry_run_summary(
@@ -809,6 +886,7 @@ def dry_run_summary(
     ladder: tuple[Rung, ...] | None = None,
     ref: Optional["ReferenceData"] = None,
     vendor_votes: Optional[dict[int, list[PriorBillVote]]] = None,
+    candidate_scc_mode: str = DEFAULT_CANDIDATE_SCC_MODE,
 ) -> dict[str, Any]:
     by_stratum: dict[str, int] = defaultdict(int)
     mixed = 0
@@ -820,21 +898,29 @@ def dry_run_summary(
     calls = len(sample) * 2  # Mode A + Mode B
     resolved_ladder = ladder if ladder is not None else ladder_by_name(ladder_name)
     input_per_call = _ESTIMATE_INPUT_TOKENS_PER_CALL
+    mean_candidate_scc_count: Optional[float] = None
     if ref is not None and vendor_votes is not None and sample:
-        input_per_call = estimate_dry_run_input_tokens_per_call(
-            sample, ref=ref, vendor_votes=vendor_votes
+        input_per_call, mean_candidate_scc_count = estimate_dry_run_payload_stats(
+            sample,
+            ref=ref,
+            vendor_votes=vendor_votes,
+            candidate_scc_mode=candidate_scc_mode,
         )
     input_per_call = floor_dry_run_input_tokens(
-        input_per_call, ladder=resolved_ladder, ladder_name=ladder_name
+        input_per_call,
+        ladder=resolved_ladder,
+        ladder_name=ladder_name,
+        candidate_scc_mode=candidate_scc_mode,
     )
     cost_per_call = estimate_ladder_first_rung_cost_usd(
         resolved_ladder, input_tokens=input_per_call
     )
     est_cost = calls * cost_per_call
     est_tokens = calls * (input_per_call + _ESTIMATE_OUTPUT_TOKENS_PER_CALL)
-    return {
+    out: dict[str, Any] = {
         **populations,
         "ladder": ladder_name,
+        "candidate_sccs": candidate_scc_mode,
         "sample_requested": sample_size,
         "sample_selected": len(sample),
         "stratum_counts": dict(by_stratum),
@@ -845,6 +931,9 @@ def dry_run_summary(
         "estimated_cost_usd_first_rung_only": round(est_cost, 4),
         "note": "Dry-run assumes every call stops at the first rung; actual spend may be higher on escalation.",
     }
+    if mean_candidate_scc_count is not None:
+        out["mean_candidate_scc_count"] = round(mean_candidate_scc_count, 2)
+    return out
 
 
 @dataclass
@@ -1322,6 +1411,7 @@ def write_report_and_outputs(
     run_status: str = "complete",
     populations: Optional[dict[str, int]] = None,
     ladder_name: str = DEFAULT_BACKTEST_LADDER_NAME,
+    candidate_scc_mode: str = DEFAULT_CANDIDATE_SCC_MODE,
 ) -> tuple[Path, Path, Path]:
     out_dir.mkdir(parents=True, exist_ok=True)
     file_stamp = f"{ladder_name}_{stamp}"
@@ -1332,6 +1422,7 @@ def write_report_and_outputs(
     summary = {
         "model_version": MODEL_VERSION,
         "ladder": ladder_name,
+        "candidate_sccs": candidate_scc_mode,
         "evaluation_window": {"since": str(eval_since), "until": str(eval_until)},
         "run_status": run_status,
         "populations": populations or {},
@@ -1369,6 +1460,8 @@ def write_report_and_outputs(
                 "raw_correct_project",
                 "error_kind",
                 "http_status",
+                "candidate_scc_count",
+                "candidate_scc_narrowed",
             ]
         )
         for row in scored:
@@ -1390,6 +1483,7 @@ def write_report_and_outputs(
                         text.cascade if text else None,
                     ),
                 ):
+                    is_text = source == "text" and text is not None
                     if pred_scc is None and source == "text" and text is None:
                         continue
                     correct_scc = ""
@@ -1409,7 +1503,9 @@ def write_report_and_outputs(
                     raw_correct_proj = ""
                     err_kind = ""
                     http_st = ""
-                    if source == "text" and text is not None:
+                    cand_count = ""
+                    cand_narrowed = ""
+                    if is_text:
                         if text.raw_predicted_scc_id is not None:
                             raw_scc = str(text.raw_predicted_scc_id)
                             raw_correct_scc = (
@@ -1431,6 +1527,10 @@ def write_report_and_outputs(
                         err_kind = text.error_kind or ""
                         if text.http_status is not None:
                             http_st = str(text.http_status)
+                        if text.candidate_scc_count is not None:
+                            cand_count = str(text.candidate_scc_count)
+                        if text.candidate_scc_narrowed is not None:
+                            cand_narrowed = "1" if text.candidate_scc_narrowed else "0"
                     w.writerow(
                         [
                             row.bill.bill_id,
@@ -1462,6 +1562,8 @@ def write_report_and_outputs(
                             raw_correct_proj,
                             err_kind,
                             http_st,
+                            cand_count,
+                            cand_narrowed,
                         ]
                     )
 
@@ -1474,6 +1576,7 @@ def write_report_and_outputs(
         f"- ModelVersion: `{MODEL_VERSION}`",
         f"- Task: `{BILL_CODING_SUGGESTION_TASK.name}`",
         f"- Ladder: `{ladder_name}`",
+        f"- Candidate SCCs: `{candidate_scc_mode}`",
         f"- Run status: {run_status}",
         f"- Evaluation window: {eval_since} .. {eval_until}",
         f"- Sample size: {len(scored)}",
@@ -1514,6 +1617,11 @@ def write_report_and_outputs(
             f"(min catalog size {metrics.get('text_catalog_size_min_per_bill', 'n/a')}, "
             f"median {metrics.get('text_catalog_size_median_per_bill', 'n/a')})"
         )
+    if metrics.get("narrowing_miss_count") is not None:
+        lines.append(
+            f"- Narrowing misses (label in full catalog, not in narrowed list): "
+            f"{metrics['narrowing_miss_count']}"
+        )
     lines.append("")
     if dry_info:
         lines.append("## Dry-run composition (no model calls)")
@@ -1522,6 +1630,20 @@ def write_report_and_outputs(
         lines.append(json.dumps(dry_info, indent=2))
         lines.append("```")
         lines.append("")
+
+    prompt_size = metrics.get("prompt_size") or {}
+    if prompt_size:
+        lines.extend(
+            [
+                "## SubCostCode candidate prompt size (U-676o)",
+                "",
+                f"- Candidate SCC mode: `{prompt_size['candidate_scc_mode']}`",
+                f"- Mean candidate_scc count (text calls): {prompt_size.get('mean_candidate_scc_count', 'n/a')}",
+                f"- Mean input tokens per CASCADE (all rungs): {prompt_size.get('mean_input_tokens_per_cascade', 'n/a')}",
+                f"- Text calls with narrowed catalog: {prompt_size.get('narrowed_call_count', 'n/a')}",
+                "",
+            ]
+        )
 
     lines.extend(
         [
@@ -1809,17 +1931,25 @@ def load_prior_text_results(
             def _int(v: str) -> Optional[int]:
                 return int(v) if (v or "").strip() else None
 
+            cand_narrowed_raw = (row.get("candidate_scc_narrowed") or "").strip()
+            cand_narrowed: Optional[bool]
+            if not cand_narrowed_raw:
+                cand_narrowed = None
+            else:
+                cand_narrowed = cand_narrowed_raw == "1"
             out[(int(row["BillId"]), row["mode"])] = TextAttemptResult(
                 mode=row["mode"],
                 cascade=cascade,
                 predicted_scc_id=_int(row.get("predicted_scc_id", "")),
                 predicted_project_id=_int(row.get("predicted_project_id", "")),
+                candidate_scc_count=_int(row.get("candidate_scc_count", "")),
+                candidate_scc_narrowed=cand_narrowed,
             )
     return out
 
 
 async def run_text_cascade_batch(
-    work: Sequence[tuple[TextBillRow, str, str, dict[str, Any]]],
+    work: Sequence[TextCascadeWorkItem],
     *,
     transport_for: Callable[[str], Any],
     concurrency: int,
@@ -1834,8 +1964,10 @@ async def run_text_cascade_batch(
         out if out is not None else {}
     )
 
-    async def one(item: tuple[TextBillRow, str, str, dict[str, Any]]) -> None:
-        bill, mode, _stratum, payload = item
+    async def one(item: TextCascadeWorkItem) -> None:
+        bill, mode, payload = item.bill, item.mode, item.payload
+        cand_narrowed = item.candidate_scc_narrowed
+        cand_count = len(payload.get("candidate_sccs") or [])
         async with sem:
             # Invariant (U-654a r3): a (Bill, mode) the cost cap stops or cuts off gets NO
             # result entry — it stays unscored, which makes the run INCOMPLETE. Only a
@@ -1879,6 +2011,8 @@ async def run_text_cascade_batch(
                 raw_confidence=raw_conf,
                 error_kind=err_kind,
                 http_status=http_status,
+                candidate_scc_count=cand_count,
+                candidate_scc_narrowed=cand_narrowed,
             )
 
     tasks = [one(w) for w in work]
@@ -2004,6 +2138,36 @@ def metric_rows_for_mode(
     raise ValueError(f"unknown mode {mode!r}")
 
 
+def aggregate_prompt_size_stats(
+    scored: Sequence[ScoredTextBill],
+    usage_totals: dict[str, Any],
+    *,
+    candidate_scc_mode: str = DEFAULT_CANDIDATE_SCC_MODE,
+) -> dict[str, Any]:
+    counts: list[int] = []
+    narrowed_calls = 0
+    n_cascades = 0
+    for row in scored:
+        for t in (row.text_a, row.text_b):
+            if t is None:
+                continue
+            n_cascades += 1
+            if t.candidate_scc_count is not None:
+                counts.append(t.candidate_scc_count)
+            if t.candidate_scc_narrowed:
+                narrowed_calls += 1
+    mean_count = round(sum(counts) / len(counts), 2) if counts else None
+    in_tok = int(usage_totals.get("input_tokens") or 0)
+    mean_in = round(in_tok / n_cascades, 1) if n_cascades and in_tok else None
+    return {
+        "candidate_scc_mode": candidate_scc_mode,
+        "mean_candidate_scc_count": mean_count,
+        "mean_input_tokens_per_cascade": mean_in,
+        "narrowed_call_count": narrowed_calls,
+        "text_cascade_count": n_cascades,
+    }
+
+
 def build_metrics(
     scored: Sequence[ScoredTextBill],
     *,
@@ -2021,6 +2185,7 @@ def build_metrics(
     cost_overshoot_usd: Optional[float] = None,
     run_status: str = "complete",
     harness_retry_by_kind: Optional[dict[str, int]] = None,
+    candidate_scc_mode: str = DEFAULT_CANDIDATE_SCC_MODE,
 ) -> dict[str, Any]:
     restrict = cap_tripped or run_status != "complete"
     rows_a = metric_rows_for_mode(scored, mode="A", restrict=restrict)
@@ -2116,6 +2281,9 @@ def build_metrics(
             run_status=run_status,
             cap_tripped=cap_tripped,
         ),
+        "prompt_size": aggregate_prompt_size_stats(
+            scored, usage_totals, candidate_scc_mode=candidate_scc_mode
+        ),
     }
 
 
@@ -2167,6 +2335,12 @@ def main(argv: list[str] | None = None) -> int:
             "summary JSON beside it supplies the spend already incurred."
         ),
     )
+    ap.add_argument(
+        "--candidate-sccs",
+        choices=("full", "narrowed"),
+        default=DEFAULT_CANDIDATE_SCC_MODE,
+        help="SubCostCode catalog slice for text cascade payloads (default: full)",
+    )
     args = ap.parse_args(argv)
     selected_ladder = ladder_by_name(args.ladder)
 
@@ -2196,7 +2370,12 @@ def main(argv: list[str] | None = None) -> int:
         eval_until=args.eval_until,
     )
     ref = load_reference_data()
-    catalog_diag = catalog_diagnostics_for_sample(sample, ref)
+    catalog_diag = catalog_diagnostics_for_sample(
+        sample,
+        ref,
+        vendor_votes=vendor_votes,
+        candidate_scc_mode=args.candidate_sccs,
+    )
     dry_info = {
         **dry_run_summary(
             sample,
@@ -2206,6 +2385,7 @@ def main(argv: list[str] | None = None) -> int:
             ladder=selected_ladder,
             ref=ref,
             vendor_votes=vendor_votes,
+            candidate_scc_mode=args.candidate_sccs,
         ),
         **{
             k: v
@@ -2219,7 +2399,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     run_status = "complete"
     scored = prepare_scored_rows(sample, vendor_votes)
-    work: list[tuple[TextBillRow, str, str, dict[str, Any]]] = []
+    work: list[TextCascadeWorkItem] = []
     cost_state: dict[str, Any] = {
         "usd": 0.0,
         "stopped": False,
@@ -2240,6 +2420,14 @@ def main(argv: list[str] | None = None) -> int:
         if prior_ladder != args.ladder:
             raise SystemExit(
                 f"--resume-from ladder {prior_ladder!r} differs from --ladder {args.ladder!r}"
+            )
+        prior_candidate_sccs = prior_summary.get(
+            "candidate_sccs", DEFAULT_CANDIDATE_SCC_MODE
+        )
+        if prior_candidate_sccs != args.candidate_sccs:
+            raise SystemExit(
+                f"--resume-from candidate_sccs {prior_candidate_sccs!r} differs from "
+                f"--candidate-sccs {args.candidate_sccs!r}"
             )
         prior = load_prior_text_results(args.resume_from, ladder_name=prior_ladder)
         sample_ids = {b.bill_id for b, _ in sample}
@@ -2307,10 +2495,11 @@ def main(argv: list[str] | None = None) -> int:
                 unreadable_bill_ids.add(bill.bill_id)
                 continue
             vname = ref.vendor_names.get(bill.vendor_id, "")
-            candidate_sccs = build_candidate_sccs_for_bill(
-                ref.scc_by_id,
-                as_of=bill.created,
-                ambiguous_numbers=ref.ambiguous_scc_numbers,
+            candidate_sccs, cand_narrowed = resolve_candidate_sccs_for_bill(
+                ref,
+                bill,
+                priors,
+                candidate_scc_mode=args.candidate_sccs,
             )
             proj_candidates = build_candidate_projects_for_bill(
                 projects_with_bills_before(bills, bill.created, ref.proj_by_id),
@@ -2337,15 +2526,28 @@ def main(argv: list[str] | None = None) -> int:
                 candidate_projects=proj_candidates,
             )
             if "A" in todo_modes:
-                work.append((bill, "A", row.stratum, payload_a))
+                work.append(
+                    TextCascadeWorkItem(
+                        bill, "A", row.stratum, payload_a, cand_narrowed
+                    )
+                )
             if "B" in todo_modes:
-                work.append((bill, "B", row.stratum, payload_b))
+                work.append(
+                    TextCascadeWorkItem(
+                        bill, "B", row.stratum, payload_b, cand_narrowed
+                    )
+                )
 
     run_status = execute_run(build_work, run_cascades_on_work)
     if unreadable_bill_ids:
         scored = [row for row in scored if row.bill.bill_id not in unreadable_bill_ids]
         kept_sample = [(b, s) for b, s in sample if b.bill_id not in unreadable_bill_ids]
-        catalog_diag = catalog_diagnostics_for_sample(kept_sample, ref)
+        catalog_diag = catalog_diagnostics_for_sample(
+            kept_sample,
+            ref,
+            vendor_votes=vendor_votes,
+            candidate_scc_mode=args.candidate_sccs,
+        )
         run_status = run_status_after_unreadable(
             run_status, unreadable=len(unreadable_bill_ids), sampled=len(sample)
         )
@@ -2398,6 +2600,7 @@ def main(argv: list[str] | None = None) -> int:
         cost_overshoot_usd=cost_overshoot_usd,
         run_status=run_status,
         harness_retry_by_kind=dict(cost_state.get("harness_retry_by_kind") or {}),
+        candidate_scc_mode=args.candidate_sccs,
     )
     metrics["blob_unreadable_count"] = len(unreadable_bill_ids)
     metrics["call_timeout_count"] = int(cost_state.get("call_timeout_count", 0))
@@ -2413,9 +2616,11 @@ def main(argv: list[str] | None = None) -> int:
         run_status=run_status,
         populations=populations,
         ladder_name=args.ladder,
+        candidate_scc_mode=args.candidate_sccs,
     )
     print(
-        f"U-654a run {run_status} ladder={args.ladder}; cost USD ~ {usage['cost_usd']:.4f} "
+        f"U-654a run {run_status} ladder={args.ladder} candidate_sccs={args.candidate_sccs}; "
+        f"cost USD ~ {usage['cost_usd']:.4f} "
         f"(scored={scored_bill_count}, unscored={unscored_bill_count})"
     )
     return 0

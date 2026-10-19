@@ -59,8 +59,11 @@ _SYSTEM_PROMPT = (
     "bill-to or ship-to customer.\n"
     "- total_amount is the amount due for THIS invoice (balance due / invoice total).\n"
     "- bill_date is the invoice or document date on the invoice.\n"
-    "- short_description names what was bought or performed in at most 5 words "
-    '(e.g. "Biweekly mowing", "Plywood purchase").\n'
+    "- short_description names the THING bought or the work done in at most 5 words "
+    '(e.g. "Poplar S4S Lumber", "Biweekly Mowing", "Drywall Repair"); do not add '
+    "generic words such as Purchase, Order, Invoice, Bill, Payment, Services, "
+    "Materials, Supplies, Charge, or Fee unless that word IS the item "
+    '(e.g. "Delivery Fee", "Equipment Rental").\n'
     "- long_description is a fuller summary (<=200 chars) with key specifics, dates, "
     "or site when printed on the invoice.\n"
     "- reference is a PO / Job / work-order / customer reference printed on the invoice "

@@ -108,6 +108,12 @@ Production routing for bill text coding and bill header extraction:
 - **Read-attachment `fields`:** seven keys always present — `description` (formatted short line), `long_description`, `reference`, plus vendor/bill_number/bill_date/total_amount. Short text comes from `short_description`, else the formatter is applied to `long_description`. Per-field confidence matches the other header scalars. Bill memo composition (short + long + reference) is owned by the web unit (U-676c).
 - **U-676a bake-off:** Arm B/C description scoring reads `long_description`, falling back to legacy `description`.
 
+## U-676k — as built (2026-10-19)
+
+- **Short line description — no filler tail:** The header cascade prompt tells the model to name the thing bought or work done (e.g. "Poplar S4S Lumber", "Biweekly Mowing") and not append generic words such as Purchase, Order, Invoice, Bill, Payment, Services, Materials, Supplies, Charge, or Fee unless that word is the item (e.g. "Delivery Fee"). `format_short_description` backstops a trailing run of `purchase` / `purchases` / `order` / `invoice` / `bill` / `payment` / `charge` / `charges` (case-insensitive) **before** the five-word cut, never stripping a one-word input (e.g. `"Purchase"` stays).
+- **Drop path cost code — history-first combined rule:** On `run_bill_read_attachment` when the request has **no** `project_public_id`, vendor history with a cost code and raw smoothed share **≥ 0.60** (`HISTORY_STRONG_RAW_SCORE`) sets the **SubCostCode** from history (`source` = the history source for the web label). The **project** still comes from the text cascade (Mode B) when the model returns an accessible project; otherwise the accessible history project, else none. Below the bar, Haiku decides the cost code with history as prompt evidence (unchanged). With a chosen project, strong history still wins without a model call (unchanged). The background text tick (`U-654b`) is unchanged.
+- **Why combined on drop:** U-654a Haiku backtest — text-only top-1 **41.2%** vs history **54.2%**; combined **55.0%** (+0.8 over history). Haiku project prediction **94.8%** (Foundry 94.2%), so split SCC/project on the drop path matches measured production behaviour.
+
 ### Follow-ups (deferred)
 
 - Catalog TTL cache; `ExtractionPolicy` object; vendor-resolver / mapper consolidation + fuzzy matcher to `shared/`; `_VendorPairCache`; vendor cache keyed by company.

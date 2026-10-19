@@ -17,6 +17,7 @@ from entities.attachment.persistence.repo import AttachmentRepository
 from entities.coding_suggestion.business.bill_suggestion_service import (
     BillCodingSuggester,
     BillSuggestion,
+    history_blocks_text_tier,
     resolve_accessible_text_project_id,
 )
 from entities.coding_suggestion.business.bill_text_suggestion_service import (
@@ -247,6 +248,28 @@ def _suggestion_from_history(
     return suggestion
 
 
+def _drop_strong_history_combined_suggestion(
+    history_suggestion: BillSuggestion,
+    text_suggestion: Optional[BillSuggestion],
+    *,
+    project_service: ProjectService,
+) -> BillSuggestion:
+    """U-676k: history SCC when raw ≥ 0.60; project from text Mode B, else history."""
+    history_resolved = _suggestion_from_history(
+        history_suggestion,
+        project_service=project_service,
+    )
+    project_id: Optional[int] = None
+    if text_suggestion is not None and text_suggestion.project_id is not None:
+        project_id = resolve_accessible_text_project_id(
+            text_suggestion.project_id,
+            project_service=project_service,
+        )
+    if project_id is None:
+        project_id = history_resolved.project_id
+    return replace(history_resolved, project_id=project_id)
+
+
 def _resolve_status(
     *,
     header_ok: bool,
@@ -377,12 +400,53 @@ async def run_bill_read_attachment(
             )
 
             suggestion: Optional[BillSuggestion] = None
+            strong_history_drop = (
+                chosen_project_id is None
+                and history_blocks_text_tier(history_suggestion)
+            )
             if not eligible and skip_reason == "history_strong":
                 suggestion = await asyncio.to_thread(
                     _suggestion_from_history,
                     history_suggestion,
                     project_service=project_service,
                 )
+            elif strong_history_drop:
+                text_suggestion: Optional[BillSuggestion] = None
+                try:
+                    text_suggestion, stopped = await predict_text_coding(
+                        bill_text=masked_text,
+                        vendor_id=int(vendor.id),
+                        chosen_project_id=chosen_project_id,
+                        as_of=as_of,
+                        suggester=engine,
+                        transport_for=transport_for,
+                    )
+                    if stopped == "daily_cap":
+                        return _result_shell(
+                            "ai_unavailable",
+                            message=MSG_AI_PAUSED,
+                            fields=fields,
+                            model=model_id,
+                        )
+                except Exception as error:
+                    logger.warning(
+                        "bill_read_attachment.coding_failed err=%s",
+                        type(error).__name__,
+                    )
+                    coding_error = True
+                if not coding_error:
+                    suggestion = await asyncio.to_thread(
+                        _drop_strong_history_combined_suggestion,
+                        history_suggestion,
+                        text_suggestion,
+                        project_service=project_service,
+                    )
+                else:
+                    suggestion = await asyncio.to_thread(
+                        _suggestion_from_history,
+                        history_suggestion,
+                        project_service=project_service,
+                    )
             elif eligible:
                 try:
                     suggestion, stopped = await predict_text_coding(

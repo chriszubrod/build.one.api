@@ -8,6 +8,30 @@ FORMAT_SHORT_DESCRIPTION_MAX_LEN = 60
 _TRAILING_PUNCT_RE = re.compile(r"[\s.,;:!?\-–—…]+(?:\.{2,})?$")
 _LEADING_CAP_SKIP = frozenset("\"'([{<")
 _KNOWN_ABBREV_WORDS = frozenset({"etc.", "inc.", "co.", "ltd."})
+_TRAILING_FILLER_WORDS = frozenset(
+    {
+        "purchase",
+        "purchases",
+        "order",
+        "invoice",
+        "bill",
+        "payment",
+        "charge",
+        "charges",
+    }
+)
+
+
+def _strip_trailing_filler_words(words: list[str]) -> list[str]:
+    if len(words) <= 1:
+        return words
+    trimmed = list(words)
+    while len(trimmed) > 1:
+        tail = trimmed[-1].lower().strip(".,;:!?")
+        if tail not in _TRAILING_FILLER_WORDS:
+            break
+        trimmed.pop()
+    return trimmed
 
 
 def truncate_at_word_boundary(text: str, max_len: int) -> str:
@@ -72,7 +96,8 @@ def format_short_description(text: str | None) -> str | None:
     collapsed = _strip_trailing_punct(collapsed)
     if not collapsed:
         return None
-    words = collapsed.split(" ")[:5]
+    words = _strip_trailing_filler_words(collapsed.split(" "))
+    words = words[:5]
     titled = [_capitalize_word(word) for word in words if word]
     if not titled:
         return None

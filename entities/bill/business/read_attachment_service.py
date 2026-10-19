@@ -28,6 +28,7 @@ from entities.project.business.service import ProjectService
 from entities.vendor.business.service import VendorService
 from entities.vendor.business.vendor_name_resolver import resolve_vendor_match_from_name
 from intelligence.cascade import claude_budget
+from entities.bill.business.description_format import format_short_description
 from intelligence.cascade.bill_header_extraction import (
     run_bill_header_extraction,
     validate_bill_header_result,
@@ -55,6 +56,8 @@ def _empty_fields() -> dict[str, Any]:
         "bill_date": {"value": None, "confidence": None},
         "total_amount": {"value": None, "confidence": None},
         "description": {"value": None, "confidence": None},
+        "long_description": {"value": None, "confidence": None},
+        "reference": {"value": None, "confidence": None},
     }
 
 
@@ -158,12 +161,15 @@ def _header_from_cascade(cascade: CascadeResult) -> tuple[dict[str, Any], bool, 
     if raw is None:
         return fields, False, model_id
 
-    ok, _reason = validate_bill_header_result(dict(raw))
+    header = dict(raw)
+    ok, _reason = validate_bill_header_result(header)
     if not ok:
         return fields, False, model_id
 
-    overall = float(raw.get("confidence") or 0.0)
-    vendor_name = raw.get("vendor_name") if isinstance(raw.get("vendor_name"), str) else None
+    overall = float(header.get("confidence") or 0.0)
+    vendor_name = (
+        header.get("vendor_name") if isinstance(header.get("vendor_name"), str) else None
+    )
     fields["vendor"]["extracted_name"] = vendor_name
 
     match = resolve_vendor_match_from_name(
@@ -177,17 +183,37 @@ def _header_from_cascade(cascade: CascadeResult) -> tuple[dict[str, Any], bool, 
     elif vendor_name:
         fields["vendor"]["confidence"] = _conf_str(overall)
 
+    short_desc = header.get("short_description")
+    if not isinstance(short_desc, str):
+        short_desc = None
+    long_desc = header.get("long_description")
+    if not isinstance(long_desc, str):
+        legacy = header.get("description")
+        long_desc = legacy if isinstance(legacy, str) else None
+
+    line_description = format_short_description(short_desc)
+    if line_description is None and long_desc:
+        line_description = format_short_description(long_desc)
+    if line_description is not None:
+        fields["description"]["value"] = line_description
+        fields["description"]["confidence"] = _conf_str(overall)
+    if long_desc:
+        fields["long_description"]["value"] = long_desc
+        fields["long_description"]["confidence"] = _conf_str(overall)
+
+    reference = header.get("reference")
+    if isinstance(reference, str) and reference.strip():
+        fields["reference"]["value"] = reference.strip()
+        fields["reference"]["confidence"] = _conf_str(overall)
+
     for key, out_key in (
         ("bill_number", "bill_number"),
         ("bill_date", "bill_date"),
         ("total_amount", "total_amount"),
-        ("description", "description"),
     ):
-        val = raw.get(key)
+        val = header.get(key)
         if val is not None and val != "":
-            if out_key == "description":
-                fields[out_key]["value"] = str(val)[:120]
-            elif out_key == "total_amount":
+            if out_key == "total_amount":
                 fields[out_key]["value"] = _format_total_amount(val)
             else:
                 fields[out_key]["value"] = str(val)
@@ -195,7 +221,14 @@ def _header_from_cascade(cascade: CascadeResult) -> tuple[dict[str, Any], bool, 
 
     header_ok = any(
         fields[k]["value"] is not None
-        for k in ("bill_number", "bill_date", "total_amount", "description")
+        for k in (
+            "bill_number",
+            "bill_date",
+            "total_amount",
+            "description",
+            "long_description",
+            "reference",
+        )
     ) or fields["vendor"]["extracted_name"] is not None
     return fields, header_ok, model_id
 

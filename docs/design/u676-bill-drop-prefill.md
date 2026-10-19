@@ -101,6 +101,13 @@ Production routing for bill text coding and bill header extraction:
 - **Ownership:** `ReadAttachmentLinkState` filters by `@ActorUserId`, `@CompanyId`, `@IsSystemAdmin`. `dbo.Attachment.CompanyId` defaults to `1` and `CreateAttachment` does not pass it today — multi-company uploads would need that threaded (no code change in this round).
 - **Text coding:** shared `predict_text_coding` + `bill_suggestion_from_text_cascade`; API payload via `presenters.suggestion_to_api_payload`.
 
+## U-676h — as built (2026-10-18)
+
+- **LLM header schema:** `short_description` (≤60, truncated at a word boundary), `long_description` (≤200, same truncation), and `reference` (≤60, PO/Job/work-order — not the invoice number), plus existing vendor/bill number/date/amount/confidence. The cascade prompt asks for the new keys; the validator still accepts legacy `description` and treats it as `long_description` when `long_description` is absent (stored U-676a backtest rows keep working).
+- **Short line description:** `entities/bill/business/description_format.py::format_short_description` — collapse whitespace, strip trailing punctuation, keep the first five space-delimited words, Title Case (first character of each word upper-cased, remainder unchanged so tokens like `3/4"`, `PVC`, `2x4`, `LLC`, `O'Neil` survive).
+- **Read-attachment `fields`:** seven keys always present — `description` (formatted short line), `long_description`, `reference`, plus vendor/bill_number/bill_date/total_amount. Short text comes from `short_description`, else the formatter is applied to `long_description`. Per-field confidence matches the other header scalars. Bill memo composition (short + long + reference) is owned by the web unit (U-676c).
+- **U-676a bake-off:** Arm B/C description scoring reads `long_description`, falling back to legacy `description`.
+
 ### Follow-ups (deferred)
 
 - Catalog TTL cache; `ExtractionPolicy` object; vendor-resolver / mapper consolidation + fuzzy matcher to `shared/`; `_VendorPairCache`; vendor cache keyed by company.

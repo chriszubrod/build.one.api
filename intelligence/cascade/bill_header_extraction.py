@@ -5,7 +5,8 @@ Payload keys (only these may appear on the dict passed to build_user_message):
 
 Output JSON:
     vendor_name, bill_number, bill_date (YYYY-MM-DD|null), total_amount (decimal str|null),
-    description (<=120 chars|null), confidence 0..1
+    short_description (<=60|null), long_description (<=200|null), reference (<=60|null),
+    confidence 0..1. Legacy key ``description`` accepted (maps to long_description when absent).
 """
 from __future__ import annotations
 
@@ -15,6 +16,7 @@ from datetime import date
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
+from entities.bill.business.description_format import truncate_at_word_boundary
 from intelligence.cascade.bill_coding import truncate_bill_text
 from intelligence.cascade.core import CascadeResult, Rung, StructuredTask, run_cascade
 from intelligence.cascade.ladder_config import (
@@ -26,7 +28,10 @@ from intelligence.cascade.ladder_config import (
 
 BILL_HEADER_TEXT_CHAR_BUDGET = 6000
 BILL_HEADER_THRESHOLD = DEFAULT_BILL_HEADER_EXTRACTION_THRESHOLD
-MAX_DESCRIPTION_LEN = 120
+MAX_SHORT_DESCRIPTION_LEN = 60
+MAX_LONG_DESCRIPTION_LEN = 200
+MAX_REFERENCE_LEN = 60
+MAX_DESCRIPTION_LEN = MAX_LONG_DESCRIPTION_LEN  # legacy key alias for tests/backtest
 MAX_VENDOR_NAME_LEN = 200
 MAX_BILL_NUMBER_LEN = 80
 
@@ -38,6 +43,9 @@ _RESULT_KEYS = frozenset(
         "bill_number",
         "bill_date",
         "total_amount",
+        "short_description",
+        "long_description",
+        "reference",
         "description",
         "confidence",
     }
@@ -51,14 +59,71 @@ _SYSTEM_PROMPT = (
     "bill-to or ship-to customer.\n"
     "- total_amount is the amount due for THIS invoice (balance due / invoice total).\n"
     "- bill_date is the invoice or document date on the invoice.\n"
-    "- description is a short summary (<=120 chars) of what was bought or performed.\n"
+    "- short_description names what was bought or performed in at most 5 words "
+    '(e.g. "Biweekly mowing", "Plywood purchase").\n'
+    "- long_description is a fuller summary (<=200 chars) with key specifics, dates, "
+    "or site when printed on the invoice.\n"
+    "- reference is a PO / Job / work-order / customer reference printed on the invoice "
+    "(NOT the invoice number itself); null when absent.\n"
     "- Use null for any field that is absent or unclear.\n\n"
     "Respond with ONLY a JSON object:\n"
     '{"vendor_name": "<str or null>", "bill_number": "<str or null>", '
     '"bill_date": "YYYY-MM-DD or null", "total_amount": "<decimal string or null>", '
-    '"description": "<=120 chars or null>", "confidence": <0..1>}\n'
+    '"short_description": "<=60 chars or null>", "long_description": "<=200 chars or null>", '
+    '"reference": "<=60 chars or null>", "confidence": <0..1>}\n'
     "confidence is your calibrated probability that the extracted header is correct overall."
 )
+
+
+def _normalize_vendor_name(val: Any) -> tuple[str | None, str | None]:
+    if val is None:
+        return None, None
+    if not isinstance(val, str):
+        return None, "vendor_name must be string or null"
+    stripped = val.strip()
+    if not stripped:
+        return None, None
+    if len(stripped) > MAX_VENDOR_NAME_LEN:
+        return None, "vendor_name exceeds max length"
+    return stripped, None
+
+
+def _coerce_lenient_capped_string(
+    val: Any,
+    *,
+    max_len: int,
+    coerce_non_negative_int: bool = False,
+    null_if_over: bool = False,
+) -> str | None:
+    if val is None:
+        return None
+    if isinstance(val, bool):
+        return None
+    if coerce_non_negative_int and isinstance(val, int):
+        if val < 0:
+            return None
+        stripped = str(val)
+    elif isinstance(val, str):
+        stripped = val.strip()
+        if not stripped:
+            return None
+    else:
+        return None
+    if len(stripped) > max_len:
+        if null_if_over:
+            # An identifier cut short is a WRONG identifier; drop it instead.
+            return None
+        stripped = truncate_at_word_boundary(stripped, max_len)
+    return stripped
+
+
+def _apply_legacy_description(result: dict[str, Any]) -> None:
+    """Map legacy ``description`` to ``long_description`` when the new key is absent."""
+    legacy = result.get("description")
+    if legacy is None:
+        return
+    if result.get("long_description") is None and isinstance(legacy, str):
+        result["long_description"] = legacy
 
 
 def _parse_iso_date(value: str) -> bool:
@@ -112,17 +177,29 @@ def validate_bill_header_result(result: dict[str, Any]) -> tuple[bool, str]:
     if not isinstance(conf, (int, float)) or conf < 0 or conf > 1:
         return False, "confidence out of range"
 
+    _apply_legacy_description(result)
+
+    vn, vn_err = _normalize_vendor_name(result.get("vendor_name"))
+    if vn_err:
+        return False, vn_err
+    result["vendor_name"] = vn
+
     for key, max_len in (
-        ("vendor_name", MAX_VENDOR_NAME_LEN),
-        ("description", MAX_DESCRIPTION_LEN),
+        ("short_description", MAX_SHORT_DESCRIPTION_LEN),
+        ("long_description", MAX_LONG_DESCRIPTION_LEN),
+        ("description", MAX_LONG_DESCRIPTION_LEN),
     ):
-        val = result.get(key)
-        if val is None:
-            continue
-        if not isinstance(val, str):
-            return False, f"{key} must be string or null"
-        if len(val) > max_len:
-            return False, f"{key} exceeds max length"
+        result[key] = _coerce_lenient_capped_string(
+            result.get(key),
+            max_len=max_len,
+        )
+
+    result["reference"] = _coerce_lenient_capped_string(
+        result.get("reference"),
+        max_len=MAX_REFERENCE_LEN,
+        coerce_non_negative_int=True,
+        null_if_over=True,
+    )
 
     bn, bn_err = _coerce_bill_number(result.get("bill_number"))
     if bn_err:

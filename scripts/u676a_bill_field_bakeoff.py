@@ -650,7 +650,10 @@ def _raw_scalar_fields_from_result(
             amt = Decimal(str(raw_amt).strip())
         except Exception:
             amt = None
-    desc = r.get("description")
+    desc = r.get("long_description")
+    if not isinstance(desc, str) or not desc.strip():
+        legacy = r.get("description")
+        desc = legacy if isinstance(legacy, str) else None
     desc_ok = isinstance(desc, str) and bool(desc.strip())
     return bn, bd, amt, desc_ok
 
@@ -769,7 +772,10 @@ def arm_prediction_from_cascade(
                 pred.total_amount = Decimal(str(amt).strip())
             except Exception:
                 pred.arm_error = True
-        desc = r.get("description")
+        desc = r.get("long_description")
+        if not isinstance(desc, str) or not desc.strip():
+            legacy = r.get("description")
+            desc = legacy if isinstance(legacy, str) else None
         if isinstance(desc, str) and desc.strip():
             pred.description = desc.strip()
     return pred

@@ -81,18 +81,18 @@ def test_validator_rejects_non_numeric_amount():
     assert not ok
 
 
-def test_validator_rejects_overlong_description():
-    ok, _ = validate_bill_header_result(
-        {
-            "vendor_name": None,
-            "bill_number": None,
-            "bill_date": None,
-            "total_amount": None,
-            "description": "x" * 121,
-            "confidence": 0.5,
-        }
-    )
-    assert not ok
+def test_validator_truncates_overlong_legacy_description():
+    data = {
+        "vendor_name": None,
+        "bill_number": None,
+        "bill_date": None,
+        "total_amount": None,
+        "description": "x" * 250,
+        "confidence": 0.5,
+    }
+    ok, reason = validate_bill_header_result(data)
+    assert ok, reason
+    assert len(data["description"]) <= 200
 
 
 def test_validator_rejects_confidence_out_of_range():

@@ -585,7 +585,7 @@ def test_inaccessible_predicted_project_dropped():
     assert out["coding"]["project_public_id"] is None
 
 
-def test_response_always_has_five_field_keys():
+def test_response_always_has_seven_field_keys():
     shell = ras._result_shell("disabled")
     assert set(shell["fields"].keys()) == {
         "vendor",
@@ -593,6 +593,8 @@ def test_response_always_has_five_field_keys():
         "bill_date",
         "total_amount",
         "description",
+        "long_description",
+        "reference",
     }
 
 

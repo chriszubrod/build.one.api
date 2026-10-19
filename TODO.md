@@ -2,6 +2,19 @@
 
 Carry-over items from sessions. Check off as done; prune anything stale.
 
+## U-676h residuals — memo / short description / line-1 single source (booked 2026-10-19)
+
+- [ ] **Excel formula injection (pre-existing, found in U-676h Pass 3):** `integrations/box/excel/business/workbook_editor.py`
+      `_cell_value_for_write` writes strings as-is, so a line description starting with `= + - @` becomes a formula in
+      the DETAILS sheet (column L). Prefix `'` or set `cell.data_type = "s"`. Not introduced by U-676h (descriptions
+      were model-prefilled before, and users can type them).
+- [ ] Web (BillCreate line 1, all P3): Change file after the file replaced a hook project leaves the project empty
+      (the hook's original is not restored until the hook re-runs); a cost-code-only read over a hook pair drops the
+      hook's suggested project, so on Change file it stays as an unbadged value; `applyFileReadCodingPair` reverts
+      then re-sets the project on the cost-code-only path (correct, ordering fragile).
+- [ ] Auto memo: once a user types and clears Memo before any drop, the auto memo is off for the page's life (by design;
+      revisit if it surprises anyone).
+
 ## U-676b/c residuals — bill drop-to-prefill (booked 2026-10-18, Gate 2)
 
 API (`entities/bill/business/read_attachment_service.py`, `entities/attachment/business/extraction_service.py`):

@@ -8,7 +8,9 @@ Payload keys (only these may appear on the dict passed to build_user_message):
     candidate_projects: list[{abbreviation, name}] | None — None when project is fixed (Mode A)
 
 Output JSON:
-    scc_number, project_abbreviation|null, confidence 0..1, rationale (<= 200 chars)
+    scc_number, project_abbreviation|null, confidence 0..1
+    (no rationale since U-676n: it was never used and an over-long one rejected good answers;
+    a stray "rationale" key from the model is ignored)
 """
 from __future__ import annotations
 
@@ -79,7 +81,7 @@ _SYSTEM_PROMPT = (
     "null if truly unknown.\n\n"
     "Respond with ONLY a JSON object:\n"
     '{"scc_number": "<code>", "project_abbreviation": "<abbrev or null>", '
-    '"confidence": <0..1>, "rationale": "<=200 chars>"}\n'
+    '"confidence": <0..1>}\n'
     "confidence is your calibrated probability that scc_number is correct."
 )
 
@@ -146,10 +148,6 @@ def validate_bill_coding_result(
     proj = result.get("project_abbreviation")
     if proj is not None and not isinstance(proj, str):
         return False, "project_abbreviation must be string or null"
-
-    rationale = result.get("rationale")
-    if rationale is not None and isinstance(rationale, str) and len(rationale) > 200:
-        return False, "rationale exceeds 200 chars"
 
     if payload is not None:
         catalog = _candidate_scc_numbers(payload)

@@ -159,12 +159,16 @@ async def run_ladder(
     """
     attempts: list[Attempt] = []
     agree: dict[Any, int] = {}   # validated label -> count, for consensus
-    had_parseable_result = False
+    # A fallback_only rung runs only when no earlier rung produced a VALID answer:
+    # an error, an unparseable reply and a parsed-but-invalid reply all count as
+    # "Claude could not answer" (U-676n, Chris 2026-10-19). A valid answer that is
+    # merely below the confidence bar still blocks the fallback.
+    had_valid_result = False
     daily_cap_stopped = False
 
     for rung in rungs:
         if rung.fallback_only and (
-            had_parseable_result or daily_cap_stopped
+            had_valid_result or daily_cap_stopped
         ):
             _append_skipped_rung(
                 attempts, rung, name, reason="fallback_only",
@@ -190,9 +194,9 @@ async def run_ladder(
             )
             continue
 
-        had_parseable_result = True
-
         validated, vreason = validate(parsed)
+        if validated:
+            had_valid_result = True
         accepted = validated and confidence is not None and confidence >= threshold
         accepted_via = "threshold" if accepted else None
 

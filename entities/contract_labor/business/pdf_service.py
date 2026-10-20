@@ -123,12 +123,13 @@ class ContractLaborPDFService:
             # Initialize storage
             try:
                 storage = AzureBlobStorage()
-            except Exception as e:
+            except Exception:
+                logger.exception("Failed to initialize storage for contract labor PDFs")
                 return {
                     "success": False,
-                    "message": f"Failed to initialize storage: {str(e)}",
+                    "message": "Failed to initialize storage",
                     "pdfs_generated": 0,
-                    "errors": [str(e)],
+                    "errors": ["Failed to initialize storage"],
                 }
             
             # Get contract labor entries linked to this bill's line items
@@ -218,7 +219,9 @@ class ContractLaborPDFService:
                     raise
                 except Exception as e:
                     logger.exception(f"Error generating PDF for line item {line_item.id}")
-                    errors.append(f"Line item {line_item.public_id}: {str(e)}")
+                    errors.append(
+                        f"Line item {line_item.public_id}: failed to generate PDF"
+                    )
             
             success = pdfs_generated > 0 or len(errors) == 0
             message = f"Generated {pdfs_generated} PDF(s)"
@@ -242,9 +245,9 @@ class ContractLaborPDFService:
             logger.exception("Error generating PDFs for bill")
             return {
                 "success": False,
-                "message": str(e),
+                "message": "Failed to generate PDFs",
                 "pdfs_generated": 0,
-                "errors": [str(e)],
+                "errors": ["Failed to generate PDFs"],
             }
 
     def _get_entries_for_line_item(self, bill_line_item_id: int) -> list:
@@ -564,7 +567,7 @@ class ContractLaborPDFService:
             logger.exception("Error generating PDFs for billed entries")
             return {
                 "success": False,
-                "message": str(e),
+                "message": "Failed to generate PDFs",
                 "pdfs_generated": 0,
-                "errors": [str(e)],
+                "errors": ["Failed to generate PDFs"],
             }

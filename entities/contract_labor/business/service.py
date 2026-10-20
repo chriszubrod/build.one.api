@@ -1143,9 +1143,11 @@ class ContractLaborService:
                         "reason": "holding_code",
                     }
                 )
+            except EntityNotAccessibleError:
+                errors.append({"public_id": public_id, "error": "Entry not found"})
             except Exception as e:
                 logger.error(f"Error marking {public_id} as ready: {e}")
-                errors.append({"public_id": public_id, "error": str(e)})
+                errors.append({"public_id": public_id, "error": "Failed to mark ready"})
         
         return {
             "success_count": success_count,
@@ -1183,9 +1185,11 @@ class ContractLaborService:
                     success_count += 1
                 else:
                     errors.append({"public_id": public_id, "error": "Delete failed"})
+            except EntityNotAccessibleError:
+                errors.append({"public_id": public_id, "error": "Entry not found"})
             except Exception as e:
                 logger.error(f"Error deleting {public_id}: {e}")
-                errors.append({"public_id": public_id, "error": str(e)})
+                errors.append({"public_id": public_id, "error": "Delete failed"})
         
         return {
             "success_count": success_count,

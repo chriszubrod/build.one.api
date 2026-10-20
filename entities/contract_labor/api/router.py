@@ -632,8 +632,7 @@ def update_contract_labor_bill(public_id: str, bill_update: ContractLaborBillUpd
     except HTTPException:
         raise
     except Exception as e:
-        logger.exception("Error updating contract labor bill")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise_server_error(e, "Failed to update contract labor bill")
 
 
 @router.post("/{public_id}/mark-ready")
@@ -653,8 +652,7 @@ def mark_contract_labor_as_ready(public_id: str, current_user: dict = Depends(re
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        logger.exception("Error marking contract labor as ready")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise_server_error(e, "Failed to mark contract labor as ready")
 
 
 @router.post("/bulk-mark-ready")
@@ -859,8 +857,7 @@ async def generate_pdfs_for_bill(bill_public_id: str, current_user: dict = Depen
         # be able to tell it apart from a transient failure.
         raise_workflow_error(str(locked), "Failed to generate PDFs for bill")
     except Exception as e:
-        logger.exception("Error generating PDFs for bill")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise_server_error(e, "Failed to generate PDFs for bill")
 
 
 @router.post("/billing/generate-all-pdfs")
@@ -881,8 +878,7 @@ async def generate_all_pdfs(
         )
         return item_response(result)
     except Exception as e:
-        logger.exception("Error generating PDFs for billed entries")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise_server_error(e, "Failed to generate PDFs")
 
 
 @router.post("/generate-bills/{vendor_id}")
@@ -937,5 +933,4 @@ def preview_pdf_for_vendor(vendor_id: int, project_id: Optional[int] = None, bil
     except HTTPException:
         raise
     except Exception as e:
-        logger.exception("Error previewing PDF for vendor")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise_server_error(e, "Failed to preview PDF")

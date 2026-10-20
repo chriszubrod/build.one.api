@@ -10,6 +10,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import UUID
 
+import config
 import pytest
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
@@ -542,6 +543,7 @@ def test_tick_reuses_matching_prediction_without_model_call():
         out = asyncio.run(
             _process_one_claim(
                 claim,
+                settings=config.Settings(),
                 repository=repo,
                 storage=MagicMock(),
                 suggester=MagicMock(),
@@ -595,6 +597,7 @@ def test_tick_does_not_reuse_on_extracted_datetime_mismatch():
         asyncio.run(
             _process_one_claim(
                 claim,
+                settings=config.Settings(),
                 repository=repo,
                 storage=MagicMock(),
                 suggester=MagicMock(),
@@ -1268,7 +1271,13 @@ def _predict_text_coding_raising(*, mode: str, retain: bool, patches) -> tuple[E
     repo.read_vendor_scc_counts.return_value = []
     catalog = SimpleNamespace(vendor_name="Acme", scc_number_to_id={"05.100": 501}, proj_abbrev_to_id={"P1": 100})
     with _prefill_settings_patch(), patch.object(
-        bts, "build_runtime_payload", return_value=({"bill_text": "t"}, mode)
+        bts,
+        "build_runtime_payload",
+        return_value=bts.RuntimePayloadBuild(
+            payload={"bill_text": "t", "candidate_sccs": []},
+            mode=mode,
+            candidate_scc_narrowed=False,
+        ),
     ), patch.object(bts, "run_bill_coding_suggestion", new=AsyncMock(return_value=cascade)), patches:
         with pytest.raises(RuntimeError) as info:
             asyncio.run(

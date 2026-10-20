@@ -174,6 +174,16 @@ def resolve_text_prediction(
     return scc_id, proj_id
 
 
+def vendor_history_scc_numbers_from_scc_counts(rows: Sequence[Any]) -> list[str]:
+    """SCC numbers from ReadVendorSccCountsForBills rows (narrowing input; all Number values)."""
+    numbers: list[str] = []
+    for row in rows:
+        number = getattr(row, "Number", None)
+        if number is not None:
+            numbers.append(str(number))
+    return numbers
+
+
 def history_evidence_from_scc_counts(
     rows: Sequence[Any],
 ) -> list[dict[str, Any]]:

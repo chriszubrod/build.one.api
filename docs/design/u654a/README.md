@@ -57,7 +57,7 @@ Prod bill lines (last 12 months) use a small vendor-specific SCC set most of the
 
 **Rule (`narrow_candidate_sccs`):** count only prior SubCostCode numbers that are **present in the as-of full catalog** toward the **≥ 3 distinct** threshold. When the threshold is met, keep full-catalog rows whose normalized number shares a **family** with one of those in-catalog history codes (family = part before the first `.`, e.g. `43.00` / `43.10` / `43.20`). Fewer than 3 in-catalog distinct codes, or a narrowed list that would be empty → full catalog unchanged (`narrowed=False`). Order matches the full list; nothing outside the as-of catalog slice is added.
 
-**History source (measurement arm only):** the backtest builds vendor history from **`priors_for_bill`** — all prior bills for the vendor as-of the bill, with no top-5 cap and no project filter. **Production** `build_runtime_payload` still uses **`ReadVendorSccCountsForBills`** (project-scoped in Mode A, top-5 in history evidence). A future live narrowing switch needs its own vendor-wide history read; this unit does not add one.
+**History source:** the backtest builds vendor history from **`priors_for_bill`** — all prior bills for the vendor as-of the bill, with no top-5 cap and no project filter. **Production** `history_evidence` still uses **`ReadVendorSccCountsForBills`** (project-scoped in Mode A, top-5). **Live switch (U-676r):** `bill_coding_candidate_sccs` (`config.py`, default `"narrowed"`) — when `"narrowed"`, the tick and drop paths also read vendor-wide history (`project_id=NULL`, top 1000) to feed `narrow_candidate_sccs`; set `"full"` to restore the pre-U-676r full catalog without deploy. Unknown values fail safe to `"full"` with one warning.
 
 **Compare arms (same seed/window/sample):**
 

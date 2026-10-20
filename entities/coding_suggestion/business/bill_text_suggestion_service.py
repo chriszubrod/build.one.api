@@ -10,7 +10,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime
 from decimal import Decimal
 from types import SimpleNamespace
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Optional, Sequence
 
 import config
 from entities.attachment.business.extraction_service import extraction_payload_is_current
@@ -36,7 +36,9 @@ from intelligence.cascade.bill_coding_payload import (
     build_candidate_projects_for_bill,
     build_candidate_sccs_for_bill,
     history_evidence_from_scc_counts,
+    narrow_candidate_sccs,
     resolve_text_prediction,
+    vendor_history_scc_numbers_from_scc_counts,
 )
 from shared.storage import AzureBlobStorage
 from shared.text_blob_read import read_text_blob_with_retry
@@ -45,6 +47,7 @@ logger = logging.getLogger(__name__)
 
 MODEL_VERSION = "u654b-text-v1"
 
+VENDOR_WIDE_SCC_HISTORY_TOP = 1000
 
 _CATALOG_CACHE_TTL_SECONDS = 60.0
 _catalog_lock = threading.Lock()
@@ -156,6 +159,72 @@ def blob_has_current_redaction(blob_text: str) -> bool:
     return extraction_payload_is_current(envelope)
 
 
+@dataclass(frozen=True)
+class RuntimePayloadBuild:
+    payload: dict[str, Any]
+    mode: str
+    candidate_scc_narrowed: bool
+
+
+def bill_coding_candidate_sccs_mode(settings: config.Settings) -> str:
+    raw = (settings.bill_coding_candidate_sccs or "").strip().lower()
+    if raw == "narrowed":
+        return "narrowed"
+    if raw not in ("", "full"):
+        claude_budget._warn_invalid_setting_once(
+            "bill_coding_candidate_sccs",
+            settings.bill_coding_candidate_sccs,
+            "full",
+        )
+    return "full"
+
+
+def load_narrowing_history_scc_numbers(
+    settings: config.Settings,
+    repository: BillTextCodingSuggestionRepository,
+    *,
+    vendor_id: int,
+    as_of: datetime,
+    exclude_bill_id: Optional[int],
+) -> Optional[list[str]]:
+    """Vendor-wide history for narrowing; None → use full catalog (off mode or failure)."""
+    if bill_coding_candidate_sccs_mode(settings) != "narrowed":
+        return None
+    try:
+        wide_rows = repository.read_vendor_scc_counts(
+            vendor_id,
+            project_id=None,
+            as_of=as_of,
+            top=VENDOR_WIDE_SCC_HISTORY_TOP,
+            exclude_bill_id=exclude_bill_id,
+        )
+        return vendor_history_scc_numbers_from_scc_counts(wide_rows)
+    except Exception as error:
+        logger.warning(
+            "bill_text_coding_narrowing_history_failed vendor_id=%s err=%s",
+            vendor_id,
+            type(error).__name__,
+        )
+        return None
+
+
+def _log_bill_text_coding_suggestion_candidates(
+    *,
+    bill_id: Optional[int],
+    vendor_id: int,
+    built: RuntimePayloadBuild,
+) -> None:
+    logger.info(
+        "bill_text_coding_suggestion bill_id=%s vendor_id=%s mode=%s "
+        "candidate_scc_count=%s candidate_scc_narrowed=%s",
+        bill_id,
+        vendor_id,
+        built.mode,
+        len(built.payload["candidate_sccs"]),
+        built.candidate_scc_narrowed,
+    )
+
+
 def build_runtime_payload(
     *,
     bill_text: str,
@@ -163,13 +232,21 @@ def build_runtime_payload(
     history_rows: Any,
     chosen_project_id: Optional[int],
     as_of: datetime,
-) -> tuple[dict[str, Any], str]:
+    narrowing_history_scc_numbers: Optional[Sequence[str]] = None,
+) -> RuntimePayloadBuild:
     mode = "A" if chosen_project_id is not None else "B"
-    candidate_sccs = build_candidate_sccs_for_bill(
+    full_candidates = build_candidate_sccs_for_bill(
         catalog.scc_by_id,
         as_of=as_of,
         ambiguous_numbers=catalog.ambiguous_scc_numbers,
     )
+    if narrowing_history_scc_numbers is not None:
+        candidate_sccs, candidate_scc_narrowed = narrow_candidate_sccs(
+            full_candidates, narrowing_history_scc_numbers
+        )
+    else:
+        candidate_sccs = full_candidates
+        candidate_scc_narrowed = False
     candidate_projects: Optional[list[dict[str, str]]]
     if mode == "A":
         candidate_projects = None
@@ -185,7 +262,11 @@ def build_runtime_payload(
         "candidate_sccs": candidate_sccs,
         "candidate_projects": candidate_projects,
     }
-    return payload, mode
+    return RuntimePayloadBuild(
+        payload=payload,
+        mode=mode,
+        candidate_scc_narrowed=candidate_scc_narrowed,
+    )
 
 
 STALE_REDACTION = "stale_redaction"
@@ -206,6 +287,7 @@ def _tick_result(**fields: Any) -> dict[str, Any]:
 async def _process_one_claim(
     claim: BillTextCodingClaim,
     *,
+    settings: config.Settings,
     repository: BillTextCodingSuggestionRepository,
     storage: AzureBlobStorage,
     suggester: Optional[BillCodingSuggester],
@@ -325,13 +407,28 @@ async def _process_one_claim(
             as_of=as_of,
             exclude_bill_id=claim.bill_id,
         )
-        payload, mode = build_runtime_payload(
+        narrowing_numbers = load_narrowing_history_scc_numbers(
+            settings,
+            repository,
+            vendor_id=claim.vendor_id,
+            as_of=as_of,
+            exclude_bill_id=claim.bill_id,
+        )
+        built = build_runtime_payload(
             bill_text=bill_text,
             catalog=catalog,
             history_rows=history_rows,
             chosen_project_id=claim.chosen_project_id,
             as_of=as_of,
+            narrowing_history_scc_numbers=narrowing_numbers,
         )
+        _log_bill_text_coding_suggestion_candidates(
+            bill_id=claim.bill_id,
+            vendor_id=claim.vendor_id,
+            built=built,
+        )
+        payload = built.payload
+        mode = built.mode
 
         cascade_ran = True
         cascade = await run_bill_coding_suggestion(payload, transport_for=transport_for)
@@ -443,6 +540,7 @@ async def run_bill_text_coding_tick(
         blob_store = blob_store or AzureBlobStorage()
         last = await _process_one_claim(
             claim,
+            settings=settings,
             repository=repository,
             storage=blob_store,
             suggester=suggester,
@@ -594,20 +692,48 @@ async def predict_text_coding(
         loaded_name = await asyncio.to_thread(_read_vendor_name, vendor_id)
         if loaded_name:
             catalog = replace(catalog, vendor_name=loaded_name)
-    history_rows = await asyncio.to_thread(
-        repository.read_vendor_scc_counts,
-        vendor_id,
-        project_id=chosen_project_id,
-        as_of=as_of,
-        exclude_bill_id=exclude_bill_id,
-    )
-    payload, mode = build_runtime_payload(
+    if bill_coding_candidate_sccs_mode(settings) == "narrowed":
+        history_rows, narrowing_numbers = await asyncio.gather(
+            asyncio.to_thread(
+                repository.read_vendor_scc_counts,
+                vendor_id,
+                project_id=chosen_project_id,
+                as_of=as_of,
+                exclude_bill_id=exclude_bill_id,
+            ),
+            asyncio.to_thread(
+                load_narrowing_history_scc_numbers,
+                settings,
+                repository,
+                vendor_id=vendor_id,
+                as_of=as_of,
+                exclude_bill_id=exclude_bill_id,
+            ),
+        )
+    else:
+        history_rows = await asyncio.to_thread(
+            repository.read_vendor_scc_counts,
+            vendor_id,
+            project_id=chosen_project_id,
+            as_of=as_of,
+            exclude_bill_id=exclude_bill_id,
+        )
+        narrowing_numbers = None
+    built = build_runtime_payload(
         bill_text=bill_text,
         catalog=catalog,
         history_rows=history_rows,
         chosen_project_id=chosen_project_id,
         as_of=as_of,
+        narrowing_history_scc_numbers=narrowing_numbers,
     )
+    _log_bill_text_coding_suggestion_candidates(
+        bill_id=exclude_bill_id,
+        vendor_id=vendor_id,
+        built=built,
+    )
+    payload = built.payload
+    mode = built.mode
     cascade = await run_bill_coding_suggestion(payload, transport_for=transport_for)
     if cascade.stopped_reason == "daily_cap":
         return None, "daily_cap", cascade

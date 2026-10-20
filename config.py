@@ -237,6 +237,9 @@ class Settings(BaseSettings):
     # failed) per UTC calendar day across all tick invocations.
     bill_coding_text_enabled: bool = False
     bill_coding_text_daily_call_cap: int = 200
+    # U-676r: live text-tier SCC candidate list — "narrowed" (vendor-wide history
+    # families) or "full" (pre-U-676r catalog slice; rollback without deploy).
+    bill_coding_candidate_sccs: str = "narrowed"
 
     # Bill create drop-to-prefill synchronous read (U-676b). Default off.
     bill_drop_prefill_enabled: bool = False

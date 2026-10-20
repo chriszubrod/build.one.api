@@ -96,14 +96,14 @@ def test_claim_next_parses_varchar_millisecond_datetimes():
         scc_id=1, number="03.01", name="Framing", created=datetime(2020, 1, 1)
     )
     catalog = _catalog(scc_by_id={1: scc})
-    payload, _mode = svc.build_runtime_payload(
+    built = svc.build_runtime_payload(
         bill_text="x",
         catalog=catalog,
         history_rows=[],
         chosen_project_id=claim.chosen_project_id,
         as_of=claim.created_datetime,
     )
-    assert payload["candidate_sccs"]
+    assert built.payload["candidate_sccs"]
 
 
 def test_empty_queue_tick_idle():
@@ -365,14 +365,14 @@ def test_catalog_as_of_uses_created_datetime_not_bill_date():
         scc_by_id={1: scc_old, 2: scc_new},
         scc_number_to_id={"03.01": 1, "04.01": 2},
     )
-    payload, _ = svc.build_runtime_payload(
+    built = svc.build_runtime_payload(
         bill_text="x",
         catalog=catalog,
         history_rows=[],
         chosen_project_id=claim.chosen_project_id,
         as_of=claim.created_datetime,
     )
-    numbers = {row["number"] for row in payload["candidate_sccs"]}
+    numbers = {row["number"] for row in built.payload["candidate_sccs"]}
     assert "03.01" in numbers
     assert "04.01" not in numbers
 

@@ -10,6 +10,7 @@ from intelligence.cascade.bill_coding_payload import (
     PriorBillVote,
     narrow_candidate_sccs,
     vendor_history_scc_numbers_from_priors,
+    vendor_history_scc_numbers_from_scc_counts,
 )
 
 
@@ -94,6 +95,14 @@ def test_narrow_preserves_full_list_order():
         {"number": "20.01", "name": "z"},
         {"number": "20.02", "name": "w"},
     ]
+
+
+def test_vendor_history_from_scc_counts_includes_rows_without_vote_count():
+    rows = [
+        SimpleNamespace(Number="43.00", Name="A", VoteCount=3),
+        SimpleNamespace(Number="65.10", Name="B", VoteCount=None),
+    ]
+    assert vendor_history_scc_numbers_from_scc_counts(rows) == ["43.00", "65.10"]
 
 
 def test_vendor_history_from_priors_distinct():

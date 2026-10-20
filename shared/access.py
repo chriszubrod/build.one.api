@@ -27,10 +27,13 @@ silent leak. Scheduler / system callers reach the admin bypass via the
 `set_authz_context(is_system_admin=True)` call in
 `shared/api/admin.py::_require_drain_secret`.
 """
+import logging
 from typing import Optional
 
 from shared.authz import current_user_id, current_is_system_admin, current_can_view_team
 from shared.database import get_connection
+
+logger = logging.getLogger(__name__)
 
 
 class EntityNotAccessibleError(Exception):
@@ -106,6 +109,25 @@ def _check_time_entry(time_entry_id: int) -> bool:
             return bool(row[0]) if row and row[0] is not None else False
         finally:
             cursor.close()
+
+
+def can_access_bill(bill_id: Optional[int]) -> bool:
+    """True if the current actor may access the bill; False if denied, on any check error,
+    or when there is no bill id (unlike assert_can_access_bill, where None means "nothing to
+    check": a boolean that grants on None would silently disclose on an unresolved id)."""
+    if bill_id is None:
+        return False
+    if _should_bypass():
+        return True
+    try:
+        return _check("UserCanAccessBill", bill_id)
+    except Exception as exc:
+        logger.warning(
+            "can_access_bill check failed for bill_id=%s: %s",
+            bill_id,
+            type(exc).__name__,
+        )
+        return False
 
 
 def assert_can_access_bill(bill_id: Optional[int]) -> None:

@@ -150,6 +150,7 @@ class EmailMessageService:
         from entities.bill.persistence.repo import BillRepository
         from entities.project.business.service import ProjectService
         from entities.vendor.business.service import VendorService
+        from shared.access import can_access_bill
 
         email = self.repo.read_by_id(email_message_id)
         if not email:
@@ -260,6 +261,8 @@ class EmailMessageService:
                     )
                     continue
                 if match is None or match.id in seen_bill_ids:
+                    continue
+                if not can_access_bill(match.id):
                     continue
                 seen_bill_ids.add(match.id)
                 existing_bill_matches.append({

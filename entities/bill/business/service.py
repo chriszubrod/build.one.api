@@ -47,7 +47,7 @@ from typing import Any, List, Optional
 # Third-party Imports
 
 # Local Imports
-from shared.access import assert_can_access_bill
+from shared.access import assert_can_access_bill, can_access_bill
 from shared.authz import current_user_id, current_is_system_admin
 from shared.lifecycle.terminal_lock import (
     assert_editable,
@@ -468,6 +468,8 @@ class BillService:
         if vendor_id and bill_number:
             existing = self.repo.read_by_bill_number_and_vendor_id(bill_number=bill_number, vendor_id=vendor_id, bill_date=bill_date)
             if existing:
+                caller_can_access = can_access_bill(existing.id)
+
                 # Opportunistic source-email backfill: if this create_bill
                 # call carries an email source AND the existing Bill row
                 # has no source linked yet, stamp the link so the email
@@ -500,12 +502,16 @@ class BillService:
                     getattr(existing, "status", None),
                     is_draft=getattr(existing, "is_draft", None),
                 )
-                if source_email_message_id is not None and existing_is_locked:
+                if (
+                    caller_can_access
+                    and source_email_message_id is not None
+                    and existing_is_locked
+                ):
                     link_msg = (
                         " Existing Bill is completed, so its source-email link "
                         "was left unchanged."
                     )
-                elif source_email_message_id is not None:
+                elif caller_can_access and source_email_message_id is not None:
                     try:
                         linked = self.repo.link_source_email_message(
                             bill_id=existing.id,
@@ -523,20 +529,29 @@ class BillService:
                                 f"linked — no change to that field."
                             )
                     except Exception as link_error:
-                        logger.exception(
+                        logger.warning(
                             "Failed to backfill source email on existing Bill %s: %s",
-                            existing.public_id, link_error,
+                            existing.public_id,
+                            type(link_error).__name__,
                         )
                         link_msg = (
-                            f" (also tried to link source email to existing "
-                            f"Bill but failed: {link_error})"
+                            " (also tried to link source email to the existing "
+                            "bill but that step failed.)"
                         )
 
+                if caller_can_access:
+                    dup_msg = (
+                        f"A bill with BillNumber '{bill_number}' and this date "
+                        f"already exists for this vendor "
+                        f"(Bill.PublicId={existing.public_id}, IsDraft={existing.is_draft}). "
+                        f"Please update the existing bill instead of creating a new one.{link_msg}"
+                    )
+                else:
+                    dup_msg = (
+                        "A bill with this number already exists for this vendor and date."
+                    )
                 raise DuplicateBillError(
-                    f"A bill with BillNumber '{bill_number}' and this date "
-                    f"already exists for this vendor "
-                    f"(Bill.PublicId={existing.public_id}, IsDraft={existing.is_draft}). "
-                    f"Please update the existing bill instead of creating a new one.{link_msg}",
+                    dup_msg,
                     existing_bill_public_id=str(existing.public_id),
                 )
 

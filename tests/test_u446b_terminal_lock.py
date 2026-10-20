@@ -806,7 +806,8 @@ def _create_service(existing):
 def _post_create(svc, vendor_public_id="vendor-1"):
     """POST /create/bill, carrying a client-supplied source-email id."""
     with patch("entities.bill.business.service.VendorService") as MockVendor, \
-         patch("entities.email_message.business.service.EmailMessageService") as MockEmail:
+         patch("entities.email_message.business.service.EmailMessageService") as MockEmail, \
+         patch("entities.bill.business.service.can_access_bill", return_value=True):
         MockVendor.return_value.read_by_public_id.return_value = SimpleNamespace(id=7)
         MockEmail.return_value.read_by_public_id.return_value = SimpleNamespace(id=123)
         try:

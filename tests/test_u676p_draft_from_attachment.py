@@ -786,7 +786,10 @@ def test_bill_service_create_raises_duplicate_bill_error():
     svc.attachment_service.read_by_public_id.return_value = SimpleNamespace(
         content_type="application/pdf", public_id=ATT_UUID, id=1
     )
-    with patch("entities.bill.business.service.VendorService") as mock_vendor:
+    with patch("entities.bill.business.service.VendorService") as mock_vendor, patch(
+        "entities.bill.business.service.can_access_bill",
+        return_value=True,
+    ):
         mock_vendor.return_value.read_by_public_id.return_value = SimpleNamespace(id=7)
         with pytest.raises(DuplicateBillError) as exc_info:
             svc.create(

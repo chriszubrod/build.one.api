@@ -1,5 +1,88 @@
 # Session Notes
 
+## Vendor Agent session — five defects found by *using* the system, not reading it (2026-09-29 → 10-01)
+
+**The transferable lesson first: every defect below was invisible to its own success signal. A `201`,
+a `confidence: 1.0`, a `completed` status and a green Box upload all reported success while the thing
+they describe had not happened.** None would have been found by code review; all were found by doing
+the work and checking the result independently of what the call returned.
+
+- **`mail.create_draft` returns `201 "Draft created successfully"` on a draft with NO recipients.**
+  `integrations/ms/mail/external/client.py:107` `_build_recipient_list` wants a flat
+  `{"email","name"}` dict; pass the **Graph-native** `{"emailAddress":{"address":…}}` shape — the shape
+  Graph itself returns — and every field resolves to `None` and Graph silently drops To/CC/BCC. The
+  201's echoed `draft` block even shows a recipient entry (`{"name": null, "email": null}`), so the
+  obvious check passes. Only a Graph read-back of the verified message id shows `to: []`.
+  **Compliance-chase drafts get sent within hours**, so this ships a recipient-less chase.
+- **`_format_datetime_for_qbo_query` corrupts any offset-bearing timestamp.** Strips a trailing `Z` or
+  `+00:00`, then appends `+00:00` unconditionally → `2026-09-25T00:00:00-07:00+00:00`, and QBO rejects
+  the whole pull. Its `try/except` is decorative (string slicing never raises), so the malformed value
+  returns as a success. 9 entity clients call it; the scheduler is safe only by accident of what feeds
+  it. Feeding it QBO's own `MetaData.LastUpdatedTime` — the most natural thing a caller would do —
+  breaks it.
+- **`w9_parser`: 9 live ingests, 0 correct classifications**, and the newest run returned
+  **`is_signed: False` on a form signed in ink, at `confidence: 1.0` with `unresolved: []`**. Earlier
+  runs at least self-reported `0.6667`. A caller that skips review when `confidence == 1.0 and not
+  unresolved` would write an unsigned, mis-classified Taxpayer straight through. Counter-observations
+  that kill the easy theories: `entity_name`/`business_name` were correct for the first time *on the
+  handwritten form*, and the BL parser on the same batch got every field right — so this is
+  `w9_parser`-specific, not general DI extraction. Full evidence table in `TODO.md`.
+- **Completed bills dead-letter to QBO after ONE attempt while Box and SharePoint succeed.**
+  `$46,283.73` sat since 2026-09-29 looking filed: Vinny & Wes `4406` **$42,327.20**
+  (`QboValidationError: Invalid Reference Id` — `dbo.Vendor` points at QBO vendor **1428, which does
+  not exist**) and Huskey `7107890` **$3,956.53** (`QboDuplicateError` — already in QBO as bill
+  **76837**; needs *linking*, not re-pushing). Realm-wide there are **7 completed bills with NULL
+  `QboId`, $56,135.99**. The paperwork looking done is exactly what hides it.
+  ⚠️ **Re-verified 2026-10-20 and the headline did not hold: 4 bills / $7,142.26.** Both large items
+  resolved themselves in the interim (`4406` → QBO **77395**, once `dbo.Vendor` re-pointed from the
+  non-existent 1428 to **1435**; `7107890` → QBO **76837**). What remains is two defects, now booked in
+  `TODO.md`: a **stale dead-letter** — `qbo.Outbox` **1277** is still `dead_letter` for a bill that now
+  carries a `QboId`, and it is the *only* dead-letter row in the table (1 of 1,475), so the entire
+  signal is a false positive — and **four completed bills with no outbox row at all**, never enqueued,
+  therefore never dead-lettered, therefore invisible. A dead-letter is at least a signal; these
+  produced none. Same shape as the U-005 expense-coding trap. **This number is perishable: re-measure,
+  do not cite it.**
+- **The watermark blind spot bit twice in one session** ([[feedback_widened_pull_filter_needs_full_pull]]).
+  Aqua Clear's vendor row and 5 Walker BillCredits ($3,038.56) existed in QBO but had never reached
+  dbo, because the watermark had advanced past their `LastUpdatedTime` without pulling them. The same
+  bounded re-pull also **repaired 2 credits stored at `$0.00`** (`801640`, `802353`) that had been
+  wrong in dbo since April while QBO was right the whole time.
+
+**Statement reconciliation: a stuck `in_review` draft was the entire discrepancy, three times.**
+Walker (6 drafts, **$7,148.18**), Cobra (`C11165`, **$10,830.00** — its single largest invoice, and
+the *only* gap in an otherwise exact $75,885.00 tie-out), and Dodd/Crawford had **zero** compliance
+records while carrying $138K and $110K of bills. Two vendors were chasing money already paid —
+SavATree **$10,133.56** (check #100767, 17 days before their collections letter) and Thompson
+**$10,133.56** (BillPayment 76878, 4 days before). **Both pay through Billtrust**; QBO proves a check
+was *issued*, never that it *cleared*, so confirm the bank before pushing back.
+
+**Walker's statements are HTML tables in the email body, not attachments** — 12 job-level statements,
+242 rows, `C` column codes `I`/`P`/`C`/`F`. ⚠️ **Pair payments to invoices GLOBALLY across all
+statements, not per job** — Walker's payment lines reference invoices carried on *other* jobs'
+statements, and per-job pairing produced a wrong answer that only reconciled once pooled. Their
+statement also proves the number mapping their collections email obscures: `INVOICE # = A1859308`,
+`REFERENCE = ER0118593080`.
+
+**Prod writes made (all verified by read-back):** 3 finance-charge bills — Jeffco `STMT48` $1,056.26
+(QBO 77003), Thompson `TMCC-019608` $123.66 (77087, statement attached), Walker ×7 $596.51
+(77104–77110, one bill per job per precedent). All account-based to **104** (`65001 Bank fees &
+service charges`), `NotBillable`, no item, `DueDate = TxnDate`. Pre-flight dedupe on every one.
+
+**11 vendors onboarded or completed**, each verified against the live folder listing first: L&R
+Contractors (1228), Aqua Clear Water Systems (**1213 — renamed from `Titan HighFlow`**, same QBO
+record 200000011), Dodd Electric (1114), Crawford Door (222), Assa Abloy Entrance Systems (84 — the
+CNC Door certs attach here, Owner-confirmed), The Iron Grove (935), Mangrum (581), Kerley (508),
+Huskey (1224), Beacon Turf (1226), Flooring Professionals (1218).
+
+⚠️ **The Iron Grove's WC is a FLORIDA exemption** (James D Hill, Crestview FL) while the vendor works
+in Tennessee — recorded so it tracks and expires, but a FL §440.05 election has no effect under TN
+law. Not equivalent to Beacon Turf's TN exemption. Owner has queried them.
+
+**Booked:** `U-580` — model WC exemptions as `VendorInsurancePolicy.IsExempt` (per-**coverage** BIT, not
+per-vendor: a vendor can be WC-exempt while carrying real GL, and the exemption has its own expiry
+that a vendor-level flag would drop). Until it lands the fact lives in a **carrier string**, which
+nothing can filter or report on.
+
 ## U-549 — Ramp receipt/memo chaser: A + C1 + C2 shipped, three layers broken at once (2026-09-29)
 
 **The transferable lesson first: the chain broke in three independent places, and every layer

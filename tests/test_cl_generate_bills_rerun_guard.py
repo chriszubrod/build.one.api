@@ -10,6 +10,15 @@ from entities.contract_labor.business.bill_service import ContractLaborBillServi
 from entities.contract_labor.business.service import ContractLaborService
 
 
+@pytest.fixture(autouse=True)
+def _stub_can_access_bill_for_existing_bill_paths(monkeypatch):
+    """U-679: edit/refusal paths that find an existing bill must not hit the DB UDF."""
+    monkeypatch.setattr(
+        "entities.contract_labor.business.bill_service.can_access_bill",
+        lambda bill_id: True,
+    )
+
+
 def _make_svc():
     svc = ContractLaborBillService()
     return svc

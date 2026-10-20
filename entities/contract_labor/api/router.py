@@ -19,7 +19,13 @@ from entities.contract_labor.api.schemas import (
 )
 from entities.contract_labor.persistence.line_item_repo import ContractLaborLineItemRepository
 from entities.sub_cost_code.business.holding_lines import assert_no_holding_sub_cost_codes
-from shared.api.responses import list_response, item_response, raise_workflow_error, raise_not_found
+from shared.api.responses import (
+    list_response,
+    item_response,
+    raise_workflow_error,
+    raise_not_found,
+    raise_server_error,
+)
 from shared.lifecycle.completion_gate import HoldingCodeRefused
 from shared.api.errors import ApiError, ErrorCode
 from shared.authz import current_user_id
@@ -833,9 +839,8 @@ async def regenerate_pdf_for_entries(body: ContractLaborBulkDelete, current_user
         )
     except HTTPException:
         raise
-    except Exception as e:
-        logger.exception("Error regenerating PDF for entries")
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as error:
+        raise_server_error(error, "Failed to regenerate PDF for entries")
 
 
 @router.post("/billing/generate-pdfs/{bill_public_id}")
@@ -904,9 +909,8 @@ def generate_bills_for_vendor(
             project_id_filter=project_id,
         )
         return item_response(result)
-    except Exception as e:
-        logger.exception("Error generating bills for vendor")
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as error:
+        raise_server_error(error, "Failed to generate bills for vendor")
 
 
 @router.get("/preview-pdf/{vendor_id}")

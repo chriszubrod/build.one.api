@@ -19,6 +19,7 @@ from entities.contract_labor.business.service import ContractLaborService
 from entities.contract_labor.persistence.line_item_repo import ContractLaborLineItemRepository
 from entities.contract_labor.persistence.repo import ContractLaborRepository
 from entities.bill.business.service import BillService
+from shared.access import can_access_bill
 from entities.bill_line_item.business.service import BillLineItemService
 from entities.bill_line_item_attachment.business.service import BillLineItemAttachmentService
 from entities.attachment.business.service import AttachmentService
@@ -428,6 +429,14 @@ class ContractLaborBillService:
                 existing_bill = self.bill_service.repo.read_by_bill_number_and_vendor_id(
                     bill_number=invoice_number, vendor_id=vendor.id
                 )
+                if existing_bill is not None and not can_access_bill(existing_bill.id):
+                    result["errors"].append(
+                        f"Bill {invoice_number} refused — an existing bill with this number "
+                        f"is not accessible"
+                    )
+                    result["bills_refused"] += 1
+                    continue
+
                 bill = existing_bill
                 is_edit = bill is not None
 
@@ -704,8 +713,13 @@ class ContractLaborBillService:
                         except Exception:
                             logger.warning(f"Could not delete orphan attachment {att_id}")
                 except Exception as e:
-                    logger.error(f"Failed to upload PDF or create attachment: {e}")
-                    result["errors"].append(f"Failed to upload PDF for {invoice_number}: {str(e)}")
+                    # Fixed text to the caller; driver / blob text stays out of errors[] (U-679).
+                    logger.error(
+                        "Failed to upload PDF or create attachment for %s: %s",
+                        invoice_number,
+                        type(e).__name__,
+                    )
+                    result["errors"].append(f"Failed to upload PDF for {invoice_number}.")
 
                 for entry_id in entry_ids_by_project[group_key]:
                     entry = self.cl_repo.read_by_id(id=entry_id)
@@ -742,8 +756,15 @@ class ContractLaborBillService:
                         result["entries_billed"] += 1
 
             except Exception as e:
-                logger.exception(f"Error generating bill for project {project_id} period {group_period}")
-                result["errors"].append(f"Error generating bill for project {project_id} period {group_period}: {str(e)}")
+                logger.exception(
+                    "Error generating bill for project %s period %s (%s)",
+                    project_id,
+                    group_period,
+                    type(e).__name__,
+                )
+                result["errors"].append(
+                    f"Error generating bill for project {project_id} period {group_period}"
+                )
 
         return result
 
@@ -801,7 +822,7 @@ class ContractLaborBillService:
                 b = self.bill_service.repo.read_by_bill_number_and_vendor_id(
                     bill_number=entry.bill_number, vendor_id=entry.vendor_id,
                 )
-                if b:
+                if b and can_access_bill(b.id):
                     entry_bills.append(b)
 
             if not entry_bills:

@@ -111,23 +111,32 @@ def _check_time_entry(time_entry_id: int) -> bool:
             cursor.close()
 
 
-def can_access_bill(bill_id: Optional[int]) -> bool:
-    """True if the current actor may access the bill; False if denied, on any check error,
-    or when there is no bill id (unlike assert_can_access_bill, where None means "nothing to
-    check": a boolean that grants on None would silently disclose on an unresolved id)."""
-    if bill_id is None:
+def _can_access(udf_name: str, label: str, entity_id: Optional[int]) -> bool:
+    """Shared rules for ``can_access_*`` boolean gates.
+
+    Returns False when ``entity_id`` is None — unlike the ``assert_can_access_*``
+    helpers, where None means "nothing to check". A boolean that granted on None
+    would silently disclose on an unresolved id.
+    """
+    if entity_id is None:
         return False
     if _should_bypass():
         return True
     try:
-        return _check("UserCanAccessBill", bill_id)
+        return _check(udf_name, entity_id)
     except Exception as exc:
         logger.warning(
-            "can_access_bill check failed for bill_id=%s: %s",
-            bill_id,
+            "can_access_%s check failed for %s_id=%s: %s",
+            label,
+            label,
+            entity_id,
             type(exc).__name__,
         )
         return False
+
+
+def can_access_bill(bill_id: Optional[int]) -> bool:
+    return _can_access("UserCanAccessBill", "bill", bill_id)
 
 
 def assert_can_access_bill(bill_id: Optional[int]) -> None:
@@ -135,6 +144,14 @@ def assert_can_access_bill(bill_id: Optional[int]) -> None:
         return
     if not _check("UserCanAccessBill", bill_id):
         raise EntityNotAccessibleError("Bill", bill_id)
+
+
+def can_access_bill_credit(bill_credit_id: Optional[int]) -> bool:
+    return _can_access("UserCanAccessBillCredit", "bill_credit", bill_credit_id)
+
+
+def can_access_expense(expense_id: Optional[int]) -> bool:
+    return _can_access("UserCanAccessExpense", "expense", expense_id)
 
 
 def assert_can_access_bill_credit(bill_credit_id: Optional[int]) -> None:

@@ -9,7 +9,7 @@ from decimal import Decimal
 from entities.bill_credit.business.model import BillCredit
 from entities.bill_credit.persistence.repo import BillCreditRepository
 from entities.vendor.business.service import VendorService
-from shared.access import assert_can_access_bill_credit
+from shared.access import assert_can_access_bill_credit, can_access_bill_credit
 from shared.authz import current_user_id, current_is_system_admin
 
 from shared.lifecycle.terminal_lock import StatusLockedError
@@ -54,7 +54,14 @@ class BillCreditService:
         # Check if a bill credit with the same CreditNumber and VendorId already exists
         existing = self.repo.read_by_credit_number_and_vendor_id(credit_number=credit_number, vendor_id=vendor_id)
         if existing:
-            raise ValueError(f"A bill credit with CreditNumber '{credit_number}' already exists for this vendor. Please update the existing bill credit instead of creating a new one.")
+            if can_access_bill_credit(existing.id):
+                raise ValueError(
+                    f"A bill credit with CreditNumber '{credit_number}' already exists for this vendor. "
+                    f"Please update the existing bill credit instead of creating a new one."
+                )
+            raise ValueError(
+                "A bill credit with this number already exists for this vendor."
+            )
         
         return self.repo.create(
             tenant_id=tenant_id,

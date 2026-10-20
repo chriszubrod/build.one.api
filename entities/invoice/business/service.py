@@ -333,6 +333,11 @@ class InvoiceService:
                 raise ValueError(f"Payment term with public_id '{payment_term_public_id}' not found.")
             payment_term_id = payment_term.id
 
+        # Duplicate lookup is safe: project_id came from ProjectService.read_by_public_id
+        # above, which refuses inaccessible projects before we reach this unscoped
+        # (project_id, invoice_number) probe. Do not change the "already exists" wording —
+        # integrations/intuit/qbo/invoice/connector/invoice/business/service.py matches it
+        # for numeric-suffix retry on QBO pull CREATE.
         existing = self.repo.read_by_invoice_number_and_project_id(
             invoice_number=invoice_number, project_id=project_id
         )

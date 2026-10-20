@@ -43,7 +43,7 @@ from entities.expense.business.model import Expense
 from entities.expense.persistence.repo import ExpenseRepository
 from entities.attachment.business.service import AttachmentService
 from entities.project.business.service import ProjectService
-from shared.access import EntityNotAccessibleError, assert_can_access_expense
+from shared.access import EntityNotAccessibleError, assert_can_access_expense, can_access_expense
 from shared.api.money import details_ledger_amount
 from shared.authz import current_user_id, current_is_system_admin
 from shared.authz.delegation import assert_may_act_as
@@ -270,6 +270,26 @@ class ExpenseService:
         if not reference_number:
             raise ValueError("Reference number is required.")
 
+        vendor = VendorService().read_by_public_id(public_id=vendor_public_id)
+        if not vendor:
+            raise ValueError(f"Vendor with public_id '{vendor_public_id}' not found.")
+        vendor_id = vendor.id
+
+        # Duplicate check before EmailAttachment → Attachment auto-bridge so a
+        # rejected duplicate never leaves an orphan bridged Attachment row.
+        existing = self.repo.read_by_reference_number_and_vendor_id(
+            reference_number=reference_number, vendor_id=vendor_id
+        )
+        if existing:
+            if can_access_expense(existing.id):
+                raise ValueError(
+                    f"An expense with ReferenceNumber '{reference_number}' already exists for this vendor. "
+                    f"Please update the existing expense instead of creating a new one."
+                )
+            raise ValueError(
+                "An expense with this reference number already exists for this vendor."
+            )
+
         # Resolve + validate the receipt attachment up front (fail fast) when one
         # is supplied. Mirrors BillService.create, including the EmailAttachment
         # auto-bridge fallback so an agent that passes an EmailAttachment public_id
@@ -297,11 +317,6 @@ class ExpenseService:
                     f"Attachment must be application/pdf; got '{attachment.content_type}'."
                 )
 
-        vendor = VendorService().read_by_public_id(public_id=vendor_public_id)
-        if not vendor:
-            raise ValueError(f"Vendor with public_id '{vendor_public_id}' not found.")
-        vendor_id = vendor.id
-
         # Resolve source EmailMessage UUID → BIGINT for the FK column.
         source_email_message_id = None
         if source_email_message_public_id:
@@ -310,11 +325,6 @@ class ExpenseService:
             if not source_email:
                 raise ValueError(f"EmailMessage with public_id '{source_email_message_public_id}' not found.")
             source_email_message_id = source_email.id
-
-        # Check if an expense with the same ReferenceNumber and VendorId already exists
-        existing = self.repo.read_by_reference_number_and_vendor_id(reference_number=reference_number, vendor_id=vendor_id)
-        if existing:
-            raise ValueError(f"An expense with ReferenceNumber '{reference_number}' already exists for this vendor. Please update the existing expense instead of creating a new one.")
 
         expense = self.repo.create(
             tenant_id=tenant_id,

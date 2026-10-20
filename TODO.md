@@ -2,6 +2,96 @@
 
 Carry-over items from sessions. Check off as done; prune anything stale.
 
+## Expense artifacts are built at submit-for-review from the SUSPENSE cost code and never regenerated — 3 confirmed, $5,921.45 hidden from a live subtotal (booked 2026-10-20, Expense review run)
+
+Found by processing `[Review] Huskey Building Supply — Expense QBO-76865 — HE12 — $5,921.45, 45.00`
+end-to-end. Not a code read: the expense coded and completed **cleanly**, and the HE12 workbook row was
+still wrong afterwards.
+
+**The mechanism.** An expense's external artifacts — the `DETAILS` row in *both* workbooks and the
+SharePoint receipt filename — are generated when it is **submitted for review**, while the line still sits
+on SubCostCode **481 = `00.02` "Suspense"** (`IsHoldingCode=1`). When the reviewer's real coding arrives via
+`apply-reviewer-decision` and `complete_expense` runs, the Excel sync's idempotency check asks only *"does
+column Z already hold this line's public_id?"* — never *"does the row still agree with the line?"* — so it
+returns `{"success": True, "message": "All 1 row(s) already synced"}` and changes nothing. The success is
+accurate about what it checked and silent about what it missed.
+
+Both halves are required: artifacts emitted **early**, from the suspense code, plus an idempotency key that
+cannot see **content drift**.
+
+⚠️ **This is NOT a gap in U-632 (`814b994d`), and U-632 does not fix it.** U-632 makes `00.02` unapprovable,
+uncompletable, unpushable and unbillable, but deliberately **permits** it while draft / submitted /
+in_review / declined — a parking spot is the point. Artifact generation happens *inside that legitimate
+window*. So the fix must not forbid `00.02`; it must stop emitting coding-bearing artifacts while a record
+is parked on it, or re-emit them when it is recoded.
+
+Code (line numbers against `origin/master` @ `f21beb8d` — an earlier draft of this item cited numbers from
+a stale checkout that were off by ~200; re-measure before trusting them):
+
+- `entities/expense/business/service.py:1496` — the root of the bad cells:
+  `cost_code_number = sub_cost_code_number.split(".")[0]`, so `00.02` → **B=`"00"`, C=`"00.02"`**
+  (written at **1503-1504**). A real code like `45.00` → B=`"45"`.
+- `entities/expense/business/service.py:1445-1470` — `existing_public_ids` from column Z (index 25), the
+  `new_line_items` filter, the early return. Second, near-identical copy at **1682-1727** (receipts path).
+- `entities/expense/business/service.py:1904` and **2112** — `sub_cost_code_number` enters `filename_parts`,
+  so the receipt filename freezes the suspense code too. Two copies, module folder and receipts folder.
+
+⚠️ **Box already has the right primitive; SharePoint has none.** `box.WorkbookEntityPush.ContentHash` exists
+and is populated (row 1416 for this expense = `f7dd74cd…`), so the Box path *could* detect drift. The MS path
+has no content key at all. Note also `complete_expense`'s result dict carries no Box section — the Box push
+is driven elsewhere — so re-completion does not re-evaluate that hash today.
+
+### Confirmed instances 🟠
+
+| Expense | Workbook | Row | B / C now | Should be | Amount |
+|---|---|---|---|---|---|
+| QBO-76865 | HE12 SharePoint `DETAILS` | **3968** | `0` / `0.02` | `45` / `45` (numeric) | **$5,921.45** |
+| QBO-76865 | HE12 Box `DETAILS` (file `2272204885423`) | **5371** | `'00'` / `'00.02'` — *text* | `45` / `45` (numeric) | same row |
+| QBO-76604 | SHT | — | `00.02` family | `65.01` | $64.85 |
+| QBO-76618 | SHT | **2724** | `0` / `0.02` | — | $107.40 |
+
+**Why column B is the whole story:** `DETAILS` subtotals are whole-column
+`=SUMIFS(N:N, $B:$B, <code>, $E:$E, "<>SUBTOTAL")`. Inclusion depends on **column B, not row position**, so a
+`B=0` row is excluded from its cost-code subtotal while looking perfectly present in the sheet. $5,921.45 is
+currently **invisible to HE12's 45.00 rollup**. The Box copy is worse — `'00'` is *text*, which also defeats
+numeric criteria matching. The two copies do not cross-propagate (KI-39), so each needs fixing separately.
+
+### Tasks
+
+- [ ] 🟠 **Key Excel-sync idempotency on content, not existence.** Compare the worksheet row against the line
+  item (at minimum cost code, amount, description) and **update in place** on drift; keep the public_id match
+  for *locating* the row. Do both copies — **1445-1470** and **1682-1727** — a fix to one leaves the receipts
+  path broken. Prefer reusing the Box `ContentHash` shape over minting a second primitive.
+- [ ] 🟠 **Decide early-vs-late artifact generation (the altitude call).** Either defer row/filename emission
+  from submit-for-review to completion, when the coding is final, or make completion **re-emit**. The first is
+  cleaner; the second preserves a reviewer's ability to see the receipt in SharePoint *before* approving,
+  which is why it is emitted early today — so this is a real trade, not an oversight. The idempotency fix
+  alone still writes a suspense row first and corrects it later, which is a worse audit trail than never
+  writing it wrong. Ties directly to U-632's "parked is legitimate" stance.
+- [ ] 🟠 **SWEEP: size the hidden total across every project workbook.** For each `ms.DriveItemProjectExcel`
+  and `box.ProjectWorkbook` mapping, read `DETAILS` and report every row carrying a column-Z public_id **and**
+  a column B that is `0`, `'00'`, blank, or disagreeing with the line item's current SubCostCode. Output:
+  project, workbook, copy (SharePoint/Box), row, current B/C, expected B/C, amount, entity ref. Reads are not
+  write-gated (Box downloads explicitly so), so this is safe to run unattended — **report only, change
+  nothing.** Expect Bill and BillCredit rows too; the suspense path is not expense-specific. HE12's SharePoint
+  copy held exactly one such row, so per-workbook counts are likely low and the total is a long tail.
+- [ ] 🟡 **Make a drifted row a `ReconciliationIssue`.** U-580 added durable issue recording at the silent
+  failure sites; "workbook row disagrees with the line item" is the same family and has no signal at all
+  today. Reuse `MsReconciliationIssueService` / `box.ReconciliationIssue`.
+- [ ] 🟡 **Stop reporting a skip as an unqualified success.** `"All N row(s) already synced"` with
+  `success: True` is what made this invisible in the completion result. Say what was verified —
+  `"N row(s) present (coding not re-verified)"` — until the content check lands.
+- [ ] 🟢 **Operator fixes for QBO-76865 — Chris, not code.** HE12 SharePoint row **3968** and Box row **5371**
+  → `B=45`, `C=45`, numeric in both; and rename the SharePoint receipt
+  `EXP - HE12 - Huskey Building Supply - QBO-76865 - Screens - 00.02 - $5,921.45 - 09-15-2026.pdf`
+  to carry `45.00` in place of `00.02`. QBO-76604's two SharePoint PDFs are an older, still-open instance of
+  the same rename problem. Per `feedback_in_place_workbook_cell_fixes_are_operator_work`, the classifier
+  denies these writes and they are not to be routed around.
+
+Related: [[project_box_details_sync_column_misalignment]], [[project_box_details_blank_costcode_orphans]],
+[[feedback_in_place_workbook_cell_fixes_are_operator_work]], [[feedback_excel_draw_update]],
+U-632 (`814b994d`), U-580 (`20f6f23c`).
+
 ## U-676h residuals — memo / short description / line-1 single source (booked 2026-10-19)
 
 - [ ] **Excel formula injection (pre-existing, found in U-676h Pass 3):** `integrations/box/excel/business/workbook_editor.py`

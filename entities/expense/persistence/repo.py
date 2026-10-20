@@ -16,7 +16,10 @@ from shared.database import (
     get_connection,
     map_database_error,
 )
-from shared.lifecycle.terminal_lock import reraise_if_sproc_status_locked
+from shared.lifecycle.terminal_lock import (
+    reraise_if_sproc_refusal,
+    reraise_if_sproc_status_locked,
+)
 from shared.api.money import to_decimal_or_none
 
 logger = logging.getLogger(__name__)
@@ -436,16 +439,10 @@ class ExpenseRepository:
                 row = cursor.fetchone()
                 return self._from_db(row) if row else None
         except Exception as error:
+            from entities.expense.business.service import DELETE_CITATION_REFUSAL_PREFIX
+
             reraise_if_sproc_status_locked(error, what="it cannot be deleted")
-            text = str(error)
-            marker = "Cannot delete this expense:"
-            idx = text.find(marker)
-            if idx != -1:
-                msg = text[idx:]
-                cut = msg.find(" (")
-                if cut != -1:
-                    msg = msg[:cut]
-                raise ValueError(msg) from error
+            reraise_if_sproc_refusal(error, DELETE_CITATION_REFUSAL_PREFIX)
             logger.error(f"Error during cascade delete of expense: {error}")
             raise map_database_error(error)
 

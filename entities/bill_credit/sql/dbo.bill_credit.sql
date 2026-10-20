@@ -1,3 +1,7 @@
+-- Contract: dbo.BillCredit   (U-631; mirror of entities/bill_credit/business/service.py docstring)
+-- Owns: BillCredit header; line items in bill_credit_line_item entity.
+-- Invariants: DeleteBillCreditCascadeById draft-only, refuses QboId and invoice citations (U-684a).
+-- Sprocs: CountBillCredits, CreateBillCredit, DeleteBillCreditById, DeleteBillCreditCascadeById, ReadBillCreditByCreditNumberAndVendorId, ReadBillCreditById, ReadBillCreditByPublicId, ReadBillCreditByQboIdAndRealmId, ReadBillCredits, ReadBillCreditsPaginated, SetBillCreditQboIdentity, UpdateBillCreditById
 GO
 
 IF OBJECT_ID('dbo.BillCredit', 'U') IS NULL
@@ -276,6 +280,96 @@ BEGIN
 END;
 GO
 
+GO
+
+-- ===========================================================================
+-- DeleteBillCreditCascadeById (U-684a)
+--
+-- ONE transaction, header locked first. Draft-only (IsDraft=1); no admin
+-- override. Refuses QBO-sourced credits and any credit whose line is cited
+-- by an InvoiceLineItem. Attachment ROWS survive — only link rows go.
+-- ===========================================================================
+CREATE OR ALTER PROCEDURE DeleteBillCreditCascadeById
+(
+    @Id BIGINT
+)
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+
+    BEGIN TRANSACTION;
+
+    DECLARE @IsDraft BIT = NULL;
+    DECLARE @QboId NVARCHAR(50) = NULL;
+    SELECT @IsDraft = [IsDraft], @QboId = [QboId]
+    FROM dbo.[BillCredit] WITH (UPDLOCK, HOLDLOCK)
+    WHERE [Id] = @Id;
+
+    IF @IsDraft = 0
+    BEGIN
+        COMMIT TRANSACTION;
+        RAISERROR('STATUS_LOCKED: a non-draft Bill Credit cannot be deleted.', 16, 1);
+        RETURN;
+    END
+
+    IF @QboId IS NOT NULL
+    BEGIN
+        COMMIT TRANSACTION;
+        RAISERROR('This bill credit came from QuickBooks; delete it in QuickBooks instead.', 16, 1);
+        RETURN;
+    END
+
+    DECLARE @CitingInvoiceNumber NVARCHAR(50) = NULL;
+    DECLARE @CitingInvoicePublicId UNIQUEIDENTIFIER = NULL;
+    SELECT TOP 1
+        @CitingInvoiceNumber = i.[InvoiceNumber],
+        @CitingInvoicePublicId = i.[PublicId]
+    FROM dbo.[InvoiceLineItem] ili
+    INNER JOIN dbo.[BillCreditLineItem] bcli ON bcli.[Id] = ili.[BillCreditLineItemId]
+    INNER JOIN dbo.[Invoice] i ON i.[Id] = ili.[InvoiceId]
+    WHERE bcli.[BillCreditId] = @Id
+    ORDER BY i.[Id];
+
+    IF @CitingInvoicePublicId IS NOT NULL
+    BEGIN
+        COMMIT TRANSACTION;
+        DECLARE @CitingMsg NVARCHAR(400);
+        SET @CitingMsg = 'Cannot delete this bill credit: invoice '
+            + COALESCE(NULLIF(LTRIM(RTRIM(@CitingInvoiceNumber)), ''), CONVERT(NVARCHAR(36), @CitingInvoicePublicId))
+            + ' still cites one of its line items.';
+        RAISERROR('%s', 16, 1, @CitingMsg);
+        RETURN;
+    END
+
+    DELETE bclia
+    FROM dbo.[BillCreditLineItemAttachment] bclia
+    INNER JOIN dbo.[BillCreditLineItem] bcli ON bcli.[Id] = bclia.[BillCreditLineItemId]
+    WHERE bcli.[BillCreditId] = @Id;
+
+    DELETE FROM dbo.[BillCreditLineItem] WHERE [BillCreditId] = @Id;
+
+    DELETE FROM dbo.[Review] WHERE [BillCreditId] = @Id;
+
+    DELETE FROM dbo.[BillCredit]
+    OUTPUT
+        DELETED.[Id],
+        DELETED.[PublicId],
+        DELETED.[RowVersion],
+        CONVERT(VARCHAR(19), DELETED.[CreatedDatetime], 120) AS [CreatedDatetime],
+        CONVERT(VARCHAR(19), DELETED.[ModifiedDatetime], 120) AS [ModifiedDatetime],
+        DELETED.[VendorId],
+        CONVERT(VARCHAR(19), DELETED.[CreditDate], 120) AS [CreditDate],
+        DELETED.[CreditNumber],
+        DELETED.[TotalAmount],
+        DELETED.[Memo],
+        DELETED.[IsDraft],
+        DELETED.[QboId],
+        DELETED.[RealmId]
+    WHERE [Id] = @Id;
+
+    COMMIT TRANSACTION;
+END;
 GO
 
 CREATE OR ALTER PROCEDURE DeleteBillCreditById

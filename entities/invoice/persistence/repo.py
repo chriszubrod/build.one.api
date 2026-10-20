@@ -14,8 +14,11 @@ from shared.database import (
     get_connection,
     map_database_error,
 )
-
-from shared.lifecycle.terminal_lock import is_exempt
+from shared.lifecycle.terminal_lock import (
+    is_exempt,
+    reraise_if_sproc_refusal,
+    reraise_if_sproc_status_locked,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -285,6 +288,26 @@ class InvoiceRepository:
                 return self._from_db(row) if row else None
         except Exception as error:
             logger.error(f"Error during delete invoice by ID: {error}")
+            raise map_database_error(error)
+
+    def delete_cascade_by_id(self, id: int) -> Optional[Invoice]:
+        """U-684a: delete an Invoice and every row that FKs to it, in ONE transaction."""
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(
+                    cursor=cursor,
+                    name="DeleteInvoiceCascadeById",
+                    params={"Id": id},
+                )
+                row = cursor.fetchone()
+                return self._from_db(row) if row else None
+        except Exception as error:
+            from entities.invoice.business.service import QBO_DELETE_REFUSAL
+
+            reraise_if_sproc_status_locked(error, what="it cannot be deleted")
+            reraise_if_sproc_refusal(error, QBO_DELETE_REFUSAL)
+            logger.error(f"Error during cascade delete of invoice: {error}")
             raise map_database_error(error)
 
     def read_source_link_lines(self, invoice_id: int) -> list:

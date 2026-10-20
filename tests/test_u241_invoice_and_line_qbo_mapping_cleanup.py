@@ -26,16 +26,15 @@ def test_invoice_delete_no_longer_clears_any_qbo_mapping():
     """U-356: qbo.InvoiceInvoice is retired — Invoice's delete no longer calls
     delete_own_qbo_mapping_before_header at all (dbo.Invoice.QboId/RealmId are
     plain columns that die with the row; there is no separate mapping row to
-    clear-then-restore). A straight header delete — the U-356 deploy-gap bridge
-    that briefly preceded it was deleted in U-365 once the table was dropped."""
-    invoice = SimpleNamespace(id=11, public_id="inv-pub")
+    clear-then-restore). U-684a: the whole cascade is one sproc call now."""
+    invoice = SimpleNamespace(
+        id=11, public_id="inv-pub", is_draft=True, qbo_id=None, status=None
+    )
 
     mock_repo = Mock()
-    mock_repo.delete_by_id.return_value = invoice
+    mock_repo.delete_cascade_by_id.return_value = invoice
 
     svc = InvoiceService(repo=mock_repo)
-    svc.invoice_line_item_service.read_by_invoice_id = Mock(return_value=[])
-    svc.invoice_attachment_service.read_by_invoice_id = Mock(return_value=[])
 
     with patch.object(svc, "read_by_public_id", return_value=invoice), patch(
         "integrations.intuit.qbo.base.mapping_cleanup.delete_own_qbo_mapping_before_header"
@@ -44,7 +43,7 @@ def test_invoice_delete_no_longer_clears_any_qbo_mapping():
 
     assert result is invoice
     legacy_helper.assert_not_called()
-    mock_repo.delete_by_id.assert_called_once_with(11)
+    mock_repo.delete_cascade_by_id.assert_called_once_with(11)
     get_conn.assert_not_called()
 
 

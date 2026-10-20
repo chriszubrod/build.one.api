@@ -1,7 +1,7 @@
 -- Contract: dbo.Invoice   (U-631; mirror of entities/invoice/business/service.py docstring)
 -- Owns: Invoice header, source-link helpers, draw matrix, and QBO identity sprocs.
 -- Invariants: UpdateInvoiceById @RowVersion; ReadInvoices/ReadInvoicesPaginated/CountInvoices take @ActorUserId (project-scoped); Create/Update/Delete do NOT SET NOCOUNT ON.
--- Sprocs: BackfillLinkedSourceProjectId, ComputeInvoiceDrawMatrix, CountInvoices, CreateInvoice, DeleteInvoiceById, ProposeInvoiceSourceLinks, ReadInvoiceById, ReadInvoiceByInvoiceNumber, ReadInvoiceByInvoiceNumberAndProjectId, ReadInvoiceByPublicId, ReadInvoiceByQboIdAndRealmId, ReadInvoiceSourceLinkLines, ReadInvoices, ReadInvoicesPaginated, SetInvoiceQboIdentity, UpdateInvoiceById
+-- Sprocs: BackfillLinkedSourceProjectId, ComputeInvoiceDrawMatrix, CountInvoices, CreateInvoice, DeleteInvoiceById, DeleteInvoiceCascadeById, ProposeInvoiceSourceLinks, ReadInvoiceById, ReadInvoiceByInvoiceNumber, ReadInvoiceByInvoiceNumberAndProjectId, ReadInvoiceByPublicId, ReadInvoiceByQboIdAndRealmId, ReadInvoiceSourceLinkLines, ReadInvoices, ReadInvoicesPaginated, SetInvoiceQboIdentity, UpdateInvoiceById
 IF OBJECT_ID('dbo.Invoice', 'U') IS NULL
 BEGIN
 CREATE TABLE [dbo].[Invoice]
@@ -362,6 +362,86 @@ BEGIN
         INSERTED.[Memo],
         INSERTED.[IsDraft]
     WHERE [Id] = @Id AND [RowVersion] = @RowVersion;
+
+    COMMIT TRANSACTION;
+END;
+GO
+
+-- ===========================================================================
+-- DeleteInvoiceCascadeById (U-684a)
+--
+-- ONE transaction, header locked first. Draft-only; no admin override.
+-- Refuses QBO-sourced invoices. Clears ILI children (attachments,
+-- source provenance, lines), invoice attachment links, and Review rows.
+-- Attachment ROWS survive — only link rows go. Does NOT un-bill sources
+-- (draft deletes only; completion marks sources billed).
+-- qbo.InvoiceInvoice was retired (U-356) — no dbo FK remains to clear.
+-- ===========================================================================
+CREATE OR ALTER PROCEDURE DeleteInvoiceCascadeById
+(
+    @Id BIGINT
+)
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+
+    BEGIN TRANSACTION;
+
+    DECLARE @IsDraft BIT = NULL;
+    DECLARE @QboId NVARCHAR(50) = NULL;
+    SELECT @IsDraft = [IsDraft], @QboId = [QboId]
+    FROM dbo.[Invoice] WITH (UPDLOCK, HOLDLOCK)
+    WHERE [Id] = @Id;
+
+    IF @IsDraft = 0
+    BEGIN
+        COMMIT TRANSACTION;
+        RAISERROR('STATUS_LOCKED: a non-draft Invoice cannot be deleted.', 16, 1);
+        RETURN;
+    END
+
+    IF @QboId IS NOT NULL
+    BEGIN
+        COMMIT TRANSACTION;
+        RAISERROR('This invoice came from QuickBooks; delete it in QuickBooks instead.', 16, 1);
+        RETURN;
+    END
+
+    DELETE ilia
+    FROM dbo.[InvoiceLineItemAttachment] ilia
+    INNER JOIN dbo.[InvoiceLineItem] ili ON ili.[Id] = ilia.[InvoiceLineItemId]
+    WHERE ili.[InvoiceId] = @Id;
+
+    DELETE prov
+    FROM dbo.[InvoiceLineItemSourceProvenance] prov
+    INNER JOIN dbo.[InvoiceLineItem] ili ON ili.[Id] = prov.[InvoiceLineItemId]
+    WHERE ili.[InvoiceId] = @Id;
+
+    DELETE FROM dbo.[InvoiceLineItem] WHERE [InvoiceId] = @Id;
+
+    DELETE FROM dbo.[InvoiceAttachment] WHERE [InvoiceId] = @Id;
+
+    DELETE FROM dbo.[Review] WHERE [InvoiceId] = @Id;
+
+    DELETE FROM dbo.[Invoice]
+    OUTPUT
+        DELETED.[Id],
+        DELETED.[PublicId],
+        DELETED.[RowVersion],
+        CONVERT(VARCHAR(19), DELETED.[CreatedDatetime], 120) AS [CreatedDatetime],
+        CONVERT(VARCHAR(19), DELETED.[ModifiedDatetime], 120) AS [ModifiedDatetime],
+        DELETED.[ProjectId],
+        DELETED.[PaymentTermId],
+        CONVERT(VARCHAR(19), DELETED.[InvoiceDate], 120) AS [InvoiceDate],
+        CONVERT(VARCHAR(19), DELETED.[DueDate], 120) AS [DueDate],
+        DELETED.[InvoiceNumber],
+        DELETED.[TotalAmount],
+        DELETED.[Memo],
+        DELETED.[IsDraft],
+        DELETED.[QboId],
+        DELETED.[RealmId]
+    WHERE [Id] = @Id;
 
     COMMIT TRANSACTION;
 END;

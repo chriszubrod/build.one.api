@@ -7,7 +7,11 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 # Local Imports
 from entities.bill_credit.api.schemas import BillCreditCreate, BillCreditUpdate
 from shared.api.money import to_decimal_or_none
-from entities.bill_credit.business.service import BillCreditService
+from entities.bill_credit.business.service import (
+    BillCreditService,
+    DELETE_CITATION_REFUSAL_PREFIX,
+    QBO_DELETE_REFUSAL,
+)
 from entities.bill_credit.business.complete_service import BillCreditCompleteService
 from shared.lifecycle.resolver import attach_lifecycle
 from shared.rbac import require_module_api
@@ -15,7 +19,14 @@ from shared.rbac_constants import Modules
 from entities.review.business.completion import gate_completion
 from entities.review.business.model import ParentType
 from core.workflow.api.process_engine import ProcessEngine, TriggerContext, EventType, Channel
-from shared.api.responses import list_response, item_response, raise_workflow_error, raise_not_found
+from shared.api.responses import (
+    ApiError,
+    ErrorCode,
+    list_response,
+    item_response,
+    raise_workflow_error,
+    raise_not_found,
+)
 
 router = APIRouter(prefix="/api/v1", tags=["api", "bill_credit"])
 
@@ -224,7 +235,16 @@ def delete_bill_credit_by_public_id_router(public_id: str, current_user: dict = 
     result = ProcessEngine().execute_synchronous(context)
     
     if not result.get("success"):
-        raise_workflow_error(result.get("error", ""), "Failed to delete bill credit")
+        err = result.get("error", "") or ""
+        if err.startswith(DELETE_CITATION_REFUSAL_PREFIX) or err.startswith(
+            QBO_DELETE_REFUSAL
+        ):
+            raise ApiError(
+                status_code=422,
+                detail=err,
+                error_code=ErrorCode.VALIDATION_ERROR,
+            )
+        raise_workflow_error(err, "Failed to delete bill credit")
     
     return item_response(result.get("data"))
 

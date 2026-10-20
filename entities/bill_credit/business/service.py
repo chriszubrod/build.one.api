@@ -1,3 +1,27 @@
+"""Entity contract — BillCredit.   (maintained with the code)
+
+Owns
+  dbo.BillCredit vendor credit header; line items live in bill_credit_line_item.
+Invariants
+  RBAC: Modules.BILL_CREDITS; by-id paths assert_can_access_bill_credit.
+  Delete: draft-only (IsDraft=1), no admin override; refuses QBO identity and
+  invoice line citations (U-684a).
+External writes
+  Box/SharePoint on complete (outbox); none on delete (links only, no blobs).
+Sprocs
+  CountBillCredits
+  CreateBillCredit
+  DeleteBillCreditById
+  DeleteBillCreditCascadeById
+  ReadBillCreditByCreditNumberAndVendorId
+  ReadBillCreditById
+  ReadBillCreditByPublicId
+  ReadBillCreditByQboIdAndRealmId
+  ReadBillCredits
+  ReadBillCreditsPaginated
+  SetBillCreditQboIdentity
+  UpdateBillCreditById
+"""
 # Python Standard Library Imports
 import logging
 from typing import Optional
@@ -12,7 +36,12 @@ from entities.vendor.business.service import VendorService
 from shared.access import assert_can_access_bill_credit, can_access_bill_credit
 from shared.authz import current_user_id, current_is_system_admin
 
-from shared.lifecycle.terminal_lock import StatusLockedError
+from shared.lifecycle.terminal_lock import assert_editable
+
+QBO_DELETE_REFUSAL = (
+    "This bill credit came from QuickBooks; delete it in QuickBooks instead."
+)
+DELETE_CITATION_REFUSAL_PREFIX = "Cannot delete this bill credit:"
 
 logger = logging.getLogger(__name__)
 
@@ -220,133 +249,34 @@ class BillCreditService:
 
     def delete_by_public_id(self, public_id: str, *, tenant_id: int = None) -> Optional[BillCredit]:
         """
-        Delete a bill credit by public ID with cascading deletes.
-        
-        TODO: In Phase 10, validate tenant_id matches record's tenant
-        
-        Process:
-        1. Get the bill credit by public_id
-        2. Get all BillCreditLineItems for this bill credit
-        3. For each BillCreditLineItem:
-           a. Get its BillCreditLineItemAttachment (1-1 relationship)
-           b. If attachment exists:
-              - Get the Attachment record
-              - Delete the file from Azure Blob Storage (if blob_url exists)
-              - Delete the Attachment record from database
-              - Delete the BillCreditLineItemAttachment record
-           c. Delete the BillCreditLineItem record
-        4. Delete the BillCredit record
+        Delete a draft bill credit and every row that FKs to it, in ONE transaction.
+
+        Cascades inside `DeleteBillCreditCascadeById` (header locked throughout):
+          BillCreditLineItemAttachment links -> BillCreditLineItem rows ->
+          Review -> the BillCredit itself.
+
+        Non-draft credits and QBO-sourced credits are refused for everyone,
+        including system admins. A credit cited by an InvoiceLineItem is refused
+        with the citing invoice number.
+
+        Attachment ROWS and Azure blobs are deliberately LEFT ALONE — only link
+        rows go, so the delete path makes no external calls.
         """
-        # Import here to avoid circular import
-        from entities.bill_credit_line_item.business.service import BillCreditLineItemService
-        from entities.bill_credit_line_item_attachment.business.service import BillCreditLineItemAttachmentService
-        from entities.bill_credit_line_item_attachment.persistence.repo import BillCreditLineItemAttachmentRepository
-        from entities.attachment.business.service import AttachmentService
-        from shared.storage import AzureBlobStorage, AzureBlobStorageError
-        
-        # Step 1: Get the bill credit
         existing = self.read_by_public_id(public_id=public_id)
         if not existing or not existing.id:
             return None
-        
-        bill_credit_id = existing.id
-        
-        # Step 2: Get all BillCreditLineItems for this bill credit
-        bill_credit_line_item_service = BillCreditLineItemService()
-        bill_credit_line_items = bill_credit_line_item_service.read_by_bill_credit_id(bill_credit_id=bill_credit_id)
-        
-        # Step 3: Delete each BillCreditLineItem and its associated attachments
-        bill_credit_line_item_attachment_service = BillCreditLineItemAttachmentService()
-        bill_credit_line_item_attachment_repo = BillCreditLineItemAttachmentRepository()
-        attachment_service = AttachmentService()
-        
-        # Initialize storage once (may fail if config is missing, handle gracefully)
-        storage = None
-        try:
-            storage = AzureBlobStorage()
-        except Exception as e:
-            logger.warning(f"Could not initialize Azure Blob Storage for file deletion: {e}")
-        
-        for line_item in bill_credit_line_items:
-            try:
-                # Step 3a: Get the BillCreditLineItemAttachment for this line item (1-1 relationship)
-                if line_item.public_id:
-                    attachment_link = bill_credit_line_item_attachment_service.read_by_bill_credit_line_item_id(
-                        bill_credit_line_item_public_id=line_item.public_id
-                    )
-                    
-                    # Step 3b: Delete attachment and its file if it exists
-                    if attachment_link and attachment_link.attachment_id:
-                        try:
-                            # Get the attachment record
-                            attachment = attachment_service.read_by_id(id=attachment_link.attachment_id)
-                            # U-446b (Codex round 5, P1). LINK, then ROW, then
-                            # BLOB — in that order, and it matters twice over.
-                            #
-                            # The link has to go FIRST because FK_BillCreditLineItemAttachment_Attachment
-                            # is NO ACTION: with the link still present the
-                            # Attachment delete fails on the FK. That was already
-                            # true before this unit, and the failure was swallowed
-                            # — so this cascade destroyed the blob and then left
-                            # the Attachment row orphaned, every time.
-                            #
-                            # The blob goes LAST because the guarded row delete is
-                            # what decides: an attachment can be a completed
-                            # Bill's evidence too (BLIA multi-split linking), and
-                            # a pre-check cannot settle that — it reads in its own
-                            # transaction, so a Bill completing in between still
-                            # destroyed the bytes. Deleting the row first means
-                            # nothing is destroyed when the guard refuses.
-                            if attachment_link.id:
-                                try:
-                                    bill_credit_line_item_attachment_repo.delete_by_id(id=attachment_link.id)
-                                    logger.info(f"Deleted bill credit line item attachment {attachment_link.id}")
-                                except Exception as e:
-                                    logger.warning(f"Error deleting bill credit line item attachment {attachment_link.id}: {e}")
 
-                            if attachment:
-                                removed = None
-                                try:
-                                    removed = attachment_service.delete_by_public_id(public_id=attachment.public_id)
-                                    logger.info(f"Deleted attachment {attachment.id}")
-                                except StatusLockedError:
-                                    logger.info(
-                                        "Kept attachment %s: it is evidence for a completed Bill",
-                                        attachment.public_id,
-                                    )
-                                except Exception as e:
-                                    logger.warning(f"Error deleting attachment {attachment.id}: {e}")
+        assert_editable(
+            status=getattr(existing, "status", None),
+            is_draft=getattr(existing, "is_draft", None),
+            what="it cannot be deleted",
+            exempt=False,
+        )
 
-                                if removed is not None and attachment.blob_url and storage:
-                                    try:
-                                        storage.delete_file(attachment.blob_url)
-                                        logger.info(f"Deleted blob {attachment.blob_url} for attachment {attachment.id}")
-                                    except AzureBlobStorageError as e:
-                                        logger.warning(f"Error deleting blob {attachment.blob_url} for attachment {attachment.id}: {e}")
-                                    except Exception as e:
-                                        logger.warning(f"Error deleting blob {attachment.blob_url} for attachment {attachment.id}: {e}")
-                        except Exception as e:
-                            logger.warning(f"Error processing attachment for line item {line_item.id}: {e}")
-                
-                # Step 3c: Delete the BillCreditLineItem record
-                if line_item.id and line_item.public_id:
-                    try:
-                        bill_credit_line_item_service.delete_by_public_id(public_id=line_item.public_id)
-                        logger.info(f"Deleted bill credit line item {line_item.id}")
-                    except Exception as e:
-                        logger.warning(f"Error deleting bill credit line item {line_item.id}: {e}")
-                elif line_item.id:
-                    # Fallback: delete directly by ID if public_id is missing
-                    try:
-                        from entities.bill_credit_line_item.persistence.repo import BillCreditLineItemRepository
-                        bill_credit_line_item_repo = BillCreditLineItemRepository()
-                        bill_credit_line_item_repo.delete_by_id(id=line_item.id)
-                        logger.info(f"Deleted bill credit line item {line_item.id} (by ID, no public_id)")
-                    except Exception as e:
-                        logger.warning(f"Error deleting bill credit line item {line_item.id} by ID: {e}")
-            except Exception as e:
-                logger.warning(f"Error processing bill credit line item {line_item.id if line_item.id else 'unknown'}: {e}")
-        
-        # U-353/U-365: no qbo.* mapping row to clear before the header delete —
-        # dbo.BillCredit.QboId/RealmId die with the row.
-        return self.repo.delete_by_id(existing.id)
+        if getattr(existing, "qbo_id", None):
+            raise ValueError(QBO_DELETE_REFUSAL)
+
+        deleted = self.repo.delete_cascade_by_id(existing.id)
+        if deleted is not None:
+            logger.info(f"Deleted bill credit {existing.id} and its dependent rows")
+        return deleted

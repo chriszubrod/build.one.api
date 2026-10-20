@@ -164,6 +164,23 @@ def is_exempt(exempt: bool = False) -> bool:
     return bool(exempt) or is_system_caller()
 
 
+def reraise_if_sproc_refusal(error: Exception, *markers: str) -> None:
+    """Map a sproc RAISERROR refusal (citation, QBO delete, …) to ValueError.
+
+    pyodbc appends driver noise after `` (`` — strip that so routers never
+    surface driver text.
+    """
+    text = str(error)
+    for marker in markers:
+        idx = text.find(marker)
+        if idx != -1:
+            msg = text[idx:]
+            cut = msg.find(" (")
+            if cut != -1:
+                msg = msg[:cut]
+            raise ValueError(msg) from error
+
+
 def reraise_if_sproc_status_locked(error: Exception, *, what: str) -> None:
     """Turn a sproc's RAISERROR back into the typed error the routers map to 422.
 

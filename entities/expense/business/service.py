@@ -77,6 +77,8 @@ from shared.lifecycle.terminal_lock import assert_editable, is_exempt, reraise_i
 from shared.lifecycle.completion_gate import HoldingCodeRefused
 from shared.database import get_connection
 
+DELETE_CITATION_REFUSAL_PREFIX = "Cannot delete this expense:"
+
 logger = logging.getLogger(__name__)
 
 

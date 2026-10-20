@@ -165,24 +165,24 @@ def test_bill_credit_delete_no_longer_clears_any_qbo_mapping():
     """U-353: qbo.VendorCreditBillCredit is retired — BillCredit's delete no
     longer calls delete_own_qbo_mapping_before_header at all (dbo.BillCredit.
     QboId/RealmId are plain columns that die with the row; there is no
-    separate mapping row to clear first). A straight header delete, same
-    shape as Bill/Expense before U-226 ever touched them (the U-353 deploy-gap
-    bridge that briefly preceded it was deleted in U-365)."""
-    bill_credit = SimpleNamespace(id=42, public_id="bc-pub")
+    separate mapping row to clear first). U-684a: the whole cascade is one
+    sproc call now."""
+    bill_credit = SimpleNamespace(
+        id=42, public_id="bc-pub", is_draft=True, qbo_id=None, status=None
+    )
 
     mock_repo = Mock()
-    mock_repo.delete_by_id.return_value = bill_credit
+    mock_repo.delete_cascade_by_id.return_value = bill_credit
 
     svc = BillCreditService(repo=mock_repo)
 
     with patch.object(svc, "read_by_public_id", return_value=bill_credit), patch(
-        "entities.bill_credit_line_item.business.service.BillCreditLineItemService"
-    ) as li_svc_cls, patch("shared.database.get_connection") as get_conn:
-        li_svc_cls.return_value.read_by_bill_credit_id.return_value = []
+        "shared.database.get_connection"
+    ) as get_conn:
         result = svc.delete_by_public_id("bc-pub")
 
     assert result is bill_credit
-    mock_repo.delete_by_id.assert_called_once_with(42)
+    mock_repo.delete_cascade_by_id.assert_called_once_with(42)
     get_conn.assert_not_called()
 
 

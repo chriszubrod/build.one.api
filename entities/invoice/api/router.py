@@ -12,9 +12,17 @@ from decimal import Decimal, InvalidOperation
 # Local Imports
 from entities.invoice.api.schemas import InvoiceCreate, InvoiceUpdate
 from entities.invoice.business.cover import _signed_line_amount
-from entities.invoice.business.service import InvoiceService
+from entities.invoice.business.service import InvoiceService, QBO_DELETE_REFUSAL
 from shared.api.money import to_decimal_or_none
-from shared.api.responses import list_response, item_response, raise_not_found
+from shared.api.responses import (
+    ApiError,
+    ErrorCode,
+    list_response,
+    item_response,
+    raise_not_found,
+    raise_workflow_error,
+)
+from shared.lifecycle.terminal_lock import StatusLockedError
 from shared.pdf_utils import fit_page_to_letter
 from shared.lifecycle.resolver import attach_lifecycle
 from shared.rbac import require_module_api
@@ -1296,6 +1304,17 @@ def delete_invoice_by_public_id_router(public_id: str, current_user: dict = Depe
         if not invoice:
             raise_not_found("Invoice")
         return item_response(invoice.to_dict())
+    except StatusLockedError as e:
+        raise_workflow_error(str(e), "Failed to delete invoice")
+    except ValueError as e:
+        msg = str(e)
+        if msg.startswith(QBO_DELETE_REFUSAL):
+            raise ApiError(
+                status_code=422,
+                detail=msg,
+                error_code=ErrorCode.VALIDATION_ERROR,
+            )
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=msg)
     except HTTPException:
         raise
     except Exception as e:

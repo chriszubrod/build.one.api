@@ -14,6 +14,10 @@ from shared.database import (
     get_connection,
     map_database_error,
 )
+from shared.lifecycle.terminal_lock import (
+    reraise_if_sproc_refusal,
+    reraise_if_sproc_status_locked,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -318,6 +322,31 @@ class BillCreditRepository:
                 return self._from_db(row) if row else None
         except Exception as error:
             logger.error(f"Error during delete bill credit by ID: {error}")
+            raise map_database_error(error)
+
+    def delete_cascade_by_id(self, id: int) -> Optional[BillCredit]:
+        """U-684a: delete a Bill Credit and every row that FKs to it, in ONE transaction."""
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(
+                    cursor=cursor,
+                    name="DeleteBillCreditCascadeById",
+                    params={"Id": id},
+                )
+                row = cursor.fetchone()
+                return self._from_db(row) if row else None
+        except Exception as error:
+            from entities.bill_credit.business.service import (
+                DELETE_CITATION_REFUSAL_PREFIX,
+                QBO_DELETE_REFUSAL,
+            )
+
+            reraise_if_sproc_status_locked(error, what="it cannot be deleted")
+            reraise_if_sproc_refusal(
+                error, DELETE_CITATION_REFUSAL_PREFIX, QBO_DELETE_REFUSAL
+            )
+            logger.error(f"Error during cascade delete of bill credit: {error}")
             raise map_database_error(error)
 
     def read_by_qbo_identity(self, qbo_id: str, realm_id: Optional[str] = None) -> Optional[BillCredit]:

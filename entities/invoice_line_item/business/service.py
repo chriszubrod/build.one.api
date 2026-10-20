@@ -264,10 +264,8 @@ class InvoiceLineItemService:
             except Exception:
                 pass
 
-            # Then delete blob and attachment record
-            # U-446b (Codex round 4, P1): row first, blob second — see
-            # entities/invoice/business/service.py for why a pre-check cannot
-            # close this race.
+            # Then delete blob and attachment record (row first, blob second —
+            # U-446b: a pre-check in its own transaction cannot close the race).
             if att:
                 removed = None
                 try:

@@ -15,6 +15,7 @@ Sprocs
   CountInvoices
   CreateInvoice
   DeleteInvoiceById
+  DeleteInvoiceCascadeById
   ProposeInvoiceSourceLinks
   ReadInvoiceById
   ReadInvoiceByInvoiceNumber
@@ -45,9 +46,13 @@ from entities.project.business.service import ProjectService
 from entities.module.business.service import ModuleService
 from shared.api.money import to_decimal_or_none
 
-from shared.lifecycle.terminal_lock import StatusLockedError
+from shared.lifecycle.terminal_lock import assert_editable
 from shared.lifecycle.completion_gate import HoldingCodeRefused
 from entities.sub_cost_code.business.service import SubCostCodeService
+
+QBO_DELETE_REFUSAL = (
+    "This invoice came from QuickBooks; delete it in QuickBooks instead."
+)
 
 logger = logging.getLogger(__name__)
 
@@ -492,66 +497,36 @@ class InvoiceService:
 
     def delete_by_public_id(self, public_id: str, *, tenant_id: int = None) -> Optional[Invoice]:
         """
-        Delete an invoice by public ID with cascading deletes of line items and attachments.
+        Delete a draft invoice and every row that FKs to it, in ONE transaction.
+
+        Cascades inside `DeleteInvoiceCascadeById` (header locked throughout):
+          InvoiceLineItemAttachment links -> InvoiceLineItemSourceProvenance ->
+          InvoiceLineItem rows -> InvoiceAttachment links -> Review -> Invoice.
+
+        Non-draft invoices and QBO-sourced invoices are refused for everyone,
+        including system admins. Sources are not un-billed on delete (draft-only).
+
+        Attachment ROWS and Azure blobs are deliberately LEFT ALONE — only link
+        rows go, so the delete path makes no external calls.
         """
         existing = self.read_by_public_id(public_id=public_id)
         if not existing or not existing.id:
             return None
 
-        invoice_id = existing.id
+        assert_editable(
+            status=getattr(existing, "status", None),
+            is_draft=getattr(existing, "is_draft", None),
+            what="it cannot be deleted",
+            exempt=False,
+        )
 
-        # Reset IsBilled on source line items before deleting
-        line_items = self.invoice_line_item_service.read_by_invoice_id(invoice_id=invoice_id)
-        for line_item in line_items:
-            try:
-                self._reset_source_as_unbilled(line_item)
-            except Exception as e:
-                logger.warning(f"Error resetting IsBilled for line item {line_item.id}: {e}")
+        if getattr(existing, "qbo_id", None):
+            raise ValueError(QBO_DELETE_REFUSAL)
 
-        # Delete invoice line items
-        for line_item in line_items:
-            try:
-                if line_item.id:
-                    self.invoice_line_item_service.delete_by_public_id(public_id=line_item.public_id)
-            except Exception as e:
-                logger.warning(f"Error deleting invoice line item {line_item.id}: {e}")
-
-        # Delete invoice attachments (link first, then attachment record + blob)
-        from entities.attachment.business.service import AttachmentService
-        from shared.storage import AzureBlobStorage
-        attachment_service = AttachmentService()
-        invoice_attachments = self.invoice_attachment_service.read_by_invoice_id(invoice_id=invoice_id)
-        for inv_attachment in invoice_attachments:
-            try:
-                att = attachment_service.read_by_id(id=inv_attachment.attachment_id) if inv_attachment.attachment_id else None
-                if inv_attachment.id:
-                    self.invoice_attachment_service.delete_by_id(id=inv_attachment.id)
-                    # U-446b (Codex round 4, P1). ROW FIRST, BLOB SECOND.
-                    # A pre-check could not close this: it is a COUNT in its own
-                    # transaction, so a Bill completing between the check and
-                    # the Azure call still destroyed evidence. Letting the
-                    # guarded row delete decide means nothing is destroyed when
-                    # it refuses.
-                if att:
-                    try:
-                        removed = attachment_service.delete_by_public_id(public_id=att.public_id)
-                    except StatusLockedError:
-                        logger.info(
-                            "Kept attachment %s: it is evidence for a completed Bill",
-                            att.public_id,
-                        )
-                        removed = None
-                    if removed is not None and att.blob_url:
-                        try:
-                            AzureBlobStorage().delete_file(att.blob_url)
-                        except Exception:
-                            logger.warning(f"Failed to delete blob for attachment {att.public_id}")
-            except Exception as e:
-                logger.warning(f"Error deleting invoice attachment {inv_attachment.id}: {e}")
-
-        # U-356/U-365: no qbo.* mapping row to clear before the header delete —
-        # dbo.Invoice.QboId/RealmId die with the row.
-        return self.repo.delete_by_id(existing.id)
+        deleted = self.repo.delete_cascade_by_id(existing.id)
+        if deleted is not None:
+            logger.info(f"Deleted invoice {existing.id} and its dependent rows")
+        return deleted
 
     def _source_line_sub_cost_code_id(self, line_item) -> Optional[int]:
         """SCC on the linked source line only (ignores the invoice line's own SCC)."""
@@ -2006,7 +1981,10 @@ class InvoiceService:
                     )
 
     def _reset_source_as_unbilled(self, line_item) -> None:
-        """Reset IsBilled=False on the source line item when an invoice is deleted."""
+        """Reset IsBilled=False on the source line item (QBO line connector path).
+
+        Not invoked on invoice delete — draft deletes leave sources unchanged (U-684a).
+        """
         if line_item.source_type == "BillLineItem" and line_item.bill_line_item_id:
             from entities.bill_line_item.business.service import BillLineItemService
             svc = BillLineItemService()

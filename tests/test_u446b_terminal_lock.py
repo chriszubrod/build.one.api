@@ -1803,9 +1803,6 @@ def test_these_repos_send_the_flag_and_map_the_sentinel(repo_mod, repo_cls, meth
 @pytest.mark.parametrize(
     "rel,func",
     [
-        ("entities/invoice/business/service.py", "delete_by_public_id"),
-        ("entities/expense/business/service.py", "delete_by_public_id"),
-        ("entities/bill_credit/business/service.py", "delete_by_public_id"),
         ("entities/invoice_line_item/business/service.py", "delete_by_public_id"),
     ],
 )
@@ -1830,8 +1827,10 @@ def test_every_cascade_removes_the_row_BEFORE_it_destroys_the_blob(rel, func):
     assert target is not None, f"{rel}:{func} moved"
 
     destroys = [n.lineno for n in _calls_in(target, "delete_file")]
-    if not destroys:
-        pytest.skip("this cascade no longer deletes blobs directly")
+    assert destroys, (
+        f"{rel}:{func} no longer deletes blobs — remove it from this parametrize "
+        "or restore the guarded blob path"
+    )
 
     removes = [
         n.lineno for n in _calls_in(target, "delete_by_public_id")
@@ -1855,6 +1854,104 @@ def test_every_cascade_removes_the_row_BEFORE_it_destroys_the_blob(rel, func):
         f"{rel}:{func} must catch StatusLockedError and keep going — a frozen "
         "attachment is a skip, not a failure of the whole cascade"
     )
+
+
+@pytest.mark.parametrize(
+    "svc_path,entity",
+    [
+        (
+            "entities.bill_credit.business.service.BillCreditService",
+            SimpleNamespace(
+                id=99,
+                public_id="bc-pub",
+                is_draft=True,
+                status=None,
+                qbo_id=None,
+            ),
+        ),
+        (
+            "entities.invoice.business.service.InvoiceService",
+            SimpleNamespace(
+                id=88,
+                public_id="inv-pub",
+                is_draft=True,
+                status=None,
+                qbo_id=None,
+            ),
+        ),
+        (
+            "entities.expense.business.service.ExpenseService",
+            SimpleNamespace(
+                id=77,
+                public_id="exp-pub",
+                is_draft=True,
+                status=None,
+                qbo_id=None,
+            ),
+        ),
+    ],
+)
+def test_header_delete_cascade_leaves_blobs_and_attachments_alone(svc_path, entity):
+    """U-684a / U-468: parent delete is sproc-only — no blob or AttachmentService calls."""
+    import importlib
+
+    module_name, _, cls_name = svc_path.rpartition(".")
+    svc_cls = getattr(importlib.import_module(module_name), cls_name)
+
+    set_authz_context(user_id=20, company_id=1, is_system_admin=False)
+    repo = MagicMock()
+    repo.delete_cascade_by_id.return_value = entity
+    svc = svc_cls(repo=repo)
+    svc.read_by_public_id = MagicMock(return_value=entity)
+
+    with patch("entities.attachment.business.service.AttachmentService") as MockAtt, patch(
+        "shared.storage.AzureBlobStorage"
+    ) as MockStorage:
+        svc.delete_by_public_id(entity.public_id)
+
+    if cls_name == "ExpenseService":
+        repo.delete_cascade_by_id.assert_called_once_with(
+            entity.id, allow_terminal_parent=False
+        )
+    else:
+        repo.delete_cascade_by_id.assert_called_once_with(entity.id)
+    MockAtt.assert_not_called()
+    MockStorage.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "rel",
+    [
+        "entities/invoice/business/service.py",
+        "entities/expense/business/service.py",
+        "entities/bill_credit/business/service.py",
+    ],
+)
+def test_header_delete_source_never_touches_blobs_or_attachment_rows(rel):
+    """U-684a: a source scan of the header delete, alongside the runtime test above.
+
+    The runtime test patches AttachmentService / AzureBlobStorage at their source
+    modules, which cannot see a service that imported them at module load (Expense
+    does). This scans DIRECT references in delete_by_public_id's own body; an
+    aliased local import or a helper method is out of its reach, and the runtime
+    test above covers the local-import case.
+    """
+    import ast
+
+    tree = _ast_of(rel)
+    target = next(
+        (n for n in ast.walk(tree)
+         if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == "delete_by_public_id"),
+        None,
+    )
+    assert target is not None, f"{rel}: delete_by_public_id moved"
+    assert not _calls_in(target, "delete_file"), f"{rel}: header delete destroys a blob"
+    names = {n.id for n in ast.walk(target) if isinstance(n, ast.Name)}
+    attrs = {n.attr for n in ast.walk(target) if isinstance(n, ast.Attribute)}
+    assert "AzureBlobStorage" not in names, f"{rel}: header delete builds blob storage"
+    assert "AttachmentService" not in names, f"{rel}: header delete builds AttachmentService"
+    assert "attachment_service" not in attrs, f"{rel}: header delete uses the attachment service"
+    assert _calls_in(target, "delete_cascade_by_id"), f"{rel}: header delete must go through the cascade sproc"
 
 
 # ===========================================================================
@@ -1965,7 +2062,6 @@ def test_a_normal_repo_failure_is_not_relabelled_as_status_locked():
 @pytest.mark.parametrize(
     "rel,func",
     [
-        ("entities/bill_credit/business/service.py", "delete_by_public_id"),
         ("entities/expense_line_item/business/service.py", "delete_by_public_id"),
     ],
 )

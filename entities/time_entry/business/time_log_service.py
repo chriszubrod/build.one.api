@@ -12,6 +12,7 @@ from entities.time_entry.persistence.repo import TimeEntryRepository
 from entities.time_entry.persistence.time_log_repo import TimeLogRepository
 from entities.time_entry.persistence.time_entry_status_repo import TimeEntryStatusRepository
 from entities.time_entry.business.actor_scope import actor_scope as _actor_scope
+from shared.api.responses import entry_lock_prefix
 from shared.database import RecordNotFoundError
 
 logger = logging.getLogger(__name__)
@@ -207,7 +208,8 @@ class TimeLogService:
         )
         if current_status and current_status.status != "draft":
             raise ValueError(
-                f"Cannot modify time logs when time entry is in '{current_status.status}' status. "
+                entry_lock_prefix(current_status.status)
+                + f"Cannot modify time logs when time entry is in '{current_status.status}' status. "
                 "Only 'draft' entries can have their time logs modified."
             )
 

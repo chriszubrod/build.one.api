@@ -224,6 +224,14 @@ def _enrich_payload_with_authz(payload: dict) -> dict:
         company_id=company_id,
         is_system_admin=is_system_admin,
     )
+    from shared.api.request_log import set_request_span_attributes
+
+    set_request_span_attributes(
+        **{
+            "enduser.id": str(user_id) if user_id is not None else None,
+            "buildone.company_id": str(company_id) if company_id is not None else None,
+        }
+    )
 
     payload["user_id"] = user_id
     payload["user_public_id"] = user_public_id
@@ -258,7 +266,9 @@ async def get_current_user_api(
                     expected_token_type="access",
                     allow_legacy=True,
                 )
-                return _enrich_payload_with_authz(payload)
+                payload = _enrich_payload_with_authz(payload)
+                request.state.user_id = payload.get("user_id")
+                return payload
             except ValueError as e:
                 errors.append(str(e))
 
@@ -271,7 +281,9 @@ async def get_current_user_api(
                 expected_token_type="access",
                 allow_legacy=True,
             )
-            return _enrich_payload_with_authz(payload)
+            payload = _enrich_payload_with_authz(payload)
+            request.state.user_id = payload.get("user_id")
+            return payload
         except ValueError as e:
             errors.append(str(e))
 

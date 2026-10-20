@@ -49,6 +49,7 @@ from entities.time_entry.persistence.repo import TimeEntryRepository
 from entities.time_entry.persistence.time_entry_status_repo import TimeEntryStatusRepository
 from entities.time_entry.persistence.time_log_repo import TimeLogRepository
 from entities.user.business.service import UserService
+from shared.api.responses import entry_lock_prefix
 from shared.authz import current_user_id, current_is_system_admin, current_can_view_team
 
 logger = logging.getLogger(__name__)
@@ -276,7 +277,11 @@ class TimeEntryService:
             actor_is_system_admin=True,
         )
         if current_status and current_status.status != "draft":
-            raise ValueError(f"Cannot update time entry in '{current_status.status}' status. Only 'draft' entries can be edited.")
+            raise ValueError(
+                entry_lock_prefix(current_status.status)
+                + f"Cannot update time entry in '{current_status.status}' status. "
+                "Only 'draft' entries can be edited."
+            )
 
         # Phase 5 edit-lock — even if current_status == 'draft' (e.g. after a
         # reject), a previously-aggregated row may already be billed/invoiced.
@@ -334,7 +339,11 @@ class TimeEntryService:
             actor_is_system_admin=True,
         )
         if current_status and current_status.status != "draft":
-            raise ValueError(f"Cannot delete time entry in '{current_status.status}' status. Only 'draft' entries can be deleted.")
+            raise ValueError(
+                entry_lock_prefix(current_status.status)
+                + f"Cannot delete time entry in '{current_status.status}' status. "
+                "Only 'draft' entries can be deleted."
+            )
 
         return self.repo.delete_by_id(
             id=existing.id,

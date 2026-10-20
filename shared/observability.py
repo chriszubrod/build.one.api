@@ -46,6 +46,8 @@ EXPORTED_INFO_LOGGERS: tuple[str, ...] = (
     "integrations.intuit.qbo.reconciliation",
     # QBO sync pull started and completed (qbo.sync.pull.*), and scheduler lifecycle.
     "shared.scheduler",
+    # Time-tracking write audit line (one INFO row per POST/PUT/PATCH/DELETE on time APIs).
+    "shared.api.request_log",
 )
 
 _PYPDF_WARNING_MODULE = r"pypdf(\..*)?"

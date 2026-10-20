@@ -159,7 +159,12 @@ def test_configure_configures_azure_then_exports_only_the_registry(restore_level
 
 def test_registry_is_exactly_the_cascade_and_business_loggers():
     assert sorted(EXPORTED_INFO_LOGGERS) == sorted(
-        ("intelligence.cascade", "intelligence.transport.cascade", *BUSINESS_LOGGER_NAMES)
+        (
+            "intelligence.cascade",
+            "intelligence.transport.cascade",
+            *BUSINESS_LOGGER_NAMES,
+            "shared.api.request_log",  # U-663 time-tracking write audit line
+        )
     )
 
 

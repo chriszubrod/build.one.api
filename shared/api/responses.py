@@ -75,11 +75,25 @@ REVIEW_STATUS_SHAPE_PREFIX = "Review status configuration is invalid: "
 # 409 makes a queued edit loop or get discarded through the wrong path.
 STATUS_LOCKED_PREFIX = "This document is completed and can no longer be edited: "
 
+# U-663 — time-tracking edit locks (iOS classifies 422 + these codes; not 409).
+ENTRY_APPROVED_PREFIX = "This day's entry has been approved: "
+ENTRY_LOCKED_PREFIX = "This day's entry is no longer a draft: "
+
 CONCURRENCY_CONFLICT_MESSAGE = (
     "The record was modified by someone else; reload and retry."
 )
 
+
+def entry_lock_prefix(entry_status: str) -> str:
+    """The message prefix a time-entry/time-log guard raises when the parent day
+    is not a draft. 'approved' is terminal (the phone DISCARDS the edit);
+    anything else is a lock the phone keeps queued behind."""
+    return ENTRY_APPROVED_PREFIX if entry_status == "approved" else ENTRY_LOCKED_PREFIX
+
+
 _WORKFLOW_STATUS_BY_PREFIX: tuple[tuple[str, int, str], ...] = (
+    (ENTRY_APPROVED_PREFIX, status.HTTP_422_UNPROCESSABLE_CONTENT, ErrorCode.ENTRY_APPROVED),
+    (ENTRY_LOCKED_PREFIX, status.HTTP_422_UNPROCESSABLE_CONTENT, ErrorCode.ENTRY_LOCKED),
     (REVIEW_STATUS_SHAPE_PREFIX, status.HTTP_422_UNPROCESSABLE_CONTENT, ErrorCode.REVIEW_STATUS_SHAPE),
     (STATUS_LOCKED_PREFIX, status.HTTP_422_UNPROCESSABLE_CONTENT, ErrorCode.STATUS_LOCKED),
 )

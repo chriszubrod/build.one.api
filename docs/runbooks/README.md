@@ -35,6 +35,7 @@ to run — no need to reverse-engineer the system under pressure.
 | [ramp-chaser.md](ramp-chaser.md) | Ramp receipt/memo chaser — follow-up table empty or stale, a cardholder not being chased, `recipient_changed` fired, turning the digest on or off safely |
 | [cascade-rung-outcomes.md](cascade-rung-outcomes.md) | Which cascade rung wins, its cost and latency (U-649) |
 | [observability-info-export.md](observability-info-export.md) | Which loggers reach App Insights at INFO, and how to add one (U-650) |
+| [time-tracking-request-log.md](time-tracking-request-log.md) | Time-tracking write audit traces + KQL for who edited / lock failures (U-663) |
 
 ## Runbook format
 

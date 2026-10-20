@@ -194,6 +194,10 @@ class ProxyHeadersMiddleware(BaseHTTPMiddleware):
 # Enable proxy headers middleware to handle HTTPS correctly in Azure
 app.add_middleware(ProxyHeadersMiddleware)
 
+from shared.api.request_log import TimeTrackingWriteLogMiddleware
+
+app.add_middleware(TimeTrackingWriteLogMiddleware)
+
 # CORS — allow the React dev server and deployed web app to call this API
 from fastapi.middleware.cors import CORSMiddleware
 

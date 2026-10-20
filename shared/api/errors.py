@@ -26,6 +26,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.requests import Request
 
 from shared.access import EntityNotAccessibleError
+from shared.api.request_log import set_request_span_attributes
 
 
 class ErrorCode:
@@ -36,7 +37,8 @@ class ErrorCode:
     substring rule.
     """
 
-    ENTRY_LOCKED = "entry_locked"  # parent entry left draft — only drafts accept edits
+    ENTRY_LOCKED = "entry_locked"  # parent entry left draft — only drafts accept edits; phone keeps edit queued
+    ENTRY_APPROVED = "entry_approved"  # parent entry is APPROVED — terminal; phone discards the edit
     TRANSITION_INVALID = "transition_invalid"  # "Cannot transition from … to …"
     DUPLICATE_KEY = "duplicate_key"  # unique-key violation (2627/2601)
     CONCURRENCY_CONFLICT = "concurrency_conflict"  # UPDATE matched no row at the stored row version — reload and retry
@@ -103,12 +105,22 @@ async def http_exception_handler(request: Request, exc: StarletteHTTPException):
     # FastAPI's own handler so they never grow a JSON body.
     if not is_body_allowed_for_status_code(exc.status_code):
         return await _fastapi_http_exception_handler(request, exc)
+    error_code = getattr(exc, "error_code", None)
+    _record_error(request, error_code)
     return error_response(
         exc.status_code,
         exc.detail,
-        getattr(exc, "error_code", None),
+        error_code,
         getattr(exc, "headers", None),
     )
+
+
+def _record_error(request: Request, error_code: str | None) -> None:
+    """Stamp the error code on the request span and on `request.state` so the
+    time-write audit middleware (shared/api/request_log.py) can log it. Every
+    error-body producer calls this — a handler that skips it logs a bare status."""
+    set_request_span_attributes(**{"buildone.error_code": error_code})
+    request.state.error_code = error_code
 
 
 def _json_safe(obj: object) -> object:
@@ -128,12 +140,14 @@ def _json_safe(obj: object) -> object:
 async def request_validation_handler(request: Request, exc: RequestValidationError):
     # Byte-identical to FastAPI's default (422 + jsonable_encoder(exc.errors()) as
     # `detail`), plus the sibling key — so the contract holds for every error body.
+    _record_error(request, ErrorCode.VALIDATION_ERROR)
     return error_response(422, _json_safe(jsonable_encoder(exc.errors())), ErrorCode.VALIDATION_ERROR)
 
 
 async def entity_not_accessible_handler(request: Request, exc: EntityNotAccessibleError):
     """Map per-row access denial to 404 (not 403) so the URL doesn't confirm
     the entity exists to a caller without UserProject access."""
+    _record_error(request, ErrorCode.NOT_FOUND)
     return error_response(404, "Not found", ErrorCode.NOT_FOUND)
 
 

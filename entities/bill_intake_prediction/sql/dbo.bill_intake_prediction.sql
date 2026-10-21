@@ -55,7 +55,7 @@ BEGIN
         [FinalizedDatetime]        DATETIME2(3)       NULL,
         -- PLACEHOLDER (U-676m): nothing writes RejectReason in this unit.
         [RejectReason]             NVARCHAR(500)      NULL,
-        CONSTRAINT [CK_BillIntakePrediction_IntakeSource] CHECK ([IntakeSource] IN ('pdf_drop','pdf_upload','list_drop')),
+        CONSTRAINT [CK_BillIntakePrediction_IntakeSource] CHECK ([IntakeSource] IN ('pdf_drop','pdf_upload','list_drop','reread')),
         CONSTRAINT [CK_BillIntakePrediction_Status] CHECK ([Status] IN ('ok','partial','unreadable','timeout','ai_unavailable'))
     );
 END

@@ -41,7 +41,7 @@ from shared.authz import current_user_id
 
 logger = logging.getLogger(__name__)
 
-IntakeSource = Literal["pdf_drop", "pdf_upload", "list_drop"]
+IntakeSource = Literal["pdf_drop", "pdf_upload", "list_drop", "reread"]
 INTAKE_SOURCES = frozenset(get_args(IntakeSource))
 
 TEXT_MODEL_VERSION = MODEL_VERSION

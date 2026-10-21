@@ -559,8 +559,9 @@ async def run_bill_read_attachment(
 
     att_svc = attachment_service or AttachmentService()
     if pre_gated is not None:
-        # The caller (the list-drop service) already ran gate_attachment_for_bill_read and
-        # refused a linked attachment; never reachable from an HTTP request body.
+        # Callers: list-drop (gate already ran; linked attachments refused) and U-704 reread
+        # (server-resolved attachment on the caller's own draft bill). pre_gated is only ever
+        # built from a server-resolved attachment, never from request input.
         attachment, is_taxpayer = pre_gated
         timing_ms["attachment"] = 0
         timing_ms["link_state"] = 0

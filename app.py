@@ -73,6 +73,7 @@ from entities.attachment.api.router import router as attachment_api_router
 from entities.bill.api.router import router as bill_api_router
 from entities.bill.api.read_attachment_router import router as bill_read_attachment_api_router
 from entities.bill.api.draft_from_attachment_router import router as bill_draft_from_attachment_api_router
+from entities.bill.api.reread_attachment_router import router as bill_reread_attachment_api_router
 from entities.bill_intake_prediction.api.router import router as bill_intake_prediction_api_router
 from entities.bill_line_item.api.router import router as bill_line_item_api_router
 from entities.bill_line_item_attachment.api.router import router as bill_line_item_attachment_api_router
@@ -295,6 +296,7 @@ app.include_router(attachment_api_router)
 app.include_router(bill_api_router)
 app.include_router(bill_read_attachment_api_router)
 app.include_router(bill_draft_from_attachment_api_router)
+app.include_router(bill_reread_attachment_api_router)
 app.include_router(bill_intake_prediction_api_router)
 app.include_router(bill_line_item_api_router)
 app.include_router(bill_line_item_attachment_api_router)

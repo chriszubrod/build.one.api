@@ -39,10 +39,10 @@ def qbo_app_lock(resource_name: str, timeout_ms: int = 15000) -> Iterator[bool]:
     Acquire a named SQL Server application lock for cross-process serialization.
 
     Yields True if the lock was acquired, False if acquisition timed out or
-    otherwise failed. On exit, the lock is explicitly released via
-    `sp_releaseapplock`; session-scope ownership means that in the event of
-    an unexpected termination the lock also auto-releases when the
-    connection closes.
+    otherwise failed. On the normal path the lock is released explicitly via
+    `sp_releaseapplock` before commit. Every failure path rolls back (which
+    releases a Transaction-owned applock). `get_connection` closes with pyodbc's
+    rollback-on-close as a backstop so a pooled session cannot retain the lock.
 
     This is the correct primitive when two separate Python processes (e.g.,
     the API and a standalone sync script) might contend for a resource —
@@ -68,7 +68,7 @@ def qbo_app_lock(resource_name: str, timeout_ms: int = 15000) -> Iterator[bool]:
                 EXEC @result = sp_getapplock
                     @Resource = ?,
                     @LockMode = 'Exclusive',
-                    @LockOwner = 'Session',
+                    @LockOwner = 'Transaction',
                     @LockTimeout = ?;
                 SELECT @result AS Result;
                 """,
@@ -112,16 +112,15 @@ def qbo_app_lock(resource_name: str, timeout_ms: int = 15000) -> Iterator[bool]:
             if acquired:
                 try:
                     cursor.execute(
-                        "EXEC sp_releaseapplock @Resource = ?, @LockOwner = 'Session';",
+                        "EXEC sp_releaseapplock @Resource = ?, @LockOwner = 'Transaction';",
                         resource_name,
                     )
                     logger.debug(
                         "qbo.lock.released",
                         extra={"event_name": "qbo.lock.released", "resource": resource_name},
                     )
+                    conn.commit()
                 except Exception as error:
-                    # Session-scope ownership means closing the connection auto-releases
-                    # the lock — this is a best-effort explicit release.
                     logger.warning(
                         "qbo.lock.release_failed",
                         extra={
@@ -130,6 +129,15 @@ def qbo_app_lock(resource_name: str, timeout_ms: int = 15000) -> Iterator[bool]:
                             "error": str(error),
                         },
                     )
+                    try:
+                        conn.rollback()
+                    except Exception:
+                        pass
+            else:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
             try:
                 cursor.close()
             except Exception:

@@ -3,16 +3,27 @@
 FROM python:3.11-slim-bookworm
 
 # Install Microsoft ODBC Driver 18 for SQL Server (required for pyodbc)
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    curl \
-    gnupg \
-    unixodbc-dev \
+RUN set -eux \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends \
+        curl \
+        gnupg \
+        unixodbc-dev \
     && curl -fsSL https://packages.microsoft.com/keys/microsoft.asc | gpg --dearmor -o /usr/share/keyrings/microsoft-prod.gpg \
     && echo "deb [arch=amd64 signed-by=/usr/share/keyrings/microsoft-prod.gpg] https://packages.microsoft.com/debian/12/prod bookworm main" > /etc/apt/sources.list.d/mssql-release.list \
     && apt-get update \
     && ACCEPT_EULA=Y apt-get install -y --no-install-recommends msodbcsql18 \
     && apt-get clean \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && odbcinst -j \
+    && INI=/etc/odbcinst.ini \
+    && grep -q '^\[ODBC Driver 18 for SQL Server\]' "$INI" \
+    && ! grep -q '^CPTimeout=' "$INI" \
+    && sed -i '/^\[ODBC Driver 18 for SQL Server\]$/a CPTimeout=120' "$INI" \
+    && printf '\n[ODBC]\nPooling=Yes\n' >> "$INI" \
+    && grep -q '^Pooling=Yes' "$INI" \
+    && grep -q '^CPTimeout=120' "$INI" \
+    && cat "$INI"
 
 WORKDIR /app
 

@@ -22,8 +22,14 @@ logger = logging.getLogger(__name__)
 T = TypeVar('T')
 
 # Enable ODBC driver-manager connection pooling. Must be set before the first
-# pyodbc.connect() call. On Azure App Service Linux, also verify
-# /etc/odbcinst.ini has `[ODBC] Pooling=Yes` for the driver to actually pool.
+# pyodbc.connect() call. Pooling is configured in the API Docker image:
+# Dockerfile post-install edits /etc/odbcinst.ini — `[ODBC] Pooling=Yes` plus
+# `CPTimeout=120` under `[ODBC Driver 18 for SQL Server]` (unixODBC evicts idle
+# pooled handles before Azure SQL's longer server-side idle disconnect).
+#
+# Pooled connections reuse the same SQL Server session (same @@SPID). Never set
+# session-scoped state on a pooled checkout — SET options outside sprocs, Session-
+# owned sp_getapplock, CONTEXT_INFO, etc. persist across close→connect reuse.
 pyodbc.pooling = True
 
 @functools.lru_cache(maxsize=1)
@@ -170,8 +176,18 @@ def _connect():
         pwd=config['pwd'],
         encrypt=config['encrypt'],
         timeout=15,
-        autocommit=False
+        autocommit=False,
+        # msodbcsql18 idle connection resiliency: transparent reconnect of a broken
+        # idle session on a later execute (ConnectRetryCount/Interval), not only at
+        # initial connect. Complements CPTimeout in odbcinst.ini for pooled handles.
+        ConnectRetryCount=3,
+        ConnectRetryInterval=2,
     )
+
+
+def _validate_connection(conn: pyodbc.Connection) -> None:
+    """Cheap liveness probe — catches dead handles checked out from the ODBC pool."""
+    conn.execute("SELECT 1").fetchone()
 
 @contextmanager
 def get_connection(retries: int = 2, backoff: float = 0.5):
@@ -184,17 +200,35 @@ def get_connection(retries: int = 2, backoff: float = 0.5):
     conn = None
     last_error = None
     
-    # Connection retry loop (separate from yield)
+    # Connection retry loop (separate from yield). With pooling, connect() may reuse
+    # a pooled session whose TCP link Azure already dropped — failure shows on first
+    # execute (08S01), not on connect; validate once and retry checkout.
     for attempt in range(retries + 1):
         try:
             conn = _connect()
-            break
         except pyodbc.Error as e:
             last_error = e
+            conn = None
             if attempt >= retries:
                 raise
             time.sleep(backoff * (2 ** attempt))
-    
+            continue
+
+        try:
+            _validate_connection(conn)
+            last_error = None
+            break
+        except pyodbc.Error as e:
+            last_error = e
+            try:
+                conn.close()
+            except Exception:
+                pass
+            conn = None
+            if not is_transient_error(e) or attempt >= retries:
+                raise
+            time.sleep(backoff * (2 ** attempt))
+
     if conn is None:
         raise last_error or DatabaseConnectionError("Failed to establish database connection")
     
@@ -212,7 +246,7 @@ def get_connection(retries: int = 2, backoff: float = 0.5):
         try:
             conn.close()
         except Exception:
-            pass  # Ignore close errors
+            pass  # Ignore close errors; pyodbc rolls back open transactions on close
 
 
 @contextmanager

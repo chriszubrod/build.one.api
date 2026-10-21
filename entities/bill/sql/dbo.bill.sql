@@ -108,6 +108,17 @@ CREATE INDEX IX_Bill_PaymentTermId ON [dbo].[Bill] ([PaymentTermId]);
 END
 GO
 
+IF OBJECT_ID('dbo.Bill', 'U') IS NOT NULL
+   AND NOT EXISTS (
+       SELECT 1 FROM sys.indexes
+       WHERE name = 'UQ_Bill_PublicId' AND object_id = OBJECT_ID('dbo.Bill')
+   )
+BEGIN
+    CREATE UNIQUE NONCLUSTERED INDEX [UQ_Bill_PublicId]
+        ON [dbo].[Bill] ([PublicId]);
+END
+GO
+
 -- Additive: QboId/RealmId/SyncToken (U-238a dbo-native identity) were added
 -- out-of-band before this base file was made canonical — the base CREATE TABLE
 -- above never declared them, which would abort a from-scratch build at

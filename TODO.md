@@ -374,7 +374,36 @@ numeric criteria matching. The two copies do not cross-propagate (KI-39), so eac
 - [ ] 🟡 **Stop reporting a skip as an unqualified success.** `"All N row(s) already synced"` with
   `success: True` is what made this invisible in the completion result. Say what was verified —
   `"N row(s) present (coding not re-verified)"` — until the content check lands.
-- [ ] 🟢 **Operator fixes for QBO-76865 — Chris, not code.** HE12 SharePoint row **3968** and Box row **5371**
+- [ ] 🟠 **Build a server-side repair mode, paired with the sweep.** The sweep above detects; this fixes,
+  so neither Chris nor a session hand-edits cells. Same detection pass, then `--dry-run` by default printing
+  the exact per-cell plan, and `--apply` writing through the **deployed API** (where `ALLOW_MS_WRITES=true`)
+  rather than anyone's laptop. The primitives already exist: `update_excel_range`
+  (`integrations/ms/sharepoint/external/client.py:737`) and `clear_excel_range` (**:1002**) for SharePoint;
+  `apply_rows_to_details` (`integrations/box/excel/business/workbook_editor.py:541`) plus
+  `upload_file_version` (`integrations/box/base/client.py:400`) for Box. Required properties:
+  - Locate the row by **column Z public_id**, never by row number — row numbers drift and both copies
+    number differently (HE12 is SharePoint **3968** / Box **5371** for the *same* line).
+  - Write B and C as **numbers**, not text. The Box copy currently holds `'00'`/`'00.02'` as *text*, which
+    defeats numeric SUMIFS criteria independently of the wrong value.
+  - Fix **both copies** in one run and report them separately. They do not cross-propagate (KI-39), and the
+    HA-08 precedent is a "done" that covered Box only while SharePoint still read stale values.
+  - Re-read and verify each corrected row after writing; a write that silently no-ops is the failure mode
+    this whole item exists because of.
+  - ⚠️ **The filename rename has NO existing helper** — there is no drive-item rename/patch function in
+    `integrations/ms/sharepoint/`. Either add one, or delete + re-upload under the correct name (a hard
+    Graph delete, so gate it behind explicit confirmation and never run it in the same pass as the cell
+    fixes). Report renames as a separate list; do not bundle them into `--apply`.
+- [ ] 🟡 **The sweep cannot prioritize by project status — `dbo.Project.Status` is `'active'` for all 140
+  rows.** Measured 2026-10-20. There is no usable active/inactive signal in the schema, so do not build a
+  prioritization that filters on it (it would silently match everything). Rank by **amount at risk**
+  instead, and if an active/inactive distinction is wanted, that is its own unit — "project is no longer
+  active" is real operational state with nowhere to live, the same shape as the vendor-payment-terms item
+  elsewhere in this file.
+- [ ] 🟢 **Operator fixes for QBO-76865 — DEFERRED BY CHRIS 2026-10-20, do not chase.** He is leaving both
+  HE12 workbooks alone: HE12 is not an active job in practice (the DB cannot express this — see above), so
+  the excluded $5,921.45 misstates a rollup nobody is currently reading. Fold these rows into the repair
+  mode above rather than hand-editing them. The fix, for the record and still binding if anyone does reach
+  for it by hand: HE12 SharePoint row **3968** and Box row **5371**
   → `B=45`, `C=45`, numeric in both; and rename the SharePoint receipt
   `EXP - HE12 - Huskey Building Supply - QBO-76865 - Screens - 00.02 - $5,921.45 - 09-15-2026.pdf`
   to carry `45.00` in place of `00.02`. QBO-76604's two SharePoint PDFs are an older, still-open instance of

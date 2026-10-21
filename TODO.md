@@ -342,6 +342,15 @@ is driven elsewhere — so re-completion does not re-evaluate that hash today.
 | QBO-76865 | HE12 Box `DETAILS` (file `2272204885423`) | **5371** | `'00'` / `'00.02'` — *text* | `45` / `45` (numeric) | same row |
 | QBO-76604 | SHT | — | `00.02` family | `65.01` | $64.85 |
 | QBO-76618 | SHT | **2724** | `0` / `0.02` | — | $107.40 |
+| **QBO-77525** | **HP2 SharePoint `DETAILS`** | **2314** | `0` / `0.02` | `34` / `34` | **$107.52** |
+| QBO-77525 | HP2 Box `DETAILS` (file `2272202433598`) | not read | presumed same | `34` / `34` | same row |
+
+⚠️ **QBO-77525 (added 2026-10-21, expense 32252, line 13162) is on HP2 — 4406 Harding Pike, an ACTIVE job.**
+Unlike the HE12 rows, which Chris deferred because that job is not active in practice, this $107.52 is
+excluded from a subtotal somebody is reading. It is a **pre-U-692a** record: the pull wrote its artifacts
+2026-10-13 (SharePoint upload outbox `9560` 17:12, Box push log `1386` 17:14), and it was recoded to 34.00
+and completed 2026-10-21 — so it is a clean end-to-end test case for **U-692c**'s sweep and repair. The
+SharePoint row was measured; the Box row is inferred from the push timestamp, not read.
 
 **Why column B is the whole story:** `DETAILS` subtotals are whole-column
 `=SUMIFS(N:N, $B:$B, <code>, $E:$E, "<>SUBTOTAL")`. Inclusion depends on **column B, not row position**, so a

@@ -1,0 +1,293 @@
+{
+  "model_version": "u654a-text-backtest-v1",
+  "ladder": "claude-sonnet",
+  "candidate_sccs": "narrowed",
+  "bill_text_mode": "envelope_truncated",
+  "similar_bills_evidence": false,
+  "prompt_variant_hash": "3184ec31632cd22d",
+  "arm_hash": "8263716cc3428710",
+  "evaluation_window": {
+    "since": "2026-04-11",
+    "until": "2026-10-10"
+  },
+  "run_status": "complete",
+  "populations": {
+    "eval_window_bill_population": 2555,
+    "text_tier_bill_population": 2374
+  },
+  "sample_size": 500,
+  "cap_tripped": false,
+  "scored_bill_count": 500,
+  "unscored_bill_count": 0,
+  "metrics": {
+    "cap_tripped": false,
+    "scored_bill_count": 500,
+    "unscored_bill_count": 0,
+    "bill_text_mode": "envelope_truncated",
+    "similar_bills_evidence": false,
+    "prompt_variant_hash": "3184ec31632cd22d",
+    "arm_hash": "8263716cc3428710",
+    "full_content_cap_hits": 0,
+    "full_content_empty_or_stale": 0,
+    "candidate_union_bills_with_additions": 0,
+    "pdf_blob_load": null,
+    "neighbour_filter_drops": {},
+    "bills_with_pdf_read_failure_for_neighbours": 0,
+    "similar_bills_neighbour_metrics": {},
+    "mode_a_n": 500,
+    "mode_b_n": 500,
+    "mode_a": {
+      "history": {
+        "coverage": 0.832,
+        "precision": 0.6514423076923077,
+        "top1_bill": 0.542,
+        "top1_dollar": 0.4820699979675269,
+        "project_top1": null
+      },
+      "text": {
+        "coverage": 0.876,
+        "precision": 0.54337899543379,
+        "top1_bill": 0.476,
+        "top1_dollar": 0.49555984404452114,
+        "project_top1": null
+      },
+      "combined": {
+        "coverage": 0.906,
+        "precision": 0.6401766004415012,
+        "top1_bill": 0.58,
+        "top1_dollar": 0.5956344171606169,
+        "project_top1": null
+      }
+    },
+    "mode_b": {
+      "history": {
+        "coverage": 0.832,
+        "precision": 0.5552884615384616,
+        "top1_bill": 0.462,
+        "top1_dollar": 0.49674287627069486,
+        "project_top1": 0.12740384615384615
+      },
+      "text": {
+        "coverage": 0.928,
+        "precision": 0.5603448275862069,
+        "top1_bill": 0.52,
+        "top1_dollar": 0.5763878925102193,
+        "project_top1": 0.966183574879227
+      }
+    },
+    "stratum_mode_a": {
+      "50-70%": {
+        "n": 128,
+        "history_top1": 0.5625,
+        "text_top1": 0.546875
+      },
+      "70-90%": {
+        "n": 101,
+        "history_top1": 0.7623762376237624,
+        "text_top1": 0.5247524752475248
+      },
+      "<50%": {
+        "n": 104,
+        "history_top1": 0.4230769230769231,
+        "text_top1": 0.28846153846153844
+      },
+      ">=90%": {
+        "n": 83,
+        "history_top1": 0.9397590361445783,
+        "text_top1": 0.7469879518072289
+      },
+      "cold_start": {
+        "n": 84,
+        "history_top1": 0.0,
+        "text_top1": 0.27380952380952384
+      }
+    },
+    "mixed_code_all": {
+      "n": 83,
+      "history_top1": 0.3614457831325301,
+      "text_top1": 0.46987951807228917,
+      "combined_top1": 0.4939759036144578
+    },
+    "rung_usage": {
+      "claude-sonnet-5-5": 1000
+    },
+    "needs_human_count": 98,
+    "throttle_retry_count": 0,
+    "throttle_failure_count": 0,
+    "harness_retry_by_kind": {},
+    "cascade_error_count": 0,
+    "call_failures_by_kind": {
+      "none": 1000
+    },
+    "confidence_bar_sweep": {
+      "bars": [
+        0.5,
+        0.6,
+        0.7,
+        0.8,
+        0.85,
+        0.9
+      ],
+      "mode_a": {
+        "0.5": {
+          "text": {
+            "coverage": 0.876,
+            "precision": 0.54337899543379,
+            "top1_bill": 0.476,
+            "top1_dollar": 0.49555984404452114,
+            "project_top1": null
+          },
+          "combined_top1_bill": 0.58,
+          "combined_delta_vs_history": 0.038
+        },
+        "0.6": {
+          "text": {
+            "coverage": 0.614,
+            "precision": 0.6775244299674267,
+            "top1_bill": 0.416,
+            "top1_dollar": 0.3360578473738079,
+            "project_top1": null
+          },
+          "combined_top1_bill": 0.546,
+          "combined_delta_vs_history": 0.004
+        },
+        "0.7": {
+          "text": {
+            "coverage": 0.484,
+            "precision": 0.71900826446281,
+            "top1_bill": 0.348,
+            "top1_dollar": 0.25225279039839915,
+            "project_top1": null
+          },
+          "combined_top1_bill": 0.524,
+          "combined_delta_vs_history": -0.018
+        },
+        "0.8": {
+          "text": {
+            "coverage": 0.472,
+            "precision": 0.7330508474576272,
+            "top1_bill": 0.346,
+            "top1_dollar": 0.2502522531923245,
+            "project_top1": null
+          },
+          "combined_top1_bill": 0.524,
+          "combined_delta_vs_history": -0.018
+        },
+        "0.85": {
+          "text": {
+            "coverage": 0.27,
+            "precision": 0.8074074074074075,
+            "top1_bill": 0.218,
+            "top1_dollar": 0.09586711964842748,
+            "project_top1": null
+          },
+          "combined_top1_bill": 0.472,
+          "combined_delta_vs_history": -0.07
+        },
+        "0.9": {
+          "text": {
+            "coverage": 0.248,
+            "precision": 0.8387096774193549,
+            "top1_bill": 0.208,
+            "top1_dollar": 0.09149149738587621,
+            "project_top1": null
+          },
+          "combined_top1_bill": 0.468,
+          "combined_delta_vs_history": -0.074
+        }
+      },
+      "mode_b": {
+        "0.5": {
+          "text": {
+            "coverage": 0.928,
+            "precision": 0.5603448275862069,
+            "top1_bill": 0.52,
+            "top1_dollar": 0.5763878925102193,
+            "project_top1": 0.966183574879227
+          },
+          "combined_top1_bill": 0.572
+        },
+        "0.6": {
+          "text": {
+            "coverage": 0.76,
+            "precision": 0.6263157894736842,
+            "top1_bill": 0.476,
+            "top1_dollar": 0.47211257136343604,
+            "project_top1": 0.9620991253644315
+          },
+          "combined_top1_bill": 0.536
+        },
+        "0.7": {
+          "text": {
+            "coverage": 0.582,
+            "precision": 0.7250859106529209,
+            "top1_bill": 0.422,
+            "top1_dollar": 0.3826751873886833,
+            "project_top1": 0.9693486590038314
+          },
+          "combined_top1_bill": 0.514
+        },
+        "0.8": {
+          "text": {
+            "coverage": 0.554,
+            "precision": 0.7472924187725631,
+            "top1_bill": 0.414,
+            "top1_dollar": 0.38103768221338447,
+            "project_top1": 0.9676113360323887
+          },
+          "combined_top1_bill": 0.51
+        },
+        "0.85": {
+          "text": {
+            "coverage": 0.304,
+            "precision": 0.8881578947368421,
+            "top1_bill": 0.27,
+            "top1_dollar": 0.13871207938987137,
+            "project_top1": 0.971830985915493
+          },
+          "combined_top1_bill": 0.46
+        },
+        "0.9": {
+          "text": {
+            "coverage": 0.236,
+            "precision": 0.9152542372881356,
+            "top1_bill": 0.216,
+            "top1_dollar": 0.09301047436905548,
+            "project_top1": 0.9814814814814815
+          },
+          "combined_top1_bill": 0.438
+        }
+      },
+      "best_combined_top1_bar_mode_a": 0.5
+    },
+    "duplicate_scc_number_count": 0,
+    "duplicate_project_abbrev_count": 0,
+    "usage": {
+      "input_tokens": 8456831,
+      "output_tokens": 39632,
+      "cost_usd": 17.30998200000001
+    },
+    "cost_overshoot_usd": null,
+    "combined_vs_history_catalog_eligible": {
+      "n": 500,
+      "history_top1_bill": 0.542,
+      "combined_top1_bill": 0.58,
+      "delta_top1_bill": 0.038
+    },
+    "label_not_in_text_catalog_count": 0,
+    "text_catalog_size_min_per_bill": 3,
+    "text_catalog_size_median_per_bill": 107,
+    "narrowing_miss_count": 31,
+    "verdict_m4": "\u00a710.5 M4: DO NOT wire text \u2014 Mode A combined top-1 58.0% vs history-only 54.2% (delta 3.8%, need \u2265 10%)",
+    "prompt_size": {
+      "candidate_scc_mode": "narrowed",
+      "mean_candidate_scc_count": 204.12,
+      "mean_input_tokens_per_cascade": 8456.8,
+      "narrowed_call_count": 722,
+      "text_cascade_count": 1000
+    },
+    "blob_unreadable_count": 0,
+    "call_timeout_count": 0
+  },
+  "dry_run": null
+}

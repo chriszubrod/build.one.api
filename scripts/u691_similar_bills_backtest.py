@@ -30,7 +30,9 @@ from dataclasses import dataclass, field
 from datetime import date, datetime
 from decimal import Decimal
 from pathlib import Path
-from typing import Any, Callable, Mapping, Optional, Sequence
+from typing import Any, Callable, Mapping, NamedTuple, Optional, Sequence
+
+from intelligence.cascade.bill_coding import SUSPENSE_SCC_NUMBER, normalize_scc_number
 
 from entities.attachment.business.extraction_service import extraction_payload_is_current
 
@@ -584,7 +586,7 @@ def _top_k_scored(
 
 def predict_all_variants(
     query: BillTokenProfile,
-    prior_profiles: Sequence[BillTokenProfile],
+    _prior_profiles: Sequence[BillTokenProfile],
     idf: dict[str, float],
     *,
     top_k: int,
@@ -735,6 +737,249 @@ def text_similarity(
         band_pct=band_pct,
         cap_ratio=cap_ratio,
     )
+
+
+def token_match_ratio(
+    query: BillTokenProfile,
+    prior: BillTokenProfile,
+    idf: dict[str, float],
+) -> float:
+    """Weighted IDF token overlap divided by the query's weighted IDF mass (0..1, 2 dp)."""
+    if query.idf_weight_sum <= 0:
+        return 0.0
+    inter = query.tokens & prior.tokens
+    if not inter:
+        return 0.0
+    overlap = sum(idf.get(t, 0.0) for t in inter)
+    return round(overlap / query.idf_weight_sum, 2)
+
+
+class Neighbour(NamedTuple):
+    """Top similar prior bill for harness evidence (U-696)."""
+
+    combined: float
+    prior: BillTokenProfile
+    match: float
+    amount_ratio: Optional[float]
+    same_vendor: bool
+
+    @property
+    def scc_id(self) -> int:
+        return self.prior.enriched.bill.label_scc_id
+
+
+def _neighbour_amount_ratio(
+    query_amount: Decimal,
+    prior_amount: Decimal,
+) -> Optional[float]:
+    if query_amount <= 0 or prior_amount <= 0:
+        return None
+    return round(float(prior_amount / query_amount), 2)
+
+
+def similar_bills_block_from_neighbours(
+    neighbours: Sequence[Neighbour],
+    scc_by_id: Mapping[int, Any],
+) -> list[dict[str, Any]]:
+    """Privacy-safe similar_bills block (no ids, dates, vendor names, or free text)."""
+    out: list[dict[str, Any]] = []
+    for n in neighbours:
+        ref = scc_by_id.get(n.scc_id)
+        if ref is None:
+            continue
+        out.append(
+            {
+                "scc_number": ref.number,
+                "scc_name": ref.name,
+                "match": n.match,
+                "amount_ratio": n.amount_ratio,
+                "same_vendor": n.same_vendor,
+            }
+        )
+    return out
+
+
+def apply_similar_evidence(
+    neighbours: Sequence[Neighbour],
+    candidate_sccs: list[dict[str, str]],
+    *,
+    as_of_catalog: Sequence[Mapping[str, str]],
+    scc_by_id: Mapping[int, Any],
+    ambiguous_numbers: frozenset[str],
+) -> tuple[
+    list[dict[str, str]],
+    int,
+    list[dict[str, Any]],
+    list[Neighbour],
+    dict[str, int],
+]:
+    """
+    Filter neighbours to SCCs choosable on the bill's as-of catalog; union into
+    candidates; build the model-facing similar_bills block from the same list.
+    """
+    choosable_nums = {
+        normalize_scc_number(str(row["number"]))
+        for row in as_of_catalog
+        if row.get("number")
+    }
+    suspense_norm = normalize_scc_number(SUSPENSE_SCC_NUMBER)
+    filtered: list[Neighbour] = []
+    drops: dict[str, int] = {
+        "neighbours_dropped_not_in_as_of_catalog": 0,
+        "neighbours_dropped_suspense": 0,
+        "neighbours_dropped_ambiguous": 0,
+    }
+    for n in neighbours:
+        ref = scc_by_id.get(n.scc_id)
+        if ref is None:
+            drops["neighbours_dropped_not_in_as_of_catalog"] += 1
+            continue
+        num = normalize_scc_number(ref.number)
+        if not num:
+            drops["neighbours_dropped_not_in_as_of_catalog"] += 1
+            continue
+        if num in ambiguous_numbers:
+            drops["neighbours_dropped_ambiguous"] += 1
+            continue
+        if num == suspense_norm:
+            drops["neighbours_dropped_suspense"] += 1
+            continue
+        if num not in choosable_nums:
+            drops["neighbours_dropped_not_in_as_of_catalog"] += 1
+            continue
+        filtered.append(n)
+
+    existing = {normalize_scc_number(c["number"]) for c in candidate_sccs}
+    added = 0
+    merged = list(candidate_sccs)
+    for n in filtered:
+        ref = scc_by_id.get(n.scc_id)
+        if ref is None:
+            continue
+        num = normalize_scc_number(ref.number)
+        if not num or num in existing:
+            continue
+        merged.append({"number": ref.number, "name": ref.name})
+        existing.add(num)
+        added += 1
+
+    block = similar_bills_block_from_neighbours(filtered, scc_by_id)
+    return merged, added, block, filtered, drops
+
+
+def enriched_bills_for_similarity(
+    bills: Sequence[BillRow],
+    blob_by_bill: Mapping[int, str],
+) -> list[EnrichedBill]:
+    """Minimal EnrichedBill rows for PDF-token similarity (descriptions unused)."""
+    coded_ids = {b.bill_id for b in bills}
+    out: list[EnrichedBill] = []
+    for b in bills:
+        if b.bill_id not in blob_by_bill or b.bill_id not in coded_ids:
+            continue
+        out.append(
+            EnrichedBill(
+                bill=b,
+                memo="",
+                line_descriptions="",
+                line_count=0,
+            )
+        )
+    return out
+
+
+def top_neighbours_any_vendor(
+    query: BillTokenProfile,
+    idf: dict[str, float],
+    *,
+    top_k: int,
+    band_pct: float = DEFAULT_AMOUNT_BAND_PCT,
+    cap_ratio: float = DEFAULT_AMOUNT_BAND_CAP_RATIO,
+    token_index: dict[str, set[int]],
+    prior_by_id: dict[int, BillTokenProfile],
+) -> list[Neighbour]:
+    """Top-K earlier bills (any vendor) by combined IDF Jaccard × amount band."""
+    as_of = query.enriched.bill.created
+    qbill = query.enriched.bill
+    candidate_ids: set[int] = set()
+    for tok in query.tokens:
+        for bid in token_index.get(tok, ()):
+            candidate_ids.add(bid)
+
+    scored: list[tuple[float, int, BillTokenProfile, float, Optional[float], bool]] = []
+    for bid in candidate_ids:
+        prior_prof = prior_by_id.get(bid)
+        if prior_prof is None:
+            continue
+        pb = prior_prof.enriched.bill
+        if not is_prior_eligible(pb, qbill, as_of=as_of):
+            continue
+        combined = text_similarity_profiles(
+            query, prior_prof, idf, band_pct=band_pct, cap_ratio=cap_ratio
+        )
+        if combined <= 0:
+            continue
+        match = token_match_ratio(query, prior_prof, idf)
+        amt_ratio = _neighbour_amount_ratio(qbill.total_abs_amount, pb.total_abs_amount)
+        same_vendor = pb.vendor_id == qbill.vendor_id
+        scored.append((combined, bid, prior_prof, match, amt_ratio, same_vendor))
+
+    ranked = _top_k_scored(
+        [(c, bid, pp.enriched.bill.label_scc_id) for c, bid, pp, *_ in scored],
+        top_k,
+    )
+    by_bid = {row[1]: row for row in scored}
+    out: list[Neighbour] = []
+    for _combined, bid, _scc in ranked:
+        combined, _bid, prior_prof, match, amt_ratio, same_vendor = by_bid[bid]
+        out.append(
+            Neighbour(combined, prior_prof, match, amt_ratio, same_vendor)
+        )
+    return out
+
+
+def collect_top_neighbours_for_sample(
+    enriched: Sequence[EnrichedBill],
+    sample_bill_ids: frozenset[int],
+    idf: dict[str, float],
+    *,
+    top_k: int = 5,
+    band_pct: float = DEFAULT_AMOUNT_BAND_PCT,
+    cap_ratio: float = DEFAULT_AMOUNT_BAND_CAP_RATIO,
+    token_config: TokenSourceConfig = _DEFAULT_TOKEN_CONFIG,
+) -> dict[int, list[Neighbour]]:
+    """
+    Rolling as-of priors: for each sampled bill, top neighbours from strictly
+    earlier PDF-population bills (never self). Keys only bills in ``sample_bill_ids``.
+    """
+    ordered = sorted(enriched, key=lambda eb: (eb.bill.created, eb.bill.bill_id))
+    prior_profiles: list[BillTokenProfile] = []
+    prior_by_id: dict[int, BillTokenProfile] = {}
+    token_index: dict[str, set[int]] = defaultdict(set)
+    neighbours: dict[int, list[Neighbour]] = {}
+
+    for eb in ordered:
+        bid = eb.bill.bill_id
+        if similarity_eligible(eb, token_config):
+            qprof = token_profile(eb, idf, config=token_config)
+            if bid in sample_bill_ids:
+                neighbours[bid] = top_neighbours_any_vendor(
+                    qprof,
+                    idf,
+                    top_k=top_k,
+                    band_pct=band_pct,
+                    cap_ratio=cap_ratio,
+                    token_index=token_index,
+                    prior_by_id=prior_by_id,
+                )
+            prior_profiles.append(qprof)
+            prior_by_id[bid] = qprof
+            for tok in qprof.tokens:
+                token_index[tok].add(bid)
+        elif bid in sample_bill_ids:
+            neighbours[bid] = []
+
+    return neighbours
 
 
 def history_is_strong(pred: ModePrediction) -> bool:

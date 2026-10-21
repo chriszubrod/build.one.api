@@ -13,18 +13,21 @@ from __future__ import annotations
 import argparse
 import asyncio
 import csv
+import hashlib
 import json
 import random
 import re
 import time
+from functools import lru_cache
 from collections import defaultdict
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime
 from decimal import Decimal
 from pathlib import Path
-from typing import Any, Callable, Iterable, Optional, Sequence
+from typing import Any, Callable, Iterable, Mapping, Optional, Sequence
 
 from intelligence.cascade.bill_coding import (
+    ALLOWED_PAYLOAD_KEYS,
     BILL_CODING_FOUNDRY_LADDER,
     BILL_CODING_SUGGESTION_TASK,
     BILL_TEXT_CHAR_BUDGET,
@@ -35,6 +38,7 @@ from intelligence.cascade.bill_coding import (
     normalize_scc_number,
     run_bill_coding_suggestion,
     truncate_bill_text,
+    validate_bill_coding_result,
 )
 from intelligence.observability.pricing import PRICING
 from intelligence.cascade.bill_coding_payload import (
@@ -46,12 +50,14 @@ from intelligence.cascade.bill_coding_payload import (
     resolve_text_prediction,
     vendor_history_scc_numbers_from_priors,
 )
-from intelligence.cascade.core import Attempt, CascadeResult, Rung
+from intelligence.cascade.core import Attempt, CascadeResult, Rung, StructuredTask, run_cascade
 from intelligence.observability.pricing import compute_cost_usd
 from intelligence.transport.base import Usage
 from scripts.sync_helper import assert_cli_system_admin
 from intelligence.cascade.bill_coding_payload import PriorBillVote
 from scripts.u653b_backtest import (
+    DEFAULT_CAL_SINCE,
+    DEFAULT_CAL_UNTIL,
     DEFAULT_EVAL_SINCE,
     DEFAULT_EVAL_UNTIL,
     MIN_PRIOR_BILLS,
@@ -72,7 +78,37 @@ from scripts.u653b_backtest import (
 )
 from shared.database import get_connection
 
+@lru_cache(maxsize=1)
+def _u691_module():
+    import scripts.u691_similar_bills_backtest as u691_mod
+
+    return u691_mod
+
+
+# Top-level summary keys required to resume after U-696 arm guard (F2).
+U696_RESUME_ARM_SUMMARY_KEYS = (
+    "bill_text_mode",
+    "similar_bills_evidence",
+    "arm_hash",
+)
+
 MODEL_VERSION = "u654a-text-backtest-v1"
+BILL_TEXT_MODE_ENVELOPE = "envelope_truncated"
+BILL_TEXT_MODE_FULL_CONTENT = "full_content"
+BILL_TEXT_MODES = (BILL_TEXT_MODE_ENVELOPE, BILL_TEXT_MODE_FULL_CONTENT)
+DEFAULT_BILL_TEXT_MODE = BILL_TEXT_MODE_ENVELOPE
+FULL_CONTENT_CHAR_CAP = 60_000
+BUDGET_BY_MODE: dict[str, int] = {
+    BILL_TEXT_MODE_ENVELOPE: BILL_TEXT_CHAR_BUDGET,
+    BILL_TEXT_MODE_FULL_CONTENT: FULL_CONTENT_CHAR_CAP,
+}
+SIMILAR_BILLS_TOP_K = 5
+SIMILAR_BILLS_RULE_LINE = (
+    "- similar_bills lists how the most similar earlier invoices were coded "
+    "(match = text overlap, amount_ratio = their total / this bill's total); "
+    "weigh it together with history_evidence and the bill text."
+)
+BACKTEST_EXTRA_PAYLOAD_KEYS = frozenset({"similar_bills"})
 DEFAULT_SAMPLE_SIZE = 500
 DEFAULT_SEED = 654
 DEFAULT_MAX_COST_USD = 10.0
@@ -249,6 +285,11 @@ class ScoredTextBill:
     history_b: ModePrediction
     text_a: Optional[TextAttemptResult] = None
     text_b: Optional[TextAttemptResult] = None
+    top_neighbour_scc_id: Optional[int] = None
+    neighbour_count: int = 0
+    followed_top_neighbour: Optional[bool] = None
+    bill_text_chars_capped: bool = False
+    candidates_added_by_neighbours: int = 0
 
 
 def load_blob_urls_from_db() -> dict[int, str]:
@@ -797,6 +838,583 @@ def stratified_sample(
     return picked[:sample_size]
 
 
+def load_distinct_bill_ids_from_predictions_csv(path: Path) -> list[int]:
+    """Distinct BillId values in CSV row order (U-696 --bill-ids-from)."""
+    out: list[int] = []
+    seen: set[int] = set()
+    with path.open(encoding="utf-8") as fh:
+        for row in csv.DictReader(fh):
+            raw = (row.get("BillId") or "").strip()
+            if not raw:
+                continue
+            bid = int(raw)
+            if bid in seen:
+                continue
+            seen.add(bid)
+            out.append(bid)
+    return out
+
+
+def sample_from_pinned_bill_ids(
+    text_bills: Sequence[TextBillRow],
+    bill_ids: Sequence[int],
+    vendor_votes: dict[int, list[PriorBillVote]],
+    *,
+    eval_since: date,
+    eval_until: date,
+) -> tuple[list[tuple[TextBillRow, str]], dict[str, int]]:
+    by_id = {b.bill_id: b for b in text_bills}
+    picked: list[tuple[TextBillRow, str]] = []
+    found = 0
+    eligible = 0
+    for bid in bill_ids:
+        bill = by_id.get(bid)
+        if bill is None:
+            continue
+        found += 1
+        if not (eval_since <= _date_only(bill.created) <= eval_until):
+            continue
+        eligible += 1
+        priors = priors_for_bill(vendor_votes, bill)
+        stratum = classify_stratum(priors, bill.mixed_code)
+        picked.append((bill, stratum))
+    stats = {
+        "bill_ids_requested": len(bill_ids),
+        "bill_ids_found": found,
+        "bill_ids_eligible": eligible,
+        "bill_ids_selected": len(picked),
+    }
+    return picked, stats
+
+
+def resolve_bill_text_from_raw_blob(
+    raw_blob: str,
+    *,
+    bill_text_mode: str = DEFAULT_BILL_TEXT_MODE,
+) -> tuple[str, bool]:
+    """
+    Map extraction blob bytes to the bill_text field passed into payload builders.
+
+    Returns (text, bill_text_chars_capped) where capped applies only to full_content.
+    """
+    if bill_text_mode == BILL_TEXT_MODE_ENVELOPE:
+        return raw_blob, False
+    if bill_text_mode == BILL_TEXT_MODE_FULL_CONTENT:
+        extracted = _u691_module().bill_text_from_extraction_blob(raw_blob)
+        if extracted is None:
+            return "", False
+        budget = BUDGET_BY_MODE[BILL_TEXT_MODE_FULL_CONTENT]
+        capped_text = truncate_bill_text(extracted, budget=budget)
+        capped = capped_text != extracted
+        return capped_text, capped
+    raise ValueError(f"unknown bill_text_mode {bill_text_mode!r}")
+
+
+def bill_text_for_user_message(payload: dict[str, Any], bill_text_mode: str) -> str:
+    raw = payload.get("bill_text") or ""
+    if bill_text_mode == BILL_TEXT_MODE_FULL_CONTENT:
+        return raw
+    return truncate_bill_text(raw, budget=BUDGET_BY_MODE[BILL_TEXT_MODE_ENVELOPE])
+
+
+def similar_bills_evidence_from_neighbours(
+    neighbours: Sequence[Any],
+    scc_by_id: dict[int, SccRef],
+) -> list[dict[str, Any]]:
+    """Backward-compatible wrapper; prefer u691.similar_bills_block_from_neighbours."""
+    u691 = _u691_module()
+    Neighbour = u691.Neighbour
+    similar_bills_block_from_neighbours = u691.similar_bills_block_from_neighbours
+
+    as_neighbours: list[Neighbour] = []
+    for row in neighbours:
+        if isinstance(row, Neighbour):
+            as_neighbours.append(row)
+        else:
+            combined, prior_prof, match, amount_ratio, same_vendor = row
+            as_neighbours.append(
+                Neighbour(combined, prior_prof, match, amount_ratio, same_vendor)
+            )
+    return similar_bills_block_from_neighbours(as_neighbours, scc_by_id)
+
+
+def build_backtest_payload(
+    bill: TextBillRow,
+    *,
+    bill_text: str,
+    vendor_name: str,
+    mode: str,
+    priors: Sequence[PriorBillVote],
+    scc_by_id: dict[int, SccRef],
+    candidate_sccs: list[dict[str, str]],
+    candidate_projects: Optional[list[dict[str, str]]],
+    bill_text_mode: str = DEFAULT_BILL_TEXT_MODE,
+    similar_bills: Optional[list[dict[str, Any]]] = None,
+) -> dict[str, Any]:
+    project_id = bill.label_project_id if mode == "A" else None
+    if bill_text_mode == BILL_TEXT_MODE_ENVELOPE:
+        text_field = truncate_bill_text(bill_text)
+    else:
+        text_field = (bill_text or "").strip()
+    payload: dict[str, Any] = {
+        "vendor_name": vendor_name,
+        "bill_text": text_field,
+        "history_evidence": build_history_evidence(
+            priors, scc_by_id, project_id=project_id
+        ),
+        "candidate_sccs": candidate_sccs,
+        "candidate_projects": candidate_projects,
+    }
+    if similar_bills is not None:
+        payload["similar_bills"] = similar_bills
+    return payload
+
+
+def _backtest_build_user_message(
+    payload: dict[str, Any],
+    *,
+    bill_text_mode: str,
+    include_similar_bills: bool,
+) -> str:
+    allowed = ALLOWED_PAYLOAD_KEYS
+    if include_similar_bills:
+        allowed = ALLOWED_PAYLOAD_KEYS | BACKTEST_EXTRA_PAYLOAD_KEYS
+    extra = set(payload.keys()) - allowed
+    if extra:
+        raise ValueError(f"unexpected payload keys: {sorted(extra)}")
+    safe: dict[str, Any] = {
+        "vendor_name": payload.get("vendor_name", ""),
+        "bill_text": bill_text_for_user_message(payload, bill_text_mode),
+        "history_evidence": payload.get("history_evidence") or [],
+        "candidate_sccs": payload.get("candidate_sccs") or [],
+        "candidate_projects": payload.get("candidate_projects"),
+    }
+    if include_similar_bills:
+        safe["similar_bills"] = payload.get("similar_bills") or []
+    return json.dumps(safe, ensure_ascii=False, indent=2)
+
+
+def backtest_cascade_task(
+    *,
+    bill_text_mode: str,
+    similar_bills_evidence: bool,
+) -> StructuredTask:
+    """Harness-local task; production BILL_CODING_SUGGESTION_TASK stays untouched."""
+    if (
+        bill_text_mode == DEFAULT_BILL_TEXT_MODE
+        and not similar_bills_evidence
+    ):
+        return BILL_CODING_SUGGESTION_TASK
+    system_prompt = BILL_CODING_SUGGESTION_TASK.system_prompt
+    if similar_bills_evidence:
+        system_prompt = system_prompt + "\n" + SIMILAR_BILLS_RULE_LINE
+
+    def build_user_message(payload: dict[str, Any]) -> str:
+        return _backtest_build_user_message(
+            payload,
+            bill_text_mode=bill_text_mode,
+            include_similar_bills=similar_bills_evidence,
+        )
+
+    return replace(
+        BILL_CODING_SUGGESTION_TASK,
+        system_prompt=system_prompt,
+        build_user_message=build_user_message,
+    )
+
+
+def prompt_variant_hash(task: StructuredTask) -> str:
+    digest = hashlib.sha256(task.system_prompt.encode("utf-8")).hexdigest()
+    return digest[:16]
+
+
+def arm_hash(
+    *,
+    bill_text_mode: str,
+    similar_bills_evidence: bool,
+    task: StructuredTask,
+) -> str:
+    builder = task.build_user_message
+    builder_id = f"{builder.__module__}.{getattr(builder, '__qualname__', repr(builder))}"
+    payload = (
+        f"{bill_text_mode}|{similar_bills_evidence}|{task.system_prompt}|{builder_id}"
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
+
+
+def build_harness_payload(
+    bill: TextBillRow,
+    *,
+    raw_blob: str,
+    resolved_bill_text: str,
+    vendor_name: str,
+    mode: str,
+    priors: Sequence[PriorBillVote],
+    scc_by_id: dict[int, SccRef],
+    candidate_sccs: list[dict[str, str]],
+    candidate_projects: Optional[list[dict[str, str]]],
+    bill_text_mode: str,
+    similar_bills: Optional[list[dict[str, Any]]] = None,
+) -> dict[str, Any]:
+    """Production-identical payload for the default arm; backtest shape otherwise."""
+    if (
+        bill_text_mode == DEFAULT_BILL_TEXT_MODE
+        and similar_bills is None
+    ):
+        return build_payload(
+            bill,
+            bill_text=raw_blob,
+            vendor_name=vendor_name,
+            mode=mode,
+            priors=priors,
+            scc_by_id=scc_by_id,
+            candidate_sccs=candidate_sccs,
+            candidate_projects=candidate_projects,
+        )
+    return build_backtest_payload(
+        bill,
+        bill_text=resolved_bill_text,
+        vendor_name=vendor_name,
+        mode=mode,
+        priors=priors,
+        scc_by_id=scc_by_id,
+        candidate_sccs=candidate_sccs,
+        candidate_projects=candidate_projects,
+        bill_text_mode=bill_text_mode,
+        similar_bills=similar_bills,
+    )
+
+
+async def run_backtest_bill_coding_suggestion(
+    payload: dict[str, Any],
+    *,
+    transport_for=None,
+    ladder: tuple[Rung, ...] | None = None,
+    bill_text_mode: str = DEFAULT_BILL_TEXT_MODE,
+    similar_bills_evidence: bool = False,
+) -> CascadeResult:
+    base_task = backtest_cascade_task(
+        bill_text_mode=bill_text_mode,
+        similar_bills_evidence=similar_bills_evidence,
+    )
+
+    def validate(result: dict[str, Any]) -> tuple[bool, str]:
+        return validate_bill_coding_result(result, payload=payload)
+
+    task = replace(base_task, validate=validate)
+    if ladder is not None:
+        task = replace(task, ladder=ladder)
+    return await run_cascade(task, payload, transport_for=transport_for)
+
+
+def enriched_bills_for_similarity(
+    bills: Sequence[BillRow],
+    blob_by_bill: Mapping[int, str],
+) -> list[Any]:
+    return _u691_module().enriched_bills_for_similarity(bills, blob_by_bill)
+
+
+@dataclass
+class SampleBillHarnessFields:
+    neighbour_count: int = 0
+    top_neighbour_scc_id: Optional[int] = None
+    candidates_added_by_neighbours: int = 0
+    bill_text_chars_capped: bool = False
+    filtered_neighbours: list[Any] = field(default_factory=list)
+    similar_block: list[dict[str, Any]] = field(default_factory=list)
+    candidate_sccs: list[dict[str, str]] = field(default_factory=list)
+
+
+@dataclass
+class SampleSimilarityContext:
+    neighbours_raw_by_bill: dict[int, list[Any]]
+    per_bill: dict[int, SampleBillHarnessFields]
+    pdf_load_stats: Any
+    bill_text_for_estimate: dict[int, str]
+    union_addition_bills: int
+    full_content_cap_hits: int
+    full_content_empty_or_stale: int
+    bills_with_pdf_read_failure: int
+    bills_with_no_linked_pdf: int
+    neighbour_filter_drops: dict[str, int]
+
+
+def prepare_sample_per_bill_evidence(
+    sample: Sequence[tuple[TextBillRow, str]],
+    *,
+    neighbours_raw_by_bill: Mapping[int, Sequence[Any]],
+    ref: ReferenceData,
+    vendor_votes: dict[int, list[PriorBillVote]],
+    candidate_scc_mode: str,
+    similar_bills_evidence: bool,
+    bill_text_resolved: Mapping[int, tuple[str, bool, bool]],
+) -> SampleSimilarityContext:
+    """Per-bill neighbour union + similar block; counts over the full sample (F3)."""
+    apply_similar_evidence = _u691_module().apply_similar_evidence
+
+    per_bill: dict[int, SampleBillHarnessFields] = {}
+    union_addition_bills = 0
+    full_content_cap_hits = 0
+    full_content_empty_or_stale = 0
+    bill_text_for_estimate: dict[int, str] = {}
+    drop_totals: dict[str, int] = {
+        "neighbours_dropped_not_in_as_of_catalog": 0,
+        "neighbours_dropped_suspense": 0,
+        "neighbours_dropped_ambiguous": 0,
+    }
+    for bill, _stratum in sample:
+        priors = priors_for_bill(vendor_votes, bill)
+        candidate_sccs, _narrowed = resolve_candidate_sccs_for_bill(
+            ref, bill, priors, candidate_scc_mode=candidate_scc_mode
+        )
+        as_of_catalog = build_candidate_sccs_for_bill(
+            ref.scc_by_id,
+            as_of=bill.created,
+            ambiguous_numbers=ref.ambiguous_scc_numbers,
+        )
+        raw_n = list(neighbours_raw_by_bill.get(bill.bill_id) or [])
+        fields = SampleBillHarnessFields()
+        if similar_bills_evidence and raw_n:
+            merged, added, block, filtered, drops = apply_similar_evidence(
+                raw_n,
+                candidate_sccs,
+                as_of_catalog=as_of_catalog,
+                scc_by_id=ref.scc_by_id,
+                ambiguous_numbers=ref.ambiguous_scc_numbers,
+            )
+            for k, v in drops.items():
+                drop_totals[k] = drop_totals.get(k, 0) + v
+            fields.candidate_sccs = merged
+            fields.candidates_added_by_neighbours = added
+            fields.similar_block = block
+            fields.filtered_neighbours = filtered
+            fields.neighbour_count = len(filtered)
+            if filtered:
+                fields.top_neighbour_scc_id = filtered[0].scc_id
+            if added:
+                union_addition_bills += 1
+        else:
+            fields.candidate_sccs = candidate_sccs
+            fields.filtered_neighbours = list(raw_n)
+            fields.neighbour_count = len(raw_n)
+
+        resolved = bill_text_resolved.get(bill.bill_id)
+        if resolved is not None:
+            text, capped, empty = resolved
+            fields.bill_text_chars_capped = capped
+            bill_text_for_estimate[bill.bill_id] = text
+            if empty:
+                full_content_empty_or_stale += 1
+            if capped:
+                full_content_cap_hits += 1
+        per_bill[bill.bill_id] = fields
+
+    return SampleSimilarityContext(
+        neighbours_raw_by_bill=dict(neighbours_raw_by_bill),
+        per_bill=per_bill,
+        pdf_load_stats=None,
+        bill_text_for_estimate=bill_text_for_estimate,
+        union_addition_bills=union_addition_bills,
+        full_content_cap_hits=full_content_cap_hits,
+        full_content_empty_or_stale=full_content_empty_or_stale,
+        bills_with_pdf_read_failure=0,
+        bills_with_no_linked_pdf=0,
+        neighbour_filter_drops=drop_totals,
+    )
+
+
+def compute_sample_neighbours(
+    bills: Sequence[BillRow],
+    blob_map: Mapping[int, str],
+    sample: Sequence[tuple[TextBillRow, str]],
+    *,
+    read_blob: Callable[[str], str],
+    ref: ReferenceData,
+    vendor_votes: dict[int, list[PriorBillVote]],
+    candidate_scc_mode: str,
+    similar_bills_evidence: bool = True,
+    bill_text_mode: str = DEFAULT_BILL_TEXT_MODE,
+    pdf_read_workers: int | None = None,
+    pdf_read_timeout: float | None = None,
+    progress: Callable[[int, int], None] | None = None,
+) -> SampleSimilarityContext:
+    """Load PDF text once; neighbours + per-bill harness fields for dry-run and --run."""
+    u691 = _u691_module()
+
+    empty_stats = u691.PdfTextLoadStats()
+    empty_resolved: dict[int, tuple[str, bool, bool]] = {}
+    if not sample:
+        return SampleSimilarityContext(
+            neighbours_raw_by_bill={},
+            per_bill={},
+            pdf_load_stats=empty_stats,
+            bill_text_for_estimate={},
+            union_addition_bills=0,
+            full_content_cap_hits=0,
+            full_content_empty_or_stale=0,
+            bills_with_pdf_read_failure=0,
+            bills_with_no_linked_pdf=0,
+            neighbour_filter_drops={},
+        )
+
+    need_pdf = similar_bills_evidence or bill_text_mode == BILL_TEXT_MODE_FULL_CONTENT
+    enriched_all = enriched_bills_for_similarity(bills, blob_map)
+    pdf_blob_urls = {eb.bill.bill_id: blob_map[eb.bill.bill_id] for eb in enriched_all}
+    sample_ids = frozenset(b.bill_id for b, _ in sample)
+    sample_blob_urls = {
+        b.bill_id: blob_map[b.bill_id]
+        for b, _ in sample
+        if b.bill_id in blob_map
+    }
+
+    pdf_tokens: dict[int, Any] = {}
+    pdf_stats = empty_stats
+    bill_text_resolved: dict[int, tuple[str, bool, bool]] = {}
+    pdf_read_failure_ids: set[int] = set()
+    no_linked_pdf_ids: set[int] = set()
+
+    if need_pdf and pdf_blob_urls:
+        workers = (
+            pdf_read_workers
+            if pdf_read_workers is not None
+            else u691.DEFAULT_PDF_READ_WORKERS
+        )
+        timeout = (
+            pdf_read_timeout
+            if pdf_read_timeout is not None
+            else u691.DEFAULT_PDF_READ_TIMEOUT_SECONDS
+        )
+        pdf_tokens, pdf_stats = u691.load_pdf_text_by_bill_id(
+            pdf_blob_urls,
+            read_blob=read_blob,
+            max_workers=workers,
+            timeout_seconds=timeout,
+            progress=progress,
+        )
+
+    if bill_text_mode == BILL_TEXT_MODE_FULL_CONTENT:
+        for bill, _ in sample:
+            url = blob_map.get(bill.bill_id)
+            if not url:
+                no_linked_pdf_ids.add(bill.bill_id)
+                bill_text_resolved[bill.bill_id] = ("", False, True)
+                continue
+            if bill.bill_id not in pdf_tokens:
+                pdf_read_failure_ids.add(bill.bill_id)
+                bill_text_resolved[bill.bill_id] = ("", False, True)
+                continue
+            try:
+                raw = read_text_blob_with_retry(read_blob, url)
+            except Exception:
+                pdf_read_failure_ids.add(bill.bill_id)
+                bill_text_resolved[bill.bill_id] = ("", False, True)
+                continue
+            text, capped = resolve_bill_text_from_raw_blob(
+                raw, bill_text_mode=bill_text_mode
+            )
+            empty = not (text or "").strip()
+            bill_text_resolved[bill.bill_id] = (text, capped, empty)
+
+    if similar_bills_evidence:
+        for bill, _ in sample:
+            bid = bill.bill_id
+            if bid not in blob_map:
+                no_linked_pdf_ids.add(bid)
+            elif bid not in pdf_tokens:
+                pdf_read_failure_ids.add(bid)
+
+    neighbours_raw: dict[int, list[Any]] = {}
+    if similar_bills_evidence and enriched_all:
+        token_config = u691.TokenSourceConfig(
+            text_source=u691.TEXT_SOURCE_PDF,
+            pdf_tokens_by_bill_id=pdf_tokens,
+        )
+        idf = u691.compute_idf_from_corpus(
+            enriched_all,
+            since=DEFAULT_CAL_SINCE,
+            until=DEFAULT_CAL_UNTIL,
+            config=token_config,
+        )
+        neighbours_raw = u691.collect_top_neighbours_for_sample(
+            enriched_all,
+            sample_ids,
+            idf,
+            top_k=SIMILAR_BILLS_TOP_K,
+            token_config=token_config,
+        )
+
+    ctx = prepare_sample_per_bill_evidence(
+        sample,
+        neighbours_raw_by_bill=neighbours_raw,
+        ref=ref,
+        vendor_votes=vendor_votes,
+        candidate_scc_mode=candidate_scc_mode,
+        similar_bills_evidence=similar_bills_evidence,
+        bill_text_resolved=bill_text_resolved,
+    )
+    ctx.pdf_load_stats = pdf_stats
+    ctx.bills_with_pdf_read_failure = len(pdf_read_failure_ids)
+    ctx.bills_with_no_linked_pdf = len(no_linked_pdf_ids)
+    return ctx
+
+
+def neighbour_metadata_for_bill(
+    neighbours: Sequence[Any],
+    *,
+    predicted_scc_id: Optional[int],
+) -> tuple[Optional[int], int, Optional[bool]]:
+    Neighbour = _u691_module().Neighbour
+
+    if not neighbours:
+        return None, 0, None
+    first = neighbours[0]
+    if isinstance(first, Neighbour):
+        top_scc = first.scc_id
+    else:
+        top_scc = first[1].enriched.bill.label_scc_id
+    followed: Optional[bool] = None
+    if predicted_scc_id is not None:
+        followed = predicted_scc_id == top_scc
+    return top_scc, len(neighbours), followed
+
+
+def followed_neighbour_metrics(
+    scored: Sequence[ScoredTextBill],
+) -> dict[str, Any]:
+    """Accuracy when text prediction matches top neighbour SCC vs when overriding."""
+    followed_correct = 0
+    followed_total = 0
+    override_correct = 0
+    override_total = 0
+    for row in scored:
+        text = row.text_a
+        if text is None or row.followed_top_neighbour is None:
+            continue
+        label = row.bill.label_scc_id
+        pred = text.predicted_scc_id
+        if pred is None:
+            continue
+        if row.followed_top_neighbour:
+            followed_total += 1
+            if pred == label:
+                followed_correct += 1
+        else:
+            override_total += 1
+            if pred == label:
+                override_correct += 1
+    def rate(num: int, den: int) -> Optional[Decimal]:
+        if den == 0:
+            return None
+        return Decimal(num) / Decimal(den)
+
+    return {
+        "followed_top_neighbour_count": followed_total,
+        "followed_top_neighbour_accuracy": rate(followed_correct, followed_total),
+        "override_top_neighbour_count": override_total,
+        "override_top_neighbour_accuracy": rate(override_correct, override_total),
+    }
+
+
 def estimate_payload_input_tokens(payload: dict[str, Any]) -> int:
     """Heuristic: serialized user payload chars / 4 (Foundry runs ~18k+ with full SCC catalog)."""
     return max(1, len(json.dumps(payload, ensure_ascii=False)) // 4)
@@ -839,42 +1457,243 @@ def estimate_dry_run_payload_stats(
     ref: "ReferenceData",
     vendor_votes: dict[int, list[PriorBillVote]],
     candidate_scc_mode: str = DEFAULT_CANDIDATE_SCC_MODE,
+    bill_text_mode: str = DEFAULT_BILL_TEXT_MODE,
+    similar_bills_evidence: bool = False,
+    similarity_ctx: Optional[SampleSimilarityContext] = None,
 ) -> tuple[int, float]:
     """Input-token estimate and mean candidate_scc count over the sample.
 
-    Full mode: max payload tokens (origin/master dry-run). Narrowed mode: mean payload
-    tokens plus DRY_RUN_NARROWED_PROMPT_OVERHEAD_TOKENS (bill text + system prompt).
+    Legacy full catalog: max payload tokens. Legacy narrowed: mean plus overhead.
+    Non-default arms: mean real per-call input tokens; worst-case bound is separate.
     """
     if not sample:
         return _ESTIMATE_INPUT_TOKENS_PER_CALL, 0.0
     per_call: list[int] = []
     cand_counts: list[int] = []
+    per_bill = similarity_ctx.per_bill if similarity_ctx is not None else {}
+    use_legacy_estimate = (
+        bill_text_mode == DEFAULT_BILL_TEXT_MODE and not similar_bills_evidence
+    )
+    if use_legacy_estimate:
+        for bill, _stratum in sample:
+            priors = priors_for_bill(vendor_votes, bill)
+            candidate_sccs, _ = resolve_candidate_sccs_for_bill(
+                ref,
+                bill,
+                priors,
+                candidate_scc_mode=candidate_scc_mode,
+            )
+            cand_counts.append(len(candidate_sccs))
+            vname = ref.vendor_names.get(bill.vendor_id, "")
+            payload = build_payload(
+                bill,
+                bill_text="",
+                vendor_name=vname,
+                mode="A",
+                priors=priors,
+                scc_by_id=ref.scc_by_id,
+                candidate_sccs=candidate_sccs,
+                candidate_projects=None,
+            )
+            per_call.append(estimate_payload_input_tokens(payload))
+    else:
+        task = backtest_cascade_task(
+            bill_text_mode=bill_text_mode,
+            similar_bills_evidence=similar_bills_evidence,
+        )
+        sys_tok = max(1, len(task.system_prompt) // 4)
+        for bill, _stratum in sample:
+            priors = priors_for_bill(vendor_votes, bill)
+            fields = per_bill.get(bill.bill_id)
+            if fields is not None and similarity_ctx is not None:
+                candidate_sccs = fields.candidate_sccs
+                similar_block = (
+                    fields.similar_block if similar_bills_evidence else None
+                )
+                bill_text = similarity_ctx.bill_text_for_estimate.get(
+                    bill.bill_id, ""
+                )
+            else:
+                candidate_sccs, _ = resolve_candidate_sccs_for_bill(
+                    ref,
+                    bill,
+                    priors,
+                    candidate_scc_mode=candidate_scc_mode,
+                )
+                similar_block = None
+                bill_text = ""
+            if not bill_text:
+                if bill_text_mode == BILL_TEXT_MODE_FULL_CONTENT:
+                    bill_text = ""
+                elif bill_text_mode == BILL_TEXT_MODE_ENVELOPE:
+                    bill_text = "x" * BILL_TEXT_CHAR_BUDGET
+            cand_counts.append(len(candidate_sccs))
+            vname = ref.vendor_names.get(bill.vendor_id, "")
+            payload = build_backtest_payload(
+                bill,
+                bill_text=bill_text,
+                vendor_name=vname,
+                mode="A",
+                priors=priors,
+                scc_by_id=ref.scc_by_id,
+                candidate_sccs=candidate_sccs,
+                candidate_projects=None,
+                bill_text_mode=bill_text_mode,
+                similar_bills=similar_block if similar_bills_evidence else None,
+            )
+            user_msg = task.build_user_message(payload)
+            per_call.append(max(1, len(user_msg) // 4) + sys_tok)
+    mean_cands = sum(cand_counts) / len(cand_counts)
+    if use_legacy_estimate and candidate_scc_mode == "full":
+        return max(per_call), mean_cands
+    mean_in = round(sum(per_call) / len(per_call))
+    if use_legacy_estimate:
+        return mean_in + DRY_RUN_NARROWED_PROMPT_OVERHEAD_TOKENS, mean_cands
+    return mean_in, mean_cands
+
+
+def estimate_dry_run_sample_one_mode_input_total(
+    sample: Sequence[tuple[TextBillRow, str]],
+    *,
+    ref: "ReferenceData",
+    vendor_votes: dict[int, list[PriorBillVote]],
+    candidate_scc_mode: str = DEFAULT_CANDIDATE_SCC_MODE,
+    bill_text_mode: str = DEFAULT_BILL_TEXT_MODE,
+    similar_bills_evidence: bool = False,
+    similarity_ctx: Optional[SampleSimilarityContext] = None,
+) -> int:
+    """Sum of per-bill input-token estimates (one mode) for dry-run reporting."""
+    if not sample:
+        return 0
+    use_legacy_estimate = (
+        bill_text_mode == DEFAULT_BILL_TEXT_MODE and not similar_bills_evidence
+    )
+    if use_legacy_estimate and candidate_scc_mode == "full":
+        return 0
+    per_bill = similarity_ctx.per_bill if similarity_ctx is not None else {}
+    per_call: list[int] = []
+    if use_legacy_estimate:
+        for bill, _stratum in sample:
+            priors = priors_for_bill(vendor_votes, bill)
+            candidate_sccs, _ = resolve_candidate_sccs_for_bill(
+                ref,
+                bill,
+                priors,
+                candidate_scc_mode=candidate_scc_mode,
+            )
+            payload = build_payload(
+                bill,
+                bill_text="",
+                vendor_name=ref.vendor_names.get(bill.vendor_id, ""),
+                mode="A",
+                priors=priors,
+                scc_by_id=ref.scc_by_id,
+                candidate_sccs=candidate_sccs,
+                candidate_projects=None,
+            )
+            per_call.append(estimate_payload_input_tokens(payload))
+        return sum(per_call)
+    task = backtest_cascade_task(
+        bill_text_mode=bill_text_mode,
+        similar_bills_evidence=similar_bills_evidence,
+    )
+    sys_tok = max(1, len(task.system_prompt) // 4)
     for bill, _stratum in sample:
         priors = priors_for_bill(vendor_votes, bill)
-        candidate_sccs, _ = resolve_candidate_sccs_for_bill(
-            ref,
-            bill,
-            priors,
-            candidate_scc_mode=candidate_scc_mode,
-        )
-        cand_counts.append(len(candidate_sccs))
+        fields = per_bill.get(bill.bill_id)
+        if fields is not None and similarity_ctx is not None:
+            candidate_sccs = fields.candidate_sccs
+            similar_block = (
+                fields.similar_block if similar_bills_evidence else None
+            )
+            bill_text = similarity_ctx.bill_text_for_estimate.get(bill.bill_id, "")
+        else:
+            candidate_sccs, _ = resolve_candidate_sccs_for_bill(
+                ref,
+                bill,
+                priors,
+                candidate_scc_mode=candidate_scc_mode,
+            )
+            similar_block = None
+            bill_text = ""
+        if not bill_text:
+            if bill_text_mode == BILL_TEXT_MODE_FULL_CONTENT:
+                bill_text = ""
+            elif bill_text_mode == BILL_TEXT_MODE_ENVELOPE:
+                bill_text = "x" * BILL_TEXT_CHAR_BUDGET
         vname = ref.vendor_names.get(bill.vendor_id, "")
-        payload = build_payload(
+        payload = build_backtest_payload(
             bill,
-            bill_text="",
+            bill_text=bill_text,
             vendor_name=vname,
             mode="A",
             priors=priors,
             scc_by_id=ref.scc_by_id,
             candidate_sccs=candidate_sccs,
             candidate_projects=None,
+            bill_text_mode=bill_text_mode,
+            similar_bills=similar_block if similar_bills_evidence else None,
         )
-        per_call.append(estimate_payload_input_tokens(payload))
-    mean_cands = sum(cand_counts) / len(cand_counts)
-    if candidate_scc_mode == "full":
-        return max(per_call), mean_cands
-    mean_in = round(sum(per_call) / len(per_call))
-    return mean_in + DRY_RUN_NARROWED_PROMPT_OVERHEAD_TOKENS, mean_cands
+        user_msg = task.build_user_message(payload)
+        per_call.append(max(1, len(user_msg) // 4) + sys_tok)
+    return sum(per_call)
+
+
+def estimate_dry_run_worst_case_input_tokens(
+    sample: Sequence[tuple[TextBillRow, str]],
+    *,
+    ref: "ReferenceData",
+    vendor_votes: dict[int, list[PriorBillVote]],
+    candidate_scc_mode: str = DEFAULT_CANDIDATE_SCC_MODE,
+    bill_text_mode: str = DEFAULT_BILL_TEXT_MODE,
+    similar_bills_evidence: bool = False,
+    similarity_ctx: Optional[SampleSimilarityContext] = None,
+) -> Optional[int]:
+    """Upper-bound input tokens using max bill-text budget (F5)."""
+    if not sample:
+        return None
+    use_legacy = (
+        bill_text_mode == DEFAULT_BILL_TEXT_MODE and not similar_bills_evidence
+    )
+    if use_legacy:
+        return None
+    worst_text = "x" * BUDGET_BY_MODE.get(bill_text_mode, BILL_TEXT_CHAR_BUDGET)
+    task = backtest_cascade_task(
+        bill_text_mode=bill_text_mode,
+        similar_bills_evidence=similar_bills_evidence,
+    )
+    sys_tok = max(1, len(task.system_prompt) // 4)
+    per_call_worst: list[int] = []
+    per_bill = similarity_ctx.per_bill if similarity_ctx is not None else {}
+    for bill, _stratum in sample:
+        priors = priors_for_bill(vendor_votes, bill)
+        fields = per_bill.get(bill.bill_id)
+        if fields is not None:
+            candidate_sccs = fields.candidate_sccs
+            similar_block = (
+                fields.similar_block if similar_bills_evidence else None
+            )
+        else:
+            candidate_sccs, _ = resolve_candidate_sccs_for_bill(
+                ref, bill, priors, candidate_scc_mode=candidate_scc_mode
+            )
+            similar_block = None
+        vname = ref.vendor_names.get(bill.vendor_id, "")
+        payload = build_backtest_payload(
+            bill,
+            bill_text=worst_text,
+            vendor_name=vname,
+            mode="A",
+            priors=priors,
+            scc_by_id=ref.scc_by_id,
+            candidate_sccs=candidate_sccs,
+            candidate_projects=None,
+            bill_text_mode=bill_text_mode,
+            similar_bills=similar_block if similar_bills_evidence else None,
+        )
+        user_worst = task.build_user_message(payload)
+        per_call_worst.append(max(1, len(user_worst) // 4) + sys_tok)
+    return max(per_call_worst) if per_call_worst else None
 
 
 def dry_run_summary(
@@ -887,6 +1706,11 @@ def dry_run_summary(
     ref: Optional["ReferenceData"] = None,
     vendor_votes: Optional[dict[int, list[PriorBillVote]]] = None,
     candidate_scc_mode: str = DEFAULT_CANDIDATE_SCC_MODE,
+    bill_text_mode: str = DEFAULT_BILL_TEXT_MODE,
+    similar_bills_evidence: bool = False,
+    similarity_ctx: Optional[SampleSimilarityContext] = None,
+    bill_ids_pin_stats: Optional[dict[str, int]] = None,
+    arm_settings_hash: Optional[str] = None,
 ) -> dict[str, Any]:
     by_stratum: dict[str, int] = defaultdict(int)
     mixed = 0
@@ -899,13 +1723,44 @@ def dry_run_summary(
     resolved_ladder = ladder if ladder is not None else ladder_by_name(ladder_name)
     input_per_call = _ESTIMATE_INPUT_TOKENS_PER_CALL
     mean_candidate_scc_count: Optional[float] = None
+    worst_case_input_per_call: Optional[int] = None
     if ref is not None and vendor_votes is not None and sample:
         input_per_call, mean_candidate_scc_count = estimate_dry_run_payload_stats(
             sample,
             ref=ref,
             vendor_votes=vendor_votes,
             candidate_scc_mode=candidate_scc_mode,
+            bill_text_mode=bill_text_mode,
+            similar_bills_evidence=similar_bills_evidence,
+            similarity_ctx=similarity_ctx,
         )
+        sample_input_one_mode_total = estimate_dry_run_sample_one_mode_input_total(
+            sample,
+            ref=ref,
+            vendor_votes=vendor_votes,
+            candidate_scc_mode=candidate_scc_mode,
+            bill_text_mode=bill_text_mode,
+            similar_bills_evidence=similar_bills_evidence,
+            similarity_ctx=similarity_ctx,
+        )
+        worst_case_input_per_call = estimate_dry_run_worst_case_input_tokens(
+            sample,
+            ref=ref,
+            vendor_votes=vendor_votes,
+            candidate_scc_mode=candidate_scc_mode,
+            bill_text_mode=bill_text_mode,
+            similar_bills_evidence=similar_bills_evidence,
+            similarity_ctx=similarity_ctx,
+        )
+    full_content_cap_hits = (
+        similarity_ctx.full_content_cap_hits if similarity_ctx else 0
+    )
+    union_addition_bills = (
+        similarity_ctx.union_addition_bills if similarity_ctx else 0
+    )
+    full_content_empty_or_stale = (
+        similarity_ctx.full_content_empty_or_stale if similarity_ctx else 0
+    )
     input_per_call = floor_dry_run_input_tokens(
         input_per_call,
         ladder=resolved_ladder,
@@ -917,10 +1772,22 @@ def dry_run_summary(
     )
     est_cost = calls * cost_per_call
     est_tokens = calls * (input_per_call + _ESTIMATE_OUTPUT_TOKENS_PER_CALL)
+    task = backtest_cascade_task(
+        bill_text_mode=bill_text_mode,
+        similar_bills_evidence=similar_bills_evidence,
+    )
     out: dict[str, Any] = {
         **populations,
         "ladder": ladder_name,
         "candidate_sccs": candidate_scc_mode,
+        "bill_text_mode": bill_text_mode,
+        "similar_bills_evidence": similar_bills_evidence,
+        "prompt_variant_hash": prompt_variant_hash(task),
+        "arm_hash": arm_settings_hash or arm_hash(
+            bill_text_mode=bill_text_mode,
+            similar_bills_evidence=similar_bills_evidence,
+            task=task,
+        ),
         "sample_requested": sample_size,
         "sample_selected": len(sample),
         "stratum_counts": dict(by_stratum),
@@ -933,6 +1800,48 @@ def dry_run_summary(
     }
     if mean_candidate_scc_count is not None:
         out["mean_candidate_scc_count"] = round(mean_candidate_scc_count, 2)
+    if ref is not None and vendor_votes is not None and sample:
+        use_legacy_estimate = (
+            bill_text_mode == DEFAULT_BILL_TEXT_MODE and not similar_bills_evidence
+        )
+        if not use_legacy_estimate or candidate_scc_mode != "full":
+            out["estimated_input_tokens_sample_one_mode_total"] = (
+                sample_input_one_mode_total
+            )
+    if bill_ids_pin_stats:
+        out["bill_ids_from"] = bill_ids_pin_stats
+    if bill_text_mode == BILL_TEXT_MODE_FULL_CONTENT:
+        out["full_content_char_cap"] = FULL_CONTENT_CHAR_CAP
+        out["full_content_cap_hits"] = full_content_cap_hits
+        out["full_content_empty_or_stale"] = full_content_empty_or_stale
+    if worst_case_input_per_call is not None:
+        out["estimated_input_tokens_per_call_worst_case_upper_bound"] = (
+            floor_dry_run_input_tokens(
+                worst_case_input_per_call,
+                ladder=resolved_ladder,
+                ladder_name=ladder_name,
+                candidate_scc_mode=candidate_scc_mode,
+            )
+        )
+    if similar_bills_evidence or bill_text_mode == BILL_TEXT_MODE_FULL_CONTENT:
+        if similarity_ctx is not None:
+            out["bills_with_no_linked_pdf"] = similarity_ctx.bills_with_no_linked_pdf
+    if similar_bills_evidence:
+        out["candidate_union_bills_with_additions"] = union_addition_bills
+        if similarity_ctx is not None:
+            out["neighbour_filter_drops"] = similarity_ctx.neighbour_filter_drops
+            out["bills_with_pdf_read_failure_for_neighbours"] = (
+                similarity_ctx.bills_with_pdf_read_failure
+            )
+    if similarity_ctx is not None and similarity_ctx.pdf_load_stats is not None:
+        st = similarity_ctx.pdf_load_stats
+        out["pdf_blob_load"] = {
+            "linked": st.linked,
+            "read_ok": st.read_ok,
+            "stale_redaction": st.stale_redaction,
+            "read_error": st.read_error,
+            "empty_content": st.empty_content,
+        }
     return out
 
 
@@ -1412,6 +2321,8 @@ def write_report_and_outputs(
     populations: Optional[dict[str, int]] = None,
     ladder_name: str = DEFAULT_BACKTEST_LADDER_NAME,
     candidate_scc_mode: str = DEFAULT_CANDIDATE_SCC_MODE,
+    bill_text_mode: str = DEFAULT_BILL_TEXT_MODE,
+    similar_bills_evidence: bool = False,
 ) -> tuple[Path, Path, Path]:
     out_dir.mkdir(parents=True, exist_ok=True)
     file_stamp = f"{ladder_name}_{stamp}"
@@ -1423,6 +2334,12 @@ def write_report_and_outputs(
         "model_version": MODEL_VERSION,
         "ladder": ladder_name,
         "candidate_sccs": candidate_scc_mode,
+        "bill_text_mode": metrics.get("bill_text_mode", bill_text_mode),
+        "similar_bills_evidence": metrics.get(
+            "similar_bills_evidence", similar_bills_evidence
+        ),
+        "prompt_variant_hash": metrics.get("prompt_variant_hash"),
+        "arm_hash": metrics.get("arm_hash"),
         "evaluation_window": {"since": str(eval_since), "until": str(eval_until)},
         "run_status": run_status,
         "populations": populations or {},
@@ -1462,6 +2379,11 @@ def write_report_and_outputs(
                 "http_status",
                 "candidate_scc_count",
                 "candidate_scc_narrowed",
+                "top_neighbour_scc_id",
+                "neighbour_count",
+                "followed_top_neighbour",
+                "bill_text_chars_capped",
+                "candidates_added_by_neighbours",
             ]
         )
         for row in scored:
@@ -1505,6 +2427,21 @@ def write_report_and_outputs(
                     http_st = ""
                     cand_count = ""
                     cand_narrowed = ""
+                    top_neigh = ""
+                    neigh_count = ""
+                    followed_neigh = ""
+                    text_capped = ""
+                    cand_added = ""
+                    if row.top_neighbour_scc_id is not None:
+                        top_neigh = str(row.top_neighbour_scc_id)
+                    if row.neighbour_count:
+                        neigh_count = str(row.neighbour_count)
+                    if row.followed_top_neighbour is not None:
+                        followed_neigh = "1" if row.followed_top_neighbour else "0"
+                    if row.bill_text_chars_capped:
+                        text_capped = "1"
+                    if row.candidates_added_by_neighbours:
+                        cand_added = str(row.candidates_added_by_neighbours)
                     if is_text:
                         if text.raw_predicted_scc_id is not None:
                             raw_scc = str(text.raw_predicted_scc_id)
@@ -1564,6 +2501,11 @@ def write_report_and_outputs(
                             http_st,
                             cand_count,
                             cand_narrowed,
+                            top_neigh,
+                            neigh_count,
+                            followed_neigh,
+                            text_capped,
+                            cand_added,
                         ]
                     )
 
@@ -1577,6 +2519,9 @@ def write_report_and_outputs(
         f"- Task: `{BILL_CODING_SUGGESTION_TASK.name}`",
         f"- Ladder: `{ladder_name}`",
         f"- Candidate SCCs: `{candidate_scc_mode}`",
+        f"- Bill text mode: `{bill_text_mode}`",
+        f"- Similar bills evidence: `{similar_bills_evidence}`",
+        f"- Prompt variant hash: `{metrics.get('prompt_variant_hash', 'n/a')}`",
         f"- Run status: {run_status}",
         f"- Evaluation window: {eval_since} .. {eval_until}",
         f"- Sample size: {len(scored)}",
@@ -1713,6 +2658,32 @@ def write_report_and_outputs(
             f"- text top-1: {pct(metrics['mixed_code_all']['text_top1'])}",
             f"- combined top-1: {pct(metrics['mixed_code_all']['combined_top1'])}",
             "",
+        ]
+    )
+    if metrics.get("similar_bills_evidence"):
+        nb = metrics.get("similar_bills_neighbour_metrics") or {}
+        lines.extend(
+            [
+                "### Similar bills evidence (Mode A text vs top neighbour SCC)",
+                "",
+                f"- Bills that followed top neighbour: {nb.get('followed_top_neighbour_count', 0)} "
+                f"(accuracy {pct(nb.get('followed_top_neighbour_accuracy'))})",
+                f"- Bills that overrode top neighbour: {nb.get('override_top_neighbour_count', 0)} "
+                f"(accuracy {pct(nb.get('override_top_neighbour_accuracy'))})",
+                f"- Candidate catalog union added SCCs on {metrics.get('candidate_union_bills_with_additions', 0)} bill(s)",
+                "",
+            ]
+        )
+    if metrics.get("bill_text_mode") == BILL_TEXT_MODE_FULL_CONTENT:
+        lines.extend(
+            [
+                f"- Full-content char cap hits: {metrics.get('full_content_cap_hits', 0)} "
+                f"(cap={FULL_CONTENT_CHAR_CAP})",
+                "",
+            ]
+        )
+    lines.extend(
+        [
             f"- Total tokens in: {metrics['usage']['input_tokens']}",
             f"- Total tokens out: {metrics['usage']['output_tokens']}",
             f"- Total cost USD: {metrics['usage']['cost_usd']:.4f}",
@@ -1957,6 +2928,8 @@ async def run_text_cascade_batch(
     cost_state: dict[str, Any],
     ladder: tuple[Rung, ...] | None = None,
     out: Optional[dict[tuple[int, str], TextAttemptResult]] = None,
+    bill_text_mode: str = DEFAULT_BILL_TEXT_MODE,
+    similar_bills_evidence: bool = False,
 ) -> dict[tuple[int, str], TextAttemptResult]:
     resolved_ladder = ladder if ladder is not None else BILL_CODING_FOUNDRY_LADDER
     sem = asyncio.Semaphore(concurrency)
@@ -1978,12 +2951,26 @@ async def run_text_cascade_batch(
             if cost_state["usd"] + est > max_cost_usd:
                 cost_state["stopped"] = True
                 return
-            cascade = await run_capped_cascade(
-                lambda: run_bill_coding_suggestion(
-                    payload,
+            async def _cascade_call(p: dict[str, Any] = payload) -> CascadeResult:
+                if (
+                    bill_text_mode == DEFAULT_BILL_TEXT_MODE
+                    and not similar_bills_evidence
+                ):
+                    return await run_bill_coding_suggestion(
+                        p,
+                        transport_for=transport_for,
+                        ladder=resolved_ladder,
+                    )
+                return await run_backtest_bill_coding_suggestion(
+                    p,
                     transport_for=transport_for,
                     ladder=resolved_ladder,
-                ),
+                    bill_text_mode=bill_text_mode,
+                    similar_bills_evidence=similar_bills_evidence,
+                )
+
+            cascade = await run_capped_cascade(
+                _cascade_call,
                 est=est,
                 cost_state=cost_state,
                 max_cost_usd=max_cost_usd,
@@ -2186,6 +3173,16 @@ def build_metrics(
     run_status: str = "complete",
     harness_retry_by_kind: Optional[dict[str, int]] = None,
     candidate_scc_mode: str = DEFAULT_CANDIDATE_SCC_MODE,
+    bill_text_mode: str = DEFAULT_BILL_TEXT_MODE,
+    similar_bills_evidence: bool = False,
+    prompt_variant_hash: Optional[str] = None,
+    arm_settings_hash: Optional[str] = None,
+    full_content_cap_hits: int = 0,
+    full_content_empty_or_stale: int = 0,
+    union_addition_bills: int = 0,
+    pdf_blob_load: Optional[dict[str, int]] = None,
+    neighbour_filter_drops: Optional[dict[str, int]] = None,
+    bills_with_pdf_read_failure_for_neighbours: int = 0,
 ) -> dict[str, Any]:
     restrict = cap_tripped or run_status != "complete"
     rows_a = metric_rows_for_mode(scored, mode="A", restrict=restrict)
@@ -2227,10 +3224,26 @@ def build_metrics(
         if catalog_diagnostics
         else {}
     )
+    neighbour_metrics = (
+        followed_neighbour_metrics(scored) if similar_bills_evidence else {}
+    )
     return {
         "cap_tripped": cap_tripped,
         "scored_bill_count": scored_bill_count,
         "unscored_bill_count": unscored_bill_count,
+        "bill_text_mode": bill_text_mode,
+        "similar_bills_evidence": similar_bills_evidence,
+        "prompt_variant_hash": prompt_variant_hash,
+        "arm_hash": arm_settings_hash,
+        "full_content_cap_hits": full_content_cap_hits,
+        "full_content_empty_or_stale": full_content_empty_or_stale,
+        "candidate_union_bills_with_additions": union_addition_bills,
+        "pdf_blob_load": pdf_blob_load,
+        "neighbour_filter_drops": neighbour_filter_drops or {},
+        "bills_with_pdf_read_failure_for_neighbours": (
+            bills_with_pdf_read_failure_for_neighbours
+        ),
+        "similar_bills_neighbour_metrics": neighbour_metrics,
         "mode_a_n": len(rows_a),
         "mode_b_n": len(rows_b),
         "mode_a": {
@@ -2341,6 +3354,23 @@ def main(argv: list[str] | None = None) -> int:
         default=DEFAULT_CANDIDATE_SCC_MODE,
         help="SubCostCode catalog slice for text cascade payloads (default: full)",
     )
+    ap.add_argument(
+        "--bill-ids-from",
+        type=Path,
+        default=None,
+        help="Pin sample to distinct BillId values from an earlier u654a predictions CSV",
+    )
+    ap.add_argument(
+        "--bill-text",
+        choices=BILL_TEXT_MODES,
+        default=DEFAULT_BILL_TEXT_MODE,
+        help="Bill text field for the cascade payload (default: envelope_truncated)",
+    )
+    ap.add_argument(
+        "--similar-bills-evidence",
+        action="store_true",
+        help="Include top similar earlier bills (PDF text) in the LLM payload",
+    )
     args = ap.parse_args(argv)
     selected_ladder = ladder_by_name(args.ladder)
 
@@ -2361,15 +3391,54 @@ def main(argv: list[str] | None = None) -> int:
         eval_since=args.eval_since,
         eval_until=args.eval_until,
     )
-    sample = stratified_sample(
-        text_bills,
-        vendor_votes,
-        sample_size=args.sample_size,
-        seed=args.seed,
-        eval_since=args.eval_since,
-        eval_until=args.eval_until,
-    )
+    bill_ids_pin_stats: Optional[dict[str, int]] = None
+    if args.bill_ids_from is not None:
+        pinned_ids = load_distinct_bill_ids_from_predictions_csv(args.bill_ids_from)
+        sample, bill_ids_pin_stats = sample_from_pinned_bill_ids(
+            text_bills,
+            pinned_ids,
+            vendor_votes,
+            eval_since=args.eval_since,
+            eval_until=args.eval_until,
+        )
+    else:
+        sample = stratified_sample(
+            text_bills,
+            vendor_votes,
+            sample_size=args.sample_size,
+            seed=args.seed,
+            eval_since=args.eval_since,
+            eval_until=args.eval_until,
+        )
     ref = load_reference_data()
+    blob_storage: list[Any] = []
+    read_blob = make_text_blob_reader(blob_storage)
+    similarity_ctx: Optional[SampleSimilarityContext] = None
+    if sample and (
+        args.similar_bills_evidence
+        or args.bill_text == BILL_TEXT_MODE_FULL_CONTENT
+    ):
+        similarity_ctx = compute_sample_neighbours(
+            bills,
+            blob_map,
+            sample,
+            read_blob=read_blob,
+            ref=ref,
+            vendor_votes=vendor_votes,
+            candidate_scc_mode=args.candidate_sccs,
+            similar_bills_evidence=args.similar_bills_evidence,
+            bill_text_mode=args.bill_text,
+        )
+    cascade_task = backtest_cascade_task(
+        bill_text_mode=args.bill_text,
+        similar_bills_evidence=args.similar_bills_evidence,
+    )
+    prompt_hash = prompt_variant_hash(cascade_task)
+    settings_hash = arm_hash(
+        bill_text_mode=args.bill_text,
+        similar_bills_evidence=args.similar_bills_evidence,
+        task=cascade_task,
+    )
     catalog_diag = catalog_diagnostics_for_sample(
         sample,
         ref,
@@ -2386,6 +3455,11 @@ def main(argv: list[str] | None = None) -> int:
             ref=ref,
             vendor_votes=vendor_votes,
             candidate_scc_mode=args.candidate_sccs,
+            bill_text_mode=args.bill_text,
+            similar_bills_evidence=args.similar_bills_evidence,
+            similarity_ctx=similarity_ctx,
+            bill_ids_pin_stats=bill_ids_pin_stats,
+            arm_settings_hash=settings_hash,
         ),
         **{
             k: v
@@ -2399,6 +3473,15 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     run_status = "complete"
     scored = prepare_scored_rows(sample, vendor_votes)
+    if similarity_ctx is not None:
+        for row in scored:
+            fields = similarity_ctx.per_bill.get(row.bill.bill_id)
+            if fields is None:
+                continue
+            row.neighbour_count = fields.neighbour_count
+            row.top_neighbour_scc_id = fields.top_neighbour_scc_id
+            row.candidates_added_by_neighbours = fields.candidates_added_by_neighbours
+            row.bill_text_chars_capped = fields.bill_text_chars_capped
     work: list[TextCascadeWorkItem] = []
     cost_state: dict[str, Any] = {
         "usd": 0.0,
@@ -2429,6 +3512,29 @@ def main(argv: list[str] | None = None) -> int:
                 f"--resume-from candidate_sccs {prior_candidate_sccs!r} differs from "
                 f"--candidate-sccs {args.candidate_sccs!r}"
             )
+        for key in U696_RESUME_ARM_SUMMARY_KEYS:
+            if key not in prior_summary:
+                raise SystemExit(
+                    f"--resume-from summary missing required arm field {key!r} "
+                    "(pre-U-696 summaries cannot be resumed into this harness)"
+                )
+        prior_bill_text = prior_summary["bill_text_mode"]
+        if prior_bill_text != args.bill_text:
+            raise SystemExit(
+                f"--resume-from bill_text_mode {prior_bill_text!r} differs from "
+                f"--bill-text {args.bill_text!r}"
+            )
+        prior_similar = prior_summary["similar_bills_evidence"]
+        if bool(prior_similar) != bool(args.similar_bills_evidence):
+            raise SystemExit(
+                f"--resume-from similar_bills_evidence {prior_similar!r} differs from "
+                f"current flag"
+            )
+        prior_arm = prior_summary["arm_hash"]
+        if prior_arm != settings_hash:
+            raise SystemExit(
+                f"--resume-from arm_hash {prior_arm!r} differs from current {settings_hash!r}"
+            )
         prior = load_prior_text_results(args.resume_from, ladder_name=prior_ladder)
         sample_ids = {b.bill_id for b, _ in sample}
         stray = {bid for bid, _ in prior} - sample_ids
@@ -2447,9 +3553,6 @@ def main(argv: list[str] | None = None) -> int:
         for key in ("throttle_retry_count", "throttle_failure_count", "cascade_error_count", "call_timeout_count"):
             cost_state[key] = int(cost_state.get(key, 0)) + int(prior_metrics.get(key) or 0)
         print(f"Resuming: {len(prior)} (Bill, mode) results reused; prior spend ${cost_state['usd']:.4f}")
-
-    blob_storage: list[Any] = []
-    read_blob = make_text_blob_reader(blob_storage)
 
     from intelligence.transport import registry as transport_registry
 
@@ -2471,6 +3574,8 @@ def main(argv: list[str] | None = None) -> int:
                 cost_state=cost_state,
                 ladder=selected_ladder,
                 out=results,
+                bill_text_mode=args.bill_text,
+                similar_bills_evidence=args.similar_bills_evidence,
             )
         )
 
@@ -2486,7 +3591,9 @@ def main(argv: list[str] | None = None) -> int:
                 continue  # resumed: both modes already finished, no blob read
             priors = priors_for_bill(vendor_votes, bill)
             try:
-                bill_text = read_text_blob_with_retry(read_blob, bill.extracted_text_blob_url)
+                raw_blob = read_text_blob_with_retry(
+                    read_blob, bill.extracted_text_blob_url
+                )
             except AzureBlobStorageError as exc:
                 if not _blob_error_is_transient(exc):
                     raise  # auth / 404 / config: stop the run, never a silent drop
@@ -2494,36 +3601,58 @@ def main(argv: list[str] | None = None) -> int:
                 # run. Counted and reported; it is never scored.
                 unreadable_bill_ids.add(bill.bill_id)
                 continue
+            bill_text, capped = resolve_bill_text_from_raw_blob(
+                raw_blob, bill_text_mode=args.bill_text
+            )
             vname = ref.vendor_names.get(bill.vendor_id, "")
-            candidate_sccs, cand_narrowed = resolve_candidate_sccs_for_bill(
+            _candidate_sccs, cand_narrowed = resolve_candidate_sccs_for_bill(
                 ref,
                 bill,
                 priors,
                 candidate_scc_mode=args.candidate_sccs,
             )
+            harness = (
+                similarity_ctx.per_bill.get(bill.bill_id)
+                if similarity_ctx is not None
+                else None
+            )
+            candidate_sccs = (
+                harness.candidate_sccs if harness is not None else _candidate_sccs
+            )
+            similar_block = (
+                harness.similar_block
+                if harness is not None and args.similar_bills_evidence
+                else None
+            )
             proj_candidates = build_candidate_projects_for_bill(
                 projects_with_bills_before(bills, bill.created, ref.proj_by_id),
                 ambiguous_abbrevs=ref.ambiguous_project_abbrevs,
             )
-            payload_a = build_payload(
+            payload_a = build_harness_payload(
                 bill,
-                bill_text=bill_text,
+                raw_blob=raw_blob,
+                resolved_bill_text=bill_text,
                 vendor_name=vname,
                 mode="A",
                 priors=priors,
                 scc_by_id=ref.scc_by_id,
                 candidate_sccs=candidate_sccs,
                 candidate_projects=None,
+                bill_text_mode=args.bill_text,
+                similar_bills=similar_block,
             )
-            payload_b = build_payload(
+            payload_b = build_harness_payload(
                 bill,
-                bill_text=bill_text,
+                raw_blob=raw_blob,
+                resolved_bill_text=bill_text,
                 vendor_name=vname,
                 mode="B",
                 priors=priors,
                 scc_by_id=ref.scc_by_id,
                 candidate_sccs=candidate_sccs,
                 candidate_projects=proj_candidates,
+                bill_text_mode=args.bill_text,
+                similar_bills=similar_block,
             )
             if "A" in todo_modes:
                 work.append(
@@ -2555,6 +3684,14 @@ def main(argv: list[str] | None = None) -> int:
     for row in scored:
         row.text_a = results.get((row.bill.bill_id, "A"))
         row.text_b = results.get((row.bill.bill_id, "B"))
+        if row.text_a is not None and similarity_ctx is not None:
+            harness = similarity_ctx.per_bill.get(row.bill.bill_id)
+            filtered = harness.filtered_neighbours if harness else []
+            _top_scc, _n, followed = neighbour_metadata_for_bill(
+                filtered,
+                predicted_scc_id=row.text_a.predicted_scc_id,
+            )
+            row.followed_top_neighbour = followed
 
     state = finalize_run_state(
         scored,
@@ -2601,6 +3738,36 @@ def main(argv: list[str] | None = None) -> int:
         run_status=run_status,
         harness_retry_by_kind=dict(cost_state.get("harness_retry_by_kind") or {}),
         candidate_scc_mode=args.candidate_sccs,
+        bill_text_mode=args.bill_text,
+        similar_bills_evidence=args.similar_bills_evidence,
+        prompt_variant_hash=prompt_hash,
+        arm_settings_hash=settings_hash,
+        full_content_cap_hits=(
+            similarity_ctx.full_content_cap_hits if similarity_ctx else 0
+        ),
+        full_content_empty_or_stale=(
+            similarity_ctx.full_content_empty_or_stale if similarity_ctx else 0
+        ),
+        union_addition_bills=(
+            similarity_ctx.union_addition_bills if similarity_ctx else 0
+        ),
+        pdf_blob_load=(
+            {
+                "linked": similarity_ctx.pdf_load_stats.linked,
+                "read_ok": similarity_ctx.pdf_load_stats.read_ok,
+                "stale_redaction": similarity_ctx.pdf_load_stats.stale_redaction,
+                "read_error": similarity_ctx.pdf_load_stats.read_error,
+                "empty_content": similarity_ctx.pdf_load_stats.empty_content,
+            }
+            if similarity_ctx and similarity_ctx.pdf_load_stats is not None
+            else None
+        ),
+        neighbour_filter_drops=(
+            similarity_ctx.neighbour_filter_drops if similarity_ctx else None
+        ),
+        bills_with_pdf_read_failure_for_neighbours=(
+            similarity_ctx.bills_with_pdf_read_failure if similarity_ctx else 0
+        ),
     )
     metrics["blob_unreadable_count"] = len(unreadable_bill_ids)
     metrics["call_timeout_count"] = int(cost_state.get("call_timeout_count", 0))
@@ -2617,6 +3784,8 @@ def main(argv: list[str] | None = None) -> int:
         populations=populations,
         ladder_name=args.ladder,
         candidate_scc_mode=args.candidate_sccs,
+        bill_text_mode=args.bill_text,
+        similar_bills_evidence=args.similar_bills_evidence,
     )
     print(
         f"U-654a run {run_status} ladder={args.ladder} candidate_sccs={args.candidate_sccs}; "

@@ -2,6 +2,299 @@
 
 Carry-over items from sessions. Check off as done; prune anything stale.
 
+## Long-standing subs were never swept into compliance tracking — 4 confirmed, ~12 more (booked 2026-10-20, Vendor Agent run)
+
+Found by onboarding **Contractors Mirror & Glass** (dbo 207): a **$165,848** sub across **35 bills since
+2022-05-19**, carrying **zero** `CertificateOfInsurance`, no `Taxpayer`, `VendorTypeId` NULL and
+`TrackCompliance` **False**. It is not an isolated record — it is the fourth found the same way, after
+Dodd Electric (**$138K**), Crawford Door (**$110K**) and SavATree. The common shape: vendors who
+pre-date compliance tracking and were never back-filled, so they are invisible to the dashboard that
+exists to catch exactly this.
+
+**Sweep run 2026-10-20** — 172 vendors with ≥$50K spend and no COI. That raw number is misleading
+(Materials Suppliers require no coverage), so split by what is actually owed:
+
+**A. `VendorTypeId = 2` (Tradesman) with no COI — 7 vendors, $1,633,345.74.** All seven are
+`IsContractLabor = 1` — the Cordova brothers, Wilmer Diaz, Brayan Marcia Salina, Denis Marcia
+Izaguirre, Hunter Dobyns. These are individual crew, not subcontractor firms, so whether a COI is
+owed is a **policy question for the Owner**, not a defect. Six of the seven billed through 2026-09-30.
+
+**B. Untyped, ≥$250K, still active in 2026 — 26 vendors, $14,284,097.88.** None has a COI or a W-9.
+Roughly half are plainly installers who should be Tradesman:
+Buchi Plumbing ($522K) · Superior Custom Framing ($507K) · Puente's Drywall ($469K) · Carpet Den
+Interiors ($462K) · Southern Stone Surfaces ($460K) · Thomas Fencing ($458K) · Bespoke Plasterworks
+($439K) · Middle TN Custom Trim ($434K) · Accent Garage Doors ($414K) · G.L. Carter Stucco ($335K) ·
+Southern Staircase ($318K) · Tennessee Homescapes ($594K).
+The remainder are suppliers/services needing classification but **not** a compliance chase (A-1
+Appliance, Cox Interior, Valley Interior Products, Ideal Millwork, Visual Comfort, MGM Sales, JTA Land
+Surveying). One is simply mis-filed: **The Cincinnati Insurance Company** ($720,710.50 / 132 bills) is
+our insurer, not a trade vendor.
+
+- [ ] 🟠 **Work list B's ~12 installers as a classify-then-chase batch**, using the flow proven on
+  Contractors Mirror & Glass: classify → `TrackCompliance=True` → **live folder listing in BOTH stores
+  first** → link (do not create) → file + ingest → draft the request. ⚠️ On CMG both stores *already
+  had* a `Contractors Mirror & Glass Co` folder; blind provisioning would have created two duplicates.
+- [ ] 🟡 **Decide the contract-labor COI policy** (list A). Individuals on our own crew are a different
+  question from subcontractor firms — needs the Owner's call before anyone chases them.
+- [ ] 🟡 Re-point **The Cincinnati Insurance Company** out of the trade-vendor population so it stops
+  surfacing in compliance sweeps.
+- [ ] 🟢 Add a standing report for "vendor with spend over $X and no COI", so the next four are found by
+  the dashboard instead of by onboarding the fifth by hand.
+
+## W-9 / Taxpayer coverage is 12% — a CY2026 1099-NEC exposure with a filing deadline (booked 2026-10-20, Vendor Agent run)
+
+Surfaced alongside the COI sweep above and **kept separate deliberately**: a missing COI is an
+insurance risk we carry, a missing W-9 is a **reporting obligation with a statutory deadline**.
+
+Measured 2026-10-20 against `dbo.Vendor.TaxpayerId`:
+
+| | Vendors | Spend |
+|---|---|---|
+| Has `Taxpayer` | **66** | $101,204,127.86 |
+| **No `Taxpayer`** | **467** | **$50,119,272.21** |
+| No `Taxpayer`, billed in **CY2026** | **175** | **$7,173,467.75** |
+| …of those, CY2026 ≥ $600 | **168** | **$7,171,028.67** |
+| …contract-labor subset (`IsContractLabor=1`) | 14 | $465,881.11 |
+
+Only **12%** of vendors we have ever billed carry a Taxpayer record.
+
+⚠️ **168 is an UPPER BOUND on 1099s owed, not a count of them.** Most corporations are exempt from
+1099-NEC (the usual exceptions being legal and medical payees), and that population has not been split
+out here — doing so is the first task below, not a conclusion this entry reaches. What *is* certain is
+that we cannot currently tell which of the 168 are reportable, because the W-9 that answers it is the
+document we do not hold.
+
+Worth noting the trap this sits next to: a W-9 **can** be on file in Box and still be worthless.
+CMG's folder held `Contractors Mirror & Glass Co - W-9.PDF`, but its requester block reads **T D S
+Construction, Inc** and it was signed **2015-08-24** — furnished to a different company entirely.
+**Presence of a W-9 file is not evidence of a W-9 to us**; check the requester block and the date.
+Same family as [[feedback_verify_compliance_doc_content_not_filename]].
+
+- [ ] 🟠 **Split the 168 by federal tax classification** before any chase, so corporations are not
+  chased for forms they do not owe. The classification lives on the W-9 itself, so for vendors with no
+  W-9 this is a judgement from entity name + QBO data, flagged as provisional.
+- [ ] 🟠 **Get the Owner's decision on chasing W-9s at this volume** before drafting. At ~168 vendors
+  this is a campaign, not a handful of drafts, and the chase emails get **SENT within hours** of being
+  staged ([[reference_vendor_document_request_email]]) — so a bad batch cannot be recalled.
+- [ ] 🟡 **Richard A. Hamblen (CMG, dbo 207) is a sole proprietor** — box checked on the 2015 W-9 — and
+  has taken **$165,848 across 35 bills since 2022** with no Taxpayer record. Sole props are squarely
+  1099-NEC reportable. A W-9 request draft is already staged in `invoice@rogersbuild.com`.
+- [ ] 🟡 Decide whether `Taxpayer` should be **required** before a vendor can be billed, or at least
+  warned on, so the gap stops growing while the backlog is worked.
+- [ ] 🟢 ⚠️ Any repair path must respect the **plaintext-TIN P0** — do NOT write TINs via
+  `TaxpayerService.update` until that is fixed ([[feedback_taxpayer_update_plaintext_tin]]).
+
+## QBO bill push — a stale dead-letter, and four bills that never enqueued at all (booked 2026-10-20, Vendor Agent statement run)
+
+Found by sweeping `dbo.Bill` for `Status='completed' AND QboId IS NULL` while reconciling vendor
+statements — not by reading code.
+
+⚠️ **The headline number was perishable and is recorded here re-verified.** The 2026-09-29 reading was
+**7 bills / $56,135.99**. Re-measured **2026-10-20: 4 bills / $7,142.26** — the two large ones resolved
+themselves in the interim. Any future sweep must re-measure rather than cite either figure.
+
+**Resolved since, no action needed:**
+- Vinny & Wes Flooring `4406` **$42,327.20** → QBO **77395**. The original failure was
+  `Invalid Reference Id` because `dbo.Vendor.QboId` pointed at QBO vendor **1428**, which did not exist;
+  the vendor now resolves to **1435**.
+- Huskey Building Supply `7107890` **$3,956.53** → QBO **76837** (the duplicate *was* the right target).
+
+### Defect 1 — the dead-letter queue is reporting a problem that no longer exists 🟠
+
+`qbo.Outbox` row **1277** is still `Status='dead_letter'` (`Attempts=1`,
+`QboDuplicateError: Duplicate Document Number Error`, `DeadLetteredAt` 2026-09-29) for Bill
+`A0FD0491-7950-44DD-8F32-36E708355FEC` = dbo **40618**, Huskey `7107890`. **That bill now carries
+QboId 76837.** The underlying problem was fixed; nothing closed the outbox row.
+
+It is the **only** dead-letter row in the table — 1 of 1,475 (the other 1,474 are `done`). So the entire
+dead-letter signal for QBO bill pushes is currently a **false positive**, which is precisely how a real
+one gets ignored. Same family as the U-005 expense-coding trap in `CLAUDE.md` ("44 codings looked
+confirmed but never reached QBO"): the queue state stopped describing reality, and nothing complained.
+
+- [ ] 🟠 **Reconcile-or-close on late success.** When a Bill acquires a `QboId` by *any* path (manual
+  link, re-pull, operator fix), close any outstanding `sync_bill_to_qbo` outbox row for it. Prefer a
+  distinct terminal status (`superseded`) over `done` so the two causes stay distinguishable, and never
+  silently delete the row — the audit trail is the point.
+- [ ] 🟡 Clear row **1277** specifically. Sequence this *after* the above, so it is not just hand-patched
+  into looking right and then re-created by the next occurrence.
+
+### Defect 2 — four completed bills have NO outbox row at all 🟠
+
+Never enqueued ⇒ never dead-lettered ⇒ **no signal anywhere**. A dead-letter is at least visible; these
+four produced nothing. Completion is supposed to enqueue `sync_bill_to_qbo`; `qbo.Outbox` holds **zero
+rows** keyed to any of their PublicIds.
+
+| dbo | Number | Date | Amount | Vendor | Vendor QboId |
+|---|---|---|---|---|---|
+| 16911 | `152320` | 2026-01-13 | $585.38 | Walker Lumber & Hardware | 292 |
+| 17453 | `2026.02.28.SHT` | 2026-02-28 | $1,456.88 | Emilson O. Cordova Tercero | 460 |
+| 17744 | `5049` | 2026-03-10 | $5,100.00 | Gladis Cleaning LLC | 143 |
+| 19965 | `2498` | 2026-08-04 | $0.00 | The Iron Grove, LLC | 274 |
+
+Total **$7,142.26**. The three real ones cluster Jan–Mar 2026; the Aug row is $0.00 and looks like an
+abandoned empty record rather than a push failure.
+
+⚠️ **`152320` is already with Chris** for manual research (deferred during the Walker Lumber
+reconciliation) — do not chase it independently.
+
+- [ ] 🟠 **Determine whether `complete_bill` can mark a bill `completed` while the enqueue silently
+  no-ops** — write gate off, swallowed exception, or a completion path that never enqueues. If it can,
+  make it fail loudly with zero state change, per the U-005 precedent (`confirm()` rejects 422 rather
+  than recording a confirmed-but-unenqueued row).
+- [ ] 🟡 **Make the never-enqueued case a `ReconciliationIssue`, not silence.** The daily QBO reconcile
+  detects "locally complete but not in external system" drift — confirm it actually covers *no outbox row
+  was ever written*, which is a different shape from *the push failed*.
+- [ ] 🟢 Decide disposition of the three Jan–Mar bills (**$6,556.88** excluding the already-deferred
+  `152320`): push them, or mark them deliberately-local.
+
+## Vendor payment terms have NOWHERE TO LIVE — `dbo.Vendor` has no term field (booked 2026-09-28, Chris)
+
+Chris set an AP terms policy (Net 45 default / Net 30 materials+utilities / Net 15 contract labor, plus
+seven per-vendor overrides) and decided it lives in **our** system, NOT in QBO — `Bill.DueDate` must keep
+equalling `Bill.BillDate` so the QBO aging reports stay unchanged. The term is an **internal payment-
+prioritization input**, not a contractual due date pushed to the vendor.
+
+**There is no field for it.** `PaymentTermId` exists on `dbo.Bill` and `dbo.Invoice` but NOT on
+`dbo.Vendor` (verified 2026-09-28 against INFORMATION_SCHEMA). Until this ships, the policy can only be
+applied by hand in the weekly payment run — it is written down in umbrella memory
+`project_ap_payment_terms_policy.md` and nowhere in the database.
+
+- [ ] 🟡 **Add `dbo.Vendor.PaymentTermId`** (nullable FK → `dbo.PaymentTerm`), ProcessEngine CRUD +
+  `VendorService.update_by_public_id(payment_term_public_id=...)` + the React vendor-edit field. Nullable
+  means "fall back to the category default" — do NOT backfill every vendor with an explicit row.
+  ⚠️ This must NOT feed the QBO bill push or `folder_processor`'s `due_date = parsed.bill_date`
+  (`entities/bill/business/folder_processor.py:552,653`). Chris explicitly chose to leave intake as-is;
+  the term is for OUR scheduling only. A future unit may surface a *derived* "target pay date" alongside
+  the unchanged DueDate, but that is a separate decision.
+- [ ] 🟡 **Add a `dbo.VendorTypePaymentTerm` category-default table**, mirroring the existing
+  `dbo.VendorTypeRequiredCoverage` pattern (per-VendorType config, SQL-managed, no UI needed at first).
+  Resolution order = vendor override → VendorType default → global Net 45.
+- [ ] 🟡 **BLOCKER for the category half: VendorType coverage is ~7%.** 1,118 of 1,205 active vendors are
+  untyped (Tradesman 66, Materials Supplier 21, Consultant 1). A VendorType-driven default resolves to the
+  global fallback for almost everyone until vendors are classified — see
+  `feedback_vendor_classify_every_worklist_vendor`. Classify the AP-active vendors (~84 with open
+  balances) first; that covers the money without a 1,200-vendor sweep.
+- [ ] 🟢 **Then teach the weekly payment-run scoring to read the resolved term** instead of the
+  hard-coded vendor-category heuristics in `project_ap_payment_policy`.
+
+## Booked 2026-09-30 by `/em` out of the 2026.09.15 contract-labor period close (U-589 … U-595)
+
+Six api units + one iOS unit (U-593, filed in `build.one.ios/TODO.md`). Board rows are **owed** —
+`build.one.team/BOARD.md` was held by a live parallel session (U-585 marked Building) when these were
+booked, so per the umbrella parallel-session rule they were written here rather than forced onto the board.
+
+### U-589 🔴 P1 — `is_overhead` is silently wiped the moment a line is billed
+
+`entities/contract_labor/business/bill_service.py:621` (the post-generation FK-linkage update) re-passes
+every `ContractLaborLineItem` field **except `is_overhead`**. `ContractLaborLineItemRepository.update_by_id`
+declares `is_billable: bool = True, is_overhead: bool = False` — **defaults, not `None`** — so omitting the
+argument *writes* `False`. `is_billable` is explicitly guarded on the line immediately above; `is_overhead`
+was missed.
+
+**Effect:** an overhead line loses its flag as soon as it is billed, leaving `project_id IS NULL AND
+is_overhead = 0`. The grouping guard in the same file —
+
+```python
+if not li_project_id and not li.is_overhead:
+    continue   # skipped
+```
+
+— then **skips that line on any re-run**, so the edit path rebuilds the `OVERHEAD` bill without it and the
+bill shrinks. Same cannibalization class as `feedback_cl_generate_bills_editpath_hazard`, new trigger.
+
+- [ ] Pass `is_overhead=fresh_li.is_overhead` at the call site.
+- [ ] **Right-depth:** change both repo bool defaults to `None` so omission preserves instead of overwrites,
+  and audit every other caller of `update_by_id` for the same omission.
+- [ ] Regression test must go RED on the pre-fix code: bill an overhead line, re-read it, assert
+  `is_overhead` is still `True`.
+
+**Observed scale:** 3 rows all-time. CL line 1652 (Elmer 9/15 PTO) restored by hand 2026-09-30. The other
+two — Ricky Moreno `li 1142` (2026-07-01) and `li 1234` (2026-07-10) — left untouched under Chris's standing
+"nothing before 9/1" instruction. The 14 historical overhead lines that kept their flag were never
+FK-linked, which is why this stayed invisible.
+
+### U-590 — delete the dead `get_due_date`
+
+`ContractLaborBillService.get_due_date` computes a due date (15th → month-end, month-end → 15th of next
+month), `generate_bills_for_vendor` passes it to `BillService.create`, and **the sprocs discard it**:
+`UpdateBillById` sets `[DueDate] = @BillDate` outright (`entities/bill/sql/dbo.bill.sql:771`) and CreateBill's
+canonical definition carries the same mirror (noted at `dbo.bill.sql:433`).
+
+`DueDate = BillDate` is **deliberate and load-bearing** — see the AP-terms-policy entry at the top of this
+file: the term is an internal prioritization input and `Bill.DueDate` must keep equalling `Bill.BillDate` so
+the QBO aging reports stay unchanged. So the invariant is correct and the function is the defect.
+
+- [ ] Delete `get_due_date` and its call sites, or reduce it to returning the bill date.
+- [ ] Add a test pinning `DueDate == BillDate` through the create path so the mirror can't silently regress.
+
+⚠️ This function actively misleads: on 2026-09-30 it caused `/em` to offer Chris a DueDate choice that did
+not exist, and he picked the unreachable option. The 82 historical `DueDate <> BillDate` bills all predate
+the mirror and taper to zero from July onward (Jul 0 / Aug 0 / Sep 0 against 529 equal).
+
+### U-591 — `VENDOR_CONFIG` is stale and incomplete
+
+`entities/contract_labor/business/bill_service.py:39`:
+- **Brayan Rafael Marcia Salina** is `rate 240.00` ($30.00/h) but his live rate is **$250/day** ($31.25/h),
+  effective **2026-08-19**. Five 9/1–9/8 rows were coded at the stale rate and corrected by hand 2026-09-30.
+- **Hunter Dobyns is absent entirely.** `VENDOR_CONFIG.get(vendor_name, {...''})` then renders a **blank
+  address block** on his bill PDF.
+
+- [ ] Correct Brayan's rate and add Hunter Dobyns.
+- [ ] **Right-depth:** a hard-coded dict keyed by vendor *name* is the real problem — rate/markup/address
+  belong on `dbo.Vendor` (or a dated rate table, since rates change mid-period and a single scalar cannot
+  express an effective date). A name-keyed dict also breaks silently on a DBA rename
+  (`feedback_vendor_name_dba_convention`).
+- [ ] Until then, add a test asserting every active contract-labor vendor has a `VENDOR_CONFIG` entry.
+
+### U-592 — recompute `ReviewPriority` / `ReviewReasons` when TimeLogs arrive late
+
+The time-tracking specialist stamps `TimeEntry.ReviewPriority` + `ReviewReasons` at submit time and nothing
+recomputes them, so an entry whose logs arrive in a later sync keeps flags that are now false.
+
+Live example: Emilson Cordova (user 38) TE **1266** still reads `medium` / `["missing_clockout",
+"missing_note"]` and TE **1271** + **1276** still read `high` / `["no_time_logs"]` — all three hold complete
+logs with clock-outs, notes and GPS, and all three are `approved`. Two were approved *while* flagged high.
+
+- [ ] Re-run the deterministic anomaly list when a TimeLog is created or updated against an existing entry.
+- [ ] Decide whether flags on an already-`approved` entry are recomputed or frozen (product call).
+- [ ] The approver queue currently lies in both directions — clean entries can read `high`, and the reverse
+  is possible too.
+
+### U-594 — PTO has no first-class representation
+
+PTO is recorded as a `LogType='work'` TimeLog whose **`Note` reads "Paid Time Off"**. The only LogTypes that
+exist are `work` (1685 rows) and `break` (10). Consequences:
+
+- The day carries no project and no GPS, so it looks like a data-quality defect to every check.
+- `ContractLabor` generation only keeps a project-less line when `is_overhead = True`, which **nothing sets
+  automatically** — so every PTO day needs hand-coding or it is silently dropped from billing.
+- `mark_as_ready_via_review_approval` exempts project-less overhead lines from needing a SubCostCode, but
+  **the QBO push requires one** (`integrations/intuit/qbo/bill/connector/bill/business/service.py:1114`) and
+  completion locks the line first. So a PTO line that passes the readiness gate can still hard-fail the push
+  unrecoverably. Hit live on 2026-09-30 (BLI 25230, fixed by assigning SCC 459 / `65.02 Miscellaneous Labor`).
+
+- [ ] Give PTO (and "Office Closed", which has the same shape) a real `LogType` or an entry-level flag.
+- [ ] Auto-set `is_overhead` + the standing overhead SubCostCode for those types at generation.
+- [ ] Make the readiness gate and the QBO push agree on what a complete overhead line requires.
+
+### U-595 — split-brain definition of "ready" (promoted from the entry at ~line 2571 of this file)
+
+Three competing definitions: legacy `mark_as_ready` validates parent-row
+`vendor_id`/`sub_cost_code_id`/`hourly_rate`/`total_hours`; `mark_as_ready_via_review_approval` validates
+line-item coding; `ContractLabor.is_ready_for_billing` is a third (and has **zero callers**). Plus
+`repo.bulk_update_status` / `update_status_and_link` write `'ready'` with no check at all.
+
+This is not theoretical: on 2026-09-30 `is_ready_for_billing`'s `bill_vendor_id is not None` clause led `/em`
+to diagnose a NULL `BillVendorId` as the reason a PTO row wasn't billable. It wasn't — `bill_vendor_id` is a
+legacy override that `generate_bills_for_vendor` deliberately ignores in favour of `vendor_id`
+(`bill_service.py:231`), and the actual blocker was an un-approved review.
+
+- [ ] Decide whether legacy `mark_as_ready` is dead (delete) or whether all paths should consume one
+  `readiness_blockers` predicate.
+- [ ] Delete `is_ready_for_billing` or wire it to the real predicate — an uncalled third definition of a
+  load-bearing concept is a trap, not dead weight.
+
+
 ## Expense artifacts are built at submit-for-review from the SUSPENSE cost code and never regenerated — 3 confirmed, $5,921.45 hidden from a live subtotal (booked 2026-10-20, Expense review run)
 
 Found by processing `[Review] Huskey Building Supply — Expense QBO-76865 — HE12 — $5,921.45, 45.00`

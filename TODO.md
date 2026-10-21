@@ -355,7 +355,7 @@ numeric criteria matching. The two copies do not cross-propagate (KI-39), so eac
   item (at minimum cost code, amount, description) and **update in place** on drift; keep the public_id match
   for *locating* the row. Do both copies — **1445-1470** and **1682-1727** — a fix to one leaves the receipts
   path broken. Prefer reusing the Box `ContentHash` shape over minting a second primitive.
-- [ ] 🟠 **Decide early-vs-late artifact generation (the altitude call).** Either defer row/filename emission
+- [x] 🟠 ✅ **DONE — U-692a `15813957` (2026-10-21).** Chris chose (a), keyed on `IsHoldingCode` rather than on completion: writers emit nothing for a parked line; documents defer expense-wide; the next QBO pull after the recode writes the first, correct artifact. Code facts that corrected this item: the early emitter is the QBO purchase **pull** (`scripts/sync_qbo_purchase.py`), triggered by the submit-time QBO write — not submit-for-review itself; the second idempotency block is the pull batch path, not receipts; the SharePoint filename duplicates rather than freezes (upload guard keys on filename). Original text: **Decide early-vs-late artifact generation (the altitude call).** Either defer row/filename emission
   from submit-for-review to completion, when the coding is final, or make completion **re-emit**. The first is
   cleaner; the second preserves a reviewer's ability to see the receipt in SharePoint *before* approving,
   which is why it is emitted early today — so this is a real trade, not an oversight. The idempotency fix
@@ -371,7 +371,7 @@ numeric criteria matching. The two copies do not cross-propagate (KI-39), so eac
 - [ ] 🟡 **Make a drifted row a `ReconciliationIssue`.** U-580 added durable issue recording at the silent
   failure sites; "workbook row disagrees with the line item" is the same family and has no signal at all
   today. Reuse `MsReconciliationIssueService` / `box.ReconciliationIssue`.
-- [ ] 🟡 **Stop reporting a skip as an unqualified success.** `"All N row(s) already synced"` with
+- [x] 🟡 ✅ **DONE — U-692a `15813957`:** messages now read `…already present (coding not re-verified)` and results carry `deferred_holding_count` / `deferred_holding`; U-692b makes the check real. Original text: **Stop reporting a skip as an unqualified success.** `"All N row(s) already synced"` with
   `success: True` is what made this invisible in the completion result. Say what was verified —
   `"N row(s) present (coding not re-verified)"` — until the content check lands.
 - [ ] 🟠 **Build a server-side repair mode, paired with the sweep.** The sweep above detects; this fixes,
@@ -409,6 +409,11 @@ numeric criteria matching. The two copies do not cross-propagate (KI-39), so eac
   to carry `45.00` in place of `00.02`. QBO-76604's two SharePoint PDFs are an older, still-open instance of
   the same rename problem. Per `feedback_in_place_workbook_cell_fixes_are_operator_work`, the classifier
   denies these writes and they are not to be routed around.
+
+- [ ] 🟠 **U-692 slices remaining.** **U-692b** content-keyed rewrite — locate by column Z, rewrite every writer-owned cell (B, C, I–N) on drift, **never column H (DRAW REQUEST stamp)**; new MS outbox kind that relocates by key at drain; Box `apply_rows_to_details` update-in-place (which also ends the `ContentHash` masking: today a changed hash triggers a push, the editor skips the present key, and the new hash is recorded as fresh); `ReconciliationIssue` on drift. **U-692c** report-only sweep + dry-run-default repair route (renames listed separately, never in `--apply`). Worktree `.worktrees/u-692`.
+- [ ] 🟠 **Bill / BillCredit follow-up (booked by Chris 2026-10-21, not in U-692).** Same early-emission pattern: `scripts/sync_qbo_bill.py` / `sync_qbo_vendorcredit.py` and the bill/credit `sync_to_excel_workbook` writers + the bill/bill_credit branches of `integrations/box/excel/business/row_builder.py` have no holding-code gate and the same column-Z skip. Port the U-692a gate and the U-692b rewrite.
+- [ ] 🟢 **U-692a residual — the QBO purchase pull ignores the deferral counts.** `scripts/sync_qbo_purchase.py` drops `deferred_holding_count` (Excel) and `deferred_holding` (SharePoint) from its logs/result, so parked lines are invisible in pull output (`reconcile_project.py` already surfaces them). One info line + a result counter. (Pass 2, U-692a.)
+- [ ] 🟢 **U-692a residual — document deferral is silent in the completion result.** A deferred upload returns `success: True` with `deferred_holding: True`, never an error or 207, so a completed expense with a parked sibling on another project shows a DETAILS row with no filed receipt until the next pull/completion re-drives it. Consider surfacing it. (Pass 3 L1, U-692a.)
 
 Related: [[project_box_details_sync_column_misalignment]], [[project_box_details_blank_costcode_orphans]],
 [[feedback_in_place_workbook_cell_fixes_are_operator_work]], [[feedback_excel_draw_update]],

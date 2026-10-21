@@ -17,6 +17,7 @@ import hashlib
 import json
 import random
 import re
+import sys
 import time
 from functools import lru_cache
 from collections import defaultdict
@@ -50,7 +51,15 @@ from intelligence.cascade.bill_coding_payload import (
     resolve_text_prediction,
     vendor_history_scc_numbers_from_priors,
 )
-from intelligence.cascade.core import Attempt, CascadeResult, Rung, StructuredTask, run_cascade
+from intelligence.cascade import claude_budget
+from intelligence.cascade.core import (
+    Attempt,
+    CascadeResult,
+    Rung,
+    StructuredTask,
+    _attempt_error_code,
+    run_cascade,
+)
 from intelligence.observability.pricing import compute_cost_usd
 from intelligence.transport.base import Usage
 from scripts.sync_helper import assert_cli_system_admin
@@ -502,10 +511,20 @@ def _instream_error_kind(err: str) -> tuple[str, Optional[int]] | None:
     return None
 
 
+def _claude_unavailable_skip_token(err: str | None) -> str | None:
+    code = _attempt_error_code(err)
+    if not code or not code.startswith("claude_unavailable:"):
+        return None
+    return code.split(":", 1)[1]
+
+
 def error_kind_from_error_string(err: str | None) -> tuple[str, Optional[int]]:
     """Map transport/cascade error text to a privacy-safe kind + HTTP status (no message body)."""
     if not err:
         return "none", None
+    skip_token = _claude_unavailable_skip_token(err)
+    if skip_token is not None:
+        return f"budget_skip:{skip_token}", None
     if "no parseable" in err.lower():
         return "parse", None
     match = _HTTP_STATUS_IN_ERROR_RE.search(err)
@@ -571,6 +590,71 @@ def cascade_call_error_summary(cascade: CascadeResult) -> tuple[str, Optional[in
     if not cascade.attempts:
         return "transport_other", None
     return "none", None
+
+
+def budget_skip_token_from_cascade(cascade: CascadeResult) -> str | None:
+    """First claude budget skip token on a finished cascade, if any."""
+    for att in cascade.attempts:
+        token = _claude_unavailable_skip_token(att.error)
+        if token is not None:
+            return token
+    return None
+
+
+def note_budget_skip_abort(cascade: CascadeResult, cost_state: dict[str, Any]) -> None:
+    """On first budget skip, stop launching new cascades (in-flight may finish)."""
+    token = budget_skip_token_from_cascade(cascade)
+    if not token:
+        return
+    cost_state["budget_skip_count"] = int(cost_state.get("budget_skip_count", 0)) + 1
+    if not cost_state.get("budget_skip_token"):
+        cost_state["budget_skip_token"] = token
+        cost_state["budget_abort"] = True
+
+
+def harness_should_skip_new_cascade(cost_state: dict[str, Any]) -> bool:
+    return bool(cost_state.get("stopped") or cost_state.get("budget_abort"))
+
+
+def harness_isolated_spend_summary() -> dict[str, Any]:
+    if not claude_budget.is_isolated_spend_ledger():
+        return {}
+    total = claude_budget.get_isolated_spend_total()
+    return {
+        "spend_ledger": "isolated",
+        "isolated_spend_total_usd": float(total or 0),
+    }
+
+
+def harness_budget_skip_run_status(run_status: str, cost_state: dict[str, Any]) -> str:
+    if cost_state.get("budget_skip_token"):
+        return "aborted_budget_skip"
+    return run_status
+
+
+def harness_run_summary_top_level(cost_state: dict[str, Any]) -> dict[str, Any]:
+    """Top-level summary JSON keys for U-702 budget/isolation (single stamp site)."""
+    out = harness_isolated_spend_summary()
+    token = cost_state.get("budget_skip_token")
+    if token:
+        out["budget_skip_token"] = token
+        out["budget_skip_count"] = int(cost_state.get("budget_skip_count", 0))
+    return out
+
+
+def harness_budget_skip_abort_exit(
+    cost_state: dict[str, Any], *, resume_hint: str,
+) -> int | None:
+    token = cost_state.get("budget_skip_token")
+    if not token:
+        return None
+    print(
+        f"ABORT: Claude budget gate skipped calls (token={token!r}); "
+        f"budget_skip_count={int(cost_state.get('budget_skip_count', 0))}. "
+        f"{resume_hint}",
+        file=sys.stderr,
+    )
+    return 1
 
 
 def cascade_only_rate_or_overloaded_failures(cascade: CascadeResult) -> bool:
@@ -2323,6 +2407,7 @@ def write_report_and_outputs(
     candidate_scc_mode: str = DEFAULT_CANDIDATE_SCC_MODE,
     bill_text_mode: str = DEFAULT_BILL_TEXT_MODE,
     similar_bills_evidence: bool = False,
+    cost_state: Optional[dict[str, Any]] = None,
 ) -> tuple[Path, Path, Path]:
     out_dir.mkdir(parents=True, exist_ok=True)
     file_stamp = f"{ladder_name}_{stamp}"
@@ -2350,6 +2435,8 @@ def write_report_and_outputs(
         "metrics": metrics,
         "dry_run": dry_info,
     }
+    if cost_state is not None:
+        summary.update(harness_run_summary_top_level(cost_state))
     json_path.write_text(json.dumps(summary, indent=2, default=_json_default), encoding="utf-8")
 
     with csv_path.open("w", newline="", encoding="utf-8") as fh:
@@ -2795,7 +2882,7 @@ async def run_capped_cascade(
     max_cost_usd: float,
 ) -> CascadeResult | None:
     """One cascade with cap, timeout, and harness-level rate-limit re-calls. None = leave unscored."""
-    if cost_state.get("stopped"):
+    if harness_should_skip_new_cascade(cost_state):
         return None
     if cost_state["usd"] + est > max_cost_usd:
         cost_state["stopped"] = True
@@ -2842,6 +2929,9 @@ async def run_capped_cascade(
         cascade = _failed_cascade_result()
     if merged_attempts:
         cascade.attempts = merged_attempts
+    note_budget_skip_abort(cascade, cost_state)
+    if budget_skip_token_from_cascade(cascade):
+        return None
     if cost_state["usd"] > max_cost_usd:
         cost_state["stopped"] = True
     return cascade
@@ -2945,7 +3035,7 @@ async def run_text_cascade_batch(
             # Invariant (U-654a r3): a (Bill, mode) the cost cap stops or cuts off gets NO
             # result entry — it stays unscored, which makes the run INCOMPLETE. Only a
             # cascade that ran to its own end (accepted, or genuinely failed) is scored.
-            if cost_state.get("stopped"):
+            if harness_should_skip_new_cascade(cost_state):
                 return
             est = estimate_ladder_first_rung_cost_usd(resolved_ladder)
             if cost_state["usd"] + est > max_cost_usd:
@@ -3471,6 +3561,49 @@ def main(argv: list[str] | None = None) -> int:
     if not args.run:
         print(json.dumps(dry_info, indent=2, default=_json_default))
         return 0
+
+    claude_budget.use_isolated_spend_ledger(Decimal(str(args.max_cost_usd)))
+    try:
+        return _run_u654a_live(
+            args,
+            dry_info,
+            catalog_diag,
+            populations,
+            prompt_hash,
+            settings_hash,
+            sample,
+            selected_ladder,
+            text_bills,
+            vendor_votes,
+            bills,
+            blob_map,
+            similarity_ctx,
+            bill_ids_pin_stats,
+            ref,
+            read_blob,
+        )
+    finally:
+        claude_budget.clear_isolated_spend_ledger()
+
+
+def _run_u654a_live(
+    args,
+    dry_info,
+    catalog_diag,
+    populations,
+    prompt_hash,
+    settings_hash,
+    sample,
+    selected_ladder,
+    text_bills,
+    vendor_votes,
+    bills,
+    blob_map,
+    similarity_ctx,
+    bill_ids_pin_stats,
+    ref,
+    read_blob,
+) -> int:
     run_status = "complete"
     scored = prepare_scored_rows(sample, vendor_votes)
     if similarity_ctx is not None:
@@ -3700,7 +3833,7 @@ def main(argv: list[str] | None = None) -> int:
         max_cost_usd=args.max_cost_usd,
         run_status=run_status,
     )
-    run_status = state.run_status
+    run_status = harness_budget_skip_run_status(state.run_status, cost_state)
     scored_bill_count = state.scored_bill_count
     unscored_bill_count = state.unscored_bill_count
     cap_tripped = state.cap_tripped
@@ -3786,12 +3919,19 @@ def main(argv: list[str] | None = None) -> int:
         candidate_scc_mode=args.candidate_sccs,
         bill_text_mode=args.bill_text,
         similar_bills_evidence=args.similar_bills_evidence,
+        cost_state=cost_state,
     )
     print(
         f"U-654a run {run_status} ladder={args.ladder} candidate_sccs={args.candidate_sccs}; "
         f"cost USD ~ {usage['cost_usd']:.4f} "
         f"(scored={scored_bill_count}, unscored={unscored_bill_count})"
     )
+    abort_code = harness_budget_skip_abort_exit(
+        cost_state,
+        resume_hint="Unfinished bills omitted from predictions — resume with --resume-from.",
+    )
+    if abort_code is not None:
+        return abort_code
     return 0
 
 

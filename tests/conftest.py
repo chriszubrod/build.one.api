@@ -91,6 +91,16 @@ def mock_ms_graph_client_cm(return_value=None):
     return instance
 
 
+@pytest.fixture(autouse=True)
+def _reset_claude_budget_isolation_after_test():
+    """U-702: main(['--run']) enables isolated spend; reset so test order stays independent."""
+    from intelligence.cascade import claude_budget
+
+    claude_budget.configure_for_tests()
+    yield
+    claude_budget.configure_for_tests()
+
+
 @pytest.fixture
 def grant_qbo_app_lock():
     """U-304: patches identity_fastpath.py's `qbo_app_lock` import to always

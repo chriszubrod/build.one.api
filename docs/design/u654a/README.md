@@ -31,7 +31,7 @@ From the API repo root (`.env` for read-only DB; system-admin CLI context):
 | `--eval-since` / `--eval-until` | 2026-04-11 .. 2026-10-10 | Evaluation window |
 | `--sample-size` | 500 | Stratified sample cap |
 | `--seed` | 654 | Reproducible stratified draw |
-| `--max-cost-usd` | 10 | Stops STARTING new Bills once the next call could exceed it; Bills already in flight finish, so spend can overshoot by up to about concurrency × one full ladder (× throttle retries) — the overshoot is reported. Skipped Bills stay unscored ⇒ INCOMPLETE |
+| `--max-cost-usd` | 10 | Harness **LLM spend cap** (stops STARTING new Bills once the next call could exceed it; Bills already in flight finish, so spend can overshoot by up to about concurrency × one full ladder (× throttle retries) — the overshoot is reported). Also seeds the **isolated Claude per-run ledger** (U-702): live `dbo.LlmDailySpend` is never read or written on `--run`. Skipped Bills stay unscored ⇒ INCOMPLETE; a **Claude budget gate skip** aborts the run (see below). |
 | `--concurrency` | 4 | Parallel cascade calls (Foundry ladders) |
 | `--claude-concurrency` | 2 | Parallel cascade calls when `--ladder` is `claude-*` |
 | `--out-dir` | `docs/design/u654a` | Report + CSV + JSON |
@@ -40,6 +40,12 @@ From the API repo root (`.env` for read-only DB; system-admin CLI context):
 | `--resume-from` | — | Prior `u654a_predictions_<ladder>_<stamp>.csv`; **must match** `--ladder` |
 
 Dry-run first: confirm population sizes, stratum counts, and estimated cost. The script uses a read-only transaction (rollback after SELECTs), same as U-653b. Live runs always write report + spend; interrupted runs are stamped **PARTIAL**. Ctrl-C while texts are still being read makes no model call at all.
+
+### U-702 — isolated Claude spend + budget abort
+
+On `--run`, the harness calls `use_isolated_spend_ledger(cap_usd=--max-cost-usd)` so Anthropic pre-call gates and metering use a **process-local ledger**, not prod `dbo.LlmDailySpend`. Summary JSON stamps `"spend_ledger": "isolated"` and `isolated_spend_total_usd`.
+
+If any cascade attempt returns `claude_unavailable:*` (disabled / no_key / credit / daily_cap), the harness classifies `error_kind` as `budget_skip:<token>`. On the **first** such skip it sets `run_status` to **`aborted_budget_skip`**, stops launching new cascades (in-flight finish), writes outputs with verdicts withheld (like partial runs), prints an abort line, and exits **non-zero**. The skipped `(Bill, mode)` itself is **not** written as a scored row (no CSV `needs_human=1` placeholder). Other unfinished pairs stay absent too — `--resume-from` reuses finished `(Bill, mode)` rows and runs the rest only.
 
 ## Privacy rule
 

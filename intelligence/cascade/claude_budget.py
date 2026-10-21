@@ -66,6 +66,82 @@ _no_key_warning_logged: bool = False
 
 _now_fn: Callable[[], datetime] = lambda: datetime.now(timezone.utc)
 _repo: Optional[LlmSpendReader] = None
+_isolated_cap_usd: Optional[Decimal] = None
+
+
+class _IsolatedSpendRepo:
+    """Process-local per-run ledger for offline harnesses — never touches dbo.LlmDailySpend."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._run_total_usd = Decimal("0")
+
+    @property
+    def run_total_usd(self) -> Decimal:
+        with self._lock:
+            return self._run_total_usd
+
+    def read_daily_spend(self, spend_date: date, provider: str) -> Decimal:
+        if provider != ANTHROPIC_PROVIDER:
+            return Decimal("0")
+        return self.run_total_usd
+
+    def add_daily_spend(
+        self, spend_date: date, provider: str, cost_usd: Decimal,
+    ) -> Decimal:
+        if provider != ANTHROPIC_PROVIDER:
+            return self.run_total_usd
+        with self._lock:
+            self._run_total_usd += cost_usd
+            return self._run_total_usd
+
+
+def _reset_process_spend_buffers_locked() -> None:
+    global _spend_cache, _unsaved_by_date, _inflight_by_date, _fail_closed_until_read
+    _spend_cache = None
+    _unsaved_by_date = {}
+    _inflight_by_date = {}
+    _fail_closed_until_read = False
+    _sync_unsaved_mirror()
+
+
+def use_isolated_spend_ledger(cap_usd: Decimal) -> None:
+    """Offline harness mode: in-memory spend + ``cap_usd`` gate (no prod LlmDailySpend)."""
+    global _isolated_cap_usd, _repo
+    if cap_usd < 0 or not cap_usd.is_finite():
+        raise ValueError(f"invalid isolated cap_usd: {cap_usd!r}")
+    with _spend_lock:
+        _reset_process_spend_buffers_locked()
+    _isolated_cap_usd = cap_usd
+    _repo = _IsolatedSpendRepo()
+
+
+def clear_isolated_spend_ledger() -> None:
+    global _isolated_cap_usd, _repo
+    with _spend_lock:
+        _reset_process_spend_buffers_locked()
+    _isolated_cap_usd = None
+    _repo = None
+
+
+def get_isolated_spend_total() -> Optional[Decimal]:
+    """Per-run anthropic spend while isolated mode is active, else None."""
+    if _isolated_cap_usd is None:
+        return None
+    repo = _repo
+    if isinstance(repo, _IsolatedSpendRepo):
+        return repo.run_total_usd
+    return None
+
+
+def is_isolated_spend_ledger() -> bool:
+    return _isolated_cap_usd is not None
+
+
+def _effective_daily_cap_usd(settings: Settings) -> Decimal:
+    if _isolated_cap_usd is not None:
+        return _isolated_cap_usd
+    return _daily_cap_usd(settings)
 
 
 def configure_for_tests(
@@ -78,8 +154,9 @@ def configure_for_tests(
     global _blocked_until, _credit_warning_logged_for_block, _spend_cache
     global _unsaved_by_date, _inflight_by_date, _unsaved_spend, _unpriced_model_warnings, _fail_closed_until_read
     global _last_read_fail_log_at, _last_write_fail_log_at, _no_key_warning_logged
-    global _now_fn, _repo
+    global _now_fn, _repo, _isolated_cap_usd
     _blocked_until = None
+    _isolated_cap_usd = None
     _credit_warning_logged_for_block = False
     _spend_cache = None
     _unsaved_by_date = {}
@@ -348,7 +425,7 @@ def get_today_anthropic_spend() -> Decimal:
 def is_claude_day_stopped() -> bool:
     """True when daily cap is reached or spend read is fail-closed."""
     settings = Settings()
-    cap = _daily_cap_usd(settings)
+    cap = _effective_daily_cap_usd(settings)
     if cap <= 0:
         return False
     spend = _read_spend_sync(_utc_today(), settings)
@@ -468,7 +545,7 @@ def warn_no_api_key_once() -> None:
 async def pre_call_gate(*, has_api_key: bool) -> Optional[str]:
     """Return skip token (disabled/credit/daily_cap/no_key) or None if call may proceed."""
     settings = Settings()
-    cap = _daily_cap_usd(settings)
+    cap = _effective_daily_cap_usd(settings)
     if cap <= 0:
         return "disabled"
     if not has_api_key:

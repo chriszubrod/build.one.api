@@ -16,6 +16,7 @@ import csv
 import json
 import random
 import re
+import sys
 import time
 from collections import defaultdict
 from contextlib import contextmanager
@@ -38,6 +39,7 @@ from intelligence.cascade.bill_coding import (
     BACKTEST_LADDERS,
     ladder_by_name,
 )
+from intelligence.cascade import claude_budget
 from intelligence.cascade.core import CascadeResult, Rung
 from scripts.sync_helper import assert_cli_system_admin
 from scripts.u653b_backtest import (
@@ -56,6 +58,9 @@ from scripts.u654a_text_backtest import (
     assert_outputs_privacy_safe,
     bill_cascade_spend_usd,
     cascade_call_error_summary,
+    harness_budget_skip_abort_exit,
+    harness_budget_skip_run_status,
+    harness_run_summary_top_level,
     estimate_ladder_first_rung_cost_usd,
     estimate_payload_input_tokens,
     execute_run,
@@ -1412,6 +1417,7 @@ def write_report_and_outputs(
     populations: Optional[dict[str, Any]] = None,
     arms: frozenset[str] | None = None,
     claude_ladder_name: str | None = None,
+    cost_state: Optional[dict[str, Any]] = None,
 ) -> tuple[Path, Path, Path]:
     out_dir.mkdir(parents=True, exist_ok=True)
     report_path = out_dir / f"u676a_report_{stamp}.md"
@@ -1429,6 +1435,8 @@ def write_report_and_outputs(
         "metrics": metrics,
         "dry_run": dry_info,
     }
+    if cost_state is not None:
+        summary.update(harness_run_summary_top_level(cost_state))
     if claude_ladder_name and arms and "C" in arms:
         summary["claude_ladder"] = claude_ladder_name
     json_path.write_text(json.dumps(summary, indent=2, default=_json_default), encoding="utf-8")
@@ -1555,14 +1563,13 @@ async def run_llm_arm_batch(
     async def one(item: tuple[HeaderBillRow, dict[str, Any]]) -> None:
         bill, payload = item
         async with sem:
-            est = estimate_ladder_first_rung_cost_usd(ladder)
             cascade = await run_capped_cascade(
                 lambda: run_bill_header_extraction(
                     payload,
                     transport_for=transport_for,
                     ladder=ladder,
                 ),
-                est=est,
+                est=estimate_ladder_first_rung_cost_usd(ladder),
                 cost_state=cost_state,
                 max_cost_usd=max_cost_usd,
             )
@@ -1673,6 +1680,21 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(dry_info, indent=2, default=_json_default))
         return 0
 
+    claude_budget.use_isolated_spend_ledger(Decimal(str(args.max_cost_usd)))
+    try:
+        return _run_u676a_live(args, sample, populations, dry_info, selected_arms, llm_ladders)
+    finally:
+        claude_budget.clear_isolated_spend_ledger()
+
+
+def _run_u676a_live(
+    args,
+    sample,
+    populations,
+    dry_info,
+    selected_arms,
+    llm_ladders,
+) -> int:
     scored: list[ScoredHeaderBill] = []
     for bill, stratum in sample:
         scored.append(
@@ -1802,7 +1824,7 @@ def main(argv: list[str] | None = None) -> int:
         max_cost_usd=args.max_cost_usd,
         run_status=run_status,
     )
-    run_status = state.run_status
+    run_status = harness_budget_skip_run_status(state.run_status, cost_state)
 
     metrics = build_metrics(
         scored,
@@ -1840,6 +1862,7 @@ def main(argv: list[str] | None = None) -> int:
         populations=populations,
         arms=selected_arms,
         claude_ladder_name=args.claude_ladder,
+        cost_state=cost_state,
     )
     print(
         f"U-676a run {run_status} arms={arms_signature(selected_arms)}; "
@@ -1848,6 +1871,12 @@ def main(argv: list[str] | None = None) -> int:
         f"blob_skipped={blob_skipped_total} "
         f"[unreadable={skip_unreadable}, unparseable={skip_unparseable}, stale={skip_stale}])"
     )
+    abort_code = harness_budget_skip_abort_exit(
+        cost_state,
+        resume_hint="Unfinished bills omitted from per-doc CSV.",
+    )
+    if abort_code is not None:
+        return abort_code
     return 0
 
 

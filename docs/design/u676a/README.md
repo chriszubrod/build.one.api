@@ -16,7 +16,9 @@ From repo root (system-admin CLI context, prod DB read-only with rollback):
 ./.venv/bin/python -m scripts.u676a_bill_field_bakeoff --run --arms A,B,C --claude-ladder claude-haiku
 ```
 
-Defaults: eval window from U-653b (`--eval-since` / `--eval-until`), sample 200, seed 676, arms `A,B`, outputs under `docs/design/u676a/`. `--max-cost-usd` applies to **B+C LLM spend combined**. `--concurrency` controls arm B (Foundry); `--claude-concurrency` (default 2) controls arm C.
+Defaults: eval window from U-653b (`--eval-since` / `--eval-until`), sample 200, seed 676, arms `A,B`, outputs under `docs/design/u676a/`. `--max-cost-usd` applies to **B+C LLM spend combined** and, on `--run`, seeds the **isolated Claude per-run ledger** (U-702 — prod `LlmDailySpend` is not touched). `--concurrency` controls arm B (Foundry); `--claude-concurrency` (default 2) controls arm C.
+
+**U-702 budget abort:** Claude gate skips (`claude_unavailable:*` → `error_kind` `budget_skip:<token>`) abort the run on first skip: `run_status` **`aborted_budget_skip`**, verdicts withheld, stderr message, exit non-zero; unfinished Bills are omitted from the per-doc CSV (no fake `needs_human` rows).
 
 Intake strata in reports: **manual** / **agent** / **other** (QBO-pulled, NULL intake, email, etc.).
 
